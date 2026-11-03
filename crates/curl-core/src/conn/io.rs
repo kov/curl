@@ -339,28 +339,6 @@ impl<'a> SocketPoll<'a> {
     }
 }
 
-/// The network as the engine reaches it.
-/// One resolve a resolver started. Numbered as C numbers them, in 32
-/// bits from 1, past the last back to 1 (`last_resolv_id`): a resolve
-/// would have to wait out four billion others to meet its number again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ResolveId(std::num::NonZeroU32);
-
-impl ResolveId {
-    /// The first a resolver gives.
-    pub const FIRST: ResolveId = ResolveId(std::num::NonZeroU32::MIN);
-
-    /// Its number, as traces show it.
-    pub fn get(self) -> u32 {
-        self.0.get()
-    }
-
-    /// The one after it.
-    pub fn next(self) -> ResolveId {
-        ResolveId(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MIN))
-    }
-}
-
 /// The transfer a resolve is for, which the multi runs again once its
 /// answer comes (C's `mid` in each queued item); none for a setup that
 /// no transfer drives.
@@ -373,33 +351,37 @@ impl Waiter {
 }
 
 /// A resolve's start: the answer, where it is known at once, or the
-/// resolve to wait for.
-#[derive(Debug, PartialEq, Eq)]
+/// resolve to wait for, and which families it queued as a query of their
+/// own, IPv6's first, for a resolver that asks each family apart
+/// (`async_thrdd_query`); neither for one that asks once for what the
+/// resolve wants.
+#[derive(Debug)]
 pub enum Resolve {
     Answer(Vec<IpAddr>),
-    Pending(Queued),
+    Pending {
+        resolve: Box<dyn Resolving>,
+        v6: bool,
+        v4: bool,
+    },
 }
 
-/// A resolve that answers later: its id, and which families it was
-/// queued as a query of their own for, IPv6's first, by a resolver that
-/// asks each family apart (`async_thrdd_query`); neither for one that
-/// asks once for what the resolve wants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Queued {
-    pub id: ResolveId,
-    pub v6: bool,
-    pub v4: bool,
-}
+/// One resolve a [`Resolver`] answers later, owned by what waits for it:
+/// dropped, before or after its answer is taken, it ends, and its
+/// resolver keeps nothing of it, its queries not yet asked taken back
+/// and an answer that comes after dropped (`Curl_resolv_destroy`).
+pub trait Resolving: Send + fmt::Debug {
+    /// Its answer, once it has come, taken; none while it has not. Taken
+    /// once: asked again, it is a bug.
+    fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
 
-impl Queued {
-    /// `id`, asked once for what it wants.
-    pub fn once(id: ResolveId) -> Queued {
-        Queued {
-            id,
-            v6: false,
-            v4: false,
-        }
+    /// What has come while it goes on (`Curl_resolv_get_ai`), for a
+    /// resolver that answers each query as it can.
+    fn partial(&mut self) -> Result<Option<Partial>, OutOfMemory> {
+        Ok(None)
     }
+
+    /// Its answer, waited for (C's `Curl_async_await`).
+    fn wait(&mut self) -> Result<Vec<IpAddr>, ResolveFailure>;
 }
 
 /// What a resolve has found so far: every address of the queries that
@@ -503,8 +485,9 @@ pub trait DnsResolve: Send + fmt::Debug {
 }
 
 /// What finds the addresses names stand for (C's resolver backends):
-/// the system's, at once, or one that answers later, telling the multi
-/// which transfers to run again.
+/// the system's, at once, or one that answers later, handing each such
+/// resolve to what waits for it and telling the multi which transfers to
+/// run again.
 pub trait Resolver {
     /// Start finding the addresses of `family` that `name` stands for,
     /// for `waiter`.
@@ -515,25 +498,10 @@ pub trait Resolver {
         waiter: Waiter,
     ) -> Result<Resolve, ResolveFailure>;
 
-    /// The answer of `id`, once it has come, taken; none while it has not.
-    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
-
-    /// What has come of `id` while it goes on (`Curl_resolv_get_ai`), for
-    /// a resolver that answers each query as it can.
-    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory> {
-        let _ = id;
-        Ok(None)
-    }
-
-    /// The answer of `id`, waited for (C's `Curl_async_await`).
-    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure>;
-
-    /// `id` is not wanted: its answer, if it comes, is dropped.
-    fn cancel(&mut self, id: ResolveId);
-
-    /// Each resolve whose answer has come since last asked, with its
-    /// waiter, told once (`Curl_async_thrdd_multi_process`).
-    fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId));
+    /// The waiter of each resolve whose answer has come since last asked,
+    /// told once (`Curl_async_thrdd_multi_process`). Told under the
+    /// resolver's lock, if it has one: `each` drops no resolve.
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter));
 
     /// What an answer coming wakes, which the multi polls, for a resolver
     /// that answers later from elsewhere (C's `wakeup_internal`).
@@ -575,19 +543,7 @@ impl Resolver for SystemResolver {
         curl_os::resolve::lookup(name, family).map(Resolve::Answer)
     }
 
-    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
-        unreachable!("{id:?}: the system's resolver answers as it starts")
-    }
-
-    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
-        unreachable!("{id:?}: the system's resolver answers as it starts")
-    }
-
-    fn cancel(&mut self, id: ResolveId) {
-        unreachable!("{id:?}: the system's resolver answers as it starts")
-    }
-
-    fn answered(&mut self, _: &mut dyn FnMut(Waiter, ResolveId)) {}
+    fn answered(&mut self, _: &mut dyn FnMut(Waiter)) {}
 
     fn waker(&self) -> Option<TryArc<Waker>> {
         None
@@ -608,6 +564,7 @@ pub fn c_ares_explains(why: ResolveFailure) -> Option<&'static str> {
     }
 }
 
+/// The network as the engine reaches it.
 pub trait Net {
     /// Wait up to `timeout` for any of `sockets` or `fds` to be ready;
     /// with none, sleep. Returns how many have events; a signal ending the
@@ -1411,11 +1368,11 @@ pub struct FakeNet {
     /// The names answered only once their test lets them, each with its
     /// gate; a resolve of one waits until then.
     late: Vec<(Vec<u8>, Late)>,
-    /// The resolves waiting, with their waiter, name and family, and
-    /// whether their answer was told of.
-    resolving: Vec<Resolving>,
+    /// The resolves waiting, shared with each one's own, which takes
+    /// itself out as it is dropped.
+    resolving: FakeResolves,
     /// The id the next resolve gets.
-    next_resolve: ResolveId,
+    next_resolve: u64,
     /// The conversations to come, each for the next connection to its
     /// address.
     conversations: Vec<(Remote, Conversation)>,
@@ -1481,15 +1438,83 @@ impl Default for Late {
     }
 }
 
-/// A fake resolve waiting.
+/// The fake's resolves waiting: each one's id, waiter and gate, and
+/// whether its answer was told of.
+#[cfg(any(test, feature = "test-util"))]
+type FakeResolves = TryArc<std::sync::Mutex<Vec<FakeWaiting>>>;
+
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug)]
-struct Resolving {
-    id: ResolveId,
+struct FakeWaiting {
+    id: u64,
     waiter: Waiter,
-    name: Vec<u8>,
-    family: Family,
+    gate: Late,
     told: bool,
+}
+
+/// A fake resolve of a late name, its answer and what comes before it
+/// found as it starts: the names a test gives do not change.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+struct FakeResolve {
+    all: FakeResolves,
+    id: u64,
+    gate: Late,
+    answer: Option<Result<Vec<IpAddr>, ResolveFailure>>,
+    partial: Option<Partial>,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl FakeResolve {
+    /// Its answer, its place among those waiting let go of.
+    fn take(&mut self) -> Result<Vec<IpAddr>, ResolveFailure> {
+        self.forget();
+        self.answer
+            .take()
+            .expect("a resolve's answer is taken once")
+    }
+
+    fn forget(&self) {
+        let id = self.id;
+        lock_resolves(&self.all).retain(|w| w.id != id);
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+fn lock_resolves(all: &FakeResolves) -> std::sync::MutexGuard<'_, Vec<FakeWaiting>> {
+    all.lock()
+        .expect("no test panics holding the fake's resolves")
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Resolving for FakeResolve {
+    fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+        self.gate.released().then(|| self.take())
+    }
+
+    fn partial(&mut self) -> Result<Option<Partial>, OutOfMemory> {
+        let Some(part) = &self.partial else {
+            return Ok(None);
+        };
+        let mut addrs = Vec::new();
+        addrs.try_extend_from_slice(&part.addrs)?;
+        Ok(Some(Partial {
+            addrs,
+            v6_answered: part.v6_answered,
+            v4_answered: part.v4_answered,
+        }))
+    }
+
+    fn wait(&mut self) -> Result<Vec<IpAddr>, ResolveFailure> {
+        self.take()
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Drop for FakeResolve {
+    fn drop(&mut self) {
+        self.forget();
+    }
 }
 
 /// What a fake socket may bind to.
@@ -1529,8 +1554,9 @@ impl FakeNet {
             datagram_peers: Vec::new(),
             names: Vec::new(),
             late: Vec::new(),
-            resolving: Vec::new(),
-            next_resolve: ResolveId::FIRST,
+            resolving: TryArc::try_new(std::sync::Mutex::new(Vec::new()))
+                .expect("a test's resolves fit"),
+            next_resolve: 0,
             conversations: Vec::new(),
             incoming: Vec::new(),
             link_local: None,
@@ -1693,14 +1719,15 @@ impl FakeNet {
     /// How many resolves wait for their answer to be taken.
     #[cfg(test)]
     pub(crate) fn resolving(&self) -> usize {
-        self.resolving.len()
+        lock_resolves(&self.resolving).len()
     }
 
-    /// Whether `name`'s answer waits for its gate.
-    fn held(&self, name: &[u8]) -> bool {
+    /// The gate `name`'s answer waits for, if it is not open yet.
+    fn gate(&self, name: &[u8]) -> Option<Late> {
         self.late
             .iter()
-            .any(|(n, late)| n.eq_ignore_ascii_case(name) && !late.released())
+            .find(|(n, late)| n.eq_ignore_ascii_case(name) && !late.released())
+            .map(|(_, late)| late.clone())
     }
 
     /// The addresses of `family` the test gave `name`.
@@ -2449,90 +2476,62 @@ impl Resolver for FakeNet {
         family: Family,
         waiter: Waiter,
     ) -> Result<Resolve, ResolveFailure> {
-        if !self.held(name) {
+        let Some(gate) = self.gate(name) else {
             return self.lookup(name, family).map(Resolve::Answer);
-        }
+        };
+        let oom = |OutOfMemory| ResolveFailure::OutOfMemory;
         let id = self.next_resolve;
-        self.next_resolve = id.next();
-        let mut n = Vec::new();
-        n.try_extend_from_slice(name)
-            .map_err(|_| ResolveFailure::OutOfMemory)?;
-        self.resolving
-            .try_push(Resolving {
-                id,
-                waiter,
-                name: n,
-                family,
-                told: false,
-            })
-            .map_err(|_| ResolveFailure::OutOfMemory)?;
-        // Each family a query of its own, as the threaded resolver asks.
-        Ok(Resolve::Pending(Queued {
+        self.next_resolve += 1;
+        let partial = match self.first {
+            None => None,
+            Some(first) => {
+                let mut addrs = Vec::new();
+                if let Some((_, all)) = self
+                    .names
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                {
+                    let v6 = first == Family::V6;
+                    for a in all.iter().filter(|a| a.is_ipv6() == v6) {
+                        addrs.try_push(*a).map_err(oom)?;
+                    }
+                }
+                Some(Partial {
+                    addrs,
+                    v6_answered: first == Family::V6,
+                    v4_answered: first == Family::V4,
+                })
+            }
+        };
+        let waiting = FakeWaiting {
             id,
+            waiter,
+            gate: gate.clone(),
+            told: false,
+        };
+        lock_resolves(&self.resolving)
+            .try_push(waiting)
+            .map_err(oom)?;
+        let resolve = FakeResolve {
+            all: self.resolving.clone(),
+            id,
+            gate,
+            answer: Some(self.lookup(name, family)),
+            partial,
+        };
+        // Each family a query of its own, as the threaded resolver asks.
+        Ok(Resolve::Pending {
+            resolve: try_box(resolve).map_err(oom)?,
             v6: family != Family::V4,
             v4: family != Family::V6,
-        }))
+        })
     }
 
-    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
-        let at = self
-            .resolving
-            .iter()
-            .position(|r| r.id == id)
-            .expect("a resolve not taken or cancelled");
-        if self.held(&self.resolving[at].name) {
-            return None;
-        }
-        let r = self.resolving.remove(at);
-        Some(self.lookup(&r.name, r.family))
-    }
-
-    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
-        let at = self
-            .resolving
-            .iter()
-            .position(|r| r.id == id)
-            .expect("a resolve not taken or cancelled");
-        let r = self.resolving.remove(at);
-        self.lookup(&r.name, r.family)
-    }
-
-    fn cancel(&mut self, id: ResolveId) {
-        self.resolving.retain(|r| r.id != id);
-    }
-
-    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory> {
-        let Some(first) = self.first else {
-            return Ok(None);
-        };
-        let r = self
-            .resolving
-            .iter()
-            .find(|r| r.id == id)
-            .expect("a resolve not taken or cancelled");
-        let mut addrs = Vec::new();
-        if let Some((_, all)) = self
-            .names
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(&r.name))
-        {
-            let v6 = first == Family::V6;
-            for a in all.iter().filter(|a| a.is_ipv6() == v6) {
-                addrs.try_push(*a)?;
-            }
-        }
-        Ok(Some(Partial {
-            addrs,
-            v6_answered: first == Family::V6,
-            v4_answered: first == Family::V4,
-        }))
-    }
-
-    fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId)) {
-        for at in 0..self.resolving.len() {
-            if !self.resolving[at].told && !self.held(&self.resolving[at].name) {
-                self.resolving[at].told = true;
-                each(self.resolving[at].waiter, self.resolving[at].id);
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter)) {
+        for w in lock_resolves(&self.resolving).iter_mut() {
+            if !w.told && w.gate.released() {
+                w.told = true;
+                each(w.waiter);
             }
         }
     }
@@ -2560,19 +2559,7 @@ impl<F: FnMut(&[u8], Family) -> Result<Vec<IpAddr>, ResolveFailure>> Resolver fo
         (self.0)(name, family).map(Resolve::Answer)
     }
 
-    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
-        unreachable!("{id:?}: answered as it starts")
-    }
-
-    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
-        unreachable!("{id:?}: answered as it starts")
-    }
-
-    fn cancel(&mut self, id: ResolveId) {
-        unreachable!("{id:?}: answered as it starts")
-    }
-
-    fn answered(&mut self, _: &mut dyn FnMut(Waiter, ResolveId)) {}
+    fn answered(&mut self, _: &mut dyn FnMut(Waiter)) {}
 
     fn waker(&self) -> Option<TryArc<Waker>> {
         None

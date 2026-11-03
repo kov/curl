@@ -26,8 +26,8 @@ use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
 use super::h3proxy::H3Proxy;
 use super::io::{
-    Closer, Connect, DnsRefused, DnsResolve, Events, Family, Net, Partial, Queued, Remote, Resolve,
-    ResolveFailure, ResolveId, Sock, Socket, SocketKind, SocketOption, SocketPoll, UnixPeer,
+    Closer, Connect, DnsRefused, DnsResolve, Events, Family, Net, Partial, Remote, Resolve,
+    ResolveFailure, Resolving, Sock, Socket, SocketKind, SocketOption, SocketPoll, UnixPeer,
     Waiter,
 };
 use super::layer::{LayerAnswer, LayerCx, LayerQuery};
@@ -1223,7 +1223,7 @@ impl ConnectMachine {
         };
         let peer = self.route.destination();
         let (name, port) = (peer.name(), peer.port());
-        let p = match p.take((name, port), cx) {
+        let mut p = match p.take((name, port), cx) {
             Taken::Done(Ok((answer, found))) => {
                 r.eyeballs.answer = Addresses::Resolved(answer);
                 return Ok(Some(found));
@@ -1234,7 +1234,7 @@ impl ConnectMachine {
             }
             Taken::Waiting(p) => p,
         };
-        if let Some(part) = p.partial(cx)? {
+        if let Some(part) = p.partial()? {
             r.eyeballs.answer = Addresses::Resolved(part.answer(name, p.family)?);
         }
         r.eyeballs.late.0 = Some(p);
@@ -1421,7 +1421,7 @@ impl ConnectMachine {
                             Looked::Found(answer, found) => (Addresses::Resolved(answer), found),
                             // Nothing until the resolver answers, when the
                             // multi runs the transfer again.
-                            Looked::Pending(p) => {
+                            Looked::Pending(mut p) => {
                                 let says_its_own = p.says_its_own();
                                 let mut retry = None;
                                 if !says_its_own {
@@ -1433,7 +1433,7 @@ impl ConnectMachine {
                                 // before what came is connected to
                                 // (`cf_dns_ready_to_connect`).
                                 let oom = |OutOfMemory| ConnectError::OutOfMemory;
-                                if let Some(part) = p.partial(cx).map_err(oom)? {
+                                if let Some(part) = p.partial().map_err(oom)? {
                                     if !part.v6_answered && now < p.await_until {
                                         let until = p.await_until;
                                         let left = p.await_until.since(now).as_millis();
@@ -2103,7 +2103,7 @@ impl ConnectMachine {
         }
         // Whatever else was to come of the name is not wanted
         // (`Curl_resolv_destroy`).
-        r.eyeballs.late.cancel(cx.net());
+        r.eyeballs.late.end();
         cx.of(
             Component::HappyEyeballs,
             format_args!("connect attempt #{i} successful"),
@@ -2412,11 +2412,11 @@ impl ConnectMachine {
                 for a in r.attempts.drain(..) {
                     a.discard(cx, component);
                 }
-                r.eyeballs.late.cancel(cx.net());
+                r.eyeballs.late.end();
             }
             Stage::Dialed(mut d) => {
                 discard(cx, component, d.stream.into_socket());
-                d.target_late.cancel(cx.net());
+                d.target_late.end();
             }
             stage @ Stage::Resolving(_) => ConnectMachine { stage, ..self }.close(cx.net()),
         }
@@ -2427,13 +2427,13 @@ impl ConnectMachine {
         match self.stage {
             Stage::Resolving(None) => {}
             // Its answer, if it comes, is not wanted.
-            Stage::Resolving(Some(p)) => p.cancel(net),
+            Stage::Resolving(Some(p)) => drop(p),
             Stage::Racing(mut r) => {
-                r.eyeballs.late.cancel(net);
+                r.eyeballs.late.end();
                 r.close_all(net);
             }
             Stage::Dialed(mut d) => {
-                d.target_late.cancel(net);
+                d.target_late.end();
                 net.close(d.stream.into_socket());
             }
         }
@@ -2915,10 +2915,7 @@ fn resolve_blocking_said(
     };
     if let Some(q) = queued {
         let xfer = cx.transfer_number();
-        let record = cx.resolve_number(Holder::Blocking);
-        say_queued(xfer, record, q, name, at, &mut |parts| {
-            cx.of_with(dns, parts)
-        });
+        say_queued(xfer, q, name, at, &mut |parts| cx.of_with(dns, parts));
     }
     if found == Some(Found::Cached) {
         cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
@@ -2989,19 +2986,33 @@ fn resolve_blocking_said(
     }
 }
 
+/// How a resolve that answers later was queued, for its lines: the number
+/// of the transfer's record of it, if the context keeps records, and which
+/// families went as a query of their own, by a resolver that asks each
+/// family apart (`async_thrdd_query`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Queued {
+    pub(crate) record: Option<ResolveNumber>,
+    pub(crate) v6: bool,
+    pub(crate) v4: bool,
+}
+
 /// The threaded resolver's queries for `name` at `at`, as `q` queued
 /// them for transfer `xfer`, IPv6's first, each line given to `say`
 /// (`async_thrdd_query`): numbered as the transfer's record of the
-/// resolve is, `record`, if it has one.
+/// resolve is; nothing for a context that keeps no records, and traces
+/// nothing.
 pub(crate) fn say_queued(
     xfer: u64,
-    record: Option<ResolveNumber>,
     q: Queued,
     name: &[u8],
     at: &[u8],
     say: &mut dyn FnMut(&[&[u8]]),
 ) {
-    let id = record.map_or(q.id.get(), ResolveNumber::get);
+    let Some(record) = q.record else {
+        return;
+    };
+    let id = record.get();
     for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
         if queued {
             let ids =
@@ -3080,27 +3091,22 @@ pub(super) fn lookup_name(
     )? {
         Looked::Found(answer, found) => Ok((answer, found)),
         Looked::Pending(mut pending) => {
-            let answer = match &pending.via {
-                Via::Resolver { id, .. } => {
-                    let id = *id;
-                    let mut answer = None;
-                    cx.net().with_resolver(&mut |r| answer = Some(r.wait(id)));
-                    answer.expect("the network lends its resolver")
-                }
+            let answer = match &mut pending.via {
+                Via::Resolver(resolve) => resolve.wait(),
                 Via::Library(_) => match await_library(&mut pending, (name, port), cx) {
                     Some((answer, TakenAt::InStart)) => {
                         return taken_in_start(answer, (name, port), pending, cx);
                     }
                     Some((answer, TakenAt::Waited)) => answer,
                     None => {
-                        pending.cancel(cx.net());
+                        drop(pending);
                         cx.libraries_closed();
                         return Err(ConnectError::Unresolved(Unresolved::GaveUp));
                     }
                 },
                 Via::Doh(_) => unreachable!("a lookup waited for is not over DoH"),
             };
-            settle(answer, (name, port), pending, cx)
+            settle(answer, (name, port), pending.into_keeping(), cx)
         }
     }
 }
@@ -3206,6 +3212,9 @@ pub(super) struct Pending {
     /// threaded resolver's are, not once its answer has come; and the
     /// families whose answers it has said.
     live: Option<Queried>,
+    /// The number of the transfer's record of it, if the context keeps
+    /// records.
+    record: Option<ResolveNumber>,
 }
 
 /// How a resolve's answer is looked for in the cache as it is taken, and
@@ -3225,14 +3234,16 @@ pub(super) enum Taken {
     Done(Result<(TryArc<Answer>, Found), ConnectError>),
 }
 
-/// Who answers a resolve.
+/// Who answers a resolve, each owned: dropped, the resolve ends, and
+/// nothing of it is left where it was asked. Each says its lines as its
+/// backend in C does (`asyn-thrdd.c`, `doh.c`, `asyn-ares.c`).
 #[derive(Debug)]
 enum Via {
-    /// The network's resolver, which must be told if it is not wanted.
-    Resolver { id: ResolveId, held: Held },
-    /// Transfers of the multi's: gone with this.
+    /// The network's resolver's.
+    Resolver(Box<dyn Resolving>),
+    /// Transfers of the multi's.
     Doh(DohLookup),
-    /// A resolver library's own resolve: gone with this.
+    /// A resolver library's own resolve.
     Library(Box<dyn DnsResolve>),
 }
 
@@ -3243,40 +3254,15 @@ struct Queried {
     v4: bool,
 }
 
-/// A resolve held: one dropped neither answered nor cancelled leaves its
-/// answer in the resolver for good, a bug, which aborts.
-#[derive(Debug)]
-struct Held;
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        assert!(
-            std::thread::panicking(),
-            "a resolve was dropped, neither answered nor cancelled"
-        );
-    }
-}
-
-/// A resolve the setup goes on beside, cancelled as the setup ends, is
-/// won, closed or discarded. Dropped instead, on a path that has no
-/// network to tell, only what runs out of memory, the resolver keeps the
-/// answer until it goes.
+/// A resolve the setup goes on beside, let go of as the setup ends, is
+/// won, closed or discarded, or with whatever drops it.
 #[derive(Debug, Default)]
 pub(crate) struct Late(Option<Pending>);
 
 impl Late {
-    fn cancel(&mut self, net: &mut dyn Net) {
-        if let Some(p) = self.0.take() {
-            p.cancel(net);
-        }
-    }
-}
-
-impl Drop for Late {
-    fn drop(&mut self) {
-        if let Some(p) = self.0.take() {
-            p.done();
-        }
+    /// Not wanted: let go of now, where C destroys it.
+    fn end(&mut self) {
+        self.0 = None;
     }
 }
 
@@ -3307,55 +3293,47 @@ impl Partial {
 }
 
 impl Pending {
-    /// Not wanted: its resolver told, if it has one.
-    fn cancel(self, net: &mut dyn Net) {
-        match self.via {
-            Via::Resolver { id, held } => {
-                net.with_resolver(&mut |r| r.cancel(id));
-                std::mem::forget(held);
-            }
-            // Its sockets are told as they close (`SocketsClosed`).
-            Via::Library(resolve) => drop(resolve),
-            Via::Doh(_) => {}
-        }
-    }
-
     /// What has come so far, if it can say.
-    fn partial(&self, cx: &mut dyn ConnCx) -> Result<Option<Partial>, OutOfMemory> {
-        match &self.via {
+    fn partial(&mut self) -> Result<Option<Partial>, OutOfMemory> {
+        match &mut self.via {
             Via::Doh(lookup) => lookup.partial().map(Some),
             Via::Library(resolve) => resolve.partial().map(Some),
-            Via::Resolver { id, .. } => {
-                let (id, mut partial) = (*id, Ok(None));
-                cx.net().with_resolver(&mut |r| partial = r.partial(id));
-                partial
-            }
+            Via::Resolver(resolve) => resolve.partial(),
         }
     }
 
-    /// Its answer taken: a library closes what it has left open.
-    fn cancel_taken(self, net: &mut dyn Net) {
-        match self.via {
-            Via::Library(_) => self.cancel(net),
-            Via::Resolver { .. } | Via::Doh(_) => {
-                self.done();
-            }
+    /// What its answer is kept as and its failure said with, the resolve
+    /// let go of: a library closes what it has left open, its sockets
+    /// told as they close (`SocketsClosed`).
+    fn into_keeping(self) -> Keeping {
+        let (library_says, library_status) = match &self.via {
+            Via::Library(resolve) => (resolve.explain(), Some(resolve.status())),
+            Via::Resolver(_) | Via::Doh(_) => (None, None),
+        };
+        let library = self.says_its_own();
+        Keeping {
+            family: self.family,
+            found: self.found,
+            keep_negative: self.keep_negative,
+            queued: self.queued(),
+            over_doh: self.over_doh(),
+            library,
+            says_its_own: library || self.live.is_some(),
+            library_says,
+            library_status,
         }
     }
 
-    /// Its answer taken, or the resolve cancelled: let go.
-    fn done(self) -> (Family, fn(Asked) -> Found, bool) {
-        if let Via::Resolver { held, .. } = self.via {
-            std::mem::forget(held);
-        }
-        (self.family, self.found, self.keep_negative)
-    }
-
-    /// How it was queued, if as queries of their own.
+    /// How it was queued, if as queries of their own: only the network's
+    /// resolver queues them so.
     fn queued(&self) -> Option<Queued> {
         let Queried { v6, v4 } = self.queried;
         match self.via {
-            Via::Resolver { id, .. } => (v6 || v4).then_some(Queued { id, v6, v4 }),
+            Via::Resolver(_) => (v6 || v4).then_some(Queued {
+                record: self.record,
+                v6,
+                v4,
+            }),
             Via::Doh(_) | Via::Library(_) => None,
         }
     }
@@ -3370,14 +3348,14 @@ impl Pending {
 
     /// Whether it says its own lines as it goes, not the network's resolver.
     fn says_its_own(&self) -> bool {
-        !matches!(self.via, Via::Resolver { .. })
+        !matches!(self.via, Via::Resolver(_))
     }
 
     /// When its library wants to run again, at the latest.
     fn due(&self, now: Instant) -> Option<Instant> {
         match &self.via {
             Via::Library(r) => Some(now.after(r.due(Duration::from_secs(1)))),
-            Via::Resolver { .. } | Via::Doh(_) => None,
+            Via::Resolver(_) | Via::Doh(_) => None,
         }
     }
 
@@ -3385,7 +3363,7 @@ impl Pending {
     fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
         match &self.via {
             Via::Library(r) => r.wants(),
-            Via::Resolver { .. } | Via::Doh(_) => &[],
+            Via::Resolver(_) | Via::Doh(_) => &[],
         }
     }
 
@@ -3408,7 +3386,7 @@ impl Pending {
                 say_found_cached(queries, (name, port), cx);
                 cx.info_with(&[b"Hostname '", name, b"' was found in DNS cache"]);
                 cx.resolve_shut(holder);
-                self.cancel(cx.net());
+                drop(self);
                 return Taken::Done(Ok((answer, Found::Meanwhile)));
             }
             // An entry without addresses (`fetch_entry`).
@@ -3423,7 +3401,7 @@ impl Pending {
                     format_args!("cache lookup {shown}:{port} queries={queries} -> 6 not found"),
                 );
                 cx.resolve_shut(holder);
-                self.cancel(cx.net());
+                drop(self);
                 let failed = ConnectError::Unresolved(Unresolved::NegativeMeanwhile);
                 return Taken::Done(Err(failed));
             }
@@ -3431,7 +3409,7 @@ impl Pending {
         }
         match self.polled((name, port), cx) {
             None => Taken::Waiting(self),
-            Some(answer) => Taken::Done(settle(answer, (name, port), self, cx)),
+            Some(answer) => Taken::Done(settle(answer, (name, port), self.into_keeping(), cx)),
         }
     }
 
@@ -3470,18 +3448,13 @@ impl Pending {
                 }
                 Some(answer)
             }
-            Via::Resolver { id, .. } => {
-                let id = *id;
+            Via::Resolver(resolve) => {
                 let Some(said) = self.live else {
-                    let mut polled = None;
-                    cx.net().with_resolver(&mut |r| polled = Some(r.answer(id)));
-                    return polled.expect("the network lends its resolver");
+                    return resolve.answer();
                 };
                 let queries = family_queries(self.family);
                 say_not_cached(queries, (name, port), cx);
-                let mut polled = None;
-                cx.net().with_resolver(&mut |r| polled = Some(r.answer(id)));
-                let polled = polled.expect("the network lends its resolver");
+                let polled = resolve.answer();
                 let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
                 let queried = self.queried;
                 // Each family's answer said once, as it is taken
@@ -3491,9 +3464,7 @@ impl Pending {
                     Some(Ok(addrs)) => (queried, Some(&addrs[..])),
                     Some(Err(_)) => (queried, None),
                     None => {
-                        let mut part = Ok(None);
-                        cx.net().with_resolver(&mut |r| part = r.partial(id));
-                        let Ok(part) = part else {
+                        let Ok(part) = resolve.partial() else {
                             return Some(Err(ResolveFailure::OutOfMemory));
                         };
                         if let Some(part) = part {
@@ -3581,7 +3552,7 @@ fn say_came(
     cx: &mut dyn ConnCx,
 ) {
     let new = Queued {
-        id: ResolveId::FIRST,
+        record: None,
         v6: came.v6 && !said.v6,
         v4: came.v4 && !said.v4,
     };
@@ -3780,6 +3751,7 @@ pub(super) fn lookup_start(
                 v6: false,
                 v4: false,
             },
+            record: cx.resolve_number(holder),
             family,
             found,
             keep_negative,
@@ -3804,23 +3776,37 @@ pub(super) fn lookup_start(
     let mut started = None;
     cx.net()
         .with_resolver(&mut |r| started = Some(r.start(name, family, waiter)));
-    let pending = |q: Queued| Pending {
-        via: Via::Resolver {
-            id: q.id,
-            held: Held,
-        },
-        queried: Queried { v6: q.v6, v4: q.v4 },
+    // An answer had at once is kept as the resolver's, queued as no
+    // queries of their own.
+    let at_once = Keeping {
         family,
         found,
         keep_negative,
-        await_until: now.after(aaaa_await()),
-        looks,
-        live: None,
+        queued: None,
+        over_doh: false,
+        library: false,
+        says_its_own: false,
+        library_says: None,
+        library_status: None,
     };
     match started.expect("the network lends its resolver") {
-        Ok(Resolve::Pending(queued)) => {
+        Ok(Resolve::Pending { resolve, v6, v4 }) => {
+            // Dropped on a failure from here, it leaves nothing in the
+            // resolver.
             cx.resolve_kept(holder).map_err(oom)?;
-            let mut pending = pending(queued);
+            let record = cx.resolve_number(holder);
+            let queued = Queued { record, v6, v4 };
+            let mut pending = Pending {
+                via: Via::Resolver(resolve),
+                queried: Queried { v6, v4 },
+                record,
+                family,
+                found,
+                keep_negative,
+                await_until: now.after(aaaa_await()),
+                looks,
+                live: None,
+            };
             // The setup's resolve says its lines as it starts and as it
             // goes; a blocking resolve's caller says them as it ends.
             if doh {
@@ -3842,8 +3828,8 @@ pub(super) fn lookup_start(
                     cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
                 }
                 say_not_cached(queries, (name, port), cx);
-                let (xfer, record) = (cx.transfer_number(), cx.resolve_number(holder));
-                say_queued(xfer, record, queued, name, at.bytes(), &mut |parts| {
+                let xfer = cx.transfer_number();
+                say_queued(xfer, queued, name, at.bytes(), &mut |parts| {
                     cx.of_with(Component::Dns, parts);
                 });
                 cx.of(
@@ -3858,17 +3844,12 @@ pub(super) fn lookup_start(
             Ok(Looked::Pending(pending))
         }
         Ok(Resolve::Answer(addrs)) => {
-            let at_once = pending(Queued::once(ResolveId::FIRST));
             let (answer, found) = settle(Ok(addrs), (name, port), at_once, cx)?;
             Ok(Looked::Found(answer, found))
         }
-        Err(why) => Err(settle(
-            Err(why),
-            (name, port),
-            pending(Queued::once(ResolveId::FIRST)),
-            cx,
-        )
-        .expect_err("a failure settles as one")),
+        Err(why) => {
+            Err(settle(Err(why), (name, port), at_once, cx).expect_err("a failure settles as one"))
+        }
     }
 }
 
@@ -3931,7 +3912,7 @@ fn take_in_start(
 fn taken_in_start(
     answer: Result<Vec<IpAddr>, ResolveFailure>,
     (name, port): (&[u8], u16),
-    mut pending: Pending,
+    pending: Pending,
     cx: &mut dyn ConnCx,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let (holder, found) = (pending.looks.holder, pending.found);
@@ -3943,12 +3924,16 @@ fn taken_in_start(
                 Component::Dns,
                 format_args!("[{queries}] hostip_resolv started -> 0"),
             );
-            let (answer, _) = settle(Ok(addrs), (name, port), pending, cx)?;
+            let keeping = pending.into_keeping();
+            let (answer, _) = settle(Ok(addrs), (name, port), keeping, cx)?;
             Ok((answer, found(Asked::InStart)))
         }
         Err(why) => {
-            pending.keep_negative = true;
-            let mut failed = match settle(Err(why), (name, port), pending, cx) {
+            let keeping = Keeping {
+                keep_negative: true,
+                ..pending.into_keeping()
+            };
+            let mut failed = match settle(Err(why), (name, port), keeping, cx) {
                 Ok(_) => unreachable!("a failure settles as one"),
                 Err(failed) => failed,
             };
@@ -3960,26 +3945,47 @@ fn taken_in_start(
     }
 }
 
-/// The resolver's answer for `name` on `port`, as `pending` started it,
-/// kept in the cache; that the name does not exist kept too, if the
-/// lookup keeps negative answers.
+/// What a resolve's answer is kept as, and what its failure is said
+/// with, taken from the resolve as its answer is, or made for one had at
+/// once.
+#[derive(Clone, Copy)]
+pub(super) struct Keeping {
+    family: Family,
+    /// Whether the cache had a stale answer.
+    found: fn(Asked) -> Found,
+    keep_negative: bool,
+    queued: Option<Queued>,
+    over_doh: bool,
+    /// A library's or DoH's, which says its own lines, not the network's
+    /// resolver.
+    library: bool,
+    /// It said its lines as it went, none left to say for it now.
+    says_its_own: bool,
+    library_says: Option<&'static str>,
+    library_status: Option<i32>,
+}
+
+/// The resolver's answer for `name` on `port`, kept in the cache as
+/// `keeping` says; that the name does not exist kept too, if the lookup
+/// keeps negative answers.
 pub(super) fn settle(
     answer: Result<Vec<IpAddr>, ResolveFailure>,
     (name, port): (&[u8], u16),
-    pending: Pending,
+    keeping: Keeping,
     cx: &mut dyn ConnCx,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
-    let queued = pending.queued();
-    let over_doh = pending.over_doh();
-    let library = pending.says_its_own();
-    let says_its_own = library || pending.live.is_some();
-    let (library_says, library_status) = match &pending.via {
-        Via::Library(resolve) => (resolve.explain(), Some(resolve.status())),
-        Via::Resolver { .. } | Via::Doh(_) => (None, None),
-    };
-    let (family, found, keep_negative) = (pending.family, pending.found, pending.keep_negative);
-    pending.cancel_taken(cx.net());
+    let Keeping {
+        family,
+        found,
+        keep_negative,
+        queued,
+        over_doh,
+        library,
+        says_its_own,
+        library_says,
+        library_status,
+    } = keeping;
     let refused = |why: ResolveFailure, cx: &mut dyn ConnCx| {
         let mut explained = library_says;
         if !library {
@@ -4090,6 +4096,20 @@ fn literal(name: &[u8]) -> Option<IpAddr> {
 mod tests {
     use super::*;
 
+    /// A resolve that never answers, for a test that only holds one.
+    #[derive(Debug)]
+    struct Unanswered;
+
+    impl Resolving for Unanswered {
+        fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+            None
+        }
+
+        fn wait(&mut self) -> Result<Vec<IpAddr>, ResolveFailure> {
+            unreachable!("not waited for")
+        }
+    }
+
     /// A race expects more addresses only while a resolve goes on, its own
     /// or the one it follows: with neither it is out of addresses at once,
     /// not waiting for some that never come.
@@ -4101,14 +4121,12 @@ mod tests {
         assert!(e.coming(), "the first attempt's resolve goes on");
         e.following = false;
         e.late = Late(Some(Pending {
-            via: Via::Resolver {
-                id: ResolveId::FIRST,
-                held: Held,
-            },
+            via: Via::Resolver(Box::new(Unanswered)),
             family: Family::Any,
             found: Found::Resolved,
             keep_negative: false,
             queried: Queried { v6: true, v4: true },
+            record: None,
             await_until: ManualClock::new().unwrap().now(),
             looks: Looks {
                 holder: Holder::Addresses(crate::multi::state::ConnRank::First),
@@ -4118,30 +4136,6 @@ mod tests {
             live: None,
         }));
         assert!(e.coming(), "its own goes on");
-    }
-
-    /// A late resolve dropped with no network to tell, as running out of
-    /// memory drops it, lets go of what it held rather than aborting.
-    #[test]
-    fn a_late_resolve_dropped_lets_go_of_its_hold() {
-        let pending = Pending {
-            via: Via::Resolver {
-                id: ResolveId::FIRST,
-                held: Held,
-            },
-            family: Family::Any,
-            found: Found::Resolved,
-            keep_negative: false,
-            queried: Queried { v6: true, v4: true },
-            await_until: ManualClock::new().unwrap().now(),
-            looks: Looks {
-                holder: Holder::Addresses(crate::multi::state::ConnRank::First),
-                wildcard: false,
-                max_age: None,
-            },
-            live: None,
-        };
-        drop(Late(Some(pending)));
     }
     use crate::conn::io::{FakeNet, Peer as FakePeer};
     use crate::conn::{Peer, Scheme};
@@ -4492,14 +4486,14 @@ mod tests {
         assert_eq!(net.resolving(), 0);
     }
 
-    /// A setup dropped while its resolve waits, neither answered nor
-    /// cancelled, is a bug: its answer would stay in the resolver.
+    /// A setup dropped while its resolve waits, by whatever drops it,
+    /// leaves nothing in the resolver.
     #[test]
-    #[should_panic = "neither answered nor cancelled"]
-    fn a_dropped_pending_resolve_is_caught() {
+    fn a_dropped_setup_leaves_nothing_in_the_resolver() {
         let late = crate::conn::io::Late::new();
-        let (m, _net) = waiting_for(&late);
+        let (m, net) = waiting_for(&late);
         drop(m);
+        assert_eq!(net.resolving(), 0);
     }
 
     /// A race begun on what AAAA answered, once it connects, lets go of the
@@ -4573,12 +4567,9 @@ mod tests {
         net.close(stream.into_socket());
     }
 
-    /// A race begun on what AAAA answered, discarded while A is still
-    /// awaited, as the setup's other race's win discards it, lets go of the
-    /// resolve in the resolver: none is left to answer a setup that is
-    /// gone (`Curl_resolv_destroy`).
-    #[test]
-    fn a_race_discarded_cancels_the_resolve_still_going_on() {
+    /// A setup to `late.test` driven until its race has begun on what
+    /// AAAA answered, A still awaited.
+    fn racing_while_a_is_awaited() -> (ConnectMachine, FakeNet, DnsCache, ManualClock) {
         let clock = ManualClock::new().unwrap();
         let late = crate::conn::io::Late::new();
         let up: SocketAddr = "[::1]:5".parse().unwrap();
@@ -4633,6 +4624,16 @@ mod tests {
             }
         };
         assert_eq!(net.resolving(), 1, "A is awaited");
+        (m, net, dns, clock)
+    }
+
+    /// A race begun on what AAAA answered, discarded while A is still
+    /// awaited, as the setup's other race's win discards it, lets go of the
+    /// resolve in the resolver: none is left to answer a setup that is
+    /// gone (`Curl_resolv_destroy`).
+    #[test]
+    fn a_race_discarded_cancels_the_resolve_still_going_on() {
+        let (m, mut net, mut dns, clock) = racing_while_a_is_awaited();
         let mut cx = Plain {
             net: &mut net,
             dns: &mut dns,
@@ -4640,6 +4641,15 @@ mod tests {
         };
         m.discard(&mut cx);
         assert_eq!(net.resolving(), 0, "the resolve was cancelled");
+    }
+
+    /// A race going on beside its resolve, dropped by whatever drops it,
+    /// leaves nothing in the resolver.
+    #[test]
+    fn a_race_dropped_leaves_nothing_in_the_resolver() {
+        let (m, net, _dns, _clock) = racing_while_a_is_awaited();
+        drop(m);
+        assert_eq!(net.resolving(), 0, "the resolve went with the race");
     }
 
     /// The attempt that connects wins, and the others are closed.

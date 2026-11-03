@@ -891,7 +891,7 @@ impl<H: Host> Multi<H> {
     fn take_answers(&mut self) {
         let (slots, dirty) = (&self.slots, &mut self.dirty);
         self.net.with_resolver(&mut |r| {
-            r.answered(&mut |waiter, _| {
+            r.answered(&mut |waiter| {
                 if let Some(id) = waiter.0
                     && slots.get(id).is_some()
                 {

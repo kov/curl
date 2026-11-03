@@ -1577,7 +1577,7 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option
     {
         let xfer = cx.easy().report().transfer_number().map_or(0, |n| n.get());
         let dns = Component::Dns;
-        crate::conn::say_queued(xfer, None, q, name, at, &mut |parts| {
+        crate::conn::say_queued(xfer, q, name, at, &mut |parts| {
             trace::of_with(cx, dns, parts);
         });
     }

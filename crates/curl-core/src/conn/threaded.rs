@@ -8,6 +8,11 @@
 //! idle time ends (C's `min_threads` is 0). A thread that cannot be
 //! started leaves its query queued; the next start, or the multi's next
 //! pass, tries again.
+//!
+//! Each resolve is handed to its waiter as a `Handle` owning its place in
+//! the resolver: everything of it, its queries queued and its answers,
+//! lives under the resolver's lock beside the threads', and the handle
+//! dropped takes it all out, whoever drops it and wherever.
 
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -15,11 +20,9 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
-use super::io::{
-    Family, Partial, Queued, Resolve, ResolveFailure, ResolveId, Resolver, Waiter, Waker,
-};
+use super::io::{Family, Partial, Resolve, ResolveFailure, Resolver, Resolving, Waiter, Waker};
 
 /// How many threads a pool keeps at most, and how long an idle one
 /// waits for work before it ends.
@@ -124,10 +127,15 @@ fn number(given: Option<&[u8]>, max: u64) -> Option<u64> {
     n
 }
 
+/// Which resolve of a resolver's a query is for: numbered on from the
+/// last, in 64 bits, never met again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Id(u64);
+
 /// One query of a resolve: one family's addresses.
 #[derive(Debug)]
 struct Query {
-    id: ResolveId,
+    id: Id,
     name: Vec<u8>,
     family: Family,
     /// What the debug build makes of it: held back before it is asked;
@@ -139,16 +147,22 @@ struct Query {
 /// A query's answer.
 #[derive(Debug)]
 struct Done {
-    id: ResolveId,
+    id: Id,
     family: Family,
     result: Result<Vec<IpAddr>, ResolveFailure>,
 }
 
-/// What the threads and the resolver share, under the lock.
+/// What the threads, the resolver and its resolves share, under the
+/// lock.
 #[derive(Debug, Default)]
 struct State {
     queue: Vec<Query>,
     done: Vec<Done>,
+    /// The resolves whose answers are not taken, each until it is or its
+    /// handle is dropped.
+    resolving: Vec<Ongoing>,
+    /// The threads started, joined as they end, or as the resolver goes.
+    handles: Vec<JoinHandle<()>>,
     /// Threads started and not ended, and of them those waiting for work.
     threads: u32,
     idle: u32,
@@ -157,7 +171,8 @@ struct State {
     /// The threads are waited for as the resolver goes, unless the
     /// application asked to exit quickly (`CURLMOPT_QUICK_EXIT`).
     join: bool,
-    /// The resolver is gone: the threads end as their query does.
+    /// The resolver is gone: the threads end as their query does, and
+    /// the queries still queued go with it.
     aborted: bool,
     /// The last thread wanted could not be started: queries wait for the
     /// next try.
@@ -186,8 +201,8 @@ impl Shared {
 
 /// A resolve whose queries are out.
 #[derive(Debug)]
-struct Resolving {
-    id: ResolveId,
+struct Ongoing {
+    id: Id,
     waiter: Waiter,
     /// Its queries not answered yet.
     left: u8,
@@ -205,10 +220,7 @@ struct Resolving {
 #[derive(Debug)]
 pub struct ThreadedResolver {
     shared: TryArc<Shared>,
-    resolving: Vec<Resolving>,
-    next: ResolveId,
-    /// The threads started, joined as they end, or at the end.
-    handles: Vec<JoinHandle<()>>,
+    next: Id,
     debug: DebugVars,
 }
 
@@ -231,9 +243,7 @@ impl ThreadedResolver {
         .map_err(|OutOfMemory| std::io::ErrorKind::OutOfMemory)?;
         Ok(ThreadedResolver {
             shared,
-            resolving: Vec::new(),
-            next: ResolveId::FIRST,
-            handles: Vec::new(),
+            next: Id(0),
             debug: DebugVars::default(),
         })
     }
@@ -265,83 +275,87 @@ impl ThreadedResolver {
             }
         }
         self.shared.work.notify_all();
-        self.start_threads();
+        start_threads(&self.shared);
         Ok(())
     }
+}
 
-    /// As many threads as the queue wants and the most allows; one that
-    /// cannot be started leaves its query queued for the next try.
-    fn start_threads(&mut self) {
-        self.reap();
-        loop {
-            {
-                let mut state = self.shared.lock();
-                let wanted = state.queue.len() as u32;
-                if wanted <= state.idle || state.threads >= state.threads_max {
-                    state.start_failed = false;
-                    return;
-                }
-                if state.fail_starts > 0 {
-                    state.fail_starts -= 1;
-                    state.start_failed = true;
-                    return;
-                }
-                state.threads += 1;
+/// As many threads as the queue wants and the most allows; one that
+/// cannot be started leaves its query queued for the next try. None once
+/// the resolver is gone, which empties the queue.
+fn start_threads(shared: &TryArc<Shared>) {
+    reap(shared);
+    loop {
+        {
+            let mut state = shared.lock();
+            let wanted = state.queue.len() as u32;
+            if wanted <= state.idle || state.threads >= state.threads_max {
+                state.start_failed = false;
+                return;
             }
-            let shared = self.shared.clone();
-            // std's start allocates without asking: a failure to start
-            // that it reports leaves the query for the next try.
-            let started = std::thread::Builder::new()
-                .name("curl-resolver".into())
-                .spawn(move || work(&shared));
-            match started {
-                // Without room to keep its handle, it runs detached.
-                Ok(handle) => {
-                    let _detached = self.handles.try_push(handle);
-                }
-                Err(_) => {
-                    let mut state = self.shared.lock();
-                    state.threads -= 1;
-                    state.start_failed = true;
-                    return;
-                }
+            if state.fail_starts > 0 {
+                state.fail_starts -= 1;
+                state.start_failed = true;
+                return;
+            }
+            state.threads += 1;
+        }
+        let for_thread = shared.clone();
+        // std's start allocates without asking: a failure to start
+        // that it reports leaves the query for the next try.
+        let started = std::thread::Builder::new()
+            .name("curl-resolver".into())
+            .spawn(move || work(&for_thread));
+        let mut state = shared.lock();
+        match started {
+            // Without room to keep its handle, it runs detached.
+            Ok(handle) => {
+                let _detached = state.handles.try_push(handle);
+            }
+            Err(_) => {
+                state.threads -= 1;
+                state.start_failed = true;
+                return;
             }
         }
     }
+}
 
-    /// Join the threads that have ended.
-    fn reap(&mut self) {
+/// Join the threads that have ended.
+fn reap(shared: &Shared) {
+    let mut ended = Vec::new();
+    {
+        let mut state = shared.lock();
         let mut at = 0;
-        while at < self.handles.len() {
-            if self.handles[at].is_finished() {
-                let handle = self.handles.swap_remove(at);
-                handle.join().expect("a resolver thread does not panic");
+        while at < state.handles.len() {
+            if state.handles[at].is_finished() {
+                // Without room to hold it, it is joined at the next reap.
+                if ended.try_push(state.handles.swap_remove(at)).is_err() {
+                    break;
+                }
             } else {
                 at += 1;
             }
         }
     }
-
-    /// Move the answers the threads gave to their resolves; one for a
-    /// resolve cancelled is dropped.
-    fn collect(&mut self) {
-        let done = std::mem::take(&mut self.shared.lock().done);
-        for d in done {
-            let Some(r) = self.resolving.iter_mut().find(|r| r.id == d.id) else {
-                continue;
-            };
-            match d.family {
-                Family::V6 => r.v6 = Some(d.result),
-                _ => r.v4 = Some(d.result),
-            }
-            r.left -= 1;
-        }
+    for handle in ended {
+        handle.join().expect("a resolver thread does not panic");
     }
+}
 
-    /// The answer of the resolve at `at`, all its queries answered.
-    fn take(&mut self, at: usize) -> Result<Vec<IpAddr>, ResolveFailure> {
-        let r = self.resolving.remove(at);
-        merged(r.v6, r.v4)
+/// Move the answers the threads gave to their resolves; one for a
+/// resolve dropped is dropped.
+fn collect(state: &mut State) {
+    let done = std::mem::take(&mut state.done);
+    for d in done {
+        let Some(r) = state.resolving.iter_mut().find(|r| r.id == d.id) else {
+            continue;
+        };
+        match d.family {
+            Family::V6 => r.v6 = Some(d.result),
+            _ => r.v4 = Some(d.result),
+        }
+        r.left -= 1;
     }
 }
 
@@ -446,7 +460,7 @@ impl Resolver for ThreadedResolver {
         waiter: Waiter,
     ) -> Result<Resolve, ResolveFailure> {
         let id = self.next;
-        self.next = id.next();
+        self.next = Id(id.0 + 1);
         // Both families are a query each, IPv6's queued first.
         let families: &[Family] = match family {
             Family::Any => &[Family::V6, Family::V4],
@@ -475,7 +489,7 @@ impl Resolver for ThreadedResolver {
                 fail,
             })?;
         }
-        self.resolving.try_push(Resolving {
+        self.shared.lock().resolving.try_push(Ongoing {
             id,
             waiter,
             left: families.len() as u8,
@@ -485,83 +499,34 @@ impl Resolver for ThreadedResolver {
             asked_v4: families.iter().any(|&f| f != Family::V6),
             told: None,
         })?;
-        if let Err(OutOfMemory) = self.queue(&mut queries) {
-            self.resolving.pop();
-            return Err(ResolveFailure::OutOfMemory);
-        }
-        Ok(Resolve::Pending(Queued {
+        // Held from here, so that whatever fails takes it out again.
+        let handle = Handle {
+            shared: self.shared.clone(),
             id,
+        };
+        self.queue(&mut queries)?;
+        Ok(Resolve::Pending {
+            resolve: try_box(handle)?,
             v6: families.contains(&Family::V6),
             v4: families.contains(&Family::V4),
-        }))
+        })
     }
 
-    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
-        self.collect();
-        let at = self
-            .resolving
-            .iter()
-            .position(|r| r.id == id)
-            .expect("a resolve not taken or cancelled");
-        if self.resolving[at].left > 0 {
-            // A query a thread could not be started for is tried again.
-            self.start_threads();
-            return None;
-        }
-        Some(self.take(at))
-    }
-
-    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory> {
-        self.collect();
-        let Some(r) = self.resolving.iter().find(|r| r.id == id) else {
-            return Ok(None);
-        };
-        let mut addrs = Vec::new();
-        for found in [&r.v6, &r.v4].into_iter().flatten().flatten() {
-            addrs.try_extend_from_slice(found)?;
-        }
-        Ok(Some(Partial {
-            addrs,
-            v6_answered: r.v6.is_some() || !r.asked_v6,
-            v4_answered: r.v4.is_some() || !r.asked_v4,
-        }))
-    }
-
-    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
-        loop {
-            if let Some(answer) = self.answer(id) {
-                return answer;
-            }
-            let state = self.shared.lock();
-            if state.done.is_empty() {
-                // Woken by any answer, or after a while to start a
-                // thread again.
-                let _waited = self
-                    .shared
-                    .answered
-                    .wait_timeout(state, Duration::from_millis(100))
-                    .expect("no thread panics holding the resolver's lock");
-            }
-        }
-    }
-
-    fn cancel(&mut self, id: ResolveId) {
-        self.resolving.retain(|r| r.id != id);
-        self.shared.lock().queue.retain(|q| q.id != id);
-    }
-
-    fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId)) {
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter)) {
         // The wake is taken as the answers are.
         let _drained = self.shared.waker.drain();
-        self.collect();
-        for r in &mut self.resolving {
-            // Each answer is told of, as what came may be connected to.
-            if r.told != Some(r.left) && (r.left == 0 || r.v6.is_some() || r.v4.is_some()) {
-                r.told = Some(r.left);
-                each(r.waiter, r.id);
+        {
+            let mut state = self.shared.lock();
+            collect(&mut state);
+            for r in &mut state.resolving {
+                // Each answer is told of, as what came may be connected to.
+                if r.told != Some(r.left) && (r.left == 0 || r.v6.is_some() || r.v4.is_some()) {
+                    r.told = Some(r.left);
+                    each(r.waiter);
+                }
             }
         }
-        self.start_threads();
+        start_threads(&self.shared);
     }
 
     fn waker(&self) -> Option<TryArc<Waker>> {
@@ -587,6 +552,87 @@ impl Resolver for ThreadedResolver {
     /// which it never answers.
     fn asked_for_records(&self) -> bool {
         true
+    }
+}
+
+/// One resolve of the threaded resolver's, held by what waits for it.
+#[derive(Debug)]
+struct Handle {
+    shared: TryArc<Shared>,
+    id: Id,
+}
+
+impl Resolving for Handle {
+    fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+        let taken = {
+            let mut state = self.shared.lock();
+            collect(&mut state);
+            let at = state
+                .resolving
+                .iter()
+                .position(|r| r.id == self.id)
+                .expect("a resolve's answer is taken once");
+            (state.resolving[at].left == 0).then(|| state.resolving.remove(at))
+        };
+        match taken {
+            Some(r) => Some(merged(r.v6, r.v4)),
+            None => {
+                // A query a thread could not be started for is tried again.
+                start_threads(&self.shared);
+                None
+            }
+        }
+    }
+
+    fn partial(&mut self) -> Result<Option<Partial>, OutOfMemory> {
+        let mut state = self.shared.lock();
+        collect(&mut state);
+        let Some(r) = state.resolving.iter().find(|r| r.id == self.id) else {
+            return Ok(None);
+        };
+        let mut addrs = Vec::new();
+        for found in [&r.v6, &r.v4].into_iter().flatten().flatten() {
+            addrs.try_extend_from_slice(found)?;
+        }
+        Ok(Some(Partial {
+            addrs,
+            v6_answered: r.v6.is_some() || !r.asked_v6,
+            v4_answered: r.v4.is_some() || !r.asked_v4,
+        }))
+    }
+
+    fn wait(&mut self) -> Result<Vec<IpAddr>, ResolveFailure> {
+        loop {
+            if let Some(answer) = self.answer() {
+                return answer;
+            }
+            let state = self.shared.lock();
+            // With the resolver gone, its queries queued are too.
+            if state.aborted {
+                return Err(ResolveFailure::Failed);
+            }
+            if state.done.is_empty() {
+                // Woken by any answer, or after a while to start a
+                // thread again.
+                let _waited = self
+                    .shared
+                    .answered
+                    .wait_timeout(state, Duration::from_millis(100))
+                    .expect("no thread panics holding the resolver's lock");
+            }
+        }
+    }
+}
+
+impl Drop for Handle {
+    /// Its place let go of, its answer taken or not: its queries still
+    /// queued go, and an answer that comes after is dropped as it is
+    /// collected (`Curl_resolv_destroy`).
+    fn drop(&mut self) {
+        let id = self.id;
+        let mut state = self.shared.lock();
+        state.resolving.retain(|r| r.id != id);
+        state.queue.retain(|q| q.id != id);
     }
 }
 
@@ -625,14 +671,15 @@ impl ResolverThreads {
 
 impl Drop for ThreadedResolver {
     fn drop(&mut self) {
-        {
+        let handles = {
             let mut state = self.shared.lock();
             state.aborted = true;
             state.queue.clear();
-        }
+            std::mem::take(&mut state.handles)
+        };
         self.shared.work.notify_all();
         if self.shared.lock().join {
-            for handle in self.handles.drain(..) {
+            for handle in handles {
                 handle.join().expect("a resolver thread does not panic");
             }
         }
@@ -643,12 +690,23 @@ impl Drop for ThreadedResolver {
 mod tests {
     use super::*;
 
+    /// The resolve of `name` in `family` started, to wait for.
+    fn start(r: &mut ThreadedResolver, name: &[u8], family: Family) -> Box<dyn Resolving> {
+        match r.start(name, family, Waiter::NONE) {
+            Ok(Resolve::Pending { resolve, .. }) => resolve,
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// Every resolve's answer, waited for, as `answered` tells of each.
-    fn answer_all(
-        r: &mut ThreadedResolver,
-        ids: &[ResolveId],
-    ) -> Vec<Result<Vec<IpAddr>, ResolveFailure>> {
-        ids.iter().map(|&id| r.wait(id)).collect()
+    fn answer_all(resolves: &mut [Box<dyn Resolving>]) -> Vec<Result<Vec<IpAddr>, ResolveFailure>> {
+        resolves.iter_mut().map(|r| r.wait()).collect()
+    }
+
+    /// How many resolves the resolver holds, and how many queries wait.
+    fn held(r: &ThreadedResolver) -> (usize, usize) {
+        let state = r.shared.lock();
+        (state.resolving.len(), state.queue.len())
     }
 
     /// A name resolves in a thread: the start gives a resolve to wait for,
@@ -656,26 +714,18 @@ mod tests {
     #[test]
     fn a_name_resolves_in_a_thread() {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
-        let Ok(Resolve::Pending(Queued { id, .. })) =
-            r.start(b"localhost", Family::V4, Waiter::NONE)
-        else {
-            panic!("pending");
-        };
-        let answer = r.wait(id).unwrap();
+        let answer = start(&mut r, b"localhost", Family::V4).wait().unwrap();
         assert!(answer.contains(&IpAddr::from([127, 0, 0, 1])), "{answer:?}");
-        let Ok(Resolve::Pending(Queued { id, .. })) =
-            r.start(b"localhost", Family::V4, Waiter::NONE)
-        else {
-            panic!("pending");
-        };
+        let mut resolve = start(&mut r, b"localhost", Family::V4);
         // Told once, then taken.
         let mut told = Vec::new();
         while told.is_empty() {
-            r.answered(&mut |w, i| told.push((w, i)));
+            r.answered(&mut |w| told.push(w));
         }
-        assert_eq!(told, [(Waiter::NONE, id)]);
-        r.answered(&mut |_, _| panic!("told twice"));
-        assert!(r.answer(id).unwrap().is_ok());
+        assert_eq!(told, [Waiter::NONE]);
+        r.answered(&mut |_| panic!("told twice"));
+        assert!(resolve.answer().unwrap().is_ok());
+        assert_eq!(held(&r), (0, 0), "taken");
     }
 
     /// Both families are two queries, IPv6's addresses first; a name
@@ -683,19 +733,11 @@ mod tests {
     #[test]
     fn both_families_are_two_queries() {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
-        let start = |r: &mut ThreadedResolver, name: &[u8]| match r.start(
-            name,
-            Family::Any,
-            Waiter::NONE,
-        ) {
-            Ok(Resolve::Pending(Queued { id, .. })) => id,
-            other => panic!("{other:?}"),
-        };
-        let ids = [
-            start(&mut r, b"localhost"),
-            start(&mut r, b"nonexist.invalid"),
+        let mut resolves = [
+            start(&mut r, b"localhost", Family::Any),
+            start(&mut r, b"nonexist.invalid", Family::Any),
         ];
-        let answers = answer_all(&mut r, &ids);
+        let answers = answer_all(&mut resolves);
         let found = answers[0].as_ref().unwrap();
         assert!(found.contains(&IpAddr::from([127, 0, 0, 1])), "{found:?}");
         // Each family's answer is kept: IPv6's too, where the system has
@@ -756,9 +798,11 @@ mod tests {
     #[test]
     fn a_resolve_is_told_of_as_each_family_answers() {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
-        r.resolving
-            .try_push(Resolving {
-                id: ResolveId::FIRST,
+        r.shared
+            .lock()
+            .resolving
+            .try_push(Ongoing {
+                id: Id(0),
                 waiter: Waiter::NONE,
                 left: 2,
                 asked_v6: true,
@@ -770,39 +814,53 @@ mod tests {
             .unwrap();
         let told = |r: &mut ThreadedResolver| {
             let mut n = 0;
-            r.answered(&mut |_, _| n += 1);
+            r.answered(&mut |_| n += 1);
             n
         };
         assert_eq!(told(&mut r), 0, "nothing came");
-        r.resolving[0].left = 1;
-        r.resolving[0].v4 = Some(Ok(vec![IpAddr::from([127, 0, 0, 1])]));
+        {
+            let mut state = r.shared.lock();
+            state.resolving[0].left = 1;
+            state.resolving[0].v4 = Some(Ok(vec![IpAddr::from([127, 0, 0, 1])]));
+        }
         assert_eq!(told(&mut r), 1, "A came");
         assert_eq!(told(&mut r), 0, "told once");
-        r.resolving[0].left = 0;
-        r.resolving[0].v4 = None;
+        {
+            let mut state = r.shared.lock();
+            state.resolving[0].left = 0;
+            state.resolving[0].v4 = None;
+        }
         assert_eq!(told(&mut r), 1, "every query answered, though empty");
-        r.resolving.clear();
+        r.shared.lock().resolving.clear();
     }
 
-    /// A cancelled resolve's answer is dropped as it comes, and the
-    /// multi is not told of it.
+    /// A resolve dropped while its query is asked leaves nothing in the
+    /// resolver: its answer is dropped as it comes, and the multi is not
+    /// told of it.
     #[test]
-    fn a_cancelled_resolve_is_never_told() {
-        let mut r = ThreadedResolver::new(Threads::EASY).unwrap();
-        let Ok(Resolve::Pending(Queued { id: gone, .. })) =
-            r.start(b"localhost", Family::V4, Waiter::NONE)
-        else {
-            panic!("pending");
+    fn a_resolve_dropped_while_asked_is_never_told() {
+        let held_back = DebugVars {
+            delay: Some(Duration::from_millis(50)),
+            ..DebugVars::default()
         };
-        r.cancel(gone);
-        let Ok(Resolve::Pending(Queued { id: kept, .. })) =
-            r.start(b"localhost", Family::V4, Waiter::NONE)
-        else {
-            panic!("pending");
-        };
-        assert!(r.wait(kept).is_ok());
-        r.answered(&mut |_, id| assert_ne!(id, gone));
-        assert!(r.resolving.is_empty());
+        let mut r = ThreadedResolver::with_debug(Threads::EASY, held_back).unwrap();
+        let gone = start(&mut r, b"localhost", Family::V4);
+        // Its query taken by a thread, out of the queue.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while held(&r) != (1, 0) {
+            assert!(std::time::Instant::now() < deadline, "{:?}", held(&r));
+            std::thread::yield_now();
+        }
+        drop(gone);
+        assert_eq!(held(&r), (0, 0), "nothing left of it");
+        // Its answer comes, and is dropped.
+        while r.shared.lock().done.is_empty() {
+            assert!(std::time::Instant::now() < deadline, "the answer came");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        r.answered(&mut |_| panic!("told of a resolve dropped"));
+        assert_eq!(held(&r), (0, 0));
+        assert!(r.shared.lock().done.is_empty(), "collected");
     }
 
     /// No more threads than the most run at once, and idle ones end.
@@ -813,15 +871,12 @@ mod tests {
             idle: Duration::from_millis(10),
         })
         .unwrap();
-        let ids: Vec<ResolveId> = (0..6)
-            .map(|_| match r.start(b"localhost", Family::V4, Waiter::NONE) {
-                Ok(Resolve::Pending(Queued { id, .. })) => id,
-                other => panic!("{other:?}"),
-            })
+        let mut resolves: Vec<_> = (0..6)
+            .map(|_| start(&mut r, b"localhost", Family::V4))
             .collect();
         let threads = r.shared.lock().threads;
         assert!(threads <= 2);
-        assert!(answer_all(&mut r, &ids).iter().all(Result::is_ok));
+        assert!(answer_all(&mut resolves).iter().all(Result::is_ok));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while r.shared.lock().threads > 0 {
             assert!(std::time::Instant::now() < deadline, "idle threads end");
@@ -829,20 +884,19 @@ mod tests {
         }
     }
 
-    /// A resolve cancelled while its query waits for a thread takes it out
-    /// of the queue, leaving the others'; and queries waiting for want of
-    /// a thread, none having failed to start, ask for no retry.
+    /// A resolve dropped while its queries wait for a thread takes them
+    /// out of the queue, leaving the others', and leaves nothing in the
+    /// resolver; and queries waiting for want of a thread, none having
+    /// failed to start, ask for no retry.
     #[test]
-    fn a_cancel_takes_its_queries_from_the_queue() {
+    fn a_resolve_dropped_takes_its_queries_from_the_queue() {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
         r.shared.lock().threads_max = 0;
-        let mut start = || match r.start(b"localhost", Family::Any, Waiter::NONE) {
-            Ok(Resolve::Pending(Queued { id, .. })) => id,
-            other => panic!("{other:?}"),
-        };
-        let (gone, kept) = (start(), start());
+        let gone = start(&mut r, b"localhost", Family::Any);
+        let kept = start(&mut r, b"localhost", Family::Any);
+        assert_eq!(held(&r), (2, 4));
         assert_eq!(r.retry(), None, "no start failed");
-        r.cancel(gone);
+        drop(gone);
         let queued: Vec<_> = r
             .shared
             .lock()
@@ -850,8 +904,10 @@ mod tests {
             .iter()
             .map(|q| (q.id, q.family))
             .collect();
-        assert_eq!(queued, [(kept, Family::V6), (kept, Family::V4)]);
-        assert_eq!(r.resolving.len(), 1);
+        assert_eq!(queued, [(Id(1), Family::V6), (Id(1), Family::V4)]);
+        assert_eq!(held(&r), (1, 2));
+        drop(kept);
+        assert_eq!(held(&r), (0, 0), "nothing left");
     }
 
     /// What has come of a resolve is told while it goes on, and whether
@@ -859,17 +915,14 @@ mod tests {
     #[test]
     fn what_came_is_told_while_a_resolve_goes_on() {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
-        let mut start = |family| match r.start(b"localhost", family, Waiter::NONE) {
-            Ok(Resolve::Pending(Queued { id, .. })) => id,
-            other => panic!("{other:?}"),
-        };
-        let (v4, any) = (start(Family::V4), start(Family::Any));
+        let mut v4 = start(&mut r, b"localhost", Family::V4);
+        let mut any = start(&mut r, b"localhost", Family::Any);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut told = 0;
         let part = loop {
             assert!(std::time::Instant::now() < deadline, "not answered");
-            r.answered(&mut |_, id| told += u32::from(id == any));
-            let part = r.partial(any).unwrap().expect("it goes on until taken");
+            r.answered(&mut |_| told += 1);
+            let part = any.partial().unwrap().expect("it goes on until taken");
             if part.v6_answered && !part.addrs.is_empty() && told >= 1 {
                 break part;
             }
@@ -883,26 +936,22 @@ mod tests {
         // A's answer is told as it comes, with AAAA's.
         let part = loop {
             assert!(std::time::Instant::now() < deadline, "A not answered");
-            let part = r.partial(any).unwrap().expect("it goes on until taken");
+            let part = any.partial().unwrap().expect("it goes on until taken");
             if part.v4_answered {
                 break part;
             }
             std::thread::yield_now();
         };
         assert!(part.v6_answered, "{part:?}");
-        let only_v4 = r.partial(v4).unwrap().expect("it goes on until taken");
+        let only_v4 = v4.partial().unwrap().expect("it goes on until taken");
         assert!(only_v4.v6_answered, "AAAA was never asked");
-        r.cancel(v4);
-        assert!(r.partial(v4).unwrap().is_none(), "gone");
-        r.cancel(any);
-        let Ok(Resolve::Pending(Queued { id: only_v6, .. })) =
-            r.start(b"localhost", Family::V6, Waiter::NONE)
-        else {
-            panic!("not queued");
-        };
-        let part = r.partial(only_v6).unwrap().expect("it goes on until taken");
+        // Taken, it has nothing more to tell.
+        assert!(v4.wait().is_ok());
+        assert!(v4.partial().unwrap().is_none(), "gone");
+        drop((v4, any));
+        let mut only_v6 = start(&mut r, b"localhost", Family::V6);
+        let part = only_v6.partial().unwrap().expect("it goes on until taken");
         assert!(part.v4_answered, "A was never asked");
-        r.cancel(only_v6);
     }
 
     /// A query asked is not told answered before its answer comes.
@@ -918,14 +967,9 @@ mod tests {
             (Family::V6, false, true),
             (Family::Any, false, false),
         ] {
-            let Ok(Resolve::Pending(Queued { id, .. })) =
-                r.start(b"localhost", family, Waiter::NONE)
-            else {
-                panic!("{family:?} not queued");
-            };
-            let part = r.partial(id).unwrap().expect("it goes on until taken");
+            let mut resolve = start(&mut r, b"localhost", family);
+            let part = resolve.partial().unwrap().expect("it goes on until taken");
             assert_eq!((part.v6_answered, part.v4_answered), (v6, v4), "{family:?}");
-            r.cancel(id);
         }
     }
 
@@ -945,11 +989,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
         };
-        let start = |r: &mut ThreadedResolver| match r.start(b"localhost", Family::V4, Waiter::NONE)
-        {
-            Ok(Resolve::Pending(Queued { id, .. })) => id,
-            other => panic!("{other:?}"),
-        };
+        let start = |r: &mut ThreadedResolver| start(r, b"localhost", Family::V4);
         let long = Duration::from_secs(60);
         // Each query held back a while, so that two at once find no
         // thread idle.
@@ -963,18 +1003,16 @@ mod tests {
         };
         let mut r = ThreadedResolver::with_debug(threads, held).unwrap();
         // Two at once take a thread each.
-        let ids = [start(&mut r), start(&mut r)];
-        assert!(answer_all(&mut r, &ids).iter().all(Result::is_ok));
+        let mut resolves = [start(&mut r), start(&mut r)];
+        assert!(answer_all(&mut resolves).iter().all(Result::is_ok));
         settle(&r, (2, 2));
         // One woken thread takes the next; the other, woken too, waits on.
-        let id = start(&mut r);
-        assert!(r.wait(id).is_ok());
+        assert!(start(&mut r).wait().is_ok());
         std::thread::sleep(Duration::from_millis(20));
         settle(&r, (2, 2));
         // With the most lowered to 1, a thread woken past it ends.
         r.shared.lock().threads_max = 1;
-        let id = start(&mut r);
-        assert!(r.wait(id).is_ok());
+        assert!(start(&mut r).wait().is_ok());
         settle(&r, (1, 1));
 
         let mut r = ThreadedResolver::new(Threads {
@@ -982,8 +1020,7 @@ mod tests {
             idle: long,
         })
         .unwrap();
-        let id = start(&mut r);
-        assert!(r.wait(id).is_ok());
+        assert!(start(&mut r).wait().is_ok());
         std::thread::sleep(Duration::from_millis(20));
         settle(&r, (1, 1));
     }
@@ -997,12 +1034,7 @@ mod tests {
             idle: Duration::from_secs(60),
         })
         .unwrap();
-        let Ok(Resolve::Pending(Queued { id, .. })) =
-            r.start(b"localhost", Family::V4, Waiter::NONE)
-        else {
-            panic!("pending");
-        };
-        assert!(r.wait(id).is_ok());
+        assert!(start(&mut r, b"localhost", Family::V4).wait().is_ok());
         let shared = r.shared.clone();
         r.shared.lock().join = false;
         drop(r);
@@ -1016,6 +1048,22 @@ mod tests {
         }
     }
 
+    /// A resolve kept past its resolver, its queries gone with it, fails
+    /// when waited for, rather than being waited for for ever, and leaves
+    /// nothing as it is dropped.
+    #[test]
+    fn a_resolve_outliving_its_resolver_fails() {
+        let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
+        r.shared.lock().threads_max = 0;
+        let mut resolve = start(&mut r, b"localhost", Family::V4);
+        let shared = r.shared.clone();
+        drop(r);
+        assert_eq!(resolve.answer(), None);
+        assert_eq!(resolve.wait(), Err(ResolveFailure::Failed));
+        drop(resolve);
+        assert!(shared.lock().resolving.is_empty());
+    }
+
     /// The settings the multi reaches through the pool are the
     /// resolver's: the most threads bounds those it starts, and a query
     /// left queued for want of a thread wakes the multi when the most is
@@ -1025,15 +1073,12 @@ mod tests {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
         let pool = r.pool().unwrap();
         pool.set_max_threads(NonZeroU32::MIN);
-        let ids: Vec<ResolveId> = (0..4)
-            .map(|_| match r.start(b"localhost", Family::V4, Waiter::NONE) {
-                Ok(Resolve::Pending(Queued { id, .. })) => id,
-                other => panic!("{other:?}"),
-            })
+        let mut resolves: Vec<_> = (0..4)
+            .map(|_| start(&mut r, b"localhost", Family::V4))
             .collect();
         let threads = r.shared.lock().threads;
         assert_eq!(threads, 1);
-        assert!(answer_all(&mut r, &ids).iter().all(Result::is_ok));
+        assert!(answer_all(&mut resolves).iter().all(Result::is_ok));
 
         assert_eq!(pool.settings(), (1, true));
         pool.set_join(false);
@@ -1052,7 +1097,7 @@ mod tests {
             curl_os::poll::poll(&mut { fd }, Duration::ZERO).unwrap() == 1
         };
         let query = Query {
-            id: ResolveId::FIRST,
+            id: Id(0),
             name: b"localhost".to_vec(),
             family: Family::V4,
             delay: None,
@@ -1135,11 +1180,7 @@ mod tests {
     /// whose start takes them.
     #[test]
     fn the_debug_build_s_variables_shape_the_resolves() {
-        let start = |r: &mut ThreadedResolver| match r.start(b"localhost", Family::V4, Waiter::NONE)
-        {
-            Ok(Resolve::Pending(Queued { id, .. })) => id,
-            other => panic!("{other:?}"),
-        };
+        let start = |r: &mut ThreadedResolver| start(r, b"localhost", Family::V4);
         let quick = Duration::from_millis(1);
         for (negative, why) in [
             (false, ResolveFailure::Failed),
@@ -1151,8 +1192,7 @@ mod tests {
                 ..DebugVars::default()
             };
             let mut r = ThreadedResolver::with_debug(Threads::EASY, vars).unwrap();
-            let id = start(&mut r);
-            assert_eq!(r.wait(id), Err(why));
+            assert_eq!(start(&mut r).wait(), Err(why));
         }
         let vars = DebugVars {
             delay: Some(Duration::from_millis(20)),
@@ -1160,8 +1200,7 @@ mod tests {
         };
         let mut r = ThreadedResolver::with_debug(Threads::EASY, vars).unwrap();
         let begun = std::time::Instant::now();
-        let id = start(&mut r);
-        assert!(r.wait(id).is_ok());
+        assert!(start(&mut r).wait().is_ok());
         assert!(begun.elapsed() >= Duration::from_millis(20));
 
         let vars = DebugVars {
@@ -1171,13 +1210,13 @@ mod tests {
         };
         let mut r = ThreadedResolver::with_debug(Threads::MULTI, vars).unwrap();
         assert_eq!(r.shared.lock().threads_max, 1);
-        let id = start(&mut r);
+        let mut resolve = start(&mut r);
         let threads = r.shared.lock().threads;
         assert_eq!(threads, 0, "the first start failed");
         assert_eq!(r.retry(), Some(Duration::from_millis(100)));
-        assert_eq!(r.answer(id), None, "the second failed");
+        assert_eq!(resolve.answer(), None, "the second failed");
         assert_eq!(r.retry(), Some(Duration::from_millis(100)));
-        assert!(r.wait(id).is_ok(), "the third started");
+        assert!(resolve.wait().is_ok(), "the third started");
         assert_eq!(r.retry(), None);
     }
 }

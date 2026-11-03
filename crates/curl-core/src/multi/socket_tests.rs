@@ -439,28 +439,7 @@ impl crate::conn::io::Resolver for Woken<'_> {
         self.0.start(name, family, waiter)
     }
 
-    fn answer(
-        &mut self,
-        id: crate::conn::io::ResolveId,
-    ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
-        self.0.answer(id)
-    }
-
-    fn wait(
-        &mut self,
-        id: crate::conn::io::ResolveId,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.wait(id)
-    }
-
-    fn cancel(&mut self, id: crate::conn::io::ResolveId) {
-        self.0.cancel(id);
-    }
-
-    fn answered(
-        &mut self,
-        each: &mut dyn FnMut(crate::conn::io::Waiter, crate::conn::io::ResolveId),
-    ) {
+    fn answered(&mut self, each: &mut dyn FnMut(crate::conn::io::Waiter)) {
         self.0.answered(each);
     }
 
@@ -673,26 +652,7 @@ impl crate::conn::io::Resolver for Stalled<'_> {
         self.0.start(name, family, waiter)
     }
 
-    fn answer(
-        &mut self,
-        id: crate::conn::io::ResolveId,
-    ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
-        self.0.answer(id)
-    }
-
-    fn wait(
-        &mut self,
-        id: crate::conn::io::ResolveId,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.wait(id)
-    }
-
-    fn cancel(&mut self, id: crate::conn::io::ResolveId) {
-        self.0.cancel(id);
-    }
-
-    fn answered(&mut self, _: &mut dyn FnMut(crate::conn::io::Waiter, crate::conn::io::ResolveId)) {
-    }
+    fn answered(&mut self, _: &mut dyn FnMut(crate::conn::io::Waiter)) {}
 
     fn waker(&self) -> Option<TryArc<Waker>> {
         None

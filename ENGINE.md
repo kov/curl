@@ -48,7 +48,8 @@ numbers are those of `SCOPE.md`.
    `ShutdownSet` (§4.6). A lease names its home pool and is given
    back only to it; every socket carries the closer it was opened with.
 7. **Generational ids everywhere**: `TransferId`, `ConnId` (whose generation is the
-   "Connection #N" number), `ResolveId`, `HeaderCursor`. A stale id fails its own lookup.
+   "Connection #N" number), `HeaderCursor`. A stale id fails its own lookup. A resolve that
+   answers later is not named by an id at all: whoever waits for it owns it (§4.8).
 
 **Call-outs and re-entrancy**
 
@@ -255,8 +256,8 @@ curl-core/src/
     h2proxy.rs, h3proxy.rs   a tunnel through an HTTPS proxy speaking HTTP/2 or HTTP/3
     capsule.rs               HTTP Datagrams in capsules, as a CONNECT-UDP tunnel carries them
     threaded.rs              the threaded resolver, its queries on a pool of threads
-    asyncs.rs                Asyncs, Holder, ResolveCount: C's records of the resolves that
-                             answer later, for the trace
+    asyncs.rs                Asyncs, Holder, ResolveCount, ResolveNumber: C's records of the
+                             resolves that answer later, numbered for the trace
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
@@ -2616,40 +2617,48 @@ hooks. The closer is not a call-out: it is captured with the connection (§4.6).
 A name is answered by the cache, the shortcuts, or one of three backends: the network's
 resolver (the system's or the threaded one, below), a resolver library (c-ares, §4.8.1), or
 DoH's transfers (§4.8.1). The setup holds the resolve it waits on as one of the three
-(`Via::Resolver`, `Via::Library`, `Via::Doh` in `Pending`).
+(`Via::Resolver`, `Via::Library`, `Via::Doh` in `Pending`), each an object it owns: dropped,
+whoever drops it and wherever, the resolve ends and nothing of it is left where it was asked.
+They stay three variants because each says its lines as its backend in C does
+(`asyn-thrdd.c`, `asyn-ares.c`, `doh.c`); none needs the network, or anything else, to be
+let go of.
 
 ```rust
 pub trait Resolver {
     fn start(&mut self, name: &[u8], family: Family, waiter: Waiter) -> Result<Resolve, ResolveFailure>;
-    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
-    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory>;  // default: None
-    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure>;
-    fn cancel(&mut self, id: ResolveId);
-    fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId));
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter));
     fn waker(&self) -> Option<TryArc<Waker>>;
     fn explain(&self, why: ResolveFailure) -> Option<&'static str>;
     fn pool(&self) -> Option<ResolverThreads>;                                   // default: None
     fn retry(&self) -> Option<Duration>;                                         // default: None
+    fn asked_for_records(&self) -> bool;                                         // default: false
 }
-pub enum Resolve { Answer(Vec<IpAddr>), Pending(Queued) }
-pub struct Queued { pub id: ResolveId, pub v6: bool, pub v4: bool }
+pub enum Resolve { Answer(Vec<IpAddr>), Pending { resolve: Box<dyn Resolving>, v6: bool, v4: bool } }
+pub trait Resolving: Send {   // dropped, it ends: its queries and answer leave the resolver
+    fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
+    fn partial(&mut self) -> Result<Option<Partial>, OutOfMemory>;               // default: None
+    fn wait(&mut self) -> Result<Vec<IpAddr>, ResolveFailure>;
+}
 ```
 
 The network has its resolver, as it has its sockets, lent to a closure (`Net::with_resolver`,
 so that a network a test shares behind a lock lends it too): the system's network the system's
-resolver, the tests' fake network names it answers for, at once or when the test lets them. `ResolveId` names one resolve of the resolver's, numbered on from the last and wrapping
-after `u32::MAX`; an id asked about that the resolver no longer holds is a bug, and the threaded
-resolver panics on it rather than answering for another resolve (C's
-`Curl_resolv_has_answers` answers yes). `Waiter` is the transfer that started it (C's
-`mid` in each queued item): the multi asks the resolver which have answered each time it runs
-its own work, before the transfers (C's admin handle, `Curl_async_thrdd_multi_process`), and
-runs those again. The resolvers come in order: the shortcuts (IP literals and `localhost`),
-then the resolver; the resolver-start callback is announced for the shortcuts too (655 and
-464).
+resolver, the tests' fake network names it answers for, at once or when the test lets them. A
+resolve that answers later is handed to its waiter as a `Resolving` it owns, holding what it
+shares with its resolver rather than an id into it: the threaded resolver's (`Handle`) keeps
+its queries and answers under the resolver's lock, and its `Drop` takes them out there; the
+fake's does the same with the fake's. Its answer is taken once. `Waiter` is the transfer that
+started it (C's `mid` in each queued item): the multi asks the resolver which have answered
+each time it runs its own work, before the transfers (C's admin handle,
+`Curl_async_thrdd_multi_process`), and runs those again. The resolvers come in order: the
+shortcuts (IP literals and `localhost`), then the resolver; the resolver-start callback is
+announced for the shortcuts too (655 and 464). Whether the resolver is asked for a name's HTTPS
+record, which it never answers, is the resolver's to say (`asked_for_records`: the threaded
+one is, as in C's threaded build; the system's is not, as C's synchronous one is not).
 
-The setup's own resolve waits in `Stage::Resolving`, its `ResolveId` held, its answer asked for each time the
-transfer is run, cancelled as the setup closes; one dropped neither answered nor cancelled
-aborts, as its answer would stay in the resolver. What it finds goes to the cache as before.
+The setup's own resolve waits in `Stage::Resolving`, held there, its answer asked for each time
+the transfer is run, and let go of as the setup closes or is dropped. What it finds goes to the
+cache as before.
 The other resolves wait where they are, as C's do (`Curl_resolv_blocking`): the interface a
 socket binds to, by name. A SOCKS proxy's destination, resolved here, waits as the setup's own
 does (C's second DNS filter): its resolve is held by the dialed setup, the handshake,
@@ -2657,8 +2666,8 @@ does (C's second DNS filter): its resolve is held by the dialed setup, the hands
 on (`Resolver::partial`, DoH's and the threaded resolver's) is connected to once AAAA has answered
 or 25 ms have passed (`cf_dns_ready_to_connect`): the race holds the resolve as `Racing::late`,
 its addresses growing as the queries answer, until the resolve answers, or the race is won,
-closed or discarded, each of which cancels it (`Late`; dropped without a network to tell, only
-on running out of memory, it stays in the resolver until the answer comes). A race
+closed or discarded, each of which lets go of it where C destroys it (`Late::end`); a race
+dropped otherwise lets go of it all the same. A race
 out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
 synchronous resolver does; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
@@ -2695,8 +2704,9 @@ waits for a thread wakes the multi, whose next pass starts one. A quick exit
 multi) leaves the threads running as the resolver goes rather than joining them; the tool asks
 for it always but in the debug build, where only `CURL_QUICK_EXIT` does.
 
-A resolve that answers later says how it was queued (`Queued`: its id, and which families went
-as a query of their own), which the answer, or the failure, carries back to the transfer's DNS
+A resolve that answers later says how it was queued (`Queued`: the number of its record, and
+which families went as a query of their own), which the answer, or the failure, carries back
+to the transfer's DNS
 trace: each query as queued, `queueing query [transfer/id] AAAA name:port`, IPv6's first, and
 each query's addresses as taken, `Host name:port resolved IPv4: ...`, IPv4's first, `(none)` for
 none, in the places C's lines fall among the cache's. The setup's resolve says them as C's do,
@@ -2704,8 +2714,9 @@ as it goes: as it starts (`hostip_resolv(name:port)` in the debug build, the cac
 query, `hostip_resolv started -> 81`), then at each look for its answer the cache's miss and
 either `resolve incomplete, responses=R, ongoing=N` or each family's addresses not yet said, as
 they are taken. The transfer in `queueing query [transfer/id]` is the transfer's number and the
-id the number of the record kept of the resolve (`hostip_async_new`), for the setup's resolve
-and for a blocking one alike. A blocking resolve's other lines are written as it ends. A name not answered within
+id the number of the record kept of the resolve (`ResolveNumber`, `hostip_async_new`), taken
+as the resolve starts, for the setup's resolve and for a blocking one alike; the resolver's
+own resolves have no number the trace sees. A blocking resolve's other lines are written as it ends. A name not answered within
 the connect limit times out as "Resolving", not "Connection".
 
 Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, `SystemNet`
@@ -2752,8 +2763,8 @@ A transfer with `options.doh.url` resolves a name the cache does not answer, and
 address or `localhost`, by adding two transfers to its multi, AAAA's first (`multi/doh.rs`,
 C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of the engine.
 
-- **One owner.** The master's setup holds a `Lookup` where a resolver's id would be (`Via::Doh`
-  in `Pending`). A `Probe`, in the slot's `Owner::Internal`, shares its state: a body kept per
+- **One owner.** The master's setup holds a `Lookup` as it holds a resolver's resolve
+  (`Via::Doh` in `Pending`). A `Probe`, in the slot's `Owner::Internal`, shares its state: a body kept per
   query, then what the query came to. `Lookup`'s `Drop` marks the state gone, so whichever way
   the setup ends, nothing a probe does afterwards reaches anything: its writes fail, its end is
   a no-op. `master` is only a row to wake, and its generation makes a reused row name nobody.

@@ -166,23 +166,68 @@ witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
 --- new
         IpVersion::Any => (true, true),
 
-=== a closed setup leaves its resolve in the resolver
+=== a closed setup keeps its resolve alive in the resolver
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::a_closed_setup_cancels_its_resolve
 --- old
-            net.with_resolver(&mut |r| r.cancel(id));
+            Stage::Resolving(Some(p)) => drop(p),
 --- new
-            let _ = id;
+            Stage::Resolving(Some(p)) => std::mem::forget(p),
 
-=== a pending resolve dropped goes unnoticed
-file: crates/curl-core/src/conn/connect.rs
-witness: curl-core conn::connect::tests::a_dropped_pending_resolve_is_caught
+=== a fake resolve dropped stays among the fake's resolves
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core conn::connect::tests::a_dropped_setup_leaves_nothing_in_the_resolver
 --- old
-            std::thread::panicking(),
-            "a resolve was dropped, neither answered nor cancelled"
+impl Drop for FakeResolve {
+    fn drop(&mut self) {
+        self.forget();
+    }
+}
 --- new
-            true,
-            "a resolve was dropped, neither answered nor cancelled"
+impl Drop for FakeResolve {
+    fn drop(&mut self) {}
+}
+
+=== a race dropped with its late resolve leaves it among the fake's resolves
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core conn::connect::tests::a_race_dropped_leaves_nothing_in_the_resolver
+--- old
+impl Drop for FakeResolve {
+    fn drop(&mut self) {
+        self.forget();
+    }
+}
+--- new
+impl Drop for FakeResolve {
+    fn drop(&mut self) {}
+}
+
+=== a threaded resolve dropped stays among the resolver's resolves
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::a_resolve_dropped_while_asked_is_never_told
+--- old
+        state.resolving.retain(|r| r.id != id);
+        state.queue.retain(|q| q.id != id);
+--- new
+        state.queue.retain(|q| q.id != id);
+
+=== a threaded resolve dropped leaves its queries queued
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::a_resolve_dropped_takes_its_queries_from_the_queue
+--- old
+        state.resolving.retain(|r| r.id != id);
+        state.queue.retain(|q| q.id != id);
+--- new
+        state.resolving.retain(|r| r.id != id);
+
+=== a threaded resolve outliving its resolver is waited for for ever
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::a_resolve_outliving_its_resolver_fails
+--- old
+            if state.aborted {
+                return Err(ResolveFailure::Failed);
+            }
+--- new
 
 === a threaded resolve's failure is negative though a query failed otherwise
 file: crates/curl-core/src/conn/threaded.rs
@@ -196,9 +241,9 @@ witness: curl-core conn::threaded::tests::a_failure_is_negative_only_if_every_qu
 file: crates/curl-core/src/conn/threaded.rs
 witness: curl-core conn::threaded::tests::threads_are_kept_to_the_most_and_end_when_idle
 --- old
-                if wanted <= state.idle || state.threads >= state.threads_max {
+            if wanted <= state.idle || state.threads >= state.threads_max {
 --- new
-                if wanted <= state.idle {
+            if wanted <= state.idle {
 
 === a threaded resolve of IPv4 alone tells A answered before its answer comes
 file: crates/curl-core/src/conn/threaded.rs
@@ -319,9 +364,9 @@ witness: curl-core conn::asyncs::tests::resolve_numbers_count_as_c_s
 file: crates/curl-core/src/conn/threaded.rs
 witness: curl-core conn::threaded::tests::the_debug_build_s_variables_shape_the_resolves
 --- old
-                if state.fail_starts > 0 {
+            if state.fail_starts > 0 {
 --- new
-                if state.fail_starts > 1000 {
+            if state.fail_starts > 1000 {
 
 === a held-back failure is negative only when asked to be
 file: crates/curl-core/src/conn/threaded.rs
@@ -557,11 +602,9 @@ witness: curl-core conn::connect::tests::a_bare_address_is_not_resolved
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
 --- old
-        say_queued(xfer, record, q, name, at, &mut |parts| {
-            cx.of_with(dns, parts)
-        });
+        say_queued(xfer, q, name, at, &mut |parts| cx.of_with(dns, parts));
 --- new
-        let _ = (xfer, record, q);
+        let _ = (xfer, q);
 
 === a blocking resolve does not say the threaded resolver's answers
 file: crates/curl-core/src/conn/connect.rs
@@ -605,16 +648,6 @@ witness: curl-core conn::threaded::tests::a_resolve_is_told_of_as_each_family_an
 --- new
             if r.told != Some(r.left) && r.left == 0 {
 
-=== a late resolve dropped keeps its hold and aborts
-file: crates/curl-core/src/conn/connect.rs
-witness: curl-core conn::connect::tests::a_late_resolve_dropped_lets_go_of_its_hold
---- old
-        if let Some(p) = self.0.take() {
-            p.done();
-        }
---- new
-        let _ = self.0.take();
-
 === a failure to connect counts from the step's start, not the clock
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-tool an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take
@@ -634,19 +667,15 @@ witness: curl-core multi::socket_tests::a_name_found_not_to_exist_after_the_race
         let kept = step.rest.kept(step.me, Kind::Names).filter(|_| false);
         DriveCx {
 
-=== a race that connects leaves the resolve still going on to the resolver
+=== a race that connects keeps the resolve still going on alive in the resolver
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::a_race_connected_cancels_the_resolve_still_going_on
 --- old
-    fn cancel(&mut self, net: &mut dyn Net) {
-        if let Some(p) = self.0.take() {
-            p.cancel(net);
-        }
-    }
+        r.eyeballs.late.end();
+        cx.of(
 --- new
-    fn cancel(&mut self, net: &mut dyn Net) {
-        let _ = net;
-    }
+        std::mem::forget(std::mem::take(&mut r.eyeballs.late));
+        cx.of(
 
 === a library's resolve beside a race is not run again when it says
 file: crates/curl-core/src/conn/connect.rs
@@ -819,14 +848,16 @@ features: test-util
 --- new
                 pending.live = None;
 
-=== a blocking resolve is queued under the resolver's number
+=== a blocking resolve's queries are not said under its record's number
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-tool a_blocking_resolve_is_queued_under_its_record_s_number
 features: threaded-resolver
 --- old
-        let record = cx.resolve_number(Holder::Blocking);
+            Via::Resolver(_) => (v6 || v4).then_some(Queued {
+                record: self.record,
 --- new
-        let record = None;
+            Via::Resolver(_) => (v6 || v4).then_some(Queued {
+                record: None,
 
 === a library's answer had at the start's first look is taken after the start
 file: crates/curl-core/src/conn/connect.rs
@@ -895,15 +926,16 @@ features: test-util
                         Some(Ok(addrs)) if addrs.is_empty() => {
                             // Had at once, it is taken inside the start
 
-=== a race discarded leaves its late resolve in the resolver
+=== a race discarded keeps its late resolve alive in the resolver
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::a_race_discarded_cancels_the_resolve_still_going_on
 features: test-util
 --- old
-                r.eyeballs.late.cancel(cx.net());
+                r.eyeballs.late.end();
             }
             Stage::Dialed(mut d) => {
 --- new
+                std::mem::forget(std::mem::take(&mut r.eyeballs.late));
             }
             Stage::Dialed(mut d) => {
 

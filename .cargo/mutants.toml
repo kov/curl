@@ -31,8 +31,9 @@
 # mutant is unviable. A blocking resolve's lines by c-ares and the
 # HTTPS filter's dial are checked only by curl-tool's `dns` tests: add
 # `--test-package curl-tool`. The threaded resolver is built only with
-# `curl-core/threaded-resolver`: its code is reached by a second run with
-# that feature, `--test-package curl-tool` too. The copy has no `build/deps`:
+# `curl-core/threaded-resolver`: its code is reached by a second run adding
+# that feature and `curl-tool/threaded-resolver`, without which curl-tool's
+# `threaded` tests are not built. The copy has no `build/deps`:
 # export `CURL_NGTCP2_DIR` naming the tree's `build/deps/ngtcp2`, or every
 # crate linking ngtcp2 fails to build.)
 # (The copy is made in `TMPDIR`: where `/tmp` is a small tmpfs it fills, and

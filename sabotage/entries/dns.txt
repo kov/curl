@@ -711,7 +711,7 @@ witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where
 --- old
         let gone = cx.easy_mut().asyncs.take(holder);
 --- new
-        let gone: Option<ResolveId> = None;
+        let gone: Option<ResolveNumber> = None;
 
 === the records still kept are walked oldest first
 file: crates/curl-core/src/conn/asyncs.rs

@@ -1087,13 +1087,9 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
             fresh(&mut options);
             *easy.options_mut() = options;
         }
-        // Inside a callback the report is the transfer's own until it
-        // ends; the options are reset now.
-        EasyRef::Frame(frame, id) => {
-            // SAFETY: as in `with_options`.
-            let options = unsafe { frame.options_mut(id) };
-            fresh(options.expect("an added handle is in its multi"));
-        }
+        // Reset may not recurse: the gate refuses it while a callback
+        // runs on the handle, the only time it is reached through a frame.
+        EasyRef::Frame(..) => unreachable!("refused by the gate inside a callback"),
     });
     match reset {
         // A handle being added has no transfer to reset.
@@ -1284,9 +1280,10 @@ impl ShimEasy {
         }
         let released = self.with_easy(|e| match e {
             EasyRef::Easy(mut easy) => easy.release_resolves(),
-            // Inside a callback its transfer still runs: they go as its
-            // next request starts, or with the handle.
-            EasyRef::Frame(..) => {}
+            // Cleanup and reset may not recurse: the gate refuses them while
+            // a callback runs on the handle's multi, the only time its
+            // transfer is reached through a frame.
+            EasyRef::Frame(..) => unreachable!("refused by the gate inside a callback"),
         });
         match released {
             // A handle being added keeps none.

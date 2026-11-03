@@ -3292,6 +3292,42 @@ fn the_records_a_lone_handle_lets_go_of_are_told_with_the_handle_reachable() {
     }
 }
 
+/// A reset from the transfer's own callback is refused, as C's gate
+/// refuses it (`curl_easy_reset` may not recurse): under
+/// `curl_easy_perform` and in a multi alike, the handle keeps its options,
+/// its URL among them. C's threaded build refuses one from the header
+/// function both ways.
+#[cfg(feature = "c-ares")]
+#[test]
+fn a_reset_from_the_transfer_s_own_callback_is_refused() {
+    let mut seen = Seen::default();
+    let c = refused_tracing_dns(debug_resetting, &mut seen);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    // Its URL kept: refused again, not malformed.
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    let multi = curl_multi_init();
+    // SAFETY: a live multi and handle, the handle run in the multi, then
+    // on its own again, then both let go of.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+        let mut running = 1;
+        let mut rounds = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(multi, &raw mut running), CURLM_OK);
+            let waited = curl_multi_wait(multi, ptr::null_mut(), 0, 100, ptr::null_mut());
+            assert_eq!(waited, CURLM_OK);
+            rounds += 1;
+            assert!(rounds < 100, "the transfer never ends");
+        }
+        assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+        assert_eq!(curl_easy_perform(c), ffi::CURLE_COULDNT_CONNECT);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(multi), CURLM_OK);
+    }
+}
+
 /// A debug function that, as it is told a record is destroyed, asks for
 /// the handle's last connect error, and keeps what it was answered.
 unsafe extern "C" fn debug_asking_errno(
@@ -3317,6 +3353,20 @@ unsafe extern "C" fn debug_asking_errno(
             .push(format!("getinfo {}, errno {errno}\n", asked.0));
     }
     r
+}
+
+/// A debug function that, as it is told text, resets the handle.
+unsafe extern "C" fn debug_resetting(
+    h: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: a live handle.
+    unsafe { crate::easy::curl_easy_reset(h) };
+    // SAFETY: as `debug_count` is called.
+    unsafe { debug_count(h, kind, ptr, n, data) }
 }
 
 /// A debug function that, as it is told text, asks for the handle's

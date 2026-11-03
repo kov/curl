@@ -98,3 +98,11 @@ witness: curl-sys-abi handle_tests::the_records_a_lone_handle_lets_go_of_are_tol
                 let _ = me;
                 f()
             }
+
+=== a reset recurses into the transfer's own callback
+file: crates/curl-sys-abi/src/gate/table.rs
+witness: curl-sys-abi handle_tests::a_reset_from_the_transfer_s_own_callback_is_refused
+--- old
+            EasyCall::Reset => EasyRules { kills: false, recurse: false, not_in_event: false, no_scache_lock: false },
+--- new
+            EasyCall::Reset => EasyRules { kills: false, recurse: true, not_in_event: false, no_scache_lock: false },

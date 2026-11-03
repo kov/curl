@@ -91,6 +91,30 @@ fn the_application_is_told_as_c_calls_its_lock() {
     assert_eq!(seen, [(Some(b"k:G".to_vec()), PACKED.to_vec())]);
 }
 
+/// A share that stops keeping its sessions between a use's choice of it
+/// and the use, as one racing a handle that links on another thread does,
+/// leaves the use no cache: an import is refused as with none and an
+/// export gives nothing, each lock told still let go, and the process goes
+/// on. C uses the cache it has freed.
+#[test]
+fn sessions_gone_under_a_use_are_no_cache() {
+    use crate::share::Emptying;
+    let (mut easy, share, told) = kept_by_a_share();
+    easy.share_watch = Some(Emptying::handler(&told, Kind::SslSessions));
+    let import = easy.ssls_import(SessionFor::Key(b"k:G"), PACKED, &mut no_notes());
+    assert_eq!(import, Err(ErrorKind::BadFunctionArgument));
+    assert_eq!(told.uses(), [Kind::SslSessions]);
+    assert!(!share.keeps(Kind::SslSessions), "let go");
+    // Let go once the export has chosen it.
+    let (mut easy, _share, told) = kept_by_a_share();
+    easy.share_watch = Some(Emptying::handler(&told, Kind::SslSessions));
+    let done = easy
+        .ssls_export()
+        .deliver::<()>(&mut |_| panic!("no session to give"));
+    assert_eq!(done.end(&easy, &mut no_notes()), Ok(()));
+    assert_eq!(told.uses(), [Kind::SslSessions]);
+}
+
 /// The application's function ends an export with its own value, the lock
 /// still let go and nothing said of what was exported.
 #[test]

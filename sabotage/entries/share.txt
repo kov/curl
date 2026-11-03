@@ -468,3 +468,50 @@ features: test-util debug-hooks
     if answered && !holds {
 --- new
     if answered && holds {
+
+=== a share says it keeps TLS sessions it has let go
+file: crates/curl-core/src/share.rs
+witness: curl-core share::tests::what_is_kept_changes_only_while_the_share_is_idle
+--- old
+            Kind::SslSessions => lock(&self.0.sessions).is_some(),
+--- new
+            Kind::SslSessions => true,
+
+=== an import aborts on a share's sessions gone since it chose them
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-core multi::ssls::tests::sessions_gone_under_a_use_are_no_cache
+--- old
+                    None => Err(ErrorKind::BadFunctionArgument),
+--- new
+                    None => unreachable!("kept while the share keeps them"),
+
+=== an export aborts on a share's sessions gone since it chose them
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-core multi::ssls::tests::sessions_gone_under_a_use_are_no_cache
+--- old
+            let exported = share
+                .sessions()
+                .as_mut()
+                .map_or_else(Exported::default, |c| c.export(now, &mut salt));
+--- new
+            let exported = share
+                .sessions()
+                .as_mut()
+                .map(|c| c.export(now, &mut salt))
+                .expect("kept while the share keeps them");
+
+=== a transfer's step aborts on a share's sessions gone since it chose them
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core proto::http::tests::tls::sessions_gone_under_a_transfer_s_use_are_no_cache
+--- old
+                if let Some(cache) = kept.share.sessions().as_mut() {
+--- new
+                if let Some(cache) = Some(kept.share.sessions().as_mut().expect("kept")) {
+
+=== a use out of a multi aborts on a share's sessions gone since it chose them
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::tls::sessions_gone_under_a_use_out_of_a_multi_are_no_cache
+--- old
+                if let Some(cache) = share.sessions().as_mut() {
+--- new
+                if let Some(cache) = Some(share.sessions().as_mut().expect("kept")) {

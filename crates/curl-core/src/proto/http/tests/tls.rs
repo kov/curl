@@ -1354,6 +1354,59 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
     );
 }
 
+/// A share that stops keeping its sessions between a transfer's choice of
+/// them and its use, as one racing a handle that links on another thread
+/// does, leaves the transfer no cache: it neither takes nor gives one, and
+/// still runs, each lock told let go. C uses the cache it has freed.
+#[test]
+fn sessions_gone_under_a_transfer_s_use_are_no_cache() {
+    use crate::share::{Emptying, Kind, Share, Told};
+    let (backend, libraries) = ticketing();
+    let share = Share::new().unwrap();
+    share.keep(Kind::SslSessions).unwrap();
+    let told = Told::new(&share);
+    let talk = answering(1).remove(0);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let watch = Emptying::handler(&told, Kind::SslSessions);
+    e.set_share_watched(share.clone(), watch).unwrap();
+    let got = get_with(&mut m, e, "/", talk.clone(), |o| {
+        let url = format!("https://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(got.result, Ok(()));
+    assert_eq!(backend.log().resumed, 0);
+    assert_eq!(told.uses(), [Kind::SslSessions], "told of the one use");
+    assert!(!share.keeps(Kind::SslSessions));
+}
+
+/// Out of its multi, the same: the ticket read after the transfer has
+/// nowhere to go.
+#[test]
+fn sessions_gone_under_a_use_out_of_a_multi_are_no_cache() {
+    use crate::share::{Emptying, Kind, Share, Told};
+    let (backend, libraries) = ticketing_late();
+    let share = Share::new().unwrap();
+    share.keep(Kind::SslSessions).unwrap();
+    let told = Told::new(&share);
+    let talk = answering(1).remove(0);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    m.make_handle_own();
+    let mut e = only_connecting(&libraries);
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    told.uses();
+    e.share_watch = Some(Emptying::handler(&told, Kind::SslSessions));
+    let sent = m.send_raw_for(&mut e, b"x", &mut |_, _| {});
+    assert!(sent.is_ok(), "{sent:?}");
+    let mut buf = [0u8; 64];
+    let got = m.recv_raw_for(&mut e, &mut buf, &mut |_, _| {});
+    assert!(got.is_ok(), "{got:?}");
+    assert_eq!(told.uses(), [Kind::SslSessions], "told of the one use");
+    assert_eq!(backend.log().resumed, 0);
+}
+
 /// A handle that only connected, over a library giving its ticket on the
 /// first read, as TLS 1.3's, and what it goes through: `calls` runs its
 /// transfer in `m` and makes one send and one receive on its connection.

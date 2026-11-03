@@ -102,9 +102,11 @@ fn import(
             share,
             Kind::SslSessions,
             || {
-                let mut sessions = share.sessions();
-                let cache = sessions.as_mut().expect("kept while the share keeps them");
-                cache.import(who, ticket, now, &mut trace)
+                // Gone since it was chosen, it is no cache.
+                match share.sessions().as_mut() {
+                    Some(cache) => cache.import(who, ticket, now, &mut trace),
+                    None => Err(ErrorKind::BadFunctionArgument),
+                }
             },
         ),
         (None, Some(own)) => own.import(who, ticket, now, &mut trace),
@@ -172,9 +174,11 @@ impl Exporting {
             if let Some(w) = &told {
                 w.lock(Kind::SslSessions, Access::Single);
             }
-            let mut sessions = share.sessions();
-            let cache = sessions.as_mut().expect("kept while the share keeps them");
-            let exported = cache.export(now, &mut salt);
+            // Gone since it was chosen, it has nothing to give.
+            let exported = share
+                .sessions()
+                .as_mut()
+                .map_or_else(Exported::default, |c| c.export(now, &mut salt));
             share.set_exporting(true);
             return Exporting {
                 exported,

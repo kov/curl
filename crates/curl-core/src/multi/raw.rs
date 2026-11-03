@@ -118,9 +118,10 @@ impl crate::conn::layer::TlsSessions for RawCx<'_> {
             };
             let watch = self.easy.share_watch.clone();
             watched(watch.as_deref(), &share, Kind::SslSessions, || {
-                let mut sessions = share.sessions();
-                let cache = sessions.as_mut().expect("kept while the share keeps them");
-                f(cache, &mut held);
+                // Gone since it was chosen, it is no cache.
+                if let Some(cache) = share.sessions().as_mut() {
+                    f(cache, &mut held);
+                }
             });
             for line in &held.lines {
                 self.of_with(Component::Ssls, &[line]);

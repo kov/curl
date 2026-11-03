@@ -192,9 +192,10 @@ impl<H: Host> crate::conn::layer::TlsSessions for StepCx<'_, H> {
                 failure: None,
             };
             watched(kept.watch(), &kept.share, Kind::SslSessions, || {
-                let mut sessions = kept.share.sessions();
-                let cache = sessions.as_mut().expect("kept while the share keeps them");
-                f(cache, &mut held);
+                // Gone since it was chosen, it is no cache.
+                if let Some(cache) = kept.share.sessions().as_mut() {
+                    f(cache, &mut held);
+                }
             });
             for line in &held.lines {
                 trace::of_with(self, Component::Ssls, &[line]);

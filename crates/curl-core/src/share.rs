@@ -50,14 +50,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Its bit in `Inner::keeps`, for a kind whose storage the share
+    /// always has; none for one kept as its container is there.
     fn bit(self) -> u8 {
         match self {
             Kind::Connections => 1,
             Kind::Names => 2,
-            Kind::Cookies => 4,
-            Kind::SslSessions => 8,
-            Kind::Psl => 16,
-            Kind::Hsts => 32,
+            Kind::Psl => 4,
+            Kind::Cookies | Kind::SslSessions | Kind::Hsts => 0,
         }
     }
 }
@@ -85,7 +85,10 @@ pub trait ShareLock: Send + Sync {
 pub struct Share(TryArc<Inner>);
 
 struct Inner {
-    /// The kinds it keeps, a bit each.
+    /// The kinds it keeps of those whose storage is always there, a bit
+    /// each. Cookies, TLS sessions and the HSTS cache are kept exactly
+    /// while their container below is: a use takes its lock and finds the
+    /// one or the other, so no second fact can disagree with it.
     keeps: AtomicU8,
     pool: Mutex<Pool>,
     dns: Mutex<DnsCache>,
@@ -138,22 +141,21 @@ impl Share {
     /// transfer's multi's.
     pub fn keep(&self, kind: Kind) -> Result<(), InUse> {
         self.idle()?;
-        if kind == Kind::Cookies {
-            let mut jar = lock(&self.0.cookies);
-            if jar.is_none() {
-                *jar = Some(Jar::default());
+        match kind {
+            Kind::Cookies => {
+                lock(&self.0.cookies).get_or_insert_with(Jar::default);
+            }
+            Kind::SslSessions => {
+                let peers = SessionCache::PEERS;
+                lock(&self.0.sessions).get_or_insert_with(|| SessionCache::new(peers));
+            }
+            Kind::Hsts => {
+                lock(&self.0.hsts).get_or_insert_with(Hsts::default);
+            }
+            Kind::Connections | Kind::Names | Kind::Psl => {
+                self.0.keeps.fetch_or(kind.bit(), Ordering::Relaxed);
             }
         }
-        if kind == Kind::SslSessions {
-            let mut sessions = lock(&self.0.sessions);
-            if sessions.is_none() {
-                *sessions = Some(SessionCache::new(SessionCache::PEERS));
-            }
-        }
-        if kind == Kind::Hsts {
-            lock(&self.0.hsts).get_or_insert_with(Hsts::default);
-        }
-        self.0.keeps.fetch_or(kind.bit(), Ordering::Relaxed);
         Ok(())
     }
 
@@ -162,22 +164,34 @@ impl Share {
     /// goes, as C's do.
     pub fn stop_keeping(&self, kind: Kind) -> Result<(), InUse> {
         self.idle()?;
-        if kind == Kind::Cookies {
-            *lock(&self.0.cookies) = None;
-        }
-        if kind == Kind::SslSessions {
-            *lock(&self.0.sessions) = None;
-        }
-        if kind == Kind::Hsts {
-            *lock(&self.0.hsts) = None;
-        }
-        self.0.keeps.fetch_and(!kind.bit(), Ordering::Relaxed);
+        self.let_go(kind);
         Ok(())
     }
 
-    /// Whether the share keeps `kind`.
+    fn let_go(&self, kind: Kind) {
+        match kind {
+            Kind::Cookies => *lock(&self.0.cookies) = None,
+            Kind::SslSessions => *lock(&self.0.sessions) = None,
+            Kind::Hsts => *lock(&self.0.hsts) = None,
+            Kind::Connections | Kind::Names | Kind::Psl => {
+                self.0.keeps.fetch_and(!kind.bit(), Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Whether the share keeps `kind`. For cookies, TLS sessions and the
+    /// HSTS cache this is only a forecast: a handle linking on another
+    /// thread as the share stops keeping them may find them gone by the
+    /// time it takes their lock, and a use answers by what it finds there.
     pub fn keeps(&self, kind: Kind) -> bool {
-        self.0.keeps.load(Ordering::Relaxed) & kind.bit() != 0
+        match kind {
+            Kind::Cookies => lock(&self.0.cookies).is_some(),
+            Kind::SslSessions => lock(&self.0.sessions).is_some(),
+            Kind::Hsts => lock(&self.0.hsts).is_some(),
+            Kind::Connections | Kind::Names | Kind::Psl => {
+                self.0.keeps.load(Ordering::Relaxed) & kind.bit() != 0
+            }
+        }
     }
 
     /// How many hold the share: its clones, this one among them.
@@ -375,6 +389,49 @@ impl ShareLock for Told {
     }
 }
 
+/// A watch that, told a use of `kind` begins, has the share stop keeping
+/// it, as `Share::stop_keeping` on another thread would once its check
+/// that no handle holds the share has passed and a handle has linked
+/// since: the use finds the kind gone under the lock it then takes.
+#[cfg(test)]
+pub(crate) struct Emptying {
+    pub(crate) told: Told,
+    pub(crate) kind: Kind,
+}
+
+#[cfg(test)]
+impl Emptying {
+    pub(crate) fn handler(told: &Told, kind: Kind) -> crate::handler::Handler<dyn ShareLock> {
+        let told = told.clone();
+        let watch: Box<dyn ShareLock> = Box::new(Emptying { told, kind });
+        crate::handler::Handler::new(watch).unwrap()
+    }
+}
+
+#[cfg(test)]
+impl ShareLock for Emptying {
+    fn lock(&self, kind: Kind, access: Access) {
+        if kind == self.kind {
+            self.told.share.forget(kind);
+        }
+        self.told.lock(kind, access);
+    }
+
+    fn unlock(&self, kind: Kind) {
+        self.told.unlock(kind);
+    }
+}
+
+#[cfg(test)]
+impl Share {
+    /// Stop keeping `kind` as `stop_keeping` does, without its check that
+    /// nothing else holds the share: the state its race with a handle
+    /// linking leaves.
+    pub(crate) fn forget(&self, kind: Kind) {
+        self.let_go(kind);
+    }
+}
+
 // What a share holds may move to whichever thread uses it next, and be
 // used from several at once.
 const _: () = {
@@ -448,8 +505,20 @@ mod tests {
         assert!(share.cookies().is_none(), "the jar forgotten");
         share.keep(Kind::SslSessions).unwrap();
         assert!(share.sessions().is_some(), "a cache made for them");
+        assert!(share.keeps(Kind::SslSessions));
         share.stop_keeping(Kind::SslSessions).unwrap();
         assert!(share.sessions().is_none(), "the sessions forgotten");
+        share.keep(Kind::Hsts).unwrap();
+        assert!(share.keeps(Kind::Hsts) && share.hsts().is_some());
+        share.stop_keeping(Kind::Hsts).unwrap();
+        assert!(share.hsts().is_none(), "the HSTS cache forgotten");
+        // What is let go is no longer kept, nor told of.
+        let told = Told::new(&share);
+        for kind in [Kind::Cookies, Kind::SslSessions, Kind::Hsts, Kind::Names] {
+            assert!(!share.keeps(kind), "{kind:?}");
+            watched(Some(&told), &share, kind, || ());
+        }
+        assert_eq!(told.calls(), []);
         assert_eq!(format!("{share:?}"), "Share");
     }
 }

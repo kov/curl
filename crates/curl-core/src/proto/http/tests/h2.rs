@@ -1779,6 +1779,34 @@ fn a_transfer_that_does_not_pipewait_makes_its_own_connection() {
     assert!(!text.iter().any(|l| l.contains("Waiting")), "{text:#?}");
 }
 
+/// The connection passed over is said as the search finds it, before the
+/// transfer has a connection of its own, as C's `url_match_conn` says it:
+/// the connection it makes is added after, and the tool's ids name none
+/// for it (`[1-x]`).
+#[test]
+fn a_connection_not_open_enough_is_said_before_the_transfer_has_one() {
+    let ([(a, _), (b, sb)], _) = h2_pair_of(
+        &[
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\naa"],
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nbb"],
+        ],
+        true,
+        |_| {},
+        |_, _| {},
+        |e| {
+            let components = crate::components::Components::new().unwrap();
+            components.configure(b"multi");
+            e.set_components(Some(components));
+        },
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    let text = sb.text();
+    let at = |line: &str| text.iter().position(|l| l.ends_with(line));
+    let passed = at("Connection #0 is not open enough, cannot reuse\n");
+    let added = at("[CPOOL] added connection 1. The cache now contains 2 members\n");
+    assert!(passed.is_some() && passed < added, "{text:#?}");
+}
+
 /// A transfer that pipewaits on a connection that turns out to take one
 /// request at a time waits for it to be given back and reuses it, making
 /// none of its own: nothing wakes it sooner (checked against the C build:

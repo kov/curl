@@ -1512,49 +1512,8 @@ fn acquire<H: Host>(
         }
         _ => true,
     });
-    let acquired = match found {
-        pool::Found::Lease(lease) => Acquired::Reused(lease),
-        pool::Found::Lent(id) => {
-            let Home::Share(share) = &home else {
-                unreachable!("only a share lends");
-            };
-            Acquired::Reused(cx.rest.caches.pool.join_lent(share, id))
-        }
-        pool::Found::Wait => Acquired::Wait(pool::WaitReason::Multiplex),
-        pool::Found::Nothing => {
-            // The connection closes its sockets as the transfer making it
-            // says, whoever closes them (url.c's `fclosesocket`).
-            let closer = match &cx.easy().options().sockets.close {
-                Some(close) => Closer::Hook(close.clone()),
-                None => Closer::System,
-            };
-            // What the connection keeps of the transfer's settings: C's
-            // defaults, as no option sets them.
-            let settings = ConnSettings::DEFAULT;
-            let (added, members) = cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
-                pool.add(here, route, dial, closer, settings, add, exits, now)
-                    .map(|added| (added, pool.len()))
-            })?;
-            if let Acquired::New(lease) = &added {
-                let n = lease.number().get();
-                mstate::trace(
-                    cx,
-                    format_args!(
-                        "[CPOOL] added connection {n}. The cache now contains {members} members"
-                    ),
-                );
-            }
-            added
-        }
-    };
-    // The transfer's connection from now on (`Curl_attach_connection`).
-    if let Acquired::Reused(lease) | Acquired::New(lease) = &acquired {
-        cx.report_mut().set_conn(Some(lease.number()));
-        cx.easy_mut().last_conn = Some(crate::easy::LastConn {
-            id: lease.id(),
-            used: false,
-        });
-    }
+    // The rest are said as the search found them too, before a connection
+    // is made or attached: of no connection yet (`url_match_conn`).
     for note in notes {
         match note {
             PoolNote::IdleTooLong { idle_ms, max_ms } => trace::info(
@@ -1604,6 +1563,49 @@ fn acquire<H: Host>(
                 format_args!("Found pending candidate for reuse and CURLOPT_PIPEWAIT is set"),
             ),
         }
+    }
+    let acquired = match found {
+        pool::Found::Lease(lease) => Acquired::Reused(lease),
+        pool::Found::Lent(id) => {
+            let Home::Share(share) = &home else {
+                unreachable!("only a share lends");
+            };
+            Acquired::Reused(cx.rest.caches.pool.join_lent(share, id))
+        }
+        pool::Found::Wait => Acquired::Wait(pool::WaitReason::Multiplex),
+        pool::Found::Nothing => {
+            // The connection closes its sockets as the transfer making it
+            // says, whoever closes them (url.c's `fclosesocket`).
+            let closer = match &cx.easy().options().sockets.close {
+                Some(close) => Closer::Hook(close.clone()),
+                None => Closer::System,
+            };
+            // What the connection keeps of the transfer's settings: C's
+            // defaults, as no option sets them.
+            let settings = ConnSettings::DEFAULT;
+            let (added, members) = cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
+                pool.add(here, route, dial, closer, settings, add, exits, now)
+                    .map(|added| (added, pool.len()))
+            })?;
+            if let Acquired::New(lease) = &added {
+                let n = lease.number().get();
+                mstate::trace(
+                    cx,
+                    format_args!(
+                        "[CPOOL] added connection {n}. The cache now contains {members} members"
+                    ),
+                );
+            }
+            added
+        }
+    };
+    // The transfer's connection from now on (`Curl_attach_connection`).
+    if let Acquired::Reused(lease) | Acquired::New(lease) = &acquired {
+        cx.report_mut().set_conn(Some(lease.number()));
+        cx.easy_mut().last_conn = Some(crate::easy::LastConn {
+            id: lease.id(),
+            used: false,
+        });
     }
     Ok(acquired)
 }

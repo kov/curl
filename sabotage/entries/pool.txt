@@ -834,3 +834,16 @@ witness: curl-core conn::tests::a_connection_reaches_transfers_of_its_family
                 (Some(have), Some(want)) => have.same_destination(want),
 --- new
                 (Some(have), Some(want)) => have == want,
+
+=== a connection passed over goes unsaid
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::h2::a_connection_not_open_enough_is_said_before_the_transfer_has_one
+features: test-util
+--- old
+    // The rest are said as the search found them too, before a connection
+    // is made or attached: of no connection yet (`url_match_conn`).
+    for note in notes {
+--- new
+    // The rest are said as the search found them too, before a connection
+    // is made or attached: of no connection yet (`url_match_conn`).
+    for note in notes.drain(..0) {

@@ -2610,14 +2610,14 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   the library writes to as it closes, dropped or not; the multi reads it after each look at the
   library and at the end of each step, so a resolve dropped anywhere is told without its owner
   having to remember. A resolve whose queries are out as it is asked is run once inside its start,
-  the setup's and a blocking one's alike (`take_in_start`); an answer the library has then is taken there, as `hostip_resolv_start` takes it on
+  the setup's, a blocking one's and the HTTPS record's alike (`take_in_start`, `look_in_start`);
+  an answer the library has then is taken there, as `hostip_resolv_start` takes it on
   `CURLE_AGAIN`: `ares_take_result` and `resolve complete`, its record destroyed at once,
   `hostip_resolv started -> 0`, then the answer kept (`Asked::InStart`). A failure had then is
   said in the same place: the take's words, the record destroyed, `started -> 6`, the name kept as
   not existing whatever the lookup otherwise keeps (`Unresolved::Resolver::in_start`). One the
   library had as it was asked, with no query out, is not looked at in the start, as c-ares's
   `Curl_async_getaddrinfo` returns `CURLE_OK` for it: `started -> 81`, then the look after.
-  The HTTPS record's answer is taken at the look right after the start.
 - **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
   on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
   first connect and its choice of attempts do not wait for A. The wait for AAAA runs on

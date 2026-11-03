@@ -399,7 +399,8 @@ fn answer_came<H: Host>(
         found_since(&c.route, kept.as_ref(), cx);
         c.record = kept;
     } else {
-        answered(&c.route, &came, doh, cx)?;
+        let taken = if doh { Taken::OverDoh } else { Taken::Later };
+        answered(&c.route, &came, taken, cx)?;
         if let Came::Record(record) = came {
             c.record = Some(record);
         }
@@ -594,7 +595,9 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
             names::async_gone(cx, Holder::Record);
         }
         let mut lookup = lookup;
-        look_at_library(route, &mut lookup, cx)?;
+        if let Some(found) = look_in_start(route, &mut lookup, cx)? {
+            return taken_in_start(route, found, lookup, cx);
+        }
         // The resolver answers later (`CURLE_AGAIN`).
         let again = crate::error::AGAIN_NUMBER;
         trace::of(
@@ -621,6 +624,69 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
         }
         Ok((Record::Pending, None, lookup))
     }
+}
+
+/// A library's resolve looked at inside its start if its query is out,
+/// as `hostip_resolv_start` looks on `CURLE_AGAIN`: what it has then, with
+/// the library's status. One the library had as it was asked is not
+/// looked for: C's c-ares then returns `CURLE_OK`, and the answer is
+/// taken at the next look (`Curl_async_getaddrinfo`).
+fn look_in_start<H: Host>(
+    route: &NetRoute,
+    lookup: &mut Option<RecordLookup>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Option<(RecordAnswer, i32)>, ErrorKind> {
+    let Some(RecordLookup::Library(resolve)) = lookup else {
+        return Ok(None);
+    };
+    if resolve.ongoing().0 == 0 {
+        return Ok(None);
+    }
+    resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
+    cx.libraries_closed();
+    if resolve.ongoing().0 > 0 {
+        say_incomplete(route, cx);
+        return Ok(None);
+    }
+    Ok(resolve.record().map(|found| (found, resolve.status())))
+}
+
+/// The record's answer, `found`, taken inside its resolve's start, the
+/// library's `status` said with it (`hostip_resolv_take_result`): the
+/// resolve, `lookup`, let go, and its record with the start's end, among
+/// the answer's lines (`hostip_resolv_start`'s `Curl_async_destroy`).
+fn taken_in_start<H: Host>(
+    route: &NetRoute,
+    (found, status): (RecordAnswer, i32),
+    lookup: Option<RecordLookup>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<LookedUp, ErrorKind> {
+    let (result, dns) = match &found {
+        RecordAnswer::Record(_) | RecordAnswer::NoRecord => (0, ""),
+        RecordAnswer::NoSuchName | RecordAnswer::Failed => (6, "not "),
+    };
+    trace::of(
+        cx,
+        Component::Dns,
+        format_args!(
+            "[HTTPS] ares_take_result, result={result}, ares_result=0, \
+             ares_status={status}, dns={dns}found"
+        ),
+    );
+    drop(lookup);
+    cx.libraries_closed();
+    let came = match found {
+        RecordAnswer::Record(record) => Came::Record(try_arc(record)?),
+        RecordAnswer::NoRecord => Came::NoRecord,
+        RecordAnswer::NoSuchName => Came::Negative,
+        RecordAnswer::Failed => Came::Failed,
+    };
+    answered(route, &came, Taken::InStart, cx)?;
+    let kept = match came {
+        Came::Record(record) => Some(record),
+        _ => None,
+    };
+    Ok((Record::Known, kept, None))
 }
 
 /// A library's resolve run once just after it starts, as C looks for the
@@ -686,25 +752,51 @@ fn found_since<H: Host>(
     say_record(route, kept, cx);
 }
 
+/// Where the record's answer was taken.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Taken {
+    /// From DoH's probe, at a look after the start.
+    OverDoh,
+    /// From a library, at a look after the start.
+    Later,
+    /// From a library, inside the start, whose end is said among the
+    /// answer's lines (`hostip_resolv`).
+    InStart,
+}
+
 /// The answer came, a record or none, kept as the name's
 /// (`Curl_dnsc_mk_https`, `Curl_dnscache_add_negative`).
 fn answered<H: Host>(
     route: &NetRoute,
     came: &Came,
-    doh: bool,
+    taken: Taken,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
     let peer = route.target();
     let (name, port) = (peer.name(), peer.port());
     let at = Text::<8>::clipped(format_args!(":{port}")).0;
     let at = at.bytes();
+    let doh = taken == Taken::OverDoh;
     let done = |cx: &mut StepCx<'_, H>| {
         if doh {
             trace::of(cx, Component::Dns, format_args!("[DoH] probe done"));
         }
     };
+    // Taken inside the start, the resolve's record goes, and the start
+    // says how it ended (`Curl_async_destroy`, `hostip_resolv`).
+    let started = |cx: &mut StepCx<'_, H>, code: u32| {
+        if taken == Taken::InStart {
+            names::async_gone(cx, Holder::Record);
+            trace::of(
+                cx,
+                Component::Dns,
+                format_args!("[HTTPS] hostip_resolv started -> {code}"),
+            );
+        }
+    };
     let record = match came {
         Came::Failed => {
+            started(cx, 6);
             done(cx);
             return Ok(());
         }
@@ -720,6 +812,7 @@ fn answered<H: Host>(
         .map_err(|_| ErrorKind::OutOfMemory)?;
     if negative {
         done(cx);
+        started(cx, 6);
         let line: [&[u8]; 4] = [
             b"cache negative name resolve for ",
             name,
@@ -749,6 +842,7 @@ fn answered<H: Host>(
         Component::Dns,
         &[b"[HTTPS] resolve complete for ", name, at],
     );
+    started(cx, 0);
     trace::of_with(cx, Component::Dns, &entry);
     say_record(route, record, cx);
     Ok(())

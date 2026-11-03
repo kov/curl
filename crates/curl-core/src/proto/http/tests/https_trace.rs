@@ -102,12 +102,15 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
 
 /// A resolve of the library [`Ares`] stands for: a name's addresses,
 /// 127.0.0.1, at once, as c-ares answers `localhost` from the hosts file,
-/// or `late`, as a DNS server answers, at the third run; its record, none,
-/// at the third run; the two runs before the third just as it starts.
+/// or `late`, as a DNS server answers, at the third run; its record at
+/// the run `record_at` says, none or `alpn=http/1.1` as it says; the two
+/// runs before the third just as it starts.
 #[derive(Debug)]
 struct AresResolve {
     record: bool,
     late: bool,
+    record_at: u32,
+    with_alpn: bool,
     performed: u32,
 }
 
@@ -131,7 +134,8 @@ impl crate::conn::io::DnsResolve for AresResolve {
         })
     }
     fn ongoing(&self) -> (u32, &'static str) {
-        if (self.record || self.late) && self.performed < 3 {
+        let at = if self.record { self.record_at } else { 3 };
+        if (self.record || self.late) && self.performed < at {
             (1, "-")
         } else {
             (0, "A")
@@ -142,7 +146,15 @@ impl crate::conn::io::DnsResolve for AresResolve {
             .then(|| Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]))
     }
     fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
-        (self.performed >= 3).then_some(crate::doh::RecordAnswer::NoSuchName)
+        if self.performed < self.record_at {
+            None
+        } else if self.with_alpn {
+            let rdata = b"\x00\x01\x00\x00\x01\x00\x09\x08http/1.1";
+            let record = crate::doh::decode_https_record(rdata).unwrap();
+            Some(crate::doh::RecordAnswer::Record(record))
+        } else {
+            Some(crate::doh::RecordAnswer::NoSuchName)
+        }
     }
     fn explain(&self) -> Option<&'static str> {
         None
@@ -154,9 +166,14 @@ impl crate::conn::io::DnsResolve for AresResolve {
 }
 
 /// A resolver library standing for c-ares, the reference build's: its
-/// addresses late if it says so.
+/// addresses late if it says so, its record at the run it says, with an
+/// ALPN if it says so.
 #[derive(Debug)]
-struct Ares(bool);
+struct Ares {
+    late: bool,
+    record_at: u32,
+    with_alpn: bool,
+}
 
 impl crate::conn::io::DnsLibrary for Ares {
     fn resolve(
@@ -166,7 +183,9 @@ impl crate::conn::io::DnsLibrary for Ares {
     ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
         Ok(Box::new(AresResolve {
             record: ask.family.is_none(),
-            late: self.0,
+            late: self.late,
+            record_at: self.record_at,
+            with_alpn: self.with_alpn,
             performed: 0,
         }))
     }
@@ -174,7 +193,14 @@ impl crate::conn::io::DnsLibrary for Ares {
 
 /// A handle as [`tracing`]'s, resolving through [`Ares`].
 fn tracing_over_ares(components: &[u8]) -> Easy {
-    tracing_over(&Ares(false), components)
+    tracing_over(
+        &Ares {
+            late: false,
+            record_at: 3,
+            with_alpn: false,
+        },
+        components,
+    )
 }
 
 /// The same, resolving through `ares`.
@@ -281,7 +307,11 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
 /// name, traces the same.
 #[test]
 fn a_record_and_addresses_come_together_are_taken_before_the_second_is_chosen() {
-    static LATE: Ares = Ares(true);
+    static LATE: Ares = Ares {
+        late: true,
+        record_at: 3,
+        with_alpn: false,
+    };
     let mut m = tls_server(1);
     let url = format!("https://name.test:{PORT}/");
     let e = tracing_over(&LATE, b"https-connect,dns");
@@ -317,6 +347,64 @@ fn a_record_and_addresses_come_together_are_taken_before_the_second_is_chosen() 
     assert_eq!(got, want, "{got:#?}");
 }
 
+/// A name's record the library has at the start's first look is taken
+/// inside the start, as C's `hostip_resolv_start` takes it on
+/// `CURLE_AGAIN`: the take's line, `resolve complete`, its resolve's record
+/// destroyed, `started -> 0`, then the record kept and said, before the
+/// addresses are asked for; none, it is kept as none after `started -> 6`.
+/// C's tool over c-ares, a DNS server answering the record at once, was
+/// seen to trace the first so.
+#[test]
+fn a_record_had_at_the_start_s_first_look_is_taken_inside_the_start() {
+    static FIRST: Ares = Ares {
+        late: false,
+        record_at: 1,
+        with_alpn: true,
+    };
+    static NONE_FIRST: Ares = Ares {
+        late: false,
+        record_at: 1,
+        with_alpn: false,
+    };
+    let starts = [
+        "[DNS] cache",
+        "[DNS] [HTTPS] ares",
+        "[DNS] [HTTPS] resolve",
+        "[DNS] [HTTPS] hostip_resolv started",
+        "[DNS] [1]",
+        "HTTPS-RR",
+    ];
+    let mut m = tls_server(1);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = https_get(&mut m, tracing_over(&FIRST, b"dns"), &url, |_| {});
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let want = expect(&format!(
+        "[DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] [HTTPS] ares_take_result, result=0, ares_result=0, ares_status=1, dns=found
+        [DNS] [HTTPS] resolve complete for localhost:{PORT}
+        [DNS] [1] destroy async
+        [DNS] [HTTPS] hostip_resolv started -> 0
+        [DNS] cached entry for localhost:{PORT} queries=HTTPS
+        HTTPS-RR localhost:{PORT}: 1 . alpn=http/1.1
+        [DNS] cache lookup localhost:{PORT} queries=A -> 0 not found"
+    ));
+    let got = lines(&ran, &starts);
+    assert_eq!(got[..want.len()], want, "{got:#?}");
+    let mut m = tls_server(1);
+    let ran = https_get(&mut m, tracing_over(&NONE_FIRST, b"dns"), &url, |_| {});
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let want = expect(&format!(
+        "[DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] [HTTPS] ares_take_result, result=6, ares_result=0, ares_status=1, dns=not found
+        [DNS] [1] destroy async
+        [DNS] [HTTPS] hostip_resolv started -> 6
+        [DNS] cache negative name resolve for localhost:{PORT} type=HTTPS
+        [DNS] cache lookup localhost:{PORT} queries=A -> 0 not found"
+    ));
+    let got = lines(&ran, &starts);
+    assert_eq!(got[..want.len()], want, "{got:#?}");
+}
+
 /// The lines of `ran` about its resolves' records, with what they follow:
 /// the DNS filters connecting and the transfer done.
 fn asyncs(seen: &Seen) -> Vec<String> {
@@ -342,7 +430,11 @@ fn asyncs(seen: &Seen) -> Vec<String> {
 /// again with `--retry`, and to another name.
 #[test]
 fn resolves_are_let_go_of_where_c_lets_them_go() {
-    static LATE: Ares = Ares(true);
+    static LATE: Ares = Ares {
+        late: true,
+        record_at: 3,
+        with_alpn: false,
+    };
     let mut m = tls_server(1);
     let get = |m: &mut Multi, e: Easy, url: String| https_get(m, e, &url, |_| {});
     let e = tracing_over(&LATE, b"dns,multi");

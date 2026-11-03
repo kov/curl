@@ -867,6 +867,17 @@ features: test-util
 --- new
                         answer
 
+=== a record had at the start's first look is taken at the next look
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_record_had_at_the_start_s_first_look_is_taken_inside_the_start
+features: test-util
+--- old
+        if let Some(found) = look_in_start(route, &mut lookup, cx)? {
+            return taken_in_start(route, found, lookup, cx);
+        }
+--- new
+        look_at_library(route, &mut lookup, cx)?;
+
 === an A answered empty is said only with the rest
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::an_a_answered_empty_before_aaaa_is_said_as_it_comes

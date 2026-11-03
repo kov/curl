@@ -1839,18 +1839,141 @@ fn request_strings_reach_the_transfer() {
     pointer(c, ffi::CURLOPT_URL, c"file:///x".as_ptr().cast_mut());
     let u = crate::url::curl_url();
     assert_eq!(pointer(c, ffi::CURLOPT_CURLU, u), CURLE_OK);
-    // SAFETY: made above; the handle keeps its own reference.
-    unsafe { crate::url::curl_url_cleanup(u) };
-    let urls = |c| options(c, |o| (o.url().is_some(), o.shared_url().is_some()));
-    assert_eq!(urls(c), (false, true), "in the URL's place");
+    let urls = |c| {
+        // SAFETY: a live handle.
+        let curlu = unsafe { easy::handle(c) }
+            .expect("a live handle")
+            .set
+            .get()
+            .curlu;
+        let o = options(c, |o| (o.url().is_some(), o.shared_url().is_some()));
+        (o, curlu.is_null())
+    };
+    assert_eq!(urls(c), ((false, false), false), "in the URL's place");
     assert_eq!(pointer(c, ffi::CURLOPT_CURLU, null), CURLE_OK);
-    assert_eq!(urls(c), (false, false));
+    assert_eq!(urls(c), ((false, false), true));
+    // SAFETY: made above, and the handle no longer names it.
+    unsafe { crate::url::curl_url_cleanup(u) };
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
     assert!(
         !jar_path.exists(),
         "no jar is written once its name is gone"
     );
+}
+
+/// `CURLOPT_CURLU` keeps the pointer it is given and reads nothing
+/// through it until a transfer starts, as C's `set.uh`: libtest 1521
+/// passes the address of a local that is no URL handle and never
+/// performs. A copy of the handle keeps the pointer, a reset forgets it.
+#[test]
+fn a_url_handle_is_not_read_until_a_transfer_starts() {
+    // Small values, which a reference count read from them would change
+    // without overflowing; room past a URL handle's size, wherever in it
+    // the count lies.
+    let mut object = [7usize; 128];
+    assert!(size_of_val(&object) > 4 * size_of::<curl_core::url::UrlCell>());
+    let p = (&raw mut object).cast::<c_void>();
+    let c = curl_easy_init();
+    assert_eq!(pointer(c, ffi::CURLOPT_CURLU, p), CURLE_OK);
+    assert_eq!(object, [7; 128], "nothing written through the pointer");
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!d.is_null());
+    assert_eq!(object, [7; 128], "nothing written through the copy's");
+    for h in [c, d] {
+        // SAFETY: a live handle.
+        let easy = unsafe { easy::handle(h) }.expect("a live handle");
+        assert_eq!(easy.set.get().curlu, p.cast::<ffi::CURLU>().cast_const());
+    }
+    // SAFETY: a live handle.
+    unsafe { crate::easy::curl_easy_reset(d) };
+    // SAFETY: as above.
+    let easy = unsafe { easy::handle(d) }.expect("a live handle");
+    assert!(easy.set.get().curlu.is_null(), "a reset forgets it");
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(d);
+        curl_easy_cleanup(c);
+    }
+    assert_eq!(object, [7; 128], "nothing freed through it");
+}
+
+/// A URL handle changed after it is set is read as it is when the
+/// transfer starts: by perform, and by a multi when it first drives the
+/// transfer, not when it is added (`Curl_pretransfer`).
+#[test]
+fn a_url_handle_is_read_as_the_transfer_starts() {
+    let (first_path, first) = file("curlu-first", b"first");
+    let (then_path, then) = file("curlu-then", b"then");
+    let u = crate::url::curl_url();
+    let set_url = |url: &CStr| {
+        // SAFETY: a live URL handle and a C string.
+        let rc = unsafe { crate::url::curl_url_set(u, ffi::CURLUPART_URL, url.as_ptr(), 0) };
+        assert_eq!(rc, ffi::CURLUE_OK);
+    };
+    let effective = |c| {
+        let url = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL);
+        // SAFETY: getinfo gives a string that lives while the handle does.
+        unsafe { CStr::from_ptr(url) }.to_owned()
+    };
+    let c = curl_easy_init();
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    set_url(&first);
+    assert_eq!(pointer(c, ffi::CURLOPT_CURLU, u), CURLE_OK);
+    set_url(&then);
+    // SAFETY: a live handle, its URL handle live through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(effective(c), then);
+
+    set_url(&first);
+    let multi = curl_multi_init();
+    // SAFETY: a live multi and handle, the URL handle live through the
+    // transfer, then both let go of.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+        set_url(&then);
+        let mut running = 1;
+        let mut rounds = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(multi, &raw mut running), CURLM_OK);
+            rounds += 1;
+            assert!(rounds < 100, "the transfer never ends");
+        }
+        assert_eq!(effective(c), then);
+        assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+    }
+    // Another URL handle, set once the transfer is added and before it
+    // starts, is the one it reads.
+    let other = crate::url::curl_url();
+    // SAFETY: a live URL handle and a C string.
+    let rc = unsafe { crate::url::curl_url_set(other, ffi::CURLUPART_URL, first.as_ptr(), 0) };
+    assert_eq!(rc, ffi::CURLUE_OK);
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+        assert_eq!(pointer(c, ffi::CURLOPT_CURLU, other), CURLE_OK);
+        let mut running = 1;
+        let mut rounds = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(multi, &raw mut running), CURLM_OK);
+            rounds += 1;
+            assert!(rounds < 100, "the transfer never ends");
+        }
+        let mut queued = 0;
+        let msg = curl_multi_info_read(multi, &raw mut queued);
+        assert!(!msg.is_null());
+        assert_eq!((*msg).data.result, CURLE_OK);
+        assert_eq!(effective(c), first);
+        assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+        assert_eq!(curl_multi_cleanup(multi), CURLM_OK);
+        curl_easy_cleanup(c);
+        crate::url::curl_url_cleanup(other);
+        crate::url::curl_url_cleanup(u);
+    }
+    for path in [first_path, then_path] {
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 type TrailerFn = unsafe extern "C" fn(*mut *mut ffi::curl_slist, *mut c_void) -> c_int;
@@ -6216,8 +6339,9 @@ fn a_handle_costs_no_more_than_cs() {
     // raise with a reason when a field earns its place (DESIGN.md): RTSP's
     // state on the handle and its interleave function on the shim are made
     // when first set, a pointer each until then, as is the list of its
-    // resolves' records (C's `state.async`).
-    assert!(made_bytes <= 2_128, "a new handle holds {made_bytes} bytes");
+    // resolves' records (C's `state.async`). `CURLOPT_CURLU`'s pointer is
+    // kept on the shim as given, as C keeps `set.uh`.
+    assert!(made_bytes <= 2_136, "a new handle holds {made_bytes} bytes");
     assert!(held <= 3_081, "an added handle holds {held} bytes");
     // The `Easy`, the shim's handle, the write adapter and its count, the
     // URL; then the slot, and the multi's tables as they grow.

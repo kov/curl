@@ -4057,7 +4057,9 @@ way. A 417 to a body sent behind `Expect: 100-continue` makes the exchange end w
 to the request's own URL, as C's `newurl` does: counted as a redirect, and with
 `no_expect` set so the library adds no Expect again. The connection is kept if the
 body was still held, and closed if some of it went. A URL the application keeps (`SharedUrl`, `CURLOPT_CURLU`, which the shim's `CURLU *` is) goes
-before the text URL: each transfer reads it as it starts, taking a copy of it as the first leg's
+before the text URL. The shim keeps the option's pointer as given and shares the URL behind it into
+`Options` only as the handle is added to a multi, as C reads `set.uh` only as a transfer starts. Each
+transfer reads it as it starts, taking a copy of it as the first leg's
 parsed URL; it is reached only inside a closure, so no borrow of it outlives the read.
 `Options::port` replaces the port of that first URL, and of each leg after, until a redirect
 leads to an absolute URL (`Run::allow_port`); as C sets it only in `state.uh`, it goes into

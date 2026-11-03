@@ -479,6 +479,10 @@ pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<()
         easy.return_home(transfer);
         return Err(MultiErrorKind::OutOfMemory.into());
     }
+    // SAFETY: a `CURLOPT_CURLU` that is not NULL is a handle from
+    // `curl_url`, which the application keeps live while the transfer
+    // it is added for runs, as C requires of `set.uh`.
+    unsafe { crate::url::share_into(transfer.options_mut(), set.curlu) };
     let mut ev = ShimEvents::new(multi);
     let added = match core {
         Core::Direct(core) => core.add(transfer, owner, &mut ev),

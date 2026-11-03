@@ -181,6 +181,9 @@ pub(crate) struct CSettings {
     /// request is made (`Curl_http_method`).
     pub(crate) method: Method,
     pub(crate) no_body: bool,
+    /// `CURLOPT_CURLU`, as given: C's `set.uh`, read only as a transfer
+    /// starts, so a copy of the handle keeps it and a reset forgets it.
+    pub(crate) curlu: *const crate::ffi::CURLU,
 }
 
 impl CSettings {
@@ -195,6 +198,7 @@ impl CSettings {
             private: ptr::null_mut(),
             method: Method::Get,
             no_body: false,
+            curlu: ptr::null(),
         }
     }
 

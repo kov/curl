@@ -1,5 +1,6 @@
 //! The URL API, `curl_url` and its kin: a `CURLU *` is a core
-//! `SharedUrl` held as its bare pointer, which `CURLOPT_CURLU` shares.
+//! `SharedUrl` held as its bare pointer, which `CURLOPT_CURLU` names and
+//! a transfer shares as it is added.
 
 #![allow(unsafe_code)]
 
@@ -94,6 +95,22 @@ pub(crate) unsafe fn shared(u: *const CURLU) -> Option<ManuallyDrop<SharedUrl>> 
     // dropped, the application's handle is not taken from it.
     let arc = unsafe { TryArc::from_raw(raw.cast()) };
     Some(ManuallyDrop::new(SharedUrl::from_arc(arc)))
+}
+
+/// Share the URL handle `CURLOPT_CURLU` names into a transfer's options,
+/// as it is about to start (`Curl_pretransfer` reads `set.uh`): changes
+/// the application makes to it until then are seen. NULL leaves a text
+/// URL set after it in place.
+///
+/// # Safety
+///
+/// `u` is NULL or a live handle from `boxed`: the application keeps the
+/// handle it set live while the transfer runs, as C requires of `set.uh`.
+pub(crate) unsafe fn share_into(options: &mut curl_core::options::Options, u: *const CURLU) {
+    // SAFETY: as the caller guarantees.
+    if let Some(shared) = unsafe { shared(u) } {
+        options.set_shared_url(Some(SharedUrl::clone(&shared)));
+    }
 }
 
 /// A C string the application frees with `curl_free`, written in place:

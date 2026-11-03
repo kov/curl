@@ -272,7 +272,7 @@ Two sets of budgets check this:
 - **A size trade is justified only against a budget derived from C**, in the layout the product
   ships, checked by a product-build print or a pin in both builds. The added handle's 3,081
   bytes and the connection's 656 are such budgets. A transfer slot's 768 bytes and a new
-  handle's 2,128 are tripwires of ours that name what grew: raising one with a reason is
+  handle's 2,136 are tripwires of ours that name what grew: raising one with a reason is
   routine, and neither justifies making a type weaker.
 
 Memory the application frees with `curl_free` comes from the application's allocator: the

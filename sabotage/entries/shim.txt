@@ -475,3 +475,31 @@ features: debug-hooks
         let p = self.malloc(size).cast::<u8>();
 --- new
         let p = self.raw_malloc(size).cast::<u8>();
+
+=== setopt reads a URL handle through CURLOPT_CURLU's pointer
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_url_handle_is_not_read_until_a_transfer_starts
+--- old
+            set.curlu = p.cast_const().cast();
+            options.set_shared_url(None);
+--- new
+            set.curlu = p.cast_const().cast();
+            // SAFETY: none: the planted fault.
+            unsafe { crate::url::share_into(options, p.cast()) };
+
+=== a transfer takes a copy of its URL handle as it is added
+file: crates/curl-sys-abi/src/url.rs
+witness: curl-sys-abi handle_tests::a_url_handle_is_read_as_the_transfer_starts
+--- old
+        options.set_shared_url(Some(SharedUrl::clone(&shared)));
+--- new
+        let copy = shared.with(|u| u.try_clone()).unwrap();
+        options.set_shared_url(Some(SharedUrl::new(copy).unwrap()));
+
+=== a URL handle set on an added handle is not the one it starts with
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_url_handle_is_read_as_the_transfer_starts
+--- old
+    if option == ffi::CURLOPT_CURLU && easy.added().is_some() {
+--- new
+    if false {

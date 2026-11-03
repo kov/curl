@@ -1899,6 +1899,38 @@ fn a_url_handle_is_not_read_until_a_transfer_starts() {
     assert_eq!(object, [7; 128], "nothing freed through it");
 }
 
+/// Setting `CURLOPT_CURLU`, even to NULL, forgets the URL the last
+/// transfer reported: `CURLINFO_EFFECTIVE_URL` is empty until the next
+/// starts, as C frees `state.url`.
+#[test]
+fn a_url_handle_set_forgets_the_effective_url() {
+    let (path, url) = file("curlu-effective", b"x");
+    let effective = |c| {
+        let url = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL);
+        // SAFETY: getinfo gives a string that lives while the handle does.
+        unsafe { CStr::from_ptr(url) }.to_owned()
+    };
+    let u = crate::url::curl_url();
+    let c = curl_easy_init();
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    for given in [u, ptr::null_mut()] {
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+        // SAFETY: a live handle.
+        assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+        assert_eq!(effective(c), url);
+        assert_eq!(pointer(c, ffi::CURLOPT_CURLU, given), CURLE_OK);
+        assert_eq!(effective(c), c"", "{given:?}");
+        // The URL set after it is the next transfer's, if none is.
+        pointer(c, ffi::CURLOPT_CURLU, ptr::null_mut::<c_void>());
+    }
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::url::curl_url_cleanup(u);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 /// A URL handle changed after it is set is read as it is when the
 /// transfer starts: by perform, and by a multi when it first drives the
 /// transfer, not when it is added (`Curl_pretransfer`).

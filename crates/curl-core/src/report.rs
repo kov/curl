@@ -519,6 +519,11 @@ impl TransferReport {
         }
     }
 
+    /// Report no URL, until a transfer starts with one.
+    pub(crate) fn forget_url(&mut self) {
+        self.url = ShownUrl::Unset;
+    }
+
     /// Why the URL cannot be reported, if it cannot: it does not read
     /// back as getinfo reads it, whatever its scheme, `path_as_is` as
     /// the handle has it, but with no space a URL handle of the

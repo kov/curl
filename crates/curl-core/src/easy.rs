@@ -152,6 +152,10 @@ impl EasyView<'_> {
         self.easy.tell_failure(why);
     }
 
+    pub fn forget_url(&mut self) {
+        self.easy.forget_url();
+    }
+
     pub fn reset(&mut self) {
         self.easy.reset_as(self.id);
     }
@@ -347,6 +351,13 @@ impl Easy {
     /// What the running or last transfer reports (`curl_easy_getinfo`).
     pub fn report(&self) -> &TransferReport {
         &self.report
+    }
+
+    /// Report no URL until the next transfer starts, as setting
+    /// `CURLOPT_CURLU` frees C's `state.url`: `CURLINFO_EFFECTIVE_URL` is
+    /// then empty.
+    pub fn forget_url(&mut self) {
+        self.report.forget_url();
     }
 
     /// The method of the running or last request, as

@@ -503,3 +503,11 @@ witness: curl-sys-abi handle_tests::a_url_handle_is_read_as_the_transfer_starts
     if option == ffi::CURLOPT_CURLU && easy.added().is_some() {
 --- new
     if false {
+
+=== setting CURLOPT_CURLU keeps the last transfer's effective URL
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_url_handle_set_forgets_the_effective_url
+--- old
+            easy::EasyRef::Easy(mut easy) => easy.forget_url(),
+--- new
+            easy::EasyRef::Easy(_) => {}

@@ -283,3 +283,13 @@ witness: curl-core multi::doh_tests::no_call_reaches_a_probe
     if let Owner::Internal { host: Some(h), .. } = &rest.tell.slots.get(id).expect("added").owner {
         rest.events.added(id, h);
     }
+
+=== a probe's callbacks run lent through no multi
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_probes_handle_is_the_multis
+features: debug-hooks
+--- old
+            Home::Added { multi, .. } | Home::Internal(multi) => Some(unsafe { multi.as_ref() }),
+--- new
+            Home::Added { multi, .. } => Some(unsafe { multi.as_ref() }),
+            Home::Internal(_) => None,

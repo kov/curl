@@ -2740,7 +2740,11 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   HTTP/2 over TLS, `pipewait`. HTTPS only outside the debug hooks build.
 - **The host.** `MultiEvents::internal` lets it make its value for the probe and `internal_gone`
   gives it back; the shim's is a `ShimEasy` marked internal, which `easy::handle` refuses as C's
-  `state.internal` is refused, called back with its debug function and its master's data.
+  `state.internal` is refused, called back with its debug function and its master's data. The
+  host is never handed the probe's id through `added`; its socket callback names it, but every
+  call taking a `TransferId` looks it up through `Slots::app`, which finds none for a probe, so
+  only `owner` answers. The shim keeps the probe's handle as `Home::Internal(multi)`, its
+  callbacks lent through that multi's stack.
 - **c-ares.** `Libraries::dns` names a `DnsLibrary`, `curl-ares` in a build without the threaded
   resolver: a channel per resolve (`DnsResolve`), held by the setup as `Via::Library`, its sockets
   in the transfer's pollset and its next try on `TimerKind::AsyncName`. The `--dns-*` settings

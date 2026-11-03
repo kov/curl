@@ -9733,6 +9733,9 @@ struct ProbeSeen {
     removed: Vec<ffi::CURLMcode>,
     added: Vec<ffi::CURLMcode>,
     asked: Vec<CURLcode>,
+    /// What asking about the master said from inside a probe's callback,
+    /// which reaches it through what that callback was lent.
+    master_asked: Vec<CURLcode>,
 }
 
 #[cfg(feature = "debug-hooks")]
@@ -9758,6 +9761,11 @@ unsafe extern "C" fn debug_probe(
                 ffi::CURLINFO_RESPONSE_CODE,
                 &raw mut code,
             ));
+            seen.master_asked.push(curl_easy_getinfo(
+                seen.master,
+                ffi::CURLINFO_RESPONSE_CODE,
+                &raw mut code,
+            ));
         }
     }
     0
@@ -9765,8 +9773,9 @@ unsafe extern "C" fn debug_probe(
 
 /// A probe calls the master's debug function with a handle of its own,
 /// one the application may not add, remove or ask about, and that goes
-/// with the transfer; `curl_multi_get_handles` lists the application's.
-/// Each posts its query, never what the read function gives
+/// with the transfer, though from its callback the master may be asked
+/// about, as getinfo may recurse; `curl_multi_get_handles` lists the
+/// application's. Each posts its query, never what the read function gives
 /// (`doh_probe_run` sets `CURLOPT_POSTFIELDS`).
 #[cfg(feature = "debug-hooks")]
 #[test]
@@ -9818,6 +9827,7 @@ fn a_probes_handle_is_the_multis() {
         removed: Vec::new(),
         added: Vec::new(),
         asked: Vec::new(),
+        master_asked: Vec::new(),
     };
     pointer(c, ffi::CURLOPT_URL, c"http://nx.test/".as_ptr().cast_mut());
     pointer(c, ffi::CURLOPT_DOH_URL, doh.as_ptr().cast_mut());
@@ -9881,5 +9891,10 @@ fn a_probes_handle_is_the_multis() {
         seen.asked
             .iter()
             .all(|&r| r == ffi::CURLE_BAD_FUNCTION_ARGUMENT)
+    );
+    assert_eq!(
+        seen.master_asked,
+        [CURLE_OK, CURLE_OK],
+        "getinfo may recurse"
     );
 }

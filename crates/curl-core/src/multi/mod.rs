@@ -53,7 +53,7 @@ pub use notify::{Notification, NotifyKind};
 pub use push::{PushFields, PushOffer, Pushed};
 pub use sched::{Census, Counts};
 pub use sockets::{SocketFor, SocketWhat, UnknownSocket};
-pub use ssls::{ExportDone, ExportFailed, Exporting};
+pub use ssls::{ExportDone, ExportFailed, Exporting, SessionsOut};
 pub use timers::TimerChange;
 #[cfg(any(test, feature = "test-util"))]
 pub use wait::drive_within;

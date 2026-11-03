@@ -79,6 +79,9 @@ pub(crate) struct Caches {
     /// The numbers its transfers' resolves are given, as C's multi numbers
     /// them, beside the connections' (`last_resolv_id`).
     pub(crate) resolves: asyncs::ResolveCount,
+    /// Whether the sessions are going out to the application's function:
+    /// made by the first export, as few multis have one.
+    pub(crate) sessions_out: Option<crate::multi::SessionsOut>,
 }
 
 impl Caches {
@@ -89,6 +92,7 @@ impl Caches {
             sessions: crate::tls::SessionCache::new(crate::tls::SessionCache::PEERS),
             psl: crate::psl::PslCache::default(),
             resolves: asyncs::ResolveCount::default(),
+            sessions_out: None,
         })
     }
 }

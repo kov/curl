@@ -179,7 +179,7 @@ witness: curl-core multi::ssls::tests::the_application_is_told_as_c_calls_its_lo
 --- old
             return Exporting {
                 exported,
-                share: Some(share.clone()),
+                out: Some(out),
                 told,
             };
 --- new
@@ -188,7 +188,7 @@ witness: curl-core multi::ssls::tests::the_application_is_told_as_c_calls_its_lo
             }
             return Exporting {
                 exported,
-                share: Some(share.clone()),
+                out: Some(out),
                 told: None,
             };
 
@@ -250,14 +250,48 @@ witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_
 file: crates/curl-sys-abi/src/gate/mod.rs
 witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_out
 --- old
-        if rules.no_scache_lock && self.exporting.get() {
+        if rules.no_scache_lock && self.sessions_out.get().is_some_and(SessionsOut::here) {
 --- new
-        if false && rules.no_scache_lock && self.exporting.get() {
+        if false && rules.no_scache_lock && self.sessions_out.get().is_some_and(SessionsOut::here) {
 
 === a multi's sessions are taken to be going out when its handle's share's are
-file: crates/curl-sys-abi/src/ssls.rs
+file: crates/curl-core/src/multi/ssls.rs
 witness: curl-sys-abi ssls::tests::a_share_s_sessions_go_out_past_a_multi
 --- old
-    let multi = easy.added().filter(|_| !exporting.on_share());
+        let own = match &self.caches.sessions_out {
 --- new
-    let multi = easy.added();
+        if let Some(share) = kept_share(easy) {
+            let out = share.sessions_out().clone();
+            self.caches.sessions_out.get_or_insert(out);
+        }
+        let own = match &self.caches.sessions_out {
+
+=== a cache's sessions are still taken to be going out once the export has ended
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_out
+--- old
+        if let Some(out) = &self.out {
+            out.set(false);
+        }
+--- new
+        let _ = &self.out;
+
+=== a multi's gate is not given the mark of its own sessions going out
+file: crates/curl-sys-abi/src/ssls.rs
+witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_out
+--- old
+                stack.watch_sessions(out);
+--- new
+                let _ = (stack, out);
+
+=== a multi's own sessions going out are not seen by a call on its other handle
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_out
+--- old
+            None => self
+                .caches
+                .sessions_out
+                .as_ref()
+                .is_some_and(SessionsOut::here),
+--- new
+            None => false,

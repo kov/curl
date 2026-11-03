@@ -1021,6 +1021,7 @@ fn no_call_reaches_a_probe() {
     let done = m
         .ssls_export(id)
         .expect("the master's")
+        .expect("room for its mark")
         .deliver(&mut |_| Err(()));
     let calls = [
         ("master's easy", m.easy(id).is_some()),

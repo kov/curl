@@ -104,24 +104,17 @@ pub unsafe extern "C" fn curl_easy_ssls_export(
     let Some(export_fn) = export_fn else {
         return CURLE_BAD_FUNCTION_ARGUMENT;
     };
-    let Some(exporting) = begin(easy) else {
-        return CURLE_RECURSIVE_API_CALL;
+    let exporting = match begin(easy) {
+        Some(Ok(exporting)) => exporting,
+        Some(Err(OutOfMemory)) => return ffi::CURLE_OUT_OF_MEMORY,
+        None => return CURLE_RECURSIVE_API_CALL,
     };
     // The handle is not borrowed from here: the function may use it as the
     // gate lets it, which is not to touch this cache.
-    let multi = easy.added().filter(|_| !exporting.on_share());
-    // SAFETY: the handle's multi outlives its `Added`.
-    let stack = multi.map(|(m, _)| unsafe { &m.as_ref().stack });
-    if let Some(stack) = stack {
-        stack.set_exporting(true);
-    }
     let done = exporting.deliver(&mut |session| {
         // SAFETY: the function and its pointer, as the caller guarantees.
         unsafe { give(curl, export_fn, userptr, session) }
     });
-    if let Some(stack) = stack {
-        stack.set_exporting(false);
-    }
     let mut held = callbacks::Held::default();
     let notes = &mut |kind, b: &[u8]| held.note(kind, b);
     let ended = easy.with_home(|home| match home {
@@ -144,19 +137,26 @@ pub unsafe extern "C" fn curl_easy_ssls_export(
 const _: ffi::proto::curl_easy_ssls_export = curl_easy_ssls_export;
 
 /// The sessions of `easy`'s cache, ready to go out; none if the multi it is
-/// in is running a callback, whose cache is out of reach.
-fn begin(easy: &ShimEasy) -> Option<Exporting> {
-    easy.with_home(|home| match home {
-        HomeRef::Detached(e) => Some(e.ssls_export()),
-        HomeRef::Added(multi, id) => Some(
-            multi
+/// in is running a callback, whose cache is out of reach. The gate of a
+/// multi whose own cache's go out is given the mark to ask.
+fn begin(easy: &ShimEasy) -> Option<Result<Exporting, OutOfMemory>> {
+    // SAFETY: the handle's multi outlives its `Added`; its gate is apart
+    // from the core the export borrows.
+    let stack = easy.added().map(|(m, _)| unsafe { &m.as_ref().stack });
+    let begun = easy.with_home(|home| match home {
+        HomeRef::Detached(e) => Some(Ok(e.ssls_export())),
+        HomeRef::Added(multi, id) => {
+            let begun = multi
                 .ssls_export(id)
-                .expect("an added handle is in its multi"),
-        ),
+                .expect("an added handle is in its multi");
+            if let (Some(out), Some(stack)) = (multi.sessions_out(), stack) {
+                stack.watch_sessions(out);
+            }
+            Some(begun)
+        }
         HomeRef::Frame(..) => None,
-    })
-    .ok()
-    .flatten()
+    });
+    begun.ok().flatten()
 }
 
 /// `bytes` with the zero byte a C string ends in.

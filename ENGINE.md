@@ -3085,6 +3085,10 @@ the share's lock (no client certificate or password, a key of `:G` or none), let
 only then calls the application's function, the multi unborrowed, telling the unlock at its end.
 Meanwhile the gate (`no_scache_lock`) refuses on that thread the calls C's refuses while it holds
 the cache's lock: on a handle using that cache, and on the multi if the cache is the multi's.
+Whether a cache's sessions are going out, and on which thread, is one `SessionsOut` its owner
+(the share or the multi) holds; the export marks it while it lasts, and the shim's gate asks the
+multi's through a clone it took as the first export from the multi's cache made it (a plain
+GET allocates none), as the multi itself may be lent to a callback.
 
 **Early data** (TLS 1.3's 0-RTT, `CURLSSLOPT_EARLYDATA`, `--tls-earlydata`). A transfer that
 asks and makes requests (`TlsPeer::early_data`, not `bits.connect_only`) has OpenSSL put its

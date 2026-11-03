@@ -16,12 +16,12 @@
 #[allow(dead_code, reason = "the table lists every call; the shim exports them step by step")]
 mod table;
 
-use core::cell::Cell;
+use core::cell::{Cell, OnceCell};
 use core::ptr::NonNull;
 
 use curl_alloc::OutOfMemory;
 use curl_core::easy::{Easy, RtspState};
-use curl_core::multi::{EventCx, NotifyCx, TransferCx, TransferId};
+use curl_core::multi::{EventCx, NotifyCx, SessionsOut, TransferCx, TransferId};
 use curl_core::options::Options;
 use curl_core::report::TransferReport;
 use curl_core::tls::TlsNative;
@@ -331,9 +331,11 @@ pub(crate) struct MultiStack {
     events: Cell<u8>,
     /// Notify callbacks running.
     notifies: Cell<u8>,
-    /// The sessions of its cache are going out, the application's function
-    /// running (C's `is_locked` on its `locking_thread`).
-    exporting: Cell<bool>,
+    /// Whether the sessions of its cache are going out, the application's
+    /// function running: the core multi's mark, asked without reaching
+    /// the multi, which a callback may hold. Taken once the first export
+    /// from its cache has made it.
+    sessions_out: OnceCell<SessionsOut>,
 }
 
 /// How a call admitted by the gate reaches the multi.
@@ -358,20 +360,16 @@ impl Drop for MultiEntry<'_> {
 }
 
 impl MultiStack {
-    /// The sessions of the multi's cache are going out, or no longer.
-    pub(crate) fn set_exporting(&self, exporting: bool) {
-        self.exporting.set(exporting);
-    }
-
-    /// Whether they are.
-    pub(crate) fn exporting(&self) -> bool {
-        self.exporting.get()
+    /// The calls on a multi whose own cache's sessions go out as
+    /// `sessions_out` says, from now on.
+    pub(crate) fn watch_sessions(&self, sessions_out: &SessionsOut) {
+        self.sessions_out.get_or_init(|| sessions_out.clone());
     }
 
     /// Admit `call`, as `Curl_mapi_enter` does.
     pub(crate) fn enter(&self, call: MultiCall) -> Result<MultiEntry<'_>, Recursive> {
         let rules = call.rules();
-        if rules.no_scache_lock && self.exporting.get() {
+        if rules.no_scache_lock && self.sessions_out.get().is_some_and(SessionsOut::here) {
             return Err(Recursive);
         }
         let in_notify = rules.in_notify && self.notifies.get() > 0;

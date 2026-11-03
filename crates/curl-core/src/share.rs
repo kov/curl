@@ -24,6 +24,7 @@ use crate::conn::shutdown::NoSet;
 use crate::conn::{DnsCache, Pool};
 use crate::cookie::Jar;
 use crate::hsts::Hsts;
+use crate::multi::SessionsOut;
 use crate::psl::PslCache;
 use crate::tls::SessionCache;
 
@@ -96,9 +97,8 @@ struct Inner {
     cookies: Mutex<Option<Jar>>,
     /// The TLS sessions, a cache made when they are first kept.
     sessions: Mutex<Option<SessionCache>>,
-    /// The thread giving its sessions to the application's function, if one
-    /// is (C's `locking_thread`).
-    exporting: Mutex<Option<std::thread::ThreadId>>,
+    /// Whether its sessions are going out to the application's function.
+    sessions_out: SessionsOut,
     /// The HSTS cache, made when it is first kept.
     hsts: Mutex<Option<Hsts>>,
     /// The public suffix list, used by its transfers in place of each
@@ -127,7 +127,7 @@ impl Share {
             dns: Mutex::new(DnsCache::default()),
             cookies: Mutex::new(None),
             sessions: Mutex::new(None),
-            exporting: Mutex::new(None),
+            sessions_out: SessionsOut::new()?,
             hsts: Mutex::new(None),
             psl: PslCache::default(),
             net: Mutex::new(net),
@@ -259,15 +259,9 @@ impl Share {
         self.pool().upkeep(interval, &mut NoSet(&mut **net), now);
     }
 
-    /// This thread gives its sessions to the application's function, or
-    /// no longer does.
-    pub(crate) fn set_exporting(&self, exporting: bool) {
-        *lock(&self.0.exporting) = exporting.then(|| std::thread::current().id());
-    }
-
-    /// Whether this thread is giving them.
-    pub(crate) fn exporting_here(&self) -> bool {
-        *lock(&self.0.exporting) == Some(std::thread::current().id())
+    /// Whether its sessions are going out.
+    pub(crate) fn sessions_out(&self) -> &SessionsOut {
+        &self.0.sessions_out
     }
 
     /// The TLS sessions, locked; none if the share keeps none.

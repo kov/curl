@@ -10,8 +10,10 @@
 //! `notes` each is given, as a raw send's is.
 
 use std::fmt;
+use std::sync::Mutex;
+use std::thread::{self, ThreadId};
 
-use curl_alloc::TryVec as _;
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use super::raw::Notes;
 use super::{Host, Multi, TransferId};
@@ -116,17 +118,56 @@ fn import(
     done
 }
 
+/// Whether the sessions of one cache, a share's or a multi's, are going
+/// out to the application's function, and on which thread (C's
+/// `is_locked` with its `locking_thread`). Its cache's owner holds it; so
+/// do an export under way, which marks it, and whoever must refuse what
+/// would want the cache meanwhile, as the shim's gate does: each a key to
+/// the one fact, none a copy of it.
+#[derive(Clone)]
+pub struct SessionsOut(TryArc<Mutex<Option<ThreadId>>>);
+
+impl SessionsOut {
+    /// Not going out.
+    pub fn new() -> Result<SessionsOut, OutOfMemory> {
+        Ok(SessionsOut(TryArc::try_new(Mutex::new(None))?))
+    }
+
+    /// Whether they are going out on this thread
+    /// (`Curl_ssl_scache_is_locked_by_current_thread`).
+    pub fn here(&self) -> bool {
+        *self.locked() == Some(thread::current().id())
+    }
+
+    /// They go out from this thread, or no longer go out.
+    fn set(&self, going: bool) {
+        *self.locked() = going.then(|| thread::current().id());
+    }
+
+    fn locked(&self) -> std::sync::MutexGuard<'_, Option<ThreadId>> {
+        // Nothing panics holding it: a panic aborts the process.
+        self.0.lock().expect("no panic holds its lock")
+    }
+}
+
+impl fmt::Debug for SessionsOut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SessionsOut")
+    }
+}
+
 /// An export begun: the sessions made ready and the application's lock
 /// function told, to go out with no lock of the library's held and nothing
 /// of the multi's borrowed. C holds its cache's lock across the
 /// application's function and its gate refuses the calls that would want
-/// it from the same thread: the shim's gate asks `Easy::ssls_going_out`
+/// it from the same thread: the shim's gate asks the cache's `SessionsOut`
 /// and refuses them too. A call on another thread waits on C's lock and
 /// finds the cache free here, the sessions going out those made ready.
 pub struct Exporting {
     exported: Exported,
-    /// The share the sessions are of, marked as theirs going out.
-    share: Option<Share>,
+    /// The mark of the cache the sessions are of, a share's or a multi's,
+    /// set while this lasts; none with no cache.
+    out: Option<SessionsOut>,
     /// The application's lock function, told until this ends.
     told: Option<Handler<dyn ShareLock>>,
 }
@@ -163,7 +204,7 @@ impl<E> ExportDone<E> {
 }
 
 impl Exporting {
-    fn begin(easy: &Easy, own: Option<&mut SessionCache>, now: i64) -> Exporting {
+    fn begin(easy: &Easy, own: Option<(&mut SessionCache, &SessionsOut)>, now: i64) -> Exporting {
         let mut salt = |bytes: &mut [u8]| {
             easy.libraries()
                 .random(bytes)
@@ -179,24 +220,28 @@ impl Exporting {
                 .sessions()
                 .as_mut()
                 .map_or_else(Exported::default, |c| c.export(now, &mut salt));
-            share.set_exporting(true);
+            let out = share.sessions_out().clone();
+            out.set(true);
             return Exporting {
                 exported,
-                share: Some(share.clone()),
+                out: Some(out),
                 told,
             };
         }
-        let exported = own.map_or_else(Exported::default, |c| c.export(now, &mut salt));
+        let Some((cache, out)) = own else {
+            return Exporting {
+                exported: Exported::default(),
+                out: None,
+                told: None,
+            };
+        };
+        let exported = cache.export(now, &mut salt);
+        out.set(true);
         Exporting {
             exported,
-            share: None,
+            out: Some(out.clone()),
             told: None,
         }
-    }
-
-    /// The sessions are a share's, not a multi's.
-    pub fn on_share(&self) -> bool {
-        self.share.is_some()
     }
 
     /// Give each session to `f` in turn, until it stops or the one that
@@ -235,8 +280,8 @@ impl Exporting {
 
 impl Drop for Exporting {
     fn drop(&mut self) {
-        if let Some(share) = &self.share {
-            share.set_exporting(false);
+        if let Some(out) = &self.out {
+            out.set(false);
         }
         if let Some(w) = &self.told {
             w.unlock(Kind::SslSessions);
@@ -245,11 +290,11 @@ impl Drop for Exporting {
 }
 
 impl Easy {
-    /// Whether the sessions of its share's cache are going out on this
-    /// thread; none if its share keeps none, whose cache is its multi's if
-    /// any (`Curl_ssl_scache_is_locked_by_current_thread`).
-    pub fn ssls_going_out(&self) -> Option<bool> {
-        kept_share(self).map(Share::exporting_here)
+    /// Whether the sessions of the cache it uses out of a multi, its
+    /// share's, are going out on this thread
+    /// (`Curl_ssl_scache_is_locked_by_current_thread`).
+    pub fn ssls_going_out(&self) -> bool {
+        kept_share(self).is_some_and(|s| s.sessions_out().here())
     }
 
     /// Keep the session `packed` for `who`, in the cache the handle's
@@ -274,9 +319,26 @@ impl Easy {
 }
 
 impl<H: Host> Multi<H> {
-    /// `Easy::ssls_going_out` of the transfer `id` of the multi.
+    /// Whether the sessions of the cache the transfer `id` uses, its
+    /// share's or else the multi's, are going out on this thread. `None` if
+    /// `id` is not in this multi.
     pub fn easy_ssls_going_out(&self, id: TransferId) -> Option<bool> {
-        self.slots.app(id)?.easy.ssls_going_out()
+        let easy = &self.slots.app(id)?.easy;
+        Some(match kept_share(easy) {
+            Some(share) => share.sessions_out().here(),
+            None => self
+                .caches
+                .sessions_out
+                .as_ref()
+                .is_some_and(SessionsOut::here),
+        })
+    }
+
+    /// Whether the sessions of the multi's own cache are going out: the
+    /// mark itself, to be asked where the multi cannot be reached. None
+    /// before the first export from its cache, which makes it.
+    pub fn sessions_out(&self) -> Option<&SessionsOut> {
+        self.caches.sessions_out.as_ref()
     }
 
     /// As `Easy::ssls_import`, for the transfer `id` of the multi, which
@@ -296,12 +358,22 @@ impl<H: Host> Multi<H> {
     }
 
     /// As `Easy::ssls_export`, for the transfer `id` of the multi. `None`
-    /// if `id` is not in this multi.
-    pub fn ssls_export(&mut self, id: TransferId) -> Option<Exporting> {
+    /// if `id` is not in this multi; it fails for want of memory to mark
+    /// the multi's cache as going out, made by its first export.
+    pub fn ssls_export(&mut self, id: TransferId) -> Option<Result<Exporting, OutOfMemory>> {
         let now = self.clock.unix_time();
         let easy = &self.slots.app(id)?.easy;
-        let own = &mut self.caches.sessions;
-        Some(Exporting::begin(easy, Some(own), now))
+        if kept_share(easy).is_none() && self.caches.sessions_out.is_none() {
+            match SessionsOut::new() {
+                Ok(out) => self.caches.sessions_out = Some(out),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        let own = match &self.caches.sessions_out {
+            Some(out) => Some((&mut self.caches.sessions, out)),
+            None => None,
+        };
+        Some(Ok(Exporting::begin(easy, own, now)))
     }
 
     /// `ExportDone::end` for the transfer `id` of the multi. `None` if `id`

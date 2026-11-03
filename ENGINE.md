@@ -2808,7 +2808,11 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   `connect, init`, as C's init asks the DNS filter for it, the plan's dial changed to match
   (`set_dial`); `CURL_DBG_AWAIT_HTTPSRR` waits for it. A record arriving later chooses the
   second, once the addresses' answer of the same call is taken (`second_chosen`, C's
-  `cf_hc_set_baller2` below the DNS filters). A server's no such name is kept as a negative entry and an answer
+  `cf_hc_set_baller2` below the DNS filters). While the record is still to come the setup races
+  its first attempt (`may_race`), so that the first's failure ends it only once the record has
+  come and chosen no second, as C's filter gives up only with its second chosen
+  (`ballers_complete`): a server that never answers holds the failed transfer until the
+  resolver gives up. A server's no such name is kept as a negative entry and an answer
   without a record as an empty one; any other failure keeps nothing.
 - **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
   name themselves (`state.feat`). A probe is verbose only with DoH's trace on.

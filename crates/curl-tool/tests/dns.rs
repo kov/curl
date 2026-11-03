@@ -18,7 +18,8 @@ use std::time::Duration;
 /// without a record. One with `tworec` gets two records, `1 . alpn=h3
 /// ipv4hint=127.0.0.2` then `2 . alpn=h2`, and one with `aliasrec` two,
 /// `1 alt.test. alpn=h2` then `1 . alpn=http/1.1`; one with `cnameonly`
-/// gets a CNAME and no record. Each query's type and name is sent on the
+/// gets a CNAME and no record; one with `slowrr` an answer without a record
+/// for its HTTPS record, late. Each query's type and name is sent on the
 /// channel.
 fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -73,7 +74,7 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             } else if !nx && kind == 65 && name.contains("h3rec") {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x0a");
                 answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x03\x02h3");
-            } else if !nx && kind == 65 && !name.contains("emptyrr") {
+            } else if !nx && kind == 65 && !name.contains("emptyrr") && !name.contains("slowrr") {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x10");
                 answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x09\x08http/1.1");
             }
@@ -82,7 +83,8 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             reply.extend_from_slice(&[0, 0, 0, 0]);
             reply.extend_from_slice(&q[12..i + 5]);
             reply.extend_from_slice(&answer);
-            if name.starts_with("slowv6") && kind == 28 {
+            if (name.starts_with("slowv6") && kind == 28) || (name.contains("slowrr") && kind == 65)
+            {
                 // Late, while the other queries are answered.
                 let late = socket.try_clone().unwrap();
                 thread::spawn(move || {
@@ -121,6 +123,49 @@ fn curl(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .unwrap()
+}
+
+/// An HTTPS setup whose only attempt fails while the origin's record is
+/// still to come goes on until the record has come, as C's HTTPS connect
+/// filter gives up only once its second attempt is chosen, which waits for
+/// the record (`cf_hc_connect`, `cf_hc_set_baller2`): the race's failure,
+/// then the record's answer, none, kept, and only then the filter's.
+/// C's tool over c-ares traces the same, a server answering the record
+/// 300 ms late.
+#[test]
+fn an_https_setup_whose_attempt_fails_waits_for_the_record() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "--trace-config",
+        "dns,https-connect",
+        "--dns-servers",
+        &servers,
+        "https://slowrr.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(7), "{said}");
+    let wanted = [
+        "* Failed to connect to slowrr.test:1 after ",
+        "* [DNS] [HTTPS] ares_take_result, result=6, ares_result=0, ares_status=1, dns=not found",
+        "* [DNS] cache negative name resolve for slowrr.test:1 type=HTTPS",
+        "* [HTTPS-CONNECT] HTTPS-RR not available",
+        "* [HTTPS-CONNECT] connect, all attempts failed",
+        "* [HTTPS-CONNECT] connect -> 7, done=0",
+    ];
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|l| wanted.iter().any(|w| l.starts_with(w)))
+        .collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with(wanted[0]))
+        .unwrap_or_else(|| panic!("{said}"));
+    assert_eq!(lines.len(), at + wanted.len(), "{said}");
+    for (line, want) in lines[at..].iter().zip(wanted) {
+        assert!(line.starts_with(want), "{line:?} for {want:?}: {said}");
+    }
 }
 
 #[test]
@@ -531,10 +576,12 @@ fn a_record_never_answered_says_its_socket_closed() {
     ]);
     assert_eq!(run.status.code(), Some(7));
     let said = String::from_utf8_lossy(&run.stderr);
-    // The addresses' resolve's socket, the record's, and the attempt's, as C
-    // says them.
+    // The sockets of the addresses' resolve, of the attempt, and of the
+    // record, waited for after the attempt fails until c-ares gives up on
+    // it, as C says them: five, C's tool over c-ares against a server that
+    // never answers the record.
     let closes = said.matches("Curl_multi_will_close fd=").count();
-    assert_eq!(closes, 3, "{said}");
+    assert_eq!(closes, 5, "{said}");
 }
 
 #[test]

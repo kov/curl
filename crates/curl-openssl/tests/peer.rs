@@ -1006,8 +1006,10 @@ const TLS_LAYER_EXTRA: u64 = 18;
 /// TLS layer's (`TLS_LAYER_EXTRA`), and the handle's list of its resolves'
 /// records, made as the origin's HTTPS record is asked for, where C
 /// allocates that ask's record (`hostip_async_new`, in C's memdump of the
-/// HTTPS GET and not of the plain one).
-const HTTPS_GET_EXTRA: u64 = TLS_LAYER_EXTRA + 1;
+/// HTTPS GET and not of the plain one); and the race its HTTPS connect
+/// filter holds its first attempt in while that record is still to come,
+/// which C's filter holds in its own context.
+const HTTPS_GET_EXTRA: u64 = TLS_LAYER_EXTRA + 2;
 
 fn an_https_get_stays_within_its_allocation_budget() {
     let base = plain_get_allocations();

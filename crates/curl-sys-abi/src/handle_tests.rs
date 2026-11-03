@@ -3448,25 +3448,40 @@ fn the_trace_goes_to_the_debug_function_or_the_stream() {
     close(stream);
 }
 
-/// A DNS server that never answers, for the tests' lifetime: a socket
-/// bound and never read, named as `CURLOPT_DNS_SERVERS` names it.
+/// A DNS server that answers every query late, 200 ms after it is asked,
+/// with no answer of the type asked (`NOERROR`, no records), for the
+/// tests' lifetime: named as `CURLOPT_DNS_SERVERS` names it.
 #[cfg(feature = "c-ares")]
-fn silent_dns_server() -> &'static CStr {
-    static SERVER: std::sync::OnceLock<(std::net::UdpSocket, std::ffi::CString)> =
-        std::sync::OnceLock::new();
-    let (_, named) = SERVER.get_or_init(|| {
+fn late_dns_server() -> &'static CStr {
+    static SERVER: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+    SERVER.get_or_init(|| {
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let at = socket.local_addr().unwrap();
-        (socket, std::ffi::CString::new(at.to_string()).unwrap())
-    });
-    named
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1500];
+            while let Ok((n, peer)) = socket.recv_from(&mut buf) {
+                let Some(question) = buf.get(12..n) else {
+                    continue;
+                };
+                // The header with the question's id, a response, no answer.
+                let mut reply = vec![buf[0], buf[1], 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0];
+                reply.extend_from_slice(question);
+                let late = socket.try_clone().unwrap();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    let _sent = late.send_to(&reply, peer);
+                });
+            }
+        });
+        std::ffi::CString::new(at.to_string()).unwrap()
+    })
 }
 
 /// A handle tracing DNS to `debug`, with `seen` its data, to a name the
 /// resolver answers itself and a port that refuses. Over c-ares its HTTPS
-/// record is asked of a server that never answers, so that the record's
-/// resolve is still out as the transfer ends, whatever the host's own
-/// resolver would answer and however soon. The threaded build, as C's
+/// record is asked of a server that answers late, so that the record is
+/// still out at the start's look and taken after it, whatever the host's
+/// own resolver would answer and however soon. The threaded build, as C's
 /// built without c-ares, has no servers to set and asks no record, which
 /// is then known at once.
 #[cfg(feature = "c-ares")]
@@ -3477,7 +3492,7 @@ fn refused_tracing_dns(debug: DebugFn, seen: &mut Seen) -> *mut CURL {
         ffi::CURLOPT_URL,
         c"https://localhost:1/".as_ptr().cast_mut(),
     );
-    let servers = silent_dns_server().as_ptr().cast_mut();
+    let servers = late_dns_server().as_ptr().cast_mut();
     let set = if cfg!(feature = "threaded-resolver") {
         ffi::CURLE_NOT_BUILT_IN
     } else {

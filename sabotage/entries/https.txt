@@ -411,3 +411,11 @@ witness: curl-tool a_name_another_transfer_resolved_meanwhile_is_taken_from_the_
 --- new
             if let HttpsLookup::Found(kept) = HttpsLookup::Missing {
                 say_lookup(&c.route, true, cx);
+
+=== a setup whose attempt fails gives up before its record comes
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool an_https_setup_whose_attempt_fails_waits_for_the_record
+--- old
+    h.record == Record::Pending || choosing(c, cx).second(first).is_some()
+--- new
+    choosing(c, cx).second(first).is_some()

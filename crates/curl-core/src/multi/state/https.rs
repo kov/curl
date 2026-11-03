@@ -886,13 +886,19 @@ fn choose_second<H: Host>(
     Second::Due(second)
 }
 
-/// Whether the setup `c` would race a second attempt against its first,
-/// as the origin's record, known or not, chooses none.
+/// Whether the setup `c` may race a second attempt against its first:
+/// one chosen by what is known, or one the origin's record, still to
+/// come, may choose. C's filter gives up only once its second is chosen
+/// (`cf_hc_connect`'s `ballers_complete`), which waits for the record
+/// (`cf_hc_set_baller2`).
 pub(super) fn may_race<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> bool {
-    let Some(first) = c.https.and_then(|h| h.first) else {
+    let Some(h) = c.https else {
         return false;
     };
-    choosing(c, cx).second(first).is_some()
+    let Some(first) = h.first else {
+        return false;
+    };
+    h.record == Record::Pending || choosing(c, cx).second(first).is_some()
 }
 
 /// The setup's first attempt starts (`cf_hc_connect`'s INIT): its

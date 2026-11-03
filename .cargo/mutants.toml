@@ -377,7 +377,18 @@ exclude_re = [
     # size, which they always have: `len - read` is never the smaller.
     'curl-sys-abi/src/callbacks\.rs:.*: replace - with \+ in <impl ReadHandler for Fields>::read$',
     # A reservation size: a wrong one only makes the push grow the vector.
-    'curl-sys-abi/src/getinfo\.rs:.*: replace \+ with \* in c_string$',
+    'curl-sys-abi/src/(getinfo|ssls)\.rs:.*: replace \+ with \* in c_string$',
+    # c-ares's version where no c-ares is linked: built only with the
+    # threaded resolver, where `curl_version` leaves the library out of
+    # what it shows and `curl_version_info` gives NULL and 0, each behind
+    # its own `cfg!`.
+    'curl-sys-abi/src/ares\.rs:.*: replace (version -> &.static str with "xyzzy"|version_number -> u32 with 1)$',
+    # The resolver library's options are refused only where the shim is
+    # built with its own `threaded-resolver` feature, which no run in the
+    # recipe above turns on (its threaded run turns on curl-core's and
+    # curl-tool's): elsewhere the guard is `true` already. Built with it,
+    # `the_resolver_library_options_are_kept_with_c_ares_alone` catches it.
+    'curl-sys-abi/src/setopt/mod\.rs:.*: replace match guard !cfg!\(feature = "threaded-resolver"\) with true in apply$',
     # A share with neither lock function gets a watch that calls none, and
     # the functions cannot change while a handle holds the share.
     'curl-sys-abi/src/share\.rs:.*: replace match guard sh\.settings\(\)\.lock\.is_some\(\) \|\| sh\.settings\(\)\.unlock\.is_some\(\) with true in set_core$',

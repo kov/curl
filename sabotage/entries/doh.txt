@@ -311,3 +311,11 @@ features: test-util
         state.released.0.fetch_add(1, Ordering::Release);
 --- new
         state.released.0.fetch_add(0, Ordering::Release);
+
+=== a record's target is read into a buffer as long as C's
+file: crates/curl-core/src/doh.rs
+witness: curl-core doh::tests::a_record_s_target_is_as_long_as_c_takes
+--- old
+const MAX_TARGET: usize = 253;
+--- new
+const MAX_TARGET: usize = 2048;

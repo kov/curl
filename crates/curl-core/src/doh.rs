@@ -21,8 +21,9 @@ const MAX_ADDRS: usize = 24;
 const MAX_HTTPS: usize = 4;
 /// A record's time to live is at most a day (`MAX_DNS_TTL`).
 const MAX_TTL: u32 = 86400;
-/// A name in a record's data is at most this long (`CURL_MAXLEN_HOST_NAME`).
-const MAX_TARGET: usize = 2048;
+/// The buffer a name in a record's data is read into (`CURL_MAXLEN_HOST_NAME`
+/// in `httpsrr.h`): the name, its dots and C's NUL.
+const MAX_TARGET: usize = 253;
 /// The ALPN ids a record keeps (`MAX_HTTPSRR_ALPNS`).
 const MAX_ALPNS: usize = 4;
 
@@ -360,7 +361,9 @@ fn record_name(data: &[u8]) -> Result<(Vec<u8>, &[u8]), RecordError> {
         let label = r
             .take(usize::from(length))
             .map_err(|_| RecordError::BadName)?;
-        if name.len() + label.len() + 1 > MAX_TARGET {
+        // The label and its dot, each added only with room for the NUL
+        // after them (`curlx_dyn_addn`).
+        if name.len() + label.len() + 1 >= MAX_TARGET {
             return Err(RecordError::BadName);
         }
         name.try_extend_from_slice(label).map_err(oom)?;

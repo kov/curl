@@ -373,12 +373,14 @@ fn target(want: usize) -> Vec<u8> {
     data
 }
 
+/// C reads a target into a buffer of 253 bytes, its NUL among them: 252
+/// with the dots are taken, 253 are not.
 #[test]
 fn a_record_s_target_is_as_long_as_c_takes() {
-    let max = decode_https_record(&target(MAX_TARGET)).unwrap();
-    assert_eq!(max.target.len(), MAX_TARGET, "its last dot among them");
+    let max = decode_https_record(&target(252)).unwrap();
+    assert_eq!(max.target.len(), 252, "its last dot among them");
     assert_eq!(
-        decode_https_record(&target(MAX_TARGET + 64)).err(),
+        decode_https_record(&target(253)).err(),
         Some(RecordError::BadName)
     );
     // A label of 63 is one; one of 64 is not a label.

@@ -1277,7 +1277,7 @@ Its first steps are milestone 6's design-review changes.
 
 Its performance scenarios use the threaded-resolver build and turn VERBOSE on, as WebKit does.
 
-Status: **to do**. The application validation: a WebKit port built with its libcurl network
+Status: **in progress**. The application validation: a WebKit port built with its libcurl network
 backend (`inventory/references/webkit-curl/`) against our library, its own HTTP tests run
 against ours and C's, and its test browser in use. Performance against the C reference
 (SCOPE stage 8) is measured here, on the scorecard and on the browser's loads.

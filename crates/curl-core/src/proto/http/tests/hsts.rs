@@ -397,6 +397,12 @@ fn a_handle_uses_the_cache_its_share_and_options_say() {
     learn(&mut own, b"own.example");
     own.set_share(Some(Share::new().unwrap())).unwrap();
     assert_eq!(knows(&mut own, b"own.example"), Some(true));
+    // There, no file throws its own cache away with the files.
+    let own_file = Temp::new("own", "");
+    own.add_hsts_file(Some(own_file.name())).unwrap();
+    own.add_hsts_file(None).unwrap();
+    assert_eq!(own.hsts_files_named(), 0);
+    assert!(!own.hsts_enabled());
     // A copy of a handle on the share has its own, of the share's entries,
     // and the share's cache is what stops being used.
     let mut on = Easy::new();

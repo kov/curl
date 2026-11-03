@@ -967,8 +967,15 @@ exclude_re = [
     # made once as the transfer starts, takes them: an SSH route always has
     # them, and only SSH connections are compared for an SSH transfer, so
     # the arm for one side without is only ever both without.
-    # (The line pins the SSH arm: the login arm above it reads the same.)
-    'curl-core/src/conn/mod\.rs:455:44: replace && with \|\| in RouteCold::suits$',
+    # (The column pins the SSH arm: the login arm above it reads the same,
+    # indented further.)
+    'curl-core/src/conn/mod\.rs:\d+:44: replace && with \|\| in RouteCold::suits$',
+    # Trait defaults that already do what the mutant does: a host keeping
+    # no URL outside the options answers none, and one naming no internal
+    # transfers has nothing to dispose of as one goes, the transfer dropped
+    # either way. The C ABI's host overrides both, and its tests reach them.
+    'curl-core/src/multi/mod\.rs:.*: replace Host::start_url -> Option<crate::url::SharedUrl> with None$',
+    'curl-core/src/multi/mod\.rs:.*: replace MultiEvents::internal_gone with \(\)$',
     # An attached key is to a multiplexing connection: the multi's has no
     # leased place to settle, so `settle` says nothing, and a share's lent
     # one multiplexes, so its verdict is Pending already, as a key, with no

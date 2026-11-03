@@ -1,7 +1,8 @@
 //! `CURLSH *`, the share (`lib/curl_share.c`).
 //!
-//! A `ShimShare` holds the core's `Share` and what C keeps beside it: the
-//! kinds of data the application asked to share and its lock functions.
+//! A `ShimShare` holds the core's `Share`, which knows the kinds of data the
+//! application asked to share, and what C keeps beside it: its lock
+//! functions.
 //! A handle given the share holds a clone of the core's, so the share is
 //! in use while more than its own exists. The lock functions are called
 //! for `CURL_LOCK_DATA_SHARE` as a handle is linked and unlinked, and,
@@ -40,8 +41,6 @@ pub(crate) struct ShimShare {
 
 #[derive(Clone, Copy)]
 struct Settings {
-    /// What it shares, a bit per `curl_lock_data` (`specifier`).
-    kinds: u32,
     lock: curl_lock_function,
     unlock: curl_unlock_function,
     user: *mut c_void,
@@ -54,10 +53,6 @@ struct Settings {
 // application, which shares the share across threads, makes them fit to
 // be.
 unsafe impl Send for Settings {}
-
-fn bit(data: curl_lock_data) -> u32 {
-    1 << data.0
-}
 
 impl ShimShare {
     /// What C keeps beside the core's share, as it is now.
@@ -130,7 +125,6 @@ pub extern "C" fn curl_share_init() -> *mut CURLSH {
         magic: AtomicU32::new(MAGIC),
         core,
         settings: Mutex::new(Settings {
-            kinds: bit(ffi::CURL_LOCK_DATA_SHARE),
             lock: None,
             unlock: None,
             user: ptr::null_mut(),
@@ -166,16 +160,7 @@ pub unsafe extern "C" fn curl_share_setopt(
             // SAFETY: the application passes an int, the type of each.
             let data = curl_lock_data(unsafe { args.next_arg::<c_int>() } as _);
             let on = option == ffi::CURLSHOPT_SHARE;
-            match kind(sh, data, on) {
-                CURLSHE_OK => {
-                    sh.change(|set| match on {
-                        true => set.kinds |= bit(data),
-                        false => set.kinds &= !bit(data),
-                    });
-                    CURLSHE_OK
-                }
-                refused => refused,
-            }
+            kind(sh, data, on)
         }
         ffi::CURLSHOPT_LOCKFUNC => {
             // `next_arg` reads only data pointers, not C's function pointer
@@ -317,13 +302,9 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
     // functions are copied out before it goes.
     let gone = unsafe { Box::from_raw(sh.cast::<ShimShare>()) };
     let Settings {
-        kinds,
-        lock,
-        unlock,
-        user,
-        ..
+        lock, unlock, user, ..
     } = gone.settings();
-    let connections = kinds & bit(ffi::CURL_LOCK_DATA_CONNECT) != 0;
+    let connections = gone.core.keeps(Kind::Connections);
     if locked && let Some(unlock) = unlock {
         // SAFETY: as in `lock_share`.
         unsafe { unlock(ptr::null_mut(), ffi::CURL_LOCK_DATA_SHARE, user) };

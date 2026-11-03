@@ -469,6 +469,14 @@ features: test-util debug-hooks
 --- new
     if answered && holds {
 
+=== a share's cleanup tells CONNECT by a kind it does not keep
+file: crates/curl-sys-abi/src/share.rs
+witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
+--- old
+    let connections = gone.core.keeps(Kind::Connections);
+--- new
+    let connections = gone.core.keeps(Kind::Names) && !gone.core.keeps(Kind::Connections);
+
 === a share says it keeps TLS sessions it has let go
 file: crates/curl-core/src/share.rs
 witness: curl-core share::tests::what_is_kept_changes_only_while_the_share_is_idle

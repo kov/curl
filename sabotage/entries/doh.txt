@@ -55,24 +55,24 @@ witness: curl-core doh::tests::unit1658_records
 file: crates/curl-core/src/multi/doh.rs
 witness: curl-core multi::doh_tests::a_stale_probe_reaches_nothing
 --- old
-        lock(&self.0).gone = true;
+        state.gone = true;
 --- new
-        drop(lock(&self.0));
+        let _ = &mut state.gone;
 
 === a master's removal leaves its probes running
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::doh_tests::a_masters_removal_takes_its_probes
 --- old
-        // What it had going on its behalf goes with it.
-        self.reap(ev);
+        // lookup of its own dropped.
+        self.reap(ev, true);
 --- new
-        // What it had going on its behalf goes with it.
+        // lookup of its own dropped.
 
 === a master's end leaves its probes running
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::doh_tests::the_probes_go_as_the_answer_comes
 --- old
-            None => self.reap(ev),
+            None => self.reap(ev, false),
 --- new
             None => {}
 
@@ -159,7 +159,7 @@ witness: curl-core multi::doh_tests::a_master_timing_out_takes_its_probes
 --- old
                     self.notify.push(Notification::InfoRead);
                 }
-                self.reap(ev);
+                self.reap(ev, false);
 --- new
                     self.notify.push(Notification::InfoRead);
                 }
@@ -293,3 +293,21 @@ features: debug-hooks
 --- new
             Home::Added { multi, .. } => Some(unsafe { multi.as_ref() }),
             Home::Internal(_) => None,
+
+=== the multi looks for probes to take out after every step
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::probes_are_looked_for_only_once_a_lookup_drops
+features: test-util
+--- old
+        moved || anyway
+--- new
+        moved || anyway || true
+
+=== a lookup's drop is not counted, so its probes are not looked for
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::a_master_timing_out_takes_its_probes
+features: test-util
+--- old
+        state.released.0.fetch_add(1, Ordering::Release);
+--- new
+        state.released.0.fetch_add(0, Ordering::Release);

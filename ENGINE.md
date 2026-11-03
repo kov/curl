@@ -2730,7 +2730,11 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   a no-op. `master` is only a row to wake, and its generation makes a reused row name nobody.
 - **One removal.** `Multi::reap` takes out every probe whose lookup or master is gone, and is
   called at the end of `remove` and of each application transfer's step; so no orphan is left
-  between calls, which `check` asserts. Dropping the multi drops slots with their lookups.
+  between calls, which `check` asserts. It looks through the slots only when a lookup has dropped
+  since its last look, or in `remove`: the multi's lookups share one count, `Released`, made
+  with its first resolve over DoH, that the `Lookup`'s drop bumps, so steps while every lookup
+  is wanted cost no scan, and no teardown path has anything more to do. Dropping the multi drops
+  slots with their lookups.
 - **The master is not told through callbacks.** A probe's end records its query and wakes the
   master; the master polls its `Lookup` in its own setup and takes the answer as it takes a
   resolver's, into the cache. No address, and every query said the name does not exist: kept as

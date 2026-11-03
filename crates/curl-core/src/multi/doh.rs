@@ -11,8 +11,14 @@
 //! dropped one. No teardown path has anything to remember, and a master's
 //! row reused by another transfer reaches nothing: its `TransferId` is
 //! stale and the new transfer has no `Lookup`.
+//!
+//! The lookups of a multi share one count of those dropped, `Released`,
+//! which the drop itself bumps: the multi looks through its transfers for
+//! probes to take out only when that count moved since it last looked, or
+//! as a transfer is removed.
 
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
@@ -64,6 +70,61 @@ struct State {
     queries: [Query; 2],
     /// The HTTPS record found.
     record: Option<HttpsRecord>,
+    /// The multi's count of lookups dropped.
+    released: Released,
+}
+
+/// How many of a multi's lookups have dropped: one count, the multi's,
+/// shared with the state of each of its resolves.
+#[derive(Clone, Debug)]
+pub(crate) struct Released(TryArc<AtomicU64>);
+
+impl Released {
+    fn new() -> Result<Released, OutOfMemory> {
+        TryArc::try_new(AtomicU64::new(0)).map(Released)
+    }
+
+    fn count(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Whether the multi has probes to look for: the count of lookups dropped
+/// as it last looked. The count is made with the multi's first resolve
+/// over DoH.
+#[derive(Debug, Default)]
+pub(super) struct Reaping {
+    released: Option<Released>,
+    seen: u64,
+    /// How often the multi asked, and how often it looked, for the tests.
+    #[cfg(test)]
+    pub(super) asked: u32,
+    #[cfg(test)]
+    pub(super) looked: u32,
+}
+
+impl Reaping {
+    /// The count each resolve started here shares, made if none was.
+    fn share(&mut self) -> Result<Released, OutOfMemory> {
+        if let Some(released) = &self.released {
+            return Ok(released.clone());
+        }
+        Ok(self.released.insert(Released::new()?).clone())
+    }
+
+    /// Whether a lookup dropped since the last time this said so, or
+    /// `anyway`: the count is read before the look, so that one dropping
+    /// during it is looked for the next time.
+    pub(super) fn due(&mut self, anyway: bool) -> bool {
+        #[cfg(test)]
+        {
+            self.asked += 1;
+        }
+        let count = self.released.as_ref().map_or(0, Released::count);
+        let moved = count != self.seen;
+        self.seen = count;
+        moved || anyway
+    }
 }
 
 type Shared = TryArc<Mutex<State>>;
@@ -79,7 +140,9 @@ pub(crate) struct Lookup(Shared);
 
 impl Drop for Lookup {
     fn drop(&mut self) {
-        lock(&self.0).gone = true;
+        let mut state = lock(&self.0);
+        state.gone = true;
+        state.released.0.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -134,6 +197,7 @@ pub(super) fn orphan_for_test() -> (Lookup, Probe) {
         gone: false,
         queries: [Query::Waiting(Vec::new()), Query::Unasked],
         record: None,
+        released: Released::new().unwrap(),
     }))
     .unwrap();
     let probe = Probe {
@@ -239,6 +303,11 @@ pub(crate) fn start<H: Host>(
     name: &[u8],
     family: Family,
 ) -> Result<Lookup, ConnectError> {
+    let released = cx
+        .rest
+        .reaping
+        .share()
+        .map_err(|OutOfMemory| ConnectError::OutOfMemory)?;
     let mut queries = [Query::Unasked, Query::Unasked];
     if family != Family::V4 {
         queries[0] = Query::Waiting(Vec::new());
@@ -250,6 +319,7 @@ pub(crate) fn start<H: Host>(
         gone: false,
         queries,
         record: None,
+        released,
     }))
     .map_err(|OutOfMemory| ConnectError::OutOfMemory)?;
     // Whatever failed part of the way, the probes started go with this.
@@ -275,10 +345,12 @@ pub(crate) fn start_https<H: Host>(
     port: u16,
 ) -> Result<Lookup, ConnectError> {
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
+    let released = cx.rest.reaping.share().map_err(oom)?;
     let shared = TryArc::try_new(Mutex::new(State {
         gone: false,
         queries: [Query::Waiting(Vec::new()), Query::Unasked],
         record: None,
+        released,
     }))
     .map_err(oom)?;
     let lookup = Lookup(shared.clone());
@@ -502,6 +574,7 @@ mod tests {
             gone: false,
             queries,
             record: None,
+            released: Released::new().unwrap(),
         }))
         .unwrap();
         Lookup(shared).poll()

@@ -68,6 +68,8 @@ pub(crate) struct EngineRest<'a, H: Host> {
     /// For the drive's reads, and the calendar time, which only a date
     /// needs.
     pub(super) clock: &'a crate::time::SharedClock,
+    /// The count of lookups dropped each resolve over DoH started shares.
+    pub(super) reaping: &'a mut super::doh::Reaping,
     /// The tests' layer each connection set up is given.
     #[cfg(any(test, feature = "test-util"))]
     pub(super) linger: Option<crate::conn::layer::Linger>,
@@ -91,6 +93,7 @@ impl<H: Host> EngineRest<'_, H> {
             events: &mut *self.events,
             now: self.now,
             clock: self.clock,
+            reaping: &mut *self.reaping,
             #[cfg(any(test, feature = "test-util"))]
             linger: self.linger,
         }

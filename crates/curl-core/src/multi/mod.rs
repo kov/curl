@@ -447,6 +447,9 @@ pub struct Multi<H: Host = NoHost> {
     /// any is.
     alive: cx::Alive,
     counts: Tally,
+    /// Whether a resolve over DoH dropped since the multi last looked for
+    /// probes to take out.
+    reaping: doh::Reaping,
     life: Life,
     /// A transfer was told the library is a debug build.
     #[cfg(feature = "debug-hooks")]
@@ -526,6 +529,7 @@ impl<H: Host> Multi<H> {
             closed: false,
             alive,
             counts: Tally::default(),
+            reaping: doh::Reaping::default(),
             life: Life::Alive,
             #[cfg(feature = "debug-hooks")]
             warned: false,
@@ -722,8 +726,9 @@ impl<H: Host> Multi<H> {
         let Owner::App(owner) = owner else {
             unreachable!("looked at above");
         };
-        // What it had going on its behalf goes with it.
-        self.reap(ev);
+        // What it had going on its behalf goes with it, whether or not a
+        // lookup of its own dropped.
+        self.reap(ev, true);
         self.check();
         Some(Removed {
             easy,
@@ -735,10 +740,16 @@ impl<H: Host> Multi<H> {
     /// The internal transfers nobody wants any more taken out: those of a
     /// resolve that ended, or of a master gone. Called at the end of what
     /// may have ended one; `doh` says why a forgotten call is no leak of
-    /// anything a stale probe can reach.
-    fn reap(&mut self, ev: &mut dyn MultiEvents<H>) {
-        if self.counts.internals() == 0 {
+    /// anything a stale probe can reach. They are looked for if a lookup
+    /// dropped since the last look, or if `master_gone`.
+    fn reap(&mut self, ev: &mut dyn MultiEvents<H>, master_gone: bool) {
+        let due = self.reaping.due(master_gone);
+        if !due || self.counts.internals() == 0 {
             return;
+        }
+        #[cfg(test)]
+        {
+            self.reaping.looked += 1;
         }
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
@@ -1302,6 +1313,7 @@ impl<H: Host> Multi<H> {
             events: ev,
             now,
             clock: &self.clock,
+            reaping: &mut self.reaping,
             #[cfg(any(test, feature = "test-util"))]
             linger: self.linger,
         }
@@ -1484,9 +1496,9 @@ impl<H: Host> Multi<H> {
                 if !self.unread_besides(id) {
                     self.notify.push(Notification::InfoRead);
                 }
-                self.reap(ev);
+                self.reap(ev, false);
             }
-            None => self.reap(ev),
+            None => self.reap(ev, false),
         }
     }
 

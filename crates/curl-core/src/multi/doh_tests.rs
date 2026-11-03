@@ -1083,3 +1083,44 @@ fn no_call_reaches_a_probe() {
     assert!(!own.is_empty(), "the probe's handler was called");
     assert_eq!(wrong(&own), Vec::<String>::new());
 }
+
+/// The multi looks through its transfers for probes to take out only once
+/// a lookup has dropped: the steps while the probes are wanted look for
+/// none, however many transfers there are, and the master's end looks
+/// once.
+#[test]
+fn probes_are_looked_for_only_once_a_lookup_drops() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Silent)
+        .with_peer(at(80), Peer::Silent)
+        .with_name("other.test", &[[127, 0, 0, 1].into()]);
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking("http://foo.test/x");
+    easy.options_mut().limits.total = crate::time::TimeLimit::from_millis(50);
+    m.add(easy, (), &mut NoEvents).unwrap();
+    for _ in 0..3 {
+        let mut other = Box::new(Easy::new());
+        other
+            .options_mut()
+            .set_url(Some(b"http://other.test/"))
+            .unwrap();
+        m.add(other, (), &mut NoEvents).unwrap();
+    }
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+        clock.advance(Duration::from_millis(1));
+    }
+    assert_eq!(m.census().counts.current, 6, "the probes run");
+    assert!(
+        m.reaping.asked >= 4,
+        "steps were taken: {}",
+        m.reaping.asked
+    );
+    assert_eq!(m.reaping.looked, 0, "with every lookup still wanted");
+    clock.advance(Duration::from_millis(40));
+    run(&mut m, &clock);
+    assert!(matches!(message(&mut m), Some(Err(_))));
+    assert_eq!(m.census().counts.current, 4, "the probes went");
+    assert_eq!(m.reaping.looked, 1, "once, as the lookup dropped");
+}

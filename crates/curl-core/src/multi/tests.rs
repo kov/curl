@@ -2957,13 +2957,25 @@ fn dns_lines(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Vec<St
 /// cache's, not the race's questions of the answer (`get Nth result`)
 /// nor the filters' own life, which tests of their own pin.
 fn dns_only(lines: Vec<String>) -> Vec<String> {
-    let starts = lines
-        .iter()
-        .filter(|l| l.contains("] hostip_resolv("))
-        .count();
+    // The debug build says `hostip_resolv(H:P)` as each lookup starts,
+    // just before the cache is looked in; each later look for a resolve's
+    // answer says the cache's line alone, as C's debug build does.
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&n| lines[n].contains("] hostip_resolv("))
+        .collect();
     let lookups = lines.iter().filter(|l| l.contains("cache lookup")).count();
-    let debug_build = cfg!(feature = "debug-hooks");
-    assert_eq!(starts, if debug_build { lookups } else { 0 }, "{lines:?}");
+    if cfg!(feature = "debug-hooks") {
+        assert_eq!(starts.is_empty(), lookups == 0, "{lines:?}");
+        for &at in &starts {
+            let next = lines[at + 1..].iter().find(|l| l.starts_with("[DNS]"));
+            let looks = next.is_some_and(|l| {
+                l.contains("cache lookup") || l.contains("cache entry does not have")
+            });
+            assert!(looks, "{lines:?}");
+        }
+    } else {
+        assert!(starts.is_empty(), "{lines:?}");
+    }
     lines
         .into_iter()
         .filter(|l| {

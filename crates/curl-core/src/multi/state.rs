@@ -551,6 +551,7 @@ impl TransferState {
     }
 
     /// Whether its request's end waits for its protocol's last answer.
+    #[cfg(debug_assertions)]
     pub(crate) fn awaits_end(&self) -> bool {
         matches!(self, TransferState::Done(d) if d.ending == Ending::Waiting)
     }

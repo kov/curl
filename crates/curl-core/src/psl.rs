@@ -114,8 +114,8 @@ pub(crate) struct PslUse<'a> {
 }
 
 impl<'a> PslUse<'a> {
-    /// The use a transfer on `share`, in the multi keeping `multi`, makes
-    /// of the list `library` loads, at `now`.
+    /// The use a transfer makes of the list `library` loads, at `now`:
+    /// `share`'s, the share it is kept in, if any, else `multi`'s.
     pub(crate) fn new(
         share: Option<&Share>,
         watch: Option<&Handler<dyn ShareLock>>,
@@ -123,7 +123,7 @@ impl<'a> PslUse<'a> {
         library: &'static dyn SuffixLibrary,
         now: Instant,
     ) -> PslUse<'a> {
-        let (home, watch) = match share.filter(|s| s.keeps(Kind::Psl)) {
+        let (home, watch) = match share {
             Some(share) => (Home::Share(share.clone()), watch.cloned()),
             None => (Home::Multi(multi), None),
         };

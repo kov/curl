@@ -4255,7 +4255,7 @@ fn a_handle_s_own_cookies_go_as_it_joins_a_share_and_its_jar_as_it_leaves() {
     assert_eq!(names(&mut e), 1);
     e.set_share(None).unwrap();
     assert_eq!(names(&mut e), 0, "no jar, and the own one's not back");
-    assert!(e.cookies.is_none());
+    assert!(!e.jar.is_on());
     e.add_cookie(b"Set-Cookie: after=1; domain=example.com", |_| {})
         .unwrap();
     assert_eq!(names(&mut e), 1, "turned on by the cookie");
@@ -4269,9 +4269,9 @@ fn a_handle_s_own_cookies_go_as_it_joins_a_share_and_its_jar_as_it_leaves() {
     one.keep(Kind::Cookies).unwrap();
     two.keep(Kind::Cookies).unwrap();
     e.set_share(Some(one)).unwrap();
-    assert!(e.cookies.is_some());
+    assert!(e.jar.is_on());
     e.set_share(Some(two)).unwrap();
-    assert!(e.cookies.is_some());
+    assert!(e.jar.is_on());
 }
 
 #[test]
@@ -4340,6 +4340,29 @@ fn a_share_s_jar_serves_the_transfers_of_a_multi() {
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
     assert!(text.contains("\r\nCookie: "), "{text}");
+}
+
+/// A handle whose jar is off joins a share keeping cookies with it still
+/// off: its transfers send none of the share's, as C points the handle at
+/// the share's jar and leaves its `cookie_engine` unset.
+#[test]
+fn a_jar_off_stays_off_on_a_share_that_keeps_cookies() {
+    let share = crate::share::Share::new().unwrap();
+    share.keep(crate::share::Kind::Cookies).unwrap();
+    let jar_on = |o: &mut Options| o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
+    let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
+    let mut one = Easy::new();
+    one.set_share(Some(share.clone())).unwrap();
+    assert_eq!(get_with(&mut m, one, "/a", talk, jar_on).result, Ok(()));
+    let (mut m, talk, _) = server(&[OK], false);
+    let mut two = Easy::new();
+    two.set_share(Some(share.clone())).unwrap();
+    assert!(!two.jar.is_on());
+    let ran = get_with(&mut m, two, "/a", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(!text.contains("\r\nCookie: "), "{text}");
+    assert!(text.starts_with("GET /a "), "{text}");
 }
 
 /// Through a proxy that sends it on, a request names the whole URL,

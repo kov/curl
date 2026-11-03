@@ -67,7 +67,7 @@ impl HeldLines {
 
 /// The handle's sessions are its share's.
 fn kept_share(easy: &Easy) -> Option<&Share> {
-    easy.share().filter(|s| s.keeps(Kind::SslSessions))
+    easy.shared(Kind::SslSessions)
 }
 
 fn import(

@@ -53,9 +53,9 @@ witness: curl-core proto::http::tests::hsts::a_read_only_file_is_not_written_bac
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::hsts::a_read_only_file_is_not_written_back
 --- old
-            caches.hsts_mode = mode;
+            copy.caches_made()?.hsts_mode = self.hsts_mode();
 --- new
-            let _ = mode;
+            copy.caches_made()?;
 
 === the shim takes CURLHSTS_READONLYFILE as nothing
 file: crates/curl-sys-abi/src/setopt/mod.rs

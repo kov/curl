@@ -1845,7 +1845,7 @@ fn number<H: Host>(slots: &mut Slots<H>, pool: &mut Pool, id: TransferId) {
     // connections, under its lock, and is numbered by it
     // (`Curl_cpool_xfer_init`).
     let easy = &slots.get(id).expect("just added").easy;
-    let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+    let number = match easy.shared(Kind::Connections) {
         Some(share) => {
             let watch = easy.share_watch();
             watched(watch, share, Kind::Connections, || share.pool().join())
@@ -2021,7 +2021,7 @@ impl<H: Host> Multi<H> {
     ) -> Option<Result<(), OutOfMemory>> {
         let easy = &self.slots.app(id)?.easy;
         let interval = easy.options().limits.reuse.upkeep.0;
-        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+        let share = easy.shared(Kind::Connections).cloned();
         let watch = easy.share_watch.clone();
         Some(self.upkeep_with(interval, share.as_ref().map(|s| (s, watch)), ev))
     }
@@ -2034,7 +2034,7 @@ impl<H: Host> Multi<H> {
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<(), OutOfMemory> {
         let interval = easy.options().limits.reuse.upkeep.0;
-        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+        let share = easy.shared(Kind::Connections).cloned();
         let watch = easy.share_watch.clone();
         self.upkeep_with(interval, share.as_ref().map(|s| (s, watch)), ev)
     }

@@ -106,9 +106,9 @@ features: test-util
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::connect_only::a_share_of_connections_forgets_the_last_connection
 --- old
-        if keeps(self.share.as_ref()) || keeps(next) {
+        if kept || next.is_some_and(|s| s.keeps(Kind::Connections)) {
 --- new
-        if keeps(self.share.as_ref()) && keeps(next) {
+        if kept && next.is_some_and(|s| s.keeps(Kind::Connections)) {
 
 === the active socket is never told
 file: crates/curl-sys-abi/src/getinfo.rs
@@ -229,10 +229,7 @@ file: crates/curl-core/src/multi/raw.rs
 witness: curl-core proto::http::tests::tls::a_ticket_read_out_of_a_multi_is_its_share_s
 features: test-util
 --- old
-        let shared = self
-            .easy
-            .share()
-            .is_some_and(|s| s.keeps(Kind::SslSessions));
+        let shared = self.easy.shared(Kind::SslSessions).is_some();
 --- new
         let shared = false;
 
@@ -252,10 +249,8 @@ witness: curl-core proto::http::tests::tls::a_connection_only_made_shows_its_tls
 features: test-util
 --- old
     let last = easy.last_conn.filter(|l| l.used)?;
-    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
 --- new
     let last = easy.last_conn?;
-    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
 
 === the SSL pointer of a connection only made is hidden
 file: crates/curl-core/src/multi/mod.rs

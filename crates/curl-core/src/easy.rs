@@ -52,11 +52,10 @@ pub struct Easy {
     pub(crate) private: Option<Box<Private>>,
     /// Authenticating with the origin, from one transfer to the next.
     pub(crate) auth: Auth,
-    /// The cookie jar, once the options or the application turn it on
-    /// (C's `cookies` with `cookie_engine`): kept from one transfer to
-    /// the next, and through `reset`. On a share that keeps cookies, the
-    /// share's is used in its place, and this one only says the jar is on.
-    pub(crate) cookies: Option<Box<Jar>>,
+    /// The cookie jar it uses, and whether it is on (C's `cookies` with
+    /// `cookie_engine`): kept from one transfer to the next, and through
+    /// `reset`.
+    pub(crate) jar: JarUse,
     /// Cookies stored from `Set-Cookie:` lines since the request started
     /// (`req.setcookies`), whoever gave them: a response, a cookie file or
     /// the application. Past `MAX_SET_PER_REQUEST`, no cookie of any kind
@@ -76,10 +75,8 @@ pub struct Easy {
     /// The HSTS and alt-svc caches, made the first time the application
     /// turns either on: few handles do.
     caches: Option<Box<HostCaches>>,
-    /// The handle has let go of the HSTS cache of the share it is on, and
-    /// has only its own if any (`CURLOPT_HSTS_CTRL` without
-    /// `CURLHSTS_ENABLE`).
-    left_shared_hsts: bool,
+    /// The HSTS cache it uses (C's `hsts`), kept through `reset`.
+    hsts: HstsUse,
     /// Where connections, resolved names and cookies are kept for the
     /// transfers after, if not in the handle's own multi (`CURLOPT_SHARE`,
     /// C's `data->share`): kept through `reset`, not copied with the
@@ -292,13 +289,54 @@ pub(crate) struct LastConn {
     pub(crate) used: bool,
 }
 
+/// The cookie jar a handle uses, and whether it is on (C's `cookies`,
+/// the handle's own or its share's, with `cookie_engine`).
+#[derive(Debug, Default)]
+pub(crate) enum JarUse {
+    /// None: the options and the application have not turned one on, and
+    /// the handle is on no share keeping cookies.
+    #[default]
+    Off,
+    /// Its own, on no share keeping cookies.
+    Own(Box<Jar>),
+    /// Its share's, as a handle joining a share that keeps cookies uses
+    /// it: `on` as the handle's options or the application turned its jar
+    /// on, before or since. Off, the transfers leave it alone but the
+    /// application's calls on the jar still reach it, as C points the
+    /// handle at the share's jar as it joins whatever its `cookie_engine`.
+    Shared { on: bool },
+}
+
+impl JarUse {
+    /// Whether the jar is on: the transfers send and store cookies.
+    pub(crate) fn is_on(&self) -> bool {
+        matches!(self, JarUse::Own(_) | JarUse::Shared { on: true })
+    }
+}
+
+/// The HSTS cache a handle uses (C's `hsts`, the handle's own or its
+/// share's, as `CURLOPT_HSTS_CTRL` and `CURLOPT_SHARE` leave it).
+#[derive(Debug, Default)]
+enum HstsUse {
+    /// None: the application has not turned one on, and the handle is on
+    /// no share keeping one.
+    #[default]
+    Off,
+    /// Its own, on no share keeping one.
+    Own(Box<Hsts>),
+    /// Its share's, as a handle joining a share that keeps one uses it,
+    /// turned on or not.
+    Shared,
+    /// On a share keeping one, the handle has let it go
+    /// (`CURLOPT_HSTS_CTRL` without `CURLHSTS_ENABLE`): its own, once
+    /// turned on again.
+    Left(Option<Box<Hsts>>),
+}
+
 /// The caches of what servers said of hosts, each once the application
 /// turns it on, kept from one transfer to the next and through `reset`.
 #[derive(Debug, Default)]
 struct HostCaches {
-    /// C's `hsts`, where it is the handle's own. A share keeping one has
-    /// it in its place: see `Easy::with_hsts`.
-    hsts: Option<Hsts>,
     /// The files read into the cache in use as each transfer starts (C's
     /// `state.hstslist`).
     hsts_files: Vec<Vec<u8>>,
@@ -527,15 +565,15 @@ impl Easy {
             auth: Auth::default(),
             private: None,
             // A jar of its own, empty, if this one's is on.
-            cookies: match self.cookies {
-                Some(_) => Some(try_box(Jar::default())?),
-                None => None,
+            jar: match self.jar.is_on() {
+                true => JarUse::Own(try_box(Jar::default())?),
+                false => JarUse::Off,
             },
             set_cookies: 0,
             shown_credentials: None,
             last_conn: None,
             caches: None,
-            left_shared_hsts: false,
+            hsts: HstsUse::Off,
             share: None,
             share_watch: None,
             libraries: self.libraries.clone(),
@@ -547,10 +585,8 @@ impl Easy {
         let now = crate::date::cache_now(SystemClock::new().unix_time());
         if let Some(alive) = self.read_hsts(|hsts| hsts.alive_copy(now)) {
             let hsts = copy.hsts_copy(alive?, now)?;
-            let mode = self.hsts_mode();
-            let caches = copy.caches_made()?;
-            caches.hsts = Some(hsts);
-            caches.hsts_mode = mode;
+            copy.hsts = HstsUse::Own(try_box(hsts)?);
+            copy.caches_made()?.hsts_mode = self.hsts_mode();
         }
         if let Some(original) = self.alt_svc() {
             // A cache of its own, which reads the file named, as C's copy
@@ -738,25 +774,24 @@ impl Easy {
     /// a share that keeps connections, or joining one
     /// (`Curl_share_easy_unlink`, `Curl_share_easy_link`).
     fn forget_pool(&mut self, next: Option<&Share>) {
-        let keeps = |s: Option<&Share>| s.is_some_and(|s| s.keeps(crate::share::Kind::Connections));
-        if keeps(self.share.as_ref()) || keeps(next) {
+        let kept = self.shared(Kind::Connections).is_some();
+        if kept || next.is_some_and(|s| s.keeps(Kind::Connections)) {
             self.last_conn = None;
             self.report.set_conn(None);
         }
     }
 
     /// As the share changes to `next`: joining one that keeps cookies, the
-    /// handle's own are gone and its jar stays on, the share's in its
-    /// place; leaving one, it has no jar until something turns one on
-    /// (`Curl_share_easy_link`, `Curl_share_easy_unlink`).
+    /// handle's own are gone and the share's used in their place, the jar
+    /// on or off as it was; leaving one, it has no jar until something
+    /// turns one on (`Curl_share_easy_link`, `Curl_share_easy_unlink`).
     fn relink_jar(&mut self, next: Option<&Share>) {
-        let keeps = |s: Option<&Share>| s.is_some_and(|s| s.keeps(Kind::Cookies));
-        if keeps(next) {
-            if let Some(jar) = self.cookies.as_deref_mut() {
-                *jar = Jar::default();
-            }
-        } else if keeps(self.share.as_ref()) {
-            self.cookies = None;
+        if next.is_some_and(|s| s.keeps(Kind::Cookies)) {
+            self.jar = JarUse::Shared {
+                on: self.jar.is_on(),
+            };
+        } else if let JarUse::Shared { .. } = self.jar {
+            self.jar = JarUse::Off;
         }
     }
 
@@ -766,12 +801,32 @@ impl Easy {
     /// letting go of the share's (`Curl_share_easy_link`,
     /// `Curl_share_easy_unlink`). The files named stay.
     fn relink_hsts(&mut self, next: Option<&Share>) {
-        self.left_shared_hsts = false;
-        if next.is_some_and(|s| s.keeps(Kind::Hsts))
-            && let Some(caches) = self.caches.as_deref_mut()
-        {
-            caches.hsts = None;
-        }
+        let own = match std::mem::take(&mut self.hsts) {
+            HstsUse::Own(own) | HstsUse::Left(Some(own)) => Some(own),
+            HstsUse::Off | HstsUse::Shared | HstsUse::Left(None) => None,
+        };
+        self.hsts = match (next.is_some_and(|s| s.keeps(Kind::Hsts)), own) {
+            (true, _) => HstsUse::Shared,
+            (false, Some(own)) => HstsUse::Own(own),
+            (false, None) => HstsUse::Off,
+        };
+    }
+
+    /// The share the handle's `kind` is kept in, if it is kept in one;
+    /// else it is the handle's own, or its multi's. The one answer for
+    /// every kind, asked at each use: for cookies and the HSTS cache, what
+    /// the handle took up as it joined the share, as C points the handle
+    /// at the share's then; for the rest, what the share keeps, as C asks
+    /// the share's `specifier` at each use. Whether the application is
+    /// told of a use is the share's to say ([`watched`]), not this.
+    pub(crate) fn shared(&self, kind: Kind) -> Option<&Share> {
+        let share = self.share.as_ref()?;
+        let kept = match kind {
+            Kind::Cookies => matches!(self.jar, JarUse::Shared { .. }),
+            Kind::Hsts => matches!(self.hsts, HstsUse::Shared),
+            Kind::Connections | Kind::Names | Kind::SslSessions | Kind::Psl => share.keeps(kind),
+        };
+        kept.then_some(share)
     }
 
     /// What is told around each use of the share, if anything is.
@@ -815,19 +870,18 @@ impl Easy {
 
     /// Make an HSTS cache of the handle's own, empty, if it uses none.
     fn hsts_made(&mut self) -> Result<(), OutOfMemory> {
-        if !self.hsts_enabled() {
-            self.caches_made()?.hsts = Some(Hsts::default());
+        match &mut self.hsts {
+            HstsUse::Off => self.hsts = HstsUse::Own(try_box(Hsts::default())?),
+            HstsUse::Left(own @ None) => *own = Some(try_box(Hsts::default())?),
+            HstsUse::Own(_) | HstsUse::Left(Some(_)) | HstsUse::Shared => {}
         }
         Ok(())
     }
 
-    /// The share whose HSTS cache the handle uses, if it does.
-    fn hsts_share(&self) -> Option<&Share> {
-        self.share_keeping_hsts().filter(|_| !self.left_shared_hsts)
-    }
-
-    fn share_keeping_hsts(&self) -> Option<&Share> {
-        self.share.as_ref().filter(|s| s.keeps(Kind::Hsts))
+    /// Whether the handle is on a share keeping an HSTS cache, using it or
+    /// having let it go.
+    fn on_hsts_share(&self) -> bool {
+        matches!(self.hsts, HstsUse::Shared | HstsUse::Left(_))
     }
 
     /// Run `f` on the HSTS cache the handle uses, if any: its share's, if
@@ -835,17 +889,23 @@ impl Easy {
     /// not told: C locks the cache only around the files it reads
     /// ([`Easy::with_hsts_told`]). Nothing `f` does may call out.
     pub(crate) fn with_hsts<R>(&mut self, f: impl FnOnce(&mut Hsts) -> R) -> Option<R> {
-        match self.hsts_share() {
-            Some(share) => share.hsts().as_mut().map(f),
-            None => self.caches.as_deref_mut()?.hsts.as_mut().map(f),
+        if let Some(share) = self.shared(Kind::Hsts) {
+            return share.hsts().as_mut().map(f);
+        }
+        match &mut self.hsts {
+            HstsUse::Own(own) | HstsUse::Left(Some(own)) => Some(f(own)),
+            HstsUse::Off | HstsUse::Shared | HstsUse::Left(None) => None,
         }
     }
 
     /// As [`Easy::with_hsts`], reading it from a handle not to be changed.
     pub(crate) fn read_hsts<R>(&self, f: impl FnOnce(&Hsts) -> R) -> Option<R> {
-        match self.hsts_share() {
-            Some(share) => share.hsts().as_ref().map(f),
-            None => self.caches.as_deref()?.hsts.as_ref().map(f),
+        if let Some(share) = self.shared(Kind::Hsts) {
+            return share.hsts().as_ref().map(f);
+        }
+        match &self.hsts {
+            HstsUse::Own(own) | HstsUse::Left(Some(own)) => Some(f(own)),
+            HstsUse::Off | HstsUse::Shared | HstsUse::Left(None) => None,
         }
     }
 
@@ -914,14 +974,14 @@ impl Easy {
     /// but on a share keeping one the share's is only let go, and the files
     /// stay named.
     pub fn disable_hsts(&mut self) {
-        let shared = self.share_keeping_hsts().is_some();
-        self.left_shared_hsts = shared;
+        if self.on_hsts_share() {
+            self.hsts = HstsUse::Left(None);
+            return;
+        }
+        self.hsts = HstsUse::Off;
         if let Some(caches) = self.caches.as_deref_mut() {
-            caches.hsts = None;
-            if !shared {
-                caches.hsts_files = Vec::new();
-                caches.hsts_mode = CacheFile::default();
-            }
+            caches.hsts_files = Vec::new();
+            caches.hsts_mode = CacheFile::default();
         }
     }
 
@@ -932,7 +992,7 @@ impl Easy {
     pub fn add_hsts_file(&mut self, file: Option<&[u8]>) -> Result<(), OutOfMemory> {
         self.hsts_made()?;
         let Some(file) = file else {
-            if self.share_keeping_hsts().is_some() {
+            if self.on_hsts_share() {
                 if let Some(caches) = self.caches.as_deref_mut() {
                     caches.hsts_files = Vec::new();
                 }
@@ -1051,8 +1111,10 @@ impl Easy {
     /// none (`CURLOPT_COOKIEJAR`). Making it is what can run out of
     /// memory.
     pub fn enable_cookies(&mut self) -> Result<(), OutOfMemory> {
-        if self.cookies.is_none() {
-            self.cookies = Some(try_box(Jar::default())?);
+        match &mut self.jar {
+            JarUse::Off => self.jar = JarUse::Own(try_box(Jar::default())?),
+            JarUse::Shared { on } => *on = true,
+            JarUse::Own(_) => {}
         }
         if let Some(cookies) = self.options.http.cookies.made_mut() {
             cookies.jar_made();
@@ -1067,7 +1129,10 @@ impl Easy {
         if let Some(cookies) = self.options.http.cookies.made_mut() {
             cookies.files = Lines::default();
         }
-        self.cookies = None;
+        self.jar = match self.jar {
+            JarUse::Shared { .. } => JarUse::Shared { on: false },
+            JarUse::Off | JarUse::Own(_) => JarUse::Off,
+        };
     }
 
     /// Store a cookie the application gives, a `Set-Cookie:` line or one
@@ -1197,7 +1262,16 @@ impl Easy {
         if make {
             self.enable_cookies()?;
         }
-        Ok(self.cookies.as_deref_mut().map(f))
+        Ok(self.own_jar().map(f))
+    }
+
+    /// The handle's own jar, if it has one: none if it is off or the
+    /// share's.
+    pub(crate) fn own_jar(&mut self) -> Option<&mut Jar> {
+        match &mut self.jar {
+            JarUse::Own(jar) => Some(jar),
+            JarUse::Off | JarUse::Shared { .. } => None,
+        }
     }
 
     /// Tell the application of a use of the share's jar that makes none
@@ -1215,7 +1289,7 @@ impl Easy {
         &self,
         f: F,
     ) -> Result<Option<R>, F> {
-        let Some(share) = self.share.as_ref().filter(|s| s.keeps(Kind::Cookies)) else {
+        let Some(share) = self.shared(Kind::Cookies) else {
             return Err(f);
         };
         let watch = self.share_watch();
@@ -1240,7 +1314,11 @@ impl Easy {
         };
         let written = match self.with_shared_jar(save) {
             Ok(written) => written,
-            Err(save) => self.cookies.as_deref_mut().map(save),
+            // The jar alone, the options borrowed for its name.
+            Err(save) => match &mut self.jar {
+                JarUse::Own(jar) => Some(save(jar)),
+                JarUse::Off | JarUse::Shared { .. } => None,
+            },
         };
         written.unwrap_or(Ok(()))
     }
@@ -1574,7 +1652,7 @@ mod tests {
         assert!(other.alt_svc_enabled());
 
         v.enable_cookies().unwrap();
-        assert!(v.cookies.is_some());
+        assert!(v.jar.is_on());
         v.add_cookie(&session, |_| {}).unwrap();
         v.add_cookie(&lasting, |_| {}).unwrap();
         assert_eq!(v.cookie_list().unwrap().len(), 2);
@@ -1592,7 +1670,7 @@ mod tests {
         assert!(jar.exists(), "written through the view");
 
         v.forget_cookies();
-        assert!(v.cookies.is_none());
+        assert!(!v.jar.is_on());
         v.reset();
         assert!(!v.options().output.verbose);
     }

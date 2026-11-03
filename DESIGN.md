@@ -180,7 +180,9 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   cache) behind a mutex of its own, held for one use at a time and never across a callback, so
   the share is `Send + Sync` and its safety never rests on the application's lock functions. Those
   are told where and with the access C calls them (a watch the handle holds with its share),
-  outside the share's own locks. A kind not kept is the multi's or the handle's own.
+  outside the share's own locks. A kind not kept is the multi's or the handle's own. A kind with a
+  container (cookies, TLS sessions, the HSTS cache) is kept exactly while that container is
+  there, and where each kind of a handle's lives is answered by one function, `Easy::shared`.
 
 ## Types
 
@@ -276,7 +278,7 @@ Two sets of budgets check this:
 - **A size trade is justified only against a budget derived from C**, in the layout the product
   ships, checked by a product-build print or a pin in both builds. The added handle's 3,081
   bytes and the connection's 656 are such budgets. A transfer slot's 768 bytes and a new
-  handle's 2,136 are tripwires of ours that name what grew: raising one with a reason is
+  handle's 2,152 are tripwires of ours that name what grew: raising one with a reason is
   routine, and neither justifies making a type weaker.
 
 Memory the application frees with `curl_free` comes from the application's allocator: the

@@ -152,9 +152,9 @@ fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKi
             said.lines(|parts| held.hold(parts));
         })
     };
-    let loaded = match easy.share().filter(|s| s.keeps(Kind::Cookies)) {
+    let loaded = match easy.shared(Kind::Cookies) {
         Some(share) => share.cookies().as_mut().map(read),
-        None => easy.cookies.as_deref_mut().map(read),
+        None => easy.own_jar().map(read),
     };
     easy.set_cookies = set;
     let told = suffixes.as_ref().map_or(Ok(()), |s| s.tell());
@@ -169,7 +169,7 @@ fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKi
 /// Tell the application its share's cookies are in use, if the share
 /// keeps them: what is to be told when the use ends.
 fn tell_jar_used(easy: &Easy) -> Option<Handler<dyn ShareLock>> {
-    easy.share().filter(|s| s.keeps(Kind::Cookies))?;
+    easy.shared(Kind::Cookies)?;
     let watch = easy.share_watch.clone()?;
     watch.lock(Kind::Cookies, Access::Single);
     Some(watch)
@@ -188,9 +188,11 @@ fn jar_section_then<R>(
     f: impl FnOnce(&mut Jar) -> R,
     then: impl FnOnce(),
 ) -> Option<R> {
-    easy.cookies.as_ref()?;
-    let Some(share) = easy.share().filter(|s| s.keeps(Kind::Cookies)) else {
-        let r = easy.cookies.as_deref_mut().map(f);
+    if !easy.jar.is_on() {
+        return None;
+    }
+    let Some(share) = easy.shared(Kind::Cookies) else {
+        let r = easy.own_jar().map(f);
         then();
         return r;
     };
@@ -320,7 +322,7 @@ pub(super) fn set_by_server<H: Host>(
     value: &[u8],
     site: &Site<'_>,
 ) -> Result<(), ErrorKind> {
-    if cx.easy().cookies.is_none() {
+    if !cx.easy().jar.is_on() {
         return Ok(());
     }
     let source = Source::Server {

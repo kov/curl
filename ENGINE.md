@@ -2529,6 +2529,15 @@ transfer holds (`ShareInUse`). `Multi::easy_mut` gives out an `EasyView`, withou
 setters, so a change cannot go round that. Each transfer uses its share's pool, names or jar where the share keeps
 that kind, else its multi's (or, for cookies, its handle's), whichever multi or thread runs it,
 so a connection one handle's multi made is reused by the next (tests 2051, 2052, 3225).
+Where a handle's data of each kind lives is answered in one place, `Easy::shared(kind)`: for
+cookies and the HSTS cache, what the handle took up as it joined the share (`JarUse`,
+`HstsUse`), as C points the handle at the share's then; for the other kinds, what the share
+keeps at that use, as C asks its `specifier`. A use asks it once and keeps the answer, a
+connection lent going back to the pool it came from. Cookies, TLS sessions and the HSTS cache
+are kept exactly while the share's container for them is there (`Share::keep` makes it,
+`stop_keeping` empties it), with no second fact beside it; a use matches the container it locks,
+so one emptied by a share unshared on another thread as a handle linked is no cache to that use
+(DIVERGENCE.md), never an abort.
 
 Each use is one short section under that kind's mutex, with nothing called out from inside:
 a search of the pool, an addition to it, a release; a lookup, a name kept, the names pruned at
@@ -4217,8 +4226,10 @@ its subdomains are included and when it expires, at most 10000 kept, oldest firs
 one once the application turns it on (`Easy::enable_hsts`, `add_hsts_file`: `CURLOPT_HSTS_CTRL`,
 `CURLOPT_HSTS`), kept through `reset`. A share keeping `Kind::Hsts` has its cache used in place of
 the handle's, whatever options the handle has set: joining, the handle's own is gone; leaving, it
-has none. Turned off while on the share, the handle lets the share's go (`left_shared_hsts`), and
-turned on again makes one of its own. The files named are the handle's (C's `state.hstslist`),
+has none. Turned off while on the share, the handle lets the share's go, and turned on again
+makes one of its own. Which it uses is one value (`HstsUse`: off, its own, the share's, or the
+share's let go with its own if made since), changed only by these calls and the share's coming
+and going. The files named are the handle's (C's `state.hstslist`),
 surviving all this, and read into whichever cache it uses; with none they are not read
 (DIVERGENCE.md). Every use goes through `Easy::with_hsts` or `read_hsts`, under the share's
 mutex and untold; only the walk of the files, `Easy::with_hsts_told`, is told, `Single`, and

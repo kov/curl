@@ -664,7 +664,7 @@ impl<H: Host> StepCx<'_, H> {
             .easy;
         let check = easy.libraries().psl.map(|library| {
             let watch = easy.share_watch.as_ref();
-            crate::psl::PslUse::new(easy.share(), watch, multi, library, now)
+            crate::psl::PslUse::new(easy.shared(Kind::Psl), watch, multi, library, now)
         });
         (easy, check)
     }

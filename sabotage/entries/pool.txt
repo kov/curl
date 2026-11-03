@@ -704,11 +704,11 @@ witness: curl-core proto::http::tests::h2::an_idle_connection_is_pinged_once_its
 --- old
     ) -> Result<(), OutOfMemory> {
         let interval = easy.options().limits.reuse.upkeep.0;
-        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+        let share = easy.shared(Kind::Connections).cloned();
 --- new
     ) -> Result<(), OutOfMemory> {
         let interval = crate::options::UpkeepInterval::default().0;
-        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+        let share = easy.shared(Kind::Connections).cloned();
 
 === the upkeep passes over a connection transfers multiplex on
 file: crates/curl-core/src/conn/pool.rs

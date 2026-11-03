@@ -652,9 +652,9 @@ witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_afte
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-    let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+    let number = match easy.shared(Kind::Connections) {
 --- new
-    let number = match easy.share().filter(|_| false) {
+    let number = match easy.shared(Kind::Connections).filter(|_| false) {
 
 === a transfer's number is forgotten as it starts
 file: crates/curl-core/src/report.rs

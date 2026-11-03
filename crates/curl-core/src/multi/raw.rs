@@ -20,7 +20,7 @@ use crate::conn::pool::Pool;
 use crate::conn::{Conn, RecvFailed};
 use crate::easy::Easy;
 use crate::error::ErrorKind;
-use crate::share::{Kind, watched};
+use crate::share::{Kind, Share, watched};
 use crate::time::Instant;
 use crate::trace::note_line;
 
@@ -77,10 +77,7 @@ impl LayerCx for RawCx<'_> {
     /// The share's, if it keeps them (`cf_ssl_scache_get`), else its
     /// multi's; a handle with neither keeps none.
     fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
-        let shared = self
-            .easy
-            .share()
-            .is_some_and(|s| s.keeps(Kind::SslSessions));
+        let shared = self.easy.shared(Kind::SslSessions).is_some();
         (shared || self.sessions.is_some()).then_some(self as _)
     }
 
@@ -109,8 +106,7 @@ impl crate::conn::layer::TlsSessions for RawCx<'_> {
         f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn crate::conn::layer::SessionSays),
     ) {
         use crate::conn::layer::LayerCalls as _;
-        let kept = self.easy.share().filter(|s| s.keeps(Kind::SslSessions));
-        if let Some(share) = kept.cloned() {
+        if let Some(share) = self.easy.shared(Kind::SslSessions).cloned() {
             let mut held = super::state::HeldSays {
                 traces: crate::trace::handle_traces(self.easy, Component::Ssls),
                 lines: Vec::new(),
@@ -272,7 +268,17 @@ fn in_pool<R>(
     easy: &mut Easy,
     f: impl FnOnce(Option<&mut Pool>, &mut Easy) -> R,
 ) -> R {
-    let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+    let share = easy.shared(Kind::Connections).cloned();
+    in_pool_of(share, own, easy, f)
+}
+
+/// As `in_pool`, the pool `share`'s, if any, as the caller found it.
+fn in_pool_of<R>(
+    share: Option<Share>,
+    own: Option<&mut Pool>,
+    easy: &mut Easy,
+    f: impl FnOnce(Option<&mut Pool>, &mut Easy) -> R,
+) -> R {
     match share {
         Some(share) => {
             let watch = easy.share_watch.clone();
@@ -303,14 +309,16 @@ fn on_reserved<R>(
     easy: &mut Easy,
     io: impl FnOnce(&mut Easy, Option<&mut Conn>) -> R,
 ) -> R {
-    let lent = in_pool(own.as_deref_mut(), easy, |pool, easy| {
+    // Put back where it was found, whatever the share keeps by then.
+    let share = easy.shared(Kind::Connections).cloned();
+    let lent = in_pool_of(share.clone(), own.as_deref_mut(), easy, |pool, easy| {
         easy.last_conn.and_then(|l| pool?.lend_reserved(l.id))
     });
     let Some(mut lent) = lent else {
         return io(easy, None);
     };
     let done = io(easy, Some(lent.conn_mut()));
-    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+    match share {
         Some(share) => share.pool().return_reserved(lent),
         None => own
             .expect("lent by the pool it was found in")
@@ -517,7 +525,7 @@ pub(super) fn reserved_tls_native(
     easy: &Easy,
 ) -> Option<crate::tls::TlsNative> {
     let last = easy.last_conn.filter(|l| l.used)?;
-    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+    match easy.shared(Kind::Connections) {
         Some(share) => share.pool().reserved_tls_native(last.id),
         None => own?.reserved_tls_native(last.id),
     }
@@ -581,7 +589,7 @@ impl Easy {
                 kept
             }
             None => {
-                if let Some(share) = self.share().filter(|s| s.keeps(Kind::Connections)) {
+                if let Some(share) = self.shared(Kind::Connections) {
                     let watch = self.share_watch.as_deref();
                     let interval = self.options().limits.reuse.upkeep.0;
                     watched(watch, share, Kind::Connections, || {

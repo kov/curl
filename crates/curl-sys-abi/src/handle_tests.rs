@@ -6754,8 +6754,10 @@ fn a_handle_costs_no_more_than_cs() {
     // state on the handle and its interleave function on the shim are made
     // when first set, a pointer each until then, as is the list of its
     // resolves' records (C's `state.async`). `CURLOPT_CURLU`'s pointer is
-    // kept on the shim as given, as C keeps `set.uh`.
-    assert!(made_bytes <= 2_136, "a new handle holds {made_bytes} bytes");
+    // kept on the shim as given, as C keeps `set.uh`. Which jar and which
+    // HSTS cache the handle uses are one value each (`JarUse`, `HstsUse`),
+    // a tag beside the box of its own.
+    assert!(made_bytes <= 2_152, "a new handle holds {made_bytes} bytes");
     assert!(held <= 3_081, "an added handle holds {held} bytes");
     // The `Easy`, the shim's handle, the write adapter and its count, the
     // URL; then the slot, and the multi's tables as they grow.

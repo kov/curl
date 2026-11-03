@@ -65,11 +65,11 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/proto/http/cookies.rs
 witness: curl-core proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_multi
 --- old
-    let Some(share) = easy.share().filter(|s| s.keeps(Kind::Cookies)) else {
-        let r = easy.cookies.as_deref_mut().map(f);
+    let Some(share) = easy.shared(Kind::Cookies) else {
+        let r = easy.own_jar().map(f);
 --- new
-    let Some(share) = easy.share().filter(|_| false) else {
-        let r = easy.cookies.as_deref_mut().map(f);
+    let Some(share) = easy.shared(Kind::Cookies).filter(|_| false) else {
+        let r = easy.own_jar().map(f);
 
 === a setup lets go of its answer untold
 file: crates/curl-core/src/multi/state/connecting.rs
@@ -101,10 +101,10 @@ witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
 file: crates/curl-core/src/easy.rs
 witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
 --- old
-            left_shared_hsts: false,
+            hsts: HstsUse::Off,
             share: None,
 --- new
-            left_shared_hsts: false,
+            hsts: HstsUse::Off,
             share: self.share.clone(),
 
 === a share asked through C for cookies keeps none
@@ -268,8 +268,8 @@ witness: curl-core share::tests::a_use_is_told_to_itself_and_only_of_what_is_kep
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::a_handle_s_own_cookies_go_as_it_joins_a_share_and_its_jar_as_it_leaves
 --- old
-        } else if keeps(self.share.as_ref()) {
-            self.cookies = None;
+        } else if let JarUse::Shared { .. } = self.jar {
+            self.jar = JarUse::Off;
         }
 --- new
         }
@@ -389,39 +389,37 @@ witness: curl-core proto::http::tests::hsts::a_share_s_cache_is_told_of_only_aro
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::hsts::a_share_s_cache_is_told_of_only_around_the_files_read
 --- old
-            Some(share) => share.hsts().as_mut().map(f),
+            return share.hsts().as_mut().map(f);
 --- new
-            Some(share) => watched(self.share_watch(), share, Kind::Hsts, || {
+            return watched(self.share_watch(), share, Kind::Hsts, || {
                 share.hsts().as_mut().map(f)
-            }),
+            });
 
 === a handle joining a share keeping HSTS keeps its own cache
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::hsts::a_handle_uses_the_cache_its_share_and_options_say
 --- old
-        match self.hsts_share() {
-            Some(share) => share.hsts().as_mut().map(f),
+            (true, _) => HstsUse::Shared,
 --- new
-        match self.hsts_share().filter(|_| false) {
-            Some(share) => share.hsts().as_mut().map(f),
+            (true, Some(own)) => HstsUse::Own(own),
+            (true, None) => HstsUse::Shared,
 
 === turning HSTS off on a share leaves the handle on the share's cache
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::hsts::a_handle_uses_the_cache_its_share_and_options_say
 --- old
-        self.left_shared_hsts = shared;
+            self.hsts = HstsUse::Left(None);
 --- new
-        let _ = shared;
+            self.hsts = HstsUse::Shared;
 
 === the files named are forgotten as the handle lets the share's cache go
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::hsts::a_handle_uses_the_cache_its_share_and_options_say
 --- old
-            if !shared {
-                caches.hsts_files = Vec::new();
+            self.hsts = HstsUse::Left(None);
+            return;
 --- new
-            {
-                caches.hsts_files = Vec::new();
+            self.hsts = HstsUse::Off;
 
 === the application's HSTS writer runs under the share's lock
 file: crates/curl-core/src/easy.rs
@@ -523,3 +521,27 @@ witness: curl-core proto::http::tests::tls::sessions_gone_under_a_use_out_of_a_m
                 if let Some(cache) = share.sessions().as_mut() {
 --- new
                 if let Some(cache) = Some(share.sessions().as_mut().expect("kept")) {
+
+=== a handle's cookies are found its own though it took up its share's jar
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::a_share_keeps_cookies_for_its_handles
+--- old
+            Kind::Cookies => matches!(self.jar, JarUse::Shared { .. }),
+--- new
+            Kind::Cookies => false,
+
+=== a handle's HSTS cache is found its own though it took up its share's
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_handle_uses_the_cache_its_share_and_options_say
+--- old
+            Kind::Hsts => matches!(self.hsts, HstsUse::Shared),
+--- new
+            Kind::Hsts => false,
+
+=== a handle whose jar is off has it turned on by joining a share that keeps cookies
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::a_jar_off_stays_off_on_a_share_that_keeps_cookies
+--- old
+                on: self.jar.is_on(),
+--- new
+                on: true,

@@ -108,7 +108,7 @@ impl<H: Host> EngineRest<'_, H> {
             .get(who)
             .expect("a transfer of the multi")
             .easy;
-        let share = easy.share().filter(|s| s.keeps(kind))?.clone();
+        let share = easy.shared(kind)?.clone();
         Some(Kept {
             share,
             watch: easy.share_watch.clone(),

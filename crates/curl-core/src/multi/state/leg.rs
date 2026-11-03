@@ -14,15 +14,11 @@ pub(super) fn pretransfer<H: Host>(
     // (`Curl_pretransfer`). The host's share goes with this read.
     let host = cx.host_start_url();
     let shared = host.as_ref().or(cx.easy().options().shared_url());
-    let shared = shared.map(|shared| {
-        shared.with(|url| {
-            let readable = url.get(Part::Url, GetOptions::NONE).is_ok();
-            (readable, url.try_clone())
-        })
-    });
+    let shared = shared
+        .map(|shared| shared.with(|url| (url.get(Part::Url, GetOptions::NONE), url.try_clone())));
     drop(host);
     let unset = match &shared {
-        Some((readable, _)) => !readable,
+        Some((text, _)) => text.is_err(),
         None => cx.easy().options().url().is_none(),
     };
     if unset {
@@ -32,6 +28,13 @@ pub(super) fn pretransfer<H: Host>(
             format_args!("No URL set"),
         ));
     }
+    // Its text is the text URL from here on, as C keeps it in
+    // `STRING_SET_URL`: what a refused `CURLOPT_URL` leaves reported.
+    let shared = shared.map(|(text, copy)| {
+        let text = text.expect("checked above");
+        cx.easy_mut().options_mut().keep_url_text(text);
+        copy
+    });
     run.retries = 0;
     run.first = None;
     run.method = cx.easy().options().method;
@@ -60,7 +63,7 @@ pub(super) fn pretransfer<H: Host>(
     }
     crate::proto::http::hsts::load(cx)?;
     // Taken as it is parsed, its text not read again.
-    if let Some((_, copy)) = shared {
+    if let Some(copy) = shared {
         return copy.map_err(url_error);
     }
     let options = cx.easy().options();

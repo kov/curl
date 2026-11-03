@@ -1987,6 +1987,19 @@ unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
     let me = NonNull::from(easy);
     let (mut ccb, mut set, mut errbuf) = (easy.ccb.get(), easy.set.get(), easy.errbuf.get());
     let applied = easy.with_options(|o| apply(me, o, &mut ccb, &mut set, &mut errbuf, option, arg));
+    if option == ffi::CURLOPT_URL && applied.is_ok() {
+        // The URL reported is the one set, or none, as C points
+        // `state.url` at it: in place of the last transfer's, or of the
+        // one under way's, set from its callback, until a request of it
+        // starts again. A URL refused leaves the one set before, which
+        // C's points it at all the same.
+        let shown = easy.with_easy(|e| match e {
+            easy::EasyRef::Easy(mut easy) => easy.show_set_url(),
+            // SAFETY: as in `with_options`.
+            easy::EasyRef::Frame(frame, id) => unsafe { frame.show_set_url(id) },
+        });
+        shown.expect("the handle was reached just above");
+    }
     let code = match applied {
         Ok(Ok(())) => CURLE_OK,
         Ok(Err(Refused::Bad)) => return CURLE_BAD_FUNCTION_ARGUMENT,
@@ -2012,18 +2025,6 @@ unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
             easy::EasyRef::Frame(frame, id) => unsafe { frame.forget_url(id) },
         });
         forgot.expect("the handle was reached just above");
-    }
-    if option == ffi::CURLOPT_URL {
-        // The URL reported is the one set, or none, as C points
-        // `state.url` at it: in place of the last transfer's, or of the
-        // one under way's, set from its callback, until a request of it
-        // starts again.
-        let shown = easy.with_easy(|e| match e {
-            easy::EasyRef::Easy(mut easy) => easy.show_set_url(),
-            // SAFETY: as in `with_options`.
-            easy::EasyRef::Frame(frame, id) => unsafe { frame.show_set_url(id) },
-        });
-        shown.expect("the handle was reached just above");
     }
     if let Some(n) = cseq {
         let Ok(n) = keepalive_value(n) else {

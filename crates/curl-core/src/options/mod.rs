@@ -734,6 +734,13 @@ impl Options {
         Ok(())
     }
 
+    /// Keep `text`, the shared URL's as a transfer started with it, as
+    /// the text URL, as `Curl_pretransfer` copies `set.uh`'s into
+    /// `STRING_SET_URL`: the shared URL still goes first.
+    pub(crate) fn keep_url_text(&mut self, text: Vec<u8>) {
+        self.url = Some(text);
+    }
+
     /// The URL to transfer as the application keeps it, read as each
     /// transfer starts (`CURLOPT_CURLU`): it goes before `url`, which
     /// setting it, even to none, clears, and after the multi host's

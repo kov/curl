@@ -1961,6 +1961,77 @@ fn a_url_handle_set_forgets_the_effective_url() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// A refused `CURLOPT_URL` leaves the URL set before it as the one
+/// reported, as C's setopt points `state.url` at `STRING_SET_URL`
+/// whether the new string was taken or not: none if none was set, and
+/// after a transfer the URL set, not the one the transfer ended at.
+#[test]
+fn a_url_refused_leaves_the_last_one_set_as_the_effective_url() {
+    let effective = |c| {
+        let url = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL);
+        // SAFETY: getinfo gives a string that lives while the handle does.
+        unsafe { CStr::from_ptr(url) }.to_owned()
+    };
+    let long_url = {
+        let mut text = b"http://127.0.0.1/".to_vec();
+        // One past `CURL_MAX_INPUT_LENGTH`.
+        text.resize(8_000_001, b'a');
+        std::ffi::CString::new(text).unwrap()
+    };
+    let refused = |c| {
+        let set = pointer(c, ffi::CURLOPT_URL, long_url.as_ptr().cast_mut());
+        assert_eq!(set, CURLE_BAD_FUNCTION_ARGUMENT);
+    };
+    let c = curl_easy_init();
+    refused(c);
+    assert_eq!(effective(c), c"", "none set");
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"http://127.0.0.1:1/a".as_ptr().cast_mut(),
+    );
+    refused(c);
+    assert_eq!(effective(c), c"http://127.0.0.1:1/a", "before a transfer");
+
+    // After a transfer that went elsewhere, the URL set, not the one
+    // the transfer ended at.
+    let (port, server) = serve(vec![
+        b"HTTP/1.1 302 There\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    ]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/a")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_FOLLOWLOCATION, 1);
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    server.join().unwrap();
+    let there = format!("http://127.0.0.1:{port}/b");
+    assert_eq!(effective(c).to_str().unwrap(), there);
+    refused(c);
+    assert_eq!(effective(c), url, "after a transfer");
+
+    // After a transfer from a URL handle, its URL, which C's transfer
+    // keeps as the text one (`Curl_pretransfer`).
+    let (path, file_url) = file("url-refused-curlu", b"x");
+    let u = crate::url::curl_url();
+    // SAFETY: a live URL handle and a C string.
+    let rc = unsafe { crate::url::curl_url_set(u, ffi::CURLUPART_URL, file_url.as_ptr(), 0) };
+    assert_eq!(rc, ffi::CURLUE_OK);
+    assert_eq!(pointer(c, ffi::CURLOPT_CURLU, u), CURLE_OK);
+    // SAFETY: a live handle, its URL handle live through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    refused(c);
+    assert_eq!(effective(c), file_url, "after a URL handle's transfer");
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::url::curl_url_cleanup(u);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 /// `CURLOPT_URL` is the URL reported until a transfer starts, as C's
 /// setopt points `state.url` at it: without its credentials, as getinfo
 /// reads it back, or its error if it does not read back; after a

@@ -541,3 +541,19 @@ witness: curl-sys-abi handle_tests::a_url_set_is_the_effective_url_until_a_trans
             easy::EasyRef::Frame(frame, id) => unsafe { frame.show_set_url(id) },
 --- new
             easy::EasyRef::Frame(..) => {}
+
+=== a refused CURLOPT_URL keeps the effective URL it found
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_url_refused_leaves_the_last_one_set_as_the_effective_url
+--- old
+    if option == ffi::CURLOPT_URL && applied.is_ok() {
+--- new
+    if option == ffi::CURLOPT_URL && matches!(applied, Ok(Ok(()))) {
+
+=== a transfer from a URL handle keeps no text URL
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-sys-abi handle_tests::a_url_refused_leaves_the_last_one_set_as_the_effective_url
+--- old
+        cx.easy_mut().options_mut().keep_url_text(text);
+--- new
+        drop(text);

@@ -4079,7 +4079,9 @@ core asks its host for the URL behind it as each transfer starts (`Host::start_u
 `Options::shared_url`), as C reads `set.uh` only in `Curl_pretransfer`: that share lasts the read,
 so a handle holds the pointer alone and a copy of it never reaches the application's URL. Each
 transfer reads it as it starts, taking a copy of it as the first leg's
-parsed URL; it is reached only inside a closure, so no borrow of it outlives the read.
+parsed URL and its text as the text URL (`Curl_pretransfer` into `STRING_SET_URL`, which a refused
+`CURLOPT_URL` leaves reported); it is reached only inside a closure, so no borrow of it outlives
+the read.
 `Options::port` replaces the port of that first URL, and of each leg after, until a redirect
 leads to an absolute URL (`Run::allow_port`); as C sets it only in `state.uh`, it goes into
 where the request goes and what a relative redirect resolves against (`request_url`), never into

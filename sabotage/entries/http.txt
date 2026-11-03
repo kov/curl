@@ -871,9 +871,9 @@ witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_shared_url_is_read_as_each_transfer_starts
 --- old
-    if let Some((_, copy)) = shared {
+    let shared = host.as_ref().or(cx.easy().options().shared_url());
 --- new
-    if let Some((_, copy)) = shared.filter(|_| false) {
+    let shared = host.as_ref().or(None);
 
 === the application's port is never applied
 file: crates/curl-core/src/multi/state/leg.rs

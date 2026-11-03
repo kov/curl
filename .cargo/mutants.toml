@@ -32,8 +32,11 @@
 # HTTPS filter's dial are checked only by curl-tool's `dns` tests: add
 # `--test-package curl-tool`. The threaded resolver is built only with
 # `curl-core/threaded-resolver`: its code is reached by a second run adding
-# that feature and `curl-tool/threaded-resolver`, without which curl-tool's
-# `threaded` tests are not built. The copy has no `build/deps`:
+# that feature, with curl-tool's `threaded-resolver` on too, without which
+# curl-tool's `threaded` tests are not built. cargo-mutants refuses
+# `curl-tool/threaded-resolver` in `--features`, as it does curl-sys-abi's:
+# in the copy only, add `"threaded-resolver"` to curl-tool's `default`.
+# The copy has no `build/deps`:
 # export `CURL_NGTCP2_DIR` naming the tree's `build/deps/ngtcp2`, or every
 # crate linking ngtcp2 fails to build.)
 # (The copy is made in `TMPDIR`: where `/tmp` is a small tmpfs it fills, and

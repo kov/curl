@@ -2660,7 +2660,9 @@ The setup's own resolve waits in `Stage::Resolving`, held there, its answer aske
 the transfer is run, and let go of as the setup closes or is dropped. What it finds goes to the
 cache as before.
 The other resolves wait where they are, as C's do (`Curl_resolv_blocking`): the interface a
-socket binds to, by name. A SOCKS proxy's destination, resolved here, waits as the setup's own
+socket binds to, by name. Their backend is a `Waited`, the resolver's or a library's, with no
+DoH variant, as C cannot wait for DoH: the lookup is started generic over its backend
+(`Backend`, `Pending<V>`), and only the setup's (`Via`) can be DoH. A SOCKS proxy's destination, resolved here, waits as the setup's own
 does (C's second DNS filter): its resolve is held by the dialed setup, the handshake,
 `Handshake::SocksTarget`, starting once it has answered. What a resolve has found while it goes
 on (`Resolver::partial`, DoH's and the threaded resolver's) is connected to once AAAA has answered

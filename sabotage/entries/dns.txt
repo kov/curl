@@ -911,9 +911,9 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_bind_s_name_a_library_answers_at_its_first_look_is_taken_inside_the_start
 features: test-util
 --- old
-                        return taken_in_start(answer, (name, port), pending, cx);
+                            return taken_in_start(answer, (name, port), pending.widen(), cx);
 --- new
-                        answer
+                            answer
 
 === a record had at the start's first look is taken at the next look
 file: crates/curl-core/src/multi/state/https.rs

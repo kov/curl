@@ -1391,15 +1391,8 @@ impl ConnectMachine {
                             None => {
                                 let family = family(self.route.ip, cx);
                                 let holder = Holder::Addresses(cx.rank());
-                                let looked = lookup_start(
-                                    (name, port),
-                                    family,
-                                    cx,
-                                    setup,
-                                    true,
-                                    true,
-                                    holder,
-                                )?;
+                                let looked =
+                                    lookup_start((name, port), family, cx, setup, true, holder)?;
                                 (looked, true)
                             }
                             Some(p) => (Looked::Pending(p), false),
@@ -2309,7 +2302,7 @@ impl ConnectMachine {
         }
         let family = family(leg.version.ip(self.route.ip), cx);
         let at = (leg.to.name(), leg.to.port());
-        match lookup_start(at, family, cx, setup, true, true, Holder::Target) {
+        match lookup_start(at, family, cx, setup, true, Holder::Target) {
             Ok(Looked::Found(answer, found)) => Ok((
                 SocksTarget::Found(answer, Came::from(found)),
                 Late::default(),
@@ -3072,7 +3065,8 @@ pub(crate) fn family(ip: IpVersion, cx: &dyn ConnCx) -> Family {
 /// to `port`, keeping that the name does not exist only if
 /// `keep_negative`, as only the setup's own resolve does
 /// (`Curl_dnscache_add_negative`); a resolver that answers later is
-/// waited for, as C waits for these (`Curl_resolv_blocking`).
+/// waited for, as C waits for these (`Curl_resolv_blocking`), never over
+/// DoH (`Waited`).
 pub(super) fn lookup_name(
     (name, port): (&[u8], u16),
     family: Family,
@@ -3080,49 +3074,47 @@ pub(super) fn lookup_name(
     setup: DriveOptions,
     keep_negative: bool,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    match lookup_start(
+    match start::<Waited>(
         (name, port),
         family,
         cx,
         setup,
         keep_negative,
-        false,
         Holder::Blocking,
     )? {
         Looked::Found(answer, found) => Ok((answer, found)),
         Looked::Pending(mut pending) => {
             let answer = match &mut pending.via {
-                Via::Resolver(resolve) => resolve.wait(),
-                Via::Library(_) => match await_library(&mut pending, (name, port), cx) {
-                    Some((answer, TakenAt::InStart)) => {
-                        return taken_in_start(answer, (name, port), pending, cx);
+                Waited::Resolver(resolve) => resolve.wait(),
+                Waited::Library(resolve) => {
+                    match await_library(resolve, pending.family, (name, port), cx) {
+                        Some((answer, TakenAt::InStart)) => {
+                            return taken_in_start(answer, (name, port), pending.widen(), cx);
+                        }
+                        Some((answer, TakenAt::Waited)) => answer,
+                        None => {
+                            drop(pending);
+                            cx.libraries_closed();
+                            return Err(ConnectError::Unresolved(Unresolved::GaveUp));
+                        }
                     }
-                    Some((answer, TakenAt::Waited)) => answer,
-                    None => {
-                        drop(pending);
-                        cx.libraries_closed();
-                        return Err(ConnectError::Unresolved(Unresolved::GaveUp));
-                    }
-                },
-                Via::Doh(_) => unreachable!("a lookup waited for is not over DoH"),
+                }
             };
-            settle(answer, (name, port), pending.into_keeping(), cx)
+            settle(answer, (name, port), pending.widen().into_keeping(), cx)
         }
     }
 }
 
-/// The answer of a resolve by a library, waited for as long as the transfer
-/// may; none if it may no longer, or the application stopped it
-/// (`hostip_resolv`'s first look, then `Curl_async_await`).
+/// The answer of `resolve`, a library's in `family`, waited for as long as
+/// the transfer may; none if it may no longer, or the application stopped
+/// it (`hostip_resolv`'s first look, then `Curl_async_await`).
 fn await_library(
-    pending: &mut Pending,
+    resolve: &mut Box<dyn DnsResolve>,
+    family: Family,
     (name, port): (&[u8], u16),
     cx: &mut dyn ConnCx,
 ) -> Option<(Result<Vec<IpAddr>, ResolveFailure>, TakenAt)> {
-    let queries = family_queries(pending.family);
-    let Via::Library(resolve) = &mut pending.via else {
-        unreachable!("only a library's resolve is awaited here");
-    };
+    let queries = family_queries(family);
     let since = cx.now();
     let dns = Component::Dns;
     let turn = |resolve: &mut Box<dyn DnsResolve>, cx: &mut dyn ConnCx| {
@@ -3189,16 +3181,17 @@ fn say_taken(queries: &str, status: i32, cx: &mut dyn ConnCx) {
 }
 
 /// Where a lookup stands: its answer, or a resolve the resolver answers
-/// later.
-pub(super) enum Looked {
+/// later, by one of `V`.
+pub(super) enum Looked<V = Via> {
     Found(TryArc<Answer>, Found),
-    Pending(Pending),
+    Pending(Pending<V>),
 }
 
-/// A resolve the resolver answers later, and what its answer is to be.
+/// A resolve the resolver answers later, by one of `V`, and what its
+/// answer is to be.
 #[derive(Debug)]
-pub(super) struct Pending {
-    via: Via,
+pub(super) struct Pending<V = Via> {
+    via: V,
     family: Family,
     /// Whether the cache had a stale answer.
     found: fn(Asked) -> Found,
@@ -3238,13 +3231,111 @@ pub(super) enum Taken {
 /// nothing of it is left where it was asked. Each says its lines as its
 /// backend in C does (`asyn-thrdd.c`, `doh.c`, `asyn-ares.c`).
 #[derive(Debug)]
-enum Via {
+pub(super) enum Via {
     /// The network's resolver's.
     Resolver(Box<dyn Resolving>),
     /// Transfers of the multi's.
     Doh(DohLookup),
     /// A resolver library's own resolve.
     Library(Box<dyn DnsResolve>),
+}
+
+/// Who answers a resolve waited for where it is asked: DoH never does, as
+/// C cannot wait for it (`Curl_resolv_blocking`).
+#[derive(Debug)]
+enum Waited {
+    Resolver(Box<dyn Resolving>),
+    Library(Box<dyn DnsResolve>),
+}
+
+impl From<Waited> for Via {
+    fn from(waited: Waited) -> Self {
+        match waited {
+            Waited::Resolver(resolve) => Via::Resolver(resolve),
+            Waited::Library(resolve) => Via::Library(resolve),
+        }
+    }
+}
+
+/// The backends a lookup may start its resolve with: the setup's any of
+/// the three (`Via`), a blocking one's no DoH (`Waited`).
+trait Backend: Into<Via> {
+    /// Whether it is the setup's own resolve, which says its lines as it
+    /// starts and goes; a blocking resolve's caller says them as it ends.
+    const SETUP: bool;
+    /// DoH's lookup made one of these, if the transfer wants DoH and DoH
+    /// may answer this resolve.
+    fn doh(cx: &dyn ConnCx) -> Option<fn(DohLookup) -> Self>;
+    fn library(resolve: Box<dyn DnsResolve>) -> Self;
+    fn resolver(resolve: Box<dyn Resolving>) -> Self;
+    /// The library's resolve, if a library's.
+    fn library_mut(&mut self) -> Option<&mut Box<dyn DnsResolve>>;
+}
+
+impl Backend for Via {
+    const SETUP: bool = true;
+    fn doh(cx: &dyn ConnCx) -> Option<fn(DohLookup) -> Self> {
+        cx.wants_doh().then_some(Via::Doh)
+    }
+    fn library(resolve: Box<dyn DnsResolve>) -> Self {
+        Via::Library(resolve)
+    }
+    fn resolver(resolve: Box<dyn Resolving>) -> Self {
+        Via::Resolver(resolve)
+    }
+    fn library_mut(&mut self) -> Option<&mut Box<dyn DnsResolve>> {
+        match self {
+            Via::Library(resolve) => Some(resolve),
+            Via::Resolver(_) | Via::Doh(_) => None,
+        }
+    }
+}
+
+impl Backend for Waited {
+    const SETUP: bool = false;
+    fn doh(_: &dyn ConnCx) -> Option<fn(DohLookup) -> Self> {
+        None
+    }
+    fn library(resolve: Box<dyn DnsResolve>) -> Self {
+        Waited::Library(resolve)
+    }
+    fn resolver(resolve: Box<dyn Resolving>) -> Self {
+        Waited::Resolver(resolve)
+    }
+    fn library_mut(&mut self) -> Option<&mut Box<dyn DnsResolve>> {
+        match self {
+            Waited::Library(resolve) => Some(resolve),
+            Waited::Resolver(_) => None,
+        }
+    }
+}
+
+impl<V: Into<Via>> Pending<V> {
+    /// As a resolve of any backend, for what takes its answer.
+    fn widen(self) -> Pending {
+        let Pending {
+            via,
+            family,
+            found,
+            keep_negative,
+            queried,
+            await_until,
+            looks,
+            live,
+            record,
+        } = self;
+        Pending {
+            via: via.into(),
+            family,
+            found,
+            keep_negative,
+            queried,
+            await_until,
+            looks,
+            live,
+            record,
+        }
+    }
 }
 
 /// Which families went as a query of their own.
@@ -3592,19 +3683,31 @@ fn family_queries(family: Family) -> &'static str {
     }
 }
 
-/// A lookup started: the cache, then the shortcuts, then, if `doh` may
-/// answer it and the transfer wants it, DoH, else the resolver, whose
-/// answer may come later (`hostip_resolv_start`). One that answers later
-/// is kept on the transfer for `holder`, as C keeps its record of it.
+/// The setup's lookup started (`start`), DoH answering it if the
+/// transfer wants it.
 pub(super) fn lookup_start(
     (name, port): (&[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
     setup: DriveOptions,
     keep_negative: bool,
-    doh: bool,
     holder: Holder,
 ) -> Result<Looked, ConnectError> {
+    start::<Via>((name, port), family, cx, setup, keep_negative, holder)
+}
+
+/// A lookup started: the cache, then the shortcuts, then, if `V` may be
+/// DoH and the transfer wants it, DoH, else the resolver, whose answer
+/// may come later (`hostip_resolv_start`). One that answers later is kept
+/// on the transfer for `holder`, as C keeps its record of it.
+fn start<V: Backend>(
+    (name, port): (&[u8], u16),
+    family: Family,
+    cx: &mut dyn ConnCx,
+    setup: DriveOptions,
+    keep_negative: bool,
+    holder: Holder,
+) -> Result<Looked<V>, ConnectError> {
     if is_onion(name) {
         return Err(ConnectError::Unresolved(Unresolved::Onion));
     }
@@ -3640,13 +3743,14 @@ pub(super) fn lookup_start(
     }
     // Without IPv6 no caller asks for both families (`family`), and a
     // resolver library is not asked for IPv6 alone.
-    let over_doh = doh && cx.wants_doh();
+    let doh = V::doh(cx);
+    let over_doh = doh.is_some();
     if over_doh || (cx.has_dns_library() && !(family == Family::V6 && !ipv6)) {
         // Said now, as the probes' own lines follow.
         let queries = family_queries(family);
         // A blocking resolve's caller said it.
         #[cfg(feature = "debug-hooks")]
-        if doh {
+        if V::SETUP {
             let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
             cx.of_with(
                 Component::Dns,
@@ -3665,11 +3769,11 @@ pub(super) fn lookup_start(
         }
         say_not_cached(queries, (name, port), cx);
         cx.announce_resolve()?;
-        let via = if over_doh {
-            cx.doh_start(name, family).map(Via::Doh)
+        let via = if let Some(doh) = doh {
+            cx.doh_start(name, family).map(doh)
         } else {
             match cx.dns_start(name, port, family) {
-                Some(Ok(resolve)) => Ok(Via::Library(resolve)),
+                Some(Ok(resolve)) => Ok(V::library(resolve)),
                 Some(Err(DnsRefused::OutOfMemory)) | None => Err(ConnectError::OutOfMemory),
                 Some(Err(DnsRefused::Init)) => Err(ConnectError::Refused(ErrorKind::FailedInit)),
                 Some(Err(DnsRefused::BadOption(why))) => {
@@ -3713,7 +3817,7 @@ pub(super) fn lookup_start(
                     }
                     cx.fail_with(&[error.bytes(), name, port.bytes()]);
                     // The setup's filter says these; a blocking resolve has none.
-                    if doh {
+                    if V::SETUP {
                         cx.fail_with(&[b"Could not resolve: ", name]);
                         if !over_doh {
                             cx.of(
@@ -3730,8 +3834,8 @@ pub(super) fn lookup_start(
         cx.libraries_closed();
         // A blocking resolve looks for its answer as it waits for it.
         let mut at_once = None;
-        if doh {
-            if let Via::Library(resolve) = &mut via {
+        if V::SETUP {
+            if let Some(resolve) = via.library_mut() {
                 at_once = take_in_start(resolve, queries, (name, port), cx)?;
             }
             if at_once.is_none() {
@@ -3760,9 +3864,8 @@ pub(super) fn lookup_start(
             live: None,
         };
         return match at_once {
-            Some(answer) => {
-                taken_in_start(answer, (name, port), pending, cx).map(|(a, f)| Looked::Found(a, f))
-            }
+            Some(answer) => taken_in_start(answer, (name, port), pending.widen(), cx)
+                .map(|(a, f)| Looked::Found(a, f)),
             None => Ok(Looked::Pending(pending)),
         };
     }
@@ -3797,7 +3900,7 @@ pub(super) fn lookup_start(
             let record = cx.resolve_number(holder);
             let queued = Queued { record, v6, v4 };
             let mut pending = Pending {
-                via: Via::Resolver(resolve),
+                via: V::resolver(resolve),
                 queried: Queried { v6, v4 },
                 record,
                 family,
@@ -3809,7 +3912,7 @@ pub(super) fn lookup_start(
             };
             // The setup's resolve says its lines as it starts and as it
             // goes; a blocking resolve's caller says them as it ends.
-            if doh {
+            if V::SETUP {
                 let queries = family_queries(family);
                 let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
                 #[cfg(feature = "debug-hooks")]

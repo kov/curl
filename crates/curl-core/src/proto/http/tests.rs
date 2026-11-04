@@ -5887,9 +5887,11 @@ fn as_saved(text: String) -> String {
 mod debug_lines;
 mod h2;
 mod h2_trace;
-// The traces of C's Linux build, whose QUIC sends runs with `sendmsg`
-// and receives batches with `recvmmsg`; Windows' one-at-a-time I/O is
-// tested beside it (`conn::quic`).
+// The traces of C's Linux build, whose QUIC sends a run with one
+// `sendmsg` and receives a batch with `recvmmsg`. Their fake server
+// answers each send with its next reply, so Windows' one datagram a
+// call (`conn::quic` tests it) takes replies a flight early; these run
+// where the traces are C's.
 #[cfg(unix)]
 mod h3_trace;
 mod hsts;

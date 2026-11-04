@@ -348,14 +348,16 @@ mod tests {
     fn protocols_reach_the_c_struct() {
         let want: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
         assert_eq!(names(info().protocols), want);
-        assert_eq!(
-            want,
-            [
-                "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap",
-                "imaps", "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp",
-                "smtp", "smtps", "telnet", "tftp", "ws", "wss",
-            ]
-        );
+        let mut all = vec![
+            "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
+            "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp",
+            "smtps", "telnet", "tftp", "ws", "wss",
+        ];
+        // No LDAP on Windows.
+        if cfg!(windows) {
+            all.retain(|p| !p.starts_with("ldap"));
+        }
+        assert_eq!(want, all);
     }
 
     /// HTTP/3's two libraries are named together in `quic_version`, as

@@ -147,10 +147,18 @@ mod tests {
     }
 
     /// The protocols the library speaks, by name.
+    #[cfg(not(windows))]
     const SPOKEN: &[&str] = &[
         "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
         "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps",
         "telnet", "tftp", "ws", "wss",
+    ];
+    /// No LDAP on Windows.
+    #[cfg(windows)]
+    const SPOKEN: &[&str] = &[
+        "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
+        "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps", "telnet", "tftp",
+        "ws", "wss",
     ];
 
     /// The library speaks the protocols of `SPOKEN`: every other name is

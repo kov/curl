@@ -235,34 +235,68 @@ static VERSION: VersionInfo = VersionInfo {
     timestamp: curlver::TIMESTAMP,
     host: HOST,
     features: FEATURES,
-    protocols: &[
-        Protocol::Dict,
-        Protocol::File,
-        Protocol::Ftp,
-        Protocol::Ftps,
-        Protocol::Gopher,
-        Protocol::Gophers,
-        Protocol::Http,
-        Protocol::Https,
-        Protocol::Imap,
-        Protocol::Imaps,
-        Protocol::Ldap,
-        Protocol::Ldaps,
-        Protocol::Mqtt,
-        Protocol::Mqtts,
-        Protocol::Pop3,
-        Protocol::Pop3s,
-        Protocol::Rtsp,
-        Protocol::Scp,
-        Protocol::Sftp,
-        Protocol::Smtp,
-        Protocol::Smtps,
-        Protocol::Telnet,
-        Protocol::Tftp,
-        Protocol::Ws,
-        Protocol::Wss,
-    ],
+    protocols: PROTOCOLS,
 };
+
+/// The protocols built, in C's order. Windows' build links no LDAP
+/// library (C's there is WinLDAP, not the OpenLDAP the LDAP protocol is
+/// written against), so it has neither LDAP protocol, as a C build
+/// without LDAP has not.
+#[cfg(not(windows))]
+const PROTOCOLS: &[Protocol] = &[
+    Protocol::Dict,
+    Protocol::File,
+    Protocol::Ftp,
+    Protocol::Ftps,
+    Protocol::Gopher,
+    Protocol::Gophers,
+    Protocol::Http,
+    Protocol::Https,
+    Protocol::Imap,
+    Protocol::Imaps,
+    Protocol::Ldap,
+    Protocol::Ldaps,
+    Protocol::Mqtt,
+    Protocol::Mqtts,
+    Protocol::Pop3,
+    Protocol::Pop3s,
+    Protocol::Rtsp,
+    Protocol::Scp,
+    Protocol::Sftp,
+    Protocol::Smtp,
+    Protocol::Smtps,
+    Protocol::Telnet,
+    Protocol::Tftp,
+    Protocol::Ws,
+    Protocol::Wss,
+];
+
+#[cfg(windows)]
+const PROTOCOLS: &[Protocol] = &[
+    Protocol::Dict,
+    Protocol::File,
+    Protocol::Ftp,
+    Protocol::Ftps,
+    Protocol::Gopher,
+    Protocol::Gophers,
+    Protocol::Http,
+    Protocol::Https,
+    Protocol::Imap,
+    Protocol::Imaps,
+    Protocol::Mqtt,
+    Protocol::Mqtts,
+    Protocol::Pop3,
+    Protocol::Pop3s,
+    Protocol::Rtsp,
+    Protocol::Scp,
+    Protocol::Sftp,
+    Protocol::Smtp,
+    Protocol::Smtps,
+    Protocol::Telnet,
+    Protocol::Tftp,
+    Protocol::Ws,
+    Protocol::Wss,
+];
 
 #[cfg(target_os = "linux")]
 const HOST: &str = "Linux";
@@ -284,14 +318,16 @@ mod tests {
     #[test]
     fn protocols_are_named_by_their_schemes() {
         let names: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
-        assert_eq!(
-            names,
-            [
-                "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap",
-                "imaps", "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp",
-                "smtp", "smtps", "telnet", "tftp", "ws", "wss",
-            ]
-        );
+        let mut want = vec![
+            "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
+            "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp",
+            "smtps", "telnet", "tftp", "ws", "wss",
+        ];
+        // No LDAP on Windows.
+        if cfg!(windows) {
+            want.retain(|p| !p.starts_with("ldap"));
+        }
+        assert_eq!(names, want);
         for &p in version().protocols {
             assert_eq!(Protocol::of_scheme(p.name().as_bytes()), Some(p));
         }

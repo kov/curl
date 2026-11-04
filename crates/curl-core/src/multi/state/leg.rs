@@ -779,16 +779,17 @@ pub(super) fn start_leg<H: Host>(
         delegation: cx.easy().options().login.delegation,
     };
     let mut dial = Dial::Stream;
-    // HTTP/3 alone must be possible (`Curl_http_setup_conn`), and is
-    // dialed over QUIC, as the HTTPS connect's one attempt is
-    // (`cf_hc_baller_assign`).
+    // HTTP/3 alone must be possible (`Curl_http_setup_conn`). It is
+    // dialed over QUIC only as the HTTPS connect's attempt: without that
+    // filter (ALPN off, or a proxy) C's connection keeps the TCP it
+    // wants, and speaks HTTP/1.1 over TLS.
     let versions = proto.http_versions();
-    if versions.h3_only() {
-        if let Err(kind) = may_http3(cx, &route, secured) {
-            return TransferState::Init.fail(kind);
-        }
-        dial = Dial::Quic;
-    } else if https::HttpsConnect::heading(&route, cx.easy().options().tls.options.alpn).is_some()
+    if versions.h3_only()
+        && let Err(kind) = may_http3(cx, &route, secured)
+    {
+        return TransferState::Init.fail(kind);
+    }
+    if https::HttpsConnect::heading(&route, cx.easy().options().tls.options.alpn).is_some()
         && https::Choosing::of(&proto, &route, cx)
             .first()
             .is_some_and(|(alpn, _)| alpn == https::Alpn::H3)

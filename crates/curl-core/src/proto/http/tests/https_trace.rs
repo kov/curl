@@ -690,6 +690,30 @@ fn an_https_setup_without_alpn_has_no_https_connect_filter() {
     );
 }
 
+/// HTTP/3 alone without ALPN has no HTTPS connect filter either, so
+/// nothing dials QUIC: the connection keeps the TCP it wants and speaks
+/// HTTP/1.1 over TLS, as C's does (`Curl_cf_https_setup`,
+/// `Curl_cf_setup_add` with `transport_wanted`).
+#[test]
+fn http3_alone_without_alpn_goes_over_tcp() {
+    let mut m = tls_server(1);
+    let e = tracing(b"multi,setup,https-connect");
+    let url = format!("https://localhost:{PORT}/");
+    let ran = https_get(&mut m, e, &url, |o| {
+        o.tls.options.make_mut().unwrap().alpn = false;
+        o.http.version = crate::options::HttpVersion::Http3Only;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.contains("QUIC") || l.contains("HTTPS-CONNECT")),
+        "{text:?}"
+    );
+    assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
+}
+
 /// A failed attempt fails the filter, which says so, and the chain the
 /// failure names ends with it, as it holds its attempt apart.
 #[test]

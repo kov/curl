@@ -683,6 +683,7 @@ fn libcurl_part(p: &ToolPart, n: &[u8], source: &mut Source) -> Result<(), OutOf
 }
 
 /// The last part of a path, as POSIX `basename` gives it.
+#[cfg(unix)]
 fn basename(path: &[u8]) -> &[u8] {
     let trimmed = match path.iter().rposition(|&b| b != b'/') {
         Some(end) => &path[..=end],
@@ -692,6 +693,17 @@ fn basename(path: &[u8]) -> &[u8] {
     match trimmed.iter().rposition(|&b| b == b'/') {
         Some(at) => &trimmed[at + 1..],
         None => trimmed,
+    }
+}
+
+/// The last part of a path, as C's own `curlx_basename` gives it where the
+/// system has no `basename`, as on Windows: what follows the last `/` or
+/// `\`, nothing for a path ending in one, the path itself without either.
+#[cfg(windows)]
+fn basename(path: &[u8]) -> &[u8] {
+    match path.iter().rposition(|&b| b == b'/' || b == b'\\') {
+        Some(at) => &path[at + 1..],
+        None => path,
     }
 }
 
@@ -1056,6 +1068,7 @@ mod tests {
     }
 
     /// POSIX `basename`, which C's tool names a file part with.
+    #[cfg(unix)]
     #[test]
     fn basename_is_posix_s() {
         let table: &[(&[u8], &[u8])] = &[
@@ -1066,6 +1079,29 @@ mod tests {
             (b"a/b", b"b"),
             (b"/a/bc/", b"bc"),
             (b"/a//", b"a"),
+        ];
+        for &(path, base) in table {
+            assert_eq!(
+                basename(path),
+                base,
+                "{:?}",
+                path.escape_ascii().to_string()
+            );
+        }
+    }
+
+    /// `curlx_basename`, which C's tool names a file part with on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn basename_is_c_s_own() {
+        let table: &[(&[u8], &[u8])] = &[
+            (b"", b""),
+            (b"a", b"a"),
+            (b"a/b", b"b"),
+            (b"a\\b", b"b"),
+            (b"C:\\d/e\\f", b"f"),
+            (b"C:\\d\\e/f", b"f"),
+            (b"/a/bc/", b""),
         ];
         for &(path, base) in table {
             assert_eq!(

@@ -392,3 +392,21 @@ witness: curl-core url::encode::tests::escapes_every_byte_up_to_the_limit
             *low = UPPER_HEX[usize::from(b & 0xf)];
 --- new
             *low = UPPER_HEX[usize::from(b >> 4)];
+
+=== a bare % decodes as itself, one byte
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::decodes_as_c_byte_by_byte
+--- old
+            i += 1;
+        } else {
+--- new
+            i += 3;
+        } else {
+
+=== a byte is found in the first byte of a word
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::finds_a_byte_as_one_at_a_time
+--- old
+        let word = u64::from_ne_bytes(chunk) ^ spread;
+--- new
+        let word = u64::from_ne_bytes(chunk) ^ spread << 8;

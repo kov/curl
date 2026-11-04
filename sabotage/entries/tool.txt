@@ -1534,3 +1534,12 @@ witness: curl-tool transfers_read_standard_input_through_one_descriptor
             run.stdin.get_or_init(|| file).clone()
 --- new
             file
+
+=== a digit as large as the base ends the number
+file: crates/curl-tool/src/options/number.rs
+witness: curl-tool options::number::tests::reads_digits_as_c_against_every_max
+--- old
+        if d >= base {
+--- new
+        if d > base {
+

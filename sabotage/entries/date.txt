@@ -44,9 +44,9 @@ witness: curl-core date::tests::unit4781_names
 file: crates/curl-core/src/date.rs
 witness: curl-core date::tests::unit4781_names
 --- old
-            .find(|(name, _)| *name == word)
+        bytes[i] = word[i];
 --- new
-            .find(|(name, _)| name.eq_ignore_ascii_case(word))
+        bytes[i] = word[i] | 0x20;
 
 === a compact date's month 00 is an error
 file: crates/curl-core/src/date.rs
@@ -64,7 +64,7 @@ witness: curl-core date::tests::a_compact_date_with_month_00_takes_a_later_month
 file: crates/curl-core/src/date.rs
 witness: curl-core date::tests::a_zero_byte_ends_the_date
 --- old
-    let date = date.split(|&b| b == 0).next().unwrap_or_default();
+    let date = std::ffi::CStr::from_bytes_until_nul(date).map_or(date, std::ffi::CStr::to_bytes);
 --- new
     let date = date;
 

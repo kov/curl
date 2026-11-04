@@ -45,18 +45,19 @@ pub struct BadDate;
 /// (`Curl_getdate_capped`), negative before then. Reading stops at a zero
 /// byte, as C reads a string. A date without a time zone is in UTC.
 pub fn parse(date: &[u8]) -> Result<i64, BadDate> {
-    let date = date.split(|&b| b == 0).next().unwrap_or_default();
+    // Found with `memchr`, not byte by byte.
+    let date = std::ffi::CStr::from_bytes_until_nul(date).map_or(date, std::ffi::CStr::to_bytes);
     let mut w = When::default();
     let mut at = 0;
     for _ in 0..MAX_PARTS {
         at += date[at..]
             .iter()
-            .take_while(|b| !b.is_ascii_alphanumeric())
+            .take_while(|&&b| CLASS[usize::from(b)] == Class::Other)
             .count();
         let Some(&first) = date.get(at) else {
             break;
         };
-        at = if first.is_ascii_alphabetic() {
+        at = if CLASS[usize::from(first)] == Class::Letter {
             name(date, at, &mut w)?
         } else {
             number(date, at, &mut w)?
@@ -78,6 +79,31 @@ pub fn parse(date: &[u8]) -> Result<i64, BadDate> {
 
 /// The most parts a date is read in.
 const MAX_PARTS: usize = 6;
+
+/// What a byte is to the parser: a part starts at a letter or a digit,
+/// and anything else separates parts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Letter,
+    Digit,
+    Other,
+}
+
+/// Each byte's class, looked up rather than tested range by range.
+static CLASS: [Class; 256] = {
+    let mut class = [Class::Other; 256];
+    let mut b = 0;
+    while b < 256 {
+        let c = b as u8;
+        if c.is_ascii_alphabetic() {
+            class[b] = Class::Letter;
+        } else if c.is_ascii_digit() {
+            class[b] = Class::Digit;
+        }
+        b += 1;
+    }
+    class
+};
 
 /// "Wednesday" is the longest name read: a run of this many letters is no
 /// name.
@@ -105,7 +131,7 @@ fn name(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
     let len = date[at..]
         .iter()
         .take(NAME_LEN)
-        .take_while(|b| b.is_ascii_alphabetic())
+        .take_while(|&&b| CLASS[usize::from(b)] == Class::Letter)
         .count();
     if len == NAME_LEN {
         return Err(BadDate);
@@ -243,26 +269,69 @@ fn weekday(word: &[u8]) -> Option<u8> {
         b"saturday",
         b"sunday",
     ];
+    static FIRST: [u32; 7] = {
+        let mut first = [0; 7];
+        let mut d = 0;
+        while d < 7 {
+            first[d] = folded3(DAYS[d]);
+            d += 1;
+        }
+        first
+    };
     if word.len() < 3 {
         return None;
     }
-    let day = DAYS
-        .iter()
-        .position(|d| d[..3].eq_ignore_ascii_case(&word[..3]))?;
+    let three = folded3(word);
+    let day = FIRST.iter().position(|&d| d == three)?;
     (word.len() == 3 || word.eq_ignore_ascii_case(DAYS[day])).then_some(day as u8)
 }
 
 /// The month `word` names in three letters, in any case; 0 for January
 /// (`checkmonth`).
 fn month(word: &[u8]) -> Option<u8> {
-    const MONTHS: [&[u8]; 12] = [
-        b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep", b"oct", b"nov",
-        b"dec",
+    static MONTHS: [u32; 12] = [
+        folded3(b"jan"),
+        folded3(b"feb"),
+        folded3(b"mar"),
+        folded3(b"apr"),
+        folded3(b"may"),
+        folded3(b"jun"),
+        folded3(b"jul"),
+        folded3(b"aug"),
+        folded3(b"sep"),
+        folded3(b"oct"),
+        folded3(b"nov"),
+        folded3(b"dec"),
     ];
-    MONTHS
-        .iter()
-        .position(|m| m.eq_ignore_ascii_case(word))
-        .map(|m| m as u8)
+    if word.len() != 3 {
+        return None;
+    }
+    let three = folded3(word);
+    MONTHS.iter().position(|&m| m == three).map(|m| m as u8)
+}
+
+/// The first three bytes of `word`, at least that long, in lower case, as
+/// one number: names are compared a number at a time, not a byte.
+const fn folded3(word: &[u8]) -> u32 {
+    u32::from_be_bytes([
+        0,
+        word[0].to_ascii_lowercase(),
+        word[1].to_ascii_lowercase(),
+        word[2].to_ascii_lowercase(),
+    ])
+}
+
+/// `word`, of two to four bytes, as one number, its bytes from the top
+/// and zeros after: two words are equal when their numbers are, as no
+/// name holds a zero byte.
+const fn packed(word: &[u8]) -> u32 {
+    let mut bytes = [0; 4];
+    let mut i = 0;
+    while i < word.len() {
+        bytes[i] = word[i];
+        i += 1;
+    }
+    u32::from_be_bytes(bytes)
 }
 
 /// The seconds to add to a local time in the zone `word` names, in
@@ -271,7 +340,7 @@ fn zone(word: &[u8]) -> Option<i32> {
     // Minutes behind UTC. Daylight time is an hour less.
     const DST: i32 = -60;
     // Military zones: A to Z, J not one.
-    const LETTERS: [Option<i32>; 26] = [
+    static LETTERS: [Option<i32>; 26] = [
         Some(-60),
         Some(-2 * 60),
         Some(-3 * 60),
@@ -299,7 +368,7 @@ fn zone(word: &[u8]) -> Option<i32> {
         Some(12 * 60),
         Some(0),
     ];
-    const NAMES: [(&[u8], i32); 44] = [
+    static NAMES: [(&[u8], i32); 44] = [
         (b"NT", 11 * 60),
         (b"UT", 0),
         (b"ADT", 240 + DST),
@@ -345,15 +414,28 @@ fn zone(word: &[u8]) -> Option<i32> {
         (b"WADT", -420 + DST),
         (b"WAST", -420),
     ];
+    static PACKED: [u32; 44] = {
+        let mut names = [0; 44];
+        let mut n = 0;
+        while n < 44 {
+            names[n] = packed(NAMES[n].0);
+            n += 1;
+        }
+        names
+    };
     let minutes = match word {
         &[letter] => letter
             .is_ascii_uppercase()
             .then(|| LETTERS[usize::from(letter - b'A')])
             .flatten(),
-        _ => NAMES
-            .iter()
-            .find(|(name, _)| *name == word)
-            .map(|&(_, m)| m),
+        _ if (2..=4).contains(&word.len()) => {
+            let word = packed(word);
+            PACKED
+                .iter()
+                .position(|&name| name == word)
+                .map(|i| NAMES[i].1)
+        }
+        _ => None,
     };
     minutes.map(|m| m * 60)
 }

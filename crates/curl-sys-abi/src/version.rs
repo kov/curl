@@ -409,6 +409,9 @@ mod tests {
         let debug = version().features.contains(&Feature::Debug);
         let (listed, listed_bits): (Vec<_>, Vec<_>) = [
             (true, "alt-svc", ffi::CURL_VERSION_ALTSVC),
+            // Apple's SecTrust verifies peers, with no bit of its own
+            // (`USE_APPLE_SECTRUST`).
+            (cfg!(feature = "apple-sectrust"), "AppleSecTrust", 0),
             (asynch, "AsynchDNS", ffi::CURL_VERSION_ASYNCHDNS),
             (true, "brotli", ffi::CURL_VERSION_BROTLI),
             (debug, "Debug", ffi::CURL_VERSION_DEBUG),

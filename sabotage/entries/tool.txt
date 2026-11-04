@@ -606,9 +606,9 @@ witness: curl-tool retries_a_failure
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
 --- old
-        if fail || file.get_ref().set_len(self.init).is_err() {
+        if fail || fs::truncate(file.get_ref(), self.init).is_err() {
 --- new
-        if fail || file.get_ref().set_len(0).is_err() {
+        if fail || fs::truncate(file.get_ref(), 0).is_err() {
 
 === what an attempt kept is written over by the next
 file: crates/curl-tool/src/output.rs
@@ -1248,9 +1248,9 @@ witness: curl-tool form::tests::a_header_file_that_cannot_be_read_is_refused
 file: crates/curl-tool/src/output.rs
 witness: curl-tool compares_and_saves_etags
 --- old
-                if file.metadata().is_ok_and(|m| m.is_file()) && fs::empty(file).is_err() {
+                if file.metadata().is_ok_and(|m| m.is_file()) && fs::truncate(file, 0).is_err() {
 --- new
-                if file.metadata().is_ok_and(|m| m.is_file()) && false && fs::empty(file).is_err() {
+                if file.metadata().is_ok_and(|m| m.is_file()) && false && fs::truncate(file, 0).is_err() {
 
 === an ETag file that does not open passes over one URL only
 file: crates/curl-tool/src/operate.rs

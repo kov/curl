@@ -225,11 +225,11 @@ fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File>
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
-/// Empty `file`, opened to write (`ftruncate(fd, 0)`); one opened to keep
-/// everything goes on writing at its end, now its start.
+/// Cut `file`, opened to write, to `len` bytes (`ftruncate`); one opened
+/// to keep everything goes on writing at its end, now there.
 #[cfg(unix)]
-pub fn empty(file: &File) -> io::Result<()> {
-    file.set_len(0)
+pub fn truncate(file: &File, len: u64) -> io::Result<()> {
+    file.set_len(len)
 }
 
 #[cfg(unix)]
@@ -772,14 +772,18 @@ pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
     )?))
 }
 
-/// Empty `file`, opened to write, as the C library's `_chsize_s` empties
-/// one opened to append (`"ab"`), which it opens to write anywhere. A file
-/// opened here to keep everything may only add to its end, which cannot
-/// cut it, so it is cut through a handle of its own opened to write
-/// (`ReOpenFile`); the file's own handle goes on writing at its end, now
-/// its start.
+/// Cut `file`, opened to write, to `len` bytes, as the C library's
+/// `_chsize_s` cuts one opened to append (`"ab"`), which it opens to write
+/// anywhere. A file opened here to keep everything may only add to its
+/// end, which cannot cut it, so it is cut through a handle of its own
+/// opened to write (`ReOpenFile`); the file's own handle goes on writing
+/// at its end, now there. Another file is cut through its own handle,
+/// which may write anywhere, a read-only one's among them.
 #[cfg(windows)]
-pub fn empty(file: &File) -> io::Result<()> {
+pub fn truncate(file: &File, len: u64) -> io::Result<()> {
+    if file.set_len(len).is_ok() {
+        return Ok(());
+    }
     // SAFETY: the handle is the open file's, borrowed for the call, which
     // makes a new one or none.
     let writable = unsafe {
@@ -796,7 +800,7 @@ pub fn empty(file: &File) -> io::Result<()> {
     // SAFETY: `writable` was just made and is owned by nothing else.
     let writable =
         File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(writable) });
-    writable.set_len(0)
+    writable.set_len(len)
 }
 
 /// Close `file` (`CloseHandle`), saying whether that went, which dropping
@@ -1271,17 +1275,19 @@ mod tests {
         assert_eq!(in_missing.kind(), io::ErrorKind::NotFound);
     }
 
-    /// A file kept whole and emptied takes what is written next at its
-    /// start, as C's `ftruncate` leaves a file opened to append.
+    /// A file kept whole and cut takes what is written next where it was
+    /// cut, as C's `ftruncate` leaves a file opened to append.
     #[test]
-    fn a_file_kept_whole_is_emptied_and_written_again() {
-        let s = Scratch::new("empty");
+    fn a_file_kept_whole_is_cut_and_written_again() {
+        let s = Scratch::new("cut");
         let mut f = open_write(&s.c("f"), Keep::Everything, 0o600).unwrap();
         f.write_all(b"old etag\n").unwrap();
-        empty(&f).unwrap();
+        truncate(&f, 0).unwrap();
         f.write_all(b"new\n").unwrap();
+        truncate(&f, 2).unwrap();
+        f.write_all(b"xt").unwrap();
         drop(f);
-        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"new\n");
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"next");
     }
 
     /// The descriptors the process has open on `dir`: none of the other
@@ -1379,17 +1385,19 @@ mod windows_tests {
         CString::new(path.to_str().unwrap()).unwrap()
     }
 
-    /// A file kept whole and emptied takes what is written next at its
-    /// start, as C's `ftruncate` leaves a file opened to append.
+    /// A file kept whole and cut takes what is written next where it was
+    /// cut, as C's `ftruncate` leaves a file opened to append.
     #[test]
-    fn a_file_kept_whole_is_emptied_and_written_again() {
-        let s = Scratch::new("empty");
+    fn a_file_kept_whole_is_cut_and_written_again() {
+        let s = Scratch::new("cut");
         let mut f = open_write(&s.c("f"), Keep::Everything, 0o600).unwrap();
         f.write_all(b"old etag\n").unwrap();
-        empty(&f).unwrap();
+        truncate(&f, 0).unwrap();
         f.write_all(b"new\n").unwrap();
+        truncate(&f, 2).unwrap();
+        f.write_all(b"xt").unwrap();
         drop(f);
-        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"new\n");
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"next");
     }
 
     #[test]

@@ -167,7 +167,7 @@ impl EtagSave {
             }
             EtagSave::File(file) => {
                 // A regular file is emptied of the ETag before.
-                if file.metadata().is_ok_and(|m| m.is_file()) && fs::empty(file).is_err() {
+                if file.metadata().is_ok_and(|m| m.is_file()) && fs::truncate(file, 0).is_err() {
                     return false;
                 }
                 drop(file.write_all(etag));
@@ -578,7 +578,7 @@ impl Stream {
         }
         // The debug test build fails it on request.
         let fail = cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_DBG_TRUNCATE_FAIL");
-        if fail || file.get_ref().set_len(self.init).is_err() {
+        if fail || fs::truncate(file.get_ref(), self.init).is_err() {
             self.msgs.error(&[b"Failed to truncate file"]);
             return false;
         }

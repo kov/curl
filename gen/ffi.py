@@ -3,20 +3,26 @@
 Generate src/ffi.rs, the C types of libcurl's public headers, from abi.json.
 
 inventory/abi.json holds what gcc computed from include/curl: constant
-values, struct layouts, typedefs and prototypes. This turns them into Rust
-declarations for the C ABI shim:
+values, struct layouts, typedefs and prototypes. inventory/abi-<target>.json
+holds the same for another target, measured with its own compiler. This
+turns them into Rust declarations for the C ABI shim:
 
   - C enums become `#[repr(transparent)]` integer newtypes with one constant
     per member, never Rust enums: a value from C may be any integer, and an
     out-of-range Rust enum is undefined behaviour before it can be checked;
   - every struct gets compile-time assertions of its size, alignment and
-    field offsets, as gcc measured them, on the target abi.json was probed on;
+    field offsets, as each target's compiler measured them, on that target;
   - every public function gets a function-pointer type in `proto`, so an
     exported definition can be checked against its prototype at build time.
+
+A declaration every target renders alike is emitted once; one that differs
+(`curl_off_t`, `curl_socket_t`, a struct laid out differently, a constant's
+type or value) is emitted per target family, under its cfg.
 
 `--check` exits non-zero instead of writing when ffi.rs is out of date.
 """
 
+import copy
 import json
 import pathlib
 import re
@@ -27,9 +33,20 @@ from genlib import ABI, ROOT, check
 HERE = pathlib.Path(__file__).resolve()
 OUT = ROOT / "crates" / "curl-sys-abi" / "src" / "ffi.rs"
 
-# The probed target's layout assertions apply only to it.
-TARGETS = {"aarch64-redhat-linux":
-           'all(target_os = "linux", target_arch = "aarch64")'}
+WINDOWS = "x86_64-pc-windows-msvc"
+# Each measured target: its measurement, the cfg its layout assertions hold
+# under (that target only), and the cfg a declaration that differs between
+# targets is given (the target's family: x86_64 Linux declares what aarch64
+# Linux measured).
+TARGETS = [
+    (ABI, "aarch64-redhat-linux",
+     'all(target_os = "linux", target_arch = "aarch64")',
+     'not(target_os = "windows")'),
+    (ROOT / "inventory" / f"abi-{WINDOWS}.json", WINDOWS,
+     ('all(target_os = "windows", target_arch = "x86_64", '
+      'target_env = "msvc")'),
+     'target_os = "windows"'),
+]
 
 KEYWORDS = {"as", "break", "const", "continue", "crate", "else", "enum",
             "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
@@ -47,36 +64,54 @@ SCALARS = {
     "long": "c_long", "long int": "c_long", "unsigned long": "c_ulong",
     "unsigned long int": "c_ulong", "long long": "c_longlong",
     "unsigned long long": "c_ulonglong", "size_t": "usize",
+    "__int64": "i64", "unsigned __int64": "u64",
     "double": "f64", "float": "f32", "void": "c_void",
 }
 C_TYPE_WORDS = {"char", "short", "int", "long", "unsigned", "signed",
                 "double", "float", "void"}
 
-PRELUDE = """\
-// System types the headers use. Their layouts are checked below with the
-// rest, from the sizes gcc reported for the curl structs that embed them.
-pub type time_t = c_long;
-pub type socklen_t = c_uint;
 
+def prelude(target):
+    """
+    Return the system types the headers use, as `target`'s units.
+
+    Not measured by name: each is checked through the curl types that use
+    it, by size (`curl_socket_t`, `curl_socklen_t`) or by the offsets of the
+    fields after it (`time_t` in `curl_fileinfo`). Signedness is no layout's
+    to check: it is the system headers' spelling (Winsock's `SOCKET` is
+    `UINT_PTR`, `socklen_t` an `int`, the CRT's `time_t` `__time64_t`).
+    """
+    windows = target == WINDOWS
+    return [
+        ("prelude", [(
+            "// System types the headers use. Their layouts are checked below"
+            " with the\n// rest, from the sizes the compiler reported for the"
+            " curl types that use them.")]),
+        ("time_t", [f"pub type time_t = {'i64' if windows else 'c_long'};"]),
+        ("socklen_t", [
+            f"pub type socklen_t = {'c_int' if windows else 'c_uint'};"]),
+        ("SOCKET", ["pub type SOCKET = usize;"] if windows else []),
+        ("sockaddr", ["""
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct sockaddr {
     pub sa_family: c_ushort,
     pub sa_data: [c_char; 14],
-}
-
+}"""]),
+        ("FILE", ["""
 /// Only ever behind a pointer.
 #[repr(C)]
 pub struct FILE {
     _opaque: [u8; 0],
-}
-
+}"""]),
+        ("fd_set", ["""
 /// Only ever behind a pointer.
 #[repr(C)]
 pub struct fd_set {
     _opaque: [u8; 0],
 }
-"""
+"""]),
+    ]
 
 
 def ident(name):
@@ -198,14 +233,50 @@ def split_params(text):
     return out
 
 
-def generate():
-    abi = json.loads(ABI.read_text())["data"]
+def measurements():
+    """
+    Return each target's measurement, as `abi.json`'s data: a foreign
+    target's layouts, declarations and values in place of the host's.
+    """
+    host = json.loads(ABI.read_text())["data"]
+    check(host["target"] == TARGETS[0][1],
+          f"no cfg for probed target {host['target']}")
+    out = [host]
+    for path, target, _, _ in TARGETS[1:]:
+        foreign = json.loads(path.read_text())["data"]
+        check(foreign["target"] == target, f"{path.name} is not {target}")
+        abi = copy.deepcopy(host)
+        abi["target"], abi["compiler"] = target, foreign["compiler"]
+        values = {c["name"]: c for c in foreign["constants"]}
+        for c in abi["constants"]:
+            c["c-type"] = values[c["name"]]["c-type"]
+            c["value"] = values[c["name"]]["value"]
+        sizes = {(e["typedef"], e["tag"]): e["size"]
+                 for e in foreign["enums"]}
+        for e in abi["enums"]:
+            e["size"] = sizes[e["typedef"], e["tag"]]
+        check(sorted(foreign["structs"]) == sorted(abi["structs"]),
+              f"{path.name}: struct set")
+        abi["structs"] = foreign["structs"]
+        check([t["name"] for t in foreign["typedefs"]] ==
+              [t["name"] for t in abi["typedefs"]], f"{path.name}: typedefs")
+        abi["typedefs"] = foreign["typedefs"]
+        out.append(abi)
+    return out
+
+
+def render(abi):
+    """
+    Return one target's declarations as units, (key, items) with each item
+    one Rust item; its prototypes, as units; and its layout assertions.
+    """
     types = Types(abi)
-    target = TARGETS.get(abi["target"])
-    check(target is not None, f"no cfg for probed target {abi['target']}")
     values = {c["name"]: c for c in abi["constants"]}
-    out = []
+    units = prelude(abi["target"])
     asserts = []
+
+    def unit(key, *items):
+        units.append((key, list(items)))
 
     # Typedefs of function types (not pointers) are pointers in Rust, so a
     # C pointer to one is an optional Rust function pointer.
@@ -216,26 +287,27 @@ def generate():
             if not is_ptr:
                 types.function_typedefs.add(name)
 
-    out.append("// Opaque handles.")
+    unit("opaque", "// Opaque handles.")
     for o in abi["opaque-types"]:
         name = o.split()[1]
-        out.append(f"#[repr(C)]\npub struct {name} {{\n    _opaque: [u8; 0],\n}}")
+        unit(o, f"#[repr(C)]\npub struct {name} {{\n    _opaque: [u8; 0],\n}}")
 
-    out.append("// C enums: integer newtypes, one constant per member.")
+    unit("enums", "// C enums: integer newtypes, one constant per member.")
     for e in sorted(abi["enums"], key=lambda e: e["typedef"] or e["tag"]):
         name = e["typedef"] or e["tag"]
         check(e["size"] == 4, f"enum {name} is not 4 bytes")
-        out.append(
+        items = [(
             "#[repr(transparent)]\n#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
-            f"pub struct {name}(pub c_int);")
+            f"pub struct {name}(pub c_int);")]
         for m in e["members"]:
             c = values.get(m)
             check(c is not None and c["kind"] == "enum",
                   f"no value for enum member {m}")
-            out.append(f"pub const {m}: {name} = {name}({c['value']});")
+            items.append(f"pub const {m}: {name} = {name}({c['value']});")
+        unit(f"enum {name}", *items)
         asserts.append(f"assert!(size_of::<{name}>() == {e['size']});")
 
-    out.append("// Other typedefs.")
+    unit("typedefs", "// Other typedefs.")
     for t in abi["typedefs"]:
         body = t["decl"].removeprefix("typedef ")
         name = t["name"]
@@ -246,70 +318,142 @@ def generate():
             check(fname == name, f"typedef name {fname} != {name}")
             ty = fn_type(types, split_params(params), ret)
             if name in types.function_typedefs:
-                out.append(f"pub type {name} = {ty};")
+                unit(name, f"pub type {name} = {ty};")
             else:
-                out.append(f"pub type {name} = Option<{ty}>;")
+                unit(name, f"pub type {name} = Option<{ty}>;")
             continue
         m = re.match(r"^(struct|union) (\w+) (\w+)$", body)
         if m:
             check(m.group(3) == name, f"odd typedef {body}")
+            items = []
             if m.group(2) != name:
-                out.append(f"pub type {name} = {m.group(2)};")
+                items.append(f"pub type {name} = {m.group(2)};")
             if (t["size"] is None
                     and f"struct {m.group(2)}" not in abi["opaque-types"]):
-                out.append(f"#[repr(C)]\npub struct {m.group(2)} "
-                           "{\n    _opaque: [u8; 0],\n}")
+                items.append(f"#[repr(C)]\npub struct {m.group(2)} "
+                             "{\n    _opaque: [u8; 0],\n}")
+            unit(name, *items)
             continue
         ty, tname = types.split_name(body)
         check(tname == name, f"odd typedef {body}")
-        out.append(f"pub type {name} = {types.rust(ty)};")
+        unit(name, f"pub type {name} = {types.rust(ty)};")
         if t["size"] is not None and types.rust(ty) != "c_void":
             asserts.append(f"assert!(size_of::<{name}>() == {t['size']});")
 
-    out.append("// Structs, with their anonymous members as named types.")
+    unit("structs", "// Structs, with their anonymous members as named types.")
     for sname in sorted(abi["structs"]):
         s = abi["structs"][sname]
         name = sname.split()[1]
-        out += struct(types, name, s, asserts)
+        unit(sname, *struct(types, name, s, asserts))
 
-    out.append("// Macro constants.")
+    unit("macros", "// Macro constants.")
     for c in abi["constants"]:
-        if c["kind"] != "macro" or c["value"] is None:
+        if c["kind"] != "macro":
             continue
-        if c["c-type"] == "char *":
+        if c["value"] is None:
+            unit(c["name"])
+        elif c["c-type"] == "char *":
             check(re.fullmatch(r'"[^"\\]*"', c["value"]) is not None,
                   f"string constant needing escapes: {c['name']}")
-            out.append(f"pub const {c['name']}: &CStr = c{c['value']};")
+            unit(c["name"], f"pub const {c['name']}: &CStr = c{c['value']};")
         else:
-            out.append(f"pub const {c['name']}: {SCALARS[c['c-type']]} = "
-                       f"{c['value']};")
+            unit(c["name"], f"pub const {c['name']}: "
+                 f"{SCALARS[c['c-type']]} = {c['value']};")
 
-    proto = [f"    pub type {f['name']} = "
-             f"{fn_type(types, f['params'], f['returns'])};"
+    proto = [(f["name"], [(f"    pub type {f['name']} = "
+                           f"{fn_type(types, f['params'], f['returns'])};")])
              for f in sorted(abi["functions"], key=lambda f: f["name"])]
+    return units, proto, asserts
+
+
+def with_cfg(cfg, item):
+    """`item` under `#[cfg(cfg)]`, after its leading blank lines."""
+    body = item.lstrip("\n")
+    indent = body[:len(body) - len(body.lstrip(" "))]
+    return f"{item[:len(item) - len(body)]}{indent}#[cfg({cfg})]\n{body}"
+
+
+def merge(per_target):
+    """
+    Merge the targets' units into one list of items. An item every target
+    renders alike is declared once; one that differs is declared for each
+    target, under the cfg of its family. Also returns, by that cfg, the
+    items declared for that family alone.
+    """
+    keys = [k for k, _ in per_target[0]]
+    for units in per_target[1:]:
+        check([k for k, _ in units] == keys, "targets render different units")
+    merged, own = [], {t[3]: [] for t in TARGETS}
+    for i in range(len(keys)):
+        variants = [units[i][1] for units in per_target]
+        if all(v == variants[0] for v in variants):
+            merged += variants[0]
+            continue
+        # Item by item where the shapes agree, so a struct whose layout
+        # differs does not take its accessors along.
+        if all(len(v) == len(variants[0]) for v in variants):
+            rows = [list(row) for row in zip(*variants)]
+        else:
+            rows = [variants]
+        for row in rows:
+            if all(item == row[0] for item in row):
+                merged.append(row[0])
+                continue
+            for (_, _, _, cfg), items in zip(TARGETS, row):
+                for item in (items if isinstance(items, list) else [items]):
+                    merged.append(with_cfg(cfg, item))
+                    own[cfg].append(item)
+    return merged, own
+
+
+def scalars_used(text):
+    return {n for n in ["CStr", "VaList", *SCALARS.values()]
+            if n.startswith(("c_", "C", "V"))
+            and re.search(rf"\b{n}\b", text)}
+
+
+def generate():
+    abis = measurements()
+    rendered = [render(abi) for abi in abis]
+    body, own = merge([units for units, _, _ in rendered])
+    proto, own_proto = merge([proto for _, proto, _ in rendered])
 
     header = (
-        genlib.header(HERE, [ABI, ROOT / "gen" / "genlib.py", HERE])
-        .replace("{", "{{").replace("}", "}}")
+        genlib.header(HERE, [ABI, ROOT / "gen" / "genlib.py", HERE,
+                             *(path for path, _, _, _ in TARGETS[1:])])
         + "//! The C types of libcurl's public headers.\n\n"
         "#![allow(non_camel_case_types, non_upper_case_globals, dead_code)]\n"
-        "#![allow(non_snake_case, clippy::upper_case_acronyms)]\n\n"
-        "use core::ffi::{{{}}};\n\n")
-    body = "\n".join([PRELUDE] + out)
+        "#![allow(non_snake_case, clippy::upper_case_acronyms)]\n\n")
     proto_mod = ("\n/// The prototype of every public function, to check "
                  "each exported definition\n/// against: "
                  "`const _: proto::curl_free = curl_free;`.\npub mod proto {\n"
                  "    use super::*;\n\n" + "\n".join(proto) + "\n}\n")
-    checks = (f"\n/// Layouts as gcc computed them for {abi['target']}.\n"
-              f"#[cfg({target})]\nconst _: () = {{\n    use core::mem::"
-              "{align_of, offset_of, size_of};\n"
-              + "\n".join("    " + a for a in asserts) + "\n};\n")
-    rest = body + "\n" + proto_mod + checks
-    used = sorted({n for n in ["CStr", "VaList", *SCALARS.values()]
-                   if n.startswith(("c_", "C", "V"))
-                   and re.search(rf"\b{n}\b", rest)},
-                  key=lambda n: (n[0].islower(), n))
-    return header.format(", ".join(used)) + rest
+    checks = ""
+    for abi, (_, _, asserts), (_, _, cfg, _) in zip(abis, rendered, TARGETS):
+        checks += (f"\n/// Layouts as {abi.get('compiler', 'gcc')} computed "
+                   f"them for {abi['target']}.\n"
+                   f"#[cfg({cfg})]\nconst _: () = {{\n    use core::mem::"
+                   "{align_of, offset_of, size_of};\n"
+                   + "\n".join("    " + a for a in asserts) + "\n};\n")
+    rest = "\n".join(body) + "\n" + proto_mod + checks
+
+    # What every target uses is imported once; what only some do, under
+    # their cfg, or the others would warn of an unused import.
+    shared = "\n".join(i for i in body + proto
+                       if not i.lstrip("\n ").startswith("#[cfg("))
+    per_cfg = {cfg: scalars_used("\n".join([shared, *own[cfg],
+                                            *own_proto[cfg]]))
+               for _, _, _, cfg in TARGETS}
+    everywhere = set.intersection(*per_cfg.values())
+
+    def use(names):
+        names = sorted(names, key=lambda n: (n[0].islower(), n))
+        return (f"use core::ffi::{names[0]};\n" if len(names) == 1 else
+                "use core::ffi::{" + ", ".join(names) + "};\n")
+    imports = use(everywhere) + "".join(
+        f"#[cfg({cfg})]\n" + use(names - everywhere)
+        for cfg, names in per_cfg.items() if names - everywhere)
+    return header + imports + "\n" + rest
 
 
 def struct(types, name, s, asserts):

@@ -10,6 +10,7 @@ use super::{ArgKind, MAX_OPTION_LEN, ParamError, Spec, find_long, find_short, nu
 use crate::config::{self, Entry, Unread};
 use crate::msgs::Messages;
 use crate::slurp::{As, ReadFailed};
+use curl_os::text::Mode;
 
 /// A command line that parsed.
 pub(crate) enum Parsed<'a> {
@@ -132,7 +133,7 @@ fn go_on<'a, R>(
             return go_on(step, msgs, wipe, then);
         }
         Step::ReadUrls(parser, name) => {
-            let text = match crate::slurp::read(name, As::Binary) {
+            let text = match crate::slurp::read(name, As::Binary, Mode::TEXT) {
                 Ok(text) => text,
                 // Any failure is one to read the file.
                 Err(_) => {
@@ -155,7 +156,7 @@ fn go_on<'a, R>(
             return go_on(step, msgs, wipe, then);
         }
         Step::ReadHeaders(parser, name, proxy) => {
-            let text = match crate::slurp::read(name, As::Binary) {
+            let text = match crate::slurp::read(name, As::Binary, Mode::TEXT) {
                 Ok(text) => text,
                 Err(e) => {
                     let e = match e {
@@ -190,7 +191,7 @@ fn go_on<'a, R>(
             return go_on(step, msgs, wipe, then);
         }
     };
-    let mut text = match crate::slurp::read(wanted.name, As::Binary) {
+    let mut text = match crate::slurp::read(wanted.name, As::Binary, Mode::TEXT) {
         Ok(text) => text,
         Err(e) => {
             let e = match e {

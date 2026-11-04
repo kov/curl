@@ -1516,3 +1516,11 @@ witness: curl-tool output::tests::splits_a_console_s_utf8_as_c_does
             if (0xC0..0xF8).contains(&last) {
 --- new
             if (0xC0..0xF0).contains(&last) {
+
+=== a file opened as text is read as binary
+file: crates/curl-tool/src/slurp.rs
+witness: curl-tool slurp::tests::reads_text_mode_as_the_c_library
+--- old
+    let mut file = Reader::new(file, mode);
+--- new
+    let mut file = Reader::new(file, Mode::Binary);

@@ -189,8 +189,21 @@ impl ScreenBuffer {
 /// it would write. 0 for an empty `utf8`.
 #[cfg(windows)]
 pub fn utf8_to_wide(utf8: &[u8], out: &mut [u16]) -> usize {
-    use windows_sys::Win32::Globalization::{CP_UTF8, MultiByteToWideChar};
-    let (Ok(len), Ok(room)) = (i32::try_from(utf8.len()), i32::try_from(out.len())) else {
+    to_wide(windows_sys::Win32::Globalization::CP_UTF8, utf8, out)
+}
+
+/// `ansi`, text in the ANSI code page (`CP_ACP`), in UTF-16, as
+/// [`utf8_to_wide`] converts UTF-8: the code page the C library takes
+/// text in once the tool has set the environment's locale.
+#[cfg(windows)]
+pub fn ansi_to_wide(ansi: &[u8], out: &mut [u16]) -> usize {
+    to_wide(windows_sys::Win32::Globalization::CP_ACP, ansi, out)
+}
+
+#[cfg(windows)]
+fn to_wide(page: u32, bytes: &[u8], out: &mut [u16]) -> usize {
+    use windows_sys::Win32::Globalization::MultiByteToWideChar;
+    let (Ok(len), Ok(room)) = (i32::try_from(bytes.len()), i32::try_from(out.len())) else {
         return 0;
     };
     if len == 0 {
@@ -201,10 +214,10 @@ pub fn utf8_to_wide(utf8: &[u8], out: &mut [u16]) -> usize {
     } else {
         out.as_mut_ptr()
     };
-    // SAFETY: `utf8` is `len` readable bytes, and `to` is null (asking for
+    // SAFETY: `bytes` is `len` readable bytes, and `to` is null (asking for
     // the room needed) or `room` writable units, both alive through the
     // call, which writes no further.
-    let n = unsafe { MultiByteToWideChar(CP_UTF8, 0, utf8.as_ptr(), len, to, room) };
+    let n = unsafe { MultiByteToWideChar(page, 0, bytes.as_ptr(), len, to, room) };
     usize::try_from(n).unwrap_or(0)
 }
 

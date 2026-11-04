@@ -7,6 +7,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_format};
 use crate::msgs::Messages;
 use crate::options::ParamError;
 use crate::slurp::{self, As, ReadFailed};
+use curl_os::text::Mode;
 
 /// The longest expansion, and the longest result of a function, less one
 /// (`MAX_EXPAND_CONTENT`, its terminating zero counted).
@@ -383,10 +384,10 @@ fn read_range(
     msgs: &Messages,
 ) -> Result<Vec<u8>, ParamError> {
     let read = if name == b"-" {
-        slurp::read(name, As::Binary)
+        slurp::read(name, As::Binary, Mode::Binary)
     } else {
         match curl_os::fs::with_c_name(name, curl_os::fs::open_read) {
-            Ok(mut file) => slurp::read_from(&mut file, As::Binary),
+            Ok(mut file) => slurp::read_from(&mut file, As::Binary, Mode::Binary),
             Err(e) => {
                 let why = crate::os_message(&e);
                 msgs.error(&[b"Failed to open ", name, b": ", why.as_bytes()]);

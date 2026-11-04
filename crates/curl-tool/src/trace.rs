@@ -196,8 +196,11 @@ impl Sink {
     fn write(&mut self, bytes: &[u8]) {
         let _ = match self {
             Sink::Stdout(out) => out.write_all(bytes),
-            Sink::Stderr | Sink::File { file: None, .. } => std::io::stderr().write_all(bytes),
-            Sink::File { file: Some(f), .. } => f.write_all(bytes),
+            Sink::Stderr | Sink::File { file: None, .. } => crate::stderr::Stderr.write_all(bytes),
+            // Opened as text (`FOPEN_WRITETEXT`).
+            Sink::File { file: Some(f), .. } => {
+                fs::write_all_as_c(f, curl_os::text::Mode::TEXT, bytes)
+            }
         };
     }
 

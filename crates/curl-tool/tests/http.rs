@@ -2631,3 +2631,127 @@ fn a_silent_upload_of_standard_input_draws_no_meter() {
         run.stderr
     );
 }
+
+/// Run the tool with `args`, `input` on its standard input.
+fn curl_input(args: &[&str], input: &[u8]) -> Run {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut child = Command::new(tool)
+        .arg("-q")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let out = child.wait_with_output().unwrap();
+    Run {
+        code: out.status.code().unwrap(),
+        stdout: out.stdout,
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    }
+}
+
+/// How many line ends of `text` are after a carriage return, and how
+/// many there are.
+fn line_ends(text: &[u8]) -> (usize, usize) {
+    let after = text.windows(2).filter(|w| w == b"\r\n").count();
+    (after, text.iter().filter(|&&b| b == b'\n').count())
+}
+
+const NOTHING: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// The library writes its cookie jar as text, which on Windows puts a
+/// carriage return before each line feed.
+#[test]
+fn the_cookie_jar_is_written_as_text() {
+    let dir = scratch("jar-text");
+    let jar = dir.join("jar");
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nSet-Cookie: n=v\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&["-s", "-c", jar.to_str().unwrap(), &s.url()]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    s.request();
+    let (after, lines) = line_ends(&std::fs::read(&jar).unwrap());
+    assert!(lines > 3);
+    assert_eq!(after, if cfg!(windows) { lines } else { 0 });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Data read from standard input by `-d @-` and `--json @-` is read as
+/// text, as C reads `stdin` until it makes it binary: on Windows a
+/// carriage return before a line feed is left out and a Ctrl-Z ends it.
+/// `--data-binary @-` makes it binary first.
+#[test]
+fn data_from_standard_input_is_text_but_for_data_binary() {
+    let input = b"a=1\r\nb=2\x1ac=3";
+    let body = |args: &[&str]| {
+        let s = Server::new(NOTHING);
+        let url = s.url();
+        let all: Vec<&str> = args.iter().copied().chain(["-s", &url]).collect();
+        assert_eq!(curl_input(&all, input).code, 0);
+        let request = s.request();
+        request.split_once("\r\n\r\n").unwrap().1.to_owned()
+    };
+    let text = if cfg!(windows) {
+        "a=1b=2"
+    } else {
+        "a=1b=2\x1ac=3"
+    };
+    assert_eq!(body(&["-d", "@-"]), text);
+    let json = if cfg!(windows) {
+        "a=1\nb=2"
+    } else {
+        "a=1\r\nb=2\x1ac=3"
+    };
+    assert_eq!(body(&["--json", "@-"]), json);
+    assert_eq!(body(&["--data-binary", "@-"]), "a=1\r\nb=2\x1ac=3");
+}
+
+/// The HSTS cache and a `.netrc` are read as text, a carriage return
+/// before a line feed left out and a Ctrl-Z ending them, and the cache is
+/// written back as text.
+#[cfg(windows)]
+#[test]
+fn the_library_reads_its_files_as_text() {
+    let dir = scratch("library-text");
+    let hsts = dir.join("hsts");
+    std::fs::write(
+        &hsts,
+        b"# x\r\n.example.com \"20380101 00:00:00\"\r\n\x1aexample.org \"20370101 00:00:00\"\r\n",
+    )
+    .unwrap();
+    let netrc = dir.join("netrc");
+    std::fs::write(
+        &netrc,
+        b"machine 127.0.0.1\r\nlogin user\r\npassword pass\r\n\x1amachine 127.0.0.1 login other\r\n",
+    )
+    .unwrap();
+    let s = Server::new(NOTHING);
+    let args = [
+        "-s",
+        "--hsts",
+        hsts.to_str().unwrap(),
+        "--netrc-file",
+        netrc.to_str().unwrap(),
+        &s.url(),
+    ];
+    let run = curl(&args);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    // `user:pass`, nothing after the Ctrl-Z.
+    let request = s.request();
+    assert!(
+        request.contains("Authorization: Basic dXNlcjpwYXNz\r\n"),
+        "{request}"
+    );
+    let back = std::fs::read(&hsts).unwrap();
+    let shown = String::from_utf8_lossy(&back);
+    assert!(
+        shown.contains(".example.com \"20380101 00:00:00\"\r\n"),
+        "{shown}"
+    );
+    assert!(!shown.contains("example.org"), "{shown}");
+    let (after, lines) = line_ends(&back);
+    assert_eq!(after, lines, "{shown}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

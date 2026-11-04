@@ -38,6 +38,162 @@ pub enum Keep {
     Absent,
 }
 
+/// One of the process's standard streams, by its C library descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Std {
+    In,
+    Out,
+    Err,
+}
+
+/// Make `stream` binary, as C's `CURL_BINMODE` does: from now on the C
+/// library translates none of its line ends. Nothing to do on Unix.
+#[cfg(unix)]
+pub fn set_binary(stream: Std) {
+    let _ = stream;
+}
+
+/// Whether `stream` is text or binary: binary on Unix, where there is no
+/// difference.
+#[cfg(unix)]
+pub fn mode(stream: Std) -> crate::text::Mode {
+    let _ = stream;
+    crate::text::Mode::Binary
+}
+
+#[cfg(windows)]
+unsafe extern "C" {
+    /// The UCRT's: set descriptor `fd`'s mode, giving the one it had.
+    fn _setmode(fd: core::ffi::c_int, mode: core::ffi::c_int) -> core::ffi::c_int;
+}
+
+/// The UCRT's `_O_TEXT` and `_O_BINARY`.
+#[cfg(windows)]
+const O_TEXT: core::ffi::c_int = 0x4000;
+#[cfg(windows)]
+const O_BINARY: core::ffi::c_int = 0x8000;
+
+#[cfg(windows)]
+fn descriptor(stream: Std) -> core::ffi::c_int {
+    match stream {
+        Std::In => 0,
+        Std::Out => 1,
+        Std::Err => 2,
+    }
+}
+
+/// Make `stream` binary, as C's `CURL_BINMODE` does (`_setmode` with
+/// `_O_BINARY`): from now on the C library translates none of its line
+/// ends. The mode is the C library's, kept for its descriptor, which
+/// every part of the process shares.
+#[cfg(windows)]
+pub fn set_binary(stream: Std) {
+    // SAFETY: `_setmode` takes no pointers; descriptors 0 to 2 are the
+    // C library's from its start, a stream it found none for among them.
+    unsafe { _setmode(descriptor(stream), O_BINARY) };
+}
+
+/// Whether `stream` is text or binary, as the C library keeps it for its
+/// descriptor: text from the start until [`set_binary`]. The C library
+/// tells a mode only as it sets one: the one it had is set back at once.
+#[cfg(windows)]
+pub fn mode(stream: Std) -> crate::text::Mode {
+    let fd = descriptor(stream);
+    // SAFETY: as in `set_binary`.
+    let was = unsafe { _setmode(fd, O_BINARY) };
+    if was != -1 && was != O_BINARY {
+        // SAFETY: as above, the mode given back the one it had.
+        unsafe { _setmode(fd, was) };
+    }
+    match was {
+        O_TEXT => crate::text::Mode::Text,
+        _ => crate::text::Mode::Binary,
+    }
+}
+
+/// Write some of `bytes` to `file` as the C library writes to a
+/// descriptor open on it in `mode` (`_write`): how many of `bytes` went.
+/// Binary goes as it is. Text has each line feed written after a
+/// carriage return ([`crate::text::Writer`]), and to a console it goes as
+/// the UCRT writes text there (`write_double_translated_ansi_nolock`):
+/// read in the ANSI code page and written as UTF-16 (`WriteConsoleW`),
+/// where binary goes to the console as bytes, for it to read in its own
+/// code page.
+#[cfg(windows)]
+pub fn write_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io::Result<usize> {
+    use crate::text::{Mode, Writer};
+    use std::io::Write as _;
+    let mut to = file;
+    if mode == Mode::Binary {
+        return to.write(bytes);
+    }
+    let Some(console) = crate::terminal::Console::of(file.as_handle()) else {
+        return Writer::new(to, Mode::Text).write(bytes);
+    };
+    // A piece at a time, in the ANSI code page's bytes, each a unit or
+    // fewer in UTF-16: 256 bytes are 512 at most with their line ends.
+    let mut ansi = [0u8; 512];
+    let mut room = &mut ansi[..];
+    let piece = &bytes[..bytes.len().min(256)];
+    let took = Writer::new(&mut room, Mode::Text).write(piece)?;
+    let n = 512 - room.len();
+    let mut wide = [0u16; 512];
+    let units = crate::terminal::ansi_to_wide(&ansi[..n], &mut wide);
+    console.write(&wide[..units])?;
+    Ok(took)
+}
+
+/// Write some of `bytes` to `file`: Unix has no modes.
+#[cfg(unix)]
+pub fn write_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io::Result<usize> {
+    use std::io::Write as _;
+    let _ = mode;
+    let mut to = file;
+    to.write(bytes)
+}
+
+/// Write all of `bytes` to standard error as C writes to `stderr`, in
+/// the mode the C library keeps for it ([`mode`], [`write_as_c`]),
+/// through the handle the process has for it now (`GetStdHandle`, which
+/// [`stderr_to`] changes).
+#[cfg(windows)]
+pub fn write_stderr(bytes: &[u8]) -> io::Result<()> {
+    use std::mem::ManuallyDrop;
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
+    // SAFETY: `GetStdHandle` takes no pointers.
+    let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if handle.is_null() || handle == wf::INVALID_HANDLE_VALUE {
+        return Err(io::Error::from_raw_os_error(
+            wf::ERROR_INVALID_HANDLE as i32,
+        ));
+    }
+    // SAFETY: the handle is the process's, open while it is its standard
+    // error; the `File` borrows it for the writes and never closes it.
+    let file = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
+    write_all_as_c(&file, mode(Std::Err), bytes)
+}
+
+/// Write all of `bytes` to `file` as [`write_as_c`] writes some.
+pub fn write_all_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io::Result<()> {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        match write_as_c(file, mode, rest) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Write all of `bytes` to standard error, as C writes to `stderr`.
+#[cfg(unix)]
+pub fn write_stderr(bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    io::stderr().write_all(bytes)
+}
+
 #[cfg(unix)]
 /// Whether `e` is a refusal to look in or change a directory (`EACCES`),
 /// as distinct from an operation not permitted (`EPERM`), which std
@@ -1612,5 +1768,54 @@ mod windows_tests {
         use std::os::windows::io::AsRawHandle as _;
         let own = stdin().unwrap();
         assert_ne!(own.as_raw_handle(), std::io::stdin().as_raw_handle());
+    }
+
+    /// The C library starts each standard stream as text, and keeps one
+    /// made binary so, telling its mode without changing it. Only standard
+    /// input is changed here: the harness writes to the others.
+    #[test]
+    fn a_standard_stream_is_text_until_made_binary() {
+        assert_eq!(mode(Std::Err), crate::text::Mode::Text);
+        assert_eq!(mode(Std::Err), crate::text::Mode::Text);
+        assert_eq!(mode(Std::In), crate::text::Mode::Text);
+        set_binary(Std::In);
+        assert_eq!(mode(Std::In), crate::text::Mode::Binary);
+        assert_eq!(mode(Std::Err), crate::text::Mode::Text);
+    }
+
+    /// Text goes to a file with each line feed after a carriage return,
+    /// and to a console in the ANSI code page, as the UCRT writes it;
+    /// binary goes to either as it is, which a console reads in its own
+    /// code page.
+    #[test]
+    fn writes_as_the_c_library_does_in_each_mode() {
+        use crate::text::Mode;
+        let s = Scratch::new("as-c");
+        let file = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        write_all_as_c(&file, Mode::Text, b"a\nb\r\n").unwrap();
+        write_all_as_c(&file, Mode::Binary, b"c\n").unwrap();
+        drop(file);
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"a\r\nb\r\r\nc\n");
+        let long = [b'\n'; 1000];
+        let file = open_write(&s.c("g"), Keep::Nothing, 0o600).unwrap();
+        write_all_as_c(&file, Mode::Text, &long).unwrap();
+        drop(file);
+        assert_eq!(std::fs::read(s.0.join("g")).unwrap(), b"\r\n".repeat(1000));
+        let screen = crate::terminal::ScreenBuffer::new().unwrap();
+        let console = File::from(screen.handle().try_clone_to_owned().unwrap());
+        // `é` in the ANSI code page, and the console's own reading of it.
+        let ansi = &[b'c', 0xe9];
+        write_all_as_c(&console, Mode::Text, ansi).unwrap();
+        write_all_as_c(&console, Mode::Binary, ansi).unwrap();
+        let mut wide = [0u16; 2];
+        let n = crate::terminal::ansi_to_wide(ansi, &mut wide);
+        let mut want: Vec<u16> = wide[..n].to_vec();
+        want.push(u16::from(b'c'));
+        let got = screen.read(4).unwrap();
+        assert_eq!(&got[..3], &want[..], "{got:x?}");
+        assert_ne!(
+            got[3], want[1],
+            "the console's code page is not the ANSI one"
+        );
     }
 }

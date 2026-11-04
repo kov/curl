@@ -88,6 +88,37 @@ impl Sink for File {
     }
 }
 
+/// A file opened as text (`FOPEN_WRITETEXT`, `FOPEN_APPENDTEXT`), written
+/// as the C library writes one: on Windows each line feed after a
+/// carriage return ([`curl_os::fs::write_as_c`]).
+pub(crate) struct TextFile(pub(crate) File);
+
+impl Sink for TextFile {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        curl_os::fs::write_as_c(&self.0, curl_os::text::Mode::TEXT, bytes)
+    }
+
+    fn layout(&self) -> Layout {
+        self.0.layout()
+    }
+}
+
+impl io::Write for TextFile {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        Sink::write(self, bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Close for TextFile {
+    fn close(self) -> io::Result<()> {
+        curl_os::fs::close(self.0)
+    }
+}
+
 /// The UCRT's `_INTERNAL_BUFSIZ`: the buffer it gives a stream.
 #[cfg(windows)]
 pub(crate) const UCRT_BUFSIZ: usize = 4096;

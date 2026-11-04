@@ -3,7 +3,6 @@
 //!
 //! Every variable and function C knows is written here.
 
-use std::fs::File;
 use std::io::Write;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -17,6 +16,7 @@ use curl_os::fs::{self, Keep};
 
 use crate::options::exit_code;
 use crate::slurp::{self, ReadFailed};
+use crate::stdio::TextFile;
 use crate::stdout::Stdout;
 
 /// C's limit on a variable's name, its terminating zero included: a longer
@@ -246,7 +246,7 @@ impl Format<'_> {
     /// The text of file `name`, or of standard input for `-`, its
     /// carriage returns and line feeds left out (`file2string`).
     pub(crate) fn read(name: &[u8]) -> Result<Format<'static>, ReadFailed> {
-        slurp::read(name, slurp::As::Text).map(Format::Read)
+        slurp::read(name, slurp::As::Text, curl_os::text::Mode::TEXT).map(Format::Read)
     }
 }
 
@@ -377,15 +377,21 @@ fn header(after: &[u8]) -> (Piece<'_>, usize) {
 /// unless it says otherwise. A failed write has nowhere to be reported,
 /// as in C.
 pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
-    write_to(format, facts, &mut Buffered(stdout), &mut std::io::stderr());
+    write_to(
+        format,
+        facts,
+        &mut Buffered(stdout),
+        &mut crate::stderr::Stderr,
+    );
 }
 
 /// Where the format's text goes now.
 enum To {
     Stdout,
     Stderr,
-    /// The file `%output{}` named, closed when another is chosen.
-    File(File),
+    /// The file `%output{}` named, as text, closed when another is
+    /// chosen.
+    File(TextFile),
 }
 
 fn write_to(format: &[u8], facts: &Facts<'_>, stdout: &mut dyn Write, stderr: &mut dyn Write) {
@@ -428,15 +434,15 @@ fn write_to(format: &[u8], facts: &Facts<'_>, stdout: &mut dyn Write, stderr: &m
                 let _ = stderr.write_all(&line);
             }
             Piece::Output { name, append } => {
-                // `fopen(.., "ab")` or `fopen(.., "wb")`; only a file that
-                // opens is written to.
+                // `FOPEN_APPENDTEXT` or `FOPEN_WRITETEXT`; only a file
+                // that opens is written to.
                 let keep = if append {
                     Keep::Everything
                 } else {
                     Keep::Nothing
                 };
                 if let Ok(file) = fs::with_c_name(name, |c| fs::open_write(c, keep, 0o666)) {
-                    to = To::File(file);
+                    to = To::File(TextFile(file));
                 }
             }
             Piece::Header { name, all } => {

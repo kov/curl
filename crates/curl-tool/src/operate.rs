@@ -32,6 +32,7 @@ use curl_core::tls::SharedKeyLog;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 use curl_core::version::Protocol;
 use curl_os::fs;
+use curl_os::text::Mode;
 
 use crate::bar::Bar;
 use crate::easysrc::{self, Setopt, Source};
@@ -216,7 +217,7 @@ fn ask_password(
     let mut typed = curl_os::terminal::Unechoed::open();
     // Unbuffered, and a failure has nowhere to be reported, as C's
     // `fputs` to `stderr`.
-    let mut stderr = std::io::stderr();
+    let mut stderr = crate::stderr::Stderr;
     drop(stderr.write_all(&prompt));
     let mut buf = [0; PASSWORD_ROOM];
     let n = typed.read(&mut buf);
@@ -627,7 +628,9 @@ fn joined(dir: &[u8], name: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 /// which is not sent: C's `file2string` has a string for it, empty.
 fn etag_header(name: &[u8], msgs: &Messages) -> Result<Vec<u8>, OutOfMemory> {
     let read = match fs::with_c_name(name, fs::open_read) {
-        Ok(mut file) => crate::slurp::read_from(&mut file, crate::slurp::As::Binary).ok(),
+        Ok(mut file) => {
+            crate::slurp::read_from(&mut file, crate::slurp::As::Binary, Mode::TEXT).ok()
+        }
         Err(e) => {
             let why = crate::os_message(&e);
             msgs.warn(&[b"Failed to open ", name, b": ", why.as_bytes()]);
@@ -1072,6 +1075,12 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let Ok(out) = made else {
         return Made::Failed(ErrorKind::OutOfMemory);
     };
+    // A body to standard output, or none, makes standard output binary
+    // unless `--use-ascii` asks for text, from now on for the rest of the
+    // run (`CURL_BINMODE`).
+    if (to_stdout || output == Output::Null) && !op.use_ascii {
+        fs::set_binary(fs::Std::Out);
+    }
     let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()))
         .expect("a handle made now holds no connection");
@@ -1133,6 +1142,10 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
             b"Using --anyauth or --proxy-anyauth with upload from stdin involves a big risk \
               of it not working. Use a temporary file or a fixed auth type instead",
         ]);
+    }
+    // Standard input is uploaded as it is (`CURL_BINMODE`).
+    if upload.is_some_and(|file| file == b"-" || file == b".") {
+        fs::set_binary(fs::Std::In);
     }
     // `-T .` reads it without waiting.
     let stdin = match upload.filter(|&file| file == b".") {
@@ -2054,8 +2067,11 @@ fn setopts(
             },
         )?;
     }
-    // `misc_setopts`.
-    s.ptr("CURLOPT_STDERR", Object, nothing)?;
+    // `misc_setopts`: the library's text goes where the tool's does.
+    s.ptr("CURLOPT_STDERR", Object, |o| {
+        o.callbacks.stderr = Some(Handler::text(crate::stderr::LibraryText).map_err(oom)?);
+        Ok(())
+    })?;
     if !op.resolve.is_empty() {
         s.slist("CURLOPT_RESOLVE", &op.resolve, |o| {
             o.resolve.set(op.resolve.iter().copied()).map_err(oom)
@@ -3347,7 +3363,7 @@ fn message_signature(
         Some((b'@', file)) => {
             // C opens `-` as a file of that name.
             let path: &[u8] = if file == b"-" { b"./-" } else { file };
-            match crate::slurp::read(path, crate::slurp::As::Text) {
+            match crate::slurp::read(path, crate::slurp::As::Text, Mode::TEXT) {
                 Ok(hex) if hex.is_empty() => {
                     msgs.error(&[b"httpsig: key file '", file, b"' is empty"]);
                     return Err(ErrorKind::BadFunctionArgument);
@@ -3420,7 +3436,7 @@ fn finish(
             // The bar's line ends once the transfer does.
             if bar.is_some_and(Bar::shown) {
                 // Nowhere to report a failed write, as in C.
-                let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
+                let _ = std::io::Write::write_all(&mut crate::stderr::Stderr, b"\n");
             }
             let mut stream = out.stream();
             let mut result = result;

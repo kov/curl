@@ -160,12 +160,14 @@ pub(crate) fn read_file(path: &[u8]) -> Result<Option<Vec<u8>>, LoadError> {
     let Ok(path) = std::ffi::CStr::from_bytes_with_nul(&z) else {
         return Ok(None);
     };
-    let Ok(mut file) = curl_os::fs::open_read(path) else {
+    let Ok(file) = curl_os::fs::open_read(path) else {
         return Ok(None);
     };
     if file.metadata().is_ok_and(|m| m.is_dir()) {
         return Ok(None);
     }
+    // Read as text (`FOPEN_READTEXT`).
+    let mut file = curl_os::text::Reader::new(file, curl_os::text::Mode::TEXT);
     let mut text = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {

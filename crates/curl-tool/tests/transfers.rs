@@ -2259,3 +2259,103 @@ fn a_session_file_s_failures_end_as_c_s_do() {
     assert_eq!(r.code, 0);
     assert_eq!(std::fs::read(s.0.join("new")).unwrap(), b"");
 }
+
+/// `text` as the C library writes it to a stream or file in text mode: on
+/// Windows each line feed after a carriage return.
+fn as_text(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for &b in text {
+        if b == b'\n' && cfg!(windows) {
+            out.push(b'\r');
+        }
+        out.push(b);
+    }
+    out
+}
+
+/// Standard output is text, as the C library starts it, until a body
+/// goes there, which makes it binary for the rest of the run;
+/// `--use-ascii` keeps it text, the body with it.
+#[test]
+fn standard_output_is_text_until_a_body_goes_there() {
+    let s = Scratch::new("stdout-text");
+    s.write("src", b"a\nb\r\n");
+    let src = s.url("src");
+    let r = curl(&s, &["-s", "-o", "out", "-w", "x\\n", &src]);
+    assert_eq!(r.stdout, as_text(b"x\n"));
+    let r = curl(&s, &["-s", "-w", "x\\n", &src]);
+    assert_eq!(r.stdout, b"a\nb\r\nx\n");
+    let r = curl(&s, &["-s", "-B", "-w", "x\\n", &src]);
+    assert_eq!(r.stdout, as_text(b"a\nb\r\nx\n"));
+    // The mode is the descriptor's, at each write of what the stream
+    // holds: the first transfer's write-out, held, goes out after the
+    // second transfer's body has made it binary.
+    let r = curl(
+        &s,
+        &["-s", "-w", "x\\n", "-o", "out", &src, "--next", "-s", &src],
+    );
+    assert_eq!(r.stdout, b"x\na\nb\r\n");
+}
+
+/// Standard error is text, made binary by `-D %` for the headers and
+/// whatever follows them there.
+#[test]
+fn standard_error_is_text_until_headers_go_there() {
+    let s = Scratch::new("stderr-text");
+    s.write("src", b"body");
+    let src = s.url("src");
+    let r = curl(&s, &["-s", "-o", "out", "-w", "%{stderr}x\\ny\\n", &src]);
+    assert_eq!(r.stderr.as_bytes(), as_text(b"x\ny\n"));
+    let r = curl(
+        &s,
+        &["-s", "-o", "out", "-D", "%", "-w", "%{stderr}x\\n", &src],
+    );
+    assert!(r.stderr.ends_with("\r\n\r\nx\n"), "{:?}", r.stderr);
+}
+
+/// The files C opens as text are written as text: `--write-out`'s
+/// `%output{}`, added to or not, a trace and `--libcurl`'s source; those
+/// it opens as binary, as `-D`'s, as they are.
+#[test]
+fn text_files_are_written_as_text() {
+    let s = Scratch::new("text-files");
+    s.write("src", b"body");
+    let src = s.url("src");
+    let r = curl(&s, &["-s", "-o", "out", "-w", "%output{wo}x\\n", &src]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(s.read("wo"), as_text(b"x\n"));
+    s.write("wo", b"was\n");
+    curl(&s, &["-s", "-o", "out", "-w", "%output{>>wo}y\\n", &src]);
+    assert_eq!(s.read("wo"), [&b"was\n"[..], &as_text(b"y\n")].concat());
+    let r = curl(&s, &["-s", "-o", "out", "--trace-ascii", "tr", &src]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let trace = s.read("tr");
+    let lines = trace.iter().filter(|&&b| b == b'\n').count();
+    let ends = trace.windows(2).filter(|w| w == b"\r\n").count();
+    assert!(lines > 2, "{trace:?}");
+    assert_eq!(ends, if cfg!(windows) { lines } else { 0 }, "{trace:?}");
+    curl(&s, &["-s", "-o", "out", "--libcurl", "src.c", &src]);
+    let source = s.read("src.c");
+    assert!(source.starts_with(b"/***"), "{source:?}");
+    let lines = source.iter().filter(|&&b| b == b'\n').count();
+    let ends = source.windows(2).filter(|w| w == b"\r\n").count();
+    assert_eq!(ends, if cfg!(windows) { lines } else { 0 });
+    curl(&s, &["-s", "-o", "out", "-D", "hd", &src]);
+    let headers = s.read("hd");
+    assert!(headers.ends_with(b"\r\n\r\n"), "{headers:?}");
+    assert!(!headers.windows(2).any(|w| w == b"\r\r"), "{headers:?}");
+}
+
+/// A configuration file is read as text: on Windows a carriage return
+/// before a line feed is left out, and a Ctrl-Z ends it.
+#[cfg(windows)]
+#[test]
+fn a_configuration_file_is_read_as_text() {
+    let s = Scratch::new("config-text");
+    s.write("src", b"body");
+    s.write("cfg", b"-o out\r\n-w \"%{stderr}x\"\r\n\x1a-o other\r\n");
+    let r = curl(&s, &["-s", "-K", "cfg", &s.url("src")]);
+    assert_eq!((r.code, r.stderr.as_str()), (0, "x"));
+    assert_eq!(s.read("out"), b"body");
+    assert!(!s.exists("other"));
+}

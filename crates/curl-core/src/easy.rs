@@ -1419,7 +1419,9 @@ fn write_jar(jar: &mut Jar, to: &[u8]) -> Result<(), SaveError> {
     let mut text = Vec::new();
     jar.file(SystemClock::new().unix_time(), &mut text)?;
     if to == b"-" {
-        let mut out = std::io::stdout().lock();
+        // In the mode standard output is in, as C's `fputs` to `stdout`.
+        let mode = curl_os::fs::mode(curl_os::fs::Std::Out);
+        let mut out = curl_os::text::Writer::new(std::io::stdout().lock(), mode);
         out.write_all(&text)?;
         out.flush()?;
         return Ok(());

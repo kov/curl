@@ -82,7 +82,7 @@ impl Bar {
     /// Draw the transfer at `now` (`tool_progress_cb`); false if it was
     /// drawn too recently to be again, as C's returns early.
     pub(crate) fn update(&self, now: ProgressNow) -> bool {
-        let mut out = std::io::stderr().lock();
+        let mut out = crate::stderr::Stderr;
         let mut state = self.0.lock().expect("no panic holds it");
         let drawn = state.draw(now, Instant::now(), width());
         // A failed write has nowhere to be reported, as in C.

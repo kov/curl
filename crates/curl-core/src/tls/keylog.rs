@@ -9,7 +9,6 @@
 //! does.
 
 use std::fs::File;
-use std::io::Write as _;
 use std::ops::Deref;
 use std::sync::Mutex;
 
@@ -120,7 +119,8 @@ impl KeyLog {
         }
         // Each line whole, as C's line buffering writes it; a failed
         // write is not said, as `fputs`'s is not.
-        let _ = open.file.write_all(&buf[..len]);
+        // The file is open as text (`FOPEN_APPENDTEXT`).
+        let _ = curl_os::fs::write_all_as_c(&open.file, curl_os::text::Mode::TEXT, &buf[..len]);
         true
     }
 }

@@ -4,8 +4,8 @@
 //! colon between. The file is the user's to edit: a line that makes no
 //! sense is warned of and passed over.
 
+use curl_os::text::{Mode, Reader};
 use std::cell::RefCell;
-use std::fs::File;
 use std::io::Write as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -72,7 +72,8 @@ pub(super) fn load(run: &Shared<'_, '_>, name: &[u8]) -> Result<(), ErrorKind> {
     };
     let easy = easy(run)?;
     let mut notes = notes(run);
-    let mut lines = Lines::new(file);
+    // Read as text (`FOPEN_READTEXT`).
+    let mut lines = Lines::new(Reader::new(file, Mode::TEXT));
     let mut line = Vec::new();
     let mut number = 0u64;
     loop {
@@ -243,11 +244,13 @@ impl<R: std::io::Read> Lines<R> {
 /// A file that cannot be made is warned of, and is no error.
 pub(super) fn save(run: &Shared<'_, '_>, name: &[u8]) -> Result<(), ErrorKind> {
     let opened = fs::with_c_name(name, |c| fs::open_write(c, Keep::Nothing, NEW_FILE_MODE));
-    let Ok(mut file) = opened else {
+    let Ok(file) = opened else {
         run.msgs
             .warn(&[b"Warning: Failed to create SSL session file ", name]);
         return Ok(());
     };
+    // Written as text (`FOPEN_WRITETEXT`).
+    let mut file = crate::stdio::TextFile(file);
     let easy = easy(run)?;
     let mut first = true;
     let done = easy
@@ -264,7 +267,7 @@ pub(super) fn save(run: &Shared<'_, '_>, name: &[u8]) -> Result<(), ErrorKind> {
 /// One line, after the file's head if it is the first (`tool_ssls_exp`).
 fn save_session(
     run: &Shared<'_, '_>,
-    file: &mut File,
+    file: &mut crate::stdio::TextFile,
     session: SessionExport<'_>,
     first: &mut bool,
 ) -> Result<(), ErrorKind> {

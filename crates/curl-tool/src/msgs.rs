@@ -155,7 +155,7 @@ fn emit(bytes: &[u8]) {
     {
         return;
     }
-    let _ = std::io::stderr().write_all(bytes);
+    let _ = crate::stderr::Stderr.write_all(bytes);
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ pub(crate) fn show(topic: Option<&[u8]>, columns: usize) {
             match crate::options::help_search(topic) {
                 Some(search) => crate::hugehelp::show_option(search.start(), search.end),
                 None => {
-                    let _ = std::io::stderr()
+                    let _ = crate::stderr::Stderr
                         .write_all(b"Incorrect option name to show help for, see curl -h\n");
                 }
             }

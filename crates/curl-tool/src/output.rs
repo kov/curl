@@ -132,6 +132,8 @@ impl EtagSave {
     /// etags`).
     pub(crate) fn open(name: &[u8], stdout: &Stdout, msgs: &Messages) -> Option<EtagSave> {
         if name == b"-" {
+            // Always binary, as C makes it for header output.
+            fs::set_binary(fs::Std::Out);
             return Some(EtagSave::Stdout(stdout.clone()));
         }
         match fs::with_c_name(name, |c| fs::open_write(c, Keep::Everything, NEW_FILE_MODE)) {
@@ -209,7 +211,7 @@ impl DumpTarget {
         match self {
             DumpTarget::Stdout(out) => out.fwrite(line),
             // Standard error is unbuffered.
-            DumpTarget::Stderr => unbuffered(&mut std::io::stderr(), line),
+            DumpTarget::Stderr => unbuffered(&mut crate::stderr::Stderr, line),
             DumpTarget::File(file) => file.fwrite(line),
         }
     }
@@ -310,9 +312,17 @@ impl Output {
             .try_extend_from_slice(name)
             .map_err(|OutOfMemory| DumpFailed::OutOfMemory)?;
         let mut stream = self.stream();
+        // Standard output or error is made binary for the headers, as C
+        // makes it, from now on for whatever else goes there too.
         let target = match name {
-            b"%" => DumpTarget::Stderr,
-            b"-" => DumpTarget::Stdout(stdout.clone()),
+            b"%" => {
+                fs::set_binary(fs::Std::Err);
+                DumpTarget::Stderr
+            }
+            b"-" => {
+                fs::set_binary(fs::Std::Out);
+                DumpTarget::Stdout(stdout.clone())
+            }
             _ => {
                 let mut c_name = Vec::new();
                 c_name

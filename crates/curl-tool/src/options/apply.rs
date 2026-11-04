@@ -2284,6 +2284,11 @@ fn data(opt: Opt, text: &[u8], msgs: &Messages) -> Result<Vec<u8>, ParamError> {
             } else {
                 As::Text
             };
+            // A file is read as it is; standard input in the mode it is
+            // in, made binary first for `--data-binary`.
+            if opt == Opt::DataBinary && name == b"-" {
+                curl_os::fs::set_binary(curl_os::fs::Std::In);
+            }
             data = read_named(name, how, msgs)?;
         }
         None => data.try_extend_from_slice(text)?,
@@ -2300,7 +2305,12 @@ fn url_encoded(text: &[u8], msgs: &Messages) -> Result<Vec<u8>, ParamError> {
         .or_else(|| text.iter().position(|&b| b == b'@'));
     let (name, content) = match at {
         Some(at) if text[at] == b'@' => {
-            (&text[..at], read_named(&text[at + 1..], As::Binary, msgs)?)
+            let name = &text[at + 1..];
+            // Standard input is made binary first, a file read as it is.
+            if name == b"-" {
+                curl_os::fs::set_binary(curl_os::fs::Std::In);
+            }
+            (&text[..at], read_named(name, As::Binary, msgs)?)
         }
         Some(at) => {
             let mut content = Vec::new();
@@ -2335,7 +2345,7 @@ fn url_encoded(text: &[u8], msgs: &Messages) -> Result<Vec<u8>, ParamError> {
 /// The file `name` (`-` standard input), or C's error for one that does
 /// not open.
 fn read_named(name: &[u8], how: As, msgs: &Messages) -> Result<Vec<u8>, ParamError> {
-    match crate::slurp::read(name, how) {
+    match crate::slurp::read(name, how, curl_os::text::Mode::Binary) {
         Ok(data) => Ok(data),
         Err(ReadFailed::Open) => {
             msgs.error(&[b"Failed to open ", name]);

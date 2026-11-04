@@ -208,7 +208,11 @@ fn found_gateway() -> Result<Option<Vec<u8>>, OutOfMemory> {
     let Ok(opened) = curl_os::fs::open_read(path) else {
         return Ok(None);
     };
-    first_line(opened)
+    // Read as text (`FOPEN_READTEXT`).
+    first_line(curl_os::text::Reader::new(
+        opened,
+        curl_os::text::Mode::TEXT,
+    ))
 }
 
 /// The first line `from` reads, to a line feed, a carriage return or

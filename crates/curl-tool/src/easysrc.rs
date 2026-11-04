@@ -400,8 +400,9 @@ impl Source {
             curl_os::fs::open_write(path, curl_os::fs::Keep::Nothing, 0o666)
         });
         match opened {
+            // Opened as text (`FOPEN_WRITETEXT`).
             Ok(file) => {
-                let mut file = crate::stdio::Stdio::new(file);
+                let mut file = crate::stdio::Stdio::new(crate::stdio::TextFile(file));
                 self.dump(&mut |bytes| {
                     file.fwrite(bytes);
                 });

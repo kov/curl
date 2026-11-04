@@ -342,8 +342,9 @@ fn part(
 /// warned of and passed over; one whose reading fails ends there, as C's
 /// `fgets` ends it.
 fn header_file(name: &[u8], headers: &mut Vec<Vec<u8>>, msgs: &Messages) -> Result<(), Refused> {
+    // Read as text (`FOPEN_READTEXT`).
     let mut file = match curl_os::fs::with_c_name(name, curl_os::fs::open_read) {
-        Ok(file) => file,
+        Ok(file) => curl_os::text::Reader::new(file, curl_os::text::Mode::TEXT),
         Err(e) => {
             let why = crate::os_message(&e);
             msgs.warn(&[b"Cannot read from ", name, b": ", why.as_bytes()]);
@@ -422,6 +423,8 @@ impl ToolPart {
 /// unless it is a regular file. `Err` for a read that failed after some
 /// of it came.
 fn stdin_part(named: bool, msgs: &Messages) -> Result<Kind, Refused> {
+    // Made binary first (`CURL_BINMODE`).
+    curl_os::fs::set_binary(curl_os::fs::Std::In);
     let mut file = curl_os::fs::stdin().ok();
     let regular = file.as_mut().and_then(|f| {
         let origin = f.stream_position().ok()?;

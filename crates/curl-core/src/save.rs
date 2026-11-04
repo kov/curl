@@ -10,6 +10,7 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_os::fs::{self, Keep};
+use curl_os::text::{Mode, Writer};
 
 /// Why a file could not be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,10 +54,10 @@ pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
     // Opened as C's `fopen(.., "w")` opens it: emptied, made if missing.
     #[cfg(unix)]
     let was = {
-        let mut file = fs::open_write(&target, Keep::Nothing, 0o666)?;
+        let file = fs::open_write(&target, Keep::Nothing, 0o666)?;
         let was = file.metadata()?;
         if !was.is_file() {
-            file.write_all(text)?;
+            Writer::new(file, Mode::TEXT).write_all(text)?;
             return Ok(());
         }
         was
@@ -90,27 +91,23 @@ pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
 /// to replace if the same user and group own them.
 #[cfg(unix)]
 fn write_temp(temp: &CStr, was: &std::fs::Metadata, text: &[u8]) -> Result<(), SaveError> {
-    let mut file = fs::open_write(temp, Keep::Absent, 0o600)?;
+    let file = fs::open_write(temp, Keep::Absent, 0o600)?;
     let new = file.metadata()?;
     if new.uid() == was.uid() && new.gid() == was.gid() {
         file.set_permissions(std::fs::Permissions::from_mode(was.mode()))?;
     }
-    file.write_all(text)?;
+    // As text (`FOPEN_WRITETEXT`), which is binary here.
+    Writer::new(file, Mode::TEXT).write_all(text)?;
     Ok(())
 }
 
 /// Write `text` to a new file at `temp`, readable and writable, in text
-/// mode as C's `fdopen(.., "wt")` writes it: each line feed as a carriage
-/// return and a line feed. Windows has no mode to copy (`HAVE_FCHMOD`).
+/// mode as C's `fdopen(.., "wt")` writes it: each line feed after a
+/// carriage return. Windows has no mode to copy (`HAVE_FCHMOD`).
 #[cfg(windows)]
 fn write_temp(temp: &CStr, text: &[u8]) -> Result<(), SaveError> {
-    let mut file = fs::open_write(temp, Keep::Absent, 0o600)?;
-    for (i, line) in text.split(|&b| b == b'\n').enumerate() {
-        if i > 0 {
-            file.write_all(b"\r\n")?;
-        }
-        file.write_all(line)?;
-    }
+    let file = fs::open_write(temp, Keep::Absent, 0o600)?;
+    Writer::new(file, Mode::TEXT).write_all(text)?;
     Ok(())
 }
 

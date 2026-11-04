@@ -11,6 +11,7 @@ use std::os::windows::io::AsHandle as _;
 use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc};
+use curl_os::fs::Std;
 
 use crate::stdio::{Failed, Layout, Sink, Stdio};
 
@@ -25,7 +26,9 @@ pub(crate) struct Descriptor(Option<File>);
 impl Sink for Descriptor {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         match &mut self.0 {
-            Some(file) => Sink::write(file, bytes),
+            // In the mode the C library keeps for descriptor 1: text until
+            // a transfer's output makes it binary (`CURL_BINMODE`).
+            Some(file) => curl_os::fs::write_as_c(file, curl_os::fs::mode(Std::Out), bytes),
             // Descriptor 1 is not open: each write fails.
             None => Err(io::Error::from(io::ErrorKind::NotConnected)),
         }

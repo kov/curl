@@ -381,3 +381,42 @@ witness: curl-os net::tests::quic_s_options_are_set_for_the_family
 --- new
                     libc::IP_MTU_DISCOVER,
                     libc::IP_PMTUDISC_DONT,
+
+=== a text write leaves its line feeds alone
+file: crates/curl-os/src/text.rs
+witness: curl-os text::tests::writes_each_line_feed_after_a_carriage_return
+--- old
+            if b == b'\n' {
+                out[n] = b'\r';
+                n += 1;
+            }
+--- new
+
+=== a text read keeps the carriage return before a line feed
+file: crates/curl-os/src/text.rs
+witness: curl-os text::tests::reads_a_line_end_as_its_line_feed_up_to_a_ctrl_z
+--- old
+            if b == b'\r' && self.at + 1 < self.end && self.buf[self.at + 1] == b'\n' {
+--- new
+            if false {
+
+=== a Ctrl-Z does not end a text read
+file: crates/curl-os/src/text.rs
+witness: curl-os text::tests::a_ctrl_z_ends_the_file_for_good
+--- old
+            if b == CTRL_Z {
+                self.ended = true;
+                break;
+            }
+--- new
+
+=== a carriage return ending what was read is dropped
+file: crates/curl-os/src/text.rs
+witness: curl-os text::tests::reads_a_line_end_as_its_line_feed_up_to_a_ctrl_z
+--- old
+                self.buf[0] = b'\r';
+                self.at = 0;
+                self.end = 1 + self.inner.read(&mut self.buf[1..])?;
+--- new
+                self.at += 1;
+                continue;

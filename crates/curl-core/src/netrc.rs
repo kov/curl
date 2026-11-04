@@ -130,13 +130,17 @@ fn in_home(
 
 /// The file at `path`, its comment lines left out (`file2memory`).
 pub(crate) fn load(path: &CStr) -> Result<Vec<u8>, NetrcError> {
-    let Ok(mut file) = curl_os::fs::open_read(path) else {
+    let Ok(file) = curl_os::fs::open_read(path) else {
         return Err(NetrcError::FileMissing);
     };
     if file.metadata().is_ok_and(|m| m.is_dir()) {
         return Err(NetrcError::FileMissing);
     }
-    read_kept(&mut file)
+    // Read as text (`FOPEN_READTEXT`).
+    read_kept(&mut curl_os::text::Reader::new(
+        file,
+        curl_os::text::Mode::TEXT,
+    ))
 }
 
 /// What `input` holds, its comment lines left out; a read interrupted is

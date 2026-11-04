@@ -515,7 +515,7 @@ impl Parallel<'_, '_, '_> {
         let census = self.multi.census();
         let (counts, live) = (census.counts, census.working());
         let counted = self.list.iter_mut().map(|e| &mut e.counted);
-        let mut err = std::io::stderr().lock();
+        let mut err = crate::stderr::Stderr;
         let now = Instant::now();
         let line = Line {
             start,

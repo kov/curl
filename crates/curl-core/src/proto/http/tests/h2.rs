@@ -762,6 +762,7 @@ fn a_connection_in_use_is_pinged_with_its_transfer_s_next_send() {
 /// PING for asks made before it gets to it, the most overdue deciding,
 /// and the PING going with its transfer's next send.
 #[test]
+#[cfg(debug_assertions)] // The pool counts its leases in debug builds only.
 fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
     use crate::share::{Kind, Share};
     #[derive(Debug, PartialEq)]
@@ -1580,6 +1581,7 @@ fn transfers_on_a_share_share_its_connection() {
 /// is taken out (`curl_multi_cleanup`): the share's pool leases nothing
 /// after, and the connection, forbidden its reuse, is closed.
 #[test]
+#[cfg(debug_assertions)] // The pool counts its leases in debug builds only.
 fn a_multi_dropped_gives_a_share_s_lent_connection_back() {
     use crate::share::{Kind, Share};
     let share = Share::new().unwrap();
@@ -2779,6 +2781,7 @@ fn a_pushed_error_ending_its_stream_resets_it() {
 /// are on, as C's (`cookie_engine` is not copied): its response's cookie
 /// is not stored.
 #[test]
+#[cfg(debug_assertions)] // The pool counts its leases in debug builds only.
 fn a_push_on_a_share_s_connection_is_taken() {
     use crate::share::{Kind, Share};
     let share = Share::new().unwrap();

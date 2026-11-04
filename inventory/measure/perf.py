@@ -58,6 +58,7 @@ import baseline
 import common
 import deps
 import score
+import suite
 from common import ROOT, check
 
 RELEASE = {"CMAKE_BUILD_TYPE": "Release", "ENABLE_DEBUG": "OFF"}
@@ -305,13 +306,13 @@ def measure_perf(legs, programs):
 
 def measure_scorecard(legs):
     """Run the scorecard SCORECARD_RUNS times per protocol, interleaved."""
-    path = f"{baseline.VENV / 'bin'}:{os.environ.get('PATH', '')}"
+    path = f"{suite.VENV / 'bin'}:{os.environ.get('PATH', '')}"
     for proto in SCORECARD_PROTOCOLS:
         runs = {leg.name: [] for leg in legs}
         for i in range(SCORECARD_RUNS):
             for leg in legs:
                 r = subprocess.run(
-                    [str(baseline.VENV / "bin/python3"),
+                    [str(suite.VENV / "bin/python3"),
                      str(ROOT / "tests/http/scorecard.py"), *SCORECARD_ARGS,
                      *leg.config.scorecard_args, proto],
                     cwd=leg.build / "tests", env={**leg.env(), "PATH": path},

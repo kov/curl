@@ -146,8 +146,13 @@ impl Entry<'_, '_> {
 struct Parallel<'r, 'a, 'l> {
     run: &'r Shared<'r, 'l>,
     transfers: Transfers<'a, 'l>,
-    /// Every transfer made and not ended, in the order made.
-    list: Vec<Entry<'a, 'l>>,
+    /// Every transfer made and not ended, in the order made. Boxed: one
+    /// ended is taken out of the middle, and the rest move up.
+    #[expect(
+        clippy::vec_box,
+        reason = "an entry is 1.6 KB: removing one moves those after it"
+    )]
+    list: Vec<Box<Entry<'a, 'l>>>,
     multi: Multi,
     max: usize,
     /// How many are in the multi (`all_added`).
@@ -215,6 +220,7 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                 start_at: 0,
                 unfinished,
             };
+            let entry = try_box(entry).map_err(|_| ErrorKind::OutOfMemory)?;
             self.list
                 .try_push(entry)
                 .map_err(|_| ErrorKind::OutOfMemory)?;
@@ -482,6 +488,7 @@ impl Parallel<'_, '_, '_> {
     fn end_all(mut self, result: Ending) -> Ending {
         let mut result = result;
         for entry in std::mem::take(&mut self.list) {
+            let entry = *entry;
             let easy = match entry.place {
                 Place::Here(easy) => easy,
                 Place::Added(id) => Handle(

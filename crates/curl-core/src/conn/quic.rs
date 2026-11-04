@@ -2029,7 +2029,7 @@ pub(crate) mod tests {
     /// A packet larger than those before it, which may be a probe of the
     /// path's MTU, sends those before as their run first, then itself
     /// on its own size (`Curl_vquic_send_tail_split`).
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_larger_packet_splits_the_run_before_it() {
         let script = Script::new();
@@ -2056,7 +2056,7 @@ pub(crate) mod tests {
 
     /// A run of one size goes in one send, the kernel cutting it; one
     /// smaller packet ends the run, counted, and goes with it.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_smaller_packet_ends_the_run() {
         let script = Script::new();
@@ -2074,7 +2074,7 @@ pub(crate) mod tests {
 
     /// A datagram too large for the path is lost, and counted as sent; a
     /// run the kernel cannot cut goes a datagram at a time, from then on.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn too_large_is_lost_and_a_failed_cut_sends_apart() {
         let script = Script::new();
@@ -2126,7 +2126,7 @@ pub(crate) mod tests {
     /// A socket that would block keeps the packets, the socket watched
     /// to write and the library called again in a millisecond; they go
     /// first at the next egress. A short send fails it.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_blocked_send_waits_and_a_short_one_fails() {
         let script = Script::new();
@@ -2154,10 +2154,11 @@ pub(crate) mod tests {
         );
     }
 
-    /// On Windows, which cannot cut a run, each packet is a send of its
-    /// own, from the first: a run of one size goes a datagram at a time,
-    /// traced as C's `send` calls are.
-    #[cfg(windows)]
+    /// On Windows and macOS, which cannot cut a run, each packet is a
+    /// send of its own, from the first: a run of one size goes a
+    /// datagram at a time, traced as C's `send` or `sendmsg` calls are
+    /// (`send_packet_no_gso`).
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn a_run_goes_a_datagram_at_a_time() {
         let script = Script::new();
@@ -2171,19 +2172,20 @@ pub(crate) mod tests {
         assert_eq!(
             cx.lines[1..],
             [
-                "egress, send collected 3 packets in 3300 bytes",
-                "vquic_send(len=1200, gso=1200, calls=1) -> 0, sent=1200",
-                "vquic_send(len=1200, gso=1200, calls=1) -> 0, sent=1200",
-                "vquic_send(len=900, gso=900, calls=1) -> 0, sent=900",
-                "vquic_send(len=3300, gso=1200, calls=3) -> 0, sent=3300",
+                "egress, send collected 3 packets in 3300 bytes".to_owned(),
+                format!("vquic_{SEND_METHOD}(len=1200, gso=1200, calls=1) -> 0, sent=1200"),
+                format!("vquic_{SEND_METHOD}(len=1200, gso=1200, calls=1) -> 0, sent=1200"),
+                format!("vquic_{SEND_METHOD}(len=900, gso=900, calls=1) -> 0, sent=900"),
+                format!("vquic_{SEND_METHOD}(len=3300, gso=1200, calls=3) -> 0, sent=3300"),
             ]
         );
     }
 
-    /// On Windows a datagram too large for the path is lost and counted
-    /// as sent; a send that would block keeps the packets for the next
-    /// egress; any other failure fails it, said as C's `send()`'s.
-    #[cfg(windows)]
+    /// On Windows and macOS a datagram too large for the path is lost
+    /// and counted as sent; a send that would block keeps the packets
+    /// for the next egress; any other failure fails it, said as C's
+    /// `send()`'s or `sendmsg()`'s.
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn a_datagram_too_large_is_lost_and_a_blocked_one_waits() {
         let script = Script::new();
@@ -2193,30 +2195,53 @@ pub(crate) mod tests {
         sends(&cx, Act::Fail(TOO_LARGE));
         q.egress(&mut cx).unwrap();
         assert_eq!(
-            cx.lines.last().unwrap(),
-            "vquic_send(len=1200, gso=1200, calls=1) -> 0, sent=1200"
+            *cx.lines.last().unwrap(),
+            format!("vquic_{SEND_METHOD}(len=1200, gso=1200, calls=1) -> 0, sent=1200")
         );
         assert!(cx.socket.sent.lock().unwrap().is_empty());
         packets(&script, &[1200]);
         sends(&cx, Act::Block);
         q.egress(&mut cx).unwrap();
         assert_eq!(
-            cx.lines.last().unwrap(),
-            "vquic_send(len=1200, gso=1200, calls=1) -> 81, sent=0"
+            *cx.lines.last().unwrap(),
+            format!("vquic_{SEND_METHOD}(len=1200, gso=1200, calls=1) -> 81, sent=0")
         );
         assert_eq!(q.wants(), Events::IN | Events::OUT);
         q.egress(&mut cx).unwrap();
         assert_eq!(*cx.socket.sent.lock().unwrap(), [(1200, 1200)]);
         packets(&script, &[1200]);
-        sends(&cx, Act::Fail(10054));
+        // A reset connection: `WSAECONNRESET`, macOS's `ECONNRESET`.
+        let reset = if cfg!(windows) { 10054 } else { 54 };
+        sends(&cx, Act::Fail(reset));
         assert_eq!(q.egress(&mut cx), Err(ErrorKind::SendError));
-        let failed = "! send() returned -1 (errno 10054)".to_owned();
+        let failed = format!("! {SEND_METHOD}() returned -1 (errno {reset})");
         assert!(cx.lines.contains(&failed), "{:?}", cx.lines);
     }
 
-    /// On Windows datagrams come one at a time, each with its sender,
-    /// traced as C's `recvfrom` calls are.
-    #[cfg(windows)]
+    /// On macOS a datagram sent short fails the send, as C's `sendmsg`
+    /// path says it (`do_sendmsg`).
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_short_send_fails() {
+        let script = Script::new();
+        packets(&script, &[1200, 1200]);
+        let (mut q, mut cx) = quic(&script);
+        cx.socket.sends.lock().unwrap().push_back(Act::Short(1000));
+        assert_eq!(q.egress(&mut cx), Err(ErrorKind::SendError));
+        assert!(
+            cx.lines
+                .contains(&"! sendmsg() sent only 1000/1200 bytes".to_owned()),
+            "{:?}",
+            cx.lines
+        );
+        let said = "vquic_sendmsg(len=2400, gso=1200, calls=0) -> 55, sent=0".to_owned();
+        assert!(cx.lines.contains(&said), "{:?}", cx.lines);
+    }
+
+    /// On Windows and macOS datagrams come one at a time, each with its
+    /// sender, traced as C's `recvfrom` or `recvmsg` calls are; C's
+    /// `recvmsg_packets` does not say the empty receive that ends them.
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn datagrams_come_one_at_a_time() {
         let script = Script::new();
@@ -2227,12 +2252,14 @@ pub(crate) mod tests {
         queued.push_back(Ok(vec![0x51; 20]));
         drop(queued);
         q.ingress(&mut cx).unwrap();
-        assert!(
-            cx.lines.contains(&"ingress, recvfrom -> EAGAIN".to_owned()),
+        assert_eq!(
+            cx.lines
+                .contains(&format!("ingress, {RECV_METHOD} -> EAGAIN")),
+            TRACES_EAGAIN,
             "{:?}",
             cx.lines
         );
-        let said = "vquic_recvfrom(len=50, packets=3, calls=3) -> 0".to_owned();
+        let said = format!("vquic_{RECV_METHOD}(len=50, packets=3, calls=3) -> 0");
         assert!(cx.lines.contains(&said), "{:?}", cx.lines);
     }
 
@@ -2242,8 +2269,14 @@ pub(crate) mod tests {
     fn a_refused_receive_fails_the_connect() {
         let script = Script::new();
         let (mut q, mut cx) = quic(&script);
-        // `ECONNREFUSED`, Winsock's `WSAECONNREFUSED`.
-        let refused = if cfg!(windows) { 10061 } else { 111 };
+        // `ECONNREFUSED`: Linux's, macOS's, Winsock's `WSAECONNREFUSED`.
+        let refused = if cfg!(windows) {
+            10061
+        } else if cfg!(target_vendor = "apple") {
+            61
+        } else {
+            111
+        };
         cx.socket.datagrams.lock().unwrap().push_back(Err(refused));
         let r = q.connect(&mut cx);
         assert_eq!(r, Err(ErrorKind::CouldntConnect));

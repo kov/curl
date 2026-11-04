@@ -5891,10 +5891,10 @@ mod h2;
 mod h2_trace;
 // The traces of C's Linux build, whose QUIC sends a run with one
 // `sendmsg` and receives a batch with `recvmmsg`. Their fake server
-// answers each send with its next reply, so Windows' one datagram a
-// call (`conn::quic` tests it) takes replies a flight early; these run
-// where the traces are C's.
-#[cfg(unix)]
+// answers each send with its next reply, so the one datagram a call of
+// Windows and macOS, which cannot cut a run (`conn::quic` tests it),
+// takes replies a flight early; these run where the traces are C's.
+#[cfg(target_os = "linux")]
 mod h3_trace;
 mod hsts;
 mod https_trace;

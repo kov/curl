@@ -7,10 +7,13 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::SystemTime;
 
 /// A directory of its own for a test, removed after it.
 struct Scratch(PathBuf);
@@ -103,6 +106,7 @@ fn globs_unless_told_not_to() {
 
 /// `--create-dirs` makes the directories an output file is in, those
 /// already there gone through.
+#[cfg(unix)]
 #[test]
 fn creates_the_output_directories() {
     let dir = Scratch::new("dirs");
@@ -126,6 +130,7 @@ fn creates_the_output_directories() {
 }
 
 /// The process's file mode mask, as a shell in `dir` reports it.
+#[cfg(unix)]
 fn umask(dir: &Scratch) -> u32 {
     let out = Command::new("sh")
         .args(["-c", "umask"])
@@ -417,6 +422,7 @@ fn reports_an_output_it_cannot_open() {
 
 /// Run the tool with `args`, in `dir`, its standard output going to
 /// `stdout`; `None` is a pipe whose reader is gone before the tool starts.
+#[cfg(unix)]
 fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
@@ -456,6 +462,7 @@ fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
 /// it got, while one that fits fails only when the buffer is written, at
 /// the end of the transfer or at once with `--no-buffer`. As the C tool
 /// does on a full device and a closed pipe.
+#[cfg(unix)]
 #[test]
 fn reports_output_it_cannot_write_when_stdio_would() {
     let s = Scratch::new("stdio");
@@ -595,6 +602,7 @@ fn skips_an_existing_output_file() {
 }
 
 /// `--remote-time` gives the output file the source's modification time.
+#[cfg(unix)]
 #[test]
 fn keeps_the_remote_time() {
     let s = Scratch::new("time");

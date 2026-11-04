@@ -4,7 +4,10 @@
 
 use std::fs::File;
 use std::io;
+#[cfg(unix)]
 use std::os::fd::AsFd as _;
+#[cfg(windows)]
+use std::os::windows::io::AsHandle as _;
 use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc};
@@ -35,11 +38,11 @@ impl Sink for Descriptor {
 
 impl Stdout {
     pub(crate) fn new() -> Result<Stdout, OutOfMemory> {
-        let fd = io::stdout()
-            .as_fd()
-            .try_clone_to_owned()
-            .ok()
-            .map(File::from);
+        #[cfg(unix)]
+        let fd = io::stdout().as_fd().try_clone_to_owned();
+        #[cfg(windows)]
+        let fd = io::stdout().as_handle().try_clone_to_owned();
+        let fd = fd.ok().map(File::from);
         Ok(Stdout(TryArc::try_new(Mutex::new(Stdio::new(
             Descriptor(fd),
         )))?))

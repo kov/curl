@@ -4,8 +4,6 @@
 // Tests may allocate infallibly; the non-test build is still checked.
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
-use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt as _;
 use std::process::ExitCode;
 
 use curl_alloc::OutOfMemory;
@@ -72,7 +70,11 @@ fn memory_tracking_init() {
         // absence, as in C.
         let _ = track::start_log(std::path::Path::new(&path));
     }
-    if let Some(limit) = memlimit_value.as_deref().and_then(memlimit) {
+    if let Some(limit) = memlimit_value
+        .as_deref()
+        .map(std::ffi::OsStr::as_encoded_bytes)
+        .and_then(memlimit)
+    {
         track::set_limit(limit);
     }
 }
@@ -80,8 +82,7 @@ fn memory_tracking_init() {
 /// The leading decimal number of `value`, as `curlx_str_number` reads it
 /// with a maximum of `LONG_MAX`.
 #[cfg(any(feature = "debug-hooks", test))]
-fn memlimit(value: &std::ffi::OsStr) -> Option<u64> {
-    let bytes = value.as_encoded_bytes();
+fn memlimit(bytes: &[u8]) -> Option<u64> {
     let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
     let n = std::str::from_utf8(&bytes[..digits])
         .ok()?
@@ -98,6 +99,12 @@ fn main() -> ExitCode {
     // the key log opened.
     curl_openssl::init();
     let mut msgs = Messages::new();
+    // And Winsock, held for the process (`CURL_GLOBAL_WIN32`); nothing
+    // to start on Unix.
+    let Ok(_winsock) = curl_os::net::Winsock::start() else {
+        msgs.error(&[b"error initializing curl library"]);
+        return ExitCode::from(exit_code(ErrorKind::FailedInit));
+    };
     let Ok(linked) = operate::Linked::new() else {
         msgs.error(&[b"out of memory"]);
         return ExitCode::from(exit_code(ErrorKind::OutOfMemory));
@@ -106,11 +113,18 @@ fn main() -> ExitCode {
     // C takes the environment's locale but for numbers (`operate`).
     curl_os::locale::from_environment_but_numbers();
     let curlrc = if config::reads_curlrc(&argv) {
-        match config::find_curlrc(
-            |var| Ok(curl_os::env::var(var.as_bytes())?.map(OsString::from_vec)),
-            curl_os::users::home_directory,
+        let found = config::find_curlrc(
+            |var| curl_os::env::var(var.as_bytes()),
+            config::user_database_home,
             config::readable,
-        ) {
+        );
+        // Then beside the program, on Windows.
+        #[cfg(windows)]
+        let found = match found {
+            Ok(None) => config::beside_program(config::readable),
+            found => found,
+        };
+        match found {
             Ok(found) => found,
             Err(OutOfMemory) => {
                 msgs.error(&[b"out of memory"]);
@@ -120,15 +134,18 @@ fn main() -> ExitCode {
     } else {
         None
     };
-    let curlrc_name = curlrc
-        .as_ref()
-        .map(|path| path.as_os_str().as_encoded_bytes());
+    let curlrc_name = curlrc.as_deref();
+    // Windows has no writable `argv` (`HAVE_WRITABLE_ARGV`): nothing is
+    // wiped there.
+    #[cfg(unix)]
     let mut wipe = |index, offset| {
         assert!(
             curl_os::args::wipe(index, offset),
             "argument {index} has {offset} bytes to keep"
         );
     };
+    #[cfg(windows)]
+    let mut wipe = |_, _| {};
     options::parse(
         &argv,
         curlrc_name,
@@ -365,7 +382,7 @@ mod tests {
     /// As `curlx_str_number`: leading digits, at most `LONG_MAX`.
     #[test]
     fn reads_memlimit_like_c() {
-        let read = |s: &str| memlimit(std::ffi::OsStr::new(s));
+        let read = |s: &str| memlimit(s.as_bytes());
         assert_eq!(read("140"), Some(140));
         assert_eq!(read("0"), Some(0));
         assert_eq!(read("12abc"), Some(12));

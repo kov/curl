@@ -1421,8 +1421,9 @@ mod tests {
             cond("31 dec 1969 23:59:59 GMT"),
             at(Condition::ModifiedSince, 0)
         );
-        let mtime =
-            std::os::unix::fs::MetadataExt::mtime(&std::fs::metadata("Cargo.toml").unwrap());
+        let modified = std::fs::metadata("Cargo.toml").unwrap().modified().unwrap();
+        let since = modified.duration_since(std::time::UNIX_EPOCH).unwrap();
+        let mtime = i64::try_from(since.as_secs()).unwrap();
         assert_eq!(cond("-Cargo.toml"), at(Condition::UnmodifiedSince, mtime));
         assert_eq!(cond("+Cargo.toml"), at(Condition::ModifiedSince, mtime));
         assert_eq!(cond("no such date nor file"), None);

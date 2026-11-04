@@ -1,11 +1,12 @@
 //! Configuration files: finding the default one, as `findfile(".curlrc",
-//! ...)` in `src/tool_findfile.c` finds it on Unix, and reading one into
-//! options and their arguments, as `parseconfig` in `src/tool_parsecfg.c`
-//! reads it.
+//! ...)` in `src/tool_findfile.c` finds it, and reading one into options
+//! and their arguments, as `parseconfig` in `src/tool_parsecfg.c` reads
+//! it.
+//!
+//! A path is the bytes the system names files by, as C keeps it: the
+//! environment's on Unix, the ANSI code page's on Windows.
 
 use std::ffi::OsString;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
 
 use curl_alloc::{OutOfMemory, TryVec};
 
@@ -24,21 +25,34 @@ const PLACES: &[(&str, &str, bool)] = &[
     ("CURL_HOME", "", false),
     ("XDG_CONFIG_HOME", "", true),
     ("HOME", "", false),
+    #[cfg(windows)]
+    ("USERPROFILE", "", false),
+    #[cfg(windows)]
+    ("APPDATA", "", false),
+    #[cfg(windows)]
+    ("USERPROFILE", "\\Application Data", false),
     // `curlrc` is looked for in one directory only: the first of these
     // whose variable is set.
     ("CURL_HOME", "/.config", true),
     ("HOME", "/.config", true),
 ];
 
+/// What separates a directory from a name in it (`DIR_CHAR`).
+const DIR_CHAR: &[u8] = if cfg!(windows) { b"\\" } else { b"/" };
+
+/// Whether `.curlrc` is looked for as `_curlrc` too, after it, in each
+/// place (`CURLRC_DOTSCORE` 2): on Windows.
+const UNDERSCORE_TOO: bool = cfg!(windows);
+
 /// The default configuration file, if there is one: the first readable
 /// one of the places C looks, and last `.curlrc` in the home directory the
 /// user database names. `env` reads a variable, `home` asks the user
 /// database, `readable` checks a file can be opened.
 pub(crate) fn find_curlrc(
-    env: impl Fn(&str) -> Result<Option<OsString>, OutOfMemory>,
-    home: impl FnOnce() -> Result<Option<OsString>, OutOfMemory>,
-    readable: impl Fn(&Path) -> bool,
-) -> Result<Option<PathBuf>, OutOfMemory> {
+    env: impl Fn(&str) -> Result<Option<Vec<u8>>, OutOfMemory>,
+    home: impl FnOnce() -> Result<Option<Vec<u8>>, OutOfMemory>,
+    readable: impl Fn(&[u8]) -> bool,
+) -> Result<Option<Vec<u8>>, OutOfMemory> {
     let mut without_dot_tried = false;
     for &(var, append, without_dot) in PLACES {
         let Some(dir) = env(var)?.filter(|d| !d.is_empty()) else {
@@ -49,15 +63,28 @@ pub(crate) fn find_curlrc(
                 continue;
             }
             without_dot_tried = true;
+            let path = join(&[&dir, append.as_bytes(), DIR_CHAR, b"curlrc"])?;
+            if readable(&path) {
+                return Ok(Some(path));
+            }
+            continue;
         }
-        let name: &[u8] = if without_dot { b"curlrc" } else { b".curlrc" };
-        let path = join(&[dir.as_bytes(), append.as_bytes(), b"/", name])?;
-        if readable(&path) {
-            return Ok(Some(path));
+        // Once a `curlrc` has been looked for, `_curlrc` no longer is
+        // (`dotscore` cleared).
+        let names: &[&[u8]] = if UNDERSCORE_TOO && !without_dot_tried {
+            &[b".curlrc", b"_curlrc"]
+        } else {
+            &[b".curlrc"]
+        };
+        for name in names {
+            let path = join(&[&dir, append.as_bytes(), DIR_CHAR, name])?;
+            if readable(&path) {
+                return Ok(Some(path));
+            }
         }
     }
     if let Some(dir) = home()? {
-        let path = join(&[dir.as_bytes(), b"/.curlrc"])?;
+        let path = join(&[&dir, DIR_CHAR, b".curlrc"])?;
         if readable(&path) {
             return Ok(Some(path));
         }
@@ -68,13 +95,13 @@ pub(crate) fn find_curlrc(
 /// The user's SSH known-hosts file, if there is one: `.ssh/known_hosts`
 /// in the first readable one of `CURL_HOME`, `HOME` and the home
 /// directory the user database names (`findfile(".ssh/known_hosts",
-/// FALSE)`).
+/// FALSE)`), and on Windows the profile's directories after `HOME`.
 pub(crate) fn find_known_hosts(
-    env: impl Fn(&str) -> Result<Option<OsString>, OutOfMemory>,
-    home: impl FnOnce() -> Result<Option<OsString>, OutOfMemory>,
-    readable: impl Fn(&Path) -> bool,
-) -> Result<Option<PathBuf>, OutOfMemory> {
-    const NAME: &[u8] = b"/.ssh/known_hosts";
+    env: impl Fn(&str) -> Result<Option<Vec<u8>>, OutOfMemory>,
+    home: impl FnOnce() -> Result<Option<Vec<u8>>, OutOfMemory>,
+    readable: impl Fn(&[u8]) -> bool,
+) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    const NAME: &[u8] = b".ssh/known_hosts";
     // The places a name with no leading dot to vary is looked in.
     for &(var, append, without_dot) in PLACES {
         if without_dot {
@@ -83,7 +110,7 @@ pub(crate) fn find_known_hosts(
         let Some(dir) = env(var)?.filter(|d| !d.is_empty()) else {
             continue;
         };
-        let path = join(&[dir.as_bytes(), append.as_bytes(), NAME])?;
+        let path = join(&[&dir, append.as_bytes(), DIR_CHAR, NAME])?;
         if readable(&path) {
             return Ok(Some(path));
         }
@@ -91,24 +118,69 @@ pub(crate) fn find_known_hosts(
     // The user database's home is the last place, found or not.
     match home()?.filter(|d| !d.is_empty()) {
         Some(dir) => {
-            let path = join(&[dir.as_bytes(), NAME])?;
+            let path = join(&[&dir, DIR_CHAR, NAME])?;
             Ok(readable(&path).then_some(path))
         }
         None => Ok(None),
     }
 }
 
-fn join(parts: &[&[u8]]) -> Result<PathBuf, OutOfMemory> {
+/// The home directory the user database names, as `findfile` asks it
+/// (`getpwuid(geteuid())`).
+#[cfg(unix)]
+pub(crate) fn user_database_home() -> Result<Option<Vec<u8>>, OutOfMemory> {
+    use std::os::unix::ffi::OsStringExt as _;
+    Ok(curl_os::users::home_directory()?.map(OsString::into_vec))
+}
+
+/// None: Windows has no user database, and C's `findfile` asks none
+/// there.
+#[cfg(windows)]
+pub(crate) fn user_database_home() -> Result<Option<Vec<u8>>, OutOfMemory> {
+    Ok(None)
+}
+
+/// The configuration file beside the program, on Windows: `.curlrc`, then
+/// `_curlrc`, in the directory of the executable, if one can be opened
+/// (`tool_execpath`). Looked for when `find_curlrc` found none.
+#[cfg(windows)]
+pub(crate) fn beside_program(
+    readable: impl Fn(&[u8]) -> bool,
+) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    let Ok(exe) = std::env::current_exe() else {
+        return Ok(None);
+    };
+    let exe = exe.as_os_str().as_encoded_bytes();
+    // C's buffer holds 512 bytes, the name and its terminator among them.
+    if exe.len() >= 512 {
+        return Ok(None);
+    }
+    let Some(slash) = exe.iter().rposition(|&b| b == DIR_CHAR[0]) else {
+        return Ok(None);
+    };
+    for name in [&b".curlrc"[..], b"_curlrc"] {
+        if slash + DIR_CHAR.len() + name.len() >= 512 {
+            continue;
+        }
+        let path = join(&[&exe[..slash], DIR_CHAR, name])?;
+        if readable(&path) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn join(parts: &[&[u8]]) -> Result<Vec<u8>, OutOfMemory> {
     let mut path = Vec::new();
     for part in parts {
         path.try_extend_from_slice(part)?;
     }
-    Ok(PathBuf::from(OsString::from_vec(path)))
+    Ok(path)
 }
 
 /// Whether `path` can be opened for reading, as `checkhome` checks it.
-pub(crate) fn readable(path: &Path) -> bool {
-    curl_os::fs::with_c_name(path.as_os_str().as_bytes(), curl_os::fs::open_read).is_ok()
+pub(crate) fn readable(path: &[u8]) -> bool {
+    curl_os::fs::with_c_name(path, curl_os::fs::open_read).is_ok()
 }
 
 /// The longest line a configuration file may have
@@ -348,17 +420,18 @@ mod tests {
             Ok(vars
                 .iter()
                 .find(|(k, _)| *k == v)
-                .map(|(_, d)| OsString::from(d)))
+                .map(|(_, d)| d.as_bytes().to_vec()))
         };
-        let readable = |p: &Path| files.iter().any(|f| Path::new(f) == p);
-        find_curlrc(env, || Ok(home.map(OsString::from)), readable)
+        let readable = |p: &[u8]| files.iter().any(|f| f.as_bytes() == p);
+        find_curlrc(env, || Ok(home.map(|h| h.as_bytes().to_vec())), readable)
             .unwrap()
-            .map(|p| p.display().to_string())
+            .map(|p| String::from_utf8(p).unwrap())
     }
 
     /// `findfile(".ssh/known_hosts", FALSE)`: `CURL_HOME`, then `HOME`,
     /// then the user database's home, never `XDG_CONFIG_HOME` nor a
     /// `.config` directory.
+    #[cfg(unix)]
     #[test]
     fn finds_known_hosts_where_c_does() {
         let find = |vars: &[(&str, &str)], home: Option<&str>, files: &[&str]| {
@@ -366,12 +439,12 @@ mod tests {
                 Ok(vars
                     .iter()
                     .find(|(k, _)| *k == v)
-                    .map(|(_, d)| OsString::from(d)))
+                    .map(|(_, d)| d.as_bytes().to_vec()))
             };
-            let readable = |p: &Path| files.iter().any(|f| Path::new(f) == p);
-            find_known_hosts(env, || Ok(home.map(OsString::from)), readable)
+            let readable = |p: &[u8]| files.iter().any(|f| f.as_bytes() == p);
+            find_known_hosts(env, || Ok(home.map(|h| h.as_bytes().to_vec())), readable)
                 .unwrap()
-                .map(|p| p.display().to_string())
+                .map(|p| String::from_utf8(p).unwrap())
         };
         let all = [
             "/c/.ssh/known_hosts",
@@ -408,6 +481,7 @@ mod tests {
     }
 
     /// The order of `findfile` with `CURLRC_DOTSCORE` 1.
+    #[cfg(unix)]
     #[test]
     fn looks_where_c_looks() {
         let all = [
@@ -455,11 +529,13 @@ mod tests {
     fn readable_is_whether_it_opens() {
         let path = std::env::temp_dir().join(format!("curl-config-{}", std::process::id()));
         std::fs::write(&path, b"").unwrap();
-        assert!(readable(&path));
+        let name = path.as_os_str().as_encoded_bytes();
+        assert!(readable(name));
         std::fs::remove_file(&path).unwrap();
-        assert!(!readable(&path));
+        assert!(!readable(name));
     }
 
+    #[cfg(unix)]
     #[test]
     fn then_the_users_home() {
         let files = ["/p/.curlrc", "/p/.config/curlrc", "/h/.curlrc"];
@@ -474,6 +550,55 @@ mod tests {
             Some("/h/.curlrc")
         );
         assert_eq!(find_with_home(&[], None, &files), None);
+    }
+
+    /// The order of `findfile` with `CURLRC_DOTSCORE` 2, on Windows: the
+    /// profile's directories after `HOME`, each place's `.curlrc` then
+    /// `_curlrc`, until a `curlrc` has been looked for; names joined with
+    /// a backslash.
+    #[cfg(windows)]
+    #[test]
+    fn looks_where_c_looks_on_windows() {
+        let vars = [
+            ("CURL_HOME", "c"),
+            ("HOME", "h"),
+            ("USERPROFILE", "u"),
+            ("APPDATA", "a"),
+        ];
+        let all = [
+            "c\\.curlrc",
+            "c\\_curlrc",
+            "h\\_curlrc",
+            "u\\.curlrc",
+            "a\\_curlrc",
+            "u\\Application Data\\.curlrc",
+            "c/.config\\curlrc",
+        ];
+        for (i, want) in all.iter().enumerate() {
+            assert_eq!(find(&vars, &all[i..]).as_deref(), Some(*want));
+        }
+        // A `curlrc` looked for in `XDG_CONFIG_HOME` ends the `_curlrc`s.
+        let xdg = [("XDG_CONFIG_HOME", "x"), ("HOME", "h")];
+        assert_eq!(find(&xdg, &["h\\_curlrc"]), None);
+        assert_eq!(find(&xdg, &["h\\.curlrc"]).as_deref(), Some("h\\.curlrc"));
+        // No user database is asked.
+        assert_eq!(find_with_home(&[], None, &["p\\.curlrc"]), None);
+        let known = |vars: &[(&str, &str)], files: &[&str]| {
+            let env = |v: &str| {
+                Ok(vars
+                    .iter()
+                    .find(|(k, _)| *k == v)
+                    .map(|(_, d)| d.as_bytes().to_vec()))
+            };
+            let readable = |p: &[u8]| files.iter().any(|f| f.as_bytes() == p);
+            find_known_hosts(env, user_database_home, readable)
+                .unwrap()
+                .map(|p| String::from_utf8(p).unwrap())
+        };
+        assert_eq!(
+            known(&vars, &["a\\.ssh/known_hosts"]).as_deref(),
+            Some("a\\.ssh/known_hosts")
+        );
     }
 
     fn read(text: &str) -> Vec<(usize, String, Option<String>, &'static [Warning])> {

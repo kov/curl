@@ -1184,7 +1184,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("format");
         std::fs::write(&file, b"a\r\n%{url}\nb\n").unwrap();
-        let name = std::os::unix::ffi::OsStrExt::as_bytes(file.as_os_str());
+        let name = file.as_os_str().as_encoded_bytes();
         assert_eq!(Format::read(name).unwrap().bytes(), b"a%{url}b");
         assert_eq!(
             Format::read(b"/nonexistent/x").unwrap_err(),
@@ -1289,7 +1289,8 @@ mod tests {
     /// `%time{}` as C writes it at the time test 1981 sets: its own
     /// conversions put in before `strftime`'s, `%%` left for it to make
     /// one `%` of; nothing for an empty format or a result past C's
-    /// buffer; an unclosed one written as it is.
+    /// buffer; an unclosed one written as it is. In glibc's words.
+    #[cfg(unix)]
     #[test]
     fn writes_the_time_as_c() {
         let at = |format: &[u8]| {

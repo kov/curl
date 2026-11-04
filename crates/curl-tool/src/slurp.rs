@@ -76,13 +76,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("f");
         std::fs::write(&file, b"a\r\nb\nc\0d\n").unwrap();
-        let name = std::os::unix::ffi::OsStrExt::as_bytes(file.as_os_str());
+        let name = file.as_os_str().as_encoded_bytes();
         assert_eq!(read(name, As::Text).unwrap(), b"abcd");
         assert_eq!(read(name, As::Binary).unwrap(), b"a\r\nb\nc\0d\n");
         assert_eq!(read(b"/nonexistent/x", As::Text), Err(ReadFailed::Open));
-        // A directory opens, and fails to be read.
-        let name = std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str());
-        assert_eq!(read(name, As::Binary), Err(ReadFailed::Read));
+        // A directory opens, and fails to be read; on Windows it does not
+        // open, as in the C library.
+        let name = dir.as_os_str().as_encoded_bytes();
+        let failed = if cfg!(windows) {
+            ReadFailed::Open
+        } else {
+            ReadFailed::Read
+        };
+        assert_eq!(read(name, As::Binary), Err(failed));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

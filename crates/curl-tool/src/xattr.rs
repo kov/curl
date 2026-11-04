@@ -1,9 +1,13 @@
 //! `--xattr`: where a download came from, stored with its file as
-//! extended attributes (`src/tool_xattr.c`).
+//! extended attributes (`src/tool_xattr.c`), or on Windows as the file's
+//! `Zone.Identifier` stream.
 
+#[cfg(unix)]
 use std::ffi::CStr;
+use std::fs::File;
 use std::io;
-use std::os::fd::BorrowedFd;
+#[cfg(unix)]
+use std::os::fd::{AsFd as _, BorrowedFd};
 
 use curl_core::report::TransferReport;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
@@ -25,11 +29,13 @@ fn strip_credentials(url: &[u8]) -> Option<Vec<u8>> {
 
 /// Where the attributes go: the file, or, in the debug test build with
 /// `CURL_FAKE_XATTR` set, standard output, a line each.
+#[cfg(unix)]
 enum Target<'a> {
     File(BorrowedFd<'a>),
     Shown(&'a Stdout),
 }
 
+#[cfg(unix)]
 impl Target<'_> {
     /// Set attribute `name` to `value` (`xattr`).
     fn set(&self, name: &CStr, value: &[u8]) -> io::Result<()> {
@@ -46,11 +52,14 @@ impl Target<'_> {
     }
 }
 
-/// Store the transfer's metadata with the file `fd` (`fwrite_xattr`):
-/// who made it, the referer sent, the type of what came, and `url`
-/// without its credentials. The first that fails stops the rest.
+/// Store the transfer's metadata with `file`, opened as `name`
+/// (`fwrite_xattr`): who made it, the referer sent, the type of what
+/// came, and `url` without its credentials. The first that fails stops
+/// the rest.
+#[cfg(unix)]
 pub(crate) fn write(
-    fd: BorrowedFd<'_>,
+    file: &File,
+    _name: &[u8],
     url: &[u8],
     report: &TransferReport,
     stdout: &Stdout,
@@ -58,7 +67,7 @@ pub(crate) fn write(
     let target = if cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_FAKE_XATTR") {
         Target::Shown(stdout)
     } else {
-        Target::File(fd)
+        Target::File(file.as_fd())
     };
     target.set(c"user.creator", b"curl")?;
     if let Some(referer) = report.referer() {
@@ -71,6 +80,55 @@ pub(crate) fn write(
     // last, as C's does; nothing was.
     let origin = strip_credentials(url).ok_or_else(|| io::Error::from_raw_os_error(0))?;
     target.set(c"user.xdg.origin.url", &origin)
+}
+
+/// Store the transfer's metadata with the file `name` as Windows keeps a
+/// download's origin (`fwrite_xattr`): its `Zone.Identifier` stream, the
+/// referer sent and `url` without its credentials, under
+/// `[ZoneTransfer]` (`win32_file_stream`). In the debug test build with
+/// `CURL_FAKE_XATTR` set, the text is shown on standard output too.
+#[cfg(windows)]
+pub(crate) fn write(
+    _file: &File,
+    name: &[u8],
+    url: &[u8],
+    report: &TransferReport,
+    stdout: &Stdout,
+) -> io::Result<()> {
+    use curl_alloc::TryVec as _;
+    let oom = |_| io::Error::from(io::ErrorKind::OutOfMemory);
+    let origin = strip_credentials(url);
+    let mut text = Vec::new();
+    if let Some(origin) = &origin {
+        let referer = report.referer();
+        let parts: [&[u8]; 6] = [
+            b"[ZoneTransfer]\n",
+            if referer.is_some() {
+                b"ReferrerUrl="
+            } else {
+                b""
+            },
+            referer.unwrap_or_default(),
+            if referer.is_some() { b"\n" } else { b"" },
+            b"HostUrl=",
+            origin,
+        ];
+        for part in parts.into_iter().chain([&b"\n"[..]]) {
+            text.try_extend_from_slice(part).map_err(oom)?;
+        }
+    }
+    curl_os::fs::with_c_name(name, |name| {
+        curl_os::xattr::set_stream(name, c"Zone.Identifier", &text)
+    })?;
+    if cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_FAKE_XATTR") {
+        // A failed write shows when standard output is flushed.
+        stdout.fwrite(&text);
+    }
+    // A URL that cannot be read leaves the stream empty, and fails.
+    match origin {
+        Some(_) => Ok(()),
+        None => Err(io::Error::from_raw_os_error(0)),
+    }
 }
 
 #[cfg(test)]

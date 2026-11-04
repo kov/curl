@@ -1138,7 +1138,9 @@ mod tests {
     /// A file of headers that opens and fails to be read, a directory
     /// here, refuses the part as a line too long for C's buffer does.
     /// C's `fgets` takes the failed read for the end of the file and the
-    /// part is taken without headers (DIVERGENCE.md).
+    /// part is taken without headers (DIVERGENCE.md). A directory does
+    /// not open on Windows.
+    #[cfg(unix)]
     #[test]
     fn a_header_file_that_cannot_be_read_is_refused() {
         let dir = std::env::temp_dir();

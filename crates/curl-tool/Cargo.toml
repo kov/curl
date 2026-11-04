@@ -32,7 +32,7 @@ required-features = ["debug-hooks"]
 curl-alloc = { path = "../curl-alloc" }
 curl-ares = { path = "../curl-ares", optional = true }
 curl-core = { path = "../curl-core" }
-curl-os = { path = "../curl-os", features = ["args", "fs"] }
+curl-os = { path = "../curl-os", features = ["args", "fs", "net"] }
 curl-gssapi = { path = "../curl-gssapi" }
 curl-openssl = { path = "../curl-openssl" }
 curl-psl = { path = "../curl-psl" }

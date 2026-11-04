@@ -6,6 +6,7 @@
 
 use std::fs::File;
 use std::io::{self, IsTerminal as _};
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 
 use curl_alloc::TryVec as _;
@@ -53,6 +54,7 @@ impl Sink for File {
         io::Write::write(self, bytes)
     }
 
+    #[cfg(unix)]
     fn layout(&self) -> Layout {
         match self.metadata() {
             Ok(meta) => Layout {
@@ -62,7 +64,22 @@ impl Sink for File {
             Err(_) => Layout::UNKNOWN,
         }
     }
+
+    /// The UCRT's: a stream's buffer is `_INTERNAL_BUFSIZ` whatever the
+    /// file, and one on the console is written out as each write ends,
+    /// which a line at a time comes nearest to.
+    #[cfg(windows)]
+    fn layout(&self) -> Layout {
+        Layout {
+            size: UCRT_BUFSIZ,
+            line: self.is_terminal(),
+        }
+    }
 }
+
+/// The UCRT's `_INTERNAL_BUFSIZ`: the buffer it gives a stream.
+#[cfg(windows)]
+const UCRT_BUFSIZ: usize = 4096;
 
 impl Close for File {
     fn close(self) -> io::Result<()> {
@@ -72,6 +89,7 @@ impl Close for File {
 
 /// The buffer for a file of block size `block`: the block, when it is
 /// smaller than `BUFSIZ` and not 0.
+#[cfg(unix)]
 fn buffer_size(block: u64) -> usize {
     match usize::try_from(block) {
         Ok(size @ 1..BUFSIZ) => size,
@@ -421,6 +439,7 @@ mod tests {
 
     /// The buffer is `BUFSIZ`, or the file's block size when smaller and
     /// not 0.
+    #[cfg(unix)]
     #[test]
     fn sizes_the_buffer_by_the_block() {
         for (block, size) in [(0, BUFSIZ), (1, 1), (4096, 4096), (8191, 8191)] {
@@ -437,5 +456,23 @@ mod tests {
             if block > 0 { block.min(BUFSIZ) } else { BUFSIZ }
         );
         assert!(!layout.line);
+    }
+
+    /// The UCRT's buffer is 4096 bytes for any file, and a file is not
+    /// written a line at a time.
+    #[cfg(windows)]
+    #[test]
+    fn sizes_the_buffer_as_the_ucrt_does() {
+        let path = std::env::temp_dir().join(format!("curl-stdio-{}", std::process::id()));
+        let file = File::create(&path).unwrap();
+        assert_eq!(
+            Sink::layout(&file),
+            Layout {
+                size: 4096,
+                line: false
+            }
+        );
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
     }
 }

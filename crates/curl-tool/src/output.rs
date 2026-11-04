@@ -370,7 +370,6 @@ fn open_unclobbered(name: &mut Vec<u8>, tried: &mut Option<Vec<u8>>) -> std::io:
     // The debug test build takes the limit from `CURL_MAX_CLOBBER`.
     #[cfg(feature = "debug-hooks")]
     if let Some(n) = curl_os::env::var_into(b"CURL_MAX_CLOBBER", &mut [0u8; 32])
-        .map(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes)
         .and_then(crate::memlimit)
         .filter(|&n| n <= 100_000)
     {
@@ -1107,8 +1106,11 @@ mod tests {
         msgs
     }
 
+    /// The device that takes every write and keeps none.
+    const NULL_DEVICE: &[u8] = if cfg!(windows) { b"NUL" } else { b"/dev/null" };
+
     fn to_terminal() -> Output {
-        let out = Output::file(b"/dev/null", quiet()).unwrap();
+        let out = Output::file(NULL_DEVICE, quiet()).unwrap();
         out.stream().terminal = true;
         out
     }
@@ -1216,7 +1218,8 @@ mod tests {
             Write::Accepted
         );
         assert_eq!(out.stream().body(b"body"), Write::Accepted);
-        let final_path = dir.join("final");
+        // Joined with a `/` everywhere, as C joins it (`"%s/%s"`).
+        let final_path = std::path::PathBuf::from(format!("{}/final", dir.display()));
         assert_eq!(
             out.stream().file_name(),
             Some(final_path.as_os_str().as_encoded_bytes())
@@ -1295,7 +1298,7 @@ mod tests {
     /// device keeps it.
     #[test]
     fn throws_away_only_from_a_regular_file() {
-        let out = Output::file(b"/dev/null", quiet()).unwrap();
+        let out = Output::file(NULL_DEVICE, quiet()).unwrap();
         let mut s = out.stream();
         assert_eq!(s.body(b"abc"), Write::Accepted);
         assert!(s.throw_away());
@@ -1383,6 +1386,7 @@ mod tests {
 
     /// A header line too long for the buffer fails at once, its count
     /// for the library to report; one held fails as it is flushed.
+    #[cfg(unix)]
     #[test]
     fn dumps_headers_short_to_a_full_device() {
         let stdout = Stdout::new().unwrap();
@@ -1399,6 +1403,7 @@ mod tests {
 
     /// A write to the output file that failed is remembered (`ferror`):
     /// what was written is then not resumed from.
+    #[cfg(unix)]
     #[test]
     fn remembers_a_failed_write() {
         let out = Output::file(b"/dev/full", quiet()).unwrap();
@@ -1407,7 +1412,7 @@ mod tests {
         assert!(!s.failed());
         assert_eq!(s.body(&[b'x'; 16384]), Write::Took(0));
         assert!(s.failed());
-        let out = Output::file(b"/dev/null", quiet()).unwrap();
+        let out = Output::file(NULL_DEVICE, quiet()).unwrap();
         let mut s = out.stream();
         assert_eq!(s.body(&[b'x'; 16384]), Write::Accepted);
         assert!(!s.failed());

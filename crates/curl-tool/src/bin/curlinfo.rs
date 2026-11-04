@@ -30,6 +30,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("typecheck", true),
     // Error codes have their full messages.
     ("verbose-strings", true),
+    // Asked of the platform: see `toggles`.
     ("wakeup", true),
     ("headers-api", true),
     ("xattr", true),
@@ -44,17 +45,21 @@ const TOGGLES: &[(&str, bool)] = &[
     ("override-dns", false),
     ("ssl-sessions", true),
     ("cert-status", true),
+    // Asked of the platform: see `toggles`.
     ("getrlimit", true),
 ];
 
 /// Each toggle, `resolv-threaded` ON when the library resolves with the
 /// threaded resolver, and `override-dns` where a debug build's c-ares takes
-/// `CURL_DNS_SERVER`.
+/// `CURL_DNS_SERVER`. On Windows `wakeup` and `getrlimit` are OFF, as C's
+/// build there has no wakeup socket pair (`ENABLE_WAKEUP`, not under
+/// Winsock) and no `getrlimit`.
 fn toggles() -> impl Iterator<Item = (&'static str, bool)> {
     let threaded = cfg!(feature = "threaded-resolver");
     TOGGLES.iter().map(move |&(name, on)| match name {
         "resolv-threaded" => (name, threaded),
         "override-dns" => (name, !threaded && cfg!(feature = "debug-hooks")),
+        "wakeup" | "getrlimit" => (name, on && cfg!(unix)),
         _ => (name, on),
     })
 }
@@ -78,5 +83,15 @@ mod tests {
             threaded,
             Some(("resolv-threaded", cfg!(feature = "threaded-resolver")))
         );
+    }
+
+    /// What the platform decides is reported as C's build there reports
+    /// it: a wakeup socket pair and `getrlimit` on Unix, neither on
+    /// Windows.
+    #[test]
+    fn the_platform_s_toggles_are_reported_as_c_s_build_there() {
+        let on = |name| toggles().find(|&(n, _)| n == name).map(|(_, on)| on);
+        assert_eq!(on("wakeup"), Some(cfg!(unix)));
+        assert_eq!(on("getrlimit"), Some(cfg!(unix)));
     }
 }

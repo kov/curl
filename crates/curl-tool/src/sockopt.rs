@@ -148,6 +148,10 @@ mod tests {
             .unwrap();
             m.add(Box::new(easy), (), &mut NoEvents).unwrap();
             m.perform(&mut NoEvents).unwrap();
+            // Windows gives up on a refused loopback connect at once, the
+            // library's own option, set before the application's.
+            #[cfg(windows)]
+            let want = [&want[..1], &[O::NoSynRetransmissions], &want[1..]].concat();
             assert_eq!(
                 talk.options(),
                 want,

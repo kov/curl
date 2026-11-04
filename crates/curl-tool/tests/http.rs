@@ -751,6 +751,7 @@ fn saves_the_cookie_jar() {
 /// `--xattr` stores where a download came from with the file the
 /// transfer wrote, once it succeeded: a pipe takes no attributes, and
 /// that is warned of, with the reason.
+#[cfg(unix)]
 #[test]
 fn stores_where_a_download_came_from() {
     let dir = scratch("xattr");
@@ -799,6 +800,7 @@ fn stores_where_a_download_came_from() {
 /// that never opens its output leaves the reader to end with nothing
 /// once `done` is set, not stuck in `open`. The end is the writer
 /// closing after it wrote, or `done` with nothing more to read.
+#[cfg(unix)]
 fn read_fifo(path: &std::path::Path, done: &std::sync::atomic::AtomicBool) -> Vec<u8> {
     use std::os::unix::fs::OpenOptionsExt as _;
     /// `O_NONBLOCK` on Linux.

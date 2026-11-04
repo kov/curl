@@ -1079,9 +1079,9 @@ file: crates/curl-tool/src/config.rs
 witness: curl-tool finds_the_configuration_by_a_long_name_under_torture
 features: debug-hooks
 --- old
-    curl_os::fs::with_c_name(path.as_os_str().as_bytes(), curl_os::fs::open_read).is_ok()
+    curl_os::fs::with_c_name(path, curl_os::fs::open_read).is_ok()
 --- new
-    std::fs::File::open(path).is_ok()
+    std::fs::File::open(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path)).is_ok()
 
 === --stderr opens its file by a name std copies
 file: crates/curl-tool/src/output.rs

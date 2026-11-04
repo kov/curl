@@ -12,7 +12,6 @@ use std::fs::File;
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
-use std::os::fd::AsFd as _;
 use std::time::{Duration, Instant};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_format};
@@ -3019,17 +3018,12 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
             found.as_deref()
         }
         None => {
-            let env = |var: &str| {
-                Ok(curl_os::env::var(var.as_bytes())?
-                    .map(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec))
-            };
             let path = crate::config::find_known_hosts(
-                env,
-                curl_os::users::home_directory,
+                |var| curl_os::env::var(var.as_bytes()),
+                crate::config::user_database_home,
                 crate::config::readable,
             )
-            .map_err(oom)?
-            .map(|p| std::os::unix::ffi::OsStringExt::into_vec(p.into_os_string()));
+            .map_err(oom)?;
             let checked = [op.hostpubmd5.is_some(), op.hostpubsha256.is_some()];
             let home = curl_os::env::var(b"HOME").map_err(oom)?;
             found = known_hosts_default(path, checked, home.as_deref()).map_err(oom)?;
@@ -3546,7 +3540,13 @@ fn settle(
     if result.is_ok()
         && op.xattr
         && let Some(file) = stream.open_file()
-        && let Err(e) = crate::xattr::write(file.as_fd(), url, easy.report(), run.stdout)
+        && let Err(e) = crate::xattr::write(
+            file,
+            stream.file_name().unwrap_or_default(),
+            url,
+            easy.report(),
+            run.stdout,
+        )
     {
         let name = stream.file_name().unwrap_or_default();
         msgs.warn(&[
@@ -3905,9 +3905,8 @@ fn open_upload(
         // The debug test build takes the size from `CURL_UPLOAD_SIZE`,
         // as if the file had grown since (`pre_transfer`).
         #[cfg(feature = "debug-hooks")]
-        if let Some(n) = curl_os::env::var_into(b"CURL_UPLOAD_SIZE", &mut [0u8; 32])
-            .map(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes)
-            .and_then(crate::memlimit)
+        if let Some(n) =
+            curl_os::env::var_into(b"CURL_UPLOAD_SIZE", &mut [0u8; 32]).and_then(crate::memlimit)
         {
             size = Some(n);
         }
@@ -4214,15 +4213,15 @@ mod tests {
         let refused = Err(ErrorKind::CouldntConnect);
         assert_eq!(reason(&op, refused, http, None, None), None);
         // Refused, with `--retry-connrefused`; and not otherwise.
-        // As Linux numbers them.
-        let why = OsErrno::new(111);
+        // As the system numbers them: Linux, or Winsock.
+        let why = OsErrno::new(if cfg!(windows) { 10061 } else { 111 });
         assert_eq!(reason(&op, refused, http, None, why), None);
         op.retry_connrefused = true;
         assert_eq!(
             reason(&op, refused, http, None, why),
             Some(Reason::ConnRefused)
         );
-        let timed_out_connect = OsErrno::new(110);
+        let timed_out_connect = OsErrno::new(if cfg!(windows) { 10060 } else { 110 });
         assert_eq!(reason(&op, refused, http, None, timed_out_connect), None);
         assert_eq!(
             reason(&op, Ok(()), http, Some(503), why),
@@ -4728,6 +4727,14 @@ mod tests {
         assert!(off.contains("fastopen: true"), "{off}");
     }
 
+    /// A known-hosts file given, which must exist: a device on Unix, this
+    /// crate's manifest on Windows, which has no device file.
+    const KNOWN: &str = if cfg!(windows) {
+        "Cargo.toml"
+    } else {
+        "/dev/null"
+    };
+
     /// For an SSH URL the key files, fingerprints, compression and
     /// known-hosts file are set as C's `ssh_setopts` sets them; with
     /// `--insecure`, no known-hosts file.
@@ -4742,7 +4749,7 @@ mod tests {
             "s",
             "--compressed-ssh",
             "--knownhosts",
-            "/dev/null",
+            KNOWN,
         ];
         let (text, _) = set_up_url(&args, "sftp://h/").unwrap();
         for line in [
@@ -4750,11 +4757,11 @@ mod tests {
             "curl_easy_setopt(curl, CURLOPT_SSH_PUBLIC_KEYFILE, \"p\");",
             "curl_easy_setopt(curl, CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256, \"s\");",
             "curl_easy_setopt(curl, CURLOPT_SSH_COMPRESSION, 1L);",
-            "curl_easy_setopt(curl, CURLOPT_SSH_KNOWNHOSTS, \"/dev/null\");",
+            &format!("curl_easy_setopt(curl, CURLOPT_SSH_KNOWNHOSTS, \"{KNOWN}\");"),
         ] {
             assert!(text.contains(line), "{line} in {text}");
         }
-        let (text, _) = set_up_url(&["-k", "--knownhosts", "/dev/null"], "sftp://h/").unwrap();
+        let (text, _) = set_up_url(&["-k", "--knownhosts", KNOWN], "sftp://h/").unwrap();
         assert!(!text.contains("CURLOPT_SSH_KNOWNHOSTS"), "{text}");
         // `--hostpubmd5` takes 32 characters, no more nor fewer.
         let md5 = "0123456789abcdef0123456789abcdef";
@@ -4773,10 +4780,10 @@ mod tests {
         let (text, _) = set_up_with(&[], "sftp://h/", Claims::of_build(), kept).unwrap();
         let line = "curl_easy_setopt(curl, CURLOPT_SSH_KNOWNHOSTS, \"/kept/known_hosts\");";
         assert!(text.contains(line), "{text}");
-        let args = ["--knownhosts", "/dev/null"];
+        let args = ["--knownhosts", KNOWN];
         let (text, _) = set_up_with(&args, "sftp://h/", Claims::of_build(), kept).unwrap();
         assert!(
-            text.contains("CURLOPT_SSH_KNOWNHOSTS, \"/dev/null\""),
+            text.contains(&format!("CURLOPT_SSH_KNOWNHOSTS, \"{KNOWN}\"")),
             "{text}"
         );
         // Nothing kept: it is worked out, one under the home directory

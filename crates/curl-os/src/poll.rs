@@ -527,9 +527,10 @@ mod windows_tests {
         mine.copy_revents(&PollFd::new(b.as_socket(), Events::OUT));
     }
 
-    /// Only what was asked is reported, of the socket that has it, as C's
-    /// `Curl_poll` over `select` reports it: `RDNORM` alone for a socket
-    /// asked `RDNORM`, Winsock's whole `IN` for one asked `IN`.
+    /// Only the socket that is ready is reported, with what C's
+    /// `Curl_poll` over `select` reports: a bit asked is told if it shares
+    /// any bit with what was ready, so a socket asked `RDNORM` alone is told
+    /// Winsock's whole `IN`, which holds it.
     #[test]
     fn reports_the_ready_socket_only() {
         let (mut a, b) = pair();
@@ -544,7 +545,7 @@ mod windows_tests {
         assert!(fds[1].revents().is_empty());
         let mut fds = [PollFd::new(b.as_socket(), Events::RDNORM)];
         assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
-        assert_eq!(fds[0].revents(), Events::RDNORM);
+        assert_eq!(fds[0].revents(), Events::IN);
         // The same socket twice is in each set once, and told to both.
         let mut fds = [
             PollFd::new(b.as_socket(), Events::IN),

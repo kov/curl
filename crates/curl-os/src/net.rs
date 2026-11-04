@@ -3006,7 +3006,8 @@ mod windows_tests {
 
     /// The int value of option `name` at `level` on `s`.
     fn option(s: BorrowedSocket<'_>, level: i32, name: i32) -> i32 {
-        let mut value: i32 = -1;
+        // Zero first: Winsock writes a `BOOLEAN` option's one byte alone.
+        let mut value: i32 = 0;
         let mut len = i32::try_from(size_of::<i32>()).unwrap();
         // SAFETY: `value` is an int of the length given, and both live
         // through the call; `s` is open.

@@ -1,12 +1,42 @@
-//! Random bytes from the kernel (`getrandom(2)`), for the nonces a
-//! protocol makes up.
+//! Random bytes from the kernel (`getrandom(2)`; on Windows the system's
+//! generator), for the nonces a protocol makes up.
 
 #![allow(unsafe_code)]
 
 use std::io;
 
+/// Fill `out` with random bytes from the system's preferred generator
+/// (`BCryptGenRandom`), as C's `curlx_win32_random` asks it.
+#[cfg(windows)]
+pub fn fill(out: &mut [u8]) -> io::Result<()> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+    };
+    fill_from(out, |rest| {
+        let n = rest.len().min(u32::MAX as usize);
+        let len = u32::try_from(n).expect("at most u32::MAX");
+        // SAFETY: `rest` is valid to write for `len` bytes, which the call
+        // writes no more than; no algorithm handle is passed, as the flag
+        // asks.
+        let status = unsafe {
+            BCryptGenRandom(
+                core::ptr::null_mut(),
+                rest.as_mut_ptr(),
+                len,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if status < 0 {
+            // An NTSTATUS is no number `io::Error` knows.
+            return Err(io::ErrorKind::Other.into());
+        }
+        Ok(n)
+    })
+}
+
 /// Fill `out` with random bytes, waiting for the kernel's pool if it is
 /// not ready yet.
+#[cfg(unix)]
 pub fn fill(out: &mut [u8]) -> io::Result<()> {
     fill_from(out, |rest| {
         // SAFETY: `rest` is valid to write for its length, and

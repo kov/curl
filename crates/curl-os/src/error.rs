@@ -32,7 +32,78 @@ impl ErrorText {
         }
     }
 
+    /// The system's text for error number `code`: an `errno`, or on
+    /// Windows any of the three numbers the system has, taken in C's
+    /// order (`curlx_strerror`): the C library's, then Winsock's, then
+    /// the system's (`GetLastError`).
+    #[cfg(windows)]
+    pub fn of_code(code: i32) -> ErrorText {
+        let mut text = ErrorText::empty();
+        // SAFETY: the pointer and length name `text.text`, writable for
+        // its whole length and alive for the call; `strerror_s` writes at
+        // most that many bytes, a NUL among them.
+        let failed = unsafe { strerror_s(text.text.as_mut_ptr().cast(), LEN, code) } != 0;
+        text.len = text.text.iter().position(|&b| b == 0).unwrap_or(0);
+        if failed || text.as_bytes() == b"Unknown error" {
+            text.len = 0;
+            if let Some(said) = winsock_text(code) {
+                // Short enough for the buffer.
+                let _ = fmt::write(&mut text, format_args!("{said}"));
+            } else if !text.system_text(code.cast_unsigned()) {
+                // Short enough for the buffer whatever the number; `{:#x}`
+                // is C's `%#x` for all but 0, which the C library names.
+                let _ = fmt::write(
+                    &mut text,
+                    format_args!("Unknown error {code} ({:#x})", code.cast_unsigned()),
+                );
+            }
+        }
+        text.strip_line_end();
+        text
+    }
+
+    /// The system's text for `code` (`curlx_get_winapi_error`), its first
+    /// line, in the ANSI code page; false if it has none.
+    #[cfg(windows)]
+    fn system_text(&mut self, code: u32) -> bool {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageA,
+        };
+        /// `LANG_NEUTRAL`, as C asks it.
+        const LANG_NEUTRAL: u32 = 0;
+        let room = u32::try_from(LEN).expect("fits");
+        // SAFETY: the buffer is `text.text`, writable for the `room` bytes
+        // the call is told, and alive for it; no source and no inserts are
+        // read.
+        let n = unsafe {
+            FormatMessageA(
+                FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                core::ptr::null(),
+                code,
+                LANG_NEUTRAL,
+                self.text.as_mut_ptr(),
+                room,
+                core::ptr::null(),
+            )
+        };
+        if n == 0 {
+            self.len = 0;
+            return false;
+        }
+        self.len = self.text.iter().position(|&b| b == 0).unwrap_or(0);
+        // Its first line only, without the carriage return before the end.
+        if let Some(at) = self.as_bytes().iter().position(|&b| b == b'\n') {
+            self.len = if at > 0 && self.text[at - 1] == b'\r' {
+                at - 1
+            } else {
+                at
+            };
+        }
+        self.len > 0
+    }
+
     /// The system's text for error number `code` (an `errno`).
+    #[cfg(unix)]
     pub fn of_code(code: i32) -> ErrorText {
         let mut text = ErrorText::empty();
         // SAFETY: the pointer and length name `text.text`, which is
@@ -75,6 +146,72 @@ impl ErrorText {
     }
 }
 
+#[cfg(windows)]
+unsafe extern "C" {
+    /// The C library's text for `errnum`, into `buf`.
+    fn strerror_s(buf: *mut core::ffi::c_char, size: usize, errnum: i32) -> i32;
+}
+
+/// C's text for a Winsock error (`get_winsock_error`), its own words
+/// rather than the system's.
+#[cfg(windows)]
+fn winsock_text(code: i32) -> Option<&'static str> {
+    use windows_sys::Win32::Networking::WinSock as ws;
+    Some(match code {
+        ws::WSAEINTR => "Call interrupted",
+        ws::WSAEBADF => "Bad file",
+        ws::WSAEACCES => "Bad access",
+        ws::WSAEFAULT => "Bad argument",
+        ws::WSAEINVAL => "Invalid arguments",
+        ws::WSAEMFILE => "Out of file descriptors",
+        ws::WSAEWOULDBLOCK => "Call would block",
+        ws::WSAEINPROGRESS | ws::WSAEALREADY => "Blocking call in progress",
+        ws::WSAENOTSOCK => "Descriptor is not a socket",
+        ws::WSAEDESTADDRREQ => "Need destination address",
+        ws::WSAEMSGSIZE => "Bad message size",
+        ws::WSAEPROTOTYPE => "Bad protocol",
+        ws::WSAENOPROTOOPT => "Protocol option is unsupported",
+        ws::WSAEPROTONOSUPPORT => "Protocol is unsupported",
+        ws::WSAESOCKTNOSUPPORT => "Socket is unsupported",
+        ws::WSAEOPNOTSUPP => "Operation not supported",
+        ws::WSAEAFNOSUPPORT => "Address family not supported",
+        ws::WSAEPFNOSUPPORT => "Protocol family not supported",
+        ws::WSAEADDRINUSE => "Address already in use",
+        ws::WSAEADDRNOTAVAIL => "Address not available",
+        ws::WSAENETDOWN => "Network down",
+        ws::WSAENETUNREACH => "Network unreachable",
+        ws::WSAENETRESET => "Network has been reset",
+        ws::WSAECONNABORTED => "Connection was aborted",
+        ws::WSAECONNRESET => "Connection was reset",
+        ws::WSAENOBUFS => "No buffer space",
+        ws::WSAEISCONN => "Socket is already connected",
+        ws::WSAENOTCONN => "Socket is not connected",
+        ws::WSAESHUTDOWN => "Socket has been shut down",
+        ws::WSAETOOMANYREFS => "Too many references",
+        ws::WSAETIMEDOUT => "Timed out",
+        ws::WSAECONNREFUSED => "Connection refused",
+        ws::WSAELOOP => "Loop??",
+        ws::WSAENAMETOOLONG => "Name too long",
+        ws::WSAEHOSTDOWN => "Host down",
+        ws::WSAEHOSTUNREACH => "Host unreachable",
+        ws::WSAENOTEMPTY => "Not empty",
+        ws::WSAEPROCLIM => "Process limit reached",
+        ws::WSAEUSERS => "Too many users",
+        ws::WSAEDQUOT => "Bad quota",
+        ws::WSAESTALE => "Something is stale",
+        ws::WSAEREMOTE => "Remote error",
+        ws::WSAEDISCON => "Disconnected",
+        ws::WSASYSNOTREADY => "Winsock library is not ready",
+        ws::WSANOTINITIALISED => "Winsock library not initialized",
+        ws::WSAVERNOTSUPPORTED => "Winsock version not supported",
+        ws::WSAHOST_NOT_FOUND => "Host not found",
+        ws::WSATRY_AGAIN => "Host not found, try again",
+        ws::WSANO_RECOVERY => "Unrecoverable error in call to nameserver",
+        ws::WSANO_DATA => "No data record of requested type",
+        _ => return None,
+    })
+}
+
 impl fmt::Write for ErrorText {
     /// Append `s`, as much of it as fits before the NUL C keeps room for.
     fn write_str(&mut self, s: &str) -> fmt::Result {
@@ -97,6 +234,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     #[cfg_attr(miri, ignore = "Miri's strerror_r has its own text")]
     fn gives_the_system_text() {
         assert_eq!(
@@ -108,6 +246,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     #[cfg_attr(miri, ignore = "Miri's strerror_r has its own text")]
     fn names_an_unknown_number() {
         assert_eq!(
@@ -118,6 +257,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     #[cfg_attr(miri, ignore = "Miri's strerror_r has its own text")]
     fn takes_an_io_error_s_number_or_its_text() {
         let os = io::Error::from_raw_os_error(libc::EACCES);
@@ -126,10 +266,41 @@ mod tests {
         assert_eq!(ErrorText::of(&other).as_bytes(), b"invalid input parameter");
     }
 
+    /// The three kinds of number, each in C's words: the C library's,
+    /// Winsock's (C's own table), and the system's, its first line.
+    #[test]
+    #[cfg(windows)]
+    fn gives_the_text_of_each_kind_of_number() {
+        assert_eq!(
+            ErrorText::of_code(libc::ENOENT).as_bytes(),
+            b"No such file or directory"
+        );
+        assert_eq!(ErrorText::of_code(0).as_bytes(), b"No error");
+        assert_eq!(
+            ErrorText::of_code(10061).as_bytes(),
+            b"Connection refused",
+            "WSAECONNREFUSED"
+        );
+        let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+        assert_eq!(ErrorText::of(&refused).as_bytes(), b"connection refused");
+        // A system number the C library does not know: ERROR_INVALID_HANDLE.
+        let system = ErrorText::of_code(6);
+        assert!(!system.as_bytes().is_empty());
+        assert!(!system.as_bytes().contains(&b'\n'), "one line");
+        assert_eq!(
+            ErrorText::of_code(99_999).as_bytes(),
+            b"Unknown error 99999 (0x1869f)"
+        );
+        assert_eq!(
+            ErrorText::of_code(-3).as_bytes(),
+            b"Unknown error -3 (0xfffffffd)"
+        );
+    }
+
     /// Some text for any number, known or not: the call Miri checks.
     #[test]
     fn gives_a_text_for_any_number() {
-        for code in [0, libc::EINTR, libc::ENOENT, 4_095, 99_999, -1] {
+        for code in [0, libc::EINTR, libc::ENOENT, 4_095, 10_035, 99_999, -1] {
             assert!(!ErrorText::of_code(code).as_bytes().is_empty(), "{code}");
         }
     }

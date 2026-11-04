@@ -1,4 +1,5 @@
-//! The process's locale (`setlocale`).
+//! The process's locale (`setlocale`): the C library's on Linux and on
+//! Windows alike.
 
 #![allow(unsafe_code)]
 
@@ -66,6 +67,7 @@ mod tests {
         }
         assert_eq!(current(libc::LC_CTYPE), "C");
         from_environment_but_numbers();
+        #[cfg(unix)]
         for category in [
             libc::LC_CTYPE,
             libc::LC_MESSAGES,
@@ -73,6 +75,12 @@ mod tests {
             libc::LC_COLLATE,
         ] {
             assert_eq!(current(category), "C.UTF-8", "{category}");
+        }
+        // The C library on Windows takes the user's locale from the system,
+        // not from `LC_ALL` or `LANG`: any but C's.
+        #[cfg(windows)]
+        for category in [libc::LC_CTYPE, libc::LC_TIME, libc::LC_COLLATE] {
+            assert_ne!(current(category), "C", "{category}");
         }
         assert_eq!(current(libc::LC_NUMERIC), "C");
     }

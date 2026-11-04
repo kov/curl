@@ -1338,4 +1338,6 @@ behaviour oracle only.
 110. **LDAP through `lib/ldap.c`'s path**: macOS's OpenLDAP 2.4 has no `ldap_init_fd`, so C's
      build takes the code WinLDAP takes; one port for both. **Done** on macOS
      (`Local`, a second LDAP library kind); WinLDAP implements the same traits later.
-111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **To do.**
+111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **Done**
+     (`apple-sectrust`, `apple-idn`): runtests against C's build with both on (`~/work/c-apple`,
+     2092 of 2092), the same failures as the plain build (96, 558, 1560).

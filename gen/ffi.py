@@ -70,6 +70,12 @@ SCALARS = {
 C_TYPE_WORDS = {"char", "short", "int", "long", "unsigned", "signed",
                 "double", "float", "void"}
 
+# Macro constants the headers define as a `curl_socket_t`. Winsock spells
+# them `(SOCKET)~0`, which the probe sees as the integer type `SOCKET` stands
+# for there; they are declared as `curl_socket_t`, the type they are compared
+# with. On Unix they are a plain `-1`, an `int` as `curl_socket_t` is.
+SOCKET_MACROS = {"CURL_SOCKET_BAD", "CURL_SOCKET_TIMEOUT"}
+
 
 def prelude(target):
     """
@@ -80,6 +86,9 @@ def prelude(target):
     fields after it (`time_t` in `curl_fileinfo`). Signedness is no layout's
     to check: it is the system headers' spelling (Winsock's `SOCKET` is
     `UINT_PTR`, `socklen_t` an `int`, the CRT's `time_t` `__time64_t`).
+    `SOCKET` is declared as std's `RawSocket`, a `u64`, which `UINT_PTR` is
+    on the one Windows target measured, so a socket passes between the
+    headers' type and the core's unconverted.
     """
     windows = target == WINDOWS
     return [
@@ -90,7 +99,7 @@ def prelude(target):
         ("time_t", [f"pub type time_t = {'i64' if windows else 'c_long'};"]),
         ("socklen_t", [
             f"pub type socklen_t = {'c_int' if windows else 'c_uint'};"]),
-        ("SOCKET", ["pub type SOCKET = usize;"] if windows else []),
+        ("SOCKET", ["pub type SOCKET = u64;"] if windows else []),
         ("sockaddr", ["""
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -104,7 +113,14 @@ pub struct sockaddr {
 pub struct FILE {
     _opaque: [u8; 0],
 }"""]),
-        ("fd_set", ["""
+        ("fd_set", ["""/// Winsock's: a count and the sockets listed, room for `FD_SETSIZE` (64,
+/// the size libcurl is built with) of them.
+#[repr(C)]
+pub struct fd_set {
+    pub fd_count: c_uint,
+    pub fd_array: [SOCKET; 64],
+}
+""" if windows else """
 /// Only ever behind a pointer.
 #[repr(C)]
 pub struct fd_set {
@@ -357,8 +373,10 @@ def render(abi):
                   f"string constant needing escapes: {c['name']}")
             unit(c["name"], f"pub const {c['name']}: &CStr = c{c['value']};")
         else:
-            unit(c["name"], f"pub const {c['name']}: "
-                 f"{SCALARS[c['c-type']]} = {c['value']};")
+            ty = SCALARS[c["c-type"]]
+            if c["name"] in SOCKET_MACROS and abi["target"] == WINDOWS:
+                ty = "curl_socket_t"
+            unit(c["name"], f"pub const {c['name']}: {ty} = {c['value']};")
 
     proto = [(f["name"], [(f"    pub type {f['name']} = "
                            f"{fn_type(types, f['params'], f['returns'])};")])

@@ -41,9 +41,9 @@ witness: curl-os wake::tests::a_wake_is_seen_until_drained
 file: crates/curl-os/src/wake.rs
 witness: curl-os wake::tests::a_wake_is_seen_until_drained
 --- old
-one.as_ptr().cast(), one.len())
+libc::write(self.0.as_raw_fd(), one.as_ptr().cast(), one.len())
 --- new
-one.as_ptr().cast(), 4)
+libc::write(self.0.as_raw_fd(), one.as_ptr().cast(), 4)
 
 === a connect in progress is an error
 file: crates/curl-os/src/net.rs

@@ -227,6 +227,8 @@ fn ask_password(
     // What was typed was not echoed, so the line is ended here; C ends it
     // whether or not echo could be turned off.
     drop(stderr.write_all(b"\n"));
+    // Echo is turned back on here on Unix; Windows has nothing to undo.
+    #[cfg_attr(windows, allow(clippy::drop_non_drop))]
     drop(typed);
     let len = given.len() + 1 + password.len();
     if len >= MAX_LOGIN {

@@ -9,7 +9,9 @@ mod ssl_sessions;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fs::File;
-use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
+#[cfg(unix)]
+use std::io::IsTerminal as _;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
@@ -3623,14 +3625,20 @@ pub(crate) fn quick_exit() -> bool {
     true
 }
 
-/// Whether standard output is a terminal. The debug test build takes
-/// `CURL_ISATTY` to say it is (`stream_isatty`).
+/// Whether standard output is a terminal, as `isatty` tells it: on
+/// Windows any character device, `NUL` among them, and no pipe. The debug
+/// test build takes `CURL_ISATTY` to say it is (`stream_isatty`).
 fn stdout_is_terminal() -> bool {
     #[cfg(feature = "debug-hooks")]
     if curl_os::env::is_set(b"CURL_ISATTY") {
         return true;
     }
-    std::io::stdout().is_terminal()
+    #[cfg(unix)]
+    return std::io::stdout().is_terminal();
+    #[cfg(windows)]
+    return curl_os::terminal::is_character_device(std::os::windows::io::AsHandle::as_handle(
+        &std::io::stdout(),
+    ));
 }
 
 /// `url` with the name of `file`, the file it uploads, added to its path,

@@ -988,6 +988,30 @@ fn refuses_binary_output_to_a_terminal() {
     assert_eq!((r.code, &r.stdout[..]), (0, &b"a\0b"[..]));
 }
 
+/// On Windows standard output is a terminal when it is a character
+/// device, as the C library's `isatty` tells it: binary output to `NUL`
+/// is refused too, as C's curl.exe refuses it.
+#[cfg(windows)]
+#[test]
+fn refuses_binary_output_to_a_character_device() {
+    let s = Scratch::new("binary-nul");
+    s.write("bin", b"a\0b");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let nul = std::fs::File::options().write(true).open("NUL").unwrap();
+    let out = Command::new(tool)
+        .args(["-q", &s.url("bin")])
+        .stdout(nul)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(23), "{stderr}");
+    assert!(
+        stderr.starts_with("Warning: Binary output can mess up your terminal."),
+        "{stderr}"
+    );
+}
+
 /// A refused pattern is shown with a caret under its column; one with no
 /// column is shown alone.
 #[test]

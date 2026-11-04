@@ -269,8 +269,9 @@ not a difference: it is tracked in `MILESTONES.md`.
   hands it to each `-T .`, but closes it as each transfer ends (`post_per_transfer`'s
   `sclose(per->infd)`): the next `-T .` is handed the closed socket, warns `fcntl failed on
   fd=N: No such file or directory`, reads it as ended and uploads nothing, and a socket opened
-  meanwhile may have been given the same number. `curl -T . file:///C:/no/such/x -T .
-  file:///C:/t/dst <input` leaves `dst` empty on C's Windows build and holds the input here.
+  meanwhile may have been given the same number. Uploading standard input with
+  `-T .` first to `file:///C:/no/such/x` and then to `file:///C:/t/dst` in one run leaves
+  `dst` empty on C's Windows build and holds the input here.
   Measured against the C build on Windows. Pinned by
   `a_second_upload_of_standard_input_reads_what_the_first_left`
   (`crates/curl-tool/tests/http.rs`).

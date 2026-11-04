@@ -177,6 +177,17 @@ fn make_runtime_globals() {
     });
 }
 
+/// A mutex holding `value`, locked once untracked so that what std makes on
+/// its first lock is made now: where std's locks are boxed pthread mutexes
+/// (macOS), an allocation std cannot fail, which a torture test refusing it
+/// would abort on. For a test's fakes, which are not the library's to
+/// account for.
+pub fn untracked_mutex<T>(value: T) -> Mutex<T> {
+    let m = Mutex::new(value);
+    untracked(|| drop(m.lock()));
+    m
+}
+
 /// Run `f` with its allocations untracked: for the standard library's
 /// lazily created globals, which are made once and never freed.
 pub fn untracked<R>(f: impl FnOnce() -> R) -> R {

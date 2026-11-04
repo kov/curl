@@ -129,8 +129,10 @@ impl SharedClock {
         if clock.identity() == ClockId::SYSTEM {
             return Ok(SharedClock::System);
         }
+        // A test's clock: the library accounts for holding it, not for the
+        // lock std makes.
         Ok(SharedClock::Given(curl_alloc::TryArc::try_new(
-            std::sync::Mutex::new(clock),
+            curl_alloc::track::untracked_mutex(clock),
         )?))
     }
 
@@ -257,7 +259,7 @@ impl ManualClock {
     /// A clock at its epoch, which is 1970's.
     pub fn new() -> Result<Self, curl_alloc::OutOfMemory> {
         Ok(ManualClock(curl_alloc::TryArc::try_new(ManualTime {
-            at: std::sync::Mutex::new((Instant::EPOCH, 0)),
+            at: curl_alloc::track::untracked_mutex((Instant::EPOCH, 0)),
         })?))
     }
 

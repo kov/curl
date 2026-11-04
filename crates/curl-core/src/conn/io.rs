@@ -1184,7 +1184,8 @@ impl Conversation {
             wire.replies.try_push(copy).expect("a test's replies fit");
         }
         Conversation(
-            curl_alloc::TryArc::try_new(std::sync::Mutex::new(wire)).expect("a test's peer fits"),
+            curl_alloc::TryArc::try_new(curl_alloc::track::untracked_mutex(wire))
+                .expect("a test's peer fits"),
         )
     }
 
@@ -1633,7 +1634,7 @@ impl FakeNet {
             datagram_peers: Vec::new(),
             names: Vec::new(),
             late: Vec::new(),
-            resolving: TryArc::try_new(std::sync::Mutex::new(Vec::new()))
+            resolving: TryArc::try_new(curl_alloc::track::untracked_mutex(Vec::new()))
                 .expect("a test's resolves fit"),
             next_resolve: 0,
             conversations: Vec::new(),
@@ -1965,7 +1966,7 @@ impl Net for FakeNet {
         let wire = match self.conversations.iter().position(|(a, _)| a == addr) {
             Some(at) if peer.is_some() => self.conversations.remove(at).1,
             _ => Conversation(
-                curl_alloc::TryArc::try_new(std::sync::Mutex::new(Wire::default()))
+                curl_alloc::TryArc::try_new(curl_alloc::track::untracked_mutex(Wire::default()))
                     .map_err(|_| io::ErrorKind::OutOfMemory)?,
             ),
         };
@@ -2011,14 +2012,14 @@ impl Net for FakeNet {
             peer,
             local,
             binding: self.binding.clone(),
-            bound: std::sync::Mutex::new(None),
+            bound: curl_alloc::track::untracked_mutex(None),
             connected: std::sync::atomic::AtomicBool::new(false),
             opened_for: addr.clone(),
             clock: self.clock.clone(),
             ready_at,
             wire,
             listening: std::sync::atomic::AtomicBool::new(false),
-            incoming: std::sync::Mutex::new(incoming),
+            incoming: curl_alloc::track::untracked_mutex(incoming),
             from: None,
         };
         Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
@@ -2316,14 +2317,14 @@ impl Socket for FakeSocket {
             peer: Some(Peer::Accepts),
             local: Some(local),
             binding: None,
-            bound: std::sync::Mutex::new(None),
+            bound: curl_alloc::track::untracked_mutex(None),
             connected: std::sync::atomic::AtomicBool::new(true),
             opened_for: Remote::Inet(incoming.from),
             clock: self.clock.clone(),
             ready_at: None,
             wire: incoming.talk,
             listening: std::sync::atomic::AtomicBool::new(false),
-            incoming: std::sync::Mutex::new(None),
+            incoming: curl_alloc::track::untracked_mutex(None),
             from: Some(incoming.from),
         };
         Ok(Some(

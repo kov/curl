@@ -1327,7 +1327,7 @@ fn shared_scenario() -> Result<[Result<(), ErrorKind>; 2], OutOfMemory> {
         let net = FakeNet::new(clock.clone())
             .with_peer(at, Peer::Accepts)
             .with_conversation(at, talk.clone());
-        TryArc::try_new(std::sync::Mutex::new(net)).expect("a test's network")
+        TryArc::try_new(track::untracked_mutex(net)).expect("a test's network")
     });
     let share = curl_core::share::Share::with_net(try_box(SharedNet(net.clone()))?)?;
     share
@@ -1615,10 +1615,15 @@ fn a_push_that_cannot_start_leaves_nothing_running() {
     });
 }
 
-/// A count the handlers keep, `Sync` as a handler is; a lock makes no
-/// allocation.
-#[derive(Default)]
+/// A count the handlers keep, `Sync` as a handler is; its lock is made
+/// untracked, so locking it allocates nothing the library is charged for.
 struct Cell<T>(std::sync::Mutex<T>);
+
+impl<T: Default> Default for Cell<T> {
+    fn default() -> Self {
+        Cell(track::untracked_mutex(T::default()))
+    }
+}
 
 impl<T: Copy> Cell<T> {
     fn get(&self) -> T {
@@ -1781,7 +1786,7 @@ fn h3_scripts(first: fn() -> H3Script, then: Option<fn() -> H3Script>) {
         fake.setups.lock().unwrap().clear();
         let mut more = fake.then.lock().unwrap();
         more.clear();
-        more.extend(then.map(|s| std::sync::Arc::new(std::sync::Mutex::new(s()))));
+        more.extend(then.map(|s| std::sync::Arc::new(track::untracked_mutex(s()))));
     })
 }
 

@@ -34,19 +34,39 @@ HERE = pathlib.Path(__file__).resolve()
 OUT = ROOT / "crates" / "curl-sys-abi" / "src" / "ffi.rs"
 
 WINDOWS = "x86_64-pc-windows-msvc"
+DARWIN = "aarch64-apple-darwin"
 # Each measured target: its measurement, the cfg its layout assertions hold
 # under (that target only), and the cfg a declaration that differs between
 # targets is given (the target's family: x86_64 Linux declares what aarch64
-# Linux measured).
+# Linux measured). The families' cfgs cover every target between them, and
+# no two hold at once.
 TARGETS = [
     (ABI, "aarch64-redhat-linux",
      'all(target_os = "linux", target_arch = "aarch64")',
-     'not(target_os = "windows")'),
+     'not(any(target_os = "windows", target_vendor = "apple"))'),
     (ROOT / "inventory" / f"abi-{WINDOWS}.json", WINDOWS,
      ('all(target_os = "windows", target_arch = "x86_64", '
       'target_env = "msvc")'),
      'target_os = "windows"'),
+    (ROOT / "inventory" / f"abi-{DARWIN}.json", DARWIN,
+     'all(target_os = "macos", target_arch = "aarch64")',
+     'target_vendor = "apple"'),
 ]
+
+
+def family_cfg(families):
+    """
+    The cfg for a declaration the targets of `families` (indexes into
+    TARGETS) render alike: one family's own, all but one family's as the
+    others' negation, or any of theirs.
+    """
+    cfgs = [TARGETS[i][3] for i in families]
+    if len(cfgs) == 1:
+        return cfgs[0]
+    others = [t[3] for i, t in enumerate(TARGETS) if i not in families]
+    if len(others) == 1:
+        return f"not({others[0]})"
+    return f"any({', '.join(cfgs)})"
 
 KEYWORDS = {"as", "break", "const", "continue", "crate", "else", "enum",
             "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
@@ -101,6 +121,13 @@ def prelude(target):
             f"pub type socklen_t = {'c_int' if windows else 'c_uint'};"]),
         ("SOCKET", ["pub type SOCKET = u64;"] if windows else []),
         ("sockaddr", ["""
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct sockaddr {
+    pub sa_len: c_uchar,
+    pub sa_family: c_uchar,
+    pub sa_data: [c_char; 14],
+}""" if target == DARWIN else """
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct sockaddr {
@@ -417,10 +444,22 @@ def merge(per_target):
             if all(item == row[0] for item in row):
                 merged.append(row[0])
                 continue
-            for (_, _, _, cfg), items in zip(TARGETS, row):
+            # Targets that render the item alike declare it once, under
+            # their families' cfg, in the order the first of them comes.
+            groups = []
+            for i, items in enumerate(row):
+                for g in groups:
+                    if row[g[0]] == items:
+                        g.append(i)
+                        break
+                else:
+                    groups.append([i])
+            for g in groups:
+                items = row[g[0]]
                 for item in (items if isinstance(items, list) else [items]):
-                    merged.append(with_cfg(cfg, item))
-                    own[cfg].append(item)
+                    merged.append(with_cfg(family_cfg(g), item))
+                    for i in g:
+                        own[TARGETS[i][3]].append(item)
     return merged, own
 
 

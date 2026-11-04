@@ -342,6 +342,7 @@ const _: ffi::proto::curl_mime_data = curl_mime_data;
 
 /// The last part of a path, as POSIX `basename` gives it: trailing
 /// slashes dropped, `/` for slashes alone, `.` for nothing.
+#[cfg(unix)]
 fn basename(path: &[u8]) -> &[u8] {
     let trimmed = match path.iter().rposition(|&b| b != b'/') {
         Some(end) => &path[..=end],
@@ -351,6 +352,17 @@ fn basename(path: &[u8]) -> &[u8] {
     match trimmed.iter().rposition(|&b| b == b'/') {
         Some(at) => &trimmed[at + 1..],
         None => trimmed,
+    }
+}
+
+/// The last part of a path, as C's own `curlx_basename` gives it where the
+/// system has no `basename`, as on Windows: what follows the last `/` or
+/// `\`, nothing for a path ending in one, the path itself without either.
+#[cfg(windows)]
+fn basename(path: &[u8]) -> &[u8] {
+    match path.iter().rposition(|&b| b == b'/' || b == b'\\') {
+        Some(at) => &path[at + 1..],
+        None => path,
     }
 }
 
@@ -1075,6 +1087,7 @@ mod tests {
     use crate::setopt::curl_easy_setopt;
 
     /// POSIX's `basename`, as glibc's libgen gives it to C.
+    #[cfg(unix)]
     #[test]
     fn basename_is_posix_s() {
         for (path, base) in [
@@ -1084,6 +1097,22 @@ mod tests {
             (b"/", b"/"),
             (b"//", b"/"),
             (b"", b"."),
+        ] {
+            assert_eq!(basename(path), base, "{}", path.escape_ascii());
+        }
+    }
+
+    /// C's `curlx_basename` on Windows: after the last of either slash.
+    #[cfg(windows)]
+    #[test]
+    fn basename_is_c_s_own() {
+        for (path, base) in [
+            (&b"C:\\a\\b.txt"[..], &b"b.txt"[..]),
+            (b"a/b\\c", b"c"),
+            (b"a\\b/c", b"c"),
+            (b"b", b"b"),
+            (b"a\\", b""),
+            (b"", b""),
         ] {
             assert_eq!(basename(path), base, "{}", path.escape_ascii());
         }

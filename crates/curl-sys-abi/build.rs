@@ -2,7 +2,7 @@
 //! C helper that reads `long double` arguments on stable Rust.
 
 // A build script is no library: aborting on a failed allocation is fine.
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 fn main() {
     let debug = std::env::var_os("CARGO_FEATURE_DEBUG_HOOKS").is_some();
@@ -22,6 +22,17 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
         println!("cargo::rustc-cdylib-link-arg=/PDB:{out}\\libcurl.pdb");
+        // The DLL names itself, and its import library names it, as C's
+        // CMake build names libcurl, whatever file cargo writes it to
+        // (`curl.dll`): a program linked against the import library loads
+        // it by that name. The linker takes the name from a second module
+        // definition, beside rustc's list of exports, and warns that it is
+        // not the file's (LNK4070), which is the point.
+        let name = if debug { "libcurl-d" } else { "libcurl" };
+        let def = format!("{out}\\libcurl.def");
+        std::fs::write(&def, format!("LIBRARY {name}\r\n")).expect("OUT_DIR is writable");
+        println!("cargo::rustc-cdylib-link-arg=/DEF:{def}");
+        println!("cargo::rustc-cdylib-link-arg=/IGNORE:4070");
     }
     // The debug test build links the debug C library, as C's debug build
     // does (`/MDd`): the streams, memory and `errno` a test program hands

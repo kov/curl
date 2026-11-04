@@ -254,6 +254,11 @@ fn number(s: &[u8], max: i64) -> Option<(i64, &[u8])> {
     Some((n, &s[digits..]))
 }
 
+/// The most a link count may be, the `long` C keeps it in (`LONG_MAX`):
+/// 32 bits on Windows, 64 on the Unix targets built.
+#[allow(clippy::unnecessary_cast, reason = "`c_long` is 32 bits on Windows")]
+const LONG_MAX: i64 = core::ffi::c_long::MAX as i64;
+
 /// The same after any spaces and tabs (`curlx_str_numblanks`).
 fn number_after_blanks(s: &[u8]) -> Option<(i64, &[u8])> {
     let blanks = s.iter().take_while(|&&b| b == b' ' || b == b'\t').count();
@@ -434,7 +439,7 @@ impl Listing {
                 if c == b' ' {
                     self.cut(self.item_end()?)?;
                     let at = self.item_offset;
-                    if let Some((n, _)) = number(self.text(at), i64::MAX) {
+                    if let Some((n, _)) = number(self.text(at), LONG_MAX) {
                         self.line().hardlinks = Some(n);
                     }
                     self.item_length = 0;

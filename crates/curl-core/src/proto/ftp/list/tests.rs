@@ -311,6 +311,20 @@ fn numbers_too_big_are_not_known() {
     );
 }
 
+/// A link count is known up to the most C's `long` holds: 32 bits on
+/// Windows, so one past them is not known there.
+#[test]
+fn a_link_count_is_known_up_to_c_s_long() {
+    let count = |line: &[u8]| read(line, line.len()).files()[0].info().hardlinks;
+    let max = b"-rw-r--r-- 2147483647 u g 5 Jan 17 11:01 n\r\n";
+    assert_eq!(count(max), Some(2147483647));
+    let past = b"-rw-r--r-- 2147483648 u g 5 Jan 17 11:01 n\r\n";
+    #[cfg(windows)]
+    assert_eq!(count(past), None);
+    #[cfg(not(windows))]
+    assert_eq!(count(past), Some(2147483648));
+}
+
 /// A tiny generator of the pseudo-random choices the mutations make,
 /// the same on every run.
 struct Choices(u64);

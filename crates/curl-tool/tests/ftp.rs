@@ -260,7 +260,18 @@ fn skips_the_pasv_address_unless_told() {
         said.contains("Skip 127.0.0.2 for data connection, reuse 127.0.0.1 instead"),
         "{said}"
     );
-    let (_, said) = commands("f", &["--disable-epsv", "--no-ftp-skip-pasv-ip"], PASV);
+    // macOS's loopback has 127.0.0.1 alone: a connect to 127.0.0.2 goes
+    // unanswered there, where Linux's is refused at once.
+    let (_, said) = commands(
+        "f",
+        &[
+            "--disable-epsv",
+            "--no-ftp-skip-pasv-ip",
+            "--connect-timeout",
+            "1",
+        ],
+        PASV,
+    );
     assert!(!said.contains("Skip 127.0.0.2"), "{said}");
     assert!(said.contains("Connecting to 127.0.0.2"), "{said}");
 }

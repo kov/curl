@@ -646,3 +646,18 @@ not a difference: it is tracked in `MILESTONES.md`.
   by its source its release build writes an empty ticket, as the rewrite does: what is imported is
   not trusted to be anything. Pinned by `a_blob_may_say_nothing`
   (`crates/curl-core/src/tls/cache/spack/tests.rs`).
+
+## Allocations the platform makes
+
+- **On macOS, a lock's first use allocates, and that allocation cannot fail.** Rust's standard
+  `Mutex` on macOS boxes a pthread mutex the first time it is locked, through an allocation the
+  standard library aborts on rather than returns, and never frees it for a static. Every lock
+  in the library and the tool does this, so on macOS running out of memory at a lock's first use
+  ends the process instead of returning `CURLE_OUT_OF_MEMORY`, and each lock costs an allocation
+  C's does not: test 1560 makes 4124 allocations against its limit of 3650, and `torture`'s
+  `an_https_get_survives_every_allocation_failing` aborts at the TLS share's lock. The standard
+  streams' and the debug hooks' own locks are made before memory tracking starts, as C's tracker
+  never sees the C library's stdio internals (`curl_alloc::track`); the test fakes' locks are made
+  as the fakes are. Linux and Windows locks allocate nothing. Measured on macOS 27 with the
+  runtests suite and `torture`; no test pins it, as no test can fail an allocation the standard
+  library makes.

@@ -1281,3 +1281,39 @@ Status: **in progress**. The application validation: a WebKit port built with it
 backend (`inventory/references/webkit-curl/`) against our library, its own HTTP tests run
 against ours and C's, and its test browser in use. Performance against the C reference
 (SCOPE stage 8) is measured here, on the scorecard and on the browser's loads.
+
+## Milestone 9: Windows
+
+Status: **in progress**. The library, the shim DLL and curl.exe built with MSVC, scored on
+the suite against two oracles: the curl.exe Windows ships (Schannel, SSPI, WinIDN, WinLDAP,
+`ENABLE_UNICODE`, the threaded resolver), the main one, and the curl.se build (LibreSSL,
+libssh2, HTTP/2 and HTTP/3, WinIDN, WinLDAP, native CA store, no Unicode). Until Schannel lands,
+the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays Unix-only.
+
+94. **The C ABI per target, `curl-os` and `curl-core` on Windows.** **Done.**
+95. **The shim DLL and curl.exe on Windows**: names in the ANSI code page, console writes, the
+    DLL named as CMake names it. **Done.**
+96. **Text mode** on stderr, `-w`, stdout before binary mode and the files C opens in text mode,
+    as one translating filter; C's `curl-ca-bundle.crt` search. **In progress.**
+97. **Schannel**, with its CA store and `CURLSSLOPT_*` options. **To do.**
+98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **To do.**
+99. **WinIDN.** **To do.**
+100. **WinLDAP.** **To do.**
+101. **`ENABLE_UNICODE`**: wide argv, paths and environment, beside the ANSI build. **To do.**
+102. **The curl.se build's set**: LibreSSL (with ngtcp2 over it) and the native CA store
+     (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **To do.**
+
+## Milestone 10: the other backends
+
+Status: **to do**. The backends C builds with that the rewrite does not bind yet, each behind
+its category's interface and scored on a C leg built with it, on Linux and, where C supports
+it there, Windows.
+
+103. **TLS**: GnuTLS, wolfSSL, mbedTLS, Rustls; the OpenSSL forks C supports (BoringSSL,
+     AWS-LC, LibreSSL, quictls) as variants of the OpenSSL backend. **To do.**
+104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **To do.**
+105. **SSH**: libssh2. **To do.**
+106. **GSS-API**: Heimdal and GNU GSS beside MIT krb5, as C's build can choose. **To do.**
+
+macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the
+experimental Apple fast UDP. They go with the macOS port.

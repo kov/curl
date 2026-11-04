@@ -2,7 +2,7 @@
 
 # Performance: the rewrite against C
 
-Release builds, measured 2026-11-04T18:29:18Z to 2026-11-04T19:17:37Z on a 8-CPU aarch64 kvm machine (kernel 7.1.8-200.fc44.aarch64), the legs' samples interleaved; load average 0.60 before and 5.16 after. The rewrite at `f566f431bf7a`. Figures are medians; compare only builds measured on this machine, in one run of this script.
+Release builds, measured 2026-11-04T20:17:37Z to 2026-11-04T21:03:53Z on a 8-CPU aarch64 kvm machine (kernel 7.1.8-200.fc44.aarch64), the legs' samples interleaved; load average 4.74 before and 5.00 after. The rewrite at `bb3130809fed`. Figures are medians; compare only builds measured on this machine, in one run of this script.
 
 ```
 c: curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
@@ -17,16 +17,16 @@ A program marked *port* times a C internal on the C leg and its Rust counterpart
 
 | program | measure | C | C IQR | Rust | Rust IQR | Rust/C |
 |---|---|---|---|---|---|---|
-| base64dec (port) | Time/loop | 94.67 ns | 0.3% | 588.19 ns | 1.2% | 6.21 |
-| base64enc (port) | Time/loop | 110.41 ns | 0.1% | 355.39 ns | 0.3% | 3.22 |
-| dateparser | Time/date | 32.50 ns | 0.7% | 69.06 ns | 0.6% | 2.12 |
-| maprintf | Time/loop | 145.99 ns | 1.1% | 509.29 ns | 1.8% | 3.49 |
-| numparser (port) | Time/num | 10.45 ns | 1.1% | 19.69 ns | 0.6% | 1.88 |
-| simpleformat | Time/loop | 103.45 ns | 0.1% | 416.16 ns | 2.5% | 4.02 |
-| snprintf | Time/loop | 256.02 ns | 0.1% | 548.24 ns | 1.8% | 2.14 |
-| urldecode | Time/loop | 207.66 ns | 0.3% | 345.68 ns | 0.1% | 1.66 |
-| urlencode | Time/loop | 137.15 ns | 0.2% | 633.45 ns | 0.4% | 4.62 |
-| urlparser | Time/URL | 161.26 ns | 0.8% | 373.87 ns | 2.5% | 2.32 |
+| base64dec (port) | Time/loop | 96.04 ns | 0.8% | 151.99 ns | 0.3% | 1.58 |
+| base64enc (port) | Time/loop | 112.65 ns | 0.9% | 218.74 ns | 1.1% | 1.94 |
+| dateparser | Time/date | 32.43 ns | 0.3% | 68.89 ns | 0.2% | 2.12 |
+| maprintf | Time/loop | 146.43 ns | 0.7% | 249.09 ns | 0.6% | 1.70 |
+| numparser (port) | Time/num | 10.40 ns | 0.5% | 20.07 ns | 0.7% | 1.93 |
+| simpleformat | Time/loop | 103.46 ns | 0.4% | 149.09 ns | 0.1% | 1.44 |
+| snprintf | Time/loop | 256.24 ns | 1.0% | 295.24 ns | 0.3% | 1.15 |
+| urldecode | Time/loop | 208.86 ns | 0.7% | 349.67 ns | 2.0% | 1.67 |
+| urlencode | Time/loop | 138.77 ns | 0.7% | 278.37 ns | 0.3% | 2.01 |
+| urlparser | Time/URL | 162.20 ns | 1.6% | 371.62 ns | 1.1% | 2.29 |
 
 ## scorecard, reference configuration
 
@@ -36,40 +36,40 @@ A program marked *port* times a C internal on the C leg and its Rust counterpart
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 91.5 MB/s (IQR 19%) | 90.8 MB/s (IQR 16%) | 0.99 |
-| 1MB | serial(50) | 890.0 MB/s (IQR 4%) | 924.1 MB/s (IQR 2%) | 1.04 |
-| 1MB | parallel(50x50) | 780.6 MB/s (IQR 5%) | 733.2 MB/s (IQR 8%) | 0.94 |
-| 10MB | single | 629.0 MB/s (IQR 1%) | 589.9 MB/s (IQR 1%) | 0.94 |
-| 10MB | serial(50) | 1,275.3 MB/s (IQR 3%) | 1,236.4 MB/s (IQR 2%) | 0.97 |
-| 10MB | parallel(50x50) | 1,877.3 MB/s (IQR 14%) | 1,878.0 MB/s (IQR 2%) | 1.00 |
-| 100MB | single | 1,117.7 MB/s (IQR 7%) | 1,119.2 MB/s (IQR 3%) | 1.00 |
-| 100MB | serial(50) | 1,242.0 MB/s (IQR 4%) | 1,218.3 MB/s (IQR 3%) | 0.98 |
-| 100MB | parallel(50x50) | 2,257.9 MB/s (IQR 6%) | 2,159.4 MB/s (IQR 10%) | 0.96 |
+| 1MB | single | 74.9 MB/s (IQR 21%) | 88.3 MB/s (IQR 16%) | 1.18 |
+| 1MB | serial(50) | 876.8 MB/s (IQR 14%) | 858.5 MB/s (IQR 5%) | 0.98 |
+| 1MB | parallel(50x50) | 763.5 MB/s (IQR 7%) | 720.8 MB/s (IQR 19%) | 0.94 |
+| 10MB | single | 525.7 MB/s (IQR 17%) | 586.6 MB/s (IQR 22%) | 1.12 |
+| 10MB | serial(50) | 1,262.2 MB/s (IQR 2%) | 1,222.0 MB/s (IQR 4%) | 0.97 |
+| 10MB | parallel(50x50) | 1,805.7 MB/s (IQR 18%) | 1,695.9 MB/s (IQR 9%) | 0.94 |
+| 100MB | single | 1,128.8 MB/s (IQR 7%) | 1,150.7 MB/s (IQR 4%) | 1.02 |
+| 100MB | serial(50) | 1,272.5 MB/s (IQR 3%) | 1,220.1 MB/s (IQR 2%) | 0.96 |
+| 100MB | parallel(50x50) | 2,319.4 MB/s (IQR 3%) | 2,095.0 MB/s (IQR 10%) | 0.90 |
 
 **Uploads to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 112.8 MB/s (IQR 15%) | 107.4 MB/s (IQR 11%) | 0.95 |
-| 1MB | serial(50) | 1,037.3 MB/s (IQR 14%) | 1,013.0 MB/s (IQR 1%) | 0.98 |
-| 1MB | parallel(50x50) | 605.0 MB/s (IQR 4%) | 593.3 MB/s (IQR 1%) | 0.98 |
-| 10MB | single | 598.4 MB/s (IQR 5%) | 587.2 MB/s (IQR 4%) | 0.98 |
-| 10MB | serial(50) | 1,386.9 MB/s (IQR 3%) | 1,329.6 MB/s (IQR 1%) | 0.96 |
-| 10MB | parallel(50x50) | 1,237.9 MB/s (IQR 1%) | 1,178.6 MB/s (IQR 0%) | 0.95 |
-| 100MB | single | 1,190.5 MB/s (IQR 4%) | 1,167.5 MB/s (IQR 1%) | 0.98 |
-| 100MB | serial(50) | 1,390.0 MB/s (IQR 2%) | 1,364.2 MB/s (IQR 6%) | 0.98 |
-| 100MB | parallel(50x50) | 1,371.9 MB/s (IQR 2%) | 1,266.0 MB/s (IQR 2%) | 0.92 |
+| 1MB | single | 113.6 MB/s (IQR 14%) | 103.3 MB/s (IQR 14%) | 0.91 |
+| 1MB | serial(50) | 1,063.9 MB/s (IQR 2%) | 1,033.1 MB/s (IQR 6%) | 0.97 |
+| 1MB | parallel(50x50) | 608.7 MB/s (IQR 0%) | 561.2 MB/s (IQR 9%) | 0.92 |
+| 10MB | single | 594.1 MB/s (IQR 2%) | 566.5 MB/s (IQR 8%) | 0.95 |
+| 10MB | serial(50) | 1,388.1 MB/s (IQR 4%) | 1,338.2 MB/s (IQR 4%) | 0.96 |
+| 10MB | parallel(50x50) | 1,235.7 MB/s (IQR 1%) | 1,100.8 MB/s (IQR 23%) | 0.89 |
+| 100MB | single | 1,195.9 MB/s (IQR 6%) | 1,084.0 MB/s (IQR 11%) | 0.91 |
+| 100MB | serial(50) | 1,374.9 MB/s (IQR 3%) | 1,332.1 MB/s (IQR 4%) | 0.97 |
+| 100MB | parallel(50x50) | 1,287.4 MB/s (IQR 4%) | 1,283.8 MB/s (IQR 6%) | 1.00 |
 
 **Requests in parallel to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 10KB | 1 max | 5,121 r/s (IQR 2%) | 4,861 r/s (IQR 0%) | 0.95 |
-| 10KB | 6 max | 19,486 r/s (IQR 2%) | 19,498 r/s (IQR 18%) | 1.00 |
-| 10KB | 25 max | 26,759 r/s (IQR 6%) | 20,979 r/s (IQR 18%) | 0.78 |
-| 10KB | 50 max | 25,239 r/s (IQR 3%) | 18,376 r/s (IQR 2%) | 0.73 |
-| 10KB | 100 max | 22,635 r/s (IQR 1%) | 16,010 r/s (IQR 6%) | 0.71 |
-| 10KB | 300 max | 7,246 r/s (IQR 18%) | 6,653 r/s (IQR 14%) | 0.92 |
+| 10KB | 1 max | 4,996 r/s (IQR 6%) | 4,894 r/s (IQR 2%) | 0.98 |
+| 10KB | 6 max | 19,254 r/s (IQR 12%) | 19,471 r/s (IQR 1%) | 1.01 |
+| 10KB | 25 max | 26,368 r/s (IQR 1%) | 21,710 r/s (IQR 2%) | 0.82 |
+| 10KB | 50 max | 25,021 r/s (IQR 1%) | 19,531 r/s (IQR 1%) | 0.78 |
+| 10KB | 100 max | 21,758 r/s (IQR 20%) | 16,993 r/s (IQR 1%) | 0.78 |
+| 10KB | 300 max | 9,135 r/s (IQR 18%) | 7,970 r/s (IQR 16%) | 0.87 |
 
 ### h2 (5 runs each, httpd/2.4.69)
 
@@ -77,81 +77,81 @@ A program marked *port* times a C internal on the C leg and its Rust counterpart
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 77.6 MB/s (IQR 5%) | 78.4 MB/s (IQR 11%) | 1.01 |
-| 1MB | serial(50) | 797.0 MB/s (IQR 5%) | 812.9 MB/s (IQR 7%) | 1.02 |
-| 1MB | parallel(50x50) | 812.7 MB/s (IQR 36%) | 1,076.9 MB/s (IQR 40%) | 1.33 |
-| 10MB | single | 519.4 MB/s (IQR 20%) | 590.5 MB/s (IQR 9%) | 1.14 |
-| 10MB | serial(50) | 1,268.7 MB/s (IQR 7%) | 1,268.1 MB/s (IQR 5%) | 1.00 |
-| 10MB | parallel(50x50) | 1,446.8 MB/s (IQR 1%) | 1,504.8 MB/s (IQR 2%) | 1.04 |
-| 100MB | single | 1,110.4 MB/s (IQR 3%) | 1,158.3 MB/s (IQR 1%) | 1.04 |
-| 100MB | serial(50) | 1,250.4 MB/s (IQR 1%) | 1,267.3 MB/s (IQR 6%) | 1.01 |
-| 100MB | parallel(50x50) | 1,481.5 MB/s (IQR 2%) | 1,560.1 MB/s (IQR 1%) | 1.05 |
+| 1MB | single | 89.5 MB/s (IQR 8%) | 74.4 MB/s (IQR 12%) | 0.83 |
+| 1MB | serial(50) | 807.5 MB/s (IQR 15%) | 827.9 MB/s (IQR 9%) | 1.03 |
+| 1MB | parallel(50x50) | 1,190.2 MB/s (IQR 15%) | 1,150.3 MB/s (IQR 34%) | 0.97 |
+| 10MB | single | 567.2 MB/s (IQR 9%) | 554.8 MB/s (IQR 16%) | 0.98 |
+| 10MB | serial(50) | 1,258.5 MB/s (IQR 1%) | 1,264.1 MB/s (IQR 1%) | 1.00 |
+| 10MB | parallel(50x50) | 1,458.6 MB/s (IQR 3%) | 1,516.0 MB/s (IQR 3%) | 1.04 |
+| 100MB | single | 1,157.8 MB/s (IQR 8%) | 1,073.6 MB/s (IQR 7%) | 0.93 |
+| 100MB | serial(50) | 1,244.4 MB/s (IQR 2%) | 1,221.2 MB/s (IQR 3%) | 0.98 |
+| 100MB | parallel(50x50) | 1,464.0 MB/s (IQR 6%) | 1,514.1 MB/s (IQR 1%) | 1.03 |
 
 **Uploads to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 100.7 MB/s (IQR 9%) | 85.5 MB/s (IQR 8%) | 0.85 |
-| 1MB | serial(50) | 401.6 MB/s (IQR 9%) | 400.0 MB/s (IQR 21%) | 1.00 |
-| 1MB | parallel(50x50) | 552.6 MB/s (IQR 26%) | 438.7 MB/s (IQR 29%) | 0.79 |
-| 10MB | single | 333.2 MB/s (IQR 10%) | 381.0 MB/s (IQR 5%) | 1.14 |
-| 10MB | serial(50) | 571.0 MB/s (IQR 6%) | 565.7 MB/s (IQR 6%) | 0.99 |
-| 10MB | parallel(50x50) | 732.2 MB/s (IQR 10%) | 660.4 MB/s (IQR 15%) | 0.90 |
-| 100MB | single | 563.2 MB/s (IQR 0%) | 562.7 MB/s (IQR 24%) | 1.00 |
-| 100MB | serial(50) | 609.7 MB/s (IQR 2%) | 635.1 MB/s (IQR 1%) | 1.04 |
-| 100MB | parallel(50x50) | 768.3 MB/s (IQR 0%) | 715.7 MB/s (IQR 9%) | 0.93 |
+| 1MB | single | 92.8 MB/s (IQR 11%) | 79.3 MB/s (IQR 13%) | 0.86 |
+| 1MB | serial(50) | 413.6 MB/s (IQR 10%) | 321.7 MB/s (IQR 16%) | 0.78 |
+| 1MB | parallel(50x50) | 626.8 MB/s (IQR 4%) | 500.9 MB/s (IQR 36%) | 0.80 |
+| 10MB | single | 367.7 MB/s (IQR 22%) | 392.9 MB/s (IQR 22%) | 1.07 |
+| 10MB | serial(50) | 536.6 MB/s (IQR 2%) | 522.1 MB/s (IQR 14%) | 0.97 |
+| 10MB | parallel(50x50) | 718.6 MB/s (IQR 2%) | 712.1 MB/s (IQR 5%) | 0.99 |
+| 100MB | single | 623.9 MB/s (IQR 18%) | 653.1 MB/s (IQR 8%) | 1.05 |
+| 100MB | serial(50) | 602.8 MB/s (IQR 2%) | 636.4 MB/s (IQR 6%) | 1.06 |
+| 100MB | parallel(50x50) | 770.6 MB/s (IQR 2%) | 729.9 MB/s (IQR 12%) | 0.95 |
 
 **Requests in parallel to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 10KB | 1 max | 4,036 r/s (IQR 1%) | 3,832 r/s (IQR 4%) | 0.95 |
-| 10KB | 6 max | 17,590 r/s (IQR 1%) | 16,598 r/s (IQR 2%) | 0.94 |
-| 10KB | 25 max | 24,371 r/s (IQR 4%) | 22,940 r/s (IQR 14%) | 0.94 |
-| 10KB | 50 max | 24,692 r/s (IQR 1%) | 23,717 r/s (IQR 3%) | 0.96 |
-| 10KB | 100 max | 24,601 r/s (IQR 4%) | 23,399 r/s (IQR 6%) | 0.95 |
-| 10KB | 300 max | 30,620 r/s (IQR 10%) | 18,944 r/s (IQR 4%) | 0.62 |
+| 10KB | 1 max | 4,025 r/s (IQR 5%) | 3,815 r/s (IQR 1%) | 0.95 |
+| 10KB | 6 max | 17,543 r/s (IQR 1%) | 16,964 r/s (IQR 1%) | 0.97 |
+| 10KB | 25 max | 24,383 r/s (IQR 1%) | 23,880 r/s (IQR 2%) | 0.98 |
+| 10KB | 50 max | 24,517 r/s (IQR 3%) | 24,425 r/s (IQR 7%) | 1.00 |
+| 10KB | 100 max | 24,642 r/s (IQR 0%) | 23,677 r/s (IQR 20%) | 0.96 |
+| 10KB | 300 max | 31,156 r/s (IQR 21%) | 18,268 r/s (IQR 19%) | 0.59 |
 
-### h3 (5 runs each, nghttpx: https:43519 [backend httpd/2.4.69])
+### h3 (5 runs each, nghttpx: https:42343 [backend httpd/2.4.69])
 
-**Downloads (h3) from nghttpx: https:43519 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
-
-| size | kind | C | Rust | Rust/C |
-|---|---|---|---|---|
-| 1MB | single | 66.1 MB/s (IQR 10%) | 67.1 MB/s (IQR 12%) | 1.02 |
-| 1MB | serial(50) | 482.7 MB/s (IQR 0%) | 443.7 MB/s (IQR 3%) | 0.92 |
-| 1MB | parallel(50x50) | 717.3 MB/s (IQR 9%) | 592.3 MB/s (IQR 4%) | 0.83 |
-| 10MB | single | 368.3 MB/s (IQR 3%) | 344.5 MB/s (IQR 5%) | 0.94 |
-| 10MB | serial(50) | 600.8 MB/s (IQR 0%) | 550.3 MB/s (IQR 4%) | 0.92 |
-| 10MB | parallel(50x50) | 1,080.9 MB/s (IQR 6%) | 817.7 MB/s (IQR 2%) | 0.76 |
-| 100MB | single | 583.3 MB/s (IQR 3%) | 525.5 MB/s (IQR 3%) | 0.90 |
-| 100MB | serial(50) | 618.5 MB/s (IQR 3%) | 553.9 MB/s (IQR 2%) | 0.90 |
-| 100MB | parallel(50x50) | 1,071.9 MB/s (IQR 5%) | 733.0 MB/s (IQR 4%) | 0.68 |
-
-**Uploads to nghttpx: https:43519 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
+**Downloads (h3) from nghttpx: https:42343 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 64.4 MB/s (IQR 5%) | 63.6 MB/s (IQR 1%) | 0.99 |
-| 1MB | serial(50) | 299.3 MB/s (IQR 33%) | 244.3 MB/s (IQR 18%) | 0.82 |
-| 1MB | parallel(50x50) | 191.0 MB/s (IQR 37%) | 162.3 MB/s (IQR 16%) | 0.85 |
-| 10MB | single | 308.8 MB/s (IQR 21%) | 227.2 MB/s (IQR 5%) | 0.74 |
-| 10MB | serial(50) | 536.0 MB/s (IQR 1%) | 331.9 MB/s (IQR 1%) | 0.62 |
-| 10MB | parallel(50x50) | 230.3 MB/s (IQR 6%) | 242.6 MB/s (IQR 2%) | 1.05 |
-| 100MB | single | 588.4 MB/s (IQR 3%) | 337.3 MB/s (IQR 3%) | 0.57 |
-| 100MB | serial(50) | 596.7 MB/s (IQR 4%) | 343.3 MB/s (IQR 2%) | 0.58 |
-| 100MB | parallel(50x50) | 238.8 MB/s (IQR 2%) | 243.3 MB/s (IQR 1%) | 1.02 |
+| 1MB | single | 68.0 MB/s (IQR 26%) | 72.1 MB/s (IQR 2%) | 1.06 |
+| 1MB | serial(50) | 485.9 MB/s (IQR 1%) | 423.2 MB/s (IQR 8%) | 0.87 |
+| 1MB | parallel(50x50) | 756.1 MB/s (IQR 5%) | 527.2 MB/s (IQR 12%) | 0.70 |
+| 10MB | single | 372.8 MB/s (IQR 3%) | 353.8 MB/s (IQR 6%) | 0.95 |
+| 10MB | serial(50) | 609.4 MB/s (IQR 1%) | 542.1 MB/s (IQR 1%) | 0.89 |
+| 10MB | parallel(50x50) | 1,069.5 MB/s (IQR 10%) | 783.2 MB/s (IQR 2%) | 0.73 |
+| 100MB | single | 575.8 MB/s (IQR 3%) | 529.3 MB/s (IQR 1%) | 0.92 |
+| 100MB | serial(50) | 616.6 MB/s (IQR 2%) | 563.7 MB/s (IQR 3%) | 0.91 |
+| 100MB | parallel(50x50) | 1,082.8 MB/s (IQR 3%) | 750.0 MB/s (IQR 8%) | 0.69 |
 
-**Requests in parallel to nghttpx: https:43519 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
+**Uploads to nghttpx: https:42343 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 10KB | 1 max | 3,491 r/s (IQR 72%) | 3,386 r/s (IQR 2%) | 0.97 |
-| 10KB | 6 max | 15,206 r/s (IQR 1%) | 13,471 r/s (IQR 1%) | 0.89 |
-| 10KB | 25 max | 29,834 r/s (IQR 2%) | 22,374 r/s (IQR 2%) | 0.75 |
-| 10KB | 50 max | 34,089 r/s (IQR 8%) | 22,957 r/s (IQR 5%) | 0.67 |
-| 10KB | 100 max | 31,726 r/s (IQR 11%) | 22,364 r/s (IQR 7%) | 0.70 |
-| 10KB | 300 max | 31,023 r/s (IQR 20%) | 18,065 r/s (IQR 2%) | 0.58 |
+| 1MB | single | 63.9 MB/s (IQR 0%) | 63.1 MB/s (IQR 6%) | 0.99 |
+| 1MB | serial(50) | 316.8 MB/s (IQR 2%) | 288.8 MB/s (IQR 3%) | 0.91 |
+| 1MB | parallel(50x50) | 210.6 MB/s (IQR 5%) | 211.1 MB/s (IQR 4%) | 1.00 |
+| 10MB | single | 315.4 MB/s (IQR 13%) | 238.7 MB/s (IQR 4%) | 0.76 |
+| 10MB | serial(50) | 549.8 MB/s (IQR 1%) | 332.3 MB/s (IQR 1%) | 0.60 |
+| 10MB | parallel(50x50) | 237.7 MB/s (IQR 0%) | 239.2 MB/s (IQR 0%) | 1.01 |
+| 100MB | single | 578.0 MB/s (IQR 7%) | 335.8 MB/s (IQR 4%) | 0.58 |
+| 100MB | serial(50) | 594.8 MB/s (IQR 2%) | 344.1 MB/s (IQR 2%) | 0.58 |
+| 100MB | parallel(50x50) | 237.9 MB/s (IQR 0%) | 246.0 MB/s (IQR 2%) | 1.03 |
+
+**Requests in parallel to nghttpx: https:42343 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
+
+| size | kind | C | Rust | Rust/C |
+|---|---|---|---|---|
+| 10KB | 1 max | 3,651 r/s (IQR 1%) | 3,440 r/s (IQR 25%) | 0.94 |
+| 10KB | 6 max | 15,068 r/s (IQR 2%) | 13,258 r/s (IQR 2%) | 0.88 |
+| 10KB | 25 max | 29,239 r/s (IQR 3%) | 19,665 r/s (IQR 19%) | 0.67 |
+| 10KB | 50 max | 34,585 r/s (IQR 2%) | 20,880 r/s (IQR 17%) | 0.60 |
+| 10KB | 100 max | 35,823 r/s (IQR 2%) | 22,232 r/s (IQR 19%) | 0.62 |
+| 10KB | 300 max | 32,682 r/s (IQR 3%) | 17,820 r/s (IQR 11%) | 0.55 |
 
 ## scorecard, threaded configuration, scorecard with `--curl-verbose`
 
@@ -161,40 +161,40 @@ A program marked *port* times a C internal on the C leg and its Rust counterpart
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 88.7 MB/s (IQR 15%) | 89.0 MB/s (IQR 24%) | 1.00 |
-| 1MB | serial(50) | 895.2 MB/s (IQR 5%) | 924.7 MB/s (IQR 17%) | 1.03 |
-| 1MB | parallel(50x50) | 614.7 MB/s (IQR 6%) | 582.0 MB/s (IQR 29%) | 0.95 |
-| 10MB | single | 559.1 MB/s (IQR 7%) | 571.6 MB/s (IQR 16%) | 1.02 |
-| 10MB | serial(50) | 1,235.4 MB/s (IQR 1%) | 1,314.2 MB/s (IQR 1%) | 1.06 |
-| 10MB | parallel(50x50) | 1,534.9 MB/s (IQR 20%) | 1,609.9 MB/s (IQR 16%) | 1.05 |
-| 100MB | single | 1,121.2 MB/s (IQR 7%) | 1,135.6 MB/s (IQR 8%) | 1.01 |
-| 100MB | serial(50) | 1,218.9 MB/s (IQR 2%) | 1,242.1 MB/s (IQR 3%) | 1.02 |
-| 100MB | parallel(50x50) | 2,057.4 MB/s (IQR 4%) | 1,824.2 MB/s (IQR 1%) | 0.89 |
+| 1MB | single | 88.9 MB/s (IQR 12%) | 82.8 MB/s (IQR 7%) | 0.93 |
+| 1MB | serial(50) | 889.9 MB/s (IQR 1%) | 844.0 MB/s (IQR 3%) | 0.95 |
+| 1MB | parallel(50x50) | 645.1 MB/s (IQR 3%) | 638.4 MB/s (IQR 5%) | 0.99 |
+| 10MB | single | 593.5 MB/s (IQR 8%) | 591.6 MB/s (IQR 15%) | 1.00 |
+| 10MB | serial(50) | 1,233.2 MB/s (IQR 2%) | 1,311.9 MB/s (IQR 7%) | 1.06 |
+| 10MB | parallel(50x50) | 1,763.2 MB/s (IQR 4%) | 1,520.2 MB/s (IQR 6%) | 0.86 |
+| 100MB | single | 1,141.2 MB/s (IQR 2%) | 1,063.5 MB/s (IQR 4%) | 0.93 |
+| 100MB | serial(50) | 1,228.9 MB/s (IQR 3%) | 1,260.6 MB/s (IQR 9%) | 1.03 |
+| 100MB | parallel(50x50) | 2,071.8 MB/s (IQR 0%) | 1,885.7 MB/s (IQR 1%) | 0.91 |
 
 **Uploads to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 109.2 MB/s (IQR 5%) | 103.0 MB/s (IQR 4%) | 0.94 |
-| 1MB | serial(50) | 922.9 MB/s (IQR 1%) | 867.1 MB/s (IQR 1%) | 0.94 |
-| 1MB | parallel(50x50) | 520.4 MB/s (IQR 2%) | 534.2 MB/s (IQR 4%) | 1.03 |
-| 10MB | single | 565.5 MB/s (IQR 5%) | 555.2 MB/s (IQR 6%) | 0.98 |
-| 10MB | serial(50) | 1,230.1 MB/s (IQR 3%) | 1,128.4 MB/s (IQR 2%) | 0.92 |
-| 10MB | parallel(50x50) | 1,070.3 MB/s (IQR 12%) | 1,048.3 MB/s (IQR 0%) | 0.98 |
-| 100MB | single | 1,077.1 MB/s (IQR 6%) | 1,022.4 MB/s (IQR 4%) | 0.95 |
-| 100MB | serial(50) | 1,286.0 MB/s (IQR 3%) | 1,142.4 MB/s (IQR 4%) | 0.89 |
-| 100MB | parallel(50x50) | 1,206.4 MB/s (IQR 4%) | 1,159.1 MB/s (IQR 6%) | 0.96 |
+| 1MB | single | 111.2 MB/s (IQR 6%) | 101.9 MB/s (IQR 0%) | 0.92 |
+| 1MB | serial(50) | 931.9 MB/s (IQR 1%) | 896.8 MB/s (IQR 2%) | 0.96 |
+| 1MB | parallel(50x50) | 526.5 MB/s (IQR 2%) | 540.3 MB/s (IQR 0%) | 1.03 |
+| 10MB | single | 588.2 MB/s (IQR 1%) | 524.9 MB/s (IQR 3%) | 0.89 |
+| 10MB | serial(50) | 1,267.8 MB/s (IQR 1%) | 1,142.9 MB/s (IQR 0%) | 0.90 |
+| 10MB | parallel(50x50) | 1,127.7 MB/s (IQR 2%) | 1,048.2 MB/s (IQR 7%) | 0.93 |
+| 100MB | single | 1,061.0 MB/s (IQR 12%) | 901.9 MB/s (IQR 13%) | 0.85 |
+| 100MB | serial(50) | 1,289.4 MB/s (IQR 4%) | 1,116.9 MB/s (IQR 5%) | 0.87 |
+| 100MB | parallel(50x50) | 1,258.4 MB/s (IQR 4%) | 1,161.7 MB/s (IQR 12%) | 0.92 |
 
 **Requests in parallel to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 10KB | 1 max | 3,667 r/s (IQR 1%) | 4,072 r/s (IQR 1%) | 1.11 |
-| 10KB | 6 max | 8,467 r/s (IQR 1%) | 12,400 r/s (IQR 1%) | 1.46 |
-| 10KB | 25 max | 8,518 r/s (IQR 2%) | 12,009 r/s (IQR 3%) | 1.41 |
-| 10KB | 50 max | 8,503 r/s (IQR 2%) | 11,445 r/s (IQR 3%) | 1.35 |
-| 10KB | 100 max | 7,563 r/s (IQR 6%) | 10,486 r/s (IQR 6%) | 1.39 |
-| 10KB | 300 max | 5,029 r/s (IQR 10%) | 5,718 r/s (IQR 10%) | 1.14 |
+| 10KB | 1 max | 3,593 r/s (IQR 1%) | 3,951 r/s (IQR 4%) | 1.10 |
+| 10KB | 6 max | 8,243 r/s (IQR 3%) | 12,082 r/s (IQR 5%) | 1.47 |
+| 10KB | 25 max | 8,366 r/s (IQR 1%) | 11,980 r/s (IQR 1%) | 1.43 |
+| 10KB | 50 max | 8,469 r/s (IQR 4%) | 11,397 r/s (IQR 2%) | 1.35 |
+| 10KB | 100 max | 7,601 r/s (IQR 1%) | 10,643 r/s (IQR 3%) | 1.40 |
+| 10KB | 300 max | 5,293 r/s (IQR 4%) | 6,262 r/s (IQR 9%) | 1.18 |
 
 ### h2 (5 runs each, httpd/2.4.69)
 
@@ -202,78 +202,78 @@ A program marked *port* times a C internal on the C leg and its Rust counterpart
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 87.2 MB/s (IQR 9%) | 81.7 MB/s (IQR 8%) | 0.94 |
-| 1MB | serial(50) | 788.2 MB/s (IQR 22%) | 777.7 MB/s (IQR 16%) | 0.99 |
-| 1MB | parallel(50x50) | 1,319.7 MB/s (IQR 4%) | 1,221.6 MB/s (IQR 6%) | 0.93 |
-| 10MB | single | 593.0 MB/s (IQR 8%) | 592.7 MB/s (IQR 14%) | 1.00 |
-| 10MB | serial(50) | 1,313.2 MB/s (IQR 1%) | 1,286.0 MB/s (IQR 6%) | 0.98 |
-| 10MB | parallel(50x50) | 1,497.5 MB/s (IQR 0%) | 1,527.7 MB/s (IQR 5%) | 1.02 |
-| 100MB | single | 1,176.6 MB/s (IQR 10%) | 1,230.8 MB/s (IQR 3%) | 1.05 |
-| 100MB | serial(50) | 1,295.6 MB/s (IQR 2%) | 1,350.0 MB/s (IQR 1%) | 1.04 |
-| 100MB | parallel(50x50) | 1,494.7 MB/s (IQR 2%) | 1,540.3 MB/s (IQR 1%) | 1.03 |
+| 1MB | single | 84.7 MB/s (IQR 7%) | 82.4 MB/s (IQR 3%) | 0.97 |
+| 1MB | serial(50) | 784.9 MB/s (IQR 11%) | 764.2 MB/s (IQR 9%) | 0.97 |
+| 1MB | parallel(50x50) | 1,374.7 MB/s (IQR 12%) | 1,245.3 MB/s (IQR 2%) | 0.91 |
+| 10MB | single | 639.4 MB/s (IQR 7%) | 553.7 MB/s (IQR 18%) | 0.87 |
+| 10MB | serial(50) | 1,296.8 MB/s (IQR 1%) | 1,299.1 MB/s (IQR 2%) | 1.00 |
+| 10MB | parallel(50x50) | 1,449.0 MB/s (IQR 2%) | 1,516.6 MB/s (IQR 1%) | 1.05 |
+| 100MB | single | 1,103.9 MB/s (IQR 16%) | 1,174.6 MB/s (IQR 7%) | 1.06 |
+| 100MB | serial(50) | 1,269.3 MB/s (IQR 2%) | 1,277.9 MB/s (IQR 4%) | 1.01 |
+| 100MB | parallel(50x50) | 1,515.6 MB/s (IQR 11%) | 1,497.8 MB/s (IQR 3%) | 0.99 |
 
 **Uploads to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 91.2 MB/s (IQR 14%) | 87.1 MB/s (IQR 13%) | 0.96 |
-| 1MB | serial(50) | 390.6 MB/s (IQR 4%) | 314.8 MB/s (IQR 16%) | 0.81 |
-| 1MB | parallel(50x50) | 556.2 MB/s (IQR 3%) | 551.5 MB/s (IQR 7%) | 0.99 |
-| 10MB | single | 311.2 MB/s (IQR 40%) | 378.2 MB/s (IQR 6%) | 1.22 |
-| 10MB | serial(50) | 504.9 MB/s (IQR 15%) | 560.2 MB/s (IQR 5%) | 1.11 |
-| 10MB | parallel(50x50) | 681.1 MB/s (IQR 2%) | 701.6 MB/s (IQR 3%) | 1.03 |
-| 100MB | single | 614.4 MB/s (IQR 9%) | 553.1 MB/s (IQR 11%) | 0.90 |
-| 100MB | serial(50) | 606.2 MB/s (IQR 1%) | 614.4 MB/s (IQR 2%) | 1.01 |
-| 100MB | parallel(50x50) | 772.5 MB/s (IQR 2%) | 737.8 MB/s (IQR 4%) | 0.96 |
+| 1MB | single | 92.5 MB/s (IQR 12%) | 91.0 MB/s (IQR 7%) | 0.98 |
+| 1MB | serial(50) | 397.7 MB/s (IQR 3%) | 347.1 MB/s (IQR 3%) | 0.87 |
+| 1MB | parallel(50x50) | 577.7 MB/s (IQR 16%) | 590.0 MB/s (IQR 1%) | 1.02 |
+| 10MB | single | 386.9 MB/s (IQR 4%) | 312.3 MB/s (IQR 23%) | 0.81 |
+| 10MB | serial(50) | 551.5 MB/s (IQR 4%) | 552.5 MB/s (IQR 3%) | 1.00 |
+| 10MB | parallel(50x50) | 727.0 MB/s (IQR 5%) | 717.1 MB/s (IQR 2%) | 0.99 |
+| 100MB | single | 579.6 MB/s (IQR 10%) | 637.3 MB/s (IQR 16%) | 1.10 |
+| 100MB | serial(50) | 615.5 MB/s (IQR 4%) | 603.6 MB/s (IQR 4%) | 0.98 |
+| 100MB | parallel(50x50) | 762.5 MB/s (IQR 5%) | 719.5 MB/s (IQR 4%) | 0.94 |
 
 **Requests in parallel to httpd/2.4.69** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 10KB | 1 max | 2,917 r/s (IQR 1%) | 3,145 r/s (IQR 1%) | 1.08 |
-| 10KB | 6 max | 7,841 r/s (IQR 5%) | 10,808 r/s (IQR 2%) | 1.38 |
-| 10KB | 25 max | 7,907 r/s (IQR 4%) | 11,278 r/s (IQR 0%) | 1.43 |
-| 10KB | 50 max | 7,910 r/s (IQR 1%) | 10,996 r/s (IQR 2%) | 1.39 |
-| 10KB | 100 max | 7,836 r/s (IQR 1%) | 10,790 r/s (IQR 2%) | 1.38 |
-| 10KB | 300 max | 7,541 r/s (IQR 4%) | 9,681 r/s (IQR 0%) | 1.28 |
+| 10KB | 1 max | 2,892 r/s (IQR 2%) | 3,195 r/s (IQR 2%) | 1.10 |
+| 10KB | 6 max | 7,519 r/s (IQR 6%) | 10,949 r/s (IQR 2%) | 1.46 |
+| 10KB | 25 max | 7,739 r/s (IQR 6%) | 11,340 r/s (IQR 0%) | 1.47 |
+| 10KB | 50 max | 7,843 r/s (IQR 2%) | 11,205 r/s (IQR 1%) | 1.43 |
+| 10KB | 100 max | 7,814 r/s (IQR 2%) | 10,885 r/s (IQR 0%) | 1.39 |
+| 10KB | 300 max | 7,622 r/s (IQR 1%) | 9,763 r/s (IQR 1%) | 1.28 |
 
-### h3 (5 runs each, nghttpx: https:39879 [backend httpd/2.4.69])
+### h3 (5 runs each, nghttpx: https:50973 [backend httpd/2.4.69])
 
-**Downloads (h3) from nghttpx: https:39879 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
-
-| size | kind | C | Rust | Rust/C |
-|---|---|---|---|---|
-| 1MB | single | 59.5 MB/s (IQR 6%) | 60.0 MB/s (IQR 4%) | 1.01 |
-| 1MB | serial(50) | 417.8 MB/s (IQR 2%) | 374.8 MB/s (IQR 4%) | 0.90 |
-| 1MB | parallel(50x50) | 620.9 MB/s (IQR 6%) | 440.9 MB/s (IQR 10%) | 0.71 |
-| 10MB | single | 333.2 MB/s (IQR 2%) | 298.7 MB/s (IQR 4%) | 0.90 |
-| 10MB | serial(50) | 534.0 MB/s (IQR 0%) | 453.8 MB/s (IQR 4%) | 0.85 |
-| 10MB | parallel(50x50) | 775.4 MB/s (IQR 8%) | 558.5 MB/s (IQR 6%) | 0.72 |
-| 100MB | single | 530.7 MB/s (IQR 0%) | 452.9 MB/s (IQR 2%) | 0.85 |
-| 100MB | serial(50) | 547.9 MB/s (IQR 1%) | 475.4 MB/s (IQR 1%) | 0.87 |
-| 100MB | parallel(50x50) | 776.0 MB/s (IQR 2%) | 555.1 MB/s (IQR 0%) | 0.72 |
-
-**Uploads to nghttpx: https:39879 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
+**Downloads (h3) from nghttpx: https:50973 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 1MB | single | 59.2 MB/s (IQR 7%) | 63.4 MB/s (IQR 6%) | 1.07 |
-| 1MB | serial(50) | 302.9 MB/s (IQR 2%) | 271.0 MB/s (IQR 8%) | 0.89 |
-| 1MB | parallel(50x50) | 215.0 MB/s (IQR 100%) | 191.3 MB/s (IQR 16%) | 0.89 |
-| 10MB | single | 303.4 MB/s (IQR 5%) | 230.0 MB/s (IQR 2%) | 0.76 |
-| 10MB | serial(50) | 537.0 MB/s (IQR 6%) | 322.3 MB/s (IQR 4%) | 0.60 |
-| 10MB | parallel(50x50) | 198.0 MB/s (IQR 114%) | 238.1 MB/s (IQR 3%) | 1.20 |
-| 100MB | single | 583.2 MB/s (IQR 4%) | 329.5 MB/s (IQR 4%) | 0.57 |
-| 100MB | serial(50) | 611.4 MB/s (IQR 1%) | 339.5 MB/s (IQR 2%) | 0.56 |
-| 100MB | parallel(50x50) | 237.4 MB/s (IQR 5%) | 250.4 MB/s (IQR 1%) | 1.05 |
+| 1MB | single | 65.1 MB/s (IQR 18%) | 65.2 MB/s (IQR 11%) | 1.00 |
+| 1MB | serial(50) | 416.7 MB/s (IQR 7%) | 369.9 MB/s (IQR 1%) | 0.89 |
+| 1MB | parallel(50x50) | 602.6 MB/s (IQR 9%) | 476.6 MB/s (IQR 2%) | 0.79 |
+| 10MB | single | 323.3 MB/s (IQR 8%) | 300.9 MB/s (IQR 2%) | 0.93 |
+| 10MB | serial(50) | 528.8 MB/s (IQR 8%) | 469.2 MB/s (IQR 3%) | 0.89 |
+| 10MB | parallel(50x50) | 749.6 MB/s (IQR 27%) | 547.1 MB/s (IQR 10%) | 0.73 |
+| 100MB | single | 513.9 MB/s (IQR 4%) | 444.4 MB/s (IQR 2%) | 0.86 |
+| 100MB | serial(50) | 548.3 MB/s (IQR 5%) | 479.6 MB/s (IQR 0%) | 0.87 |
+| 100MB | parallel(50x50) | 755.9 MB/s (IQR 3%) | 544.1 MB/s (IQR 3%) | 0.72 |
 
-**Requests in parallel to nghttpx: https:39879 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
+**Uploads to nghttpx: https:50973 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
 
 | size | kind | C | Rust | Rust/C |
 |---|---|---|---|---|
-| 10KB | 1 max | 2,574 r/s (IQR 3%) | 2,688 r/s (IQR 1%) | 1.04 |
-| 10KB | 6 max | 7,540 r/s (IQR 0%) | 9,825 r/s (IQR 1%) | 1.30 |
-| 10KB | 25 max | 7,883 r/s (IQR 2%) | 10,946 r/s (IQR 1%) | 1.39 |
-| 10KB | 50 max | 7,860 r/s (IQR 1%) | 11,193 r/s (IQR 3%) | 1.42 |
-| 10KB | 100 max | 7,905 r/s (IQR 2%) | 10,668 r/s (IQR 4%) | 1.35 |
-| 10KB | 300 max | 7,561 r/s (IQR 0%) | 9,494 r/s (IQR 4%) | 1.26 |
+| 1MB | single | 37.7 MB/s (IQR 84%) | 54.5 MB/s (IQR 22%) | 1.44 |
+| 1MB | serial(50) | 277.1 MB/s (IQR 19%) | 276.5 MB/s (IQR 4%) | 1.00 |
+| 1MB | parallel(50x50) | 160.8 MB/s (IQR 21%) | 201.7 MB/s (IQR 11%) | 1.25 |
+| 10MB | single | 304.1 MB/s (IQR 4%) | 228.7 MB/s (IQR 3%) | 0.75 |
+| 10MB | serial(50) | 527.0 MB/s (IQR 4%) | 326.1 MB/s (IQR 3%) | 0.62 |
+| 10MB | parallel(50x50) | 236.1 MB/s (IQR 2%) | 235.3 MB/s (IQR 3%) | 1.00 |
+| 100MB | single | 579.1 MB/s (IQR 2%) | 357.6 MB/s (IQR 56%) | 0.62 |
+| 100MB | serial(50) | 601.6 MB/s (IQR 3%) | 345.8 MB/s (IQR 3%) | 0.57 |
+| 100MB | parallel(50x50) | 230.6 MB/s (IQR 101%) | 250.2 MB/s (IQR 1%) | 1.09 |
+
+**Requests in parallel to nghttpx: https:50973 [backend httpd/2.4.69]** (Rust/C above 1 is faster)
+
+| size | kind | C | Rust | Rust/C |
+|---|---|---|---|---|
+| 10KB | 1 max | 2,543 r/s (IQR 4%) | 2,464 r/s (IQR 8%) | 0.97 |
+| 10KB | 6 max | 7,332 r/s (IQR 2%) | 9,950 r/s (IQR 1%) | 1.36 |
+| 10KB | 25 max | 7,613 r/s (IQR 1%) | 10,930 r/s (IQR 3%) | 1.44 |
+| 10KB | 50 max | 7,506 r/s (IQR 6%) | 11,207 r/s (IQR 2%) | 1.49 |
+| 10KB | 100 max | 7,766 r/s (IQR 2%) | 11,052 r/s (IQR 1%) | 1.42 |
+| 10KB | 300 max | 7,569 r/s (IQR 3%) | 9,826 r/s (IQR 2%) | 1.30 |

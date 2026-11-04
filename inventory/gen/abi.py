@@ -9,8 +9,15 @@ Values and layouts are not parsed out of the headers by hand: a probe
 program is compiled with gcc against include/ and run, so the numbers are
 the ones an application compiled against these headers bakes in. Layouts
 are for the build target (recorded as `target`).
+
+Other targets are measured on their own machines, for the names found
+here, by the scripts in inventory/measure/ (`abi_msvc.py`: x86_64 Windows
+with MSVC), into inventory/abi-<target>.json. Each records a key of the
+headers and the probe it ran; this fails while one no longer matches.
 """
 
+import hashlib
+import json
 import pathlib
 import re
 import subprocess
@@ -282,39 +289,103 @@ int main(void)
 """
 
 
-def run_probe(lines):
+class Gcc:
+    """The host's gcc, which `abi.json` is measured with."""
+
+    # A diagnostic naming a line of the probe.
+    diagnostic = re.compile(r"probe\.c:(\d+):\d+: (?:error|note)")
+
+    def build(self, src, scratch):
+        """Compile and link `src`; return (exit code, diagnostics, exe)."""
+        exe = scratch / "probe"
+        r = gcc(["-Werror=int-conversion", "-Wno-deprecated-declarations",
+                 "-o", str(exe), str(src)])
+        return r.returncode, r.stderr, exe
+
+
+def run_probe(lines, compiler=None):
     """
     Compile `lines` (one statement each) into the probe; drop lines that
     fail to compile and retry. Returns (stdout, dropped lines).
     """
+    compiler = compiler or Gcc()
     lines, dropped = list(lines), []
     first = PROBE_PRELUDE.count("\n") + 1
     for _ in range(50):
         src = SCRATCH / "probe.c"
         src.write_text(PROBE_PRELUDE + "\n".join(lines) +
                        "\nreturn 0;\n}\n")
-        exe = SCRATCH / "probe"
-        r = gcc(["-Werror=int-conversion", "-Wno-deprecated-declarations",
-                 "-o", str(exe), str(src)])
-        if r.returncode == 0:
+        code, stderr, exe = compiler.build(src, SCRATCH)
+        if code == 0:
             out = subprocess.run([str(exe)], capture_output=True, text=True,
                                  check=True).stdout
             return out, dropped
         # An error inside a header names the probe line only in the
         # "in expansion of macro" notes that follow it.
         bad, pending = set(), False
-        for diag in r.stderr.splitlines():
-            if ": error:" in diag:
+        for diag in stderr.splitlines():
+            if re.search(r": (fatal )?error\b", diag):
                 pending = True
-            m = re.search(r"probe\.c:(\d+):\d+: (error|note)", diag)
+            m = compiler.diagnostic.search(diag)
             if m and pending and int(m.group(1)) >= first:
                 bad.add(int(m.group(1)) - first)
                 pending = False
         bad = {b for b in bad if 0 <= b < len(lines)}
-        check(bad, f"probe failed outside the probe lines:\n{r.stderr}")
+        check(bad, f"probe failed outside the probe lines:\n{stderr}")
         dropped += [lines[b] for b in bad]
         lines = [line for i, line in enumerate(lines) if i not in bad]
     sys.exit("abi.py: check failed: probe did not converge")
+
+
+def probe_lines(enum_names, obj_macros, type_names, structs):
+    """Return the probe's lines for these constants, types and fields."""
+    lines = [f"P({n});" for n in enum_names + obj_macros]
+    lines += [f"S({t});" for t in type_names]
+    for s, info in sorted(structs.items()):
+        lines += [f"{'B' if 'bit-width' in f else 'O'}({s}, {f['name']});"
+                  for f in info["fields"] if not f["decl"].endswith("{...}")]
+    return lines
+
+
+def foreign_probe_lines(data):
+    """
+    Return the lines a probe for another target runs, from `abi.json`'s data:
+    everything the host's probe measures but the functions, whose presence
+    does not depend on the target.
+    """
+    consts = sorted(data["constants"], key=lambda c: c["name"])
+    type_names = [t["name"] for t in data["typedefs"]] + sorted(
+        data["structs"])
+    type_names += sorted(f"enum {e['tag']}" for e in data["enums"]
+                         if not e["typedef"])
+    return probe_lines([c["name"] for c in consts if c["kind"] == "enum"],
+                       [c["name"] for c in consts if c["kind"] == "macro"],
+                       type_names, data["structs"])
+
+
+def probe_key(lines):
+    """
+    Identify what a foreign probe measured: the public headers (line ends
+    normalised), the probe's prelude and its lines. A target measured on
+    another machine is stale when this no longer matches.
+    """
+    h = hashlib.sha256()
+    for name in sorted(HEADERS):
+        h.update(common.read(f"include/curl/{name}").replace(
+            "\r\n", "\n").encode())
+    h.update(PROBE_PRELUDE.encode())
+    h.update("\n".join(sorted(lines)).encode())
+    return h.hexdigest()
+
+
+def check_foreign(data):
+    """Fail when a target measured elsewhere no longer matches the headers."""
+    key = probe_key(foreign_probe_lines(data))
+    for path in sorted(common.INVENTORY.glob("abi-*.json")):
+        foreign = json.loads(path.read_text())["data"]
+        check(foreign["probe-key"] == key,
+              f"{path.relative_to(ROOT)} is stale against include/curl or "
+              f"the probe; remeasure it with {foreign['measured-by']}")
 
 
 # ----------------------------------------------------------- other sources
@@ -595,14 +666,10 @@ def generate():
     check(len(enum_names) == len(set(enum_names)), "duplicate enum constant")
     obj_macros = sorted(n for n, m in macros.items()
                         if m["params"] is None and m["body"])
-    lines = [f"P({n});" for n in enum_names + obj_macros]
-    lines += [f"F({f['name']});" for f in funcs]
     type_names = [t["name"] for t in typedefs] + sorted(structs)
     type_names += sorted(f"enum {e['tag']}" for e in enums if not e["typedef"])
-    lines += [f"S({t});" for t in type_names]
-    for s, info in sorted(structs.items()):
-        lines += [f"{'B' if 'bit-width' in f else 'O'}({s}, {f['name']});"
-                  for f in info["fields"] if not f["decl"].endswith("{...}")]
+    lines = probe_lines(enum_names, obj_macros, type_names, structs)
+    lines += [f"F({f['name']});" for f in funcs]
     out, dropped = run_probe(lines)
 
     values, sizes, offsets, bitpos, linked = {}, {}, {}, {}, set()
@@ -729,6 +796,10 @@ def generate():
 
     deprecated_consts = sum(1 for c in constants if c.get("deprecated")
                             is not None)
+    check_foreign({"constants": constants, "typedefs": typedefs,
+                   "structs": structs, "enums": [
+                       {"typedef": e["typedef"], "tag": e["tag"]}
+                       for e in enums]})
     data = {
         "target": target,
         "headers": {h: NOT_PROBED.get(h, "probed") for h in HEADERS},

@@ -2151,6 +2151,8 @@ mod tests {
     /// Peers are the same as `Curl_peer_equal` finds them: the host in
     /// any case, the port, the scheme, and the zone by its scope, a
     /// number or an interface's index, or else by name.
+    /// The zone names Linux's loopback, which Windows names otherwise.
+    #[cfg(unix)]
     #[test]
     fn peers_compare_as_c_compares_them() {
         assert_eq!(
@@ -2195,6 +2197,8 @@ mod tests {
     /// A proxy is the same destination as another by its name in any
     /// case, its port, and its zone by number however spelt, or by name
     /// when it has none (`Curl_peer_same_destination`).
+    /// The zone names Linux's loopback, which Windows names otherwise.
+    #[cfg(unix)]
     #[test]
     fn proxies_compare_as_destinations() {
         let same = |a: &Peer, b: &Peer| Destination(a) == Destination(b);

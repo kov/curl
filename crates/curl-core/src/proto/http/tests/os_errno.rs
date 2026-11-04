@@ -8,9 +8,16 @@ use std::net::IpAddr;
 
 use super::*;
 
-/// As Linux numbers them, as the fake network gives them.
+/// As the system numbers them, as the fake network gives them: on
+/// Windows Winsock's, a send on a shut socket `WSAESHUTDOWN`.
+#[cfg(unix)]
 const ECONNREFUSED: i32 = 111;
+#[cfg(unix)]
 const EPIPE: i32 = 32;
+#[cfg(windows)]
+const ECONNREFUSED: i32 = 10061;
+#[cfg(windows)]
+const EPIPE: i32 = 10058;
 
 fn errno(ran: &Ran) -> Option<i32> {
     ran.easy.report().os_errno().map(|e| e.get())

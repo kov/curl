@@ -84,6 +84,14 @@ fn bound(net: impl FnOnce(FakeNet) -> FakeNet, bind: LocalBind) -> Ran {
     })
 }
 
+/// What the system says of an interface not there: Linux's device bind
+/// fails with `ENODEV`; Windows, with no such bind and no interface
+/// lookup, has no error to tell (`Curl_if2ip`).
+#[cfg(unix)]
+const NO_DEVICE: &str = "19: No such device";
+#[cfg(windows)]
+const NO_DEVICE: &str = "0: No error";
+
 fn interface(given: &str) -> LocalBind {
     LocalBind {
         interface: Interface::parse(given.as_bytes()).unwrap(),
@@ -122,6 +130,7 @@ fn a_port_in_use_gives_way_to_the_next_of_the_range() {
 /// reason given way to the connect's.
 #[test]
 fn a_range_all_in_use_fails_to_bind() {
+    const IN_USE: i32 = if cfg!(windows) { 10048 } else { 98 };
     let ran = bound(
         |n| n.with_port_in_use(18700).with_port_in_use(18701),
         ports(18700, 2),
@@ -132,9 +141,9 @@ fn a_range_all_in_use_fails_to_bind() {
         lines(&format!(
             "Trying 127.0.0.1:{PORT}...
             Bind to local port 18700 failed, trying next
-            bind failed with errno 98: Address already in use
+            bind failed with errno {IN_USE}: Address already in use
             [TCP] cf_socket_open() -> 45, fd=-1
-            connect to 127.0.0.1 port {PORT} from  port 0 failed: Success
+            connect to 127.0.0.1 port {PORT} from  port 0 failed: {NO_ERROR}
             [TCP] destroy
             Failed to connect to 127.0.0.1:{PORT} after 0 ms: Failed binding local connection end"
         ))
@@ -146,7 +155,8 @@ fn a_range_all_in_use_fails_to_bind() {
 }
 
 /// A plain name binds to the interface of that name, and to nothing
-/// else.
+/// else (`SO_BINDTODEVICE`, which Windows has not).
+#[cfg(unix)]
 #[test]
 fn a_name_binds_to_its_interface() {
     let ran = bound(|n| n.with_device("eth9"), interface("eth9"));
@@ -190,7 +200,7 @@ fn an_interface_not_there_fails_to_bind() {
         bind_lines(&ran)[..3],
         lines(&format!(
             "Trying 127.0.0.1:{PORT}...
-            Could not bind to interface 'nonexist' with errno 19: No such device
+            Could not bind to interface 'nonexist' with errno {NO_DEVICE}
             [TCP] cf_socket_open() -> 45, fd=-1"
         ))
     );
@@ -206,7 +216,12 @@ fn an_interface_not_utf8_fails_as_its_bytes() {
     };
     let ran = bound(|n| n, bind);
     assert_eq!(ran.result, Err(ErrorKind::InterfaceFailed));
-    let wanted = b"Could not bind to interface 'caf\xffx' with errno 19: No such device\n";
+    let wanted = [
+        &b"Could not bind to interface 'caf\xffx' with errno "[..],
+        NO_DEVICE.as_bytes(),
+        b"\n",
+    ]
+    .concat();
     assert!(
         ran.seen.of("text").contains(&wanted.to_vec()),
         "{:?}",
@@ -218,13 +233,14 @@ fn an_interface_not_utf8_fails_as_its_bytes() {
 /// could not connect: the next address would be tried.
 #[test]
 fn a_host_of_the_other_family_cannot_connect() {
+    const AF_INET6: i32 = if cfg!(windows) { 23 } else { 10 };
     let ran = bound(|n| n, interface("host!::1"));
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     assert_eq!(
         bind_lines(&ran)[..3],
         lines(&format!(
             "Trying 127.0.0.1:{PORT}...
-            Name '::1' family 2 resolved to '::1' family 10
+            Name '::1' family 2 resolved to '::1' family {AF_INET6}
             [TCP] cf_socket_open() -> 7, fd=-1"
         ))
     );

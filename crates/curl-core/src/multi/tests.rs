@@ -5061,20 +5061,27 @@ fn sockets_are_set_as_the_options_say() {
     m.add(Box::new(idle_off), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let set = |n| net.lock().unwrap().socket_options(SocketKey::new(n));
-    assert_eq!(set(1000), [O::NoDelay]);
-    assert_eq!(set(1001), []);
+    // Windows makes a connect to the loopback address give up at once,
+    // once the options are set.
+    #[cfg(windows)]
+    let lo: &[O] = &[O::NoSynRetransmissions];
+    #[cfg(unix)]
+    let lo: &[O] = &[];
+    assert_eq!(set(1000), [&[O::NoDelay][..], lo].concat());
+    assert_eq!(set(1001), lo);
+    let alive = [
+        O::NoDelay,
+        O::KeepAlive,
+        O::KeepIdle(30),
+        O::KeepInterval(60),
+        O::KeepCount(9),
+    ];
+    assert_eq!(set(1002), [&alive[..], lo, &[O::FastOpenConnect]].concat());
     assert_eq!(
-        set(1002),
-        [
-            O::NoDelay,
-            O::KeepAlive,
-            O::KeepIdle(30),
-            O::KeepInterval(60),
-            O::KeepCount(9),
-            O::FastOpenConnect
-        ]
+        set(1003),
+        [&[O::NoDelay][..], lo].concat(),
+        "keepalive's times wait for it"
     );
-    assert_eq!(set(1003), [O::NoDelay], "keepalive's times wait for it");
 }
 
 /// Connections are numbered in the order they are made, and one found
@@ -5187,6 +5194,7 @@ fn a_wake_ends_a_wait_on_a_transfer_s_socket() {
 /// A network for the IPv6 scope tests: `::1` port 5 accepts in scopes 9,
 /// 10 and the loopback's, `fe80::1` port 6 in scope 3, and the one
 /// interface with a link-local address is in scope 3.
+#[cfg(unix)]
 fn scoped_net() -> (Multi, std::num::NonZeroU32) {
     use crate::conn::io::Peer;
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
@@ -5226,6 +5234,7 @@ fn run_traced(m: &mut Multi, e: Easy, lines: &TextLines) -> (Result<(), ErrorKin
 
 /// The URL's zone is the socket address's scope, a number as it is and a
 /// name as its interface's index (`get_scope_id`, `peer_create`).
+#[cfg(unix)]
 #[test]
 fn a_zone_is_the_socket_address_s_scope() {
     let (mut m, lo) = scoped_net();
@@ -5246,6 +5255,7 @@ fn a_zone_is_the_socket_address_s_scope() {
 
 /// A link-local address with no scope takes a local interface's; one
 /// with a scope keeps it (`get_scope_id`).
+#[cfg(unix)]
 #[test]
 fn a_link_local_address_without_a_scope_takes_an_interface_s() {
     let (mut m, _) = scoped_net();
@@ -5270,6 +5280,7 @@ fn a_link_local_address_without_a_scope_takes_an_interface_s() {
 
 /// The application's scope takes the place of the URL's zone
 /// (`CURLOPT_ADDRESS_SCOPE`).
+#[cfg(unix)]
 #[test]
 fn the_application_s_scope_overrides_the_zone() {
     let (mut m, _) = scoped_net();
@@ -5287,6 +5298,7 @@ fn the_application_s_scope_overrides_the_zone() {
 
 /// A connection serves a transfer in the same scope, however its zone
 /// spells it, and none in another (`Curl_peer_equal`).
+#[cfg(unix)]
 #[test]
 fn connections_are_reused_within_a_scope() {
     let (mut m, lo) = scoped_net();

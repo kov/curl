@@ -187,6 +187,12 @@ mod over_the_wire {
     use crate::options::{Method, Options, TftpBlockSize, UploadSource};
     use crate::proto::raw::wire::{PORT, Ran, against};
 
+    /// A bind's `EINVAL`, on Windows in Winsock's words from C's table.
+    #[cfg(unix)]
+    const INVALID: &str = "bind() failed; Invalid argument\n";
+    #[cfg(windows)]
+    const INVALID: &str = "bind() failed; Invalid arguments\n";
+
     const RRQ: &[u8] = b"\0\x01f\0octet\0tsize\x000\0blksize\x00512\0timeout\x003\0";
 
     fn data(block: u16, bytes: &[u8]) -> Vec<u8> {
@@ -442,11 +448,7 @@ mod over_the_wire {
             "{}",
             ran.text
         );
-        assert!(
-            ran.text.contains("bind() failed; Invalid argument\n"),
-            "{}",
-            ran.text
-        );
+        assert!(ran.text.contains(INVALID), "{}", ran.text);
         let head = String::from_utf8_lossy(&said);
         assert!(head.ends_with("\r\n\r\n"), "nothing after the head: {head}");
     }
@@ -485,7 +487,9 @@ mod over_the_wire {
     }
 
     /// An interface bound by its name is not a socket bound
-    /// (`bits.bound`): the transfer's own bind goes on, and fails.
+    /// (`bits.bound`): the transfer's own bind goes on, and fails. A bind
+    /// by name is Linux's (`SO_BINDTODEVICE`).
+    #[cfg(unix)]
     #[test]
     fn an_interface_named_does_not_spare_the_bind() {
         use crate::options::{Interface, LocalBind};
@@ -500,11 +504,7 @@ mod over_the_wire {
             "{}",
             ran.text
         );
-        assert!(
-            ran.text.contains("bind() failed; Invalid argument\n"),
-            "{}",
-            ran.text
-        );
+        assert!(ran.text.contains(INVALID), "{}", ran.text);
     }
 
     /// A socket its connect bound to a port is spared the transfer's bind,

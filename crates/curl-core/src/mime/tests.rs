@@ -876,16 +876,19 @@ fn a_part_reached_before_starts_over_as_c_s() {
     assert!(new_reader(&m).start_for_test(&mut calls));
     assert_eq!(calls.rewinds, 1, "started over since");
 
-    let dev_null = FileData::new(b"/dev/null").unwrap();
-    assert_eq!(dev_null.size(), None);
-    let m = TryArc::try_new(tree([named("f", Content::File(dev_null))])).unwrap();
-    let mut r = new_reader(&m);
-    assert!(r.start_for_test(&mut calls));
-    all(&mut r, &mut calls);
-    assert!(
-        !new_reader(&m).start_for_test(&mut calls),
-        "a file that is not regular has no way back"
-    );
+    #[cfg(unix)]
+    {
+        let dev_null = FileData::new(b"/dev/null").unwrap();
+        assert_eq!(dev_null.size(), None);
+        let m = TryArc::try_new(tree([named("f", Content::File(dev_null))])).unwrap();
+        let mut r = new_reader(&m);
+        assert!(r.start_for_test(&mut calls));
+        all(&mut r, &mut calls);
+        assert!(
+            !new_reader(&m).start_for_test(&mut calls),
+            "a file that is not regular has no way back"
+        );
+    }
 
     let m = TryArc::try_new(tree([named("n", Content::None)])).unwrap();
     all(&mut new_reader(&m), &mut calls);
@@ -898,7 +901,9 @@ fn a_part_reached_before_starts_over_as_c_s() {
 
 /// A file that fails to read ends there if it is regular, as C's `fread`
 /// ends it, for the body's size to tell; one that is not fails the read,
-/// where C sends what came as all of it (DIVERGENCE.md).
+/// where C sends what came as all of it (DIVERGENCE.md). A directory is
+/// what fails, which opens on Unix alone.
+#[cfg(unix)]
 #[test]
 fn a_file_that_fails_to_read_ends_or_fails() {
     let dir = std::env::temp_dir();

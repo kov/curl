@@ -216,6 +216,8 @@ mod tests {
         drop(made);
         assert!(held.write_line(b"CLIENT_RANDOM 00 11"));
         assert_eq!(std::fs::read(&path).unwrap(), b"CLIENT_RANDOM 00 11\n");
+        // Windows removes no file open without sharing its deletion.
+        drop(held);
         std::fs::remove_file(&path).unwrap();
     }
 }

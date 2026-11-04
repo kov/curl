@@ -170,7 +170,7 @@ fn a_socket_hung_up_without_an_error_fails() {
             [TCP] local address 127.0.0.1 port 40000...
             [TCP] poll/select error on fd=1000
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
-            connect to 127.0.0.1 port {PORT} from 127.0.0.1 port 40000 failed: Success
+            connect to 127.0.0.1 port {PORT} from 127.0.0.1 port 40000 failed: {NO_ERROR}
             [TCP] destroy
             Failed to connect to 127.0.0.1:{PORT} after 0 ms: Could not connect to server"
         ))
@@ -498,9 +498,9 @@ fn an_opener_opening_nothing_fails_as_c() {
         socket_lines(&h.ran),
         expect(&format!(
             "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
-            failed to open socket: Success
+            failed to open socket: {NO_ERROR}
             [TCP] cf_socket_open() -> 7, fd=-1
-            connect to  port 0 from  port 0 failed: Success
+            connect to  port 0 from  port 0 failed: {NO_ERROR}
             [TCP] destroy
             Failed to connect to 127.0.0.1:{PORT} after 0 ms: Could not connect to server"
         ))
@@ -523,12 +523,12 @@ fn an_opener_out_of_memory_fails_its_attempt() {
     let h = hooked(Peer::Accepts, |h| h.fail = Some(12));
     assert_eq!(h.ran.result, Err(ErrorKind::CouldntConnect));
     let lines = socket_lines(&h.ran);
-    assert!(
-        lines
-            .iter()
-            .any(|l| l == "failed to open socket: Cannot allocate memory"),
-        "{lines:?}"
-    );
+    // `ENOMEM`, in the C library's words.
+    #[cfg(unix)]
+    let said = "failed to open socket: Cannot allocate memory";
+    #[cfg(windows)]
+    let said = "failed to open socket: Not enough space";
+    assert!(lines.iter().any(|l| l == said), "{lines:?}");
 }
 
 /// A configurer that fails the socket has it closed through the closer,
@@ -546,7 +546,7 @@ fn a_configurer_failing_a_socket_aborts_as_c() {
               Trying 127.0.0.1:{PORT}...
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             [TCP] cf_socket_open() -> 42, fd=-1
-            connect to 127.0.0.1 port {PORT} from  port 0 failed: Success
+            connect to 127.0.0.1 port {PORT} from  port 0 failed: {NO_ERROR}
             [TCP] destroy
             Failed to connect to 127.0.0.1:{PORT} after 0 ms: Operation was aborted by an application callback"
         ))
@@ -583,7 +583,7 @@ fn a_socket_already_connected_wins_as_it_opens() {
     assert_eq!(h.set, [1000]);
     assert_eq!(
         h.talk.made_nonblocking_after(),
-        Some(1),
+        Some(1 + LOOPBACK_SET),
         "after the options set"
     );
 }
@@ -596,11 +596,12 @@ fn a_configurer_sets_its_socket_s_options() {
     use crate::conn::io::SocketOption;
     let h = hooked(Peer::Accepts, |h| h.mark = Some(SocketOption::Priority(3)));
     assert_eq!(h.ran.result, Ok(()));
-    assert_eq!(
-        h.talk.options(),
-        [SocketOption::NoDelay, SocketOption::Priority(3)]
-    );
-    assert_eq!(h.talk.made_nonblocking_after(), Some(2));
+    let mut set = vec![SocketOption::NoDelay];
+    #[cfg(windows)]
+    set.push(SocketOption::NoSynRetransmissions);
+    set.push(SocketOption::Priority(3));
+    assert_eq!(h.talk.options(), set);
+    assert_eq!(h.talk.made_nonblocking_after(), Some(2 + LOOPBACK_SET));
 }
 
 /// An opener may change the address, which the attempt then connects to
@@ -625,7 +626,7 @@ fn an_opener_may_change_the_address() {
     );
     // The application's socket is made nonblocking once set: here after
     // the `TCP_NODELAY` the library sets.
-    assert_eq!(h.talk.made_nonblocking_after(), Some(1));
+    assert_eq!(h.talk.made_nonblocking_after(), Some(1 + LOOPBACK_SET));
 }
 
 /// What a GET of a name with an IPv6 and an IPv4 address told the
@@ -695,7 +696,7 @@ fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec
 fn each_attempt_s_reason_is_let_go_as_the_race_goes_on() {
     let (ran, told) = told_by_two_attempts(None, &[true, true]);
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
-    let open = b"failed to open socket: Success".to_vec();
+    let open = format!("failed to open socket: {NO_ERROR}").into_bytes();
     let race =
         format!("Failed to connect to both.example:{PORT} after 0 ms: Could not connect to server");
     assert_eq!(
@@ -718,7 +719,8 @@ fn a_reason_is_let_go_as_an_attempt_connects() {
     let (ran, told) = told_by_two_attempts(Some(slow), &[true, false]);
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.easy.report().failure(), None);
-    assert_eq!(told, [&b"failed to open socket: Success"[..], b""]);
+    let open = format!("failed to open socket: {NO_ERROR}").into_bytes();
+    assert_eq!(told, [open, Vec::new()]);
 }
 
 /// An IPv6 address refused, then the last, an IPv4 one, silent: the

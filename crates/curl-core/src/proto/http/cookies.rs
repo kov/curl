@@ -603,10 +603,19 @@ mod tests {
         };
         assert_eq!(read(&file), Ok(text.into_bytes()));
         let dir_name = dir.display();
+        // A directory opens on Unix, and is told by its status; on Windows
+        // it does not open, as C's `fopen` does not open it there.
+        #[cfg(unix)]
         let said = format!("WARNING: cookie filename points to a directory: \"{dir_name}\"\n");
+        #[cfg(windows)]
+        let said = format!("WARNING: failed to open cookie file \"{dir_name}\"\n");
         assert_eq!(read(&dir), Err(said));
-        let said = format!("WARNING: failed to open cookie file \"{dir_name}/missing\"\n");
-        assert_eq!(read(&dir.join("missing")), Err(said));
+        let missing = dir.join("missing");
+        let said = format!(
+            "WARNING: failed to open cookie file \"{}\"\n",
+            missing.display()
+        );
+        assert_eq!(read(&missing), Err(said));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

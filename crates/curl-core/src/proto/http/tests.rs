@@ -3984,8 +3984,16 @@ fn cookie_files_are_read_as_a_transfer_starts() {
             "WARNING: failed to open cookie file \"{}\"\n",
             missing.display()
         ),
+        // A directory does not open on Windows, as C's `fopen` does not
+        // open it there.
+        #[cfg(unix)]
         format!(
             "WARNING: cookie filename points to a directory: \"{}\"\n",
+            dir.display()
+        ),
+        #[cfg(windows)]
+        format!(
+            "WARNING: failed to open cookie file \"{}\"\n",
             dir.display()
         ),
     ] {
@@ -4238,8 +4246,8 @@ fn a_share_keeps_cookies_for_its_handles() {
         .unwrap();
     two.reload_cookies(|_| {}).unwrap();
     two.save_cookies().unwrap();
-    let saved = std::fs::read(&jar).unwrap();
-    assert!(saved.ends_with(b"\n\nexample.com\tFALSE\t/\tFALSE\t0\ta\t1\n"));
+    let saved = as_saved(std::fs::read_to_string(&jar).unwrap());
+    assert!(saved.ends_with("\n\nexample.com\tFALSE\t/\tFALSE\t0\ta\t1\n"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -5852,10 +5860,37 @@ mod alt_svc;
 mod bind_trace;
 mod coding;
 mod connect_only;
+/// The system's words for no error, as a trace gives them (`strerror(0)`).
+#[cfg(unix)]
+const NO_ERROR: &str = "Success";
+#[cfg(windows)]
+const NO_ERROR: &str = "No error";
+
+/// The options set on a socket to the loopback address beyond Linux's:
+/// on Windows its connect gives up after the first SYN (`tcplocalhost`).
+const LOOPBACK_SET: usize = if cfg!(windows) { 1 } else { 0 };
+
+/// A file the library saved, its line ends made LF: on Windows it is
+/// written in text mode, each line end CRLF, as C's `Curl_fopen` writes
+/// it.
+fn as_saved(text: String) -> String {
+    if cfg!(windows) {
+        let lf = text.matches('\n').count();
+        assert_eq!(text.matches("\r\n").count(), lf, "{text:?}");
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    }
+}
+
 #[cfg(feature = "debug-hooks")]
 mod debug_lines;
 mod h2;
 mod h2_trace;
+// The traces of C's Linux build, whose QUIC sends runs with `sendmsg`
+// and receives batches with `recvmmsg`; Windows' one-at-a-time I/O is
+// tested beside it (`conn::quic`).
+#[cfg(unix)]
 mod h3_trace;
 mod hsts;
 mod https_trace;
@@ -6391,7 +6426,12 @@ fn proxy_from_the_environment() {
     } else {
         let (line, said) = fetch(direct.as_bytes(), |_| {});
         assert_eq!(line, "GET / HTTP/1.1\r\n", "not through the proxy");
+        // Windows' environment is the same in any case, and the
+        // lowercase name, asked first, finds it.
+        #[cfg(unix)]
         let uses = "Uses proxy env variable NO_PROXY == '127.0.0.1'\n".to_string();
+        #[cfg(windows)]
+        let uses = "Uses proxy env variable no_proxy == '127.0.0.1'\n".to_string();
         assert!(said.contains(&uses), "{said:?}");
     }
 }
@@ -7619,6 +7659,7 @@ fn a_link_local_address_takes_the_interface_s_scope() {
 
 /// Set in the child process `the_system_s_ipv6_probe_is_the_system_s`
 /// runs itself in.
+#[cfg(unix)]
 const PROBE_CHILD: &str = "CURL_CORE_PROBE_CHILD";
 
 /// The system's network asks the system whether IPv6 works: yes here,
@@ -7629,6 +7670,7 @@ const PROBE_CHILD: &str = "CURL_CORE_PROBE_CHILD";
 #[cfg_attr(miri, ignore = "Miri cannot start a process")]
 fn the_system_s_ipv6_probe_is_the_system_s() {
     use crate::conn::io::Net as _;
+    #[cfg(unix)]
     if std::env::var_os(PROBE_CHILD).is_some() {
         let mut held = Vec::new();
         let err = loop {
@@ -7652,7 +7694,14 @@ fn the_system_s_ipv6_probe_is_the_system_s() {
     let clock = ManualClock::new().unwrap();
     assert_eq!(FakeNet::new(clock.clone()).probe_ipv6(), Ok(true));
     assert_eq!(FakeNet::new(clock).without_ipv6().probe_ipv6(), Ok(false));
-    // Few descriptors, so they run out at once.
+    // Few descriptors, so they run out at once: a limit Windows has not.
+    #[cfg(unix)]
+    probe_without_descriptors();
+}
+
+/// The probe run in a child process left without descriptors.
+#[cfg(unix)]
+fn probe_without_descriptors() {
     let name = "proto::http::tests::the_system_s_ipv6_probe_is_the_system_s";
     let out = std::process::Command::new("sh")
         .args(["-c", "ulimit -n 64 && exec \"$0\" \"$@\""])

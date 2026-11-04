@@ -267,7 +267,11 @@ fn a_reset_answer_fails_with_the_socket_s_reason() {
     let (_, ran) = against(talk, "dict://127.0.0.1:PORT/d:basic", |_| {});
     assert_eq!(ran.result, Some(Err(ErrorKind::RecvError)), "{}", ran.text);
     // Said once, by the layer that saw it.
+    #[cfg(unix)]
     let said = ran.text.matches("Recv failure: Connection reset by peer\n");
+    // Winsock's words, from C's table (`get_winsock_error`).
+    #[cfg(windows)]
+    let said = ran.text.matches("Recv failure: Connection was reset\n");
     assert_eq!(said.count(), 1, "{}", ran.text);
 }
 

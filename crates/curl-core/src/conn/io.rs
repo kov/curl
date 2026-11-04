@@ -815,16 +815,30 @@ pub fn open_remote(addr: &Remote, protocol: Protocol, nonblocking: bool) -> io::
 
 /// The operating system's network, and its resolver: the system's,
 /// answering as a resolve starts, or, in a build with the threaded
-/// resolver, a pool of threads of the multi's own.
-#[derive(Debug, Default)]
+/// resolver, a pool of threads of the multi's own. It holds a Winsock
+/// start for as long as it lives, last so that it ends after the
+/// resolver; one the system refused is none, and each socket then fails
+/// to open, saying so.
+#[derive(Debug)]
 pub struct SystemNet {
     threaded: Option<super::threaded::ThreadedResolver>,
+    _winsock: Option<curl_os::net::Winsock>,
+}
+
+impl Default for SystemNet {
+    fn default() -> SystemNet {
+        SystemNet {
+            threaded: None,
+            _winsock: curl_os::net::Winsock::start().ok(),
+        }
+    }
 }
 
 impl SystemNet {
     /// The network a multi uses: in a build with the threaded resolver,
     /// with a pool of `threads`.
     pub fn for_multi(threads: super::threaded::Threads) -> io::Result<SystemNet> {
+        let winsock = curl_os::net::Winsock::start().ok();
         #[cfg(feature = "threaded-resolver")]
         let threaded = {
             let debug = super::threaded::DebugVars::from_env();
@@ -837,7 +851,10 @@ impl SystemNet {
             let _unused = threads;
             None
         };
-        Ok(SystemNet { threaded })
+        Ok(SystemNet {
+            threaded,
+            _winsock: winsock,
+        })
     }
 }
 
@@ -3024,7 +3041,8 @@ mod tests {
             .with_peer(at(3), Peer::Silent);
         let nobody = net.open(&Remote::Inet(at(9)), SocketKind::Stream).unwrap();
         let err = nobody.connect(&Remote::Inet(at(9))).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(111), "no peer: refused at once");
+        let refused = Some(libc_errno::ECONNREFUSED);
+        assert_eq!(err.raw_os_error(), refused, "no peer: refused at once");
         let unbound = SocketAddr::from(([0, 0, 0, 0], 0));
         assert_eq!(nobody.local_addr().unwrap(), unbound, "never bound");
         net.close(Sock::new(nobody, Closer::System));
@@ -3093,7 +3111,8 @@ mod tests {
     }
 
     /// The system's socket is set, and made nonblocking, through the
-    /// library's view of it.
+    /// library's view of it, as Linux's `/proc` shows.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_system_socket_is_set_through_the_trait() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

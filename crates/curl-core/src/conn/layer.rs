@@ -146,6 +146,12 @@ pub(crate) trait Trace {
 
     /// Its info lines are said (`Curl_trc_is_verbose`).
     fn says_info(&self) -> bool;
+
+    /// `component`'s lines may be traced (`Curl_trc_cf_is_verbose`): a
+    /// line whose parts cost to make need not be made when not.
+    fn traces(&self, _component: Component) -> bool {
+        true
+    }
 }
 
 /// What keeps a failure: the reason, kept if it is the first and said
@@ -264,6 +270,11 @@ pub(crate) trait LayerCalls: LayerCx {
         if let Some(trace) = self.trace() {
             trace.line(component, line);
         }
+    }
+
+    /// `component`'s lines may be traced.
+    fn traces(&mut self, component: Component) -> bool {
+        self.trace().is_some_and(|trace| trace.traces(component))
     }
 
     /// `of` with a line made of `parts`, which need not be text.

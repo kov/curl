@@ -728,6 +728,9 @@ impl Eyeballs {
                 self.nth(v6, n).is_some(),
             ),
         };
+        if !cx.traces(Component::DnsFilter) {
+            return there;
+        }
         let mut line = Line::new();
         line.text(format_args!("get {n}th result for "))
             .raw(of.name)

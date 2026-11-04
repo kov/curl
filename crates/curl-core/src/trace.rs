@@ -455,6 +455,10 @@ impl crate::conn::layer::Trace for &Internal {
     fn says_info(&self) -> bool {
         true
     }
+
+    fn traces(&self, component: Component) -> bool {
+        Internal::traces(self, component)
+    }
 }
 
 /// A result as C's trace lines print a `CURLcode` (`-> %d`).

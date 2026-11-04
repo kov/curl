@@ -779,3 +779,21 @@ features: test-util
             mstate::xfer_setup(cx, Directions::default());
 --- new
             mstate::xfer_setup(cx, Directions { recv: true, send: false });
+
+=== a traced race leaves out the DNS filter's answers
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::unix_trace::a_unix_socket_is_connected_in_place_of_the_host
+--- old
+        if !cx.traces(Component::DnsFilter) {
+--- new
+        if cx.traces(Component::DnsFilter) {
+
+=== a transfer's components are taken as never traced
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core proto::http::tests::unix_trace::a_unix_socket_is_connected_in_place_of_the_host
+--- old
+    fn traces(&self, component: Component) -> bool {
+        trace::traces(self, component)
+--- new
+    fn traces(&self, component: Component) -> bool {
+        !trace::traces(self, component)

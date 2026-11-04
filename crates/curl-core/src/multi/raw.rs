@@ -166,6 +166,10 @@ impl crate::conn::layer::Trace for RawCx<'_> {
     fn says_info(&self) -> bool {
         self.easy.options().output.verbose
     }
+
+    fn traces(&self, component: Component) -> bool {
+        crate::trace::handle_traces(self.easy, component)
+    }
 }
 
 /// A connection made already asks little of its handle: a TLS session

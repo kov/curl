@@ -68,6 +68,10 @@ impl<H: Host> crate::conn::layer::Trace for StepCx<'_, H> {
     fn says_info(&self) -> bool {
         self.easy().options().output.verbose
     }
+
+    fn traces(&self, component: Component) -> bool {
+        trace::traces(self, component)
+    }
 }
 
 impl<H: Host> crate::conn::layer::Failures for StepCx<'_, H> {

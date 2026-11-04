@@ -41,6 +41,11 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "early_data_a_server_refuses_is_sent_again",
         early_data_a_server_refuses_is_sent_again,
     ),
+    #[cfg(all(target_os = "macos", feature = "apple-sectrust"))]
+    (
+        "a_session_sectrust_verified_resumes_and_is_kept_so",
+        a_session_sectrust_verified_resumes_and_is_kept_so,
+    ),
 ];
 
 /// A server's TLS, as `serve_configured` makes it.
@@ -317,6 +322,82 @@ fn a_failed_check_forgets_the_peer_s_sessions() {
     assert_eq!(two.result, Err(ErrorKind::PeerFailedVerification));
     assert_eq!(three.result, Ok(()), "{:#?}", three.seen.lines);
     assert!(!resumed(&three), "{:#?}", three.seen.lines);
+}
+
+/// A session whose peer Apple's SecTrust verified is resumed on that word
+/// by a transfer trusting the system's store, though OpenSSL never
+/// verified its peer, and the session that transfer is given is kept
+/// saying so in turn, so the next resumes too (`ossl_apply_session`,
+/// `ossl_new_session_cb`'s `sectrust_verified`); a session not marked so
+/// is not resumed, and the peer, which the system does not trust, fails.
+///
+/// SecTrust trusts no local server without a change to the system's
+/// trust settings, so the first session is made unverified and marked
+/// by hand: exported, and imported under a verified transfer's key with
+/// the packed form's SecTrust tag (`CURL_SPACK_SECTRUST`). C's Apple
+/// build answers both cases as this does (measured on macOS 27).
+#[cfg(all(target_os = "macos", feature = "apple-sectrust"))]
+fn a_session_sectrust_verified_resumes_and_is_kept_so() {
+    use curl_core::tls::SessionFor;
+    let certs = certs("sectrust", "localhost", &["localhost"]);
+    for marked in [true, false] {
+        let a = acceptor(&certs, |a| {
+            a.set_min_proto_version(Some(SslVersion::TLS1_3)).unwrap();
+        });
+        let (at, server) = serve_each(vec![a.clone(), a.clone(), a]);
+        let mut m = multi(try_box(SystemClock::new()).unwrap());
+        let unverified = |o: &mut Options| {
+            o.tls.verify_peer = false;
+            o.tls.verify_host = false;
+        };
+        let one = get_in(&mut m, "https", "localhost", at, unverified, false);
+        assert_eq!(one.result, Ok(()), "{:#?}", one.seen.lines);
+        let mut easy = Easy::new();
+        easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
+        let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();
+        let mut kept: Option<(Vec<u8>, Vec<u8>)> = None;
+        let done = m.ssls_export(id).unwrap().unwrap().deliver(&mut |s| {
+            kept = Some((s.key.unwrap().to_vec(), s.packed.to_vec()));
+            Ok::<(), ()>(())
+        });
+        drop(done);
+        let (key, mut packed) = kept.expect("the first transfer's session");
+        let key = String::from_utf8(key)
+            .unwrap()
+            .replace(":NO-VRFY-PEER", "")
+            .replace(":NO-VRFY-HOST", "");
+        if marked {
+            packed.push(0x08);
+        }
+        m.ssls_import(id, SessionFor::Key(key.as_bytes()), &packed, &mut |_, _| {})
+            .unwrap()
+            .unwrap();
+        m.remove(id, &mut NoEvents).unwrap();
+        let two = get_in(&mut m, "https", "localhost", at, |_| {}, false);
+        let three = get_in(&mut m, "https", "localhost", at, |_| {}, false);
+        server.join().unwrap();
+        for got in [&two, &three] {
+            if marked {
+                assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+                assert!(resumed(got), "{:#?}", got.seen.lines);
+                assert!(
+                    said(got, "SSL certificate verified via Apple SecTrust."),
+                    "{:#?}",
+                    got.seen.lines
+                );
+            } else {
+                assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
+                assert!(!resumed(got), "{:#?}", got.seen.lines);
+            }
+        }
+        if !marked {
+            assert!(
+                said(&two, "SSL session not peer verified, not reusing"),
+                "{:#?}",
+                two.seen.lines
+            );
+        }
+    }
 }
 
 /// The key log the tests' OpenSSL logs to.

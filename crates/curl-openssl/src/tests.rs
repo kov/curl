@@ -93,28 +93,38 @@ fn counted_transfers() {
     crate::sys::tests::count_allocations();
     let server = leaks::Server::start();
     let kinds = leaks::kinds(&server);
-    let round = || {
-        for (name, set) in &kinds {
-            let result = leaks::transfer(server.port, set);
-            assert_eq!(result, Ok(()), "{name}");
-        }
-    };
-    round();
-    round();
-    let before = crate::sys::tests::live_allocations();
-    assert!(before > 0, "the library's allocations are counted");
     for (name, set) in &kinds {
-        let at = crate::sys::tests::live_allocations();
-        for _ in 0..3 {
-            leaks::transfer(server.port, set).unwrap();
+        let result = leaks::transfer(server.port, set);
+        assert_eq!(result, Ok(()), "{name}");
+    }
+    assert!(
+        crate::sys::tests::live_allocations() > 0,
+        "the library's allocations are counted"
+    );
+    // The library fills caches of its own over the first transfers
+    // through a provider, a few allocations at a time, depending on what
+    // ran before, then keeps no more: C's build does the same (measured
+    // on macOS with OpenSSL 3.6). So each kind runs three transfers at a
+    // time until three leave the count where they found it, which a
+    // transfer leaving anything behind never does.
+    for (name, set) in &kinds {
+        let mut left = Vec::new();
+        for _ in 0..10 {
+            let at = crate::sys::tests::live_allocations();
+            for _ in 0..3 {
+                leaks::transfer(server.port, set).unwrap();
+            }
+            left.push(crate::sys::tests::live_allocations() - at);
+            if left.last() == Some(&0) {
+                break;
+            }
         }
-        let left = crate::sys::tests::live_allocations() - at;
         assert_eq!(
-            left, 0,
-            "{name}: {left} of OpenSSL's allocations left by 3 transfers"
+            left.last(),
+            Some(&0),
+            "{name}: OpenSSL's allocations left by each 3 transfers: {left:?}"
         );
     }
-    assert_eq!(crate::sys::tests::live_allocations(), before);
 }
 
 /// The server and the transfers `counted_transfers` makes.

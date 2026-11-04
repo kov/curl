@@ -206,18 +206,30 @@ fn a_stub_status_has_no_text() {
     assert_eq!(described(&status, Style::Log), b"");
 }
 
-/// The version `curl -V` names is the library's as pkg-config has it,
-/// as C's CMake build finds it.
+/// The version `curl -V` names is the library's as pkg-config has it, or
+/// else `krb5-config` (macOS), as C's CMake build finds it.
 #[test]
 fn the_version_is_pkg_config_s() {
     let out = std::process::Command::new("pkg-config")
         .args(["--modversion", "mit-krb5-gssapi"])
         .output()
         .unwrap();
+    if out.status.success() {
+        assert_eq!(
+            crate::version(),
+            String::from_utf8_lossy(&out.stdout).trim()
+        );
+        return;
+    }
+    let out = std::process::Command::new("krb5-config")
+        .arg("--version")
+        .output()
+        .unwrap();
     assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
-        crate::version(),
-        String::from_utf8_lossy(&out.stdout).trim()
+        format!("Kerberos 5 release {}", crate::version()),
+        text.trim()
     );
 }
 

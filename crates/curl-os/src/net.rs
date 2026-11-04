@@ -9,6 +9,13 @@
 //! C makes them under `USE_WINSOCK`: what Linux alone has (binding to a
 //! device, the interfaces' list, segmented sends and batched receives,
 //! QUIC's options) C does without there, and so does this.
+//!
+//! On macOS they are the BSD calls C makes there: a socket opened without
+//! `SOCK_CLOEXEC` or `SOCK_NONBLOCK`, then told not to raise `SIGPIPE`
+//! (`SO_NOSIGPIPE`, which std's sends there rely on in place of
+//! `MSG_NOSIGNAL`) and made close-on-exec with `fcntl`; a fast-open
+//! connect made with `connectx`; and of what Linux alone has, what C does
+//! without there.
 
 #![allow(unsafe_code)]
 
@@ -46,7 +53,26 @@ pub enum Sent {
 
 /// A TCP socket: opened, then connecting or connected.
 #[derive(Debug)]
-pub struct TcpSocket(TcpStream);
+pub struct TcpSocket(TcpStream, FastOpen);
+
+/// Whether a socket's connect is to be made with TCP Fast Open. On
+/// macOS it is the connect's to say (`connectx`), so the socket holds it
+/// until then; elsewhere the option is set on the socket, and holds
+/// nothing.
+#[cfg(target_vendor = "apple")]
+type FastOpen = std::sync::atomic::AtomicBool;
+#[cfg(not(target_vendor = "apple"))]
+type FastOpen = ();
+
+impl TcpSocket {
+    fn new(stream: TcpStream) -> TcpSocket {
+        #[cfg(target_vendor = "apple")]
+        let fast_open = FastOpen::new(false);
+        #[cfg(not(target_vendor = "apple"))]
+        let fast_open = ();
+        TcpSocket(stream, fast_open)
+    }
+}
 
 /// The protocol a stream socket speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,31 +91,37 @@ pub enum SocketOption {
     NoDelay,
     /// The kernel probes an idle connection (`SO_KEEPALIVE`).
     KeepAlive,
-    /// Seconds idle before the first probe (`TCP_KEEPIDLE`).
+    /// Seconds idle before the first probe (`TCP_KEEPIDLE`; macOS's
+    /// `TCP_KEEPALIVE`).
     KeepIdle(i32),
     /// Seconds between probes (`TCP_KEEPINTVL`).
     KeepInterval(i32),
     /// Probes unanswered before the connection is dropped (`TCP_KEEPCNT`).
     KeepCount(i32),
-    /// The connect is made with TCP Fast Open (`TCP_FASTOPEN_CONNECT`).
+    /// The connect is made with TCP Fast Open (`TCP_FASTOPEN_CONNECT`; on
+    /// macOS the socket's connect is then a `connectx` with
+    /// `CONNECT_DATA_IDEMPOTENT`).
     FastOpenConnect,
     /// The type of service of what it sends: `IP_TOS` over IPv4,
     /// `IPV6_TCLASS` over IPv6, nothing over any other family.
     TypeOfService(i32),
-    /// The priority of what it sends, a VLAN's (`SO_PRIORITY`).
+    /// The priority of what it sends, a VLAN's (`SO_PRIORITY`). macOS has
+    /// none: nothing is set there, as C sets nothing.
     Priority(i32),
     /// A bind to an address leaves the port for the connect to choose
-    /// (`IP_BIND_ADDRESS_NO_PORT`).
+    /// (`IP_BIND_ADDRESS_NO_PORT`). Linux's alone: nothing is set
+    /// elsewhere.
     BindAddressNoPort,
     /// Each datagram received says its ECN bits: `IP_RECVTOS` over IPv4,
     /// `IPV6_RECVTCLASS` over IPv6 (`linux_quic_ecn`).
     ReceiveEcn,
     /// Datagrams go unfragmented, the path's MTU found
     /// (`IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER`: `PMTUDISC_DO`,
-    /// `linux_quic_mtu`).
+    /// `linux_quic_mtu`; on macOS `IP_DONTFRAG` over IPv4,
+    /// `linux_ip_dontfrag`).
     DiscoverMtu,
     /// Datagrams of one flow may be received joined (`UDP_GRO`,
-    /// `linux_quic_gro`).
+    /// `linux_quic_gro`). Linux's alone: nothing is set elsewhere.
     ReceiveJoined,
     /// An IPv6 socket reaches IPv4 peers too, by their mapped addresses
     /// (`IPV6_V6ONLY` off), as C sets every IPv6 socket on Windows.
@@ -110,22 +142,35 @@ impl SocketOption {
         Some(match self {
             SocketOption::NoDelay => (tcp, libc::TCP_NODELAY, 1),
             SocketOption::KeepAlive => (libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1),
+            #[cfg(target_os = "linux")]
             SocketOption::KeepIdle(s) => (tcp, libc::TCP_KEEPIDLE, s),
+            // "macOS style" (`tcpkeepalive`).
+            #[cfg(target_vendor = "apple")]
+            SocketOption::KeepIdle(s) => (tcp, libc::TCP_KEEPALIVE, s),
             SocketOption::KeepInterval(s) => (tcp, libc::TCP_KEEPINTVL, s),
             SocketOption::KeepCount(n) => (tcp, libc::TCP_KEEPCNT, n),
+            #[cfg(target_os = "linux")]
             SocketOption::FastOpenConnect => (tcp, libc::TCP_FASTOPEN_CONNECT, 1),
+            // An option of the connect there, not of the socket.
+            #[cfg(target_vendor = "apple")]
+            SocketOption::FastOpenConnect => return None,
             SocketOption::TypeOfService(tos) => match family {
                 libc::AF_INET => (libc::IPPROTO_IP, libc::IP_TOS, tos),
                 libc::AF_INET6 => (libc::IPPROTO_IPV6, libc::IPV6_TCLASS, tos),
                 _ => return None,
             },
+            #[cfg(target_os = "linux")]
             SocketOption::Priority(p) => (libc::SOL_SOCKET, libc::SO_PRIORITY, p),
+            #[cfg(target_os = "linux")]
             SocketOption::BindAddressNoPort => (libc::IPPROTO_IP, libc::IP_BIND_ADDRESS_NO_PORT, 1),
+            #[cfg(target_vendor = "apple")]
+            SocketOption::Priority(_) | SocketOption::BindAddressNoPort => return None,
             SocketOption::ReceiveEcn => match family {
                 libc::AF_INET => (libc::IPPROTO_IP, libc::IP_RECVTOS, 1),
                 libc::AF_INET6 => (libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS, 1),
                 _ => return None,
             },
+            #[cfg(target_os = "linux")]
             SocketOption::DiscoverMtu => match family {
                 libc::AF_INET => (
                     libc::IPPROTO_IP,
@@ -139,7 +184,18 @@ impl SocketOption {
                 ),
                 _ => return None,
             },
+            // IPv4's alone: the system's headers declare no
+            // `IPV6_DONTFRAG` without RFC 3542's names, so C sets nothing
+            // over IPv6 there.
+            #[cfg(target_vendor = "apple")]
+            SocketOption::DiscoverMtu => match family {
+                libc::AF_INET => (libc::IPPROTO_IP, libc::IP_DONTFRAG, 1),
+                _ => return None,
+            },
+            #[cfg(target_os = "linux")]
             SocketOption::ReceiveJoined => (libc::IPPROTO_UDP, libc::UDP_GRO, 1),
+            #[cfg(target_vendor = "apple")]
+            SocketOption::ReceiveJoined => return None,
         })
     }
 }
@@ -209,23 +265,94 @@ pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Resu
         SocketAddr::V4(_) => libc::AF_INET,
         SocketAddr::V6(_) => libc::AF_INET6,
     };
-    let mut kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    let protocol = match protocol {
+        Protocol::Tcp => libc::IPPROTO_TCP,
+        Protocol::Mptcp => MPTCP,
+    };
+    let fd = open_fd(family, libc::SOCK_STREAM, protocol, nonblocking)?;
+    Ok(TcpSocket::new(TcpStream::from(fd)))
+}
+
+/// Multipath TCP's protocol number. macOS's headers have none: the
+/// tool's opener names Linux's there (`tool_cb_soc.c`), which the system
+/// refuses.
+#[cfg(target_os = "linux")]
+const MPTCP: libc::c_int = libc::IPPROTO_MPTCP;
+#[cfg(target_vendor = "apple")]
+const MPTCP: libc::c_int = 262;
+
+#[cfg(target_os = "linux")]
+/// A close-on-exec socket of `family`, `kind` and `protocol`, nonblocking
+/// if `nonblocking`, as one call makes it (`SOCK_CLOEXEC`,
+/// `SOCK_NONBLOCK`).
+fn open_fd(
+    family: libc::c_int,
+    kind: libc::c_int,
+    protocol: libc::c_int,
+    nonblocking: bool,
+) -> io::Result<OwnedFd> {
+    let mut kind = kind | libc::SOCK_CLOEXEC;
     if nonblocking {
         kind |= libc::SOCK_NONBLOCK;
     }
-    let protocol = match protocol {
-        Protocol::Tcp => libc::IPPROTO_TCP,
-        Protocol::Mptcp => libc::IPPROTO_MPTCP,
-    };
     // SAFETY: `socket` takes no pointers; a negative result is an error.
-    let fd = unsafe { libc::socket(family, kind, protocol) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let fd = checked(unsafe { libc::socket(family, kind, protocol) })?;
     // SAFETY: `fd` was just opened and is owned by nothing else.
-    Ok(TcpSocket(TcpStream::from(unsafe {
-        OwnedFd::from_raw_fd(fd)
-    })))
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[cfg(target_vendor = "apple")]
+/// A socket of `family`, `kind` and `protocol`, set up as C sets one up
+/// on macOS (`socket_open`): told not to raise `SIGPIPE`, then made
+/// close-on-exec, then, if `nonblocking`, nonblocking (`curlx_nonblock`).
+/// A step failing closes it.
+fn open_fd(
+    family: libc::c_int,
+    kind: libc::c_int,
+    protocol: libc::c_int,
+    nonblocking: bool,
+) -> io::Result<OwnedFd> {
+    // SAFETY: `socket` takes no pointers; a negative result is an error.
+    let fd = checked(unsafe { libc::socket(family, kind, protocol) })?;
+    // SAFETY: `fd` was just opened and is owned by nothing else.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    no_sigpipe(fd.as_fd())?;
+    close_on_exec(fd.as_fd())?;
+    if nonblocking {
+        set_fd_nonblocking(fd.as_fd())?;
+    }
+    Ok(fd)
+}
+
+#[cfg(target_vendor = "apple")]
+/// Tell the socket `fd` not to raise `SIGPIPE` as it sends to a closed
+/// peer (`SO_NOSIGPIPE`, `Curl_sock_nosigpipe`): the error comes back as
+/// `EPIPE` instead. macOS has no `MSG_NOSIGNAL` for a send to say so.
+fn no_sigpipe(fd: BorrowedFd<'_>) -> io::Result<()> {
+    let on: libc::c_int = 1;
+    let len = libc::socklen_t::try_from(size_of::<libc::c_int>()).expect("an int's size fits");
+    // SAFETY: `on` is an int of the length given and lives through the
+    // call; `fd` is open while borrowed.
+    checked(unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_NOSIGPIPE,
+            (&raw const on).cast(),
+            len,
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(target_vendor = "apple")]
+/// Make the descriptor `fd` close-on-exec (`F_SETFD`), as C does where a
+/// socket cannot be opened so.
+fn close_on_exec(fd: BorrowedFd<'_>) -> io::Result<()> {
+    // SAFETY: `fcntl` with `F_SETFD` takes an int, no pointer; `fd` is
+    // open while borrowed.
+    checked(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -237,32 +364,43 @@ pub fn open_udp(addr: SocketAddr, nonblocking: bool) -> io::Result<UdpSocket> {
         SocketAddr::V4(_) => libc::AF_INET,
         SocketAddr::V6(_) => libc::AF_INET6,
     };
-    let mut kind = libc::SOCK_DGRAM | libc::SOCK_CLOEXEC;
-    if nonblocking {
-        kind |= libc::SOCK_NONBLOCK;
-    }
-    // SAFETY: `socket` takes no pointers; a negative result is an error.
-    let fd = unsafe { libc::socket(family, kind, libc::IPPROTO_UDP) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` was just opened and is owned by nothing else.
-    Ok(UdpSocket(StdUdpSocket::from(unsafe {
-        OwnedFd::from_raw_fd(fd)
-    })))
+    let fd = open_fd(family, libc::SOCK_DGRAM, libc::IPPROTO_UDP, nonblocking)?;
+    Ok(UdpSocket(StdUdpSocket::from(fd)))
 }
 
 #[cfg(unix)]
 /// The UDP socket `fd`, which an application opened and gives up: closing
-/// the `UdpSocket` closes it.
+/// the `UdpSocket` closes it. It is set up as a socket curl opens is
+/// after its opening, where the system needs it (see [`adopted`]); that
+/// failing closes it.
 ///
 /// # Safety
 ///
 /// `fd` is an open datagram socket descriptor that nothing else owns or
 /// closes while the `UdpSocket` lives.
-pub unsafe fn adopt_udp(fd: RawFd) -> UdpSocket {
+pub unsafe fn adopt_udp(fd: RawFd) -> io::Result<UdpSocket> {
     // SAFETY: as the caller guarantees.
-    UdpSocket(StdUdpSocket::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+    let fd = adopted(unsafe { OwnedFd::from_raw_fd(fd) })?;
+    Ok(UdpSocket(StdUdpSocket::from(fd)))
+}
+
+#[cfg(target_os = "linux")]
+/// A socket the application opened, as curl takes it: as it is, sends
+/// saying `MSG_NOSIGNAL` and close-on-exec left to the opener, as C's
+/// `socket_open` leaves them (it asks for `SOCK_CLOEXEC` in the type it
+/// hands the opener).
+fn adopted(fd: OwnedFd) -> io::Result<OwnedFd> {
+    Ok(fd)
+}
+
+#[cfg(target_vendor = "apple")]
+/// A socket the application opened, set up as C's `socket_open` sets up
+/// any socket on macOS, the opener's too: told not to raise `SIGPIPE`,
+/// then made close-on-exec. A step failing closes it.
+fn adopted(fd: OwnedFd) -> io::Result<OwnedFd> {
+    no_sigpipe(fd.as_fd())?;
+    close_on_exec(fd.as_fd())?;
+    Ok(fd)
 }
 
 #[cfg(unix)]
@@ -271,19 +409,8 @@ pub unsafe fn adopt_udp(fd: RawFd) -> UdpSocket {
 /// reads, writes and errors being the same calls; it has no local
 /// address of TCP's families.
 pub fn open_unix(nonblocking: bool) -> io::Result<TcpSocket> {
-    let mut kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
-    if nonblocking {
-        kind |= libc::SOCK_NONBLOCK;
-    }
-    // SAFETY: `socket` takes no pointers; a negative result is an error.
-    let fd = unsafe { libc::socket(libc::AF_UNIX, kind, 0) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` was just opened and is owned by nothing else.
-    Ok(TcpSocket(TcpStream::from(unsafe {
-        OwnedFd::from_raw_fd(fd)
-    })))
+    let fd = open_fd(libc::AF_UNIX, libc::SOCK_STREAM, 0, nonblocking)?;
+    Ok(TcpSocket::new(TcpStream::from(fd)))
 }
 
 #[cfg(unix)]
@@ -325,15 +452,16 @@ fn unix_address(path: &[u8], abstract_name: bool) -> Option<SockAddr> {
 
 #[cfg(unix)]
 /// The socket `fd`, which an application opened and gives up: closing
-/// the `TcpSocket` closes it.
+/// the `TcpSocket` closes it. It is set up as [`adopt_udp`] sets one up.
 ///
 /// # Safety
 ///
 /// `fd` is an open socket descriptor that nothing else owns or closes
 /// while the `TcpSocket` lives.
-pub unsafe fn adopt(fd: RawFd) -> TcpSocket {
+pub unsafe fn adopt(fd: RawFd) -> io::Result<TcpSocket> {
     // SAFETY: as the caller guarantees.
-    TcpSocket(TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+    let fd = adopted(unsafe { OwnedFd::from_raw_fd(fd) })?;
+    Ok(TcpSocket::new(TcpStream::from(fd)))
 }
 
 #[cfg(unix)]
@@ -351,6 +479,10 @@ impl From<SocketAddr> for SockAddr {
         let len = match addr {
             SocketAddr::V4(a) => {
                 let sin = libc::sockaddr_in {
+                    // The kernel takes the length passed beside the
+                    // address (`sockargs`); C leaves this zero too.
+                    #[cfg(target_vendor = "apple")]
+                    sin_len: 0,
                     sin_family: libc::AF_INET as libc::sa_family_t,
                     sin_port: a.port().to_be(),
                     sin_addr: libc::in_addr {
@@ -365,6 +497,9 @@ impl From<SocketAddr> for SockAddr {
             }
             SocketAddr::V6(a) => {
                 let sin6 = libc::sockaddr_in6 {
+                    // As above.
+                    #[cfg(target_vendor = "apple")]
+                    sin6_len: 0,
                     sin6_family: libc::AF_INET6 as libc::sa_family_t,
                     sin6_port: a.port().to_be(),
                     sin6_flowinfo: a.flowinfo(),
@@ -634,9 +769,10 @@ fn bind_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 /// Bind the socket `fd` to the network interface named `name`, which must
-/// not hold a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`).
+/// not hold a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`,
+/// which Linux alone has: elsewhere C looks for the interface's address).
 fn bind_fd_to_device(fd: BorrowedFd<'_>, name: &[u8]) -> io::Result<()> {
     let mut c_name = [0u8; 256];
     if name.contains(&0) || name.len() >= c_name.len() - 1 {
@@ -692,6 +828,42 @@ fn connect_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<Connect> {
     connect_failed(io::Error::last_os_error())
 }
 
+#[cfg(target_vendor = "apple")]
+/// Start connecting the TCP socket `fd` to `addr` with TCP Fast Open:
+/// `connectx` to the address alone, resumed as the socket is read or
+/// written, its first data idempotent (`CONNECT_RESUME_ON_READ_WRITE`,
+/// `CONNECT_DATA_IDEMPOTENT`), as C's `do_connect` makes it.
+fn connectx_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<Connect> {
+    let storage = SockAddr::from(addr);
+    let endpoints = libc::sa_endpoints_t {
+        sae_srcif: 0,
+        sae_srcaddr: std::ptr::null(),
+        sae_srcaddrlen: 0,
+        sae_dstaddr: (&raw const storage.raw).cast::<libc::sockaddr>(),
+        sae_dstaddrlen: storage.len,
+    };
+    // SAFETY: `endpoints` points at `storage`, a sockaddr of `addr`'s
+    // family valid for the length given; both live through the call. No
+    // data, no association or connection id is asked back; the socket is
+    // open.
+    let rc = unsafe {
+        libc::connectx(
+            fd.as_raw_fd(),
+            &raw const endpoints,
+            libc::SAE_ASSOCID_ANY,
+            libc::CONNECT_RESUME_ON_READ_WRITE | libc::CONNECT_DATA_IDEMPOTENT,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if rc == 0 {
+        return Ok(Connect::Done);
+    }
+    connect_failed(io::Error::last_os_error())
+}
+
 impl TcpSocket {
     #[cfg(unix)]
     pub fn fd(&self) -> BorrowedFd<'_> {
@@ -703,15 +875,21 @@ impl TcpSocket {
         bind_fd(self.fd(), addr)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     /// Bind it to the network interface named `name`, which must not hold
     /// a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`).
     pub fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         bind_fd_to_device(self.fd(), name)
     }
 
-    /// Set `option` on it, as [`set`] does.
+    /// Set `option` on it, as [`set`] does. On macOS, TCP Fast Open is
+    /// held for the connect to ask for.
     pub fn set(&self, option: SocketOption) -> io::Result<()> {
+        #[cfg(target_vendor = "apple")]
+        if option == SocketOption::FastOpenConnect {
+            self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
         set(self.fd(), option)
     }
 
@@ -721,8 +899,15 @@ impl TcpSocket {
     }
 
     /// Start connecting it to `addr`; the socket is nonblocking, so a
-    /// connect not decided at once goes on in the background.
+    /// connect not decided at once goes on in the background. On macOS a
+    /// connect with TCP Fast Open asked for is a `connectx`, its data
+    /// idempotent and sent as the socket is first written to
+    /// (`do_connect`).
     pub fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
+        #[cfg(target_vendor = "apple")]
+        if self.1.load(std::sync::atomic::Ordering::Relaxed) {
+            return connectx_fd(self.fd(), addr);
+        }
         connect_fd(self.fd(), addr)
     }
 
@@ -785,8 +970,10 @@ impl TcpSocket {
     #[cfg(unix)]
     /// The connection waiting on it, listening, accepted as a
     /// nonblocking, close-on-exec socket; none if none waits
-    /// (`accept4`).
+    /// (`accept4`; on macOS, which has none, `accept`, then `fcntl` for
+    /// each, as C does without it).
     pub fn accept(&self) -> io::Result<Option<TcpSocket>> {
+        #[cfg(target_os = "linux")]
         // SAFETY: a null address and length ask for no peer address;
         // the socket is open.
         let fd = unsafe {
@@ -797,6 +984,15 @@ impl TcpSocket {
                 libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
             )
         };
+        #[cfg(target_vendor = "apple")]
+        // SAFETY: as above.
+        let fd = unsafe {
+            libc::accept(
+                self.fd().as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
         if fd < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::WouldBlock {
@@ -805,9 +1001,13 @@ impl TcpSocket {
             return Err(e);
         }
         // SAFETY: `fd` was just accepted and is owned by nothing else.
-        Ok(Some(TcpSocket(TcpStream::from(unsafe {
-            OwnedFd::from_raw_fd(fd)
-        }))))
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        #[cfg(target_vendor = "apple")]
+        {
+            close_on_exec(fd.as_fd())?;
+            set_fd_nonblocking(fd.as_fd())?;
+        }
+        Ok(Some(TcpSocket::new(TcpStream::from(fd))))
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -842,7 +1042,7 @@ impl UdpSocket {
         bind_fd(self.fd(), addr)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     /// Bind it to the network interface named `name` (`SO_BINDTODEVICE`).
     pub fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         bind_fd_to_device(self.fd(), name)
@@ -923,19 +1123,27 @@ impl UdpSocket {
     /// How many bytes went, or the system's error as it is: what a
     /// datagram too large, a failed segmentation or a full buffer mean is
     /// the caller's to say. A signal interrupting it sends again.
+    ///
+    /// macOS cannot cut a send: there `buf` must be one datagram, no
+    /// longer than `segment`, and goes without a control message, as C
+    /// sends each datagram apart there (`no_gso`).
     pub fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
         assert!(!buf.is_empty(), "a send needs bytes");
         assert!(segment > 0, "a segment has bytes");
+        #[cfg(target_vendor = "apple")]
+        assert!(buf.len() <= segment, "the system cannot cut a send");
         let mut iov = libc::iovec {
             iov_base: buf.as_ptr().cast_mut().cast(),
             iov_len: buf.len(),
         };
         // Room for one control message of a `u16`, aligned for its header.
+        #[cfg(target_os = "linux")]
         let mut control = [0u64; 4];
         // SAFETY: all zeroes is a valid `msghdr`.
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
+        #[cfg(target_os = "linux")]
         if buf.len() > segment {
             let segment = u16::try_from(segment).expect("a datagram's size fits");
             let data = u32::try_from(size_of::<u16>()).expect("fits");
@@ -978,7 +1186,7 @@ impl UdpSocket {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     /// Receive datagrams into `buf`, each into a slot of `slot` bytes of
     /// it, as many as fit and `out` holds, at most `BATCH`: one
     /// `recvmmsg` (`recvmmsg_packets`). How many, each told in `out`:
@@ -1063,6 +1271,77 @@ impl UdpSocket {
         Ok(count)
     }
 
+    #[cfg(target_vendor = "apple")]
+    /// Receive one datagram into the first slot of `buf`, `slot` bytes of
+    /// it, and tell it in `out[0]`: one `recvmsg`, as C receives on
+    /// macOS, which has no `recvmmsg` (`recvmsg_packets`). Always 1: its
+    /// length (an empty one too, which the caller passes over), as one
+    /// packet, the kernel joining none, its ECN bits and whom it came
+    /// from. The system's error as it is, `EAGAIN` with nothing to read; a
+    /// signal interrupting it, or a datagram too large for its slot,
+    /// receives again, as C does.
+    pub fn recv_batch(
+        &self,
+        buf: &mut [u8],
+        slot: usize,
+        out: &mut [Datagram],
+    ) -> io::Result<usize> {
+        assert!(slot > 0, "a slot has room");
+        assert!(
+            !out.is_empty() && buf.len() >= slot,
+            "a receive needs room for a datagram"
+        );
+        let int = u32::try_from(size_of::<libc::c_int>()).expect("fits");
+        // SAFETY: a size computation, no pointer.
+        let per = unsafe { libc::CMSG_SPACE(int) };
+        // Aligned for the control message's header.
+        let mut control = [0u64; 4];
+        assert!(
+            per as usize <= size_of_val(&control),
+            "the room holds the message"
+        );
+        // SAFETY: all zeroes is a valid value of each.
+        let mut name: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        let mut iov = libc::iovec {
+            iov_base: buf.as_mut_ptr().cast(),
+            iov_len: slot,
+        };
+        let (msg, len) = loop {
+            // Set up afresh for each call, as C does: a system may change
+            // what it was given.
+            // SAFETY: all zeroes is a valid `msghdr`.
+            let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+            iov.iov_len = slot;
+            msg.msg_iov = &raw mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_name = (&raw mut name).cast();
+            msg.msg_namelen = libc::socklen_t::try_from(size_of::<libc::sockaddr_storage>())
+                .expect("its size fits");
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = per;
+            // SAFETY: the header points at the first slot of `buf`, the
+            // name and the control room, all alive through the call.
+            let rc = unsafe { libc::recvmsg(self.0.as_raw_fd(), &raw mut msg, 0) };
+            match usize::try_from(rc) {
+                Ok(len) => break (msg, len),
+                Err(_) => {
+                    let err = io::Error::last_os_error();
+                    if !matches!(err.raw_os_error(), Some(libc::EINTR | libc::EMSGSIZE)) {
+                        return Err(err);
+                    }
+                }
+            }
+        };
+        let (_, ecn) = control_of(&msg, name.ss_family);
+        out[0] = Datagram {
+            len,
+            segment: len,
+            ecn,
+            from: socket_addr(&name),
+        };
+        Ok(1)
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }
@@ -1105,12 +1384,21 @@ pub struct Datagram {
     pub from: Option<SocketAddr>,
 }
 
+/// The control message an IPv4 datagram's type of service comes in:
+/// `IP_TOS` on Linux, `IP_RECVTOS` on macOS (`vquic_msghdr_get_ecn`).
+#[cfg(target_os = "linux")]
+const IPV4_TOS_MESSAGE: libc::c_int = libc::IP_TOS;
+#[cfg(target_vendor = "apple")]
+const IPV4_TOS_MESSAGE: libc::c_int = libc::IP_RECVTOS;
+
 #[cfg(unix)]
 /// The joined packets' size and the ECN bits a received message's control
-/// messages say, each 0 if none does (`vquic_msghdr_get_udp_gro`,
-/// `vquic_msghdr_get_ecn`).
+/// messages say, each 0 if none does (`vquic_msghdr_get_udp_gro`, which
+/// Linux alone has; `vquic_msghdr_get_ecn`).
 fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (usize, u8) {
     const ECN_MASK: libc::c_int = 0x03;
+    // Never joined where the kernel does not join (macOS).
+    #[cfg_attr(target_vendor = "apple", allow(unused_mut))]
     let (mut segment, mut ecn) = (0, 0);
     // SAFETY: a header the kernel filled, its control room alive.
     let mut cm = unsafe { libc::CMSG_FIRSTHDR(hdr) };
@@ -1125,10 +1413,11 @@ fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (usize, u8) {
             unsafe { data.cast::<libc::c_int>().read_unaligned() }
         };
         match (level, kind) {
+            #[cfg(target_os = "linux")]
             (libc::SOL_UDP, libc::UDP_GRO) if segment == 0 => {
                 segment = usize::try_from(int()).unwrap_or(0);
             }
-            (libc::IPPROTO_IP, libc::IP_TOS)
+            (libc::IPPROTO_IP, IPV4_TOS_MESSAGE)
                 if family == libc::AF_INET as libc::sa_family_t && len > 0 =>
             {
                 // SAFETY: the type of service's one byte.
@@ -1438,7 +1727,7 @@ pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Resu
     if protocol == Protocol::Mptcp {
         return Err(io::Error::from_raw_os_error(ws::WSAEPROTONOSUPPORT));
     }
-    let s = TcpSocket(TcpStream::from(new_socket(
+    let s = TcpSocket::new(TcpStream::from(new_socket(
         family_of(addr),
         ws::SOCK_STREAM,
         ws::IPPROTO_TCP,
@@ -1465,31 +1754,33 @@ pub fn open_udp(addr: SocketAddr, nonblocking: bool) -> io::Result<UdpSocket> {
 }
 
 /// The UDP socket `fd`, which an application opened and gives up: closing
-/// the `UdpSocket` closes it.
+/// the `UdpSocket` closes it, taken as it is, as C takes it on Windows.
 ///
 /// # Safety
 ///
 /// `fd` is an open datagram socket that nothing else owns or closes
 /// while the `UdpSocket` lives.
 #[cfg(windows)]
-pub unsafe fn adopt_udp(fd: RawSocket) -> UdpSocket {
+pub unsafe fn adopt_udp(fd: RawSocket) -> io::Result<UdpSocket> {
     // SAFETY: as the caller guarantees.
-    UdpSocket(StdUdpSocket::from(unsafe {
+    Ok(UdpSocket(StdUdpSocket::from(unsafe {
         OwnedSocket::from_raw_socket(fd)
-    }))
+    })))
 }
 
 /// The socket `fd`, which an application opened and gives up: closing
-/// the `TcpSocket` closes it.
+/// the `TcpSocket` closes it, taken as it is, as C takes it on Windows.
 ///
 /// # Safety
 ///
 /// `fd` is an open socket that nothing else owns or closes while the
 /// `TcpSocket` lives.
 #[cfg(windows)]
-pub unsafe fn adopt(fd: RawSocket) -> TcpSocket {
+pub unsafe fn adopt(fd: RawSocket) -> io::Result<TcpSocket> {
     // SAFETY: as the caller guarantees.
-    TcpSocket(TcpStream::from(unsafe { OwnedSocket::from_raw_socket(fd) }))
+    Ok(TcpSocket::new(TcpStream::from(unsafe {
+        OwnedSocket::from_raw_socket(fd)
+    })))
 }
 
 /// Open a Unix stream socket (`AF_UNIX`, which Windows 10 has and C's
@@ -1497,7 +1788,7 @@ pub unsafe fn adopt(fd: RawSocket) -> TcpSocket {
 /// not connected yet. It is held as a TCP socket is.
 #[cfg(windows)]
 pub fn open_unix(nonblocking: bool) -> io::Result<TcpSocket> {
-    let s = TcpSocket(TcpStream::from(new_socket(
+    let s = TcpSocket::new(TcpStream::from(new_socket(
         i32::from(ws::AF_UNIX),
         ws::SOCK_STREAM,
         0,
@@ -1846,7 +2137,7 @@ impl TcpSocket {
             return Err(e);
         }
         // SAFETY: `s` was just accepted and is owned by nothing else.
-        let accepted = TcpSocket(TcpStream::from(unsafe {
+        let accepted = TcpSocket::new(TcpStream::from(unsafe {
             OwnedSocket::from_raw_socket(s as RawSocket)
         }));
         accepted.set_nonblocking()?;
@@ -2022,7 +2313,14 @@ mod tests {
     /// none of it, or a cut that ends inside it, never past its end.
     #[test]
     fn the_host_name_is_the_kernel_s() {
+        #[cfg(target_os = "linux")]
         let kernel = std::fs::read("/proc/sys/kernel/hostname").unwrap();
+        #[cfg(target_vendor = "apple")]
+        let kernel = std::process::Command::new("sysctl")
+            .args(["-n", "kern.hostname"])
+            .output()
+            .unwrap()
+            .stdout;
         let kernel = kernel.strip_suffix(b"\n").unwrap_or(&kernel);
         let mut buf = [0xffu8; 1025];
         assert_eq!(host_name(&mut buf), Some(kernel));
@@ -2140,6 +2438,8 @@ mod tests {
         );
         assert_eq!(&buf[..4], b"back");
         // A datagram larger than the room is cut to it, the rest lost.
+        // macOS's loopback may queue it only after the first is read.
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
         let mut small = [0u8; 2];
         assert_eq!(
             s.recv(&mut small).unwrap(),
@@ -2167,27 +2467,80 @@ mod tests {
             ] {
                 s.set(o).unwrap();
             }
+            #[cfg(target_os = "linux")]
             assert_eq!(option(s.fd(), libc::IPPROTO_UDP, libc::UDP_GRO), 1);
         }
         assert_eq!(option(v4.fd(), libc::IPPROTO_IP, libc::IP_RECVTOS), 1);
+        #[cfg(target_os = "linux")]
         assert_eq!(
             option(v4.fd(), libc::IPPROTO_IP, libc::IP_MTU_DISCOVER),
             libc::IP_PMTUDISC_DO
         );
+        #[cfg(target_vendor = "apple")]
+        assert_ne!(option(v4.fd(), libc::IPPROTO_IP, libc::IP_DONTFRAG), 0);
         assert_eq!(
             option(v6.fd(), libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS),
             1
         );
+        #[cfg(target_os = "linux")]
         assert_eq!(
             option(v6.fd(), libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER),
             libc::IPV6_PMTUDISC_DO
         );
     }
 
+    /// Each datagram sent goes alone, as macOS cannot cut a send, and is
+    /// received alone, one a call, told its ECN bits and its sender.
+    #[test]
+    #[cfg(target_vendor = "apple")]
+    fn datagrams_are_sent_and_received_one_a_call() {
+        let r = open_udp("127.0.0.1:1".parse().unwrap(), true).unwrap();
+        r.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        r.set(SocketOption::ReceiveEcn).unwrap();
+        let at = r.local_addr().unwrap();
+        let s = open_udp(at, true).unwrap();
+        s.set(SocketOption::TypeOfService(2)).unwrap();
+        assert_eq!(s.connect(at).unwrap(), Connect::Done);
+        let from = Some(s.local_addr().unwrap());
+        let bytes: Vec<u8> = (0..250u8).collect();
+        for chunk in bytes.chunks(100) {
+            assert_eq!(s.send_segments(chunk, 100).unwrap(), chunk.len());
+        }
+        let mut buf = vec![0u8; 4 * 128];
+        let mut out = [Datagram::default(); 4];
+        let mut fds = [PollFd::new(r.fd(), Events::IN)];
+        for (i, len) in [100, 100, 50].into_iter().enumerate() {
+            assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+            assert_eq!(r.recv_batch(&mut buf, 128, &mut out).unwrap(), 1);
+            let d = Datagram {
+                len,
+                segment: len,
+                ecn: 2,
+                from,
+            };
+            assert_eq!(out[0], d);
+            assert_eq!(&buf[..len], &bytes[i * 100..i * 100 + len]);
+        }
+        let err = r.recv_batch(&mut buf, 128, &mut out).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    /// A send longer than one datagram is a caller's mistake on macOS,
+    /// which cannot cut it.
+    #[test]
+    #[cfg(target_vendor = "apple")]
+    #[should_panic(expected = "the system cannot cut a send")]
+    fn a_send_longer_than_a_segment_is_refused() {
+        let s = open_udp("127.0.0.1:1".parse().unwrap(), true).unwrap();
+        s.connect("127.0.0.1:9".parse().unwrap()).unwrap();
+        s.send_segments(&[0; 200], 100).ok();
+    }
+
     /// One send of segments is that many datagrams, the last what is
     /// left; a receiver that takes them joined gets them as one, told the
     /// segments' size; each is told its ECN bits and its sender.
     #[test]
+    #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
     fn segments_sent_are_received_apart_or_joined() {
         let r = open_udp("127.0.0.1:1".parse().unwrap(), true).unwrap();
@@ -2336,22 +2689,33 @@ mod tests {
         ] {
             s.set(o).unwrap();
         }
-        assert_eq!(option(s.fd(), tcp, libc::TCP_NODELAY), 1);
-        assert_eq!(option(s.fd(), libc::SOL_SOCKET, libc::SO_KEEPALIVE), 1);
-        assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPIDLE), 30);
+        // A flag set reads back as some bit: macOS's are not 1.
+        assert_ne!(option(s.fd(), tcp, libc::TCP_NODELAY), 0);
+        assert_ne!(option(s.fd(), libc::SOL_SOCKET, libc::SO_KEEPALIVE), 0);
         assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPINTVL), 20);
         assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPCNT), 4);
-        assert_eq!(option(s.fd(), libc::SOL_SOCKET, libc::SO_PRIORITY), 3);
-        assert_eq!(option(s.fd(), tcp, libc::TCP_FASTOPEN_CONNECT), 1);
-        // One the kernel refuses is an error, as C's `setsockopt` call
-        // sees it: an idle time is at least a second.
-        let refused = s.set(SocketOption::KeepIdle(0)).unwrap_err();
-        assert_eq!(refused.raw_os_error(), Some(libc::EINVAL));
-        assert_eq!(
-            option(s.fd(), tcp, libc::TCP_KEEPIDLE),
-            30,
-            "left as it was"
-        );
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPIDLE), 30);
+            assert_eq!(option(s.fd(), libc::SOL_SOCKET, libc::SO_PRIORITY), 3);
+            assert_eq!(option(s.fd(), tcp, libc::TCP_FASTOPEN_CONNECT), 1);
+            // One the kernel refuses is an error, as C's `setsockopt`
+            // call sees it: an idle time is at least a second.
+            let refused = s.set(SocketOption::KeepIdle(0)).unwrap_err();
+            assert_eq!(refused.raw_os_error(), Some(libc::EINVAL));
+            assert_eq!(
+                option(s.fd(), tcp, libc::TCP_KEEPIDLE),
+                30,
+                "left as it was"
+            );
+        }
+        // macOS's idle time is `TCP_KEEPALIVE`; it has no priority, and
+        // fast open is the connect's to ask for.
+        #[cfg(target_vendor = "apple")]
+        {
+            assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPALIVE), 30);
+            assert!(s.1.load(std::sync::atomic::Ordering::Relaxed), "held");
+        }
         // The type of service needs the socket's family, which it has once
         // bound: a connect binds it.
         s.connect(addr).unwrap();
@@ -2386,10 +2750,13 @@ mod tests {
         // SAFETY: `F_GETFD` takes no pointer; the socket is open.
         let fd_flags = unsafe { libc::fcntl(s.fd().as_raw_fd(), libc::F_GETFD) };
         assert_ne!(fd_flags & libc::FD_CLOEXEC, 0);
+        #[cfg(target_os = "linux")]
         assert_eq!(
             option(s.fd(), libc::SOL_SOCKET, libc::SO_PROTOCOL),
             libc::IPPROTO_TCP
         );
+        #[cfg(target_vendor = "apple")]
+        assert_ne!(option(s.fd(), libc::SOL_SOCKET, libc::SO_NOSIGPIPE), 0);
     }
 
     /// An application's descriptor is the socket's from then on: it
@@ -2402,8 +2769,16 @@ mod tests {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(fd >= 0);
         // SAFETY: `fd` was just opened here and is given up.
-        let s = unsafe { adopt(fd) };
+        let s = unsafe { adopt(fd) }.unwrap();
         assert_eq!(s.fd().as_raw_fd(), fd);
+        // Set up as one curl opens is, on macOS.
+        #[cfg(target_vendor = "apple")]
+        {
+            assert_ne!(option(s.fd(), libc::SOL_SOCKET, libc::SO_NOSIGPIPE), 0);
+            // SAFETY: `F_GETFD` takes no pointer; the socket is open.
+            let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            assert_ne!(fd_flags & libc::FD_CLOEXEC, 0);
+        }
         s.set_nonblocking().unwrap();
         if s.connect(addr).unwrap() == Connect::InProgress {
             assert!(ready(&s, Events::OUT).contains(Events::OUT));
@@ -2422,10 +2797,14 @@ mod tests {
     fn a_socket_may_speak_multipath_tcp() {
         let addr = SocketAddr::from(([127, 0, 0, 1], 1));
         match open(addr, Protocol::Mptcp, true) {
+            #[cfg(target_os = "linux")]
             Ok(s) => assert_eq!(
                 option(s.fd(), libc::SOL_SOCKET, libc::SO_PROTOCOL),
                 libc::IPPROTO_MPTCP
             ),
+            // macOS has no Multipath TCP of this kind.
+            #[cfg(target_vendor = "apple")]
+            Ok(_) => panic!("Linux's protocol number opened a socket"),
             // A kernel without it says so.
             Err(e) => assert!(
                 matches!(
@@ -2452,7 +2831,7 @@ mod tests {
         let (s, _peer) = connected(&listener);
         let fd = s.into_raw();
         // SAFETY: `fd` was let go of above and is owned by nothing else.
-        let s = TcpSocket(TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) }));
+        let s = TcpSocket::new(TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) }));
         assert_eq!(s.fd().as_raw_fd(), fd);
         assert_eq!(s.peer_addr().unwrap(), listener.local_addr().unwrap());
     }
@@ -2466,13 +2845,21 @@ mod tests {
     }
 
     /// A loopback port held by a socket that is bound but never listens:
-    /// connects to it are refused, and no other test can take it.
-    fn refusing_port() -> (OwnedFd, SocketAddr) {
+    /// connects to it are refused, and no other test can take it. macOS
+    /// drops a connect to such a port unanswered, so there the port is let
+    /// go of, as a port no one has is refused.
+    fn refusing_port() -> (Option<OwnedFd>, SocketAddr) {
+        // Closed on exec, so a test's child process does not hold it.
+        #[cfg(target_os = "linux")]
+        let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+        #[cfg(target_vendor = "apple")]
+        let kind = libc::SOCK_STREAM;
         // SAFETY: `socket` takes no pointers.
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
-        assert!(fd >= 0);
+        let fd = checked(unsafe { libc::socket(libc::AF_INET, kind, 0) }).unwrap();
         // SAFETY: `fd` was just opened and is owned by nothing else.
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        #[cfg(target_vendor = "apple")]
+        close_on_exec(fd.as_fd()).unwrap();
         let mut addr = SockAddr::from(SocketAddr::from(([127, 0, 0, 1], 0)));
         // SAFETY: `addr` holds an IPv4 address of the length given and
         // lives through the call; `fd` is open.
@@ -2490,8 +2877,13 @@ mod tests {
         assert_eq!(rc, 0);
         // SAFETY: the socket is IPv4, so the kernel wrote a `sockaddr_in`.
         let sin = unsafe { (&raw const addr.raw).cast::<libc::sockaddr_in>().read() };
+        let held = if cfg!(target_vendor = "apple") {
+            None
+        } else {
+            Some(fd)
+        };
         (
-            fd,
+            held,
             SocketAddr::from(([127, 0, 0, 1], u16::from_be(sin.sin_port))),
         )
     }
@@ -2620,10 +3012,11 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot call if_nametoindex")]
     fn interfaces_are_found_by_name() {
-        assert!(interface_index(b"lo").is_some(), "Linux has a loopback");
+        assert!(interface_index(LOOPBACK).is_some(), "there is a loopback");
         assert_eq!(interface_index(b"nosuch-if0"), None);
         assert_eq!(interface_index(b""), None);
         assert_eq!(interface_index(b"lo\0"), None);
+        assert_eq!(interface_index(b"lo0\0"), None);
         assert_eq!(interface_index(&[b'a'; 64]), None);
         assert_eq!(interface_index(&[b'a'; libc::IF_NAMESIZE]), None);
     }
@@ -2633,9 +3026,16 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot call getifaddrs")]
     fn the_link_local_scope_is_not_loopback_s() {
         if let Some(scope) = link_local_scope() {
-            assert_ne!(Some(scope), interface_index(b"lo"));
+            assert_ne!(Some(scope), interface_index(LOOPBACK));
         }
     }
+
+    /// The loopback interface's name.
+    const LOOPBACK: &[u8] = if cfg!(target_vendor = "apple") {
+        b"lo0"
+    } else {
+        b"lo"
+    };
 
     /// Set in the child process `descriptors_run_from_zero_to_the_limit`
     /// runs itself in.
@@ -2672,6 +3072,9 @@ mod tests {
         let peer = std::net::TcpStream::connect(listening.local_addr().unwrap()).unwrap();
         // SAFETY: nothing in this process reads stdin.
         assert_eq!(unsafe { libc::close(0) }, 0);
+        // macOS may queue the connection a moment after the connect.
+        let mut fds = [PollFd::new(listening.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
         // A connection accepted as descriptor 0 is one, not a failure.
         let accepted = listening.accept().unwrap().expect("the connection waiting");
         assert_eq!(accepted.fd().as_raw_fd(), 0, "the lowest free descriptor");
@@ -2789,10 +3192,13 @@ mod tests {
         let taken = open(to, Protocol::Tcp, false).unwrap();
         let refused = taken.bind(from).unwrap_err();
         assert_eq!(refused.raw_os_error(), Some(libc::EADDRINUSE));
-        let unknown = taken.bind_to_device(b"no-such-if0").unwrap_err();
-        assert_eq!(unknown.raw_os_error(), Some(libc::ENODEV));
-        let too_long = taken.bind_to_device(&[b'x'; 255]).unwrap_err();
-        assert_eq!(too_long.raw_os_error(), Some(libc::EINVAL));
+        #[cfg(target_os = "linux")]
+        {
+            let unknown = taken.bind_to_device(b"no-such-if0").unwrap_err();
+            assert_eq!(unknown.raw_os_error(), Some(libc::ENODEV));
+            let too_long = taken.bind_to_device(&[b'x'; 255]).unwrap_err();
+            assert_eq!(too_long.raw_os_error(), Some(libc::EINVAL));
+        }
     }
 
     /// A Unix socket's address is its path and terminator, or a zero and
@@ -2821,12 +3227,16 @@ mod tests {
     }
 
     /// A Unix socket connects to one listening at a path, and to one of
-    /// an abstract name; to a path nothing listens at, it fails at once.
+    /// an abstract name (Linux's alone); to a path nothing listens at, it
+    /// fails at once.
     #[test]
     #[cfg_attr(miri, ignore = "FFI")]
     fn a_unix_socket_connects_by_path_and_by_name() {
+        #[cfg(target_os = "linux")]
         use std::os::linux::net::SocketAddrExt;
-        use std::os::unix::net::{SocketAddr as UnixAddr, UnixListener};
+        #[cfg(target_os = "linux")]
+        use std::os::unix::net::SocketAddr as UnixAddr;
+        use std::os::unix::net::UnixListener;
         let dir = std::env::temp_dir().join(format!("curl-os-uds-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("s");
@@ -2844,14 +3254,18 @@ mod tests {
         std::io::Read::read_exact(&mut &accepted, &mut got).unwrap();
         assert_eq!(&got, b"hi");
         assert!(s.local_addr().is_err(), "no address of TCP's families");
-        let name = format!("curl-os-uds-{}", std::process::id());
-        let abs = UnixListener::bind_addr(&UnixAddr::from_abstract_name(&name).unwrap()).unwrap();
-        let s = open_unix(false).unwrap();
-        assert_eq!(
-            s.connect_unix(name.as_bytes(), true).unwrap(),
-            Connect::Done
-        );
-        abs.accept().unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let name = format!("curl-os-uds-{}", std::process::id());
+            let abs =
+                UnixListener::bind_addr(&UnixAddr::from_abstract_name(&name).unwrap()).unwrap();
+            let s = open_unix(false).unwrap();
+            assert_eq!(
+                s.connect_unix(name.as_bytes(), true).unwrap(),
+                Connect::Done
+            );
+            abs.accept().unwrap();
+        }
         drop(listener);
         std::fs::remove_file(&path).unwrap();
         let refused = open_unix(true)
@@ -2897,6 +3311,7 @@ mod tests {
     /// One send of segments arrives as datagrams of the segment's size,
     /// the last what is left, each told with its sender.
     #[test]
+    #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
     fn a_send_of_segments_arrives_cut() {
         for ip in loopbacks() {
@@ -2923,6 +3338,7 @@ mod tests {
     /// A receiver that takes packets joined gets them as one datagram, as
     /// large as they are together, told by the size of each.
     #[test]
+    #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
     fn joined_packets_arrive_as_one_datagram() {
         for ip in loopbacks() {
@@ -2964,6 +3380,7 @@ mod tests {
     /// A batch takes no more datagrams than the buffer has slots for,
     /// though more wait.
     #[test]
+    #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
     fn a_batch_takes_what_its_buffer_holds() {
         let (from, to) = udp_pair(Ipv4Addr::LOCALHOST.into(), &[]);
@@ -3295,7 +3712,7 @@ mod windows_tests {
         let addr = listener.local_addr().unwrap();
         let raw = open(addr, Protocol::Tcp, false).unwrap().into_raw();
         // SAFETY: `raw` was let go of just now and is owned by nothing else.
-        let s = unsafe { adopt(raw) };
+        let s = unsafe { adopt(raw) }.unwrap();
         assert_eq!(crate::socket::raw(s.fd()), raw);
         assert_eq!(
             s.connect(addr).unwrap(),

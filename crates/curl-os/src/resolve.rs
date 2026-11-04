@@ -330,6 +330,8 @@ mod tests {
     #[test]
     fn a_short_address_is_none() {
         let mut sin = libc::sockaddr_in {
+            #[cfg(target_vendor = "apple")]
+            sin_len: 0,
             sin_family: libc::AF_INET as libc::sa_family_t,
             sin_port: 0,
             sin_addr: libc::in_addr {
@@ -338,6 +340,8 @@ mod tests {
             sin_zero: [0; 8],
         };
         let mut sin6 = libc::sockaddr_in6 {
+            #[cfg(target_vendor = "apple")]
+            sin6_len: 0,
             sin6_family: libc::AF_INET6 as libc::sa_family_t,
             sin6_port: 0,
             sin6_flowinfo: 0,

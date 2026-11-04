@@ -769,6 +769,7 @@ impl Socket for FdSocket {
         Err(not_ours())
     }
 
+    #[cfg(target_os = "linux")]
     fn bind_to_device(&self, _: &[u8]) -> io::Result<()> {
         Err(not_ours())
     }

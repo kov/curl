@@ -69,7 +69,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   records both ways.
 - `crates/curl-openssl/src/x509.rs`: the certificates a session trusts, and the peer's checked.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
-  place; on Windows the C library's `argv`, read, and the program's file name.
+  place (on macOS where `_NSGetArgv` says); on Windows the C library's `argv`, read, and the
+  program's file name.
 - `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly
   (`GetEnvironmentVariableA` on Windows).
 - `crates/curl-os/src/error.rs`: the text of an operating-system error, `strerror_r` into a
@@ -83,12 +84,14 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   library's text or binary mode of the standard streams (`_setmode`) and writing as it writes
   in each, and finding a file along the system's search path (`SearchPath`).
 - `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, listening and
-  accepting on one, adopting one the application opened, and the machine's host name; on
-  Windows through Winsock, and starting it (`WSAStartup`).
+  accepting on one, adopting one the application opened, connecting with fast open on macOS
+  (`connectx`), and the machine's host name; on Windows through Winsock, and starting it
+  (`WSAStartup`).
 - `crates/curl-os/src/poll.rs`: `poll(2)`; Winsock's `select` on Windows.
-- `crates/curl-os/src/wake.rs`: the multi's waker, an eventfd; a loopback TCP pair on Windows.
-- `crates/curl-os/src/random.rs`: random bytes from the kernel, `getrandom`
-  (`BCryptGenRandom` on Windows).
+- `crates/curl-os/src/wake.rs`: the multi's waker, an eventfd; a pipe on macOS; a loopback TCP pair
+  on Windows.
+- `crates/curl-os/src/random.rs`: random bytes from the kernel, `getrandom` (`getentropy` on
+  macOS, `BCryptGenRandom` on Windows).
 - `crates/curl-os/src/resolve.rs`: the system's resolver, `getaddrinfo`.
 - `crates/curl-os/src/terminal.rs`: the terminal's width, and reading a password from it with
   echo off (the console and `_getch` on Windows); on Windows also telling a character device
@@ -97,8 +100,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   formatting it in the process's locale (`strftime`).
 - `crates/curl-os/src/locale.rs`: the process's locale, from the environment (`setlocale`).
 - `crates/curl-os/src/users.rs`: the user database.
-- `crates/curl-os/src/xattr.rs`: setting an open file's extended attributes (`fsetxattr`); on
-  Windows writing a file's alternate data stream.
+- `crates/curl-os/src/xattr.rs`: setting an open file's extended attributes (`fsetxattr`, macOS's
+  with its position and options); on Windows writing a file's alternate data stream.
 - `crates/curl-sys-abi/csrc/va_fetch.c`: C, not Rust; reads the printf arguments stable Rust
   cannot (`long double`). The `nightly` feature reads them in Rust instead.
 

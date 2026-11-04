@@ -286,18 +286,24 @@ mod tests {
             b"No such file or directory"
         );
         assert_eq!(ErrorText::of_code(libc::EEXIST).as_bytes(), b"File exists");
+        #[cfg(target_os = "linux")]
         assert_eq!(ErrorText::of_code(0).as_bytes(), b"Success");
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(ErrorText::of_code(0).as_bytes(), b"Undefined error: 0");
     }
 
     #[test]
     #[cfg(unix)]
     #[cfg_attr(miri, ignore = "Miri's strerror_r has its own text")]
     fn names_an_unknown_number() {
-        assert_eq!(
-            ErrorText::of_code(99_999).as_bytes(),
-            b"Unknown error 99999"
-        );
-        assert_eq!(ErrorText::of_code(-3).as_bytes(), b"Unknown error -3");
+        // The system's text, macOS's with a colon.
+        let (far, negative): (&[u8], &[u8]) = if cfg!(target_vendor = "apple") {
+            (b"Unknown error: 99999", b"Unknown error: -3")
+        } else {
+            (b"Unknown error 99999", b"Unknown error -3")
+        };
+        assert_eq!(ErrorText::of_code(99_999).as_bytes(), far);
+        assert_eq!(ErrorText::of_code(-3).as_bytes(), negative);
     }
 
     #[test]

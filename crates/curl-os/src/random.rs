@@ -1,5 +1,6 @@
-//! Random bytes from the kernel (`getrandom(2)`; on Windows the system's
-//! generator), for the nonces a protocol makes up.
+//! Random bytes from the kernel (`getrandom(2)`; `getentropy` on macOS;
+//! on Windows the system's generator), for the nonces a protocol makes
+//! up.
 
 #![allow(unsafe_code)]
 
@@ -36,13 +37,32 @@ pub fn fill(out: &mut [u8]) -> io::Result<()> {
 
 /// Fill `out` with random bytes, waiting for the kernel's pool if it is
 /// not ready yet.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn fill(out: &mut [u8]) -> io::Result<()> {
     fill_from(out, |rest| {
         // SAFETY: `rest` is valid to write for its length, and
         // `getrandom` writes no more than that.
         let n = unsafe { libc::getrandom(rest.as_mut_ptr().cast(), rest.len(), 0) };
         usize::try_from(n).map_err(|_| io::Error::last_os_error())
+    })
+}
+
+/// The most `getentropy` fills at once.
+#[cfg(target_vendor = "apple")]
+const ENTROPY_MOST: usize = 256;
+
+/// Fill `out` with random bytes from the kernel (`getentropy`), at most
+/// 256 of them a call, as it takes.
+#[cfg(target_vendor = "apple")]
+pub fn fill(out: &mut [u8]) -> io::Result<()> {
+    fill_from(out, |rest| {
+        let n = rest.len().min(ENTROPY_MOST);
+        // SAFETY: `rest` is valid to write for `n` bytes, no more than its
+        // length, and `getentropy` writes exactly that many.
+        if unsafe { libc::getentropy(rest.as_mut_ptr().cast(), n) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(n)
     })
 }
 
@@ -76,6 +96,15 @@ mod tests {
         assert_ne!(a, b);
         assert!(a[48..].iter().any(|&x| x != 0), "the end is filled too");
         fill(&mut []).unwrap();
+    }
+
+    /// A fill longer than one call of the kernel's takes (`getentropy`'s
+    /// 256 bytes) is filled to its end.
+    #[test]
+    fn a_long_fill_is_filled_to_its_end() {
+        let mut a = [0u8; 1000];
+        fill(&mut a).unwrap();
+        assert!(a[968..].iter().any(|&x| x != 0), "the end is filled too");
     }
 
     /// A read a signal interrupted is made again; any other failure is

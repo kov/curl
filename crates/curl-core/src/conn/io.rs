@@ -189,8 +189,9 @@ pub trait Socket: fmt::Debug + Send {
     /// Bind its local end to `addr`, before it connects.
     fn bind(&self, addr: SocketAddr) -> io::Result<()>;
 
-    /// Bind it to the network interface named `name` (`SO_BINDTODEVICE`).
-    #[cfg(unix)]
+    /// Bind it to the network interface named `name` (`SO_BINDTODEVICE`),
+    /// which Linux alone has.
+    #[cfg(target_os = "linux")]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()>;
 
     /// Start connecting it to `addr`.
@@ -666,7 +667,7 @@ impl Socket for curl_os::net::TcpSocket {
         curl_os::net::TcpSocket::bind(self, addr)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         curl_os::net::TcpSocket::bind_to_device(self, name)
     }
@@ -737,7 +738,7 @@ impl Socket for curl_os::net::UdpSocket {
         curl_os::net::UdpSocket::bind(self, addr)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         curl_os::net::UdpSocket::bind_to_device(self, name)
     }
@@ -2256,7 +2257,7 @@ impl Socket for FakeSocket {
     }
 
     /// Only an interface the network has as a device binds.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         let known = self
             .binding

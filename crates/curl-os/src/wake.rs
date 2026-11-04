@@ -2,8 +2,8 @@
 //! `lib/socketpair.c`): an eventfd, as C makes one where the system has
 //! it (`wakeup_eventfd`), written by those that wake and polled by the
 //! waiting thread. It is nonblocking, so a wake never waits and a drain
-//! stops once the count is read. On Windows it is C's pair of loopback
-//! sockets instead.
+//! stops once the count is read. On macOS, which has no eventfd, it is
+//! C's pipe (`wakeup_pipe`); on Windows C's pair of loopback sockets.
 
 #![allow(unsafe_code)]
 
@@ -12,11 +12,11 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd};
 
 /// Shared between the waiting thread and those that wake it.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct Waker(OwnedFd);
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl Waker {
     pub fn new() -> io::Result<Waker> {
         // SAFETY: `eventfd` takes no pointers; a negative result is an
@@ -73,6 +73,103 @@ impl Waker {
     /// The descriptor to poll for reading.
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
+    }
+}
+
+/// Shared between the waiting thread and those that wake it: on macOS a
+/// pipe, as C makes one there (`wakeup_pipe`), both ends close-on-exec and
+/// nonblocking. The waiting thread polls the reading end, those that wake
+/// write a byte to the other.
+#[cfg(target_vendor = "apple")]
+#[derive(Debug)]
+pub struct Waker {
+    /// The end polled and drained (C's `socks[0]`).
+    read: OwnedFd,
+    /// The end written (C's `socks[1]`).
+    write: OwnedFd,
+}
+
+#[cfg(target_vendor = "apple")]
+impl Waker {
+    /// A pipe, each end then made close-on-exec and nonblocking with
+    /// `fcntl`, as C makes one without `pipe2`. A step failing closes
+    /// both ends.
+    pub fn new() -> io::Result<Waker> {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `fds` has room for the two descriptors `pipe` writes.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: both were just opened and are owned by nothing else.
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        for end in [read.as_fd(), write.as_fd()] {
+            // SAFETY: `fcntl` with `F_SETFD` takes an int, no pointer; the
+            // end is open.
+            if unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        for end in [read.as_fd(), write.as_fd()] {
+            // SAFETY: as above, `F_GETFL` and `F_SETFL` with an int.
+            let flags = unsafe { libc::fcntl(end.as_raw_fd(), libc::F_GETFL) };
+            // SAFETY: as above.
+            if flags < 0
+                || unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
+                    < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(Waker { read, write })
+    }
+
+    /// Make the next poll of [`Waker::fd`] report it readable
+    /// (`Curl_wakeup_signal`): one byte written. A pipe too full to take
+    /// it is a wake already pending, not an error.
+    pub fn wake(&self) -> io::Result<()> {
+        let one = [1u8];
+        loop {
+            // SAFETY: the end is open while `self` lives, and the buffer
+            // is the one byte written.
+            let n = unsafe { libc::write(self.write.as_raw_fd(), one.as_ptr().cast(), one.len()) };
+            if n >= 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                io::ErrorKind::Interrupted => {}
+                io::ErrorKind::WouldBlock => return Ok(()),
+                _ => return Err(e),
+            }
+        }
+    }
+
+    /// Consume every pending wake (`Curl_wakeup_consume` with `all`):
+    /// read until nothing is left, or the other end is gone.
+    pub fn drain(&self) -> io::Result<()> {
+        let mut buf = [0u8; 64];
+        loop {
+            // SAFETY: as in `wake`; the buffer has room for what is read.
+            let n =
+                unsafe { libc::read(self.read.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            if n == 0 {
+                return Ok(());
+            }
+            if n > 0 {
+                continue;
+            }
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                io::ErrorKind::Interrupted => {}
+                io::ErrorKind::WouldBlock => return Ok(()),
+                _ => return Err(e),
+            }
+        }
+    }
+
+    /// The descriptor to poll for reading.
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.read.as_fd()
     }
 }
 
@@ -282,6 +379,7 @@ mod tests {
     /// short of descriptors still gets its waker, and the descriptors
     /// after it are numbered as C numbers them.
     #[test]
+    #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore = "Miri cannot read a descriptor's link")]
     fn the_waker_is_one_eventfd() {
         let w = Waker::new().unwrap();
@@ -296,10 +394,33 @@ mod tests {
         assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "closed on exec");
     }
 
+    /// Two descriptors on macOS, a pipe's ends, as C's (`wakeup_pipe`):
+    /// each nonblocking and closed on exec.
+    #[test]
+    #[cfg(target_vendor = "apple")]
+    fn the_waker_is_a_pipe() {
+        let w = Waker::new().unwrap();
+        for end in [w.read.as_raw_fd(), w.write.as_raw_fd()] {
+            // SAFETY: all zeroes is a valid `stat`, which `fstat` fills
+            // for a descriptor `w` holds open.
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: as above.
+            assert_eq!(unsafe { libc::fstat(end, &raw mut st) }, 0);
+            assert_eq!(st.st_mode & libc::S_IFMT, libc::S_IFIFO, "a pipe");
+            // SAFETY: `fcntl` on a descriptor `w` holds open.
+            let flags = unsafe { libc::fcntl(end, libc::F_GETFL) };
+            assert_ne!(flags & libc::O_NONBLOCK, 0, "nonblocking");
+            // SAFETY: as above.
+            let fd_flags = unsafe { libc::fcntl(end, libc::F_GETFD) };
+            assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "closed on exec");
+        }
+    }
+
     /// A wake with one already pending past counting is no error, as C's
     /// "wakeup is already ongoing"; a drain with none pending is none
     /// (`Curl_wakeup_signal`, `Curl_wakeup_consume` on `EAGAIN`).
     #[test]
+    #[cfg(target_os = "linux")]
     fn a_full_count_wakes_and_an_empty_one_drains() {
         use std::io::Write as _;
         let w = Waker::new().unwrap();
@@ -318,7 +439,8 @@ mod tests {
     #[test]
     fn many_wakes_drain_as_one() {
         let w = Waker::new().unwrap();
-        // Far more than a socket buffer would hold, one each.
+        // Far more than a socket buffer or a pipe would hold, one each: a
+        // full pipe is a wake pending, not an error.
         for _ in 0..1_000_000 {
             w.wake().unwrap();
         }

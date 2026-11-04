@@ -316,12 +316,26 @@ pub fn rename(from: &CStr, to: &CStr) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+/// Permissions `mode` as the system's calls take them: Linux's `mode_t`
+/// is the `u32` they are given as.
+fn mode_t(mode: u32) -> libc::mode_t {
+    mode
+}
+
+#[cfg(target_vendor = "apple")]
+/// Permissions `mode` as the system's calls take them: macOS's `mode_t`
+/// is 16 bits, which every mode the options allow (at most `0o777`) fits.
+fn mode_t(mode: u32) -> libc::mode_t {
+    libc::mode_t::try_from(mode).expect("permissions fit a mode")
+}
+
 #[cfg(unix)]
 /// Make the directory `path`, with permissions `mode` before the umask
 /// (`mkdir(2)`).
 pub fn make_dir(path: &CStr, mode: u32) -> io::Result<()> {
     // SAFETY: `path` is a C string, alive for the call.
-    if unsafe { libc::mkdir(path.as_ptr(), mode) } < 0 {
+    if unsafe { libc::mkdir(path.as_ptr(), mode_t(mode)) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -360,8 +374,15 @@ pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
         Keep::Everything => libc::O_APPEND,
         Keep::Absent => libc::O_EXCL,
     };
-    open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode)
+    open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode_t(mode))
 }
+
+/// This thread's `errno`, where the C library keeps it.
+#[cfg(target_os = "linux")]
+use libc::__errno_location as errno_location;
+/// This thread's `errno`, where the C library keeps it.
+#[cfg(target_vendor = "apple")]
+use libc::__error as errno_location;
 
 #[cfg(unix)]
 fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File> {
@@ -471,8 +492,8 @@ impl Dir {
     /// last. The name is valid until the next call.
     pub fn next_name(&mut self) -> Option<io::Result<&[u8]>> {
         // `readdir` tells the end from a failure only by `errno`.
-        // SAFETY: `__errno_location` has no preconditions.
-        let errno = unsafe { libc::__errno_location() };
+        // SAFETY: the call has no preconditions.
+        let errno = unsafe { errno_location() };
         // SAFETY: it points to this thread's `errno`, valid to write.
         unsafe { *errno = 0 };
         // SAFETY: the stream is open, and only this `Dir`, which `&mut`
@@ -1481,11 +1502,32 @@ mod tests {
     /// The descriptors the process has open on `dir`: none of the other
     /// tests', which open their own, so their comings and goings meanwhile
     /// do not count.
+    #[cfg(target_os = "linux")]
     fn open_on(dir: &std::path::Path) -> usize {
         std::fs::read_dir("/proc/self/fd")
             .unwrap()
             .filter(|fd| std::fs::read_link(fd.as_ref().unwrap().path()).is_ok_and(|to| to == dir))
             .count()
+    }
+
+    /// As above, on macOS: each descriptor below the limit asked where it
+    /// is open (`F_GETPATH`).
+    #[cfg(target_vendor = "apple")]
+    fn open_on(dir: &std::path::Path) -> usize {
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut count = 0;
+        for fd in 0..4096 {
+            let mut path = [0u8; libc::PATH_MAX as usize];
+            // SAFETY: `F_GETPATH` writes at most `MAXPATHLEN` bytes, which
+            // `path` has room for; a descriptor not open fails the call.
+            if unsafe { libc::fcntl(fd, libc::F_GETPATH, path.as_mut_ptr()) } == 0 {
+                let len = path.iter().position(|&b| b == 0).unwrap();
+                if path[..len] == *dir.as_os_str().as_bytes() {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 
     /// A listing closes its directory when it goes.

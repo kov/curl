@@ -25,12 +25,19 @@ const SEND_METHOD: &str = "sendmsg";
 const SEND_METHOD: &str = "send";
 
 /// The call datagrams come in with, as C's traces name it: a batch with
-/// `recvmmsg` where the system has it, one at a time with `recvfrom` on
-/// Windows (`recvfrom_packets`).
-#[cfg(unix)]
+/// `recvmmsg` where the system has it (Linux), one at a time with
+/// `recvmsg` on macOS (`recvmsg_packets`), with `recvfrom` on Windows
+/// (`recvfrom_packets`).
+#[cfg(target_os = "linux")]
 const RECV_METHOD: &str = "recvmmsg";
+#[cfg(target_vendor = "apple")]
+const RECV_METHOD: &str = "recvmsg";
 #[cfg(windows)]
 const RECV_METHOD: &str = "recvfrom";
+
+/// Whether an empty receive is traced, as C's `recvmmsg_packets` and
+/// `recvfrom_packets` trace it and its `recvmsg_packets` does not.
+const TRACES_EAGAIN: bool = !cfg!(target_vendor = "apple");
 
 /// The room one `recvfrom` receives into, C's buffer on the stack.
 #[cfg(windows)]
@@ -54,7 +61,7 @@ fn send_datagrams(socket: &dyn Socket, bytes: &[u8], _segment: usize) -> io::Res
 }
 
 /// Receive datagrams into slots of `room`, `SLOT` bytes each, at most as
-/// many as `out` holds: how many came.
+/// many as `out` holds: how many came (on macOS one a call).
 #[cfg(unix)]
 fn recv_datagrams(socket: &dyn Socket, room: &mut [u8], out: &mut [Datagram]) -> io::Result<usize> {
     socket.recv_batch(room, SLOT, out)
@@ -523,8 +530,8 @@ impl Quic {
                 sent: 0,
                 gso: 0,
                 split: None,
-                // Windows cannot cut a run into datagrams.
-                no_gso: cfg!(windows),
+                // Only Linux cuts a run into datagrams (`UDP_SEGMENT`).
+                no_gso: cfg!(not(target_os = "linux")),
             },
             state: State {
                 started: now,
@@ -1288,7 +1295,8 @@ impl Quic {
     }
 
     /// One send of `len` bytes, cut by the kernel into datagrams of `gso`
-    /// bytes (`do_sendmsg`); on Windows, which cannot cut, one datagram.
+    /// bytes (`do_sendmsg`); where it cannot cut (not Linux), one
+    /// datagram.
     fn send_run(
         &mut self,
         cx: &mut dyn SocketIo,
@@ -1499,10 +1507,12 @@ impl Quic {
             let count = match recv_datagrams(cx.socket(), room, &mut got[..n]) {
                 Ok(count) => count,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    cx.of(
-                        self.state.component,
-                        format_args!("ingress, {RECV_METHOD} -> EAGAIN"),
-                    );
+                    if TRACES_EAGAIN {
+                        cx.of(
+                            self.state.component,
+                            format_args!("ingress, {RECV_METHOD} -> EAGAIN"),
+                        );
+                    }
                     break Ok(());
                 }
                 Err(e) if !self.state.connected && e.kind() == io::ErrorKind::ConnectionRefused => {
@@ -1752,7 +1762,7 @@ pub(crate) mod tests {
         fn bind(&self, _: SocketAddr) -> io::Result<()> {
             Ok(())
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         fn bind_to_device(&self, _: &[u8]) -> io::Result<()> {
             Ok(())
         }

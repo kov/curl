@@ -121,14 +121,21 @@ mod tests {
             .unwrap()
             .stdout;
         let uid = String::from_utf8(uid).unwrap();
-        let getent = std::process::Command::new("getent")
-            .args(["passwd", uid.trim()])
+        // macOS has no `getent`; its `id -P` prints the entry, with two
+        // fields more before the home directory.
+        let (cmd, args, field) = if cfg!(target_vendor = "apple") {
+            ("id", ["-P", uid.trim()], 8)
+        } else {
+            ("getent", ["passwd", uid.trim()], 5)
+        };
+        let entry = std::process::Command::new(cmd)
+            .args(args)
             .output()
             .unwrap()
             .stdout;
-        let getent = String::from_utf8(getent).unwrap();
+        let entry = String::from_utf8(entry).unwrap();
         assert_eq!(
-            getent.trim().split(':').nth(5).map(str::as_bytes),
+            entry.trim().split(':').nth(field).map(str::as_bytes),
             Some(&home[..])
         );
     }

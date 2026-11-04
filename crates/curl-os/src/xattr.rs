@@ -46,18 +46,32 @@ pub fn set_stream(path: &CStr, stream: &CStr, text: &[u8]) -> io::Result<()> {
 }
 
 /// Set the extended attribute `name` of the open file `fd` to `value`,
-/// replacing it if it is there.
+/// replacing it if it is there. macOS's call takes a position too, of a
+/// resource fork's, which C gives as 0, as it does no options.
 #[cfg(unix)]
 pub fn set(fd: BorrowedFd<'_>, name: &CStr, value: &[u8]) -> io::Result<()> {
     // SAFETY: the descriptor is open for the borrow; `name` is a
     // NUL-terminated string and `value` points to `value.len()` readable
     // bytes, both outliving the call, which only reads them.
+    #[cfg(target_os = "linux")]
     let rc = unsafe {
         libc::fsetxattr(
             fd.as_raw_fd(),
             name.as_ptr(),
             value.as_ptr().cast(),
             value.len(),
+            0,
+        )
+    };
+    // SAFETY: as above.
+    #[cfg(target_vendor = "apple")]
+    let rc = unsafe {
+        libc::fsetxattr(
+            fd.as_raw_fd(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
             0,
         )
     };
@@ -111,12 +125,25 @@ mod tests {
         // SAFETY: the descriptor is open for the borrow, `name` is a
         // NUL-terminated string, and `buf` has `buf.len()` writable bytes
         // the call writes at most.
+        #[cfg(target_os = "linux")]
         let n = unsafe {
             libc::fgetxattr(
                 fd.as_raw_fd(),
                 name.as_ptr(),
                 buf.as_mut_ptr().cast(),
                 buf.len(),
+            )
+        };
+        // SAFETY: as above; from the start, with no options.
+        #[cfg(target_vendor = "apple")]
+        let n = unsafe {
+            libc::fgetxattr(
+                fd.as_raw_fd(),
+                name.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                0,
+                0,
             )
         };
         if n < 0 {
@@ -126,8 +153,9 @@ mod tests {
         Ok(buf)
     }
 
-    /// An attribute set is there to read, replaced when set again; one in
-    /// no namespace the file system knows is refused with the reason.
+    /// An attribute set is there to read, replaced when set again; one the
+    /// system refuses (Linux's in no namespace it knows, macOS's with a
+    /// name longer than it allows) is refused with the reason.
     #[test]
     fn sets_an_attribute() {
         let dir = std::env::temp_dir().join(format!("curl-os-xattr-{}", std::process::id()));
@@ -145,7 +173,13 @@ mod tests {
                 assert_eq!(get(file.as_fd(), name).unwrap(), b"x");
             }
         }
+        #[cfg(target_os = "linux")]
         let refused = set(file.as_fd(), c"nonamespace", b"x").unwrap_err();
+        #[cfg(target_vendor = "apple")]
+        let refused = {
+            let long = std::ffi::CString::new("x".repeat(200)).unwrap();
+            set(file.as_fd(), &long, b"x").unwrap_err()
+        };
         assert!(refused.raw_os_error().is_some(), "{refused}");
         drop(file);
         std::fs::remove_dir_all(&dir).unwrap();

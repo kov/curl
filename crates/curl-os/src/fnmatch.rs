@@ -469,10 +469,15 @@ mod tests {
     /// C's unit test 1307's table, with the results it expects of Linux's
     /// `fnmatch`, in the C locale the tests run in: there a byte past
     /// ASCII is a character like any other, and the rows that fail in a
-    /// UTF-8 locale give the table's portable result.
+    /// UTF-8 locale give the table's portable result. macOS's `fnmatch`
+    /// fails the rows `MACOS_FAILS` names, as measured on macOS 27 (C runs
+    /// no test of it: 1307 is in `DISABLED`, the systems differing).
     #[test]
     #[cfg(unix)]
     fn patterns_match_as_c_s_unit_test_expects_of_linux() {
+        /// The rows macOS's `fnmatch` fails: a bracket left open, a class
+        /// it does not know, and a pattern ending in a backslash.
+        const MACOS_FAILS: [usize; 6] = [0, 2, 3, 100, 101, 131];
         let rows: &[(&[u8], &[u8], Matched)] = &[
         (b"*[*[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[\x01\x7f[[[[[[[[[[[[[[[[[[[[[", b"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[", Matched::NoMatch),
         (b"\\[", b"[", Matched::Match),
@@ -639,6 +644,11 @@ mod tests {
         (b"**]*[*[\x13]**[*\x13)]*]*[**[*\x13~r-]*]**[.*]*[\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3*[\x13]**[*\x13)]*]*[*[\x13]*[~r]*]*\xba\x13\xa6~b-]*", b"a", Matched::NoMatch),
         ];
         for (i, &(pattern, name, want)) in rows.iter().enumerate() {
+            let want = if cfg!(target_vendor = "apple") && MACOS_FAILS.contains(&i) {
+                Matched::Fail
+            } else {
+                want
+            };
             assert_eq!(fnmatch(pattern, name).unwrap(), want, "row {i}");
         }
     }

@@ -395,12 +395,12 @@ impl SocketOpener for Adapter {
         let socket: Box<dyn Socket> = match kind {
             SocketKind::Stream => {
                 // SAFETY: as above.
-                try_box(unsafe { curl_core::conn::io::adopt(fd) })
+                try_box(unsafe { curl_core::conn::io::adopt(fd) }?)
                     .map_err(|_| io::ErrorKind::OutOfMemory)?
             }
             SocketKind::Datagram => {
                 // SAFETY: as above.
-                try_box(unsafe { curl_core::conn::io::adopt_udp(fd) })
+                try_box(unsafe { curl_core::conn::io::adopt_udp(fd) }?)
                     .map_err(|_| io::ErrorKind::OutOfMemory)?
             }
         };

@@ -1,9 +1,9 @@
 //! Wiping an argument changes what process listings show.
 //!
 //! The binary runs itself again with two secret arguments; the child
-//! reads its own `/proc/self/cmdline` (what `ps` reads) before and after
-//! wiping them, one whole and one from inside the word, as `--user=...`
-//! is wiped.
+//! reads its own `/proc/self/cmdline` (what `ps` reads; `ps` itself on
+//! macOS) before and after wiping them, one whole and one from inside the
+//! word, as `--user=...` is wiped.
 //!
 //! On Windows, where C wipes nothing, the child reads its command line as
 //! the C library parsed it, quoting included, its bytes in the ANSI code
@@ -13,11 +13,25 @@
 
 use std::process::Command;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn cmdline() -> String {
     std::fs::read_to_string("/proc/self/cmdline")
         .unwrap()
         .replace('\0', " ")
+}
+
+/// What `ps` shows of this process on macOS, which reads its arguments
+/// from the process's memory: each argument followed by a space, as
+/// Linux's `cmdline` reads above.
+#[cfg(target_vendor = "apple")]
+fn cmdline() -> String {
+    let pid = std::process::id().to_string();
+    let out = Command::new("ps")
+        .args(["-ww", "-o", "command=", "-p", &pid])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "ps: {out:?}");
+    format!("{} ", String::from_utf8(out.stdout).unwrap().trim_end())
 }
 
 #[cfg(unix)]

@@ -102,6 +102,7 @@ impl Socket for StutterSocket {
     fn bind(&self, addr: SocketAddr) -> io::Result<()> {
         self.inner.bind(addr)
     }
+    #[cfg(target_os = "linux")]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         self.inner.bind_to_device(name)
     }

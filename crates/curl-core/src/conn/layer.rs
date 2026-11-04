@@ -1299,7 +1299,7 @@ mod tests {
         fn bind(&self, _: std::net::SocketAddr) -> io::Result<()> {
             unreachable!()
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         fn bind_to_device(&self, _: &[u8]) -> io::Result<()> {
             unreachable!()
         }

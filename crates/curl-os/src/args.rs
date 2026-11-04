@@ -5,6 +5,9 @@
 //! tool overwrites such an argument with `*` once it has read it. That
 //! needs the argument strings themselves, not a copy: glibc passes them to
 //! the functions in `.init_array` before `main`, and `CAPTURE` keeps them.
+//! On macOS the process's `argv` is where `_NSGetArgv` says, the strings
+//! the system shows process listings, which C's tool writes there too
+//! (`HAVE_WRITABLE_ARGV`).
 //!
 //! Only this module reads the argument strings: `std::env::args` and
 //! `std::env::args_os` are banned by `clippy.toml`, so nothing reads them
@@ -22,34 +25,52 @@
 use core::ffi::{CStr, c_char, c_int};
 #[cfg(unix)]
 use std::sync::Mutex;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 
-#[cfg(all(unix, not(all(target_os = "linux", target_env = "gnu"))))]
-compile_error!("the command line is captured as glibc passes it to `.init_array`");
+#[cfg(all(
+    unix,
+    not(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))
+))]
+compile_error!("the command line is captured as glibc or macOS's dyld passes it");
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 static ARGC: AtomicIsize = AtomicIsize::new(-1);
 #[cfg(unix)]
 /// Held while the argument strings are read or written, so a copy never
 /// sees a wipe half done.
 static LOCK: Mutex<()> = Mutex::new(());
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 static ARGV: AtomicPtr<*mut c_char> = AtomicPtr::new(core::ptr::null_mut());
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 /// Called by glibc before `main`, with the process's arguments.
 extern "C" fn capture(argc: c_int, argv: *mut *mut c_char, _envp: *mut *mut c_char) {
     ARGV.store(argv, Ordering::Release);
     ARGC.store(argc as isize, Ordering::Release);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[used]
 #[unsafe(link_section = ".init_array")]
 static CAPTURE: extern "C" fn(c_int, *mut *mut c_char, *mut *mut c_char) = capture;
 
-#[cfg(unix)]
+#[cfg(target_vendor = "apple")]
+/// The process's arguments, where the system keeps them for `main`
+/// (`_NSGetArgc`, `_NSGetArgv`): their count and the array of their
+/// strings.
+fn captured() -> (usize, *mut *mut c_char) {
+    // SAFETY: neither function takes an argument; each gives a pointer to
+    // the value dyld sets before any code of the program runs and keeps
+    // for the life of the process.
+    let (argc, argv): (c_int, _) =
+        unsafe { (libc::_NSGetArgc().read(), libc::_NSGetArgv().read()) };
+    let argc = usize::try_from(argc).expect("the process has its arguments");
+    assert!(!argv.is_null(), "the process has its arguments");
+    (argc, argv)
+}
+
+#[cfg(target_os = "linux")]
 /// The captured arguments: their count and the array of their strings.
 fn captured() -> (usize, *mut *mut c_char) {
     // Reading `CAPTURE` keeps the linker from dropping it with nothing
@@ -65,15 +86,15 @@ fn captured() -> (usize, *mut *mut c_char) {
 }
 
 #[cfg(unix)]
-/// Argument `index`: the pointer glibc passed, through which the string
-/// may be written.
+/// Argument `index`: the pointer the system passed, through which the
+/// string may be written.
 fn argument(index: usize) -> Option<*mut c_char> {
     let (argc, argv) = captured();
     if index >= argc {
         return None;
     }
-    // SAFETY: glibc passes an array of `argc` valid pointers, which stays
-    // in place for the life of the process.
+    // SAFETY: glibc, or dyld, passes an array of `argc` valid pointers,
+    // which stays in place for the life of the process.
     Some(unsafe { argv.wrapping_add(index).read() })
 }
 
@@ -81,8 +102,8 @@ fn argument(index: usize) -> Option<*mut c_char> {
 /// Call `f` with the bytes of argument string `arg`. The borrow ends when
 /// `f` returns, so none is live when `wipe` writes the string.
 fn with_bytes<R>(arg: *mut c_char, f: impl FnOnce(&[u8]) -> R) -> R {
-    // SAFETY: `arg` is a NUL-terminated string glibc passed, alive for the
-    // life of the process. Callers hold `LOCK`, so `wipe` does not write
+    // SAFETY: `arg` is a NUL-terminated string the system passed, alive
+    // for the life of the process. Callers hold `LOCK`, so `wipe` does not write
     // it while `f` reads it.
     f(unsafe { CStr::from_ptr(arg) }.to_bytes())
 }
@@ -119,7 +140,7 @@ pub fn wipe(index: usize, offset: usize) -> bool {
         return false;
     }
     let start = arg.cast::<u8>().wrapping_add(offset);
-    // SAFETY: `arg` is the pointer glibc passed in `argv`, and the bytes
+    // SAFETY: `arg` is the pointer the system passed in `argv`, and the bytes
     // from `offset` to the NUL belong to its string, which the process may
     // write. No reference to the string is live: `with_bytes`' ended above,
     // and every other reader takes `LOCK`. The NUL stays, so the length

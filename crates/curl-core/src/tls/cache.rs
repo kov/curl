@@ -1070,7 +1070,7 @@ fn write_key(
         path(out, "CApath", identity.ca_path());
         path(out, "CRL", o.crl_file.as_deref());
         path(out, "Issuer", o.issuer_cert.as_deref());
-        hash(out, "CAInfoBlob", o.ca_blob.as_deref());
+        hash(out, "CAInfoBlob", identity.ca_blob());
         hash(out, "IssuerBlob", o.issuer_cert_blob.as_deref());
     }
     hash(out, "CertBlob", o.cert_blob.as_deref());

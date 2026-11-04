@@ -412,3 +412,11 @@ witness: curl-core tls::tests::the_native_store_is_the_default_only_where_no_ca_
                 && matches!(o.ca_file, CaSetting::Default)
 --- new
                 && !matches!(o.ca_file, CaSetting::Given(_))
+
+=== the system's store is the default though the transfer set its CA blob to nothing
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::the_native_store_is_the_default_only_where_no_ca_is_named
+--- old
+                && matches!(o.ca_blob, CaSetting::Default))
+--- new
+                && self.ca_blob().is_none())

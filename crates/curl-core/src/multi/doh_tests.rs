@@ -319,7 +319,7 @@ fn a_probe_inherits_only_cs_list() {
     o.proxy.make_mut().unwrap().url = Some(b"http://proxy.test/".to_vec());
     o.http.user_agent = Some(b"agent".to_vec());
     let t = o.tls.options.make_mut().unwrap();
-    t.ca_blob = Some(b"blob".to_vec());
+    t.ca_blob = crate::options::CaSetting::Given(b"blob".to_vec());
     t.crl_file = Some(b"crl".to_vec());
     t.ssl_options =
         crate::options::SslOptions::AUTO_CLIENT_CERT | crate::options::SslOptions::NO_REVOKE;
@@ -339,7 +339,10 @@ fn a_probe_inherits_only_cs_list() {
     assert!(!p.tls.verify_peer);
     assert!(!p.tls.verify_host);
     assert!(p.tls.options.verify_status);
-    assert_eq!(p.tls.options.ca_blob.as_deref(), Some(&b"blob"[..]));
+    assert_eq!(
+        p.tls.options.ca_blob,
+        crate::options::CaSetting::Given(b"blob".to_vec())
+    );
     assert_eq!(p.tls.options.crl_file.as_deref(), Some(&b"crl"[..]));
     assert!(p.tls.options.cert.is_none(), "not the client's certificate");
     assert_eq!(

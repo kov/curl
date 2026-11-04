@@ -337,8 +337,9 @@ unsafe fn owned(p: *mut c_void) -> Result<Option<Vec<u8>>, Refused> {
     Ok(Some(copy))
 }
 
-/// A CA file or directory as the application set it: NULL sets none,
-/// and the build's default is not used either (`custom_cafile`).
+/// A CA file, directory or blob as the application set it: NULL sets none,
+/// and the build's default is not used either (`custom_cafile`,
+/// `custom_cablob`).
 fn ca_setting(value: Option<Vec<u8>>) -> curl_core::options::CaSetting {
     match value {
         Some(text) => curl_core::options::CaSetting::Given(text),
@@ -818,10 +819,11 @@ fn apply(
             let path = ca_setting(unsafe { owned(p) }?);
             options.tls.options.make_mut()?.ca_path = path;
         }
+        // NULL too names the certificates (`custom_cablob`).
         (ffi::CURLOPT_CAINFO_BLOB, Ptr(p)) => {
             // SAFETY: the application passes a blob or NULL.
-            let blob = unsafe { blob(p) }?;
-            options.tls.options.set(|t| &mut t.ca_blob, blob)?;
+            let blob = ca_setting(unsafe { blob(p) }?);
+            options.tls.options.make_mut()?.ca_blob = blob;
         }
         (ffi::CURLOPT_SSL_CIPHER_LIST, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.

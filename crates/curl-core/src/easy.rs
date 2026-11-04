@@ -530,7 +530,7 @@ impl Easy {
             t.verify_status = from.doh.verify_status;
             t.ca_file = f.ca_file.try_clone()?;
             t.ca_path = f.ca_path.try_clone()?;
-            t.ca_blob = f.ca_blob.as_deref().map(crate::options::copy).transpose()?;
+            t.ca_blob = f.ca_blob.try_clone()?;
             t.crl_file = f
                 .crl_file
                 .as_deref()

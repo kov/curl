@@ -2894,8 +2894,10 @@ pub struct TlsOptions {
     /// (`CURLOPT_CAINFO`), and the directory of them (`CURLOPT_CAPATH`).
     pub ca_file: CaSetting,
     pub ca_path: CaSetting,
-    /// The same, given in memory (`CURLOPT_CAINFO_BLOB`).
-    pub ca_blob: Option<Vec<u8>>,
+    /// The same, given in memory (`CURLOPT_CAINFO_BLOB`). It has no
+    /// default to keep, but setting it, to nothing too, names the
+    /// certificates as the file and the directory do (`custom_cablob`).
+    pub ca_blob: CaSetting,
     /// The revocation list (`CURLOPT_CRLFILE`).
     pub crl_file: Option<Vec<u8>>,
     /// The certificate the peer's must be issued by (`CURLOPT_ISSUERCERT`,
@@ -2974,7 +2976,7 @@ impl ColdGroup for TlsOptions {
         verify_status: false,
         ca_file: CaSetting::Default,
         ca_path: CaSetting::Default,
-        ca_blob: None,
+        ca_blob: CaSetting::Default,
         crl_file: None,
         issuer_cert: None,
         issuer_cert_blob: None,
@@ -3040,7 +3042,7 @@ impl TlsOptions {
             verify_status: *verify_status,
             ca_file: ca_file.try_clone()?,
             ca_path: ca_path.try_clone()?,
-            ca_blob: text(ca_blob)?,
+            ca_blob: ca_blob.try_clone()?,
             crl_file: text(crl_file)?,
             issuer_cert: text(issuer_cert)?,
             issuer_cert_blob: text(issuer_cert_blob)?,
@@ -3076,8 +3078,9 @@ impl Default for TlsOptions {
 /// none, or the application's.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub enum CaSetting {
-    /// The TLS library's default, found as the library was built (C
-    /// stores a copy of it in the option at the handle's start).
+    /// Not set: the TLS library's default, found as the library was built
+    /// (C stores a copy of it in the option at the handle's start), where
+    /// it has one.
     #[default]
     Default,
     /// None: the application set it to nothing.

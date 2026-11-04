@@ -13,7 +13,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::options::SslOptions;
-use curl_core::tls::{TlsCx, TlsIdentity, TlsPeerKind, TlsShared};
+use curl_core::tls::{NATIVE_CA_DEFAULT, TlsCx, TlsIdentity, TlsPeerKind, TlsShared};
 use openssl_sys::{BIO, SSL, SSL_CTX, X509, X509_STORE};
 
 use crate::cache::{self, StoreCache};
@@ -293,7 +293,6 @@ fn load_trust_anchors(
     identity: &TlsIdentity,
     io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
-    let options = &identity.options;
     let mut empty = true;
     // The system's store, which Apple's SecTrust checks the peer against
     // once OpenSSL has not verified it: a file or directory that does not
@@ -302,7 +301,7 @@ fn load_trust_anchors(
     if native {
         io.info(format_args!("  Native: Apple SecTrust"));
     }
-    if let Some(blob) = &options.ca_blob {
+    if let Some(blob) = identity.ca_blob() {
         if let Err(kind) = load_from_memory(store, blob) {
             return Err(io.fail(
                 kind,
@@ -316,7 +315,7 @@ fn load_trust_anchors(
         empty = false;
     }
     // A blob takes the file's place.
-    let file = if options.ca_blob.is_some() {
+    let file = if identity.ca_blob().is_some() {
         None
     } else {
         identity.ca_file()
@@ -366,7 +365,7 @@ fn load_trust_anchors(
 /// default where the transfer names no certificates of its own
 /// (`native_ca_store` under `USE_APPLE_SECTRUST`).
 pub(crate) fn sectrust(identity: &TlsIdentity) -> bool {
-    cfg!(all(target_os = "macos", feature = "apple-sectrust")) && identity.native_ca_store(true)
+    NATIVE_CA_DEFAULT && identity.native_ca_store(true)
 }
 
 /// Add each certificate and revocation list of the PEM text `blob` to

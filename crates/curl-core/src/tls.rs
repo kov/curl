@@ -1173,20 +1173,31 @@ impl TlsIdentity {
         resolved(&self.options.ca_path, self.ca_defaults.path)
     }
 
+    /// The certificates to trust given in memory, if any: one set to
+    /// nothing has none, as one never set.
+    pub fn ca_blob(&self) -> Option<&[u8]> {
+        resolved(&self.options.ca_blob, None)
+    }
+
     /// The peer is to be checked against the system's own trust store
     /// (`native_ca_store`): asked for (`CURLSSLOPT_NATIVE_CA`), or, where
     /// the library's build makes it the default (`platform_default`, C's
     /// `USE_APPLE_SECTRUST`), when the transfer names no file, directory or
-    /// blob of certificates of its own (`Curl_ssl_easy_config_complete`).
+    /// blob of certificates of its own, naming none counting as naming one
+    /// (`Curl_ssl_filter_config_tmp_init`, `custom_cablob`).
     pub fn native_ca_store(&self, platform_default: bool) -> bool {
         let o = &self.options;
         o.ssl_options.contains(SslOptions::NATIVE_CA)
             || (platform_default
                 && matches!(o.ca_file, CaSetting::Default)
                 && matches!(o.ca_path, CaSetting::Default)
-                && o.ca_blob.is_none())
+                && matches!(o.ca_blob, CaSetting::Default))
     }
 }
+
+/// The system's own trust store is the default of this build where a
+/// transfer names no certificates of its own: C's `USE_APPLE_SECTRUST`.
+pub const NATIVE_CA_DEFAULT: bool = cfg!(all(target_os = "macos", feature = "apple-sectrust"));
 
 /// A CA setting as it applies: the default where it keeps it.
 fn resolved<'a>(setting: &'a CaSetting, default: Option<&'static str>) -> Option<&'a [u8]> {
@@ -1220,10 +1231,11 @@ impl PartialEq for TlsIdentity {
             max_version,
             ssl_options,
             verify_status,
-            // Compared as they resolve, below.
+            // Compared as they resolve, below, and by the store they
+            // make the default (`native_ca_store`).
             ca_file: _,
             ca_path: _,
-            ca_blob,
+            ca_blob: _,
             crl_file,
             issuer_cert,
             issuer_cert_blob,
@@ -1264,7 +1276,8 @@ impl PartialEq for TlsIdentity {
             && *verify_status == o.verify_status
             && self.ca_file() == other.ca_file()
             && self.ca_path() == other.ca_path()
-            && *ca_blob == o.ca_blob
+            && self.ca_blob() == other.ca_blob()
+            && self.native_ca_store(NATIVE_CA_DEFAULT) == other.native_ca_store(NATIVE_CA_DEFAULT)
             && *crl_file == o.crl_file
             && *issuer_cert == o.issuer_cert
             && *issuer_cert_blob == o.issuer_cert_blob

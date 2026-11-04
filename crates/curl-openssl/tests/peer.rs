@@ -919,7 +919,7 @@ fn an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own() {
     assert_eq!(loads(&unverified), 1);
     assert!(said(&unverified, "SSL Trust: peer verification disabled"));
     let blob = verified_in(&mut m, &certs, |o| {
-        o.tls.options.make_mut().unwrap().ca_blob = Some(pem);
+        o.tls.options.make_mut().unwrap().ca_blob = curl_core::options::CaSetting::Given(pem);
     });
     assert_eq!(loads(&blob), 1);
     assert!(said(&blob, "  CA Blob from configuration"));

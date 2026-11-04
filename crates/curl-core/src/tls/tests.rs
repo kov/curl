@@ -42,7 +42,9 @@ fn every_setting_tells_two_identities_apart() {
         ("ca_path", |i| {
             i.options.ca_path = CaSetting::Given(b"/etc/ssl/certs".to_vec());
         }),
-        ("ca_blob", |i| i.options.ca_blob = text("pem")),
+        ("ca_blob", |i| {
+            i.options.ca_blob = CaSetting::Given(b"pem".to_vec())
+        }),
         ("crl_file", |i| i.options.crl_file = text("crl")),
         ("issuer_cert", |i| i.options.issuer_cert = text("issuer")),
         ("issuer_cert_blob", |i| {
@@ -116,19 +118,21 @@ fn lists_match_in_any_case_and_paths_exactly() {
 /// the library's default file matches one that keeps the default, as in
 /// C, which copies the default into the setting; one that sets none
 /// matches neither. Defaults the library does not have resolve to none.
+/// Where the build makes the system's store the default, naming a file
+/// turns it off, and the two do not match (`native_ca_store`).
 #[test]
 fn the_ca_default_compares_as_the_file_it_names() {
     let kept = identity(|_| {});
     let named = identity(|i| i.options.ca_file = CaSetting::Given(b"/default/ca.pem".to_vec()));
     let none = identity(|i| i.options.ca_file = CaSetting::Unset);
-    assert_eq!(kept, named);
+    assert_eq!(kept == named, !NATIVE_CA_DEFAULT);
     assert_ne!(kept, none);
     assert_ne!(named, none);
     assert_eq!(kept.ca_file(), Some(&b"/default/ca.pem"[..]));
     assert_eq!(none.ca_file(), None);
     // No default path: keeping it is having none.
     let no_path = identity(|i| i.options.ca_path = CaSetting::Unset);
-    assert_eq!(kept, no_path);
+    assert_eq!(kept == no_path, !NATIVE_CA_DEFAULT);
     assert_eq!(kept.ca_path(), None);
     let other_default = identity(|i| i.ca_defaults.file = Some("/other/ca.pem"));
     assert_ne!(kept, other_default);
@@ -136,7 +140,8 @@ fn the_ca_default_compares_as_the_file_it_names() {
 
 /// The system's store is used where asked for, or, in a build that makes
 /// it the default, where the transfer names no file, directory or blob of
-/// its own, naming none counting as naming one (`custom_cafile`).
+/// its own, naming none counting as naming one (`custom_cafile`,
+/// `custom_cablob`).
 #[test]
 fn the_native_store_is_the_default_only_where_no_ca_is_named() {
     let kept = identity(|_| {});
@@ -144,15 +149,29 @@ fn the_native_store_is_the_default_only_where_no_ca_is_named() {
     assert!(!kept.native_ca_store(false));
     let asked = identity(|i| i.options.ssl_options = SslOptions::NATIVE_CA);
     assert!(asked.native_ca_store(false));
-    let named: [Change; 4] = [
+    let named: [Change; 5] = [
         |i| i.options.ca_file = CaSetting::Given(b"/certs/ca.pem".to_vec()),
         |i| i.options.ca_file = CaSetting::Unset,
         |i| i.options.ca_path = CaSetting::Given(b"/certs".to_vec()),
-        |i| i.options.ca_blob = Some(b"PEM".to_vec()),
+        |i| i.options.ca_blob = CaSetting::Given(b"PEM".to_vec()),
+        |i| i.options.ca_blob = CaSetting::Unset,
     ];
     for change in named {
         assert!(!identity(change).native_ca_store(true));
     }
+}
+
+/// A blob set to nothing holds no certificates, as one never set, so the
+/// two match where that is all they differ by; but where the build makes
+/// the system's store the default, one uses it and the other does not,
+/// and they do not match (`match_ssl_primary_config`'s
+/// `native_ca_store`).
+#[test]
+fn a_blob_set_to_nothing_matches_one_never_set_unless_the_store_differs() {
+    let never = identity(|_| {});
+    let nothing = identity(|i| i.options.ca_blob = CaSetting::Unset);
+    assert_eq!(nothing.ca_blob(), None);
+    assert_eq!(never == nothing, !NATIVE_CA_DEFAULT);
 }
 
 type Change = fn(&mut TlsIdentity);
@@ -169,11 +188,11 @@ fn alpn_does_not_tell_identities_apart() {
 #[test]
 fn an_identity_copies_the_options() {
     let mut tls = Tls::default();
-    tls.options.make_mut().unwrap().ca_blob = text("pem");
+    tls.options.make_mut().unwrap().ca_blob = CaSetting::Given(b"pem".to_vec());
     let id = TlsIdentity::of(&tls, CaDefaults::default()).unwrap();
-    tls.options.make_mut().unwrap().ca_blob = text("other");
+    tls.options.make_mut().unwrap().ca_blob = CaSetting::Given(b"other".to_vec());
     tls.verify_peer = false;
-    assert_eq!(id.options.ca_blob, text("pem"));
+    assert_eq!(id.options.ca_blob, CaSetting::Given(b"pem".to_vec()));
     assert!(id.verify_peer);
 }
 

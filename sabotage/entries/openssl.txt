@@ -119,15 +119,15 @@ file: crates/curl-openssl/src/cache.rs
 witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
 --- old
         && identity.verify_peer
-        && o.ca_blob.is_none()
+        && identity.ca_blob().is_none()
 --- new
-        && o.ca_blob.is_none()
+        && identity.ca_blob().is_none()
 
 === a transfer trusting a CA blob takes the multi's store
 file: crates/curl-openssl/src/cache.rs
 witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
 --- old
-        && o.ca_blob.is_none()
+        && identity.ca_blob().is_none()
         && o.crl_file.is_none()
 --- new
         && o.crl_file.is_none()
@@ -137,15 +137,15 @@ file: crates/curl-openssl/src/cache.rs
 witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
 --- old
         && o.crl_file.is_none()
-        && !o.ssl_options
+        && !identity.native_ca_store
 --- new
-        && !o.ssl_options
+        && !identity.native_ca_store
 
 === a transfer trusting the system's store takes the multi's store
 file: crates/curl-openssl/src/cache.rs
 witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
 --- old
-        && !o.ssl_options.contains(SslOptions::NATIVE_CA)
+        && !identity.native_ca_store(NATIVE_CA_DEFAULT)
 --- new
         && true
 

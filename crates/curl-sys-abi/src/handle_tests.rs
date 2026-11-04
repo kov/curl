@@ -294,8 +294,8 @@ fn tls_options_are_kept_as_c_keeps_them() {
     );
     pem[0] = b'X';
     std::hint::black_box(&pem);
-    let kept = |c| options(c, |o| o.tls.options.ca_blob.clone());
-    assert_eq!(kept(c), Some(b"PEM".to_vec()));
+    let kept = |c, want: CaSetting| options(c, |o| o.tls.options.ca_blob == want);
+    assert!(kept(c, CaSetting::Given(b"PEM".to_vec())));
     blob.len = 0;
     assert_eq!(
         pointer(c, ffi::CURLOPT_CAINFO_BLOB, &raw mut blob),
@@ -308,8 +308,10 @@ fn tls_options_are_kept_as_c_keeps_them() {
         CURLE_BAD_FUNCTION_ARGUMENT
     );
     let none = ptr::null_mut::<ffi::curl_blob>();
+    // NULL names the certificates too, so the build's native store is not
+    // the default (`custom_cablob`).
     assert_eq!(pointer(c, ffi::CURLOPT_CAINFO_BLOB, none), CURLE_OK);
-    assert_eq!(kept(c), None);
+    assert!(kept(c, CaSetting::Unset));
 
     let versions = |c| {
         options(c, |o| {

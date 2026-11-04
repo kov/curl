@@ -164,7 +164,7 @@ fn a_ca_blob_s_certificates_and_lists_are_all_taken() {
     let with = |blob: Vec<u8>| {
         let (at, server) = serve(&certs);
         let got = get("localhost", at, |o| {
-            o.tls.options.make_mut().unwrap().ca_blob = Some(blob);
+            o.tls.options.make_mut().unwrap().ca_blob = curl_core::options::CaSetting::Given(blob);
         });
         server.join().unwrap();
         got

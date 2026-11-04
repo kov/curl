@@ -71,9 +71,14 @@ pub(super) fn apply(options: &mut Options, option: CURLoption, arg: Arg) -> Resu
             let path = ca_setting(unsafe { owned(p) }?);
             group(options)?.ca_path = path;
         }
+        // NULL too names the certificates (`custom_cablob`).
+        (ffi::CURLOPT_PROXY_CAINFO_BLOB, Arg::Ptr(p)) => {
+            // SAFETY: the application passes a blob or NULL.
+            let blob = ca_setting(unsafe { blob(p) }?);
+            group(options)?.ca_blob = blob;
+        }
         (
-            ffi::CURLOPT_PROXY_CAINFO_BLOB
-            | ffi::CURLOPT_PROXY_ISSUERCERT_BLOB
+            ffi::CURLOPT_PROXY_ISSUERCERT_BLOB
             | ffi::CURLOPT_PROXY_SSLCERT_BLOB
             | ffi::CURLOPT_PROXY_SSLKEY_BLOB,
             Arg::Ptr(p),
@@ -114,7 +119,6 @@ fn set(
 /// The field a string or blob option sets.
 fn field(option: CURLoption) -> fn(&mut TlsOptions) -> &mut Option<Vec<u8>> {
     match option {
-        ffi::CURLOPT_PROXY_CAINFO_BLOB => |t| &mut t.ca_blob,
         ffi::CURLOPT_PROXY_CRLFILE => |t| &mut t.crl_file,
         ffi::CURLOPT_PROXY_ISSUERCERT => |t| &mut t.issuer_cert,
         ffi::CURLOPT_PROXY_ISSUERCERT_BLOB => |t| &mut t.issuer_cert_blob,

@@ -8,7 +8,7 @@
 use curl_alloc::TryArc;
 use curl_core::options::{CaCache, SslOptions};
 use curl_core::time::Instant;
-use curl_core::tls::TlsIdentity;
+use curl_core::tls::{NATIVE_CA_DEFAULT, TlsIdentity};
 
 /// A multi's kept store, of the library's type `S`.
 pub(crate) struct StoreCache<S> {
@@ -33,16 +33,17 @@ impl<S> Default for StoreCache<S> {
 /// A connection with `identity` may take a kept store and keep the one it
 /// loads (`Curl_ssl_setup_x509_store`'s `cache_criteria_met`): the cache
 /// is on, and the peer is verified against the CA file and path alone, no
-/// blob, no revocation list and not the system's own store. (C also
+/// blob, no revocation list and not the system's own store, asked for
+/// or this build's default (`native_ca_store`). (C also
 /// leaves a store loaded under an OpenSSL provider out; this build loads
 /// none.)
 pub(crate) fn cacheable(identity: &TlsIdentity) -> bool {
     let o = &identity.options;
     o.ca_cache != CaCache::Off
         && identity.verify_peer
-        && o.ca_blob.is_none()
+        && identity.ca_blob().is_none()
         && o.crl_file.is_none()
-        && !o.ssl_options.contains(SslOptions::NATIVE_CA)
+        && !identity.native_ca_store(NATIVE_CA_DEFAULT)
 }
 
 /// A store loaded for `kept` serves `wanted`
@@ -179,7 +180,7 @@ mod tests {
         assert!(!cacheable(&identity(|i| i.verify_peer = false)));
         assert!(!cacheable(&identity(|i| i.options.ca_cache = CaCache::Off)));
         assert!(!cacheable(&identity(
-            |i| i.options.ca_blob = Some(b"PEM".to_vec())
+            |i| i.options.ca_blob = CaSetting::Given(b"PEM".to_vec())
         )));
         assert!(!cacheable(&identity(
             |i| i.options.crl_file = Some(b"/crl".to_vec())

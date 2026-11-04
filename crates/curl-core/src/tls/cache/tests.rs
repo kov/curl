@@ -122,7 +122,7 @@ fn a_key_holds_every_setting_a_session_must_share() {
         o.ca_path = CaSetting::Given(b"/ca/dir".to_vec());
         o.crl_file = Some(b"/crl.pem".to_vec());
         o.issuer_cert = Some(b"/issuer.pem".to_vec());
-        o.ca_blob = Some(b"abc".to_vec());
+        o.ca_blob = CaSetting::Given(b"abc".to_vec());
         o.cert_blob = Some(b"abc".to_vec());
         o.pinned_key = Some(b"sha256//x".to_vec());
         o.cert = Some(b"/client.pem".to_vec());

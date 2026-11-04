@@ -2467,7 +2467,8 @@ mod tests {
         }
         assert!(!have.serves(&secured(None)) && !secured(None).serves(&have));
         let mut blob = Tls::default();
-        blob.options.make_mut().unwrap().ca_blob = Some(b"pem".to_vec());
+        blob.options.make_mut().unwrap().ca_blob =
+            crate::options::CaSetting::Given(b"pem".to_vec());
         assert!(!have.serves(&secured(Some(&blob))));
     }
 

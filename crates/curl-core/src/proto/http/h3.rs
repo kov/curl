@@ -748,6 +748,17 @@ impl Request {
                 s.rx_offset_max += n;
                 Heard::Fine
             }
+            StreamEvent::ReadFailed => {
+                // C's `closed` holds for a reset stream too.
+                let reset = u8::from(matches!(s.ended, Some(Ended::Reset(_))));
+                let closed = u8::from(s.ended.is_some());
+                trace::of(
+                    cx,
+                    h3,
+                    format_args!("[{id}] error on known stream, reset={reset}, closed={closed}"),
+                );
+                Heard::Fine
+            }
             StreamEvent::Closed(error) => {
                 if error == H3Error::NO_ERROR {
                     s.ended = Some(Ended::Closed);

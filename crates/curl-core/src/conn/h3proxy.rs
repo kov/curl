@@ -313,7 +313,11 @@ impl Tunnel {
                 }
                 Heard::Fine
             }
-            StreamEvent::QuicReset { .. } | StreamEvent::Consumed(_) => Heard::Fine,
+            // C's proxy sets no stream's user data, so a refused stream is
+            // no known one (`cb_recv_stream_data`).
+            StreamEvent::QuicReset { .. } | StreamEvent::Consumed(_) | StreamEvent::ReadFailed => {
+                Heard::Fine
+            }
         }
     }
 }

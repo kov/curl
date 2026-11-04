@@ -1341,6 +1341,10 @@ unsafe extern "C" fn recv_stream_data(
     // SAFETY: the HTTP/3 connection, and the library's bytes.
     let rc = unsafe { sys::nghttp3_conn_read_stream(h3, stream_id, data, datalen, fin) };
     let Ok(consumed) = u64::try_from(rc) else {
+        // The stream's transfer says so, if it has one; the read fails
+        // whatever it makes of it.
+        // SAFETY: inside the call, holding nothing of the state.
+        unsafe { tell_stream(inner, stream_id, StreamEvent::ReadFailed) };
         return sys::NGTCP2_ERR_CALLBACK_FAILURE;
     };
     if consumed > 0 {

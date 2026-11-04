@@ -240,6 +240,9 @@ pub enum StreamEvent<'a> {
     /// window opened by as much (`cb_recv_stream_data`,
     /// `cb_h3_deferred_consume`).
     Consumed(u64),
+    /// The HTTP/3 library refused the stream's bytes: the connection's
+    /// read fails after (`cb_recv_stream_data`).
+    ReadFailed,
     /// The QUIC stream closed, with the peer's error code if it gave one;
     /// the HTTP/3 library's answer to closing it (`cb_stream_close`).
     QuicClosed {

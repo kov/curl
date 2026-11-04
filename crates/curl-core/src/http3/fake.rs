@@ -60,6 +60,9 @@ pub enum Told {
     /// HTTP/3 could not be set up, for this reason; the call fails, as
     /// the binding's callback does.
     H3Failed(&'static str),
+    /// The HTTP/3 library refused a stream's bytes: the read fails, as
+    /// the binding's callback makes it (`cb_recv_stream_data`).
+    Refused(i64),
 }
 
 /// The script and the record of one connection, shared with the test.
@@ -282,6 +285,10 @@ impl FakeConnection {
                         };
                         let h = told_to(call, events, Event::Connection(event));
                         if checked.is_err() { Heard::Failed } else { h }
+                    }
+                    Told::Refused(s) => {
+                        told_to(call, events, stream(*s, StreamEvent::ReadFailed));
+                        Heard::Failed
                     }
                     Told::H3Failed(why) => {
                         let failed = H3Failed {

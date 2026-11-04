@@ -4382,3 +4382,160 @@ fn an_http3_proxy_connect_names_its_host_as_its_bytes() {
         traced[0]
     );
 }
+
+/// Two GETs of `/a` and `/b` on one QUIC connection to 127.0.0.1, the
+/// second waiting for the first's to multiplex on it, both heads read in
+/// the third packet in; the fourth, which the connection reads with
+/// `then`, comes only once the test lets it (`talk.allow(4)`). The first
+/// alone has a timer to run it: its speed checked each second.
+fn two_heads_on_quic(then: Vec<Told>) -> TwoOnQuic {
+    use std::num::{NonZeroU16, NonZeroU64};
+    let script = Script::new();
+    {
+        let mut s = script.lock().unwrap();
+        s.idle = Some(std::time::Duration::from_secs(30));
+        s.out.extend([vec![1; 1200], vec![2; 1200], vec![], vec![]]);
+        s.on_submit
+            .extend([vec![vec![3; 75], vec![]], vec![vec![4; 76], vec![]]]);
+        s.on_read
+            .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
+        // Stream 0's request is only acknowledged.
+        s.on_read.push_back(vec![]);
+        let mut heads = Vec::new();
+        for stream in [0, 4] {
+            let header = |name: &[u8], value: &[u8]| Told::Header {
+                stream,
+                name: name.to_vec(),
+                value: value.to_vec(),
+            };
+            heads.extend([
+                header(b":status", b"200"),
+                header(b"content-length", b"9"),
+                Told::HeadersDone(stream),
+            ]);
+        }
+        s.on_read.push_back(heads);
+        s.on_read.push_back(then);
+    }
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::replies(&[b"server flight", b"ack", b"heads", b"then"], false)
+        .per_send()
+        .volunteering(1)
+        .held();
+    talk.allow(3);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for (path, timed) in [("/a", true), ("/b", false)] {
+        let mut e = tracing(FakeTls::new().unwrap(), &script);
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("https://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.http.pipewait = true;
+        if timed {
+            o.flow.make_mut().unwrap().low_speed = Some(crate::options::LowSpeed {
+                limit: NonZeroU64::new(1).unwrap(),
+                time: NonZeroU16::new(30).unwrap(),
+            });
+        }
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.header = Some(Handler::header(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        seen.push(s);
+    }
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+        if seen.iter().all(|s| s.of("header").len() == 3) {
+            break;
+        }
+    }
+    for s in &seen {
+        assert_eq!(s.of("header").len(), 3, "both heads read: {:#?}", s.text());
+    }
+    TwoOnQuic { m, talk, ids, seen }
+}
+
+/// What `two_heads_on_quic` made.
+struct TwoOnQuic {
+    m: Multi,
+    talk: Conversation,
+    ids: Vec<crate::multi::TransferId>,
+    seen: Vec<Seen>,
+}
+
+impl TwoOnQuic {
+    /// The `[HTTP/3]` lines transfer `i` traced.
+    fn text(&self, i: usize) -> Vec<String> {
+        lines_of(&self.seen[i], &["[HTTP/3]"])
+    }
+
+    fn said(&self, i: usize, line: &str) -> bool {
+        self.text(i).iter().any(|l| l == line)
+    }
+
+    /// Each transfer's result, none for one still running.
+    fn results(&mut self) -> Vec<Option<Result<(), ErrorKind>>> {
+        let mut results = vec![None; self.ids.len()];
+        while let Some(msg) = self.m.info_read() {
+            let i = self.ids.iter().position(|&id| id == msg.id).unwrap();
+            results[i] = Some(msg.result);
+        }
+        results
+    }
+}
+
+/// The HTTP/3 library refusing a sibling's stream as a transfer reads
+/// fails the read, the stream's own transfer saying so as C's
+/// `cb_recv_stream_data` does on the stream's transfer; the library's
+/// failure closes the connection, and the other fails as it runs.
+#[test]
+fn a_refused_stream_is_said_on_its_own_transfer() {
+    let mut two = two_heads_on_quic(vec![Told::Refused(4)]);
+    two.talk.allow(4);
+    for _ in 0..5 {
+        two.m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(
+        two.said(1, "[HTTP/3] [4] error on known stream, reset=0, closed=0"),
+        "{:#?}",
+        two.text(1)
+    );
+    assert!(
+        !two.text(0)
+            .iter()
+            .any(|l| l.contains("error on known stream")),
+        "{:#?}",
+        two.text(0)
+    );
+    assert!(
+        two.said(0, "[HTTP/3] ingress, read_pkt -> ERR_FAKE (-502)"),
+        "{:#?}",
+        two.text(0)
+    );
+    for (i, id) in [(0, 0), (1, 4)] {
+        let read = format!("[HTTP/3] [{id}] cf_recv(buflen=16384) -> 56, 0");
+        assert!(two.said(i, &read), "{read:?} in {:#?}", two.text(i));
+    }
+    let results = two.results();
+    assert_eq!(
+        results,
+        [
+            Some(Err(ErrorKind::RecvError)),
+            Some(Err(ErrorKind::RecvError))
+        ]
+    );
+}

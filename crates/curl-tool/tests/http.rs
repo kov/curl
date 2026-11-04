@@ -1470,6 +1470,7 @@ fn curl_typing(args: &[&str], typed: &[u8]) -> Run {
 }
 
 /// The `Authorization` and `Proxy-Authorization` lines of `request`.
+#[cfg(unix)]
 fn logins(request: &str) -> Vec<&str> {
     request
         .split("\r\n")
@@ -1477,6 +1478,7 @@ fn logins(request: &str) -> Vec<&str> {
         .collect()
 }
 
+#[cfg(unix)]
 const CLOSED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 /// A `-u` or `-U` without a password asks for one on standard error and

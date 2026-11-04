@@ -4466,7 +4466,13 @@ fn two_heads_on_quic(then: Vec<Told>) -> TwoOnQuic {
     for s in &seen {
         assert_eq!(s.of("header").len(), 3, "both heads read: {:#?}", s.text());
     }
-    TwoOnQuic { m, talk, ids, seen }
+    TwoOnQuic {
+        m,
+        talk,
+        ids,
+        seen,
+        clock,
+    }
 }
 
 /// What `two_heads_on_quic` made.
@@ -4475,6 +4481,7 @@ struct TwoOnQuic {
     talk: Conversation,
     ids: Vec<crate::multi::TransferId>,
     seen: Vec<Seen>,
+    clock: ManualClock,
 }
 
 impl TwoOnQuic {
@@ -4533,6 +4540,45 @@ fn a_refused_stream_is_said_on_its_own_transfer() {
     let results = two.results();
     assert_eq!(
         results,
+        [
+            Some(Err(ErrorKind::RecvError)),
+            Some(Err(ErrorKind::RecvError))
+        ]
+    );
+}
+
+/// A read that fails in a step its socket did not start, the first
+/// transfer's run by its timer, fails the other transfer on the
+/// connection in the same call: the connection's failure has the other
+/// run at once, with C's code and line, rather than wait for an event of
+/// its socket that will not come or a timer it may not have.
+#[test]
+fn a_failed_read_run_by_a_timer_fails_the_other_transfer_at_once() {
+    use crate::multi::SocketEvent;
+    // The first's own stream is refused: nothing the library tells is
+    // the other's.
+    let mut two = two_heads_on_quic(vec![Told::Refused(0)]);
+    two.talk.allow(4);
+    // The first's speed check comes due; the socket's event is not
+    // looked at, as an application's loop runs its due timers first.
+    two.clock.advance(std::time::Duration::from_millis(1000));
+    let running = two
+        .m
+        .socket_action(SocketEvent::Timeout, &mut NoEvents)
+        .unwrap();
+    assert_eq!(running, 0, "{:#?}\n{:#?}", two.text(0), two.text(1));
+    assert!(
+        two.said(0, "[HTTP/3] ingress, read_pkt -> ERR_FAKE (-502)"),
+        "the first read: {:#?}",
+        two.text(0)
+    );
+    assert!(
+        two.said(1, "[HTTP/3] [4] cf_recv(buflen=16384) -> 56, 0"),
+        "{:#?}",
+        two.text(1)
+    );
+    assert_eq!(
+        two.results(),
         [
             Some(Err(ErrorKind::RecvError)),
             Some(Err(ErrorKind::RecvError))

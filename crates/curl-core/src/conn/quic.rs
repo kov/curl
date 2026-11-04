@@ -452,6 +452,11 @@ struct State {
     /// Early data is sent: this much of the request went before the
     /// handshake was done (`use_earlydata`, `earlydata_skip`).
     early: Option<usize>,
+    /// The failures of the connection's own so far: a read that failed,
+    /// or the library's call failing. Each is every stream's on it, not
+    /// the stepping transfer's alone: the call that saw it has the other
+    /// transfers on the connection run at once (`failures`).
+    failures: u32,
 }
 
 /// What a session resumed says of the early data a connection may send
@@ -535,6 +540,7 @@ impl Quic {
                 last_io: now,
                 component,
                 early: None,
+                failures: 0,
             },
             clock,
             tunnel_room: Vec::new(),
@@ -969,6 +975,7 @@ impl Quic {
     /// with, if nothing was before, and closed now if past saving
     /// (`Curl_cf_ngtcp2_cmn_err_set`).
     fn failed(&mut self, cx: &mut dyn QuicIo, error: QuicError) {
+        self.state.failures = self.state.failures.wrapping_add(1);
         if self.conn.failed(error) {
             self.close(cx);
         }
@@ -1382,10 +1389,20 @@ impl Quic {
             let Quic { conn, peer, .. } = self;
             conn.before_recv(&mut TlsCx::new(cx, component, peer))?;
         }
-        match cx.via() {
+        let read = match cx.via() {
             Via::Layers(below) => self.ingress_through(below),
             Via::Socket(on) => self.ingress_socket(on),
+        };
+        if read.is_err() {
+            self.state.failures = self.state.failures.wrapping_add(1);
         }
+        read
+    }
+
+    /// The count of its failures so far, which a call compares before and
+    /// after to know whether one came under it.
+    pub(crate) fn failures(&self) -> u32 {
+        self.state.failures
     }
 
     /// What the layers below have, read into the connection's own room

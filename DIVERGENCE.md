@@ -601,6 +601,22 @@ not a difference: it is tracked in `MILESTONES.md`.
   (`crates/curl-core/src/proto/http/tests/h2.rs`) and, for a pushed transfer refused memory,
   `a_push_that_cannot_start_leaves_nothing_running` (`crates/curl-core/tests/torture.rs`).
 
+- **A failure of an HTTP/3 connection runs every transfer on it at once.** When a read of a
+  QUIC connection fails, or the library's call on it does (a stream's bytes the HTTP/3
+  library refuses, which closes the connection), the transfer whose step met it fails with
+  56, and each other transfer on the connection fails with 56 as it next runs, as C's do.
+  C's ngtcp2 filter has the others run only on their own socket's events and timers
+  (`cf_ngtcp2_recv`; its quiche filter marks them, `cf_quiche_do_expire`): a step that read
+  the failure without its socket's event, a transfer's timer run first as an event loop does,
+  leaves them waiting for a datagram that will not come on a closed connection, or for a timer
+  they may not have. Here every other transfer on the connection is run at once. Where the
+  socket's event ran them all anyway, both builds give the same codes and lines: three
+  transfers over one connection against a server breaking one stream's framing, driven by
+  `curl_multi_perform` and by `curl_multi_socket_action` (2026-11-04: 56 for each, the 50
+  lines after the failed read identical). Pinned by
+  `a_failed_read_run_by_a_timer_fails_the_other_transfer_at_once`
+  (`crates/curl-core/src/proto/http/tests/h3_trace.rs`).
+
 ## Descriptors C shares with a library
 
 - **libssh is handed a copy of the connection's socket.** C gives libssh the connection's own

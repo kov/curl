@@ -344,10 +344,20 @@ impl Request {
             extends: Vec::new(),
             oom: false,
         };
+        let failures = quic.failures();
         if matches!(step.req.outgoing, Sending::Done | Sending::Aborted) {
             done_sending(&mut step, quic);
         }
         let r = f(&mut step, quic);
+        if quic.failures() != failures {
+            // The connection's failure is every stream's on it: each other
+            // transfer runs now to meet it, not at its own socket's event
+            // or timer, which may never come once the connection closed.
+            let me = step.cx.me;
+            for to in step.routes.others(me) {
+                step.cx.wake(to);
+            }
+        }
         lease.get().give_back_h3(h3);
         r
     }

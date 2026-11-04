@@ -1220,3 +1220,11 @@ witness: curl-core proto::http::tests::h3_trace::a_refused_stream_is_said_on_its
                     format_args!("[{id}] error on known stream, reset={reset}, closed={closed}"),
 --- new
                     format_args!("[{id}] error on stream, reset={reset}, closed={closed}"),
+
+=== a failure of the QUIC connection leaves its other transfers to their own events
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_failed_read_run_by_a_timer_fails_the_other_transfer_at_once
+--- old
+        if quic.failures() != failures {
+--- new
+        if quic.failures() != failures && quic.failures() == 0 {

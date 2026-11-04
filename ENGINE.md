@@ -2198,7 +2198,13 @@ line at a time, as HTTP/2's does; the windows its reading opens are opened once 
 returns. How the stream ended is one field, closed or reset with the peer's error (C's `closed`,
 `reset` and `error3`). The library's timer, set in a step, is armed on the transfer after it. The stream is
 done with as the connection hears the transfer is (`Curl_conn_ev_data_done`), after the
-request's own end.
+request's own end. A failure of the connection's own, a read that failed or the library's call
+failing, is every stream's on it, whichever transfer's step met it: `Quic` counts them, and a
+call under which the count moved has every other transfer on the connection run at once
+(`with_h3`), so each meets the connection as it now is, as C's quiche filter marks them
+(`cf_quiche_do_expire`); C's ngtcp2 filter leaves them to their own socket events and timers
+(`DIVERGENCE.md`). A stream the HTTP/3 library refused is said on its own transfer (`error on
+known stream`).
 
 **The connection's life.** A kept connection is dead once it shuts down, or once idle, since its
 last datagram went or came, past the idle timeout the peer gave, in whole milliseconds; else it

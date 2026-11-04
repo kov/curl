@@ -136,11 +136,8 @@ unsafe fn next(ap: &mut VaList<'_>, tag: Tag) -> u64 {
 ///
 /// `ap` holds at least the arguments the format names, of the types it
 /// names, as a C caller of a printf function must ensure.
-unsafe fn fetch(parsed: &Parsed, mut ap: VaList<'_>) -> Values {
+unsafe fn fetch(parsed: &Parsed, mut ap: VaList<'_>, v: &mut Values) {
     let inputs = parsed.inputs();
-    let mut v = Values {
-        bits: [0; MAX_PARAMETERS],
-    };
     if !RUST_READS_LONG_DOUBLE && inputs.contains(&ArgType::LongDouble) {
         let mut tags = [0u8; MAX_PARAMETERS];
         for (t, &ty) in tags.iter_mut().zip(inputs) {
@@ -150,14 +147,13 @@ unsafe fn fetch(parsed: &Parsed, mut ap: VaList<'_>) -> Values {
         // helper reads that many arguments of the types the caller
         // guarantees are there.
         unsafe { curl_rs_va_fetch(ap, tags.as_ptr(), inputs.len(), v.bits.as_mut_ptr()) };
-        return v;
+        return;
     }
     for (b, &ty) in v.bits.iter_mut().zip(inputs) {
         // SAFETY: the caller guarantees the next argument has the type the
         // format gives it, which is the type `next` reads.
         *b = unsafe { next(&mut ap, tag(ty)) };
     }
-    v
 }
 
 impl Args for Values {
@@ -236,11 +232,15 @@ unsafe fn formatf(sink: &mut impl Sink, format: *const c_char, ap: VaList<'_>) -
     }
     // SAFETY: the caller passes a C string.
     let fmt = unsafe { CStr::from_ptr(format) }.to_bytes();
-    let Some(parsed) = format::parse(fmt) else {
+    let mut parsed = Parsed::new();
+    if format::parse(fmt, &mut parsed).is_none() {
         return 0;
+    }
+    let mut args = Values {
+        bits: [0; MAX_PARAMETERS],
     };
     // SAFETY: the caller's arguments match the format.
-    let mut args = unsafe { fetch(&parsed, ap) };
+    unsafe { fetch(&parsed, ap, &mut args) };
     format::render(fmt, &parsed, &mut args, sink)
 }
 

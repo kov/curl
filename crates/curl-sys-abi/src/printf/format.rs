@@ -85,6 +85,19 @@ struct Segment {
     outlen: usize,
 }
 
+impl Segment {
+    /// A segment of nothing: what `Parsed::new` fills its room with, a
+    /// constant so that filling is a `memset`.
+    const EMPTY: Segment = Segment {
+        width: 0,
+        precision: 0,
+        flags: 0,
+        input: 0,
+        start: 0,
+        outlen: 0,
+    };
+}
+
 /// A parsed format: its segments and the types of the arguments it reads.
 pub(crate) struct Parsed {
     segments: [Segment; MAX_SEGMENTS],
@@ -274,14 +287,24 @@ fn parse_conversion(c: u8, flags: u32) -> Option<(ArgType, u32)> {
     })
 }
 
-/// Parse `fmt`. `None` for a format libcurl rejects, which outputs nothing.
-pub(crate) fn parse(fmt: &[u8]) -> Option<Parsed> {
-    let mut parsed = Parsed {
-        segments: [Segment::default(); MAX_SEGMENTS],
-        nsegments: 0,
-        inputs: [ArgType::Int; MAX_PARAMETERS],
-        ninputs: 0,
-    };
+impl Parsed {
+    /// Room for a parsed format, which `parse` fills.
+    pub(crate) fn new() -> Parsed {
+        Parsed {
+            segments: [Segment::EMPTY; MAX_SEGMENTS],
+            nsegments: 0,
+            inputs: [ArgType::Int; MAX_PARAMETERS],
+            ninputs: 0,
+        }
+    }
+}
+
+/// Parse `fmt` into `parsed`, which is a few kilobytes: filled in place
+/// rather than returned, it is not copied on every call. `None` for a
+/// format libcurl rejects, which outputs nothing.
+pub(crate) fn parse(fmt: &[u8], parsed: &mut Parsed) -> Option<()> {
+    parsed.nsegments = 0;
+    parsed.ninputs = 0;
     let mut used = [false; MAX_PARAMETERS];
     let mut param_num = 0usize;
     let mut max_param: Option<usize> = None;
@@ -318,7 +341,7 @@ pub(crate) fn parse(fmt: &[u8]) -> Option<Parsed> {
             // `%%`: the text so far, then the second `%` starts the next.
             if outlen > 0 {
                 push(
-                    &mut parsed,
+                    parsed,
                     Segment {
                         flags: SUBSTR,
                         start,
@@ -392,7 +415,7 @@ pub(crate) fn parse(fmt: &[u8]) -> Option<Parsed> {
 
         p += 1;
         push(
-            &mut parsed,
+            parsed,
             Segment {
                 width: spec.width,
                 precision: spec.precision,
@@ -406,7 +429,7 @@ pub(crate) fn parse(fmt: &[u8]) -> Option<Parsed> {
     }
     if p > start {
         push(
-            &mut parsed,
+            parsed,
             Segment {
                 flags: SUBSTR,
                 start,
@@ -421,7 +444,7 @@ pub(crate) fn parse(fmt: &[u8]) -> Option<Parsed> {
         return None;
     }
     parsed.ninputs = ninputs;
-    Some(parsed)
+    Some(())
 }
 
 /// Where `%n` stores the count, by its length modifier.

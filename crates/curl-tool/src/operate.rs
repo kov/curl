@@ -123,6 +123,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         linked,
         claims: Claims::of_build(),
         started: Cell::new(None),
+        stdin_relay: nonblocking::Relay::default(),
     };
     let loaded = match line.global.ssl_sessions {
         Some(name) => ssl_sessions::load(&run, name),
@@ -680,6 +681,8 @@ struct Shared<'a, 'l> {
     /// When the last transfer, or its last attempt, started, for
     /// `--rate`.
     started: Cell<Option<Instant>>,
+    /// Standard input's relay for `-T .`, set up once for the run.
+    stdin_relay: nonblocking::Relay,
 }
 
 /// What the library claims to have of what the options need, which C's
@@ -1129,7 +1132,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     }
     // `-T .` reads it without waiting.
     let stdin = match upload.filter(|&file| file == b".") {
-        Some(_) => match nonblocking::Stdin::open(&msgs) {
+        Some(_) => match nonblocking::Stdin::open(&msgs, &run.stdin_relay) {
             Ok(stdin) => Some(stdin),
             Err(nonblocking::Unopened::OutOfMemory) => {
                 return failed(easy, ErrorKind::OutOfMemory);
@@ -4392,6 +4395,7 @@ mod tests {
             linked: &linked,
             claims,
             started: Cell::new(None),
+            stdin_relay: nonblocking::Relay::default(),
         };
         let out = output::Output::null(msgs).unwrap();
         let post = op.post.as_deref().filter(|_| !op.get);

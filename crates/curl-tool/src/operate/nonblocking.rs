@@ -7,7 +7,9 @@
 //! On Windows standard input cannot be read without waiting, so C's tool
 //! has a thread read it into one end of a loopback TCP connection and
 //! reads the other end without waiting (`win32_stdin_read_thread`); so
-//! does this.
+//! does this. The thread is started once for the process, by the first
+//! `-T .` (C's static `socket_r`), and every later one reads the same
+//! connection: what the thread has read is never lost to a second.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -39,7 +41,7 @@ struct State {
     /// writes it into, or none, when that could not be set up and it is
     /// read as it is.
     #[cfg(windows)]
-    relay: Option<std::net::TcpStream>,
+    relay: Option<TryArc<std::net::TcpStream>>,
     /// The last read found nothing, and paused the upload.
     busy: AtomicBool,
     /// What was uploaded when the progress was last told (`ulprev`).
@@ -52,10 +54,40 @@ pub(super) enum Unopened {
     Io,
 }
 
+/// The run's relay of standard input on Windows: none until a `-T .`
+/// sets it up, then that one for every later `-T .` of the run, as C
+/// keeps its socket in a static (`win32_stdin_read_thread`). One that
+/// could not be set up is tried again by the next, as C's is. Nothing on
+/// Unix, where standard input is read as it is.
+#[derive(Default)]
+pub(super) struct Relay {
+    #[cfg(windows)]
+    reading: std::cell::RefCell<Option<TryArc<std::net::TcpStream>>>,
+}
+
+impl Relay {
+    /// The reading end, set up now if no `-T .` before did.
+    #[cfg(windows)]
+    fn reading(&self) -> std::io::Result<TryArc<std::net::TcpStream>> {
+        let mut reading = self.reading.borrow_mut();
+        if let Some(stream) = &*reading {
+            return Ok(stream.clone());
+        }
+        let stream = curl_os::fs::stdin().and_then(relay::start)?;
+        let stream = TryArc::try_new(stream).map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+        *reading = Some(stream.clone());
+        Ok(stream)
+    }
+}
+
 impl Stdin {
     /// Standard input, its reads made not to wait (`check_stdin_upload`);
-    /// a failure to make them so is warned of, as C's, and they wait.
-    pub(super) fn open(msgs: &crate::msgs::Messages) -> Result<Stdin, Unopened> {
+    /// a failure to make them so is warned of, as C's, and they wait. On
+    /// Windows it is read from `relay`.
+    pub(super) fn open(
+        msgs: &crate::msgs::Messages,
+        #[cfg_attr(unix, allow(unused_variables))] relay: &Relay,
+    ) -> Result<Stdin, Unopened> {
         let file = curl_os::fs::stdin().map_err(|_| Unopened::Io)?;
         #[cfg(unix)]
         if let Err(e) = curl_os::fs::set_nonblocking(&file) {
@@ -64,7 +96,7 @@ impl Stdin {
             msgs.warn(&[b"fcntl failed on fd=0: ", why.as_bytes()]);
         }
         #[cfg(windows)]
-        let relay = match curl_os::fs::stdin().and_then(relay::start) {
+        let relay = match relay.reading() {
             Ok(relay) => Some(relay),
             Err(_) => {
                 msgs.warn(&[
@@ -174,7 +206,7 @@ impl Stdin {
     fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         #[cfg(windows)]
         if let Some(relay) = &self.0.relay {
-            return (&*relay).read(buf);
+            return (&**relay).read(buf);
         }
         self.0.file.lock().expect("no panic holds it").read(buf)
     }

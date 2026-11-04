@@ -262,6 +262,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   Pinned by `an_etag_file_that_does_not_open_passes_over_its_urls`
   (`crates/curl-tool/tests/http.rs`).
 
+- **On Windows, every `-T .` of a run reads standard input's one relay.** The first sets up
+  the thread that reads standard input into a loopback connection, and each later `-T .` reads
+  the same connection, so what the thread has read goes to the next upload. C keeps the
+  connection's reading socket in a static (`win32_stdin_read_thread`, `src/tool_doswin.c`) and
+  hands it to each `-T .`, but closes it as each transfer ends (`post_per_transfer`'s
+  `sclose(per->infd)`): the next `-T .` is handed the closed socket, warns `fcntl failed on
+  fd=N: No such file or directory`, reads it as ended and uploads nothing, and a socket opened
+  meanwhile may have been given the same number. `curl -T . file:///C:/no/such/x -T .
+  file:///C:/t/dst <input` leaves `dst` empty on C's Windows build and holds the input here.
+  Measured against the C build on Windows. Pinned by
+  `a_second_upload_of_standard_input_reads_what_the_first_left`
+  (`crates/curl-tool/tests/transfers.rs`).
+
 - **A connection a 101's body ended by closing is not kept.** A 101 nothing asked to upgrade
   to is the final response, and its body runs until the server closes the connection; the
   rewrite then drops the connection and traces `shutting down connection #0`. C's

@@ -4087,9 +4087,9 @@ impl Linked {
                 h3: Some(&curl_ngtcp2::NGTCP2),
                 ssh: Some(&curl_libssh::LIBSSH),
                 // Windows' build has no LDAP library, as a C build
-                // without one.
+                // without one; nor has macOS's yet (`curl_ldap`).
                 #[cfg(unix)]
-                ldap: Some(&curl_ldap::LIBLDAP),
+                ldap: curl_ldap::library(),
                 #[cfg(windows)]
                 ldap: None,
                 psl: Some(&curl_psl::LIBPSL),

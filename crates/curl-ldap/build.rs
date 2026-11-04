@@ -1,14 +1,34 @@
-//! Link libldap and liblber, as the C build does, and build the table of
-//! their headers' values and layouts the tests compare `src/sys.rs` with.
+//! Link libldap and liblber where libldap has `ldap_init_fd`, as the C
+//! build takes OpenLDAP's backend only then (CMake's
+//! `check_function_exists(ldap_init_fd)`, `USE_OPENLDAP`), and build the
+//! table of their headers' values and layouts the tests compare
+//! `src/sys.rs` with.
 
 // A build script is no library: aborting on a failed allocation is fine.
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 fn main() {
-    println!("cargo::rustc-link-lib=ldap");
-    println!("cargo::rustc-link-lib=lber");
+    println!("cargo::rustc-check-cfg=cfg(openldap)");
+    println!("cargo::rerun-if-env-changed=PKG_CONFIG_PATH");
+    println!("cargo::rerun-if-env-changed=PKG_CONFIG_LIBDIR");
+    let mut libs: Vec<String> = ["ldap", "lber"]
+        .iter()
+        .flat_map(|package| curl_build::library_dirs(package))
+        .map(|dir| format!("-L{}", dir.display()))
+        .collect();
+    libs.extend(["-lldap".to_owned(), "-llber".to_owned()]);
+    if !curl_build::function_exists("init_fd", "ldap_init_fd", &libs) {
+        return;
+    }
+    println!("cargo::rustc-cfg=openldap");
+    curl_build::link("ldap", "ldap");
+    curl_build::link("lber", "lber");
     println!("cargo::rerun-if-changed=csrc/layout.c");
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    for dir in curl_build::include_dirs("ldap") {
+        build.include(dir);
+    }
+    build
         .file("csrc/layout.c")
         .warnings_into_errors(true)
         .compile("curl_ldap_layout");

@@ -94,7 +94,7 @@ witness: curl-core proto::ldap::tests::a_paused_write_holds_the_answer
         if self.receiving {
 
 === a session dropped unbound is not unbound
-file: crates/curl-ldap/src/lib.rs
+file: crates/curl-ldap/src/openldap.rs
 witness: curl-ldap tests::a_session_dropped_says_goodbye_and_closes
 --- old
         // be sent, and the session is freed all the same.
@@ -103,7 +103,7 @@ witness: curl-ldap tests::a_session_dropped_says_goodbye_and_closes
         // be sent, and the session is freed all the same.
 
 === a socket with no descriptor goes on to make a session
-file: crates/curl-ldap/src/lib.rs
+file: crates/curl-ldap/src/openldap.rs
 witness: curl-ldap tests::a_socket_without_a_descriptor_makes_no_session
 --- old
         let socket = socket.ok_or(SessionFailed::NoCopy)?;
@@ -113,7 +113,7 @@ witness: curl-ldap tests::a_socket_without_a_descriptor_makes_no_session
         };
 
 === a URL's `children` scope is refused
-file: crates/curl-ldap/src/lib.rs
+file: crates/curl-ldap/src/openldap.rs
 witness: curl-ldap tests::a_url_names_its_search
 --- old
         sys::LDAP_SCOPE_SUBORDINATE => Some(Scope::Subordinate),
@@ -121,7 +121,7 @@ witness: curl-ldap tests::a_url_names_its_search
         sys::LDAP_SCOPE_SUBORDINATE => None,
 
 === a subtree search goes out as a search of the base
-file: crates/curl-ldap/src/lib.rs
+file: crates/curl-ldap/src/openldap.rs
 witness: curl-ldap tests::a_session_over_a_wire_reads_and_writes_through_it
 --- old
         Scope::Subtree => sys::LDAP_SCOPE_SUBTREE,

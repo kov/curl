@@ -232,6 +232,11 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// The C library's: where the calling thread's `errno` is, which a
     /// layer's read or write sets as the library expects.
+    #[cfg(not(target_vendor = "apple"))]
+    pub(crate) fn __errno_location() -> *mut c_int;
+    /// Apple's C library's name for it.
+    #[cfg(target_vendor = "apple")]
+    #[link_name = "__error"]
     pub(crate) fn __errno_location() -> *mut c_int;
 }
 

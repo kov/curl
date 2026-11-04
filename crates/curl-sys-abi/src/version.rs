@@ -243,15 +243,17 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let h3 = curl_ngtcp2::version();
             let gss = Library("mit-krb5", curl_gssapi::version());
             // Named by the library itself (`Curl_ldap_version`). Windows'
-            // build has no LDAP library.
+            // build has no LDAP library, nor has macOS's yet.
             #[cfg(unix)]
             let ldap = curl_ldap::version();
             #[cfg(windows)]
-            let ldap = "";
+            let ldap: Option<&str> = None;
+            let has_ldap = ldap.is_some();
+            let ldap = ldap.unwrap_or_default();
             let mut libraries: [&dyn fmt::Display; 12] = [
                 &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
             ];
-            let linked = &mut libraries[..if cfg!(windows) { 11 } else { 12 }];
+            let linked = &mut libraries[..if has_ldap { 12 } else { 11 }];
             // A build with the threaded resolver does not use c-ares.
             let shown = if cfg!(feature = "threaded-resolver") {
                 let n = linked.len();
@@ -298,12 +300,13 @@ mod tests {
     /// `curl_version` lists the libraries linked in after libcurl, in
     /// C's order and words, each version as the library says it.
     /// The LDAP library after a space, as the version string has it:
-    /// none on Windows, whose build has none.
+    /// none where the build has none (Windows', macOS's).
     fn ldap_shown() -> String {
         #[cfg(unix)]
-        return format!(" {}", curl_ldap::version());
+        let ldap = curl_ldap::version();
         #[cfg(windows)]
-        return String::new();
+        let ldap: Option<&str> = None;
+        ldap.map_or_else(String::new, |v| format!(" {v}"))
     }
 
     fn ares_shown() -> String {

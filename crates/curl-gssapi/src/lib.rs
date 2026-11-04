@@ -17,9 +17,11 @@ mod sys;
 mod tests;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
+#[cfg(gss_set_neg_mechs)]
+use curl_core::gss::GssNote;
 use curl_core::gss::{
-    Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssNote, GssStatus, Mech,
-    Progress, Step, StepSink, Style, Target, TooLong,
+    Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssStatus, Mech, Progress, Step,
+    StepSink, Style, Target, TooLong,
 };
 
 use sys::{Name, NameKind};
@@ -141,6 +143,7 @@ impl Backend {
         }
     }
 
+    #[cfg(gss_set_neg_mechs)]
     fn has_cred(&self) -> bool {
         match self {
             Backend::Library { cred, .. } => cred.is_some(),
@@ -149,6 +152,7 @@ impl Backend {
         }
     }
 
+    #[cfg(gss_set_neg_mechs)]
     /// SPNEGO's credentials, without NTLM among the mechanisms it may
     /// negotiate where the library lets them be narrowed (C's
     /// `HAVE_GSS_SET_NEG_MECHS` block).
@@ -194,6 +198,7 @@ impl GssContext for Context {
         sink: &mut dyn StepSink,
     ) -> Result<Step, GssFailure> {
         let backend = self.backend.get_or_insert_with(Backend::chosen);
+        #[cfg(gss_set_neg_mechs)]
         if self.mech == Mech::Spnego && !backend.has_cred() {
             backend.spnego_cred(sink)?;
         }

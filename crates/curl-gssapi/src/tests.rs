@@ -233,6 +233,7 @@ fn the_version_is_pkg_config_s() {
     );
 }
 
+#[cfg(gss_set_neg_mechs)]
 /// The mechanisms the library has, and a copy without one of them.
 #[test]
 fn a_set_of_mechanisms_leaves_one_out() {

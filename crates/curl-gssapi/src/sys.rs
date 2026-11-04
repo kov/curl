@@ -34,6 +34,7 @@ struct GssOidDesc {
 }
 
 /// `gss_OID_set_desc`.
+#[cfg(gss_set_neg_mechs)]
 #[repr(C)]
 struct GssOidSetDesc {
     count: usize,
@@ -79,7 +80,9 @@ pub(crate) const GSS_C_CONF_FLAG: u32 = 16;
 pub(crate) const GSS_C_INTEG_FLAG: u32 = 32;
 pub(crate) const GSS_C_DELEG_POLICY_FLAG: u32 = 32768;
 
+#[cfg(gss_set_neg_mechs)]
 const GSS_C_INITIATE: c_int = 1;
+#[cfg(gss_set_neg_mechs)]
 const GSS_C_INDEFINITE: OmUint32 = 0xffff_ffff;
 const GSS_C_GSS_CODE: c_int = 1;
 const GSS_C_MECH_CODE: c_int = 2;
@@ -105,6 +108,7 @@ unsafe extern "C" {
     ) -> OmUint32;
     fn gss_release_name(minor: *mut OmUint32, name: *mut *mut GssNameStruct) -> OmUint32;
     fn gss_release_buffer(minor: *mut OmUint32, buffer: *mut GssBufferDesc) -> OmUint32;
+    #[cfg(gss_set_neg_mechs)]
     fn gss_acquire_cred(
         minor: *mut OmUint32,
         desired_name: *mut GssNameStruct,
@@ -116,14 +120,19 @@ unsafe extern "C" {
         time_rec: *mut OmUint32,
     ) -> OmUint32;
     fn gss_release_cred(minor: *mut OmUint32, cred: *mut *mut GssCredIdStruct) -> OmUint32;
+    #[cfg(gss_set_neg_mechs)]
     fn gss_indicate_mechs(minor: *mut OmUint32, mech_set: *mut *mut GssOidSetDesc) -> OmUint32;
+    #[cfg(gss_set_neg_mechs)]
     fn gss_create_empty_oid_set(minor: *mut OmUint32, set: *mut *mut GssOidSetDesc) -> OmUint32;
+    #[cfg(gss_set_neg_mechs)]
     fn gss_add_oid_set_member(
         minor: *mut OmUint32,
         member: *mut GssOidDesc,
         set: *mut *mut GssOidSetDesc,
     ) -> OmUint32;
+    #[cfg(gss_set_neg_mechs)]
     fn gss_release_oid_set(minor: *mut OmUint32, set: *mut *mut GssOidSetDesc) -> OmUint32;
+    #[cfg(gss_set_neg_mechs)]
     fn gss_set_neg_mechs(
         minor: *mut OmUint32,
         cred: *mut GssCredIdStruct,
@@ -306,12 +315,20 @@ impl Drop for Name {
 }
 
 /// Credentials acquired, released with them.
+#[cfg_attr(
+    not(gss_set_neg_mechs),
+    allow(
+        dead_code,
+        reason = "acquired only where SPNEGO's mechanisms can be narrowed"
+    )
+)]
 pub(crate) struct Cred(*mut GssCredIdStruct);
 
 // SAFETY: as for `Name`.
 unsafe impl Send for Cred {}
 
 impl Cred {
+    #[cfg(gss_set_neg_mechs)]
     /// The default credentials to initiate with (`gss_acquire_cred` with
     /// no name, for as long as they last, for every mechanism).
     pub(crate) fn acquire() -> Result<Cred, Status> {
@@ -337,6 +354,7 @@ impl Cred {
         Ok(Cred(cred))
     }
 
+    #[cfg(gss_set_neg_mechs)]
     /// Narrows the mechanisms SPNEGO may negotiate with these
     /// credentials to `set` (`gss_set_neg_mechs`).
     pub(crate) fn set_neg_mechs(&self, set: &OidSet) -> Result<(), Status> {
@@ -359,9 +377,11 @@ impl Drop for Cred {
     }
 }
 
+#[cfg(gss_set_neg_mechs)]
 /// A set of OIDs the library made, released with it.
 pub(crate) struct OidSet(*mut GssOidSetDesc);
 
+#[cfg(gss_set_neg_mechs)]
 impl OidSet {
     /// The mechanisms the library has (`gss_indicate_mechs`).
     pub(crate) fn mechanisms() -> Result<OidSet, Status> {
@@ -420,6 +440,7 @@ impl OidSet {
     }
 }
 
+#[cfg(gss_set_neg_mechs)]
 impl Drop for OidSet {
     fn drop(&mut self) {
         let mut minor = 0;

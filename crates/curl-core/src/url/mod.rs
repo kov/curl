@@ -50,6 +50,36 @@ pub fn unescape(bytes: &[u8]) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
     }
 }
 
+/// [`unescape`] into the start of `out`, which is at least as long as
+/// `bytes` (decoding never lengthens), as `Curl_urldecode` writes into
+/// the buffer of the input's size it allocates: how many bytes it wrote.
+///
+/// # Panics
+///
+/// If `out` is shorter than `bytes`.
+pub fn unescape_into(bytes: &[u8], out: &mut [u8]) -> usize {
+    encode::decode_into(bytes, |_| false, out).expect("nothing is refused")
+}
+
+/// Where `needle` first is in `hay`, looked for eight bytes at a time as
+/// C's `strchr` and `memchr` do, not one by one.
+fn find_byte(hay: &[u8], needle: u8) -> Option<usize> {
+    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+    const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
+    let spread = ONES * u64::from(needle);
+    let (words, _) = hay.as_chunks::<8>();
+    let mut at = 0;
+    for &chunk in words {
+        let word = u64::from_ne_bytes(chunk) ^ spread;
+        // Nonzero exactly when some byte of `word` is zero.
+        if word.wrapping_sub(ONES) & !word & HIGHS != 0 {
+            break;
+        }
+        at += 8;
+    }
+    hay[at..].iter().position(|&b| b == needle).map(|i| at + i)
+}
+
 /// The longest URL C accepts (`CURL_MAX_INPUT_LENGTH`); its buffers also
 /// stop just short of it.
 pub const MAX_INPUT: usize = 8_000_000;
@@ -391,7 +421,7 @@ impl Url {
         };
         // The path still holds the query and the fragment.
         let mut path = path;
-        if let Some(at) = path.iter().position(|&b| b == b'#') {
+        if let Some(at) = find_byte(path, b'#') {
             u.fragment = Some(if path.len() - at <= 1 {
                 Tail::Bare
             } else {
@@ -404,7 +434,7 @@ impl Url {
             });
             path = &path[..at];
         }
-        if let Some(at) = path.iter().position(|&b| b == b'?') {
+        if let Some(at) = find_byte(path, b'?') {
             u.query = Some(Tail::Text(part_after(
                 &path[at..],
                 opts,
@@ -1401,6 +1431,37 @@ impl SharedUrl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Eight bytes at a time finds the first of a byte as one at a time
+    /// does: at every position of haystacks up to three words long, with
+    /// bytes either side of it in value (which a carry between bytes would
+    /// confuse) and a second copy after it.
+    #[test]
+    fn finds_a_byte_as_one_at_a_time() {
+        for needle in [b'#', b'?', 0, 0x80, 0xff] {
+            for len in 0..24 {
+                for at in 0..=len {
+                    for fill in [
+                        needle.wrapping_sub(1),
+                        needle.wrapping_add(1),
+                        needle ^ 0x80,
+                    ] {
+                        for second in [false, true] {
+                            let mut hay = vec![fill; len];
+                            if at < len {
+                                hay[at] = needle;
+                                if second && at + 3 < len {
+                                    hay[at + 3] = needle;
+                                }
+                            }
+                            let want = hay.iter().position(|&b| b == needle);
+                            assert_eq!(find_byte(&hay, needle), want, "{hay:?} {needle}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// What a reader's own buffer is asked for and given.
     #[derive(Debug, Default)]

@@ -9,7 +9,23 @@ use crate::error::UrlErrorKind;
 /// Bytes never allowed in a host name: `" \r\n\t/:#?!@{}[]\$'"^`*<>=;,+&()%|`
 /// and the other control bytes. Bytes from 0x80 are allowed, for IDN.
 fn invalid_host_byte(b: u8) -> bool {
-    b < 0x80 && (b <= b' ' || b"/:#?!@{}[]\\$'\"^`*<>=;,+&()%|\x7f".contains(&b))
+    // Looked up, not searched for in the list byte by byte.
+    static INVALID: [bool; 256] = {
+        let mut invalid = [false; 256];
+        let mut b = 0;
+        while b <= b' ' {
+            invalid[b as usize] = true;
+            b += 1;
+        }
+        let listed = b"/:#?!@{}[]\\$'\"^`*<>=;,+&()%|\x7f";
+        let mut i = 0;
+        while i < listed.len() {
+            invalid[listed[i] as usize] = true;
+            i += 1;
+        }
+        invalid
+    };
+    INVALID[usize::from(b)]
 }
 
 /// Check a host name that is not an IPv6 address (`hostname_check`).

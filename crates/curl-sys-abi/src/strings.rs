@@ -246,20 +246,37 @@ pub unsafe extern "C" fn curl_easy_unescape(
     let Some(bytes) = (unsafe { given(string, length) }) else {
         return ptr::null_mut();
     };
-    let Ok(decoded) = curl_core::url::unescape(bytes) else {
+    // As C does: decoded straight into a buffer of the input's size and
+    // its terminator, as decoding never lengthens.
+    let Some(size) = bytes.len().checked_add(1) else {
         return ptr::null_mut();
     };
-    let said = match c_int::try_from(decoded.len()) {
+    let alloc = root::allocator();
+    let out = alloc.malloc(size).cast::<u8>();
+    if out.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `out` is a fresh allocation of `size` bytes.
+    unsafe { out.write_bytes(0, size) };
+    // SAFETY: `size` bytes, initialised above, disjoint from `bytes` and
+    // reached through nothing else while the slice lives.
+    let room = unsafe { core::slice::from_raw_parts_mut(out, size) };
+    let len = curl_core::url::unescape_into(bytes, &mut room[..bytes.len()]);
+    room[len] = 0;
+    let said = match c_int::try_from(len) {
         Ok(n) => n,
         Err(_) if outlength.is_null() => 0,
-        Err(_) => return ptr::null_mut(),
+        Err(_) => {
+            // SAFETY: from this allocator, and not used again.
+            unsafe { alloc.free(out.cast()) };
+            return ptr::null_mut();
+        }
     };
-    let out = root::allocator().c_string(&decoded);
-    if !out.is_null() && !outlength.is_null() {
+    if !outlength.is_null() {
         // SAFETY: points at an `int`, as the caller guarantees.
         unsafe { outlength.write(said) };
     }
-    out
+    out.cast()
 }
 const _: ffi::proto::curl_easy_unescape = curl_easy_unescape;
 

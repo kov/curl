@@ -45,8 +45,27 @@ pub(super) enum Query {
 
 const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
 
+/// Each byte's value as a hex digit, 0xff for none (C's `hextable`): two
+/// digits' values or'ed have no high bits set exactly when both are
+/// digits. A static, not a const: indexing a const array copies it.
+static HEX_VALUES: [u8; 256] = {
+    let mut values = [0xff; 256];
+    let mut b = 0;
+    while b < 256 {
+        values[b] = match b as u8 {
+            d @ b'0'..=b'9' => d - b'0',
+            d @ b'a'..=b'f' => d - b'a' + 10,
+            d @ b'A'..=b'F' => d - b'A' + 10,
+            _ => 0xff,
+        };
+        b += 1;
+    }
+    values
+};
+
 fn hex_value(b: u8) -> Option<u8> {
-    (b as char).to_digit(16).map(|d| d as u8)
+    let v = HEX_VALUES[usize::from(b)];
+    (v != 0xff).then_some(v)
 }
 
 /// A `%xx` escape's byte; re-encoding writes it with uppercase digits.
@@ -195,25 +214,62 @@ pub(super) fn decode_rejecting(
     let mut out = Bytes::new();
     out.try_reserve_exact(s.len())
         .map_err(|_| UrlErrorKind::OutOfMemory)?;
-    let mut i = 0;
-    while i < s.len() {
-        let b = s[i];
-        let escaped = match s.get(i..i + 3) {
-            Some([b'%', h, l]) => hex_value(*h).zip(hex_value(*l)).map(|(h, l)| h << 4 | l),
-            _ => None,
-        };
-        let (byte, used) = match escaped {
-            Some(v) => (v, 3),
-            None => (b, 1),
-        };
-        if reject(byte) {
-            return Ok(None);
-        }
-        // Within the capacity reserved above: no allocation.
-        out.try_push(byte).map_err(|_| UrlErrorKind::OutOfMemory)?;
-        i += used;
-    }
+    out.try_resize(s.len(), 0)
+        .map_err(|_| UrlErrorKind::OutOfMemory)?;
+    let Some(len) = decode_into(s, reject, &mut out) else {
+        return Ok(None);
+    };
+    out.truncate(len);
     Ok(Some(out))
+}
+
+/// Decode `s` into the start of `out`, at least as long as `s` (the
+/// decoded bytes are never more), as `Curl_urldecode` does: `%` with two
+/// hex digits is the byte they name, anything else is itself, and runs
+/// without a `%` are copied whole. How many bytes were written, or
+/// `None` at the first decoded byte `reject` refuses.
+pub(super) fn decode_into(s: &[u8], reject: impl Fn(u8) -> bool, out: &mut [u8]) -> Option<usize> {
+    assert!(out.len() >= s.len(), "room for every byte of the input");
+    let (mut i, mut o) = (0, 0);
+    while i < s.len() {
+        if s[i] == b'%' {
+            // Each outcome advances in its own branch, as C's does: a
+            // step chosen without a branch would make every next read
+            // wait for this escape's table lookups.
+            if let Some(&[h, l]) = s.get(i + 1..i + 3) {
+                let (h, l) = (HEX_VALUES[usize::from(h)], HEX_VALUES[usize::from(l)]);
+                if (h | l) & 0xf0 == 0 {
+                    let byte = h << 4 | l;
+                    if reject(byte) {
+                        return None;
+                    }
+                    out[o] = byte;
+                    o += 1;
+                    i += 3;
+                    continue;
+                }
+            }
+            if reject(b'%') {
+                return None;
+            }
+            out[o] = b'%';
+            o += 1;
+            i += 1;
+        } else {
+            let run = s[i + 1..]
+                .iter()
+                .position(|&b| b == b'%')
+                .map_or(s.len(), |n| i + 1 + n);
+            let plain = &s[i..run];
+            if plain.iter().any(|&b| reject(b)) {
+                return None;
+            }
+            out[o..o + plain.len()].copy_from_slice(plain);
+            o += plain.len();
+            i = run;
+        }
+    }
+    Some(o)
 }
 
 /// `s` with every byte but letters, digits and `-._~` escaped
@@ -344,6 +400,59 @@ mod tests {
         assert_eq!(decode_but_zero(b"a%00b").unwrap(), None);
         assert_eq!(decode_but_zero(b"a\0b").unwrap(), None);
         assert_eq!(escape(b"a b/~").unwrap(), b"a%20b%2F~");
+    }
+
+    /// Decoding reads `%` with two hex digits as the byte they name and
+    /// anything else as itself, rejecting by the decoded byte, as
+    /// `Curl_urldecode` does: checked one byte at a time against every
+    /// string of up to five bytes from an alphabet of the edge cases
+    /// (a `%` at the end or before one digit, digits of both cases, a
+    /// non-digit, a control byte).
+    #[test]
+    fn decodes_as_c_byte_by_byte() {
+        fn one_by_one(s: &[u8], reject: fn(u8) -> bool) -> Option<Vec<u8>> {
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < s.len() {
+                let (byte, used) = match s.get(i..i + 3) {
+                    Some([b'%', h, l]) => match hex_value(*h).zip(hex_value(*l)) {
+                        Some((h, l)) => (h << 4 | l, 3),
+                        None => (s[i], 1),
+                    },
+                    _ => (s[i], 1),
+                };
+                if reject(byte) {
+                    return None;
+                }
+                out.push(byte);
+                i += used;
+            }
+            Some(out)
+        }
+        const ALPHABET: &[u8] = b"%41aFg\x01";
+        let mut strings: Vec<Vec<u8>> = vec![Vec::new()];
+        let mut last = strings.clone();
+        for _ in 0..5 {
+            let next: Vec<Vec<u8>> = last
+                .iter()
+                .flat_map(|s| {
+                    ALPHABET.iter().map(move |&b| {
+                        let mut t = s.clone();
+                        t.push(b);
+                        t
+                    })
+                })
+                .collect();
+            strings.extend(next.iter().cloned());
+            last = next;
+        }
+        let rejects: [fn(u8) -> bool; 3] = [|_| false, |b| b < 0x20, |b| b == 0x1a];
+        for s in &strings {
+            for reject in rejects {
+                let got = decode_rejecting(s, reject).unwrap();
+                assert_eq!(got.as_deref(), one_by_one(s, reject).as_deref(), "{s:?}");
+            }
+        }
     }
 
     /// Every byte is kept or written `%XX`, as `curl_easy_escape` writes

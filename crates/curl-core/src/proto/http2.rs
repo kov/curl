@@ -56,6 +56,10 @@ pub(crate) struct H2Conn {
     goaway: Option<GoAway>,
     /// The peer closed the connection.
     closed: bool,
+    /// A read of the session failed, whichever transfer read: what it
+    /// took of the bytes it was given is lost, so it is never read again
+    /// and every stream on it fails as its transfer next reads.
+    broken: bool,
     /// The client said GOAWAY, as the connection shuts down.
     sent_goaway: bool,
     /// Each open stream's transfer, with the receive window last asked
@@ -241,6 +245,7 @@ impl H2Conn {
                 sent: 0,
                 goaway: None,
                 closed: false,
+                broken: false,
                 sent_goaway: false,
                 routes: Routes::new(),
                 max_said: MAX_SAID_FIRST,
@@ -299,6 +304,7 @@ impl H2Conn {
         bytes: &[u8],
         events: &mut dyn FnMut(Event<'_>, Option<TransferId>, &mut u32) -> Heard,
     ) -> Result<usize, FrameError> {
+        assert!(!self.broken, "a session whose read failed is read again");
         let H2Conn {
             session,
             routes,
@@ -408,6 +414,15 @@ impl H2Conn {
 
     pub(crate) fn set_closed(&mut self) {
         self.closed = true;
+    }
+
+    /// A read of the session failed: it is read no more.
+    pub(crate) fn broken(&self) -> bool {
+        self.broken
+    }
+
+    pub(crate) fn set_broken(&mut self) {
+        self.broken = true;
     }
 
     /// Ask the session for what it wants sent, reading bodies and telling
@@ -535,6 +550,9 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
     /// `should_close_session`).
     fn is_alive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'a>) -> Alive {
         use crate::http2::{Event, Heard};
+        if self.broken {
+            return Alive::Dead;
+        }
         let below_alive = below.reborrow().alive(cx);
         if below_alive
             != (Alive::Alive {
@@ -565,6 +583,7 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
                 let all = rx.filled().len();
                 rx.consume(all);
                 *below.rx_mut() = rx;
+                self.broken = read.is_err();
                 let wants = self.session.wants();
                 read.is_ok() && !goaway && (wants.read || wants.write)
             }

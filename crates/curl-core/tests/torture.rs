@@ -1542,26 +1542,24 @@ fn push_scenario() -> Result<PushRun, OutOfMemory> {
 fn a_push_that_cannot_start_leaves_nothing_running() {
     let mut limit = 0;
     let mut discarded = 0;
-    let mut stranded_by_read = 0;
+    let mut failed_by_read = 0;
     let mut unadded = 0;
     loop {
         let live = track::live_tracked();
         let (outcome, refused) = track::fail_once_after(limit, push_scenario);
-        if let Ok(run) = &outcome
-            && run.running != 0
-        {
-            // A refusal as a started push's own frame is read fails the
-            // parent's read, and the push, its stream no longer read, is
-            // left to its timeout: a failed read strands the connection's
-            // other transfers, which this test does not cover.
-            let stranded = run.added
-                && run.unpushed == 0
-                && run.parent == Some(Err(ErrorKind::RecvError))
-                && run.running == 1;
-            if !stranded {
+        if let Ok(run) = &outcome {
+            if run.running != 0 {
                 track::untracked(|| panic!("refusing {limit}, transfers still run: {run:?}"));
             }
-            stranded_by_read += 1;
+            // A refusal as a started push's own frame is read fails the
+            // parent's read, and with it the session's: the push fails as
+            // it next runs, not left to its timeout.
+            if run.added && run.unpushed == 0 && run.parent == Some(Err(ErrorKind::RecvError)) {
+                track::untracked(|| {
+                    assert_eq!(run.pushed_messages, 1, "refusing {limit}: {run:?}")
+                });
+                failed_by_read += 1;
+            }
         }
         assert_eq!(
             track::live_tracked(),
@@ -1605,10 +1603,14 @@ fn a_push_that_cannot_start_leaves_nothing_running() {
     }
     assert!(discarded > 0, "no refusal fell in the push's start");
     assert!(unadded > 0, "no refusal fell in the push's adding");
+    assert!(
+        failed_by_read > 0,
+        "no refusal failed a read with the push running"
+    );
     track::untracked(|| {
         eprintln!(
             "torture: {limit} allocations, {discarded} in a push's start, \
-             {stranded_by_read} stranding it by a failed read"
+             {failed_by_read} failing a read with it running"
         );
     });
 }

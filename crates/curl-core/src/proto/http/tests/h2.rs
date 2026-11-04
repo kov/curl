@@ -2385,6 +2385,106 @@ fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
     }
 }
 
+/// `/a` then `/b` over one connection by prior knowledge, tracing the
+/// HTTP/2 filter, to `talk`, run until both are done or ten passes went:
+/// each one's result, in that order, and its lines.
+fn two_on_one(talk: &Conversation) -> (Vec<Result<(), ErrorKind>>, Vec<Vec<String>>) {
+    let mut m = serving(Peer::Accepts, &[talk]);
+    let mut ev = Pushes::answering(Answer::Deny);
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"http/2");
+        e.set_components(Some(c));
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        o.output.verbose = true;
+        let s = Seen::default();
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+        seen.push(s);
+        ids.push(m.add(Box::new(e), (), &mut ev).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut ev).unwrap();
+        }
+    }
+    let mut done = Vec::new();
+    for _ in 0..10 {
+        m.perform(&mut ev).unwrap();
+        while let Some(msg) = m.info_read() {
+            done.push((msg.id, msg.result));
+        }
+    }
+    done.sort_by_key(|&(id, _)| ids.iter().position(|&i| i == id));
+    for id in ids {
+        m.remove(id, &mut ev).unwrap();
+    }
+    let results = done.into_iter().map(|(_, r)| r).collect();
+    (results, seen.iter().map(Seen::text).collect())
+}
+
+/// Whether `lines` hold `line` whole.
+fn said(lines: &[String], line: &str) -> bool {
+    lines.iter().any(|l| l == line)
+}
+
+/// A read the session fails, here on a promise naming another authority,
+/// fails the transfer reading, and each other transfer on the connection
+/// fails as it next runs, at once and with C's code and lines: the
+/// session is read no more, as what it took of the bytes is gone, and no
+/// stream is reset on it.
+#[test]
+fn a_failed_read_fails_every_stream_on_the_connection() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naa",
+            WINDOW_SENT,
+            b"H 3 0\n:status: 200\n\nD 3 2 0\nbbPP 3 2\n:method: GET\n:scheme: http\n\
+              :authority: elsewhere.example\n:path: /p\n\n",
+        ],
+        false,
+    )
+    .per_send();
+    let (results, texts) = two_on_one(&talk);
+    // `/b` reads the promise on its own stream; `/a`'s fails after.
+    assert_eq!(
+        results,
+        [Err(ErrorKind::Http2), Err(ErrorKind::RecvError)],
+        "{texts:?}"
+    );
+    let failed = "nghttp2 recv error -902: The user callback function failed\n";
+    assert!(said(&texts[1], failed), "{:?}", texts[1]);
+    let read = "[HTTP/2] [3] cf_recv(len=16384) -> 56, 0,";
+    assert!(
+        texts[1].iter().any(|l| l.starts_with(read)),
+        "{:?}",
+        texts[1]
+    );
+    for line in [
+        "[HTTP/2] [0] ingress: session is closed\n",
+        "[HTTP/2] [1] premature DATA_DONE, RST stream\n",
+    ] {
+        assert!(said(&texts[0], line), "{line:?} in {:?}", texts[0]);
+    }
+    let read = "[HTTP/2] [1] cf_recv(len=16384) -> 16, 0,";
+    assert!(
+        texts[0].iter().any(|l| l.starts_with(read)),
+        "{:?}",
+        texts[0]
+    );
+    // The reader's reset of its own stream goes, as C's egress sends it
+    // after the failed read; nothing more goes on the session after.
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.contains("R 3 1\n"), "{sent}");
+    assert!(!sent.contains("R 1 5\n"), "{sent}");
+}
+
 /// A stream paused by a delivery in a sibling's step has its window
 /// closed there, nothing told the peer, and reopened as its own transfer
 /// runs once unpaused.

@@ -1974,8 +1974,12 @@ take it answers in HTTP/1.1.
 one is: the session's `is_alive` reads the frames (a SETTINGS or PING), and it is alive unless the
 session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). A
 connection that shuts down has the session say GOAWAY first, with C's debug data, through its
-`shutdown`, which never waits (`cf_h2_shutdown`). A GOAWAY read wakes every other transfer on
-it, as do the connection's end and its failure; after it the session takes no more transfers than
+`shutdown`, which never waits (`cf_h2_shutdown`). A read the session fails, whichever
+transfer's step it is in, is the session's, not the stream's: the session (`H2Conn`) records it
+once, is never read again, and closes its connection; every other transfer on it fails with
+`CURLE_HTTP2` as it next reads (`[0] ingress: session is closed`), its stream not reset
+(`DIVERGENCE.md`). A GOAWAY read wakes every other transfer on
+it, as do the connection's end, its failure and the session's; after it the session takes no more transfers than
 it has, so no search joins it, and the transfer that gives it back last closes it. A failure other than a
 stream's own closes the connection after the request (`streamclose`).
 

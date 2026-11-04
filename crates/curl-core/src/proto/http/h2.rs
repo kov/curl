@@ -927,9 +927,15 @@ impl Request {
         let mut stopped = false;
         let mut came = self.stream_recv(cx, lease, max);
         if let Ok(StreamRecv::Again) = came {
-            // A connection that failed under the read fails it at once.
-            stopped = self.h2_ingress(cx, lease, max)?;
-            came = self.stream_recv(cx, lease, max);
+            // A connection that failed under the read fails it at once,
+            // what the reading left to send still going after.
+            came = match self.h2_ingress(cx, lease, max) {
+                Ok(spent) => {
+                    stopped = spent;
+                    self.stream_recv(cx, lease, max)
+                }
+                Err(e) => Err(e),
+            };
         }
         // What the stream came to is read before what the reading left to
         // send goes, as C's `cf_h2_recv` asks the stream before its
@@ -984,6 +990,12 @@ impl Request {
         lease: &mut ConnLease,
         max: usize,
     ) -> Result<bool, ErrorKind> {
+        // A session whose read failed has nothing more for any stream
+        // (`should_close_session`).
+        if lease.conn().h2().is_some_and(H2Conn::broken) {
+            trace::of(cx, H2, format_args!("[0] ingress: session is closed"));
+            return Err(ErrorKind::Http2);
+        }
         let held = with_session(lease, |h2, _| h2.take_held());
         if !held.is_empty() {
             let n = held.len();
@@ -1371,6 +1383,15 @@ impl Request {
             // Each stream on it learns so (`Curl_multi_connchanged`); no
             // new request goes on it, as it takes no more transfers than
             // it has (`cf_h2_query`).
+            self.wake_others(cx, lease);
+        }
+        if !matches!(fed, Ok(Ok(_))) {
+            // The read failed for the session, not for this stream: what
+            // it took of the bytes is gone with it, so the session is
+            // read no more, and each other stream on it fails as its
+            // transfer runs, at once (`DIVERGENCE.md`).
+            with_session(lease, |h2, _| h2.set_broken());
+            lease.get().mark_close();
             self.wake_others(cx, lease);
         }
         let fed = fed.map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
@@ -1929,6 +1950,17 @@ impl Request {
         // The stream is no transfer's from here.
         with_session(lease, |h2, _| h2.unroute(id));
         if !open {
+            return;
+        }
+        let shown = id.0;
+        trace::of(
+            cx,
+            H2,
+            format_args!("[{shown}] premature DATA_DONE, RST stream"),
+        );
+        // A session whose read failed sends nothing more: its streams go
+        // with the connection.
+        if lease.conn().h2().is_some_and(H2Conn::broken) {
             return;
         }
         let _reset = with_session(lease, |h2, _| {

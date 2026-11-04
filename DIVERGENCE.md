@@ -579,6 +579,27 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_push_that_cannot_start_leaves_nothing_running` (`crates/curl-core/tests/torture.rs`),
   which checks that the parent's body is written by the time the handle is given back.
 
+## Sessions C reads again
+
+- **An HTTP/2 session whose read failed is not read again.** When nghttp2 fails a read of the
+  connection's bytes (`nghttp2 recv error`, its callbacks refusing a frame: a PUSH_PROMISE for
+  another authority, or memory), the transfer reading fails with 56. C leaves the bytes it
+  gave in the connection's buffer (`h2_process_pending_input` skips none on failure), and the
+  next transfer on the connection gives them to the session again from their start, though
+  the session took some of them already. What follows is whatever nghttp2 makes of the
+  repeat: against a server sending such a promise, a GOAWAY with `COMPRESSION_ERROR` (`nghttp2
+  shuts down connection with error 9`), and the other transfers fail with 16 then; a failure
+  between frames would have the session read those frames twice. Here the session is marked
+  failed once: every other transfer on it is woken and fails with 16 as it runs, with C's
+  `[0] ingress: session is closed` and `premature DATA_DONE, RST stream`, no stream is reset
+  on it, and the connection is closed, with the GOAWAY its shutdown sends. Without the mark
+  they would wait for their timeouts, as nothing more comes to read. Measured against the C
+  build with three transfers over one connection and such a promise (2026-11-04: C 56, 16,
+  16 within 0.1 s; the rewrite 56, 16, 16 at once). Pinned by
+  `a_failed_read_fails_every_stream_on_the_connection`
+  (`crates/curl-core/src/proto/http/tests/h2.rs`) and, for a pushed transfer refused memory,
+  `a_push_that_cannot_start_leaves_nothing_running` (`crates/curl-core/tests/torture.rs`).
+
 ## Descriptors C shares with a library
 
 - **libssh is handed a copy of the connection's socket.** C gives libssh the connection's own

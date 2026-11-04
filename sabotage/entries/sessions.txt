@@ -101,10 +101,10 @@ witness: curl-openssl the_next_connection_resumes_a_tls_1_3_ticket
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_failed_check_forgets_the_peer_s_sessions
 --- old
-            io.forget_sessions();
-            return Err(kind);
+                io.forget_sessions();
+                return Err(kind);
 --- new
-            return Err(kind);
+                return Err(kind);
 
 === the key log's lines are written without their line end
 file: crates/curl-core/src/tls/keylog.rs

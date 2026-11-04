@@ -62,7 +62,25 @@ impl Drop for Scratch {
 struct Run {
     code: i32,
     stdout: Vec<u8>,
+    /// What went to standard error, as `messages` reads it.
     stderr: String,
+    /// What went to standard error, byte for byte.
+    err: Vec<u8>,
+}
+
+/// Text the tool wrote through the C library's text mode (standard error,
+/// standard output before a body went there, a file C opens as text), its
+/// line ends as a test on any platform expects them: on Windows, where
+/// text mode writes a carriage return before each line feed, each such
+/// pair is read as its line feed. The tests of the mode itself look at
+/// the bytes.
+fn messages(err: &[u8]) -> String {
+    let text = String::from_utf8(err.to_owned()).unwrap();
+    if cfg!(windows) {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    }
 }
 
 /// Run the tool with `args`, in `dir`, without a configuration file.
@@ -88,7 +106,8 @@ fn curl_env(dir: &Scratch, args: &[&str], env: &[(&str, &str)]) -> Run {
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stderr: messages(&out.stderr),
+        err: out.stderr,
     }
 }
 
@@ -459,7 +478,8 @@ fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stderr: messages(&out.stderr),
+        err: out.stderr,
     }
 }
 
@@ -918,7 +938,7 @@ fn traces_to_a_file() {
     s.write("f", b"line\r\n");
     let r = curl(&s, &["-s", "--trace-ascii", "t", "-o", "out", &s.url("f")]);
     assert_eq!(r.code, 0);
-    let trace = String::from_utf8(s.read("t")).unwrap();
+    let trace = messages(&s.read("t"));
     // Among libcurl's own lines.
     assert!(
         trace.contains("<= Recv data, 6 bytes (0x6)\n0000: line\n"),
@@ -1152,7 +1172,7 @@ fn notes_the_default_config_file() {
         .env("COLUMNS", "500")
         .output()
         .unwrap();
-    let stderr = String::from_utf8(out.stderr).unwrap();
+    let stderr = messages(&out.stderr);
     let want = format!("Note: Read config file from '{}'\n", s.path(".curlrc"));
     assert!(stderr.starts_with(&want), "{stderr}");
 }
@@ -1186,7 +1206,7 @@ fn says_how_to_get_help_without_a_url() {
             .env("XDG_CONFIG_HOME", &home)
             .output()
             .unwrap();
-        let stderr = String::from_utf8(out.stderr).unwrap();
+        let stderr = messages(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         let hint = stderr
             .strip_prefix(said)
@@ -1224,7 +1244,7 @@ fn numbers_the_urls() {
             &url,
         ],
     );
-    assert_eq!((r.code, &r.stdout[..]), (0, &b"0\n1\n2\n"[..]));
+    assert_eq!((r.code, r.stdout), (0, as_text(b"0\n1\n2\n")));
 }
 
 /// With `--globoff` an output name is not read for patterns, so a name
@@ -1386,7 +1406,7 @@ fn draws_the_bar_of_an_upload_resumed_at_its_end() {
         .unwrap();
     std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"0123456789").unwrap();
     let out = child.wait_with_output().unwrap();
-    let stderr = String::from_utf8(out.stderr).unwrap();
+    let stderr = messages(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{stderr}");
     assert_eq!(stderr, format!("\r{} 100.0%\n", "#".repeat(23)));
     assert_eq!(s.read("dst"), b"0123456789");
@@ -1663,7 +1683,7 @@ fn parallel_transfer_failing_as_it_is_made() {
             &s.url("a"),
         ],
     );
-    assert_eq!((r.code, &r.stdout[..]), (23, &b"0 23\n"[..]));
+    assert_eq!((r.code, r.stdout), (23, as_text(b"0 23\n")));
     assert_eq!(
         r.stderr,
         "curl: cannot open 'nodir/x'\ncurl: (23) Failed writing received data to disk/application\n"
@@ -1682,7 +1702,7 @@ fn sets_the_socks5_methods_asked_for() {
             &[&["-s", "-o", "out", "--libcurl", "-"], args, &[&s.url("f")]].concat(),
         );
         assert_eq!(r.code, 0, "{args:?}");
-        let program = String::from_utf8(r.stdout).unwrap();
+        let program = messages(&r.stdout);
         let at = program.find("CURLOPT_SOCKS5_AUTH, ");
         at.map(|at| {
             let line = &program[at..];
@@ -1758,7 +1778,7 @@ fn sets_the_ssl_options_bits_asked_for() {
             &[&["-s", "-o", "out", "--libcurl", "-"], args, &[&s.url("f")]].concat(),
         );
         assert_eq!(r.code, 0, "{args:?}");
-        let program = String::from_utf8(r.stdout).unwrap();
+        let program = messages(&r.stdout);
         let at = program.find("CURLOPT_SSL_OPTIONS, ");
         at.map(|at| {
             let line = &program[at..];
@@ -1844,7 +1864,7 @@ fn sets_the_tls_options_as_c_does() {
         if r.code != 0 {
             return Err(format!("{}: {}", r.code, r.stderr.lines().next().unwrap()));
         }
-        let program = String::from_utf8(r.stdout).unwrap();
+        let program = messages(&r.stdout);
         Ok(program
             .split(";\n")
             .map(|call| call.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -2211,7 +2231,7 @@ fn a_session_file_s_bad_lines_are_warned_of() {
     ] {
         assert!(err.contains(said), "no {said:?} in {err}");
     }
-    let kept = std::fs::read_to_string(s.0.join("sessions")).unwrap();
+    let kept = messages(&std::fs::read(s.0.join("sessions")).unwrap());
     assert_eq!(
         kept,
         format!(
@@ -2305,12 +2325,12 @@ fn standard_error_is_text_until_headers_go_there() {
     s.write("src", b"body");
     let src = s.url("src");
     let r = curl(&s, &["-s", "-o", "out", "-w", "%{stderr}x\\ny\\n", &src]);
-    assert_eq!(r.stderr.as_bytes(), as_text(b"x\ny\n"));
+    assert_eq!(r.err, as_text(b"x\ny\n"));
     let r = curl(
         &s,
         &["-s", "-o", "out", "-D", "%", "-w", "%{stderr}x\\n", &src],
     );
-    assert!(r.stderr.ends_with("\r\n\r\nx\n"), "{:?}", r.stderr);
+    assert!(r.err.ends_with(b"\r\n\r\nx\n"), "{:?}", r.err);
 }
 
 /// The files C opens as text are written as text: `--write-out`'s

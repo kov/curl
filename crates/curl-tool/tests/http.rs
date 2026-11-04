@@ -91,7 +91,25 @@ fn request_ended(got: &[u8]) -> bool {
 struct Run {
     code: i32,
     stdout: Vec<u8>,
+    /// What went to standard error, as `messages` reads it.
     stderr: String,
+    /// What went to standard error, byte for byte.
+    err: Vec<u8>,
+}
+
+/// Text the tool wrote through the C library's text mode (standard error,
+/// standard output before a body went there, a file C opens as text), its
+/// line ends as a test on any platform expects them: on Windows, where
+/// text mode writes a carriage return before each line feed, each such
+/// pair is read as its line feed. The tests of the mode itself look at
+/// the bytes.
+fn messages(err: &[u8]) -> String {
+    let text = String::from_utf8(err.to_owned()).unwrap();
+    if cfg!(windows) {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    }
 }
 
 /// Run the tool with `args`, without a configuration file.
@@ -113,7 +131,8 @@ fn curl_columns(args: &[&str], columns: Option<&str>) -> Run {
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stderr: messages(&out.stderr),
+        err: out.stderr,
     }
 }
 
@@ -147,7 +166,8 @@ fn options_shape_the_request() {
 }
 
 /// `-H @file` adds each line of the file as a header as it is, a carriage
-/// return before its newline kept, and leaves out blank lines and
+/// return before its newline kept (but on Windows, where C reads the file
+/// as text and the pair is its line feed), and leaves out blank lines and
 /// comments; `--proxy-header @-` reads standard input, for the proxy
 /// alone. A line that does not look like a header is not warned about.
 #[test]
@@ -173,10 +193,17 @@ fn reads_headers_from_a_file() {
         &url,
     ]);
     assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let one = if cfg!(windows) {
+        "One: 1\r\n"
+    } else {
+        "One: 1\r\r\n"
+    };
     assert_eq!(
         s.request(),
-        "GET / HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nAccept: */*\r\nFirst: 0\r\n\
-         One: 1\r\r\n\tTab: t\r\nLast: x\r\nAfter: 2\r\n\r\n"
+        format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nAccept: */*\r\nFirst: 0\r\n\
+             {one}\tTab: t\r\nLast: x\r\nAfter: 2\r\n\r\n"
+        )
     );
 
     let s = Server::new(OK);
@@ -200,8 +227,10 @@ fn reads_headers_from_a_file() {
     assert_eq!(out.status.code(), Some(0), "{:?}", out);
     assert_eq!(
         s.request(),
-        "GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nAccept: */*\r\n\
-         Proxy-Connection: Keep-Alive\r\nOne: 1\r\r\n\tTab: t\r\nLast: x\r\n\r\n"
+        format!(
+            "GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nAccept: */*\r\n\
+             Proxy-Connection: Keep-Alive\r\n{one}\tTab: t\r\nLast: x\r\n\r\n"
+        )
     );
 
     // Proxy headers are not sent to a server.
@@ -733,7 +762,10 @@ fn dumps_the_headers_to_the_standard_streams() {
     assert_eq!(run.stdout, [head.as_bytes(), b"-foo-\n"].concat());
     let s = Server::new(OK);
     let run = curl(&["-s", "-D", "%", &s.url()]);
-    assert_eq!((&run.stdout[..], &run.stderr[..]), (&b"-foo-\n"[..], head));
+    assert_eq!(
+        (&run.stdout[..], &run.err[..]),
+        (&b"-foo-\n"[..], head.as_bytes())
+    );
 }
 
 /// With two URLs, `-D` starts its file afresh for the first transfer and
@@ -1465,7 +1497,8 @@ fn curl_typing(args: &[&str], typed: &[u8]) -> Run {
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stderr: messages(&out.stderr),
+        err: out.stderr,
     }
 }
 
@@ -1965,7 +1998,8 @@ fn curl_ipfs_env(args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Run {
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stderr: messages(&out.stderr),
+        err: out.stderr,
     }
 }
 
@@ -2088,10 +2122,7 @@ fn signs_the_request_as_told() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        (
-            out.status.code().unwrap(),
-            String::from_utf8(out.stderr).unwrap(),
-        )
+        (out.status.code().unwrap(), messages(&out.stderr))
     };
     let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
     let key = |p: &std::path::Path| format!("@{}", p.display());
@@ -2289,7 +2320,7 @@ fn serial_transfers_share_a_connection() {
         &url,
         &url,
     ]);
-    assert_eq!((run.code, &run.stdout[..]), (0, &b"1\n0\n"[..]));
+    assert_eq!((run.code, messages(&run.stdout)), (0, "1\n0\n".to_owned()));
     assert_eq!(s.request().matches("GET / ").count(), 2);
 }
 
@@ -2318,7 +2349,7 @@ fn parallel_transfers_share_cookies_and_connections() {
         &url,
         &url,
     ]);
-    assert_eq!((run.code, &run.stdout[..]), (0, &b"1\n0\n"[..]));
+    assert_eq!((run.code, messages(&run.stdout)), (0, "1\n0\n".to_owned()));
     let requests = s.request();
     let second = requests.rsplit("GET / ").next().unwrap();
     assert!(second.contains("\r\nCookie: a=1\r\n"), "{requests}");
@@ -2575,7 +2606,8 @@ fn upload_dot(parts: &[&'static [u8]], pause: u64, args: &[&str]) -> (Run, Strin
     let run = Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stderr: messages(&out.stderr),
+        err: out.stderr,
     };
     (run, s.request())
 }
@@ -2649,7 +2681,8 @@ fn curl_input(args: &[&str], input: &[u8]) -> Run {
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stderr: messages(&out.stderr),
+        err: out.stderr,
     }
 }
 

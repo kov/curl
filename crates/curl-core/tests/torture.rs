@@ -1310,7 +1310,7 @@ impl Net for SharedNet {
         _: curl_core::conn::io::Ipv6Scope,
         _: u32,
     ) -> curl_core::conn::io::InterfaceAddress {
-        curl_core::conn::io::InterfaceAddress::NotFound
+        curl_core::conn::io::InterfaceAddress::NotFound(0)
     }
 }
 

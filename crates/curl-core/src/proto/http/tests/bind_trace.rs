@@ -85,10 +85,13 @@ fn bound(net: impl FnOnce(FakeNet) -> FakeNet, bind: LocalBind) -> Ran {
 }
 
 /// What the system says of an interface not there: Linux's device bind
-/// fails with `ENODEV`; Windows, with no such bind and no interface
-/// lookup, has no error to tell (`Curl_if2ip`).
-#[cfg(unix)]
+/// fails with `ENODEV`; macOS, with no such bind, says what its
+/// interface lookup left (`ENXIO`); Windows, with no such bind and no
+/// interface lookup, has no error to tell (`Curl_if2ip`).
+#[cfg(target_os = "linux")]
 const NO_DEVICE: &str = "19: No such device";
+#[cfg(target_vendor = "apple")]
+const NO_DEVICE: &str = "6: Device not configured";
 #[cfg(windows)]
 const NO_DEVICE: &str = "0: No error";
 

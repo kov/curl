@@ -97,7 +97,7 @@ impl crate::conn::io::Net for Counted {
         _: crate::conn::io::Ipv6Scope,
         _: u32,
     ) -> crate::conn::io::InterfaceAddress {
-        crate::conn::io::InterfaceAddress::NotFound
+        crate::conn::io::InterfaceAddress::NotFound(0)
     }
 }
 

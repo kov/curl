@@ -168,9 +168,11 @@ fn where_to_bind(
         let name = iface.expect("an interface is named where no host is");
         let remote_scope = ipv6_scope(remote.ip());
         match cx.net().interface_address(name, v6, remote_scope, scope_id) {
-            InterfaceAddress::NotFound if iface_in => {
-                // Not taken for a host's name.
-                let error = by_name.unwrap_or_else(|| io::Error::from_raw_os_error(0));
+            InterfaceAddress::NotFound(left) if iface_in => {
+                // Not taken for a host's name. C says the error number
+                // the lookup left: on Linux the failed bind by name's,
+                // which the lookup leaves as it was.
+                let error = by_name.unwrap_or_else(|| io::Error::from_raw_os_error(left));
                 cx.socket_failed(&error);
                 let n = error.raw_os_error().unwrap_or(0);
                 let n = Text::<32>::clipped(format_args!("' with errno {n}: ")).0;
@@ -182,7 +184,7 @@ fn where_to_bind(
                 ]);
                 return Err(BindFailed::Failed(ErrorKind::InterfaceFailed));
             }
-            InterfaceAddress::NotFound => {}
+            InterfaceAddress::NotFound(_) => {}
             InterfaceAddress::OtherFamily => return Err(BindFailed::OtherFamily),
             InterfaceAddress::Found(ip, scope) => {
                 host_text = Text::clipped(format_args!("{ip}{}", Scope(scope))).0;

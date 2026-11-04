@@ -1429,6 +1429,15 @@ impl Conversation {
     }
 }
 
+/// The error number a fake lookup of an interface not there leaves.
+#[cfg(any(test, feature = "test-util"))]
+const NOT_FOUND_ERRNO: i32 = if cfg!(target_vendor = "apple") {
+    // What macOS's `getifaddrs` leaves behind (`ENXIO`), which C says.
+    6
+} else {
+    0
+};
+
 /// A network where waiting takes no time: a poll that finds nothing ready
 /// moves the clock on by its timeout instead of sleeping. Real descriptors
 /// given to it, a waker's or the application's, are still polled. Connects
@@ -1685,7 +1694,8 @@ impl FakeNet {
         self
     }
 
-    /// `Curl_if2ip` over the interfaces it has.
+    /// `Curl_if2ip` over the interfaces it has; one not there leaves
+    /// the error number the system's lookup leaves.
     fn interface_address_of(
         &self,
         name: &[u8],
@@ -1693,11 +1703,11 @@ impl FakeNet {
         remote_scope: Ipv6Scope,
         scope_id: u32,
     ) -> InterfaceAddress {
-        let mut found = InterfaceAddress::NotFound;
+        let mut found = InterfaceAddress::NotFound(NOT_FOUND_ERRNO);
         for &(ref n, ip, scope) in &self.interfaces {
             let named = n.as_slice() == name;
             if ip.is_ipv6() != v6 {
-                if named && found == InterfaceAddress::NotFound {
+                if named && matches!(found, InterfaceAddress::NotFound(_)) {
                     found = InterfaceAddress::OtherFamily;
                 }
                 continue;
@@ -1706,7 +1716,7 @@ impl FakeNet {
                 continue;
             }
             if v6 && (ipv6_scope(ip) != remote_scope || (scope_id != 0 && scope != scope_id)) {
-                if found == InterfaceAddress::NotFound {
+                if matches!(found, InterfaceAddress::NotFound(_)) {
                     found = InterfaceAddress::OtherFamily;
                 }
                 continue;

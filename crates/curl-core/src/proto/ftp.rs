@@ -3300,7 +3300,7 @@ impl Request {
                     .net()
                     .interface_address(addr, remote.is_ipv6(), scope, scope_id)
                 {
-                    InterfaceAddress::NotFound => copied(addr)?,
+                    InterfaceAddress::NotFound(_) => copied(addr)?,
                     InterfaceAddress::OtherFamily => return Err(failed),
                     InterfaceAddress::Found(ip, _) => text_of(format_args!("{ip}"))?,
                 }

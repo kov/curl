@@ -672,8 +672,10 @@ pub fn ipv6_scope(ip: IpAddr) -> Ipv6Scope {
 /// (`Curl_if2ip`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterfaceAddress {
-    /// No interface has the name, or the list cannot be had.
-    NotFound,
+    /// No interface has the name, or the list cannot be had: with the
+    /// error number the system's lookup left behind, which C reports as
+    /// it fails (`SOCKERRNO` after `Curl_if2ip`), 0 for none.
+    NotFound(i32),
     /// It has no address of the family, or none of the scope wanted.
     OtherFamily,
     /// Its address, and for IPv6 the address's scope id (0 for none).
@@ -696,9 +698,9 @@ pub fn interface_address(
     // SAFETY: `list` is a valid place for the list's head, which is freed
     // below with `freeifaddrs` and nowhere else.
     if unsafe { libc::getifaddrs(&raw mut list) } < 0 {
-        return InterfaceAddress::NotFound;
+        return InterfaceAddress::NotFound(last_errno());
     }
-    let mut found = InterfaceAddress::NotFound;
+    let mut found = InterfaceAddress::NotFound(0);
     let mut at = list;
     while !at.is_null() {
         // SAFETY: `at` is an entry of the list `getifaddrs` returned, not
@@ -714,7 +716,7 @@ pub fn interface_address(
         // starts with its family.
         let of = libc::c_int::from(unsafe { (*entry.ifa_addr).sa_family });
         if of != family {
-            if named && found == InterfaceAddress::NotFound {
+            if named && matches!(found, InterfaceAddress::NotFound(_)) {
                 found = InterfaceAddress::OtherFamily;
             }
             continue;
@@ -732,7 +734,7 @@ pub fn interface_address(
             let wrong_scope =
                 ipv6_scope(ip) != remote_scope || (scope_id != 0 && sin6.sin6_scope_id != scope_id);
             if wrong_scope {
-                if found == InterfaceAddress::NotFound {
+                if matches!(found, InterfaceAddress::NotFound(_)) {
                     found = InterfaceAddress::OtherFamily;
                 }
                 continue;
@@ -749,7 +751,18 @@ pub fn interface_address(
     // SAFETY: `list` is what `getifaddrs` returned, freed once, and no
     // entry of it is used after.
     unsafe { libc::freeifaddrs(list) };
-    found
+    match found {
+        // What the lookup left, read as C reads it once it is done: on
+        // macOS `getifaddrs` leaves `ENXIO` behind.
+        InterfaceAddress::NotFound(_) => InterfaceAddress::NotFound(last_errno()),
+        found => found,
+    }
+}
+
+/// The calling thread's error number, as the last system call left it.
+#[cfg(unix)]
+fn last_errno() -> i32 {
+    io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 #[cfg(unix)]
@@ -2001,7 +2014,7 @@ pub fn interface_address(
     scope_id: u32,
 ) -> InterfaceAddress {
     let _ = (name, v6, remote_scope, scope_id);
-    InterfaceAddress::NotFound
+    InterfaceAddress::NotFound(0)
 }
 
 /// Bind the local end of the socket `fd` to `addr`, before it connects.
@@ -3160,7 +3173,10 @@ mod tests {
         let lo = interface_address(b"lo", false, Ipv6Scope::Global, 0);
         assert_eq!(lo, InterfaceAddress::Found("127.0.0.1".parse().unwrap(), 0));
         let missing = interface_address(b"no-such-if0", false, Ipv6Scope::Global, 0);
-        assert_eq!(missing, InterfaceAddress::NotFound);
+        assert!(
+            matches!(missing, InterfaceAddress::NotFound(_)),
+            "{missing:?}"
+        );
         let has_v6 = std::fs::read_to_string("/proc/net/if_inet6")
             .unwrap_or_default()
             .lines()
@@ -3863,7 +3879,7 @@ mod windows_tests {
         assert_eq!(link_local_scope(), None);
         assert_eq!(
             interface_address(b"Ethernet", false, Ipv6Scope::Global, 0),
-            InterfaceAddress::NotFound
+            InterfaceAddress::NotFound(0)
         );
     }
 

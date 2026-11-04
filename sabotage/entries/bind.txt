@@ -37,9 +37,9 @@ witness: curl-core proto::http::tests::bind_trace::an_interface_with_a_host_bind
 file: crates/curl-core/src/conn/bind.rs
 witness: curl-core proto::http::tests::bind_trace::an_interface_not_there_fails_to_bind
 --- old
-            InterfaceAddress::NotFound if iface_in => {
+            InterfaceAddress::NotFound(left) if iface_in => {
 --- new
-            InterfaceAddress::NotFound if iface_in && host_in => {
+            InterfaceAddress::NotFound(left) if iface_in && host_in => {
 
 === a transfer naming an interface but no port takes a bound port
 file: crates/curl-core/src/conn/mod.rs

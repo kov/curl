@@ -4,16 +4,31 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-/// The value of a base64 digit, or none.
-fn digit(b: u8) -> Option<u8> {
-    Some(match b {
-        b'A'..=b'Z' => b - b'A',
-        b'a'..=b'z' => b - b'a' + 26,
-        b'0'..=b'9' => b - b'0' + 52,
-        b'+' => 62,
-        b'/' => 63,
-        _ => return None,
-    })
+/// What `DIGITS` holds for a byte that is no base64 digit.
+const NOT_DIGIT: u8 = 0xff;
+
+/// The value of each byte as a base64 digit, or `NOT_DIGIT`.
+const DIGITS: [u8; 256] = {
+    let mut digits = [NOT_DIGIT; 256];
+    let mut i = 0;
+    while i < 64 {
+        digits[ALPHABET[i] as usize] = i as u8;
+        i += 1;
+    }
+    digits
+};
+
+/// The 24 bits of a group of base64 digits, none if one is no digit.
+fn group_bits(group: &[u8]) -> Option<u32> {
+    let mut n = 0u32;
+    for &b in group {
+        let v = DIGITS[usize::from(b)];
+        if v == NOT_DIGIT {
+            return None;
+        }
+        n = n << 6 | u32::from(v);
+    }
+    Some(n << (6 * (4 - group.len())))
 }
 
 /// `text` decoded as base64 as `curlx_base64_decode` takes it: whole
@@ -26,23 +41,28 @@ pub(crate) fn decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
     if padding > 2 {
         return Ok(None);
     }
+    // Allocated once, at its length, and written in place: appending
+    // three bytes at a time costs a copy call each.
+    let len = text.len() / 4 * 3 - padding;
     let mut out = Vec::new();
-    out.try_reserve_exact(text.len() / 4 * 3 - padding)
-        .map_err(|_| OutOfMemory)?;
-    for (i, group) in text.chunks(4).enumerate() {
-        let last = i == text.len() / 4 - 1;
-        let pads = if last { padding } else { 0 };
-        let mut n = 0u32;
-        for &b in &group[..4 - pads] {
-            let Some(v) = digit(b) else {
-                return Ok(None);
-            };
-            n = n << 6 | u32::from(v);
-        }
-        n <<= 6 * pads;
-        let bytes = n.to_be_bytes();
-        out.try_extend_from_slice(&bytes[1..4 - pads])?;
+    out.try_reserve_exact(len).map_err(|_| OutOfMemory)?;
+    out.try_resize(len, 0)?;
+    let (whole, last) = text.split_at(text.len() - 4);
+    let mut rest = &mut out[..];
+    for group in whole.as_chunks::<4>().0 {
+        let Some(n) = group_bits(group) else {
+            return Ok(None);
+        };
+        let [a, b, c, tail @ ..] = rest else {
+            unreachable!("the length counted holds every group")
+        };
+        [*a, *b, *c] = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        rest = tail;
     }
+    let Some(n) = group_bits(&last[..4 - padding]) else {
+        return Ok(None);
+    };
+    rest.copy_from_slice(&n.to_be_bytes()[1..4 - padding]);
     Ok(Some(out))
 }
 
@@ -55,19 +75,28 @@ pub(crate) fn encode(
     len: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), OutOfMemory> {
-    for _ in 0..len.div_ceil(3) {
+    // Grown once, to its length, and written in place.
+    let groups = len.div_ceil(3);
+    let start = out.len();
+    let end = groups
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(start))
+        .ok_or(OutOfMemory)?;
+    out.try_reserve_exact(end - start)
+        .map_err(|_| OutOfMemory)?;
+    out.try_resize(end, 0)?;
+    for chunk in out[start..].as_chunks_mut::<4>().0 {
         let group = [bytes.next(), bytes.next(), bytes.next()];
         let n = group
             .iter()
             .fold(0u32, |n, b| n << 8 | u32::from(b.unwrap_or(0)));
         let have = group.iter().filter(|b| b.is_some()).count();
-        for i in 0..4 {
-            let c = if i <= have {
+        for (i, c) in chunk.iter_mut().enumerate() {
+            *c = if i <= have {
                 ALPHABET[(n >> (18 - 6 * i) & 0x3f) as usize]
             } else {
                 b'='
             };
-            out.try_push(c)?;
         }
     }
     Ok(())
@@ -107,6 +136,30 @@ mod tests {
             (b"", b""),
         ] {
             assert_eq!(encode_url(bytes).unwrap(), want, "{bytes:?}");
+        }
+    }
+
+    /// unit1302's base64 cases, written after what the buffer held, and
+    /// decoded back.
+    #[test]
+    fn base64_is_written_as_curlx_writes_it() {
+        for (bytes, want) in [
+            (&b"iiiiii"[..], &b"aWlpaWlp"[..]),
+            (b"iiiii", b"aWlpaWk="),
+            (b"iiii", b"aWlpaQ=="),
+            (b"iii", b"aWlp"),
+            (b"ii", b"aWk="),
+            (b"i", b"aQ=="),
+            (b"\xff\x01\xfe\x02", b"/wH+Ag=="),
+            (b"", b""),
+        ] {
+            let mut out = b"held".to_vec();
+            encode(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
+            assert_eq!(&out[..4], b"held");
+            assert_eq!(&out[4..], want, "{bytes:?}");
+            if !bytes.is_empty() {
+                assert_eq!(decode(want).unwrap().as_deref(), Some(bytes));
+            }
         }
     }
 

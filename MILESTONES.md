@@ -1336,5 +1336,6 @@ behaviour oracle only.
      runtests on the Mac: 2088 of 2092 against C's 2093 of 2093; 96 and 558 are replaced, 1013
      waits for LDAP (step 110) and 1560 is DIVERGENCE.md's "Allocations the platform makes".
 110. **LDAP through `lib/ldap.c`'s path**: macOS's OpenLDAP 2.4 has no `ldap_init_fd`, so C's
-     build takes the code WinLDAP takes; one port for both. **To do.**
+     build takes the code WinLDAP takes; one port for both. **Done** on macOS
+     (`Local`, a second LDAP library kind); WinLDAP implements the same traits later.
 111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **To do.**

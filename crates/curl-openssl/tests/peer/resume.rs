@@ -360,7 +360,9 @@ fn a_session_sectrust_verified_resumes_and_is_kept_so() {
             kept = Some((s.key.unwrap().to_vec(), s.packed.to_vec()));
             Ok::<(), ()>(())
         });
-        drop(done);
+        m.ssls_export_end(id, done, &mut |_, _| {})
+            .expect("in the multi")
+            .expect("the export ends");
         let (key, mut packed) = kept.expect("the first transfer's session");
         let key = String::from_utf8(key)
             .unwrap()

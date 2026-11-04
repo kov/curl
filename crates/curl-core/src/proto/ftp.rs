@@ -3685,11 +3685,19 @@ fn bind_listen<H: Host>(
     Ok(bound)
 }
 
-/// The numbers of the system's errors the bind loop tells apart.
+/// The numbers of the system's errors the bind loop tells apart: on
+/// Windows Winsock's (`SOCKEACCES`, `SOCKEADDRINUSE`, `WSAEADDRNOTAVAIL`).
+#[cfg(unix)]
 mod libc_errno {
     pub(super) const EACCES: i32 = 13;
     pub(super) const EADDRINUSE: i32 = 98;
     pub(super) const EADDRNOTAVAIL: i32 = 99;
+}
+#[cfg(windows)]
+mod libc_errno {
+    pub(super) const EACCES: i32 = 10013;
+    pub(super) const EADDRINUSE: i32 = 10048;
+    pub(super) const EADDRNOTAVAIL: i32 = 10049;
 }
 
 /// The closer the transfer's sockets close with.

@@ -158,12 +158,23 @@ pub(crate) const SSH_SCP_WRITE: c_int = 0;
 pub(crate) const SSH_SCP_READ: c_int = 1;
 pub(crate) const SSH_SCP_REQUEST_NEWFILE: c_int = 2;
 
-// `open(2)`'s flags, as `sftp_open` takes them.
+// `open(2)`'s flags, as `sftp_open` takes them: the C library's numbers,
+// which libssh was built with and reads them by (`<fcntl.h>`), glibc's on
+// Linux and the UCRT's on Windows.
 pub(crate) const O_RDONLY: c_int = 0;
 pub(crate) const O_WRONLY: c_int = 1;
+#[cfg(not(windows))]
 pub(crate) const O_CREAT: c_int = 0o100;
+#[cfg(not(windows))]
 pub(crate) const O_TRUNC: c_int = 0o1000;
+#[cfg(not(windows))]
 pub(crate) const O_APPEND: c_int = 0o2000;
+#[cfg(windows)]
+pub(crate) const O_CREAT: c_int = 0x0100;
+#[cfg(windows)]
+pub(crate) const O_TRUNC: c_int = 0x0200;
+#[cfg(windows)]
+pub(crate) const O_APPEND: c_int = 0x0008;
 
 // `SSH_FILEXFER_ATTR_*` read of what the server gave, and set by the changes.
 pub(crate) const SSH_FILEXFER_ATTR_SIZE: u32 = 0x0000_0001;

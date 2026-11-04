@@ -6,17 +6,13 @@
 //! A path is the bytes the system names files by, as C keeps it: the
 //! environment's on Unix, the ANSI code page's on Windows.
 
-use std::ffi::OsString;
-
 use curl_alloc::{OutOfMemory, TryVec};
 
 /// Whether the command line lets the default configuration file be read:
 /// not if its first argument starts with `-q` or is `--disable`.
-pub(crate) fn reads_curlrc(argv: &[OsString]) -> bool {
-    argv.get(1).is_none_or(|first| {
-        let first = first.as_encoded_bytes();
-        !first.starts_with(b"-q") && first != b"--disable"
-    })
+pub(crate) fn reads_curlrc(argv: &[Vec<u8>]) -> bool {
+    argv.get(1)
+        .is_none_or(|first| !first.starts_with(b"-q") && first != b"--disable")
 }
 
 /// Where to look, in order: a variable naming a directory, what to append
@@ -129,8 +125,7 @@ pub(crate) fn find_known_hosts(
 /// (`getpwuid(geteuid())`).
 #[cfg(unix)]
 pub(crate) fn user_database_home() -> Result<Option<Vec<u8>>, OutOfMemory> {
-    use std::os::unix::ffi::OsStringExt as _;
-    Ok(curl_os::users::home_directory()?.map(OsString::into_vec))
+    curl_os::users::home_directory()
 }
 
 /// None: Windows has no user database, and C's `findfile` asks none
@@ -147,10 +142,11 @@ pub(crate) fn user_database_home() -> Result<Option<Vec<u8>>, OutOfMemory> {
 pub(crate) fn beside_program(
     readable: impl Fn(&[u8]) -> bool,
 ) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    let Ok(exe) = std::env::current_exe() else {
+    // In the ANSI code page, as the names it is joined to are opened.
+    let Some(exe) = curl_os::args::program_file()? else {
         return Ok(None);
     };
-    let exe = exe.as_os_str().as_encoded_bytes();
+    let exe = exe.as_slice();
     // C's buffer holds 512 bytes, the name and its terminator among them.
     if exe.len() >= 512 {
         return Ok(None);
@@ -798,7 +794,8 @@ mod tests {
 
     #[test]
     fn q_or_disable_first_skips_it() {
-        let argv = |a: &[&str]| -> Vec<OsString> { a.iter().map(OsString::from).collect() };
+        let argv =
+            |a: &[&str]| -> Vec<Vec<u8>> { a.iter().map(|a| a.as_bytes().to_vec()).collect() };
         assert!(reads_curlrc(&argv(&["curl"])));
         assert!(reads_curlrc(&argv(&["curl", "-v", "-q"])));
         assert!(!reads_curlrc(&argv(&["curl", "-q"])));

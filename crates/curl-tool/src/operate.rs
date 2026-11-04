@@ -4368,10 +4368,10 @@ mod tests {
         claims: Claims,
         change: impl FnOnce(&mut Operation<'_>),
     ) -> Option<(String, String)> {
-        let argv: Vec<std::ffi::OsString> = std::iter::once("curl")
+        let argv: Vec<Vec<u8>> = std::iter::once("curl")
             .chain(args.iter().copied())
             .chain(std::iter::once(url))
-            .map(std::ffi::OsString::from)
+            .map(|a| a.as_bytes().to_vec())
             .collect();
         let mut msgs = Messages::new();
         msgs.silent = true;

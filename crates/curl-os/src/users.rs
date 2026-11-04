@@ -5,82 +5,19 @@
 
 #[cfg(unix)]
 use core::ffi::{CStr, c_char};
-use std::ffi::OsString;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStringExt;
 
-use curl_alloc::{OutOfMemory, TryVec};
+use curl_alloc::OutOfMemory;
+#[cfg(unix)]
+use curl_alloc::TryVec;
 
 /// The user's profile directory, `USERPROFILE`, where C's netrc looks on
-/// Windows for want of a user database (`Curl_parsenetrc`). `None` when it
-/// is unset or empty; `Err` when memory for the answer cannot be
-/// allocated. Read as the system keeps it, in UTF-16, which an `OsString`
-/// holds whole.
+/// Windows for want of a user database (`Curl_parsenetrc`), read as
+/// `curl_getenv` reads it: in the ANSI code page, which the files named
+/// from it are opened in. `None` when it is unset or empty; `Err` when
+/// memory for the answer cannot be allocated.
 #[cfg(windows)]
-pub fn home_directory() -> Result<Option<OsString>, OutOfMemory> {
-    use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
-    const NAME: [u16; 12] = {
-        let ascii = *b"USERPROFILE\0";
-        let mut wide = [0u16; 12];
-        let mut i = 0;
-        while i < ascii.len() {
-            wide[i] = ascii[i] as u16;
-            i += 1;
-        }
-        wide
-    };
-    let mut wide: Vec<u16> = Vec::new();
-    let mut room = 260usize;
-    loop {
-        wide.clear();
-        wide.try_reserve_exact(room)?;
-        let size = u32::try_from(room).expect("a variable's size fits");
-        // SAFETY: `NAME` is a NUL-terminated UTF-16 string, and `wide` has
-        // room for the `size` units the call is told, which it writes no
-        // further than; both live through the call.
-        let n = unsafe { GetEnvironmentVariableW(NAME.as_ptr(), wide.as_mut_ptr(), size) };
-        let n = usize::try_from(n).expect("a u32 fits");
-        if n == 0 {
-            // Unset, or set empty: C's `curl_getenv` takes both as unset.
-            return Ok(None);
-        }
-        if n >= room {
-            // `n` is the room it needs, its NUL included.
-            room = n;
-            continue;
-        }
-        // SAFETY: the call wrote `n` units, below the room reserved.
-        unsafe { wide.set_len(n) };
-        return Ok(Some(wtf8(&wide)?));
-    }
-}
-
-/// `wide` as an `OsString` holds it, without the infallible copy
-/// `OsString::from_wide` makes: its WTF-8 encoding, UTF-8 with any lone
-/// surrogate encoded as if it were a character.
-#[cfg(windows)]
-fn wtf8(wide: &[u16]) -> Result<OsString, OutOfMemory> {
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(wide.len() * 3)?;
-    for unit in char::decode_utf16(wide.iter().copied()) {
-        let mut buf = [0u8; 4];
-        let encoded: &[u8] = match unit {
-            Ok(c) => c.encode_utf8(&mut buf).as_bytes(),
-            Err(lone) => {
-                let s = u32::from(lone.unpaired_surrogate());
-                buf[..3].copy_from_slice(&[
-                    0xE0 | (s >> 12) as u8,
-                    0x80 | ((s >> 6) & 0x3F) as u8,
-                    0x80 | (s & 0x3F) as u8,
-                ]);
-                &buf[..3]
-            }
-        };
-        bytes.try_extend_from_slice(encoded)?;
-    }
-    // SAFETY: `bytes` is the WTF-8 encoding of a UTF-16 string, made just
-    // above, which is what an `OsString` holds on Windows.
-    Ok(unsafe { OsString::from_encoded_bytes_unchecked(bytes) })
+pub fn home_directory() -> Result<Option<Vec<u8>>, OutOfMemory> {
+    Ok(crate::env::var(b"USERPROFILE")?.filter(|v| !v.is_empty()))
 }
 
 /// The home directory of the effective user, from the user database, as
@@ -88,7 +25,7 @@ fn wtf8(wide: &[u16]) -> Result<OsString, OutOfMemory> {
 /// or an empty home directory; `Err` when memory for the lookup or the
 /// answer cannot be allocated.
 #[cfg(unix)]
-pub fn home_directory() -> Result<Option<OsString>, OutOfMemory> {
+pub fn home_directory() -> Result<Option<Vec<u8>>, OutOfMemory> {
     // SAFETY: `sysconf` takes any name and fails with -1.
     let hint = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
     let mut size = usize::try_from(hint)
@@ -124,7 +61,7 @@ pub fn home_directory() -> Result<Option<OsString>, OutOfMemory> {
         }
         let mut copy = Vec::new();
         copy.try_extend_from_slice(home)?;
-        return Ok(Some(OsString::from_vec(copy)));
+        return Ok(Some(copy));
     }
 }
 
@@ -132,42 +69,43 @@ pub fn home_directory() -> Result<Option<OsString>, OutOfMemory> {
 mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
-    /// The user's profile directory, as the system has it in
-    /// `USERPROFILE`, and none with it unset or empty.
+    /// The user's profile directory, as `USERPROFILE` holds it in the
+    /// ANSI code page (1252 on the test machine: an accent is one byte,
+    /// not UTF-8's two), and none with it unset or empty.
     #[test]
     #[cfg(windows)]
     fn finds_the_user_s_profile() {
-        let home = super::home_directory().unwrap().expect("a profile");
-        assert_eq!(Some(home), std::env::var_os("USERPROFILE"));
-        let wide: Vec<u16> = "a\u{e9}\u{1f600}"
-            .encode_utf16()
-            .chain([0xD800, 0x62])
-            .collect();
-        let os = super::wtf8(&wide).unwrap();
-        assert_eq!(
-            std::os::windows::ffi::OsStrExt::encode_wide(os.as_os_str()).collect::<Vec<_>>(),
-            wide
-        );
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "users::tests::with_no_profile"])
-            .env("USERPROFILE", "")
-            .env("CURL_OS_USERS_CHILD", "1")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        assert!(
-            String::from_utf8_lossy(&out.stdout).contains("1 passed"),
-            "{out:?}"
-        );
+        for (value, want) in [
+            ("C:\\Users\\caf\u{e9}", "433a5c55736572735c636166e9"),
+            ("", "none"),
+        ] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "users::tests::says_the_profile", "--nocapture"])
+                .env("USERPROFILE", value)
+                .env("CURL_OS_USERS_CHILD", "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{out:?}");
+            assert!(stdout.contains("1 passed"), "{out:?}");
+            assert!(
+                stdout.contains(&format!("profile: [{want}]")),
+                "{value:?}: {stdout}"
+            );
+        }
     }
 
     #[test]
     #[cfg(windows)]
-    fn with_no_profile() {
+    fn says_the_profile() {
         if std::env::var_os("CURL_OS_USERS_CHILD").is_none() {
             return;
         }
-        assert_eq!(super::home_directory().unwrap(), None);
+        let said = match super::home_directory().unwrap() {
+            Some(home) => home.iter().map(|b| format!("{b:02x}")).collect(),
+            None => "none".to_owned(),
+        };
+        println!("profile: [{said}]");
     }
 
     /// The user running the tests has an entry, as `getent passwd` shows.
@@ -189,6 +127,9 @@ mod tests {
             .unwrap()
             .stdout;
         let getent = String::from_utf8(getent).unwrap();
-        assert_eq!(getent.trim().split(':').nth(5), home.to_str());
+        assert_eq!(
+            getent.trim().split(':').nth(5).map(str::as_bytes),
+            Some(&home[..])
+        );
     }
 }

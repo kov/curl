@@ -12,16 +12,14 @@
 //!
 //! On Windows the C library hands C's `main` its arguments in the ANSI
 //! code page, which is what C's tool reads unless built for Unicode; the
-//! copy is of those. Their strings are the C library's copy, not what
+//! copy is of those bytes, as they are, in the code page the files they
+//! name are opened in. Their strings are the C library's copy, not what
 //! process listings show, so C does not wipe them there (it has no
 //! `HAVE_WRITABLE_ARGV`), and neither is there a `wipe` here.
 
 #![allow(unsafe_code)]
 
 use core::ffi::{CStr, c_char, c_int};
-use std::ffi::OsString;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::sync::Mutex;
 #[cfg(unix)]
@@ -89,7 +87,7 @@ fn with_bytes<R>(arg: *mut c_char, f: impl FnOnce(&[u8]) -> R) -> R {
     f(unsafe { CStr::from_ptr(arg) }.to_bytes())
 }
 
-/// A copy of the command line, the program name first.
+/// A copy of the command line's bytes, the program name first.
 ///
 /// The copy is the one infallible allocation kept here: the command line
 /// is the process's input, read before anything is tracked.
@@ -98,12 +96,12 @@ fn with_bytes<R>(arg: *mut c_char, f: impl FnOnce(&[u8]) -> R) -> R {
     clippy::disallowed_methods,
     reason = "the command line is copied once, at start-up"
 )]
-pub fn command_line() -> Vec<OsString> {
+pub fn command_line() -> Vec<Vec<u8>> {
     let _lock = LOCK.lock().expect("never poisoned: panics abort");
     let (argc, _) = captured();
     (0..argc)
         .map_while(argument)
-        .map(|a| with_bytes(a, |b| OsString::from_vec(b.to_vec())))
+        .map(|a| with_bytes(a, <[u8]>::to_vec))
         .collect()
 }
 
@@ -138,10 +136,9 @@ unsafe extern "C" {
     fn __p___argv() -> *mut *mut *mut c_char;
 }
 
-/// A copy of the command line, the program name first: the arguments the
-/// C library parsed for `main`, in the ANSI code page, as C's tool reads
-/// them (`main`'s `argv`), each turned to UTF-16 from that code page for
-/// the `OsString` that holds it.
+/// A copy of the command line: the arguments the C library parsed for
+/// `main`, the program name first, as the bytes C's tool reads them
+/// (`main`'s `argv`), in the ANSI code page.
 ///
 /// The copy is the one infallible allocation kept here: the command line
 /// is the process's input, read before anything is tracked.
@@ -150,9 +147,7 @@ unsafe extern "C" {
     clippy::disallowed_methods,
     reason = "the command line is copied once, at start-up"
 )]
-pub fn command_line() -> Vec<OsString> {
-    use std::os::windows::ffi::OsStringExt as _;
-    use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
+pub fn command_line() -> Vec<Vec<u8>> {
     // SAFETY: neither function takes an argument; each gives a pointer to
     // the C library's value, which it sets before `main` and keeps for the
     // life of the process.
@@ -173,25 +168,39 @@ pub fn command_line() -> Vec<OsString> {
             // strings, which the C library never frees.
             let arg = unsafe { argv.wrapping_add(i).read() };
             // SAFETY: as above.
-            let arg = unsafe { CStr::from_ptr(arg) }.to_bytes();
-            if arg.is_empty() {
-                return OsString::new();
-            }
-            let len = i32::try_from(arg.len()).expect("an argument fits");
-            // SAFETY: `arg` is `len` readable bytes; a null output asks for
-            // the room the conversion needs.
-            let need = unsafe {
-                MultiByteToWideChar(CP_ACP, 0, arg.as_ptr(), len, core::ptr::null_mut(), 0)
-            };
-            let mut wide =
-                std::iter::repeat_n(0u16, usize::try_from(need).unwrap_or(0)).collect::<Vec<u16>>();
-            // SAFETY: as above, with `wide` writable for the `need` units
-            // the call is told.
-            let n = unsafe {
-                MultiByteToWideChar(CP_ACP, 0, arg.as_ptr(), len, wide.as_mut_ptr(), need)
-            };
-            wide.truncate(usize::try_from(n).unwrap_or(0));
-            OsString::from_wide(&wide)
+            unsafe { CStr::from_ptr(arg) }.to_bytes().to_vec()
         })
         .collect()
+}
+
+/// The program's file, as C's tool names it to find what lies beside it
+/// (`GetModuleFileName(0, ...)` without `UNICODE`): its whole path, in the
+/// ANSI code page.
+///
+/// `None` if the system cannot say; `Err` when memory for the answer
+/// cannot be allocated.
+#[cfg(windows)]
+pub fn program_file() -> Result<Option<Vec<u8>>, curl_alloc::OutOfMemory> {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleFileNameA;
+    let mut room = 512usize;
+    loop {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(room)?;
+        let size = u32::try_from(room).expect("a path's room fits");
+        // SAFETY: a null module is the program's own; `buf` has room for
+        // the `size` bytes the call is told, which it writes no further
+        // than, and outlives the call.
+        let n = unsafe { GetModuleFileNameA(core::ptr::null_mut(), buf.as_mut_ptr(), size) };
+        let n = usize::try_from(n).expect("a u32 fits");
+        if n == 0 {
+            return Ok(None);
+        }
+        // A name cut short fills the buffer whole.
+        if n < room {
+            // SAFETY: the call wrote `n` bytes, below the room reserved.
+            unsafe { buf.set_len(n) };
+            return Ok(Some(buf));
+        }
+        room = room.checked_mul(2).expect("a path's room fits");
+    }
 }

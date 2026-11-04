@@ -662,6 +662,53 @@ fn uploads_a_file() {
     assert_eq!(r.stdout, b"0123456789");
 }
 
+/// On Windows the command line is read in the ANSI code page, as C's tool
+/// reads `main`'s `argv` without `UNICODE`, and so are the files it
+/// names: an output named with an accent is the file of that name, not
+/// one named by its UTF-8 bytes read in the code page.
+#[cfg(windows)]
+#[test]
+fn names_files_in_the_ansi_code_page() {
+    let s = Scratch::new("ansi");
+    s.write("src", b"x");
+    let r = curl(&s, &["-s", "-o", "caf\u{e9}", &s.url("src")]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(s.exists("caf\u{e9}"));
+    assert!(!s.exists("caf\u{c3}\u{a9}"));
+}
+
+/// On Windows a `.curlrc` beside the program is read when none is found
+/// in the user's directories, the program's directory named in the ANSI
+/// code page as C names it (`GetModuleFileName`), here with an accent.
+#[cfg(windows)]
+#[test]
+fn reads_the_configuration_beside_the_program() {
+    let s = Scratch::new("beside");
+    s.write("src", b"x");
+    let home = s.0.join("home");
+    std::fs::create_dir(&home).unwrap();
+    let dir = s.0.join("caf\u{e9}");
+    std::fs::create_dir(&dir).unwrap();
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    std::fs::copy(&tool, dir.join("curl.exe")).unwrap();
+    std::fs::write(dir.join(".curlrc"), "write-out = \"beside\\n\"\n").unwrap();
+    let mut cmd = Command::new(dir.join("curl.exe"));
+    cmd.args(["-s", &s.url("src")]).current_dir(&s.0);
+    for var in [
+        "CURL_HOME",
+        "XDG_CONFIG_HOME",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+    ] {
+        cmd.env(var, &home);
+    }
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(out.stdout, b"xbeside\n");
+}
+
 /// An upload of `name` to `file://` under `--max-time 1`, its input
 /// `abc` at once and `def` 1.5 s later from a writer that then holds it
 /// open for 6 s: how long the tool took, its exit code and what it

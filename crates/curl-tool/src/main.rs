@@ -262,7 +262,7 @@ fn list_engines() {
 /// It is read before allocation tracking starts: like C's `argv`, it is the
 /// process's input rather than memory curl allocates, and the C debug
 /// build's memdump never shows it.
-fn command_line() -> Vec<std::ffi::OsString> {
+fn command_line() -> Vec<Vec<u8>> {
     curl_os::args::command_line()
 }
 

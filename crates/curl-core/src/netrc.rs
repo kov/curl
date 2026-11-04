@@ -6,10 +6,6 @@
 //! passed over, as C passes it over.
 
 use std::ffi::CStr;
-#[cfg(unix)]
-use std::ffi::OsString;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStringExt as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
@@ -80,18 +76,11 @@ pub(crate) fn old_style_path() -> Result<Option<Vec<u8>>, OutOfMemory> {
     old_style_from(curl_os::env::var, home_directory)
 }
 
-/// The user's home directory, as the user database has it.
-#[cfg(unix)]
-fn home_directory() -> Result<Option<Vec<u8>>, OutOfMemory> {
-    Ok(curl_os::users::home_directory()?.map(OsString::into_vec))
-}
-
-/// The user's home directory, `%USERPROFILE%` as the C library's
-/// environment holds it, in the ANSI code page files are named in (C's
+/// The user's home directory: as the user database has it, or on
+/// Windows `%USERPROFILE%`, in the ANSI code page files are named in (C's
 /// `curl_getenv("USERPROFILE")`).
-#[cfg(windows)]
 fn home_directory() -> Result<Option<Vec<u8>>, OutOfMemory> {
-    Ok(curl_os::env::var(b"USERPROFILE")?.filter(|v| !v.is_empty()))
+    curl_os::users::home_directory()
 }
 
 /// [`default_path`], from the environment `var` reads and the user's

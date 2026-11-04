@@ -1,8 +1,6 @@
 //! Reading the command line, as `parse_args` and `getparameter` in
 //! `src/tool_getparam.c` read it.
 
-use std::ffi::OsString;
-
 use curl_core::version::version;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_format};
@@ -39,7 +37,7 @@ const CONFIG_LEVELS: u32 = 5;
 /// until `then` returns: what was parsed borrows from it as it does from
 /// `argv`.
 pub(crate) fn parse<'a, R>(
-    argv: &'a [OsString],
+    argv: &'a [Vec<u8>],
     curlrc: Option<&'a [u8]>,
     msgs: &mut Messages,
     wipe: Wipe<'_>,
@@ -67,7 +65,7 @@ pub(crate) fn parse<'a, R>(
 /// named. For tests.
 #[cfg(test)]
 pub(crate) fn parse_args<'a>(
-    argv: &'a [OsString],
+    argv: &'a [Vec<u8>],
     msgs: &mut Messages,
     wipe: Wipe<'_>,
 ) -> Result<Parsed<'a>, ParamError> {
@@ -287,7 +285,7 @@ impl<'a> Room<'a> {
 
 /// The command line being read, and where from.
 struct Parser<'a> {
-    argv: &'a [OsString],
+    argv: &'a [Vec<u8>],
     line: CommandLine<'a>,
     room: Room<'a>,
     /// The command line, then each configuration file being read from
@@ -315,7 +313,7 @@ enum Source<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(argv: &'a [OsString]) -> Result<Parser<'a>, ParamError> {
+    fn new(argv: &'a [Vec<u8>]) -> Result<Parser<'a>, ParamError> {
         let mut sources = Vec::new();
         sources.try_push(Source::Args {
             at: 1,
@@ -345,7 +343,7 @@ impl<'a> Parser<'a> {
                         self.sources.pop();
                         continue;
                     };
-                    let arg = arg.as_encoded_bytes();
+                    let arg = arg.as_slice();
                     let i = *at;
                     *word = i;
                     let step = if *still_flags && arg.first() == Some(&b'-') {
@@ -355,7 +353,7 @@ impl<'a> Parser<'a> {
                             *still_flags = false;
                             Ok((Flow::Continue, false))
                         } else {
-                            let next = self.argv.get(i + 1).map(|a| a.as_encoded_bytes());
+                            let next = self.argv.get(i + 1).map(Vec::as_slice);
                             let line = &mut self.line;
                             getparameter(arg, i, next, line, &mut self.room, msgs, wipe)
                         }
@@ -542,7 +540,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Some(Source::Args { word, .. }) => {
-                    let arg = self.argv[*word].as_encoded_bytes();
+                    let arg = self.argv[*word].as_slice();
                     return Step::Done(Err(report(msgs, arg, e)));
                 }
                 None => unreachable!("the command line is read last"),
@@ -764,11 +762,11 @@ mod tests {
     use crate::options::{Output, Trace, Unimplemented, Upload};
 
     fn parsed(args: &[&str]) -> Result<Parsed<'static>, ParamError> {
-        let argv: Vec<OsString> = std::iter::once("curl")
+        let argv: Vec<Vec<u8>> = std::iter::once("curl")
             .chain(args.iter().copied())
-            .map(OsString::from)
+            .map(|a| a.as_bytes().to_vec())
             .collect();
-        let argv: &'static [OsString] = Vec::leak(argv);
+        let argv: &'static [Vec<u8>] = Vec::leak(argv);
         let mut msgs = Messages::new();
         msgs.silent = true;
         parse_args(argv, &mut msgs, &mut |_, _| {})
@@ -824,7 +822,7 @@ mod tests {
         for bad in ["Seen", "seen,", "", "-", "answered,bogus", "seenx"] {
             let mut failed = false;
             crate::msgs::captured(|mut msgs| {
-                let argv: &'static [OsString] = Vec::leak(argv(&["--upload-flags", bad, "x"]));
+                let argv: &'static [Vec<u8>] = Vec::leak(argv(&["--upload-flags", bad, "x"]));
                 failed = parse_args(argv, &mut msgs, &mut |_, _| {}).is_err();
             });
             assert!(failed, "{bad:?}");
@@ -857,7 +855,7 @@ mod tests {
         for blank in ["--mail-from", "--mail-auth"] {
             let mut failed = false;
             crate::msgs::captured(|mut msgs| {
-                let argv: &'static [OsString] = Vec::leak(argv(&[blank, "", "x"]));
+                let argv: &'static [Vec<u8>] = Vec::leak(argv(&[blank, "", "x"]));
                 failed = parse_args(argv, &mut msgs, &mut |_, _| {}).is_err();
             });
             assert!(failed, "{blank}");
@@ -906,7 +904,7 @@ mod tests {
         let delegation = |word: &str| {
             let mut got = None;
             let said = crate::msgs::captured(|mut msgs| {
-                let argv: &'static [OsString] = Vec::leak(argv(&["--delegation", word, "x"]));
+                let argv: &'static [Vec<u8>] = Vec::leak(argv(&["--delegation", word, "x"]));
                 got = match parse_args(argv, &mut msgs, &mut |_, _| {}) {
                     Ok(Parsed::Run(line)) => Some(line.operations[0].delegation),
                     _ => None,
@@ -1143,9 +1141,9 @@ mod tests {
     #[test]
     fn wipes_secrets_where_they_are() {
         let wiped = |args: &[&str]| {
-            let argv: Vec<OsString> = std::iter::once("curl")
+            let argv: Vec<Vec<u8>> = std::iter::once("curl")
                 .chain(args.iter().copied())
-                .map(OsString::from)
+                .map(|a| a.as_bytes().to_vec())
                 .collect();
             let mut msgs = Messages::new();
             msgs.silent = true;
@@ -1188,7 +1186,7 @@ mod tests {
                 continue;
             }
             let mut ran = None;
-            let words: &'static [OsString] = Vec::leak(argv(&args));
+            let words: &'static [Vec<u8>] = Vec::leak(argv(&args));
             let said = crate::msgs::captured(|mut msgs| {
                 ran = Some(parse_args(words, &mut msgs, &mut |_, _| {}));
             });
@@ -1225,10 +1223,10 @@ mod tests {
         );
     }
 
-    fn argv(args: &[&str]) -> Vec<OsString> {
+    fn argv(args: &[&str]) -> Vec<Vec<u8>> {
         std::iter::once("curl")
             .chain(args.iter().copied())
-            .map(OsString::from)
+            .map(|a| a.as_bytes().to_vec())
             .collect()
     }
 
@@ -1790,7 +1788,7 @@ mod tests {
         }
         args.extend(["--expand-user".into(), "{{v}}:p".into()]);
         args.extend(["--expand-user".into(), "plain:p".into()]);
-        let argv: Vec<OsString> = args.iter().map(OsString::from).collect();
+        let argv: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
         let mut msgs = Messages::new();
         msgs.silent = true;
         let mut wiped = Vec::new();
@@ -1842,9 +1840,9 @@ mod tests {
         }
         text.push_str("--expand-url 'http://h/q/{{v}}\n");
         let file = TempFile::new("expand.cfg", text.as_bytes());
-        let argv: Vec<OsString> = ["curl", "-K", file.name()]
+        let argv: Vec<Vec<u8>> = ["curl", "-K", file.name()]
             .iter()
-            .map(OsString::from)
+            .map(|a| a.as_bytes().to_vec())
             .collect();
         let mut urls = Vec::new();
         let said = crate::msgs::captured(|mut msgs| {
@@ -1878,7 +1876,10 @@ mod tests {
     /// configuration file stepped back over.
     #[test]
     fn a_failed_room_names_the_entry_that_wanted_it() {
-        let argv: Vec<OsString> = ["curl", "-K", "f"].iter().map(OsString::from).collect();
+        let argv: Vec<Vec<u8>> = ["curl", "-K", "f"]
+            .iter()
+            .map(|a| a.as_bytes().to_vec())
+            .collect();
         let entry = |number, option| Entry {
             number,
             option,
@@ -1917,9 +1918,9 @@ mod tests {
     #[test]
     fn notes_a_variable_set_again_when_tracing() {
         let said = |args: &[&str]| {
-            let argv: Vec<OsString> = std::iter::once("curl")
+            let argv: Vec<Vec<u8>> = std::iter::once("curl")
                 .chain(args.iter().copied())
-                .map(OsString::from)
+                .map(|a| a.as_bytes().to_vec())
                 .collect();
             crate::msgs::captured(|mut msgs| {
                 assert!(parse_args(&argv, &mut msgs, &mut |_, _| {}).is_ok());

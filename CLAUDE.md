@@ -69,7 +69,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   records both ways.
 - `crates/curl-openssl/src/x509.rs`: the certificates a session trusts, and the peer's checked.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
-  place; on Windows the C library's `argv`, read.
+  place; on Windows the C library's `argv`, read, and the program's file name.
 - `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly
   (`GetEnvironmentVariableA` on Windows).
 - `crates/curl-os/src/error.rs`: the text of an operating-system error, `strerror_r` into a
@@ -93,7 +93,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/time.rs`: the monotonic clock on Windows, the local time of day, and
   formatting it in the process's locale (`strftime`).
 - `crates/curl-os/src/locale.rs`: the process's locale, from the environment (`setlocale`).
-- `crates/curl-os/src/users.rs`: the user database; the user's profile directory on Windows.
+- `crates/curl-os/src/users.rs`: the user database.
 - `crates/curl-os/src/xattr.rs`: setting an open file's extended attributes (`fsetxattr`); on
   Windows writing a file's alternate data stream.
 - `crates/curl-sys-abi/csrc/va_fetch.c`: C, not Rust; reads the printf arguments stable Rust

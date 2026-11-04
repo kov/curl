@@ -1610,7 +1610,8 @@ mod tests {
 
     /// A header line too long for the buffer fails at once, its count
     /// for the library to report; one held fails as it is flushed.
-    #[cfg(unix)]
+    // macOS has no `/dev/full`, a device every write to fails.
+    #[cfg(target_os = "linux")]
     #[test]
     fn dumps_headers_short_to_a_full_device() {
         let stdout = Stdout::new().unwrap();
@@ -1627,7 +1628,8 @@ mod tests {
 
     /// A write to the output file that failed is remembered (`ferror`):
     /// what was written is then not resumed from.
-    #[cfg(unix)]
+    // macOS has no `/dev/full`, a device every write to fails.
+    #[cfg(target_os = "linux")]
     #[test]
     fn remembers_a_failed_write() {
         let out = Output::file(b"/dev/full", quiet()).unwrap();

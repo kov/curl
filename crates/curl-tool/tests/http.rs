@@ -821,8 +821,9 @@ fn saves_the_cookie_jar() {
 }
 
 /// `--xattr` stores where a download came from with the file the
-/// transfer wrote, once it succeeded: a pipe takes no attributes, and
-/// that is warned of, with the reason.
+/// transfer wrote, once it succeeded: on Linux a pipe takes no
+/// attributes, and that is warned of, with the reason; macOS sets them on
+/// a pipe, and C says nothing there.
 #[cfg(unix)]
 #[test]
 fn stores_where_a_download_came_from() {
@@ -862,7 +863,8 @@ fn stores_where_a_download_came_from() {
         let warning = format!(
             "Warning: Error setting extended attributes on '{name}': Operation not permitted\n"
         );
-        assert_eq!(run.stderr.contains(&warning), warned, "{}", run.stderr);
+        let warns = warned && cfg!(target_os = "linux");
+        assert_eq!(run.stderr.contains(&warning), warns, "{}", run.stderr);
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -875,8 +877,12 @@ fn stores_where_a_download_came_from() {
 #[cfg(unix)]
 fn read_fifo(path: &std::path::Path, done: &std::sync::atomic::AtomicBool) -> Vec<u8> {
     use std::os::unix::fs::OpenOptionsExt as _;
-    /// `O_NONBLOCK` on Linux.
-    const O_NONBLOCK: i32 = 0o4000;
+    /// `O_NONBLOCK`: Linux's, macOS's.
+    const O_NONBLOCK: i32 = if cfg!(target_vendor = "apple") {
+        0x4
+    } else {
+        0o4000
+    };
     let mut fifo = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(O_NONBLOCK)
@@ -1469,10 +1475,11 @@ fn reads_the_name_the_server_gives_as_c_does() {
 
 /// Run the tool with `args` and `typed` on standard input, outside any
 /// terminal: `setsid` leaves it without one, so a password asked for is
-/// read from standard input (`/dev/tty` would wait for a person). Unix
+/// read from standard input (`/dev/tty` would wait for a person). Linux
 /// only: on Windows C reads a password from the console alone
-/// (`_getch`), never from standard input, so nothing can be typed.
-#[cfg(unix)]
+/// (`_getch`), never from standard input, so nothing can be typed, and
+/// `setsid` is util-linux's, which macOS does not have.
+#[cfg(target_os = "linux")]
 fn curl_typing(args: &[&str], typed: &[u8]) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
@@ -1518,7 +1525,7 @@ const CLOSED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: clos
 /// takes one read of standard input, its last byte cut, up to a zero
 /// byte; options after the user stay. `;options` alone, a password,
 /// even empty, and `--oauth2-bearer` ask for none.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn asks_for_a_missing_password() {
     /// The arguments, what is typed, the prompts, the logins sent.
@@ -1621,7 +1628,7 @@ fn asks_for_a_missing_password() {
 /// The prompt is an operation's, not a URL's: one for all the URLs of
 /// one, numbered when `--next` makes several, and all asked before the
 /// first transfer.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn asks_for_each_operation_s_password() {
     let cases: [(&[&str], &str, &[&str]); 3] = [
@@ -1678,7 +1685,7 @@ fn asks_for_each_operation_s_password() {
 /// The prompt is cut at 255 bytes; a password typed past 2047 bytes is
 /// cut there; and a login that would reach 100 KiB fails the run, as
 /// out of memory and without a word.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn bounds_the_password_asked_for() {
     let s = Server::new(CLOSED);
@@ -2285,7 +2292,9 @@ fn sets_the_socket_options_it_handles() {
     let run = curl(&["--no-progress-meter", "--vlan-priority", "7", &url]);
     assert_eq!((run.code, &run.stdout[..]), (0, &b"-foo-\n"[..]));
     let root = Command::new("id").arg("-u").output().unwrap().stdout == b"0\n";
-    if !root {
+    // Only Linux has a socket priority (`SO_PRIORITY`); elsewhere C sets
+    // none and says nothing.
+    if cfg!(target_os = "linux") && !root {
         assert_eq!(
             run.stderr,
             "Warning: VLAN priority 7 failed with errno 1: Operation not permitted\n"

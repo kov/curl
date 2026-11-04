@@ -487,8 +487,9 @@ fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
 /// that does not fit the buffer is tried at once, and fails with the count
 /// it got, while one that fits fails only when the buffer is written, at
 /// the end of the transfer or at once with `--no-buffer`. As the C tool
-/// does on a full device and a closed pipe.
-#[cfg(unix)]
+/// does on a full device and a closed pipe. Linux only: macOS has no
+/// `/dev/full`.
+#[cfg(target_os = "linux")]
 #[test]
 fn reports_output_it_cannot_write_when_stdio_would() {
     let s = Scratch::new("stdio");

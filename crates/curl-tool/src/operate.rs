@@ -4255,15 +4255,24 @@ mod tests {
         let refused = Err(ErrorKind::CouldntConnect);
         assert_eq!(reason(&op, refused, http, None, None), None);
         // Refused, with `--retry-connrefused`; and not otherwise.
-        // As the system numbers them: Linux, or Winsock.
-        let why = OsErrno::new(if cfg!(windows) { 10061 } else { 111 });
+        // As the system numbers them: Winsock, macOS, or Linux.
+        let numbered = |winsock, apple, linux| {
+            OsErrno::new(if cfg!(windows) {
+                winsock
+            } else if cfg!(target_vendor = "apple") {
+                apple
+            } else {
+                linux
+            })
+        };
+        let why = numbered(10061, 61, 111);
         assert_eq!(reason(&op, refused, http, None, why), None);
         op.retry_connrefused = true;
         assert_eq!(
             reason(&op, refused, http, None, why),
             Some(Reason::ConnRefused)
         );
-        let timed_out_connect = OsErrno::new(if cfg!(windows) { 10060 } else { 110 });
+        let timed_out_connect = numbered(10060, 60, 110);
         assert_eq!(reason(&op, refused, http, None, timed_out_connect), None);
         assert_eq!(
             reason(&op, Ok(()), http, Some(503), why),

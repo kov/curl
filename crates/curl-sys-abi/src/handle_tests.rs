@@ -3653,12 +3653,17 @@ fn cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go() {
 /// as it is cleaned up or reset outside any transfer, reaches the handle
 /// whole, as C's does: asked there for the last connect's error, it is
 /// answered with the refused connect's, as C's c-ares and threaded builds
-/// answer (`CURLINFO_OS_ERRNO`, 111).
+/// answer (`CURLINFO_OS_ERRNO`, `ECONNREFUSED`).
 #[cfg(feature = "c-ares")]
 #[test]
 fn the_records_a_lone_handle_lets_go_of_are_told_with_the_handle_reachable() {
     let destroyed = "[DNS] [1] destroy async\n";
-    let asked = "getinfo 0, errno 111\n";
+    let refused = if cfg!(target_vendor = "apple") {
+        61
+    } else {
+        111
+    };
+    let asked = format!("getinfo 0, errno {refused}\n");
     for reset in [false, true] {
         let mut seen = Seen::default();
         let c = refused_tracing_dns(debug_asking_errno, &mut seen);
@@ -3674,7 +3679,7 @@ fn the_records_a_lone_handle_lets_go_of_are_told_with_the_handle_reachable() {
         let at = at.unwrap_or_else(|| panic!("{:#?}", seen.texts));
         assert_eq!(
             seen.texts.get(at + 1).map(String::as_str),
-            Some(asked),
+            Some(asked.as_str()),
             "{:#?}",
             seen.texts
         );

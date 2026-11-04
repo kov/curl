@@ -431,8 +431,11 @@ fn tls_options_are_kept_as_c_keeps_them() {
         p
     };
     let (file, path) = crate::version::ca_defaults();
-    assert!(
+    // C's CMake build looks for none on Windows (`CURL_CA_BUNDLE` and
+    // `CURL_CA_PATH` unset).
+    assert_eq!(
         !file.is_null() || !path.is_null(),
+        cfg!(not(windows)),
         "the build has a default"
     );
     assert_eq!(given(ffi::CURLINFO_CAINFO), file);
@@ -1006,7 +1009,8 @@ fn http_options_reach_the_request() {
         );
         assert_eq!(options(c, |o| o.proxy.auth.0), want, "{bits:#x}");
     }
-    #[cfg(target_pointer_width = "64")]
+    // A `long` of 64 bits: Windows' has 32.
+    #[cfg(all(target_pointer_width = "64", not(windows)))]
     {
         let high: core::ffi::c_ulong = 1 << 40;
         assert_eq!(
@@ -1230,6 +1234,8 @@ fn the_method_follows_nobody_and_upload_as_in_c() {
             long(c, ffi::CURLOPT_INFILESIZE, bad),
             CURLE_BAD_FUNCTION_ARGUMENT
         );
+        #[allow(clippy::useless_conversion, reason = "a long is 32 bits on Windows")]
+        let bad = curl_off_t::from(bad);
         assert_eq!(
             off(c, ffi::CURLOPT_INFILESIZE_LARGE, bad),
             CURLE_BAD_FUNCTION_ARGUMENT
@@ -1512,18 +1518,29 @@ fn limits_are_checked_as_in_c() {
     let scope = |c| options(c, |o| o.address_scope.map(std::num::NonZeroU32::get));
     assert_eq!(long(c, ffi::CURLOPT_ADDRESS_SCOPE, 7), CURLE_OK);
     assert_eq!(scope(c), Some(7));
+    // Read as an `unsigned long`, past `UINT_MAX` refused where a `long`
+    // reaches it, a negative among them; Windows' 32 bits all fit, -1 as
+    // `UINT_MAX`, as C's cast takes it.
+    #[cfg(not(windows))]
     for bad in [-1, c_long::from(u32::MAX) + 1] {
         assert_eq!(
             long(c, ffi::CURLOPT_ADDRESS_SCOPE, bad),
             CURLE_BAD_FUNCTION_ARGUMENT
         );
     }
+    #[cfg(windows)]
+    {
+        assert_eq!(long(c, ffi::CURLOPT_ADDRESS_SCOPE, -1), CURLE_OK);
+        assert_eq!(scope(c), Some(u32::MAX));
+        assert_eq!(long(c, ffi::CURLOPT_ADDRESS_SCOPE, 7), CURLE_OK);
+    }
     assert_eq!(scope(c), Some(7));
-    assert_eq!(
-        long(c, ffi::CURLOPT_ADDRESS_SCOPE, c_long::from(u32::MAX)),
-        CURLE_OK
-    );
-    assert_eq!(scope(c), Some(u32::MAX));
+    #[cfg(not(windows))]
+    let most = c_long::from(u32::MAX);
+    #[cfg(windows)]
+    let most = c_long::MAX;
+    assert_eq!(long(c, ffi::CURLOPT_ADDRESS_SCOPE, most), CURLE_OK);
+    assert_eq!(scope(c), Some(u32::try_from(most).unwrap()));
     assert_eq!(long(c, ffi::CURLOPT_ADDRESS_SCOPE, 0), CURLE_OK);
     assert_eq!(scope(c), None);
     let he = |c| options(c, |o| o.limits.eyeballs.0);
@@ -2466,14 +2483,18 @@ fn ids_are_told_apart_as_c_tells_them() {
     };
     assert_eq!(long(c, ffi::CURLOPT_RTSP_CLIENT_CSEQ, 7), CURLE_OK);
     assert_eq!(cseq(c, ffi::CURLINFO_RTSP_CLIENT_CSEQ), 7);
-    assert_eq!(
-        long(c, ffi::CURLOPT_RTSP_SERVER_CSEQ, c_long::from(i32::MAX) + 1),
-        CURLE_OK
-    );
-    assert_eq!(
-        cseq(c, ffi::CURLINFO_RTSP_SERVER_CSEQ),
-        c_long::from(i32::MAX)
-    );
+    // Where a `long` reaches past `INT_MAX`: Windows' does not.
+    #[cfg(not(windows))]
+    {
+        assert_eq!(
+            long(c, ffi::CURLOPT_RTSP_SERVER_CSEQ, c_long::from(i32::MAX) + 1),
+            CURLE_OK
+        );
+        assert_eq!(
+            cseq(c, ffi::CURLINFO_RTSP_SERVER_CSEQ),
+            c_long::from(i32::MAX)
+        );
+    }
     assert_eq!(
         long(c, ffi::CURLOPT_RTSP_CLIENT_CSEQ, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
@@ -2925,7 +2946,10 @@ fn a_rewind_asks_the_application() {
                 // SAFETY: room for the pipe's two descriptors; the write
                 // end is closed once written, the read end by `fclose`.
                 unsafe {
+                    #[cfg(unix)]
                     assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+                    #[cfg(windows)]
+                    assert_eq!(libc::pipe(fds.as_mut_ptr(), 64, libc::O_BINARY), 0);
                     libc::write(fds[1], b"xyz".as_ptr().cast(), 3);
                     libc::close(fds[1]);
                     pipe = libc::fdopen(fds[0], c"r".as_ptr());
@@ -2970,6 +2994,11 @@ fn a_rewind_asks_the_application() {
     // The default read function reads `stream`, which `fseek` rewinds.
     assert_eq!(run(How::Stream).0, CURLE_OK);
     let failed = run(How::Pipe);
+    // The UCRT's `fseek` takes a pipe's stream back without complaint,
+    // so the rewind goes, as C's `fseek` there goes.
+    #[cfg(windows)]
+    assert_eq!(failed, (CURLE_OK, 0, String::new()));
+    #[cfg(unix)]
     assert_eq!(
         failed,
         (fail, 0, "necessary data rewind was not possible".to_owned())
@@ -3091,6 +3120,12 @@ fn a_resumed_body_asks_the_seek_function() {
     assert_eq!(run(Some(7)), failed);
 }
 
+/// The null device, a file that is not regular.
+#[cfg(unix)]
+const DEV_NULL: &std::ffi::CStr = c"/dev/null";
+#[cfg(windows)]
+const DEV_NULL: &std::ffi::CStr = c"NUL";
+
 /// A tree posted twice starts over, as the second transfer begins, the
 /// parts the first one's reading reached, as C keeps that in the part
 /// (`mime_part_rewind` past `MIMESTATE_BEGIN`): a part a function reads is
@@ -3127,7 +3162,7 @@ fn a_tree_posted_again_starts_over_what_was_reached() {
                 What::Function => {
                     curl_mime_data_cb(p, 0, Some(read), Some(seek), None, ptr::null_mut())
                 }
-                What::DevNull => curl_mime_filedata(p, c"/dev/null".as_ptr()),
+                What::DevNull => curl_mime_filedata(p, DEV_NULL.as_ptr()),
                 What::Nothing => CURLE_OK,
             };
             assert_eq!(set, CURLE_OK);
@@ -3684,6 +3719,7 @@ fn a_reset_from_the_transfer_s_own_callback_is_refused() {
 
 /// A debug function that, as it is told a record is destroyed, asks for
 /// the handle's last connect error, and keeps what it was answered.
+#[cfg(feature = "c-ares")]
 unsafe extern "C" fn debug_asking_errno(
     h: *mut CURL,
     kind: ffi::curl_infotype,
@@ -3710,6 +3746,7 @@ unsafe extern "C" fn debug_asking_errno(
 }
 
 /// A debug function that, as it is told text, resets the handle.
+#[cfg(feature = "c-ares")]
 unsafe extern "C" fn debug_resetting(
     h: *mut CURL,
     kind: ffi::curl_infotype,
@@ -3784,10 +3821,18 @@ fn a_cookie_list_is_traced_as_it_is_set() {
         ),
         "invalid octets in name, cookie dropped\n".to_string(),
         "invalid cookie, dropped\n".to_string(),
-        format!(
-            "WARNING: cookie filename points to a directory: \"{}\"\n",
-            dir_name.to_str().unwrap()
-        ),
+        // Windows opens no directory as a stream (`fopen`).
+        if cfg!(windows) {
+            format!(
+                "WARNING: failed to open cookie file \"{}\"\n",
+                dir_name.to_str().unwrap()
+            )
+        } else {
+            format!(
+                "WARNING: cookie filename points to a directory: \"{}\"\n",
+                dir_name.to_str().unwrap()
+            )
+        },
         "Added cookie second=\"y\" for domain b.com, path /, expire 0\n".to_string(),
         "Replaced cookie second=\"z\" for domain b.com, path /, expire 0\n".to_string(),
         "Added cookie hy=\"2\" for domain b.com, path (nil), expire 0\n".to_string(),
@@ -4240,6 +4285,8 @@ fn a_sibling_may_not_perform_inside_a_callback() {
 }
 
 /// A wait polls the application's descriptors and reports what C reports.
+/// Unix only: the descriptors are a Unix socket pair's.
+#[cfg(unix)]
 #[test]
 fn a_wait_reports_the_application_s_descriptors() {
     let (r, w) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -4281,7 +4328,8 @@ fn a_wait_reports_the_application_s_descriptors() {
 /// keeps them on its stack (`a_few_on_stack`): a loop of waits, as an
 /// easy perform's while a transfer has nothing to read, costs no memory
 /// (test 671).
-#[cfg(feature = "debug-hooks")]
+// Unix only: the descriptors are a Unix socket pair's.
+#[cfg(all(unix, feature = "debug-hooks"))]
 #[test]
 fn a_wait_allocates_nothing() {
     use crate::multi::curl_multi_poll;
@@ -4405,12 +4453,25 @@ fn the_transfers_sockets_are_listed() {
         .unwrap()
         .as_ptr()
         .cast();
-    let fdset = |read: &mut libc::fd_set, write: &mut libc::fd_set| {
+    // Unix's bitmap, or Winsock's list.
+    #[cfg(unix)]
+    type FdSet = libc::fd_set;
+    #[cfg(windows)]
+    type FdSet = ffi::fd_set;
+    let fdset = |read: &mut FdSet, write: &mut FdSet| {
         let mut max: c_int = 7;
         // SAFETY: a live multi and the caller's sets.
         let rc = unsafe {
-            libc::FD_ZERO(read);
-            libc::FD_ZERO(write);
+            #[cfg(unix)]
+            {
+                libc::FD_ZERO(read);
+                libc::FD_ZERO(write);
+            }
+            #[cfg(windows)]
+            {
+                read.fd_count = 0;
+                write.fd_count = 0;
+            }
             curl_multi_fdset(
                 m,
                 ptr::from_mut(read).cast(),
@@ -4451,13 +4512,20 @@ fn the_transfers_sockets_are_listed() {
     assert_eq!(running_now, 1, "connecting");
     assert_eq!(fdset(&mut read, &mut write), 1000);
     // SAFETY: the sets `fdset` filled.
+    #[cfg(unix)]
     unsafe {
         assert!(libc::FD_ISSET(1000, &write));
         assert!(!libc::FD_ISSET(1000, &read));
     }
+    // Winsock's sets list their sockets.
+    #[cfg(windows)]
+    assert_eq!(
+        (&write.fd_array[..write.fd_count as usize], read.fd_count),
+        (&[1000][..], 0)
+    );
     assert_eq!(count(ptr::null_mut(), 0), (CURLM_OK, 1));
     let mut entries = [curl_waitfd {
-        fd: -1,
+        fd: ffi::CURL_SOCKET_BAD,
         events: 0,
         revents: 0,
     }; 2];
@@ -4471,7 +4539,7 @@ fn the_transfers_sockets_are_listed() {
         (entries[0].fd, c_int::from(entries[0].events)),
         (1000, CURL_WAIT_POLLOUT)
     );
-    assert_eq!(entries[1].fd, -1, "untouched");
+    assert_eq!(entries[1].fd, ffi::CURL_SOCKET_BAD, "untouched");
     // SAFETY: the handle and multi made above, done with.
     unsafe {
         assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
@@ -4483,7 +4551,7 @@ fn the_transfers_sockets_are_listed() {
 /// What the socket function saw, and the multi it assigns on.
 struct SocketLog {
     m: *mut CURLM,
-    calls: Vec<(*mut CURL, c_int, c_int, *mut c_void)>,
+    calls: Vec<(*mut CURL, ffi::curl_socket_t, c_int, *mut c_void)>,
     abort: bool,
 }
 
@@ -6431,6 +6499,18 @@ fn post_fields_are_read_in_place_and_rewound() {
     assert_eq!(pieces, [&b"ab"[..], b"cd", b"abcd", b"ef"]);
 }
 
+/// A refused connect's error number: the C library's, or Winsock's
+/// (`WSAECONNREFUSED`), as `SOCKERRNO` reads it.
+#[cfg(unix)]
+const ECONNREFUSED: c_long = libc::ECONNREFUSED as c_long;
+#[cfg(windows)]
+const ECONNREFUSED: c_long = 10061;
+/// A reset connection's (`WSAECONNRESET`).
+#[cfg(unix)]
+const ECONNRESET: c_long = libc::ECONNRESET as c_long;
+#[cfg(windows)]
+const ECONNRESET: c_long = 10054;
+
 /// `CURLINFO_OS_ERRNO` is the number of the last socket call that failed:
 /// a connect refused, a receive the peer reset; kept by a reset of the
 /// handle, and 0 again once its next transfer starts (`easy_perform`).
@@ -6445,10 +6525,7 @@ fn the_os_errno_is_the_last_socket_failure_s() {
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     // SAFETY: a live handle.
     assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
-    assert_eq!(
-        info::<c_long>(c, ffi::CURLINFO_OS_ERRNO),
-        c_long::from(libc::ECONNREFUSED)
-    );
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_OS_ERRNO), ECONNREFUSED);
 
     // A peer that closes with the request unread resets the connection.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -6466,17 +6543,11 @@ fn the_os_errno_is_the_last_socket_failure_s() {
     // SAFETY: a live handle.
     assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_RECV_ERROR);
     server.join().unwrap();
-    assert_eq!(
-        info::<c_long>(c, ffi::CURLINFO_OS_ERRNO),
-        c_long::from(libc::ECONNRESET)
-    );
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_OS_ERRNO), ECONNRESET);
     // A reset leaves it: C keeps it in the handle's state, not its info.
     // SAFETY: a live handle.
     unsafe { easy::curl_easy_reset(c) };
-    assert_eq!(
-        info::<c_long>(c, ffi::CURLINFO_OS_ERRNO),
-        c_long::from(libc::ECONNRESET)
-    );
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_OS_ERRNO), ECONNRESET);
     long(c, ffi::CURLOPT_TIMEOUT, 10);
 
     let (port, server) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"]);
@@ -6503,6 +6574,12 @@ fn proxy_failures_are_reported_as_in_c() {
         peer.read_exact(&mut greeting).unwrap();
         // A SOCKS4 version where SOCKS5's belongs.
         peer.write_all(&[4, 0]).unwrap();
+        // Held open until the client lets go: closed with bytes unread,
+        // Windows resets the connection, and the reset can come before
+        // the client reads the answer.
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _ = peer.read(&mut [0; 16]);
         greeting
     });
     let c = curl_easy_init();
@@ -6982,8 +7059,9 @@ fn clearing_an_option_makes_no_group() {
 /// allocations it makes for one named short, as C copies no name: std's
 /// rename copied each name of 384 bytes or more, the jar's and the one it
 /// is written under first, with an allocation that cannot fail, which
-/// aborted a torture run.
-#[cfg(feature = "debug-hooks")]
+/// aborted a torture run. Unix only: on Windows every name is turned to
+/// UTF-16 in memory of its own to be opened, whatever its length.
+#[cfg(all(unix, feature = "debug-hooks"))]
 #[test]
 fn flushes_a_jar_named_long_without_copying_the_name() {
     use curl_alloc::track::measure;
@@ -7168,6 +7246,9 @@ fn a_perform_out_of_memory_adding_its_handle_says_so() {
 }
 
 /// What a test's socket functions saw, and what its configurer answers.
+/// These tests open, connect and close their sockets with libc's calls,
+/// so they run on Unix only.
+#[cfg(unix)]
 #[derive(Default)]
 struct SocketsSeen {
     /// The family, type, protocol and address length each open was asked
@@ -7181,6 +7262,7 @@ struct SocketsSeen {
     port: u16,
 }
 
+#[cfg(unix)]
 unsafe extern "C" fn opener(
     data: *mut c_void,
     purpose: ffi::curlsocktype,
@@ -7207,6 +7289,7 @@ unsafe extern "C" fn opener(
     fd
 }
 
+#[cfg(unix)]
 unsafe extern "C" fn sockopt(
     data: *mut c_void,
     fd: ffi::curl_socket_t,
@@ -7220,6 +7303,7 @@ unsafe extern "C" fn sockopt(
 
 /// A configurer that connects the socket itself, to the port of its
 /// data on this host, and says so.
+#[cfg(unix)]
 unsafe extern "C" fn connecting_sockopt(
     data: *mut c_void,
     fd: ffi::curl_socket_t,
@@ -7244,6 +7328,7 @@ unsafe extern "C" fn connecting_sockopt(
     ffi::CURL_SOCKOPT_ALREADY_CONNECTED
 }
 
+#[cfg(unix)]
 unsafe extern "C" fn closer(data: *mut c_void, fd: ffi::curl_socket_t) -> c_int {
     // SAFETY: the test's data is a `SocketsSeen`.
     let seen = unsafe { &mut *data.cast::<SocketsSeen>() };
@@ -7257,6 +7342,7 @@ unsafe extern "C" fn closer(data: *mut c_void, fd: ffi::curl_socket_t) -> c_int 
 /// family; a configurer's failure aborts the transfer, its socket closed
 /// through the closer. A copy calls them with the data it was copied
 /// with; a reset forgets them.
+#[cfg(unix)]
 #[test]
 fn socket_functions_are_called_as_c_calls_them() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -7330,10 +7416,12 @@ fn socket_functions_are_called_as_c_calls_them() {
     }
 }
 
+#[cfg(unix)]
 const SERVED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 /// A handle performing a GET of `url` with the socket functions `hooks`
 /// set, each with its data `seen`.
+#[cfg(unix)]
 fn perform_hooked(
     url: &str,
     hooks: &[(CURLoption, CURLoption, *const ())],
@@ -7365,6 +7453,7 @@ fn perform_hooked(
 /// configurer's `CURL_SOCKOPT_OK` connects as usual; its
 /// `CURL_SOCKOPT_ALREADY_CONNECTED` skips the connect it made itself
 /// (`cf_socket_open`).
+#[cfg(unix)]
 #[test]
 fn each_socket_function_is_called_alone() {
     let c = curl_easy_init();
@@ -7426,6 +7515,7 @@ fn each_socket_function_is_called_alone() {
 
 /// An opener may point the address elsewhere, of either family, and the
 /// socket connects there (`socket_open` hands it `ctx->addr`).
+#[cfg(unix)]
 #[test]
 fn an_opener_may_change_the_port() {
     // A port nothing listens on, which the URL names.
@@ -7594,11 +7684,12 @@ fn the_resolver_s_options_are_the_build_s() {
         true => ffi::CURLM_BAD_FUNCTION_ARGUMENT,
         false => CURLM_OK,
     };
+    for (n, code) in [(0, refused), (-1, refused), (1, CURLM_OK), (5, CURLM_OK)] {
+        assert_eq!(set(ffi::CURLMOPT_RESOLVE_THREADS_MAX, n), code, "{n}");
+    }
+    // Where a `long` reaches past `u32::MAX`: Windows' does not.
+    #[cfg(not(windows))]
     for (n, code) in [
-        (0, refused),
-        (-1, refused),
-        (1, CURLM_OK),
-        (5, CURLM_OK),
         (c_long::from(u32::MAX), CURLM_OK),
         (c_long::from(u32::MAX) + 1, refused),
     ] {
@@ -7772,7 +7863,7 @@ fn a_connect_only_perform_leaves_the_connection_to_the_handle() {
             curl_easy_getinfo(c, ffi::CURLINFO_ACTIVESOCKET, &raw mut active),
             CURLE_OK
         );
-        assert_eq!(active, -1, "none before a transfer");
+        assert_eq!(active, ffi::CURL_SOCKET_BAD, "none before a transfer");
         assert_eq!(curl_easy_perform(c), CURLE_OK);
         assert_eq!(
             curl_easy_getinfo(c, ffi::CURLINFO_ACTIVESOCKET, &raw mut active),
@@ -7783,8 +7874,11 @@ fn a_connect_only_perform_leaves_the_connection_to_the_handle() {
             CURLE_OK
         );
     }
-    assert!(active >= 0);
-    assert_eq!(c_long::from(active), last);
+    assert_ne!(active, ffi::CURL_SOCKET_BAD);
+    // The last socket is the active one, cast to a `long` as C casts it.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let as_long = active as c_long;
+    assert_eq!(as_long, last);
     let request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
     let mut n = 0;
     // SAFETY: a live handle, the request's bytes and a count to write.
@@ -8581,7 +8675,11 @@ fn a_debug_function_calls_back_during_a_call_on_a_connection() {
         [b"[WS] connection is not setup for websocket\n".to_vec()]
     );
     assert_eq!(asks.code, Some(CURLE_OK));
-    assert!(asks.socket >= 0, "the connection is known during the call");
+    assert_ne!(
+        asks.socket,
+        ffi::CURL_SOCKET_BAD,
+        "the connection is known during the call"
+    );
     let request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
     // SAFETY: a live handle, the request's bytes and a count to write.
     let sent = unsafe { curl_easy_send(c, request.as_ptr().cast(), request.len(), &raw mut n) };
@@ -8853,7 +8951,6 @@ fn a_ws_send_of_no_frame_says_why_if_the_flush_before_it_fails() {
     use crate::ffi::{CURLWS_BINARY, CURLWS_TEXT};
     use crate::ws::{curl_ws_recv, curl_ws_send};
     use std::io::Write as _;
-    use std::os::fd::AsRawFd as _;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (hang_up, hung_up) = std::sync::mpsc::channel::<()>();
@@ -8868,19 +8965,44 @@ fn a_ws_send_of_no_frame_says_why_if_the_flush_before_it_fails() {
         .unwrap();
         peer.write_all(b"\x81\x02hi\x89\x01p").unwrap();
         hung_up.recv().unwrap();
-        let linger = libc::linger {
-            l_onoff: 1,
-            l_linger: 0,
+        #[cfg(unix)]
+        let set = {
+            use std::os::fd::AsRawFd as _;
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: an open socket, and the option's type and size.
+            unsafe {
+                libc::setsockopt(
+                    peer.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    (&raw const linger).cast(),
+                    core::mem::size_of::<libc::linger>() as libc::socklen_t,
+                )
+            }
         };
-        // SAFETY: an open socket, and the option's type and size.
-        let set = unsafe {
-            libc::setsockopt(
-                peer.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_LINGER,
-                (&raw const linger).cast(),
-                core::mem::size_of::<libc::linger>() as libc::socklen_t,
-            )
+        #[cfg(windows)]
+        let set = {
+            use std::os::windows::io::AsRawSocket as _;
+            use windows_sys::Win32::Networking::WinSock::{
+                LINGER, SO_LINGER, SOL_SOCKET, setsockopt,
+            };
+            let linger = LINGER {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: an open socket, and the option's type and size.
+            unsafe {
+                setsockopt(
+                    peer.as_raw_socket() as usize,
+                    SOL_SOCKET,
+                    SO_LINGER,
+                    (&raw const linger).cast(),
+                    core::mem::size_of::<LINGER>() as i32,
+                )
+            }
         };
         assert_eq!(set, 0);
     });
@@ -9738,7 +9860,7 @@ fn a_bad_argument_says_which_option_as_in_c() {
     assert_eq!(long(c, sslversion, 99999), bad);
     assert_eq!(text(&buf), failed);
     // A transfer that gave no reason leaves room for the next.
-    let url = c"file:///dev/null";
+    let (empty, url) = file("empty", b"");
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     // SAFETY: a live handle.
     assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
@@ -9747,6 +9869,7 @@ fn a_bad_argument_says_which_option_as_in_c() {
     assert_eq!(text(&buf), "setopt 0x11e got bad argument");
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
+    std::fs::remove_file(empty).unwrap();
 
     // Each one is traced, and only a bad argument; not to a quiet handle.
     let mut seen: Vec<String> = Vec::new();

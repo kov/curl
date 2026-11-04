@@ -693,10 +693,10 @@ mod tests {
             "the block of 558 not freed:\n{log}"
         );
         // The escape of fourteen bytes, each `%XX`, and its end.
-        let escaped = allocated("crates/curl-sys-abi/src/strings.rs:", "43")
+        let escaped = allocated(&source("crates/curl-sys-abi/src/strings.rs:"), "43")
             .unwrap_or_else(|| panic!("no escape:\n{log}"));
         assert!(
-            freed("crates/curl-sys-abi/src/root.rs:", &escaped),
+            freed(&source("crates/curl-sys-abi/src/root.rs:"), &escaped),
             "the escape not freed by curl_free:\n{log}"
         );
 
@@ -791,8 +791,18 @@ mod tests {
         assert_ne!(app, ours.cast());
         let ours_line = log.lines().find(|l| l.contains(&lines[2])).unwrap();
         assert!(
-            ours_line.starts_with("MEM crates/curl-sys-abi/src/debug.rs:"),
+            ours_line.starts_with(&format!(
+                "MEM {}",
+                source("crates/curl-sys-abi/src/debug.rs:")
+            )),
             "{ours_line}"
         );
+    }
+
+    /// A source file's name as the compiler gives it (`file!()`): with
+    /// the platform's separator, a backslash on Windows, as C's
+    /// `__FILE__` there.
+    fn source(path: &str) -> String {
+        path.replace('/', std::path::MAIN_SEPARATOR_STR)
     }
 }

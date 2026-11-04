@@ -23,7 +23,7 @@ witness: curl-core proto::file::tests::a_directory_is_its_names
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
 --- old
-        cx.report_mut().set_filetime(meta.mtime());
+        cx.report_mut().set_filetime(mtime(&meta));
 --- new
 
 === a local protocol keeps its headers

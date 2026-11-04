@@ -367,22 +367,35 @@ pub(crate) fn with_netrc<H: Host>(
         );
     }
     let netrc = &cx.easy().options().netrc;
+    let named = netrc.file.is_some();
     let path = match &netrc.file {
         Some(file) => Some(copy(file)?),
         None => netrc::default_path().map_err(|_| ErrorKind::OutOfMemory)?,
     };
-    let found = match path {
-        None => Err(NetrcError::FileMissing),
+    let scan_at = |path: Option<Vec<u8>>| match path {
+        None => Ok(Err(NetrcError::FileMissing)),
         Some(mut path) => {
             path.try_push(0).map_err(|_| ErrorKind::OutOfMemory)?;
-            match CStr::from_bytes_with_nul(&path) {
+            Ok(match CStr::from_bytes_with_nul(&path) {
                 Ok(path) => {
                     netrc::load(path).and_then(|text| netrc::scan(&text, host, user.as_deref()))
                 }
                 Err(_) => Err(NetrcError::FileMissing),
-            }
+            })
         }
     };
+    let found = scan_at(path)?;
+    // Windows has an old-style name for the file in the home directory,
+    // read when the default one is missing.
+    #[cfg(windows)]
+    let found = match found {
+        Err(NetrcError::FileMissing) if !named => {
+            scan_at(netrc::old_style_path().map_err(|_| ErrorKind::OutOfMemory)?)?
+        }
+        found => found,
+    };
+    #[cfg(unix)]
+    let _unused = named;
     match found {
         Ok(found) if !takes.allows(&found.user) || !takes.allows(&found.password) => {
             Err(trace::fail(

@@ -290,7 +290,7 @@ file: crates/curl-core/src/save.rs
 witness: curl-sys-abi handle_tests::flushes_a_jar_named_long_without_copying_the_name
 features: debug-hooks
 --- old
-    temp.try_reserve_exact(dir.len() + TEMP_NAME + b".tmp".len())
+    temp.try_reserve_exact(dir.len() + 1 + TEMP_NAME + b".tmp".len())
 --- new
     temp.try_reserve_exact(dir.len())
 

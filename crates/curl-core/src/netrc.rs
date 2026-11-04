@@ -5,7 +5,10 @@
 //! its tokens bounded in length, and anything it does not understand
 //! passed over, as C passes it over.
 
-use std::ffi::{CStr, OsString};
+use std::ffi::CStr;
+#[cfg(unix)]
+use std::ffi::OsString;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -55,13 +58,40 @@ pub(crate) struct Found {
     pub(crate) password: Vec<u8>,
 }
 
+/// What C puts between the home directory and the file's name
+/// (`DIR_CHAR`).
+#[cfg(unix)]
+const DIR_CHAR: u8 = b'/';
+#[cfg(windows)]
+const DIR_CHAR: u8 = b'\\';
+
 /// Where the file is when the application names none: `$NETRC`, else
 /// `.netrc` in `$HOME`, else in the user's home directory; a variable set
 /// empty is as unset (`curl_getenv`).
 pub(crate) fn default_path() -> Result<Option<Vec<u8>>, OutOfMemory> {
-    path_from(curl_os::env::var, || {
-        Ok(curl_os::users::home_directory()?.map(OsString::into_vec))
-    })
+    path_from(curl_os::env::var, home_directory)
+}
+
+/// Where C looks next on Windows when the file [`default_path`] names is
+/// missing: the old-style `_netrc` in the same home directory; none when
+/// `$NETRC` named the file, or no home directory is known.
+#[cfg(windows)]
+pub(crate) fn old_style_path() -> Result<Option<Vec<u8>>, OutOfMemory> {
+    old_style_from(curl_os::env::var, home_directory)
+}
+
+/// The user's home directory, as the user database has it.
+#[cfg(unix)]
+fn home_directory() -> Result<Option<Vec<u8>>, OutOfMemory> {
+    Ok(curl_os::users::home_directory()?.map(OsString::into_vec))
+}
+
+/// The user's home directory, `%USERPROFILE%` as the C library's
+/// environment holds it, in the ANSI code page files are named in (C's
+/// `curl_getenv("USERPROFILE")`).
+#[cfg(windows)]
+fn home_directory() -> Result<Option<Vec<u8>>, OutOfMemory> {
+    Ok(curl_os::env::var(b"USERPROFILE")?.filter(|v| !v.is_empty()))
 }
 
 /// [`default_path`], from the environment `var` reads and the user's
@@ -70,10 +100,33 @@ fn path_from(
     var: impl Fn(&[u8]) -> Result<Option<Vec<u8>>, OutOfMemory>,
     home: impl FnOnce() -> Result<Option<Vec<u8>>, OutOfMemory>,
 ) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    let set = |name| Ok::<_, OutOfMemory>(var(name)?.filter(|v| !v.is_empty()));
-    if let Some(path) = set(b"NETRC")? {
+    if let Some(path) = var(b"NETRC")?.filter(|v| !v.is_empty()) {
         return Ok(Some(path));
     }
+    in_home(var, home, b".netrc")
+}
+
+/// [`old_style_path`], from the environment `var` reads and the user's
+/// home directory `home` finds.
+#[cfg(any(windows, test))]
+fn old_style_from(
+    var: impl Fn(&[u8]) -> Result<Option<Vec<u8>>, OutOfMemory>,
+    home: impl FnOnce() -> Result<Option<Vec<u8>>, OutOfMemory>,
+) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    if var(b"NETRC")?.is_some_and(|v| !v.is_empty()) {
+        return Ok(None);
+    }
+    in_home(var, home, b"_netrc")
+}
+
+/// The file `name` in `$HOME`, else in the user's home directory `home`
+/// finds.
+fn in_home(
+    var: impl Fn(&[u8]) -> Result<Option<Vec<u8>>, OutOfMemory>,
+    home: impl FnOnce() -> Result<Option<Vec<u8>>, OutOfMemory>,
+    name: &[u8],
+) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    let set = |name| Ok::<_, OutOfMemory>(var(name)?.filter(|v| !v.is_empty()));
     let mut path = match set(b"HOME")? {
         Some(home) => home,
         None => match home()? {
@@ -81,7 +134,8 @@ fn path_from(
             None => return Ok(None),
         },
     };
-    path.try_extend_from_slice(b"/.netrc")?;
+    path.try_push(DIR_CHAR)?;
+    path.try_extend_from_slice(name)?;
     Ok(Some(path))
 }
 
@@ -652,12 +706,49 @@ mod tests {
         let netrc: Env<'_> = &[(b"NETRC", b"/n/rc"), (b"HOME", b"/h")];
         assert_eq!(path(netrc, Some(b"/pw")), Ok(Some(b"/n/rc".to_vec())));
         let home: Env<'_> = &[(b"NETRC", b""), (b"HOME", b"/h")];
-        assert_eq!(path(home, Some(b"/pw")), Ok(Some(b"/h/.netrc".to_vec())));
+        assert_eq!(path(home, Some(b"/pw")), Ok(Some(joined(b"/h", b".netrc"))));
         let none: Env<'_> = &[(b"NETRC", b""), (b"HOME", b"")];
-        assert_eq!(path(none, Some(b"/pw")), Ok(Some(b"/pw/.netrc".to_vec())));
+        assert_eq!(
+            path(none, Some(b"/pw")),
+            Ok(Some(joined(b"/pw", b".netrc")))
+        );
         assert_eq!(path(none, None), Ok(None));
         let refused = path_from(|_| Err(OutOfMemory), || Ok(None));
         assert_eq!(refused, Err(OutOfMemory));
+    }
+
+    /// `dir`, C's `DIR_CHAR`, then `name`.
+    fn joined(dir: &[u8], name: &[u8]) -> Vec<u8> {
+        [dir, &[DIR_CHAR], name].concat()
+    }
+
+    /// Windows' fallback, the old-style `_netrc`, sits where `.netrc`
+    /// would, and is none when `$NETRC` named the file, as C's `home` is
+    /// unset then.
+    #[test]
+    fn the_old_style_file_is_beside_the_default_one() {
+        type Env<'a> = &'a [(&'a [u8], &'a [u8])];
+        let path = |env: Env<'_>, home: Option<&[u8]>| {
+            old_style_from(
+                |name| {
+                    Ok(env
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, v)| v.to_vec()))
+                },
+                || Ok(home.map(<[u8]>::to_vec)),
+            )
+        };
+        let netrc: Env<'_> = &[(b"NETRC", b"/n/rc"), (b"HOME", b"/h")];
+        assert_eq!(path(netrc, Some(b"/pw")), Ok(None));
+        let home: Env<'_> = &[(b"NETRC", b""), (b"HOME", b"/h")];
+        assert_eq!(path(home, Some(b"/pw")), Ok(Some(joined(b"/h", b"_netrc"))));
+        let none: Env<'_> = &[(b"HOME", b"")];
+        assert_eq!(
+            path(none, Some(b"/pw")),
+            Ok(Some(joined(b"/pw", b"_netrc")))
+        );
+        assert_eq!(path(none, None), Ok(None));
     }
 
     /// The process's own environment: `$NETRC` if it is set, else a
@@ -667,7 +758,10 @@ mod tests {
         let path = default_path().unwrap().expect("a home under the tests");
         match std::env::var_os("NETRC").filter(|n| !n.is_empty()) {
             Some(n) => assert_eq!(path, n.as_encoded_bytes()),
-            None => assert!(path.len() > 7 && path.ends_with(b"/.netrc"), "{path:?}"),
+            None => {
+                let tail = joined(b"", b".netrc");
+                assert!(path.len() > 7 && path.ends_with(&tail), "{path:?}");
+            }
         }
     }
 

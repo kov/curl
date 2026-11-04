@@ -5,6 +5,7 @@
 
 use std::ffi::CStr;
 use std::io::{self, Write as _};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -44,29 +45,40 @@ pub enum CacheFile {
 /// How many random letters and digits name the file written first.
 const TEMP_NAME: usize = 40;
 
-/// Write `text` to the file at `path`, in place of what it held.
+/// Write `text` to the file at `path`, in place of what it held. On
+/// Windows C looks at no file there first: it always writes a new one
+/// and renames it over, in text mode.
 pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
     let target = c_path(path)?;
     // Opened as C's `fopen(.., "w")` opens it: emptied, made if missing.
-    let mut file = fs::open_write(&target, Keep::Nothing, 0o666)?;
-    let was = file.metadata()?;
-    if !was.is_file() {
-        file.write_all(text)?;
-        return Ok(());
-    }
-    drop(file);
+    #[cfg(unix)]
+    let was = {
+        let mut file = fs::open_write(&target, Keep::Nothing, 0o666)?;
+        let was = file.metadata()?;
+        if !was.is_file() {
+            file.write_all(text)?;
+            return Ok(());
+        }
+        was
+    };
     let dir = dir_of(path);
     let mut temp = Vec::new();
     // One allocation, whatever the name's length.
-    temp.try_reserve_exact(dir.len() + TEMP_NAME + b".tmp".len())
+    temp.try_reserve_exact(dir.len() + 1 + TEMP_NAME + b".tmp".len())
         .map_err(|_| SaveError::OutOfMemory)?;
     temp.try_extend_from_slice(dir)?;
+    if !dir.is_empty() {
+        temp.try_push(PATHSEP)?;
+    }
     let mut random = [0u8; TEMP_NAME];
     alphanumeric(&mut random)?;
     temp.try_extend_from_slice(&random)?;
     temp.try_extend_from_slice(b".tmp")?;
     let temp = c_path(&temp)?;
+    #[cfg(unix)]
     let written = write_temp(&temp, &was, text);
+    #[cfg(windows)]
+    let written = write_temp(&temp, text);
     let renamed = written.and_then(|()| Ok(fs::rename(&temp, &target)?));
     if renamed.is_err() {
         let _ = fs::remove(&temp);
@@ -76,6 +88,7 @@ pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
 
 /// Write `text` to a new file at `temp`, with the mode of the file it is
 /// to replace if the same user and group own them.
+#[cfg(unix)]
 fn write_temp(temp: &CStr, was: &std::fs::Metadata, text: &[u8]) -> Result<(), SaveError> {
     let mut file = fs::open_write(temp, Keep::Absent, 0o600)?;
     let new = file.metadata()?;
@@ -86,17 +99,46 @@ fn write_temp(temp: &CStr, was: &std::fs::Metadata, text: &[u8]) -> Result<(), S
     Ok(())
 }
 
-/// The directory part of `path` with one slash after it, or nothing if
-/// it names none (`dirslash`). A file directly under `/` has none.
+/// Write `text` to a new file at `temp`, readable and writable, in text
+/// mode as C's `fdopen(.., "wt")` writes it: each line feed as a carriage
+/// return and a line feed. Windows has no mode to copy (`HAVE_FCHMOD`).
+#[cfg(windows)]
+fn write_temp(temp: &CStr, text: &[u8]) -> Result<(), SaveError> {
+    let mut file = fs::open_write(temp, Keep::Absent, 0o600)?;
+    for (i, line) in text.split(|&b| b == b'\n').enumerate() {
+        if i > 0 {
+            file.write_all(b"\r\n")?;
+        }
+        file.write_all(line)?;
+    }
+    Ok(())
+}
+
+/// What C puts after the directory a temporary file is made in
+/// (`PATHSEP`).
+#[cfg(unix)]
+const PATHSEP: u8 = b'/';
+#[cfg(windows)]
+const PATHSEP: u8 = b'\\';
+
+/// Whether `b` separates a name's parts (`IS_SEP`): Windows takes both
+/// slashes.
+fn is_sep(b: u8) -> bool {
+    b == b'/' || (cfg!(windows) && b == b'\\')
+}
+
+/// The directory part of `path`, without the separators after it, or
+/// nothing if it names none (`dirslash`, which then adds one `PATHSEP`).
+/// A file directly under `/` has none.
 fn dir_of(path: &[u8]) -> &[u8] {
     let mut n = path.len();
-    while n > 0 && path[n - 1] != b'/' {
+    while n > 0 && !is_sep(path[n - 1]) {
         n -= 1;
     }
-    while n > 0 && path[n - 1] == b'/' {
+    while n > 0 && is_sep(path[n - 1]) {
         n -= 1;
     }
-    if n == 0 { b"" } else { &path[..=n] }
+    &path[..n]
 }
 
 /// Random letters and digits (`Curl_rand_alnum`).
@@ -129,12 +171,36 @@ mod tests {
 
     #[test]
     fn finds_the_directory_as_c() {
-        assert_eq!(dir_of(b"/a/b/file"), b"/a/b/");
-        assert_eq!(dir_of(b"a//b"), b"a/");
+        assert_eq!(dir_of(b"/a/b/file"), b"/a/b");
+        assert_eq!(dir_of(b"a//b"), b"a");
         assert_eq!(dir_of(b"file"), b"");
         assert_eq!(dir_of(b"/file"), b"");
+        // A backslash separates only on Windows.
+        let windows = cfg!(windows);
+        assert_eq!(
+            dir_of(br"c:\a\\b"),
+            if windows { &br"c:\a"[..] } else { b"" }
+        );
+        assert_eq!(dir_of(br"c:\a/b"), br"c:\a");
     }
 
+    /// On Windows the file is replaced whatever it was, and written as
+    /// text, as C's `"wt"` writes it.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_is_replaced_in_text_mode() {
+        let dir = scratch("text");
+        let path = dir.join("jar");
+        std::fs::write(&path, b"old and longer").unwrap();
+        replace(path.as_os_str().as_encoded_bytes(), b"a\nb\n\nc").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"a\r\nb\r\n\r\nc");
+        // Nothing is left beside it.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(replace(b"", b"new"), Err(SaveError::Write));
+    }
+
+    #[cfg(unix)]
     #[test]
     fn replaces_a_file_and_keeps_its_mode() {
         let dir = std::env::temp_dir().join(format!("curl-save-{}", std::process::id()));
@@ -159,6 +225,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_regular_file_is_replaced_and_any_other_written_in_place() {
         let dir = scratch("rename");
@@ -173,6 +240,7 @@ mod tests {
         assert_eq!(replace(b"", b"new"), Err(SaveError::Write));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_mode_is_kept_only_where_the_group_is_the_same() {
         // A group of the user's other than the one new files get.

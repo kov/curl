@@ -1,0 +1,24 @@
+=== a Windows file time is read from 1601, not 1970
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_time_is_seconds_since_1970
+--- old
+    let secs = (i128::from(t) - EPOCH).div_euclid(10_000_000);
+--- new
+    let secs = i128::from(t).div_euclid(10_000_000);
+
+=== a Windows file time before 1970 rounds towards zero
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_time_is_seconds_since_1970
+--- old
+    let secs = (i128::from(t) - EPOCH).div_euclid(10_000_000);
+--- new
+    let secs = (i128::from(t) - EPOCH) / 10_000_000;
+
+=== the old-style _netrc is looked for though $NETRC named the file
+file: crates/curl-core/src/netrc.rs
+witness: curl-core netrc::tests::the_old_style_file_is_beside_the_default_one
+--- old
+    if var(b"NETRC")?.is_some_and(|v| !v.is_empty()) {
+        return Ok(None);
+    }
+--- new

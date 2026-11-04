@@ -9,7 +9,6 @@ use core::ffi::CStr;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
-use std::os::unix::fs::MetadataExt as _;
 
 use curl_alloc::TryVec;
 use curl_os::fs::{self, Dir, Keep};
@@ -189,14 +188,14 @@ impl Request {
         };
         let is_dir = meta.is_dir();
         let st_size = i64::try_from(meta.len()).expect("a file's size fits its offset type");
-        cx.report_mut().set_filetime(meta.mtime());
+        cx.report_mut().set_filetime(mtime(&meta));
         // A file the condition rules out is not read, nor are its headers
         // made, unless a range is asked for (`file_do`).
         let options = cx.easy().options();
         if let Some(condition) = options
             .time_condition
             .filter(|_| options.ranged().is_none())
-            && let Err(unmet) = condition.met_by(meta.mtime())
+            && let Err(unmet) = condition.met_by(mtime(&meta))
         {
             trace::info(cx, format_args!("{unmet}"));
             cx.report_mut().set_condition_unmet();
@@ -209,7 +208,7 @@ impl Request {
             write!(line, "Accept-ranges: bytes\r\n").expect("a header fits");
             self.header(cx, &mut line)?;
         }
-        last_modified(meta.mtime(), &mut line)?;
+        last_modified(mtime(&meta), &mut line)?;
         self.header(cx, &mut line)?;
         line.write_str("\r\n").expect("a header fits");
         self.header(cx, &mut line)?;
@@ -606,6 +605,31 @@ fn number(s: &[u8]) -> Option<(i64, &[u8])> {
 fn injected<H: Host>(cx: &StepCx<'_, H>, pipeline: &Pipeline) -> Option<std::io::Error> {
     let at = cx.easy().options().file_faults.read_fails_at?;
     (pipeline.bytecount() >= at).then(|| std::io::Error::other("injected"))
+}
+
+/// The file's modification time, in seconds after the epoch, as `fstat`
+/// says it (`st_mtime`).
+#[cfg(unix)]
+fn mtime(meta: &std::fs::Metadata) -> i64 {
+    std::os::unix::fs::MetadataExt::mtime(meta)
+}
+
+/// The file's modification time, in seconds after the epoch, as the C
+/// library's `fstat` says it: the system's last write time, in 100 ns
+/// steps since 1601, in whole seconds since 1970 (`st_mtime`).
+#[cfg(windows)]
+fn mtime(meta: &std::fs::Metadata) -> i64 {
+    from_file_time(std::os::windows::fs::MetadataExt::last_write_time(meta))
+}
+
+/// A Windows file time, 100 ns steps since 1601, as seconds since 1970,
+/// rounded down.
+#[cfg(any(windows, test))]
+fn from_file_time(t: u64) -> i64 {
+    /// 1970 less 1601, in the file time's steps.
+    const EPOCH: i128 = 116_444_736_000_000_000;
+    let secs = (i128::from(t) - EPOCH).div_euclid(10_000_000);
+    i64::try_from(secs).expect("a file time's seconds fit")
 }
 
 /// The header line of a modification time, `t` seconds after the epoch,

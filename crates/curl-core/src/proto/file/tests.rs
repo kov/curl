@@ -3,6 +3,7 @@
 //! build running the same transfer.
 
 use std::num::NonZeroUsize;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +26,7 @@ use crate::report::{HeaderError, Origins, Request};
 use crate::text::Text;
 use crate::time::ManualClock;
 
-use super::last_modified;
+use super::{from_file_time, last_modified};
 
 /// A directory of its own for a test, removed after it.
 struct Scratch(PathBuf);
@@ -669,11 +670,14 @@ fn an_upload_writes_the_file() {
     let (r, e) = run(e);
     assert_eq!(r, Ok(()));
     assert_eq!(s.read("new"), [b'u'; 70000]);
-    let mode = std::fs::metadata(s.0.join("new"))
-        .unwrap()
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o600);
+    #[cfg(unix)]
+    {
+        let mode = std::fs::metadata(s.0.join("new"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
     let mut want = vec![up(0); 2];
     want.push(up(65536));
     want.extend(vec![up(70000); 5]);
@@ -1379,4 +1383,16 @@ fn a_file_says_it_is_set_up_to_move_nothing() {
         creds < queued && queued < setup && setup < named,
         "{lines:?}"
     );
+}
+
+/// A Windows file time is seconds since 1970, rounded down, as the C
+/// library's `st_mtime` has it.
+#[test]
+fn a_file_time_is_seconds_since_1970() {
+    let epoch = 116_444_736_000_000_000u64;
+    assert_eq!(from_file_time(epoch), 0);
+    assert_eq!(from_file_time(epoch + 9_999_999), 0);
+    assert_eq!(from_file_time(epoch + 10_000_000), 1);
+    assert_eq!(from_file_time(epoch - 1), -1);
+    assert_eq!(from_file_time(0), -11_644_473_600);
 }

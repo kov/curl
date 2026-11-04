@@ -108,6 +108,7 @@ pub fn start_log(path: &Path) -> io::Result<()> {
     if state().log.is_some() {
         return Ok(());
     }
+    make_runtime_globals();
     // Opening allocates; the lock is not held, so that allocation can be
     // tracked or not without waiting on it. It is not tracked, so it is
     // never refused: std's open is the one this crate, below `curl-os`,
@@ -155,11 +156,25 @@ fn flush(state: &mut State) {
 /// Let `limit` more tracked allocations succeed and fail the rest. Only
 /// the first call has any effect, as in C.
 pub fn set_limit(limit: u64) {
+    make_runtime_globals();
     let mut state = state();
     if state.limit.is_none() {
         state.limit = Some(limit);
     }
     ACTIVE.store(true, Ordering::Release);
+}
+
+/// Make, untracked, what the standard library makes on first use and never
+/// frees, before tracking starts: the standard streams' buffers and, where
+/// std's locks are boxed pthread mutexes (macOS), each stream's mutex on its
+/// first lock. They are the runtime's, as C's stdio buffers are libc's and
+/// unseen by its memory debugging; made later, they would read as leaks in
+/// every memdump and could be refused under a limit, which std aborts on.
+fn make_runtime_globals() {
+    untracked(|| {
+        drop(io::stdout().lock());
+        drop(io::stderr().lock());
+    });
 }
 
 /// Run `f` with its allocations untracked: for the standard library's

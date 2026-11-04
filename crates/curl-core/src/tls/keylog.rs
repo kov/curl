@@ -47,6 +47,12 @@ impl KeyLog {
         }
     }
 
+    /// Take the lock once, so that what std makes on a lock's first use is
+    /// made now: a debug build's memory tracking starts after it.
+    pub fn make_lock(&self) {
+        drop(self.lock());
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Open>> {
         self.open.lock().expect("no panic holds the key log")
     }

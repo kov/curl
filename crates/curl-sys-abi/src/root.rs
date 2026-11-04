@@ -231,6 +231,19 @@ fn root() -> std::sync::MutexGuard<'static, Root> {
     ROOT.lock().expect("the global root lock is never poisoned")
 }
 
+/// Make the process-wide statics' locks now, untracked, before the debug
+/// build's memory tracking starts: where std's locks are boxed pthread
+/// mutexes (macOS), a static's first lock allocates a block it never
+/// frees, which every memdump would read as a leak. C's global lock and
+/// key log allocate nothing.
+#[cfg(feature = "debug-hooks")]
+pub(crate) fn make_locks() {
+    curl_alloc::track::untracked(|| {
+        drop(root());
+        KEYLOG.make_lock();
+    });
+}
+
 /// The allocator currently installed.
 pub(crate) fn allocator() -> Allocator {
     root().allocator

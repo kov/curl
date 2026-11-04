@@ -223,6 +223,7 @@ pub unsafe extern "C" fn curl_dbg_memdebug(logname: *const c_char) {
     if name.is_empty() {
         return;
     }
+    crate::root::make_locks();
     // A memdump that cannot be created leaves the test to fail on its
     // absence, as in C.
     #[cfg(unix)]
@@ -242,6 +243,7 @@ const _: unsafe extern "C" fn(*const c_char) = curl_dbg_memdebug;
 /// nothing.
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_dbg_memlimit(limit: c_long) {
+    crate::root::make_locks();
     track::set_limit(as_limit(limit));
 }
 

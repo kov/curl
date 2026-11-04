@@ -55,10 +55,6 @@ static ALLOCATOR: curl_alloc::track::Tracker = curl_alloc::track::Tracker;
 #[cfg(feature = "debug-hooks")]
 fn memory_tracking_init() {
     use curl_alloc::track;
-    // Standard output's buffer is made on first use and never freed.
-    track::untracked(|| {
-        let _ = std::io::stdout();
-    });
     // Read before tracking starts, so std's infallible copies are not
     // counted, as C reads them before its memory debugging starts.
     #[allow(clippy::disallowed_methods)]

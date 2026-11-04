@@ -100,8 +100,10 @@ impl Waker {
         if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: both were just opened and are owned by nothing else.
-        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: just opened and owned by nothing else.
+        let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        // SAFETY: as for the read end.
+        let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
         for end in [read.as_fd(), write.as_fd()] {
             // SAFETY: `fcntl` with `F_SETFD` takes an int, no pointer; the
             // end is open.
@@ -110,12 +112,13 @@ impl Waker {
             }
         }
         for end in [read.as_fd(), write.as_fd()] {
-            // SAFETY: as above, `F_GETFL` and `F_SETFL` with an int.
+            // SAFETY: as above, `F_GETFL` with no argument.
             let flags = unsafe { libc::fcntl(end.as_raw_fd(), libc::F_GETFL) };
-            // SAFETY: as above.
-            if flags < 0
-                || unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
-                    < 0
+            if flags < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: as above, `F_SETFL` with an int.
+            if unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
             {
                 return Err(io::Error::last_os_error());
             }

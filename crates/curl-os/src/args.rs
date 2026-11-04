@@ -60,11 +60,16 @@ static CAPTURE: extern "C" fn(c_int, *mut *mut c_char, *mut *mut c_char) = captu
 /// (`_NSGetArgc`, `_NSGetArgv`): their count and the array of their
 /// strings.
 fn captured() -> (usize, *mut *mut c_char) {
-    // SAFETY: neither function takes an argument; each gives a pointer to
-    // the value dyld sets before any code of the program runs and keeps
-    // for the life of the process.
-    let (argc, argv): (c_int, _) =
-        unsafe { (libc::_NSGetArgc().read(), libc::_NSGetArgv().read()) };
+    // SAFETY: it takes no argument and gives a pointer to the count dyld
+    // sets before any code of the program runs and keeps for the life of
+    // the process.
+    let argc_at = unsafe { libc::_NSGetArgc() };
+    // SAFETY: as above, for the array.
+    let argv_at = unsafe { libc::_NSGetArgv() };
+    // SAFETY: `argc_at` points to that count, live and aligned.
+    let argc: c_int = unsafe { argc_at.read() };
+    // SAFETY: `argv_at` points to that array's pointer, live and aligned.
+    let argv = unsafe { argv_at.read() };
     let argc = usize::try_from(argc).expect("the process has its arguments");
     assert!(!argv.is_null(), "the process has its arguments");
     (argc, argv)

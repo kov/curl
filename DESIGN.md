@@ -28,8 +28,8 @@ decisions, not implementation details: those live beside the code.
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh, c-ares and the rest);
-- one crate for sockets, polling and other OS interfaces (`curl-os`, over `libc`), with Linux
-  first and other platforms behind the same API. It exposes safe functions; `curl-core` adapts
+- one crate for sockets, polling and other OS interfaces (`curl-os`, over `libc` on Unix and
+  `windows-sys` on Windows), with Linux first and other platforms behind the same API. It exposes safe functions; `curl-core` adapts
   them to its own traits;
 - one crate for allocation: the fallible constructors std lacks on stable (see
   [Allocation failure](#allocation-failure)) and the debug build's memory tracker (see

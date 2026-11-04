@@ -1,5 +1,5 @@
-//! Link brotli's decoder, as the C build does.
+//! Link brotli's decoder, as the C build does, from where pkg-config finds it.
 
 fn main() {
-    println!("cargo::rustc-link-lib=brotlidec");
+    curl_build::link("brotlidec", "libbrotlidec");
 }

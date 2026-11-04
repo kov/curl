@@ -15,5 +15,8 @@ curl-core = { path = "../curl-core" }
 # The tests set the locale libidn2 reads names in.
 libc = "0.2"
 
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+
 [lints]
 workspace = true

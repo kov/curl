@@ -7,7 +7,7 @@
 
 // A build script is not the library: an allocation it cannot make may
 // abort it, and its environment is cargo's.
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::path::PathBuf;
 
@@ -40,7 +40,12 @@ fn main() {
     println!("cargo::rustc-link-search=native={}", lib.display());
     println!("cargo::rustc-link-lib=static=ngtcp2_crypto_ossl");
     println!("cargo::rustc-link-lib=static=ngtcp2");
-    println!("cargo::rustc-link-lib=nghttp3");
+    // nghttp3 and OpenSSL from where pkg-config finds them, where that is
+    // outside the linker's own paths (Homebrew's on macOS).
+    curl_build::link("nghttp3", "libnghttp3");
+    for dir in curl_build::library_dirs("openssl") {
+        println!("cargo::rustc-link-search=native={}", dir.display());
+    }
     println!("cargo::rustc-link-lib=ssl");
     println!("cargo::rustc-link-lib=crypto");
 }

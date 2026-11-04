@@ -17,5 +17,8 @@ curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os" }
 libc = "0.2"
 
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+
 [lints]
 workspace = true

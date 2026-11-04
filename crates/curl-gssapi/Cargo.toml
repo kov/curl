@@ -21,5 +21,8 @@ curl-os = { path = "../curl-os" }
 # The fake network, to run HTTP Negotiate through the core with the stub.
 curl-core = { path = "../curl-core", features = ["test-util"] }
 
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+
 [lints]
 workspace = true

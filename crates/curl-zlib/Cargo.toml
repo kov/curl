@@ -11,5 +11,8 @@ links = "z"
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+
 [lints]
 workspace = true

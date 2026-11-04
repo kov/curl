@@ -1,5 +1,5 @@
-//! Link c-ares, as the C build does.
+//! Link c-ares, as the C build does, from where pkg-config finds it.
 
 fn main() {
-    println!("cargo::rustc-link-lib=cares");
+    curl_build::link("cares", "libcares");
 }

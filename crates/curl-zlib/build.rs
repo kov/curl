@@ -1,5 +1,5 @@
-//! Link zlib, as the C build does.
+//! Link zlib, as the C build does, from where pkg-config finds it.
 
 fn main() {
-    println!("cargo::rustc-link-lib=z");
+    curl_build::link("z", "zlib");
 }

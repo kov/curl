@@ -65,6 +65,7 @@ name = "curl-ares"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
  "curl-os",
  "libc",
@@ -75,7 +76,15 @@ name = "curl-brotli"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
+]
+
+[[package]]
+name = "curl-build"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -94,6 +103,7 @@ name = "curl-gssapi"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
  "curl-os",
 ]
@@ -103,6 +113,7 @@ name = "curl-idn2"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
  "libc",
 ]
@@ -113,6 +124,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "curl-alloc",
+ "curl-build",
  "curl-core",
  "proptest",
 ]
@@ -123,6 +135,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "curl-alloc",
+ "curl-build",
  "curl-core",
 ]
 
@@ -131,6 +144,7 @@ name = "curl-nghttp2"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
 ]
 
@@ -173,6 +187,7 @@ name = "curl-psl"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
 ]
 
@@ -229,6 +244,7 @@ name = "curl-zlib"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
 ]
 
@@ -237,6 +253,7 @@ name = "curl-zstd"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
 ]
 

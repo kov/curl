@@ -12,6 +12,7 @@ curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 
 [build-dependencies]
+curl-build = { path = "../curl-build" }
 cc = "1.10.0"
 
 [lints]

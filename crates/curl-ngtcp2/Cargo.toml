@@ -23,5 +23,8 @@ curl-openssl = { path = "../curl-openssl" }
 # The certificates the server the tests start shows.
 openssl = "0.10.81"
 
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+
 [lints]
 workspace = true

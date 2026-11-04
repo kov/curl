@@ -1032,6 +1032,7 @@ impl Pool {
                 served: false,
                 socks5_authenticated: false,
                 seen_version: None,
+                local: std::sync::OnceLock::new(),
                 close: false,
                 settings,
                 negotiate: None,

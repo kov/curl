@@ -1333,6 +1333,10 @@ pub(crate) struct Conn {
     socks5_authenticated: bool,
     /// The version its last HTTP response said (`httpversion_seen`).
     seen_version: Option<ResponseVersion>,
+    /// Its end here, as its socket said when first asked: a socket's
+    /// address does not change once it is connected, and C keeps it from
+    /// the connect rather than ask again on each reuse (`ip.local`).
+    local: std::sync::OnceLock<Option<SocketAddr>>,
     /// It is not to be kept for another request (C's `connclose`), or
     /// its peer closed it, which no request can use again.
     close: bool,
@@ -1982,11 +1986,11 @@ impl Conn {
         if matches!(&self.route, Route::Net(net) if net.origin.scheme().no_tcp_proxy()) {
             return None;
         }
-        match &self.transport {
+        *self.local.get_or_init(|| match &self.transport {
             Transport::Stream(stream) => stream.local_addr(),
             Transport::Datagram(datagrams) => datagrams.local_addr(),
             Transport::Local => None,
-        }
+        })
     }
 
     /// Keep it for no other request: it closes when its lease goes back.

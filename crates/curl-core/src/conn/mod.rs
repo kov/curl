@@ -936,6 +936,11 @@ impl Scheme {
         self.0.family == Some(crate::url::schemes::Protocol::Ftp)
     }
 
+    /// Whether it is HTTP's, HTTPS's or WebSocket's (`PROTO_FAMILY_HTTP`).
+    pub(crate) fn http_family(self) -> bool {
+        self.0.family == Some(crate::url::schemes::Protocol::Http)
+    }
+
     /// Whether it goes over no network, and has no origin to name
     /// (`PROTOPT_NONETWORK`).
     pub(crate) fn no_network(self) -> bool {

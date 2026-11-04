@@ -1742,7 +1742,21 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             TransferState::Done(x.done(Ok(()), false, Reached::Made)),
             Wake::Again,
         ),
-        TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
+        // With other transfers running, an HTTP request goes on in the
+        // next pass, giving the others a chance to send theirs first
+        // (`multistate_did`): its response is rarely there yet.
+        TransferState::Did(x) => {
+            let http = x
+                .proto
+                .scheme()
+                .is_some_and(crate::conn::Scheme::http_family);
+            let wake = if http && cx.running() > 1 {
+                Wake::Idle
+            } else {
+                Wake::Again
+            };
+            (TransferState::Exchanging(x), wake)
+        }
         // Out of time as the pass starts: nothing more is read or sent
         // (`multi_handle_timeout`, ahead of the state's work).
         TransferState::Exchanging(x) if expired(run, cx) => {

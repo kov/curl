@@ -888,3 +888,21 @@ witness: curl-core a_push_that_cannot_start_leaves_nothing_running
                 slot.discard = true;
 --- new
                 slot.discard = false;
+
+=== an HTTP request sent beside another transfer reads in the same pass
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_request_sent_beside_another_transfer_is_read_in_the_next_pass
+features: test-util
+--- old
+            let wake = if http && cx.running() > 1 {
+--- new
+            let wake = if http && cx.running() > 0 && false {
+
+=== an HTTP request sent by a lone transfer waits a pass to read
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_request_sent_beside_another_transfer_is_read_in_the_next_pass
+features: test-util
+--- old
+            let wake = if http && cx.running() > 1 {
+--- new
+            let wake = if http && cx.running() > 0 {

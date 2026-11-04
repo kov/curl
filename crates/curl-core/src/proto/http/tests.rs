@@ -1224,6 +1224,51 @@ fn records_as_built(net: FakeNet) -> FakeNet {
     }
 }
 
+/// An HTTP transfer that has sent its request leaves the pass while
+/// another transfer is alive, so the others send theirs before it looks
+/// for a response that is rarely there yet (`multistate_did`); alone, it
+/// reads in the same pass.
+#[test]
+fn a_request_sent_beside_another_transfer_is_read_in_the_next_pass() {
+    let first = Conversation::new(OK, false).held();
+    let second = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let add = |m: &mut Multi, path: &str| {
+        let mut e = Easy::new();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        let o = e.options_mut();
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        m.add(Box::new(e), (), &mut NoEvents).unwrap()
+    };
+    // Passes until `talk` has a request: the last is the one it went in.
+    let until_sent = |m: &mut Multi, talk: &Conversation| {
+        for _ in 0..10 {
+            m.perform(&mut NoEvents).unwrap();
+            if !talk.received().is_empty() {
+                return;
+            }
+        }
+        panic!("no request sent");
+    };
+    let a = add(&mut m, "/a");
+    until_sent(&mut m, &first);
+    let (alone, _) = first.reads();
+    assert!(alone > 0, "alone, it read in the pass it sent in");
+    let b = add(&mut m, "/b");
+    until_sent(&mut m, &second);
+    assert_eq!(second.reads().0, 0, "the second has not read yet");
+    m.perform(&mut NoEvents).unwrap();
+    assert!(second.reads().0 > 0, "the second reads in the next pass");
+    first.allow(1);
+    for id in [b, a] {
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+    }
+}
+
 /// A connection the server answers once, then closes as it is reused.
 fn answers_once() -> Conversation {
     Conversation::new(OK, false).hanging_up_unanswered()

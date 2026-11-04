@@ -1514,19 +1514,21 @@ fn a_transfer_done_on_a_shared_connection_says_it_is_still_in_use() {
     assert_eq!((a, b), (Ok(()), Ok(())));
     let said = |s: &Seen, line: &str| s.text().iter().any(|l| l.ends_with(line));
     let still = "] Connection still in use 1, no more multi_done now!\n";
-    // The second is driven to its end first, the first still on.
+    // The second leaves the pass once its request is sent
+    // (`multistate_did`), so the first reads both streams' ends and is
+    // done first, the second still on.
     assert!(
-        said(&sb, "] multi_done_locked, in use=1\n"),
-        "{:#?}",
-        sb.text()
-    );
-    assert!(said(&sb, still), "{:#?}", sb.text());
-    assert!(
-        said(&sa, "] multi_done_locked, in use=0\n"),
+        said(&sa, "] multi_done_locked, in use=1\n"),
         "{:#?}",
         sa.text()
     );
-    assert!(!sa.text().iter().any(|l| l.contains("still in use")));
+    assert!(said(&sa, still), "{:#?}", sa.text());
+    assert!(
+        said(&sb, "] multi_done_locked, in use=0\n"),
+        "{:#?}",
+        sb.text()
+    );
+    assert!(!sb.text().iter().any(|l| l.contains("still in use")));
 }
 
 /// Transfers of one multi whose handles share connections
@@ -2330,21 +2332,23 @@ impl WriteHandler for PausesOnceAt {
 /// A stream whose window the library fails to set in a sibling's step,
 /// as nghttp2 fails out of memory, is reset there with C's code, and its
 /// transfer learns so as the reset goes, failing once it next reads; the
-/// sibling goes on (`cf_h2_update_local_win`'s failure).
+/// sibling goes on (`cf_h2_update_local_win`'s failure). `/b` leaves the
+/// pass once its request is sent (`multistate_did`), so `/a` reads
+/// `/b`'s body, which pauses `/b` in `/a`'s step.
 #[test]
 fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
     let talk = Conversation::replies(
         &[
             b"S\nH 1 0\n:status: 200\n\n",
             WINDOW_SENT,
-            b"H 3 0\n:status: 200\n\nXW 1\nD 1 2 0\naaD 1 2 0\nbbD 3 1 1\nc",
+            b"H 3 0\n:status: 200\n\nD 3 2 0\naaXW 3\nD 3 2 0\nbbD 1 1 1\nc",
         ],
         false,
     )
     .per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut ids = Vec::new();
-    let a_seen = Seen::default();
+    let b_seen = Seen::default();
     for path in ["/a", "/b"] {
         let mut e = Easy::new();
         e.set_libraries(with_h2());
@@ -2354,8 +2358,8 @@ fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
         o.http.version = HttpVersion::Http2Prior;
         o.output.verbose = true;
-        let w = if path == "/a" {
-            o.callbacks.debug = Some(Handler::debug(a_seen.clone()).unwrap());
+        let w = if path == "/b" {
+            o.callbacks.debug = Some(Handler::debug(b_seen.clone()).unwrap());
             Handler::write(PausesOnceAt(2, Arc::default())).unwrap()
         } else {
             Handler::write(Seen::default()).unwrap()
@@ -2367,20 +2371,24 @@ fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
         }
     }
     assert_eq!(
-        drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
+        drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
         Ok(())
     );
     let sent = String::from_utf8(talk.received()).unwrap();
-    assert!(sent.contains("R 1 4294966394\n"), "{sent}");
-    m.pause(ids[0], crate::deliver::PauseRequest::CONT, &mut NoEvents)
-        .unwrap();
-    let done = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
-    assert_eq!(done, Err(ErrorKind::Http2Stream), "{:?}", a_seen.text());
-    let said = "HTTP/2 stream 1 reset by curl (error 0xfffffc7a unknown)\n";
     assert!(
-        a_seen.text().iter().any(|l| l == said),
+        sent.contains("R 3 4294966394\n"),
+        "{sent} {:#?}",
+        b_seen.text()
+    );
+    m.pause(ids[1], crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    let done = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    assert_eq!(done, Err(ErrorKind::Http2Stream), "{:?}", b_seen.text());
+    let said = "HTTP/2 stream 3 reset by curl (error 0xfffffc7a unknown)\n";
+    assert!(
+        b_seen.text().iter().any(|l| l == said),
         "{:?}",
-        a_seen.text()
+        b_seen.text()
     );
     for id in ids {
         m.remove(id, &mut NoEvents).unwrap();
@@ -2440,51 +2448,52 @@ fn said(lines: &[String], line: &str) -> bool {
 /// fails the transfer reading, and each other transfer on the connection
 /// fails as it next runs, at once and with C's code and lines: the
 /// session is read no more, as what it took of the bytes is gone, and no
-/// stream is reset on it.
+/// stream is reset on it. `/b` sends its request and leaves the pass to
+/// `/a` (`multistate_did`), so `/a` reads the bytes for both streams.
 #[test]
 fn a_failed_read_fails_every_stream_on_the_connection() {
     let talk = Conversation::replies(
         &[
             b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naa",
             WINDOW_SENT,
-            b"H 3 0\n:status: 200\n\nD 3 2 0\nbbPP 3 2\n:method: GET\n:scheme: http\n\
+            b"H 3 0\n:status: 200\n\nD 3 2 0\nbbPP 1 2\n:method: GET\n:scheme: http\n\
               :authority: elsewhere.example\n:path: /p\n\n",
         ],
         false,
     )
     .per_send();
     let (results, texts) = two_on_one(&talk);
-    // `/b` reads the promise on its own stream; `/a`'s fails after.
+    // `/a` reads the promise on its own stream; `/b`'s fails after.
     assert_eq!(
         results,
-        [Err(ErrorKind::Http2), Err(ErrorKind::RecvError)],
+        [Err(ErrorKind::RecvError), Err(ErrorKind::Http2)],
         "{texts:?}"
     );
     let failed = "nghttp2 recv error -902: The user callback function failed\n";
-    assert!(said(&texts[1], failed), "{:?}", texts[1]);
-    let read = "[HTTP/2] [3] cf_recv(len=16384) -> 56, 0,";
-    assert!(
-        texts[1].iter().any(|l| l.starts_with(read)),
-        "{:?}",
-        texts[1]
-    );
-    for line in [
-        "[HTTP/2] [0] ingress: session is closed\n",
-        "[HTTP/2] [1] premature DATA_DONE, RST stream\n",
-    ] {
-        assert!(said(&texts[0], line), "{line:?} in {:?}", texts[0]);
-    }
-    let read = "[HTTP/2] [1] cf_recv(len=16384) -> 16, 0,";
+    assert!(said(&texts[0], failed), "{:?}", texts[0]);
+    let read = "[HTTP/2] [1] cf_recv(len=16384) -> 56, 0,";
     assert!(
         texts[0].iter().any(|l| l.starts_with(read)),
         "{:?}",
         texts[0]
     );
+    for line in [
+        "[HTTP/2] [0] ingress: session is closed\n",
+        "[HTTP/2] [3] premature DATA_DONE, RST stream\n",
+    ] {
+        assert!(said(&texts[1], line), "{line:?} in {:?}", texts[1]);
+    }
+    let read = "[HTTP/2] [3] cf_recv(len=16384) -> 16, 0,";
+    assert!(
+        texts[1].iter().any(|l| l.starts_with(read)),
+        "{:?}",
+        texts[1]
+    );
     // The reader's reset of its own stream goes, as C's egress sends it
     // after the failed read; nothing more goes on the session after.
     let sent = String::from_utf8(talk.received()).unwrap();
-    assert!(sent.contains("R 3 1\n"), "{sent}");
-    assert!(!sent.contains("R 1 5\n"), "{sent}");
+    assert!(sent.contains("R 1 1\n"), "{sent}");
+    assert!(!sent.contains("R 3 5\n"), "{sent}");
 }
 
 /// A connection reset fails the transfer reading with 56, its read's

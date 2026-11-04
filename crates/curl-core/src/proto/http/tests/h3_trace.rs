@@ -834,9 +834,10 @@ fn an_http3_connection_is_passed_over_by_a_transfer_in_http1() {
 /// Two transfers at once: the second, finding the first's connection
 /// being set up, waits for it (`CURLOPT_PIPEWAIT`, which the tool sets for
 /// `-Z`), then joins it on a stream of its own, as many as the peer allows
-/// and those open; the second's read hands each stream's response to its
-/// transfer, the first's to its sibling, so the second is done first; the
-/// connection is kept for the last.
+/// and those open. The second leaves the pass once its request is sent
+/// (`multistate_did`), so the first's read hands each stream's response to
+/// its transfer, the second's to its sibling, and the first is done first;
+/// the connection is kept for the last.
 #[test]
 fn a_second_transfer_multiplexes_on_the_first_s_connection() {
     let script = Script::new();
@@ -919,8 +920,7 @@ fn a_second_transfer_multiplexes_on_the_first_s_connection() {
         expect(&format!(
             "[HTTP/3] [0] OPENED stream for https://localhost:{PORT}/
             [HTTP/3] [0] easy handle is done
-            [HTTP/3] query conn[0]: MAX_CONCURRENT -> 98 (0 in use)
-            Connection #0 to host localhost:{PORT} left intact"
+            [MULTI] [DONE] Connection still in use 1, no more multi_done now!"
         ))
     );
     assert_eq!(
@@ -933,7 +933,8 @@ fn a_second_transfer_multiplexes_on_the_first_s_connection() {
             Reusing existing https: connection with host localhost
             [HTTP/3] [4] OPENED stream for https://localhost:{PORT}/
             [HTTP/3] [4] easy handle is done
-            [MULTI] [DONE] Connection still in use 1, no more multi_done now!"
+            [HTTP/3] query conn[0]: MAX_CONCURRENT -> 98 (0 in use)
+            Connection #0 to host localhost:{PORT} left intact"
         ))
     );
 }

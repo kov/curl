@@ -284,6 +284,12 @@ impl<H: Host> StepCx<'_, H> {
         self.rank
     }
 
+    /// How many of the multi's transfers are added and not yet completed,
+    /// this one among them (`xfers_alive`).
+    pub(crate) fn running(&self) -> u32 {
+        self.rest.tell.counts.get().running
+    }
+
     /// Run `f`, its work the connection's second chain's: its filters'
     /// lines name it, and no others do.
     pub(crate) fn as_second<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {

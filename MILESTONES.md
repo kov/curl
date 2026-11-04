@@ -1329,10 +1329,12 @@ the suite against C's build from this tree with the Linux reference's options (`
 cannot be built from this tree, which dropped SecureTransport and needs LibreSSL 3.4.1: it is a
 behaviour oracle only.
 
-107. **The C ABI on aarch64-apple-darwin**, a third target for `gen/ffi.py`. **To do.**
+107. **The C ABI on aarch64-apple-darwin**, a third target for `gen/ffi.py`. **Done.**
 108. **`curl-os` on macOS**, along C's Apple paths (sockets, waker, random, errno, xattr, argv).
-     **To do.**
-109. **`curl-core`, the tool and the shim on macOS**, the C libraries linked. **To do.**
+     **Done.**
+109. **`curl-core`, the tool and the shim on macOS**, the C libraries linked. **In progress.**
+     curl-core builds and runs its tests; the shim and the tool compile but do not link yet
+     (LDAP.framework, Apple's GSS-API without `gss_set_neg_mechs`).
 110. **LDAP through `lib/ldap.c`'s path**: macOS's OpenLDAP 2.4 has no `ldap_init_fd`, so C's
      build takes the code WinLDAP takes; one port for both. **To do.**
 111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **To do.**

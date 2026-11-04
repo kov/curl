@@ -2346,6 +2346,45 @@ fn text_files_are_written_as_text() {
     assert!(!headers.windows(2).any(|w| w == b"\r\r"), "{headers:?}");
 }
 
+/// On Windows, with no CA bundle or directory given or named by the
+/// environment, the tool trusts a `curl-ca-bundle.crt` the system finds
+/// along its search path (`SearchPath`), here in the current directory;
+/// one named wins, and none is looked for when the peer goes unverified.
+#[cfg(windows)]
+#[test]
+fn finds_a_ca_bundle_along_the_search_path() {
+    let s = Scratch::new("ca-search");
+    s.write("src", b"x");
+    s.write("curl-ca-bundle.crt", b"");
+    let src = s.url("src");
+    let source = |args: &[&str], env: &[(&str, &str)]| {
+        let all: Vec<&str> = args
+            .iter()
+            .copied()
+            .chain(["--libcurl", "-", &src])
+            .collect();
+        let r = curl_env(&s, &all, env);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        String::from_utf8(r.stdout).unwrap()
+    };
+    let found = s.path("curl-ca-bundle.crt").replace('\\', "\\\\");
+    let text = source(&["-s"], &[]);
+    assert!(
+        text.contains(&format!("CURLOPT_CAINFO, \"{found}\")")),
+        "{text}"
+    );
+    let text = source(&["-s"], &[("CURL_CA_BUNDLE", "named")]);
+    assert!(text.contains("CURLOPT_CAINFO, \"named\")"), "{text}");
+    let text = source(&["-s"], &[("SSL_CERT_DIR", "dir")]);
+    assert!(text.contains("CURLOPT_CAPATH, \"dir\")"), "{text}");
+    assert!(!text.contains("CURLOPT_CAINFO"), "{text}");
+    s.write("given.crt", b"");
+    let text = source(&["-s", "--cacert", "given.crt"], &[]);
+    assert!(text.contains("CURLOPT_CAINFO, \"given.crt\")"), "{text}");
+    let text = source(&["-s", "-k"], &[]);
+    assert!(!text.contains("CURLOPT_CAINFO"), "{text}");
+}
+
 /// A configuration file is read as text: on Windows a carriage return
 /// before a line feed is left out, and a Ctrl-Z ends it.
 #[cfg(windows)]

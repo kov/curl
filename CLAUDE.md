@@ -81,7 +81,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   and listing directories, reading standard input unbuffered, making a file's reads nonblocking,
   and pointing standard error at a file; on Windows through the Win32 file calls, with the C
   library's text or binary mode of the standard streams (`_setmode`) and writing as it writes
-  in each.
+  in each, and finding a file along the system's search path (`SearchPath`).
 - `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, listening and
   accepting on one, adopting one the application opened, and the machine's host name; on
   Windows through Winsock, and starting it (`WSAStartup`).

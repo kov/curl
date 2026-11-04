@@ -799,6 +799,38 @@ pub fn real_path<T>(path: &CStr, f: impl FnOnce(&[u8]) -> T) -> io::Result<T> {
     Ok(f(&full[..n]))
 }
 
+/// `f` given where the system finds a file named `name` (`SearchPath`,
+/// as C's tool asks it in `FindWin32CACert`): in the program's directory,
+/// the current one, the system's directories and those of `PATH`, in the
+/// order the system's search mode puts them. `None` if it finds none. A
+/// path longer than C's buffer (`MAX_PATH`) is given empty, as C's buffer
+/// then is.
+#[cfg(windows)]
+pub fn search_path<T>(name: &CStr, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
+    const MAX_PATH: usize = 260;
+    let mut found = [0u8; MAX_PATH];
+    let mut part: *mut u8 = std::ptr::null_mut();
+    // SAFETY: `name` is a C string, `found` writable for the `MAX_PATH`
+    // bytes the call is told and `part` a pointer for it to set, all alive
+    // for the call; no path or extension is given.
+    let n = unsafe {
+        wfs::SearchPathA(
+            std::ptr::null(),
+            name.as_ptr().cast(),
+            std::ptr::null(),
+            MAX_PATH as u32,
+            found.as_mut_ptr(),
+            &raw mut part,
+        )
+    };
+    let n = usize::try_from(n).expect("a u32 fits");
+    match n {
+        0 => None,
+        n if n < MAX_PATH => Some(f(&found[..n])),
+        _ => Some(f(b"")),
+    }
+}
+
 /// A call's result that is true on success, an error if not.
 #[cfg(windows)]
 fn done(ok: windows_sys::core::BOOL) -> io::Result<()> {

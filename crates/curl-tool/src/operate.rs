@@ -2196,6 +2196,16 @@ fn ssl_ca_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKin
             capath = var(b"SSL_CERT_DIR")?;
             cacert = var(b"SSL_CERT_FILE")?;
         }
+        // On Windows, with neither named, a bundle the system finds along
+        // its search path (`win32_setup_certs`, `FindWin32CACert`).
+        #[cfg(windows)]
+        if cacert.is_none() && capath.is_none() {
+            let found = fs::search_path(c"curl-ca-bundle.crt", |path| {
+                let mut owned = Vec::new();
+                owned.try_extend_from_slice(path).map(|()| owned)
+            });
+            cacert = found.transpose().map_err(oom)?.map(Cow::Owned);
+        }
     }
     if let Some(file) = cacert.as_deref() {
         s.str("CURLOPT_CAINFO", Some(file), |o| {

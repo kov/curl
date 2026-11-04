@@ -331,9 +331,9 @@ witness: curl-tool write_out::tests::writes_values_as_c
 file: crates/curl-tool/src/write_out.rs
 witness: curl-tool write_out::tests::reads_a_format_file_without_line_ends
 --- old
-        slurp::read(name, slurp::As::Text).map(Format::Read)
+        slurp::read(name, slurp::As::Text, curl_os::text::Mode::TEXT).map(Format::Read)
 --- new
-        slurp::read(name, slurp::As::Binary).map(Format::Read)
+        slurp::read(name, slurp::As::Binary, curl_os::text::Mode::TEXT).map(Format::Read)
 
 === the header count runs on across responses
 file: crates/curl-tool/src/output.rs
@@ -1383,8 +1383,10 @@ file: crates/curl-tool/src/operate.rs
 witness: curl-tool warns_of_more_than_one_auth_with_standard_input
 --- old
     if upload.is_some_and(|file| file == b"-" || file == b".")
+        && (op.proxy_anyauth
 --- new
     if upload.is_some_and(|file| file == b"-")
+        && (op.proxy_anyauth
 
 === --libcurl leaves a later transfer's verify options at the reset's default
 file: crates/curl-tool/src/easysrc.rs

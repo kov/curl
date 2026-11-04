@@ -237,7 +237,8 @@ mod tests {
         assert_eq!(replace(b"", b"new"), Err(SaveError::Write));
     }
 
-    #[cfg(unix)]
+    // The user's groups from `/proc`, which only Linux has.
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_mode_is_kept_only_where_the_group_is_the_same() {
         // A group of the user's other than the one new files get.

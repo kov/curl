@@ -2181,14 +2181,17 @@ mod tests {
         );
         assert_ne!(v6(Some(b"nosuch0")), v6(None));
         // A name is its interface's index, the same scope as the number.
-        let lo = curl_os::net::interface_index(b"lo").expect("Linux has a loopback");
+        let lo = curl_os::net::interface_index(crate::LOOPBACK.as_bytes()).expect("a loopback");
         let index = lo.to_string();
-        assert_eq!(v6(Some(b"lo")), v6(Some(index.as_bytes())));
-        assert_eq!(v6(Some(b"lo")).scope(), Some(lo));
+        assert_eq!(
+            v6(Some(crate::LOOPBACK.as_bytes())),
+            v6(Some(index.as_bytes()))
+        );
+        assert_eq!(v6(Some(crate::LOOPBACK.as_bytes())).scope(), Some(lo));
         assert_eq!(v6(Some(b"nosuch0")).scope(), None);
         // The application's scope, in place of a zone, is a number's.
         let scoped = Peer::scoped(HTTP, b"[fe80::1]".to_vec(), 80, lo);
-        assert_eq!(scoped, v6(Some(b"lo")));
+        assert_eq!(scoped, v6(Some(crate::LOOPBACK.as_bytes())));
         assert_eq!(v6(None).name(), b"fe80::1");
         assert_eq!(v6(None).shown(), b"[fe80::1]");
         assert!(v6(None).ipv6() && !peer(b"fe80", 80, None).ipv6());
@@ -2207,8 +2210,11 @@ mod tests {
         assert!(!same(&v6(Some(b"2")), &v6(Some(b"3"))));
         assert!(same(&v6(Some(b"nosuch0")), &v6(Some(b"nosuch0"))));
         assert!(!same(&v6(Some(b"nosuch0")), &v6(Some(b"nosuch1"))));
-        let lo = curl_os::net::interface_index(b"lo").expect("Linux has a loopback");
-        assert!(same(&v6(Some(b"lo")), &v6(Some(lo.to_string().as_bytes()))));
+        let lo = curl_os::net::interface_index(crate::LOOPBACK.as_bytes()).expect("a loopback");
+        assert!(same(
+            &v6(Some(crate::LOOPBACK.as_bytes())),
+            &v6(Some(lo.to_string().as_bytes()))
+        ));
         assert!(same(
             &peer(b"P.example", 80, None),
             &peer(b"p.example", 80, None)

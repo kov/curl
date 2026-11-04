@@ -42,6 +42,14 @@ pub mod share;
 pub mod ssh;
 #[cfg(test)]
 mod test_cell;
+/// The loopback interface's name, as the tests scope addresses by it:
+/// `lo` on Linux, `lo0` on macOS.
+#[cfg(all(test, unix))]
+const LOOPBACK: &str = if cfg!(target_vendor = "apple") {
+    "lo0"
+} else {
+    "lo"
+};
 mod text;
 pub mod time;
 pub mod tls;

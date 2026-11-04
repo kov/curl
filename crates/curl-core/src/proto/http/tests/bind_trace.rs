@@ -130,7 +130,13 @@ fn a_port_in_use_gives_way_to_the_next_of_the_range() {
 /// reason given way to the connect's.
 #[test]
 fn a_range_all_in_use_fails_to_bind() {
-    const IN_USE: i32 = if cfg!(windows) { 10048 } else { 98 };
+    const IN_USE: i32 = if cfg!(windows) {
+        10048
+    } else if cfg!(target_vendor = "apple") {
+        48
+    } else {
+        98
+    };
     let ran = bound(
         |n| n.with_port_in_use(18700).with_port_in_use(18701),
         ports(18700, 2),
@@ -155,8 +161,8 @@ fn a_range_all_in_use_fails_to_bind() {
 }
 
 /// A plain name binds to the interface of that name, and to nothing
-/// else (`SO_BINDTODEVICE`, which Windows has not).
-#[cfg(unix)]
+/// else (`SO_BINDTODEVICE`, which only Linux has).
+#[cfg(target_os = "linux")]
 #[test]
 fn a_name_binds_to_its_interface() {
     let ran = bound(|n| n.with_device("eth9"), interface("eth9"));
@@ -233,7 +239,13 @@ fn an_interface_not_utf8_fails_as_its_bytes() {
 /// could not connect: the next address would be tried.
 #[test]
 fn a_host_of_the_other_family_cannot_connect() {
-    const AF_INET6: i32 = if cfg!(windows) { 23 } else { 10 };
+    const AF_INET6: i32 = if cfg!(windows) {
+        23
+    } else if cfg!(target_vendor = "apple") {
+        30
+    } else {
+        10
+    };
     let ran = bound(|n| n, interface("host!::1"));
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     assert_eq!(

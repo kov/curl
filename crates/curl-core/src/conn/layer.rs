@@ -1377,13 +1377,20 @@ mod tests {
             }
         );
         peer.write_all(b"x").unwrap();
-        // Loopback delivers before the write returns; the poll is at once.
-        assert_eq!(
-            below().alive(&mut cx),
-            Alive::Alive {
-                input_pending: true
+        // Linux's loopback delivers before the write returns; macOS's may
+        // deliver a moment later. The poll itself is at once.
+        let pending = Alive::Alive {
+            input_pending: true,
+        };
+        let mut seen = below().alive(&mut cx);
+        for _ in 0..100 {
+            if seen == pending {
+                break;
             }
-        );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            seen = below().alive(&mut cx);
+        }
+        assert_eq!(seen, pending);
     }
 
     /// A layer that keeps the defaults passes the question below: the

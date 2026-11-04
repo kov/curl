@@ -2053,7 +2053,9 @@ fn the_agent_logs_in_without_a_private_key() {
     let mut m = chatty();
     let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
         let ssh = o.ssh.make_mut().unwrap();
-        ssh.private_key = None;
+        // Empty, as none is where no default key file is: not left to
+        // the default, which is the files of whoever runs the tests.
+        ssh.private_key = Some(Vec::new());
         ssh.public_key = None;
         ssh.auth_types = crate::options::SshAuthTypes::ANY;
     });

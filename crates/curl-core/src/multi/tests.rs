@@ -5199,7 +5199,7 @@ fn scoped_net() -> (Multi, std::num::NonZeroU32) {
     use crate::conn::io::Peer;
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
     let clock = ManualClock::new().unwrap();
-    let lo = curl_os::net::interface_index(b"lo").expect("Linux has a loopback");
+    let lo = curl_os::net::interface_index(crate::LOOPBACK.as_bytes()).expect("a loopback");
     let at = |ip: Ipv6Addr, port, scope| SocketAddr::V6(SocketAddrV6::new(ip, port, 0, scope));
     let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     let three = std::num::NonZeroU32::new(3).unwrap();
@@ -5242,7 +5242,7 @@ fn a_zone_is_the_socket_address_s_scope() {
     let (result, trace) = run_traced(&mut m, e, &lines);
     assert_eq!(result, Ok(()));
     assert_eq!(trace[0], "  Trying [::1]:5 scope_id=9...\n");
-    let (e, lines) = traced("tcp://[::1%25lo]:5/");
+    let (e, lines) = traced(&format!("tcp://[::1%25{}]:5/", crate::LOOPBACK));
     let (result, trace) = run_traced(&mut m, e, &lines);
     assert_eq!(result, Ok(()));
     assert_eq!(trace[0], format!("  Trying [::1]:5 scope_id={lo}...\n"));
@@ -5309,7 +5309,7 @@ fn connections_are_reused_within_a_scope() {
         ("tcp://[::1%2510]:5/", "  Trying [::1]:5 scope_id=10...\n"),
         ("tcp://[::1%25009]:5/", reused),
         (
-            "tcp://[::1%25lo]:5/",
+            &format!("tcp://[::1%25{}]:5/", crate::LOOPBACK),
             &format!("  Trying [::1]:5 scope_id={lo}...\n"),
         ),
         (&index, reused),

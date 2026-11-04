@@ -5861,8 +5861,10 @@ mod bind_trace;
 mod coding;
 mod connect_only;
 /// The system's words for no error, as a trace gives them (`strerror(0)`).
-#[cfg(unix)]
+#[cfg(all(unix, not(target_vendor = "apple")))]
 const NO_ERROR: &str = "Success";
+#[cfg(target_vendor = "apple")]
+const NO_ERROR: &str = "Undefined error: 0";
 #[cfg(windows)]
 const NO_ERROR: &str = "No error";
 

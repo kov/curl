@@ -10,8 +10,10 @@ use super::*;
 
 /// As the system numbers them, as the fake network gives them: on
 /// Windows Winsock's, a send on a shut socket `WSAESHUTDOWN`.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_vendor = "apple")))]
 const ECONNREFUSED: i32 = 111;
+#[cfg(target_vendor = "apple")]
+const ECONNREFUSED: i32 = 61;
 #[cfg(unix)]
 const EPIPE: i32 = 32;
 #[cfg(windows)]

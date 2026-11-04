@@ -488,7 +488,9 @@ mod over_the_wire {
 
     /// An interface bound by its name is not a socket bound
     /// (`bits.bound`): the transfer's own bind goes on, and fails. A bind
-    /// by name is Linux's (`SO_BINDTODEVICE`).
+    /// by name is Linux's (`SO_BINDTODEVICE`): elsewhere the name is
+    /// taken for a host, resolved, and the bind fails as C's does on
+    /// macOS (`curl --interface eth9` exits 45 there).
     #[cfg(unix)]
     #[test]
     fn an_interface_named_does_not_spare_the_bind() {
@@ -498,13 +500,21 @@ mod over_the_wire {
             ..LocalBind::NONE
         };
         let (_, ran) = tunnel_bound(|n| n.with_device("eth9"), bind);
-        assert_eq!(
-            ran.result,
-            Some(Err(ErrorKind::CouldntConnect)),
-            "{}",
-            ran.text
-        );
-        assert!(ran.text.contains(INVALID), "{}", ran.text);
+        let want = if cfg!(target_os = "linux") {
+            ErrorKind::CouldntConnect
+        } else {
+            ErrorKind::InterfaceFailed
+        };
+        assert_eq!(ran.result, Some(Err(want)), "{}", ran.text);
+        if cfg!(target_os = "linux") {
+            assert!(ran.text.contains(INVALID), "{}", ran.text);
+        } else {
+            assert!(
+                ran.text.contains("Could not bind to 'eth9' with errno "),
+                "{}",
+                ran.text
+            );
+        }
     }
 
     /// A socket its connect bound to a port is spared the transfer's bind,

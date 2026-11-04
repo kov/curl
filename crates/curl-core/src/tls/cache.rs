@@ -980,12 +980,14 @@ fn write_key(
     };
     let mut local = false;
     // A path made absolute if it is not, so that the key holds in another
-    // directory; one that cannot be is kept as it is, the key local.
+    // directory; one that cannot be is kept as it is, the key local. On
+    // Windows every path is made absolute, its drive and backslashes
+    // given (`_fullpath`).
     let mut path = |out: &mut dyn Sink, name: &str, value: Option<&[u8]>| {
         let Some(value) = value.filter(|v| !v.is_empty()) else {
             return;
         };
-        if value.first() != Some(&b'/') {
+        if cfg!(windows) || value.first() != Some(&b'/') {
             let real = curl_os::fs::with_c_name(value, |c| {
                 curl_os::fs::real_path(c, |abs| text(out, name, abs))
             });

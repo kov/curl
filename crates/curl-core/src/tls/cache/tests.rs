@@ -39,14 +39,24 @@ fn key(p: &SessionPeer) -> &str {
     std::str::from_utf8(p.key()).unwrap()
 }
 
+/// A path as a key holds it, after its name and length: as given, or on
+/// Windows made absolute as `_fullpath` makes it, a drive and
+/// backslashes given it.
+fn keyed(name: &str, path: &str) -> String {
+    #[cfg(windows)]
+    let path = std::path::absolute(path).unwrap().display().to_string();
+    format!("{name}-{}:{path}", path.len())
+}
+
 /// The key of a verified peer with a CA file, as C's build traces it
 /// against stunnel (`[SSLS] find peer slot for ...`, the step 43
 /// captures).
 #[test]
 fn a_key_is_c_s_for_the_same_settings() {
+    let ca = keyed("CA", CA);
     assert_eq!(
         key(&peer(|_| {})),
-        format!("https:localhost:18443:KEY-V3:TLSVER-6-0:CA-58:{CA}:IMPL-13:OpenSSL/3.5.9:G")
+        format!("https:localhost:18443:KEY-V3:TLSVER-6-0:{ca}:IMPL-13:OpenSSL/3.5.9:G")
     );
     // Unverified: no CA, and the verify bits said.
     let p = peer(|i| {
@@ -66,7 +76,7 @@ fn a_key_is_c_s_for_the_same_settings() {
         key(&p),
         format!(
             "https:localhost:18443:KEY-V3:NO-VRFY-HOST:CHOST-9:127.0.0.1:CPORT-9:\
-             TLSVER-6-0:CA-58:{CA}:IMPL-13:OpenSSL/3.5.9:G"
+             TLSVER-6-0:{ca}:IMPL-13:OpenSSL/3.5.9:G"
         )
     );
     // Verified, the connect-to's peer is not.
@@ -88,9 +98,10 @@ fn a_key_is_c_s_for_the_same_settings() {
 fn a_quic_session_s_key_names_its_transport() {
     let o = origin("localhost", 18443);
     let p = SessionPeer::new(&identity(|_| {}), &o, None, &"OpenSSL/3.5.9", Dial::Quic).unwrap();
+    let ca = keyed("CA", CA);
     assert_eq!(
         key(&p),
-        format!("https:localhost:18443:KEY-V3:QUIC:TLSVER-6-0:CA-58:{CA}:IMPL-13:OpenSSL/3.5.9:G")
+        format!("https:localhost:18443:KEY-V3:QUIC:TLSVER-6-0:{ca}:IMPL-13:OpenSSL/3.5.9:G")
     );
 }
 
@@ -120,14 +131,21 @@ fn a_key_holds_every_setting_a_session_must_share() {
         o.key_type = Some(b"der".to_vec());
     });
     let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let (ca, ca_path, crl) = (
+        keyed("CA", CA),
+        keyed("CApath", "/ca/dir"),
+        keyed("CRL", "/crl.pem"),
+    );
+    let issuer = keyed("Issuer", "/issuer.pem");
+    let (cert, cert_key) = (keyed("CCERT", "/client.pem"), keyed("KEY", "/client.key"));
     assert_eq!(
         key(&p),
         format!(
             "https:localhost:18443:KEY-V3:VRFY-STATUS:TLSVER-7-7:TLSOPT-3:CIPHER-3:AES:\
              CIPHER13-22:TLS_AES_128_GCM_SHA256:CURVES-6:X25519:SIGALGS-7:ed25519:\
-             CA-58:{CA}:CApath-7:/ca/dir:CRL-8:/crl.pem:Issuer-11:/issuer.pem:\
-             CAInfoBlob-{abc}:CertBlob-{abc}:Pinned-9:sha256//x:CCERT-11:/client.pem:\
-             KEY-11:/client.key:CT-3:PEM:KT-3:DER:IMPL-13:OpenSSL/3.5.9:G"
+             {ca}:{ca_path}:{crl}:{issuer}:\
+             CAInfoBlob-{abc}:CertBlob-{abc}:Pinned-9:sha256//x:{cert}:\
+             {cert_key}:CT-3:PEM:KT-3:DER:IMPL-13:OpenSSL/3.5.9:G"
         )
     );
 }
@@ -138,10 +156,24 @@ fn a_key_holds_every_setting_a_session_must_share() {
 #[cfg_attr(miri, ignore = "Miri has no realpath")]
 fn a_relative_path_is_made_absolute_or_the_key_local() {
     let p = peer(|i| i.options.ca_file = CaSetting::Given(b"no/such/ca.pem".to_vec()));
-    assert!(key(&p).contains(":CA-14:no/such/ca.pem:"), "{}", key(&p));
-    assert!(key(&p).ends_with(":L"), "{}", key(&p));
+    // Windows makes a path absolute whether or not it is there.
+    #[cfg(unix)]
+    {
+        assert!(key(&p).contains(":CA-14:no/such/ca.pem:"), "{}", key(&p));
+        assert!(key(&p).ends_with(":L"), "{}", key(&p));
+    }
+    #[cfg(windows)]
+    {
+        let ca = keyed("CA", "no/such/ca.pem");
+        assert!(key(&p).contains(&format!(":{ca}:")), "{}", key(&p));
+        assert!(key(&p).ends_with(":G"), "{}", key(&p));
+    }
     let p = peer(|i| i.options.ca_file = CaSetting::Given(b"Cargo.toml".to_vec()));
+    #[cfg(unix)]
     let abs = std::fs::canonicalize("Cargo.toml").unwrap();
+    // `canonicalize` names it in Windows' extended form, `_fullpath` not.
+    #[cfg(windows)]
+    let abs = std::path::absolute("Cargo.toml").unwrap();
     let abs = abs.to_str().unwrap();
     assert!(
         key(&p).contains(&format!(":CA-{}:{abs}:", abs.len())),
@@ -156,11 +188,8 @@ fn a_relative_path_is_made_absolute_or_the_key_local() {
 #[test]
 fn the_default_ca_is_keyed_as_the_file_it_resolves_to() {
     let p = peer(|i| i.options.ca_file = CaSetting::Default);
-    assert!(
-        key(&p).contains(":CA-34:/etc/ssl/certs/ca-certificates.crt:"),
-        "{}",
-        key(&p)
-    );
+    let ca = keyed("CA", "/etc/ssl/certs/ca-certificates.crt");
+    assert!(key(&p).contains(&format!(":{ca}:")), "{}", key(&p));
     let p = peer(|i| i.options.ca_file = CaSetting::Unset);
     assert!(!key(&p).contains(":CA-"), "{}", key(&p));
 }

@@ -1265,9 +1265,12 @@ fn the_session_cache_traces_its_uses() {
                 .map(|l| l.trim_end().to_owned()),
         );
     }
-    let key = format!(
-        "https:127.0.0.1:{PORT}:KEY-V3:TLSVER-6-0:CA-19:/fake/ca-bundle.crt:IMPL-11:FakeTLS/1.0:G"
-    );
+    // On Windows the CA's path made absolute (`_fullpath`).
+    #[cfg(unix)]
+    let ca = "CA-19:/fake/ca-bundle.crt";
+    #[cfg(windows)]
+    let ca = "CA-21:C:\\fake\\ca-bundle.crt";
+    let key = format!("https:127.0.0.1:{PORT}:KEY-V3:TLSVER-6-0:{ca}:IMPL-11:FakeTLS/1.0:G");
     let want = [
         format!("[SSLS] find peer slot for {key} among 25 slots"),
         format!("[SSLS] peer not found for {key}"),

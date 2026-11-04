@@ -93,7 +93,17 @@ pub(crate) struct ssh_knownhosts_entry {
 }
 
 /// `mode_t` on Linux.
+#[cfg(unix)]
 pub(crate) type mode_t = c_uint;
+/// `mode_t` as libssh's header declares it for MSVC.
+#[cfg(windows)]
+pub(crate) type mode_t = c_int;
+
+/// `socket_t`: a descriptor, on Windows a Winsock `SOCKET`.
+#[cfg(unix)]
+pub(crate) type socket_t = c_int;
+#[cfg(windows)]
+pub(crate) type socket_t = usize;
 
 // `SSH_OK`, `SSH_ERROR`, `SSH_AGAIN`.
 pub(crate) const SSH_OK: c_int = 0;
@@ -174,7 +184,7 @@ unsafe extern "C" {
     pub(crate) fn ssh_get_error(error: *mut c_void) -> *const c_char;
     pub(crate) fn ssh_connect(session: ssh_session) -> c_int;
     pub(crate) fn ssh_disconnect(session: ssh_session);
-    pub(crate) fn ssh_get_fd(session: ssh_session) -> c_int;
+    pub(crate) fn ssh_get_fd(session: ssh_session) -> socket_t;
     pub(crate) fn ssh_get_server_publickey(session: ssh_session, key: *mut ssh_key) -> c_int;
     pub(crate) fn ssh_get_publickey_hash(
         key: ssh_key,
@@ -316,8 +326,9 @@ unsafe extern "C" {
     /// The C library's, which frees what `ssh_pki_export_pubkey_base64`
     /// allocates.
     pub(crate) fn free(p: *mut c_void);
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    #[cfg(unix)]
     pub(crate) fn close(fd: c_int) -> c_int;
 }
 

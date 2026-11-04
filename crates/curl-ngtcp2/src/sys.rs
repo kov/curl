@@ -7,7 +7,16 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-use libc::{sockaddr, sockaddr_in, sockaddr_in6, socklen_t};
+#[cfg(unix)]
+pub(crate) use libc::{sockaddr, sockaddr_in, sockaddr_in6, sockaddr_storage, socklen_t};
+#[cfg(windows)]
+pub(crate) use windows_sys::Win32::Networking::WinSock::{
+    SOCKADDR as sockaddr, SOCKADDR_IN as sockaddr_in, SOCKADDR_IN6 as sockaddr_in6,
+    SOCKADDR_STORAGE as sockaddr_storage,
+};
+/// `ngtcp2_socklen`: an `int` on Windows.
+#[cfg(windows)]
+pub(crate) type socklen_t = c_int;
 
 pub(crate) type ngtcp2_tstamp = u64;
 pub(crate) type ngtcp2_duration = u64;

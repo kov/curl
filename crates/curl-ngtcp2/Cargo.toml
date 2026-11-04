@@ -13,6 +13,9 @@ curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os" }
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
+
 [dev-dependencies]
 curl-core = { path = "../curl-core", features = ["test-util"] }
 # The TLS session a connection is handed, and its library linked.

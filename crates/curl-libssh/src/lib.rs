@@ -10,7 +10,10 @@ mod sys;
 
 use core::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use core::ptr;
-use std::os::fd::{BorrowedFd, IntoRawFd as _};
+#[cfg(unix)]
+use std::os::fd::{BorrowedFd as BorrowedSocket, IntoRawFd as _};
+#[cfg(windows)]
+use std::os::windows::io::{BorrowedSocket, FromRawSocket as _, IntoRawSocket as _, OwnedSocket};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ssh::{
@@ -98,11 +101,11 @@ enum Socket {
     None,
     /// Handed to libssh, not yet taken up by a connect: libssh's to
     /// forget, ours to close.
-    Given(c_int),
+    Given(sys::socket_t),
     /// Taken up by a connect: open while libssh's socket has it.
-    Taken(c_int),
+    Taken(sys::socket_t),
     /// Let go of by libssh, open, after its goodbye: ours to close.
-    LetGo(c_int),
+    LetGo(sys::socket_t),
 }
 
 // SAFETY: libssh's handles are tied to no thread: a session and what it
@@ -212,6 +215,15 @@ impl Drop for Attributes {
 }
 
 /// What libssh's `rc` says of a call that may wait.
+/// Permissions as libssh's `mode_t` has them: on Windows an `int`, C's
+/// cast wrapping them.
+fn mode_t(mode: u32) -> sys::mode_t {
+    #[cfg(unix)]
+    return mode;
+    #[cfg(windows)]
+    return mode.cast_signed();
+}
+
 fn rc(rc: c_int) -> Rc {
     match rc {
         sys::SSH_OK => Rc::Ok,
@@ -401,13 +413,15 @@ impl Session for Libsession {
         }
     }
 
-    fn set_socket(&mut self, socket: Option<BorrowedFd<'_>>) -> Result<(), Refused> {
+    fn set_socket(&mut self, socket: Option<BorrowedSocket<'_>>) -> Result<(), Refused> {
         assert_eq!(self.socket, Socket::None, "a session is handed one socket");
         let socket = socket.ok_or(Refused)?;
-        let copy = socket
-            .try_clone_to_owned()
-            .map_err(|_| Refused)?
-            .into_raw_fd();
+        let copy = socket.try_clone_to_owned().map_err(|_| Refused)?;
+        #[cfg(unix)]
+        let copy = copy.into_raw_fd();
+        #[cfg(windows)]
+        let copy =
+            sys::socket_t::try_from(copy.into_raw_socket()).expect("a SOCKET is pointer-wide");
         self.socket = Socket::Given(copy);
         self.set(sys::SSH_OPTIONS_FD, (&raw const copy).cast())
     }
@@ -849,7 +863,7 @@ impl Session for Libsession {
     fn mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), NotDone> {
         let n = self.on_path(path, sys::SSH_ERROR, |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
-            unsafe { sys::sftp_mkdir(sftp, p, mode) }
+            unsafe { sys::sftp_mkdir(sftp, p, mode_t(mode)) }
         });
         self.finished(n)
     }
@@ -887,7 +901,7 @@ impl Session for Libsession {
         self.close_file();
         self.file = self.on_path(path, ptr::null_mut(), |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
-            unsafe { sys::sftp_open(sftp, p, flags, perms) }
+            unsafe { sys::sftp_open(sftp, p, flags, mode_t(perms)) }
         });
         if self.file.is_null() {
             Err(self.status())
@@ -1027,10 +1041,18 @@ impl Drop for Libsession {
         if let Socket::Given(fd) | Socket::LetGo(fd) = self.socket {
             // SAFETY: the session's copy of the socket, which libssh never
             // took up or let go of open, closed once, here.
-            unsafe { sys::close(fd) };
+            #[cfg(unix)]
+            unsafe {
+                sys::close(fd)
+            };
+            // SAFETY: as above: owned here alone, and closed as it drops.
+            #[cfg(windows)]
+            drop(unsafe { OwnedSocket::from_raw_socket(fd as u64) });
         }
     }
 }
 
 #[cfg(test)]
+// The tests drive libssh over Unix socket pairs and a local sshd.
+#[cfg(unix)]
 mod tests;

@@ -190,47 +190,92 @@ fn crypto_init() {
 /// A socket address as the libraries take it.
 #[derive(Clone, Copy)]
 struct Addr {
-    storage: libc::sockaddr_storage,
-    len: libc::socklen_t,
+    storage: sys::sockaddr_storage,
+    len: sys::socklen_t,
+}
+
+/// `a` as the system's `sockaddr_in` has it.
+#[cfg(unix)]
+fn sockaddr_in(a: std::net::SocketAddrV4) -> sys::sockaddr_in {
+    libc::sockaddr_in {
+        sin_family: libc::sa_family_t::try_from(libc::AF_INET).expect("fits"),
+        sin_port: a.port().to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from_ne_bytes(a.ip().octets()),
+        },
+        sin_zero: [0; 8],
+    }
+}
+
+/// `a` as the system's `sockaddr_in6` has it.
+#[cfg(unix)]
+fn sockaddr_in6(a: std::net::SocketAddrV6) -> sys::sockaddr_in6 {
+    libc::sockaddr_in6 {
+        sin6_family: libc::sa_family_t::try_from(libc::AF_INET6).expect("fits"),
+        sin6_port: a.port().to_be(),
+        sin6_flowinfo: a.flowinfo(),
+        sin6_addr: libc::in6_addr {
+            s6_addr: a.ip().octets(),
+        },
+        sin6_scope_id: a.scope_id(),
+    }
+}
+
+/// `a` as Winsock's `SOCKADDR_IN` has it.
+#[cfg(windows)]
+fn sockaddr_in(a: std::net::SocketAddrV4) -> sys::sockaddr_in {
+    use windows_sys::Win32::Networking::WinSock as ws;
+    ws::SOCKADDR_IN {
+        sin_family: ws::AF_INET,
+        sin_port: a.port().to_be(),
+        sin_addr: ws::IN_ADDR {
+            S_un: ws::IN_ADDR_0 {
+                S_addr: u32::from_ne_bytes(a.ip().octets()),
+            },
+        },
+        sin_zero: [0; 8],
+    }
+}
+
+/// `a` as Winsock's `SOCKADDR_IN6` has it.
+#[cfg(windows)]
+fn sockaddr_in6(a: std::net::SocketAddrV6) -> sys::sockaddr_in6 {
+    use windows_sys::Win32::Networking::WinSock as ws;
+    ws::SOCKADDR_IN6 {
+        sin6_family: ws::AF_INET6,
+        sin6_port: a.port().to_be(),
+        sin6_flowinfo: a.flowinfo(),
+        sin6_addr: ws::IN6_ADDR {
+            u: ws::IN6_ADDR_0 {
+                Byte: a.ip().octets(),
+            },
+        },
+        Anonymous: ws::SOCKADDR_IN6_0 {
+            sin6_scope_id: a.scope_id(),
+        },
+    }
 }
 
 impl Addr {
     fn new(addr: SocketAddr) -> Addr {
         // SAFETY: all zeroes is a valid `sockaddr_storage`.
-        let mut storage: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
+        let mut storage: sys::sockaddr_storage = unsafe { core::mem::zeroed() };
         let len = match addr {
             SocketAddr::V4(a) => {
-                let sin = libc::sockaddr_in {
-                    sin_family: libc::sa_family_t::try_from(libc::AF_INET).expect("fits"),
-                    sin_port: a.port().to_be(),
-                    sin_addr: libc::in_addr {
-                        s_addr: u32::from_ne_bytes(a.ip().octets()),
-                    },
-                    sin_zero: [0; 8],
-                };
                 // SAFETY: a `sockaddr_in` fits in the storage, which is
                 // aligned for any address.
-                unsafe { ptr::write(ptr::from_mut(&mut storage).cast(), sin) };
-                core::mem::size_of::<libc::sockaddr_in>()
+                unsafe { ptr::write(ptr::from_mut(&mut storage).cast(), sockaddr_in(a)) };
+                core::mem::size_of::<sys::sockaddr_in>()
             }
             SocketAddr::V6(a) => {
-                let sin6 = libc::sockaddr_in6 {
-                    sin6_family: libc::sa_family_t::try_from(libc::AF_INET6).expect("fits"),
-                    sin6_port: a.port().to_be(),
-                    sin6_flowinfo: a.flowinfo(),
-                    sin6_addr: libc::in6_addr {
-                        s6_addr: a.ip().octets(),
-                    },
-                    sin6_scope_id: a.scope_id(),
-                };
                 // SAFETY: as above.
-                unsafe { ptr::write(ptr::from_mut(&mut storage).cast(), sin6) };
-                core::mem::size_of::<libc::sockaddr_in6>()
+                unsafe { ptr::write(ptr::from_mut(&mut storage).cast(), sockaddr_in6(a)) };
+                core::mem::size_of::<sys::sockaddr_in6>()
             }
         };
         Addr {
             storage,
-            len: libc::socklen_t::try_from(len).expect("an address's length fits"),
+            len: sys::socklen_t::try_from(len).expect("an address's length fits"),
         }
     }
 

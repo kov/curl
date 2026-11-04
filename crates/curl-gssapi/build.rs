@@ -6,7 +6,12 @@
 use std::process::Command;
 
 fn main() {
-    println!("cargo::rustc-link-lib=gssapi_krb5");
+    // MIT krb5 for Windows names it by its width.
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        println!("cargo::rustc-link-lib=gssapi64");
+    } else {
+        println!("cargo::rustc-link-lib=gssapi_krb5");
+    }
     println!("cargo::rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo::rerun-if-env-changed=PKG_CONFIG_LIBDIR");
     let out = Command::new("pkg-config")

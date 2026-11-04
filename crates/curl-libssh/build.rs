@@ -7,7 +7,13 @@
 fn main() {
     println!("cargo::rustc-link-lib=ssh");
     println!("cargo::rerun-if-changed=csrc/layout.c");
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    // MSVC's C knows `_Static_assert` from C11 on, which it is not in
+    // unless asked.
+    if std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
+        build.std("c11");
+    }
+    build
         .file("csrc/layout.c")
         .warnings_into_errors(true)
         .compile("curl_libssh_layout");

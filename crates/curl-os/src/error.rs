@@ -19,9 +19,16 @@ pub struct ErrorText {
 
 impl ErrorText {
     /// The text of `e`: for an operating-system error, the system's text
-    /// for its number; for another, std's text of it, cut to fit.
+    /// for its number; for another, std's text of it, cut to fit. On
+    /// Windows the number is the system's (`GetLastError`), which the C
+    /// library turns into the `errno` C reads after a failed call
+    /// (`_dosmaperr`): a file not found is `ENOENT`, not `ESRCH`, which
+    /// the system's 3 would read as.
     pub fn of(e: &io::Error) -> ErrorText {
         match e.raw_os_error() {
+            #[cfg(windows)]
+            Some(code) => ErrorText::of_code(errno_of_system_error(code).unwrap_or(code)),
+            #[cfg(unix)]
             Some(code) => ErrorText::of_code(code),
             None => {
                 let mut text = ErrorText::empty();
@@ -144,6 +151,43 @@ impl ErrorText {
     pub fn as_bytes(&self) -> &[u8] {
         &self.text[..self.len]
     }
+}
+
+/// The `errno` the C library sets for system error `code`, as its
+/// `_dosmaperr` maps it; `None` for no error, and for Winsock's numbers
+/// and those past them, which are no file call's: each is named as it is.
+#[cfg(windows)]
+fn errno_of_system_error(code: i32) -> Option<i32> {
+    /// Winsock's numbers start here (`WSABASEERR`).
+    const WSABASEERR: i32 = 10_000;
+    if !(1..WSABASEERR).contains(&code) {
+        return None;
+    }
+    Some(match code {
+        1 | 12 | 13 | 87 | 131 => libc::EINVAL,
+        2 | 3 | 15 | 18 | 53 | 67 | 161 | 206 => libc::ENOENT,
+        4 => libc::EMFILE,
+        5 | 16 | 33 | 65 | 82 | 83 | 108 | 132 | 158 | 167 => libc::EACCES,
+        6 | 114 | 130 => libc::EBADF,
+        7..=9 => libc::ENOMEM,
+        10 => libc::E2BIG,
+        11 => libc::ENOEXEC,
+        17 => libc::EXDEV,
+        80 | 183 => libc::EEXIST,
+        89 | 164 | 215 => libc::EAGAIN,
+        109 => libc::EPIPE,
+        112 => libc::ENOSPC,
+        128 | 129 => libc::ECHILD,
+        145 => libc::ENOTEMPTY,
+        // `ERROR_WRITE_PROTECT` to `ERROR_SHARING_BUFFER_EXCEEDED`.
+        19..=36 => libc::EACCES,
+        // `ERROR_INVALID_STARTING_CODESEG` to
+        // `ERROR_INFLOOP_IN_RELOC_CHAIN`.
+        188..=202 => libc::ENOEXEC,
+        // `ERROR_NOT_ENOUGH_QUOTA`.
+        1816 => libc::ENOMEM,
+        _ => libc::EINVAL,
+    })
 }
 
 #[cfg(windows)]
@@ -295,6 +339,29 @@ mod tests {
             ErrorText::of_code(-3).as_bytes(),
             b"Unknown error -3 (0xfffffffd)"
         );
+    }
+
+    /// A system error is named by the `errno` the C library makes of it,
+    /// as C names a failed file call's; Winsock's by its own.
+    #[test]
+    #[cfg(windows)]
+    fn names_a_system_error_as_the_c_library_s_errno() {
+        let text = |code| ErrorText::of(&io::Error::from_raw_os_error(code));
+        // ERROR_FILE_NOT_FOUND and ERROR_PATH_NOT_FOUND.
+        assert_eq!(text(2).as_bytes(), b"No such file or directory");
+        assert_eq!(text(3).as_bytes(), b"No such file or directory");
+        // ERROR_ACCESS_DENIED and ERROR_SHARING_VIOLATION.
+        assert_eq!(text(5).as_bytes(), b"Permission denied");
+        assert_eq!(text(32).as_bytes(), b"Permission denied");
+        // ERROR_FILE_EXISTS and ERROR_DISK_FULL.
+        assert_eq!(text(80).as_bytes(), b"File exists");
+        assert_eq!(text(112).as_bytes(), b"No space left on device");
+        // ERROR_DIRECTORY, which the table does not list.
+        assert_eq!(text(267).as_bytes(), b"Invalid argument");
+        assert_eq!(text(10061).as_bytes(), b"Connection refused");
+        assert_eq!(text(0).as_bytes(), b"No error");
+        // The number itself is still read as an `errno`.
+        assert_eq!(ErrorText::of_code(3).as_bytes(), b"No such process");
     }
 
     /// Some text for any number, known or not: the call Miri checks.

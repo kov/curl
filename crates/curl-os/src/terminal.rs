@@ -49,6 +49,165 @@ pub fn columns() -> Option<u16> {
         })
 }
 
+/// Whether `handle` is a character device, as the C library's `_isatty`
+/// tells it on Windows: a console, and devices such as `NUL`, but not a
+/// pipe, whatever is at its other end.
+#[cfg(windows)]
+pub fn is_character_device(handle: std::os::windows::io::BorrowedHandle<'_>) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+    // SAFETY: the handle is open for the borrow; the call only asks the
+    // system what it is.
+    unsafe { GetFileType(handle.as_raw_handle()) == FILE_TYPE_CHAR }
+}
+
+/// A console's screen buffer, which C's tool writes a body to as UTF-16
+/// rather than through the C library (`win_console`).
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+pub struct Console<'a>(std::os::windows::io::BorrowedHandle<'a>);
+
+#[cfg(windows)]
+impl<'a> Console<'a> {
+    /// `handle`, if it is a console's screen buffer: one the system tells
+    /// about (`GetConsoleScreenBufferInfo`).
+    pub fn of(handle: std::os::windows::io::BorrowedHandle<'a>) -> Option<Console<'a>> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::Console::{
+            CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo,
+        };
+        // SAFETY: all zeros is a value of the plain record the call fills.
+        let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { core::mem::zeroed() };
+        // SAFETY: the handle is open for the borrow, and `info` is the
+        // record the call writes, alive through it; a handle that is not
+        // a console's fails.
+        let ok = unsafe { GetConsoleScreenBufferInfo(handle.as_raw_handle(), &raw mut info) };
+        (ok != 0).then_some(Console(handle))
+    }
+
+    /// Write `units` to it (`WriteConsoleW`).
+    pub fn write(&self, units: &[u16]) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::Console::WriteConsoleW;
+        let count = u32::try_from(units.len()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let mut written = 0u32;
+        // SAFETY: the handle is open for the borrow; `units` is `count`
+        // readable units and `written` a writable count, both alive
+        // through the call, which reserves nothing.
+        let ok = unsafe {
+            WriteConsoleW(
+                self.0.as_raw_handle(),
+                units.as_ptr().cast(),
+                count,
+                &raw mut written,
+                core::ptr::null(),
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+/// A console screen buffer of its own, on the process's console (one is
+/// made for it if it has none), which a child may be given to write to
+/// and whose first line can be read back: for tests of what is written to
+/// a console.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct ScreenBuffer(std::os::windows::io::OwnedHandle);
+
+#[cfg(windows)]
+impl ScreenBuffer {
+    pub fn new() -> std::io::Result<ScreenBuffer> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Console::{
+            AllocConsole, CONSOLE_TEXTMODE_BUFFER, CreateConsoleScreenBuffer,
+        };
+        // SAFETY: the call takes nothing, and fails when the process has a
+        // console already, which is then the one used.
+        unsafe { AllocConsole() };
+        // SAFETY: no security attributes or data are passed; the call
+        // makes a new handle or fails.
+        let raw = unsafe {
+            CreateConsoleScreenBuffer(
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                core::ptr::null(),
+                CONSOLE_TEXTMODE_BUFFER,
+                core::ptr::null(),
+            )
+        };
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the handle is new, owned by nothing else.
+        Ok(ScreenBuffer(unsafe {
+            std::os::windows::io::OwnedHandle::from_raw_handle(raw)
+        }))
+    }
+
+    pub fn handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        use std::os::windows::io::AsHandle as _;
+        self.0.as_handle()
+    }
+
+    /// The first `n` units of its first line.
+    pub fn read(&self, n: usize) -> std::io::Result<Vec<u16>> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::Console::{COORD, ReadConsoleOutputCharacterW};
+        let mut back: Vec<u16> = Vec::new();
+        curl_alloc::TryVec::try_resize(&mut back, n, 0)
+            .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+        let count = u32::try_from(n).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let mut read = 0u32;
+        // SAFETY: the handle is open; `back` has room for the `count` units
+        // the call is told and `read` is a writable count, both alive
+        // through the call.
+        let ok = unsafe {
+            ReadConsoleOutputCharacterW(
+                self.0.as_raw_handle(),
+                back.as_mut_ptr(),
+                count,
+                COORD { X: 0, Y: 0 },
+                &raw mut read,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        back.truncate(usize::try_from(read).expect("a u32 fits"));
+        Ok(back)
+    }
+}
+
+/// `utf8` in UTF-16, as Windows converts it (`MultiByteToWideChar` with
+/// `CP_UTF8`, which puts U+FFFD for what is not UTF-8), into `out`: how
+/// many units it wrote, 0 when they do not fit; with `out` empty, how many
+/// it would write. 0 for an empty `utf8`.
+#[cfg(windows)]
+pub fn utf8_to_wide(utf8: &[u8], out: &mut [u16]) -> usize {
+    use windows_sys::Win32::Globalization::{CP_UTF8, MultiByteToWideChar};
+    let (Ok(len), Ok(room)) = (i32::try_from(utf8.len()), i32::try_from(out.len())) else {
+        return 0;
+    };
+    if len == 0 {
+        return 0;
+    }
+    let to = if out.is_empty() {
+        core::ptr::null_mut()
+    } else {
+        out.as_mut_ptr()
+    };
+    // SAFETY: `utf8` is `len` readable bytes, and `to` is null (asking for
+    // the room needed) or `room` writable units, both alive through the
+    // call, which writes no further.
+    let n = unsafe { MultiByteToWideChar(CP_UTF8, 0, utf8.as_ptr(), len, to, room) };
+    usize::try_from(n).unwrap_or(0)
+}
+
 /// Where a password is typed (`getpass_r`): the controlling terminal,
 /// `/dev/tty`, or standard input when there is none, with the terminal's
 /// echo off until this is dropped.
@@ -195,6 +354,51 @@ mod tests {
         assert_eq!(read(b"\x08\x08a\r", 16), b"a\r");
         assert_eq!(read(b"abcd", 3), b"abc");
         assert_eq!(read(b"\r", 16), b"\r");
+    }
+
+    /// UTF-8 is converted as Windows converts it: what is not UTF-8 is
+    /// U+FFFD, an empty `out` asks for the room, and too little room
+    /// converts nothing.
+    #[test]
+    #[cfg(windows)]
+    fn converts_utf8_as_windows_does() {
+        let wide = |utf8: &[u8]| {
+            let mut out = vec![0u16; super::utf8_to_wide(utf8, &mut [])];
+            let n = super::utf8_to_wide(utf8, &mut out);
+            out.truncate(n);
+            out
+        };
+        assert_eq!(wide(b"caf\xc3\xa9"), [0x63, 0x61, 0x66, 0xe9]);
+        assert_eq!(wide(b"\xf0\x9f\x98\x80\0"), [0xd83d, 0xde00, 0]);
+        assert_eq!(wide(b"a\xc3"), [0x61, 0xfffd]);
+        assert_eq!(wide(b""), []);
+        assert_eq!(super::utf8_to_wide(b"abc", &mut [0; 2]), 0);
+    }
+
+    /// `NUL` and a console are character devices; a file and a pipe are
+    /// not. Only a console's screen buffer is a console, and what is
+    /// written to it reads back as written.
+    #[test]
+    #[cfg(windows)]
+    fn tells_a_console_from_a_device_and_writes_to_it() {
+        use std::os::windows::io::AsHandle as _;
+        let nul = std::fs::OpenOptions::new().write(true).open("NUL").unwrap();
+        assert!(super::is_character_device(nul.as_handle()));
+        assert!(super::Console::of(nul.as_handle()).is_none());
+        let path = std::env::temp_dir().join(format!("curl-console-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        assert!(!super::is_character_device(file.as_handle()));
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+        let (read, write) = std::io::pipe().unwrap();
+        assert!(!super::is_character_device(write.as_handle()));
+        drop((read, write));
+        let screen = super::ScreenBuffer::new().unwrap();
+        assert!(super::is_character_device(screen.handle()));
+        let console = super::Console::of(screen.handle()).expect("a console");
+        let text: Vec<u16> = "caf\u{e9}".encode_utf16().collect();
+        console.write(&text).unwrap();
+        assert_eq!(screen.read(4).unwrap(), text);
     }
 
     /// Under `cargo test` the standard streams are pipes or files at

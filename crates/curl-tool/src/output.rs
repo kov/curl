@@ -78,6 +78,10 @@ pub(crate) struct Stream {
     num_headers: u64,
     /// The last header line was blank: the next starts a response.
     after_blank: bool,
+    /// What a write to a console left of a UTF-8 sequence at its end,
+    /// for the next to complete (`outs->utf8seq`).
+    #[cfg(windows)]
+    utf8seq: [u8; 5],
     msgs: Messages,
 }
 
@@ -281,6 +285,8 @@ impl Output {
             etag_save: None,
             num_headers: 0,
             after_blank: true,
+            #[cfg(windows)]
+            utf8seq: [0; 5],
             msgs,
         };
         Ok(Output(TryArc::try_new(Mutex::new(stream))?))
@@ -656,10 +662,22 @@ impl Stream {
             ]);
             return Write::Fail;
         }
-        if self.write_held().is_err() {
-            return Write::Fail;
-        }
-        let took = self.fwrite(body);
+        // To a console on Windows, as UTF-16, past the C library and
+        // without the header lines held (`win_console`).
+        #[cfg(windows)]
+        let console = self.write_console(body);
+        #[cfg(not(windows))]
+        let console: Option<Result<(), Failed>> = None;
+        let took = match console {
+            Some(Ok(())) => body.len(),
+            Some(Err(Failed)) => return Write::Fail,
+            None => {
+                if self.write_held().is_err() {
+                    return Write::Fail;
+                }
+                self.fwrite(body)
+            }
+        };
         if took == body.len() {
             self.bytes += body.len() as u64;
         }
@@ -671,6 +689,31 @@ impl Stream {
             Write::Accepted
         } else {
             Write::Took(took)
+        }
+    }
+
+    /// Write `body` to the output's console, if it is one, as C's tool
+    /// does on Windows: if it is a character device and a console's
+    /// screen buffer (`isatty` and `GetConsoleScreenBufferInfo`). `None`
+    /// when it is not.
+    #[cfg(windows)]
+    fn write_console(&mut self, body: &[u8]) -> Option<Result<(), Failed>> {
+        use std::os::windows::io::AsHandle as _;
+        let seq = &mut self.utf8seq;
+        let mut write = |file: &File| {
+            let handle = file.as_handle();
+            if !curl_os::terminal::is_character_device(handle) {
+                return None;
+            }
+            let console = curl_os::terminal::Console::of(handle)?;
+            Some(console::write(console, seq, body))
+        };
+        match &self.target {
+            Target::Stdout(out) => out.with_file(|file| file.and_then(write)),
+            Target::File {
+                file: Some(file), ..
+            } => write(file.get_ref()),
+            Target::File { file: None, .. } | Target::Null => None,
         }
     }
 
@@ -1083,10 +1126,181 @@ fn link_target(location: &[u8], url: &[u8], vte: Option<&[u8]>) -> Option<Vec<u8
     matches!(&scheme[..], b"http" | b"https" | b"ftp" | b"ftps").then_some(target)
 }
 
+/// A write to a console failed, or its UTF-16 could not be made.
+#[derive(Debug, PartialEq, Eq)]
+struct Failed;
+
+/// A body written to a console as C's tool writes it there
+/// (`win_console`): its UTF-8 made UTF-16 and written past the C library,
+/// a sequence cut by the end of one write held for the next.
+#[cfg(any(windows, test))]
+mod console {
+    #[cfg(windows)]
+    use super::Failed;
+
+    /// A UTF-8 continuation byte.
+    fn trailing(b: u8) -> bool {
+        (0x80..0xC0).contains(&b)
+    }
+
+    /// What `body` makes with `seq` held from the last write: the held
+    /// sequence, once `body`'s first bytes complete it (whether or not it
+    /// is well formed), to be converted on its own; and the rest of
+    /// `body` to convert, less an incomplete sequence at its end, which
+    /// is held in `seq`. As C does it, byte for byte.
+    pub(super) fn split<'b>(seq: &mut [u8; 5], body: &'b [u8]) -> (Option<[u8; 5]>, &'b [u8]) {
+        let mut rbuf = body;
+        let take = |rbuf: &mut &'b [u8]| {
+            let b = rbuf[0];
+            *rbuf = &rbuf[1..];
+            b
+        };
+        let mut completed = None;
+        if seq[0] != 0 && !rbuf.is_empty() {
+            let mut complete = false;
+            if (0xC0..0xE0).contains(&seq[0]) {
+                seq[1] = take(&mut rbuf);
+                complete = true;
+            } else if (0xE0..0xF0).contains(&seq[0]) {
+                if seq[1] == 0 {
+                    seq[1] = take(&mut rbuf);
+                }
+                if !rbuf.is_empty() && seq[2] == 0 {
+                    seq[2] = take(&mut rbuf);
+                    complete = true;
+                }
+            } else if (0xF0..0xF8).contains(&seq[0]) {
+                if seq[1] == 0 {
+                    seq[1] = take(&mut rbuf);
+                }
+                if !rbuf.is_empty() && seq[2] == 0 {
+                    seq[2] = take(&mut rbuf);
+                }
+                if !rbuf.is_empty() && seq[3] == 0 {
+                    seq[3] = take(&mut rbuf);
+                    complete = true;
+                }
+            }
+            if complete {
+                completed = Some(*seq);
+                *seq = [0; 5];
+            }
+        }
+        let n = rbuf.len();
+        if seq[0] == 0 && n > 0 && rbuf[n - 1] & 0x80 != 0 {
+            let last = rbuf[n - 1];
+            if (0xC0..0xF8).contains(&last) {
+                seq[0] = last;
+                rbuf = &rbuf[..n - 1];
+            } else if n >= 2 && trailing(last) {
+                if (0xE0..0xF8).contains(&rbuf[n - 2]) {
+                    seq[..2].copy_from_slice(&rbuf[n - 2..]);
+                    rbuf = &rbuf[..n - 2];
+                } else if n >= 3 && trailing(rbuf[n - 2]) && (0xF0..0xF8).contains(&rbuf[n - 3]) {
+                    seq[..3].copy_from_slice(&rbuf[n - 3..]);
+                    rbuf = &rbuf[..n - 3];
+                }
+            }
+        }
+        (completed, rbuf)
+    }
+
+    /// Write `body` to `console`, `seq` held between writes.
+    #[cfg(windows)]
+    pub(super) fn write(
+        console: curl_os::terminal::Console<'_>,
+        seq: &mut [u8; 5],
+        body: &[u8],
+    ) -> Result<(), Failed> {
+        use curl_os::terminal::utf8_to_wide;
+        let (completed, rest) = split(seq, body);
+        if let Some(completed) = completed {
+            // Up to its terminator, which is converted too, into room for
+            // two units and it; what does not fit, or is not converted,
+            // is not written.
+            let end = completed
+                .iter()
+                .position(|&b| b == 0)
+                .expect("the last byte is 0");
+            let mut prefix = [0u16; 3];
+            if utf8_to_wide(&completed[..=end], &mut prefix) > 0 {
+                let units = if prefix[1] != 0 { 2 } else { 1 };
+                console.write(&prefix[..units]).map_err(|_| Failed)?;
+            }
+        }
+        if rest.is_empty() {
+            return Ok(());
+        }
+        let len = utf8_to_wide(rest, &mut []);
+        if len == 0 {
+            return Err(Failed);
+        }
+        let mut wide: Vec<u16> = Vec::new();
+        curl_alloc::TryVec::try_resize(&mut wide, len, 0).map_err(|_| Failed)?;
+        let len = utf8_to_wide(rest, &mut wide);
+        if len == 0 {
+            return Err(Failed);
+        }
+        console.write(&wide[..len]).map_err(|_| Failed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
+
+    /// A body to a console is split as C's `win_console` splits it: a
+    /// sequence cut by a write's end is held and completed by the next,
+    /// whatever follows its lead byte; one ended by a byte that cannot
+    /// continue it is passed on whole to be converted.
+    #[test]
+    fn splits_a_console_s_utf8_as_c_does() {
+        let mut seq = [0u8; 5];
+        // Whole sequences pass; one cut after its lead is held.
+        assert_eq!(
+            console::split(&mut seq, b"a\xc3\xa9b\xe2"),
+            (None, &b"a\xc3\xa9b"[..])
+        );
+        assert_eq!(seq, [0xe2, 0, 0, 0, 0]);
+        // Completed a byte at a time.
+        assert_eq!(console::split(&mut seq, b"\x82"), (None, &b""[..]));
+        assert_eq!(seq, [0xe2, 0x82, 0, 0, 0]);
+        assert_eq!(
+            console::split(&mut seq, b"\xacz"),
+            (Some([0xe2, 0x82, 0xac, 0, 0]), &b"z"[..])
+        );
+        assert_eq!(seq, [0; 5]);
+        // A lead and one continuation of three, or two of four, held.
+        assert_eq!(console::split(&mut seq, b"x\xe2\x82"), (None, &b"x"[..]));
+        assert_eq!(seq, [0xe2, 0x82, 0, 0, 0]);
+        seq = [0; 5];
+        assert_eq!(console::split(&mut seq, b"\xf0\x9f\x98"), (None, &b""[..]));
+        assert_eq!(seq, [0xf0, 0x9f, 0x98, 0, 0]);
+        // The next byte completes it, well formed or not.
+        assert_eq!(
+            console::split(&mut seq, b"Ab"),
+            (Some([0xf0, 0x9f, 0x98, b'A', 0]), &b"b"[..])
+        );
+        // Two continuations after a two-byte lead, or a lone continuation,
+        // are not held.
+        assert_eq!(
+            console::split(&mut seq, b"\xc3\xa9\xa9"),
+            (None, &b"\xc3\xa9\xa9"[..])
+        );
+        assert_eq!(console::split(&mut seq, b"\xa9"), (None, &b"\xa9"[..]));
+        assert_eq!(seq, [0; 5]);
+        // A four-byte lead alone is held.
+        assert_eq!(console::split(&mut seq, b"a\xf0"), (None, &b"a"[..]));
+        assert_eq!(seq, [0xf0, 0, 0, 0, 0]);
+        seq = [0; 5];
+        // A byte past 0xF7 is no lead.
+        assert_eq!(console::split(&mut seq, b"\xf8"), (None, &b"\xf8"[..]));
+        // Nothing to complete with: the held sequence waits.
+        seq = [0xc3, 0, 0, 0, 0];
+        assert_eq!(console::split(&mut seq, b""), (None, &b""[..]));
+        assert_eq!(seq, [0xc3, 0, 0, 0, 0]);
+    }
 
     /// A number goes before an extension, or after a name without one;
     /// a leading dot or a trailing one is no extension.

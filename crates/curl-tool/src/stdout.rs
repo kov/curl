@@ -32,7 +32,20 @@ impl Sink for Descriptor {
     }
 
     fn layout(&self) -> Layout {
-        self.0.as_ref().map_or(Layout::UNKNOWN, File::layout)
+        self.0.as_ref().map_or(Layout::UNKNOWN, |file| {
+            #[cfg(windows)]
+            {
+                // The UCRT buffers `stdout` for each write when it is a
+                // character device, as its `_isatty` tells it.
+                let temporary = curl_os::terminal::is_character_device(file.as_handle());
+                Layout {
+                    temporary,
+                    ..file.layout()
+                }
+            }
+            #[cfg(unix)]
+            file.layout()
+        })
     }
 }
 
@@ -67,6 +80,19 @@ impl Stdout {
     pub(crate) fn flush(&self) -> Result<(), Failed> {
         self.0.lock().expect("no panic holds it").flush()
     }
+
+    /// Call `f` with descriptor 1, if it is open, for a write past the
+    /// buffer, which the caller has seen is empty.
+    #[cfg(windows)]
+    pub(crate) fn with_file<R>(&self, f: impl FnOnce(Option<&File>) -> R) -> R {
+        f(self
+            .0
+            .lock()
+            .expect("no panic holds it")
+            .get_ref()
+            .0
+            .as_ref())
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +102,22 @@ mod tests {
     /// Standard output with descriptor 1 not open.
     fn closed() -> Stdout {
         Stdout(TryArc::try_new(Mutex::new(Stdio::new(Descriptor(None)))).unwrap())
+    }
+
+    /// On Windows standard output is buffered for each write when it is a
+    /// character device, as the UCRT buffers it, and for the buffer's
+    /// size otherwise: `NUL` is one, a file is not.
+    #[cfg(windows)]
+    #[test]
+    fn is_buffered_for_each_write_on_a_character_device() {
+        let nul = File::options().write(true).open("NUL").unwrap();
+        let layout = Descriptor(Some(nul)).layout();
+        assert!(layout.temporary && !layout.line, "{layout:?}");
+        let path = std::env::temp_dir().join(format!("curl-stdout-{}", std::process::id()));
+        let layout = Descriptor(Some(File::create(&path).unwrap())).layout();
+        assert!(!layout.temporary && !layout.line, "{layout:?}");
+        assert_eq!(layout.size, crate::stdio::UCRT_BUFSIZ);
+        std::fs::remove_file(&path).unwrap();
     }
 
     /// What fits the buffer is all taken, and fails only when written; a

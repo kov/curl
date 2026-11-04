@@ -2,10 +2,14 @@
 //! output with `fwrite` and finds out a write failed from what `fwrite`
 //! returns, or only at `fflush` or `fclose`, so the rewrite holds bytes and
 //! writes them in the same pieces at the same moments (glibc's
-//! `libio/fileops.c`, `_IO_new_file_xsputn` and what it calls).
+//! `libio/fileops.c`, `_IO_new_file_xsputn` and what it calls). The UCRT's
+//! `fwrite` cuts a write into the same pieces; only the buffer's size and
+//! when it is written out differ (`Layout`).
 
 use std::fs::File;
-use std::io::{self, IsTerminal as _};
+use std::io;
+#[cfg(unix)]
+use std::io::IsTerminal as _;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 
@@ -39,6 +43,10 @@ pub(crate) struct Layout {
     pub(crate) size: usize,
     /// Written as each line ends (`_IO_LINE_BUF`).
     pub(crate) line: bool,
+    /// Written as each write ends, the buffer set up before it: the UCRT's
+    /// temporary buffering of `stdout` on a character device (`_stbuf`
+    /// and `_ftbuf`, `__acrt_should_use_temporary_buffer`).
+    pub(crate) temporary: bool,
 }
 
 impl Layout {
@@ -46,6 +54,7 @@ impl Layout {
     pub(crate) const UNKNOWN: Layout = Layout {
         size: BUFSIZ,
         line: false,
+        temporary: false,
     };
 }
 
@@ -60,26 +69,28 @@ impl Sink for File {
             Ok(meta) => Layout {
                 size: buffer_size(meta.blksize()),
                 line: meta.file_type().is_char_device() && self.is_terminal(),
+                temporary: false,
             },
             Err(_) => Layout::UNKNOWN,
         }
     }
 
     /// The UCRT's: a stream's buffer is `_INTERNAL_BUFSIZ` whatever the
-    /// file, and one on the console is written out as each write ends,
-    /// which a line at a time comes nearest to.
+    /// file, written when it fills, console or not; only `stdout` is
+    /// buffered for each write on a console ([`Layout::temporary`]).
     #[cfg(windows)]
     fn layout(&self) -> Layout {
         Layout {
             size: UCRT_BUFSIZ,
-            line: self.is_terminal(),
+            line: false,
+            temporary: false,
         }
     }
 }
 
 /// The UCRT's `_INTERNAL_BUFSIZ`: the buffer it gives a stream.
 #[cfg(windows)]
-const UCRT_BUFSIZ: usize = 4096;
+pub(crate) const UCRT_BUFSIZ: usize = 4096;
 
 impl Close for File {
     fn close(self) -> io::Result<()> {
@@ -141,12 +152,28 @@ impl<S: Sink> Stdio<S> {
     }
 
     /// Write `data`: how much of it was taken (`fwrite`, whose count may
-    /// say all was taken though writing it failed).
+    /// say all was taken though writing it failed). A temporary buffer is
+    /// set up first, and written out after, whatever came of the rest.
     pub(crate) fn fwrite(&mut self, data: &[u8]) -> usize {
-        let n = data.len();
-        if n == 0 {
+        if data.is_empty() {
             return 0;
         }
+        if self.buf.is_none() && self.get_ref().layout().temporary {
+            // Without one the write goes unbuffered, as it does here when
+            // no buffer can be had.
+            self.allocate();
+        }
+        let took = self.fwrite_held(data);
+        if self.buf.as_ref().is_some_and(|buf| buf.layout.temporary) {
+            // A failure is the stream's, for `ferror`, and not the count's.
+            let _ = self.write_held();
+        }
+        took
+    }
+
+    /// [`Stdio::fwrite`], what is held left held.
+    fn fwrite_held(&mut self, data: &[u8]) -> usize {
+        let n = data.len();
         let mut to_do = n;
         let mut at = 0;
         let mut must_flush = false;
@@ -343,7 +370,11 @@ mod tests {
 
     fn stream(size: usize, line: bool, room: usize) -> Stdio<Script> {
         Stdio::new(Script {
-            layout: Layout { size, line },
+            layout: Layout {
+                size,
+                line,
+                temporary: false,
+            },
             room,
             writes: Vec::new(),
             close_fails: false,
@@ -437,6 +468,31 @@ mod tests {
         assert_eq!(s.fwrite(b"a\nb"), 1);
     }
 
+    /// A temporary buffer, the UCRT's for `stdout` on a console, is set up
+    /// before the first write and written out after each, in the pieces
+    /// the UCRT's `fwrite` cuts: what fills the buffer, the whole buffers
+    /// past it, the rest.
+    #[test]
+    fn a_temporary_buffer_is_written_as_each_write_ends() {
+        let mut s = stream(4096, false, usize::MAX);
+        s.get_mut().layout.temporary = true;
+        assert_eq!(s.fwrite(b"abc"), 3);
+        assert_eq!(s.get_ref().writes, [3]);
+        assert_eq!(s.fwrite(&[1; 10000]), 10000);
+        assert_eq!(s.get_ref().writes, [3, 4096, 4096, 1808]);
+        // The first write too: the buffer is there before it.
+        let mut s = stream(4096, false, usize::MAX);
+        s.get_mut().layout.temporary = true;
+        assert_eq!(s.fwrite(&[1; 10000]), 10000);
+        assert_eq!(s.get_ref().writes, [4096, 4096, 1808]);
+        // A write held that fails still counts as taken, and is the
+        // stream's error.
+        let mut s = stream(4096, false, 0);
+        s.get_mut().layout.temporary = true;
+        assert_eq!(s.fwrite(b"abc"), 3);
+        assert!(s.failed());
+    }
+
     /// The buffer is `BUFSIZ`, or the file's block size when smaller and
     /// not 0.
     #[cfg(unix)]
@@ -459,7 +515,7 @@ mod tests {
     }
 
     /// The UCRT's buffer is 4096 bytes for any file, and a file is not
-    /// written a line at a time.
+    /// written a line at a time, nor at each write.
     #[cfg(windows)]
     #[test]
     fn sizes_the_buffer_as_the_ucrt_does() {
@@ -469,7 +525,8 @@ mod tests {
             Sink::layout(&file),
             Layout {
                 size: 4096,
-                line: false
+                line: false,
+                temporary: false,
             }
         );
         drop(file);

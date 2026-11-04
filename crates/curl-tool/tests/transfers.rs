@@ -677,6 +677,30 @@ fn names_files_in_the_ansi_code_page() {
     assert!(!s.exists("caf\u{c3}\u{a9}"));
 }
 
+/// On Windows a body written to a console goes to it as UTF-16, as C's
+/// tool writes it there (`win_console`): its UTF-8 shows as the
+/// characters it is, whatever the console's code page.
+#[cfg(windows)]
+#[test]
+fn writes_a_body_to_a_console_as_utf16() {
+    let s = Scratch::new("console");
+    let text = "caf\u{e9} \u{20ac}1";
+    s.write("src", text.as_bytes());
+    let screen = curl_os::terminal::ScreenBuffer::new().unwrap();
+    let stdout = screen.handle().try_clone_to_owned().unwrap();
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let status = Command::new(tool)
+        .args(["-q", "-s", &s.url("src")])
+        .stdout(std::process::Stdio::from(stdout))
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(0));
+    let want: Vec<u16> = text.encode_utf16().collect();
+    let got = screen.read(want.len()).unwrap();
+    assert_eq!(String::from_utf16_lossy(&got), text);
+}
+
 /// On Windows a `.curlrc` beside the program is read when none is found
 /// in the user's directories, the program's directory named in the ANSI
 /// code page as C names it (`GetModuleFileName`), here with an accent.

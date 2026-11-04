@@ -1492,3 +1492,27 @@ witness: curl-tool operate::tests::the_known_hosts_default_is_worked_out_once
         None if op.knownhosts_default.borrow().is_some() => {
 --- new
         None if false => {
+
+=== a temporary buffer (the UCRT's for stdout on a console) is not written as each write ends
+file: crates/curl-tool/src/stdio.rs
+witness: curl-tool stdio::tests::a_temporary_buffer_is_written_as_each_write_ends
+--- old
+        if self.buf.as_ref().is_some_and(|buf| buf.layout.temporary) {
+--- new
+        if false {
+
+=== a temporary buffer is set up only as the first write needs one
+file: crates/curl-tool/src/stdio.rs
+witness: curl-tool stdio::tests::a_temporary_buffer_is_written_as_each_write_ends
+--- old
+        if self.buf.is_none() && self.get_ref().layout().temporary {
+--- new
+        if false {
+
+=== a console sequence cut after its four-byte lead is not held for the next write
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::splits_a_console_s_utf8_as_c_does
+--- old
+            if (0xC0..0xF8).contains(&last) {
+--- new
+            if (0xC0..0xF0).contains(&last) {

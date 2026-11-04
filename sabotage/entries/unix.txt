@@ -96,6 +96,6 @@ features: net
 file: crates/curl-sys-abi/src/sockets.rs
 witness: curl-sys-abi sockets::tests::a_unix_address_is_handed_over_as_c_hands_it
 --- old
-        let len = core::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
+        let len = core::mem::offset_of!(sys::sockaddr_un, sun_path) + path.len() + 1;
 --- new
-        let len = core::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len();
+        let len = core::mem::offset_of!(sys::sockaddr_un, sun_path) + path.len();

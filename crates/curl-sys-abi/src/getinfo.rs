@@ -188,11 +188,25 @@ fn string(p: Result<*const c_char, OutOfMemory>) -> Value {
     }
 }
 
+/// A count as C converts its `uint32_t` or `int` to the `long` it
+/// returns: as is where a `long` has 64 bits, wrapped past `LONG_MAX`
+/// where it has 32, as on Windows.
+fn long_of(n: u32) -> c_long {
+    n as c_long
+}
+
+/// A socket as C hands it in a `long` (`(long)sockfd`): as is on Unix,
+/// where both are an `int` or wider; cut to 32 bits on Windows, where a
+/// `SOCKET` has 64 and a `long` 32.
+fn socket_as_long(s: ffi::curl_socket_t) -> c_long {
+    s as c_long
+}
+
 /// What RTSP numbers and names (`CURLINFO_RTSP_*`): the session id
 /// the option holds, which a server's may have set, and the handle's
 /// sequence numbers.
 fn rtsp_info(easy: &ShimEasy, info: CURLINFO) -> Result<Option<Value>, Recursive> {
-    let long = |n: u32| Value::Long(c_long::from(n));
+    let long = |n: u32| Value::Long(long_of(n));
     if info == ffi::CURLINFO_RTSP_SESSION_ID {
         return easy.with_options(|o| {
             Some(match &o.small.rtsp_session {
@@ -369,9 +383,9 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO, path_as_is: bool) 
         ffi::CURLINFO_PROXY_SSL_VERIFYRESULT => {
             Value::Long(c_long::try_from(r.proxy_verify_result()).unwrap_or(c_long::MAX))
         }
-        ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
+        ffi::CURLINFO_NUM_CONNECTS => Value::Long(long_of(r.connects())),
         ffi::CURLINFO_USED_PROXY => Value::Long(c_long::from(r.used_proxy())),
-        ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),
+        ffi::CURLINFO_REDIRECT_COUNT => Value::Long(long_of(r.redirects())),
         ffi::CURLINFO_HTTPAUTH_AVAIL => Value::Long(auth_mask(r.auth_offered(), spnego())),
         ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used(), spnego())),
         ffi::CURLINFO_PROXYAUTH_AVAIL => Value::Long(auth_mask(r.proxy_auth_offered(), spnego())),
@@ -512,10 +526,12 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         Ok(Some(engines()))
     } else if info == ffi::CURLINFO_ACTIVESOCKET || info == ffi::CURLINFO_LASTSOCKET {
         active_socket(easy).map(|s| {
-            let s = s.map_or(-1, SocketKey::get);
             Some(match info {
-                ffi::CURLINFO_ACTIVESOCKET => Value::Socket(s),
-                _ => Value::Long(c_long::from(s)),
+                ffi::CURLINFO_ACTIVESOCKET => {
+                    Value::Socket(s.map_or(ffi::CURL_SOCKET_BAD, SocketKey::get))
+                }
+                // -1 for none, whatever `CURL_SOCKET_BAD` is.
+                _ => Value::Long(s.map_or(-1, |s| socket_as_long(s.get()))),
             })
         })
     } else if matches!(

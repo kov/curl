@@ -432,19 +432,16 @@ pub unsafe extern "C" fn curl_mfprintf(fd: *mut FILE, format: *const c_char, arg
 }
 const _: ffi::proto::curl_mfprintf = curl_mfprintf;
 
-unsafe extern "C" {
-    /// The C library's standard output stream, shared with the
-    /// application's own `printf`.
-    static stdout: *mut libc::FILE;
-}
-
 /// # Safety
 ///
 /// As C's `vprintf`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_mvprintf(format: *const c_char, args: VaList<'_>) -> c_int {
-    // SAFETY: `stdout` is initialised by the C library before any code
-    // runs; the format and arguments are the caller's.
+    // The C library's standard output stream, shared with the
+    // application's own `printf`.
+    let (_, stdout, _) = crate::callbacks::standard();
+    // SAFETY: the stream is the C library's, open for the process; the
+    // format and arguments are the caller's.
     unsafe { curl_mvfprintf(stdout.cast(), format, args) }
 }
 const _: ffi::proto::curl_mvprintf = curl_mvprintf;

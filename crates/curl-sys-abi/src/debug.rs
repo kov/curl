@@ -27,17 +27,12 @@ use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
 use core::fmt::{self, Write};
 use core::panic::Location;
 use core::ptr;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use curl_alloc::track::{self, Line, Ptr};
 
+use crate::ffi::{CURL_SOCKET_BAD as SOCKET_BAD, curl_socket_t as Socket};
 use crate::root::{self, Allocator};
-
-/// `curl_socket_t` on the platforms in scope.
-type Socket = c_int;
-const SOCKET_BAD: Socket = -1;
 
 /// Where a tracked call was made.
 #[derive(Clone, Copy)]
@@ -115,8 +110,16 @@ fn limit_reached(func: &str, source: Source) -> bool {
 }
 
 fn set_errno(value: c_int) {
-    // SAFETY: `__errno_location` takes nothing and cannot fail.
-    let errno = unsafe { libc::__errno_location() };
+    #[cfg(unix)]
+    use libc::__errno_location as errno_location;
+    #[cfg(windows)]
+    unsafe extern "C" {
+        /// The UCRT's: where this thread's `errno` is.
+        #[link_name = "_errno"]
+        fn errno_location() -> *mut c_int;
+    }
+    // SAFETY: it takes nothing and cannot fail.
+    let errno = unsafe { errno_location() };
     // SAFETY: it points to this thread's `errno`.
     unsafe { errno.write(value) };
 }
@@ -220,7 +223,16 @@ pub unsafe extern "C" fn curl_dbg_memdebug(logname: *const c_char) {
     }
     // A memdump that cannot be created leaves the test to fail on its
     // absence, as in C.
-    let _ = track::start_log(Path::new(OsStr::from_bytes(name)));
+    #[cfg(unix)]
+    let _ = track::start_log(Path::new(
+        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name),
+    ));
+    // A name in the ANSI code page that is not UTF-8 is not opened: the
+    // test fails on the absence.
+    #[cfg(windows)]
+    if let Ok(name) = core::str::from_utf8(name) {
+        let _ = track::start_log(Path::new(name));
+    }
 }
 const _: unsafe extern "C" fn(*const c_char) = curl_dbg_memdebug;
 
@@ -332,7 +344,7 @@ pub unsafe extern "C" fn curl_dbg_socket(
         return SOCKET_BAD;
     }
     // SAFETY: `socket` takes any arguments.
-    let fd = unsafe { libc::socket(domain, kind, protocol) };
+    let fd = unsafe { sys::socket(domain, kind, protocol) };
     if fd != SOCKET_BAD {
         log_call(source, "FD", |l| write!(l, "socket() = {fd}"));
     }
@@ -344,6 +356,7 @@ const _: unsafe extern "C" fn(c_int, c_int, c_int, c_int, *const c_char) -> Sock
 /// # Safety
 ///
 /// `fds` points to two sockets' room; `source` is NULL or a C string.
+#[cfg(unix)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_dbg_socketpair(
     domain: c_int,
@@ -369,6 +382,7 @@ pub unsafe extern "C" fn curl_dbg_socketpair(
     }
     rc
 }
+#[cfg(unix)]
 const _: unsafe extern "C" fn(c_int, c_int, c_int, *mut Socket, c_int, *const c_char) -> c_int =
     curl_dbg_socketpair;
 
@@ -386,7 +400,7 @@ pub unsafe extern "C" fn curl_dbg_accept(
     // SAFETY: as the caller guarantees.
     let source = unsafe { Source::c(source, line) };
     // SAFETY: as the caller guarantees.
-    let fd = unsafe { libc::accept(s, addr.cast(), addrlen.cast()) };
+    let fd = unsafe { sys::accept(s, addr.cast(), addrlen.cast()) };
     if fd != SOCKET_BAD {
         log_call(source, "FD", |l| write!(l, "accept() = {fd}"));
     }
@@ -398,6 +412,7 @@ const _: unsafe extern "C" fn(Socket, *mut c_void, *mut c_void, c_int, *const c_
 /// # Safety
 ///
 /// As `accept4(2)`; `source` is NULL or a C string.
+#[cfg(unix)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_dbg_accept4(
     s: Socket,
@@ -416,6 +431,7 @@ pub unsafe extern "C" fn curl_dbg_accept4(
     }
     fd
 }
+#[cfg(unix)]
 const _: unsafe extern "C" fn(
     Socket,
     *mut c_void,
@@ -446,7 +462,48 @@ pub unsafe extern "C" fn curl_dbg_sclose(fd: Socket, line: c_int, source: *const
     // SAFETY: as the caller guarantees.
     unsafe { curl_dbg_mark_sclose(fd, line, source) };
     // SAFETY: the caller owns `fd` and gives it up.
-    unsafe { libc::close(fd) }
+    unsafe { sys::close(fd) }
+}
+
+/// The system's socket calls, by the C names `memdebug.c` calls them.
+#[cfg(unix)]
+mod sys {
+    pub(super) use libc::{accept, close, socket};
+}
+
+/// Winsock's socket calls, a `SOCKET` as the headers' `curl_socket_t`.
+#[cfg(windows)]
+mod sys {
+    use core::ffi::{c_int, c_void};
+
+    use windows_sys::Win32::Networking::WinSock as ws;
+
+    use super::Socket;
+
+    /// # Safety
+    ///
+    /// None beyond Winsock's own: it takes any arguments.
+    pub(super) unsafe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> Socket {
+        // SAFETY: as above.
+        unsafe { ws::socket(domain, kind, protocol) as Socket }
+    }
+
+    /// # Safety
+    ///
+    /// As `accept`: `addr` and `len` are NULL or room for the address and
+    /// its length.
+    pub(super) unsafe fn accept(s: Socket, addr: *mut c_void, len: *mut c_void) -> Socket {
+        // SAFETY: as the caller guarantees.
+        unsafe { ws::accept(s as ws::SOCKET, addr.cast(), len.cast()) as Socket }
+    }
+
+    /// # Safety
+    ///
+    /// The caller owns `s` and gives it up.
+    pub(super) unsafe fn close(s: Socket) -> c_int {
+        // SAFETY: as the caller guarantees.
+        unsafe { ws::closesocket(s as ws::SOCKET) }
+    }
 }
 const _: unsafe extern "C" fn(Socket, c_int, *const c_char) -> c_int = curl_dbg_sclose;
 

@@ -853,8 +853,11 @@ static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_easy_init() -> *mut CURL {
-    // C initialises the library for a program that did not.
-    crate::root::init_unless_done();
+    // C initialises the library for a program that did not, and makes no
+    // handle if it cannot.
+    if crate::root::init_unless_done().is_err() {
+        return ptr::null_mut();
+    }
     let mut handle = Easy::new();
     handle.set_libraries(curl_core::libraries::SharedLibraries::of_static(libraries(
         crate::setopt::gssapi(),

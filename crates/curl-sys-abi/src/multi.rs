@@ -13,11 +13,10 @@ use core::ffi::{c_int, c_long, c_uint, c_ulong, c_void};
 use core::num::NonZeroU32;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
-use std::os::fd::BorrowedFd;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
-use curl_core::conn::io::{Events, Net, PollFd, SocketKey, SystemNet, Waker};
+use curl_core::conn::io::{BorrowedSocket, Events, Net, PollFd, SocketKey, SystemNet, Waker};
 use curl_core::easy::Easy;
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
@@ -1218,7 +1217,12 @@ fn set_limit(limits: &mut ConnLimits, option: CURLMoption, n: c_long) -> CURLMco
     if option == ffi::CURLMOPT_MAXCONNECTS {
         // Read unsigned: past `UINT32_MAX`, a negative one among them,
         // changes nothing; 0 is the guess.
-        if let Ok(n) = u32::try_from(n as c_ulong) {
+        #[allow(
+            clippy::useless_conversion,
+            reason = "an `unsigned long` is 32 bits on Windows"
+        )]
+        let n = u32::try_from(n as c_ulong).ok();
+        if let Some(n) = n {
             limits.max_connects = NonZeroU32::new(n);
         }
         return CURLM_OK;
@@ -1329,7 +1333,7 @@ unsafe fn wait(
     let polled = extra.iter().map(|e| {
         // SAFETY: the application keeps its descriptors open for the
         // call.
-        let fd = unsafe { BorrowedFd::borrow_raw(e.fd) };
+        let fd = unsafe { BorrowedSocket::borrow_raw(e.fd) };
         PollFd::new(fd, wait_events(e.events))
     });
     // A few on the stack, as C's `a_few_on_stack`, so a loop of waits
@@ -1470,15 +1474,15 @@ pub unsafe extern "C" fn curl_multi_fdset(
     let walked = unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |key, events| {
         let fd = key.get();
         // One a set cannot hold is left out (`FDSET_SOCK`).
-        if usize::try_from(fd).is_ok_and(|fd| fd < libc::FD_SETSIZE) {
+        if fd_set_holds(fd) {
             for (wanted, set) in [(Events::IN, read_fd_set), (Events::OUT, write_fd_set)] {
                 if events.contains(wanted) && !set.is_null() {
-                    // SAFETY: `set` is the caller's `fd_set`, and `fd` is
-                    // within it.
-                    unsafe { libc::FD_SET(fd, set.cast::<libc::fd_set>()) };
+                    // SAFETY: `set` is the caller's `fd_set`, which holds
+                    // `fd`.
+                    unsafe { fd_set_add(set, fd) };
                 }
             }
-            highest = highest.max(fd);
+            highest = highest.max(max_fd_of(fd));
         }
     });
     if let Err(kind) = walked {
@@ -1489,6 +1493,67 @@ pub unsafe extern "C" fn curl_multi_fdset(
     CURLM_OK
 }
 const _: ffi::proto::curl_multi_fdset = curl_multi_fdset;
+
+/// Whether an `fd_set` holds `fd`: a descriptor below `FD_SETSIZE`.
+#[cfg(unix)]
+fn fd_set_holds(fd: curl_socket_t) -> bool {
+    usize::try_from(fd).is_ok_and(|fd| fd < libc::FD_SETSIZE)
+}
+
+/// Whether an `fd_set` holds `fd`: any socket, as Winsock's set lists
+/// sockets rather than numbering them (`FDSET_SOCK` is 1).
+#[cfg(windows)]
+fn fd_set_holds(_fd: curl_socket_t) -> bool {
+    true
+}
+
+/// Add `fd` to `set` (`FD_SET`).
+///
+/// # Safety
+///
+/// `set` points at an `fd_set`, which holds `fd`.
+#[cfg(unix)]
+unsafe fn fd_set_add(set: *mut ffi::fd_set, fd: curl_socket_t) {
+    // SAFETY: as the caller guarantees.
+    unsafe { libc::FD_SET(fd, set.cast::<libc::fd_set>()) };
+}
+
+/// Add `fd` to `set` as Winsock's `FD_SET` does: unless listed already,
+/// after the sockets listed, if the set has room for it among its
+/// `FD_SETSIZE`; a set full is left as it is.
+///
+/// # Safety
+///
+/// `set` points at an `fd_set`.
+#[cfg(windows)]
+unsafe fn fd_set_add(set: *mut ffi::fd_set, fd: curl_socket_t) {
+    // SAFETY: as the caller guarantees.
+    let set = unsafe { &mut *set };
+    // A count past the array is the application's garbage: C's macro would
+    // read past the set; the listed ones are those within it.
+    let n = (set.fd_count as usize).min(set.fd_array.len());
+    if set.fd_array[..n].contains(&fd) {
+        return;
+    }
+    if let Some(slot) = set.fd_array.get_mut(n) {
+        *slot = fd;
+        set.fd_count = c_uint::try_from(n + 1).expect("an fd_set's count fits");
+    }
+}
+
+/// `fd` as `max_fd` tells it: as an `int`, which a Winsock socket is cast
+/// to (`(int)ps.sockets[i]`).
+#[cfg(unix)]
+fn max_fd_of(fd: curl_socket_t) -> c_int {
+    fd
+}
+
+/// `fd` as `max_fd` tells it: as an `int`, which a Winsock socket is cast
+/// to (`(int)ps.sockets[i]`).
+#[cfg(windows)]
+fn max_fd_of(fd: curl_socket_t) -> c_int {
+    fd as c_int
+}
 
 /// # Safety
 ///
@@ -1588,7 +1653,7 @@ mod tests {
             (need, wfds.n)
         };
         let blank = curl_waitfd {
-            fd: -1,
+            fd: ffi::CURL_SOCKET_BAD,
             events: 0,
             revents: 0,
         };
@@ -1596,7 +1661,10 @@ mod tests {
 
         let mut room = [blank; 3];
         assert_eq!(list(Some(&mut room)), (2, 2));
-        assert_eq!(entries(&room), [(5, r | w), (6, r | w), (-1, 0)]);
+        assert_eq!(
+            entries(&room),
+            [(5, r | w), (6, r | w), (ffi::CURL_SOCKET_BAD, 0)]
+        );
 
         let mut one = [blank; 1];
         assert_eq!(list(Some(&mut one)), (3, 1), "6 never fit, twice");

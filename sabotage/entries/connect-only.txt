@@ -114,9 +114,9 @@ witness: curl-core proto::http::tests::connect_only::a_share_of_connections_forg
 file: crates/curl-sys-abi/src/getinfo.rs
 witness: curl-sys-abi handle_tests::a_connect_only_perform_leaves_the_connection_to_the_handle
 --- old
-            let s = s.map_or(-1, SocketKey::get);
+                    Value::Socket(s.map_or(ffi::CURL_SOCKET_BAD, SocketKey::get))
 --- new
-            let s = s.map_or(-1, |_| -1);
+                    Value::Socket(ffi::CURL_SOCKET_BAD)
 
 === CONNECT_ONLY takes any value
 file: crates/curl-sys-abi/src/setopt/mod.rs

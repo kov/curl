@@ -17,7 +17,7 @@
 use core::ffi::{c_int, c_uint, c_void};
 use core::ptr::NonNull;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::SocketAddr;
 
 use curl_alloc::{OutOfMemory, try_box};
 use curl_core::conn::io::{Remote, Socket, SocketKey, SocketKind};
@@ -126,55 +126,26 @@ struct SockaddrEx {
     socktype: c_int,
     protocol: c_int,
     addrlen: c_uint,
-    addr: libc::sockaddr_storage,
+    addr: sys::sockaddr_storage,
 }
 
 const _: () = assert!(core::mem::offset_of!(SockaddrEx, addr) == 16);
 
 impl SockaddrEx {
     /// A socket of `kind` to `to`, as C asks the opener for one: a TCP
-    /// stream or a UDP socket, close-on-exec, never nonblocking
-    /// (`cf_socket_open`, `Curl_sock_assign_addr`).
+    /// stream or a UDP socket, close-on-exec where the system has it,
+    /// never nonblocking (`cf_socket_open`, `Curl_sock_assign_addr`).
     fn inet(to: SocketAddr, kind: SocketKind) -> SockaddrEx {
         // SAFETY: all-zero bytes are a valid `sockaddr_storage`.
-        let mut addr: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
-        let (family, len) = match to {
-            SocketAddr::V4(v4) => {
-                let sin = libc::sockaddr_in {
-                    sin_family: libc::AF_INET as libc::sa_family_t,
-                    sin_port: v4.port().to_be(),
-                    sin_addr: libc::in_addr {
-                        s_addr: u32::from(*v4.ip()).to_be(),
-                    },
-                    sin_zero: [0; 8],
-                };
-                // SAFETY: a `sockaddr_in` fits in the storage, which is
-                // aligned for any address.
-                unsafe { (&raw mut addr).cast::<libc::sockaddr_in>().write(sin) };
-                (libc::AF_INET, size_of::<libc::sockaddr_in>())
-            }
-            SocketAddr::V6(v6) => {
-                let sin6 = libc::sockaddr_in6 {
-                    sin6_family: libc::AF_INET6 as libc::sa_family_t,
-                    sin6_port: v6.port().to_be(),
-                    sin6_flowinfo: v6.flowinfo().to_be(),
-                    sin6_addr: libc::in6_addr {
-                        s6_addr: v6.ip().octets(),
-                    },
-                    sin6_scope_id: v6.scope_id(),
-                };
-                // SAFETY: as above, for a `sockaddr_in6`.
-                unsafe { (&raw mut addr).cast::<libc::sockaddr_in6>().write(sin6) };
-                (libc::AF_INET6, size_of::<libc::sockaddr_in6>())
-            }
-        };
+        let mut addr: sys::sockaddr_storage = unsafe { core::mem::zeroed() };
+        let (family, len) = sys::write_inet(&mut addr, to);
         let (socktype, protocol) = match kind {
-            SocketKind::Stream => (libc::SOCK_STREAM, libc::IPPROTO_TCP),
-            SocketKind::Datagram => (libc::SOCK_DGRAM, libc::IPPROTO_UDP),
+            SocketKind::Stream => (sys::SOCK_STREAM, sys::IPPROTO_TCP),
+            SocketKind::Datagram => (sys::SOCK_DGRAM, sys::IPPROTO_UDP),
         };
         SockaddrEx {
             family,
-            socktype: socktype | libc::SOCK_CLOEXEC,
+            socktype: socktype | sys::SOCK_CLOEXEC,
             protocol,
             addrlen: c_uint::try_from(len).expect("an address's size fits"),
             addr,
@@ -188,23 +159,23 @@ impl SockaddrEx {
     /// name's, after the family.
     fn unix(path: &[u8], abstract_name: bool) -> SockaddrEx {
         // SAFETY: all-zero bytes are a valid `sockaddr_un`.
-        let mut un: libc::sockaddr_un = unsafe { core::mem::zeroed() };
-        un.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        let mut un: sys::sockaddr_un = unsafe { core::mem::zeroed() };
+        un.sun_family = sys::AF_UNIX as sys::sa_family_t;
         let at = usize::from(abstract_name);
         // The setup refused a path too long for it.
         assert!(at + path.len() < un.sun_path.len(), "a Unix path fits");
         for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
-            *to = b as libc::c_char;
+            *to = b as core::ffi::c_char;
         }
-        let len = core::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
+        let len = core::mem::offset_of!(sys::sockaddr_un, sun_path) + path.len() + 1;
         // SAFETY: all-zero bytes are a valid `sockaddr_storage`.
-        let mut addr: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
+        let mut addr: sys::sockaddr_storage = unsafe { core::mem::zeroed() };
         // SAFETY: a `sockaddr_un` fits in the storage, which is aligned
         // for any address.
-        unsafe { (&raw mut addr).cast::<libc::sockaddr_un>().write(un) };
+        unsafe { (&raw mut addr).cast::<sys::sockaddr_un>().write(un) };
         SockaddrEx {
-            family: libc::AF_UNIX,
-            socktype: libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+            family: sys::AF_UNIX,
+            socktype: sys::SOCK_STREAM | sys::SOCK_CLOEXEC,
             protocol: 0,
             addrlen: c_uint::try_from(len).expect("an address's size fits"),
             addr,
@@ -214,8 +185,60 @@ impl SockaddrEx {
     /// The address as the opener left it, if it is one of TCP's
     /// families.
     fn read(&self) -> Option<SocketAddr> {
-        let p = (&raw const self.addr).cast::<u8>();
-        match c_int::from(self.addr.ss_family) {
+        sys::read_inet(&self.addr)
+    }
+}
+
+/// The system's socket addresses and numbers, as its headers declare
+/// them.
+#[cfg(unix)]
+mod sys {
+    use core::ffi::c_int;
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+
+    pub(super) use libc::{
+        AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_STREAM, sa_family_t,
+        sockaddr_storage, sockaddr_un,
+    };
+
+    /// Write `to` into `addr`; its family and length.
+    pub(super) fn write_inet(addr: &mut sockaddr_storage, to: SocketAddr) -> (c_int, usize) {
+        match to {
+            SocketAddr::V4(v4) => {
+                let sin = libc::sockaddr_in {
+                    sin_family: libc::AF_INET as sa_family_t,
+                    sin_port: v4.port().to_be(),
+                    sin_addr: libc::in_addr {
+                        s_addr: u32::from(*v4.ip()).to_be(),
+                    },
+                    sin_zero: [0; 8],
+                };
+                // SAFETY: a `sockaddr_in` fits in the storage, which is
+                // aligned for any address.
+                unsafe { (&raw mut *addr).cast::<libc::sockaddr_in>().write(sin) };
+                (libc::AF_INET, size_of::<libc::sockaddr_in>())
+            }
+            SocketAddr::V6(v6) => {
+                let sin6 = libc::sockaddr_in6 {
+                    sin6_family: libc::AF_INET6 as sa_family_t,
+                    sin6_port: v6.port().to_be(),
+                    sin6_flowinfo: v6.flowinfo().to_be(),
+                    sin6_addr: libc::in6_addr {
+                        s6_addr: v6.ip().octets(),
+                    },
+                    sin6_scope_id: v6.scope_id(),
+                };
+                // SAFETY: as above, for a `sockaddr_in6`.
+                unsafe { (&raw mut *addr).cast::<libc::sockaddr_in6>().write(sin6) };
+                (libc::AF_INET6, size_of::<libc::sockaddr_in6>())
+            }
+        }
+    }
+
+    /// The address in `addr`, if it is one of TCP's families.
+    pub(super) fn read_inet(addr: &sockaddr_storage) -> Option<SocketAddr> {
+        let p = (&raw const *addr).cast::<u8>();
+        match c_int::from(addr.ss_family) {
             libc::AF_INET => {
                 // SAFETY: the storage holds a `sockaddr_in` by its family,
                 // and is aligned for one.
@@ -237,6 +260,97 @@ impl SockaddrEx {
                 )))
             }
             _ => None,
+        }
+    }
+}
+
+/// The system's socket addresses and numbers, as Winsock declares them.
+/// A socket's type has no close-on-exec flag there, so C asks for none
+/// (`SOCK_CLOEXEC` is not defined).
+#[cfg(windows)]
+mod sys {
+    use core::ffi::c_int;
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+
+    use windows_sys::Win32::Networking::WinSock as ws;
+
+    pub(super) use ws::{ADDRESS_FAMILY as sa_family_t, SOCKADDR_STORAGE as sockaddr_storage};
+    pub(super) use ws::{IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_STREAM};
+
+    /// `struct sockaddr_un` as Winsock's `afunix.h` declares it.
+    pub(super) use ws::SOCKADDR_UN as sockaddr_un;
+
+    pub(super) const AF_UNIX: c_int = ws::AF_UNIX as c_int;
+    pub(super) const SOCK_CLOEXEC: c_int = 0;
+
+    /// Write `to` into `addr`; its family and length.
+    pub(super) fn write_inet(addr: &mut sockaddr_storage, to: SocketAddr) -> (c_int, usize) {
+        match to {
+            SocketAddr::V4(v4) => {
+                let sin = ws::SOCKADDR_IN {
+                    sin_family: ws::AF_INET,
+                    sin_port: v4.port().to_be(),
+                    sin_addr: ws::IN_ADDR {
+                        S_un: ws::IN_ADDR_0 {
+                            S_addr: u32::from(*v4.ip()).to_be(),
+                        },
+                    },
+                    sin_zero: [0; 8],
+                };
+                // SAFETY: a `SOCKADDR_IN` fits in the storage, which is
+                // aligned for any address.
+                unsafe { (&raw mut *addr).cast::<ws::SOCKADDR_IN>().write(sin) };
+                (c_int::from(ws::AF_INET), size_of::<ws::SOCKADDR_IN>())
+            }
+            SocketAddr::V6(v6) => {
+                let sin6 = ws::SOCKADDR_IN6 {
+                    sin6_family: ws::AF_INET6,
+                    sin6_port: v6.port().to_be(),
+                    sin6_flowinfo: v6.flowinfo().to_be(),
+                    sin6_addr: ws::IN6_ADDR {
+                        u: ws::IN6_ADDR_0 {
+                            Byte: v6.ip().octets(),
+                        },
+                    },
+                    Anonymous: ws::SOCKADDR_IN6_0 {
+                        sin6_scope_id: v6.scope_id(),
+                    },
+                };
+                // SAFETY: as above, for a `SOCKADDR_IN6`.
+                unsafe { (&raw mut *addr).cast::<ws::SOCKADDR_IN6>().write(sin6) };
+                (c_int::from(ws::AF_INET6), size_of::<ws::SOCKADDR_IN6>())
+            }
+        }
+    }
+
+    /// The address in `addr`, if it is one of TCP's families.
+    pub(super) fn read_inet(addr: &sockaddr_storage) -> Option<SocketAddr> {
+        let p = (&raw const *addr).cast::<u8>();
+        if addr.ss_family == ws::AF_INET {
+            // SAFETY: the storage holds a `SOCKADDR_IN` by its family, and
+            // is aligned for one.
+            let sin = unsafe { p.cast::<ws::SOCKADDR_IN>().read() };
+            // SAFETY: every field of the union reads the same four bytes.
+            let ip = Ipv4Addr::from(u32::from_be(unsafe { sin.sin_addr.S_un.S_addr }));
+            Some(SocketAddr::V4(SocketAddrV4::new(
+                ip,
+                u16::from_be(sin.sin_port),
+            )))
+        } else if addr.ss_family == ws::AF_INET6 {
+            // SAFETY: as above, a `SOCKADDR_IN6`.
+            let sin6 = unsafe { p.cast::<ws::SOCKADDR_IN6>().read() };
+            // SAFETY: as above, the sixteen bytes.
+            let ip = unsafe { sin6.sin6_addr.u.Byte };
+            // SAFETY: as above, the scope's four.
+            let scope = unsafe { sin6.Anonymous.sin6_scope_id };
+            Some(SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::from(ip),
+                u16::from_be(sin6.sin6_port),
+                u32::from_be(sin6.sin6_flowinfo),
+                scope,
+            )))
+        } else {
+            None
         }
     }
 }
@@ -502,18 +616,18 @@ mod tests {
         assert_eq!(
             (stream.family, stream.socktype, stream.protocol),
             (
-                libc::AF_INET,
-                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
-                libc::IPPROTO_TCP
+                curl_core::conn::io::AF_INET,
+                sys::SOCK_STREAM | sys::SOCK_CLOEXEC,
+                sys::IPPROTO_TCP
             )
         );
         let dgram = SockaddrEx::inet(to, SocketKind::Datagram);
         assert_eq!(
             (dgram.family, dgram.socktype, dgram.protocol),
             (
-                libc::AF_INET,
-                libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
-                libc::IPPROTO_UDP
+                curl_core::conn::io::AF_INET,
+                sys::SOCK_DGRAM | sys::SOCK_CLOEXEC,
+                sys::IPPROTO_UDP
             )
         );
         assert_eq!(dgram.read(), Some(to));
@@ -524,17 +638,17 @@ mod tests {
     /// zero and the abstract name, and the length after the family.
     #[test]
     fn a_unix_address_is_handed_over_as_c_hands_it() {
-        let at = core::mem::offset_of!(libc::sockaddr_un, sun_path);
+        let at = core::mem::offset_of!(sys::sockaddr_un, sun_path);
         let path = SockaddrEx::unix(b"/tmp/s46.sock", false);
         assert_eq!(
             (path.family, path.protocol, path.addrlen as usize),
-            (libc::AF_UNIX, 0, at + 14)
+            (sys::AF_UNIX, 0, at + 14)
         );
-        assert_eq!(path.socktype, libc::SOCK_STREAM | libc::SOCK_CLOEXEC);
+        assert_eq!(path.socktype, sys::SOCK_STREAM | sys::SOCK_CLOEXEC);
         let abs = SockaddrEx::unix(b"s46abs", true);
         assert_eq!(abs.addrlen as usize, at + 7);
         // SAFETY: the storage holds the `sockaddr_un` written.
-        let un = unsafe { (&raw const abs.addr).cast::<libc::sockaddr_un>().read() };
+        let un = unsafe { (&raw const abs.addr).cast::<sys::sockaddr_un>().read() };
         #[allow(
             clippy::unnecessary_cast,
             reason = "`c_char` is signed on some targets"

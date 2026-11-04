@@ -16,8 +16,8 @@ use crate::time::Instant;
 pub use curl_os::net::IO_FAILED;
 pub use curl_os::net::{
     AF_INET, AF_INET6, BATCH, Connect, Datagram, InterfaceAddress, Ipv6Scope, Protocol, Recv, SLOT,
-    Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope, open,
-    open_udp,
+    Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, Winsock, adopt, adopt_udp, ipv6_scope,
+    open, open_udp,
 };
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};

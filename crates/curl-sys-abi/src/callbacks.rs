@@ -33,6 +33,7 @@ use crate::ffi::{
 };
 use crate::gate::Frame;
 
+#[cfg(unix)]
 unsafe extern "C" {
     // glibc's standard streams.
     static stdin: *mut libc::FILE;
@@ -40,11 +41,37 @@ unsafe extern "C" {
     static stderr: *mut libc::FILE;
 }
 
-/// The process's standard input, output and error streams.
+/// A file's link count in C's `long`: the listing's reader reads none
+/// past `LONG_MAX`, as C reads it.
+#[allow(clippy::useless_conversion, reason = "a `long` is 32 bits on Windows")]
+fn link_count(n: i64) -> c_long {
+    n.try_into().expect("read up to LONG_MAX")
+}
+
+/// The process's standard input, output and error streams, the C
+/// library's, shared with the application's own.
+#[cfg(unix)]
 pub(crate) fn standard() -> (*mut c_void, *mut c_void, *mut libc::FILE) {
     // SAFETY: glibc sets these before any code runs and never changes
     // them.
     unsafe { (stdin.cast(), stdout.cast(), stderr) }
+}
+
+#[cfg(windows)]
+unsafe extern "C" {
+    /// The UCRT's standard streams, by number: `stdin` is
+    /// `__acrt_iob_func(0)`.
+    fn __acrt_iob_func(n: core::ffi::c_uint) -> *mut libc::FILE;
+}
+
+/// The process's standard input, output and error streams, the C
+/// library's, shared with the application's own.
+#[cfg(windows)]
+pub(crate) fn standard() -> (*mut c_void, *mut c_void, *mut libc::FILE) {
+    // SAFETY: it takes any of the three numbers, and gives the C
+    // library's stream, which lives as long as the process.
+    let stream = |n| unsafe { __acrt_iob_func(n) };
+    (stream(0).cast(), stream(1).cast(), stream(2))
 }
 
 /// The application's functions and data, as setopt left them.
@@ -995,7 +1022,7 @@ impl ChunkBeginHandler for Adapter {
             size: file
                 .size
                 .map_or(0, |s| s.try_into().expect("read as an off_t")),
-            hardlinks: file.hardlinks.unwrap_or(0),
+            hardlinks: file.hardlinks.map_or(0, link_count),
             strings,
             flags: flags.cast_unsigned(),
             b_data: ptr::null_mut(),

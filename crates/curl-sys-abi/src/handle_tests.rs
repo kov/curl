@@ -7494,7 +7494,14 @@ fn tcp_options_are_held_to_c_s_range() {
     assert_eq!(long(c, ffi::CURLOPT_TCP_KEEPCNT, 3), CURLE_OK);
     assert_eq!(long(c, ffi::CURLOPT_TCP_KEEPALIVE, 2), CURLE_OK);
     assert_eq!(long(c, ffi::CURLOPT_TCP_NODELAY, 0), CURLE_OK);
+    #[cfg(not(windows))]
     assert_eq!(long(c, ffi::CURLOPT_TCP_FASTOPEN, 1), CURLE_OK);
+    // Refused where C cannot connect with data.
+    #[cfg(windows)]
+    assert_eq!(
+        long(c, ffi::CURLOPT_TCP_FASTOPEN, 1),
+        ffi::CURLE_NOT_BUILT_IN
+    );
     let max = Duration::from_secs(i32::MAX.unsigned_abs().into());
     options(c, |o| {
         let s = o.sockets.made_mut().expect("made by a value set");
@@ -7507,7 +7514,7 @@ fn tcp_options_are_held_to_c_s_range() {
                 count: 3,
             }
         );
-        assert!(!s.nodelay && s.fastopen);
+        assert!(!s.nodelay && s.fastopen == cfg!(not(windows)));
     });
     // 0 is in the range.
     for o in [

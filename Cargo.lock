@@ -198,6 +198,7 @@ dependencies = [
  "libc",
  "openssl",
  "openssl-sys",
+ "windows-sys",
 ]
 
 [[package]]

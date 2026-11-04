@@ -1709,7 +1709,13 @@ fn apply(
             tcp(options, |s| s.keepalive.count = count)?;
         }
         // Linux connects with `TCP_FASTOPEN_CONNECT`.
+        #[cfg(not(windows))]
         (ffi::CURLOPT_TCP_FASTOPEN, Long(n)) => tcp(options, |s| s.fastopen = n != 0)?,
+        // C's Windows build has no way to connect with data
+        // (`CONNECT_DATA_IDEMPOTENT`, `MSG_FASTOPEN`, `TCP_FASTOPEN_CONNECT`)
+        // and refuses the option.
+        #[cfg(windows)]
+        (ffi::CURLOPT_TCP_FASTOPEN, Long(_)) => return Err(Refused::NotBuiltIn),
         (ffi::CURLOPT_INTERFACE, Ptr(p)) => {
             // SAFETY: as above.
             let given = unsafe { string(p) }?;

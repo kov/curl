@@ -308,7 +308,7 @@ unsafe fn read_options(forms: &mut Vec<FormInfo>, args: &mut VaList<'_>) -> CURL
                 if len < 0 {
                     CURL_FORMADD_INCOMPLETE
                 } else {
-                    curr.contentslength = len;
+                    curr.contentslength = curl_off_t::from(len);
                     CURL_FORMADD_OK
                 }
             }
@@ -811,10 +811,18 @@ fn made<T>(p: *mut T) -> Result<*mut T, NotConverted> {
     }
 }
 
-/// `fseek` on the `FILE *` a part reads, as its seek function.
+/// `fseek` on the `FILE *` a part reads, as its seek function
+/// (`curlx_fseek`: `fseeko`, or `_fseeki64` on Windows).
 unsafe extern "C" fn seek_file(arg: *mut c_void, offset: curl_off_t, origin: c_int) -> c_int {
+    #[cfg(unix)]
+    use libc::fseeko as seek;
+    #[cfg(windows)]
+    unsafe extern "C" {
+        #[link_name = "_fseeki64"]
+        fn seek(stream: *mut libc::FILE, offset: i64, origin: c_int) -> c_int;
+    }
     // SAFETY: the part's argument is the `FILE *` it reads.
-    unsafe { libc::fseeko(arg.cast(), offset, origin) }
+    unsafe { seek(arg.cast(), offset, origin) }
 }
 
 /// A tree of the chain from `post`, attached to nothing, its streams read
@@ -921,7 +929,7 @@ unsafe fn set_content(
     let clen = if p.flags & LARGE != 0 {
         p.contentlen
     } else {
-        p.contentslength
+        curl_off_t::from(p.contentslength)
     };
     let code = if p.flags & (FILENAME | READFILE) != 0 {
         let code = if file.contents.is_null() {

@@ -5,12 +5,36 @@
 #![allow(clippy::disallowed_methods)]
 
 fn main() {
-    let soname = if std::env::var_os("CARGO_FEATURE_DEBUG_HOOKS").is_some() {
-        "libcurl-d.so.4"
-    } else {
-        "libcurl.so.4"
-    };
-    println!("cargo::rustc-cdylib-link-arg=-Wl,-soname,{soname}");
+    let debug = std::env::var_os("CARGO_FEATURE_DEBUG_HOOKS").is_some();
+    // Windows has no soname: a program names the DLL's file, which the
+    // build tree lays out as C's CMake names it (`libcurl-d.dll`).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        let soname = if debug {
+            "libcurl-d.so.4"
+        } else {
+            "libcurl.so.4"
+        };
+        println!("cargo::rustc-cdylib-link-arg=-Wl,-soname,{soname}");
+    }
+    // The library and the tool are both `curl`, and on Windows each would
+    // write its debug information to `curl.pdb` beside the other: the
+    // library's goes where this script's output does.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+        println!("cargo::rustc-cdylib-link-arg=/PDB:{out}\\libcurl.pdb");
+    }
+    // The debug test build links the debug C library, as C's debug build
+    // does (`/MDd`): the streams, memory and `errno` a test program hands
+    // over are that library's, and a stream written here must be the
+    // program's own, buffer and all.
+    if debug && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        for lib in ["msvcrt", "vcruntime", "ucrt"] {
+            println!("cargo::rustc-cdylib-link-arg=/NODEFAULTLIB:{lib}.lib");
+        }
+        for lib in ["msvcrtd", "vcruntimed", "ucrtd"] {
+            println!("cargo::rustc-cdylib-link-arg=/DEFAULTLIB:{lib}.lib");
+        }
+    }
     println!("cargo::rerun-if-changed=csrc/va_fetch.c");
     cc::Build::new()
         .file("csrc/va_fetch.c")

@@ -11,6 +11,7 @@ use core::ffi::{c_char, c_long, c_void};
 use std::sync::Mutex;
 
 use curl_core::components::{Components, Levels};
+use curl_core::conn::io::Winsock;
 
 use crate::ffi::{
     self, CURLE_FAILED_INIT, CURLE_OK, CURLcode, curl_calloc_callback, curl_free_callback,
@@ -52,6 +53,10 @@ struct Root {
     /// `curl_global_init` calls not yet matched by `curl_global_cleanup`.
     initialized: u32,
     allocator: Allocator,
+    /// Winsock, started by the first init that asks for it
+    /// (`CURL_GLOBAL_WIN32`) and held until the last cleanup; there is
+    /// nothing to start on Unix.
+    winsock: Option<Winsock>,
     /// The last number `CURL_ENTROPY`'s sequence gave, once it has.
     #[cfg(feature = "debug-hooks")]
     entropy: Option<u32>,
@@ -60,6 +65,7 @@ struct Root {
 static ROOT: Mutex<Root> = Mutex::new(Root {
     initialized: 0,
     allocator: SYSTEM,
+    winsock: None,
     #[cfg(feature = "debug-hooks")]
     entropy: None,
 });
@@ -365,40 +371,61 @@ fn libraries_cleanup() {
 }
 
 /// The library initialised for a program that did not, as a handle is
-/// made (`curl_easy_init`).
-pub(crate) fn init_unless_done() {
+/// made (`curl_easy_init`, with `CURL_GLOBAL_DEFAULT`); `Err` if it could
+/// not be.
+pub(crate) fn init_unless_done() -> Result<(), ()> {
     let mut root = root();
     if root.initialized == 0 {
         root.allocator = SYSTEM;
-        trace_from_env();
-        libraries_init();
+        if first_init(&mut root, c_long::from(ffi::CURL_GLOBAL_DEFAULT)) != CURLE_OK {
+            return Err(());
+        }
         root.initialized = 1;
     }
+    Ok(())
 }
 
-fn global_init() -> CURLcode {
+/// What the first init sets up, the allocator installed (`global_init`):
+/// the trace, then Winsock if `flags` asks for it (`CURL_GLOBAL_WIN32`),
+/// which the system may refuse, failing the init; then the libraries.
+fn first_init(root: &mut Root, flags: c_long) -> CURLcode {
+    // `Curl_trc_init`.
+    trace_from_env();
+    if flags & c_long::from(ffi::CURL_GLOBAL_WIN32) != 0 {
+        match Winsock::start() {
+            Ok(started) => root.winsock = Some(started),
+            Err(_) => return CURLE_FAILED_INIT,
+        }
+    }
+    libraries_init();
+    CURLE_OK
+}
+
+fn global_init(flags: c_long) -> CURLcode {
     let mut root = root();
     if root.initialized == 0 {
         // The defaults are installed again, as in C.
         root.allocator = SYSTEM;
-        // `Curl_trc_init`.
-        trace_from_env();
-        libraries_init();
+        let code = first_init(&mut root, flags);
+        if code != CURLE_OK {
+            return code;
+        }
     }
     root.initialized += 1;
     CURLE_OK
 }
 
-/// `flags` selects platform parts to initialise; none apply on Linux.
+/// `flags` selects platform parts to initialise: Winsock on Windows
+/// (`CURL_GLOBAL_WIN32`); none apply on Linux.
 #[unsafe(no_mangle)]
-pub extern "C" fn curl_global_init(_flags: c_long) -> CURLcode {
-    global_init()
+pub extern "C" fn curl_global_init(flags: c_long) -> CURLcode {
+    global_init(flags)
 }
 const _: ffi::proto::curl_global_init = curl_global_init;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_global_init_mem(
-    _flags: c_long,
+    flags: c_long,
     m: curl_malloc_callback,
     f: curl_free_callback,
     r: curl_realloc_callback,
@@ -420,8 +447,10 @@ pub extern "C" fn curl_global_init_mem(
             strdup,
             calloc,
         };
-        trace_from_env();
-        libraries_init();
+        let code = first_init(&mut root, flags);
+        if code != CURLE_OK {
+            return code;
+        }
     }
     root.initialized += 1;
     CURLE_OK
@@ -454,6 +483,7 @@ pub extern "C" fn curl_global_cleanup() {
     // The allocator stays: memory handed out may still be freed with it.
     if root.initialized == 1 {
         libraries_cleanup();
+        root.winsock = None;
     }
     root.initialized = root.initialized.saturating_sub(1);
 }

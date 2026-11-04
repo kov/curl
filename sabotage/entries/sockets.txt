@@ -176,9 +176,9 @@ witness: curl-sys-abi tls_tests::the_ssl_ctx_function_s_code_fails_the_transfer
 file: crates/curl-sys-abi/src/sockets.rs
 witness: curl-sys-abi sockets::tests::an_opener_is_asked_for_the_socket_the_transport_needs
 --- old
-            SocketKind::Datagram => (libc::SOCK_DGRAM, libc::IPPROTO_UDP),
+            SocketKind::Datagram => (sys::SOCK_DGRAM, sys::IPPROTO_UDP),
 --- new
-            SocketKind::Datagram => (libc::SOCK_STREAM, libc::IPPROTO_UDP),
+            SocketKind::Datagram => (sys::SOCK_STREAM, sys::IPPROTO_UDP),
 
 === a pollset past its room in place loses the sockets beyond it
 file: crates/curl-core/src/multi/sockets.rs

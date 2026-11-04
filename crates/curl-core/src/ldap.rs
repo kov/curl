@@ -1,17 +1,24 @@
-//! What an LDAP library does for `ldap:` and `ldaps:`, as OpenLDAP's
-//! libldap does for C (`lib/openldap.c`): the URL's search, a session
-//! over a copy of the connected socket, its binds and searches, and the
-//! messages that answer them. The core links none; a handle's
-//! `Libraries` name the one its build has. Each call is one of the
-//! library's, made when C makes it, so what goes on the wire is the
-//! library's as in C.
+//! What an LDAP library does for `ldap:` and `ldaps:`, in either of the
+//! two ways C's build drives one. The core links none; a handle's
+//! `Libraries` name the one its build has ([`LdapLibrary`]). Each call is
+//! one of the library's, made when C makes it, so what goes on the wire
+//! is the library's as in C.
 //!
-//! Over TLS the library's reads and writes go through the connection's
-//! layers, not its socket: each call that may touch the wire is handed
-//! the [`Wire`] to use, for that call only.
+//! [`Ldap`] is OpenLDAP's libldap as `lib/openldap.c` drives it: the
+//! URL's search, a session over a copy of the connected socket, its binds
+//! and searches, and the messages that answer them, none of them waited
+//! for. Over TLS the library's reads and writes go through the
+//! connection's layers, not its socket: each call that may touch the wire
+//! is handed the [`Wire`] to use, for that call only.
+//!
+//! [`Local`] is a library as `lib/ldap.c` drives it, where libldap has no
+//! `ldap_init_fd` (macOS's LDAP.framework) or the library is another
+//! (WinLDAP): a session of the library's own, over a connection it makes
+//! itself, each call waited for.
 
 use std::fmt;
 use std::io;
+use std::time::Duration;
 
 use curl_alloc::OutOfMemory;
 use curl_os::socket::BorrowedSocket;
@@ -214,4 +221,123 @@ pub trait Message {
 pub struct Attribute<'m> {
     pub name: &'m [u8],
     pub values: Option<Vec<&'m [u8]>>,
+}
+
+/// The LDAP library a build has, and the way C drives it.
+#[derive(Clone, Copy, Debug)]
+pub enum LdapLibrary {
+    /// Over the connection's socket (`lib/openldap.c`).
+    Fd(&'static dyn Ldap),
+    /// Over a connection of its own (`lib/ldap.c`).
+    Local(&'static dyn Local),
+}
+
+/// An LDAP library as `lib/ldap.c` drives it: it parses the URL, makes a
+/// session to the host and port connected to, sets it up, binds and
+/// searches, each call waiting for its answer, then hands the entries
+/// found over one by one. The connection the transfer made is used for
+/// nothing but its address.
+pub trait Local: fmt::Debug + Send + Sync {
+    /// The library's name and version as its headers give them
+    /// (`LDAP_VENDOR_NAME`, `LDAP_VENDOR_VERSION`).
+    fn vendor(&self) -> (&'static str, i32);
+
+    /// The search `url` names (`ldap_url_parse`), or the library's
+    /// number for what is wrong with it.
+    fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError>;
+
+    /// The library's words for `code` (`ldap_err2string`).
+    fn describe(&self, code: Code) -> &'static [u8];
+
+    /// How the library is told to speak TLS, which decides the steps of
+    /// an `ldaps:` session's set-up.
+    fn tls(&self) -> LocalTls;
+
+    /// The call a bind is made with, as a failed bind names it.
+    fn bind_call(&self) -> &'static str;
+
+    /// A session to `host`'s `port`, made but not connected
+    /// (`ldap_init`).
+    fn open(&self, host: &[u8], port: u16) -> Result<Box<dyn LocalSession>, Opened>;
+}
+
+/// Why no session was made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opened {
+    /// The library made none.
+    Refused,
+    OutOfMemory,
+}
+
+/// How a [`Local`] library speaks TLS (the branches of `ldap_do`'s
+/// `ldap_ssl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalTls {
+    /// By OpenLDAP's options (`LDAP_OPT_X_TLS`): the file of
+    /// certificates to trust, how hard the peer's is checked, and TLS
+    /// from the start.
+    OpenLdap,
+    /// Not at all: the library has no TLS to set.
+    None,
+}
+
+/// How hard a session checks the peer's certificate
+/// (`LDAP_OPT_X_TLS_REQUIRE_CERT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequireCert {
+    /// Not at all (`LDAP_OPT_X_TLS_NEVER`).
+    Never,
+    /// It must verify (`LDAP_OPT_X_TLS_DEMAND`).
+    Demand,
+}
+
+/// A [`Local`] library's session, its settings and calls one for one with
+/// the library's, each waited for. Dropping it unbinds and frees it, its
+/// connection closed (`ldap_unbind_s`).
+pub trait LocalSession: fmt::Debug + Send {
+    /// How long a connect may take (`LDAP_OPT_NETWORK_TIMEOUT`).
+    fn set_network_timeout(&mut self, timeout: Duration);
+    /// The protocol version it speaks (`LDAP_OPT_PROTOCOL_VERSION`).
+    fn set_version(&mut self, version: Version);
+    /// Chase no referrals (`LDAP_OPT_REFERRALS`).
+    fn set_no_referrals(&mut self);
+    /// Trust the certificates in the file `path` names
+    /// (`LDAP_OPT_X_TLS_CACERTFILE`).
+    fn set_ca_file(&mut self, path: &[u8]) -> Result<(), Code>;
+    /// Check the peer's certificate as `require` says
+    /// (`LDAP_OPT_X_TLS_REQUIRE_CERT`).
+    fn set_require_cert(&mut self, require: RequireCert) -> Result<(), Code>;
+    /// Speak TLS from the start (`LDAP_OPT_X_TLS` to
+    /// `LDAP_OPT_X_TLS_HARD`).
+    fn set_tls_hard(&mut self) -> Result<(), Code>;
+    /// Bind simply as `user` with `password`, none for none, the
+    /// connection made first if it is not yet (`ldap_simple_bind_s`): the
+    /// library's or the server's code.
+    fn bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code;
+    /// Search, waiting for the whole answer (`ldap_search_s`): its code,
+    /// success or too many entries, and the entries; the code otherwise.
+    fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code>;
+}
+
+/// The entries a search found, read one at a time, and freed when
+/// dropped (`ldap_msgfree`).
+pub trait Entries {
+    /// Move to the next entry, the first the first time
+    /// (`ldap_first_entry`, `ldap_next_entry`): whether there is one.
+    fn next_entry(&mut self) -> bool;
+    /// The entry's name (`ldap_get_dn`).
+    fn dn(&mut self) -> Result<&[u8], NoName>;
+    /// The entry's next attribute, the first the first time
+    /// (`ldap_first_attribute`, `ldap_next_attribute`): its type, and its
+    /// values if the library gives any (`ldap_get_values_len`); none past
+    /// the last.
+    fn next_attribute(&mut self) -> Result<Option<Attribute<'_>>, OutOfMemory>;
+}
+
+/// Why an entry has no name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoName {
+    /// The library gave none.
+    Missing,
+    OutOfMemory,
 }

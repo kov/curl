@@ -50,7 +50,7 @@ fn main() {
     // The LDAP protocols are built where the LDAP crate links its
     // library, by the same check.
     println!("cargo::rustc-check-cfg=cfg(ldap)");
-    if curl_build::openldap() {
+    if curl_build::ldap().links {
         println!("cargo::rustc-cfg=ldap");
     }
 }

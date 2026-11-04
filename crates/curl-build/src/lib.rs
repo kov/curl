@@ -63,12 +63,21 @@ pub fn include_dirs(package: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether the build has OpenLDAP's LDAP: libldap and liblber, from
-/// where pkg-config finds them, with `ldap_init_fd`, as C's build takes
-/// `lib/openldap.c` only then (CMake's `check_function_exists`,
-/// `USE_OPENLDAP`). The LDAP crate links it, and the core lists the LDAP
-/// protocols, by this one answer.
-pub fn openldap() -> bool {
+/// What the build's LDAP library, libldap and liblber from where
+/// pkg-config finds them (the system's otherwise, as macOS's), can do,
+/// as CMake's `check_function_exists` decides it. The LDAP crate links
+/// it, and the core lists the LDAP protocols, by this one answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LdapLibrary {
+    /// It links, with `ldap_init`: C's build has LDAP.
+    pub links: bool,
+    /// It has `ldap_init_fd`: C's build takes `lib/openldap.c`
+    /// (`USE_OPENLDAP`), `lib/ldap.c` otherwise.
+    pub init_fd: bool,
+}
+
+/// The build's LDAP library, as [`LdapLibrary`] says.
+pub fn ldap() -> LdapLibrary {
     println!("cargo::rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo::rerun-if-env-changed=PKG_CONFIG_LIBDIR");
     let mut libs: Vec<String> = ["ldap", "lber"]
@@ -77,7 +86,11 @@ pub fn openldap() -> bool {
         .map(|dir| format!("-L{}", dir.display()))
         .collect();
     libs.extend(["-lldap".to_owned(), "-llber".to_owned()]);
-    function_exists("ldap_init_fd", "ldap_init_fd", &libs)
+    let links = function_exists("ldap_init", "ldap_init", &libs);
+    LdapLibrary {
+        links,
+        init_fd: links && function_exists("ldap_init_fd", "ldap_init_fd", &libs),
+    }
 }
 
 /// Whether a program calling `function` links with `libs` (linker

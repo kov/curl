@@ -22,8 +22,8 @@ use crate::conn::{ConnLease, RecvFailed};
 use crate::deliver::{self, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::ldap::{
-    Code, Kind, Ldap, Mech, Message, MsgId, Scope, Search, Session, SessionFailed, UrlError,
-    Version, Wire,
+    Code, Kind, Ldap, LdapLibrary, Mech, Message, MsgId, Scope, Search, Session, SessionFailed,
+    UrlError, Version, Wire,
 };
 use crate::multi::Host;
 use crate::multi::state::StepCx;
@@ -323,7 +323,7 @@ impl Request {
         before: super::Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let Some(library) = cx.easy().libraries().ldap else {
+        let Some(LdapLibrary::Fd(library)) = cx.easy().libraries().ldap else {
             return Err(ErrorKind::UnsupportedProtocol);
         };
         let name: &[u8] = if secured { b"ldaps" } else { b"ldap" };
@@ -1302,6 +1302,8 @@ impl super::Phases for Request {
         phase.c_default()
     }
 }
+
+pub(crate) mod local;
 
 #[cfg(test)]
 mod tests;

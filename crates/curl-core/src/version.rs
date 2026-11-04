@@ -239,10 +239,9 @@ static VERSION: VersionInfo = VersionInfo {
 };
 
 /// The protocols built, in C's order. LDAP's two only where the LDAP
-/// crate links OpenLDAP's libldap (`curl_build::openldap`): Windows'
-/// build has WinLDAP and macOS's an OpenLDAP without `ldap_init_fd`, for
-/// which C takes `lib/ldap.c`, not ported, so they have neither LDAP
-/// protocol, as a C build without LDAP has not.
+/// crate links an LDAP library (`curl_build::ldap`): Windows' build has
+/// WinLDAP, not bound yet, so it has neither LDAP protocol, as a C build
+/// without LDAP has not.
 #[cfg(ldap)]
 const PROTOCOLS: &[Protocol] = &[
     Protocol::Dict,
@@ -327,7 +326,7 @@ mod tests {
             "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp",
             "smtps", "telnet", "tftp", "ws", "wss",
         ];
-        // No LDAP without OpenLDAP's libldap.
+        // No LDAP without an LDAP library.
         if !cfg!(ldap) {
             want.retain(|p| !p.starts_with("ldap"));
         }

@@ -47,6 +47,10 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-ldap/src/openldap.rs` and `src/sys.rs`: libldap's session over the connection's
   socket, the I/O layer it reads and writes TLS through, its messages, and the declarations of
   the functions they call.
+- `crates/curl-ldap/src/local.rs`: libldap's session over a connection of its own, as
+  `lib/ldap.c` drives it, and the entries of its search.
+- `crates/curl-ldap/src/common.rs`: libldap's URL parser, its words for a code, its version,
+  and the strings and values passed to and from it, for both of the above.
 - `crates/curl-ares/src/lib.rs` and `src/sys.rs`: c-ares's channels, their callbacks and sockets,
   and the declarations of the functions they call.
 - `crates/curl-idn2/src/lib.rs`: libidn2, converting host names to and from punycode.

@@ -1,9 +1,12 @@
-//! The parts of libldap's `ldap.h` and liblber's `lber.h` the session
-//! uses, and the two calls of libldap's own the headers keep private
-//! (`ldap_pvt_url_scheme2proto`, `ldap_init_fd`), declared as
-//! `lib/openldap.c` declares them. `csrc/layout.c` gives the headers' own
-//! values and layouts, which the crate's tests compare with these.
+//! The parts of libldap's `ldap.h` and liblber's `lber.h` the sessions
+//! use: `lib/openldap.c`'s, with the two calls of libldap's own the
+//! headers keep private (`ldap_pvt_url_scheme2proto`, `ldap_init_fd`),
+//! declared as it declares them, and the older calls `lib/ldap.c` makes,
+//! which OpenLDAP declares only with `LDAP_DEPRECATED`. `csrc/layout.c`
+//! gives the headers' own values and layouts, which the crate's tests
+//! compare with these.
 
+#![allow(unsafe_code)]
 #![allow(non_camel_case_types, dead_code, clippy::upper_case_acronyms)]
 
 use core::ffi::{c_char, c_int, c_long, c_ulong, c_void};
@@ -46,8 +49,13 @@ pub(crate) struct berval {
 #[repr(C)]
 pub(crate) struct timeval {
     pub(crate) tv_sec: c_long,
-    pub(crate) tv_usec: c_long,
+    pub(crate) tv_usec: suseconds_t,
 }
+
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) type suseconds_t = c_long;
+#[cfg(target_vendor = "apple")]
+pub(crate) type suseconds_t = i32;
 
 #[repr(C)]
 pub(crate) struct LDAPURLDesc {
@@ -119,6 +127,13 @@ pub(crate) const LDAP_SCOPE_SUBTREE: c_int = 0x0002;
 pub(crate) const LDAP_SCOPE_SUBORDINATE: c_int = 0x0003;
 pub(crate) const LDAP_VERSION2: c_int = 2;
 pub(crate) const LDAP_VERSION3: c_int = 3;
+pub(crate) const LDAP_OPT_NETWORK_TIMEOUT: c_int = 0x5005;
+pub(crate) const LDAP_OPT_X_TLS: c_int = 0x6000;
+pub(crate) const LDAP_OPT_X_TLS_CACERTFILE: c_int = 0x6002;
+pub(crate) const LDAP_OPT_X_TLS_REQUIRE_CERT: c_int = 0x6006;
+pub(crate) const LDAP_OPT_X_TLS_NEVER: c_int = 0;
+pub(crate) const LDAP_OPT_X_TLS_DEMAND: c_int = 2;
+pub(crate) const LDAP_OPT_X_TLS_HARD: c_int = 1;
 
 #[link(name = "ldap")]
 unsafe extern "C" {
@@ -212,6 +227,42 @@ unsafe extern "C" {
         sctrls: *mut *mut LDAPControl,
         cctrls: *mut *mut LDAPControl,
     ) -> c_int;
+    // `lib/ldap.c`'s calls.
+    pub(crate) fn ldap_init(host: *const c_char, port: c_int) -> *mut LDAP;
+    pub(crate) fn ldap_simple_bind_s(
+        ld: *mut LDAP,
+        who: *const c_char,
+        passwd: *const c_char,
+    ) -> c_int;
+    pub(crate) fn ldap_search_s(
+        ld: *mut LDAP,
+        base: *const c_char,
+        scope: c_int,
+        filter: *const c_char,
+        attrs: *mut *mut c_char,
+        attrsonly: c_int,
+        res: *mut *mut LDAPMessage,
+    ) -> c_int;
+    pub(crate) fn ldap_first_entry(ld: *mut LDAP, chain: *mut LDAPMessage) -> *mut LDAPMessage;
+    pub(crate) fn ldap_next_entry(ld: *mut LDAP, entry: *mut LDAPMessage) -> *mut LDAPMessage;
+    pub(crate) fn ldap_get_dn(ld: *mut LDAP, entry: *mut LDAPMessage) -> *mut c_char;
+    pub(crate) fn ldap_first_attribute(
+        ld: *mut LDAP,
+        entry: *mut LDAPMessage,
+        ber: *mut *mut BerElement,
+    ) -> *mut c_char;
+    pub(crate) fn ldap_next_attribute(
+        ld: *mut LDAP,
+        entry: *mut LDAPMessage,
+        ber: *mut BerElement,
+    ) -> *mut c_char;
+    pub(crate) fn ldap_get_values_len(
+        ld: *mut LDAP,
+        entry: *mut LDAPMessage,
+        target: *const c_char,
+    ) -> *mut *mut berval;
+    pub(crate) fn ldap_value_free_len(vals: *mut *mut berval);
+    pub(crate) fn ldap_unbind_s(ld: *mut LDAP) -> c_int;
 }
 
 #[link(name = "lber")]
@@ -242,7 +293,13 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     pub(crate) static curl_ldap_values: [i64; LAYOUT_LEN];
+    /// The headers' `LDAP_VENDOR_NAME`, a C string.
+    pub(crate) static curl_ldap_vendor_name: [c_char; 0];
+    /// The headers' `LDAP_VENDOR_VERSION`.
+    pub(crate) static curl_ldap_vendor_version: c_int;
+    /// Whether the headers are Apple's (`LDAP_OPT_X_TLS_PASSPHRASE`).
+    pub(crate) static curl_ldap_apple: c_int;
 }
 
 /// How many values and layouts `csrc/layout.c` gives.
-pub(crate) const LAYOUT_LEN: usize = 63;
+pub(crate) const LAYOUT_LEN: usize = 72;

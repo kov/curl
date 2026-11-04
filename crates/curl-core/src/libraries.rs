@@ -15,7 +15,7 @@ use crate::gss::Gss;
 use crate::http2::Http2;
 use crate::http3::Http3;
 use crate::idn::Idn;
-use crate::ldap::Ldap;
+use crate::ldap::LdapLibrary;
 use crate::psl::SuffixLibrary;
 use crate::ssh::Ssh;
 use crate::tls::TlsBackend;
@@ -53,9 +53,9 @@ pub struct Libraries {
     /// The SSH library, if any: without it, SCP and SFTP are not built
     /// in, as in a C build without libssh.
     pub ssh: Option<&'static dyn Ssh>,
-    /// The LDAP library, if any: without it, LDAP is not built in, as in
-    /// a C build without OpenLDAP.
-    pub ldap: Option<&'static dyn Ldap>,
+    /// The LDAP library, if any, and the way C drives it: without it,
+    /// LDAP is not built in, as in a C build without one.
+    pub ldap: Option<LdapLibrary>,
     /// Where public suffix lists come from, if anywhere: without it, a
     /// cookie's domain needs a dot, as in a C build without libpsl.
     pub psl: Option<&'static dyn SuffixLibrary>,

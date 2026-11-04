@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/time.h>
 #include <ldap.h>
 
 #define URL(f) (int64_t)offsetof(LDAPURLDesc, f)
@@ -36,7 +37,24 @@ const int64_t curl_ldap_values[] = {
   LDAP_PROTOCOL_ERROR, LDAP_SIZELIMIT_EXCEEDED, LDAP_SASL_BIND_IN_PROGRESS,
   LDAP_INVALID_CREDENTIALS, LDAP_INSUFFICIENT_ACCESS, LDAP_NO_MEMORY,
   LDAP_NO_RESULTS_RETURNED, LDAP_URL_ERR_BADURL,
+  /* The options lib/ldap.c sets. */
+  LDAP_OPT_NETWORK_TIMEOUT, LDAP_OPT_X_TLS, LDAP_OPT_X_TLS_CACERTFILE,
+  LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_NEVER, LDAP_OPT_X_TLS_DEMAND,
+  LDAP_OPT_X_TLS_HARD,
+  (int64_t)sizeof(struct timeval), (int64_t)offsetof(struct timeval, tv_usec),
 };
 
 _Static_assert(sizeof(curl_ldap_values) / sizeof(curl_ldap_values[0])
-               == 63, "src/sys.rs's LAYOUT_LEN");
+               == 72, "src/sys.rs's LAYOUT_LEN");
+
+/* What lib/ldap.c says of the library, from its headers: its name and
+ * version (LDAP_VENDOR_NAME, LDAP_VENDOR_VERSION), and whether it is
+ * Apple's, which has an option no other has (Curl_ldap_version's
+ * flavor). */
+const char curl_ldap_vendor_name[] = LDAP_VENDOR_NAME;
+const int curl_ldap_vendor_version = LDAP_VENDOR_VERSION;
+#ifdef LDAP_OPT_X_TLS_PASSPHRASE
+const int curl_ldap_apple = 1;
+#else
+const int curl_ldap_apple = 0;
+#endif

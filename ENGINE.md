@@ -319,7 +319,8 @@ curl-core/src/
                              machine over the `ssh` library traits; path.rs, the
                              request's path, quote paths, ranges and numbers
     ldap.rs                  LDAP (openldap.c): LdapConn, the connect's binds over the
-                             `ldap` library traits, the search, the entries as LDIF
+                             `ldap` library traits, the search, the entries as LDIF;
+                             ldap/local.rs, LDAP (ldap.c) over the `Local` traits
     raw.rs                   a request sent whole in DO, DICT's and Gopher's (`Outgoing`);
                              raw/wire.rs, their tests' fake server (tests)
     dict.rs, gopher.rs       DICT (dict.c) and Gopher (gopher.c): the request each makes of
@@ -3979,6 +3980,17 @@ search's message and the URL's parts.
   LDIF (a name or value with bytes LDIF does not allow in base64, a binary type's always, an
   attribute type with them refused), until the result, whose code is the transfer's. DONE
   abandons a search not answered; the connection unbinds as it shuts down.
+
+Where libldap has no `ldap_init_fd`, as macOS's LDAP.framework, C's build takes `lib/ldap.c`
+instead, and so does the rewrite: `Libraries.ldap` is an `LdapLibrary`, `Fd` for the above or
+`Local` for `proto/ldap/local.rs` over the `Local` traits, which a WinLDAP binding would answer
+too (its TLS is a `LocalTls` of its own). The whole exchange is DO's, blocking in each library
+call as C's `ldap_do` does: the library opens a connection of its own to the host and port the
+transfer's connection reached (which carries nothing and is closed after), sets C's options
+(ldaps's CA file and certificate checks as `LDAP_OPT_X_TLS` options), binds (again in version 2
+if refused in the clear), searches, and the entries are written as `lib/ldap.c`'s LDIF, which
+differs from `openldap.c`'s: an attribute with no values is an empty line alone, no blank line
+ends an entry, and a size-limited search says how many entries came.
 
 ## 6. HTTP/1.x
 

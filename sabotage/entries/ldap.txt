@@ -81,9 +81,9 @@ witness: curl-core proto::ldap::tests::a_search_cut_short_is_abandoned
 file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::ldap::tests::ldaps_wants_a_tls_library_too
 --- old
-                if cx.easy().libraries().ldap.is_some() && cx.easy().libraries().tls.is_some() =>
+                    && (scheme == b"ldap" || cx.easy().libraries().tls.is_some()) =>
 --- new
-                if cx.easy().libraries().ldap.is_some() =>
+                    && (scheme == b"ldap" || true) =>
 
 === a paused LDAP transfer waits to read
 file: crates/curl-core/src/proto/ldap.rs
@@ -95,7 +95,7 @@ witness: curl-core proto::ldap::tests::a_paused_write_holds_the_answer
 
 === a session dropped unbound is not unbound
 file: crates/curl-ldap/src/openldap.rs
-witness: curl-ldap tests::a_session_dropped_says_goodbye_and_closes
+witness: curl-ldap openldap::tests::a_session_dropped_says_goodbye_and_closes
 --- old
         // be sent, and the session is freed all the same.
         self.unbind_now();
@@ -104,7 +104,7 @@ witness: curl-ldap tests::a_session_dropped_says_goodbye_and_closes
 
 === a socket with no descriptor goes on to make a session
 file: crates/curl-ldap/src/openldap.rs
-witness: curl-ldap tests::a_socket_without_a_descriptor_makes_no_session
+witness: curl-ldap openldap::tests::a_socket_without_a_descriptor_makes_no_session
 --- old
         let socket = socket.ok_or(SessionFailed::NoCopy)?;
 --- new
@@ -113,16 +113,16 @@ witness: curl-ldap tests::a_socket_without_a_descriptor_makes_no_session
         };
 
 === a URL's `children` scope is refused
-file: crates/curl-ldap/src/openldap.rs
-witness: curl-ldap tests::a_url_names_its_search
+file: crates/curl-ldap/src/common.rs
+witness: curl-ldap common::tests::a_url_names_its_search
 --- old
         sys::LDAP_SCOPE_SUBORDINATE => Some(Scope::Subordinate),
 --- new
         sys::LDAP_SCOPE_SUBORDINATE => None,
 
 === a subtree search goes out as a search of the base
-file: crates/curl-ldap/src/openldap.rs
-witness: curl-ldap tests::a_session_over_a_wire_reads_and_writes_through_it
+file: crates/curl-ldap/src/common.rs
+witness: curl-ldap openldap::tests::a_session_over_a_wire_reads_and_writes_through_it
 --- old
         Scope::Subtree => sys::LDAP_SCOPE_SUBTREE,
 --- new

@@ -52,7 +52,7 @@ fn every_library() -> SharedLibraries {
     SharedLibraries::new(Libraries {
         tls: Some(Library::Static(tls)),
         ssh: Some(&NoSsh),
-        ldap: Some(&NoLdap),
+        ldap: Some(crate::ldap::LdapLibrary::Fd(&NoLdap)),
         ..Libraries::NONE
     })
     .unwrap()

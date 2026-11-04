@@ -889,7 +889,7 @@ fn run_driven(
     }
     e.set_libraries(
         SharedLibraries::new(Libraries {
-            ldap: Some(ldap),
+            ldap: Some(LdapLibrary::Fd(ldap)),
             tls,
             ..Libraries::NONE
         })

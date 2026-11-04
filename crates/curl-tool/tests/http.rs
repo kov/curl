@@ -1437,7 +1437,10 @@ fn reads_the_name_the_server_gives_as_c_does() {
 
 /// Run the tool with `args` and `typed` on standard input, outside any
 /// terminal: `setsid` leaves it without one, so a password asked for is
-/// read from standard input (`/dev/tty` would wait for a person).
+/// read from standard input (`/dev/tty` would wait for a person). Unix
+/// only: on Windows C reads a password from the console alone
+/// (`_getch`), never from standard input, so nothing can be typed.
+#[cfg(unix)]
 fn curl_typing(args: &[&str], typed: &[u8]) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
@@ -1480,6 +1483,7 @@ const CLOSED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: clos
 /// takes one read of standard input, its last byte cut, up to a zero
 /// byte; options after the user stay. `;options` alone, a password,
 /// even empty, and `--oauth2-bearer` ask for none.
+#[cfg(unix)]
 #[test]
 fn asks_for_a_missing_password() {
     /// The arguments, what is typed, the prompts, the logins sent.
@@ -1582,6 +1586,7 @@ fn asks_for_a_missing_password() {
 /// The prompt is an operation's, not a URL's: one for all the URLs of
 /// one, numbered when `--next` makes several, and all asked before the
 /// first transfer.
+#[cfg(unix)]
 #[test]
 fn asks_for_each_operation_s_password() {
     let cases: [(&[&str], &str, &[&str]); 3] = [
@@ -1638,6 +1643,7 @@ fn asks_for_each_operation_s_password() {
 /// The prompt is cut at 255 bytes; a password typed past 2047 bytes is
 /// cut there; and a login that would reach 100 KiB fails the run, as
 /// out of memory and without a word.
+#[cfg(unix)]
 #[test]
 fn bounds_the_password_asked_for() {
     let s = Server::new(CLOSED);

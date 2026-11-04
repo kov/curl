@@ -6,8 +6,16 @@ file: crates/curl-os/src/xattr.rs
 witness: curl-os xattr::tests::sets_an_attribute
 --- old
             value.len(),
+            0,
+        )
+    };
+    // SAFETY: as above.
 --- new
             0,
+            0,
+        )
+    };
+    // SAFETY: as above.
 
 === the URL a download came from is stored with its user and password
 file: crates/curl-tool/src/xattr.rs

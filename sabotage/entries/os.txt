@@ -105,21 +105,31 @@ witness: curl-os net::tests::a_reset_connection_fails_both_ways
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::descriptors_run_from_zero_to_the_limit
 --- old
-    let fd = unsafe { libc::socket(family, kind, protocol) };
-    if fd < 0 {
+        kind |= libc::SOCK_NONBLOCK;
+    }
+    // SAFETY: `socket` takes no pointers; a negative result is an error.
+    let fd = checked(unsafe { libc::socket(family, kind, protocol) })?;
 --- new
+        kind |= libc::SOCK_NONBLOCK;
+    }
+    // SAFETY: `socket` takes no pointers; a negative result is an error.
     let fd = unsafe { libc::socket(family, kind, protocol) };
     if fd <= 0 {
+        return Err(io::Error::last_os_error());
+    }
 
 === a failed socket(2) is taken for a descriptor
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::descriptors_run_from_zero_to_the_limit
 --- old
-    let fd = unsafe { libc::socket(family, kind, protocol) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
+        kind |= libc::SOCK_NONBLOCK;
     }
+    // SAFETY: `socket` takes no pointers; a negative result is an error.
+    let fd = checked(unsafe { libc::socket(family, kind, protocol) })?;
 --- new
+        kind |= libc::SOCK_NONBLOCK;
+    }
+    // SAFETY: `socket` takes no pointers; a negative result is an error.
     let fd = unsafe { libc::socket(family, kind, protocol) };
 
 === a file kept for appending is emptied
@@ -142,9 +152,9 @@ witness: curl-os fs::tests::opens_files_to_read_and_write
 file: crates/curl-os/src/fs.rs
 witness: curl-os fs::tests::opens_files_to_read_and_write
 --- old
-    open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode)
+    open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode_t(mode))
 --- new
-    open(path, libc::O_WRONLY | libc::O_CREAT | keep, 0o644)
+    open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode_t(0o644))
 
 === a listing stops before its end
 file: crates/curl-os/src/fs.rs
@@ -334,9 +344,9 @@ witness: curl-os net::tests::an_interrupted_call_reads_as_c_reads_it
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_udp_socket_moves_one_datagram_a_call
 --- old
-    let mut kind = libc::SOCK_DGRAM | libc::SOCK_CLOEXEC;
+open_fd(family, libc::SOCK_DGRAM, libc::IPPROTO_UDP, nonblocking)
 --- new
-    let mut kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+open_fd(family, libc::SOCK_STREAM, libc::IPPROTO_UDP, nonblocking)
 
 === an empty datagram reads as the end of a UDP socket
 file: crates/curl-os/src/net.rs
@@ -368,9 +378,9 @@ witness: curl-os net::tests::segments_sent_are_received_apart_or_joined
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::segments_sent_are_received_apart_or_joined
 --- old
-            (libc::IPPROTO_IP, libc::IP_TOS)
+const IPV4_TOS_MESSAGE: libc::c_int = libc::IP_TOS;
 --- new
-            (libc::IPPROTO_IP, libc::IP_TTL)
+const IPV4_TOS_MESSAGE: libc::c_int = libc::IP_TTL;
 
 === a QUIC socket over IPv4 lets its datagrams fragment
 file: crates/curl-os/src/net.rs

@@ -127,3 +127,60 @@ mod tests {
         }
     }
 }
+
+/// The counterparts of `tests/perf/base64enc.c` and `base64dec.c`: the
+/// same input, loop count and output lines, timing this module. Run by
+/// `inventory/measure/perf.py` from a release build of the crate's tests
+/// (`--ignored --exact base64::perf::<name> --nocapture`).
+#[cfg(test)]
+mod perf {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    /// `tests/perf`'s default loop count for both.
+    const LOOPS: u64 = 10_000_000;
+
+    /// The 256 octets 0-255, base64 encoded (`BLOB64`).
+    const BLOB64: &[u8] = b"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMD\
+EyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFi\
+Y2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5\
+SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TF\
+xsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19v\
+f4+fr7/P3+/w==";
+
+    /// The lines C's programs print, from microseconds as `curlx_now`
+    /// measures them.
+    fn report(loops: u64, start: Instant) {
+        let us = u64::try_from(start.elapsed().as_micros()).unwrap();
+        let hn = us * 100_000 / loops;
+        println!("Loops:     {loops}");
+        println!("Time:      {us} usecs");
+        println!("Time/loop: {}.{:02} ns", hn / 100, hn % 100);
+    }
+
+    #[test]
+    #[ignore = "a benchmark, run by inventory/measure/perf.py"]
+    fn base64enc() {
+        let array: Vec<u8> = (0..=255).collect();
+        let start = Instant::now();
+        for _ in 0..LOOPS {
+            // As the callers do: a new buffer for each encoding.
+            let mut out = Vec::new();
+            let bytes = black_box(&array[..]);
+            super::encode(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
+            black_box(out);
+        }
+        report(LOOPS, start);
+    }
+
+    #[test]
+    #[ignore = "a benchmark, run by inventory/measure/perf.py"]
+    fn base64dec() {
+        assert_eq!(super::decode(BLOB64).unwrap().unwrap().len(), 256);
+        let start = Instant::now();
+        for _ in 0..LOOPS {
+            black_box(super::decode(black_box(BLOB64)).unwrap().unwrap());
+        }
+        report(LOOPS, start);
+    }
+}

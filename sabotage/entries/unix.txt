@@ -86,9 +86,11 @@ features: net
 --- old
     let at = usize::from(abstract_name);
     for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
+        *to = b as libc::c_char;
 --- new
     let at = usize::from(abstract_name) * 0;
     for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
+        *to = b as libc::c_char;
 
 === an opener is handed a Unix path without its terminator's room
 file: crates/curl-sys-abi/src/sockets.rs

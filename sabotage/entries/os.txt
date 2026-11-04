@@ -15,8 +15,10 @@ file: crates/curl-os/src/poll.rs
 witness: curl-os poll::tests::a_sub_millisecond_timeout_still_waits
 --- old
     let ms = timeout.as_nanos().div_ceil(1_000_000);
+    let ms = i32::try_from(ms).unwrap_or(i32::MAX);
 --- new
     let ms = timeout.as_nanos() / 1_000_000;
+    let ms = i32::try_from(ms).unwrap_or(i32::MAX);
 
 === the waker's eventfd blocks
 file: crates/curl-os/src/wake.rs
@@ -56,16 +58,20 @@ file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::connects_over_ipv4_and_ipv6
 --- old
                     sin_port: a.port().to_be(),
+                    sin_addr: libc::in_addr {
 --- new
                     sin_port: a.port(),
+                    sin_addr: libc::in_addr {
 
 === the end of the stream reads as would-block
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::receives_data_then_the_end_of_the_stream
 --- old
         Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) => {
 --- new
         Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::WouldBlock, Recv::Data)),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) => {
 
 === a receive with nothing to read is an error
 file: crates/curl-os/src/net.rs
@@ -207,8 +213,22 @@ features: debug-hooks
 file: crates/curl-os/src/time.rs
 witness: curl-os time::tests::formats_a_time_in_utc
 --- old
+        libc::strftime(
+            out.as_mut_ptr().cast(),
+            out.len(),
+            format.as_ptr(),
+            &raw const tm,
+        )
+    };
     (n > 0).then_some(n)
 --- new
+        libc::strftime(
+            out.as_mut_ptr().cast(),
+            out.len(),
+            format.as_ptr(),
+            &raw const tm,
+        )
+    };
     Some(n)
 
 === the tool takes only the time's locale from the environment
@@ -231,8 +251,12 @@ witness: curl-os locale::tests::takes_the_environment_s_locale
 file: crates/curl-os/src/fs.rs
 witness: curl-os takes_a_long_name_without_allocating
 --- old
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+    }
     let mut buf = [0u8; NAME_MAX_BYTES];
 --- new
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+    }
     let mut buf = vec![0u8; NAME_MAX_BYTES];
 
 === a file's name is measured past its zero byte
@@ -240,15 +264,21 @@ file: crates/curl-os/src/fs.rs
 witness: curl-os fs::tests::takes_a_name_as_c_does
 --- old
     let name = name.split(|&b| b == 0).next().unwrap_or_default();
+    if name.len() >= NAME_MAX_BYTES {
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
 --- new
 
+    if name.len() >= NAME_MAX_BYTES {
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
 === a file's name as long as the system's limit is passed on
 file: crates/curl-os/src/fs.rs
 witness: curl-os fs::tests::takes_a_name_as_c_does
 --- old
     if name.len() >= NAME_MAX_BYTES {
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
 --- new
     if name.len() > NAME_MAX_BYTES {
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
 
 === a socket connects without the options it was given
 file: crates/curl-os/src/net.rs
@@ -312,8 +342,10 @@ witness: curl-os net::tests::a_udp_socket_moves_one_datagram_a_call
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_udp_socket_moves_one_datagram_a_call
 --- old
+            match received(self.0.recv(buf))? {
                 Recv::Eof => continue,
 --- new
+            match received(self.0.recv(buf))? {
                 Recv::Eof => return Ok(Recv::Eof),
 
 === a datagram the kernel did not join is told no segment size

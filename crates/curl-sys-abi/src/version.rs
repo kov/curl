@@ -77,6 +77,8 @@ const MAX_FEATURES: usize = 64;
 fn c_feature(f: Feature) -> (&'static CStr, c_int) {
     match f {
         Feature::AltSvc => (c"alt-svc", crate::ffi::CURL_VERSION_ALTSVC),
+        // A name alone, without a bit, as in C.
+        Feature::AppleSecTrust => (c"AppleSecTrust", 0),
         Feature::AsynchDns => (c"AsynchDNS", crate::ffi::CURL_VERSION_ASYNCHDNS),
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),

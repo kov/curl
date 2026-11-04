@@ -72,7 +72,10 @@ fn setting(name: &str) -> Setting {
 /// builds for another; a bundle or path set explicitly stops the other
 /// being looked for.
 fn ca_defaults() -> (Option<String>, Option<String>) {
-    let cross = std::env::var("TARGET").ok() != std::env::var("HOST").ok();
+    // CMake looks for neither where Apple's SecTrust is the default
+    // trust store (`NOT USE_APPLE_SECTRUST`).
+    let cross = std::env::var("TARGET").ok() != std::env::var("HOST").ok()
+        || std::env::var_os("CARGO_FEATURE_APPLE_SECTRUST").is_some();
     let bundle = setting("CURL_CA_BUNDLE");
     let path = setting("CURL_CA_PATH");
     let find_bundle = matches!(bundle, Setting::Auto) && !cross;

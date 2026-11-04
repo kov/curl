@@ -134,6 +134,29 @@ fn the_ca_default_compares_as_the_file_it_names() {
     assert_ne!(kept, other_default);
 }
 
+/// The system's store is used where asked for, or, in a build that makes
+/// it the default, where the transfer names no file, directory or blob of
+/// its own, naming none counting as naming one (`custom_cafile`).
+#[test]
+fn the_native_store_is_the_default_only_where_no_ca_is_named() {
+    let kept = identity(|_| {});
+    assert!(kept.native_ca_store(true));
+    assert!(!kept.native_ca_store(false));
+    let asked = identity(|i| i.options.ssl_options = SslOptions::NATIVE_CA);
+    assert!(asked.native_ca_store(false));
+    let named: [Change; 4] = [
+        |i| i.options.ca_file = CaSetting::Given(b"/certs/ca.pem".to_vec()),
+        |i| i.options.ca_file = CaSetting::Unset,
+        |i| i.options.ca_path = CaSetting::Given(b"/certs".to_vec()),
+        |i| i.options.ca_blob = Some(b"PEM".to_vec()),
+    ];
+    for change in named {
+        assert!(!identity(change).native_ca_store(true));
+    }
+}
+
+type Change = fn(&mut TlsIdentity);
+
 /// Whether ALPN is offered is the handle's, not the connection's: C
 /// matches no connection by it.
 #[test]

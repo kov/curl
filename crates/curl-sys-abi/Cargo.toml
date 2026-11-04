@@ -26,6 +26,9 @@ threaded-resolver = ["curl-core/threaded-resolver"]
 # Host names converted by Apple's ICU in place of libidn2 (C's
 # `USE_APPLE_IDN`).
 apple-idn = ["curl-idn2/apple-idn"]
+# Peers verified by Apple's SecTrust where OpenSSL cannot (C's
+# `USE_APPLE_SECTRUST`).
+apple-sectrust = ["curl-openssl/apple-sectrust"]
 
 [dependencies]
 curl-alloc = { version = "0.1.0", path = "../curl-alloc" }

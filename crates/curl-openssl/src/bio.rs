@@ -35,6 +35,9 @@ pub(crate) struct Flags {
     pub(crate) peer_closed: bool,
     /// The trust store is set up (`x509_store_setup`).
     pub(crate) store_ready: bool,
+    /// Apple's SecTrust verified the peer (`sectrust_verified`), which the
+    /// sessions it gives are kept with.
+    pub(crate) sectrust_verified: bool,
 }
 
 /// What the last read or write below came to (`io_result`).
@@ -195,6 +198,17 @@ unsafe fn slot_of_ssl<'r>(ssl: *const SSL) -> Option<&'r mut Slot<'r, 'r>> {
     unsafe { slot_of(bio) }
 }
 
+/// Note that Apple's SecTrust verified the peer of the call under way on
+/// `ssl`, or not: the sessions it gives after are kept saying so.
+///
+/// # Safety
+/// As `with_cx`.
+pub(crate) unsafe fn set_sectrust(ssl: NonNull<SSL>, verified: bool) {
+    // SAFETY: as the caller says.
+    let slot = unsafe { slot_of_ssl(ssl.as_ptr()) }.expect("called during a call into the library");
+    slot.flags.sectrust_verified = verified;
+}
+
 /// Run `f` with the transfer the call under way on `ssl` reaches.
 ///
 /// # Safety
@@ -244,6 +258,7 @@ pub(crate) unsafe extern "C" fn new_session(ssl: *mut SSL, session: *mut SSL_SES
             Some(params) => ticket.with_quic_params(params),
             None => ticket,
         };
+        let ticket = ticket.with_sectrust(slot.flags.sectrust_verified);
         slot.io.cx().keep_session(ticket);
     }
     0

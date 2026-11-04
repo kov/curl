@@ -7,6 +7,8 @@
 
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
+#[cfg(all(target_os = "macos", feature = "apple-sectrust"))]
+mod apple;
 mod bio;
 mod cache;
 mod cert;

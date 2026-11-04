@@ -26,7 +26,7 @@ use crate::conn::layer::LayerCalls as _;
 use crate::conn::layer::{Below, LayerCx};
 use crate::error::ErrorKind;
 use crate::handler::DebugKind;
-use crate::options::{CaSetting, Tls, TlsOptions};
+use crate::options::{CaSetting, SslOptions, Tls, TlsOptions};
 use crate::report::CertInfo;
 use crate::time::Instant;
 
@@ -1171,6 +1171,20 @@ impl TlsIdentity {
     /// The directory of certificates to trust, resolved as `ca_file`.
     pub fn ca_path(&self) -> Option<&[u8]> {
         resolved(&self.options.ca_path, self.ca_defaults.path)
+    }
+
+    /// The peer is to be checked against the system's own trust store
+    /// (`native_ca_store`): asked for (`CURLSSLOPT_NATIVE_CA`), or, where
+    /// the library's build makes it the default (`platform_default`, C's
+    /// `USE_APPLE_SECTRUST`), when the transfer names no file, directory or
+    /// blob of certificates of its own (`Curl_ssl_easy_config_complete`).
+    pub fn native_ca_store(&self, platform_default: bool) -> bool {
+        let o = &self.options;
+        o.ssl_options.contains(SslOptions::NATIVE_CA)
+            || (platform_default
+                && matches!(o.ca_file, CaSetting::Default)
+                && matches!(o.ca_path, CaSetting::Default)
+                && o.ca_blob.is_none())
     }
 }
 

@@ -404,3 +404,11 @@ witness: curl-core conn::tls::tests::the_layer_says_what_its_session_holds_and_w
             return below.data_pending();
         }
 --- new
+
+=== the system's store is the default though the transfer named a CA file
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::the_native_store_is_the_default_only_where_no_ca_is_named
+--- old
+                && matches!(o.ca_file, CaSetting::Default)
+--- new
+                && !matches!(o.ca_file, CaSetting::Given(_))

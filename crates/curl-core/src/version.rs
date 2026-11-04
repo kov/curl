@@ -27,6 +27,9 @@ pub enum Feature {
     /// Alternative services: an origin's alternatives a server names are
     /// kept, from and to a file, and connected to in its place.
     AltSvc,
+    /// A peer the TLS library cannot verify is verified by Apple's
+    /// SecTrust against the system's trust settings (`USE_APPLE_SECTRUST`).
+    AppleSecTrust,
     /// The `br` content coding is undone by brotli, which the tool and the
     /// C ABI give every handle.
     Brotli,
@@ -93,6 +96,7 @@ impl Feature {
     pub fn name(self) -> &'static str {
         match self {
             Feature::AltSvc => "alt-svc",
+            Feature::AppleSecTrust => "AppleSecTrust",
             Feature::AsynchDns => "AsynchDNS",
             Feature::Brotli => "brotli",
             Feature::Debug => "Debug",
@@ -123,6 +127,8 @@ impl Feature {
 /// Sorted by name, case-insensitively, as C lists them.
 const FEATURES: &[Feature] = &[
     Feature::AltSvc,
+    #[cfg(feature = "apple-sectrust")]
+    Feature::AppleSecTrust,
     Feature::AsynchDns,
     Feature::Brotli,
     #[cfg(feature = "debug-hooks")]

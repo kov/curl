@@ -50,8 +50,8 @@ pub struct TlsTicket {
     /// When it is no longer good, in seconds since 1970; 0 or less for
     /// none known.
     valid_until: i64,
-    /// Its peer was verified by Apple's SecTrust (`sectrust_verified`).
-    /// No backend here does: an imported session's, kept to go out again.
+    /// Its peer was verified by Apple's SecTrust (`sectrust_verified`):
+    /// a peer that resumes it is trusted as SecTrust trusted it.
     sectrust: bool,
 }
 
@@ -101,6 +101,16 @@ impl TlsTicket {
             quic_params: params,
             ..self
         }
+    }
+
+    /// The same, its peer verified by Apple's SecTrust or not.
+    pub fn with_sectrust(self, sectrust: bool) -> TlsTicket {
+        TlsTicket { sectrust, ..self }
+    }
+
+    /// Its peer was verified by Apple's SecTrust (`sectrust_verified`).
+    pub fn sectrust(&self) -> bool {
+        self.sectrust
     }
 
     /// The protocol it was made for, if one this build knows.

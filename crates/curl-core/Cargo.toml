@@ -17,6 +17,9 @@ test-util = ["curl-alloc/debug-hooks"]
 # a pool of threads per multi, in place of the resolver that answers at
 # once.
 threaded-resolver = []
+# The TLS library verifies a peer it cannot with Apple's SecTrust, as C's
+# `USE_APPLE_SECTRUST`: claims the `AppleSecTrust` feature.
+apple-sectrust = []
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }

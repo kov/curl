@@ -238,6 +238,15 @@ fn populate_store(
     }
     io.info(format_args!("SSL Trust Anchors:"));
     load_trust_anchors(store, identity, io)?;
+    if identity.options.crl_file.is_some() && sectrust(identity) {
+        return Err(io.fail(
+            ErrorKind::NotBuiltIn,
+            format_args!(
+                "openssl: CRL file not supported with native CA store; \
+                 the platform verifier has no CRL attachment API"
+            ),
+        ));
+    }
     let mut flags: c_ulong = 0;
     if let Some(crl) = &identity.options.crl_file {
         // The revocation list, which every certificate of the chain is
@@ -286,6 +295,13 @@ fn load_trust_anchors(
 ) -> Result<(), ErrorKind> {
     let options = &identity.options;
     let mut empty = true;
+    // The system's store, which Apple's SecTrust checks the peer against
+    // once OpenSSL has not verified it: a file or directory that does not
+    // load then fails nothing.
+    let native = sectrust(identity);
+    if native {
+        io.info(format_args!("  Native: Apple SecTrust"));
+    }
     if let Some(blob) = &options.ca_blob {
         if let Err(kind) = load_from_memory(store, blob) {
             return Err(io.fail(
@@ -309,7 +325,7 @@ fn load_trust_anchors(
         let c = c_string(file)?;
         // SAFETY: the store, and a C string alive for the call.
         if unsafe { ffi::X509_STORE_load_file(store.as_ptr(), c.as_ptr().cast()) } == 0 {
-            if empty {
+            if empty && !native {
                 return Err(io.fail(
                     ErrorKind::SslCacertBadfile,
                     format_args!("error adding trust anchors from file: {}", Text(file)),
@@ -326,7 +342,7 @@ fn load_trust_anchors(
         let c = c_string(path)?;
         // SAFETY: as above.
         if unsafe { ffi::X509_STORE_load_path(store.as_ptr(), c.as_ptr().cast()) } == 0 {
-            if empty {
+            if empty && !native {
                 return Err(io.fail(
                     ErrorKind::SslCacertBadfile,
                     format_args!("error adding trust anchors from path: {}", Text(path)),
@@ -339,10 +355,18 @@ fn load_trust_anchors(
         io.info(format_args!("  CApath: {}", Text(path)));
         empty = false;
     }
-    if empty {
+    if empty && !native {
         io.info(format_args!("  no trust anchors configured"));
     }
     Ok(())
+}
+
+/// The peer is checked by Apple's SecTrust where OpenSSL does not verify
+/// it: in a build with it, against the system's store, which is the
+/// default where the transfer names no certificates of its own
+/// (`native_ca_store` under `USE_APPLE_SECTRUST`).
+pub(crate) fn sectrust(identity: &TlsIdentity) -> bool {
+    cfg!(all(target_os = "macos", feature = "apple-sectrust")) && identity.native_ca_store(true)
 }
 
 /// Add each certificate and revocation list of the PEM text `blob` to
@@ -785,16 +809,19 @@ fn common_name(
 /// Check the peer's certificate once the handshake is done
 /// (`Curl_ossl_check_peer_cert`): the lines about it, its name if the
 /// host is to be checked, then what OpenSSL made of its chain, which
-/// fails the transfer only if the peer is to be verified. Gives the
-/// verify result kept for `CURLINFO_SSL_VERIFYRESULT`.
+/// fails the transfer only if the peer is to be verified; where OpenSSL
+/// did not verify it, Apple's SecTrust may (`sectrust`), a resumed
+/// session's peer trusted if its session's was (`from_sectrust`). Gives
+/// whether SecTrust verified it (`sectrust_verified`).
 pub(crate) fn check_peer(
     ssl: NonNull<SSL>,
     identity: &TlsIdentity,
     host: &[u8],
     kind: TlsPeerKind,
     reused: bool,
+    from_sectrust: bool,
     io: &mut TlsCx<'_>,
-) -> Result<c_long, ErrorKind> {
+) -> Result<bool, ErrorKind> {
     // A resumed session's chain is not sent again.
     if !reused {
         crate::certinfo::report(ssl, io)?;
@@ -805,7 +832,7 @@ pub(crate) fn check_peer(
     let Some(cert) = cert.map(Cert) else {
         if !(identity.verify_peer || identity.verify_host) && identity.options.pinned_key.is_none()
         {
-            return Ok(1);
+            return Ok(false);
         }
         return Err(io.fail(
             ErrorKind::PeerFailedVerification,
@@ -821,9 +848,22 @@ pub(crate) fn check_peer(
     let verified = unsafe { openssl_sys::SSL_get_verify_result(ssl.as_ptr()) };
     io.verified(verified);
     io.info(format_args!("OpenSSL verify result: {verified:x}"));
-    if verified == c_long::from(openssl_sys::X509_V_OK) {
+    let mut trusted = verified == c_long::from(openssl_sys::X509_V_OK);
+    if trusted {
         io.info(format_args!("SSL certificate verified via OpenSSL."));
-    } else {
+    }
+    // SecTrust, unless OpenSSL verified it (which an application's own
+    // verify callback may have made it do).
+    let by_sectrust = !trusted
+        && identity.verify_peer
+        && sectrust(identity)
+        && apple_verify(ssl, identity, host, kind, reused, from_sectrust, io)?;
+    if by_sectrust {
+        io.info(format_args!("SSL certificate verified via Apple SecTrust."));
+        io.verified(openssl_sys::X509_V_OK);
+        trusted = true;
+    }
+    if !trusted {
         if identity.verify_peer {
             // SAFETY: a function of no state, for any number.
             let why = unsafe { openssl_sys::X509_verify_cert_error_string(verified) };
@@ -842,8 +882,8 @@ pub(crate) fn check_peer(
         ));
     }
     // C checks the status of a new session only: a resumed one carries
-    // none.
-    if identity.options.verify_status && !reused {
+    // none. SecTrust checked it with the chain if it verified the peer.
+    if identity.options.verify_status && !by_sectrust && !reused {
         // SAFETY: the session's SSL; its context is its own.
         let ctx = NonNull::new(unsafe { openssl_sys::SSL_get_SSL_CTX(ssl.as_ptr()) });
         crate::ocsp::check(ssl, ctx.expect("an SSL's context"), io)?;
@@ -860,7 +900,60 @@ pub(crate) fn check_peer(
             ));
         }
     }
-    Ok(verified)
+    Ok(by_sectrust)
+}
+
+/// The peer as Apple's SecTrust finds it (`ossl_apple_verify`), named as
+/// the session named it to the peer if by name (`peer->sni`), else as the
+/// URL does, and only if the name is to be checked: `Ok(true)` if trusted;
+/// an error other than its failing to verify fails the transfer.
+#[cfg(all(target_os = "macos", feature = "apple-sectrust"))]
+fn apple_verify(
+    ssl: NonNull<SSL>,
+    identity: &TlsIdentity,
+    host: &[u8],
+    kind: TlsPeerKind,
+    reused: bool,
+    from_sectrust: bool,
+    io: &mut TlsCx<'_>,
+) -> Result<bool, ErrorKind> {
+    let mut sni = Vec::new();
+    let trimmed = host.strip_suffix(b".").unwrap_or(host);
+    let name: &[u8] = if kind == TlsPeerKind::Name && trimmed.len() < usize::from(u16::MAX) {
+        sni.try_extend_from_slice(trimmed)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        sni.make_ascii_lowercase();
+        &sni
+    } else {
+        host
+    };
+    let o = &identity.options;
+    // SAFETY: the session's SSL, its handshake done.
+    unsafe {
+        crate::apple::verify(
+            ssl,
+            identity.verify_host.then_some(name),
+            o.ssl_options.contains(SslOptions::NO_REVOKE),
+            o.verify_status,
+            reused,
+            from_sectrust,
+            io,
+        )
+    }
+}
+
+/// Never asked in a build without SecTrust, whose `sectrust` is false.
+#[cfg(not(all(target_os = "macos", feature = "apple-sectrust")))]
+fn apple_verify(
+    _: NonNull<SSL>,
+    _: &TlsIdentity,
+    _: &[u8],
+    _: TlsPeerKind,
+    _: bool,
+    _: bool,
+    _: &mut TlsCx<'_>,
+) -> Result<bool, ErrorKind> {
+    unreachable!("SecTrust is asked only in a build with it")
 }
 
 /// The peer's certificate was issued by the one the transfer names

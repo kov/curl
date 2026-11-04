@@ -10,3 +10,12 @@ features: apple-idn
         if err > U_ZERO_ERROR || info.errors != 0 {
 --- new
         if err > U_ZERO_ERROR {
+
+=== an error SecTrust did not make is released
+file: crates/curl-openssl/src/apple.rs
+witness: curl-openssl apple::tests::nothing_made_is_not_released
+features: apple-sectrust
+--- old
+        (!made.is_null()).then(|| Owned(made))
+--- new
+        (!made.is_null()).then_some(Owned(made))

@@ -153,6 +153,7 @@ impl OpenSsl {
             shut: false,
             keylog: self.keylog.clone(),
             reused: false,
+            from_sectrust: false,
             early_data: peer.early_data,
             deferred: None,
             early: Early::None,
@@ -252,6 +253,9 @@ struct Session {
     /// The handshake resumes a session the cache kept
     /// (`reused_session`).
     reused: bool,
+    /// The session resumed came from a connection Apple's SecTrust
+    /// verified (`sectrust_session`).
+    from_sectrust: bool,
     /// The transfer may send early data.
     early_data: bool,
     /// The handshake is put off for early data, as the session resumed
@@ -1065,7 +1069,11 @@ impl Session {
         } else {
             // SAFETY: the SSL, its session just set.
             let verified = unsafe { openssl_sys::SSL_get_verify_result(s) };
-            if self.identity.verify_peer && verified != c_long::from(openssl_sys::X509_V_OK) {
+            // Unless SecTrust verified the peer it came from.
+            if self.identity.verify_peer
+                && verified != c_long::from(openssl_sys::X509_V_OK)
+                && !(x509::sectrust(&self.identity) && ticket.sectrust())
+            {
                 // Made unverified: it cannot serve a peer to verify.
                 // SAFETY: the SSL; no session, its reference let go.
                 unsafe { openssl_sys::SSL_set_session(s, ptr::null_mut()) };
@@ -1074,6 +1082,7 @@ impl Session {
                 let alpn = ticket.alpn_name().unwrap_or(b"-");
                 io.info_with(&[b"SSL reusing session with ALPN '", alpn, b"'"]);
                 self.reused = true;
+                self.from_sectrust = ticket.sectrust();
                 io.info(format_args!("SSL verify result: {verified:x}"));
                 // SAFETY: the session, alive until freed below.
                 let allows = unsafe { openssl_sys::SSL_SESSION_get_max_early_data(session) };
@@ -1228,12 +1237,16 @@ impl TlsSession for Session {
             &self.host,
             self.kind,
             self.reused,
+            self.from_sectrust,
             io,
         );
-        if let Err(kind) = checked {
-            // The sessions kept for the peer go with it.
-            io.forget_sessions();
-            return Err(kind);
+        match checked {
+            Ok(sectrust) => self.flags.sectrust_verified = sectrust,
+            Err(kind) => {
+                // The sessions kept for the peer go with it.
+                io.forget_sessions();
+                return Err(kind);
+            }
         }
         if self.early == Early::Sent {
             // SAFETY: the SSL, its handshake done.
@@ -1502,6 +1515,7 @@ impl QuicTls for QuicSession {
             host: &s.host,
             kind: s.kind,
             reused: s.reused,
+            from_sectrust: s.from_sectrust,
         };
         bio::call(ssl, &mut slot, |_| call(&mut check));
     }
@@ -1516,6 +1530,7 @@ struct Check<'s> {
     host: &'s [u8],
     kind: TlsPeerKind,
     reused: bool,
+    from_sectrust: bool,
 }
 
 impl DriveCall for Check<'_> {
@@ -1529,6 +1544,7 @@ impl DriveCall for Check<'_> {
             host,
             kind,
             reused,
+            from_sectrust,
         } = *self;
         // SAFETY: the session's SSL, alive while the check is.
         let finished = unsafe { openssl_sys::SSL_is_init_finished(ssl.as_ptr()) };
@@ -1539,8 +1555,8 @@ impl DriveCall for Check<'_> {
         let check = |cx: &mut TlsCx<'_>| {
             // SAFETY: the session's SSL, its handshake done.
             unsafe { report_handshake(ssl, cx) };
-            match x509::check_peer(ssl, identity, host, kind, reused, cx) {
-                Ok(_) => Ok(()),
+            match x509::check_peer(ssl, identity, host, kind, reused, from_sectrust, cx) {
+                Ok(sectrust) => Ok(sectrust),
                 Err(kind) => {
                     cx.forget_sessions();
                     Err(kind)
@@ -1549,7 +1565,10 @@ impl DriveCall for Check<'_> {
         };
         // SAFETY: a `Check` lives only inside `drive`'s call, whose slot
         // is the SSL's BIO's while it runs, on this thread.
-        unsafe { bio::with_cx(ssl, check) }
+        let sectrust = unsafe { bio::with_cx(ssl, check) }?;
+        // SAFETY: as above, the check's borrow of the slot over.
+        unsafe { bio::set_sectrust(ssl, sectrust) };
+        Ok(())
     }
 
     fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {

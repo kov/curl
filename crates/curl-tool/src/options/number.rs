@@ -9,18 +9,34 @@ const LONG_MAX: u64 = i64::MAX.unsigned_abs();
 /// `curlx_str_number` reads it: at least one digit, no sign, no space, and
 /// `None` above `max`.
 pub(crate) fn leading_number(s: &[u8], max: u64) -> Option<(u64, &[u8])> {
-    let digits = s.iter().take_while(|b| b.is_ascii_digit()).count();
-    if digits == 0 {
-        return None;
-    }
+    let (n, digits) = digits_up_to(s, 10, max).ok()?;
+    (digits > 0).then(|| (n, &s[digits..]))
+}
+
+/// The value of the leading digits of `s` in `base` (8, 10 or 16), and
+/// how many there are, in one pass as `curlx_str_number` and its
+/// siblings read them; `Err` once the value would pass `max`, before any
+/// digit after.
+fn digits_up_to(s: &[u8], base: u8, max: u64) -> Result<(u64, usize), ()> {
     let mut n: u64 = 0;
-    for &d in &s[..digits] {
-        n = n.checked_mul(10)?.checked_add(u64::from(d - b'0'))?;
-        if n > max {
-            return None;
+    for (i, &b) in s.iter().enumerate() {
+        let d = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => 0xff,
+        };
+        if d >= base {
+            return Ok((n, i));
         }
+        let d = u64::from(d);
+        // As C checks it: what the next digit adds must still fit.
+        if max < d || n > (max - d) / u64::from(base) {
+            return Err(());
+        }
+        n = n * u64::from(base) + d;
     }
-    Some((n, &s[digits..]))
+    Ok((n, s.len()))
 }
 
 /// A whole-number argument that must not be negative, as `str2unum`
@@ -65,19 +81,9 @@ pub(crate) fn offset(s: &[u8]) -> Result<u64, ParamError> {
 /// An octal number at most `max`, as `oct2nummax` reads it: only octal
 /// digits, at least one.
 pub(crate) fn octal(s: &[u8], max: u64) -> Result<u64, ParamError> {
-    let digits = s.iter().take_while(|b| (b'0'..=b'7').contains(b)).count();
-    if digits == 0 {
-        return Err(ParamError::BadNumeric);
-    }
     // Too large is found before anything after the digits.
-    let mut n: u64 = 0;
-    for &d in &s[..digits] {
-        n = n * 8 + u64::from(d - b'0');
-        if n > max {
-            return Err(ParamError::NumberTooLarge);
-        }
-    }
-    if digits != s.len() {
+    let (n, digits) = digits_up_to(s, 8, max).map_err(|()| ParamError::NumberTooLarge)?;
+    if digits == 0 || digits != s.len() {
         return Err(ParamError::BadNumeric);
     }
     Ok(n)
@@ -357,6 +363,77 @@ mod tests {
         }
     }
 
+    /// The one-pass reader takes the digits a base allows and refuses a
+    /// value past `max` as `str_num_base` does: each digit checked before
+    /// it is added, a `max` below the base included. Checked against the
+    /// value read whole, for every string of up to four bytes from an
+    /// alphabet of each base's edge digits and a non-digit, under maxima
+    /// at and around the base and at the top of the range.
+    #[test]
+    fn reads_digits_as_c_against_every_max() {
+        fn whole(s: &[u8], base: u8, max: u64) -> Result<(u64, usize), ()> {
+            let digits = s
+                .iter()
+                .take_while(|&&b| char::from(b).is_digit(u32::from(base)))
+                .count();
+            let mut n: u128 = 0;
+            for &b in &s[..digits] {
+                n = n * u128::from(base) + u128::from(char::from(b).to_digit(16).unwrap());
+                if n > u128::from(max) {
+                    return Err(());
+                }
+            }
+            Ok((u64::try_from(n).unwrap(), digits))
+        }
+        const ALPHABET: &[u8] = b"0179aFg";
+        let mut strings: Vec<Vec<u8>> = vec![Vec::new()];
+        let mut last = strings.clone();
+        for _ in 0..4 {
+            let next: Vec<Vec<u8>> = last
+                .iter()
+                .flat_map(|s| {
+                    ALPHABET.iter().map(move |&b| {
+                        let mut t = s.clone();
+                        t.push(b);
+                        t
+                    })
+                })
+                .collect();
+            strings.extend(next.iter().cloned());
+            last = next;
+        }
+        strings.push(b"18446744073709551615".to_vec());
+        strings.push(b"18446744073709551616".to_vec());
+        strings.push(b"FFFFFFFFFFFFFFFF".to_vec());
+        strings.push(b"1777777777777777777777".to_vec());
+        for base in [8, 10, 16] {
+            for max in [
+                0,
+                1,
+                6,
+                7,
+                8,
+                9,
+                10,
+                15,
+                16,
+                17,
+                100,
+                0o777,
+                LONG_MAX,
+                u64::MAX,
+            ] {
+                for s in &strings {
+                    assert_eq!(
+                        digits_up_to(s, base, max),
+                        whole(s, base, max),
+                        "{s:?} base {base} max {max}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn unsigned_like_c() {
         assert_eq!(unsigned(b"0"), Ok(0));
@@ -612,10 +689,11 @@ mod perf {
         (b"12345670123456701234B", 8, 1505851632739161316),
     ];
 
+    /// `curlx_str_hex`: the tool reads no hex argument of its own, so the
+    /// benchmark reads it with the same one-pass reader.
     fn hex(s: &[u8], max: u64) -> Option<u64> {
-        let digits = s.iter().take_while(|b| b.is_ascii_hexdigit()).count();
-        let d = std::str::from_utf8(&s[..digits]).ok()?;
-        u64::from_str_radix(d, 16).ok().filter(|&n| n <= max)
+        let (n, digits) = super::digits_up_to(s, 16, max).ok()?;
+        (digits > 0).then_some(n)
     }
 
     #[test]

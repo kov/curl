@@ -1320,3 +1320,19 @@ it there, Windows.
 
 macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the
 experimental Apple fast UDP. They go with the macOS port.
+
+## Milestone 11: macOS
+
+Status: **in progress**. The library, the shim and the tool on aarch64-apple-darwin, scored on
+the suite against C's build from this tree with the Linux reference's options (`alface`,
+`~/work/c-ref`: 2082 of 2082). The curl macOS ships (8.7.1, SecureTransport and LibreSSL 3.3.6)
+cannot be built from this tree, which dropped SecureTransport and needs LibreSSL 3.4.1: it is a
+behaviour oracle only.
+
+107. **The C ABI on aarch64-apple-darwin**, a third target for `gen/ffi.py`. **To do.**
+108. **`curl-os` on macOS**, along C's Apple paths (sockets, waker, random, errno, xattr, argv).
+     **To do.**
+109. **`curl-core`, the tool and the shim on macOS**, the C libraries linked. **To do.**
+110. **LDAP through `lib/ldap.c`'s path**: macOS's OpenLDAP 2.4 has no `ldap_init_fd`, so C's
+     build takes the code WinLDAP takes; one port for both. **To do.**
+111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **To do.**

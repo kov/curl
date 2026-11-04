@@ -196,16 +196,26 @@ mod sys {
     use core::ffi::c_int;
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
+    #[cfg(target_os = "linux")]
+    pub(super) use libc::SOCK_CLOEXEC;
     pub(super) use libc::{
-        AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_STREAM, sa_family_t,
-        sockaddr_storage, sockaddr_un,
+        AF_UNIX, IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_STREAM, sa_family_t, sockaddr_storage,
+        sockaddr_un,
     };
+
+    /// macOS's socket type has no close-on-exec flag, so C asks for none
+    /// (`SOCK_CLOEXEC` is not defined) and sets it on the socket after.
+    #[cfg(target_vendor = "apple")]
+    pub(super) const SOCK_CLOEXEC: c_int = 0;
 
     /// Write `to` into `addr`; its family and length.
     pub(super) fn write_inet(addr: &mut sockaddr_storage, to: SocketAddr) -> (c_int, usize) {
         match to {
             SocketAddr::V4(v4) => {
                 let sin = libc::sockaddr_in {
+                    // Its length, as the resolver writes it on macOS.
+                    #[cfg(target_vendor = "apple")]
+                    sin_len: size_of::<libc::sockaddr_in>() as u8,
                     sin_family: libc::AF_INET as sa_family_t,
                     sin_port: v4.port().to_be(),
                     sin_addr: libc::in_addr {
@@ -220,6 +230,8 @@ mod sys {
             }
             SocketAddr::V6(v6) => {
                 let sin6 = libc::sockaddr_in6 {
+                    #[cfg(target_vendor = "apple")]
+                    sin6_len: size_of::<libc::sockaddr_in6>() as u8,
                     sin6_family: libc::AF_INET6 as sa_family_t,
                     sin6_port: v6.port().to_be(),
                     sin6_flowinfo: v6.flowinfo().to_be(),

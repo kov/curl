@@ -2542,7 +2542,7 @@ impl Socket for FakeSocket {
 }
 
 /// The error numbers the fake gives, as Linux numbers them.
-#[cfg(all(unix, any(test, feature = "test-util")))]
+#[cfg(all(target_os = "linux", any(test, feature = "test-util")))]
 mod libc_errno {
     pub(super) const ECONNREFUSED: i32 = 111;
     pub(super) const EPIPE: i32 = 32;
@@ -2551,6 +2551,17 @@ mod libc_errno {
     pub(super) const EINVAL: i32 = 22;
     pub(super) const ENODEV: i32 = 19;
     pub(super) const ENOTCONN: i32 = 107;
+}
+
+/// The error numbers the fake gives, as macOS numbers them.
+#[cfg(all(target_vendor = "apple", any(test, feature = "test-util")))]
+mod libc_errno {
+    pub(super) const ECONNREFUSED: i32 = 61;
+    pub(super) const EPIPE: i32 = 32;
+    pub(super) const ECONNRESET: i32 = 54;
+    pub(super) const EADDRINUSE: i32 = 48;
+    pub(super) const EINVAL: i32 = 22;
+    pub(super) const ENOTCONN: i32 = 57;
 }
 
 /// The error numbers the fake gives, as Winsock numbers them; a send on

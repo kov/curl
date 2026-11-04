@@ -300,6 +300,9 @@ const PROTOCOLS: &[Protocol] = &[
 
 #[cfg(target_os = "linux")]
 const HOST: &str = "Linux";
+/// What C's CMake build names macOS, as `curl -V` shows it there.
+#[cfg(target_os = "macos")]
+const HOST: &str = "Darwin";
 /// What C's CMake build names Windows (`CMAKE_SYSTEM_NAME`).
 #[cfg(windows)]
 const HOST: &str = "Windows";

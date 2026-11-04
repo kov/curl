@@ -198,6 +198,8 @@ struct Addr {
 #[cfg(unix)]
 fn sockaddr_in(a: std::net::SocketAddrV4) -> sys::sockaddr_in {
     libc::sockaddr_in {
+        #[cfg(target_vendor = "apple")]
+        sin_len: 0,
         sin_family: libc::sa_family_t::try_from(libc::AF_INET).expect("fits"),
         sin_port: a.port().to_be(),
         sin_addr: libc::in_addr {
@@ -211,6 +213,8 @@ fn sockaddr_in(a: std::net::SocketAddrV4) -> sys::sockaddr_in {
 #[cfg(unix)]
 fn sockaddr_in6(a: std::net::SocketAddrV6) -> sys::sockaddr_in6 {
     libc::sockaddr_in6 {
+        #[cfg(target_vendor = "apple")]
+        sin6_len: 0,
         sin6_family: libc::sa_family_t::try_from(libc::AF_INET6).expect("fits"),
         sin6_port: a.port().to_be(),
         sin6_flowinfo: a.flowinfo(),

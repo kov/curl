@@ -7313,6 +7313,8 @@ unsafe extern "C" fn connecting_sockopt(
     let seen = unsafe { &mut *data.cast::<SocketsSeen>() };
     seen.set.push(fd);
     let to = libc::sockaddr_in {
+        #[cfg(target_vendor = "apple")]
+        sin_len: 0,
         sin_family: libc::AF_INET as libc::sa_family_t,
         sin_port: seen.port.to_be(),
         sin_addr: libc::in_addr {
@@ -7375,7 +7377,12 @@ fn socket_functions_are_called_as_c_calls_them() {
     assert!(!dup.is_null());
     // SAFETY: a live handle.
     assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_ABORTED_BY_CALLBACK);
+    // The type C opens with: close-on-exec asked of it where the system
+    // can be asked (`SOCK_CLOEXEC`), set after on macOS.
+    #[cfg(target_os = "linux")]
     let stream = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    #[cfg(target_vendor = "apple")]
+    let stream = libc::SOCK_STREAM;
     let fd = seen.opened[0][4];
     assert_eq!(
         seen.opened,

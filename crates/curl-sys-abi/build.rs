@@ -7,8 +7,17 @@
 fn main() {
     let debug = std::env::var_os("CARGO_FEATURE_DEBUG_HOOKS").is_some();
     // Windows has no soname: a program names the DLL's file, which the
-    // build tree lays out as C's CMake names it (`libcurl-d.dll`).
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    // build tree lays out as C's CMake names it (`libcurl-d.dll`). macOS's
+    // is the install name, C's CMake's `@rpath/libcurl.4.dylib`.
+    let os = std::env::var("CARGO_CFG_TARGET_OS");
+    if os.as_deref() == Ok("macos") {
+        let name = if debug {
+            "@rpath/libcurl-d.4.dylib"
+        } else {
+            "@rpath/libcurl.4.dylib"
+        };
+        println!("cargo::rustc-cdylib-link-arg=-Wl,-install_name,{name}");
+    } else if os.as_deref() != Ok("windows") {
         let soname = if debug {
             "libcurl-d.so.4"
         } else {

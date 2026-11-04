@@ -167,7 +167,7 @@ impl EtagSave {
             }
             EtagSave::File(file) => {
                 // A regular file is emptied of the ETag before.
-                if file.metadata().is_ok_and(|m| m.is_file()) && file.set_len(0).is_err() {
+                if file.metadata().is_ok_and(|m| m.is_file()) && fs::empty(file).is_err() {
                     return false;
                 }
                 drop(file.write_all(etag));

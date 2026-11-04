@@ -225,6 +225,13 @@ fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File>
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+/// Empty `file`, opened to write (`ftruncate(fd, 0)`); one opened to keep
+/// everything goes on writing at its end, now its start.
+#[cfg(unix)]
+pub fn empty(file: &File) -> io::Result<()> {
+    file.set_len(0)
+}
+
 #[cfg(unix)]
 /// Close `file` (`close(2)`), saying whether that went, which dropping
 /// it does not: a write the kernel held may fail only then. The
@@ -765,6 +772,33 @@ pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
     )?))
 }
 
+/// Empty `file`, opened to write, as the C library's `_chsize_s` empties
+/// one opened to append (`"ab"`), which it opens to write anywhere. A file
+/// opened here to keep everything may only add to its end, which cannot
+/// cut it, so it is cut through a handle of its own opened to write
+/// (`ReOpenFile`); the file's own handle goes on writing at its end, now
+/// its start.
+#[cfg(windows)]
+pub fn empty(file: &File) -> io::Result<()> {
+    // SAFETY: the handle is the open file's, borrowed for the call, which
+    // makes a new one or none.
+    let writable = unsafe {
+        wfs::ReOpenFile(
+            file.as_raw_handle(),
+            wf::GENERIC_WRITE,
+            wfs::FILE_SHARE_READ | wfs::FILE_SHARE_WRITE,
+            0,
+        )
+    };
+    if writable == wf::INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `writable` was just made and is owned by nothing else.
+    let writable =
+        File::from(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(writable) });
+    writable.set_len(0)
+}
+
 /// Close `file` (`CloseHandle`), saying whether that went, which dropping
 /// it does not. The handle is let go of either way, and not closed again.
 #[cfg(windows)]
@@ -1237,6 +1271,19 @@ mod tests {
         assert_eq!(in_missing.kind(), io::ErrorKind::NotFound);
     }
 
+    /// A file kept whole and emptied takes what is written next at its
+    /// start, as C's `ftruncate` leaves a file opened to append.
+    #[test]
+    fn a_file_kept_whole_is_emptied_and_written_again() {
+        let s = Scratch::new("empty");
+        let mut f = open_write(&s.c("f"), Keep::Everything, 0o600).unwrap();
+        f.write_all(b"old etag\n").unwrap();
+        empty(&f).unwrap();
+        f.write_all(b"new\n").unwrap();
+        drop(f);
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"new\n");
+    }
+
     /// The descriptors the process has open on `dir`: none of the other
     /// tests', which open their own, so their comings and goings meanwhile
     /// do not count.
@@ -1330,6 +1377,19 @@ mod windows_tests {
 
     fn c(path: &Path) -> CString {
         CString::new(path.to_str().unwrap()).unwrap()
+    }
+
+    /// A file kept whole and emptied takes what is written next at its
+    /// start, as C's `ftruncate` leaves a file opened to append.
+    #[test]
+    fn a_file_kept_whole_is_emptied_and_written_again() {
+        let s = Scratch::new("empty");
+        let mut f = open_write(&s.c("f"), Keep::Everything, 0o600).unwrap();
+        f.write_all(b"old etag\n").unwrap();
+        empty(&f).unwrap();
+        f.write_all(b"new\n").unwrap();
+        drop(f);
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"new\n");
     }
 
     #[test]

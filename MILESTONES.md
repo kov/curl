@@ -1294,7 +1294,10 @@ the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays U
 95. **The shim DLL and curl.exe on Windows**: names in the ANSI code page, console writes, the
     DLL named as CMake names it. **Done.**
 96. **Text mode** on stderr, `-w`, stdout before binary mode and the files C opens in text mode,
-    as one translating filter; C's `curl-ca-bundle.crt` search. **In progress.**
+    as one translating filter (`curl_os::text`); C's `curl-ca-bundle.crt` search. **Done.**
+    Byte for byte against the C build on 41 cases; on the guest's suite the Rust leg fails no
+    test C passes but the replaced 96 and 558 and the WinLDAP and SSPI listings of 1013 and
+    1014.
 97. **Schannel**, with its CA store and `CURLSSLOPT_*` options. **To do.**
 98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **To do.**
 99. **WinIDN.** **To do.**

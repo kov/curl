@@ -3918,6 +3918,12 @@ leaves TELNET's DOING to it (`times_itself`), as C's multi never sees that time 
 bytes read count as downloaded twice, once read and once delivered, as C counts them. The
 server closing ends the transfer, and so does an input that aborts.
 
+On Windows the rounds are C's `USE_WINSOCK` loop (`WINSOCK`): a round with the server's
+bytes reads no input; the input handler is called only once the socket has been quiet for
+100 ms (`quiet_since`, started again by each of the server's reads and each reading of the
+input), then until it has nothing or the connection takes no more. Nothing is counted but
+the body delivered, no progress update is made, and an input that aborts is a read error.
+
 ### 5.12 TFTP
 
 `proto/tftp.rs` is `lib/tftp.c`. Its plan dials `Dial::Udp`: one UDP socket, bound as the

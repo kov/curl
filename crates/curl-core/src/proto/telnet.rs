@@ -7,6 +7,10 @@
 //! poll of 100 ms between calls of the read function. Here it is DOING:
 //! each pass is one round of C's loop, run when the socket has something
 //! or 100 ms after the last.
+//!
+//! On Windows C's loop is another (`USE_WINSOCK`): it waits on the
+//! socket's events, and reads the input only once 100 ms have passed
+//! without one, then until the input has nothing. Here too.
 
 use std::fmt;
 use std::time::Duration;
@@ -64,6 +68,11 @@ const BUFFER: usize = 4 * 1024;
 /// How long a pass waits for the server before it asks the read handler
 /// again.
 const INTERVAL: Duration = Duration::from_millis(100);
+/// Whether the exchange is C's Windows loop (`USE_WINSOCK`): the input
+/// read only after the socket has been quiet for `INTERVAL`, and until
+/// it has nothing; no progress taken stock of, nothing counted but the
+/// body delivered, and an aborted input a read error.
+const WINSOCK: bool = cfg!(windows);
 
 static TELOPTS: [&str; 40] = [
     "BINARY",
@@ -852,6 +861,10 @@ pub(crate) struct Request {
     unsent: Vec<u8>,
     /// When the last pass ran: the next runs 100 ms after it.
     last_pass: Option<Instant>,
+    /// Where the exchange is C's Windows loop, since when the socket has
+    /// been quiet: when its wait started, which each of the socket's
+    /// events and each reading of the input starts again.
+    quiet_since: Option<Instant>,
 }
 
 impl Request {
@@ -884,6 +897,7 @@ impl Request {
             telnet: None,
             unsent: Vec::new(),
             last_pass: None,
+            quiet_since: None,
         })
     }
 
@@ -894,7 +908,12 @@ impl Request {
 
     /// When the next pass runs whatever the socket says.
     pub(crate) fn due(&self) -> Option<Instant> {
-        self.last_pass.map(|at| at.after(INTERVAL))
+        let since = if WINSOCK {
+            self.quiet_since
+        } else {
+            self.last_pass
+        };
+        since.map(|at| at.after(INTERVAL))
     }
 
     /// Read the application's options and set up the exchange
@@ -957,10 +976,14 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
-        self.last_pass = Some(cx.now());
-        // C polls the socket alone, the input being a read function.
-        trace::debug_info(cx, format_args!("telnet_do, poll 1 fds"));
-        let over = self.exchange(cx, lease)?;
+        let now = cx.now();
+        self.last_pass = Some(now);
+        // C polls the socket alone, the input being a read function; its
+        // Windows loop says nothing of its wait.
+        if !WINSOCK {
+            trace::debug_info(cx, format_args!("telnet_do, poll 1 fds"));
+        }
+        let over = self.exchange(cx, lease, now)?;
         if let TimeLeft::Expired(_) = cx.time_left() {
             return Err(trace::fail(
                 cx,
@@ -968,7 +991,9 @@ impl Request {
                 format_args!("Time-out"),
             ));
         }
-        progress::update(cx, false)?;
+        if !WINSOCK {
+            progress::update(cx, false)?;
+        }
         Ok(over)
     }
 
@@ -977,6 +1002,7 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
+        now: Instant,
     ) -> Result<bool, ErrorKind> {
         let telnet = self.telnet.as_mut().expect("DO set the exchange up");
         let mut live = Live {
@@ -996,15 +1022,43 @@ impl Request {
             Got::Eof => return Ok(true),
             Got::Again => {}
             Got::Data(n) => {
-                // Counted as read, and again as delivered, as C counts it.
-                live.cx.report_mut().sizes_mut().download += n as u64;
+                // Counted as read, and again as delivered, as C counts it;
+                // its Windows loop counts it delivered only.
+                if !WINSOCK {
+                    live.cx.report_mut().sizes_mut().download += n as u64;
+                }
                 telnet.receive(&mut live, &buf[..n])?;
                 telnet.negotiate_once(&mut live);
+                if WINSOCK {
+                    // An event of the socket's: its wait starts again,
+                    // and the input waits for the next quiet.
+                    self.quiet_since = Some(now);
+                    return Ok(false);
+                }
             }
         }
         let Some(handler) = live.cx.easy().options().small.input.clone() else {
             return Ok(false);
         };
+        if WINSOCK {
+            // The first pass, from DO, waits as C's loop begins waiting.
+            let quiet = *self.quiet_since.get_or_insert(now);
+            if now.since(quiet) < INTERVAL {
+                return Ok(false);
+            }
+            self.quiet_since = Some(now);
+            // Read until the input has nothing, as C does; while the
+            // connection takes no more, where C's send blocks, it waits.
+            while live.unsent.is_empty() {
+                match handler.read(&mut TransferCx::new(live.cx), &mut buf) {
+                    Read::Data(n) if n.get() > buf.len() => return Err(ErrorKind::ReadError),
+                    Read::Data(n) => send_data(&mut live, &buf[..n.get()])?,
+                    Read::Eof | Read::Pause => break,
+                    Read::Abort | Read::Fail => return Err(ErrorKind::ReadError),
+                }
+            }
+            return Ok(false);
+        }
         match handler.read(&mut TransferCx::new(live.cx), &mut buf) {
             Read::Data(n) if n.get() > buf.len() => Err(ErrorKind::ReadError),
             Read::Data(n) => {

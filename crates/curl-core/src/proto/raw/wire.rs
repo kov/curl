@@ -66,7 +66,11 @@ impl DebugHandler for Seen {
 
 /// A multi whose server at `PORT` takes `conversations` in turn.
 pub(crate) fn serving(conversations: &[&Conversation]) -> Multi {
-    let clock = ManualClock::new().unwrap();
+    serving_on(ManualClock::new().unwrap(), conversations)
+}
+
+/// The same, its time `clock`'s.
+pub(crate) fn serving_on(clock: ManualClock, conversations: &[&Conversation]) -> Multi {
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
     for c in conversations {

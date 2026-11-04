@@ -470,8 +470,10 @@ fn a_session_runs_to_the_close() {
     assert_eq!(ran.body, b"login: bye\r\n");
     assert!(!ran.stored_headers);
     // What was read counts twice, as read and as delivered; what was
-    // sent as the input gave it.
-    assert_eq!(ran.counted, (24, 5));
+    // sent as the input gave it. C's Windows loop counts what it
+    // delivers only.
+    let counted = if WINSOCK { (12, 0) } else { (24, 5) };
+    assert_eq!(ran.counted, counted);
 }
 
 /// A redirect from HTTP to another host takes the application's user
@@ -510,13 +512,56 @@ fn the_application_s_user_stays_with_the_first_host() {
     }
 }
 
-/// An input that aborts ends the exchange, well.
+/// An input that aborts ends the exchange, well; in C's Windows loop as
+/// a read error.
 #[test]
 fn an_aborted_input_ends_it() {
     let talk = Conversation::replies(&[b"hi"], false).greeting();
     let (_, ran) = telnet(talk, &[b"ABORT"], |_| {});
-    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    let ended = if WINSOCK {
+        Err(ErrorKind::ReadError)
+    } else {
+        Ok(())
+    };
+    assert_eq!(ran.result, Some(ended), "{}", ran.text);
     assert_eq!(ran.body, b"hi");
+}
+
+/// In C's Windows loop the input is read only once the socket has been
+/// quiet for 100 ms, which each of its events starts again: what the
+/// server sends first is answered first, and the input follows.
+#[cfg(windows)]
+#[test]
+fn the_input_waits_for_a_quiet_socket() {
+    use crate::libraries::{Libraries, SharedLibraries};
+    use crate::multi::NoEvents;
+    let talk = Conversation::replies(&[&[IAC, DO, 200]], false).greeting();
+    let clock = crate::time::ManualClock::new().unwrap();
+    let mut m = crate::proto::raw::wire::serving_on(clock.clone(), &[&talk]);
+    let mut e = crate::easy::Easy::new();
+    e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+    let o = e.options_mut();
+    o.set_url(Some(
+        format!("telnet://127.0.0.1:{}", crate::proto::raw::wire::PORT).as_bytes(),
+    ))
+    .unwrap();
+    let input = Input(Mutex::new(vec![b"typed".to_vec()]));
+    o.small.make_mut().unwrap().input = Some(Handler::read(input).unwrap());
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..5 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let answered = talk.received();
+    assert!(answered.starts_with(&[IAC, WONT, 200]), "{answered:?}");
+    assert!(!answered.ends_with(b"typed"), "the answers alone");
+    clock.advance(INTERVAL - Duration::from_millis(1));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(talk.received(), answered, "not quiet long enough");
+    clock.advance(Duration::from_millis(1));
+    m.perform(&mut NoEvents).unwrap();
+    let mut then = answered;
+    then.extend_from_slice(b"typed");
+    assert_eq!(talk.received(), then, "then the input");
 }
 
 /// A server that never closes runs the transfer out of time, with C's
@@ -691,14 +736,27 @@ fn the_input_is_read_into_c_s_buffer() {
             over,
         };
         let input = Handler::read(input).unwrap();
-        let talk = Conversation::replies(&[b"hi"], true).greeting();
+        // C's Windows loop reads the input once the server is quiet:
+        // one that closes at once is never asked, so this one stays,
+        // and the transfer runs out of time.
+        let talk = Conversation::replies(&[b"hi"], !WINSOCK).greeting();
         let (said, ran) = against(talk, "telnet://127.0.0.1:PORT", |o| {
             o.small.make_mut().unwrap().input = Some(input);
+            if WINSOCK {
+                o.limits.total = crate::time::TimeLimit::from_millis(500);
+            }
         });
         assert_eq!(rooms.lock().unwrap()[0], 4096);
         if over {
             assert_eq!(ran.result, Some(Err(ErrorKind::ReadError)), "{}", ran.text);
             assert!(said.is_empty(), "{said:?}");
+        } else if WINSOCK {
+            assert_eq!(
+                ran.result,
+                Some(Err(ErrorKind::OperationTimedout)),
+                "{}",
+                ran.text
+            );
         } else {
             assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
         }

@@ -9068,8 +9068,24 @@ fn a_ws_send_of_no_frame_says_why_if_the_flush_before_it_fails() {
     }
     hang_up.send(()).unwrap();
     server.join().unwrap();
-    // The reset must have arrived for the send to fail: the kernel's
-    // loopback delivers it as the server's socket closes.
+    // The reset must have arrived for the send to fail: Linux's loopback
+    // delivers it as the server's socket closes, macOS's a moment later,
+    // so wait for the socket to say it (readable, or hung up).
+    #[cfg(unix)]
+    {
+        let mut active: ffi::curl_socket_t = ffi::CURL_SOCKET_BAD;
+        // SAFETY: a live handle, and a pointer to a value of the info's type.
+        let got = unsafe { curl_easy_getinfo(c, ffi::CURLINFO_ACTIVESOCKET, &raw mut active) };
+        assert_eq!(got, CURLE_OK);
+        let mut fd = libc::pollfd {
+            fd: active,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd, valid through the call.
+        let ready = unsafe { libc::poll(&raw mut fd, 1, 5000) };
+        assert_eq!(ready, 1, "the reset never came");
+    }
     seen.texts.clear();
     let mut went = 0;
     let bad = (CURLWS_TEXT | CURLWS_BINARY) as c_uint;

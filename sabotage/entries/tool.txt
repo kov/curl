@@ -1526,3 +1526,11 @@ witness: curl-tool slurp::tests::reads_text_mode_as_the_c_library
     let mut file = Reader::new(file, mode);
 --- new
     let mut file = Reader::new(file, Mode::Binary);
+
+=== each transfer reads standard input through a descriptor of its own
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool transfers_read_standard_input_through_one_descriptor
+--- old
+            run.stdin.get_or_init(|| file).clone()
+--- new
+            file

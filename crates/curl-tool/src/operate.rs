@@ -7,7 +7,7 @@ mod parallel;
 mod ssl_sessions;
 
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::fs::File;
 #[cfg(unix)]
 use std::io::IsTerminal as _;
@@ -127,6 +127,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         claims: Claims::of_build(),
         started: Cell::new(None),
         stdin_relay: nonblocking::Relay::default(),
+        stdin: OnceCell::new(),
     };
     let loaded = match line.global.ssl_sessions {
         Some(name) => ssl_sessions::load(&run, name),
@@ -690,7 +691,14 @@ struct Shared<'a, 'l> {
     started: Cell<Option<Instant>>,
     /// Standard input's relay for `-T .`, set up once for the run.
     stdin_relay: nonblocking::Relay,
+    /// Standard input as every transfer without an upload reads it, one
+    /// descriptor for the run as C's transfers all read descriptor 0
+    /// (`per->infd`); none if it is closed.
+    stdin: OnceCell<Option<StdinFile>>,
 }
+
+/// Standard input, read through one descriptor the transfers share.
+type StdinFile = TryArc<std::sync::Mutex<std::fs::File>>;
 
 /// What the library claims to have of what the options need, which C's
 /// tool learns from `curl_version_info`: an option the library lacks is
@@ -833,7 +841,7 @@ impl PerTransfer<'_, '_> {
         let Some(file) = self.upload.as_deref() else {
             // Without one, the read callback reads standard input, as
             // TELNET sends it (`per->infd`).
-            return match standard_input(limit).map_err(Pre::Failed)? {
+            return match standard_input(run, limit).map_err(Pre::Failed)? {
                 Some(input) => input_setopts(easy, run, input).map_err(Pre::Failed),
                 None => Ok(()),
             };
@@ -3874,15 +3882,30 @@ enum Unopened {
 /// Upload `source`, its size said if known (`pre_transfer`).
 /// Standard input, read as the read callback reads it without an upload:
 /// waiting no longer than `limit`, never started over. None if it is
-/// closed: C's reads of it fail, which reads as its end.
+/// closed: C's reads of it fail, which reads as its end. The run's one
+/// descriptor, opened by the first transfer that reads it: one each would
+/// hold a descriptor per parallel transfer, which C's do not, and run out
+/// of them where the limit is low (macOS's 256).
 fn standard_input(
+    run: &Shared<'_, '_>,
     limit: Option<nonblocking::ReadLimit>,
 ) -> Result<Option<Handler<dyn ReadHandler>>, ErrorKind> {
-    let Ok(file) = curl_os::fs::stdin() else {
+    let file = match run.stdin.get() {
+        Some(file) => file.clone(),
+        None => {
+            let file = match curl_os::fs::stdin() {
+                Ok(file) => Some(
+                    TryArc::try_new(std::sync::Mutex::new(file))
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                ),
+                Err(_) => None,
+            };
+            run.stdin.get_or_init(|| file).clone()
+        }
+    };
+    let Some(file) = file else {
         return Ok(None);
     };
-    let file = curl_alloc::TryArc::try_new(std::sync::Mutex::new(file))
-        .map_err(|_| ErrorKind::OutOfMemory)?;
     let input = Handler::read(UploadFile { file, limit }).map_err(|_| ErrorKind::OutOfMemory)?;
     Ok(Some(input))
 }
@@ -4444,6 +4467,7 @@ mod tests {
             claims,
             started: Cell::new(None),
             stdin_relay: nonblocking::Relay::default(),
+            stdin: OnceCell::new(),
         };
         let out = output::Output::null(msgs).unwrap();
         let post = op.post.as_deref().filter(|_| !op.get);
@@ -5184,5 +5208,44 @@ mod tests {
         ] {
             assert_eq!(url_error(e), want, "{e:?}");
         }
+    }
+
+    /// Every transfer without an upload reads standard input through the
+    /// run's one descriptor, as C's all read descriptor 0: one each would
+    /// hold a descriptor per parallel transfer, which ran out of them on
+    /// macOS (`test_02_07_download_reuse`, 200 in parallel).
+    #[test]
+    fn transfers_read_standard_input_through_one_descriptor() {
+        let argv: Vec<Vec<u8>> = vec![b"curl".to_vec(), b"http://h/".to_vec()];
+        let mut msgs = Messages::new();
+        msgs.silent = true;
+        let Ok(tool::Parsed::Run(line)) = tool::parse_args(&argv, &mut msgs, &mut |_, _| {}) else {
+            panic!("the command line parses");
+        };
+        let stdout = Stdout::new().unwrap();
+        let share = Share::new().unwrap();
+        let linked = Linked::new().unwrap();
+        let run = Shared {
+            libcurl: None,
+            global: &line.global,
+            stdout: &stdout,
+            tracer: None,
+            msgs,
+            share: &share,
+            linked: &linked,
+            claims: Claims::of_build(),
+            started: Cell::new(None),
+            stdin_relay: nonblocking::Relay::default(),
+            stdin: OnceCell::new(),
+        };
+        let first = standard_input(&run, None).unwrap();
+        let second = standard_input(&run, None).unwrap();
+        assert!(
+            first.is_some() && second.is_some(),
+            "standard input is open"
+        );
+        let kept = run.stdin.get().unwrap().as_ref().unwrap();
+        // The run's, and one for each transfer's read callback.
+        assert_eq!(TryArc::count(kept), 3);
     }
 }

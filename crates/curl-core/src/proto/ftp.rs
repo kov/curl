@@ -3687,11 +3687,17 @@ fn bind_listen<H: Host>(
 
 /// The numbers of the system's errors the bind loop tells apart: on
 /// Windows Winsock's (`SOCKEACCES`, `SOCKEADDRINUSE`, `WSAEADDRNOTAVAIL`).
-#[cfg(unix)]
+#[cfg(all(unix, not(target_vendor = "apple")))]
 mod libc_errno {
     pub(super) const EACCES: i32 = 13;
     pub(super) const EADDRINUSE: i32 = 98;
     pub(super) const EADDRNOTAVAIL: i32 = 99;
+}
+#[cfg(target_vendor = "apple")]
+mod libc_errno {
+    pub(super) const EACCES: i32 = 13;
+    pub(super) const EADDRINUSE: i32 = 48;
+    pub(super) const EADDRNOTAVAIL: i32 = 49;
 }
 #[cfg(windows)]
 mod libc_errno {

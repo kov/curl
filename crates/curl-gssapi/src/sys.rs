@@ -85,6 +85,9 @@ const GSS_C_GSS_CODE: c_int = 1;
 const GSS_C_MECH_CODE: c_int = 2;
 const GSS_C_QOP_DEFAULT: OmUint32 = 0;
 
+// Named on Windows, where a static is reached through the DLL's import
+// table (`__imp_`), which only a block linked to its library knows to do.
+#[cfg_attr(windows, link(name = "gssapi64", kind = "dylib"))]
 unsafe extern "C" {
     static GSS_C_NT_HOSTBASED_SERVICE: *mut GssOidDesc;
 

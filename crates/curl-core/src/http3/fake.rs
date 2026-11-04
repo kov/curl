@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use curl_alloc::OutOfMemory;
@@ -231,14 +231,21 @@ impl FakeHttp3 {
         setup: &ClientSetup,
         tls: Box<dyn QuicTls>,
     ) -> Result<Box<dyn Connection>, ConnectFailed> {
-        let mut setups = self.setups.lock().unwrap();
+        let mut setups = self.setups.lock().unwrap_or_else(PoisonError::into_inner);
         let script = match setups.len() {
             0 => None,
-            _ => self.then.lock().unwrap().pop_front(),
+            _ => self
+                .then
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front(),
         }
         .unwrap_or_else(|| self.script.clone());
         setups.push(*setup);
-        script.lock().unwrap().at(setup.now);
+        script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .at(setup.now);
         Ok(Box::new(FakeConnection {
             script,
             tls,
@@ -271,12 +278,15 @@ impl FakeConnection {
                 let event_heard = match t {
                     Told::HandshakeDone => {
                         let checked = call.handshake_done();
-                        let mut s = script.lock().unwrap();
+                        let mut s = script.lock().unwrap_or_else(PoisonError::into_inner);
                         own(|| s.checked.push(checked));
                         s.handshake_done = checked.is_ok();
                         drop(s);
-                        let early = script.lock().unwrap().early;
-                        let rejected = script.lock().unwrap().early_rejected;
+                        let early = script.lock().unwrap_or_else(PoisonError::into_inner).early;
+                        let rejected = script
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .early_rejected;
                         let event = ConnEvent::HandshakeDone {
                             checked,
                             max_udp_payload: 1452,
@@ -300,7 +310,7 @@ impl FakeConnection {
                         Heard::Failed
                     }
                     Told::Acked(n) => {
-                        let mut s = script.lock().unwrap();
+                        let mut s = script.lock().unwrap_or_else(PoisonError::into_inner);
                         let b = &mut s.body;
                         b.acked = (b.acked + n).min(b.handed);
                         if b.handed < b.bytes.len() {
@@ -403,7 +413,7 @@ impl Connection for FakeConnection {
         events: Events<'_>,
     ) -> Result<(), QuicError> {
         let told = {
-            let mut s = self.script.lock().unwrap();
+            let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
             s.at(now);
             own(|| s.read.push((packet.to_vec(), ecn)));
             if let Some(code) = s.read_fails {
@@ -424,7 +434,12 @@ impl Connection for FakeConnection {
         buf: &mut [u8],
         events: Events<'_>,
     ) -> Result<Option<usize>, QuicError> {
-        let read = self.script.lock().unwrap().body.hand();
+        let read = self
+            .script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .body
+            .hand();
         if let Some(told) = read {
             let Told::BodyRead { n, eof, .. } = told else {
                 unreachable!("a read")
@@ -435,7 +450,7 @@ impl Connection for FakeConnection {
             // What it handed goes in a packet of its own: its bytes, or
             // the stream's end.
             if n > 0 || eof {
-                let mut s = self.script.lock().unwrap();
+                let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
                 s.at(now);
                 let b = &s.body;
                 let packet = if n > 0 {
@@ -448,7 +463,7 @@ impl Connection for FakeConnection {
                 return Ok(Some(len));
             }
         }
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.at(now);
         let Some(packet) = s.out.pop_front().filter(|p| !p.is_empty()) else {
             return Ok(None);
@@ -467,25 +482,34 @@ impl Connection for FakeConnection {
     }
 
     fn sent_at(&mut self, now: Instant) {
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.at(now);
         own(|| s.sent_at.push(now));
     }
 
     fn max_payload(&self) -> usize {
-        self.script.lock().unwrap().max_payload
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .max_payload
     }
 
     fn path_max_payload(&self) -> usize {
-        self.script.lock().unwrap().path_max_payload
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .path_max_payload
     }
 
     fn send_quantum(&self) -> usize {
-        self.script.lock().unwrap().send_quantum
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send_quantum
     }
 
     fn expiry(&self, now: Instant) -> Expiry {
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(d) = s.timer.filter(|_| !s.requests.is_empty()) {
             let at = *s.timer_at.get_or_insert(now.after(d));
             return match at.since(now) {
@@ -506,7 +530,7 @@ impl Connection for FakeConnection {
         now: Instant,
         _events: Events<'_>,
     ) -> Result<(), QuicError> {
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.at(now);
         s.expired += 1;
         s.expiry = None;
@@ -517,11 +541,14 @@ impl Connection for FakeConnection {
     }
 
     fn handshake_done(&self) -> bool {
-        self.script.lock().unwrap().handshake_done
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .handshake_done
     }
 
     fn set_early_params(&mut self, params: &[u8]) -> Result<(), &'static str> {
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.early_params = own(|| params.to_vec());
         match s.early_params_refused {
             Some(why) => Err(why),
@@ -530,7 +557,7 @@ impl Connection for FakeConnection {
     }
 
     fn start_early(&mut self) -> Result<EarlyStart, H3Failed> {
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         let start = match s.early_tls_refuses {
             true => EarlyStart::Refused,
             false => EarlyStart::Started,
@@ -540,23 +567,36 @@ impl Connection for FakeConnection {
     }
 
     fn draining(&self) -> bool {
-        self.script.lock().unwrap().draining
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .draining
     }
 
     fn peer_idle_timeout(&self) -> Option<Duration> {
-        self.script.lock().unwrap().idle
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .idle
     }
 
     fn set_keep_alive(&mut self, every: Option<Duration>) {
-        self.script.lock().unwrap().keep_alive = Some(every);
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keep_alive = Some(every);
     }
 
     fn send_room(&self) -> bool {
-        !self.script.lock().unwrap().no_send_room
+        !self
+            .script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .no_send_room
     }
 
     fn failed(&mut self, error: QuicError) -> bool {
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         own(|| s.failed.push(error));
         if s.close.is_none() {
             s.close = Some(CloseError {
@@ -568,19 +608,26 @@ impl Connection for FakeConnection {
     }
 
     fn close_error(&self) -> CloseError {
-        self.script.lock().unwrap().close.unwrap_or(CloseError {
-            kind: CloseKind::Transport,
-            code: 0,
-        })
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close
+            .unwrap_or(CloseError {
+                kind: CloseKind::Transport,
+                code: 0,
+            })
     }
 
     fn closed_with(&self) -> Option<CloseError> {
-        let s = self.script.lock().unwrap();
+        let s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.draining.then_some(s.peer_close).flatten()
     }
 
     fn write_close(&mut self, now: Instant, buf: &mut [u8]) -> Result<usize, QuicError> {
-        self.script.lock().unwrap().at(now);
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .at(now);
         buf[..5].copy_from_slice(b"CLOSE");
         Ok(5)
     }
@@ -595,7 +642,7 @@ impl Connection for FakeConnection {
                 .iter()
                 .map(|(n, v)| format!("{}: {}", curl_alloc::Lossy(n), curl_alloc::Lossy(v)))
                 .collect();
-            let mut s = self.script.lock().unwrap();
+            let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
             s.requests.push(lines);
             // The library reads a body as it first writes the stream.
             s.body.reading = body;
@@ -609,7 +656,7 @@ impl Connection for FakeConnection {
     }
 
     fn write_body(&mut self, _stream: StreamId, bytes: &[u8]) -> Result<usize, OutOfMemory> {
-        let mut s = self.script.lock().unwrap();
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         let b = &mut s.body;
         let room = b
             .held_max
@@ -620,21 +667,29 @@ impl Connection for FakeConnection {
     }
 
     fn end_body(&mut self, _stream: StreamId) {
-        self.script.lock().unwrap().body.ended = true;
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .body
+            .ended = true;
     }
 
     fn body_in_flight(&self, _stream: StreamId) -> usize {
-        let s = self.script.lock().unwrap();
+        let s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.body.handed - s.body.acked
     }
 
     fn body_buffered(&self, _stream: StreamId) -> usize {
-        let s = self.script.lock().unwrap();
+        let s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.body.bytes.len() - s.body.acked
     }
 
     fn resume(&mut self, _stream: StreamId) {
-        self.script.lock().unwrap().body.reading = true;
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .body
+            .reading = true;
     }
 
     fn cancel(&mut self, stream: StreamId, error: H3Error) {
@@ -648,6 +703,12 @@ impl Connection for FakeConnection {
     }
 
     fn extend_stream_window(&mut self, stream: StreamId, n: u64) {
-        own(|| self.script.lock().unwrap().windows.push((stream.0, n)));
+        own(|| {
+            self.script
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .windows
+                .push((stream.0, n))
+        });
     }
 }

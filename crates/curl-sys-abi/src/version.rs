@@ -242,17 +242,23 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let h2 = Library("nghttp2", curl_nghttp2::version());
             let h3 = curl_ngtcp2::version();
             let gss = Library("mit-krb5", curl_gssapi::version());
-            // Named by the library itself (`Curl_ldap_version`).
+            // Named by the library itself (`Curl_ldap_version`). Windows'
+            // build has no LDAP library.
+            #[cfg(unix)]
             let ldap = curl_ldap::version();
+            #[cfg(windows)]
+            let ldap = "";
             let mut libraries: [&dyn fmt::Display; 12] = [
                 &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
             ];
+            let linked = &mut libraries[..if cfg!(windows) { 11 } else { 12 }];
             // A build with the threaded resolver does not use c-ares.
             let shown = if cfg!(feature = "threaded-resolver") {
-                libraries.copy_within(5.., 4);
-                &libraries[..11]
+                let n = linked.len();
+                linked.copy_within(5.., 4);
+                &linked[..n - 1]
             } else {
-                &libraries[..]
+                &linked[..]
             };
             cbuf(format_args!("{}", version().components(shown)))
         })
@@ -291,6 +297,15 @@ mod tests {
 
     /// `curl_version` lists the libraries linked in after libcurl, in
     /// C's order and words, each version as the library says it.
+    /// The LDAP library after a space, as the version string has it:
+    /// none on Windows, whose build has none.
+    fn ldap_shown() -> String {
+        #[cfg(unix)]
+        return format!(" {}", curl_ldap::version());
+        #[cfg(windows)]
+        return String::new();
+    }
+
     fn ares_shown() -> String {
         if cfg!(feature = "threaded-resolver") {
             String::new()
@@ -304,7 +319,7 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -318,7 +333,7 @@ mod tests {
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),
             curl_gssapi::version(),
-            curl_ldap::version()
+            ldap_shown()
         );
         assert_eq!(said, want);
         // SAFETY: as above.

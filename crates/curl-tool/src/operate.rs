@@ -4045,7 +4045,12 @@ impl Linked {
                 h2: Some(&curl_nghttp2::NGHTTP2),
                 h3: Some(&curl_ngtcp2::NGTCP2),
                 ssh: Some(&curl_libssh::LIBSSH),
+                // Windows' build has no LDAP library, as a C build
+                // without one.
+                #[cfg(unix)]
                 ldap: Some(&curl_ldap::LIBLDAP),
+                #[cfg(windows)]
+                ldap: None,
                 psl: Some(&curl_psl::LIBPSL),
                 random: random()?,
             })

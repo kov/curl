@@ -33,13 +33,17 @@ curl-psl = { path = "../curl-psl" }
 curl-ares = { path = "../curl-ares", optional = true }
 curl-idn2 = { path = "../curl-idn2" }
 curl-libssh = { path = "../curl-libssh" }
-curl-ldap = { path = "../curl-ldap" }
 curl-nghttp2 = { path = "../curl-nghttp2" }
 curl-ngtcp2 = { path = "../curl-ngtcp2" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 curl-zstd = { path = "../curl-zstd" }
 libc = "0.2"
+
+# Windows' build links no LDAP library: C's there is WinLDAP, not
+# OpenLDAP.
+[target.'cfg(unix)'.dependencies]
+curl-ldap = { path = "../curl-ldap" }
 
 [dev-dependencies]
 # The `script:` test protocol, for bodies sent again.

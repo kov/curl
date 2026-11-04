@@ -267,17 +267,23 @@ impl std::fmt::Display for CurlVersion {
         let h2 = Library("nghttp2", curl_nghttp2::version());
         let h3 = curl_ngtcp2::version();
         let gss = Library("mit-krb5", curl_gssapi::version());
-        // Named by the library itself (`Curl_ldap_version`).
+        // Named by the library itself (`Curl_ldap_version`). Windows'
+        // build has no LDAP library.
+        #[cfg(unix)]
         let ldap = curl_ldap::version();
+        #[cfg(windows)]
+        let ldap = "";
         let mut libraries: [&dyn std::fmt::Display; 12] = [
             &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
         ];
+        let linked = &mut libraries[..if cfg!(windows) { 11 } else { 12 }];
         // A build with the threaded resolver does not use c-ares.
         let shown = if cfg!(feature = "threaded-resolver") {
-            libraries.copy_within(5.., 4);
-            &libraries[..11]
+            let n = linked.len();
+            linked.copy_within(5.., 4);
+            &linked[..n - 1]
         } else {
-            &libraries[..]
+            &linked[..]
         };
         version().components(shown).fmt(f)
     }
@@ -369,12 +375,21 @@ mod tests {
         assert_eq!(read("9223372036854775808"), None);
     }
 
+    /// The LDAP library after a space, as the version string has it:
+    /// none on Windows, whose build has none.
+    fn ldap_shown() -> String {
+        #[cfg(unix)]
+        return format!(" {}", curl_ldap::version());
+        #[cfg(windows)]
+        return String::new();
+    }
+
     /// `curl -V` lists the libraries after libcurl as C's does: in its
     /// order, each named as it names it, without those not linked.
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -392,7 +407,7 @@ mod tests {
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),
             curl_gssapi::version(),
-            curl_ldap::version()
+            ldap_shown()
         );
         assert_eq!(CurlVersion.to_string(), want);
     }

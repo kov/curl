@@ -2,7 +2,11 @@
 //! length, as C's do: under the debug build's torture mode an allocation
 //! std makes to copy a name of 384 bytes or more could not be refused, and
 //! would abort the tool. The tracker counts this binary's allocations.
+//!
+//! On Windows a name is turned to UTF-16 in memory that may be refused,
+//! as C turns it there, so this holds on Unix alone.
 
+#![cfg(unix)]
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::os::unix::ffi::OsStrExt as _;

@@ -8,13 +8,22 @@
 //! here too, as the tool's `--stderr` asks, a file's reads are made not to
 //! wait, as `-T .` asks of standard input, and a file is closed saying
 //! whether that went.
+//!
+//! On Windows a name is in the ANSI code page, as C's build without
+//! Unicode takes it, and is opened through the system's UTF-16 calls, as
+//! the C library opens it, a long one marked long as C marks it; the
+//! UTF-16 is made in memory that may be refused, as C makes it. A file's
+//! reads cannot be made not to wait there: C reads standard input in a
+//! thread of its own instead.
 
 #![allow(unsafe_code)]
 
 use core::ffi::CStr;
 use std::fs::File;
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+#[cfg(unix)]
 use std::ptr::NonNull;
 
 /// What opening for writing does to what the file holds.
@@ -29,6 +38,7 @@ pub enum Keep {
     Absent,
 }
 
+#[cfg(unix)]
 /// Whether `e` is a refusal to look in or change a directory (`EACCES`),
 /// as distinct from an operation not permitted (`EPERM`), which std
 /// reports with the same kind.
@@ -36,10 +46,12 @@ pub fn denied(e: &io::Error) -> bool {
     e.raw_os_error() == Some(libc::EACCES)
 }
 
+#[cfg(unix)]
 /// The longest name the system takes, its ending zero byte included
 /// (`PATH_MAX`).
 const NAME_MAX_BYTES: usize = libc::PATH_MAX as usize;
 
+#[cfg(unix)]
 /// Call `f` with `name` as a C string, as C sees it: to its first zero
 /// byte, if it has one. It is copied to a buffer on the stack, not the
 /// heap; one too long for the system is refused with the error the system
@@ -55,6 +67,7 @@ pub fn with_c_name<T>(name: &[u8], f: impl FnOnce(&CStr) -> io::Result<T>) -> io
     f(c)
 }
 
+#[cfg(unix)]
 /// What `stat(2)` says of a file, as much as is asked of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Status {
@@ -63,6 +76,7 @@ pub struct Status {
     modified: i64,
 }
 
+#[cfg(unix)]
 impl Status {
     /// Whether it is a regular file.
     pub fn is_file(&self) -> bool {
@@ -90,6 +104,7 @@ impl Status {
     }
 }
 
+#[cfg(unix)]
 /// The status of the file at `path`, a symbolic link followed.
 pub fn stat(path: &CStr) -> io::Result<Status> {
     let mut st = core::mem::MaybeUninit::<libc::stat>::uninit();
@@ -107,6 +122,7 @@ pub fn stat(path: &CStr) -> io::Result<Status> {
     })
 }
 
+#[cfg(unix)]
 /// Call `f` with the absolute name of the file at `path`, every symbolic
 /// link, `.` and `..` resolved (`realpath(3)`), into a buffer on the
 /// stack, not the heap. A file that does not exist has none.
@@ -123,6 +139,7 @@ pub fn real_path<T>(path: &CStr, f: impl FnOnce(&[u8]) -> T) -> io::Result<T> {
     Ok(f(name.to_bytes()))
 }
 
+#[cfg(unix)]
 /// Remove the name `path` (`unlink(2)`).
 pub fn remove(path: &CStr) -> io::Result<()> {
     // SAFETY: `path` is a C string, alive for the call.
@@ -132,6 +149,7 @@ pub fn remove(path: &CStr) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Give the file `from` the name `to`, in place of any file that had it
 /// (`rename(2)`).
 pub fn rename(from: &CStr, to: &CStr) -> io::Result<()> {
@@ -142,6 +160,7 @@ pub fn rename(from: &CStr, to: &CStr) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Make the directory `path`, with permissions `mode` before the umask
 /// (`mkdir(2)`).
 pub fn make_dir(path: &CStr, mode: u32) -> io::Result<()> {
@@ -152,6 +171,7 @@ pub fn make_dir(path: &CStr, mode: u32) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Set the access and modification times of the file at `path` to `t`
 /// seconds after the epoch (`utimes(2)`), by name: no permission to read
 /// or write it is needed, only to own it.
@@ -169,11 +189,13 @@ pub fn set_times(path: &CStr, t: i64) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Open `path` to read it. A directory opens too.
 pub fn open_read(path: &CStr) -> io::Result<File> {
     open(path, libc::O_RDONLY, 0)
 }
 
+#[cfg(unix)]
 /// Open `path` to write it, creating it with permissions `mode` (before
 /// the umask) if it does not exist.
 pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
@@ -185,6 +207,7 @@ pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
     open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode)
 }
 
+#[cfg(unix)]
 fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File> {
     // SAFETY: `path` is a C string, alive for the call; `open` reads the
     // mode argument only with O_CREAT, and takes it as an unsigned int.
@@ -202,6 +225,7 @@ fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File>
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+#[cfg(unix)]
 /// Close `file` (`close(2)`), saying whether that went, which dropping
 /// it does not: a write the kernel held may fail only then. The
 /// descriptor is let go of either way, and not closed again.
@@ -215,6 +239,7 @@ pub fn close(file: File) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Standard input, read through a descriptor of its own: no buffer
 /// stays behind, as `std::io::stdin`'s does until the process ends.
 pub fn stdin() -> io::Result<File> {
@@ -228,6 +253,7 @@ pub fn stdin() -> io::Result<File> {
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+#[cfg(unix)]
 /// Make reads of `file` not wait for data, as `curlx_nonblock` does
 /// (`O_NONBLOCK`): a read that finds nothing fails with `WouldBlock`. The
 /// flag belongs to the open file, so it holds for every descriptor of it:
@@ -247,6 +273,7 @@ pub fn set_nonblocking(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Make standard error write where `to` writes, as `freopen` of `stderr`
 /// does: every later write to descriptor 2, from anywhere in the process,
 /// goes there.
@@ -259,12 +286,14 @@ pub fn stderr_to(to: &impl AsFd) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// A directory's entries, as `readdir` gives them, in no order.
 #[derive(Debug)]
 pub struct Dir {
     stream: NonNull<libc::DIR>,
 }
 
+#[cfg(unix)]
 impl Dir {
     /// Open the directory at `path` to list it.
     pub fn open(path: &CStr) -> io::Result<Dir> {
@@ -301,6 +330,7 @@ impl Dir {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Dir {
     fn drop(&mut self) {
         // SAFETY: the stream is open and closed only here. A failure
@@ -309,7 +339,597 @@ impl Drop for Dir {
     }
 }
 
-#[cfg(test)]
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle, AsRawHandle as _, FromRawHandle as _, IntoRawHandle as _};
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation as wf;
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem as wfs;
+
+/// What holds an open file, on either platform: a descriptor on Unix, a
+/// handle on Windows.
+#[cfg(unix)]
+pub use std::os::fd::AsFd as AsFile;
+#[cfg(windows)]
+pub use std::os::windows::io::AsHandle as AsFile;
+
+/// Whether `e` is a refusal to look in or change a directory
+/// (`ERROR_ACCESS_DENIED`).
+#[cfg(windows)]
+pub fn denied(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(wf::ERROR_ACCESS_DENIED as i32)
+}
+
+/// The longest name the system takes, in bytes, its ending zero byte
+/// included: C's `max_path_len`, past which it no longer makes a long name
+/// one the system takes (`fix_excessive_path`).
+#[cfg(windows)]
+const NAME_MAX_BYTES: usize = 32_767;
+
+/// Call `f` with `name` as a C string, as C sees it: to its first zero
+/// byte, if it has one. It is copied to a buffer on the stack, not the
+/// heap; one too long for the system is refused with the error the system
+/// gives it (`ERROR_FILENAME_EXCED_RANGE`), without calling `f`.
+#[cfg(windows)]
+pub fn with_c_name<T>(name: &[u8], f: impl FnOnce(&CStr) -> io::Result<T>) -> io::Result<T> {
+    let name = name.split(|&b| b == 0).next().unwrap_or_default();
+    if name.len() >= NAME_MAX_BYTES {
+        return Err(io::Error::from_raw_os_error(
+            wf::ERROR_FILENAME_EXCED_RANGE as i32,
+        ));
+    }
+    let mut buf = [0u8; NAME_MAX_BYTES];
+    buf[..name.len()].copy_from_slice(name);
+    let c = CStr::from_bytes_until_nul(&buf).expect("a zero byte after the name");
+    f(c)
+}
+
+/// The system's last error.
+#[cfg(windows)]
+fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
+
+/// Memory for `n` units, zeroed, or the error of running out.
+#[cfg(windows)]
+fn units(n: usize) -> io::Result<Vec<u16>> {
+    use curl_alloc::TryVec as _;
+    let mut v = Vec::new();
+    v.try_resize(n, 0)
+        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    Ok(v)
+}
+
+/// `name`, in the ANSI code page as C's build takes a file's name, in the
+/// UTF-16 the system's calls take, ended by a zero; made absolute and
+/// marked long (`\\?\`) when that is longer than `MAX_PATH`, as C's
+/// `fix_excessive_path` makes it, so that a long name opens too.
+#[cfg(windows)]
+pub(crate) fn wide_name(name: &CStr) -> io::Result<Vec<u16>> {
+    use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
+    /// `MAX_PATH`, the longest name the system takes unmarked.
+    const MAX_PATH: usize = 260;
+    let bytes = name.to_bytes_with_nul();
+    let len = i32::try_from(bytes.len()).expect("a name fits");
+    // SAFETY: `bytes` is `len` readable bytes; a null output asks for the
+    // room the conversion needs.
+    let need =
+        unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
+    if need <= 0 {
+        return Err(last_error());
+    }
+    let mut wide = units(usize::try_from(need).expect("positive"))?;
+    // SAFETY: as above, `wide` writable for the `need` units it is told.
+    let n = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), need) };
+    if n <= 0 {
+        return Err(last_error());
+    }
+    wide.truncate(usize::try_from(n).expect("positive"));
+    let marked = |w: &[u16], prefix: &str| {
+        w.len() >= prefix.len() && w.iter().zip(prefix.encode_utf16()).all(|(&a, b)| a == b)
+    };
+    if marked(&wide, r"\\?\") {
+        return Ok(wide);
+    }
+    // SAFETY: `wide` is a NUL-terminated name; a null buffer asks for the
+    // room the full name needs.
+    let need = unsafe {
+        wfs::GetFullPathNameW(wide.as_ptr(), 0, std::ptr::null_mut(), std::ptr::null_mut())
+    };
+    let need = usize::try_from(need).expect("a u32 fits");
+    if need == 0 || need <= MAX_PATH || need > NAME_MAX_BYTES {
+        return Ok(wide);
+    }
+    let mut full = units(need)?;
+    let room = u32::try_from(need).expect("fits");
+    // SAFETY: `full` is writable for the `room` units the call is told.
+    let got = unsafe {
+        wfs::GetFullPathNameW(wide.as_ptr(), room, full.as_mut_ptr(), std::ptr::null_mut())
+    };
+    let got = usize::try_from(got).expect("a u32 fits");
+    if got == 0 || got >= need {
+        return Ok(wide);
+    }
+    full.truncate(got);
+    let prefix: &str = if marked(&full, r"\\?\") {
+        ""
+    } else if marked(&full, r"\\.\") {
+        full[2] = u16::from(b'?');
+        ""
+    } else if marked(&full, r"\\.") || marked(&full, r"\\?") {
+        // Not a name C marks.
+        return Ok(wide);
+    } else if marked(&full, r"\\") {
+        full.drain(..2);
+        r"\\?\UNC\"
+    } else {
+        r"\\?\"
+    };
+    let mut out = units(prefix.len() + full.len() + 1)?;
+    for (to, from) in out
+        .iter_mut()
+        .zip(prefix.encode_utf16().chain(full.iter().copied()))
+    {
+        *to = from;
+    }
+    Ok(out)
+}
+
+/// A handle the system returned, or its error.
+#[cfg(windows)]
+fn opened(handle: wf::HANDLE) -> io::Result<std::os::windows::io::OwnedHandle> {
+    if handle == wf::INVALID_HANDLE_VALUE {
+        return Err(last_error());
+    }
+    // SAFETY: `handle` was just opened and is owned by nothing else.
+    Ok(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle) })
+}
+
+/// Open `path` with `CreateFileW`, as the C library's `_sopen_s` opens it
+/// for C (`curlx_win32_open`): shared for reading and writing, as
+/// `_SH_DENYNO` asks.
+#[cfg(windows)]
+fn create(
+    path: &CStr,
+    access: u32,
+    share: u32,
+    disposition: u32,
+    flags: u32,
+) -> io::Result<std::os::windows::io::OwnedHandle> {
+    let wide = wide_name(path)?;
+    // SAFETY: `wide` is a NUL-terminated name alive through the call; no
+    // security attributes or template are passed.
+    let handle = unsafe {
+        wfs::CreateFileW(
+            wide.as_ptr(),
+            access,
+            share,
+            std::ptr::null(),
+            disposition,
+            flags,
+            std::ptr::null_mut(),
+        )
+    };
+    opened(handle)
+}
+
+/// What a file is, as much as is asked of it.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    File,
+    Dir,
+    Other,
+}
+
+/// What `_stati64` says of a file, as much as is asked of it.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Status {
+    kind: Kind,
+    len: u64,
+    modified: i64,
+}
+
+#[cfg(windows)]
+impl Status {
+    /// Whether it is a regular file.
+    pub fn is_file(&self) -> bool {
+        self.kind == Kind::File
+    }
+
+    /// Whether it is a directory.
+    pub fn is_dir(&self) -> bool {
+        self.kind == Kind::Dir
+    }
+
+    /// Its size in bytes; a directory's is 0.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Whether it is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// When it was last modified, in seconds after the epoch.
+    pub fn modified(&self) -> i64 {
+        self.modified
+    }
+}
+
+/// 100-nanosecond intervals from 1601 to 1970, where a `FILETIME` counts
+/// from and Unix time does.
+#[cfg(windows)]
+const EPOCH_IN_FILETIME: i64 = 116_444_736_000_000_000;
+
+/// The status of the file at `path`, a symbolic link followed.
+#[cfg(windows)]
+pub fn stat(path: &CStr) -> io::Result<Status> {
+    let share = wfs::FILE_SHARE_READ | wfs::FILE_SHARE_WRITE | wfs::FILE_SHARE_DELETE;
+    let file = create(
+        path,
+        wfs::FILE_READ_ATTRIBUTES,
+        share,
+        wfs::OPEN_EXISTING,
+        wfs::FILE_FLAG_BACKUP_SEMANTICS,
+    )?;
+    let handle = file.as_raw_handle();
+    // SAFETY: `handle` is open while `file` lives.
+    if unsafe { wfs::GetFileType(handle) } != wfs::FILE_TYPE_DISK {
+        return Ok(Status {
+            kind: Kind::Other,
+            len: 0,
+            modified: 0,
+        });
+    }
+    // SAFETY: all zeros is a value of the plain record the call fills.
+    let mut info: wfs::BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is the record the call writes, alive through it; the
+    // handle is open.
+    if unsafe { wfs::GetFileInformationByHandle(handle, &raw mut info) } == 0 {
+        return Err(last_error());
+    }
+    let dir = info.dwFileAttributes & wfs::FILE_ATTRIBUTE_DIRECTORY != 0;
+    let written = (i64::from(info.ftLastWriteTime.dwHighDateTime) << 32)
+        | i64::from(info.ftLastWriteTime.dwLowDateTime);
+    Ok(Status {
+        kind: if dir { Kind::Dir } else { Kind::File },
+        len: if dir {
+            0
+        } else {
+            (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow)
+        },
+        modified: (written - EPOCH_IN_FILETIME).div_euclid(10_000_000),
+    })
+}
+
+/// Call `f` with the absolute name of `path`, its `.` and `..` resolved,
+/// into a buffer on the stack, not the heap: on Windows `_fullpath`'s, as
+/// C's session cache keys a file there, which follows no link and needs
+/// no file.
+#[cfg(windows)]
+pub fn real_path<T>(path: &CStr, f: impl FnOnce(&[u8]) -> T) -> io::Result<T> {
+    let mut full = [0u8; NAME_MAX_BYTES + 1];
+    let room = u32::try_from(full.len()).expect("fits");
+    // SAFETY: `path` is a C string and `full` writable for the `room`
+    // bytes the call is told; both are alive for the call.
+    let n = unsafe {
+        wfs::GetFullPathNameA(
+            path.as_ptr().cast(),
+            room,
+            full.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    };
+    let n = usize::try_from(n).expect("a u32 fits");
+    if n == 0 {
+        return Err(last_error());
+    }
+    if n >= full.len() {
+        return Err(io::Error::from_raw_os_error(
+            wf::ERROR_FILENAME_EXCED_RANGE as i32,
+        ));
+    }
+    Ok(f(&full[..n]))
+}
+
+/// A call's result that is true on success, an error if not.
+#[cfg(windows)]
+fn done(ok: windows_sys::core::BOOL) -> io::Result<()> {
+    if ok == 0 { Err(last_error()) } else { Ok(()) }
+}
+
+/// Remove the name `path` (`DeleteFileW`, as the C library's `_unlink`).
+#[cfg(windows)]
+pub fn remove(path: &CStr) -> io::Result<()> {
+    let wide = wide_name(path)?;
+    // SAFETY: `wide` is a NUL-terminated name, alive for the call.
+    done(unsafe { wfs::DeleteFileW(wide.as_ptr()) })
+}
+
+/// Give the file `from` the name `to`, in place of any file that had it,
+/// as `curlx_win32_rename` does: `MoveFileExW`, tried again for a second
+/// while it fails, as another process may still have either open.
+#[cfg(windows)]
+pub fn rename(from: &CStr, to: &CStr) -> io::Result<()> {
+    use std::time::Duration;
+    let (from, to) = (wide_name(from)?, wide_name(to)?);
+    let start = crate::time::monotonic();
+    loop {
+        // SAFETY: both are NUL-terminated names, alive for the call.
+        let ok =
+            unsafe { wfs::MoveFileExW(from.as_ptr(), to.as_ptr(), wfs::MOVEFILE_REPLACE_EXISTING) };
+        if ok != 0 {
+            return Ok(());
+        }
+        let failed = last_error();
+        if crate::time::monotonic() - start > Duration::from_secs(1) {
+            return Err(failed);
+        }
+        // SAFETY: `Sleep` takes no pointers.
+        unsafe { windows_sys::Win32::System::Threading::Sleep(1) };
+    }
+}
+
+/// Make the directory `path` (`CreateDirectoryW`, as `curlx_win32_mkdir`):
+/// Windows has no mode to give it, so `mode` is not used, as C drops it.
+#[cfg(windows)]
+pub fn make_dir(path: &CStr, mode: u32) -> io::Result<()> {
+    let _ = mode;
+    let wide = wide_name(path)?;
+    // SAFETY: `wide` is a NUL-terminated name, alive for the call; no
+    // security attributes are passed.
+    done(unsafe { wfs::CreateDirectoryW(wide.as_ptr(), std::ptr::null()) })
+}
+
+/// Set the access and modification times of the file at `path` to `t`
+/// seconds after the epoch, as C's tool sets them on Windows
+/// (`tool_filetime.c`): opened for its attributes only, then
+/// `SetFileTime`. A time a `FILETIME` cannot hold is refused; the tool
+/// caps it first, as C's does.
+#[cfg(windows)]
+pub fn set_times(path: &CStr, t: i64) -> io::Result<()> {
+    let ft = t
+        .checked_mul(10_000_000)
+        .and_then(|n| n.checked_add(EPOCH_IN_FILETIME))
+        .filter(|&n| n >= 0)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let ft = wf::FILETIME {
+        dwLowDateTime: (ft & 0xFFFF_FFFF) as u32,
+        dwHighDateTime: (ft >> 32) as u32,
+    };
+    let share = wfs::FILE_SHARE_READ | wfs::FILE_SHARE_WRITE | wfs::FILE_SHARE_DELETE;
+    let file = create(
+        path,
+        wfs::FILE_WRITE_ATTRIBUTES,
+        share,
+        wfs::OPEN_EXISTING,
+        0,
+    )?;
+    // SAFETY: the handle is open while `file` lives; both times are read
+    // only, the creation time left as it is.
+    done(unsafe {
+        wfs::SetFileTime(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            &raw const ft,
+            &raw const ft,
+        )
+    })
+}
+
+/// Open `path` to read it, as C's `curlx_open` with `O_RDONLY`. A
+/// directory does not open, as it does not in the C library.
+#[cfg(windows)]
+pub fn open_read(path: &CStr) -> io::Result<File> {
+    let share = wfs::FILE_SHARE_READ | wfs::FILE_SHARE_WRITE;
+    let file = create(
+        path,
+        wf::GENERIC_READ,
+        share,
+        wfs::OPEN_EXISTING,
+        wfs::FILE_ATTRIBUTE_NORMAL,
+    )?;
+    Ok(File::from(file))
+}
+
+/// Open `path` to write it, creating it if it does not exist: read-only if
+/// `mode` gives its owner no write permission, as the C library makes a
+/// file without `_S_IWRITE`.
+#[cfg(windows)]
+pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
+    let (access, disposition) = match keep {
+        Keep::Nothing => (wf::GENERIC_WRITE, wfs::CREATE_ALWAYS),
+        // Every write goes at the end, as `O_APPEND`'s do.
+        Keep::Everything => (
+            wfs::FILE_GENERIC_WRITE & !wfs::FILE_WRITE_DATA,
+            wfs::OPEN_ALWAYS,
+        ),
+        Keep::Absent => (wf::GENERIC_WRITE, wfs::CREATE_NEW),
+    };
+    let attributes = if mode & 0o200 == 0 {
+        wfs::FILE_ATTRIBUTE_READONLY
+    } else {
+        wfs::FILE_ATTRIBUTE_NORMAL
+    };
+    let share = wfs::FILE_SHARE_READ | wfs::FILE_SHARE_WRITE;
+    Ok(File::from(create(
+        path,
+        access,
+        share,
+        disposition,
+        attributes,
+    )?))
+}
+
+/// Close `file` (`CloseHandle`), saying whether that went, which dropping
+/// it does not. The handle is let go of either way, and not closed again.
+#[cfg(windows)]
+pub fn close(file: File) -> io::Result<()> {
+    let handle = file.into_raw_handle();
+    // SAFETY: `handle` was the file's own, which no one else holds, and is
+    // not used again whatever `CloseHandle` says.
+    done(unsafe { wf::CloseHandle(handle) })
+}
+
+/// Standard input, read through a handle of its own: no buffer stays
+/// behind, as `std::io::stdin`'s does until the process ends.
+#[cfg(windows)]
+pub fn stdin() -> io::Result<File> {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    // SAFETY: `GetStdHandle` takes no pointers.
+    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if input.is_null() || input == wf::INVALID_HANDLE_VALUE {
+        return Err(io::Error::from_raw_os_error(
+            wf::ERROR_INVALID_HANDLE as i32,
+        ));
+    }
+    Ok(File::from(duplicate(input)?))
+}
+
+/// A handle of its own to what `handle` is open on.
+#[cfg(windows)]
+fn duplicate(handle: wf::HANDLE) -> io::Result<std::os::windows::io::OwnedHandle> {
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut copy: wf::HANDLE = std::ptr::null_mut();
+    // SAFETY: `GetCurrentProcess` takes nothing, and gives a pseudo handle.
+    let me = unsafe { GetCurrentProcess() };
+    // SAFETY: both process handles are this process's pseudo handle, and
+    // `copy` is where the call writes the new handle, alive through it.
+    let ok = unsafe {
+        wf::DuplicateHandle(
+            me,
+            handle,
+            me,
+            &raw mut copy,
+            0,
+            0,
+            wf::DUPLICATE_SAME_ACCESS,
+        )
+    };
+    done(ok)?;
+    // SAFETY: `copy` was just made and is owned by nothing else.
+    Ok(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(copy) })
+}
+
+/// Make standard error write where `to` writes, as C's tool `freopen`s
+/// `stderr`: every later write through the process's standard error
+/// handle (`GetStdHandle`, which std's `stderr` writes through) goes to a
+/// copy of `to`'s handle, which stays open for the process.
+#[cfg(windows)]
+pub fn stderr_to(to: &impl AsHandle) -> io::Result<()> {
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
+    let copy = duplicate(to.as_handle().as_raw_handle())?;
+    // SAFETY: `SetStdHandle` takes no pointers to memory; the handle given
+    // is open, and is let go of below so that it stays so.
+    done(unsafe { SetStdHandle(STD_ERROR_HANDLE, copy.as_raw_handle()) })?;
+    let _: wf::HANDLE = copy.into_raw_handle();
+    Ok(())
+}
+
+/// A directory's entries, as `FindFirstFile` and `FindNextFile` give them
+/// (C's `win32_file_list`), in the ANSI code page, in no order.
+#[cfg(windows)]
+pub struct Dir {
+    handle: wf::HANDLE,
+    entry: wfs::WIN32_FIND_DATAA,
+    /// The entry the find began with, not given yet.
+    first: bool,
+    done: bool,
+}
+
+#[cfg(windows)]
+impl Dir {
+    /// Open the directory at `path` to list it: `path\*`, as C asks, the
+    /// separator left out after one.
+    pub fn open(path: &CStr) -> io::Result<Dir> {
+        use curl_alloc::TryVec as _;
+        let bytes = path.to_bytes();
+        let sep = !matches!(bytes.last(), Some(b'\\' | b'/'));
+        let mut pattern = Vec::new();
+        fn oom<E>(_: E) -> io::Error {
+            io::ErrorKind::OutOfMemory.into()
+        }
+        pattern.try_reserve_exact(bytes.len() + 3).map_err(oom)?;
+        pattern.try_extend_from_slice(bytes).map_err(oom)?;
+        if sep {
+            pattern.try_push(b'\\').map_err(oom)?;
+        }
+        pattern.try_extend_from_slice(b"*\0").map_err(oom)?;
+        // SAFETY: all zeros is a value of the plain record the call fills.
+        let mut entry: wfs::WIN32_FIND_DATAA = unsafe { std::mem::zeroed() };
+        // SAFETY: `pattern` is a NUL-terminated name and `entry` the record
+        // the call writes, both alive through it.
+        let handle = unsafe { wfs::FindFirstFileA(pattern.as_ptr(), &raw mut entry) };
+        if handle == wf::INVALID_HANDLE_VALUE {
+            return Err(last_error());
+        }
+        Ok(Dir {
+            handle,
+            entry,
+            first: true,
+            done: false,
+        })
+    }
+
+    /// The next entry's name, `.` and `..` among them; `None` after the
+    /// last. The name is valid until the next call.
+    pub fn next_name(&mut self) -> Option<io::Result<&[u8]>> {
+        if self.done {
+            return None;
+        }
+        if self.first {
+            self.first = false;
+        } else {
+            // SAFETY: the find is open, and only this `Dir`, which `&mut`
+            // makes exclusive, uses it; `entry` is the record it writes.
+            if unsafe { wfs::FindNextFileA(self.handle, &raw mut self.entry) } == 0 {
+                self.done = true;
+                let err = last_error();
+                return (err.raw_os_error() != Some(wf::ERROR_NO_MORE_FILES as i32))
+                    .then_some(Err(err));
+            }
+        }
+        let name = self.entry_name();
+        let n = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        Some(Ok(&name[..n]))
+    }
+
+    /// The entry's name as bytes.
+    fn entry_name(&self) -> &[u8] {
+        // SAFETY: `cFileName` is an array of `i8`, which `u8` has the size
+        // and alignment of, borrowed for as long as `self` is.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.entry.cFileName.as_ptr().cast::<u8>(),
+                self.entry.cFileName.len(),
+            )
+        }
+    }
+}
+
+#[cfg(windows)]
+impl core::fmt::Debug for Dir {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Dir")
+            .field("handle", &self.handle)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Dir {
+    fn drop(&mut self) {
+        // SAFETY: the find is open and closed only here. A failure leaves
+        // nothing to do.
+        unsafe { wfs::FindClose(self.handle) };
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -672,5 +1292,257 @@ mod tests {
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
         let not_dir = Dir::open(&s.c("a")).unwrap_err();
         assert_eq!(not_dir.raw_os_error(), Some(libc::ENOTDIR));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+
+    use std::ffi::CString;
+    use std::io::{Read as _, Write as _};
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    /// A directory of its own for a test, removed after it.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir =
+                std::env::temp_dir().join(format!("curl-os-fs-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn c(&self, name: &str) -> CString {
+            c(&self.0.join(name))
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn c(path: &Path) -> CString {
+        CString::new(path.to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn opens_files_to_read_and_write() {
+        let s = Scratch::new("open");
+        let missing = open_read(&s.c("missing")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        open_write(&s.c("f"), Keep::Nothing, 0o600)
+            .unwrap()
+            .write_all(b"hello")
+            .unwrap();
+        open_write(&s.c("f"), Keep::Everything, 0o600)
+            .unwrap()
+            .write_all(b" world")
+            .unwrap();
+        let mut read = String::new();
+        open_read(&s.c("f"))
+            .unwrap()
+            .read_to_string(&mut read)
+            .unwrap();
+        assert_eq!(read, "hello world");
+        open_write(&s.c("f"), Keep::Nothing, 0o600)
+            .unwrap()
+            .write_all(b"new")
+            .unwrap();
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"new");
+        let there = open_write(&s.c("f"), Keep::Absent, 0o600).unwrap_err();
+        assert_eq!(there.kind(), io::ErrorKind::AlreadyExists);
+        // A directory does not open, as in the C library.
+        let dir = open_read(&c(&s.0)).unwrap_err();
+        assert!(denied(&dir), "{dir}");
+        let in_missing = open_write(&s.c("no/f"), Keep::Nothing, 0o600).unwrap_err();
+        assert_eq!(in_missing.kind(), io::ErrorKind::NotFound);
+        // No write permission for its owner: made read-only.
+        open_write(&s.c("ro"), Keep::Nothing, 0o400).unwrap();
+        assert!(
+            std::fs::metadata(s.0.join("ro"))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        assert!(
+            !std::fs::metadata(s.0.join("f"))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        let mut p = std::fs::metadata(s.0.join("ro")).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false, reason = "Windows only")]
+        p.set_readonly(false);
+        std::fs::set_permissions(s.0.join("ro"), p).unwrap();
+    }
+
+    #[test]
+    fn closes_a_file() {
+        let s = Scratch::new("close-file");
+        let mut f = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        f.write_all(b"kept").unwrap();
+        close(f).unwrap();
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"kept");
+    }
+
+    /// A file's status, as std reads it; a directory's length is 0.
+    #[test]
+    fn states_a_file() {
+        let s = Scratch::new("stat");
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let f = stat(&s.c("f")).unwrap();
+        assert!(f.is_file() && !f.is_dir());
+        assert_eq!(f.len(), 5);
+        let modified = std::fs::metadata(s.0.join("f"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let secs = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(f.modified(), i64::try_from(secs).unwrap());
+        let d = stat(&c(&s.0)).unwrap();
+        assert!(d.is_dir() && !d.is_file() && d.is_empty());
+        let missing = stat(&s.c("missing")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        let nul = stat(c"NUL").unwrap();
+        assert!(!nul.is_file() && !nul.is_dir(), "a device");
+    }
+
+    /// A name longer than `MAX_PATH` is marked long, as C marks it, and
+    /// opens; one longer than the system takes is refused first.
+    #[test]
+    fn a_long_name_opens() {
+        let s = Scratch::new("long");
+        let mut dir = s.0.clone();
+        while dir.as_os_str().len() < 300 {
+            dir.push("abcdefghijklmnopqrstuvwxyz");
+        }
+        let long = dir.join("f");
+        let name = c(&long);
+        // std makes a long name long itself.
+        std::fs::create_dir_all(&dir).unwrap();
+        open_write(&name, Keep::Nothing, 0o600)
+            .unwrap()
+            .write_all(b"far")
+            .unwrap();
+        assert_eq!(stat(&name).unwrap().len(), 3);
+        assert_eq!(std::fs::read(&long).unwrap(), b"far");
+        let wide = wide_name(&name).unwrap();
+        assert_eq!(&wide[..4], [92, 92, 63, 92], r"\\?\");
+        remove(&name).unwrap();
+        let too_long = with_c_name(&[b'a'; NAME_MAX_BYTES], |_| Ok(()));
+        assert_eq!(
+            too_long.unwrap_err().raw_os_error(),
+            Some(wf::ERROR_FILENAME_EXCED_RANGE as i32)
+        );
+    }
+
+    /// Names are made, moved over another and removed.
+    #[test]
+    fn makes_moves_and_removes_names() {
+        let s = Scratch::new("names");
+        make_dir(&s.c("d"), 0o700).unwrap();
+        assert!(s.0.join("d").is_dir());
+        let again = make_dir(&s.c("d"), 0o700).unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::AlreadyExists);
+        std::fs::write(s.0.join("a"), b"moved").unwrap();
+        std::fs::write(s.0.join("b"), b"replaced").unwrap();
+        rename(&s.c("a"), &s.c("b")).unwrap();
+        assert_eq!(std::fs::read(s.0.join("b")).unwrap(), b"moved");
+        assert!(!s.0.join("a").exists());
+        remove(&s.c("b")).unwrap();
+        assert_eq!(
+            remove(&s.c("b")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let start = std::time::Instant::now();
+        let missing = rename(&s.c("b"), &s.c("c")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert!(
+            start.elapsed() >= std::time::Duration::from_secs(1),
+            "tried for a second"
+        );
+    }
+
+    #[test]
+    fn sets_a_file_s_times() {
+        let s = Scratch::new("times");
+        open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        for t in [1_000_000_000, 0, -86_400] {
+            set_times(&s.c("f"), t).unwrap();
+            assert_eq!(stat(&s.c("f")).unwrap().modified(), t);
+        }
+        let missing = set_times(&s.c("missing"), 0).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        let past = set_times(&s.c("f"), i64::MIN).unwrap_err();
+        assert_eq!(past.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// `_fullpath`'s: absolute, its dots resolved, whether or not the file
+    /// is there.
+    #[test]
+    fn a_real_path_is_absolute() {
+        let s = Scratch::new("realpath");
+        std::fs::create_dir(s.0.join("d")).unwrap();
+        let want = s.0.join("f");
+        let got = real_path(&s.c(r"d\..\f"), <[u8]>::to_vec).unwrap();
+        assert_eq!(got, want.to_str().unwrap().as_bytes());
+        let missing = real_path(&s.c("missing"), <[u8]>::to_vec).unwrap();
+        assert_eq!(missing, s.0.join("missing").to_str().unwrap().as_bytes());
+    }
+
+    #[test]
+    fn lists_a_directory() {
+        let s = Scratch::new("list");
+        std::fs::write(s.0.join("a"), b"").unwrap();
+        std::fs::create_dir(s.0.join("b")).unwrap();
+        for path in [
+            c(&s.0),
+            CString::new(format!("{}\\", s.0.display())).unwrap(),
+        ] {
+            let mut dir = Dir::open(&path).unwrap();
+            let mut names = Vec::new();
+            while let Some(name) = dir.next_name() {
+                names.push(String::from_utf8(name.unwrap().to_vec()).unwrap());
+            }
+            names.sort();
+            assert_eq!(names, [".", "..", "a", "b"]);
+            assert!(dir.next_name().is_none(), "still at the end");
+        }
+        let missing = Dir::open(&s.c("missing")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert!(Dir::open(&s.c("a")).is_err(), "a file lists nothing");
+    }
+
+    /// Standard error writes to the file it is pointed at, until pointed
+    /// back.
+    #[test]
+    fn points_standard_error_at_a_file() {
+        let s = Scratch::new("stderr");
+        let file = open_write(&s.c("err"), Keep::Nothing, 0o600).unwrap();
+        let saved = std::io::stderr().as_handle().try_clone_to_owned().unwrap();
+        stderr_to(&file).unwrap();
+        let written = std::io::stderr().write_all(b"to the file\n");
+        stderr_to(&saved).unwrap();
+        written.unwrap();
+        drop(file);
+        let read = std::fs::read_to_string(s.0.join("err")).unwrap();
+        assert!(read.contains("to the file\n"), "{read:?}");
+    }
+
+    #[test]
+    fn standard_input_has_a_handle_of_its_own() {
+        use std::os::windows::io::AsRawHandle as _;
+        let own = stdin().unwrap();
+        assert_ne!(own.as_raw_handle(), std::io::stdin().as_raw_handle());
     }
 }

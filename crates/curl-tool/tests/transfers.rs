@@ -447,7 +447,8 @@ fn reports_an_output_it_cannot_open() {
 
 /// Run the tool with `args`, in `dir`, its standard output going to
 /// `stdout`; `None` is a pipe whose reader is gone before the tool starts.
-#[cfg(unix)]
+/// Its one user runs on Linux alone.
+#[cfg(target_os = "linux")]
 fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);

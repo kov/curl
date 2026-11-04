@@ -2485,6 +2485,50 @@ fn a_failed_read_fails_every_stream_on_the_connection() {
     assert!(!sent.contains("R 1 5\n"), "{sent}");
 }
 
+/// A connection reset fails the transfer reading with 56, its read's
+/// line said and what it leaves to send tried; the other finds the
+/// connection's end, and its send failing on the closed connection is
+/// what its read returns, 55, as C's `cf_h2_recv` lets its egress's
+/// failure stand; a stream reset once its transfer is done is no easy's.
+#[test]
+fn a_reset_connection_fails_the_others_as_their_sends_fail() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naa",
+            WINDOW_SENT,
+            b"H 3 0\n:status: 200\n\nD 3 2 0\nbb",
+            // The reset comes once `/b`'s window has gone, so the reading
+            // leaves nothing to send.
+            WINDOW_SENT,
+        ],
+        false,
+    )
+    .per_send()
+    .resetting_once();
+    let (results, texts) = two_on_one(&talk);
+    assert_eq!(results.len(), 2, "{texts:?}");
+    let reader = results.iter().position(|r| *r == Err(ErrorKind::RecvError));
+    let reader = reader.unwrap_or_else(|| panic!("{results:?} {texts:?}"));
+    let other = 1 - reader;
+    assert_eq!(results[other], Err(ErrorKind::SendError), "{texts:?}");
+    let (r, o) = (2 * reader + 1, 2 * other + 1);
+    let lines = &texts[reader];
+    let failed = "Failed receiving HTTP2 data: 56(Failure when receiving data from the peer)\n";
+    assert!(said(lines, failed), "{lines:?}");
+    let read = format!("[HTTP/2] [{r}] cf_recv(len=16384) -> 56, 0,");
+    assert!(lines.iter().any(|l| l.starts_with(&read)), "{lines:?}");
+    let lines = &texts[other];
+    for line in [
+        format!("[HTTP/2] [{o}] stream_recv(len=16384) -> 18, 0\n"),
+        format!("[HTTP/2] [{o}] premature DATA_DONE, RST stream\n"),
+        format!("[HTTP/2] [{o}] on_stream_close, no easy set on stream\n"),
+    ] {
+        assert!(said(lines, &line), "{line:?} in {lines:?}");
+    }
+    let read = format!("[HTTP/2] [{o}] cf_recv(len=16384) -> 55, 0,");
+    assert!(lines.iter().any(|l| l.starts_with(&read)), "{lines:?}");
+}
+
 /// A stream paused by a delivery in a sibling's step has its window
 /// closed there, nothing told the peer, and reopened as its own transfer
 /// runs once unpaused.

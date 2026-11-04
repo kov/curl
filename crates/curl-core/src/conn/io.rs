@@ -1062,6 +1062,9 @@ struct Wire {
     resets: bool,
     /// The reset polls in error and hung up, as Linux polls it.
     reset_polls: bool,
+    /// The reset is read once, as Linux reports it: after it the
+    /// connection reads its end and sends fail (`EPIPE`).
+    reset_once: bool,
     /// The peer answers each send with its next reply, not each
     /// request's head: a handshake whose messages have no blank line.
     per_send: bool,
@@ -1353,6 +1356,18 @@ impl Conversation {
             let mut wire = self.0.lock().expect("no test panics holding the wire");
             wire.resets = true;
             wire.reset_polls = true;
+        }
+        self
+    }
+
+    /// The same peer, resetting as `resetting` does, the reset read once
+    /// as Linux reads it: then the connection's end, and sends failing
+    /// with `EPIPE`.
+    pub fn resetting_once(self) -> Conversation {
+        {
+            let mut wire = self.0.lock().expect("no test panics holding the wire");
+            wire.resets = true;
+            wire.reset_once = true;
         }
         self
     }
@@ -2398,6 +2413,9 @@ impl Socket for FakeSocket {
             return Ok(Recv::Data(n));
         }
         if wire.resets {
+            if wire.reset_once {
+                wire.hung_up = true;
+            }
             return Err(io::Error::from_raw_os_error(libc_errno::ECONNRESET));
         }
         Ok(if wire.then_close {

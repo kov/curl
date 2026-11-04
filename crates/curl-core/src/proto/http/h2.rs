@@ -277,7 +277,9 @@ impl<H: Host> crate::proto::http2::Egress for Egressing<'_, '_, H> {
             return Heard::Fine;
         };
         let me = self.cx.me;
-        if Some(stream) == self.stream.id {
+        // The stepping transfer's own stream, once its request is done, is
+        // no transfer's, as C has unset its user data by then.
+        if Some(stream) == self.stream.id && to == Some(me) {
             trace_closed(&mut *self.cx, stream, error);
         } else if let Some(to) = to.filter(|&to| to != me) {
             self.cx
@@ -940,11 +942,11 @@ impl Request {
         // What the stream came to is read before what the reading left to
         // send goes, as C's `cf_h2_recv` asks the stream before its
         // egress: a reset the client sends then does not undo a response
-        // already whole.
-        let sent = self.h2_egress(cx, lease);
-        let came = match (came, sent) {
-            (Ok(_), Err(e)) => Err(e),
-            (came, _) => came,
+        // already whole. A failure to send is what the call returns,
+        // whatever the stream came to.
+        let came = match self.h2_egress(cx, lease) {
+            Err(e) => Err(e),
+            Ok(()) => came,
         };
         let code = match &came {
             Ok(StreamRecv::Closed) => 0,

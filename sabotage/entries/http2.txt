@@ -869,6 +869,24 @@ witness: curl-core proto::http::tests::h2::a_failed_read_fails_every_stream_on_t
 --- new
         let _reset = with_session(lease, |h2, _| {
 
+=== a send's failure gives way to what the stream came to
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_reset_connection_fails_the_others_as_their_sends_fail
+--- old
+            Err(e) => Err(e),
+            Ok(()) => came,
+--- new
+            Err(e) if came.is_ok() => Err(e),
+            _ => came,
+
+=== a done transfer's stream reset is traced as still its own
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_reset_connection_fails_the_others_as_their_sends_fail
+--- old
+        if Some(stream) == self.stream.id && to == Some(me) {
+--- new
+        if Some(stream) == self.stream.id {
+
 === a failed read of the connection returns before its line and its sends
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_failed_read_fails_every_stream_on_the_connection

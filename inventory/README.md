@@ -60,10 +60,11 @@ came from and what it relies on.
 ## Reading the data
 
 - **Layouts are per target.** `abi.json` records the `target` it was probed on (the host's gcc).
-  Struct layouts and type sizes hold for that target only. `abi-x86_64-pc-windows-msvc.json`
-  holds the declarations, layouts and values of the same names for x86_64 Windows, measured
-  with MSVC by `inventory/measure/abi_msvc.py` (run on Windows; see its docstring); `abi.py`
-  fails while it is stale against the headers.
+  Struct layouts and type sizes hold for that target only. `abi-<target>.json` holds the
+  declarations, layouts and values of the same names for another target, measured on it with
+  its own compiler (`inventory/measure/abi_foreign.py`): x86_64 Windows with MSVC
+  (`abi_msvc.py`) and aarch64 macOS with Apple clang (`abi_darwin.py`), each run on its target
+  (see its docstring); `abi.py` fails while one is stale against the headers.
 - **Discrepancies are data.** Where two C sources disagree (docs against the header, the docs
   against the option table), the generator keeps both sides under `discrepancies` and does not
   pick one. Run the C build before deciding which side is right.

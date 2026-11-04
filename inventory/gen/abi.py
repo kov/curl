@@ -12,7 +12,8 @@ are for the build target (recorded as `target`).
 
 Other targets are measured on their own machines, for the names found
 here, by the scripts in inventory/measure/ (`abi_msvc.py`: x86_64 Windows
-with MSVC), into inventory/abi-<target>.json. Each records a key of the
+with MSVC; `abi_darwin.py`: aarch64 macOS with Apple clang), into
+inventory/abi-<target>.json. Each records a key of the
 headers and the probe it ran; this fails while one no longer matches.
 """
 

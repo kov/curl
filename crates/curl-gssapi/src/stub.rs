@@ -11,6 +11,7 @@
 use curl_alloc::{OutOfMemory, try_box};
 
 use crate::sys::{self, Name};
+#[cfg(gss_set_neg_mechs)]
 use crate::{KRB5_OID, NTLMSSP_OID};
 
 const VARIABLE: &[u8] = b"CURL_STUB_GSS_CREDS";
@@ -52,6 +53,7 @@ pub(crate) struct Cred {
 impl Cred {
     /// The default credentials, allowing every mechanism
     /// (`stub_gss_acquire_cred`).
+    #[cfg(gss_set_neg_mechs)]
     pub(crate) fn acquire() -> Result<Box<Cred>, sys::Status> {
         try_box(Cred {
             allow_krb5: true,
@@ -61,6 +63,7 @@ impl Cred {
     }
 
     /// Narrows the mechanisms to `set`'s (`stub_gss_set_neg_mechs`).
+    #[cfg(gss_set_neg_mechs)]
     pub(crate) fn set_neg_mechs(&mut self, set: &[&[u8]]) {
         self.allow_krb5 = set.contains(&KRB5_OID);
         self.allow_ntlm = set.contains(&NTLMSSP_OID);
@@ -69,6 +72,7 @@ impl Cred {
 
 /// The mechanisms the stub has: Kerberos, and NTLM if the credentials
 /// name it (`stub_gss_indicate_mechs`).
+#[cfg(gss_set_neg_mechs)]
 pub(crate) fn mechanisms() -> Result<([&'static [u8]; 2], usize), sys::Status> {
     let mut buf = [0; CREDS];
     let creds = creds(&mut buf).ok_or(failure(INVALID_CREDS))?;

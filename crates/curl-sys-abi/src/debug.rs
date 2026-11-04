@@ -110,8 +110,10 @@ fn limit_reached(func: &str, source: Source) -> bool {
 }
 
 fn set_errno(value: c_int) {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     use libc::__errno_location as errno_location;
+    #[cfg(target_vendor = "apple")]
+    use libc::__error as errno_location;
     #[cfg(windows)]
     unsafe extern "C" {
         /// The UCRT's: where this thread's `errno` is.
@@ -411,8 +413,9 @@ const _: unsafe extern "C" fn(Socket, *mut c_void, *mut c_void, c_int, *const c_
 
 /// # Safety
 ///
-/// As `accept4(2)`; `source` is NULL or a C string.
-#[cfg(unix)]
+/// As `accept4(2)`; `source` is NULL or a C string. Only where the
+/// system has `accept4`, as C's (`HAVE_ACCEPT4`): not macOS.
+#[cfg(all(unix, not(target_vendor = "apple")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_dbg_accept4(
     s: Socket,
@@ -431,7 +434,7 @@ pub unsafe extern "C" fn curl_dbg_accept4(
     }
     fd
 }
-#[cfg(unix)]
+#[cfg(all(unix, not(target_vendor = "apple")))]
 const _: unsafe extern "C" fn(
     Socket,
     *mut c_void,

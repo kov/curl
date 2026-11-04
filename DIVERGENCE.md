@@ -425,6 +425,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   gss_inquire_context failed: ...", then "Failed to determine username.", 97. Pinned by
   `the_stub_s_context_names_no_user` (`crates/curl-gssapi/tests/socks.rs`).
 
+- **On Windows, a time or a format the C library cannot take is refused first.** A time before
+  1970 or after the year 3000 (`_gmtime64_s`, `_localtime64_s`), or a `strftime` format with a
+  conversion the C library does not know, gives no time and no text: `curl_os::time` checks
+  both before calling. The UCRT documents that these calls hand such an argument to the
+  invalid-parameter handler, which by default ends the process. That documented behaviour has
+  not been measured against the C build. Pinned by `refuses_what_the_c_library_cannot_take`
+  (`crates/curl-os/src/time.rs`, run on Windows).
+
 ## Traces C cuts short
 
 - **With the ids on, traced bytes reach the debug handler whole.** `Curl_debug`

@@ -205,7 +205,7 @@ fn info() -> &'static curl_version_info_data {
                 } else {
                     crate::ares::version_number() as _
                 },
-                libidn: curl_idn2::version_c().as_ptr(),
+                libidn: curl_idn2::version_c().map_or(ptr::null(), CStr::as_ptr),
                 iconv_ver_num: 0,
                 libssh_version: libssh.as_ptr(),
                 brotli_ver_num: curl_brotli::version_number(),
@@ -236,7 +236,7 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let brotli = Library("brotli", curl_brotli::version());
             let zstd = Library("zstd", curl_zstd::version());
             let ares = Library("c-ares", crate::ares::version());
-            let idn = Library("libidn2", curl_idn2::version());
+            let idn = curl_idn2::Shown;
             let psl = Library("libpsl", curl_psl::version());
             let ssh = Library("libssh", curl_libssh::version());
             let h2 = Library("nghttp2", curl_nghttp2::version());
@@ -322,14 +322,14 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
             ares_shown(),
-            curl_idn2::version(),
+            curl_idn2::Shown,
             curl_psl::version(),
             curl_libssh::version(),
             curl_nghttp2::version(),

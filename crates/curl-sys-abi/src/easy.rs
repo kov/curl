@@ -845,7 +845,7 @@ const RANDOM: Option<curl_core::libraries::Library<dyn curl_core::libraries::Ran
 const RANDOM: Option<curl_core::libraries::Library<dyn curl_core::libraries::Random>> = None;
 
 /// What converts host names, for the handles and the URL API alike.
-pub(crate) const IDN: &dyn curl_core::idn::Idn = &curl_idn2::IDN2;
+pub(crate) const IDN: &dyn curl_core::idn::Idn = curl_idn2::IDN;
 
 /// OpenSSL, logging secrets to the root's key log.
 static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(

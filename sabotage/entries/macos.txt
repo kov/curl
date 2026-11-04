@@ -1,0 +1,12 @@
+# Code built only on macOS, with the features of C's Apple build
+# (`USE_APPLE_IDN`, `USE_APPLE_SECTRUST`): the sweep runs these on a Mac;
+# elsewhere their witnesses do not build.
+
+=== a name ICU converts while reporting errors in it is looked up
+file: crates/curl-idn2/src/apple.rs
+witness: curl-idn2 apple::tests::names_convert_as_c_s_apple_build_converts_them
+features: apple-idn
+--- old
+        if err > U_ZERO_ERROR || info.errors != 0 {
+--- new
+        if err > U_ZERO_ERROR {

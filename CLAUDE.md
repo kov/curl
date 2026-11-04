@@ -53,7 +53,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   and the strings and values passed to and from it, for both of the above.
 - `crates/curl-ares/src/lib.rs` and `src/sys.rs`: c-ares's channels, their callbacks and sockets,
   and the declarations of the functions they call.
-- `crates/curl-idn2/src/lib.rs`: libidn2, converting host names to and from punycode.
+- `crates/curl-idn2/src/idn2.rs`: libidn2, converting host names to and from punycode.
+- `crates/curl-idn2/src/apple.rs`: ICU's IDNA and iconv on macOS, the same conversion as
+  `USE_APPLE_IDN`'s.
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.
 - `crates/curl-openssl/src/sign.rs`: OpenSSL's Ed25519, signing HTTP message signatures.

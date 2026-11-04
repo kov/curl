@@ -4105,7 +4105,7 @@ impl Linked {
                 tls: Some(Library::Owned(tls)),
                 gss,
                 dns: crate::ares::LIBRARY,
-                idn: Some(&curl_idn2::IDN2),
+                idn: Some(curl_idn2::IDN),
                 h2: Some(&curl_nghttp2::NGHTTP2),
                 h3: Some(&curl_ngtcp2::NGTCP2),
                 ssh: Some(&curl_libssh::LIBSSH),

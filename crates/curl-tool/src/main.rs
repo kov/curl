@@ -275,7 +275,7 @@ impl std::fmt::Display for CurlVersion {
         let brotli = Library("brotli", curl_brotli::version());
         let zstd = Library("zstd", curl_zstd::version());
         let ares = Library("c-ares", ares::version());
-        let idn = Library("libidn2", curl_idn2::version());
+        let idn = curl_idn2::Shown;
         let psl = Library("libpsl", curl_psl::version());
         let ssh = Library("libssh", curl_libssh::version());
         let h2 = Library("nghttp2", curl_nghttp2::version());
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -417,7 +417,7 @@ mod tests {
             } else {
                 format!(" c-ares/{}", ares::version())
             },
-            curl_idn2::version(),
+            curl_idn2::Shown,
             curl_psl::version(),
             curl_libssh::version(),
             curl_nghttp2::version(),

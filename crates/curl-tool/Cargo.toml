@@ -19,6 +19,9 @@ c-ares = ["dep:curl-ares"]
 debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`).
 threaded-resolver = ["curl-core/threaded-resolver"]
+# Host names converted by Apple's ICU in place of libidn2 (C's
+# `USE_APPLE_IDN`).
+apple-idn = ["curl-idn2/apple-idn"]
 
 [[test]]
 name = "memdebug"

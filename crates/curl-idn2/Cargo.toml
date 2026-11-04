@@ -7,6 +7,11 @@ license.workspace = true
 publish.workspace = true
 links = "idn2"
 
+[features]
+# ICU's IDNA from the system on Apple's, in place of libidn2
+# (`USE_APPLE_IDN`).
+apple-idn = []
+
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }

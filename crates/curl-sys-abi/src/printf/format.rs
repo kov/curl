@@ -42,6 +42,13 @@ const ALT: u32 = 1 << 3;
 const SHORT: u32 = 1 << 4;
 const LONG: u32 = 1 << 5;
 const LONGLONG: u32 = 1 << 6;
+/// The flag of a 64-bit `size_t` or `curl_off_t`: `LONG` where a `long`
+/// has 64 bits, `LONGLONG` where it has 32.
+const WIDE: u32 = if core::ffi::c_long::BITS == 64 {
+    LONG
+} else {
+    LONGLONG
+};
 const LONGDOUBLE: u32 = 1 << 7;
 const PAD_NIL: u32 = 1 << 8;
 const UNSIGNED: u32 = 1 << 9;
@@ -184,8 +191,24 @@ fn parse_flags(fmt: &[u8], pos: &mut usize, dollar: Dollar) -> Option<Spec> {
             }
             b'L' => s.flags |= LONGDOUBLE,
             b'q' => s.flags |= LONGLONG,
-            // `size_t` and `curl_off_t` are both `long` on LP64 targets.
-            b'z' | b'O' => s.flags |= LONG,
+            // `size_t` and `curl_off_t`: a `long` where it is as wide, as
+            // on LP64 targets; a `long long` where a `long` is narrower,
+            // as on Windows.
+            b'z' | b'O' => s.flags |= WIDE,
+            // Windows' own: `I32` a `long`, `I64` a `long long`, and a
+            // bare `I` a `size_t`.
+            #[cfg(windows)]
+            b'I' => {
+                if fmt.get(p..p + 2) == Some(&b"32"[..]) {
+                    s.flags |= LONG;
+                    p += 2;
+                } else if fmt.get(p..p + 2) == Some(&b"64"[..]) {
+                    s.flags |= LONGLONG;
+                    p += 2;
+                } else {
+                    s.flags |= WIDE;
+                }
+            }
             b'0'..=b'9' => {
                 if c == b'0' && s.flags & LEFT == 0 {
                     s.flags |= PAD_NIL;

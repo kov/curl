@@ -219,19 +219,47 @@ pub(super) fn decode_rejecting(
 /// `s` with every byte but letters, digits and `-._~` escaped
 /// (`curl_easy_escape`).
 pub(super) fn escape(s: &[u8]) -> Result<Bytes, UrlErrorKind> {
+    // The bytes kept as they are: letters, digits and `-._~`.
+    const KEPT: [bool; 256] = {
+        let mut kept = [false; 256];
+        let mut b = 0;
+        while b < 256 {
+            let c = b as u8;
+            kept[b] = c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~');
+            b += 1;
+        }
+        kept
+    };
+    // The whole length first, so the buffer is allocated once: C's limit
+    // is passed exactly when the last byte would pass it.
+    let len: usize = s
+        .iter()
+        .map(|&b| if KEPT[usize::from(b)] { 1 } else { 3 })
+        .sum();
+    if len >= MAX_INPUT {
+        return Err(UrlErrorKind::TooLarge);
+    }
     let mut out = Bytes::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| UrlErrorKind::OutOfMemory)?;
+    out.try_resize(len, 0)
+        .map_err(|_| UrlErrorKind::OutOfMemory)?;
+    let mut rest = &mut out[..];
     for &b in s {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            push(&mut out, &[b])?;
+        if KEPT[usize::from(b)] {
+            let [first, tail @ ..] = rest else {
+                unreachable!("the length counted holds every byte")
+            };
+            *first = b;
+            rest = tail;
         } else {
-            push(
-                &mut out,
-                &[
-                    b'%',
-                    UPPER_HEX[usize::from(b >> 4)],
-                    UPPER_HEX[usize::from(b & 0xf)],
-                ],
-            )?;
+            let [percent, high, low, tail @ ..] = rest else {
+                unreachable!("the length counted holds every escape")
+            };
+            *percent = b'%';
+            *high = UPPER_HEX[usize::from(b >> 4)];
+            *low = UPPER_HEX[usize::from(b & 0xf)];
+            rest = tail;
         }
     }
     Ok(out)
@@ -316,6 +344,32 @@ mod tests {
         assert_eq!(decode_but_zero(b"a%00b").unwrap(), None);
         assert_eq!(decode_but_zero(b"a\0b").unwrap(), None);
         assert_eq!(escape(b"a b/~").unwrap(), b"a%20b%2F~");
+    }
+
+    /// Every byte is kept or written `%XX`, as `curl_easy_escape` writes
+    /// it, and a result reaching C's buffer limit is too large.
+    #[test]
+    fn escapes_every_byte_up_to_the_limit() {
+        let all: Vec<u8> = (0..=255).collect();
+        let mut want = Vec::new();
+        for &b in &all {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                want.push(b);
+            } else {
+                want.extend_from_slice(format!("%{b:02X}").as_bytes());
+            }
+        }
+        assert_eq!(escape(&all).unwrap(), want);
+        assert_eq!(escape(b"").unwrap(), b"");
+        let kept = vec![b'a'; MAX_INPUT - 1];
+        assert_eq!(escape(&kept).unwrap().len(), MAX_INPUT - 1);
+        assert_eq!(escape(&vec![b'a'; MAX_INPUT]), Err(UrlErrorKind::TooLarge));
+        let mut escaped = vec![b'a'; MAX_INPUT - 3];
+        escaped.push(b' ');
+        assert_eq!(escape(&escaped), Err(UrlErrorKind::TooLarge));
+        escaped.truncate(MAX_INPUT - 4);
+        escaped.push(b' ');
+        assert_eq!(escape(&escaped).unwrap().len(), MAX_INPUT - 1);
     }
 
     #[test]

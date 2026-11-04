@@ -374,3 +374,21 @@ features: debug-hooks
 --- new
     let digits = copy(&host[colon + 1..])?;
     let port = port_after_colon(&digits, has_scheme);
+
+=== an escaped string as long as C's buffer limit is not refused
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::escapes_every_byte_up_to_the_limit
+--- old
+    if len >= MAX_INPUT {
+        return Err(UrlErrorKind::TooLarge);
+--- new
+    if len > MAX_INPUT {
+        return Err(UrlErrorKind::TooLarge);
+
+=== an escaped byte is written with the wrong hex digit
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::escapes_every_byte_up_to_the_limit
+--- old
+            *low = UPPER_HEX[usize::from(b & 0xf)];
+--- new
+            *low = UPPER_HEX[usize::from(b >> 4)];

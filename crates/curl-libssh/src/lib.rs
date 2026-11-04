@@ -161,18 +161,6 @@ impl Drop for LibsshString {
     }
 }
 
-/// A string `ssh_pki_export_pubkey_base64` made, freed with the system's
-/// `free`, as libssh allocated it.
-struct Exported(*mut c_char);
-
-impl Drop for Exported {
-    fn drop(&mut self) {
-        // SAFETY: NULL, or memory libssh took from the system allocator,
-        // freed once, here.
-        unsafe { sys::free(self.0.cast()) };
-    }
-}
-
 /// A key libssh made, freed with it.
 struct Key(sys::ssh_key);
 
@@ -286,12 +274,14 @@ fn base64_of(key: sys::ssh_key) -> Option<Vec<u8>> {
     // SAFETY: a key libssh made, and an out-pointer it sets to a string of
     // its own.
     let rc = unsafe { sys::ssh_pki_export_pubkey_base64(key, &raw mut b64) };
-    let made = Exported(b64);
+    // Freed by libssh, as its documentation asks: the C library that
+    // allocated it is libssh's, which need not be this library's (a
+    // debug build's is the debug one).
+    let made = LibsshString(b64);
     if rc != sys::SSH_OK {
         return None;
     }
-    // SAFETY: NULL or the C string libssh made, alive until `made` drops.
-    unsafe { copied(made.0) }.ok().flatten()
+    made.copied().ok().flatten()
 }
 
 impl Libsession {

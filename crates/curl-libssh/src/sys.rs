@@ -334,9 +334,6 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    /// The C library's, which frees what `ssh_pki_export_pubkey_base64`
-    /// allocates.
-    pub(crate) fn free(p: *mut c_void);
     #[cfg(all(test, unix))]
     pub(crate) fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     #[cfg(unix)]

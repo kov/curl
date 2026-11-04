@@ -354,8 +354,8 @@ struct Hooks {
     mark: Option<crate::conn::io::SocketOption>,
     /// The port the URL names, if not the server's.
     url_port: Option<u16>,
-    set: Arc<Mutex<Vec<i32>>>,
-    closed: Arc<Mutex<Vec<i32>>>,
+    set: Arc<Mutex<Vec<crate::conn::io::RawSocket>>>,
+    closed: Arc<Mutex<Vec<crate::conn::io::RawSocket>>>,
 }
 
 impl crate::handler::SocketOpener for Hooks {
@@ -404,8 +404,8 @@ impl crate::handler::SocketCloser for Hooks {
 struct Hooked {
     ran: Ran,
     talk: Conversation,
-    set: Vec<i32>,
-    closed: Vec<i32>,
+    set: Vec<crate::conn::io::RawSocket>,
+    closed: Vec<crate::conn::io::RawSocket>,
 }
 
 /// A GET from a server at `PORT` that does as `peer` says, the

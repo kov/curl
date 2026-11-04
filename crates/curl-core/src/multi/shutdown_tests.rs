@@ -17,7 +17,7 @@ use crate::time::ManualClock;
 /// multi's own), the socket, what it was told; or the timer's change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Call {
-    Socket(Option<u32>, i32, SocketWhat),
+    Socket(Option<u32>, crate::conn::io::RawSocket, SocketWhat),
     Timer(TimerChange),
 }
 
@@ -82,17 +82,17 @@ struct Wire(Arc<Mutex<Wired>>);
 
 struct Wired {
     net: FakeNet,
-    closed: Vec<i32>,
+    closed: Vec<crate::conn::io::RawSocket>,
     /// How long each close takes of the clock, if any time.
     close_takes: Option<(ManualClock, Duration)>,
 }
 
 impl Wire {
-    fn closed(&self) -> Vec<i32> {
+    fn closed(&self) -> Vec<crate::conn::io::RawSocket> {
         self.0.lock().unwrap().closed.clone()
     }
 
-    fn hang_up(&self, fd: i32) {
+    fn hang_up(&self, fd: crate::conn::io::RawSocket) {
         self.0.lock().unwrap().net.hang_up(SocketKey::new(fd));
     }
 
@@ -205,7 +205,12 @@ fn closing(port: u16) -> Box<Easy> {
 
 /// Run `m` by `socket_action`, on the socket `fd` of transfer `id`,
 /// until it completes.
-fn by_events(m: &mut Multi, id: TransferId, fd: i32, ev: &mut dyn MultiEvents<NoHost>) {
+fn by_events(
+    m: &mut Multi,
+    id: TransferId,
+    fd: crate::conn::io::RawSocket,
+    ev: &mut dyn MultiEvents<NoHost>,
+) {
     m.socket_action(SocketEvent::Timeout, ev).unwrap();
     for _ in 0..10 {
         if m.state_of(id).is_completed() {
@@ -438,7 +443,7 @@ fn a_full_set_closes_its_oldest() {
 /// hears of each as the multi's.
 #[test]
 fn cleanup_closes_every_connection_through_its_own_closer() {
-    struct Told(Arc<Mutex<Vec<i32>>>);
+    struct Told(Arc<Mutex<Vec<crate::conn::io::RawSocket>>>);
     impl crate::handler::SocketCloser for Told {
         fn close(&self, socket: SocketKey) {
             self.0.lock().unwrap().push(socket.get());
@@ -1165,7 +1170,7 @@ fn the_set_s_deadline_is_its_least_time_left() {
 /// multi itself.
 struct Refusing {
     rec: Rec,
-    fd: i32,
+    fd: crate::conn::io::RawSocket,
 }
 
 impl MultiEvents<NoHost> for Refusing {

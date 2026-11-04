@@ -299,8 +299,13 @@ fn a_wait_counts_the_waker_only_when_it_waits_as_c() {
     let mut m = waking("unused.example", &[(silent, Peer::Silent)], &talk);
     let seen = Seen::default();
     add_get(&mut m, silent, None, &seen);
-    let (_keep, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
-    let mine = || [PollFd::new(std::os::fd::AsFd::as_fd(&theirs), Events::IN)];
+    let (_keep, theirs) = crate::conn::io::stream_pair();
+    let mine = || {
+        [PollFd::new(
+            crate::conn::io::pair_socket(&theirs),
+            Events::IN,
+        )]
+    };
     let ms = Duration::from_millis(10);
     let waits = |m: &mut Multi, extra: &mut [PollFd<'_>], mode| {
         m.wait(extra, ms, mode, &mut NoEvents).unwrap();

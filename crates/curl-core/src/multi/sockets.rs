@@ -361,7 +361,7 @@ mod tests {
 
     /// A socket known by its key alone.
     #[derive(Debug)]
-    struct Keyed(i32);
+    struct Keyed(crate::conn::io::RawSocket);
 
     impl Socket for Keyed {
         fn key(&self) -> SocketKey {
@@ -385,6 +385,7 @@ mod tests {
         fn bind(&self, _: std::net::SocketAddr) -> std::io::Result<()> {
             unreachable!()
         }
+        #[cfg(unix)]
         fn bind_to_device(&self, _: &[u8]) -> std::io::Result<()> {
             unreachable!()
         }
@@ -427,7 +428,7 @@ mod tests {
     /// races of addresses among them, each socket still once.
     #[test]
     fn a_pollset_grows_past_its_room_in_place() {
-        let sockets: Vec<_> = (0..2 * MAX_ATTEMPTS as i32)
+        let sockets: Vec<_> = (0..2 * MAX_ATTEMPTS as crate::conn::io::RawSocket)
             .map(|fd| Keyed(10 + fd))
             .collect();
         assert!(sockets.len() > POLLSET_INLINE);
@@ -444,7 +445,7 @@ mod tests {
                     0 | POLLSET_INLINE => Events::IN | Events::OUT,
                     _ => Events::OUT,
                 };
-                (SocketKey::new(10 + i as i32), events)
+                (SocketKey::new(10 + i as crate::conn::io::RawSocket), events)
             })
             .collect();
         let got: Vec<_> = set.iter().map(|(s, e)| (s.key(), e)).collect();
@@ -461,7 +462,7 @@ mod tests {
         )
     }
 
-    fn whats(changes: &[Change<u8>]) -> Vec<(i32, SocketWhat, Option<u8>)> {
+    fn whats(changes: &[Change<u8>]) -> Vec<(crate::conn::io::RawSocket, SocketWhat, Option<u8>)> {
         changes
             .iter()
             .map(|c| (c.key.get(), c.what, c.removed_with))

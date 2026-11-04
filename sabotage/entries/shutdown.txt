@@ -346,20 +346,20 @@ file: crates/curl-core/src/conn/layer.rs
 witness: curl-core multi::shutdown_tests::the_internal_trace_says_the_socket_under_a_shutdown
 --- old
                 traced: Some(traced),
-                heard: None,
+                kept: None,
 --- new
                 traced: None,
-                heard: None,
+                kept: None,
 
 === a data connection's shutdown says nothing of its socket
 file: crates/curl-core/src/conn/layer.rs
 witness: curl-core proto::ftp::tests::a_protected_data_connection_resumes_its_control_connection_s_session
 --- old
                 traced: Some(traced),
-                heard: None,
+                kept: None,
 --- new
                 traced: None,
-                heard: None,
+                kept: None,
 
 === a connection's close does not say its socket's
 file: crates/curl-core/src/conn/shutdown.rs

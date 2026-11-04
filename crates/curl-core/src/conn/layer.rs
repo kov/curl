@@ -523,6 +523,32 @@ pub(crate) trait Layer: for<'a> Part<Below<'a>> + Send + fmt::Debug {
 /// The layers below one, then the socket: the stack split at the layer
 /// being called, so a layer reads and writes the ones below without
 /// aliasing itself.
+/// What a socket's filter keeps of its socket (`cf_socket_ctx`), which
+/// its stream holds: whether it received a byte (`got_first_byte`), and,
+/// on Windows, the size its send buffer was last set to and when that
+/// was last asked (`sndbuf_size`, `last_sndbuf_query_at`).
+#[derive(Debug, Default)]
+pub(crate) struct SocketKept {
+    pub(crate) heard: Cell<bool>,
+    #[cfg(windows)]
+    send_buffer: Cell<(Option<Instant>, u32)>,
+}
+
+impl SocketKept {
+    /// After a send that went, the send buffer sized to what the system
+    /// finds ideal, asked at most once a second, as C's
+    /// `win_update_sndbuf_size` does after each.
+    #[cfg(windows)]
+    fn fit_send_buffer(&self, socket: &dyn Socket, now: Instant) {
+        let (asked, size) = self.send_buffer.get();
+        if asked.is_some_and(|at| now.since(at).as_millis() <= 1000) {
+            return;
+        }
+        let size = socket.fit_send_buffer(size).unwrap_or(size);
+        self.send_buffer.set((Some(now), size));
+    }
+}
+
 pub(crate) struct Below<'a> {
     /// Bottom first.
     layers: &'a mut [Box<dyn Layer>],
@@ -531,9 +557,9 @@ pub(crate) struct Below<'a> {
     /// traced, and their failures said, as they reach it (`cf_socket_send`,
     /// `cf_socket_recv`); none when the caller says what it needs itself.
     traced: Option<Component>,
-    /// Set as the socket first receives a byte (`got_first_byte`), where
-    /// its stream keeps the fact.
-    heard: Option<&'a Cell<bool>>,
+    /// What the socket's filter keeps of it, where its stream keeps that:
+    /// whether it received a byte, and Windows' send buffer.
+    kept: Option<&'a SocketKept>,
 }
 
 impl<'a> Below<'a> {
@@ -544,7 +570,7 @@ impl<'a> Below<'a> {
             layers,
             socket,
             traced: None,
-            heard: None,
+            kept: None,
         }
     }
 }
@@ -558,7 +584,7 @@ impl<'a> Below<'a> {
             layers: &mut [],
             socket,
             traced,
-            heard: None,
+            kept: None,
         }
     }
 }
@@ -590,7 +616,7 @@ impl Below<'_> {
             layers: &mut *self.layers,
             socket: self.socket,
             traced: self.traced,
-            heard: self.heard,
+            kept: self.kept,
         }
     }
 
@@ -602,8 +628,8 @@ impl Below<'_> {
                 if let Err(e) = &got {
                     cx.socket_failed(e);
                 }
-                if let (Ok(Recv::Data(_)), Some(heard)) = (&got, self.heard) {
-                    heard.set(true);
+                if let (Ok(Recv::Data(_)), Some(kept)) = (&got, self.kept) {
+                    kept.heard.set(true);
                 }
                 if let Some(component) = self.traced {
                     let (code, n) = match &got {
@@ -632,6 +658,10 @@ impl Below<'_> {
                 let sent = self.socket.send(bytes);
                 if let Err(e) = &sent {
                     cx.socket_failed(e);
+                }
+                #[cfg(windows)]
+                if let (Ok(Sent::Bytes(_)), Some(kept)) = (&sent, self.kept) {
+                    kept.fit_send_buffer(self.socket, cx.now());
                 }
                 if let Some(component) = self.traced {
                     let (code, n) = match &sent {
@@ -743,7 +773,7 @@ impl LayerStack {
         &'a mut self,
         socket: &'a dyn Socket,
         traced: Option<Component>,
-        heard: Option<&'a Cell<bool>>,
+        kept: Option<&'a SocketKept>,
     ) -> Below<'a> {
         Below {
             layers: self
@@ -752,7 +782,7 @@ impl LayerStack {
                 .map_or(&mut [], Vec::as_mut_slice),
             socket,
             traced,
-            heard,
+            kept,
         }
     }
 
@@ -778,9 +808,9 @@ impl LayerStack {
         socket: &dyn Socket,
         cx: &mut dyn LayerCx,
         traced: Option<Component>,
-        heard: Option<&Cell<bool>>,
+        kept: Option<&SocketKept>,
     ) -> Result<Handshake, ErrorKind> {
-        let below = self.over(socket, traced, heard);
+        let below = self.over(socket, traced, kept);
         match below.layers.split_last_mut() {
             Some((top, layers)) => top.connect(cx, Below { layers, ..below }),
             None => Ok(Handshake::Done),
@@ -838,7 +868,7 @@ impl LayerStack {
         socket: &dyn Socket,
         cx: &mut dyn LayerCx,
         traced: Option<Component>,
-        heard: Option<&Cell<bool>>,
+        kept: Option<&SocketKept>,
         goodbye: crate::tls::Goodbye,
     ) -> Result<Handshake, ErrorKind> {
         let Some(layers) = self.layers.as_deref_mut() else {
@@ -850,7 +880,7 @@ impl LayerStack {
                 layers: below,
                 socket,
                 traced,
-                heard,
+                kept,
             };
             let Some(r) = top[0].clear_tls(cx, below, goodbye) else {
                 continue;
@@ -884,7 +914,7 @@ impl LayerStack {
                 layers: below,
                 socket,
                 traced: Some(traced),
-                heard: None,
+                kept: None,
             };
             // Each layer's end said in its name (`Curl_cshutdn_try_once_idx`).
             let filter = top[0].filter();
@@ -924,7 +954,12 @@ impl LayerStack {
 
     /// Say, as `shutdown_pollset` asks them, what the layers not shut
     /// down yet put in for socket `fd`, as C's filters trace it.
-    pub(crate) fn say_shutdown_pollset(&self, shut: usize, fd: i32, cx: &mut dyn LayerCx) {
+    pub(crate) fn say_shutdown_pollset(
+        &self,
+        shut: usize,
+        fd: super::io::RawSocket,
+        cx: &mut dyn LayerCx,
+    ) {
         for layer in self.layers.iter().flat_map(|l| l.iter()).rev().skip(shut) {
             if let (Some(events), Some(filter)) = (layer.pollset_said(), layer.filter()) {
                 let way = if events.contains(Events::OUT) {
@@ -1210,7 +1245,7 @@ mod tests {
             layers: &mut [],
             socket: &*s,
             traced: None,
-            heard: None,
+            kept: None,
         };
         assert_eq!(
             below().alive(&mut cx),
@@ -1230,7 +1265,7 @@ mod tests {
             layers: &mut [],
             socket: &*refused,
             traced: None,
-            heard: None,
+            kept: None,
         };
         assert_eq!(below.alive(&mut cx), Alive::Dead);
     }
@@ -1264,6 +1299,7 @@ mod tests {
         fn bind(&self, _: std::net::SocketAddr) -> io::Result<()> {
             unreachable!()
         }
+        #[cfg(unix)]
         fn bind_to_device(&self, _: &[u8]) -> io::Result<()> {
             unreachable!()
         }
@@ -1293,7 +1329,7 @@ mod tests {
                 layers: &mut [],
                 socket: &s,
                 traced: None,
-                heard: None,
+                kept: None,
             };
             below.alive(&mut Silent(ManualClock::new().unwrap().now()))
         };
@@ -1331,7 +1367,7 @@ mod tests {
             layers: &mut [],
             socket: &socket,
             traced: None,
-            heard: None,
+            kept: None,
         };
         let mut cx = Silent(ManualClock::new().unwrap().now());
         assert_eq!(
@@ -1363,7 +1399,7 @@ mod tests {
             layers: &mut holds,
             socket: &*s,
             traced: None,
-            heard: None,
+            kept: None,
         };
         assert!(below.data_pending());
         let mut empty = [holdback(), upper()];
@@ -1371,7 +1407,7 @@ mod tests {
             layers: &mut empty,
             socket: &*s,
             traced: None,
-            heard: None,
+            kept: None,
         };
         assert!(!below.data_pending());
     }

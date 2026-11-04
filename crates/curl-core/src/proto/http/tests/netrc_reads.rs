@@ -34,7 +34,7 @@ impl Ldap for NoLdap {
 
     fn session(
         &self,
-        _: Option<std::os::fd::BorrowedFd<'_>>,
+        _: Option<curl_os::socket::BorrowedSocket<'_>>,
         _: &[u8],
         _: &[u8],
     ) -> Result<Box<dyn LdapSession>, SessionFailed> {

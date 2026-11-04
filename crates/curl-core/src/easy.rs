@@ -1351,6 +1351,10 @@ impl Easy {
         let mut private = match self.private.take() {
             Some(private) => private,
             None => {
+                // Winsock, started while the multi's waker and network are
+                // made, until the multi holds a start of its own; a refusal
+                // fails the sockets as they open.
+                let _winsock = curl_os::net::Winsock::start().ok();
                 // A waker, as every C multi has one (`Curl_wakeup_init`),
                 // watched as a perform's multi waits; without the
                 // descriptors for it, the multi goes without.

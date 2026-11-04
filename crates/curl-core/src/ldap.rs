@@ -12,9 +12,9 @@
 
 use std::fmt;
 use std::io;
-use std::os::fd::BorrowedFd;
 
 use curl_alloc::OutOfMemory;
+use curl_os::socket::BorrowedSocket;
 
 /// An LDAP library.
 pub trait Ldap: fmt::Debug + Send + Sync {
@@ -28,7 +28,7 @@ pub trait Ldap: fmt::Debug + Send + Sync {
     /// descriptor is one a library over the system's sockets cannot copy.
     fn session(
         &self,
-        socket: Option<BorrowedFd<'_>>,
+        socket: Option<BorrowedSocket<'_>>,
         scheme: &[u8],
         url: &[u8],
     ) -> Result<Box<dyn Session>, SessionFailed>;

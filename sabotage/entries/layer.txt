@@ -21,7 +21,7 @@ witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layer
 --- old
         let below = self
             .layers
-            .over(self.socket.socket(), traced, Some(&self.heard));
+            .over(self.socket.socket(), traced, Some(&self.kept));
         self.rx.fill(max, |room| below.recv(cx, room))
 --- new
         let socket = self.socket.socket();
@@ -32,7 +32,7 @@ file: crates/curl-core/src/conn/stream.rs
 witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layers
 --- old
         self.layers
-            .over(self.socket.socket(), traced, Some(&self.heard))
+            .over(self.socket.socket(), traced, Some(&self.kept))
             .send(cx, bytes)
 --- new
         self.socket.socket().send(bytes)

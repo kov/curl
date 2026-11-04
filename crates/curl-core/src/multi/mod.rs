@@ -24,7 +24,6 @@ pub(crate) mod timers;
 mod wait;
 
 use std::num::NonZeroU32;
-use std::os::fd::AsRawFd as _;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc};
@@ -492,6 +491,11 @@ pub struct Multi<H: Host = NoHost> {
     /// The tests' layer each connection set up from here is given.
     #[cfg(any(test, feature = "test-util"))]
     linger: Option<crate::conn::layer::Linger>,
+    /// Winsock, started for as long as the multi's sockets live: last, so
+    /// that it ends after them. Windows counts the starts, so the
+    /// multi's own holds it up whoever else started it; one the system
+    /// refused is none, and each socket then fails to open, saying so.
+    _winsock: Option<curl_os::net::Winsock>,
 }
 
 /// The limit `CURL_DBG_MAX_TOTAL_CONNECTIONS` gives: its leading digits,
@@ -510,7 +514,11 @@ fn debug_max_total(given: &[u8]) -> Option<u32> {
 }
 
 impl<H: Host> Multi<H> {
+    /// A multi over `env`. On Windows its network and waker were made
+    /// while Winsock was started by whoever made them; the multi holds a
+    /// start of its own from here.
     pub fn new(env: Env) -> Result<Self, OutOfMemory> {
+        let winsock = curl_os::net::Winsock::start().ok();
         let slots = Arena::new(env.arena)?;
         let caches = Caches::new()?;
         // As C's multi is made, after its waker (`Curl_multi_handle`).
@@ -572,6 +580,7 @@ impl<H: Host> Multi<H> {
             traces_internally: curl_os::env::is_set(b"CURL_DEBUG"),
             #[cfg(any(test, feature = "test-util"))]
             linger: None,
+            _winsock: winsock,
         })
     }
 
@@ -1102,7 +1111,7 @@ impl<H: Host> Multi<H> {
             Some(w) => {
                 let alive = self.alive.count;
                 self.say(format_args!("adding wakeup, {alive} xfers really alive"));
-                let fd = w.fd().as_raw_fd();
+                let fd = SocketKey::of(w.fd()).get();
                 self.say(format_args!("pollset[fd={fd} IN], timeouts={timers}"));
             }
             None => self.say(format_args!(
@@ -1302,7 +1311,7 @@ impl<H: Host> Multi<H> {
         // The resolver's wake first, as C's admin handle is the first in
         // the set it walks.
         if let Some(waker) = self.alive.waker.as_deref().filter(|_| self.alive.count > 0) {
-            f(SocketKey::new(waker.fd().as_raw_fd()), Events::IN);
+            f(SocketKey::of(waker.fd()), Events::IN);
         }
         pollsets(
             &self.slots,

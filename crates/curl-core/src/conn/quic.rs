@@ -12,7 +12,72 @@ use std::time::Duration;
 
 use curl_alloc::TryVec;
 
-use super::io::{BATCH, Datagram, Events, IO_FAILED, Recv, SLOT, Sent, Socket, TOO_LARGE};
+#[cfg(unix)]
+use super::io::IO_FAILED;
+use super::io::{BATCH, Datagram, Events, Recv, SLOT, Sent, Socket, TOO_LARGE};
+
+/// The call a run of datagrams goes out with, as C's traces name it
+/// (`VQUIC_SEND_METHOD`): `sendmsg` where the system has it, `send` on
+/// Windows.
+#[cfg(unix)]
+const SEND_METHOD: &str = "sendmsg";
+#[cfg(windows)]
+const SEND_METHOD: &str = "send";
+
+/// The call datagrams come in with, as C's traces name it: a batch with
+/// `recvmmsg` where the system has it, one at a time with `recvfrom` on
+/// Windows (`recvfrom_packets`).
+#[cfg(unix)]
+const RECV_METHOD: &str = "recvmmsg";
+#[cfg(windows)]
+const RECV_METHOD: &str = "recvfrom";
+
+/// The room one `recvfrom` receives into, C's buffer on the stack.
+#[cfg(windows)]
+const RECVFROM_ROOM: usize = 64 * 1024;
+
+/// Send `bytes` as datagrams of `segment` bytes in one call: how many
+/// bytes went.
+#[cfg(unix)]
+fn send_datagrams(socket: &dyn Socket, bytes: &[u8], segment: usize) -> io::Result<usize> {
+    socket.send_segments(bytes, segment)
+}
+
+/// Send `bytes` as one datagram (`swrite`), as C does on Windows, which
+/// has no `sendmsg` to cut a run with: how many bytes went.
+#[cfg(windows)]
+fn send_datagrams(socket: &dyn Socket, bytes: &[u8], _segment: usize) -> io::Result<usize> {
+    match socket.send(bytes)? {
+        Sent::Bytes(n) => Ok(n.get()),
+        Sent::WouldBlock => Err(io::ErrorKind::WouldBlock.into()),
+    }
+}
+
+/// Receive datagrams into slots of `room`, `SLOT` bytes each, at most as
+/// many as `out` holds: how many came.
+#[cfg(unix)]
+fn recv_datagrams(socket: &dyn Socket, room: &mut [u8], out: &mut [Datagram]) -> io::Result<usize> {
+    socket.recv_batch(room, SLOT, out)
+}
+
+/// Receive one datagram into the start of `room` (`recvfrom`), as C does
+/// on Windows: 1, or `WouldBlock` if none waits.
+#[cfg(windows)]
+fn recv_datagrams(socket: &dyn Socket, room: &mut [u8], out: &mut [Datagram]) -> io::Result<usize> {
+    let fits = room.len().min(RECVFROM_ROOM);
+    match socket.recv_from(&mut room[..fits])? {
+        None => Err(io::ErrorKind::WouldBlock.into()),
+        Some((len, from)) => {
+            out[0] = Datagram {
+                len,
+                segment: len,
+                ecn: 0,
+                from: Some(from),
+            };
+            Ok(1)
+        }
+    }
+}
 use super::layer::{
     Below, EarlyData, Failures, ForTransfer, H3Streams, LayerCalls as _, LayerCx, QuicTimer,
     TlsSessions, Trace,
@@ -327,8 +392,8 @@ struct Out {
     sent: usize,
     gso: usize,
     split: Option<(usize, usize)>,
-    /// The kernel failed to cut a run once: each datagram goes on its own
-    /// from then on.
+    /// The kernel failed to cut a run once, or cannot (Windows): each
+    /// datagram goes on its own from then on.
     no_gso: bool,
 }
 
@@ -453,7 +518,8 @@ impl Quic {
                 sent: 0,
                 gso: 0,
                 split: None,
-                no_gso: false,
+                // Windows cannot cut a run into datagrams.
+                no_gso: cfg!(windows),
             },
             state: State {
                 started: now,
@@ -1215,7 +1281,7 @@ impl Quic {
     }
 
     /// One send of `len` bytes, cut by the kernel into datagrams of `gso`
-    /// bytes (`do_sendmsg`).
+    /// bytes (`do_sendmsg`); on Windows, which cannot cut, one datagram.
     fn send_run(
         &mut self,
         cx: &mut dyn SocketIo,
@@ -1227,8 +1293,12 @@ impl Quic {
         // No size known yet is no cutting: one datagram, as the kernel
         // takes a segment size of 0.
         let segment = if gso == 0 { len } else { gso };
-        let (sent, r) = match cx.socket().send_segments(bytes, segment) {
+        let (sent, r) = match send_datagrams(cx.socket(), bytes, segment) {
             Ok(n) if n == len => (n, Ok(())),
+            // C checks a short send only of `sendmsg`'s.
+            #[cfg(windows)]
+            Ok(n) => (n, Ok(())),
+            #[cfg(unix)]
             Ok(n) => {
                 cx.fails(
                     ErrorKind::SendError,
@@ -1239,6 +1309,7 @@ impl Quic {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => (0, Err(Stop::Again)),
             // Too large for the path, a probe of its MTU: lost.
             Err(e) if e.raw_os_error() == Some(TOO_LARGE) => (len, Ok(())),
+            #[cfg(unix)]
             Err(e) if e.raw_os_error() == Some(IO_FAILED) && len > gso => {
                 // The kernel cannot cut it: each datagram goes on its own
                 // from now on.
@@ -1253,7 +1324,7 @@ impl Quic {
                 let errno = e.raw_os_error().unwrap_or(0);
                 cx.fails(
                     ErrorKind::SendError,
-                    format_args!("sendmsg() returned -1 (errno {errno})"),
+                    format_args!("{SEND_METHOD}() returned -1 (errno {errno})"),
                 );
                 (0, Err(Stop::Failed(ErrorKind::SendError)))
             }
@@ -1261,7 +1332,9 @@ impl Quic {
         let code = number(r);
         cx.of(
             self.state.component,
-            format_args!("vquic_sendmsg(len={len}, gso={gso}, calls=1) -> {code}, sent={sent}"),
+            format_args!(
+                "vquic_{SEND_METHOD}(len={len}, gso={gso}, calls=1) -> {code}, sent={sent}"
+            ),
         );
         (sent, r)
     }
@@ -1295,7 +1368,7 @@ impl Quic {
         cx.of(
             self.state.component,
             format_args!(
-                "vquic_sendmsg(len={len}, gso={gso}, calls={calls}) -> {code}, sent={sent}"
+                "vquic_{SEND_METHOD}(len={len}, gso={gso}, calls={calls}) -> {code}, sent={sent}"
             ),
         );
         (sent, r)
@@ -1406,12 +1479,12 @@ impl Quic {
                 break Ok(());
             }
             let n = BATCH.min(MAX_PACKETS - packets);
-            let count = match cx.socket().recv_batch(room, SLOT, &mut got[..n]) {
+            let count = match recv_datagrams(cx.socket(), room, &mut got[..n]) {
                 Ok(count) => count,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     cx.of(
                         self.state.component,
-                        format_args!("ingress, recvmmsg -> EAGAIN"),
+                        format_args!("ingress, {RECV_METHOD} -> EAGAIN"),
                     );
                     break Ok(());
                 }
@@ -1424,7 +1497,7 @@ impl Quic {
                 Err(e) => {
                     let errno = e.raw_os_error().unwrap_or(0);
                     let errno = crate::text::Text::<80>::clipped(format_args!(
-                        "QUIC: recvmmsg() unexpectedly returned -1 (errno={errno}; "
+                        "QUIC: {RECV_METHOD}() unexpectedly returned -1 (errno={errno}; "
                     ))
                     .0;
                     let why = curl_os::error::ErrorText::of(&e);
@@ -1467,7 +1540,7 @@ impl Quic {
             cx.of(
                 self.state.component,
                 format_args!(
-                    "vquic_recvmmsg(len={total}, packets={packets}, calls={calls}) -> {code}"
+                    "vquic_{RECV_METHOD}(len={total}, packets={packets}, calls={calls}) -> {code}"
                 ),
             );
         }
@@ -1595,6 +1668,8 @@ pub(crate) mod tests {
     #[derive(Debug)]
     pub(crate) enum Act {
         Take,
+        /// Only `sendmsg`'s short send is checked.
+        #[cfg(unix)]
         Short(usize),
         Fail(i32),
         Block,
@@ -1607,6 +1682,35 @@ pub(crate) mod tests {
         pub(crate) sends: Mutex<VecDeque<Act>>,
         pub(crate) sent: Mutex<Vec<(usize, usize)>>,
         pub(crate) datagrams: Mutex<VecDeque<Result<Vec<u8>, i32>>>,
+    }
+
+    impl Scripted {
+        /// A send of `buf` as datagrams of `segment` bytes, as scripted.
+        fn take_send(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
+            let act = self.sends.lock().unwrap().pop_front().unwrap_or(Act::Take);
+            match act {
+                Act::Take => {
+                    self.sent.lock().unwrap().push((buf.len(), segment));
+                    Ok(buf.len())
+                }
+                #[cfg(unix)]
+                Act::Short(n) => Ok(n),
+                Act::Fail(errno) => Err(io::Error::from_raw_os_error(errno)),
+                Act::Block => Err(io::ErrorKind::WouldBlock.into()),
+            }
+        }
+
+        /// The next datagram queued, into `buf`: its length.
+        fn take_datagram(&self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.datagrams.lock().unwrap().pop_front() {
+                None => Err(io::ErrorKind::WouldBlock.into()),
+                Some(Err(errno)) => Err(io::Error::from_raw_os_error(errno)),
+                Some(Ok(d)) => {
+                    buf[..d.len()].copy_from_slice(&d);
+                    Ok(d.len())
+                }
+            }
+        }
     }
 
     impl Socket for Scripted {
@@ -1631,6 +1735,7 @@ pub(crate) mod tests {
         fn bind(&self, _: SocketAddr) -> io::Result<()> {
             Ok(())
         }
+        #[cfg(unix)]
         fn bind_to_device(&self, _: &[u8]) -> io::Result<()> {
             Ok(())
         }
@@ -1638,45 +1743,51 @@ pub(crate) mod tests {
             Ok(Connect::Done)
         }
         fn recv(&self, _: &mut [u8]) -> io::Result<Recv> {
-            unreachable!("QUIC receives in batches")
+            unreachable!("QUIC receives in batches, or with its sender")
         }
+        #[cfg(unix)]
         fn send(&self, _: &[u8]) -> io::Result<Sent> {
             unreachable!("QUIC sends in runs")
         }
-        fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
-            let act = self.sends.lock().unwrap().pop_front().unwrap_or(Act::Take);
-            match act {
-                Act::Take => {
-                    self.sent.lock().unwrap().push((buf.len(), segment));
-                    Ok(buf.len())
-                }
-                Act::Short(n) => Ok(n),
-                Act::Fail(errno) => Err(io::Error::from_raw_os_error(errno)),
-                Act::Block => Err(io::ErrorKind::WouldBlock.into()),
+        /// On Windows each datagram is a send of its own.
+        #[cfg(windows)]
+        fn send(&self, buf: &[u8]) -> io::Result<Sent> {
+            match self.take_send(buf, buf.len()) {
+                Ok(n) => Ok(Sent::Bytes(std::num::NonZeroUsize::new(n).unwrap())),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Sent::WouldBlock),
+                Err(e) => Err(e),
             }
         }
+        /// On Windows each datagram is received on its own, with its
+        /// sender.
+        #[cfg(windows)]
+        fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+            match self.take_datagram(buf) {
+                Ok(n) => Ok(Some((n, SocketAddr::from(([127, 0, 0, 1], 443))))),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+        #[cfg(unix)]
+        fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
+            self.take_send(buf, segment)
+        }
+        #[cfg(unix)]
         fn recv_batch(
             &self,
             buf: &mut [u8],
             slot: usize,
             out: &mut [Datagram],
         ) -> io::Result<usize> {
-            let mut queued = self.datagrams.lock().unwrap();
-            match queued.pop_front() {
-                None => Err(io::ErrorKind::WouldBlock.into()),
-                Some(Err(errno)) => Err(io::Error::from_raw_os_error(errno)),
-                Some(Ok(d)) => {
-                    buf[..d.len()].copy_from_slice(&d);
-                    assert!(d.len() <= slot);
-                    out[0] = Datagram {
-                        len: d.len(),
-                        segment: d.len(),
-                        ecn: 0,
-                        from: None,
-                    };
-                    Ok(1)
-                }
-            }
+            let len = self.take_datagram(buf)?;
+            assert!(len <= slot);
+            out[0] = Datagram {
+                len,
+                segment: len,
+                ecn: 0,
+                from: None,
+            };
+            Ok(1)
         }
         fn release(self: Box<Self>) -> SocketKey {
             self.key()
@@ -1891,6 +2002,7 @@ pub(crate) mod tests {
     /// A packet larger than those before it, which may be a probe of the
     /// path's MTU, sends those before as their run first, then itself
     /// on its own size (`Curl_vquic_send_tail_split`).
+    #[cfg(unix)]
     #[test]
     fn a_larger_packet_splits_the_run_before_it() {
         let script = Script::new();
@@ -1917,6 +2029,7 @@ pub(crate) mod tests {
 
     /// A run of one size goes in one send, the kernel cutting it; one
     /// smaller packet ends the run, counted, and goes with it.
+    #[cfg(unix)]
     #[test]
     fn a_smaller_packet_ends_the_run() {
         let script = Script::new();
@@ -1934,6 +2047,7 @@ pub(crate) mod tests {
 
     /// A datagram too large for the path is lost, and counted as sent; a
     /// run the kernel cannot cut goes a datagram at a time, from then on.
+    #[cfg(unix)]
     #[test]
     fn too_large_is_lost_and_a_failed_cut_sends_apart() {
         let script = Script::new();
@@ -1985,6 +2099,7 @@ pub(crate) mod tests {
     /// A socket that would block keeps the packets, the socket watched
     /// to write and the library called again in a millisecond; they go
     /// first at the next egress. A short send fails it.
+    #[cfg(unix)]
     #[test]
     fn a_blocked_send_waits_and_a_short_one_fails() {
         let script = Script::new();
@@ -2012,15 +2127,96 @@ pub(crate) mod tests {
         );
     }
 
+    /// On Windows, which cannot cut a run, each packet is a send of its
+    /// own, from the first: a run of one size goes a datagram at a time,
+    /// traced as C's `send` calls are.
+    #[cfg(windows)]
+    #[test]
+    fn a_run_goes_a_datagram_at_a_time() {
+        let script = Script::new();
+        packets(&script, &[1200, 1200, 900]);
+        let (mut q, mut cx) = quic(&script);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(
+            *cx.socket.sent.lock().unwrap(),
+            [(1200, 1200), (1200, 1200), (900, 900)]
+        );
+        assert_eq!(
+            cx.lines[1..],
+            [
+                "egress, send collected 3 packets in 3300 bytes",
+                "vquic_send(len=1200, gso=1200, calls=1) -> 0, sent=1200",
+                "vquic_send(len=1200, gso=1200, calls=1) -> 0, sent=1200",
+                "vquic_send(len=900, gso=900, calls=1) -> 0, sent=900",
+                "vquic_send(len=3300, gso=1200, calls=3) -> 0, sent=3300",
+            ]
+        );
+    }
+
+    /// On Windows a datagram too large for the path is lost and counted
+    /// as sent; a send that would block keeps the packets for the next
+    /// egress; any other failure fails it, said as C's `send()`'s.
+    #[cfg(windows)]
+    #[test]
+    fn a_datagram_too_large_is_lost_and_a_blocked_one_waits() {
+        let script = Script::new();
+        packets(&script, &[1200]);
+        let (mut q, mut cx) = quic(&script);
+        let sends = |cx: &Cx, act| cx.socket.sends.lock().unwrap().push_back(act);
+        sends(&cx, Act::Fail(TOO_LARGE));
+        q.egress(&mut cx).unwrap();
+        assert_eq!(
+            cx.lines.last().unwrap(),
+            "vquic_send(len=1200, gso=1200, calls=1) -> 0, sent=1200"
+        );
+        assert!(cx.socket.sent.lock().unwrap().is_empty());
+        packets(&script, &[1200]);
+        sends(&cx, Act::Block);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(
+            cx.lines.last().unwrap(),
+            "vquic_send(len=1200, gso=1200, calls=1) -> 81, sent=0"
+        );
+        assert_eq!(q.wants(), Events::IN | Events::OUT);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(*cx.socket.sent.lock().unwrap(), [(1200, 1200)]);
+        packets(&script, &[1200]);
+        sends(&cx, Act::Fail(10054));
+        assert_eq!(q.egress(&mut cx), Err(ErrorKind::SendError));
+        let failed = "! send() returned -1 (errno 10054)".to_owned();
+        assert!(cx.lines.contains(&failed), "{:?}", cx.lines);
+    }
+
+    /// On Windows datagrams come one at a time, each with its sender,
+    /// traced as C's `recvfrom` calls are.
+    #[cfg(windows)]
+    #[test]
+    fn datagrams_come_one_at_a_time() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        let mut queued = cx.socket.datagrams.lock().unwrap();
+        queued.push_back(Ok(vec![0x51; 30]));
+        queued.push_back(Ok(Vec::new()));
+        queued.push_back(Ok(vec![0x51; 20]));
+        drop(queued);
+        q.ingress(&mut cx).unwrap();
+        assert!(
+            cx.lines.contains(&"ingress, recvfrom -> EAGAIN".to_owned()),
+            "{:?}",
+            cx.lines
+        );
+        let said = "vquic_recvfrom(len=50, packets=3, calls=3) -> 0".to_owned();
+        assert!(cx.lines.contains(&said), "{:?}", cx.lines);
+    }
+
     /// A refused datagram before the connect is done fails it as a
     /// refused connect; any other error is a receive's.
     #[test]
     fn a_refused_receive_fails_the_connect() {
         let script = Script::new();
         let (mut q, mut cx) = quic(&script);
-        let refused = io::Error::from(io::ErrorKind::ConnectionRefused)
-            .raw_os_error()
-            .unwrap_or(111);
+        // `ECONNREFUSED`, Winsock's `WSAECONNREFUSED`.
+        let refused = if cfg!(windows) { 10061 } else { 111 };
         cx.socket.datagrams.lock().unwrap().push_back(Err(refused));
         let r = q.connect(&mut cx);
         assert_eq!(r, Err(ErrorKind::CouldntConnect));
@@ -2030,10 +2226,8 @@ pub(crate) mod tests {
             "{:?}",
             cx.lines
         );
-        assert!(
-            cx.lines
-                .contains(&"vquic_recvmmsg(len=0, packets=0, calls=0) -> 7".to_owned())
-        );
+        let said = format!("vquic_{RECV_METHOD}(len=0, packets=0, calls=0) -> 7");
+        assert!(cx.lines.contains(&said), "{:?}", cx.lines);
         assert!(cx.lines.contains(&"connect -> 7, done=0".to_owned()));
     }
 

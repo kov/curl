@@ -3611,7 +3611,7 @@ fn an_eprt_refused_over_ipv6_waits_for_an_answer_in_vain() {
 }
 
 /// The sockets the multi's transfers wait on, and for what.
-fn waits(m: &mut Multi) -> Vec<(i32, crate::conn::io::Events)> {
+fn waits(m: &mut Multi) -> Vec<(crate::conn::io::RawSocket, crate::conn::io::Events)> {
     let mut waits = Vec::new();
     m.sockets(&mut NoEvents, |key, events| waits.push((key.get(), events)))
         .unwrap();

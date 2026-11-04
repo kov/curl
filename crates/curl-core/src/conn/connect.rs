@@ -1669,6 +1669,15 @@ impl ConnectMachine {
                 return self.not_opened(cx, None, ErrorKind::CouldntConnect, none);
             }
         };
+        // Windows' IPv6 sockets reach IPv4 peers too, by their mapped
+        // addresses, whatever the system's default; C ignores whether this
+        // takes.
+        #[cfg(windows)]
+        if let Remote::Inet(SocketAddr::V6(_)) = remote {
+            match socket.set(SocketOption::DualStack) {
+                Ok(()) | Err(_) => {}
+            }
+        }
         trace_trying(cx, &remote);
         let fd = socket.key().get();
         // Only TCP's are set (`is_tcp`): neither a Unix socket nor
@@ -1676,6 +1685,10 @@ impl ConnectMachine {
         let tcp = matches!(remote, Remote::Inet(_)) && kind == SocketKind::Stream;
         if tcp {
             set_up(cx, &*socket, setup.socket);
+            #[cfg(windows)]
+            if let Remote::Inet(at) = remote {
+                give_up_on_loopback(&*socket, at);
+            }
         }
         let connected = match cx.configure_socket(&*socket) {
             Configured::Ok => false,
@@ -2694,6 +2707,10 @@ fn set_up(cx: &mut dyn ConnCx, socket: &dyn Socket, setup: SocketSetup) {
         );
         return;
     }
+    // Windows 10 1709 and later, all Rust runs on, take the options C sets
+    // on other systems.
+    #[cfg(windows)]
+    cx.of(Component::Tcp, format_args!("Set TCP_KEEP* on fd={fd}"));
     let secs = |d: Duration| i32::try_from(d.as_secs()).unwrap_or(i32::MAX);
     let count = i32::try_from(alive.count).unwrap_or(i32::MAX);
     for (option, name) in [
@@ -2712,6 +2729,26 @@ fn set_up(cx: &mut dyn ConnCx, socket: &dyn Socket, setup: SocketSetup) {
             );
         }
     }
+}
+
+/// A TCP socket to the loopback address, `127.0.0.1` or `::1` alone,
+/// gives up on its connect after the first SYN, so that a refused one is
+/// found at once, as C sets it on Windows (`tcplocalhost`); C ignores
+/// whether this takes.
+#[cfg(windows)]
+fn give_up_on_loopback(socket: &dyn Socket, remote: SocketAddr) {
+    if targets_localhost(remote.ip()) {
+        match socket.set(SocketOption::NoSynRetransmissions) {
+            Ok(()) | Err(_) => {}
+        }
+    }
+}
+
+/// Whether `ip` is the loopback address as C's `targets_localhost` tells
+/// it, by its text: `127.0.0.1` or `::1`, no other.
+#[cfg(any(windows, test))]
+fn targets_localhost(ip: IpAddr) -> bool {
+    ip == IpAddr::from(Ipv4Addr::LOCALHOST) || ip == IpAddr::from(Ipv6Addr::LOCALHOST)
 }
 
 /// The address an attempt to `ip` on `peer` connects to, and the scope
@@ -4517,12 +4554,18 @@ mod tests {
     /// attempt, set as QUIC's are, and one over TCP a stream; TCP's
     /// options are set on a stream alone (`cf_socket_open`'s `is_tcp`).
     /// With no HTTP/3 library, the QUIC attempt fails once its socket is
-    /// set.
+    /// set. On Windows an IPv6 socket is made to reach IPv4 too, and one
+    /// to the loopback address gives up after its first SYN.
     #[test]
     fn a_route_over_quic_opens_a_socket_for_datagrams() {
-        for (dial, datagrams) in [(crate::conn::Dial::Stream, 0), (crate::conn::Dial::Quic, 1)] {
+        let v4: IpAddr = [127, 0, 0, 1].into();
+        let v6 = IpAddr::from(Ipv6Addr::LOCALHOST);
+        for (dial, datagrams, at) in [
+            (crate::conn::Dial::Stream, 0, v4),
+            (crate::conn::Dial::Stream, 0, v6),
+            (crate::conn::Dial::Quic, 1, v4),
+        ] {
             let clock = ManualClock::new().unwrap();
-            let at: IpAddr = [127, 0, 0, 1].into();
             let wire = crate::conn::io::Conversation::new(b"", false);
             let mut net = FakeNet::new(clock.clone())
                 .with_name("quic.test", &[at])
@@ -4600,6 +4643,18 @@ mod tests {
                         options.contains(&SocketOption::FastOpenConnect),
                         "{options:?}"
                     );
+                    #[cfg(windows)]
+                    {
+                        let dual = options.contains(&SocketOption::DualStack);
+                        assert_eq!(dual, at.is_ipv6(), "{options:?}");
+                        let first = options.first();
+                        assert_eq!(dual, first == Some(&SocketOption::DualStack));
+                        // After TCP's own options, before the connect's.
+                        let at = |o| options.iter().position(|p| *p == o);
+                        let rto = at(SocketOption::NoSynRetransmissions);
+                        let count = at(SocketOption::KeepCount(9));
+                        assert_eq!(rto, count.map(|c| c + 1), "{options:?}");
+                    }
                     m.expect("still trying").close(&mut net);
                 }
                 crate::conn::Dial::Quic => {
@@ -4614,6 +4669,18 @@ mod tests {
                 crate::conn::Dial::Udp => unreachable!("not tried"),
             }
         }
+    }
+
+    /// The loopback address is told by its text, as C tells it: a mapped
+    /// IPv4 one, or another in 127/8, is not it.
+    #[test]
+    fn the_loopback_address_is_told_as_c_tells_it() {
+        assert!(targets_localhost([127, 0, 0, 1].into()));
+        assert!(targets_localhost(Ipv6Addr::LOCALHOST.into()));
+        assert!(!targets_localhost([127, 0, 0, 2].into()));
+        assert!(!targets_localhost(
+            Ipv4Addr::LOCALHOST.to_ipv6_mapped().into()
+        ));
     }
 
     /// A setup closed while its resolve waits cancels it.

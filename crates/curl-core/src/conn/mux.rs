@@ -298,7 +298,8 @@ impl Carrier<'_> {
             Over::Datagrams(datagrams) => datagrams.socket(),
         };
         if let Readiness::Poll(fd) = socket.readiness() {
-            let mut one = [curl_os::poll::PollFd::new(fd, Events::OUT)];
+            let asked = super::io::as_asked(Events::OUT);
+            let mut one = [curl_os::poll::PollFd::new(fd, asked)];
             curl_os::poll::poll(&mut one, timeout)?;
         }
         Ok(())

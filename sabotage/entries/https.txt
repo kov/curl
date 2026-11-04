@@ -238,9 +238,9 @@ witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_answered_h
 file: crates/curl-core/src/conn/layer.rs
 witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout
 --- old
-                    heard.set(true);
+                    kept.heard.set(true);
 --- new
-                    heard.set(false);
+                    kept.heard.set(false);
 
 === a dialed setup lets its answer go before it is connected
 file: crates/curl-core/src/conn/connect.rs
@@ -263,7 +263,7 @@ witness: curl-core proto::http::tests::h3_trace::a_transfer_given_up_as_it_conne
 file: crates/curl-core/src/conn/stream.rs
 witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_unanswered_starts_the_second_at_the_soft_timeout
 --- old
-        self.heard.get()
+        self.kept.heard.get()
 --- new
         true
 

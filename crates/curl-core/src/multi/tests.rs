@@ -947,14 +947,13 @@ fn the_multi_s_own_timeout_cuts_a_wait_short() {
 #[test]
 fn ready_extra_descriptors_are_reported_in_their_entries() {
     use std::io::Write as _;
-    use std::os::fd::AsFd as _;
     let (mut m, clock) = multi();
-    let (mut a, b) = std::os::unix::net::UnixStream::pair().unwrap();
-    let (_c, d) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (mut a, b) = crate::conn::io::stream_pair();
+    let (_c, d) = crate::conn::io::stream_pair();
     a.write_all(b"x").unwrap();
     let mut extra = [
-        PollFd::new(d.as_fd(), Events::IN),
-        PollFd::new(b.as_fd(), Events::IN),
+        PollFd::new(crate::conn::io::pair_socket(&d), Events::IN),
+        PollFd::new(crate::conn::io::pair_socket(&b), Events::IN),
     ];
     let max = Duration::from_secs(3);
     let took = slept(&clock, || {
@@ -973,15 +972,12 @@ fn ready_extra_descriptors_are_reported_in_their_entries() {
 #[test]
 fn a_wait_takes_more_than_fit_on_the_stack() {
     use std::io::Write as _;
-    use std::os::fd::AsFd as _;
     let (mut m, _clock) = multi();
-    let pairs: Vec<_> = (0..11)
-        .map(|_| std::os::unix::net::UnixStream::pair().unwrap())
-        .collect();
+    let pairs: Vec<_> = (0..11).map(|_| crate::conn::io::stream_pair()).collect();
     (&pairs[10].0).write_all(b"x").unwrap();
     let mut extra: Vec<PollFd<'_>> = pairs
         .iter()
-        .map(|(_, b)| PollFd::new(b.as_fd(), Events::IN))
+        .map(|(_, b)| PollFd::new(crate::conn::io::pair_socket(b), Events::IN))
         .collect();
     assert_eq!(
         m.wait(
@@ -2528,7 +2524,7 @@ fn a_share_keeps_connections_across_handles() {
 }
 
 /// Records the sockets it is given to close.
-struct Closer(std::sync::Arc<std::sync::Mutex<Vec<i32>>>);
+struct Closer(std::sync::Arc<std::sync::Mutex<Vec<crate::conn::io::RawSocket>>>);
 
 impl crate::handler::SocketCloser for Closer {
     fn close(&self, socket: crate::conn::io::SocketKey) {

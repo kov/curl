@@ -143,8 +143,13 @@ fn where_to_bind(
     let af = if v6 { AF_INET6 } else { AF_INET };
     // An interface bound to by name, unless a host is named too: not
     // allowed to most users, it fails then, and its address is looked
-    // for instead.
+    // for instead. Windows has no binding by name (`SO_BINDTODEVICE`), so
+    // C looks for the address alone there.
+    #[cfg(windows)]
+    let (by_name, _unused): (Option<io::Error>, _) = (None, socket);
+    #[cfg(unix)]
     let mut by_name = None;
+    #[cfg(unix)]
     if let Some(name) = iface {
         match socket.bind_to_device(name) {
             Ok(()) if !host_in => {

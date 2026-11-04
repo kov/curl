@@ -1408,7 +1408,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
 }
 
 /// A socket in a pollset's trace: its descriptor and what it waits for.
-struct FdEvents(i32, &'static str, &'static str);
+struct FdEvents(crate::conn::io::RawSocket, &'static str, &'static str);
 
 impl fmt::Display for FdEvents {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

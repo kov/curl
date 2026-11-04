@@ -2141,7 +2141,9 @@ kernel cuts (`UDP_SEGMENT`); a packet larger than the run, which may probe the p
 sent apart from it; a datagram too large for the path is lost and counted as sent; a failed cut
 (`EIO`) sends a datagram at a time from then on; a blocked send keeps its packets and asks to be
 called in a millisecond. Ingress reads batches of datagrams (`recvmmsg`, GRO) into the multi's
-one receive buffer, lent and given back across the call, at most 1000 packets a pass. The
+one receive buffer, lent and given back across the call, at most 1000 packets a pass. Windows,
+which has neither, sends each datagram with a `send` of its own from the start and receives one
+at a time with `recvfrom`, traced by those names, as C's build there does. The
 library's timer is armed as the transfer's `QUIC` timer, in whole milliseconds rounded up, a
 wait from now that any multi stepping it arms. Every library call is given the time read again
 then (`Curl_cf_ngtcp2_io_ctx_update_time`) from the clock the connection was made under, which

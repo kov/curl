@@ -478,7 +478,7 @@ impl Ldap for FakeLdap {
 
     fn session(
         &self,
-        _: Option<std::os::fd::BorrowedFd<'_>>,
+        _: Option<curl_os::socket::BorrowedSocket<'_>>,
         scheme: &[u8],
         url: &[u8],
     ) -> Result<Box<dyn Session>, SessionFailed> {

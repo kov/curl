@@ -5,7 +5,6 @@ use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
-use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
@@ -13,13 +12,16 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
 
+#[cfg(unix)]
+pub use curl_os::net::IO_FAILED;
 pub use curl_os::net::{
-    AF_INET, AF_INET6, BATCH, Connect, Datagram, IO_FAILED, InterfaceAddress, Ipv6Scope, Protocol,
-    Recv, SLOT, Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope,
-    open, open_udp,
+    AF_INET, AF_INET6, BATCH, Connect, Datagram, InterfaceAddress, Ipv6Scope, Protocol, Recv, SLOT,
+    Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope, open,
+    open_udp,
 };
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
+pub use curl_os::socket::{BorrowedSocket, RawSocket};
 pub use curl_os::wake::Waker;
 
 /// What a socket carries: a stream (TCP's, or a Unix socket's), or
@@ -32,20 +34,30 @@ pub enum SocketKind {
     Datagram,
 }
 
-/// A socket's number, as C hands it to the application (`curl_socket_t`).
+/// A socket's number, as C hands it to the application (`curl_socket_t`):
+/// a descriptor on Unix, a `SOCKET` on Windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SocketKey(i32);
+pub struct SocketKey(RawSocket);
 
 impl SocketKey {
-    /// No socket (`CURL_SOCKET_BAD`).
+    /// No socket (`CURL_SOCKET_BAD`: -1 on Unix, `INVALID_SOCKET` on
+    /// Windows).
+    #[cfg(unix)]
     pub(crate) const BAD: SocketKey = SocketKey(-1);
+    #[cfg(windows)]
+    pub(crate) const BAD: SocketKey = SocketKey(RawSocket::MAX);
 
     /// The socket C calls `n`, as the application names it back.
-    pub fn new(n: i32) -> SocketKey {
+    pub fn new(n: RawSocket) -> SocketKey {
         SocketKey(n)
     }
 
-    pub fn get(self) -> i32 {
+    /// The number of `socket`, open.
+    pub fn of(socket: BorrowedSocket<'_>) -> SocketKey {
+        SocketKey(curl_os::socket::raw(socket))
+    }
+
+    pub fn get(self) -> RawSocket {
         self.0
     }
 }
@@ -149,7 +161,7 @@ pub trait Socket: fmt::Debug + Send {
 
     /// Its descriptor, for a library that works on the socket itself; none
     /// for a socket that has none.
-    fn descriptor(&self) -> Option<BorrowedFd<'_>> {
+    fn descriptor(&self) -> Option<BorrowedSocket<'_>> {
         match self.readiness() {
             Readiness::Poll(fd) => Some(fd),
             Readiness::Known { .. } => None,
@@ -178,6 +190,7 @@ pub trait Socket: fmt::Debug + Send {
     fn bind(&self, addr: SocketAddr) -> io::Result<()>;
 
     /// Bind it to the network interface named `name` (`SO_BINDTODEVICE`).
+    #[cfg(unix)]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()>;
 
     /// Start connecting it to `addr`.
@@ -192,6 +205,7 @@ pub trait Socket: fmt::Debug + Send {
     /// Send `buf`, which is not empty, as datagrams of `segment` bytes in
     /// one call, as a UDP socket does (`UdpSocket::send_segments`); a
     /// socket of another kind cannot.
+    #[cfg(unix)]
     fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
         let _ = (buf, segment);
         Err(io::ErrorKind::Unsupported.into())
@@ -199,6 +213,7 @@ pub trait Socket: fmt::Debug + Send {
 
     /// Receive datagrams into slots of `buf`, as a UDP socket does
     /// (`UdpSocket::recv_batch`); a socket of another kind cannot.
+    #[cfg(unix)]
     fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
         let _ = (buf, slot, out);
         Err(io::ErrorKind::Unsupported.into())
@@ -231,6 +246,15 @@ pub trait Socket: fmt::Debug + Send {
     /// socket; none if none waits (`accept4`).
     fn accept(&self) -> io::Result<Option<Box<dyn Socket>>> {
         Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Size its send buffer to what the system finds ideal now, if that
+    /// is not `current`, the size set last: the size set, or `None` if
+    /// none was (`win_update_sndbuf_size`). Only a TCP socket can.
+    #[cfg(windows)]
+    fn fit_send_buffer(&self, current: u32) -> Option<u32> {
+        let _unused = current;
+        None
     }
 
     /// Let go of the descriptor without closing it, for the application's
@@ -308,7 +332,7 @@ impl Drop for Sock {
 /// How a socket's readiness is learned.
 #[derive(Clone, Copy, Debug)]
 pub enum Readiness<'a> {
-    Poll(BorrowedFd<'a>),
+    Poll(BorrowedSocket<'a>),
     /// A socket without a descriptor knows what it is ready for now, and
     /// when it will be ready if it is not.
     Known {
@@ -611,7 +635,7 @@ pub trait Net {
 
 impl Socket for curl_os::net::TcpSocket {
     fn key(&self) -> SocketKey {
-        SocketKey(self.fd().as_raw_fd())
+        SocketKey::of(self.fd())
     }
 
     fn readiness(&self) -> Readiness<'_> {
@@ -642,6 +666,7 @@ impl Socket for curl_os::net::TcpSocket {
         curl_os::net::TcpSocket::bind(self, addr)
     }
 
+    #[cfg(unix)]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         curl_os::net::TcpSocket::bind_to_device(self, name)
     }
@@ -673,6 +698,11 @@ impl Socket for curl_os::net::TcpSocket {
         }
     }
 
+    #[cfg(windows)]
+    fn fit_send_buffer(&self, current: u32) -> Option<u32> {
+        curl_os::net::TcpSocket::fit_send_buffer(self, current)
+    }
+
     fn release(self: Box<Self>) -> SocketKey {
         SocketKey(self.into_raw())
     }
@@ -680,7 +710,7 @@ impl Socket for curl_os::net::TcpSocket {
 
 impl Socket for curl_os::net::UdpSocket {
     fn key(&self) -> SocketKey {
-        SocketKey(self.fd().as_raw_fd())
+        SocketKey::of(self.fd())
     }
 
     fn readiness(&self) -> Readiness<'_> {
@@ -707,6 +737,7 @@ impl Socket for curl_os::net::UdpSocket {
         curl_os::net::UdpSocket::bind(self, addr)
     }
 
+    #[cfg(unix)]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         curl_os::net::UdpSocket::bind_to_device(self, name)
     }
@@ -727,10 +758,12 @@ impl Socket for curl_os::net::UdpSocket {
         curl_os::net::UdpSocket::send(self, buf)
     }
 
+    #[cfg(unix)]
     fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
         curl_os::net::UdpSocket::send_segments(self, buf, segment)
     }
 
+    #[cfg(unix)]
     fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
         curl_os::net::UdpSocket::recv_batch(self, buf, slot, out)
     }
@@ -855,6 +888,19 @@ impl Net for SystemNet {
 /// The entries a wait keeps on the stack (`NUM_POLLS_ON_STACK`).
 pub(crate) const ON_STACK: usize = 10;
 
+/// What the system is asked of a socket wanted for `events`. On Windows
+/// a socket wanted writable is asked for priority data too: a connect
+/// refused there shows only as an exception, which C's
+/// `SOCKET_WRITABLE` asks for (`POLLPRI`) and its multi's wait watches
+/// (`FD_CONNECT`).
+pub(crate) fn as_asked(events: Events) -> Events {
+    #[cfg(windows)]
+    if events.contains(Events::OUT) {
+        return events | Events::PRI;
+    }
+    events
+}
+
 /// Poll `fds` and the sockets with descriptors in one call; sockets that
 /// know their readiness count without one, and end the wait at once.
 pub(crate) fn poll_together(
@@ -895,7 +941,7 @@ pub(crate) fn poll_together(
     match (to_poll.next(), to_poll.next()) {
         (None, _) => return Ok(curl_os::poll::poll(fds, timeout)? + known),
         (Some((fd, s)), None) if fds.is_empty() => {
-            let mut one = [PollFd::new(fd, s.events)];
+            let mut one = [PollFd::new(fd, as_asked(s.events))];
             let ready = curl_os::poll::poll(&mut one, timeout)?;
             s.revents = one[0].revents();
             return Ok(ready + known);
@@ -905,7 +951,7 @@ pub(crate) fn poll_together(
     // As many as a wait keeps on the stack are polled from it, more from
     // memory of their own (`a_few_on_stack`).
     let polled = sockets.iter().filter_map(|s| match s.socket.readiness() {
-        Readiness::Poll(fd) => Some(PollFd::new(fd, s.events)),
+        Readiness::Poll(fd) => Some(PollFd::new(fd, as_asked(s.events))),
         Readiness::Known { .. } => None,
     });
     let polled_sockets = polled.clone().count();
@@ -1530,7 +1576,7 @@ struct Binding {
 /// The first number a fake socket gets: past the descriptors a test
 /// process has open, so that a fake one is never mistaken for them.
 #[cfg(any(test, feature = "test-util"))]
-const FIRST_FAKE: i32 = 1000;
+const FIRST_FAKE: RawSocket = 1000;
 /// The sockets, and the bytes of requests, a fake holds without growing:
 /// room for a QUIC handshake and request in a tunnel, a few full
 /// datagrams.
@@ -1801,7 +1847,7 @@ impl FakeNet {
             }
         };
         self.open[row] = Some(wire);
-        let n = i32::try_from(row).expect("a test opens few sockets");
+        let n = RawSocket::try_from(row).expect("a test opens few sockets");
         Ok(SocketKey(FIRST_FAKE + n))
     }
 
@@ -2178,6 +2224,7 @@ impl Socket for FakeSocket {
     }
 
     /// Only an interface the network has as a device binds.
+    #[cfg(unix)]
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         let known = self
             .binding
@@ -2348,6 +2395,7 @@ impl Socket for FakeSocket {
     }
 
     /// One send, as a stream's: the run is the peer's to cut.
+    #[cfg(unix)]
     fn send_segments(&self, buf: &[u8], _segment: usize) -> io::Result<usize> {
         match self.send(buf)? {
             Sent::Bytes(n) => Ok(n.get()),
@@ -2403,6 +2451,7 @@ impl Socket for FakeSocket {
     }
 
     /// Each reply the peer has ready is a datagram, none joined.
+    #[cfg(unix)]
     fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
         let room = out.len().min(buf.len() / slot);
         let mut n = 0;
@@ -2457,7 +2506,7 @@ impl Socket for FakeSocket {
 }
 
 /// The error numbers the fake gives, as Linux numbers them.
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(all(unix, any(test, feature = "test-util")))]
 mod libc_errno {
     pub(super) const ECONNREFUSED: i32 = 111;
     pub(super) const EPIPE: i32 = 32;
@@ -2466,6 +2515,18 @@ mod libc_errno {
     pub(super) const EINVAL: i32 = 22;
     pub(super) const ENODEV: i32 = 19;
     pub(super) const ENOTCONN: i32 = 107;
+}
+
+/// The error numbers the fake gives, as Winsock numbers them; a send on
+/// a connection shut is `WSAESHUTDOWN`, Windows' broken pipe.
+#[cfg(all(windows, any(test, feature = "test-util")))]
+mod libc_errno {
+    pub(super) const ECONNREFUSED: i32 = 10061;
+    pub(super) const EPIPE: i32 = 10058;
+    pub(super) const ECONNRESET: i32 = 10054;
+    pub(super) const EADDRINUSE: i32 = 10048;
+    pub(super) const EINVAL: i32 = 10022;
+    pub(super) const ENOTCONN: i32 = 10057;
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -2619,6 +2680,36 @@ impl Net for SharedNet {
     }
 }
 
+/// One end of a connected pair of streams, for tests that poll a
+/// descriptor of their own: a Unix socket's, or on Windows, which polls
+/// sockets alone, a loopback TCP connection's.
+#[cfg(all(test, unix))]
+pub(crate) type PairEnd = std::os::unix::net::UnixStream;
+#[cfg(all(test, windows))]
+pub(crate) type PairEnd = std::net::TcpStream;
+
+/// A connected pair of streams, written at one end and read at the other.
+#[cfg(test)]
+pub(crate) fn stream_pair() -> (PairEnd, PairEnd) {
+    #[cfg(unix)]
+    {
+        PairEnd::pair().expect("a pair of sockets")
+    }
+    #[cfg(windows)]
+    {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
+        let a = PairEnd::connect(listener.local_addr().expect("bound")).expect("a connect");
+        let (b, _) = listener.accept().expect("the connection");
+        (a, b)
+    }
+}
+
+/// The socket `end` polls by.
+#[cfg(test)]
+pub(crate) fn pair_socket(end: &PairEnd) -> BorrowedSocket<'_> {
+    curl_os::socket::AsSocket::borrow_socket(end)
+}
+
 /// A socket opened on `net` for `at`, its connect started, for tests that
 /// need one connecting.
 #[cfg(test)]
@@ -2634,8 +2725,6 @@ pub(crate) fn dial(net: &mut dyn Net, at: SocketAddr) -> Box<dyn Socket> {
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
-    use std::os::fd::AsFd as _;
-    use std::os::unix::net::UnixStream;
 
     use super::*;
 
@@ -2643,15 +2732,14 @@ mod tests {
     /// libssh and libldap do, the descriptor it is polled by.
     #[test]
     fn a_system_socket_gives_its_descriptor() {
-        use std::os::fd::AsRawFd as _;
         let at = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
         let s = curl_os::net::open(at, curl_os::net::Protocol::Tcp, true).unwrap();
         let polled = match s.readiness() {
-            Readiness::Poll(fd) => fd.as_raw_fd(),
+            Readiness::Poll(fd) => curl_os::socket::raw(fd),
             Readiness::Known { .. } => panic!("a system socket is polled"),
         };
         let given = Socket::descriptor(&s).expect("a descriptor");
-        assert_eq!(given.as_raw_fd(), polled);
+        assert_eq!(curl_os::socket::raw(given), polled);
     }
 
     /// The system's resolver, which stands in for the reference build's
@@ -2714,8 +2802,8 @@ mod tests {
 
     #[test]
     fn the_system_network_polls_the_descriptors() {
-        let (mut a, b) = UnixStream::pair().unwrap();
-        let mut fds = [PollFd::new(b.as_fd(), Events::IN)];
+        let (mut a, b) = stream_pair();
+        let mut fds = [PollFd::new(pair_socket(&b), Events::IN)];
         let none = &mut [];
         assert_eq!(
             SystemNet::default()
@@ -2803,10 +2891,10 @@ mod tests {
     fn sockets_and_descriptors_are_polled_together() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let socket = dial(&mut SystemNet::default(), listener.local_addr().unwrap());
-        let (mut a, b) = UnixStream::pair().unwrap();
+        let (mut a, b) = stream_pair();
         a.write_all(b"x").unwrap();
         let mut sockets = [SocketPoll::new(&*socket, Events::OUT)];
-        let mut fds = [PollFd::new(b.as_fd(), Events::IN)];
+        let mut fds = [PollFd::new(pair_socket(&b), Events::IN)];
         let ready = SystemNet::default()
             .poll(&mut sockets, &mut fds, Duration::from_secs(5))
             .unwrap();
@@ -2822,6 +2910,34 @@ mod tests {
         SystemNet::default().close(Sock::new(socket, Closer::System));
     }
 
+    /// A connect refused on Windows shows only as an exception: a socket
+    /// polled to take more is asked for that too, so the refusal ends the
+    /// wait, and the socket's error says it.
+    #[cfg(windows)]
+    #[test]
+    fn a_refused_connect_ends_a_wait_for_writable() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = closed.local_addr().unwrap();
+        drop(closed);
+        let mut net = SystemNet::default();
+        let socket = net.open(&Remote::Inet(at), SocketKind::Stream).unwrap();
+        // Refused at the first SYN, not after Windows' retries.
+        socket.set(SocketOption::NoSynRetransmissions).unwrap();
+        match socket.connect(&Remote::Inet(at)) {
+            Ok(Connect::InProgress) => {}
+            other => panic!("{other:?}"),
+        }
+        let mut sockets = [SocketPoll::new(&*socket, Events::OUT)];
+        let ready = net
+            .poll(&mut sockets, &mut [], Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(ready, 1, "the refusal ends the wait");
+        assert!(sockets[0].revents().contains(Events::PRI));
+        let refused = socket.take_error().unwrap().expect("refused");
+        assert_eq!(refused.kind(), io::ErrorKind::ConnectionRefused);
+        net.close(Sock::new(socket, Closer::System));
+    }
+
     /// More sockets and descriptors than fit on the stack are polled all
     /// the same, each getting its own events back.
     #[test]
@@ -2829,7 +2945,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let one = dial(&mut SystemNet::default(), listener.local_addr().unwrap());
         let two = dial(&mut SystemNet::default(), listener.local_addr().unwrap());
-        let pairs: Vec<_> = (0..9).map(|_| UnixStream::pair().unwrap()).collect();
+        let pairs: Vec<_> = (0..9).map(|_| stream_pair()).collect();
         (&pairs[8].0).write_all(b"x").unwrap();
         let mut sockets = [
             SocketPoll::new(&*one, Events::IN),
@@ -2837,7 +2953,7 @@ mod tests {
         ];
         let mut fds: Vec<PollFd<'_>> = pairs
             .iter()
-            .map(|(_, b)| PollFd::new(b.as_fd(), Events::IN))
+            .map(|(_, b)| PollFd::new(pair_socket(b), Events::IN))
             .collect();
         let ready = SystemNet::default()
             .poll(&mut sockets, &mut fds, Duration::from_secs(5))

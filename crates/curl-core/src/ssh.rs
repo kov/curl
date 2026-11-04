@@ -7,9 +7,9 @@
 
 use std::fmt;
 use std::ops::BitOr;
-use std::os::fd::BorrowedFd;
 
 use curl_alloc::OutOfMemory;
+use curl_os::socket::BorrowedSocket;
 
 /// An SSH library.
 pub trait Ssh: fmt::Debug + Send + Sync {
@@ -299,7 +299,7 @@ pub trait Session: fmt::Debug + Send {
     /// The connected socket the session reads and writes, which stays the
     /// caller's to close; a socket with no descriptor is one a library
     /// over the system's sockets refuses.
-    fn set_socket(&mut self, socket: Option<BorrowedFd<'_>>) -> Result<(), Refused>;
+    fn set_socket(&mut self, socket: Option<BorrowedSocket<'_>>) -> Result<(), Refused>;
     fn set_user(&mut self, user: &[u8]) -> Result<(), Refused>;
     /// The known-hosts file, as both the user's and the global one.
     fn set_known_hosts(&mut self, file: &[u8]) -> Result<(), Refused>;

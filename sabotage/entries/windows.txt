@@ -22,3 +22,11 @@ witness: curl-core netrc::tests::the_old_style_file_is_beside_the_default_one
         return Ok(None);
     }
 --- new
+
+=== any address in 127/8 counts as the loopback a connect gives up on
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::the_loopback_address_is_told_as_c_tells_it
+--- old
+    ip == IpAddr::from(Ipv4Addr::LOCALHOST) || ip == IpAddr::from(Ipv6Addr::LOCALHOST)
+--- new
+    ip.is_loopback()

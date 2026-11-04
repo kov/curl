@@ -552,7 +552,7 @@ fn close_in<H: Host>(cx: &mut StepCx<'_, H>, socket: crate::conn::io::Sock) {
 
 /// A listening socket as the accept filter's lines name it: its number,
 /// and where it listens.
-fn listens_at(sock: &Sock) -> (i32, trace::Ip, u16) {
+fn listens_at(sock: &Sock) -> (crate::conn::io::RawSocket, trace::Ip, u16) {
     let at = sock.socket().local_addr().ok();
     let port = at.map_or(0, |at| at.port());
     (sock.key().get(), trace::Ip(at.map(|at| at.ip())), port)

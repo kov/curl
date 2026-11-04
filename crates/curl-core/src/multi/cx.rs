@@ -5,7 +5,6 @@
 use crate::conn::quic::RecvRoom;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use std::num::NonZeroU32;
-use std::os::fd::AsRawFd as _;
 
 use std::io;
 use std::time::Duration;
@@ -939,7 +938,7 @@ impl<H: Host> Telling<'_, H> {
         if !events.wants_sockets() {
             return Ok(());
         }
-        let key = SocketKey::new(waker.fd().as_raw_fd());
+        let key = SocketKey::of(waker.fd());
         let listen = [(key, Events::IN)];
         let wants: &[(SocketKey, Events)] = if on { &listen } else { &[] };
         let mut changes = Vec::new();
@@ -1625,7 +1624,7 @@ mod tests {
     use crate::time::ManualClock;
 
     /// The fake network, its closes recorded in order.
-    struct Recording(FakeNet, Vec<i32>);
+    struct Recording(FakeNet, Vec<crate::conn::io::RawSocket>);
 
     impl Net for Recording {
         fn poll(
@@ -1698,7 +1697,8 @@ mod tests {
         assert!(later.few.iter().all(Option::is_some));
         assert_eq!(later.more.len(), 2, "none closed yet");
         later.close();
-        let want: Vec<i32> = (1000..1000 + CloseLater::FEW as i32 + 2).collect();
+        let want: Vec<crate::conn::io::RawSocket> =
+            (1000..1000 + CloseLater::FEW as crate::conn::io::RawSocket + 2).collect();
         assert_eq!(net.1, want);
         assert_eq!(net.0.open_sockets(), 0);
     }

@@ -3,7 +3,6 @@
 //! end over those waits (`easy_transfer`), or over what the multi tells its
 //! timer and socket callbacks (`easy_events`).
 
-use std::os::fd::AsRawFd as _;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
@@ -229,7 +228,7 @@ impl<H: Host> Multi<H> {
         // Watched only while the socket callback was told of it, while a
         // transfer is alive.
         let wake = self.alive.waker.as_deref();
-        let wake_key = wake.map(|w| SocketKey::new(w.fd().as_raw_fd()));
+        let wake_key = wake.map(|w| SocketKey::of(w.fd()));
         let mut wake_fd = None;
         let mut sockets = Vec::new();
         sockets.try_reserve_exact(watched.len()).map_err(oom)?;

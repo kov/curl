@@ -193,7 +193,10 @@ impl Session for FakeSession {
     fn parse_config(&mut self) -> Result<(), Refused> {
         Ok(())
     }
-    fn set_socket(&mut self, _: Option<std::os::fd::BorrowedFd<'_>>) -> Result<(), Refused> {
+    fn set_socket(
+        &mut self,
+        _: Option<curl_os::socket::BorrowedSocket<'_>>,
+    ) -> Result<(), Refused> {
         self.w().call("set_socket", &[]);
         Ok(())
     }

@@ -21,7 +21,13 @@ impl Host for Tagged {
 
 /// One call of the socket callback: the transfer's row, the socket, what
 /// it was told, the value assigned, and how many sockets had closed.
-type Call = (u32, i32, SocketWhat, Option<u32>, u32);
+type Call = (
+    u32,
+    crate::conn::io::RawSocket,
+    SocketWhat,
+    Option<u32>,
+    u32,
+);
 
 /// Logs each socket call; tags each socket on its first call with the
 /// next number, and aborts the call numbered `abort_at` (from 1).
@@ -519,7 +525,7 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
     let net =
         FakeNet::new(clock.clone()).with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5)));
     let waker = TryArc::try_new(Waker::new().unwrap()).unwrap();
-    let wake = std::os::fd::AsRawFd::as_raw_fd(&waker.fd());
+    let wake = curl_os::socket::raw(waker.fd());
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(Waking(net, waker.clone(), None)),
@@ -1008,7 +1014,7 @@ fn closing_library(
     n: usize,
 ) -> (
     &'static ClosingLibrary,
-    Vec<i32>,
+    Vec<crate::conn::io::RawSocket>,
     crate::libraries::SharedLibraries,
 ) {
     let at = SocketAddr::from(([127, 0, 0, 1], 3));
@@ -1067,7 +1073,7 @@ fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
         e.set_components(Some(c));
         e
     };
-    let closes = |key: i32| {
+    let closes = |key: crate::conn::io::RawSocket| {
         let said = format!("Curl_multi_will_close fd={key}");
         let lines = lines.0.lock().unwrap();
         lines.iter().filter(|l| l.contains(&said)).count()

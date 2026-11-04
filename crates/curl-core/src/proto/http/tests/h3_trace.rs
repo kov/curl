@@ -2294,7 +2294,7 @@ fn a_race_timed_out_closes_both_attempts() {
 }
 /// A network that keeps the descriptor of each socket it closes, in
 /// order.
-struct Closes(FakeNet, Arc<Mutex<Vec<i32>>>);
+struct Closes(FakeNet, Arc<Mutex<Vec<crate::conn::io::RawSocket>>>);
 
 impl crate::conn::io::Net for Closes {
     fn poll(

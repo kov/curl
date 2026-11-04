@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 use super::io::{Events, Recv, Sent, Sock, Socket};
 use curl_alloc::OutOfMemory;
 
-use super::layer::{Alive, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, LayerStack};
+use super::layer::{
+    Alive, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, LayerStack, SocketKept,
+};
 use super::{RecvBuf, RecvFailed};
 use crate::components::Component;
 use crate::error::ErrorKind;
@@ -60,8 +62,8 @@ pub(crate) struct Stream {
     socket: Sock,
     layers: LayerStack,
     rx: RecvBuf,
-    /// Its socket has received a byte (`got_first_byte`).
-    heard: std::cell::Cell<bool>,
+    /// What its socket's filter keeps of the socket.
+    kept: SocketKept,
 }
 
 impl Stream {
@@ -70,7 +72,7 @@ impl Stream {
             socket,
             layers: LayerStack::default(),
             rx: RecvBuf::default(),
-            heard: std::cell::Cell::new(false),
+            kept: SocketKept::default(),
         }
     }
 
@@ -100,7 +102,7 @@ impl Stream {
         traced: Option<Component>,
     ) -> Result<Handshake, ErrorKind> {
         self.layers
-            .connect(self.socket.socket(), cx, traced, Some(&self.heard))
+            .connect(self.socket.socket(), cx, traced, Some(&self.kept))
     }
 
     /// Move the goodbye of the origin's TLS on, as `goodbye` says, its
@@ -114,7 +116,7 @@ impl Stream {
         goodbye: crate::tls::Goodbye,
     ) -> Result<Handshake, ErrorKind> {
         self.layers
-            .clear_tls(self.socket.socket(), cx, traced, Some(&self.heard), goodbye)
+            .clear_tls(self.socket.socket(), cx, traced, Some(&self.kept), goodbye)
     }
 
     /// Its layers over its socket, for a handshake that reads and writes
@@ -122,7 +124,7 @@ impl Stream {
     /// receives traced as `traced`, if given.
     pub(crate) fn below(&mut self, traced: Option<Component>) -> super::layer::Below<'_> {
         self.layers
-            .over(self.socket.socket(), traced, Some(&self.heard))
+            .over(self.socket.socket(), traced, Some(&self.kept))
     }
 
     pub(crate) fn socket(&self) -> &dyn Socket {
@@ -139,7 +141,7 @@ impl Stream {
     /// Its socket has received a byte, as C's socket filter answers how
     /// long that took once it has (`CF_QUERY_CONNECT_REPLY_MS`).
     pub(crate) fn heard(&self) -> bool {
-        self.heard.get()
+        self.kept.heard.get()
     }
 
     /// The socket, for closing.
@@ -158,7 +160,7 @@ impl Stream {
     ) -> Result<Recv, RecvFailed> {
         let below = self
             .layers
-            .over(self.socket.socket(), traced, Some(&self.heard));
+            .over(self.socket.socket(), traced, Some(&self.kept));
         self.rx.fill(max, |room| below.recv(cx, room))
     }
 
@@ -171,7 +173,7 @@ impl Stream {
         traced: Option<Component>,
     ) -> io::Result<Sent> {
         self.layers
-            .over(self.socket.socket(), traced, Some(&self.heard))
+            .over(self.socket.socket(), traced, Some(&self.kept))
             .send(cx, bytes)
     }
 
@@ -181,7 +183,7 @@ impl Stream {
         !self.rx.filled().is_empty()
             || self
                 .layers
-                .over(self.socket.socket(), None, Some(&self.heard))
+                .over(self.socket.socket(), None, Some(&self.kept))
                 .data_pending()
     }
 
@@ -215,7 +217,7 @@ impl Stream {
     /// `traced`.
     pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx, traced: Component) -> Alive {
         self.layers
-            .over(self.socket.socket(), Some(traced), Some(&self.heard))
+            .over(self.socket.socket(), Some(traced), Some(&self.kept))
             .alive(cx)
     }
 

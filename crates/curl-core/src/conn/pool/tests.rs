@@ -151,7 +151,7 @@ fn idle_conn(pool: &Pool, id: ConnId) -> Option<&Conn> {
     pool.conns.get(id)?.idle()
 }
 
-fn socket(lease: &ConnLease) -> Option<i32> {
+fn socket(lease: &ConnLease) -> Option<crate::conn::io::RawSocket> {
     lease.holding()?.sockets().next().map(|s| s.key().get())
 }
 

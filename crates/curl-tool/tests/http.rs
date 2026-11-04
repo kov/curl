@@ -570,6 +570,46 @@ fn uploads_standard_input() {
     );
 }
 
+/// Every `-T .` of a run reads the one standard input: a first whose
+/// transfer fails before it reads (a `file:` upload into a directory
+/// that is not there) leaves all of it to the next. On Windows the first
+/// sets up the thread that reads it into a loopback connection, and the
+/// next reads that connection too, as C keeps one for the process
+/// (`win32_stdin_read_thread`); a thread of its own would find the input
+/// already taken by the first's. C closes that connection as each
+/// transfer ends, so its second upload is empty: a deliberate difference
+/// from C (DIVERGENCE.md), and this test fails on its Windows tool. The
+/// second is HTTP, whose upload waits for input the thread has not
+/// passed on yet, where a `file:` one fails.
+#[test]
+fn a_second_upload_of_standard_input_reads_what_the_first_left() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let dir = scratch("stdin-twice");
+    std::fs::write(dir.join("input"), b"hello").unwrap();
+    let missing = dir.join("missing").join("x");
+    let missing = missing.to_str().unwrap();
+    let missing = if cfg!(windows) {
+        format!("file:///{}", missing.replace('\\', "/"))
+    } else {
+        format!("file://{missing}")
+    };
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let out = Command::new(tool)
+        .args(["-q", "-s", "-T", ".", &missing, "-T", ".", "-H", "Expect:"])
+        .arg(s.url())
+        .stdin(std::fs::File::open(dir.join("input")).unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let request = s.request();
+    assert!(
+        request.ends_with("Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"),
+        "{request}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A redirect that has `-T -` send its body again cannot, from a pipe:
 /// the seek fails, and the library says so after the tool's reason.
 #[test]

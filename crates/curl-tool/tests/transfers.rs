@@ -662,32 +662,6 @@ fn uploads_a_file() {
     assert_eq!(r.stdout, b"0123456789");
 }
 
-/// Every `-T .` of a run reads the one standard input: a first whose
-/// transfer fails before it reads leaves all of it to the next. On
-/// Windows the first sets up the thread that reads it into a loopback
-/// connection, and the next reads that connection too, as C keeps one
-/// for the process (`win32_stdin_read_thread`); a thread of its own
-/// would find the input already taken by the first's. C closes that
-/// connection as each transfer ends, so its second upload is empty: a
-/// deliberate difference from C (DIVERGENCE.md), and this test fails on
-/// its Windows tool.
-#[test]
-fn a_second_upload_of_standard_input_reads_what_the_first_left() {
-    let s = Scratch::new("stdin-twice");
-    s.write("input", b"hello");
-    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
-        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
-    let out = Command::new(tool)
-        .args(["-q", "-s", "-T", ".", &s.url("missing/x"), "-T", "."])
-        .arg(s.url("dst"))
-        .current_dir(&s.0)
-        .stdin(std::fs::File::open(s.0.join("input")).unwrap())
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(s.read("dst"), b"hello");
-}
-
 /// An upload of `name` to `file://` under `--max-time 1`, its input
 /// `abc` at once and `def` 1.5 s later from a writer that then holds it
 /// open for 6 s: how long the tool took, its exit code and what it

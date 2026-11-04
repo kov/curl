@@ -273,7 +273,7 @@ not a difference: it is tracked in `MILESTONES.md`.
   file:///C:/t/dst <input` leaves `dst` empty on C's Windows build and holds the input here.
   Measured against the C build on Windows. Pinned by
   `a_second_upload_of_standard_input_reads_what_the_first_left`
-  (`crates/curl-tool/tests/transfers.rs`).
+  (`crates/curl-tool/tests/http.rs`).
 
 - **A connection a 101's body ended by closing is not kept.** A 101 nothing asked to upgrade
   to is the final response, and its body runs until the server closes the connection; the

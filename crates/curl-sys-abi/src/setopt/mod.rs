@@ -919,13 +919,17 @@ fn apply(
         }
         (ffi::CURLOPT_ADDRESS_SCOPE, Long(n)) => {
             // Read as an `unsigned long`: past `UINT_MAX` refused, a
-            // negative among them; 0 none.
+            // negative among them, where it has more bits than an
+            // `unsigned int` (not on Windows); 0 none.
+            #[allow(clippy::useless_conversion, reason = "a long is 32 bits on Windows")]
             let n = u32::try_from(n as core::ffi::c_ulong).map_err(|_| Refused::Bad)?;
             options.address_scope = NonZeroU32::new(n);
         }
         (ffi::CURLOPT_CONNECTTIMEOUT_MS, Long(n)) => options.limits.connect = time_limit(n, 1)?,
         (ffi::CURLOPT_TIMECONDITION, Long(n)) => {
-            if !(ffi::CURL_TIMECOND_NONE..ffi::CURL_TIMECOND_LAST.0.into()).contains(&n) {
+            #[allow(clippy::useless_conversion, reason = "a long is 32 bits on Windows")]
+            let last = ffi::CURL_TIMECOND_LAST.0.into();
+            if !(ffi::CURL_TIMECOND_NONE..last).contains(&n) {
                 return Err(Refused::Bad);
             }
             set.time_condition = n;
@@ -2503,9 +2507,13 @@ mod tests {
             Protocols::of(&["file", "gophers"]).unwrap()
         );
         assert_eq!(protocol_mask(ffi::CURLPROTO_RTMP), Protocols::NONE);
-        assert_eq!(protocol_mask(1 << 32), Protocols::of(&["mqtts"]).unwrap());
-        let socks = protocol_mask(1 << 33);
-        assert!(socks.contains(b"socks5h") && !socks.contains(b"http"));
+        // Past bit 31 where a `long` has them: Windows' has 32 bits.
+        #[cfg(not(windows))]
+        {
+            assert_eq!(protocol_mask(1 << 32), Protocols::of(&["mqtts"]).unwrap());
+            let socks = protocol_mask(1 << 33);
+            assert!(socks.contains(b"socks5h") && !socks.contains(b"http"));
+        }
         let all = protocol_mask(-1);
         for scheme in [&b"http"[..], b"wss", b"socks4a", b"tftp"] {
             assert!(all.contains(scheme), "{scheme:?}");

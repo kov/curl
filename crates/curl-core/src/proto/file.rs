@@ -47,7 +47,8 @@ pub(crate) struct Request {
     /// The path, decoded, with a zero byte after it.
     path: Vec<u8>,
     /// Open to read, for anything but an upload; for an upload, open to
-    /// write once DO starts.
+    /// write once DO starts. On Windows a directory is not open, as it
+    /// does not open there.
     file: Option<File>,
     /// What a piece is read into, once DO starts.
     buf: Vec<u8>,
@@ -118,6 +119,8 @@ impl Request {
         let mut path = url::decode_but_zero(&encoded)
             .map_err(url_error)?
             .ok_or(ErrorKind::UrlMalformat)?;
+        #[cfg(windows)]
+        dos_path(&mut path);
         path.try_push(0).map_err(|_| ErrorKind::OutOfMemory)?;
         let mut request = Request {
             path,
@@ -129,6 +132,10 @@ impl Request {
         if cx.easy().options().method != Method::Upload {
             match fs::open_read(request.c_path()) {
                 Ok(file) => request.file = Some(file),
+                // A directory does not open on Windows: it is listed by its
+                // name (`file_stat`).
+                #[cfg(windows)]
+                Err(_) if fs::stat(request.c_path()).is_ok_and(|s| s.is_dir()) => {}
                 Err(_) => {
                     let kind = ErrorKind::FileCouldntReadFile;
                     return Err(trace::fail_with(
@@ -175,8 +182,27 @@ impl Request {
         }
     }
 
+    /// What the file's status says (`fstat`), or on Windows, for a
+    /// directory, which is not open, what its name's does (`file_stat`).
+    fn stated(&self) -> std::io::Result<Stated> {
+        let Some(file) = &self.file else {
+            let status = fs::stat(self.c_path())?;
+            return Ok(Stated {
+                is_dir: true,
+                size: status.len(),
+                mtime: status.modified(),
+            });
+        };
+        let meta = file.metadata()?;
+        Ok(Stated {
+            is_dir: meta.is_dir(),
+            size: meta.len(),
+            mtime: mtime(&meta),
+        })
+    }
+
     fn download<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<DoStep, ErrorKind> {
-        let meta = self.file.as_ref().expect("opened to read").metadata();
+        let meta = self.stated();
         #[cfg(test)]
         let meta = if cx.easy().options().file_faults.stat_fails {
             Err(std::io::Error::other("injected"))
@@ -186,16 +212,16 @@ impl Request {
         let Ok(meta) = meta else {
             return self.download_unstated(cx);
         };
-        let is_dir = meta.is_dir();
-        let st_size = i64::try_from(meta.len()).expect("a file's size fits its offset type");
-        cx.report_mut().set_filetime(mtime(&meta));
+        let is_dir = meta.is_dir;
+        let st_size = i64::try_from(meta.size).expect("a file's size fits its offset type");
+        cx.report_mut().set_filetime(meta.mtime);
         // A file the condition rules out is not read, nor are its headers
         // made, unless a range is asked for (`file_do`).
         let options = cx.easy().options();
         if let Some(condition) = options
             .time_condition
             .filter(|_| options.ranged().is_none())
-            && let Err(unmet) = condition.met_by(mtime(&meta))
+            && let Err(unmet) = condition.met_by(meta.mtime)
         {
             trace::info(cx, format_args!("{unmet}"));
             cx.report_mut().set_condition_unmet();
@@ -208,7 +234,7 @@ impl Request {
             write!(line, "Accept-ranges: bytes\r\n").expect("a header fits");
             self.header(cx, &mut line)?;
         }
-        last_modified(mtime(&meta), &mut line)?;
+        last_modified(meta.mtime, &mut line)?;
         self.header(cx, &mut line)?;
         line.write_str("\r\n").expect("a header fits");
         self.header(cx, &mut line)?;
@@ -258,10 +284,12 @@ impl Request {
         // Before the start, C's seek fails and returns -1, which only an
         // offset of -1 is: the last byte of an empty file, read from the
         // start. Any other fails.
-        let file = self.file.as_mut().expect("opened to read");
         let sought = match u64::try_from(resume) {
             Ok(0) => true,
-            Ok(at) => file.seek(SeekFrom::Start(at)).ok() == Some(at),
+            Ok(at) => {
+                let file = self.file.as_mut().expect("opened to read");
+                file.seek(SeekFrom::Start(at)).ok() == Some(at)
+            }
             Err(_) => resume == -1,
         };
         if !sought {
@@ -392,11 +420,11 @@ impl Request {
     /// Write the body to the path (`file_upload`): the file opened, and
     /// the first piece.
     fn upload<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<DoStep, ErrorKind> {
-        // C looks for something after the path's first slash.
+        // C looks for something after the path's first separator.
         let path = &self.path[..self.path.len() - 1];
         if !path
             .iter()
-            .position(|&b| b == b'/')
+            .position(|&b| b == DIRSEP)
             .is_some_and(|slash| slash + 1 < path.len())
         {
             return Err(ErrorKind::FileCouldntReadFile);
@@ -605,6 +633,37 @@ fn number(s: &[u8]) -> Option<(i64, &[u8])> {
 fn injected<H: Host>(cx: &StepCx<'_, H>, pipeline: &Pipeline) -> Option<std::io::Error> {
     let at = cx.easy().options().file_faults.read_fails_at?;
     (pipeline.bytecount() >= at).then(|| std::io::Error::other("injected"))
+}
+
+/// What a download knows of its file once stated.
+struct Stated {
+    is_dir: bool,
+    size: u64,
+    mtime: i64,
+}
+
+/// What separates a path's parts (`DIRSEP`).
+#[cfg(unix)]
+const DIRSEP: u8 = b'/';
+#[cfg(windows)]
+const DIRSEP: u8 = b'\\';
+
+/// A URL's path made a Windows one, as C makes it on Windows
+/// (`DOS_FILESYSTEM`): a slash before a drive letter dropped, a `|` after
+/// the letter taken for `:`, and every slash a backslash. A path without
+/// a drive stays relative to the current drive's root, as a browser
+/// takes it.
+#[cfg(any(windows, test))]
+fn dos_path(path: &mut Vec<u8>) {
+    if path.len() > 2 && path[0] == b'/' && path[1] != 0 && matches!(path[2], b':' | b'|') {
+        path[2] = b':';
+        path.remove(0);
+    }
+    for b in path.iter_mut() {
+        if *b == b'/' {
+            *b = b'\\';
+        }
+    }
 }
 
 /// The file's modification time, in seconds after the epoch, as `fstat`

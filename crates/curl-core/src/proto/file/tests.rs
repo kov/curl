@@ -26,7 +26,7 @@ use crate::report::{HeaderError, Origins, Request};
 use crate::text::Text;
 use crate::time::ManualClock;
 
-use super::{from_file_time, last_modified};
+use super::{dos_path, from_file_time, last_modified};
 
 /// A directory of its own for a test, removed after it.
 struct Scratch(PathBuf);
@@ -41,8 +41,14 @@ impl Scratch {
         Scratch(dir)
     }
 
+    /// The URL of `name` in it: on Windows its drive after a slash, and
+    /// slashes for its backslashes.
     fn url(&self, name: &str) -> Vec<u8> {
-        format!("file://{}/{name}", self.0.display()).into_bytes()
+        #[cfg(unix)]
+        let dir = self.0.display().to_string();
+        #[cfg(windows)]
+        let dir = format!("/{}", self.0.display()).replace('\\', "/");
+        format!("file://{dir}/{name}").into_bytes()
     }
 
     /// `name` holding `content`, modified at `mtime` seconds after the
@@ -463,10 +469,14 @@ fn a_zero_byte_in_the_path_is_malformed() {
     let s = Scratch::new("zero");
     let (e, _) = easy(&s.url("a%00b"));
     assert_eq!(run(e).0, Err(ErrorKind::UrlMalformat));
-    s.file("a\x01b", b"x", Y2K_NOON);
-    let (e, seen) = easy(&s.url("a%01b"));
-    assert_eq!(run(e).0, Ok(()));
-    assert_eq!(seen.body(), b"x");
+    // Another control byte is a name's on Unix; Windows has no such name.
+    #[cfg(unix)]
+    {
+        s.file("a\x01b", b"x", Y2K_NOON);
+        let (e, seen) = easy(&s.url("a%01b"));
+        assert_eq!(run(e).0, Ok(()));
+        assert_eq!(seen.body(), b"x");
+    }
 }
 
 /// A head request is the headers, and the size, alone.
@@ -957,14 +967,18 @@ fn the_url_rules_apply_to_a_file_url() {
     e.options_mut().url_rules.disallow_user = true;
     assert_eq!(run(e).0, Err(ErrorKind::LoginDenied));
     // Through a directory that is not there: resolved, the path is the
-    // file; as it is, it is not found.
+    // file; as it is, it is not found, but on Windows, whose system
+    // resolves it, as C's `open` there finds it.
     let dotted = s.url("missing/../f");
     let (e, seen) = easy(&dotted);
     assert_eq!(run(e).0, Ok(()));
     assert_eq!(seen.body(), b"x");
     let (mut e, _) = easy(&dotted);
     e.options_mut().url_rules.path_as_is = true;
+    #[cfg(unix)]
     assert_eq!(run(e).0, Err(ErrorKind::FileCouldntReadFile));
+    #[cfg(windows)]
+    assert_eq!(run(e).0, Ok(()));
 }
 
 /// A read handler cannot pause an upload to a file.
@@ -1383,6 +1397,22 @@ fn a_file_says_it_is_set_up_to_move_nothing() {
         creds < queued && queued < setup && setup < named,
         "{lines:?}"
     );
+}
+
+/// A URL's path is made a Windows one as C makes it there: the slash
+/// before a drive dropped, `|` for `:`, slashes made backslashes.
+#[test]
+fn a_path_is_made_a_windows_one_as_c_makes_it() {
+    let dos = |p: &[u8]| {
+        let mut p = p.to_vec();
+        dos_path(&mut p);
+        p
+    };
+    assert_eq!(dos(b"/c:/dir/f"), br"c:\dir\f");
+    assert_eq!(dos(b"/D|/f"), br"D:\f");
+    assert_eq!(dos(b"/dir/f"), br"\dir\f");
+    assert_eq!(dos(b"//srv/share"), br"\\srv\share");
+    assert_eq!(dos(b"/c"), br"\c");
 }
 
 /// A Windows file time is seconds since 1970, rounded down, as the C

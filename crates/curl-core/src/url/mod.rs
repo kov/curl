@@ -297,6 +297,10 @@ fn scheme_of(url: &[u8], guessing: bool) -> Option<&[u8]> {
     if !url.first()?.is_ascii_alphabetic() {
         return None;
     }
+    // On Windows a drive is no scheme, guessing (`STARTS_WITH_DRIVE_PREFIX`).
+    if cfg!(windows) && guessing && url.get(1) == Some(&b':') {
+        return None;
+    }
     let len = 1 + url[1..]
         .iter()
         .take(MAX_SCHEME - 1)
@@ -434,9 +438,15 @@ impl Url {
                 return Err(UrlErrorKind::BadFileUrl);
             };
         }
-        // Drive letters only mean something on Windows.
+        // Drive letters only mean something on Windows, where the slash
+        // before one goes.
+        #[cfg(unix)]
         if drive_prefix(path) || (path.first() == Some(&b'/') && drive_prefix(&path[1..])) {
             return Err(UrlErrorKind::BadFileUrl);
+        }
+        #[cfg(windows)]
+        if path.first() == Some(&b'/') && drive_prefix(&path[1..]) {
+            path = &path[1..];
         }
         self.scheme = Some(Scheme {
             name: copy(b"file")?,
@@ -1935,15 +1945,19 @@ mod tests {
             "file:///c:/foo",
             "file://c:/foo",
             "file:/c:/foo",
-            "file:c:/foo",
             "file:///c|/foo",
         ] {
-            assert_eq!(
-                get(drive, Part::Url, p, g),
-                Err(UrlErrorKind::BadFileUrl),
-                "{drive}"
-            );
+            // Windows takes the drive, its slash before it dropped.
+            #[cfg(unix)]
+            let want = Err(UrlErrorKind::BadFileUrl);
+            #[cfg(windows)]
+            let want = Ok(format!("file://{}", &drive[drive.len() - 6..]));
+            assert_eq!(get(drive, Part::Url, p, g), want, "{drive}");
         }
+        assert_eq!(
+            get("file:c:/foo", Part::Url, p, g),
+            Err(UrlErrorKind::BadFileUrl)
+        );
         assert_eq!(
             get("file:///cc:/foo", Part::Path, p, g).as_deref(),
             Ok("/cc:/foo")

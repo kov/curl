@@ -30,3 +30,21 @@ witness: curl-core conn::connect::tests::the_loopback_address_is_told_as_c_tells
     ip == IpAddr::from(Ipv4Addr::LOCALHOST) || ip == IpAddr::from(Ipv6Addr::LOCALHOST)
 --- new
     ip.is_loopback()
+
+=== a DOS path keeps the bar a URL may write for a drive's colon
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_path_is_made_a_windows_one_as_c_makes_it
+--- old
+        path[2] = b':';
+        path.remove(0);
+--- new
+        path.remove(0);
+
+=== a DOS path keeps its slashes
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_path_is_made_a_windows_one_as_c_makes_it
+--- old
+        if *b == b'/' {
+            *b = b'\\';
+        }
+--- new

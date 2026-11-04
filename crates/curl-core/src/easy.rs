@@ -1698,8 +1698,14 @@ mod tests {
             Scratch(dir)
         }
 
+        /// The URL of `name` in it: on Windows its drive after a slash,
+        /// and slashes for its backslashes.
         fn url(&self, name: &str) -> Vec<u8> {
-            format!("file://{}/{name}", self.0.display()).into_bytes()
+            #[cfg(unix)]
+            let dir = self.0.display().to_string();
+            #[cfg(windows)]
+            let dir = format!("/{}", self.0.display()).replace('\\', "/");
+            format!("file://{dir}/{name}").into_bytes()
         }
     }
 
@@ -1794,7 +1800,12 @@ mod tests {
         e.options_mut().output.verbose = true;
         e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
         let err = e.perform().unwrap_err();
+        // The path as the URL has it, on Windows the slash before its
+        // drive dropped.
+        #[cfg(unix)]
         let path = &missing[b"file://".len()..];
+        #[cfg(windows)]
+        let path = &missing[b"file:///".len()..];
         let why = [&b"Could not open file "[..], path].concat();
         assert_eq!(err.detail(), Some(&why[..]));
         assert_eq!(err.to_string().as_bytes(), why);
@@ -1888,6 +1899,16 @@ mod tests {
         e.options_mut().set_default_protocol(Some(b"file")).unwrap();
         assert_eq!(e.perform(), Ok(()));
         assert_eq!(*body.0.lock().unwrap(), b"hello");
+        // On Windows a drive is no scheme, though a slash follows it
+        // (`Curl_is_absolute_url`).
+        #[cfg(windows)]
+        {
+            let slashed = path.display().to_string().replace('\\', "/");
+            e.options_mut().set_url(Some(slashed.as_bytes())).unwrap();
+            body.0.lock().unwrap().clear();
+            assert_eq!(e.perform(), Ok(()));
+            assert_eq!(*body.0.lock().unwrap(), b"hello");
+        }
         let copy = e.try_clone().unwrap();
         assert_eq!(copy.options().default_protocol(), Some(&b"file"[..]));
     }
@@ -2167,7 +2188,11 @@ mod tests {
         assert_eq!(result, Err(ErrorKind::CouldntConnect));
         assert_eq!(why, Some(std::io::ErrorKind::ConnectionRefused));
         assert_eq!(text[0], format!("  Trying 127.0.0.1:{port}...\n"));
+        // Windows says no local address of a connect refused.
+        #[cfg(unix)]
         let refused = format!("connect to 127.0.0.1 port {port} from 127.0.0.1 port ");
+        #[cfg(windows)]
+        let refused = format!("connect to 127.0.0.1 port {port} from 0.0.0.0 port ");
         assert!(text[1].starts_with(&refused), "{text:?}");
         assert!(
             text[1].ends_with(" failed: Connection refused\n"),

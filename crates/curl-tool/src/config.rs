@@ -34,7 +34,7 @@ const PLACES: &[(&str, &str, bool)] = &[
 ];
 
 /// What separates a directory from a name in it (`DIR_CHAR`).
-const DIR_CHAR: &[u8] = if cfg!(windows) { b"\\" } else { b"/" };
+pub(crate) const DIR_CHAR: &[u8] = if cfg!(windows) { b"\\" } else { b"/" };
 
 /// Whether `.curlrc` is looked for as `_curlrc` too, after it, in each
 /// place (`CURLRC_DOTSCORE` 2): on Windows.

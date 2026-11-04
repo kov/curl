@@ -3072,7 +3072,8 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
 
 /// The known-hosts file when none is given: the user's one `found`, else
 /// one under `home` that might do when the host is checked by neither
-/// fingerprint (`checked`: MD5, SHA-256), else none (`ssh_setopts`).
+/// fingerprint (`checked`: MD5, SHA-256), else none (`ssh_setopts`). Its
+/// parts are joined with `DIR_CHAR`, a backslash on Windows.
 fn known_hosts_default(
     found: Option<Vec<u8>>,
     checked: [bool; 2],
@@ -3082,8 +3083,10 @@ fn known_hosts_default(
         return Ok(found);
     }
     let mut path = Vec::new();
-    path.try_extend_from_slice(home.unwrap_or_default())?;
-    path.try_extend_from_slice(b"/.ssh/known_hosts")?;
+    let sep = crate::config::DIR_CHAR;
+    for part in [home.unwrap_or_default(), sep, b".ssh", sep, b"known_hosts"] {
+        path.try_extend_from_slice(part)?;
+    }
     Ok(Some(path))
 }
 
@@ -4849,17 +4852,23 @@ mod tests {
             let default = known_hosts_default(None, checked, Some(b"/h"));
             assert_eq!(default.unwrap(), None, "{checked:?}");
         }
+        // Joined with C's `DIR_CHAR`.
+        let under = if cfg!(windows) {
+            &b"\\.ssh\\known_hosts"[..]
+        } else {
+            b"/.ssh/known_hosts"
+        };
         assert_eq!(
             known_hosts_default(None, [false; 2], Some(b"/h"))
                 .unwrap()
                 .as_deref(),
-            Some(&b"/h/.ssh/known_hosts"[..])
+            Some(&[&b"/h"[..], under].concat()[..])
         );
         assert_eq!(
             known_hosts_default(None, [false; 2], None)
                 .unwrap()
                 .as_deref(),
-            Some(&b"/.ssh/known_hosts"[..])
+            Some(under)
         );
     }
 

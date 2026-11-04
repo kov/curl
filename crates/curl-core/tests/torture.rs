@@ -180,6 +180,10 @@ fn main() {
             track::untracked(|| println!("test {name} ... ignored, a lock's first use on macOS"));
             continue;
         }
+        if !cfg!(target_os = "linux") && RUN_ON_LINUX_ALONE.contains(&name) {
+            track::untracked(|| println!("test {name} ... ignored, a fake server's replies"));
+            continue;
+        }
         // Reported as libtest does, the name before the run, so that a run
         // that aborts still shows which test it was in.
         track::untracked(|| {
@@ -200,12 +204,22 @@ const MACOS_LOCK_ABORTS: &[&str] = &[
     "an_https_get_takes_no_refusal_for_success",
     "an_https_get_stays_within_its_allocation_budget",
     "a_share_s_connection_survives_every_allocation_failing",
+];
+
+/// The HTTP/3 tests, whose fake server answers each send with its next
+/// reply: they run where QUIC sends a run of datagrams in one call, as on
+/// Linux, as the HTTP/3 trace tests do (`proto::http::tests`). Where each
+/// datagram is a send of its own the replies come a flight early.
+const RUN_ON_LINUX_ALONE: &[&str] = &[
     "an_http3_get_survives_every_allocation_failing",
     "an_http3_get_takes_no_refusal_for_success",
+    "an_http3_get_stays_within_its_allocation_budget",
     "a_tunnel_through_an_http3_proxy_survives_every_allocation_failing",
     "a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success",
     "http3_through_an_http3_proxy_survives_every_allocation_failing",
     "http3_through_an_http3_proxy_takes_no_refusal_for_success",
+    "quic_receive_rooms_come_zeroed_from_the_allocator",
+    "one_quic_receive_room_per_multi",
 ];
 
 /// More transfers than the arena's first 16 rows, so it grows.

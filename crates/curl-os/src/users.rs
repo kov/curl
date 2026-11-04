@@ -130,6 +130,8 @@ pub fn home_directory() -> Result<Option<OsString>, OutOfMemory> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+
     /// The user's profile directory, as the system has it in
     /// `USERPROFILE`, and none with it unset or empty.
     #[test]

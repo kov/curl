@@ -153,14 +153,16 @@ unsafe extern "C" {
 pub fn command_line() -> Vec<OsString> {
     use std::os::windows::ffi::OsStringExt as _;
     use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
-    // SAFETY: the C library sets both before `main`, and keeps them for
-    // the life of the process; neither function takes an argument, and
-    // each gives a pointer to its value.
-    let (argc, argv) = unsafe {
-        let argc = __p___argc();
-        let argv = __p___argv();
-        (argc.read(), argv.read())
-    };
+    // SAFETY: neither function takes an argument; each gives a pointer to
+    // the C library's value, which it sets before `main` and keeps for the
+    // life of the process.
+    let argc = unsafe { __p___argc() };
+    // SAFETY: as above.
+    let argv = unsafe { __p___argv() };
+    // SAFETY: as above.
+    let argc = unsafe { argc.read() };
+    // SAFETY: as above.
+    let argv = unsafe { argv.read() };
     let argc = usize::try_from(argc).unwrap_or(0);
     if argv.is_null() {
         return Vec::new();
@@ -169,7 +171,7 @@ pub fn command_line() -> Vec<OsString> {
         .map(|i| {
             // SAFETY: `argv` holds `argc` pointers to NUL-terminated
             // strings, which the C library never frees.
-            let arg = unsafe { argv.add(i).read() };
+            let arg = unsafe { argv.wrapping_add(i).read() };
             // SAFETY: as above.
             let arg = unsafe { CStr::from_ptr(arg) }.to_bytes();
             if arg.is_empty() {

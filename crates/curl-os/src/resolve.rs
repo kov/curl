@@ -1,7 +1,8 @@
 //! Names resolved to addresses by the system's resolver (`getaddrinfo`),
 //! as C's synchronous resolver asks it (`lib/vdns/hostip4.c`,
 //! `hostip6.c`): blocking until it answers, its addresses in the order it
-//! gives them, each once.
+//! gives them, each once. On Windows it is Winsock's, which must be
+//! started (`net::Winsock`).
 
 #![allow(unsafe_code)]
 
@@ -41,6 +42,7 @@ impl From<OutOfMemory> for Failure {
 }
 
 /// The addresses of `name`, of `family`.
+#[cfg(unix)]
 pub fn lookup(name: &[u8], family: Family) -> Result<Vec<IpAddr>, Failure> {
     let mut text = Vec::new();
     text.try_reserve_exact(name.len() + 1)
@@ -86,6 +88,7 @@ pub fn lookup(name: &[u8], family: Family) -> Result<Vec<IpAddr>, Failure> {
 /// What a failure `getaddrinfo` returned says. Only no such name and no
 /// such data are answers (as C's `gai_negative` tells them apart), which
 /// the caller keeps; the resolver failing now is not.
+#[cfg(unix)]
 fn failure(rc: libc::c_int) -> Failure {
     match rc {
         libc::EAI_NONAME => Failure::NotFound,
@@ -97,6 +100,7 @@ fn failure(rc: libc::c_int) -> Failure {
 }
 
 /// The address a node holds, if of a family known here.
+#[cfg(unix)]
 fn address(node: &libc::addrinfo) -> Option<IpAddr> {
     let len = usize::try_from(node.ai_addrlen).ok()?;
     if node.ai_addr.is_null() {
@@ -121,8 +125,10 @@ fn address(node: &libc::addrinfo) -> Option<IpAddr> {
 }
 
 /// The list `getaddrinfo` made, freed once.
+#[cfg(unix)]
 struct List(*mut libc::addrinfo);
 
+#[cfg(unix)]
 impl Drop for List {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -132,7 +138,155 @@ impl Drop for List {
     }
 }
 
-#[cfg(test)]
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock as ws;
+
+/// The addresses of `name`, of `family`, as Winsock's `getaddrinfo`
+/// gives them, in the ANSI code page C hands it the name in.
+#[cfg(windows)]
+pub fn lookup(name: &[u8], family: Family) -> Result<Vec<IpAddr>, Failure> {
+    let mut text = Vec::new();
+    text.try_reserve_exact(name.len() + 1)
+        .map_err(|_| Failure::OutOfMemory)?;
+    text.try_extend_from_slice(name)?;
+    text.try_push(0)?;
+    // A name with a zero byte in it is no name.
+    let text = CString::from_vec_with_nul(text).map_err(|_| Failure::NotFound)?;
+    // SAFETY: `ADDRINFOA` is plain data, for which all zeroes is the
+    // empty hint `getaddrinfo` expects in the fields not set.
+    let mut hints: ws::ADDRINFOA = unsafe { mem::zeroed() };
+    hints.ai_family = i32::from(match family {
+        Family::Any => ws::AF_UNSPEC,
+        Family::V4 => ws::AF_INET,
+        Family::V6 => ws::AF_INET6,
+    });
+    hints.ai_socktype = ws::SOCK_STREAM;
+    let mut first: *mut ws::ADDRINFOA = ptr::null_mut();
+    // SAFETY: `text` is a C string and `hints` an addrinfo, both alive
+    // through the call; `first` is where it writes the list.
+    let rc = unsafe {
+        ws::getaddrinfo(
+            text.as_ptr().cast(),
+            ptr::null(),
+            &raw const hints,
+            &raw mut first,
+        )
+    };
+    if rc != 0 {
+        return Err(failure(rc));
+    }
+    let list = List(first);
+    let mut addrs: Vec<IpAddr> = Vec::new();
+    let mut at = list.0;
+    while !at.is_null() {
+        // SAFETY: a node of the list `getaddrinfo` made, which `list`
+        // keeps until it is dropped.
+        let node = unsafe { &*at };
+        if let Some(ip) = address(node)
+            && !addrs.contains(&ip)
+        {
+            addrs.try_push(ip)?;
+        }
+        at = node.ai_next;
+    }
+    Ok(addrs)
+}
+
+/// What a failure `getaddrinfo` returned says. Winsock's `EAI_NODATA` is
+/// its `EAI_NONAME` (`WSAHOST_NOT_FOUND`), so a name is either found or
+/// not, as C's `gai_negative` tells them there; the resolver failing now
+/// (`WSATRY_AGAIN`) is no answer.
+#[cfg(windows)]
+fn failure(rc: i32) -> Failure {
+    match rc {
+        ws::WSAHOST_NOT_FOUND => Failure::NotFound,
+        ws::WSATRY_AGAIN => Failure::Again,
+        ws::WSA_NOT_ENOUGH_MEMORY => Failure::OutOfMemory,
+        _ => Failure::Failed,
+    }
+}
+
+/// The address a node holds, if of a family known here.
+#[cfg(windows)]
+fn address(node: &ws::ADDRINFOA) -> Option<IpAddr> {
+    if node.ai_addr.is_null() {
+        return None;
+    }
+    let family = u16::try_from(node.ai_family).ok()?;
+    if family == ws::AF_INET && node.ai_addrlen >= mem::size_of::<ws::SOCKADDR_IN>() {
+        // SAFETY: an AF_INET address of a SOCKADDR_IN's length, which the
+        // list keeps; read unaligned, as nothing promises more.
+        let sin = unsafe { ptr::read_unaligned(node.ai_addr.cast::<ws::SOCKADDR_IN>()) };
+        // SAFETY: every field of the union is a reading of the same four
+        // bytes.
+        let raw = unsafe { sin.sin_addr.S_un.S_addr };
+        Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(raw))))
+    } else if family == ws::AF_INET6 && node.ai_addrlen >= mem::size_of::<ws::SOCKADDR_IN6>() {
+        // SAFETY: as above, for AF_INET6 and a SOCKADDR_IN6.
+        let sin6 = unsafe { ptr::read_unaligned(node.ai_addr.cast::<ws::SOCKADDR_IN6>()) };
+        // SAFETY: as above, the sixteen bytes.
+        let bytes = unsafe { sin6.sin6_addr.u.Byte };
+        Some(IpAddr::V6(Ipv6Addr::from(bytes)))
+    } else {
+        None
+    }
+}
+
+/// The list `getaddrinfo` made, freed once.
+#[cfg(windows)]
+struct List(*mut ws::ADDRINFOA);
+
+#[cfg(windows)]
+impl Drop for List {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the list `getaddrinfo` returned, freed only here.
+            unsafe { ws::freeaddrinfo(self.0) };
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// The loopback names resolve, by family as asked; a name that cannot
+    /// exist does not, nor one with a zero byte in it.
+    #[test]
+    fn looks_up_names_as_the_system_knows_them() {
+        std::mem::forget(crate::net::Winsock::start().unwrap());
+        let v4 = lookup(b"127.0.0.1", Family::Any).unwrap();
+        assert_eq!(v4, [IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+        let v6 = lookup(b"::1", Family::V6).unwrap();
+        assert_eq!(v6, [IpAddr::V6(Ipv6Addr::LOCALHOST)]);
+        assert!(lookup(b"::1", Family::V4).is_err());
+        let localhost = lookup(b"localhost", Family::V4).unwrap();
+        assert!(localhost.iter().all(IpAddr::is_ipv4), "{localhost:?}");
+        assert!(!localhost.is_empty());
+        assert_eq!(
+            lookup(b"nonexist.invalid", Family::Any),
+            Err(Failure::NotFound)
+        );
+        assert_eq!(lookup(b"bad\0name", Family::Any), Err(Failure::NotFound));
+    }
+
+    /// Each of `getaddrinfo`'s failures says what it means.
+    #[test]
+    fn failures_say_why() {
+        for (rc, why) in [
+            (ws::WSAHOST_NOT_FOUND, Failure::NotFound),
+            (ws::WSATRY_AGAIN, Failure::Again),
+            (ws::WSA_NOT_ENOUGH_MEMORY, Failure::OutOfMemory),
+            (ws::WSANO_RECOVERY, Failure::Failed),
+            (ws::WSANO_DATA, Failure::Failed),
+            (ws::WSANOTINITIALISED, Failure::Failed),
+        ] {
+            assert_eq!(failure(rc), why, "{rc}");
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

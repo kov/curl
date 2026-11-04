@@ -4,8 +4,9 @@
 //! locale, the local time of day, the user database,
 //! random bytes, with `net` sockets, polling, the system's resolver and
 //! the waker, and with `fs` files, their extended attributes and
-//! directories. Linux first; each module says what it needs of the
-//! platform.
+//! directories. Linux first, and Windows behind the same API, each as
+//! C's build for it does; each module says what it needs of the
+//! platform. A socket is named by [`socket`]'s names, the same on each.
 
 #[cfg(feature = "args")]
 pub mod args;
@@ -22,6 +23,8 @@ pub mod poll;
 pub mod random;
 #[cfg(feature = "net")]
 pub mod resolve;
+#[cfg(feature = "net")]
+pub mod socket;
 pub mod terminal;
 pub mod time;
 pub mod users;

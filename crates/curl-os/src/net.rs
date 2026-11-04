@@ -4,12 +4,18 @@
 //! `MSG_NOSIGNAL`, or a std `UdpSocket`, one datagram a call. A receive or
 //! send a signal interrupts would block, as C reads `EINTR` there; a
 //! connect it interrupts failed.
+//!
+//! On Windows the same calls are Winsock's, which [`Winsock`] starts, as
+//! C makes them under `USE_WINSOCK`: what Linux alone has (binding to a
+//! device, the interfaces' list, segmented sends and batched receives,
+//! QUIC's options) C does without there, and so does this.
 
 #![allow(unsafe_code)]
 
 use std::io::{self, Read as _, Write as _};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, UdpSocket as StdUdpSocket};
 use std::num::{NonZeroU32, NonZeroUsize};
+#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 /// How a connect started.
@@ -85,8 +91,18 @@ pub enum SocketOption {
     /// Datagrams of one flow may be received joined (`UDP_GRO`,
     /// `linux_quic_gro`).
     ReceiveJoined,
+    /// An IPv6 socket reaches IPv4 peers too, by their mapped addresses
+    /// (`IPV6_V6ONLY` off), as C sets every IPv6 socket on Windows.
+    #[cfg(windows)]
+    DualStack,
+    /// A connect gives up after its first SYN (`SIO_TCP_INITIAL_RTO`), as
+    /// C sets a socket to the loopback address on Windows
+    /// (`tcplocalhost`).
+    #[cfg(windows)]
+    NoSynRetransmissions,
 }
 
+#[cfg(unix)]
 impl SocketOption {
     /// Its level, name and value, or none for the family.
     fn raw(self, family: libc::c_int) -> Option<(libc::c_int, libc::c_int, libc::c_int)> {
@@ -128,6 +144,7 @@ impl SocketOption {
     }
 }
 
+#[cfg(unix)]
 /// Set `option` on the socket `fd`. The type of service is set for the
 /// family the socket is bound to; on one of no family it sets nothing,
 /// as the tool's `sockopt_callback` does.
@@ -150,6 +167,7 @@ pub fn set(fd: BorrowedFd<'_>, option: SocketOption) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// A system call's result `rc`, an error if it failed: negative, the
 /// error in `errno`.
 fn checked(rc: libc::c_int) -> io::Result<libc::c_int> {
@@ -159,6 +177,7 @@ fn checked(rc: libc::c_int) -> io::Result<libc::c_int> {
     Ok(rc)
 }
 
+#[cfg(unix)]
 /// The address family of the socket `fd`, `AF_UNSPEC` if it cannot be
 /// told (`get_address_family`).
 fn family(fd: BorrowedFd<'_>) -> libc::c_int {
@@ -182,6 +201,7 @@ fn family(fd: BorrowedFd<'_>) -> libc::c_int {
     }
 }
 
+#[cfg(unix)]
 /// Open a close-on-exec TCP stream socket of `addr`'s family, speaking
 /// `protocol`, nonblocking if `nonblocking`: not connected yet.
 pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Result<TcpSocket> {
@@ -208,6 +228,7 @@ pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Resu
     })))
 }
 
+#[cfg(unix)]
 /// Open a close-on-exec UDP socket of `addr`'s family, nonblocking if
 /// `nonblocking`, as QUIC's are (`SOCK_DGRAM`, `IPPROTO_UDP`): not
 /// connected yet.
@@ -231,6 +252,7 @@ pub fn open_udp(addr: SocketAddr, nonblocking: bool) -> io::Result<UdpSocket> {
     })))
 }
 
+#[cfg(unix)]
 /// The UDP socket `fd`, which an application opened and gives up: closing
 /// the `UdpSocket` closes it.
 ///
@@ -243,6 +265,7 @@ pub unsafe fn adopt_udp(fd: RawFd) -> UdpSocket {
     UdpSocket(StdUdpSocket::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+#[cfg(unix)]
 /// Open a close-on-exec Unix stream socket (`AF_UNIX`), nonblocking if
 /// `nonblocking`: not connected yet. It is held as a TCP socket is, its
 /// reads, writes and errors being the same calls; it has no local
@@ -263,6 +286,7 @@ pub fn open_unix(nonblocking: bool) -> io::Result<TcpSocket> {
     })))
 }
 
+#[cfg(unix)]
 /// The room a Unix socket's address has for its path, its terminator or,
 /// for an abstract name, the zero before it among it (`sun_path`).
 pub const UNIX_PATH_ROOM: usize = {
@@ -271,6 +295,7 @@ pub const UNIX_PATH_ROOM: usize = {
     std::mem::size_of_val(&un.sun_path)
 };
 
+#[cfg(unix)]
 /// The address of the Unix socket at `path`, or of the abstract name
 /// `path` if `abstract_name`, as C writes it (`Curl_unix2addr`): the path
 /// and its terminator, or a zero and the name, without one after. `None`
@@ -298,6 +323,7 @@ fn unix_address(path: &[u8], abstract_name: bool) -> Option<SockAddr> {
     })
 }
 
+#[cfg(unix)]
 /// The socket `fd`, which an application opened and gives up: closing
 /// the `TcpSocket` closes it.
 ///
@@ -310,12 +336,14 @@ pub unsafe fn adopt(fd: RawFd) -> TcpSocket {
     TcpSocket(TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+#[cfg(unix)]
 /// A socket address as the kernel reads it.
 struct SockAddr {
     raw: libc::sockaddr_storage,
     len: libc::socklen_t,
 }
 
+#[cfg(unix)]
 impl From<SocketAddr> for SockAddr {
     fn from(addr: SocketAddr) -> SockAddr {
         // SAFETY: all-zero bytes are a valid `sockaddr_storage`.
@@ -357,6 +385,7 @@ impl From<SocketAddr> for SockAddr {
     }
 }
 
+#[cfg(unix)]
 /// Whether the system has a working IPv6 stack: an IPv6 datagram socket
 /// opens, and is closed at once (`Curl_probeipv6`). Only running out of
 /// memory is an error; any other failure is no IPv6.
@@ -372,6 +401,7 @@ pub fn probe_ipv6() -> io::Result<bool> {
     Ok(true)
 }
 
+#[cfg(unix)]
 /// What the probe's socket failing to open with `err` means: running out
 /// of memory is an error, anything else no IPv6.
 fn probe_failed(err: io::Error) -> io::Result<bool> {
@@ -381,6 +411,7 @@ fn probe_failed(err: io::Error) -> io::Result<bool> {
     }
 }
 
+#[cfg(unix)]
 /// The index of the network interface named `name` (`if_nametoindex`),
 /// or `None` if no interface has that name.
 pub fn interface_index(name: &[u8]) -> Option<NonZeroU32> {
@@ -397,6 +428,7 @@ pub fn interface_index(name: &[u8]) -> Option<NonZeroU32> {
     NonZeroU32::new(index)
 }
 
+#[cfg(unix)]
 /// The machine's host name (`gethostname`), read into `buf`: as much of
 /// it as fits with its terminator, up to that terminator; `None` if the
 /// system cannot say it.
@@ -417,6 +449,7 @@ pub fn host_name(buf: &mut [u8]) -> Option<&[u8]> {
     Some(&buf[..n])
 }
 
+#[cfg(unix)]
 /// The scope of the first interface that is up, is not loopback, and has
 /// a link-local IPv6 address, for a link-local address given without one
 /// (cf-socket.c's `get_scope_id`); `None` if there is none, or the list
@@ -464,9 +497,11 @@ pub fn link_local_scope() -> Option<NonZeroU32> {
     found
 }
 
+#[cfg(unix)]
 /// The system's numbers for the address families, as C's traces show
 /// them.
 pub const AF_INET: i32 = libc::AF_INET;
+#[cfg(unix)]
 pub const AF_INET6: i32 = libc::AF_INET6;
 
 /// The scope an IPv6 address is in, as an interface's address is matched
@@ -510,6 +545,7 @@ pub enum InterfaceAddress {
     Found(IpAddr, u32),
 }
 
+#[cfg(unix)]
 /// The first address of the family IPv6 if `v6`, else IPv4, of the
 /// interface named `name` (`Curl_if2ip`). An IPv6 one is taken only in
 /// `remote_scope`, the scope of the address connected to, and, if
@@ -581,6 +617,7 @@ pub fn interface_address(
     found
 }
 
+#[cfg(unix)]
 /// Bind the local end of the socket `fd` to `addr`, before it connects.
 fn bind_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<()> {
     let storage = SockAddr::from(addr);
@@ -597,6 +634,7 @@ fn bind_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Bind the socket `fd` to the network interface named `name`, which must
 /// not hold a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`).
 fn bind_fd_to_device(fd: BorrowedFd<'_>, name: &[u8]) -> io::Result<()> {
@@ -622,6 +660,7 @@ fn bind_fd_to_device(fd: BorrowedFd<'_>, name: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Make the socket `fd` nonblocking, as `curlx_nonblock` does (`F_SETFL`).
 fn set_fd_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     let fd = fd.as_raw_fd();
@@ -632,6 +671,7 @@ fn set_fd_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Start connecting the socket `fd` to `addr`; the socket is nonblocking,
 /// so a connect not decided at once goes on in the background. A
 /// datagram socket's is decided at once.
@@ -653,6 +693,7 @@ fn connect_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<Connect> {
 }
 
 impl TcpSocket {
+    #[cfg(unix)]
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
     }
@@ -662,6 +703,7 @@ impl TcpSocket {
         bind_fd(self.fd(), addr)
     }
 
+    #[cfg(unix)]
     /// Bind it to the network interface named `name`, which must not hold
     /// a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`).
     pub fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
@@ -684,6 +726,7 @@ impl TcpSocket {
         connect_fd(self.fd(), addr)
     }
 
+    #[cfg(unix)]
     /// Start connecting it, a Unix socket, to the one at `path`, or of
     /// the abstract name `path` if `abstract_name`: refused with `EINVAL`
     /// if the address cannot hold it (see [`UNIX_PATH_ROOM`]).
@@ -730,6 +773,7 @@ impl TcpSocket {
         self.0.shutdown(Shutdown::Write)
     }
 
+    #[cfg(unix)]
     /// Listen on it, bound, for `backlog` connections at most waiting
     /// (`listen`).
     pub fn listen(&self, backlog: i32) -> io::Result<()> {
@@ -738,6 +782,7 @@ impl TcpSocket {
         Ok(())
     }
 
+    #[cfg(unix)]
     /// The connection waiting on it, listening, accepted as a
     /// nonblocking, close-on-exec socket; none if none waits
     /// (`accept4`).
@@ -769,6 +814,7 @@ impl TcpSocket {
         self.0.local_addr()
     }
 
+    #[cfg(unix)]
     /// Let go of the descriptor without closing it: the caller closes
     /// it, as an application's own closer does.
     pub fn into_raw(self) -> RawFd {
@@ -786,6 +832,7 @@ impl TcpSocket {
 pub struct UdpSocket(StdUdpSocket);
 
 impl UdpSocket {
+    #[cfg(unix)]
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
     }
@@ -795,6 +842,7 @@ impl UdpSocket {
         bind_fd(self.fd(), addr)
     }
 
+    #[cfg(unix)]
     /// Bind it to the network interface named `name` (`SO_BINDTODEVICE`).
     pub fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
         bind_fd_to_device(self.fd(), name)
@@ -820,6 +868,7 @@ impl UdpSocket {
         self.0.take_error()
     }
 
+    #[cfg(unix)]
     /// Receive one datagram into `buf`, which must not be empty: as much
     /// of it as fits. An empty datagram, which no peer of ours sends, is
     /// passed over for the next.
@@ -851,6 +900,7 @@ impl UdpSocket {
         }
     }
 
+    #[cfg(unix)]
     /// Receive one datagram into `buf`, which must not be empty, and
     /// whom it came from (`recvfrom`): as much of it as fits, an empty one
     /// too; none if none waits. A signal interrupting it receives again.
@@ -866,6 +916,7 @@ impl UdpSocket {
         }
     }
 
+    #[cfg(unix)]
     /// Send `buf`, which must not be empty, as datagrams of `segment`
     /// bytes each, the last what is left: one `sendmsg`, the kernel
     /// cutting it (`UDP_SEGMENT`) if it is longer than one (`do_sendmsg`).
@@ -927,6 +978,7 @@ impl UdpSocket {
         }
     }
 
+    #[cfg(unix)]
     /// Receive datagrams into `buf`, each into a slot of `slot` bytes of
     /// it, as many as fit and `out` holds, at most `BATCH`: one
     /// `recvmmsg` (`recvmmsg_packets`). How many, each told in `out`:
@@ -1015,6 +1067,7 @@ impl UdpSocket {
         self.0.local_addr()
     }
 
+    #[cfg(unix)]
     /// Let go of the descriptor without closing it: the caller closes
     /// it, as an application's own closer does.
     pub fn into_raw(self) -> RawFd {
@@ -1022,10 +1075,12 @@ impl UdpSocket {
     }
 }
 
+#[cfg(unix)]
 /// A datagram was too large for the path (`EMSGSIZE`), which a send of
 /// segments may fail with.
 pub const TOO_LARGE: i32 = libc::EMSGSIZE;
 
+#[cfg(unix)]
 /// The kernel could not cut a send of segments (`EIO`).
 pub const IO_FAILED: i32 = libc::EIO;
 
@@ -1050,6 +1105,7 @@ pub struct Datagram {
     pub from: Option<SocketAddr>,
 }
 
+#[cfg(unix)]
 /// The joined packets' size and the ECN bits a received message's control
 /// messages say, each 0 if none does (`vquic_msghdr_get_udp_gro`,
 /// `vquic_msghdr_get_ecn`).
@@ -1091,6 +1147,7 @@ fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (usize, u8) {
     (segment, ecn)
 }
 
+#[cfg(unix)]
 /// The address the kernel wrote into `storage`, if of a family of IP's.
 fn socket_addr(storage: &libc::sockaddr_storage) -> Option<SocketAddr> {
     match libc::c_int::from(storage.ss_family) {
@@ -1116,6 +1173,7 @@ fn socket_addr(storage: &libc::sockaddr_storage) -> Option<SocketAddr> {
     }
 }
 
+#[cfg(unix)]
 /// What a connect that did not connect at once means: in progress, or,
 /// for any other error, failed (`socket_connect_result`). An `EINTR`
 /// fails it, as C takes only `EINPROGRESS` and `EAGAIN` for under way.
@@ -1126,6 +1184,7 @@ fn connect_failed(err: io::Error) -> io::Result<Connect> {
     }
 }
 
+#[cfg(unix)]
 /// What a receive's result means: an `EAGAIN` or an `EINTR` would block
 /// (`cf_socket_recv`).
 fn received(got: io::Result<usize>) -> io::Result<Recv> {
@@ -1138,6 +1197,7 @@ fn received(got: io::Result<usize>) -> io::Result<Recv> {
     }
 }
 
+#[cfg(unix)]
 /// What a send's result means: an `EAGAIN`, an `EINTR` or an
 /// `EINPROGRESS` would block (`cf_socket_send`).
 fn sent(took: io::Result<usize>) -> io::Result<Sent> {
@@ -1158,7 +1218,761 @@ fn sent(took: io::Result<usize>) -> io::Result<Sent> {
     }
 }
 
-#[cfg(test)]
+/// Winsock, started for as long as this lives (`WSAStartup` for version
+/// 2.2, then `WSACleanup`), as C's `curl_global_init` starts it on
+/// Windows. Every socket call before it fails with `WSANOTINITIALISED`.
+/// The system counts the starts, so each owner holds one of its own, and
+/// sockets work while any is held. On Unix there is nothing to start.
+#[derive(Debug)]
+pub struct Winsock {
+    _started: (),
+}
+
+impl Winsock {
+    #[cfg(unix)]
+    pub fn start() -> io::Result<Winsock> {
+        Ok(Winsock { _started: () })
+    }
+
+    /// Start Winsock 2.2, or fail with the system's reason
+    /// (`WSASYSNOTREADY`, `WSAVERNOTSUPPORTED`, `WSAEPROCLIM`).
+    #[cfg(windows)]
+    pub fn start() -> io::Result<Winsock> {
+        // SAFETY: all zeros is a value of the plain record the call fills.
+        let mut data: ws::WSADATA = unsafe { std::mem::zeroed() };
+        // SAFETY: `data` is the record the call writes, alive through it.
+        let rc = unsafe { ws::WSAStartup(0x0202, &raw mut data) };
+        if rc != 0 {
+            return Err(io::Error::from_raw_os_error(rc));
+        }
+        Ok(Winsock { _started: () })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Winsock {
+    fn drop(&mut self) {
+        // SAFETY: this start succeeded, and is ended once. A failure
+        // leaves nothing to do.
+        unsafe { ws::WSACleanup() };
+    }
+}
+
+#[cfg(windows)]
+use std::os::windows::io::{
+    AsRawSocket as _, AsSocket as _, FromRawSocket as _, IntoRawSocket as _,
+};
+
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock as ws;
+
+#[cfg(windows)]
+use crate::socket::{BorrowedSocket, OwnedSocket, RawSocket};
+
+/// The error Winsock holds for the last call that failed on this thread.
+#[cfg(windows)]
+fn last_error() -> io::Error {
+    // SAFETY: `WSAGetLastError` only reads the thread's error.
+    io::Error::from_raw_os_error(unsafe { ws::WSAGetLastError() })
+}
+
+/// A Winsock call's result `rc`, an error if it failed (`SOCKET_ERROR`).
+#[cfg(windows)]
+fn checked(rc: i32) -> io::Result<i32> {
+    if rc == ws::SOCKET_ERROR {
+        return Err(last_error());
+    }
+    Ok(rc)
+}
+
+/// The `SOCKET` `fd` names, as Winsock takes it.
+#[cfg(windows)]
+fn sock(fd: BorrowedSocket<'_>) -> ws::SOCKET {
+    fd.as_raw_socket() as ws::SOCKET
+}
+
+/// A new socket, as C opens one (`socket()`): inherited by a child
+/// process made to inherit handles, as C's are.
+#[cfg(windows)]
+fn new_socket(family: i32, kind: i32, protocol: i32) -> io::Result<OwnedSocket> {
+    // SAFETY: `socket` takes no pointers; `INVALID_SOCKET` is an error.
+    let s = unsafe { ws::socket(family, kind, protocol) };
+    if s == ws::INVALID_SOCKET {
+        return Err(last_error());
+    }
+    // SAFETY: `s` was just opened and is owned by nothing else.
+    Ok(unsafe { OwnedSocket::from_raw_socket(s as RawSocket) })
+}
+
+#[cfg(windows)]
+impl SocketOption {
+    /// Its level, name and value, or none: for the family, or because C
+    /// sets no such option on Windows (`SO_PRIORITY`,
+    /// `IP_BIND_ADDRESS_NO_PORT`, `TCP_FASTOPEN_CONNECT` and QUIC's are
+    /// Linux's), or because it is no `setsockopt`.
+    fn raw(self, family: i32) -> Option<(i32, i32, i32)> {
+        let tcp = ws::IPPROTO_TCP;
+        let (inet, inet6) = (i32::from(ws::AF_INET), i32::from(ws::AF_INET6));
+        Some(match self {
+            SocketOption::NoDelay => (tcp, ws::TCP_NODELAY, 1),
+            SocketOption::KeepAlive => (ws::SOL_SOCKET, ws::SO_KEEPALIVE, 1),
+            // In seconds, as Windows 10 1709 and later take them; C's
+            // `SIO_KEEPALIVE_VALS` is for those before.
+            SocketOption::KeepIdle(s) => (tcp, ws::TCP_KEEPIDLE, s),
+            SocketOption::KeepInterval(s) => (tcp, ws::TCP_KEEPINTVL, s),
+            SocketOption::KeepCount(n) => (tcp, ws::TCP_KEEPCNT, n),
+            SocketOption::TypeOfService(tos) => match family {
+                f if f == inet => (ws::IPPROTO_IP, ws::IP_TOS, tos),
+                f if f == inet6 => (ws::IPPROTO_IPV6, ws::IPV6_TCLASS, tos),
+                _ => return None,
+            },
+            SocketOption::DualStack => (ws::IPPROTO_IPV6, ws::IPV6_V6ONLY, 0),
+            SocketOption::FastOpenConnect
+            | SocketOption::Priority(_)
+            | SocketOption::BindAddressNoPort
+            | SocketOption::ReceiveEcn
+            | SocketOption::DiscoverMtu
+            | SocketOption::ReceiveJoined
+            | SocketOption::NoSynRetransmissions => return None,
+        })
+    }
+}
+
+/// Set `option` on the socket `fd`. The type of service is set for the
+/// family the socket is bound to; on one of no family it sets nothing,
+/// as the tool's `sockopt_callback` does. An option C does not set on
+/// Windows sets nothing.
+#[cfg(windows)]
+pub fn set(fd: BorrowedSocket<'_>, option: SocketOption) -> io::Result<()> {
+    if option == SocketOption::NoSynRetransmissions {
+        return no_syn_retransmissions(fd);
+    }
+    let family = match option {
+        SocketOption::TypeOfService(_) => family(fd),
+        _ => i32::from(ws::AF_UNSPEC),
+    };
+    let Some((level, name, value)) = option.raw(family) else {
+        return Ok(());
+    };
+    let len = i32::try_from(size_of::<i32>()).expect("an int's size fits");
+    // SAFETY: `value` is an int of the length given and lives through the
+    // call; `fd` is an open socket for as long as it is borrowed.
+    let rc = unsafe { ws::setsockopt(sock(fd), level, name, (&raw const value).cast(), len) };
+    checked(rc)?;
+    Ok(())
+}
+
+/// A connect to `fd`'s peer gives up after its first SYN
+/// (`SIO_TCP_INITIAL_RTO`), as C's `tcplocalhost` sets it: the default
+/// round trip, and no retransmissions, as Windows 10 1709 and later take
+/// it.
+#[cfg(windows)]
+fn no_syn_retransmissions(fd: BorrowedSocket<'_>) -> io::Result<()> {
+    /// `TCP_INITIAL_RTO_PARAMETERS`.
+    #[repr(C)]
+    struct InitialRto {
+        rtt: u16,
+        max_syn_retransmissions: u8,
+    }
+    /// `TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS`.
+    const NO_SYN_RETRANSMISSIONS: u8 = 0xFE;
+    let rto = InitialRto {
+        rtt: 0,
+        max_syn_retransmissions: NO_SYN_RETRANSMISSIONS,
+    };
+    let mut bytes = 0u32;
+    let len = u32::try_from(size_of::<InitialRto>()).expect("fits");
+    // SAFETY: `rto` is the parameters of the length given, `bytes` where
+    // the call writes how much it returned, both alive through it; the
+    // socket is open, and no overlapped call is made.
+    let rc = unsafe {
+        ws::WSAIoctl(
+            sock(fd),
+            ws::SIO_TCP_INITIAL_RTO,
+            (&raw const rto).cast(),
+            len,
+            std::ptr::null_mut(),
+            0,
+            &raw mut bytes,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    checked(rc)?;
+    Ok(())
+}
+
+/// The address family of the socket `fd`, `AF_UNSPEC` if it cannot be
+/// told (`get_address_family`).
+#[cfg(windows)]
+fn family(fd: BorrowedSocket<'_>) -> i32 {
+    // SAFETY: all-zero bytes are a valid `SOCKADDR_STORAGE`.
+    let mut storage: ws::SOCKADDR_STORAGE = unsafe { std::mem::zeroed() };
+    let mut len = i32::try_from(size_of::<ws::SOCKADDR_STORAGE>()).expect("its size fits");
+    // SAFETY: `storage` has room for any address, `len` says so, and both
+    // live through the call; `fd` is open while borrowed.
+    let rc = unsafe { ws::getsockname(sock(fd), (&raw mut storage).cast(), &raw mut len) };
+    if rc == 0 {
+        i32::from(storage.ss_family)
+    } else {
+        i32::from(ws::AF_UNSPEC)
+    }
+}
+
+/// The family `addr` is of, as Winsock numbers it.
+#[cfg(windows)]
+fn family_of(addr: SocketAddr) -> i32 {
+    i32::from(match addr {
+        SocketAddr::V4(_) => ws::AF_INET,
+        SocketAddr::V6(_) => ws::AF_INET6,
+    })
+}
+
+/// Open a TCP stream socket of `addr`'s family, speaking `protocol`,
+/// nonblocking if `nonblocking` (`FIONBIO` once opened, as Windows has no
+/// `SOCK_NONBLOCK`): not connected yet. Windows has no Multipath TCP:
+/// asked for it, this fails as the tool's `tool_socket_open_mptcp_cb`
+/// does there.
+#[cfg(windows)]
+pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Result<TcpSocket> {
+    if protocol == Protocol::Mptcp {
+        return Err(io::Error::from_raw_os_error(ws::WSAEPROTONOSUPPORT));
+    }
+    let s = TcpSocket(TcpStream::from(new_socket(
+        family_of(addr),
+        ws::SOCK_STREAM,
+        ws::IPPROTO_TCP,
+    )?));
+    if nonblocking {
+        s.set_nonblocking()?;
+    }
+    Ok(s)
+}
+
+/// Open a UDP socket of `addr`'s family, nonblocking if `nonblocking`,
+/// as QUIC's are: not connected yet.
+#[cfg(windows)]
+pub fn open_udp(addr: SocketAddr, nonblocking: bool) -> io::Result<UdpSocket> {
+    let s = UdpSocket(StdUdpSocket::from(new_socket(
+        family_of(addr),
+        ws::SOCK_DGRAM,
+        ws::IPPROTO_UDP,
+    )?));
+    if nonblocking {
+        s.set_nonblocking()?;
+    }
+    Ok(s)
+}
+
+/// The UDP socket `fd`, which an application opened and gives up: closing
+/// the `UdpSocket` closes it.
+///
+/// # Safety
+///
+/// `fd` is an open datagram socket that nothing else owns or closes
+/// while the `UdpSocket` lives.
+#[cfg(windows)]
+pub unsafe fn adopt_udp(fd: RawSocket) -> UdpSocket {
+    // SAFETY: as the caller guarantees.
+    UdpSocket(StdUdpSocket::from(unsafe {
+        OwnedSocket::from_raw_socket(fd)
+    }))
+}
+
+/// The socket `fd`, which an application opened and gives up: closing
+/// the `TcpSocket` closes it.
+///
+/// # Safety
+///
+/// `fd` is an open socket that nothing else owns or closes while the
+/// `TcpSocket` lives.
+#[cfg(windows)]
+pub unsafe fn adopt(fd: RawSocket) -> TcpSocket {
+    // SAFETY: as the caller guarantees.
+    TcpSocket(TcpStream::from(unsafe { OwnedSocket::from_raw_socket(fd) }))
+}
+
+/// Open a Unix stream socket (`AF_UNIX`, which Windows 10 has and C's
+/// build uses there, `USE_UNIX_SOCKETS`), nonblocking if `nonblocking`:
+/// not connected yet. It is held as a TCP socket is.
+#[cfg(windows)]
+pub fn open_unix(nonblocking: bool) -> io::Result<TcpSocket> {
+    let s = TcpSocket(TcpStream::from(new_socket(
+        i32::from(ws::AF_UNIX),
+        ws::SOCK_STREAM,
+        0,
+    )?));
+    if nonblocking {
+        s.set_nonblocking()?;
+    }
+    Ok(s)
+}
+
+/// The room a Unix socket's address has for its path, its terminator or,
+/// for an abstract name, the zero before it among it (`sun_path`).
+#[cfg(windows)]
+pub const UNIX_PATH_ROOM: usize = {
+    // SAFETY: all-zero bytes are a valid `SOCKADDR_UN`.
+    let un: ws::SOCKADDR_UN = unsafe { std::mem::zeroed() };
+    std::mem::size_of_val(&un.sun_path)
+};
+
+/// The address of the Unix socket at `path`, or of the abstract name
+/// `path` if `abstract_name`, as C writes it (`Curl_unix2addr`): the path
+/// and its terminator, or a zero and the name, without one after. `None`
+/// if it does not fit, or a path holds a zero byte.
+#[cfg(windows)]
+fn unix_address(path: &[u8], abstract_name: bool) -> Option<SockAddr> {
+    if path.len() >= UNIX_PATH_ROOM || (!abstract_name && path.contains(&0)) {
+        return None;
+    }
+    // SAFETY: all-zero bytes are a valid `SOCKADDR_UN`.
+    let mut un: ws::SOCKADDR_UN = unsafe { std::mem::zeroed() };
+    un.sun_family = ws::AF_UNIX;
+    let at = usize::from(abstract_name);
+    for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
+        *to = b as i8;
+    }
+    let len = std::mem::offset_of!(ws::SOCKADDR_UN, sun_path) + path.len() + 1;
+    // SAFETY: all-zero bytes are a valid `SOCKADDR_STORAGE`.
+    let mut raw: ws::SOCKADDR_STORAGE = unsafe { std::mem::zeroed() };
+    // SAFETY: `SOCKADDR_STORAGE` is large enough and aligned for any
+    // socket address, `SOCKADDR_UN` among them.
+    unsafe { (&raw mut raw).cast::<ws::SOCKADDR_UN>().write(un) };
+    Some(SockAddr {
+        raw,
+        len: i32::try_from(len).expect("a Unix socket address length fits"),
+    })
+}
+
+/// A socket address as Winsock reads it.
+#[cfg(windows)]
+struct SockAddr {
+    raw: ws::SOCKADDR_STORAGE,
+    len: i32,
+}
+
+#[cfg(windows)]
+impl From<SocketAddr> for SockAddr {
+    fn from(addr: SocketAddr) -> SockAddr {
+        // SAFETY: all-zero bytes are a valid `SOCKADDR_STORAGE`.
+        let mut raw: ws::SOCKADDR_STORAGE = unsafe { std::mem::zeroed() };
+        let len = match addr {
+            SocketAddr::V4(a) => {
+                let sin = ws::SOCKADDR_IN {
+                    sin_family: ws::AF_INET,
+                    sin_port: a.port().to_be(),
+                    sin_addr: ws::IN_ADDR {
+                        S_un: ws::IN_ADDR_0 {
+                            S_addr: u32::from_ne_bytes(a.ip().octets()),
+                        },
+                    },
+                    sin_zero: [0; 8],
+                };
+                // SAFETY: `SOCKADDR_STORAGE` is large enough and aligned
+                // for any socket address, `SOCKADDR_IN` among them.
+                unsafe { (&raw mut raw).cast::<ws::SOCKADDR_IN>().write(sin) };
+                size_of::<ws::SOCKADDR_IN>()
+            }
+            SocketAddr::V6(a) => {
+                let sin6 = ws::SOCKADDR_IN6 {
+                    sin6_family: ws::AF_INET6,
+                    sin6_port: a.port().to_be(),
+                    sin6_flowinfo: a.flowinfo(),
+                    sin6_addr: ws::IN6_ADDR {
+                        u: ws::IN6_ADDR_0 {
+                            Byte: a.ip().octets(),
+                        },
+                    },
+                    Anonymous: ws::SOCKADDR_IN6_0 {
+                        sin6_scope_id: a.scope_id(),
+                    },
+                };
+                // SAFETY: as above, for `SOCKADDR_IN6`.
+                unsafe { (&raw mut raw).cast::<ws::SOCKADDR_IN6>().write(sin6) };
+                size_of::<ws::SOCKADDR_IN6>()
+            }
+        };
+        SockAddr {
+            raw,
+            len: i32::try_from(len).expect("a socket address length fits"),
+        }
+    }
+}
+
+/// The address Winsock wrote into `storage`, if of a family of IP's.
+#[cfg(windows)]
+fn socket_addr(storage: &ws::SOCKADDR_STORAGE) -> Option<SocketAddr> {
+    if storage.ss_family == ws::AF_INET {
+        // SAFETY: an IPv4 address Winsock wrote, which the storage,
+        // aligned for any, holds.
+        let sin = unsafe { &*(&raw const *storage).cast::<ws::SOCKADDR_IN>() };
+        // SAFETY: every field of the union is a reading of the same four
+        // bytes.
+        let ip = std::net::Ipv4Addr::from(u32::from_be(unsafe { sin.sin_addr.S_un.S_addr }));
+        Some(SocketAddr::from((ip, u16::from_be(sin.sin_port))))
+    } else if storage.ss_family == ws::AF_INET6 {
+        // SAFETY: as above, IPv6's.
+        let sin6 = unsafe { &*(&raw const *storage).cast::<ws::SOCKADDR_IN6>() };
+        // SAFETY: as above, the sixteen bytes.
+        let ip = unsafe { sin6.sin6_addr.u.Byte };
+        // SAFETY: as above, the scope's four.
+        let scope = unsafe { sin6.Anonymous.sin6_scope_id };
+        Some(SocketAddr::V6(std::net::SocketAddrV6::new(
+            std::net::Ipv6Addr::from(ip),
+            u16::from_be(sin6.sin6_port),
+            sin6.sin6_flowinfo,
+            scope,
+        )))
+    } else {
+        None
+    }
+}
+
+/// Whether the system has a working IPv6 stack: an IPv6 datagram socket
+/// opens, and is closed at once (`Curl_probeipv6`). Only running out of
+/// memory is an error; any other failure is no IPv6.
+#[cfg(windows)]
+pub fn probe_ipv6() -> io::Result<bool> {
+    match new_socket(i32::from(ws::AF_INET6), ws::SOCK_DGRAM, 0) {
+        Ok(s) => {
+            drop(s);
+            Ok(true)
+        }
+        Err(err) => probe_failed(err),
+    }
+}
+
+/// What the probe's socket failing to open with `err` means: running out
+/// of memory (`WSA_NOT_ENOUGH_MEMORY`, C's `SOCKENOMEM` there) is an
+/// error, anything else no IPv6.
+#[cfg(windows)]
+fn probe_failed(err: io::Error) -> io::Result<bool> {
+    match err.raw_os_error() {
+        Some(ws::WSA_NOT_ENOUGH_MEMORY) => Err(err),
+        _ => Ok(false),
+    }
+}
+
+/// The index of the network interface named `name`: none on Windows,
+/// where C's build has no `if_nametoindex` (`HAVE_IF_NAMETOINDEX` is
+/// probed only off Windows), so a zone id is never a name there.
+#[cfg(windows)]
+pub fn interface_index(name: &[u8]) -> Option<NonZeroU32> {
+    let _ = name;
+    None
+}
+
+/// The machine's host name (`gethostname`), read into `buf`: as much of
+/// it as fits with its terminator, up to that terminator; `None` if the
+/// system cannot say it, as when Winsock is not started.
+#[cfg(windows)]
+pub fn host_name(buf: &mut [u8]) -> Option<&[u8]> {
+    if buf.is_empty() {
+        return None;
+    }
+    let len = i32::try_from(buf.len()).unwrap_or(i32::MAX);
+    // SAFETY: `buf` is valid for writes of the `len` bytes the call is
+    // told, and writes no further than.
+    let rc = unsafe { ws::gethostname(buf.as_mut_ptr(), len) };
+    if rc != 0 {
+        return None;
+    }
+    // A name cut to fit may lack its terminator (`name[namelen - 1]`).
+    let last = buf.len() - 1;
+    buf[last] = 0;
+    let n = buf.iter().position(|&b| b == 0).expect("terminated");
+    Some(&buf[..n])
+}
+
+/// The scope for a link-local address given without one: none on Windows,
+/// where C has no `getifaddrs` to find an interface by (`get_scope_id`).
+#[cfg(windows)]
+pub fn link_local_scope() -> Option<NonZeroU32> {
+    None
+}
+
+/// The system's numbers for the address families, as C's traces show
+/// them.
+#[cfg(windows)]
+pub const AF_INET: i32 = ws::AF_INET as i32;
+#[cfg(windows)]
+pub const AF_INET6: i32 = ws::AF_INET6 as i32;
+
+/// What the interface asked for has: on Windows nothing, as C's
+/// `Curl_if2ip` finds no interface without `getifaddrs`, so an interface
+/// name given is taken as a host name, as C takes it there.
+#[cfg(windows)]
+pub fn interface_address(
+    name: &[u8],
+    v6: bool,
+    remote_scope: Ipv6Scope,
+    scope_id: u32,
+) -> InterfaceAddress {
+    let _ = (name, v6, remote_scope, scope_id);
+    InterfaceAddress::NotFound
+}
+
+/// Bind the local end of the socket `fd` to `addr`, before it connects.
+#[cfg(windows)]
+fn bind_fd(fd: BorrowedSocket<'_>, addr: SocketAddr) -> io::Result<()> {
+    let storage = SockAddr::from(addr);
+    // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
+    // the length given, and lives through the call; the socket is open.
+    let rc = unsafe { ws::bind(sock(fd), (&raw const storage.raw).cast(), storage.len) };
+    checked(rc)?;
+    Ok(())
+}
+
+/// Make the socket `fd` nonblocking, as `curlx_nonblock` does on Windows
+/// (`ioctlsocket` with `FIONBIO`).
+#[cfg(windows)]
+fn set_fd_nonblocking(fd: BorrowedSocket<'_>) -> io::Result<()> {
+    let mut on = 1u32;
+    // SAFETY: `on` is the `u_long` the request reads, alive through the
+    // call; the socket is open.
+    checked(unsafe { ws::ioctlsocket(sock(fd), ws::FIONBIO, &raw mut on) })?;
+    Ok(())
+}
+
+/// Start connecting the socket `fd` to `addr` (`connect`), which goes on
+/// in the background on a nonblocking socket; a datagram socket's is
+/// decided at once.
+#[cfg(windows)]
+fn connect_fd(fd: BorrowedSocket<'_>, addr: SocketAddr) -> io::Result<Connect> {
+    let storage = SockAddr::from(addr);
+    connect_to(fd, &storage)
+}
+
+#[cfg(windows)]
+fn connect_to(fd: BorrowedSocket<'_>, storage: &SockAddr) -> io::Result<Connect> {
+    // SAFETY: `storage` holds a socket address, valid for the length
+    // given, and lives through the call; the socket is open.
+    let rc = unsafe { ws::connect(sock(fd), (&raw const storage.raw).cast(), storage.len) };
+    if rc == 0 {
+        return Ok(Connect::Done);
+    }
+    connect_failed(last_error())
+}
+
+/// What a connect that did not connect at once means: under way on
+/// `WSAEINPROGRESS` or `WSAEWOULDBLOCK`, which a nonblocking connect
+/// gives, failed on any other (`socket_connect_result`).
+#[cfg(windows)]
+fn connect_failed(err: io::Error) -> io::Result<Connect> {
+    match err.raw_os_error() {
+        Some(ws::WSAEINPROGRESS | ws::WSAEWOULDBLOCK) => Ok(Connect::InProgress),
+        _ => Err(err),
+    }
+}
+
+/// What a receive's result means: `WSAEWOULDBLOCK` would block, and no
+/// other, as Winsock has no `EINTR` to read there (`cf_socket_recv`).
+#[cfg(windows)]
+fn received(got: io::Result<usize>) -> io::Result<Recv> {
+    match got {
+        Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
+        Err(e) if e.raw_os_error() == Some(ws::WSAEWOULDBLOCK) => Ok(Recv::WouldBlock),
+        Err(e) => Err(e),
+    }
+}
+
+/// What a send's result means: `WSAEWOULDBLOCK` would block, and no other
+/// (`cf_socket_send`).
+#[cfg(windows)]
+fn sent(took: io::Result<usize>) -> io::Result<Sent> {
+    match took {
+        Ok(n) => {
+            let n = NonZeroUsize::new(n).expect("a send of some bytes takes some");
+            Ok(Sent::Bytes(n))
+        }
+        Err(e) if e.raw_os_error() == Some(ws::WSAEWOULDBLOCK) => Ok(Sent::WouldBlock),
+        Err(e) => Err(e),
+    }
+}
+
+/// A datagram was too large for the path (`WSAEMSGSIZE`), which a send
+/// may fail with.
+#[cfg(windows)]
+pub const TOO_LARGE: i32 = ws::WSAEMSGSIZE;
+
+/// The datagram `got` filled `buf` with: a datagram larger than `buf`
+/// fails with `WSAEMSGSIZE` on Windows, having filled it, where Unix cuts
+/// it to fit without a word; both are as much of it as fits.
+#[cfg(windows)]
+fn cut_to_fit<T>(got: io::Result<T>, filled: impl FnOnce() -> T) -> io::Result<T> {
+    match got {
+        Err(e) if e.raw_os_error() == Some(ws::WSAEMSGSIZE) => Ok(filled()),
+        other => other,
+    }
+}
+
+#[cfg(windows)]
+impl TcpSocket {
+    pub fn fd(&self) -> BorrowedSocket<'_> {
+        self.0.as_socket()
+    }
+
+    /// Start connecting it, a Unix socket, to the one at `path`, or of
+    /// the abstract name `path` if `abstract_name`: refused with
+    /// `WSAEINVAL` if the address cannot hold it (see [`UNIX_PATH_ROOM`]).
+    pub fn connect_unix(&self, path: &[u8], abstract_name: bool) -> io::Result<Connect> {
+        let Some(storage) = unix_address(path, abstract_name) else {
+            return Err(io::Error::from_raw_os_error(ws::WSAEINVAL));
+        };
+        connect_to(self.fd(), &storage)
+    }
+
+    /// Listen on it, bound, for `backlog` connections at most waiting
+    /// (`listen`).
+    pub fn listen(&self, backlog: i32) -> io::Result<()> {
+        // SAFETY: `listen` takes no pointers; the socket is open.
+        checked(unsafe { ws::listen(sock(self.fd()), backlog) })?;
+        Ok(())
+    }
+
+    /// The connection waiting on it, listening, accepted and made
+    /// nonblocking, as C's `cf_tcp_accept_connect` makes it (`accept`,
+    /// then `FIONBIO`: Windows has no `accept4`); none if none waits.
+    pub fn accept(&self) -> io::Result<Option<TcpSocket>> {
+        // SAFETY: a null address and length ask for no peer address; the
+        // socket is open.
+        let s = unsafe { ws::accept(sock(self.fd()), std::ptr::null_mut(), std::ptr::null_mut()) };
+        if s == ws::INVALID_SOCKET {
+            let e = last_error();
+            if e.raw_os_error() == Some(ws::WSAEWOULDBLOCK) {
+                return Ok(None);
+            }
+            return Err(e);
+        }
+        // SAFETY: `s` was just accepted and is owned by nothing else.
+        let accepted = TcpSocket(TcpStream::from(unsafe {
+            OwnedSocket::from_raw_socket(s as RawSocket)
+        }));
+        accepted.set_nonblocking()?;
+        Ok(Some(accepted))
+    }
+
+    /// Let go of the socket without closing it: the caller closes it, as
+    /// an application's own closer does.
+    pub fn into_raw(self) -> RawSocket {
+        self.0.into_raw_socket()
+    }
+
+    /// Size its send buffer to what the system finds ideal for the
+    /// connection now (`SIO_IDEAL_SEND_BACKLOG_QUERY`, then `SO_SNDBUF`),
+    /// as C's `win_update_sndbuf_size` does after a send, if that is not
+    /// `current`, the size set last: the size set, or `None` if it was
+    /// already that or could not be asked or set. How often to ask is the
+    /// caller's (C asks at most once a second).
+    pub fn fit_send_buffer(&self, current: u32) -> Option<u32> {
+        /// `SIO_IDEAL_SEND_BACKLOG_QUERY`.
+        const IDEAL_SEND_BACKLOG_QUERY: u32 = 0x4004_747B;
+        let mut ideal = 0u32;
+        let mut len = 0u32;
+        let room = u32::try_from(size_of::<u32>()).expect("fits");
+        // SAFETY: `ideal` is the `ULONG` the query writes, `len` where it
+        // says how much, both alive through the call; nothing is read, and
+        // no overlapped call is made.
+        let rc = unsafe {
+            ws::WSAIoctl(
+                sock(self.fd()),
+                IDEAL_SEND_BACKLOG_QUERY,
+                std::ptr::null(),
+                0,
+                (&raw mut ideal).cast(),
+                room,
+                &raw mut len,
+                std::ptr::null_mut(),
+                None,
+            )
+        };
+        if rc != 0 || ideal == current {
+            return None;
+        }
+        let len = i32::try_from(size_of::<u32>()).expect("fits");
+        // SAFETY: `ideal` is a value of the length given, alive through
+        // the call; the socket is open.
+        let rc = unsafe {
+            ws::setsockopt(
+                sock(self.fd()),
+                ws::SOL_SOCKET,
+                ws::SO_SNDBUF,
+                (&raw const ideal).cast(),
+                len,
+            )
+        };
+        (rc == 0).then_some(ideal)
+    }
+}
+
+#[cfg(windows)]
+impl UdpSocket {
+    pub fn fd(&self) -> BorrowedSocket<'_> {
+        self.0.as_socket()
+    }
+
+    /// Receive one datagram into `buf`, which must not be empty: as much
+    /// of it as fits. An empty datagram, which no peer of ours sends, is
+    /// passed over for the next.
+    pub fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
+        assert!(!buf.is_empty(), "a receive needs room");
+        let room = buf.len();
+        loop {
+            match received(cut_to_fit(self.0.recv(buf), || room))? {
+                Recv::Eof => continue,
+                got => return Ok(got),
+            }
+        }
+    }
+
+    /// Receive one datagram into `buf`, which must not be empty, and
+    /// whom it came from (`recvfrom`): as much of it as fits, an empty one
+    /// too; none if none waits.
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        assert!(!buf.is_empty(), "a receive needs room");
+        // SAFETY: all-zero bytes are a valid `SOCKADDR_STORAGE`.
+        let mut from: ws::SOCKADDR_STORAGE = unsafe { std::mem::zeroed() };
+        let mut len = i32::try_from(size_of::<ws::SOCKADDR_STORAGE>()).expect("fits");
+        let room = i32::try_from(buf.len()).unwrap_or(i32::MAX);
+        // SAFETY: `buf` is writable for the `room` bytes the call is told,
+        // `from` has room for any address and `len` says so, all alive
+        // through the call; the socket is open.
+        let rc = unsafe {
+            ws::recvfrom(
+                sock(self.fd()),
+                buf.as_mut_ptr(),
+                room,
+                0,
+                (&raw mut from).cast(),
+                &raw mut len,
+            )
+        };
+        let got = if rc == ws::SOCKET_ERROR {
+            Err(last_error())
+        } else {
+            Ok(usize::try_from(rc).expect("a count"))
+        };
+        match cut_to_fit(got, || usize::try_from(room).expect("a count")) {
+            Ok(n) => {
+                let Some(addr) = socket_addr(&from) else {
+                    return Err(io::Error::from_raw_os_error(ws::WSAEAFNOSUPPORT));
+                };
+                Ok(Some((n, addr)))
+            }
+            Err(e) if e.raw_os_error() == Some(ws::WSAEWOULDBLOCK) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Let go of the socket without closing it: the caller closes it, as
+    /// an application's own closer does.
+    pub fn into_raw(self) -> RawSocket {
+        self.0.into_raw_socket()
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -2172,5 +2986,499 @@ mod tests {
         let bytes = vec![0; 70_000];
         let failed = from.send_segments(&bytes, bytes.len()).unwrap_err();
         assert_eq!(failed.raw_os_error(), Some(TOO_LARGE));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+
+    use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
+    use std::time::Duration;
+
+    use super::*;
+    use crate::poll::{Events, PollFd, poll};
+
+    /// Winsock, started for the rest of the test binary.
+    fn started() {
+        std::mem::forget(Winsock::start().unwrap());
+    }
+
+    /// The int value of option `name` at `level` on `s`.
+    fn option(s: BorrowedSocket<'_>, level: i32, name: i32) -> i32 {
+        let mut value: i32 = -1;
+        let mut len = i32::try_from(size_of::<i32>()).unwrap();
+        // SAFETY: `value` is an int of the length given, and both live
+        // through the call; `s` is open.
+        let rc =
+            unsafe { ws::getsockopt(sock(s), level, name, (&raw mut value).cast(), &raw mut len) };
+        assert_eq!(rc, 0, "{}", last_error());
+        value
+    }
+
+    /// Wait for `s` to be ready for `events`, for at most five seconds.
+    fn ready(s: &TcpSocket, events: Events) -> Events {
+        let mut fds = [PollFd::new(s.fd(), events)];
+        assert_eq!(
+            poll(&mut fds, Duration::from_secs(5)).unwrap(),
+            1,
+            "ready in time"
+        );
+        fds[0].revents()
+    }
+
+    /// Connected either at once or once it polls writable, with no error;
+    /// the listener then has the peer.
+    fn connected(listener: &TcpListener) -> (TcpSocket, TcpStream) {
+        let addr = listener.local_addr().unwrap();
+        let s = open(addr, Protocol::Tcp, true).unwrap();
+        s.set(SocketOption::NoDelay).unwrap();
+        if s.connect(addr).unwrap() == Connect::InProgress {
+            assert!(ready(&s, Events::OUT | Events::PRI).contains(Events::OUT));
+        }
+        assert!(s.take_error().unwrap().is_none());
+        let (peer, from) = listener.accept().unwrap();
+        assert_eq!(from, s.local_addr().unwrap());
+        assert_eq!(s.peer_addr().unwrap(), addr);
+        (s, peer)
+    }
+
+    /// Without Winsock started a socket does not open, and with it, it
+    /// does: in a process of its own, as std starts Winsock for itself at
+    /// its first socket, which would hide a start missing.
+    #[test]
+    fn sockets_need_winsock_started() {
+        if std::env::var_os("CURL_OS_WINSOCK_CHILD").is_some() {
+            let any = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+            let err = open(any, Protocol::Tcp, true).unwrap_err();
+            assert_eq!(err.raw_os_error(), Some(ws::WSANOTINITIALISED));
+            let mut buf = [0u8; 256];
+            assert_eq!(host_name(&mut buf), None);
+            let winsock = Winsock::start().unwrap();
+            open(any, Protocol::Tcp, true).unwrap();
+            assert!(host_name(&mut buf).is_some());
+            drop(winsock);
+            let err = open(any, Protocol::Tcp, true).unwrap_err();
+            assert_eq!(
+                err.raw_os_error(),
+                Some(ws::WSANOTINITIALISED),
+                "cleaned up"
+            );
+            println!("winsock child: ok");
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "net::windows_tests::sockets_need_winsock_started",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("CURL_OS_WINSOCK_CHILD", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("winsock child: ok"),
+            "the child ran it: {stdout}"
+        );
+    }
+
+    /// A socket bound and listening takes a connection only once one
+    /// comes, accepted nonblocking, its peer named.
+    #[test]
+    fn a_listening_socket_accepts_a_connection() {
+        started();
+        let any = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let s = open(any, Protocol::Tcp, true).unwrap();
+        s.bind(any).unwrap();
+        let at = s.local_addr().unwrap();
+        s.listen(1).unwrap();
+        assert!(s.accept().unwrap().is_none(), "none waits yet");
+        let peer = std::net::TcpStream::connect(at).unwrap();
+        assert!(ready(&s, Events::IN).contains(Events::IN));
+        let accepted = s.accept().unwrap().expect("the connection waiting");
+        assert_eq!(accepted.peer_addr().unwrap(), peer.local_addr().unwrap());
+        let mut buf = [0u8; 4];
+        assert_eq!(
+            accepted.recv(&mut buf).unwrap(),
+            Recv::WouldBlock,
+            "nonblocking"
+        );
+    }
+
+    #[test]
+    fn connects_over_ipv4_and_ipv6() {
+        started();
+        connected(&TcpListener::bind("127.0.0.1:0").unwrap());
+        if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) {
+            connected(&v6);
+        }
+    }
+
+    /// A port nobody listens on: refused at once, or once the connect in
+    /// progress is decided, which Winsock reports as an exception (`PRI`),
+    /// not as writable.
+    #[test]
+    fn a_refused_connect_reports_why() {
+        started();
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap();
+        drop(held);
+        let s = open(addr, Protocol::Tcp, true).unwrap();
+        s.set(SocketOption::NoSynRetransmissions).unwrap();
+        let err = match s.connect(addr) {
+            Err(e) => e,
+            Ok(state) => {
+                assert_eq!(state, Connect::InProgress, "nothing listens there");
+                let got = ready(&s, Events::OUT | Events::PRI);
+                assert_eq!(got, Events::PRI, "an exception, not writable");
+                s.take_error().unwrap().expect("the connect failed")
+            }
+        };
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+    }
+
+    #[test]
+    fn receives_data_then_the_end_of_the_stream() {
+        started();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (s, mut peer) = connected(&listener);
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            s.recv(&mut buf).unwrap(),
+            Recv::WouldBlock,
+            "nothing sent yet"
+        );
+        std::io::Write::write_all(&mut peer, b"hi").unwrap();
+        drop(peer);
+        assert!(ready(&s, Events::IN).contains(Events::IN));
+        assert_eq!(
+            s.recv(&mut buf).unwrap(),
+            Recv::Data(NonZeroUsize::new(2).unwrap())
+        );
+        assert_eq!(&buf[..2], b"hi");
+        assert!(ready(&s, Events::IN).contains(Events::IN));
+        assert_eq!(s.recv(&mut buf).unwrap(), Recv::Eof);
+    }
+
+    #[test]
+    fn a_send_into_full_buffers_would_block() {
+        started();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (s, peer) = connected(&listener);
+        let chunk = [7u8; 65536];
+        let mut sent = 0usize;
+        let blocked = loop {
+            match s.send(&chunk).unwrap() {
+                Sent::Bytes(n) => sent += n.get(),
+                Sent::WouldBlock => break true,
+            }
+            if sent > 256 << 20 {
+                break false;
+            }
+        };
+        assert!(blocked, "the peer reads nothing, so the buffers fill");
+        // The ideal buffer is asked once there is a connection to ask of.
+        let _ = s.fit_send_buffer(0);
+        drop(peer);
+    }
+
+    #[test]
+    fn a_shut_down_side_reads_as_the_end_at_the_peer() {
+        started();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (s, mut peer) = connected(&listener);
+        s.shutdown_send().unwrap();
+        let mut buf = [0u8; 4];
+        assert_eq!(std::io::Read::read(&mut peer, &mut buf).unwrap(), 0);
+    }
+
+    /// A peer that closes with a reset fails the receive.
+    #[test]
+    fn a_reset_connection_fails_the_receive() {
+        started();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (s, peer) = connected(&listener);
+        let linger = ws::LINGER {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        let len = i32::try_from(size_of::<ws::LINGER>()).unwrap();
+        // SAFETY: `linger` is a valid `SO_LINGER` value of the length
+        // given and lives through the call; `peer` is open.
+        let rc = unsafe {
+            ws::setsockopt(
+                peer.as_raw_socket() as ws::SOCKET,
+                ws::SOL_SOCKET,
+                ws::SO_LINGER,
+                (&raw const linger).cast(),
+                len,
+            )
+        };
+        assert_eq!(rc, 0);
+        drop(peer);
+        assert!(ready(&s, Events::IN).contains(Events::IN));
+        let err = s.recv(&mut [0u8; 4]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(err.raw_os_error(), Some(ws::WSAECONNRESET));
+    }
+
+    /// The options C sets on Windows reach the socket; those it sets on
+    /// Linux alone set nothing, and are no error.
+    #[test]
+    fn a_socket_is_set_as_asked() {
+        started();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let s = open(addr, Protocol::Tcp, true).unwrap();
+        let tcp = ws::IPPROTO_TCP;
+        assert_eq!(
+            option(s.fd(), tcp, ws::TCP_NODELAY),
+            0,
+            "Nagle on until set"
+        );
+        for o in [
+            SocketOption::NoDelay,
+            SocketOption::KeepAlive,
+            SocketOption::KeepIdle(30),
+            SocketOption::KeepInterval(20),
+            SocketOption::KeepCount(4),
+            SocketOption::Priority(3),
+            SocketOption::FastOpenConnect,
+            SocketOption::BindAddressNoPort,
+            SocketOption::NoSynRetransmissions,
+        ] {
+            s.set(o).unwrap();
+        }
+        assert_eq!(option(s.fd(), tcp, ws::TCP_NODELAY), 1);
+        assert_eq!(option(s.fd(), ws::SOL_SOCKET, ws::SO_KEEPALIVE), 1);
+        assert_eq!(option(s.fd(), tcp, ws::TCP_KEEPIDLE), 30);
+        assert_eq!(option(s.fd(), tcp, ws::TCP_KEEPINTVL), 20);
+        assert_eq!(option(s.fd(), tcp, ws::TCP_KEEPCNT), 4);
+        assert_eq!(option(s.fd(), ws::SOL_SOCKET, ws::SO_TYPE), ws::SOCK_STREAM);
+        // The type of service needs the socket's family, which it has once
+        // bound; with none it sets nothing.
+        s.set(SocketOption::TypeOfService(32)).unwrap();
+        s.bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        s.set(SocketOption::TypeOfService(32)).unwrap();
+        let v6 = open("[::1]:1".parse().unwrap(), Protocol::Tcp, true).unwrap();
+        assert_eq!(
+            option(v6.fd(), ws::IPPROTO_IPV6, ws::IPV6_V6ONLY),
+            1,
+            "Windows' default"
+        );
+        v6.set(SocketOption::DualStack).unwrap();
+        assert_eq!(option(v6.fd(), ws::IPPROTO_IPV6, ws::IPV6_V6ONLY), 0);
+    }
+
+    /// Windows has no Multipath TCP: asked for, the socket does not open.
+    #[test]
+    fn multipath_tcp_does_not_open() {
+        started();
+        let err = open("127.0.0.1:1".parse().unwrap(), Protocol::Mptcp, true).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ws::WSAEPROTONOSUPPORT));
+    }
+
+    /// An application's socket is the socket's from then on: it connects
+    /// through it, and closing the socket closes it; one let go of stays
+    /// open until its new owner closes it.
+    #[test]
+    fn an_adopted_socket_is_the_socket_s() {
+        started();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let raw = open(addr, Protocol::Tcp, false).unwrap().into_raw();
+        // SAFETY: `raw` was let go of just now and is owned by nothing else.
+        let s = unsafe { adopt(raw) };
+        assert_eq!(crate::socket::raw(s.fd()), raw);
+        assert_eq!(
+            s.connect(addr).unwrap(),
+            Connect::Done,
+            "blocking, until made not to"
+        );
+        s.set_nonblocking().unwrap();
+        assert_eq!(s.recv(&mut [0u8; 4]).unwrap(), Recv::WouldBlock);
+        let (mut peer, _) = listener.accept().unwrap();
+        drop(s);
+        assert_eq!(
+            std::io::Read::read(&mut peer, &mut [0; 1]).unwrap(),
+            0,
+            "closed"
+        );
+    }
+
+    /// A UDP socket connects at once to its one peer; each send and
+    /// receive is one datagram, one larger than the room cut to it; an
+    /// unconnected one sends to an address and reads with the sender.
+    #[test]
+    fn a_udp_socket_moves_one_datagram_a_call() {
+        started();
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let at = peer.local_addr().unwrap();
+        let s = open_udp(at, true).unwrap();
+        assert_eq!(option(s.fd(), ws::SOL_SOCKET, ws::SO_TYPE), ws::SOCK_DGRAM);
+        assert_eq!(s.connect(at).unwrap(), Connect::Done);
+        let mut buf = [0u8; 64];
+        assert_eq!(s.recv(&mut buf).unwrap(), Recv::WouldBlock);
+        assert_eq!(
+            s.send(b"one").unwrap(),
+            Sent::Bytes(NonZeroUsize::new(3).unwrap())
+        );
+        let (n, from) = peer.recv_from(&mut buf).unwrap();
+        assert_eq!((&buf[..n], from), (&b"one"[..], s.local_addr().unwrap()));
+        peer.send_to(b"back", from).unwrap();
+        peer.send_to(b"again", from).unwrap();
+        let mut fds = [PollFd::new(s.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        assert_eq!(
+            s.recv(&mut buf).unwrap(),
+            Recv::Data(NonZeroUsize::new(4).unwrap())
+        );
+        let mut small = [0u8; 2];
+        let mut fds = [PollFd::new(s.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        assert_eq!(
+            s.recv(&mut small).unwrap(),
+            Recv::Data(NonZeroUsize::new(2).unwrap())
+        );
+        assert_eq!(&small, b"ag");
+        assert_eq!(
+            s.recv(&mut buf).unwrap(),
+            Recv::WouldBlock,
+            "the rest is lost"
+        );
+
+        let u = open_udp(at, true).unwrap();
+        u.bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        assert_eq!(u.recv_from(&mut buf).unwrap(), None);
+        assert_eq!(u.send_to(b"ping", at).unwrap(), 4);
+        let (n, from) = peer.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        peer.send_to(b"pong!", from).unwrap();
+        let mut fds = [PollFd::new(u.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        let mut four = [0u8; 4];
+        assert_eq!(u.recv_from(&mut four).unwrap(), Some((4, at)));
+        assert_eq!(&four, b"pong");
+        assert_eq!(u.recv_from(&mut buf).unwrap(), None, "the rest is lost");
+        let big = vec![0u8; 70_000];
+        assert_eq!(
+            u.send_to(&big, at).unwrap_err().raw_os_error(),
+            Some(TOO_LARGE)
+        );
+    }
+
+    /// A Unix socket connects to one listening at a path; to a path
+    /// nothing listens at, it fails at once; one too long does not fit.
+    #[test]
+    fn a_unix_socket_connects_by_path() {
+        started();
+        let dir = std::env::temp_dir().join(format!("curl-os-uds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s");
+        let _ = std::fs::remove_file(&path);
+        let bytes = path.to_str().unwrap().as_bytes();
+        let listener = open_unix(false).unwrap();
+        let addr = unix_address(bytes, false).unwrap();
+        // SAFETY: `addr` holds a `SOCKADDR_UN` of the length given, alive
+        // through the call; the socket is open.
+        let rc = unsafe { ws::bind(sock(listener.fd()), (&raw const addr.raw).cast(), addr.len) };
+        assert_eq!(rc, 0, "{}", last_error());
+        listener.listen(1).unwrap();
+        let s = open_unix(false).unwrap();
+        assert_eq!(s.connect_unix(bytes, false).unwrap(), Connect::Done);
+        let accepted = listener.accept().unwrap().expect("the connection");
+        assert_eq!(
+            s.send(b"hi").unwrap(),
+            Sent::Bytes(NonZeroUsize::new(2).unwrap())
+        );
+        let mut got = [0; 2];
+        let mut fds = [PollFd::new(accepted.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        assert_eq!(
+            accepted.recv(&mut got).unwrap(),
+            Recv::Data(NonZeroUsize::new(2).unwrap())
+        );
+        assert_eq!(&got, b"hi");
+        drop((listener, accepted, s));
+        std::fs::remove_file(&path).unwrap();
+        let refused = open_unix(true)
+            .unwrap()
+            .connect_unix(bytes, false)
+            .unwrap_err();
+        assert!(refused.raw_os_error().is_some(), "{refused}");
+        let too_long = open_unix(true)
+            .unwrap()
+            .connect_unix(&[b'x'; UNIX_PATH_ROOM], false);
+        assert_eq!(too_long.unwrap_err().raw_os_error(), Some(ws::WSAEINVAL));
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    /// The host name is the system's, as `hostname` prints it, and a
+    /// buffer too small gets none of it or a cut inside it.
+    #[test]
+    fn the_host_name_is_the_system_s() {
+        started();
+        let out = std::process::Command::new("hostname").output().unwrap();
+        let printed = String::from_utf8(out.stdout).unwrap();
+        let mut buf = [0xffu8; 1025];
+        assert_eq!(host_name(&mut buf), Some(printed.trim().as_bytes()));
+        let mut short = [0xffu8; 2];
+        if let Some(cut) = host_name(&mut short) {
+            assert!(
+                cut.len() <= 1 && printed.as_bytes().starts_with(cut),
+                "{cut:?}"
+            );
+        }
+        assert_eq!(host_name(&mut []), None);
+    }
+
+    /// What C's Windows build has none of is none here.
+    #[test]
+    fn interfaces_are_not_looked_up() {
+        assert_eq!(interface_index(b"lo"), None);
+        assert_eq!(link_local_scope(), None);
+        assert_eq!(
+            interface_address(b"Ethernet", false, Ipv6Scope::Global, 0),
+            InterfaceAddress::NotFound
+        );
+    }
+
+    #[test]
+    fn the_probe_finds_ipv6() {
+        started();
+        assert!(probe_ipv6().unwrap());
+        assert!(!probe_failed(io::Error::from_raw_os_error(ws::WSAEAFNOSUPPORT)).unwrap());
+        let err = probe_failed(io::Error::from_raw_os_error(ws::WSA_NOT_ENOUGH_MEMORY));
+        assert!(err.is_err());
+    }
+
+    /// Only Winsock's would-block blocks a receive or a send; a connect is
+    /// under way on it or on in-progress, as C reads them.
+    #[test]
+    fn errors_read_as_c_reads_them() {
+        let os = io::Error::from_raw_os_error;
+        assert!(matches!(
+            received(Err(os(ws::WSAEWOULDBLOCK))),
+            Ok(Recv::WouldBlock)
+        ));
+        assert!(received(Err(os(ws::WSAEINTR))).is_err());
+        assert!(matches!(
+            sent(Err(os(ws::WSAEWOULDBLOCK))),
+            Ok(Sent::WouldBlock)
+        ));
+        assert!(sent(Err(os(ws::WSAEINPROGRESS))).is_err());
+        for under_way in [ws::WSAEWOULDBLOCK, ws::WSAEINPROGRESS] {
+            assert!(matches!(
+                connect_failed(os(under_way)),
+                Ok(Connect::InProgress)
+            ));
+        }
+        assert!(connect_failed(os(ws::WSAECONNREFUSED)).is_err());
     }
 }

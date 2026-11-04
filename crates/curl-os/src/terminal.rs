@@ -175,6 +175,8 @@ impl Drop for Unechoed {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+
     /// Enter ends the keys, kept last; a backspace takes back the key
     /// before it, or nothing at the start; a buffer filled without Enter
     /// is all read, its last byte taken for the end as C cuts it there.

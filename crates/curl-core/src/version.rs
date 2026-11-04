@@ -238,11 +238,12 @@ static VERSION: VersionInfo = VersionInfo {
     protocols: PROTOCOLS,
 };
 
-/// The protocols built, in C's order. Windows' build links no LDAP
-/// library (C's there is WinLDAP, not the OpenLDAP the LDAP protocol is
-/// written against), so it has neither LDAP protocol, as a C build
-/// without LDAP has not.
-#[cfg(not(windows))]
+/// The protocols built, in C's order. LDAP's two only where the LDAP
+/// crate links OpenLDAP's libldap (`curl_build::openldap`): Windows'
+/// build has WinLDAP and macOS's an OpenLDAP without `ldap_init_fd`, for
+/// which C takes `lib/ldap.c`, not ported, so they have neither LDAP
+/// protocol, as a C build without LDAP has not.
+#[cfg(ldap)]
 const PROTOCOLS: &[Protocol] = &[
     Protocol::Dict,
     Protocol::File,
@@ -271,7 +272,7 @@ const PROTOCOLS: &[Protocol] = &[
     Protocol::Wss,
 ];
 
-#[cfg(windows)]
+#[cfg(not(ldap))]
 const PROTOCOLS: &[Protocol] = &[
     Protocol::Dict,
     Protocol::File,
@@ -326,8 +327,8 @@ mod tests {
             "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp",
             "smtps", "telnet", "tftp", "ws", "wss",
         ];
-        // No LDAP on Windows.
-        if cfg!(windows) {
+        // No LDAP without OpenLDAP's libldap.
+        if !cfg!(ldap) {
             want.retain(|p| !p.starts_with("ldap"));
         }
         assert_eq!(names, want);

@@ -346,6 +346,14 @@ mod tests {
         assert!(said.contains(&format!(" zlib/{info} ")), "{said}");
     }
 
+    /// Whether the build has an LDAP library: none on Windows.
+    fn has_ldap() -> bool {
+        #[cfg(unix)]
+        return curl_ldap::library().is_some();
+        #[cfg(windows)]
+        return false;
+    }
+
     /// The protocols the core reports reach the C struct as names.
     #[test]
     fn protocols_reach_the_c_struct() {
@@ -356,8 +364,9 @@ mod tests {
             "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp",
             "smtps", "telnet", "tftp", "ws", "wss",
         ];
-        // No LDAP on Windows.
-        if cfg!(windows) {
+        // No LDAP where the LDAP crate has no library: the core's list
+        // and the library linked agree.
+        if !has_ldap() {
             all.retain(|p| !p.starts_with("ldap"));
         }
         assert_eq!(want, all);

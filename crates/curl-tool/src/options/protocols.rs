@@ -146,43 +146,50 @@ mod tests {
             .fold(Protocols(0), |set, b| Protocols(set.0 | b))
     }
 
-    /// The protocols the library speaks, by name.
-    #[cfg(not(windows))]
-    const SPOKEN: &[&str] = &[
+    /// The protocols the library may speak, by name.
+    const BUILT: &[&str] = &[
         "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
         "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps",
         "telnet", "tftp", "ws", "wss",
     ];
-    /// No LDAP on Windows.
-    #[cfg(windows)]
-    const SPOKEN: &[&str] = &[
-        "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
-        "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps", "telnet", "tftp",
-        "ws", "wss",
-    ];
 
-    /// The library speaks the protocols of `SPOKEN`: every other name is
+    /// The protocols the library speaks: LDAP's only where the build has
+    /// an LDAP library (none on Windows).
+    fn spoken() -> Vec<&'static str> {
+        #[cfg(unix)]
+        let ldap = curl_ldap::library().is_some();
+        #[cfg(windows)]
+        let ldap = false;
+        BUILT
+            .iter()
+            .copied()
+            .filter(|p| ldap || !p.starts_with("ldap"))
+            .collect()
+    }
+
+    /// The library speaks the protocols of `spoken`: every other name is
     /// unknown, as test 322 checks, and a redirect may go to `http`,
     /// `https`, `ftp` and `ftps` by default.
     #[test]
     fn with_the_protocols_built() {
         let msgs = quiet();
-        let all = set(SPOKEN);
+        let spoken = spoken();
+        let all = set(&spoken);
         let but = |out: &[&str]| {
-            let kept: Vec<&str> = SPOKEN
+            let kept: Vec<&str> = spoken
                 .iter()
                 .copied()
                 .filter(|p| !out.contains(p))
                 .collect();
             set(&kept)
         };
-        assert_eq!(all.0.count_ones() as usize, SPOKEN.len());
+        assert_eq!(all.0.count_ones() as usize, spoken.len());
         assert_eq!(Protocols::all(), all);
         assert_eq!(
             Protocols::redirect_default(),
             set(&["http", "https", "ftp", "ftps"])
         );
-        let none: String = SPOKEN.iter().map(|p| format!("-{p},")).collect();
+        let none: String = spoken.iter().map(|p| format!("-{p},")).collect();
         for (list, want) in [
             (b"".as_slice(), Ok(all)),
             (b",,=ALL,", Ok(all)),

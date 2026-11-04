@@ -1,4 +1,5 @@
-//! Take the version from `include/curl/curlver.h`, the one place it is set.
+//! Take the version from `include/curl/curlver.h`, the one place it is set,
+//! and whether the build has the LDAP protocols.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -46,4 +47,10 @@ fn main() {
     );
     let dest = Path::new(&env::var("OUT_DIR").unwrap()).join("curlver.rs");
     fs::write(dest, out).expect("write curlver.rs");
+    // The LDAP protocols are built where the LDAP crate links its
+    // library, by the same check.
+    println!("cargo::rustc-check-cfg=cfg(ldap)");
+    if curl_build::openldap() {
+        println!("cargo::rustc-cfg=ldap");
+    }
 }

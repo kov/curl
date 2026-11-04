@@ -9,15 +9,8 @@
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(openldap)");
-    println!("cargo::rerun-if-env-changed=PKG_CONFIG_PATH");
-    println!("cargo::rerun-if-env-changed=PKG_CONFIG_LIBDIR");
-    let mut libs: Vec<String> = ["ldap", "lber"]
-        .iter()
-        .flat_map(|package| curl_build::library_dirs(package))
-        .map(|dir| format!("-L{}", dir.display()))
-        .collect();
-    libs.extend(["-lldap".to_owned(), "-llber".to_owned()]);
-    if !curl_build::function_exists("init_fd", "ldap_init_fd", &libs) {
+    // The core lists the LDAP protocols by the same answer.
+    if !curl_build::openldap() {
         return;
     }
     println!("cargo::rustc-cfg=openldap");

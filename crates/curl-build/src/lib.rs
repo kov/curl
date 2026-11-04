@@ -63,6 +63,23 @@ pub fn include_dirs(package: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Whether the build has OpenLDAP's LDAP: libldap and liblber, from
+/// where pkg-config finds them, with `ldap_init_fd`, as C's build takes
+/// `lib/openldap.c` only then (CMake's `check_function_exists`,
+/// `USE_OPENLDAP`). The LDAP crate links it, and the core lists the LDAP
+/// protocols, by this one answer.
+pub fn openldap() -> bool {
+    println!("cargo::rerun-if-env-changed=PKG_CONFIG_PATH");
+    println!("cargo::rerun-if-env-changed=PKG_CONFIG_LIBDIR");
+    let mut libs: Vec<String> = ["ldap", "lber"]
+        .iter()
+        .flat_map(|package| library_dirs(package))
+        .map(|dir| format!("-L{}", dir.display()))
+        .collect();
+    libs.extend(["-lldap".to_owned(), "-llber".to_owned()]);
+    function_exists("ldap_init_fd", "ldap_init_fd", &libs)
+}
+
 /// Whether a program calling `function` links with `libs` (linker
 /// words: `-L`, `-l`, `-framework`), as CMake's `check_function_exists`
 /// decides it. `name` names the program in the build's output directory.

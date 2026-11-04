@@ -35,9 +35,13 @@ use crate::gate::Frame;
 
 #[cfg(unix)]
 unsafe extern "C" {
-    // glibc's standard streams.
+    // The C library's standard streams: glibc's by their names, Apple's
+    // by `stdio.h`'s (`#define stdin __stdinp`).
+    #[cfg_attr(target_vendor = "apple", link_name = "__stdinp")]
     static stdin: *mut libc::FILE;
+    #[cfg_attr(target_vendor = "apple", link_name = "__stdoutp")]
     static stdout: *mut libc::FILE;
+    #[cfg_attr(target_vendor = "apple", link_name = "__stderrp")]
     static stderr: *mut libc::FILE;
 }
 
@@ -52,8 +56,8 @@ fn link_count(n: i64) -> c_long {
 /// library's, shared with the application's own.
 #[cfg(unix)]
 pub(crate) fn standard() -> (*mut c_void, *mut c_void, *mut libc::FILE) {
-    // SAFETY: glibc sets these before any code runs and never changes
-    // them.
+    // SAFETY: the C library sets these before any code runs and never
+    // changes them.
     unsafe { (stdin.cast(), stdout.cast(), stderr) }
 }
 

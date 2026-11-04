@@ -1332,9 +1332,9 @@ behaviour oracle only.
 107. **The C ABI on aarch64-apple-darwin**, a third target for `gen/ffi.py`. **Done.**
 108. **`curl-os` on macOS**, along C's Apple paths (sockets, waker, random, errno, xattr, argv).
      **Done.**
-109. **`curl-core`, the tool and the shim on macOS**, the C libraries linked. **In progress.**
-     curl-core builds and runs its tests; the shim and the tool compile but do not link yet
-     (LDAP.framework, Apple's GSS-API without `gss_set_neg_mechs`).
+109. **`curl-core`, the tool and the shim on macOS**, the C libraries linked. **Done.**
+     runtests on the Mac: 2088 of 2092 against C's 2093 of 2093; 96 and 558 are replaced, 1013
+     waits for LDAP (step 110) and 1560 is DIVERGENCE.md's "Allocations the platform makes".
 110. **LDAP through `lib/ldap.c`'s path**: macOS's OpenLDAP 2.4 has no `ldap_init_fd`, so C's
      build takes the code WinLDAP takes; one port for both. **To do.**
 111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **To do.**

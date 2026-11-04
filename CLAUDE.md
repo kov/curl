@@ -76,9 +76,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   buffer on the stack; on Windows `strerror_s`, then `FormatMessageA`.
 - `crates/curl-os/src/fnmatch.rs`: matching a name against a shell pattern, the system's
   `fnmatch` (on Windows C's own matcher, in safe Rust).
-- `crates/curl-os/src/fs.rs`: opening and closing files, a file's status, removing, renaming
-  and setting the times of files by name, resolving a name to its absolute path, making and
-  listing directories, reading standard input unbuffered, making a file's reads nonblocking,
+- `crates/curl-os/src/fs.rs`: opening, cutting and closing files, a file's status, removing,
+  renaming and setting the times of files by name, resolving a name to its absolute path, making
+  and listing directories, reading standard input unbuffered, making a file's reads nonblocking,
   and pointing standard error at a file; on Windows through the Win32 file calls.
 - `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, listening and
   accepting on one, adopting one the application opened, and the machine's host name; on

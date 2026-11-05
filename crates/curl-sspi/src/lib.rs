@@ -2,11 +2,14 @@
 //! `curl_core::sspi::Sspi`: the credentials and contexts of the
 //! `Negotiate`, `Kerberos` and `WDigest` packages, as C's
 //! `USE_WINDOWS_SSPI` build makes them, in the build's text (the ANSI
-//! code page, or UTF-8 converted to UTF-16 in the Unicode build). On
-//! any other system the crate is empty.
+//! code page, or UTF-8 converted to UTF-16 in the Unicode build); and
+//! what Schannel shares of SSPI with them (`handle`). On any other system
+//! the crate is empty.
 
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
+#[cfg(windows)]
+pub mod handle;
 #[cfg(windows)]
 mod sys;
 

@@ -1,6 +1,6 @@
 [package]
 name = "curl-sspi"
-description = "Windows' SSPI for the curl rewrite: Negotiate, Kerberos and Digest, and the handles Schannel shares"
+description = "Windows' SSPI for the curl rewrite: Negotiate, Kerberos and Digest, and the buffers and handles Schannel shares"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

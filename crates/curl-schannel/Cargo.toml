@@ -11,6 +11,8 @@ publish.workspace = true
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os", features = ["fs"] }
+# SSPI's buffers and handles, shared with authentication.
+curl-sspi = { path = "../curl-sspi" }
 windows-sys = { version = "0.61.2", features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",

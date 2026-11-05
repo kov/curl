@@ -3,14 +3,17 @@
 //! and moved through the handshake by `InitializeSecurityContext`, the
 //! records it decrypts and encrypts in place, the goodbye it makes, and
 //! what it says of itself. The system's version, which says what Schannel
-//! speaks, is read here too.
+//! speaks, is read here too. The buffers and handles are SSPI's own,
+//! shared with authentication (`curl_sspi::handle`).
 
 #![allow(unsafe_code)]
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use curl_alloc::{OutOfMemory, try_box};
+use curl_alloc::OutOfMemory;
+pub(crate) use curl_sspi::handle::Token;
+use curl_sspi::handle::{CredHandle, CtxtHandle, buffer, desc, empty, kind};
 use windows_sys::Win32::Security::Authentication::Identity as id;
 use windows_sys::Win32::Security::Credentials::SecHandle;
 use windows_sys::Win32::Security::Cryptography::CERT_CONTEXT;
@@ -63,73 +66,12 @@ pub(crate) mod req {
     pub(crate) const STREAM: u32 = 0x8000;
 }
 
-const SECBUFFER_EMPTY: u32 = 0;
-const SECBUFFER_DATA: u32 = 1;
-const SECBUFFER_TOKEN: u32 = 2;
-const SECBUFFER_EXTRA: u32 = 5;
-const SECBUFFER_STREAM_TRAILER: u32 = 6;
-const SECBUFFER_STREAM_HEADER: u32 = 7;
-const SECBUFFER_ALERT: u32 = 17;
-const SECBUFFER_APPLICATION_PROTOCOLS: u32 = 18;
-const SECBUFFER_VERSION: u32 = 0;
 const SECPKG_ATTR_STREAM_SIZES: u32 = 4;
 const SECPKG_ATTR_REMOTE_CERT_CONTEXT: u32 = 0x53;
 const SECPKG_ATTR_APPLICATION_PROTOCOL: u32 = 35;
 const SCHANNEL_CRED_VERSION: u32 = 4;
 /// `SecApplicationProtocolNegotiationStatus_Success`.
 const ALPN_SUCCESS: i32 = 1;
-
-fn buffer(kind: u32, data: *mut c_void, len: u32) -> id::SecBuffer {
-    id::SecBuffer {
-        cbBuffer: len,
-        BufferType: kind,
-        pvBuffer: data,
-    }
-}
-
-fn empty() -> id::SecBuffer {
-    buffer(SECBUFFER_EMPTY, ptr::null_mut(), 0)
-}
-
-fn desc(buffers: &mut [id::SecBuffer]) -> id::SecBufferDesc {
-    id::SecBufferDesc {
-        ulVersion: SECBUFFER_VERSION,
-        cBuffers: u32::try_from(buffers.len()).expect("a few"),
-        pBuffers: buffers.as_mut_ptr(),
-    }
-}
-
-/// A buffer SSPI allocated and handed over, freed as it goes.
-pub(crate) struct Token {
-    data: NonNull<u8>,
-    len: usize,
-}
-
-// SAFETY: memory SSPI allocated for the caller, freed from any thread.
-unsafe impl Send for Token {}
-
-impl Token {
-    /// Take over the buffer `b` says SSPI allocated, if it did.
-    fn of(b: &id::SecBuffer) -> Option<Token> {
-        let data = NonNull::new(b.pvBuffer.cast::<u8>())?;
-        Some(Token {
-            data,
-            len: usize::try_from(b.cbBuffer).expect("a u32 fits"),
-        })
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8] {
-        // SAFETY: the `len` bytes SSPI allocated, owned here until drop.
-        unsafe { core::slice::from_raw_parts(self.data.as_ptr(), self.len) }
-    }
-}
-
-impl Drop for Token {
-    fn drop(&mut self) {
-        // SAFETY: a buffer SSPI allocated, freed once.
-        unsafe { id::FreeContextBuffer(self.data.as_ptr().cast()) };
-    }
-}
 
 /// How a credential is made (`acquire_sspi_handle`).
 pub(crate) enum CredKind<'a> {
@@ -150,24 +92,11 @@ pub(crate) struct CredSpec<'a> {
 
 /// A client credential for Schannel, freed as it goes; with the store
 /// its client certificate came from, whose key was not kept on disk and
-/// so lives only as long as the store.
+/// so lives only as long as the store. The handle is freed first: the
+/// fields drop in order.
 pub(crate) struct Credentials {
-    handle: SecHandle,
+    handle: CredHandle,
     _client_store: Option<CertStore>,
-}
-
-// SAFETY: a credential handle may be used by any thread, and by several
-// contexts at once; SSPI serialises what it must.
-unsafe impl Send for Credentials {}
-// SAFETY: as above.
-unsafe impl Sync for Credentials {}
-
-impl Drop for Credentials {
-    fn drop(&mut self) {
-        // SAFETY: a handle acquired below, freed once, after every
-        // context made with it, each of which holds the credential.
-        unsafe { id::FreeCredentialsHandle(&self.handle) };
-    }
 }
 
 impl Credentials {
@@ -255,7 +184,9 @@ impl Credentials {
             return Err(status);
         }
         Ok(Credentials {
-            handle,
+            // SAFETY: the call succeeded and wrote a handle no one else
+            // owns.
+            handle: unsafe { CredHandle::adopt(handle) },
             _client_store: client_store,
         })
     }
@@ -264,18 +195,7 @@ impl Credentials {
 /// A security context, deleted as it goes. Its handle stays at one
 /// place, which an application may be handed.
 pub(crate) struct Context {
-    handle: Box<SecHandle>,
-}
-
-// SAFETY: a context is used by one thread at a time, which `&mut self`
-// ensures; it moves between threads only whole.
-unsafe impl Send for Context {}
-
-impl Drop for Context {
-    fn drop(&mut self) {
-        // SAFETY: a context this module made, deleted once.
-        unsafe { id::DeleteSecurityContext(&*self.handle) };
-    }
+    handle: CtxtHandle,
 }
 
 /// The first call's outcome (`schannel_connect_step1`).
@@ -297,18 +217,18 @@ pub(crate) fn start(
     alpn: Option<&mut [u8]>,
 ) -> Result<First, OutOfMemory> {
     assert_eq!(target.last(), Some(&0), "a name ended by a zero");
-    let mut handle = try_box(SecHandle::default())?;
+    let mut handle = CtxtHandle::room()?;
     let mut inbuf = [match alpn {
         Some(a) => buffer(
-            SECBUFFER_APPLICATION_PROTOCOLS,
+            kind::APPLICATION_PROTOCOLS,
             a.as_mut_ptr().cast(),
             u32::try_from(a.len()).expect("small"),
         ),
         None => empty(),
     }];
-    let has_alpn = inbuf[0].BufferType == SECBUFFER_APPLICATION_PROTOCOLS;
+    let has_alpn = inbuf[0].BufferType == kind::APPLICATION_PROTOCOLS;
     let indesc = desc(&mut inbuf);
-    let mut outbuf = [buffer(SECBUFFER_EMPTY, ptr::null_mut(), 0)];
+    let mut outbuf = [empty()];
     let mut outdesc = desc(&mut outbuf);
     let mut attrs = 0u32;
     // SAFETY: the credential, the target and the buffers are alive for the
@@ -316,7 +236,7 @@ pub(crate) fn start(
     // and the attributes.
     let status = unsafe {
         id::InitializeSecurityContextW(
-            &cred.handle,
+            cred.handle.as_ptr(),
             ptr::null(),
             target.as_ptr(),
             req,
@@ -330,10 +250,15 @@ pub(crate) fn start(
             ptr::null_mut(),
         )
     };
-    let token = Token::of(&outbuf[0]);
+    // SAFETY: the context asks SSPI to allocate its tokens
+    // (`ISC_REQ_ALLOCATE_MEMORY`), which it hands over.
+    let token = unsafe { Token::of(&outbuf[0]) };
     Ok(First {
         status,
-        context: (status >= 0).then_some(Context { handle }),
+        context: (status >= 0).then(|| Context {
+            // SAFETY: a call that did not fail made the context.
+            handle: unsafe { CtxtHandle::adopt(handle) },
+        }),
         token,
         attrs,
     })
@@ -354,7 +279,9 @@ impl Context {
     /// The handle, where it lives as long as the context: what C hands
     /// an application (`CURLINFO_TLS_SSL_PTR`).
     pub(crate) fn handle_ptr(&self) -> NonNull<c_void> {
-        NonNull::from(&*self.handle).cast()
+        NonNull::new(self.handle.as_ptr().cast_mut())
+            .expect("a boxed handle")
+            .cast()
     }
 
     /// Move the handshake on with `input` (`InitializeSecurityContext`
@@ -369,7 +296,7 @@ impl Context {
         assert_eq!(target.last(), Some(&0), "a name ended by a zero");
         let mut inbuf = [
             buffer(
-                SECBUFFER_TOKEN,
+                kind::TOKEN,
                 input.as_mut_ptr().cast(),
                 u32::try_from(input.len()).unwrap_or(u32::MAX),
             ),
@@ -377,8 +304,8 @@ impl Context {
         ];
         let indesc = desc(&mut inbuf);
         let mut outbuf = [
-            buffer(SECBUFFER_TOKEN, ptr::null_mut(), 0),
-            buffer(SECBUFFER_ALERT, ptr::null_mut(), 0),
+            buffer(kind::TOKEN, ptr::null_mut(), 0),
+            buffer(kind::ALERT, ptr::null_mut(), 0),
             empty(),
         ];
         let mut outdesc = desc(&mut outbuf);
@@ -388,8 +315,8 @@ impl Context {
         // allocates and the attributes.
         let status = unsafe {
             id::InitializeSecurityContextW(
-                &cred.handle,
-                &*self.handle,
+                cred.handle.as_ptr(),
+                self.handle.as_ptr(),
                 target.as_ptr(),
                 req,
                 0,
@@ -403,8 +330,9 @@ impl Context {
             )
         };
         let token = |i: usize| {
-            let t = Token::of(&outbuf[i]);
-            if outbuf[i].BufferType == SECBUFFER_TOKEN {
+            // SAFETY: as in `start`.
+            let t = unsafe { Token::of(&outbuf[i]) };
+            if outbuf[i].BufferType == kind::TOKEN {
                 t
             } else {
                 None
@@ -413,7 +341,7 @@ impl Context {
         Next {
             status,
             tokens: [token(0), token(1), token(2)],
-            extra: (inbuf[1].BufferType == SECBUFFER_EXTRA && inbuf[1].cbBuffer > 0)
+            extra: (inbuf[1].BufferType == kind::EXTRA && inbuf[1].cbBuffer > 0)
                 .then(|| usize::try_from(inbuf[1].cbBuffer).expect("a u32 fits")),
             attrs,
         }
@@ -431,25 +359,25 @@ impl Context {
     ) -> Result<(i32, Option<Token>, u32), i32> {
         let mut shut: u32 = id::SCHANNEL_SHUTDOWN;
         let mut control = [buffer(
-            SECBUFFER_TOKEN,
+            kind::TOKEN,
             (&raw mut shut).cast(),
             u32::try_from(size_of::<u32>()).expect("small"),
         )];
         let controldesc = desc(&mut control);
         // SAFETY: the context and the buffer, alive for the call.
-        let applied = unsafe { id::ApplyControlToken(&*self.handle, &controldesc) };
+        let applied = unsafe { id::ApplyControlToken(self.handle.as_ptr(), &controldesc) };
         if applied != status::OK {
             return Err(applied);
         }
         let mut outbuf = [empty()];
         let mut outdesc = desc(&mut outbuf);
         let mut attrs = 0u32;
-        let h: *mut SecHandle = &mut *self.handle;
+        let h: *mut SecHandle = self.handle.as_mut_ptr();
         // SAFETY: the credential, the context (as old and new, as C passes
         // it), the target and the buffer are alive for the call.
         let status = unsafe {
             id::InitializeSecurityContextW(
-                &cred.handle,
+                cred.handle.as_ptr(),
                 h,
                 target.as_ptr(),
                 req,
@@ -463,7 +391,8 @@ impl Context {
                 ptr::null_mut(),
             )
         };
-        Ok((status, Token::of(&outbuf[0]), attrs))
+        // SAFETY: as in `start`.
+        Ok((status, unsafe { Token::of(&outbuf[0]) }, attrs))
     }
 
     /// Decrypt the records at the start of `data` in place
@@ -473,7 +402,7 @@ impl Context {
         let len = data.len();
         let mut bufs = [
             buffer(
-                SECBUFFER_DATA,
+                kind::DATA,
                 base.cast(),
                 u32::try_from(len).unwrap_or(u32::MAX),
             ),
@@ -484,18 +413,18 @@ impl Context {
         let d = desc(&mut bufs);
         // SAFETY: the context and the buffers, alive for the call; SSPI
         // decrypts within `data` and points the buffers into it.
-        let status = unsafe { id::DecryptMessage(&*self.handle, &d, 0, ptr::null_mut()) };
+        let status = unsafe { id::DecryptMessage(self.handle.as_ptr(), &d, 0, ptr::null_mut()) };
         let within = |b: &id::SecBuffer| -> Option<(usize, usize)> {
             let at = (b.pvBuffer as usize).checked_sub(base as usize)?;
             let n = usize::try_from(b.cbBuffer).ok()?;
             (at.checked_add(n)? <= len).then_some((at, n))
         };
-        let plain = if bufs[1].BufferType == SECBUFFER_DATA {
+        let plain = if bufs[1].BufferType == kind::DATA {
             Some(within(&bufs[1]).expect("SSPI's plaintext lies within the data"))
         } else {
             None
         };
-        let extra = (bufs[3].BufferType == SECBUFFER_EXTRA && bufs[3].cbBuffer > 0)
+        let extra = (bufs[3].BufferType == kind::EXTRA && bufs[3].cbBuffer > 0)
             .then(|| usize::try_from(bufs[3].cbBuffer).expect("a u32 fits"));
         Decrypted {
             status,
@@ -525,19 +454,19 @@ impl Context {
         // SAFETY: as above.
         let tail = unsafe { base.add(header + len) };
         let mut bufs = [
-            buffer(SECBUFFER_STREAM_HEADER, base.cast(), sizes.header),
+            buffer(kind::STREAM_HEADER, base.cast(), sizes.header),
             buffer(
-                SECBUFFER_DATA,
+                kind::DATA,
                 data.cast(),
                 u32::try_from(len).expect("at most the largest message"),
             ),
-            buffer(SECBUFFER_STREAM_TRAILER, tail.cast(), sizes.trailer),
+            buffer(kind::STREAM_TRAILER, tail.cast(), sizes.trailer),
             empty(),
         ];
         let d = desc(&mut bufs);
         // SAFETY: the context and the buffers within `record`, alive for
         // the call.
-        let status = unsafe { id::EncryptMessage(&*self.handle, 0, &d, 0) };
+        let status = unsafe { id::EncryptMessage(self.handle.as_ptr(), 0, &d, 0) };
         if status != status::OK {
             return Err(status);
         }
@@ -552,7 +481,7 @@ impl Context {
         // call.
         let status = unsafe {
             id::QueryContextAttributesW(
-                &*self.handle,
+                self.handle.as_ptr(),
                 SECPKG_ATTR_STREAM_SIZES,
                 (&raw mut s).cast(),
             )
@@ -575,7 +504,7 @@ impl Context {
         // SAFETY: as above.
         let status = unsafe {
             id::QueryContextAttributesW(
-                &*self.handle,
+                self.handle.as_ptr(),
                 SECPKG_ATTR_APPLICATION_PROTOCOL,
                 (&raw mut a).cast(),
             )
@@ -595,7 +524,7 @@ impl Context {
         // owns.
         let status = unsafe {
             id::QueryContextAttributesW(
-                &*self.handle,
+                self.handle.as_ptr(),
                 SECPKG_ATTR_REMOTE_CERT_CONTEXT,
                 (&raw mut cert).cast(),
             )

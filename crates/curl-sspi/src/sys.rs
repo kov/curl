@@ -2,9 +2,7 @@
 //! make them: in the build's text, the ANSI calls, or in the Unicode
 //! build the wide ones, as C's `TCHAR` table (`Curl_pSecFn`) is either.
 //! Handles are released as they go; buffers SSPI allocates are freed as
-//! they are copied out. What is generic to SSPI (a buffer SSPI
-//! allocated, the credential and context handles, the buffer
-//! descriptions) Schannel uses too.
+//! they are copied out.
 
 #![allow(unsafe_code)]
 
@@ -15,18 +13,10 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use windows_sys::Win32::Security::Authentication::Identity as id;
 use windows_sys::Win32::Security::Credentials::SecHandle;
 
-/// `SECBUFFER_*` and the other numbers the calls take.
-pub mod kind {
-    pub const EMPTY: u32 = 0;
-    pub const DATA: u32 = 1;
-    pub const TOKEN: u32 = 2;
-    pub const PKG_PARAMS: u32 = 3;
-    pub const PADDING: u32 = 9;
-    pub const STREAM: u32 = 10;
-}
+pub use crate::handle::kind;
+pub use crate::handle::{CredHandle, CtxtHandle};
+use crate::handle::{Token, buffer, desc, empty};
 
-/// `SECBUFFER_VERSION`.
-const VERSION: u32 = 0;
 /// `SECPKG_ATTR_SIZES`.
 const ATTR_SIZES: u32 = 0;
 /// `SECPKG_CRED_ATTR_NAMES`.
@@ -40,132 +30,6 @@ const IDENTITY_UNICODE: u32 = 2;
 const NATIVE_DREP: u32 = 0x10;
 /// `KERB_WRAP_NO_ENCRYPT`.
 const WRAP_NO_ENCRYPT: u32 = 0x8000_0001;
-
-/// A buffer description of `kind` over `len` bytes at `data`.
-pub fn buffer(kind: u32, data: *mut c_void, len: u32) -> id::SecBuffer {
-    id::SecBuffer {
-        cbBuffer: len,
-        BufferType: kind,
-        pvBuffer: data,
-    }
-}
-
-/// An empty buffer description.
-pub fn empty() -> id::SecBuffer {
-    buffer(kind::EMPTY, ptr::null_mut(), 0)
-}
-
-/// The description of `buffers`.
-pub fn desc(buffers: &mut [id::SecBuffer]) -> id::SecBufferDesc {
-    id::SecBufferDesc {
-        ulVersion: VERSION,
-        cBuffers: u32::try_from(buffers.len()).expect("a few"),
-        pBuffers: buffers.as_mut_ptr(),
-    }
-}
-
-/// A buffer SSPI allocated and handed over, freed as it goes.
-pub struct Token {
-    data: NonNull<u8>,
-    len: usize,
-}
-
-// SAFETY: memory SSPI allocated for the caller, freed from any thread.
-unsafe impl Send for Token {}
-
-impl Token {
-    /// Take over the buffer `b` says SSPI allocated, if it did.
-    fn of(b: &id::SecBuffer) -> Option<Token> {
-        let data = NonNull::new(b.pvBuffer.cast::<u8>())?;
-        Some(Token {
-            data,
-            len: usize::try_from(b.cbBuffer).expect("a u32 fits"),
-        })
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        // SAFETY: the `len` bytes SSPI allocated, owned here until drop.
-        unsafe { core::slice::from_raw_parts(self.data.as_ptr(), self.len) }
-    }
-}
-
-impl Drop for Token {
-    fn drop(&mut self) {
-        // SAFETY: a buffer SSPI allocated, freed once.
-        unsafe { id::FreeContextBuffer(self.data.as_ptr().cast()) };
-    }
-}
-
-/// A credential handle SSPI made, freed as it goes.
-pub struct CredHandle(SecHandle);
-
-// SAFETY: a credential handle may be used by any thread, and by several
-// contexts at once; SSPI serialises what it must.
-unsafe impl Send for CredHandle {}
-// SAFETY: as above.
-unsafe impl Sync for CredHandle {}
-
-impl CredHandle {
-    /// Adopt the handle a successful `AcquireCredentialsHandle` wrote.
-    ///
-    /// # Safety
-    ///
-    /// `handle` is one SSPI made, owned by no one else.
-    pub unsafe fn adopt(handle: SecHandle) -> CredHandle {
-        CredHandle(handle)
-    }
-
-    pub fn as_ptr(&self) -> *const SecHandle {
-        &self.0
-    }
-}
-
-impl Drop for CredHandle {
-    fn drop(&mut self) {
-        // SAFETY: a handle SSPI made, freed once, after every context
-        // made with it, each of which holds it or was deleted first.
-        unsafe { id::FreeCredentialsHandle(&self.0) };
-    }
-}
-
-/// A security context's handle, deleted as it goes. It stays at one
-/// place, which an application may be handed.
-pub struct CtxtHandle(Box<SecHandle>);
-
-// SAFETY: a context is used by one thread at a time, which `&mut self`
-// ensures; it moves between threads only whole.
-unsafe impl Send for CtxtHandle {}
-
-impl CtxtHandle {
-    /// Room for the handle a first `InitializeSecurityContext` writes.
-    pub fn room() -> Result<Box<SecHandle>, OutOfMemory> {
-        curl_alloc::try_box(SecHandle::default())
-    }
-
-    /// Adopt the handle a successful first call wrote in `room`.
-    ///
-    /// # Safety
-    ///
-    /// `room` holds a context SSPI made, owned by no one else.
-    pub unsafe fn adopt(room: Box<SecHandle>) -> CtxtHandle {
-        CtxtHandle(room)
-    }
-
-    pub fn as_ptr(&self) -> *const SecHandle {
-        &*self.0
-    }
-
-    pub fn as_mut_ptr(&mut self) -> *mut SecHandle {
-        &mut *self.0
-    }
-}
-
-impl Drop for CtxtHandle {
-    fn drop(&mut self) {
-        // SAFETY: a context SSPI made, deleted once.
-        unsafe { id::DeleteSecurityContext(&*self.0) };
-    }
-}
 
 /// Text in the build's form, ended by a zero: the ANSI code page's bytes,
 /// or UTF-16.
@@ -466,7 +330,11 @@ pub fn initialize(
     if room.is_some() {
         let n = usize::try_from(outbuf[0].cbBuffer).expect("a u32 fits");
         out.truncate(n.min(room_len));
-    } else if let Some(token) = Token::of(&outbuf[0]) {
+    } else if let Some(token) = {
+        // SAFETY: the call was asked to allocate the token, which SSPI
+        // then hands over.
+        unsafe { Token::of(&outbuf[0]) }
+    } {
         out.try_extend_from_slice(token.bytes())?;
     }
     if status >= 0
@@ -669,10 +537,9 @@ pub fn user_name(cred: &CredHandle, wide: bool) -> Result<UserName, Failed> {
         });
     };
     // Freed as it goes, whatever is copied.
-    let _owned = Token {
-        data: name.cast(),
-        len: 0,
-    };
+    // SAFETY: the name SSPI allocated and handed over; none of it is read
+    // through the token.
+    let _owned = unsafe { Token::adopt(name.cast(), 0) };
     let oom = |_| Failed::OutOfMemory;
     if wide {
         let p = name.as_ptr().cast::<u16>();

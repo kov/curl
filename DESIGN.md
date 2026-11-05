@@ -26,7 +26,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-idn2` | libidn2's host names, behind `curl_core::idn::Idn`. | yes: it is a binding |
 | `curl-ares` | c-ares's resolves, behind `curl_core::conn::io::DnsLibrary`. | yes: it is a binding |
 | `curl-gssapi` | MIT krb5's GSS-API, behind `curl_core::gss::Gss`; with `debug-hooks`, the debug build's stub for the tests (`CURL_STUB_GSS_CREDS`). Not on Windows, where SSPI takes its place. | in `sys.rs` |
-| `curl-sspi` | Windows' SSPI for authentication, behind `curl_core::sspi::Sspi`: Kerberos, SPNEGO and Digest as C's Windows build makes them. | in `sys.rs` |
+| `curl-sspi` | Windows' SSPI for authentication, behind `curl_core::sspi::Sspi`: Kerberos, SPNEGO and Digest as C's Windows build makes them; and SSPI's buffers and handles, which `curl-schannel` shares. | in `sys.rs` and `handle.rs` |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh, c-ares and the rest);

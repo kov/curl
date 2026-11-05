@@ -68,7 +68,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-openssl/src/apple.rs`: Apple's SecTrust verifying the peer's chain OpenSSL did
   not, through Security.framework and CoreFoundation.
 - `crates/curl-schannel/src/sspi.rs`: Schannel's credentials and security contexts through
-  SSPI: the handshake's tokens, the records both ways, and what a context is asked of.
+  SSPI: the handshake's tokens, the records both ways, and what a context is asked of; the
+  handles and buffers themselves are `curl-sspi`'s.
 - `crates/curl-schannel/src/crypt.rs`: CryptoAPI's certificate stores and contexts: a CA
   file's certificates, a client's from a PKCS #12 file or a system store, the peer's chain
   built and checked by a chain engine, and its names.
@@ -77,6 +78,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-sspi/src/sys.rs`: Windows' SSPI for authentication: the identities and
   credentials of the Negotiate, Kerberos and WDigest packages, their security contexts, and
   the buffers passed to and from them.
+- `crates/curl-sspi/src/handle.rs`: what is generic to SSPI, for authentication and Schannel
+  alike: the buffer descriptions, a buffer SSPI allocated, and the credential and context
+  handles, each released as it goes.
 - `crates/curl-openssl/src/cert.rs`: the client's certificate and key, loaded into OpenSSL's
   context.
 - `crates/curl-openssl/src/certinfo.rs`: the peer's chain, each certificate's fields as OpenSSL

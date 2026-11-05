@@ -7,9 +7,8 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
-use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
 /// A directory of its own for a test, removed after it.
 struct Scratch(PathBuf);
@@ -30,6 +29,33 @@ impl Scratch {
             long.push_str("./");
         }
         long + name
+    }
+}
+
+/// The `file:` URL of `path`: on Windows its drive after a third slash,
+/// and slashes for its backslashes.
+fn file_url(path: &Path) -> String {
+    let path = path.to_str().unwrap();
+    if cfg!(windows) {
+        format!("file:///{}", path.replace('\\', "/"))
+    } else {
+        format!("file://{path}")
+    }
+}
+
+/// Whether the run ended by aborting rather than with an exit code: a
+/// signal on Unix; on Windows a status the system gives a process it
+/// ended (an `NTSTATUS` error, such as Rust's abort's
+/// `STATUS_STACK_BUFFER_OVERRUN`), which no exit code of the tool is.
+fn aborted(status: &ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        status.signal().is_some()
+    }
+    #[cfg(windows)]
+    {
+        status.code().is_none_or(|c| c < 0)
     }
 }
 
@@ -67,7 +93,7 @@ fn tortured(dir: &Path, args: &[&str], env: &[(&str, &str)], reset: impl Fn()) {
     for limit in 0.. {
         let (out, log) = run(Some(limit));
         assert!(
-            out.status.signal().is_none(),
+            !aborted(&out.status),
             "{args:?} with allocation {} refused: {out:?}\n{}",
             limit + 1,
             log.lines().rev().take(8).collect::<Vec<_>>().join("\n")
@@ -89,7 +115,7 @@ fn downloads_with_long_names_under_torture() {
     std::fs::write(s.0.join("src"), b"hello\n").unwrap();
     std::fs::write(s.0.join("netrc"), b"").unwrap();
     std::fs::write(s.0.join("config"), b"silent\n").unwrap();
-    let url = format!("file://{}", s.0.join("src").to_str().unwrap());
+    let url = file_url(&s.0.join("src"));
     let (src, netrc, config) = (s.long("src"), s.long("netrc"), s.long("config"));
     let (out, err) = (s.long("made/out"), s.long("err"));
     let output = format!("%output{{{}}}done", s.long("wo"));
@@ -127,7 +153,7 @@ fn finds_the_configuration_by_a_long_name_under_torture() {
     let s = Scratch::new("long-curlrc");
     std::fs::write(s.0.join(".curlrc"), b"silent\n").unwrap();
     std::fs::write(s.0.join("src"), b"hello\n").unwrap();
-    let url = format!("file://{}", s.0.join("src").to_str().unwrap());
+    let url = file_url(&s.0.join("src"));
     let home = s.long("");
     let data = format!("@{}", s.long("src"));
     let env = [("CURL_HOME", home.as_str())];
@@ -140,7 +166,7 @@ fn finds_the_configuration_by_a_long_name_under_torture() {
 fn uploads_from_a_long_name_under_torture() {
     let s = Scratch::new("long-upload");
     std::fs::write(s.0.join("src"), b"hello\n").unwrap();
-    let url = format!("file://{}", s.0.join("dst").to_str().unwrap());
+    let url = file_url(&s.0.join("dst"));
     let src = s.long("src");
     tortured(&s.0, &["-q", "-T", &src, &url], &[], || {});
 }

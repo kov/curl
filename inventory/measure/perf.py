@@ -5,7 +5,7 @@ Measure the performance of the rewrite's release build against C's.
 `--run` builds both sides in release form, measures them, and keeps the raw
 samples under each build directory's perf/; `--build` only builds them.
 Without either, the stored samples are summarised into
-inventory/perf.{json,md}.
+inventory/perf.{json,md}, or inventory/perf-macos.{json,md} on macOS.
 
 Two configurations, each a C leg and a Rust leg:
 
@@ -33,10 +33,16 @@ Two kinds of measurement:
   left out: it connects to public internet hosts.
 
 The legs' samples are interleaved, sample by sample, so that drift in the
-host spreads over all of them. The figures hold for this machine only,
-which is a virtual machine whose host schedules the cores: compare builds
-measured here, in one run, by medians, never against numbers from
-elsewhere.
+host spreads over all of them, and the load average is kept with each
+scorecard run. The figures hold for the machine they were taken on only:
+compare builds measured there, in one run, by medians, never against
+numbers from elsewhere.
+
+On macOS the dependencies come from Homebrew, OpenSSL from `OPENSSL_DIR`
+(as the Rust build's openssl-sys takes it) and ngtcp2 from
+`CURL_NGTCP2_DIR` (as curl-ngtcp2's build takes it). Homebrew's nghttpx
+has no HTTP/3, so the first nghttpx on PATH is the one the C build's
+tests/http configuration names: put one built with HTTP/3 there first.
 """
 
 import hashlib
@@ -61,14 +67,42 @@ import score
 import suite
 from common import ROOT, check
 
+MACOS = sys.platform == "darwin"
+# The release library's name, as the C release build installs it, and the
+# glob that finds the file it names.
+SONAME = "libcurl.4.dylib" if MACOS else "libcurl.so.4"
+C_LIBRARY = "lib/libcurl.*.*.*.dylib" if MACOS else "lib/libcurl*.so.*.*.*"
+# The variable that puts a directory first on the library search path.
+LIBRARY_PATH = "DYLD_LIBRARY_PATH" if MACOS else "LD_LIBRARY_PATH"
+# Where the summary goes: inventory/<OUTPUT>.{json,md}.
+OUTPUT = "perf-macos" if MACOS else "perf"
 RELEASE = {"CMAKE_BUILD_TYPE": "Release", "ENABLE_DEBUG": "OFF"}
-C_CMAKE_ARGS = {**baseline.CMAKE_ARGS, **RELEASE}
+
+
+def platform_cmake_args():
+    """What the C build needs on this platform beyond baseline's."""
+    if not MACOS:
+        return {}
+    openssl = os.environ.get("OPENSSL_DIR")
+    check(openssl, "OPENSSL_DIR must name the OpenSSL to build against")
+    brew = subprocess.run(["brew", "--prefix"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+    nghttpx = shutil.which("nghttpx")
+    check(nghttpx, "no nghttpx on PATH")
+    return {"OPENSSL_ROOT_DIR": openssl,
+            "CMAKE_PREFIX_PATH": f"{deps.NGTCP2};{openssl};{brew}",
+            "CMAKE_BUILD_RPATH": f"{deps.NGTCP2 / 'lib'};{openssl}/lib",
+            # baseline's are Fedora's paths: CMake finds macOS's.
+            "DANTED": "", "SFTPD": "",
+            "HTTPD_NGHTTPX": nghttpx}
+
+
+PLATFORM = platform_cmake_args()
+C_CMAKE_ARGS = {**baseline.CMAKE_ARGS, **RELEASE, **PLATFORM}
 SAMPLES = 9
 SCORECARD_RUNS = 5
 SCORECARD_PROTOCOLS = ["h1", "h2", "h3"]
 SCORECARD_ARGS = ["-j", "--samples", "1", "-d", "-u", "-r", "--httpd"]
-# The release library's name, as the C release build installs it.
-SONAME = "libcurl.so.4"
 # The Rust counterparts of the programs that time C internals: the crate,
 # the cargo target that holds the test and the test's path.
 PORTS = {
@@ -97,7 +131,8 @@ class Config:
 
 
 REFERENCE = Config("reference", C_CMAKE_ARGS, (), (), True)
-THREADED = Config("threaded", {**baseline.THREADED.cmake_args, **RELEASE},
+THREADED = Config("threaded", {**baseline.THREADED.cmake_args, **RELEASE,
+                               **PLATFORM},
                   ("curl-sys-abi/threaded-resolver",
                    "curl-tool/threaded-resolver"),
                   ("--curl-verbose",), False)
@@ -139,7 +174,7 @@ class Leg:
         """The environment the leg's programs run with."""
         if self.side == "c":
             return dict(os.environ)
-        return {**os.environ, "LD_LIBRARY_PATH": str(self.build / "lib")}
+        return {**os.environ, LIBRARY_PATH: str(self.build / "lib")}
 
 
 LEGS = [Leg(c, s) for c in CONFIGS for s in ("c", "rust")]
@@ -169,10 +204,16 @@ def build_c(leg):
                          "Ninja",
                          *(f"-D{k}={v}" for k, v in leg.config.cmake.items())]),
                    check=True, stdout=subprocess.DEVNULL,
-                   env={**os.environ, **dep_env})
-    subprocess.run(nice(["ninja", "-C", str(build), "all", "testdeps",
+                   env={**os.environ, **dep_env, "PKG_CONFIG_PATH": ":".join(
+                       p for p in (dep_env["PKG_CONFIG_PATH"],
+                                   os.environ.get("PKG_CONFIG_PATH")) if p)})
+    # CMake's own variable for the build's parallelism (cargo's is
+    # CARGO_BUILD_JOBS), for a shared machine.
+    jobs = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL")
+    subprocess.run(nice(["ninja", "-C", str(build),
+                         *([f"-j{jobs}"] if jobs else []), "all", "testdeps",
                          "perf"]), check=True, stdout=subprocess.DEVNULL)
-    for binary in [next(build.glob("lib/libcurl*.so.*.*.*")),
+    for binary in [next(build.glob(C_LIBRARY)),
                    build / "src/curl", build / "tests/perf/perf"]:
         deps.check_linked(binary)
 
@@ -215,33 +256,70 @@ def build_rust(leg):
     skip = {"perf", "src/curl", "src/curlinfo", "tests/perf", "tests/log",
             "tests/.cache"}
     score.overlay(c_build, c_build, leg.build, skip)
-    shutil.copy2(out / "libcurl.so", leg.build / "lib" / SONAME)
+    library = leg.build / "lib" / SONAME
+    if MACOS:
+        shutil.copy2(out / "libcurl.dylib", library)
+        # Named as C's is, so that what links C's finds it.
+        subprocess.run(["install_name_tool", "-id", f"@rpath/{SONAME}",
+                        str(library)], check=True)
+        codesign(library)
+    else:
+        shutil.copy2(out / "libcurl.so", library)
     for name in ("curl", "curlinfo"):
         shutil.copy2(out / name, leg.build / "src" / name)
     perf = leg.build / "tests/perf/perf"
     perf.parent.mkdir()
     shutil.copy2(c_build / "tests/perf/perf", perf)
     # Without the environment too, it loads the leg's library.
-    score.own_runpath(perf, c_build / "lib", "$ORIGIN/../../lib")
+    if MACOS:
+        subprocess.run(["install_name_tool", "-rpath", str(c_build / "lib"),
+                        "@loader_path/../../lib", str(perf)], check=True)
+        codesign(perf)
+    else:
+        score.own_runpath(perf, c_build / "lib", "$ORIGIN/../../lib")
     if leg.config.perf:
         ports = port_binaries(leg)
         (leg.build / "ports.json").write_text(json.dumps(ports, indent=1))
+
+
+def codesign(binary):
+    """Sign `binary` ad hoc again: macOS kills one whose code was edited."""
+    subprocess.run(["codesign", "-f", "-s", "-", str(binary)], check=True,
+                   capture_output=True)
+
+
+def loaded_libcurl(binary, env):
+    """The libcurl `binary` loads under `env`, as the loader reports it."""
+    if MACOS:
+        # The loader itself lists what it loads; perf without arguments
+        # loads everything and exits.
+        r = subprocess.run([str(binary)], env={**env,
+                                               "DYLD_PRINT_LIBRARIES": "1"},
+                           check=False, capture_output=True, text=True)
+        found = re.findall(r"^dyld\[\d+\]: (?:<[-0-9A-F]+> )?"
+                           r"(\S*/libcurl[^/]*\.dylib)$",
+                           r.stderr, re.MULTILINE)
+        # The system's own, which a system framework loads beside
+        # ours: two-level namespaces keep the two apart.
+        found = [f for f in found if not f.startswith("/usr/lib/")]
+        check(len(found) == 1, f"{binary} loads libcurl {found}")
+        return pathlib.Path(found[0]).resolve()
+    ldd = subprocess.run(["ldd", str(binary)], env=env, check=True,
+                         capture_output=True, text=True).stdout
+    m = re.search(rf"^\s*{re.escape(SONAME)} => (\S+)", ldd, re.MULTILINE)
+    return m and pathlib.Path(m.group(1)).resolve()
 
 
 def check_loading(leg):
     """Fail unless the leg's programs load the leg's own library."""
     want = (leg.build / "lib" / SONAME).resolve()
     if leg.side == "c":
-        want = next(leg.build.glob("lib/libcurl.so.*.*.*")).resolve()
-    bare = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
+        want = next(leg.build.glob(C_LIBRARY)).resolve()
+    bare = {k: v for k, v in os.environ.items() if k != LIBRARY_PATH}
     for env in (leg.env(), bare):
-        ldd = subprocess.run(["ldd", str(leg.build / "tests/perf/perf")],
-                             env=env, check=True, capture_output=True,
-                             text=True).stdout
-        m = re.search(rf"^\s*{re.escape(SONAME)} => (\S+)", ldd, re.MULTILINE)
-        check(m and pathlib.Path(m.group(1)).resolve() == want,
-              f"{leg.name}: tests/perf/perf loads {m and m.group(1)}, "
-              f"not {want}")
+        got = loaded_libcurl(leg.build / "tests/perf/perf", env)
+        check(got == want,
+              f"{leg.name}: tests/perf/perf loads {got}, not {want}")
     version = subprocess.run([str(leg.build / "src/curl"), "-V"],
                              capture_output=True, text=True, check=True,
                              env=leg.env()).stdout
@@ -250,18 +328,31 @@ def check_loading(leg):
           f"{leg.name}: curl -V says {version.splitlines()[0]!r}")
 
 
+def loadavg():
+    return " ".join(f"{v:.2f}" for v in os.getloadavg())
+
+
 def machine():
-    def read(path):
-        try:
-            return pathlib.Path(path).read_text().strip()
-        except OSError:
-            return None
+    if MACOS:
+        def sysctl(name):
+            return subprocess.run(["sysctl", "-n", name], check=True,
+                                  capture_output=True,
+                                  text=True).stdout.strip()
+        return {"system": f"macOS {platform.mac_ver()[0]}",
+                "kernel": f"Darwin {platform.release()}",
+                "machine": platform.machine(), "cpus": os.cpu_count(),
+                "model": sysctl("hw.model"),
+                "cpu": sysctl("machdep.cpu.brand_string"),
+                "virtualization": None,
+                "memory": f"{int(sysctl('hw.memsize')) // 2**30} GiB",
+                "loadavg-before": loadavg()}
     virt = subprocess.run(["systemd-detect-virt"], capture_output=True,
                           text=True, check=False).stdout.strip()
     return {"kernel": platform.release(), "machine": platform.machine(),
             "cpus": os.cpu_count(), "virtualization": virt or None,
-            "memory": read("/proc/meminfo").splitlines()[0],
-            "loadavg-before": read("/proc/loadavg")}
+            "memory": pathlib.Path("/proc/meminfo").read_text()
+            .splitlines()[0],
+            "loadavg-before": loadavg()}
 
 
 def parse_perf_output(text):
@@ -306,11 +397,13 @@ def measure_perf(legs, programs):
 
 def measure_scorecard(legs):
     """Run the scorecard SCORECARD_RUNS times per protocol, interleaved."""
+    suite.venv()
     path = f"{suite.VENV / 'bin'}:{os.environ.get('PATH', '')}"
     for proto in SCORECARD_PROTOCOLS:
         runs = {leg.name: [] for leg in legs}
         for i in range(SCORECARD_RUNS):
             for leg in legs:
+                load = loadavg()
                 r = subprocess.run(
                     [str(suite.VENV / "bin/python3"),
                      str(ROOT / "tests/http/scorecard.py"), *SCORECARD_ARGS,
@@ -321,7 +414,8 @@ def measure_scorecard(legs):
                     r.stderr)
                 check(r.returncode == 0, f"{leg.name} scorecard {proto} run "
                       f"{i} failed: {r.stderr[-500:]}")
-                runs[leg.name].append(json.loads(r.stdout))
+                runs[leg.name].append({**json.loads(r.stdout),
+                                       "loadavg-before": load})
         for leg in legs:
             (leg.results / f"scorecard-{proto}.json").write_text(
                 json.dumps(runs[leg.name]))
@@ -371,7 +465,7 @@ def run():
                  sorted(tests["perf"]))
     measure_scorecard(LEGS)
     meta["finished"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    meta["loadavg-after"] = machine()["loadavg-before"]
+    meta["loadavg-after"] = loadavg()
     for leg in LEGS:
         (leg.results / "run.json").write_text(json.dumps(meta, indent=1) + "\n")
 
@@ -432,6 +526,9 @@ def summarize_scorecard(out):
         result[proto] = {"server": runs[0]["meta"]["server"],
                          "implementation": runs[0]["meta"].get(
                              "implementation"),
+                         # One-minute load average before each run.
+                         "loadavg": [float(r["loadavg-before"].split()[0])
+                                     for r in runs if "loadavg-before" in r],
                          "tables": tables}
     return result
 
@@ -452,6 +549,10 @@ def scorecard_md(config, c, rust, runs):
     md = []
     for proto, sc in c.items():
         md.append(f"### {proto} ({runs} runs each, {sc['server']})\n")
+        load = sc["loadavg"] + rust[proto]["loadavg"]
+        if load:
+            md.append(f"Load average before each run: {min(load):.2f} to "
+                      f"{max(load):.2f}.\n")
         for section, table in sc["tables"].items():
             unit = "r/s" if section == "requests" else "B/s"
             rtable = rust[proto]["tables"][section]
@@ -520,12 +621,15 @@ def main():
             "legs": legs}
 
     m = data["machine"]
+    host = (f"{m['cpus']}-CPU {m['machine']} {m['model']} ({m['cpu']}, "
+            f"{m['system']}, {m['kernel']})" if "system" in m else
+            f"{m['cpus']}-CPU {m['machine']} "
+            f"{m['virtualization'] or 'bare-metal'} machine (kernel "
+            f"{m['kernel']})")
     md = ["# Performance: the rewrite against C\n",
           ("Release builds, measured "
-           f"{meta['started']} to {meta['finished']} on a "
-           f"{m['cpus']}-CPU {m['machine']} "
-           f"{m['virtualization'] or 'bare-metal'} machine (kernel "
-           f"{m['kernel']}), the legs' samples interleaved; load average "
+           f"{meta['started']} to {meta['finished']} on a {host}, "
+           "the legs' samples interleaved; load average "
            f"{m['loadavg-before'].split()[0]} before and "
            f"{meta['loadavg-after'].split()[0]} after. The rewrite at "
            f"`{meta['commit'][:12]}`. Figures are medians; compare only "
@@ -558,7 +662,7 @@ def main():
         md.extend(scorecard_md(config.name, legs[f"c{suffix}"]["scorecard"],
                                legs[f"rust{suffix}"]["scorecard"],
                                meta["scorecard-runs"]))
-    common.write("perf", data, "\n".join(md), [
+    common.write(OUTPUT, data, "\n".join(md), [
         "tests/perf/", "tests/http/scorecard.py"],
         generated_by="inventory/measure/perf.py")
 

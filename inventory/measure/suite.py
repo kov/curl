@@ -39,6 +39,15 @@ REPLACED = {
 SKIPPED_LINE = r"^test (\d+) SKIPPED: (.*?)\s*$"
 
 
+def venv():
+    """Make VENV, with tests/http's modules, unless it is there."""
+    if not (VENV / "bin/pytest").exists():
+        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
+        subprocess.run([str(VENV / "bin/pip"), "install", "-q", "-r",
+                        str(ROOT / "tests/http/requirements.txt")],
+                       check=True)
+
+
 def run(build, results, env):
     """
     Run runtests.pl and pytest from `build`/tests into `results`.
@@ -58,11 +67,7 @@ def run(build, results, env):
           "runtests.pl did not run the suite; it ended with:\n"
           + "\n".join(log.splitlines()[-5:]))
     probe_skips(build, results, env)
-    if not (VENV / "bin/pytest").exists():
-        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
-        subprocess.run([str(VENV / "bin/pip"), "install", "-q", "-r",
-                        str(ROOT / "tests/http/requirements.txt")],
-                       check=True)
+    venv()
     # The test servers run as `#!/usr/bin/env python3` and need the venv's
     # modules, so the venv goes first on PATH, as if activated.
     pyenv = {**env, "PATH": f"{VENV / 'bin'}:{env.get('PATH', '')}"}

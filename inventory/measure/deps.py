@@ -27,7 +27,11 @@ from common import ROOT, check
 
 DEPS = ROOT / "build" / "deps"
 WORKFLOW = ".github/workflows/http3-linux.yml"
-NGTCP2 = DEPS / "ngtcp2"
+# CURL_NGTCP2_DIR names an ngtcp2 built elsewhere, as for curl-ngtcp2's
+# build: it is checked, not built.
+OWN_NGTCP2 = "CURL_NGTCP2_DIR" not in os.environ
+NGTCP2 = DEPS / "ngtcp2" if OWN_NGTCP2 else pathlib.Path(
+    os.environ["CURL_NGTCP2_DIR"])
 
 
 def pinned(name):
@@ -46,7 +50,8 @@ def build():
     version = pinned("NGTCP2_VERSION")
     built = f"{version} pic"
     stamp = NGTCP2 / ".version"
-    if not (stamp.exists() and stamp.read_text().strip() == built):
+    if OWN_NGTCP2 and not (stamp.exists()
+                           and stamp.read_text().strip() == built):
         src = DEPS / "src" / f"ngtcp2-{version}"
         if not src.exists():
             src.parent.mkdir(parents=True, exist_ok=True)
@@ -74,10 +79,13 @@ def build():
 
 def check_linked(binary):
     """Fail unless `binary` loads the ngtcp2 built here."""
-    libs = subprocess.run(["ldd", str(binary)], check=True,
-                          capture_output=True, text=True).stdout
-    check(f"{NGTCP2}/lib/libngtcp2.so" in libs,
-          f"{binary} does not load {NGTCP2}/lib/libngtcp2.so")
+    macos = sys.platform == "darwin"
+    libs = subprocess.run([*(["otool", "-L"] if macos else ["ldd"]),
+                           str(binary)], check=True, capture_output=True,
+                          text=True).stdout
+    # libngtcp2.16.dylib on macOS, libngtcp2.so.16 on Linux.
+    lib = f"{NGTCP2}/lib/libngtcp2.{'' if macos else 'so'}"
+    check(lib in libs, f"{binary} does not load {lib}")
 
 
 if __name__ == "__main__":

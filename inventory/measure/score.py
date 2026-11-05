@@ -103,7 +103,7 @@ def overlay(root, src, dst, skip):
     dst.mkdir(parents=True)
     for entry in sorted(src.iterdir()):
         rel = str(entry.relative_to(root))
-        if rel in skip or re.match(r"^lib/libcurl.*\.so", rel):
+        if rel in skip or re.match(r"^lib/libcurl.*\.(so|dylib)", rel):
             continue
         if rel in DESCEND:
             overlay(root, entry, dst / entry.name, skip)

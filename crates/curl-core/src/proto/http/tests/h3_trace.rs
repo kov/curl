@@ -706,6 +706,92 @@ fn a_stream_closed_before_its_head_fails() {
     );
 }
 
+/// The head of a response of 9 bytes and 4 of them, then `then`.
+fn short_body(then: Vec<Told>) -> Vec<Told> {
+    let header = |name: &[u8], value: &[u8]| Told::Header {
+        stream: 0,
+        name: name.to_vec(),
+        value: value.to_vec(),
+    };
+    let mut told = vec![
+        header(b":status", b"200"),
+        header(b"content-length", b"9"),
+        Told::HeadersDone(0),
+        Told::Data(0, b"1234".to_vec()),
+    ];
+    told.extend(then);
+    told
+}
+
+/// A stream the server closes cleanly before the body its
+/// `content-length` gave is whole fails the transfer as a partial file,
+/// as the end of the response (`cw_download_write`'s EOS check): the end
+/// of a stream is not the end of a body.
+#[test]
+fn a_stream_closed_cleanly_mid_body_is_a_partial_file() {
+    let ran = closed_early(short_body(vec![Told::Closed(0, 0x100)]));
+    assert_eq!(ran.result, Err(ErrorKind::PartialFile));
+    assert_eq!(ran.seen.body(), b"1234");
+    assert_eq!(
+        lines(&ran, &["[HTTP/3] [0] CLOSED", "end of response"]),
+        [
+            "[HTTP/3] [0] CLOSED",
+            "end of response with 5 bytes missing"
+        ]
+    );
+}
+
+/// The connection lost mid-body, the peer closing it, fails the transfer
+/// as a receive (`cf_ngtcp2_recv`'s failed ingress), not as a response
+/// that ended.
+#[test]
+fn a_connection_closed_mid_body_fails_the_transfer() {
+    // NGTCP2_ERR_DRAINING: the peer's CONNECTION_CLOSE was read.
+    let ran = closed_early(short_body(vec![Told::ReadFails(-224)]));
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+    assert_eq!(ran.seen.body(), b"1234");
+    assert_eq!(
+        lines(
+            &ran,
+            &["[HTTP/3] ingress, read_pkt", "[HTTP/3] [0] cf_recv"]
+        )
+        .last(),
+        Some(&"[HTTP/3] [0] cf_recv(buflen=16384) -> 56, 0".to_owned())
+    );
+    assert!(
+        lines(&ran, &["[WRITE] xfer_write_resp(len=0, eos=1)"]).is_empty(),
+        "the response was not ended"
+    );
+}
+
+/// The connection idle past its timeout mid-body, the library's timer
+/// saying so, fails the transfer as a send, as C's expiry check does
+/// (`check_and_set_expiry`), not as a response that ended.
+#[test]
+fn an_idle_close_mid_body_fails_the_transfer() {
+    let script = get_script(b"123456789");
+    {
+        let mut s = script.lock().unwrap();
+        *s.on_read.back_mut().unwrap() = short_body(vec![]);
+        s.timer = Some(std::time::Duration::from_millis(25));
+        // NGTCP2_ERR_IDLE_CLOSE.
+        s.expiry_fails = Some(-238);
+    }
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Err(ErrorKind::SendError));
+    assert_eq!(ran.seen.body(), b"1234");
+    assert_eq!(
+        lines(&ran, &["ngtcp2_conn_handle_expiry"]),
+        ["ngtcp2_conn_handle_expiry returned error: ERR_FAKE"]
+    );
+    assert!(
+        lines(&ran, &["[WRITE] xfer_write_resp(len=0, eos=1)"]).is_empty(),
+        "the response was not ended"
+    );
+}
+
 /// A connection a share keeps is reused by another multi on the one clock
 /// they read, the library never handed a time before one it had though
 /// the clock moves within each step.
@@ -4557,6 +4643,63 @@ fn a_refused_stream_is_said_on_its_own_transfer() {
             Some(Err(ErrorKind::RecvError))
         ]
     );
+}
+
+/// Two streams of one connection the server closes cleanly, each short of
+/// the body its `content-length` gave, in one packet: each transfer fails
+/// as a partial file, neither taken for whole.
+#[test]
+fn streams_closed_cleanly_mid_body_together_are_each_a_partial_file() {
+    let mut two = two_heads_on_quic(vec![
+        Told::Data(0, b"1234".to_vec()),
+        Told::Data(4, b"12345678".to_vec()),
+        Told::Closed(0, 0x100),
+        Told::Closed(4, 0x100),
+    ]);
+    two.talk.allow(4);
+    for _ in 0..5 {
+        two.m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(
+        two.results(),
+        [
+            Some(Err(ErrorKind::PartialFile)),
+            Some(Err(ErrorKind::PartialFile))
+        ]
+    );
+    assert_eq!(two.seen[0].body(), b"1234");
+    assert_eq!(two.seen[1].body(), b"12345678");
+    for (i, missing) in [(0, 5), (1, 1)] {
+        let said = format!("end of response with {missing} bytes missing");
+        let got = lines_of(&two.seen[i], &["end of response"]);
+        assert_eq!(got, [said], "transfer {i}");
+    }
+}
+
+/// The library giving the connection up mid-body, both transfers on it
+/// reading part of their bodies, fails each, the one whose read failed
+/// and the other as it next runs on the connection closed.
+#[test]
+fn a_connection_dropped_mid_body_fails_each_transfer_on_it() {
+    let mut two = two_heads_on_quic(vec![
+        Told::Data(0, b"1234".to_vec()),
+        Told::Data(4, b"12345678".to_vec()),
+        // NGTCP2_ERR_DROP_CONN.
+        Told::ReadFails(-232),
+    ]);
+    two.talk.allow(4);
+    for _ in 0..5 {
+        two.m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(
+        two.results(),
+        [
+            Some(Err(ErrorKind::RecvError)),
+            Some(Err(ErrorKind::RecvError))
+        ]
+    );
+    assert_eq!(two.seen[0].body(), b"1234");
+    assert_eq!(two.seen[1].body(), b"12345678");
 }
 
 /// What a transfer's step reads for its sibling's stream has the sibling

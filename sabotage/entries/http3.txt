@@ -1274,3 +1274,55 @@ witness: curl-core conn::quic::tests::a_joined_datagram_s_packets_are_read_in_or
             let packets = bytes.chunks(d.segment);
 --- new
             let packets = bytes.chunks(bytes.len().max(1));
+
+=== an HTTP/3 stream closed cleanly short of its content-length is a whole response
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::h3_trace::a_stream_closed_cleanly_mid_body_is_a_partial_file
+--- old
+            Some(size) if expect.max.is_some() && !expect.no_body && size > bytecount => {
+--- new
+            Some(size) if expect.max.is_some() && !expect.no_body && size > bytecount + size => {
+
+=== HTTP/3 streams closed cleanly together short of their content-length are whole responses
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::h3_trace::streams_closed_cleanly_mid_body_together_are_each_a_partial_file
+--- old
+            Some(size) if expect.max.is_some() && !expect.no_body && size > bytecount => {
+--- new
+            Some(size) if expect.max.is_some() && !expect.no_body && size > bytecount + size => {
+
+=== a QUIC connection that fails to read mid-body ends its stream's response
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_connection_closed_mid_body_fails_the_transfer
+--- old
+                            .is_err()
+                    {
+                        break 'out Err(ErrorKind::RecvError);
+--- new
+                            .is_err()
+                    {
+                        break 'out Ok(Called::Done);
+
+=== a QUIC connection closed by its timer leaves its transfers waiting
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::an_idle_close_mid_body_fails_the_transfer
+--- old
+                self.failed(cx, error);
+                return Err(ErrorKind::SendError);
+--- new
+                self.failed(cx, error);
+                return Ok(());
+
+=== a transfer reads on from a QUIC connection already closed
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_connection_dropped_mid_body_fails_each_transfer_on_it
+--- old
+                if quic.shutdown_started() {
+                    break 'out Err(ErrorKind::RecvError);
+                }
+                rx_window(step, quic);
+--- new
+                if false {
+                    break 'out Err(ErrorKind::RecvError);
+                }
+                rx_window(step, quic);

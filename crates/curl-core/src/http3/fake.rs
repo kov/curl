@@ -63,6 +63,10 @@ pub enum Told {
     /// The HTTP/3 library refused a stream's bytes: the read fails, as
     /// the binding's callback makes it (`cb_recv_stream_data`).
     Refused(i64),
+    /// The packet's read fails with this code, the QUIC library's, after
+    /// what was told before it: the peer closed the connection, or the
+    /// library gave it up.
+    ReadFails(i32),
 }
 
 /// The script and the record of one connection, shared with the test.
@@ -93,6 +97,9 @@ pub struct Script {
     pub on_submit: VecDeque<Vec<Vec<u8>>>,
     /// Its timer ran this many times.
     pub expired: usize,
+    /// Running its timer fails with this code, the QUIC library's: the
+    /// connection was idle too long, say.
+    pub expiry_fails: Option<i32>,
     pub handshake_done: bool,
     pub draining: bool,
     pub max_payload: usize,
@@ -296,6 +303,7 @@ impl FakeConnection {
                         let h = told_to(call, events, Event::Connection(event));
                         if checked.is_err() { Heard::Failed } else { h }
                     }
+                    Told::ReadFails(_) => unreachable!("the read stops before it"),
                     Told::Refused(s) => {
                         told_to(call, events, stream(*s, StreamEvent::ReadFailed));
                         Heard::Failed
@@ -422,9 +430,21 @@ impl Connection for FakeConnection {
                 }
                 s.on_read.pop_front().unwrap_or_default()
             };
+            let (told, fails) = match told.iter().position(|t| matches!(t, Told::ReadFails(_))) {
+                Some(at) => {
+                    let Told::ReadFails(code) = told[at] else {
+                        unreachable!("found")
+                    };
+                    (own(|| told[..at].to_vec()), Some(code))
+                }
+                None => (told, None),
+            };
             match self.tell(cx, told, &mut *events) {
                 Heard::Fine => {}
                 Heard::Failed => return Err(quic_error("ngtcp2_conn_read_pkt", -502)),
+            }
+            if let Some(code) = fails {
+                return Err(quic_error("ngtcp2_conn_read_pkt", code));
             }
         }
         Ok(())
@@ -535,6 +555,9 @@ impl Connection for FakeConnection {
     ) -> Result<(), QuicError> {
         let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.at(now);
+        if let Some(code) = s.expiry_fails {
+            return Err(quic_error("ngtcp2_conn_handle_expiry", code));
+        }
         s.expired += 1;
         s.expiry = None;
         s.timer = None;
@@ -607,7 +630,9 @@ impl Connection for FakeConnection {
                 code: u64::from(error.code.unsigned_abs()),
             });
         }
-        error.code <= -500
+        // As the binding's: ngtcp2's fatal codes, its dropped connection
+        // and its idle close.
+        error.code <= -500 || error.code == -232 || error.code == -238
     }
 
     fn close_error(&self) -> CloseError {

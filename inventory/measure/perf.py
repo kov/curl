@@ -486,7 +486,8 @@ def spread(values):
     twice as slow; the IQR, unlike max - min, ignores such a sample.
     """
     med = statistics.median(values)
-    q1, _, q3 = statistics.quantiles(values, n=4, method="inclusive")
+    q1, _, q3 = statistics.quantiles(values, n=4, method="inclusive") \
+        if len(values) > 1 else (med, med, med)
     return {"median": med, "min": min(values), "max": max(values),
             "iqr-pct": round(100 * (q3 - q1) / med, 1) if med else None,
             "samples": values}
@@ -508,6 +509,20 @@ def summarize_perf(out, programs):
     return result
 
 
+def cell(got):
+    """
+    Summarise one scorecard cell's runs, leaving out the failed ones.
+
+    A failed run is one the scorecard gave errors for: it reports -1, or
+    a rate from the transfers that did not fail, neither of them a
+    measurement.
+    """
+    errors = [g["errors"] for g in got if g.get("errors")]
+    ok = [g["val"] for g in got if not g.get("errors")]
+    return {**(spread(ok) if ok else {}), "failed": len(errors),
+            "errors": errors}
+
+
 def summarize_scorecard(out):
     result = {}
     for proto in SCORECARD_PROTOCOLS:
@@ -523,9 +538,9 @@ def summarize_scorecard(out):
                 for j, col in enumerate(cols[1:], start=1):
                     if col == "total":
                         continue  # the request count, not a measurement
-                    vals = [r[section]["rows"][i][j]["val"] for r in runs]
-                    if all(isinstance(v, (int, float)) for v in vals):
-                        cells[col] = spread(vals)
+                    got = [r[section]["rows"][i][j] for r in runs]
+                    if all(isinstance(g["val"], (int, float)) for g in got):
+                        cells[col] = cell(got)
                 rows.append({"size": row[0]["sval"], "cells": cells})
             check(rows and all(r["cells"] for r in rows),
                   f"scorecard {proto} {section}: no numeric results")
@@ -553,6 +568,15 @@ def ratio(rust, c):
     return f"{rust / c:.2f}" if c else "-"
 
 
+def cell_md(c, unit, runs):
+    if "median" not in c:
+        return f"failed in all {runs} runs"
+    failed = c.get("failed", 0)
+    return (f"{fmt(c['median'], unit)} (IQR {c['iqr-pct']:.0f}%"
+            + (f", failed in {failed} of {runs} runs" if failed else "")
+            + ")")
+
+
 def scorecard_md(config, c, rust, runs):
     md = []
     for proto, sc in c.items():
@@ -571,12 +595,11 @@ def scorecard_md(config, c, rust, runs):
                       f"{config} {proto} {section}: rows differ")
                 for col in cols:
                     cc, rc = crow["cells"][col], rrow["cells"][col]
-                    rows.append((crow["size"], col,
-                                 f"{fmt(cc['median'], unit)} "
-                                 f"(IQR {cc['iqr-pct']:.0f}%)",
-                                 f"{fmt(rc['median'], unit)} "
-                                 f"(IQR {rc['iqr-pct']:.0f}%)",
-                                 ratio(rc["median"], cc["median"])))
+                    rows.append((crow["size"], col, cell_md(cc, unit, runs),
+                                 cell_md(rc, unit, runs),
+                                 ratio(rc["median"], cc["median"])
+                                 if "median" in cc and "median" in rc
+                                 else "-"))
             md.extend([f"**{table['title']}** (Rust/C above 1 is faster)\n",
                        common.md_table(["size", "kind", "C", "Rust",
                                         "Rust/C"], rows)])
@@ -661,7 +684,14 @@ def main():
                 ratio(r["values"][r["headline"]]["median"],
                       p["values"][p["headline"]]["median"]))
                for (n, p), r in zip(legs["c"]["perf"].items(),
-                                    legs["rust"]["perf"].values())])]
+                                    legs["rust"]["perf"].values())]),
+          "## scorecard\n",
+          ("A run the scorecard reports errors for is left out of its "
+           "cell's median and counted as failed in it. A requests run fails "
+           "when a response is not a 200 or the tool exits with an error; "
+           "with `--parallel`, Rust's tool exits with a transfer's failure "
+           "where C's can forget it (DIVERGENCE.md), so a run in which "
+           "both legs lost transfers can fail on the Rust leg alone.\n")]
     for config in CONFIGS:
         suffix = "" if config is REFERENCE else f"-{config.name}"
         extra = (f", scorecard with `{' '.join(config.scorecard_args)}`"

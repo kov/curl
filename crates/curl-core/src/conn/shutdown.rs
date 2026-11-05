@@ -1,5 +1,6 @@
 //! Connections shutting down (`lib/cshutdn.c`): those whose layers say
-//! goodbye to the peer over more than one pass, as TLS's close_notify may.
+//! goodbye to the peer over more than one pass, as TLS's close_notify may,
+//! or whose protocol's goodbye awaits an answer, as FTP's `QUIT` does.
 //! The multi's `ShutdownSet` is the one owner of each until it is closed,
 //! whichever pool it left, a share's included: the releasing transfer's
 //! multi takes it (conncache.c:242).
@@ -77,6 +78,10 @@ pub(crate) struct Shutting {
     /// Its protocol said goodbye, or was told the connection is dead
     /// (`bits.shutdown_handler`): asked once, whatever comes after.
     said: bool,
+    /// Its protocol's goodbye awaits an answer, which C's blocking
+    /// disconnect waits for before the layers shut down (`ftp_quit`):
+    /// the shutdown waits for it, in its own time.
+    answer_awaited: bool,
     /// A try finished it, its layers done, failed or out of time
     /// (`bits.shutdown_filters`): its close is no forced one.
     finished: bool,
@@ -101,6 +106,7 @@ impl Shutting {
             started_ms,
             tried: false,
             said: false,
+            answer_awaited: false,
             finished: false,
         }
     }
@@ -111,8 +117,24 @@ impl Shutting {
     fn say_goodbye(&mut self, cx: &mut InternalCx<'_>, dead: bool) {
         if !std::mem::replace(&mut self.said, true) {
             let trace = cx.trace;
-            self.conn.protocol_goodbye(cx, trace, dead);
+            self.answer_awaited = self.conn.protocol_goodbye(cx, trace, dead) == Handshake::Waiting;
         }
+    }
+
+    /// Whether its protocol's goodbye still awaits an answer, read on as
+    /// far as the connection lets it now.
+    fn awaits_answer(&mut self, cx: &mut InternalCx<'_>) -> bool {
+        if self.answer_awaited {
+            self.answer_awaited = self.conn.goodbye_answer(cx) == Handshake::Waiting;
+        }
+        self.answer_awaited
+    }
+
+    /// The time left for the answer its protocol's goodbye awaits, if it
+    /// awaits one.
+    fn answer_time_left(&self, now: Instant) -> Option<Duration> {
+        self.answer_awaited
+            .then(|| Duration::from_millis(self.left_ms(now).max(0).unsigned_abs()))
     }
 
     /// Milliseconds left at `now` of the shutdown's time, -1 for none
@@ -177,6 +199,12 @@ impl Shutting {
         // Its protocol says goodbye first, once; then a session, each try
         // (`cshutdn_run_once`, `cf_h2_shutdown`).
         self.say_goodbye(&mut cx, false);
+        // The answer goes before the layers shut down: closing a socket
+        // with it unread, or before it comes, resets the connection, and
+        // the peer may then lose what it had not read yet (Windows does).
+        if self.awaits_answer(&mut cx) {
+            return Tried::Waiting;
+        }
         self.conn.goodbye(&mut cx);
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
@@ -218,13 +246,18 @@ impl Shutting {
         self.close(net, trace, in_multi);
     }
 
-    /// What it waits on while it shuts down: what its layers not shut down
+    /// What it waits on while it shuts down: what its protocol's goodbye
+    /// does while it awaits its answer, then what its layers not shut down
     /// yet say, from the top (`Curl_conn_adjust_pollset` on a chain in
     /// shutdown, its connected socket adding nothing).
     fn pollset(&self) -> Option<(&dyn Socket, Events)> {
         let Transport::Stream(stream) = &self.conn.transport else {
             return None;
         };
+        if self.answer_awaited {
+            let line = self.conn.line().expect("a goodbye awaits on a line");
+            return Some((stream.socket(), line.goodbye_wants()));
+        }
         let events = stream.shutdown_pollset(self.shut);
         (!events.is_empty()).then(|| (stream.socket(), events))
     }
@@ -526,6 +559,16 @@ impl ShutdownSet {
                 e.shutting.say_pollset(now, t);
             }
         }
+    }
+
+    /// The least time left at `now` of those whose protocol's goodbye
+    /// awaits an answer, if any does: C waits for it inside the protocol's
+    /// disconnect, whatever time the cleanup gives its shutdowns.
+    pub(crate) fn answer_time_left(&self, now: Instant) -> Option<Duration> {
+        self.conns
+            .iter()
+            .filter_map(|e| e.shutting.answer_time_left(now))
+            .min()
     }
 
     /// Each connection's socket and what it waits on, oldest first.

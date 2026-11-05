@@ -1605,16 +1605,17 @@ impl Conn {
     /// Its protocol's goodbye, once as it shuts down, before its session
     /// and layers say theirs (`cshutdn_run_conn_handler`); `dead` if no
     /// one knows what state it is in. Said on `trace` as C's debug build
-    /// says it, for a protocol that has one.
+    /// says it, for a protocol that has one. `Waiting` if it awaits an
+    /// answer, which [`goodbye_answer`](Self::goodbye_answer) reads on.
     pub(crate) fn protocol_goodbye(
         &mut self,
         cx: &mut dyn LayerCx,
         trace: Option<&crate::trace::Internal>,
         dead: bool,
-    ) {
+    ) -> layer::Handshake {
         let n = self.number.get();
         let (mux::Speaks::Line(line), Some(carrier)) = self.speaks_over() else {
-            return;
+            return layer::Handshake::Done;
         };
         if cfg!(feature = "debug-hooks")
             && line.says_goodbye()
@@ -1625,7 +1626,16 @@ impl Conn {
                 u8::from(dead)
             ));
         }
-        line.goodbye(cx, carrier, dead);
+        line.goodbye(cx, carrier, dead)
+    }
+
+    /// Read on the answer its protocol's goodbye awaits: `Done` once it
+    /// came, or the connection failed or closed.
+    pub(crate) fn goodbye_answer(&mut self, cx: &mut dyn LayerCx) -> layer::Handshake {
+        let (mux::Speaks::Line(line), Some(carrier)) = self.speaks_over() else {
+            panic!("a goodbye awaits an answer on a connection that said none");
+        };
+        line.goodbye_answer(cx, carrier)
     }
 
     /// A protocol keeps its state on it.

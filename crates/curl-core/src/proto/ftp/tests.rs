@@ -14,7 +14,7 @@ use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, TransferId, drive_to_completion};
 use crate::options::{Ccc, Options};
-use crate::time::ManualClock;
+use crate::time::{Clock as _, ManualClock};
 
 const PORT: u16 = 8021;
 /// The port the server's `EPSV` answer names.
@@ -109,6 +109,12 @@ fn serving(control: &[&Conversation], data: &[&Conversation]) -> Multi {
 
 /// `serving`'s multi, and its network's count of open sockets.
 fn counting(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counted) {
+    let (m, counted, _) = clocked(control, data);
+    (m, counted)
+}
+
+/// `counting`'s multi and network, and the clock they run on.
+fn clocked(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counted, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let data_at = SocketAddr::from(([127, 0, 0, 1], DATA_PORT));
@@ -123,12 +129,12 @@ fn counting(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counte
     }
     let counted = Counted(Arc::new(Mutex::new(net)));
     let env = Env {
-        clock: Box::new(clock),
+        clock: Box::new(clock.clone()),
         net: Box::new(counted.clone()),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), counted)
+    (Multi::new(env).unwrap(), counted, clock)
 }
 
 /// A transfer of `url` (`PORT` in it replaced) added to `m`, its body and
@@ -3982,6 +3988,157 @@ fn a_range_cut_short_closes_its_control_connection() {
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{}", text.text());
     assert_eq!(received(&fresh), COMMANDS);
+}
+
+/// The answers to a range cut short, `0-1` of `hello`: the transfer's
+/// and its end's to `RETR`, then `abor` to `ABOR` and, if given, `quit`
+/// to `QUIT`.
+fn cut_short(abor: Option<&'static [u8]>, quit: Option<&'static [u8]>) -> Conversation {
+    let mut replies = LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    replies.extend(abor);
+    replies.extend(quit);
+    Conversation::replies(&replies, false).greeting()
+}
+
+/// A range cut short reads the end of the transfer as its verdict, and
+/// the answer to its `ABOR` comes after it: the `QUIT` the connection
+/// says as it closes waits for a reply, which is that one, before the
+/// socket closes (`ftp_quit`'s wait). A socket closed with a reply
+/// unread, or before it comes, is reset, and Windows then drops the
+/// `QUIT` the server had not read yet (tests 135, 336, 337 and 2307
+/// lost it now and then). Here the answer comes only after the
+/// transfer is over, its connection shutting down, as it does when the
+/// server is slower than the `QUIT`.
+#[test]
+fn quit_waits_for_the_abor_s_answer_before_the_socket_closes() {
+    let control = cut_short(Some(b"500 no ABOR\r\n"), Some(b"221 bye\r\n")).held();
+    // The greeting, the login and setup's six and the transfer's.
+    let before_abor = LOGIN_AND_SETUP.len() + 1;
+    control.allow(before_abor);
+    let file = data(b"hello");
+    let mut m = serving(&[&control], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"he");
+    let sent = String::from_utf8_lossy(&control.received()).into_owned();
+    assert!(sent.ends_with("RETR f\r\nABOR\r\nQUIT\r\n"), "{sent}");
+    control.allow(before_abor + 2);
+    m.remove(id, &mut NoEvents).unwrap();
+    drop(m);
+    // The `ABOR`'s answer was not left unread as the socket closed.
+    assert!(control.answered() > before_abor, "{said}");
+}
+
+/// A `QUIT` whose answer never comes is waited on for the shutdown's
+/// time, two seconds, even by a multi's cleanup that gives its
+/// shutdowns none: C waits inside its disconnect, whatever the cleanup
+/// gives the layers after it (`DEFAULT_SHUTDOWN_TIMEOUT_MS`).
+#[test]
+fn quit_waits_for_an_answer_no_longer_than_the_shutdown_s_time() {
+    let control = cut_short(None, None);
+    let file = data(b"hello");
+    let (mut m, counted, clock) = clocked(&[&control], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    let released = clock.now();
+    drop(m);
+    assert_eq!(counted.open(), 0);
+    let sent = String::from_utf8_lossy(&control.received()).into_owned();
+    assert!(sent.ends_with("ABOR\r\nQUIT\r\n"), "{sent}");
+    // C's `DEFAULT_SHUTDOWN_TIMEOUT_MS`, counted from the `QUIT`.
+    assert_eq!(
+        clock.now().since(released),
+        std::time::Duration::from_secs(2)
+    );
+}
+
+/// A transfer removed while DONE awaits an answer leaves its connection
+/// in a state no one knows, though the control connection was still
+/// trusted: it closes saying no `QUIT` (`dead_connection`).
+#[test]
+fn a_transfer_removed_in_done_says_no_quit() {
+    let first = control(&[b"150 here\r\n226 done\r\n", b"200 noop\r\n"]).held();
+    first.allow(LOGIN_AND_SETUP.len() + 1);
+    let one = data(b"hello");
+    let mut m = serving(&[&first], &[&one]);
+    let (waiting, _, text) = added(&mut m, URL, |o| {
+        o.line
+            .make_mut()
+            .unwrap()
+            .postquote
+            .set([&b"NOOP"[..]])
+            .unwrap();
+    });
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert!(said.contains("[PERFORMING] -> [DONE]"), "{said}");
+    assert!(m.info_read().is_none(), "the answer is awaited");
+    first.allow(LOGIN_AND_SETUP.len() + 3);
+    m.remove(waiting, &mut NoEvents).unwrap();
+    drop(m);
+    let sent = String::from_utf8_lossy(&first.received()).into_owned();
+    assert!(sent.ends_with("RETR f\r\nNOOP\r\n"), "{sent}");
+}
+
+/// A `QUIT` the socket takes only part of is sent whole before its
+/// answer is read, as C flushes it in its wait (`Curl_pp_statemach`).
+#[test]
+fn quit_sent_in_parts_is_finished_and_answered() {
+    let control = control(&[b"150 here\r\n226 done\r\n", b"221 bye\r\n"])
+        .taking(std::num::NonZeroUsize::new(3).unwrap());
+    let file = data(b"hello");
+    let mut m = serving(&[&control], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    drop(m);
+    let sent = String::from_utf8_lossy(&control.received()).into_owned();
+    assert!(sent.ends_with("RETR f\r\nQUIT\r\n"), "{sent}");
+    // Its answer read too: every reply was.
+    assert_eq!(control.answered(), LOGIN_AND_SETUP.len() + 2);
+}
+
+/// The answer to `QUIT` is awaited without stalling the multi's other
+/// transfers, where C blocks for it in its disconnect (DIVERGENCE.md):
+/// the connection waits in the multi's shutdown set, its socket open.
+#[test]
+fn quit_awaiting_its_answer_stalls_no_other_transfer() {
+    let first = cut_short(Some(b"500 no ABOR\r\n"), Some(b"221 bye\r\n")).held();
+    let before_abor = LOGIN_AND_SETUP.len() + 1;
+    first.allow(before_abor);
+    let second = control(&[b"150 here\r\n226 done\r\n"]);
+    let (one, two) = (data(b"hello"), data(b"world"));
+    let (mut m, counted) = counting(&[&first, &second], &[&one, &two]);
+    let (cut, _, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
+    let result = drive_to_completion(&mut m, cut, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(cut, &mut NoEvents).unwrap();
+    assert!(received(&first).ends_with("ABOR\r\n"));
+    assert_eq!(counted.open(), 1, "the first control connection awaits");
+    let (beside, body, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, beside, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"world");
+    m.remove(beside, &mut NoEvents).unwrap();
+    // The second's control connection kept, the first's still waiting.
+    assert_eq!(counted.open(), 2);
+    assert_eq!(first.answered(), before_abor);
+    first.allow(before_abor + 2);
+    // Its socket is waited on for the answer.
+    let max = std::time::Duration::from_secs(1);
+    let ready = m.wait(&mut [], max, crate::multi::WaitMode::Wait, &mut NoEvents);
+    assert_eq!(ready, Ok(1));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(counted.open(), 1, "the first closed once answered");
+    assert!(first.answered() > before_abor);
 }
 
 /// An entry path that does not start with a slash has the server's

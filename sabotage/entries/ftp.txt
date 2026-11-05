@@ -475,3 +475,58 @@ features: test-util debug-hooks
 --- new
     if connected.dns_filters() > 0 || connected.dns_filters() == 0 {
         let target = connected.dns_filters() > 1;
+
+=== the socket closes before the QUIT's reply is read, the ABOR's answer left to reset it
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::ftp::tests::quit_waits_for_the_abor_s_answer_before_the_socket_closes
+features: test-util debug-hooks
+--- old
+        if self.awaits_answer(&mut cx) {
+            return Tried::Waiting;
+        }
+--- new
+        if self.answer_awaited {
+            self.answer_awaited = false;
+        }
+
+=== a multi's cleanup closes a connection whose QUIT still awaits its answer
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::ftp::tests::quit_waits_for_an_answer_no_longer_than_the_shutdown_s_time
+features: test-util debug-hooks
+--- old
+            if spent >= limit && answer.is_none() {
+--- new
+            if spent >= limit {
+
+=== a QUIT the socket took only part of is left unfinished
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::ftp::tests::quit_sent_in_parts_is_finished_and_answered
+features: test-util debug-hooks
+--- old
+    if pp.needs_flush() {
+        match carrier.send(cx, pp.unsent()) {
+--- new
+    if pp.needs_flush() {
+        return Handshake::Done;
+        match carrier.send(cx, pp.unsent()) {
+
+=== a connection awaiting its QUIT's answer is not polled for it
+file: crates/curl-core/src/conn/line.rs
+witness: curl-core proto::ftp::tests::quit_awaiting_its_answer_stalls_no_other_transfer
+features: test-util debug-hooks
+--- old
+            LineConn::Ftp(ref p) => p.goodbye_wants(),
+--- new
+            LineConn::Ftp(ref p) => {
+                let _ = p.goodbye_wants();
+                super::io::Events::NONE
+            }
+
+=== a connection whose transfer was removed in DONE says QUIT
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_transfer_removed_in_done_says_no_quit
+features: test-util debug-hooks
+--- old
+        if dead || self.pp.needs_flush() || !self.ctl_valid {
+--- new
+        if dead && self.pp.needs_flush() || !self.ctl_valid {

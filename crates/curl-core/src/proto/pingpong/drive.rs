@@ -173,6 +173,53 @@ fn recv<H: Host>(
     }
 }
 
+/// Send the rest of a goodbye and read on its answer as a connection
+/// shuts down, as far as it lets that now (C's blocking
+/// `Curl_pp_statemach` in `ftp_quit`): done once any whole reply is read,
+/// or the connection fails or closes, all of which C's wait ends on;
+/// waiting while it would block. What is held is looked through before
+/// anything is read, as C reads its `overflow` first. Untraced and given
+/// to no application: the transfer is gone (C's internal handle reads
+/// it).
+pub(crate) fn goodbye_answer<E: Ends>(
+    cx: &mut dyn crate::conn::layer::LayerCx,
+    pp: &mut Pingpong,
+    carrier: &mut Carrier<'_>,
+    ends: &E,
+) -> crate::conn::layer::Handshake {
+    use crate::conn::layer::Handshake;
+    if pp.needs_flush() {
+        match carrier.send(cx, pp.unsent()) {
+            Ok(Sent::Bytes(n)) => pp.flushed(n.get(), cx.now()),
+            Ok(Sent::WouldBlock) => {}
+            Err(_) => return Handshake::Done,
+        }
+        if pp.needs_flush() {
+            return Handshake::Waiting;
+        }
+    }
+    loop {
+        match pp.next(ends) {
+            Ok(super::Event::NeedMore) => {}
+            Ok(super::Event::Line(_)) => continue,
+            Ok(super::Event::Reply { .. }) | Err(_) => return Handshake::Done,
+        }
+        match carrier.recv(cx, READ_SIZE) {
+            Ok(Recv::WouldBlock) => return Handshake::Waiting,
+            Ok(Recv::Data(_)) => {
+                let rx = carrier.rx_mut();
+                let n = rx.filled().len().min(READ_SIZE);
+                let pushed = pp.push(&rx.filled()[..n]);
+                rx.consume(n);
+                if pushed.is_err() {
+                    return Handshake::Done;
+                }
+            }
+            Ok(Recv::Eof) | Err(_) => return Handshake::Done,
+        }
+    }
+}
+
 /// The reader's failure, said as C says it.
 fn read_failed<H: Host>(cx: &mut StepCx<'_, H>, e: super::ReadError) -> ErrorKind {
     match e {

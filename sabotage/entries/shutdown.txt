@@ -329,12 +329,21 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
 --- old
         self.say_goodbye(&mut cx, false);
+        // The answer goes before the layers shut down: closing a socket
+        // with it unread, or before it comes, resets the connection, and
+        // the peer may then lose what it had not read yet (Windows does).
+        if self.awaits_answer(&mut cx) {
+            return Tried::Waiting;
+        }
         self.conn.goodbye(&mut cx);
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
                 Ok(Handshake::Waiting) => Tried::Waiting,
 --- new
+        if self.awaits_answer(&mut cx) {
+            return Tried::Waiting;
+        }
         self.conn.goodbye(&mut cx);
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {

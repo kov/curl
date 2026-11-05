@@ -30,7 +30,7 @@ use crate::components::Component;
 use std::net::{IpAddr, SocketAddr};
 
 use crate::conn::io::{Closer, Events, InterfaceAddress, Remote, Sock, Socket};
-use crate::conn::layer::{LayerAnswer, LayerQuery, Lower as _};
+use crate::conn::layer::{Handshake, LayerAnswer, LayerQuery, Lower as _};
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, Held, NetRoute, Peer, RouteCold, Scheme};
@@ -191,20 +191,54 @@ fn login_of(cold: &Option<TryArc<RouteCold>>) -> Option<&Credentials> {
 impl FtpConn {
     /// Say `QUIT` as the connection shuts down, unless it is `dead`, a
     /// command waits half sent or the control connection is not in a
-    /// state for it (`ftp_disconnect`, `ftp_quit`): sent as the
-    /// connection takes it now, its answer not waited on.
+    /// state for it (`ftp_disconnect`, `ftp_quit`). `Waiting` while what
+    /// the connection did not take of it waits to go, or its answer is
+    /// awaited, which [`goodbye_answer`](Self::goodbye_answer) moves on.
     pub(crate) fn goodbye(
         &mut self,
         cx: &mut dyn crate::conn::layer::LayerCx,
         mut below: Carrier<'_>,
         dead: bool,
-    ) {
+    ) -> Handshake {
         if dead || self.pp.needs_flush() || !self.ctl_valid {
-            return;
+            return Handshake::Done;
         }
         self.state = State::Quit;
-        // What does not go now is not said.
-        let _sent = below.send(cx, b"QUIT\r\n");
+        // A command that cannot be built or sent ends it, as a failed
+        // `Curl_pp_sendf` ends `ftp_quit`.
+        let Ok(unsent) = self.pp.command(None, &[b"QUIT"]) else {
+            return Handshake::Done;
+        };
+        let n = match below.send(cx, unsent.bytes()) {
+            Ok(crate::conn::io::Sent::Bytes(n)) => n.get(),
+            Ok(crate::conn::io::Sent::WouldBlock) => 0,
+            Err(_) => return Handshake::Done,
+        };
+        let _sent = unsent.wrote(n, cx.now());
+        self.goodbye_answer(cx, below)
+    }
+
+    /// Send the rest of `QUIT`, then read on the answer it awaits,
+    /// whichever reply comes first (`ftp_block_statemach` in
+    /// `FTP_QUIT`). That is often the answer to an `ABOR` sent as a range
+    /// was cut short, which nothing read: a connection closed with it
+    /// unread, or before it comes, is reset, and Windows then drops what
+    /// the server had not read of it yet, the `QUIT` among it.
+    pub(crate) fn goodbye_answer(
+        &mut self,
+        cx: &mut dyn crate::conn::layer::LayerCx,
+        mut below: Carrier<'_>,
+    ) -> Handshake {
+        drive::goodbye_answer(cx, &mut self.pp, &mut below, &Ends)
+    }
+
+    /// What the goodbye waits on: to send the rest of `QUIT`, or its
+    /// answer.
+    pub(crate) fn goodbye_wants(&self) -> crate::conn::io::Events {
+        match self.pp.wants() {
+            super::pingpong::Wants::Send => crate::conn::io::Events::OUT,
+            super::pingpong::Wants::Recv => crate::conn::io::Events::IN,
+        }
     }
 }
 

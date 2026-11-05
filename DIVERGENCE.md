@@ -169,15 +169,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   and once done the chain it says `connected` and `reduced to`. Not said are the blocking
   connect's waits, `do poll` and `Curl_poll() -> 1`, which the multi's pollset and wait lines
   stand in for; their timing was not measured against the C build.
-  The same holds for the goodbye on a closing connection (FTP's, POP3's and SMTP's `QUIT`,
-  IMAP's `LOGOUT`), which C waits on and the shutdown here does not. To be looked at again
-  against the command-line corpus, should anything there depend on C's blocking. Pinned by
-  `an_answer_awaited_in_done_stalls_no_other_transfer`
+  The same holds for the goodbye on a closing connection: FTP's `QUIT` awaits a reply as C's
+  does, but in the shutdown set, the other transfers going on meanwhile. So an application
+  driving the multi by its socket callback may be told to watch a plain FTP control
+  connection for input while it waits, and hears its removal later, where C closes it before
+  DONE ends. POP3's and SMTP's `QUIT` and IMAP's `LOGOUT` are not waited on at all, where C
+  waits; to be looked at again against the command-line corpus, should anything there depend
+  on C's blocking. Pinned by `an_answer_awaited_in_done_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`,
   `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs` and
   `crates/curl-core/src/proto/ftp/tests.rs`), and by
-  `a_handshake_after_auth_stalls_no_other_transfer` and
-  `a_data_connection_s_handshake_stalls_no_other_transfer`
+  `a_handshake_after_auth_stalls_no_other_transfer`,
+  `a_data_connection_s_handshake_stalls_no_other_transfer` and
+  `quit_awaiting_its_answer_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/ftp/tests.rs`).
 
 - **A TELNET exchange leaves the multi's other transfers moving.** C runs the whole exchange

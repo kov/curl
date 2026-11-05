@@ -7,7 +7,7 @@
 //! the test protocol's. A WebSocket's is put on the HTTP/1.1 connection
 //! its upgrade switched.
 
-use super::layer::LayerCx;
+use super::layer::{Handshake, LayerCx};
 use super::mux::Carrier;
 
 /// A protocol's state on its connection.
@@ -53,12 +53,20 @@ impl LineConn {
 
     /// Say goodbye to the peer as the connection shuts down, asked once
     /// whatever the shutdown does after (`cshutdn_run_conn_handler`):
-    /// sent as the connection takes it now, its answer never waited on.
-    /// A connection `dead`, whose state no one knows (a transfer on it
-    /// aborted), is told so and says nothing (`dead_connection`).
-    pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx, below: Carrier<'_>, dead: bool) {
+    /// sent as the connection takes it now. FTP's `QUIT` awaits an
+    /// answer, as C's blocking wait does: `Waiting` while it has not
+    /// come, which [`goodbye_answer`](Self::goodbye_answer) reads on;
+    /// the others' answers are never waited on. A connection `dead`,
+    /// whose state no one knows (a transfer on it aborted), is told so
+    /// and says nothing (`dead_connection`).
+    pub(crate) fn goodbye(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        below: Carrier<'_>,
+        dead: bool,
+    ) -> Handshake {
         match *self {
-            LineConn::Ftp(ref mut p) => p.goodbye(cx, below, dead),
+            LineConn::Ftp(ref mut p) => return p.goodbye(cx, below, dead),
             LineConn::Pop3(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Imap(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Smtp(ref mut p) => p.goodbye(cx, below, dead),
@@ -69,6 +77,26 @@ impl LineConn {
             LineConn::Ws(_) | LineConn::Rtsp(_) => {}
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
+        }
+        Handshake::Done
+    }
+
+    /// Read on the answer its goodbye awaits, as far as the connection
+    /// lets that now: `Done` once it came, or once the connection failed
+    /// or closed.
+    pub(crate) fn goodbye_answer(&mut self, cx: &mut dyn LayerCx, below: Carrier<'_>) -> Handshake {
+        match *self {
+            LineConn::Ftp(ref mut p) => p.goodbye_answer(cx, below),
+            _ => panic!("only FTP's goodbye awaits an answer"),
+        }
+    }
+
+    /// What a goodbye awaiting its answer waits on: the socket to take
+    /// the rest of it, or the answer.
+    pub(crate) fn goodbye_wants(&self) -> super::io::Events {
+        match *self {
+            LineConn::Ftp(ref p) => p.goodbye_wants(),
+            _ => panic!("only FTP's goodbye awaits an answer"),
         }
     }
 }
@@ -82,8 +110,8 @@ pub(crate) struct Farewell(pub(crate) Vec<u8>);
 impl Farewell {
     fn goodbye(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>, dead: bool) {
         if !dead {
-            // What does not go now is not said, as a shutdown waits on
-            // no goodbye.
+            // What does not go now is not said, and no answer is
+            // awaited.
             let _sent = below.send(cx, &self.0);
         }
     }

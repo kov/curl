@@ -2261,8 +2261,12 @@ impl<H: Host> Multi<H> {
                 );
                 break;
             }
-            let spent = self.clock.now().since(now);
-            if spent >= limit {
+            let at = self.clock.now();
+            let spent = at.since(now);
+            // A goodbye awaiting its answer is waited for in its own
+            // time, as C's protocol disconnect blocks for it.
+            let answer = self.shutdowns.answer_time_left(at);
+            if spent >= limit && answer.is_none() {
                 let why = if limit.is_zero() {
                     "best effort done"
                 } else {
@@ -2274,7 +2278,8 @@ impl<H: Host> Multi<H> {
                 );
                 break;
             }
-            let wait = (limit - spent).min(Duration::from_secs(1));
+            let left = limit.saturating_sub(spent).max(answer.unwrap_or_default());
+            let wait = left.min(Duration::from_secs(1));
             if wait_for(&self.shutdowns, &mut net, wait).is_err() {
                 say(
                     &self.shutdowns,

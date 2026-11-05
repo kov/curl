@@ -2540,7 +2540,8 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   the earliest is the set's own deadline (§3.4). Under a share's lock the room a new
   connection checks for is the share's pool and the multi's set together. `perform` and `socket_action` drive the set (`Curl_cshutdn_perform`),
   `wait`, `fdset` and `waitfds` include its sockets, and a multi's cleanup gives it one
-  best-effort pass (timeout 0), or with `debug-hooks` waits `CURL_GRACEFUL_SHUTDOWN` ms. Its
+  best-effort pass (timeout 0), or with `debug-hooks` waits `CURL_GRACEFUL_SHUTDOWN` ms, and
+  longer for a protocol goodbye still awaiting its answer, in that connection's time. Its
   sockets are owned by the connection (`SocketOwner::Conn`, §4.7): as a connection moves into
   the set its socket stays registered, its transfer gone from it (C's `removed transfer,
   total=0/1 (xfer/conn)`) and no socket callback made; the callback hears `remove` when the
@@ -2549,8 +2550,9 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   once the share's lock is let go, where C announces it under the lock. It is traced on the
   multi's internal trace, as C's `[SHUTDOWN]` lines and the shutdown's TLS lines are on its
   internal handle. A kept-alive TLS connection sends its close_notify from
-  the cleanup's pass, as the reference does. Plain TCP never waits in the set: C's TCP shutdown
-  finishes in one call (cf-socket.c:1094–1114). A transfer arms SHUTDOWN itself only for a TLS
+  the cleanup's pass, as the reference does. Plain TCP waits in the set only for the answer to
+  FTP's `QUIT`, which C blocks for in its disconnect: C's TCP shutdown itself finishes in one
+  call (cf-socket.c:1094–1114). A transfer arms SHUTDOWN itself only for a TLS
   or FTP shutdown it makes on its own connection (vtls.c:1572; ftp.c:562, through
   `Curl_xfer_set_shutdown`), with STARTTLS and FTP.
 - On a share's pool, `find`, `add` and `release` are each one use of it under its lock, and a
@@ -3401,9 +3403,15 @@ HTTP/3 proxy.
 **A protocol's goodbye.** A connection a protocol keeps state on (`Speaks::Line`) says the
 protocol's goodbye as its shutdown starts, once (`Shutting::said`, C's
 `bits.shutdown_handler`), before its session and layers say theirs, which go on try by try
-(`cshutdn_run_once`). It is sent as the connection takes it then and its answer is never
-waited for: the shutdown set, not the goodbye, holds the connection. A connection discarded as
-its transfer aborted tells the protocol it is dead, and nothing is said (`dead_connection`).
+(`cshutdn_run_once`). It is sent as the connection takes it then. FTP's `QUIT` then awaits a
+reply, any reply, before the layers start (`Shutting::answer_awaited`; C's `ftp_quit` blocks
+for it): the first is often the answer to an `ABOR` nothing read, and a socket closed with it
+unread, or before it comes, is reset, which on Windows drops the `QUIT` the server had not read
+yet. The wait polls the socket for input, holds the connection in the set in the shutdown's
+2 s, and is waited for by a multi's cleanup whatever time that gives the rest, as C's blocks
+inside the disconnect. POP3's, IMAP's and SMTP's answers are not waited for (DIVERGENCE.md). A
+connection discarded as its transfer aborted tells the protocol it is dead, and nothing is
+said (`dead_connection`).
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is
@@ -3882,7 +3890,7 @@ protocol's phases (the drive, below).
   key to the route's cold group for its credentials; IMAP's `ImapConn` also its tag count and
   the mailbox selected; SMTP's `SmtpConn` what EHLO offered and the domain it greets with);
   a transfer's is its `ProtoState`. Its goodbye (`QUIT`, `LOGOUT`) is sent as the connection
-  shuts down, its answer not waited on.
+  shuts down, its answer not waited on (FTP's is: §4.9, "A protocol's goodbye").
 - **IMAP's transfer ends with an answer.** A FETCH's literal (`{N}`) is the body, what came
   with its line written at once and the rest read to its size and no further (`Expect::max`);
   the tagged answer after it, or after an APPEND's body and the empty line that ends it, is

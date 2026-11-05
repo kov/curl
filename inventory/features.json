@@ -1,5 +1,5 @@
 {
- "c-commit": "4a1aa08f6cffa12ffd240a073d0ceba9a4f028c1",
+ "c-commit": "e3fa43dc381fb322b66705c47262a22a99e0dee9",
  "data": {
   "backends": {
    "all": [
@@ -8159,7 +8159,7 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1067,
+   "test-feature-blocks": 1068,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8375,7 +8375,7 @@
       ],
       "regex": "SSL"
      },
-     "tests": 147
+     "tests": 148
     },
     {
      "name": "SSLS-EXPORT",
@@ -8991,7 +8991,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1061,
+   "test-files-with-features": 1062,
    "tool-added-features": [
     {
      "bit": null,

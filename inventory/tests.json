@@ -1,5 +1,5 @@
 {
- "c-commit": "4a1aa08f6cffa12ffd240a073d0ceba9a4f028c1",
+ "c-commit": "e3fa43dc381fb322b66705c47262a22a99e0dee9",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -38,7 +38,7 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2179,
+   "default_run_candidates": 2180,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
@@ -46,7 +46,7 @@
    "perf_programs": 10,
    "pytest_functions": 358,
    "server_keywords_mapped": 36,
-   "test_files": 2193,
+   "test_files": 2194,
    "tunit_programs": 6,
    "unit_programs": 81
   },
@@ -345,7 +345,8 @@
      305,
      404,
      405,
-     2101
+     2101,
+     3240
     ]
    }
   ],
@@ -395,7 +396,7 @@
    "55": 10,
    "56": 23,
    "6": 7,
-   "60": 11,
+   "60": 12,
    "61": 11,
    "63": 7,
    "64": 5,
@@ -404,7 +405,7 @@
    "7": 30,
    "70": 1,
    "71": 1,
-   "77": 2,
+   "77": 3,
    "78": 10,
    "8": 43,
    "84": 1,
@@ -449,7 +450,7 @@
    "NTLM": 52,
    "OpenSSL": 5,
    "PSL": 9,
-   "SSL": 147,
+   "SSL": 148,
    "SSLS-EXPORT": 1,
    "SSLpinning": 10,
    "Schannel": 8,
@@ -918,7 +919,7 @@
    "HTTP DELETE": 1,
    "HTTP Digest auth": 53,
    "HTTP FORMPOST": 17,
-   "HTTP GET": 688,
+   "HTTP GET": 689,
    "HTTP HEAD": 8,
    "HTTP MIME": 4,
    "HTTP MIME POST": 7,
@@ -943,7 +944,7 @@
    "HTTP/1.0": 10,
    "HTTP/2": 15,
    "HTTP/3": 4,
-   "HTTPS": 62,
+   "HTTPS": 63,
    "HTTPS GET": 1,
    "HTTPS PUT": 1,
    "HTTPS RR": 1,
@@ -1349,28 +1350,28 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2193
+   "testcases_listed": 2194
   },
   "part_counts": {
-   "client/command": 2083,
+   "client/command": 2084,
    "client/connectport": 1,
    "client/disable": 11,
-   "client/features": 1060,
-   "client/file": 375,
+   "client/features": 1061,
+   "client/file": 376,
    "client/file1": 13,
    "client/file2": 15,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 13,
-   "client/name": 2193,
+   "client/name": 2194,
    "client/precheck": 27,
-   "client/server": 1946,
+   "client/server": 1947,
    "client/setenv": 201,
    "client/stdin": 88,
    "client/stdout": 5,
    "client/tool": 114,
    "client/verify": 1,
-   "info/keywords": 2193,
+   "info/keywords": 2194,
    "reply/connect": 76,
    "reply/connect1": 2,
    "reply/connect1000": 3,
@@ -1419,7 +1420,7 @@
    "reply/size": 18,
    "verify/data": 2,
    "verify/dns": 1,
-   "verify/errorcode": 529,
+   "verify/errorcode": 530,
    "verify/file": 176,
    "verify/file1": 70,
    "verify/file2": 70,
@@ -26648,7 +26649,7 @@
    }
   },
   "runner_counts": {
-   "curl": 1680,
+   "curl": 1681,
    "libtest": 397,
    "perl-script": 28,
    "tunit": 6,
@@ -26679,7 +26680,7 @@
    "http-unix": 2,
    "http/2": 11,
    "http/3": 4,
-   "https": 74,
+   "https": 75,
    "https-mtls": 3,
    "https-proxy": 6,
    "imap": 72,
@@ -102250,6 +102251,58 @@
     ]
    },
    {
+    "attr_values": [],
+    "bytes": 809,
+    "command": "https://%HOSTIP:%HTTPSPORT/want/%TESTNUMBER --ca-native --cacert \"%LOGDIR/cacert\"",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "60,77",
+    "features": [
+     "SSL"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP GET",
+     "HTTPS"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "HTTPS with the native CA store and a CA file that does not load",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3240,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/errorcode"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "https"
+    ],
+    "servers": [
+     "https"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPSPORT",
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
     "attr_values": [
      "crlf=headers"
     ],
@@ -149073,20 +149126,20 @@
    "GTT": 1,
    "H2CVER": 2,
    "HOST6IP": 22,
-   "HOSTIP": 1885,
+   "HOSTIP": 1886,
    "HTTP2PORT": 5,
    "HTTP2TLSPORT": 6,
    "HTTP3PORT": 4,
    "HTTP6PORT": 14,
    "HTTPPORT": 1196,
    "HTTPS": 3,
-   "HTTPSPORT": 69,
+   "HTTPSPORT": 70,
    "HTTPSPROXYPORT": 6,
    "HTTPUNIXPATH": 2,
    "IMAPPORT": 72,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 662,
+   "LOGDIR": 663,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -149124,7 +149177,7 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1858,
+   "TESTNUMBER": 1859,
    "TESTNUMBER000": 1,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
@@ -150511,6 +150564,7 @@
   "tests/data/test3237",
   "tests/data/test3238",
   "tests/data/test3239",
+  "tests/data/test3240",
   "tests/data/test325",
   "tests/data/test326",
   "tests/data/test3260",

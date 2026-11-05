@@ -3036,6 +3036,10 @@ for; no fallback to OpenSSL's own paths. They are `&'static str` (`TlsBackend::c
 so a handle holds no CA string until the application sets one, and `CURLINFO_CAINFO` returns
 the constant whatever the handle set, as C's does. The tool
 reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c does.
+**The certificate reader** (`tls::x509`, x509asn1.c) reads a DER certificate as C's light ASN.1
+reader does, for the libraries that hand the peer's over whole (Schannel): its parts for
+pinning, and its fields as text for `CURLINFO_CERTINFO` and the leaf's verbose lines
+(`Curl_extract_certinfo`); a certificate that does not read is refused.
 **The CA store cache** (`Curl_ssl_setup_x509_store`, curl-openssl's `cache.rs`): a store a
 connection loads is kept for the multi's next ones, which take it at their first read instead of
 loading (nothing traced: no `configuring OpenSSL's x509 trust store`, `SSL Trust Anchors:` or

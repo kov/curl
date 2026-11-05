@@ -41,6 +41,7 @@ pub(crate) mod cache;
 pub mod hostcheck;
 mod keylog;
 mod pin;
+pub mod x509;
 
 /// A test double: a TLS library of text lines and scrambled records.
 #[cfg(any(test, feature = "test-util"))]

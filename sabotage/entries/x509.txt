@@ -1,0 +1,38 @@
+# The certificate reader (crates/curl-core/src/tls/x509.rs and x509/info.rs),
+# C's x509asn1.c, for the TLS libraries that hand the peer's certificate over
+# whole.
+
+=== a UTC time's year 50 is read as 2050
+file: crates/curl-core/src/tls/x509/info.rs
+witness: curl-core tls::x509::info::tests::times_read_as_c_reads_them
+--- old
+    let century = if b[0] >= b'5' { 19 } else { 20 };
+--- new
+    let century = if b[0] > b'5' { 19 } else { 20 };
+
+=== an identifier's second number padded with 0x80 is read
+file: crates/curl-core/src/tls/x509/info.rs
+witness: curl-core tls::x509::info::tests::identifiers_read_as_c_reads_them
+--- old
+        if t == 0 {
+            return Err(BAD);
+        }
+--- new
+        if t == 0 {
+        }
+
+=== a small negative integer is written in hex
+file: crates/curl-core/src/tls/x509/info.rs
+witness: curl-core tls::x509::info::tests::values_read_as_c_reads_them
+--- old
+    let mut u: u32 = if b[0] & 0x80 != 0 { !0 } else { 0 };
+--- new
+    let mut u: u32 = 0;
+
+=== the public key info pinned leaves out its header
+file: crates/curl-core/src/tls/x509.rs
+witness: curl-core tls::x509::tests::the_public_key_info_is_found_whole
+--- old
+            whole: &der[..header + len],
+--- new
+            whole: &rest[..len],

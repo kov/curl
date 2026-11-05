@@ -57,8 +57,10 @@ libc = "0.2"
 [target.'cfg(unix)'.dependencies]
 curl-ldap = { path = "../curl-ldap" }
 
-# Winsock's socket addresses, which an opener is handed.
+# Winsock's socket addresses, which an opener is handed; the names the
+# debug build's `curl_dbg_fopen` opens, read as the build reads a name.
 [target.'cfg(windows)'.dependencies]
+curl-os = { path = "../curl-os", features = ["fs"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]

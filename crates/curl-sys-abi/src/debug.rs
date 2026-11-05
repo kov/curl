@@ -319,6 +319,46 @@ pub unsafe extern "C" fn curl_dbg_strdup(
 }
 const _: unsafe extern "C" fn(*const c_char, c_int, *const c_char) -> *mut c_char = curl_dbg_strdup;
 
+/// A tracked copy of the wide string `s`, as the Unicode build has it
+/// (`curl_dbg_wcsdup`): counted once as `wcsdup`, logged with its size in
+/// bytes.
+///
+/// # Safety
+///
+/// `s` is a zero-ended UTF-16 string; `source` is NULL or a C string.
+#[cfg(all(windows, feature = "unicode"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_dbg_wcsdup(
+    s: *const u16,
+    line: c_int,
+    source: *const c_char,
+) -> *mut u16 {
+    // SAFETY: as the caller guarantees.
+    let source = unsafe { Source::c(source, line) };
+    if limit_reached("wcsdup", source) {
+        return ptr::null_mut();
+    }
+    let mut units = 0;
+    // SAFETY: `s` is read up to its ending zero, which it has, as the
+    // caller guarantees.
+    while unsafe { s.wrapping_add(units).read() } != 0 {
+        units += 1;
+    }
+    let len = (units + 1) * size_of::<u16>();
+    let copy = root::allocator().raw_malloc(len).cast::<u16>();
+    if !copy.is_null() {
+        // SAFETY: `copy` is a fresh block of `len` bytes, `units + 1`
+        // units; `s` has as many, its zero included.
+        unsafe { ptr::copy_nonoverlapping(s, copy, units + 1) };
+    }
+    log_call(source, "MEM", |l| {
+        write!(l, "wcsdup({}) ({len}) = {}", Ptr(s), Ptr(copy))
+    });
+    copy
+}
+#[cfg(all(windows, feature = "unicode"))]
+const _: unsafe extern "C" fn(*const u16, c_int, *const c_char) -> *mut u16 = curl_dbg_wcsdup;
+
 /// # Safety
 ///
 /// `p` is NULL or a block from this pool; `source` is NULL or a C string.
@@ -512,6 +552,121 @@ mod sys {
 }
 const _: unsafe extern "C" fn(Socket, c_int, *const c_char) -> c_int = curl_dbg_sclose;
 
+/// How the debug build opens a file by name (`CURLX_FOPEN_LOW`,
+/// `CURLX_FREOPEN_LOW`): the C library's calls on Unix.
+#[cfg(unix)]
+mod files {
+    use core::ffi::c_char;
+
+    /// # Safety
+    ///
+    /// As `fopen(3)`.
+    pub(super) unsafe fn open(file: *const c_char, mode: *const c_char) -> *mut libc::FILE {
+        // SAFETY: as the caller guarantees.
+        unsafe { libc::fopen(file, mode) }
+    }
+
+    /// # Safety
+    ///
+    /// As `freopen(3)`.
+    pub(super) unsafe fn reopen(
+        file: *const c_char,
+        mode: *const c_char,
+        fh: *mut libc::FILE,
+    ) -> *mut libc::FILE {
+        // SAFETY: as the caller guarantees.
+        unsafe { libc::freopen(file, mode, fh) }
+    }
+}
+
+/// How the debug build opens a file by name on Windows
+/// (`curlx_win32_fopen`, `curlx_win32_freopen`): the name and the mode
+/// read as the build reads names, UTF-8 in the Unicode build and the
+/// ANSI code page otherwise, a long name made absolute and marked
+/// (`fix_excessive_path`), and opened by the C library's wide calls,
+/// shared for reading and writing (`_SH_DENYNO`). A name or mode that
+/// cannot be read fails with `EINVAL`. The conversions are not counted,
+/// as C makes them with the system's `malloc`.
+#[cfg(windows)]
+mod files {
+    use core::ffi::{CStr, c_char, c_int};
+
+    use curl_alloc::track;
+
+    /// The C library's `_SH_DENYNO`: others may read and write too.
+    const SH_DENYNO: c_int = 0x40;
+
+    unsafe extern "C" {
+        /// The UCRT's `_wfsopen`.
+        fn _wfsopen(file: *const u16, mode: *const u16, share: c_int) -> *mut libc::FILE;
+        /// The UCRT's `_wfreopen_s`: the stream opened through `out`, the
+        /// error returned.
+        fn _wfreopen_s(
+            out: *mut *mut libc::FILE,
+            file: *const u16,
+            mode: *const u16,
+            fh: *mut libc::FILE,
+        ) -> c_int;
+    }
+
+    /// The name and the mode in UTF-16, or `None` with `errno` set.
+    ///
+    /// # Safety
+    ///
+    /// `file` and `mode` are C strings.
+    unsafe fn wide(file: *const c_char, mode: *const c_char) -> Option<(Vec<u16>, Vec<u16>)> {
+        // SAFETY: as the caller guarantees.
+        let file = unsafe { CStr::from_ptr(file) };
+        // SAFETY: as the caller guarantees.
+        let mode = unsafe { CStr::from_ptr(mode) };
+        let both = track::untracked(|| {
+            Some((
+                curl_os::fs::wide_name(file).ok()?,
+                curl_os::fs::wide_text(mode).ok()?,
+            ))
+        });
+        if both.is_none() {
+            super::set_errno(libc::EINVAL);
+        }
+        both
+    }
+
+    /// # Safety
+    ///
+    /// As `fopen(3)`.
+    pub(super) unsafe fn open(file: *const c_char, mode: *const c_char) -> *mut libc::FILE {
+        // SAFETY: as the caller guarantees.
+        let Some((file, mode)) = (unsafe { wide(file, mode) }) else {
+            return core::ptr::null_mut();
+        };
+        // SAFETY: both are zero-ended UTF-16, alive for the call.
+        let f = unsafe { _wfsopen(file.as_ptr(), mode.as_ptr(), SH_DENYNO) };
+        track::untracked(|| drop((file, mode)));
+        f
+    }
+
+    /// # Safety
+    ///
+    /// As `freopen(3)`.
+    pub(super) unsafe fn reopen(
+        file: *const c_char,
+        mode: *const c_char,
+        fh: *mut libc::FILE,
+    ) -> *mut libc::FILE {
+        // SAFETY: as the caller guarantees.
+        let Some((file, mode)) = (unsafe { wide(file, mode) }) else {
+            return core::ptr::null_mut();
+        };
+        let mut f = core::ptr::null_mut();
+        // SAFETY: `f` is room for the stream; the names are zero-ended
+        // UTF-16, alive for the call; `fh` is the caller's stream.
+        let e = unsafe { _wfreopen_s(&raw mut f, file.as_ptr(), mode.as_ptr(), fh) };
+        super::set_errno(e);
+        track::untracked(|| drop((file, mode)));
+        f
+    }
+}
+
 /// # Safety
 ///
 /// `file`, `mode` and `source` are C strings; `source` may be NULL.
@@ -525,7 +680,7 @@ pub unsafe extern "C" fn curl_dbg_fopen(
     // SAFETY: as the caller guarantees.
     let source = unsafe { Source::c(source, line) };
     // SAFETY: as the caller guarantees.
-    let f = unsafe { libc::fopen(file, mode) };
+    let f = unsafe { files::open(file, mode) };
     log_call(source, "FILE", |l| {
         l.push(b"fopen(\"");
         // SAFETY: as the caller guarantees.
@@ -558,7 +713,7 @@ pub unsafe extern "C" fn curl_dbg_freopen(
     // SAFETY: as the caller guarantees.
     let source = unsafe { Source::c(source, line) };
     // SAFETY: as the caller guarantees.
-    let f = unsafe { libc::freopen(file, mode, fh) };
+    let f = unsafe { files::reopen(file, mode, fh) };
     log_call(source, "FILE", |l| {
         l.push(b"freopen(\"");
         // SAFETY: as the caller guarantees.
@@ -802,6 +957,89 @@ mod tests {
             )),
             "{ours_line}"
         );
+    }
+
+    /// On Windows `curl_dbg_fopen` and `curl_dbg_freopen` read a name as
+    /// the build reads one, as C's `curlx_win32_fopen` does: UTF-8 in the
+    /// Unicode build, a name that is not refused with `EINVAL`, and the
+    /// ANSI code page otherwise; a name past `MAX_PATH` opens too.
+    #[cfg(windows)]
+    #[test]
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "one contract covers the whole sequence"
+    )]
+    fn opens_files_by_the_names_the_build_reads() {
+        let dir = std::env::temp_dir().join(format!("curl-dbg-fopen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = dir.as_os_str().to_str().unwrap();
+        // "café" as the build reads it: Windows-1252's é, which the
+        // guest's ANSI code page is, or UTF-8's.
+        let e: &[u8] = if cfg!(feature = "unicode") {
+            b"\xc3\xa9"
+        } else {
+            b"\xe9"
+        };
+        let named = |tail: &[u8]| {
+            std::ffi::CString::new([at.as_bytes(), b"\\caf", e, tail].concat()).unwrap()
+        };
+        let long = format!("\\{}", "d".repeat(250));
+        std::fs::create_dir_all(format!("{at}\\caf\u{e9}3{long}")).unwrap();
+        let source = c"t.c".as_ptr();
+        // SAFETY: C strings, and streams opened here closed once.
+        unsafe {
+            let f = curl_dbg_fopen(named(b"").as_ptr(), c"wb".as_ptr(), 1, source);
+            assert!(!f.is_null());
+            let g = curl_dbg_freopen(named(b"2").as_ptr(), c"wb".as_ptr(), f, 2, source);
+            assert!(!g.is_null());
+            assert_eq!(curl_dbg_fclose(g, 3, source), 0);
+            let name = named(format!("3{long}\\f").as_bytes());
+            let f = curl_dbg_fopen(name.as_ptr(), c"wb".as_ptr(), 4, source);
+            assert!(!f.is_null());
+            assert_eq!(curl_dbg_fclose(f, 5, source), 0);
+        }
+        assert!(dir.join("caf\u{e9}").exists());
+        assert!(dir.join("caf\u{e9}2").exists());
+        assert!(
+            std::path::PathBuf::from(format!("\\\\?\\{at}\\caf\u{e9}3{long}\\f")).exists(),
+            "the long name"
+        );
+        if cfg!(feature = "unicode") {
+            let bad = named(b"\xff");
+            // SAFETY: C strings.
+            let f = unsafe { curl_dbg_fopen(bad.as_ptr(), c"wb".as_ptr(), 6, source) };
+            assert!(f.is_null());
+            // SAFETY: the UCRT's `errno`, this thread's.
+            let errno = unsafe { *libc_errno() };
+            assert_eq!(errno, libc::EINVAL);
+        }
+        std::fs::remove_dir_all(format!(r"\\?\{at}")).unwrap();
+    }
+
+    #[cfg(windows)]
+    unsafe extern "C" {
+        /// The UCRT's: where this thread's `errno` is.
+        #[link_name = "_errno"]
+        fn libc_errno() -> *mut c_int;
+    }
+
+    /// The Unicode build's `curl_dbg_wcsdup` copies a wide string into a
+    /// tracked block, which `curl_dbg_free` frees.
+    #[cfg(all(windows, feature = "unicode"))]
+    #[test]
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "one contract covers the whole sequence"
+    )]
+    fn copies_a_wide_string() {
+        let s: Vec<u16> = "caf\u{e9}\0".encode_utf16().collect();
+        // SAFETY: a zero-ended wide string, and the copy freed once.
+        unsafe {
+            let copy = curl_dbg_wcsdup(s.as_ptr(), 1, c"t.c".as_ptr());
+            assert!(!copy.is_null());
+            assert_eq!(core::slice::from_raw_parts(copy, s.len()), &s[..]);
+            curl_dbg_free(copy.cast(), 2, c"t.c".as_ptr());
+        }
     }
 
     /// A source file's name as the compiler gives it (`file!()`): with

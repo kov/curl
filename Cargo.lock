@@ -211,6 +211,7 @@ dependencies = [
  "curl-nghttp2",
  "curl-ngtcp2",
  "curl-openssl",
+ "curl-os",
  "curl-psl",
  "curl-zlib",
  "curl-zstd",

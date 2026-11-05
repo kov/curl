@@ -697,11 +697,19 @@ fn utf8(wide: &[u16]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// `text` in UTF-16 ended by a zero, read as [`wide_name`] reads a name
+/// (UTF-8 in the Unicode build, the ANSI code page otherwise) but left as
+/// it is: a mode C's debug build converts beside the name it opens.
+#[cfg(windows)]
+pub fn wide_text(text: &CStr) -> io::Result<Vec<u16>> {
+    wide(text)
+}
+
 /// `name` as [`wide`] reads it, made absolute and marked long (`\\?\`)
 /// when that is longer than `MAX_PATH`, as C's `fix_excessive_path`
 /// makes it, so that a long name opens too.
 #[cfg(windows)]
-pub(crate) fn wide_name(name: &CStr) -> io::Result<Vec<u16>> {
+pub fn wide_name(name: &CStr) -> io::Result<Vec<u16>> {
     /// `MAX_PATH`, the longest name the system takes unmarked.
     const MAX_PATH: usize = 260;
     let wide = wide(name)?;

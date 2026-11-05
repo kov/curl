@@ -475,3 +475,33 @@ witness: curl-core a_quit_said_is_answered_before_its_connection_closes_whatever
             shutting.close(net, Some(&self.clock), self.trace.as_ref(), true);
 --- new
             shutting.close(net, None, self.trace.as_ref(), true);
+
+=== a share's close says what only a multi says of a socket closing
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_share_s_internal_trace_says_its_connections_close
+--- old
+            if in_multi {
+                t.of(
+                    Component::Multi,
+                    format_args!("Curl_multi_will_close fd={fd}"),
+--- new
+            if true {
+                t.of(
+                    Component::Multi,
+                    format_args!("Curl_multi_will_close fd={fd}"),
+
+=== a connection's socket shuts down unsaid
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core multi::shutdown_tests::a_share_s_internal_trace_says_its_connections_close
+--- old
+        cx.of(traced, format_args!("cf_socket_shutdown, fd={fd}"));
+--- new
+        let _ = fd;
+
+=== a data connection's socket shuts down unsaid
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_socket
+--- old
+        cx.of(traced, format_args!("shut down successfully"));
+--- new
+        let _ = traced;

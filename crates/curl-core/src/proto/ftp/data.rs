@@ -500,13 +500,7 @@ impl DataConn {
                     format_args!("shutdown start on secondary connection"),
                 );
             }
-            if stream.shutdown(cx, socket, shut)? == Handshake::Waiting {
-                return Ok(false);
-            }
-            let fd = stream.socket().key().get();
-            trace::of(cx, socket, format_args!("cf_socket_shutdown, fd={fd}"));
-            trace::of(cx, socket, format_args!("shut down successfully"));
-            Ok(true)
+            Ok(stream.shutdown(cx, socket, shut)? == Handshake::Done)
         })
     }
 

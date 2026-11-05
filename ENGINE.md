@@ -2580,7 +2580,13 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   the multi's cleanup (758's sequence). A share's connection joining the set is announced
   once the share's lock is let go, where C announces it under the lock. It is traced on the
   multi's internal trace, as C's `[SHUTDOWN]` lines and the shutdown's TLS lines are on its
-  internal handle. A kept-alive TLS connection sends its close_notify from
+  internal handle, each layer's end and then the socket's own (`cf_socket_shutdown, fd=N`,
+  `shut down successfully`) in their names. What a share's pool closes with no multi (as the
+  share goes, or in its upkeep) is said on the share's own internal trace, on under the debug
+  build's `CURL_DEBUG` with the components of the first transfer that uses the share, as C's
+  share makes its own handle verbose (`share->admin`): its `[SHARE] [CPOOL] destroy` line and
+  the shutdowns, but none of a multi's (`Curl_multi_will_close`, `trigger multi
+  connchanged`). A kept-alive TLS connection sends its close_notify from
   the cleanup's pass, as the reference does. Plain TCP waits in the set only for the answer to
   a protocol's goodbye, which C blocks for in its disconnect: C's TCP shutdown itself finishes in one
   call (cf-socket.c:1094–1114). A transfer arms SHUTDOWN itself only for a TLS

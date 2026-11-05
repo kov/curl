@@ -1791,3 +1791,104 @@ fn a_share_s_last_connection_closes_once_its_goodbye_is_answered() {
     assert_eq!(talk.answered(), 1, "read before the close");
     assert_eq!(wire.closed(), [1000]);
 }
+
+/// A share's idle connection closed as the share goes is said on the
+/// share's own internal trace, as C's share says it on its internal handle
+/// (`share->admin`, verbose under `CURL_DEBUG`): the pool's end, the
+/// shutdown, each layer's and the socket's own, and the close; nothing a
+/// multi would say, as no multi closes it. The C build's tool, at its exit,
+/// says the same of its share's HTTP/2 connection, its GOAWAY between.
+#[test]
+fn a_share_s_internal_trace_says_its_connections_close() {
+    use crate::components::{Component, Components, Level};
+    use crate::share::{Kind, Share};
+    let talk = Conversation::new(OK, false).late_replies();
+    let (mut m, wire, _clock) = answering(&[(1, std::slice::from_ref(&talk))]);
+    let share = Share::with_net(Box::new(wire.clone())).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let components = Components::new().unwrap();
+    components.set(Component::Multi, Level::Info);
+    components.set(Component::Tcp, Level::Info);
+    let written = Written::default();
+    share.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut ev = Rec::default();
+    let mut e = closing(1);
+    e.options_mut().limits.reuse.forbid = false;
+    e.set_share(Some(share.clone())).unwrap();
+    let id = m.add(e, (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    m.remove(id, &mut ev).unwrap();
+    drop(m);
+    assert_eq!(written.lines(), Vec::<String>::new(), "nothing yet");
+    drop(share);
+    assert_eq!(wire.closed(), [1000]);
+    assert_eq!(
+        written.lines(),
+        [
+            "* [MULTI] [SHARE] [CPOOL] destroy, 1 connections",
+            "* [MULTI] shutdown start on connection",
+            "* [TCP] cf_socket_shutdown, fd=1000",
+            "* [TCP] shut down successfully",
+            "* [MULTI] [SHUTDOWN] shutdown, done=1",
+            "* [MULTI] [SHUTDOWN] closing connection #0",
+            "* [TCP] destroy",
+            "* [TCP] cf_socket_close, fd=1000",
+        ]
+    );
+}
+
+/// Under the debug build's `CURL_DEBUG`, as the share is made, its
+/// internal trace is on once a transfer uses it, with that transfer's
+/// components, the process's: the share says on standard error what C's
+/// share says on its own verbose handle (`curl_share_init`). Checked in a
+/// process of its own, with the variable set.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_share_made_under_curl_debug_traces_internally() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "multi::shutdown_tests::a_share_under_curl_debug_says_its_pool_s_end",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("CURL_DEBUG", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("1 passed"), "the test ran: {stdout}");
+    assert!(
+        stderr.contains("* [MULTI] [SHARE] [CPOOL] destroy, 1 connections\n"),
+        "{stderr}"
+    );
+}
+
+#[cfg(feature = "debug-hooks")]
+#[test]
+#[ignore = "run by a_share_made_under_curl_debug_traces_internally, CURL_DEBUG set"]
+fn a_share_under_curl_debug_says_its_pool_s_end() {
+    use crate::components::{Component, Components, Level};
+    use crate::share::{Kind, Share};
+    let talk = Conversation::new(OK, false).late_replies();
+    let (mut m, wire, _clock) = answering(&[(1, std::slice::from_ref(&talk))]);
+    let share = Share::with_net(Box::new(wire.clone())).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let components = Components::new().unwrap();
+    components.set(Component::Multi, Level::Info);
+    let mut ev = Rec::default();
+    let mut e = closing(1);
+    e.options_mut().limits.reuse.forbid = false;
+    e.set_components(Some(components));
+    e.set_share(Some(share.clone())).unwrap();
+    let id = m.add(e, (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    m.remove(id, &mut ev).unwrap();
+    drop(m);
+    drop(share);
+    assert_eq!(wire.closed(), [1000]);
+}

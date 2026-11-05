@@ -389,10 +389,13 @@ fn terminate(
             let fd = socket.key().get();
             t.of(component, format_args!("destroy"));
             t.of(component, format_args!("cf_socket_close, fd={fd}"));
-            t.of(
-                Component::Multi,
-                format_args!("Curl_multi_will_close fd={fd}"),
-            );
+            // Said by a multi's (`Curl_multi_will_close`), not a share's.
+            if in_multi {
+                t.of(
+                    Component::Multi,
+                    format_args!("Curl_multi_will_close fd={fd}"),
+                );
+            }
         }
         net.close(socket);
     }
@@ -778,6 +781,12 @@ pub(crate) trait Exits {
 
     /// The clock a goodbye's answer is waited for on, if any.
     fn clock(&self) -> Option<SharedClock>;
+
+    /// The internal trace of a handle with no multi, if it traces: what
+    /// goes through a multi is said on the multi's set's.
+    fn internal(&self) -> Option<Internal> {
+        None
+    }
 }
 
 /// A network alone, in a pool's own tests: with no clock, a connection
@@ -793,9 +802,14 @@ impl<N: Net> Exits for N {
     }
 }
 
-/// A network known only by reference, which keeps no connection, and the
-/// clock of the handles that use it.
-pub(crate) struct NoSet<'a>(pub(crate) &'a mut dyn Net, pub(crate) SharedClock);
+/// A network known only by reference, which keeps no connection, the
+/// clock of the handles that use it, and the internal trace of the share
+/// it is, if that traces (C's `share->admin`).
+pub(crate) struct NoSet<'a>(
+    pub(crate) &'a mut dyn Net,
+    pub(crate) SharedClock,
+    pub(crate) Option<Internal>,
+);
 
 impl Exits for NoSet<'_> {
     fn parts(&mut self) -> (&mut dyn Net, Option<Linger<'_>>) {
@@ -804,6 +818,10 @@ impl Exits for NoSet<'_> {
 
     fn clock(&self) -> Option<SharedClock> {
         Some(self.1.clone())
+    }
+
+    fn internal(&self) -> Option<Internal> {
+        self.2.clone()
     }
 }
 
@@ -862,10 +880,15 @@ pub(crate) fn discard(
     now: Instant,
 ) {
     let clock = exits.clock();
+    let alone = exits.internal();
     let (net, mut linger) = exits.parts();
-    // Said on the multi's internal trace, as C says it on its internal
-    // handle; a connection a multi closes lets one waiting for room look.
-    let trace = linger.as_ref().and_then(|l| l.set.internal().cloned());
+    // Said on the multi's internal trace, or a share's with no multi, as C
+    // says it on its internal handle; a connection a multi closes lets one
+    // waiting for room look.
+    let trace = match linger.as_ref() {
+        Some(l) => l.set.internal().cloned(),
+        None => alone,
+    };
     let in_multi = linger.is_some();
     let mut shutting = Shutting::start(conn, now);
     if aborted {

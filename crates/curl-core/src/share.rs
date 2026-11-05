@@ -28,6 +28,7 @@ use crate::multi::SessionsOut;
 use crate::psl::PslCache;
 use crate::time::{Instant, SharedClock};
 use crate::tls::SessionCache;
+use crate::trace::Internal;
 
 /// A handle's share cannot change now: the handle holds a connection
 /// (`setopt_share`).
@@ -114,6 +115,14 @@ struct Inner {
     /// the system's; a test's share takes the first multi's.
     #[cfg(any(test, feature = "test-util"))]
     clock: OnceLock<SharedClock>,
+    /// The debug build's `CURL_DEBUG` was set as the share was made: its
+    /// internal trace is on, with the components of the first transfer
+    /// that uses it, the process's (C's `share->admin`, made verbose).
+    #[cfg(feature = "debug-hooks")]
+    traces_internally: bool,
+    /// What it does for no transfer is traced here once on: the
+    /// connections its pool closes as it goes or keeps alive.
+    internal: OnceLock<Internal>,
 }
 
 /// A handle holds the share, so what it keeps cannot change.
@@ -140,7 +149,38 @@ impl Share {
             net: Mutex::new(net),
             #[cfg(any(test, feature = "test-util"))]
             clock: OnceLock::new(),
+            #[cfg(feature = "debug-hooks")]
+            traces_internally: curl_os::env::is_set(b"CURL_DEBUG"),
+            internal: OnceLock::new(),
         })?))
+    }
+
+    /// A transfer tracing `components` uses it: under the debug build's
+    /// `CURL_DEBUG` its internal trace is on from now on, with the first
+    /// such transfer's components, as C's share makes its own handle
+    /// verbose (`curl_share_init`).
+    #[cfg_attr(not(feature = "debug-hooks"), allow(unused_variables))]
+    pub(crate) fn traced_by(&self, components: Option<&crate::components::Components>) {
+        #[cfg(feature = "debug-hooks")]
+        if self.0.traces_internally
+            && let Some(components) = components
+        {
+            self.0
+                .internal
+                .get_or_init(|| Internal::new(components.clone()));
+        }
+    }
+
+    /// Trace what it does for no transfer to `sink`, as `components` say.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn trace_internally_to(
+        &self,
+        components: crate::components::Components,
+        sink: crate::handler::Handler<dyn crate::handler::TextSink>,
+    ) {
+        self.0
+            .internal
+            .get_or_init(|| Internal::to(components, sink));
     }
 
     /// Keep `kind` for the transfers given the share from now on
@@ -297,8 +337,8 @@ impl Share {
     pub(crate) fn upkeep(&self, interval: std::time::Duration, now: crate::time::Instant) {
         let mut net = lock(&self.0.net);
         let clock = self.0.clock();
-        self.pool()
-            .upkeep(interval, &mut NoSet(&mut **net, clock), now);
+        let mut exits = NoSet(&mut **net, clock, self.0.internal.get().cloned());
+        self.pool().upkeep(interval, &mut exits, now);
     }
 
     /// Whether its sessions are going out; none before its first export.
@@ -376,11 +416,17 @@ impl Drop for Inner {
     fn drop(&mut self) {
         let clock = self.clock();
         let now = clock.now();
+        let trace = self.internal.take();
         let net = self.net.get_mut().expect("no panic holds a share's lock");
-        self.pool
-            .get_mut()
-            .expect("no panic holds a share's lock")
-            .close_idle(&mut NoSet(&mut **net, clock), now);
+        let pool = self.pool.get_mut().expect("no panic holds a share's lock");
+        if let Some(t) = &trace {
+            let n = pool.len();
+            t.of(
+                crate::components::Component::Multi,
+                format_args!("[SHARE] [CPOOL] destroy, {n} connections"),
+            );
+        }
+        pool.close_idle(&mut NoSet(&mut **net, clock, trace), now);
     }
 }
 

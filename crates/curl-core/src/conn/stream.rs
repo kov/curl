@@ -10,7 +10,8 @@ use super::io::{Events, Recv, Sent, Sock, Socket};
 use curl_alloc::OutOfMemory;
 
 use super::layer::{
-    Alive, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, LayerStack, SocketKept,
+    Alive, Handshake, Layer, LayerAnswer, LayerCalls as _, LayerCx, LayerQuery, LayerStack,
+    SocketKept,
 };
 use super::{RecvBuf, RecvFailed};
 use crate::components::Component;
@@ -252,7 +253,12 @@ impl Stream {
         {
             return Ok(Handshake::Waiting);
         }
+        // The socket's own shutdown, said in its name as C's filter says
+        // it (`cf_socket_shutdown`, `Curl_cshutdn_try_once_idx`).
+        let fd = self.socket().key().get();
+        cx.of(traced, format_args!("cf_socket_shutdown, fd={fd}"));
         self.drain();
+        cx.of(traced, format_args!("shut down successfully"));
         Ok(Handshake::Done)
     }
 

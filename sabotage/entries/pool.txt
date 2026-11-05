@@ -465,9 +465,7 @@ file: crates/curl-core/src/conn/stream.rs
 witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 --- old
         self.drain();
-        Ok(Handshake::Done)
 --- new
-        Ok(Handshake::Done)
 
 === an aborted transfer's connection is drained as it closes
 file: crates/curl-core/src/conn/shutdown.rs

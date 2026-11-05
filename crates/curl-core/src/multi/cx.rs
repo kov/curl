@@ -113,6 +113,7 @@ impl<H: Host> EngineRest<'_, H> {
             .easy;
         let share = easy.shared(kind)?.clone();
         share.used_under(self.clock);
+        share.traced_by(easy.components());
         Some(Kept {
             share,
             watch: easy.share_watch.clone(),

@@ -30,12 +30,9 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/share.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-        self.pool
-            .get_mut()
-            .expect("no panic holds a share's lock")
-            .close_idle(&mut NoSet(&mut **net, clock), now);
+        pool.close_idle(&mut NoSet(&mut **net, clock, trace), now);
 --- new
-        let _ = (&mut self.pool, net, clock, now);
+        let _ = (pool, net, clock, now, trace);
 
 === a share keeps every kind whatever is asked
 file: crates/curl-core/src/share.rs
@@ -718,3 +715,29 @@ features: test-util debug-hooks
     if shortcut(name).map_err(oom)?.is_none() {
         say_not_cached(queries, (name, port), cx);
     }
+
+=== a share's pool closes its connections untraced as the share goes
+file: crates/curl-core/src/share.rs
+witness: curl-core multi::shutdown_tests::a_share_s_internal_trace_says_its_connections_close
+--- old
+        pool.close_idle(&mut NoSet(&mut **net, clock, trace), now);
+--- new
+        drop(trace);
+        pool.close_idle(&mut NoSet(&mut **net, clock, None), now);
+
+=== a share's pool's end is not said on its internal trace
+file: crates/curl-core/src/share.rs
+witness: curl-core multi::shutdown_tests::a_share_s_internal_trace_says_its_connections_close
+--- old
+                format_args!("[SHARE] [CPOOL] destroy, {n} connections"),
+--- new
+                format_args!("[CPOOL] destroy, {n} connections"),
+
+=== a share made under CURL_DEBUG does not trace internally
+file: crates/curl-core/src/share.rs
+witness: curl-core multi::shutdown_tests::a_share_made_under_curl_debug_traces_internally
+features: debug-hooks
+--- old
+        if self.0.traces_internally
+--- new
+        if false

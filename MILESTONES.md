@@ -1300,7 +1300,12 @@ the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays U
     1014.
 97. **Schannel**, with its CA store and `CURLSSLOPT_*` options. **To do.**
 98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **To do.**
-99. **WinIDN.** **To do.**
+99. **WinIDN.** **Done** (`win-idn`): `IdnToAscii` and `IdnToUnicode` on the name read as
+    UTF-8, in C's 255-unit buffers, `WinIDN` in the version string and no `libidn`. Against
+    C's build with OpenSSL and WinIDN (`C:\work\c-ossl-winidn`): 763, 1034, 1035 and 1560 pass
+    on both legs, and 165, 1448, 2046 and 2047, which `DISABLED` lists for the non-Unicode
+    build, fail alike when forced; 64 hand cases, by config file and by argv, give the same
+    bytes as C's, and the same results as Microsoft's curl.exe 8.21.0.
 100. **WinLDAP.** **To do.**
 101. **`ENABLE_UNICODE`**: wide argv, paths and environment, beside the ANSI build. **To do.**
 102. **The curl.se build's set**: LibreSSL (with ngtcp2 over it) and the native CA store

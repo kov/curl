@@ -56,6 +56,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-idn2/src/idn2.rs`: libidn2, converting host names to and from punycode.
 - `crates/curl-idn2/src/apple.rs`: ICU's IDNA and iconv on macOS, the same conversion as
   `USE_APPLE_IDN`'s.
+- `crates/curl-idn2/src/win.rs`: Windows' `IdnToAscii` and `IdnToUnicode`, and the UTF-8 to
+  UTF-16 conversions around them, the same conversion as `USE_WIN32_IDN`'s.
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.
 - `crates/curl-openssl/src/sign.rs`: OpenSSL's Ed25519, signing HTTP message signatures.

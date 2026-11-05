@@ -111,7 +111,7 @@ pub(crate) fn session_info(
     // getinfo returns, and no other call writes meanwhile.
     unsafe {
         tsi.write(ffi::curl_tlssessioninfo {
-            backend: ffi::CURLSSLBACKEND_OPENSSL,
+            backend: crate::tlslib::ID,
             internals: internals.map_or(ptr::null_mut(), NonNull::as_ptr),
         })
     };

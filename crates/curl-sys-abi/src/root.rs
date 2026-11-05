@@ -175,16 +175,16 @@ pub unsafe extern "C" fn curl_global_trace(config: *const c_char) -> CURLcode {
 const _: ffi::proto::curl_global_trace = curl_global_trace;
 
 /// The TLS libraries this build has, as `curl_global_sslset` lists
-/// them: OpenSSL alone.
+/// them: the one it was built with.
 struct Backends([*const ffi::curl_ssl_backend; 2]);
 
 // SAFETY: the pointers name the static below and a static C string,
 // neither ever written.
 unsafe impl Sync for Backends {}
 
-static OPENSSL_BACKEND: Backend = Backend(ffi::curl_ssl_backend {
-    id: ffi::CURLSSLBACKEND_OPENSSL,
-    name: c"openssl".as_ptr(),
+static THE_BACKEND: Backend = Backend(ffi::curl_ssl_backend {
+    id: crate::tlslib::ID,
+    name: crate::tlslib::NAME.as_ptr(),
 });
 
 struct Backend(ffi::curl_ssl_backend);
@@ -192,10 +192,10 @@ struct Backend(ffi::curl_ssl_backend);
 // SAFETY: as for `Backends`.
 unsafe impl Sync for Backend {}
 
-static BACKENDS: Backends = Backends([&raw const OPENSSL_BACKEND.0, core::ptr::null()]);
+static BACKENDS: Backends = Backends([&raw const THE_BACKEND.0, core::ptr::null()]);
 
 /// Choose the TLS library by `id` or by `name` (`curl_global_sslset`).
-/// This build has one, OpenSSL, always in use: choosing it succeeds, at
+/// This build has one, always in use: choosing it succeeds, at
 /// any time, and any other is not known, as in C built with one. The
 /// list of those available is given in `avail` unless NULL.
 ///
@@ -217,8 +217,8 @@ pub unsafe extern "C" fn curl_global_sslset(
         // SAFETY: as the caller guarantees.
         && unsafe { core::ffi::CStr::from_ptr(name) }
             .to_bytes()
-            .eq_ignore_ascii_case(b"openssl");
-    if id == ffi::CURLSSLBACKEND_OPENSSL || named {
+            .eq_ignore_ascii_case(crate::tlslib::NAME.to_bytes());
+    if id == crate::tlslib::ID || named {
         ffi::CURLSSLSET_OK
     } else {
         ffi::CURLSSLSET_UNKNOWN_BACKEND
@@ -371,10 +371,9 @@ pub(crate) static KEYLOG: curl_core::tls::KeyLog = curl_core::tls::KeyLog::new()
 
 /// Initialise the libraries linked in, as C's global init does
 /// (`Curl_ssl_init`): OpenSSL's configuration is read now, and the key
-/// log opened (`ossl_init`).
+/// log opened (`ossl_init`); Schannel has nothing to do.
 fn libraries_init() {
-    curl_openssl::init();
-    KEYLOG.open();
+    crate::tlslib::init();
 }
 
 /// What the libraries linked in let go of at the last cleanup

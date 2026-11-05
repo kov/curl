@@ -1287,8 +1287,9 @@ against ours and C's, and its test browser in use. Performance against the C ref
 Status: **in progress**. The library, the shim DLL and curl.exe built with MSVC, scored on
 the suite against two oracles: the curl.exe Windows ships (Schannel, SSPI, WinIDN, WinLDAP,
 `ENABLE_UNICODE`, the threaded resolver), the main one, and the curl.se build (LibreSSL,
-libssh2, HTTP/2 and HTTP/3, WinIDN, WinLDAP, native CA store, no Unicode). Until Schannel lands,
-the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays Unix-only.
+libssh2, HTTP/2 and HTTP/3, WinIDN, WinLDAP, native CA store, no Unicode). The TLS library is
+chosen as the shim and the tool are built: `openssl` (the default) or `schannel`. Kerberos goes
+through SSPI; MIT krb5 stays Unix-only.
 
 94. **The C ABI per target, `curl-os` and `curl-core` on Windows.** **Done.**
 95. **The shim DLL and curl.exe on Windows**: names in the ANSI code page, console writes, the
@@ -1309,7 +1310,12 @@ the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays U
     Byte for byte against the C build on 41 cases; on the guest's suite the Rust leg fails no
     test C passes but the replaced 96 and 558 and the WinLDAP and SSPI listings of 1013 and
     1014.
-97. **Schannel**, with its CA store and `CURLSSLOPT_*` options. **To do.**
+97. **Schannel**, with its CA store and `CURLSSLOPT_*` options. **Done.** The `schannel` build has
+    no HTTP/3 and no message signatures, as C's. Against C's Schannel build on the guest's suite
+    the Rust leg fails no test C passes but 96, 558, 1013 and 1014, as step 96 left them; twelve
+    hand cases (CA file, pinning, certinfo, revocation and client-certificate flags, a cipher
+    list, an untrusted root, a name mismatch, credential and CA store reuse, the options Schannel
+    lacks) give C's verbose output but for the debug lines of when the peer's data arrived.
 98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **To do.**
 99. **WinIDN.** **Done** (`win-idn`): `IdnToAscii` and `IdnToUnicode` on the name read as
     UTF-8, in C's 255-unit buffers, `WinIDN` in the version string and no `libidn`. Against

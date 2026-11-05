@@ -49,7 +49,8 @@ const TOGGLES: &[(&str, bool)] = &[
     ("getrlimit", true),
 ];
 
-/// Each toggle, `resolv-threaded` ON when the library resolves with the
+/// Each toggle, `httpsig` and `cert-status` OFF with Schannel,
+/// `resolv-threaded` ON when the library resolves with the
 /// threaded resolver, and `override-dns` where a debug build's c-ares takes
 /// `CURL_DNS_SERVER`. On Windows `wakeup` and `getrlimit` are OFF, as C's
 /// build there has no wakeup socket pair (`ENABLE_WAKEUP`, not under
@@ -60,6 +61,9 @@ fn toggles() -> impl Iterator<Item = (&'static str, bool)> {
         "resolv-threaded" => (name, threaded),
         "override-dns" => (name, !threaded && cfg!(feature = "debug-hooks")),
         "wakeup" | "getrlimit" => (name, on && cfg!(unix)),
+        // Schannel signs no Ed25519 and staples no certificate status, as
+        // C's build with it.
+        "httpsig" | "cert-status" => (name, on && !cfg!(feature = "schannel")),
         _ => (name, on),
     })
 }

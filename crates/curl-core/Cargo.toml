@@ -7,6 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [features]
+# The build's TLS library carries no QUIC (Schannel): no HTTP3 nor
+# proxy-HTTP3 claimed.
+no-quic = []
+# The build signs no HTTP message (no Ed25519 library): no HTTPSIG
+# claimed.
+no-httpsig = []
 # The counterpart of the C debug build: reports the `Debug` feature, and
 # will carry the debug-only behaviours the test suite relies on.
 debug-hooks = []

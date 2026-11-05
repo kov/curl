@@ -134,17 +134,21 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
 file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::names_the_libraries_as_c
 --- old
-                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
+                Some(&brotli),
+                Some(&zstd),
 --- new
-                &ssl, &zlib, &zstd, &brotli, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
+                Some(&zstd),
+                Some(&brotli),
 
 === curl_version lists HTTP/3's libraries after GSS-API's
 file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::names_the_libraries_as_c
 --- old
-                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
+                h3.as_ref().map(|h| h as &dyn fmt::Display),
+                Some(&gss),
 --- new
-                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &gss, &h3, &ldap,
+                Some(&gss),
+                h3.as_ref().map(|h| h as &dyn fmt::Display),
 
 === HTTP/3's feature bit is HTTP/2's
 file: crates/curl-sys-abi/src/version.rs
@@ -158,7 +162,7 @@ witness: curl-sys-abi version::tests::features_reach_the_c_struct
 file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::quic_version_names_both_libraries
 --- old
-                quic_version: quic.as_ptr(),
+                quic_version: quic.map_or(ptr::null(), CBuf::as_ptr),
 --- new
                 quic_version: c"".as_ptr(),
 
@@ -174,10 +178,11 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
 file: crates/curl-core/src/version.rs
 witness: curl-sys-abi version::tests::features_reach_the_c_struct
 --- old
-    Feature::Http2,
+    #[cfg(not(feature = "no-quic"))]
     Feature::Http3,
 --- new
-    Feature::Http2,
+    #[cfg(feature = "no-quic")]
+    Feature::Http3,
 
 === the multi's running count takes in the transfers waiting for a connection
 file: crates/curl-sys-abi/src/multi.rs
@@ -253,9 +258,9 @@ witness: curl-sys-abi handle_tests::tls_options_are_kept_as_c_keeps_them
 file: crates/curl-sys-abi/src/root.rs
 witness: curl-sys-abi handle_tests::the_one_tls_library_is_openssl
 --- old
-            .eq_ignore_ascii_case(b"openssl");
+            .eq_ignore_ascii_case(crate::tlslib::NAME.to_bytes());
 --- new
-            == b"openssl";
+            == crate::tlslib::NAME.to_bytes();
 
 === a certificate's lines run on into the next certificate's
 file: crates/curl-sys-abi/src/certinfo.rs
@@ -557,3 +562,11 @@ witness: curl-sys-abi handle_tests::a_url_refused_leaves_the_last_one_set_as_the
         cx.easy_mut().options_mut().keep_url_text(text);
 --- new
         drop(text);
+
+=== OpenSSL's build refuses the CA path as not built in
+file: crates/curl-sys-abi/src/tlslib.rs
+witness: curl-sys-abi setopt::tests::the_tls_library_s_lacking_options_are_not_built_in
+--- old
+    pub(crate) const LACKS: &[ffi::CURLoption] = &[];
+--- new
+    pub(crate) const LACKS: &[ffi::CURLoption] = &[ffi::CURLOPT_CAPATH];

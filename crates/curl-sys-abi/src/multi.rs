@@ -136,7 +136,7 @@ impl ShimMulti {
     }
 
     /// As `curl_multi_init`, over `net`.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "openssl"))]
     pub(crate) fn boxed_with(net: Box<dyn Net + Send>) -> Result<NonNull<ShimMulti>, OutOfMemory> {
         Ok(NonNull::from(Box::leak(try_box(ShimMulti::with_net(
             net,

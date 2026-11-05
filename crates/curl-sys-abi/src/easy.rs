@@ -817,13 +817,13 @@ const fn libraries_with(
             .with(Coding::Gzip, curl_zlib::gzip)
             .with(Coding::Brotli, curl_brotli::decoder)
             .with(Coding::Zstd, curl_zstd::decoder),
-        ed25519: Some(&curl_openssl::ED25519),
-        tls: Some(curl_core::libraries::Library::Static(&OPENSSL)),
+        ed25519: crate::tlslib::ED25519,
+        tls: Some(curl_core::libraries::Library::Static(&crate::tlslib::TLS)),
         gss,
         dns: crate::ares::LIBRARY,
         idn: Some(IDN),
         h2: Some(&curl_nghttp2::NGHTTP2),
-        h3: Some(&curl_ngtcp2::NGTCP2),
+        h3: crate::tlslib::H3,
         ssh: Some(&curl_libssh::LIBSSH),
         // Windows' build has no LDAP library, as a C build without one;
         // nor has macOS's yet (`curl_ldap`).
@@ -846,11 +846,6 @@ const RANDOM: Option<curl_core::libraries::Library<dyn curl_core::libraries::Ran
 
 /// What converts host names, for the handles and the URL API alike.
 pub(crate) const IDN: &dyn curl_core::idn::Idn = curl_idn2::IDN;
-
-/// OpenSSL, logging secrets to the root's key log.
-static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(
-    curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
-);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_easy_init() -> *mut CURL {
@@ -1530,7 +1525,12 @@ mod tests {
         assert!(libraries(false).gss.is_none());
         let (with, without) = (libraries(true), libraries(false));
         assert!(with.tls.is_some() && without.tls.is_some());
-        assert!(with.ed25519.is_some() && without.ed25519.is_some());
+        // Ed25519 is OpenSSL's: Schannel's build has none.
+        let signs = cfg!(feature = "openssl");
+        assert_eq!(
+            (with.ed25519.is_some(), without.ed25519.is_some()),
+            (signs, signs)
+        );
     }
 
     /// What the write callback saw and got back from the calls it made.

@@ -570,6 +570,9 @@ fn apply(
     arg: Arg,
 ) -> Result<(), Refused> {
     use Arg::{Long, Off, Ptr};
+    if crate::tlslib::LACKS.contains(&option) {
+        return Err(Refused::NotBuiltIn);
+    }
     match (option, arg) {
         (ffi::CURLOPT_VERBOSE, Long(n)) => options.output.verbose = n != 0,
         (ffi::CURLOPT_HEADER, Long(n)) => options.output.include_header = n != 0,
@@ -2230,6 +2233,40 @@ fn upload_flags(n: c_long) -> UploadFlags {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The options the TLS library lacks are not built in, as C's
+    /// `Curl_ssl_supports` refuses them: Schannel's CA path, revocation
+    /// list, issuer, TLS 1.3 suites, context callback, curves and
+    /// signature algorithms; none of OpenSSL's.
+    #[test]
+    fn the_tls_library_s_lacking_options_are_not_built_in() {
+        let c = crate::easy::curl_easy_init();
+        let text = |option| {
+            // SAFETY: a live handle, and a string option given a C string.
+            unsafe { curl_easy_setopt(c, option, c"x".as_ptr()) }
+        };
+        let lacking = [
+            ffi::CURLOPT_CAPATH,
+            ffi::CURLOPT_PROXY_CAPATH,
+            ffi::CURLOPT_CRLFILE,
+            ffi::CURLOPT_PROXY_ISSUERCERT,
+            ffi::CURLOPT_TLS13_CIPHERS,
+            ffi::CURLOPT_SSL_EC_CURVES,
+            ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS,
+        ];
+        let want = if cfg!(feature = "schannel") {
+            CURLE_NOT_BUILT_IN
+        } else {
+            CURLE_OK
+        };
+        for option in lacking {
+            assert_eq!(text(option), want, "{option:?}");
+        }
+        // One every library has.
+        assert_eq!(text(ffi::CURLOPT_CAINFO), CURLE_OK);
+        // SAFETY: the handle made above, not used again.
+        unsafe { crate::easy::curl_easy_cleanup(c) };
+    }
 
     /// The SSH options are taken as C's libssh build takes them: a
     /// directory's mode up to 0777, and the host key function and its

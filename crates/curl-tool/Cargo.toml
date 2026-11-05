@@ -13,7 +13,12 @@ path = "src/main.rs"
 [features]
 # Answers names by c-ares (C's `--enable-ares`), unless the threaded resolver
 # is chosen; one or the other is needed.
-default = ["c-ares"]
+default = ["c-ares", "openssl"]
+# One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
+# over ngtcp2 and Ed25519 for message signatures, or Schannel (Windows),
+# with neither, as C's build with it.
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2"]
+schannel = ["dep:curl-schannel", "curl-core/no-quic", "curl-core/no-httpsig"]
 c-ares = ["dep:curl-ares"]
 # The debug test build: track allocations as the C tool's debug build does.
 debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
@@ -27,7 +32,7 @@ apple-idn = ["curl-idn2/apple-idn"]
 win-idn = ["curl-idn2/win-idn"]
 # Peers verified by Apple's SecTrust where OpenSSL cannot (C's
 # `USE_APPLE_SECTRUST`).
-apple-sectrust = ["curl-openssl/apple-sectrust"]
+apple-sectrust = ["curl-openssl?/apple-sectrust"]
 # Windows' Unicode build (C's `ENABLE_UNICODE`): the command line and the
 # names of files in UTF-8, through the system's UTF-16 calls.
 unicode = ["curl-core/unicode"]
@@ -46,12 +51,13 @@ curl-ares = { path = "../curl-ares", optional = true }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os", features = ["args", "fs", "net"] }
 curl-gssapi = { path = "../curl-gssapi" }
-curl-openssl = { path = "../curl-openssl" }
+curl-openssl = { path = "../curl-openssl", optional = true }
+curl-schannel = { path = "../curl-schannel", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-idn2 = { path = "../curl-idn2" }
 curl-libssh = { path = "../curl-libssh" }
 curl-nghttp2 = { path = "../curl-nghttp2" }
-curl-ngtcp2 = { path = "../curl-ngtcp2" }
+curl-ngtcp2 = { path = "../curl-ngtcp2", optional = true }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 # C's `errno` values, which the tool's messages are chosen by.

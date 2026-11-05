@@ -585,6 +585,11 @@ impl<'a> Setopt<'a> {
         value: Option<&[u8]>,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
+        // One the TLS library lacks is not built in: set nowhere, written
+        // nowhere, and not a failure, as C's tool takes it.
+        if crate::tlslib::lacks(name) {
+            return Ok(());
+        }
         let Some(source) = self.apply(apply)? else {
             return Ok(());
         };

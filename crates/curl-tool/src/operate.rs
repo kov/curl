@@ -16,7 +16,7 @@ use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_format};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{
@@ -1887,8 +1887,8 @@ fn setopts(
     }
     ssh_setopts(s, op)?;
     if crate::options::has_tls() {
-        ssl_ca_setopts(s, op)?;
-        ssl_setopts(s, op)?;
+        ssl_ca_setopts(s, op, &run.msgs)?;
+        ssl_setopts(s, op, &run.msgs)?;
         // A debug build's first URL goes without TLS, if asked
         // (`CURL_DBG_NO_USE_SSL_ON_FIRST`), as a test needs a connection
         // in the clear beside one over TLS.
@@ -2235,14 +2235,20 @@ fn setopts(
 
 /// Where the certificates to trust are (`ssl_ca_setopts`): as given, or
 /// as the environment says (`cacertpaths`) unless the peer goes
-/// unverified.
-fn ssl_ca_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+/// unverified, or Schannel, which trusts the system's store, is the TLS
+/// library (`win32_using_schannel`).
+fn ssl_ca_setopts(
+    s: &mut Setopt<'_>,
+    op: &Operation<'_>,
+    msgs: &Messages,
+) -> Result<(), ErrorKind> {
     let tls = &op.tls;
     let (mut cacert, mut capath) = (
         tls.cacert.as_deref().map(Cow::Borrowed),
         tls.capath.as_deref().map(Cow::Borrowed),
     );
-    if cacert.is_none()
+    if !cfg!(feature = "schannel")
+        && cacert.is_none()
         && capath.is_none()
         && (!tls.insecure || (tls.doh_url.is_some() && !tls.doh_insecure))
     {
@@ -2295,8 +2301,32 @@ fn ssl_ca_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKin
                 options::CaSetting::Given(copy(easysrc::c_string(path)).map_err(oom)?);
             Ok(())
         })?;
+        warn_lacked(
+            msgs,
+            "CURLOPT_PROXY_CAPATH",
+            "setting the CA path for the proxy",
+        );
     }
     Ok(())
+}
+
+/// What C's tool warns of an option the TLS library lacks: `ignoring
+/// <what>, not supported by libcurl with Schannel`.
+fn warn_lacked(msgs: &Messages, name: &str, what: &str) {
+    // A warning that cannot be made is not said.
+    if crate::tlslib::lacks(name)
+        && let Ok(library) = try_format(format_args!("{}", crate::tlslib::version()))
+    {
+        // The library's name, up to its first space, as `ssl_backend`
+        // cuts it.
+        let library = library.split(' ').next().unwrap_or_default();
+        msgs.warn(&[
+            b"ignoring ",
+            what.as_bytes(),
+            b", not supported by libcurl with ",
+            library.as_bytes(),
+        ]);
+    }
 }
 
 /// An HTTPS proxy's TLS options, to change.
@@ -2306,7 +2336,7 @@ fn proxy_tls(o: &mut options::Options) -> Result<&mut options::TlsOptions, Error
 }
 
 /// The TLS options (`ssl_setopts`).
-fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Result<(), ErrorKind> {
     let tls = &op.tls;
     let proxy = &tls.proxy;
     string_setopt(s, "CURLOPT_CRLFILE", tls.crlfile, |t| &mut t.crl_file)?;
@@ -2482,9 +2512,15 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     string_setopt(s, "CURLOPT_TLS13_CIPHERS", tls.tls13_ciphers, |t| {
         &mut t.tls13_ciphers
     })?;
+    if tls.tls13_ciphers.is_some() {
+        warn_lacked(msgs, "CURLOPT_TLS13_CIPHERS", "--tls13-ciphers");
+    }
     proxy_string_setopt(s, "CURLOPT_PROXY_TLS13_CIPHERS", proxy.tls13_ciphers, |t| {
         &mut t.tls13_ciphers
     })?;
+    if proxy.tls13_ciphers.is_some() {
+        warn_lacked(msgs, "CURLOPT_PROXY_TLS13_CIPHERS", "--proxy-tls13-ciphers");
+    }
     if tls.no_sessionid {
         s.long("CURLOPT_SSL_SESSIONID_CACHE", 0, |o| {
             o.tls.options.make_mut().map_err(oom)?.session_cache = false;
@@ -4199,27 +4235,26 @@ impl Linked {
             || -> Result<Option<Library<dyn curl_core::libraries::Random>>, OutOfMemory> {
                 #[cfg(feature = "debug-hooks")]
                 if let Some(entropy) = &entropy {
-                    return Ok(Some(Library::Owned(try_box(entropy.clone())?)));
+                    return Ok(Some(Library::Owned(curl_alloc::try_box(entropy.clone())?)));
                 }
                 Ok(None)
             };
         let with = |gss| -> Result<SharedLibraries, OutOfMemory> {
             use curl_core::coding::{Coding, Decoders};
-            let tls: Box<dyn curl_core::tls::TlsBackend> =
-                try_box(curl_openssl::OpenSsl::logging_keys_to(keylog.clone()))?;
+            let tls = crate::tlslib::tls(&keylog)?;
             SharedLibraries::new(curl_core::libraries::Libraries {
                 decoders: Decoders::none()
                     .with(Coding::Deflate, curl_zlib::deflate)
                     .with(Coding::Gzip, curl_zlib::gzip)
                     .with(Coding::Brotli, curl_brotli::decoder)
                     .with(Coding::Zstd, curl_zstd::decoder),
-                ed25519: Some(&curl_openssl::ED25519),
+                ed25519: crate::tlslib::ED25519,
                 tls: Some(Library::Owned(tls)),
                 gss,
                 dns: crate::ares::LIBRARY,
                 idn: Some(curl_idn2::IDN),
                 h2: Some(&curl_nghttp2::NGHTTP2),
-                h3: Some(&curl_ngtcp2::NGTCP2),
+                h3: crate::tlslib::H3,
                 ssh: Some(&curl_libssh::LIBSSH),
                 // Windows' build has no LDAP library, as a C build
                 // without one; nor has macOS's yet (`curl_ldap`).

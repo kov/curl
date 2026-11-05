@@ -31,6 +31,7 @@ mod sockopt;
 mod stderr;
 mod stdio;
 mod stdout;
+mod tlslib;
 mod trace;
 #[cfg(test)]
 mod untrusted;
@@ -95,7 +96,7 @@ fn main() -> ExitCode {
     memory_tracking_init();
     // C's `curl_global_init`: OpenSSL's configuration is read now, and
     // the key log opened.
-    curl_openssl::init();
+    tlslib::init();
     let mut msgs = Messages::new();
     // And Winsock, held for the process (`CURL_GLOBAL_WIN32`); nothing
     // to start on Unix.
@@ -231,9 +232,8 @@ fn show(request: Request<'_>, msgs: &Messages) -> ExitCode {
 /// engines, `<none>` if it has none or they cannot be listed. A failure
 /// to write stops the rest, as `puts` and `printf` would only fail again.
 fn list_engines() {
-    use curl_core::tls::TlsBackend as _;
     use std::io::Write as _;
-    let ids = curl_openssl::OPENSSL.engines().unwrap_or_default();
+    let ids = tlslib::engines().unwrap_or_default();
     let mut out = stdout::Printed;
     let none: &[&[u8]] = &[b"<none>"];
     let shown = ids.iter().map(Vec::as_slice);
@@ -271,7 +271,7 @@ pub(crate) struct CurlVersion;
 impl std::fmt::Display for CurlVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use curl_core::version::Library;
-        let ssl = curl_openssl::version();
+        let ssl = tlslib::version();
         let zlib = Library("zlib", curl_zlib::version());
         let brotli = Library("brotli", curl_brotli::version());
         let zstd = Library("zstd", curl_zstd::version());
@@ -280,29 +280,38 @@ impl std::fmt::Display for CurlVersion {
         let psl = Library("libpsl", curl_psl::version());
         let ssh = Library("libssh", curl_libssh::version());
         let h2 = Library("nghttp2", curl_nghttp2::version());
-        let h3 = curl_ngtcp2::version();
+        // A build without QUIC names no QUIC library.
+        let h3 = tlslib::quic();
         let gss = Library("mit-krb5", curl_gssapi::version());
         // Named by the library itself (`Curl_ldap_version`). Windows'
         // build has no LDAP library, nor has macOS's yet.
         #[cfg(unix)]
-        let (has_ldap, ldap) = match curl_ldap::version() {
-            Some(ldap) => (true, ldap),
-            None => (false, ""),
-        };
+        let ldap = curl_ldap::version();
         #[cfg(windows)]
-        let (has_ldap, ldap) = (false, "");
-        let mut libraries: [&dyn std::fmt::Display; 12] = [
-            &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
-        ];
-        let linked = &mut libraries[..if has_ldap { 12 } else { 11 }];
+        let ldap: Option<&str> = None;
         // A build with the threaded resolver does not use c-ares.
-        let shown = if cfg!(feature = "threaded-resolver") {
-            let n = linked.len();
-            linked.copy_within(5.., 4);
-            &linked[..n - 1]
-        } else {
-            &linked[..]
-        };
+        let ares = (!cfg!(feature = "threaded-resolver")).then_some(ares);
+        let libraries: [Option<&dyn std::fmt::Display>; 12] = [
+            Some(&ssl),
+            Some(&zlib),
+            Some(&brotli),
+            Some(&zstd),
+            ares.as_ref().map(|a| a as &dyn std::fmt::Display),
+            Some(&idn),
+            Some(&psl),
+            Some(&ssh),
+            Some(&h2),
+            h3.as_ref().map(|h| h as &dyn std::fmt::Display),
+            Some(&gss),
+            ldap.as_ref().map(|l| l as &dyn std::fmt::Display),
+        ];
+        let mut linked: [&dyn std::fmt::Display; 12] = [&""; 12];
+        let mut n = 0;
+        for library in libraries.into_iter().flatten() {
+            linked[n] = library;
+            n += 1;
+        }
+        let shown = &linked[..n];
         version().components(shown).fmt(f)
     }
 }
@@ -398,6 +407,7 @@ mod tests {
 
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none (Windows', macOS's).
+    #[cfg(feature = "openssl")]
     fn ldap_shown() -> String {
         #[cfg(unix)]
         let ldap = curl_ldap::version();
@@ -408,6 +418,7 @@ mod tests {
 
     /// `curl -V` lists the libraries after libcurl as C's does: in its
     /// order, each named as it names it, without those not linked.
+    #[cfg(feature = "openssl")]
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(

@@ -166,9 +166,9 @@ fn info() -> &'static curl_version_info_data {
     let r = v.release;
     let version = VERSION.get_or_init(|| cbuf(format_args!("{}", v.version)));
     let host = HOST.get_or_init(|| cbuf(format_args!("{}", v.host)));
-    let ssl = SSL.get_or_init(|| cbuf(format_args!("{}", curl_openssl::version())));
+    let ssl = SSL.get_or_init(|| cbuf(format_args!("{}", crate::tlslib::version())));
     // The build's defaults, as C's `CURL_CA_BUNDLE` and `CURL_CA_PATH`.
-    let ca = curl_openssl::OPENSSL.ca_defaults();
+    let ca = crate::tlslib::TLS.ca_defaults();
     let cainfo = ca
         .file
         .map(|f| CAINFO.get_or_init(|| cbuf(format_args!("{f}"))));
@@ -179,7 +179,7 @@ fn info() -> &'static curl_version_info_data {
     // Named, as C's `brotli_version` names it.
     let brotli = BROTLI.get_or_init(|| cbuf(format_args!("brotli/{}", curl_brotli::version())));
     let zstd = ZSTD.get_or_init(|| cbuf(format_args!("zstd/{}", curl_zstd::version())));
-    let quic = QUIC.get_or_init(|| cbuf(format_args!("{}", curl_ngtcp2::version())));
+    let quic = crate::tlslib::quic().map(|q| QUIC.get_or_init(|| cbuf(format_args!("{q}"))));
     // Named, as C's `Curl_ssh_version` names it.
     let libssh = LIBSSH.get_or_init(|| cbuf(format_args!("libssh/{}", curl_libssh::version())));
     &INFO
@@ -215,7 +215,7 @@ fn info() -> &'static curl_version_info_data {
                 brotli_version: brotli.as_ptr(),
                 nghttp2_ver_num: curl_nghttp2::version_number(),
                 nghttp2_version: curl_nghttp2::version_c().as_ptr(),
-                quic_version: quic.as_ptr(),
+                quic_version: quic.map_or(ptr::null(), CBuf::as_ptr),
                 cainfo: cainfo.map_or(ptr::null(), CBuf::as_ptr),
                 capath: capath.map_or(ptr::null(), CBuf::as_ptr),
                 zstd_ver_num: curl_zstd::version_number(),
@@ -234,7 +234,7 @@ pub extern "C" fn curl_version() -> *mut c_char {
     COMPONENTS
         .get_or_init(|| {
             // The libraries linked in, in C's order.
-            let ssl = curl_openssl::version();
+            let ssl = crate::tlslib::version();
             let zlib = Library("zlib", curl_zlib::version());
             let brotli = Library("brotli", curl_brotli::version());
             let zstd = Library("zstd", curl_zstd::version());
@@ -243,29 +243,38 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let psl = Library("libpsl", curl_psl::version());
             let ssh = Library("libssh", curl_libssh::version());
             let h2 = Library("nghttp2", curl_nghttp2::version());
-            let h3 = curl_ngtcp2::version();
+            // A build without QUIC names no QUIC library.
+            let h3 = crate::tlslib::quic();
             let gss = Library("mit-krb5", curl_gssapi::version());
             // Named by the library itself (`Curl_ldap_version`). Windows'
             // build has no LDAP library, nor has macOS's yet.
             #[cfg(unix)]
-            let (has_ldap, ldap) = match curl_ldap::version() {
-                Some(ldap) => (true, ldap),
-                None => (false, ""),
-            };
+            let ldap = curl_ldap::version();
             #[cfg(windows)]
-            let (has_ldap, ldap) = (false, "");
-            let mut libraries: [&dyn fmt::Display; 12] = [
-                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
-            ];
-            let linked = &mut libraries[..if has_ldap { 12 } else { 11 }];
+            let ldap: Option<&str> = None;
             // A build with the threaded resolver does not use c-ares.
-            let shown = if cfg!(feature = "threaded-resolver") {
-                let n = linked.len();
-                linked.copy_within(5.., 4);
-                &linked[..n - 1]
-            } else {
-                &linked[..]
-            };
+            let ares = (!cfg!(feature = "threaded-resolver")).then_some(ares);
+            let libraries: [Option<&dyn fmt::Display>; 12] = [
+                Some(&ssl),
+                Some(&zlib),
+                Some(&brotli),
+                Some(&zstd),
+                ares.as_ref().map(|a| a as &dyn fmt::Display),
+                Some(&idn),
+                Some(&psl),
+                Some(&ssh),
+                Some(&h2),
+                h3.as_ref().map(|h| h as &dyn fmt::Display),
+                Some(&gss),
+                ldap.as_ref().map(|l| l as &dyn fmt::Display),
+            ];
+            let mut linked: [&dyn fmt::Display; 12] = [&""; 12];
+            let mut n = 0;
+            for library in libraries.into_iter().flatten() {
+                linked[n] = library;
+                n += 1;
+            }
+            let shown = &linked[..n];
             cbuf(format_args!("{}", version().components(shown)))
         })
         .as_ptr()
@@ -305,6 +314,7 @@ mod tests {
     /// C's order and words, each version as the library says it.
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none (Windows', macOS's).
+    #[cfg(feature = "openssl")]
     fn ldap_shown() -> String {
         #[cfg(unix)]
         let ldap = curl_ldap::version();
@@ -313,6 +323,7 @@ mod tests {
         ldap.map_or_else(String::new, |v| format!(" {v}"))
     }
 
+    #[cfg(feature = "openssl")]
     fn ares_shown() -> String {
         if cfg!(feature = "threaded-resolver") {
             String::new()
@@ -321,6 +332,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "openssl")]
     #[test]
     fn names_the_libraries_as_c() {
         // SAFETY: a static C string.
@@ -378,6 +390,7 @@ mod tests {
 
     /// HTTP/3's two libraries are named together in `quic_version`, as
     /// C names them.
+    #[cfg(feature = "openssl")]
     #[test]
     fn quic_version_names_both_libraries() {
         // SAFETY: a static C string, never NULL.
@@ -396,6 +409,9 @@ mod tests {
     /// names, the names NULL-terminated.
     #[test]
     fn features_reach_the_c_struct() {
+        // OpenSSL's build has HTTP/3 and message signatures, Schannel's
+        // neither.
+        let quic = cfg!(feature = "openssl");
         let info = info();
         let names = names(info.feature_names);
         let want: Vec<_> = version().features.iter().map(|f| f.name()).collect();
@@ -420,16 +436,16 @@ mod tests {
             (true, "GSS-API", ffi::CURL_VERSION_GSSAPI),
             (true, "HSTS", ffi::CURL_VERSION_HSTS),
             (true, "HTTP2", ffi::CURL_VERSION_HTTP2),
-            (true, "HTTP3", ffi::CURL_VERSION_HTTP3),
+            (quic, "HTTP3", ffi::CURL_VERSION_HTTP3),
             (true, "HTTPS-proxy", ffi::CURL_VERSION_HTTPS_PROXY),
-            (true, "HTTPSIG", 0),
+            (quic, "HTTPSIG", 0),
             (true, "HTTPSRR", 0),
             (true, "IDN", ffi::CURL_VERSION_IDN),
             (true, "IPv6", ffi::CURL_VERSION_IPV6),
             (true, "Kerberos", ffi::CURL_VERSION_KERBEROS5),
             (true, "Largefile", ffi::CURL_VERSION_LARGEFILE),
             (true, "libz", ffi::CURL_VERSION_LIBZ),
-            (true, "proxy-HTTP3", 0),
+            (quic, "proxy-HTTP3", 0),
             (true, "PSL", ffi::CURL_VERSION_PSL),
             (true, "SPNEGO", ffi::CURL_VERSION_SPNEGO),
             (true, "SSL", ffi::CURL_VERSION_SSL),

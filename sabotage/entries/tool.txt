@@ -975,9 +975,9 @@ witness: curl-tool options::parse::tests::a_range_is_taken_as_c_takes_it
 file: crates/curl-tool/src/main.rs
 witness: curl-tool tests::names_the_libraries_as_c
 --- old
-            &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
+            Some(&psl),
 --- new
-            &ssl, &zlib, &brotli, &zstd, &ares, &idn, &h2, &ssh, &h2, &h3, &gss, &ldap,
+            Some(&h2),
 
 === %time{}'s microseconds lose their leading zeros
 file: crates/curl-tool/src/write_out.rs
@@ -1576,3 +1576,11 @@ witness: curl-tool operate::tests::transfers_share_one_library_text_sink
     if let Some(text) = run.library_text.get() {
 --- new
     if let Some(text) = run.library_text.get().filter(|_| false) {
+
+=== OpenSSL's build warns that the proxy's CA path is ignored
+file: crates/curl-tool/src/tlslib.rs
+witness: curl-tool options_the_library_lacks_are_warned_of
+--- old
+    pub(crate) const LACKS: &[&str] = &[];
+--- new
+    pub(crate) const LACKS: &[&str] = &["CURLOPT_PROXY_CAPATH"];

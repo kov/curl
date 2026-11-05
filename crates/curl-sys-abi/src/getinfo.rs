@@ -256,7 +256,7 @@ fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
 /// the list cannot be made.
 fn engines() -> Value {
     use curl_core::tls::TlsBackend as _;
-    match curl_openssl::OPENSSL.engines() {
+    match crate::tlslib::TLS.engines() {
         Ok(ids) => list_of(ids.iter()),
         Err(OutOfMemory) => Value::List(core::ptr::null_mut()),
     }

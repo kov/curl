@@ -141,10 +141,10 @@ const FEATURES: &[Feature] = &[
     Feature::GssApi,
     Feature::Hsts,
     Feature::Http2,
-    #[cfg(not(feature = "no-quic"))]
+    #[cfg(feature = "quic")]
     Feature::Http3,
     Feature::HttpsProxy,
-    #[cfg(not(feature = "no-httpsig"))]
+    #[cfg(feature = "httpsig")]
     Feature::Httpsig,
     Feature::HttpsRr,
     Feature::Idn,
@@ -152,7 +152,7 @@ const FEATURES: &[Feature] = &[
     Feature::Kerberos,
     Feature::Largefile,
     Feature::Libz,
-    #[cfg(not(feature = "no-quic"))]
+    #[cfg(feature = "quic")]
     Feature::ProxyHttp3,
     Feature::Psl,
     Feature::Spnego,

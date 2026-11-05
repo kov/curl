@@ -49,7 +49,8 @@ const TOGGLES: &[(&str, bool)] = &[
     ("getrlimit", true),
 ];
 
-/// Each toggle, `httpsig` and `cert-status` OFF with Schannel,
+/// Each toggle, `httpsig` ON where the library signs messages,
+/// `cert-status` ON where its TLS library checks a stapled status,
 /// `resolv-threaded` ON when the library resolves with the
 /// threaded resolver, and `override-dns` where a debug build's c-ares takes
 /// `CURL_DNS_SERVER`. On Windows `wakeup` and `getrlimit` are OFF, as C's
@@ -57,13 +58,18 @@ const TOGGLES: &[(&str, bool)] = &[
 /// Winsock) and no `getrlimit`.
 fn toggles() -> impl Iterator<Item = (&'static str, bool)> {
     let threaded = cfg!(feature = "threaded-resolver");
+    let signs = curl_core::version::version()
+        .features
+        .contains(&curl_core::version::Feature::Httpsig);
     TOGGLES.iter().map(move |&(name, on)| match name {
         "resolv-threaded" => (name, threaded),
         "override-dns" => (name, !threaded && cfg!(feature = "debug-hooks")),
         "wakeup" | "getrlimit" => (name, on && cfg!(unix)),
-        // Schannel signs no Ed25519 and staples no certificate status, as
-        // C's build with it.
-        "httpsig" | "cert-status" => (name, on && !cfg!(feature = "schannel")),
+        // A build without an Ed25519 library (Schannel's) signs nothing,
+        // as C's build with it.
+        "httpsig" => (name, on && signs),
+        // Schannel staples no certificate status, as C's build with it.
+        "cert-status" => (name, on && !cfg!(feature = "schannel")),
         _ => (name, on),
     })
 }
@@ -97,5 +103,14 @@ mod tests {
         let on = |name| toggles().find(|&(n, _)| n == name).map(|(_, on)| on);
         assert_eq!(on("wakeup"), Some(cfg!(unix)));
         assert_eq!(on("getrlimit"), Some(cfg!(unix)));
+    }
+
+    /// Message signatures are reported as the build has them: with
+    /// OpenSSL's Ed25519, not with Schannel, which has none, as C's
+    /// builds with each.
+    #[test]
+    fn message_signatures_are_reported_as_the_tls_library_has_them() {
+        let on = toggles().find(|&(n, _)| n == "httpsig").map(|(_, on)| on);
+        assert_eq!(on, Some(cfg!(feature = "openssl")));
     }
 }

@@ -17,8 +17,8 @@ default = ["c-ares", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
 # over ngtcp2 and Ed25519 for message signatures, or Schannel (Windows),
 # with neither, as C's build with it.
-openssl = ["dep:curl-openssl", "dep:curl-ngtcp2"]
-schannel = ["dep:curl-schannel", "curl-core/no-quic", "curl-core/no-httpsig"]
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
+schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
 # The debug test build: track allocations as the C tool's debug build does.
 debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]

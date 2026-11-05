@@ -1584,3 +1584,11 @@ witness: curl-tool options_the_library_lacks_are_warned_of
     pub(crate) const LACKS: &[&str] = &[];
 --- new
     pub(crate) const LACKS: &[&str] = &["CURLOPT_PROXY_CAPATH"];
+
+=== OpenSSL's build claims no message signatures
+file: crates/curl-tool/Cargo.toml
+witness: curl-tool tests::message_signatures_are_reported_as_the_tls_library_has_them
+--- old
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
+--- new
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic"]

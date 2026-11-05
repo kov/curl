@@ -32,6 +32,9 @@ win-idn = ["curl-idn2/win-idn"]
 # Peers verified by Apple's SecTrust where OpenSSL cannot (C's
 # `USE_APPLE_SECTRUST`).
 apple-sectrust = ["curl-openssl/apple-sectrust"]
+# Windows' Unicode build (C's `ENABLE_UNICODE`): the command line and the
+# names of files in UTF-8, through the system's UTF-16 calls.
+unicode = ["curl-core/unicode"]
 
 [dependencies]
 curl-alloc = { version = "0.1.0", path = "../curl-alloc" }

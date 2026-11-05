@@ -43,6 +43,7 @@ const WANTED: &CStr = c"0.20.0";
 unsafe extern "C" {
     fn idn2_check_version(req_version: *const c_char) -> *const c_char;
     fn idn2_lookup_ul(src: *const c_char, lookupname: *mut *mut c_char, flags: c_int) -> c_int;
+    fn idn2_lookup_u8(src: *const u8, lookupname: *mut *mut u8, flags: c_int) -> c_int;
     fn idn2_to_unicode_8z8z(input: *const c_char, output: *mut *mut c_char, flags: c_int) -> c_int;
     fn idn2_free(ptr: *mut c_void);
 }
@@ -93,12 +94,22 @@ fn answer(rc: c_int, made: Made) -> Result<Vec<u8>, IdnFailure> {
     }
 }
 
-/// `name` looked up with `flags` (`IDN2_LOOKUP`, the locale's characters).
+/// `name` looked up with `flags` (`IDN2_LOOKUP`): in the locale's
+/// characters, or UTF-8 in Windows' Unicode build, where C's build takes
+/// names as UTF-8 (`idn2_lookup_u8`).
 fn lookup(name: &CStr, flags: c_int) -> (c_int, Made) {
     let mut out = core::ptr::null_mut();
-    // SAFETY: a C string in, and a pointer libidn2 sets to a string of
-    // its own on success.
-    let rc = unsafe { idn2_lookup_ul(name.as_ptr(), &raw mut out, flags) };
+    let rc = if curl_os::UNICODE {
+        let mut made: *mut u8 = core::ptr::null_mut();
+        // SAFETY: a C string in, and a pointer libidn2 sets to a string of
+        // its own on success.
+        let rc = unsafe { idn2_lookup_u8(name.as_ptr().cast(), &raw mut made, flags) };
+        out = made.cast();
+        rc
+    } else {
+        // SAFETY: as above.
+        unsafe { idn2_lookup_ul(name.as_ptr(), &raw mut out, flags) }
+    };
     (rc, Made(out))
 }
 

@@ -20,6 +20,9 @@ threaded-resolver = []
 # The TLS library verifies a peer it cannot with Apple's SecTrust, as C's
 # `USE_APPLE_SECTRUST`: claims the `AppleSecTrust` feature.
 apple-sectrust = []
+# Windows' Unicode build (C's `ENABLE_UNICODE`), which `curl-os` makes:
+# claims the `Unicode` feature.
+unicode = ["curl-os/unicode"]
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }

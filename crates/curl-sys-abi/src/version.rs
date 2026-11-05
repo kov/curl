@@ -103,6 +103,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         // A name alone, without a bit, as in C.
         Feature::SslsExport => (c"SSLS-EXPORT", 0),
         Feature::Threadsafe => (c"threadsafe", crate::ffi::CURL_VERSION_THREADSAFE),
+        Feature::Unicode => (c"Unicode", crate::ffi::CURL_VERSION_UNICODE),
         Feature::UnixSockets => (c"UnixSockets", crate::ffi::CURL_VERSION_UNIX_SOCKETS),
         Feature::Zstd => (c"zstd", crate::ffi::CURL_VERSION_ZSTD),
     }
@@ -433,6 +434,12 @@ mod tests {
             (true, "SSL", ffi::CURL_VERSION_SSL),
             (true, "SSLS-EXPORT", 0),
             (true, "threadsafe", ffi::CURL_VERSION_THREADSAFE),
+            // Windows' Unicode build (`ENABLE_UNICODE`).
+            (
+                cfg!(feature = "unicode"),
+                "Unicode",
+                ffi::CURL_VERSION_UNICODE,
+            ),
             (true, "UnixSockets", ffi::CURL_VERSION_UNIX_SOCKETS),
             (true, "zstd", ffi::CURL_VERSION_ZSTD),
         ]

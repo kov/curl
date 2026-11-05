@@ -687,16 +687,92 @@ fn uploads_a_file() {
 /// On Windows the command line is read in the ANSI code page, as C's tool
 /// reads `main`'s `argv` without `UNICODE`, and so are the files it
 /// names: an output named with an accent is the file of that name, not
-/// one named by its UTF-8 bytes read in the code page.
+/// one named by its UTF-8 bytes read in the code page. The Unicode build
+/// (`ENABLE_UNICODE`) reads `wmain`'s in UTF-8 and opens names as UTF-8:
+/// a name outside the code page is the file of that name too, where the
+/// other build reads it as question marks.
 #[cfg(windows)]
 #[test]
-fn names_files_in_the_ansi_code_page() {
-    let s = Scratch::new("ansi");
+fn names_files_as_the_build_reads_them() {
+    let s = Scratch::new("names");
     s.write("src", b"x");
     let r = curl(&s, &["-s", "-o", "caf\u{e9}", &s.url("src")]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(s.exists("caf\u{e9}"));
     assert!(!s.exists("caf\u{c3}\u{a9}"));
+    let wide = "\u{6f22}\u{5b57}\u{1f600}";
+    let r = curl(&s, &["-s", "-o", wide, &s.url("src")]);
+    if cfg!(feature = "unicode") {
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(s.read(wide), b"x");
+    } else {
+        // What becomes of the question marks is C's sanitizing of a name
+        // on Windows, not this test's subject.
+        assert!(!s.exists(wide));
+    }
+}
+
+/// On Windows a name in a configuration file is its bytes, as the C
+/// tool reads them, opened as the build opens names: the ANSI code page's
+/// `é` names `café`; in the Unicode build it is no UTF-8, which C's
+/// conversion refuses (`EINVAL`), so the output does not open, and UTF-8's
+/// names the file.
+#[cfg(windows)]
+#[test]
+fn reads_a_configuration_s_names_as_the_build_does() {
+    let s = Scratch::new("cfg-names");
+    s.write("src", b"x");
+    s.write("ansi.cfg", b"output = \"k-caf\xe9\"\n");
+    s.write("utf8.cfg", "output = \"k-\u{6f22}\"\n".as_bytes());
+    let r = curl(&s, &["-sS", "-K", "ansi.cfg", &s.url("src")]);
+    if cfg!(feature = "unicode") {
+        assert_eq!(r.code, 23, "{}", r.stderr);
+        assert!(!s.exists("k-caf\u{e9}"));
+    } else {
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(s.read("k-caf\u{e9}"), b"x");
+    }
+    let r = curl(&s, &["-sS", "-K", "utf8.cfg", &s.url("src")]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let want = if cfg!(feature = "unicode") {
+        "k-\u{6f22}"
+    } else {
+        "k-\u{e6}\u{bc}\u{a2}"
+    };
+    assert_eq!(s.read(want), b"x");
+}
+
+/// On Windows the environment is read in the ANSI code page in either
+/// build, as C's `curl_getenv` reads it (`GetEnvironmentVariableA`): a
+/// `CURL_HOME` with an accent names its directory in the build without
+/// Unicode, and in the Unicode build is no UTF-8, so its `.curlrc` is not
+/// found, as Microsoft's curl.exe does not find it.
+#[cfg(windows)]
+#[test]
+fn reads_the_environment_in_the_ansi_code_page() {
+    let s = Scratch::new("env-names");
+    s.write("src", b"x");
+    let home = s.0.join("hom\u{e9}");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join(".curlrc"), "write-out = \"rc\\n\"\n").unwrap();
+    let empty = s.0.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut cmd = Command::new(tool);
+    cmd.args(["-s", &s.url("src")]).current_dir(&s.0);
+    for var in ["XDG_CONFIG_HOME", "HOME", "USERPROFILE", "APPDATA"] {
+        cmd.env(var, &empty);
+    }
+    cmd.env("CURL_HOME", &home);
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let want: &[u8] = if cfg!(feature = "unicode") {
+        b"x"
+    } else {
+        b"xrc\n"
+    };
+    assert_eq!(out.stdout, want);
 }
 
 /// On Windows a body written to a console goes to it as UTF-16, as C's
@@ -725,7 +801,9 @@ fn writes_a_body_to_a_console_as_utf16() {
 
 /// On Windows a `.curlrc` beside the program is read when none is found
 /// in the user's directories, the program's directory named in the ANSI
-/// code page as C names it (`GetModuleFileName`), here with an accent.
+/// code page as C names it (`GetModuleFileName`), here with an accent;
+/// in the Unicode build in UTF-8, here with characters outside the code
+/// page, which the other build reads as question marks.
 #[cfg(windows)]
 #[test]
 fn reads_the_configuration_beside_the_program() {
@@ -733,7 +811,11 @@ fn reads_the_configuration_beside_the_program() {
     s.write("src", b"x");
     let home = s.0.join("home");
     std::fs::create_dir(&home).unwrap();
-    let dir = s.0.join("caf\u{e9}");
+    let dir = s.0.join(if cfg!(feature = "unicode") {
+        "\u{6f22}\u{5b57}"
+    } else {
+        "caf\u{e9}"
+    });
     std::fs::create_dir(&dir).unwrap();
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
@@ -2366,6 +2448,49 @@ fn text_files_are_written_as_text() {
     let headers = s.read("hd");
     assert!(headers.ends_with(b"\r\n\r\n"), "{headers:?}");
     assert!(!headers.windows(2).any(|w| w == b"\r\r"), "{headers:?}");
+}
+
+/// On Windows the CA bundle found along the search path (`SearchPath`)
+/// is named as the build names files: in a directory named outside
+/// ASCII, the ANSI code page's bytes, or in the Unicode build the UTF-8 of
+/// `SearchPathW`'s answer, as `--libcurl` shows them.
+#[cfg(windows)]
+#[test]
+fn finds_a_ca_bundle_in_a_directory_named_as_the_build_does() {
+    let s = Scratch::new(if cfg!(feature = "unicode") {
+        "ca-\u{6f22}\u{5b57}"
+    } else {
+        "ca-caf\u{e9}"
+    });
+    s.write("src", b"x");
+    s.write("curl-ca-bundle.crt", b"");
+    let r = curl(&s, &["-s", "--libcurl", "-", &s.url("src")]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let path = s.path("curl-ca-bundle.crt");
+    let bytes: Vec<u8> = if cfg!(feature = "unicode") {
+        path.into_bytes()
+    } else {
+        path.chars()
+            .map(|c| u8::try_from(u32::from(c)).unwrap())
+            .collect()
+    };
+    // As `--libcurl` escapes a string (`c_escape`).
+    let mut want = String::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'\\' => want.push_str("\\\\"),
+            0x20..=0x7e => want.push(char::from(b)),
+            _ if bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit) => {
+                want.push_str(&format!("\\{b:03o}"));
+            }
+            _ => want.push_str(&format!("\\x{b:02x}")),
+        }
+    }
+    let text = String::from_utf8(r.stdout).unwrap();
+    assert!(
+        text.contains(&format!("CURLOPT_CAINFO, \"{want}\")")),
+        "{want}\n{text}"
+    );
 }
 
 /// On Windows, with no CA bundle or directory given or named by the

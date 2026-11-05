@@ -647,6 +647,18 @@ not a difference: it is tracked in `MILESTONES.md`.
   not trusted to be anything. Pinned by `a_blob_may_say_nothing`
   (`crates/curl-core/src/tls/cache/spack/tests.rs`).
 
+## Names C reads two ways
+
+- **`--remove-on-error` removes a partial output with a name outside ASCII on Windows' Unicode
+  build.** The name the command line gave is UTF-8 there, and the rewrite opens, checks and
+  removes it as UTF-8. C's tool checks it with `curlx_stat`, which converts it to UTF-16, but
+  removes it with `unlink` (`_unlink`), which reads it in the ANSI code page: `curl
+  --remove-on-error -o café URL` on a transfer that fails warns `Failed removing: café` and
+  leaves the partial file, as Microsoft's curl.exe 8.21.0 and C's build from this tree with
+  `ENABLE_UNICODE` both do. The library's own removals of a temporary file it failed to rename
+  (`Curl_fopen`'s callers) take the same path. Pinned by `removes_a_partial_output_by_its_name`
+  (`crates/curl-tool/tests/http.rs`).
+
 ## Allocations the platform makes
 
 - **On macOS, a lock's first use allocates, and that allocation cannot fail.** Rust's standard

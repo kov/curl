@@ -80,6 +80,10 @@ pub enum Feature {
     Ssl,
     /// TLS sessions go in and out of the cache (`curl_easy_ssls_import`).
     SslsExport,
+    /// Windows' Unicode build (C's `ENABLE_UNICODE`): names of files are
+    /// UTF-8, opened through the system's UTF-16 calls. Claimed by a
+    /// build with the `unicode` feature, which is `curl-os`'s.
+    Unicode,
     /// Nothing the library keeps is process-wide: handles may be made, and
     /// the C ABI initialised, from several threads at once (C's
     /// `threadsafe`, its global initialisation under a lock).
@@ -118,6 +122,7 @@ impl Feature {
             Feature::Ssl => "SSL",
             Feature::SslsExport => "SSLS-EXPORT",
             Feature::Threadsafe => "threadsafe",
+            Feature::Unicode => "Unicode",
             Feature::UnixSockets => "UnixSockets",
             Feature::Zstd => "zstd",
         }
@@ -151,9 +156,18 @@ const FEATURES: &[Feature] = &[
     Feature::Ssl,
     Feature::SslsExport,
     Feature::Threadsafe,
+    #[cfg(feature = "unicode")]
+    Feature::Unicode,
     Feature::UnixSockets,
     Feature::Zstd,
 ];
+
+// The feature is `curl-os`'s, where names are converted; this one only
+// claims it, and is on exactly when that one is.
+const _: () = assert!(
+    cfg!(feature = "unicode") == curl_os::UNICODE,
+    "curl-os's `unicode` feature is on through curl-core's alone"
+);
 
 pub use crate::url::schemes::Protocol;
 

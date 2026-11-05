@@ -4,7 +4,8 @@
 //! it.
 //!
 //! A path is the bytes the system names files by, as C keeps it: the
-//! environment's on Unix, the ANSI code page's on Windows.
+//! environment's on Unix, the ANSI code page's on Windows, or UTF-8 in
+//! its Unicode build.
 
 use curl_alloc::{OutOfMemory, TryVec};
 
@@ -142,7 +143,8 @@ pub(crate) fn user_database_home() -> Result<Option<Vec<u8>>, OutOfMemory> {
 pub(crate) fn beside_program(
     readable: impl Fn(&[u8]) -> bool,
 ) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    // In the ANSI code page, as the names it is joined to are opened.
+    // In the ANSI code page, or UTF-8 in the Unicode build, as the names
+    // it is joined to are opened.
     let Some(exe) = curl_os::args::program_file()? else {
         return Ok(None);
     };

@@ -9,6 +9,18 @@
 //! C's build for it does; each module says what it needs of the
 //! platform. A socket is named by [`socket`]'s names, the same on each.
 
+/// Whether this is Windows' Unicode build, as C's with `ENABLE_UNICODE`
+/// (`UNICODE`): the command line, the program's path and the names of
+/// files are UTF-8, converted to and from the UTF-16 of the system's
+/// calls, where the build without it takes them in the ANSI code page.
+/// The environment is read in the ANSI code page either way, as C's
+/// `curl_getenv` reads it. The one switch, the `unicode` feature; what
+/// else depends on it reads it here.
+pub const UNICODE: bool = cfg!(feature = "unicode");
+
+#[cfg(all(feature = "unicode", not(windows)))]
+compile_error!("the `unicode` feature is Windows' Unicode build (`ENABLE_UNICODE`)");
+
 #[cfg(feature = "args")]
 pub mod args;
 pub mod env;

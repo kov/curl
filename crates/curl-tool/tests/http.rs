@@ -792,6 +792,34 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// `--remove-on-error` removes a partial output whatever its name. In
+/// Windows' Unicode build the name is UTF-8, which every other call on it
+/// takes; C's tool removes it with `unlink`, which reads it in the ANSI
+/// code page instead, and warns `Failed removing` for a name outside
+/// ASCII, the file left (`DIVERGENCE.md`, "Names C reads two ways").
+#[test]
+fn removes_a_partial_output_by_its_name() {
+    let dir = scratch("rm-partial");
+    let name = if cfg!(feature = "unicode") {
+        "\u{6f22}\u{5b57}-caf\u{e9}"
+    } else {
+        "partial"
+    };
+    let out = dir.join(name);
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789");
+    let run = curl(&[
+        "--no-progress-meter",
+        "--remove-on-error",
+        "-o",
+        out.to_str().unwrap(),
+        &s.url(),
+    ]);
+    assert_eq!(run.code, 18, "{}", run.stderr);
+    assert!(!run.stderr.contains("Failed removing"), "{}", run.stderr);
+    assert!(!out.exists(), "{}", run.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `-c` saves the cookies the server set once the transfer is done; a
 /// jar that cannot be written goes unsaid, as C traces nothing after its
 /// transfer is cleaned up.

@@ -7,7 +7,7 @@
 //!
 //! On Windows, where C wipes nothing, the child reads its command line as
 //! the C library parsed it, quoting included, its bytes in the ANSI code
-//! page.
+//! page, or in the Unicode build `wmain`'s UTF-16 in UTF-8.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -94,12 +94,28 @@ fn main() {
         }
         return;
     }
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt as _;
     // Quoted by std as the C library unquotes; the last read in the ANSI
     // code page (1252 here), its accent one byte, not UTF-8's two.
-    let given = ["pw-one", "--user=pw two", "", r#"a\"b"#, "caf\u{e9}"];
-    let bytes: [&[u8]; 5] = [b"pw-one", b"--user=pw two", b"", br#"a\"b"#, b"caf\xe9"];
+    let mut given: Vec<OsString> = ["pw-one", "--user=pw two", "", r#"a\"b"#, "caf\u{e9}"]
+        .map(OsString::from)
+        .into();
+    let mut bytes: Vec<&[u8]> = vec![b"pw-one", b"--user=pw two", b"", br#"a\"b"#, b"caf\xe9"];
+    if curl_os::UNICODE {
+        // In the Unicode build `wmain`'s arguments in UTF-8, as C's tool
+        // converts them: outside the code page and the BMP too, and a
+        // lone surrogate as U+FFFD.
+        bytes[4] = "caf\u{e9}".as_bytes();
+        given.push("\u{6f22}\u{5b57}".into());
+        bytes.push("\u{6f22}\u{5b57}".as_bytes());
+        given.push("\u{1f600}".into());
+        bytes.push("\u{1f600}".as_bytes());
+        given.push(OsString::from_wide(&[u16::from(b'x'), 0xd800]));
+        bytes.push("x\u{fffd}".as_bytes());
+    }
     let out = Command::new(std::env::current_exe().unwrap())
-        .args(given)
+        .args(&given)
         .env("CURL_OS_WIPE_CHILD", "1")
         .output()
         .unwrap();

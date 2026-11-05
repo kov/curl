@@ -18,6 +18,8 @@ win-idn = []
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
+# Whether names are UTF-8 (Windows' Unicode build) or the locale's.
+curl-os = { path = "../curl-os" }
 
 # Windows' IDN and code-page conversions.
 [target.'cfg(windows)'.dependencies]

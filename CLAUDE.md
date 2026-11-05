@@ -79,7 +79,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   records both ways.
 - `crates/curl-openssl/src/x509.rs`: the certificates a session trusts, and the peer's checked.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
-  place (on macOS where `_NSGetArgv` says); on Windows the C library's `argv`, read, and the
+  place (on macOS where `_NSGetArgv` says); on Windows the C library's `argv`, read (in the
+  Unicode build its `wmain` arguments, `_configure_wide_argv`, converted to UTF-8), and the
   program's file name.
 - `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly
   (`GetEnvironmentVariableA` on Windows).
@@ -92,7 +93,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   and listing directories, reading standard input unbuffered, making a file's reads nonblocking,
   and pointing standard error at a file; on Windows through the Win32 file calls, with the C
   library's text or binary mode of the standard streams (`_setmode`) and writing as it writes
-  in each, and finding a file along the system's search path (`SearchPath`).
+  in each, and finding a file along the system's search path (`SearchPath`); names converted
+  to and from UTF-16 in the ANSI code page, or as UTF-8 in the Unicode build.
 - `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, listening and
   accepting on one, adopting one the application opened, connecting with fast open on macOS
   (`connectx`), and the machine's host name; on Windows through Winsock, and starting it

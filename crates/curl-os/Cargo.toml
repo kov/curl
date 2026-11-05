@@ -14,6 +14,10 @@ args = []
 net = []
 # Files and directories, for `file:` URLs.
 fs = []
+# Windows' Unicode build (C's `ENABLE_UNICODE`): the command line, the
+# program's path and the names of files taken as UTF-8, through the
+# system's UTF-16 calls, in place of the ANSI code page. Windows only.
+unicode = []
 
 [[test]]
 name = "wipe"

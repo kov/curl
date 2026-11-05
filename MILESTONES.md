@@ -1307,7 +1307,18 @@ the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays U
     build, fail alike when forced; 64 hand cases, by config file and by argv, give the same
     bytes as C's, and the same results as Microsoft's curl.exe 8.21.0.
 100. **WinLDAP.** **To do.**
-101. **`ENABLE_UNICODE`**: wide argv, paths and environment, beside the ANSI build. **To do.**
+101. **`ENABLE_UNICODE`**: wide argv, paths and environment, beside the ANSI build. **Done**
+     (the `unicode` feature): `wmain`'s arguments, the program's path, the CA bundle's search
+     and a directory's entries in UTF-8, names opened as UTF-8 through the UTF-16 calls, a name
+     that is not UTF-8 refused as C refuses it; the environment stays in the ANSI code page, as
+     C's `curl_getenv` reads it, and libidn2 is asked with `idn2_lookup_u8`. Against C's build
+     with OpenSSL, libidn2 and `ENABLE_UNICODE` (`C:\work\c-unicode`), the suite with CI's
+     flags passes 2034 of 2049 on the Rust leg and 1955 of 1968 on C's; the Rust leg fails no
+     test C's passes but 96, 558, 1013 and 1014, as the ANSI build does, and FTP's 135 and 336,
+     which fail now and then on the ANSI build too. 165, 1448, 2046, 2047, 1560 and 3203's
+     Unicode branch run and pass on both legs, and with WinIDN (`C:\work\c-unicode-winidn`)
+     all but 165, which `DISABLED` lists for WinIDN. Hand cases give C's bytes and Microsoft's
+     curl.exe 8.21.0's results but for `--remove-on-error`, which DIVERGENCE.md records.
 102. **The curl.se build's set**: LibreSSL (with ngtcp2 over it) and the native CA store
      (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **To do.**
 

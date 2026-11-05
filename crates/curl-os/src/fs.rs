@@ -10,11 +10,12 @@
 //! whether that went.
 //!
 //! On Windows a name is in the ANSI code page, as C's build without
-//! Unicode takes it, and is opened through the system's UTF-16 calls, as
-//! the C library opens it, a long one marked long as C marks it; the
-//! UTF-16 is made in memory that may be refused, as C makes it. A file's
-//! reads cannot be made not to wait there: C reads standard input in a
-//! thread of its own instead.
+//! Unicode takes it, or UTF-8 in the Unicode build ([`crate::UNICODE`],
+//! C's `ENABLE_UNICODE`), and is opened through the system's UTF-16
+//! calls, as the C library opens it, a long one marked long as C marks
+//! it; the UTF-16 is made in memory that may be refused, as C makes it. A
+//! file's reads cannot be made not to wait there: C reads standard input
+//! in a thread of its own instead.
 
 #![allow(unsafe_code)]
 
@@ -585,31 +586,103 @@ fn units(n: usize) -> io::Result<Vec<u16>> {
     Ok(v)
 }
 
-/// `name`, in the ANSI code page as C's build takes a file's name, in the
-/// UTF-16 the system's calls take, ended by a zero; made absolute and
-/// marked long (`\\?\`) when that is longer than `MAX_PATH`, as C's
-/// `fix_excessive_path` makes it, so that a long name opens too.
+/// `name` in the UTF-16 the system's calls take, ended by a zero: read in
+/// the ANSI code page, as C's build takes a file's name, or in the
+/// Unicode build as UTF-8, a name that is not UTF-8 refused as C refuses
+/// it (`MB_ERR_INVALID_CHARS`, `EINVAL`).
 #[cfg(windows)]
-pub(crate) fn wide_name(name: &CStr) -> io::Result<Vec<u16>> {
-    use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
-    /// `MAX_PATH`, the longest name the system takes unmarked.
-    const MAX_PATH: usize = 260;
+fn wide(name: &CStr) -> io::Result<Vec<u16>> {
+    use windows_sys::Win32::Globalization::{
+        CP_ACP, CP_UTF8, MB_ERR_INVALID_CHARS, MultiByteToWideChar,
+    };
+    let (page, flags) = if crate::UNICODE {
+        (CP_UTF8, MB_ERR_INVALID_CHARS)
+    } else {
+        (CP_ACP, 0)
+    };
     let bytes = name.to_bytes_with_nul();
     let len = i32::try_from(bytes.len()).expect("a name fits");
+    let refused = || io::Error::from_raw_os_error(wf::ERROR_INVALID_PARAMETER as i32);
     // SAFETY: `bytes` is `len` readable bytes; a null output asks for the
     // room the conversion needs.
     let need =
-        unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
+        unsafe { MultiByteToWideChar(page, flags, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
     if need <= 0 {
-        return Err(last_error());
+        return Err(refused());
     }
     let mut wide = units(usize::try_from(need).expect("positive"))?;
     // SAFETY: as above, `wide` writable for the `need` units it is told.
-    let n = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), need) };
+    let n =
+        unsafe { MultiByteToWideChar(page, flags, bytes.as_ptr(), len, wide.as_mut_ptr(), need) };
     if n <= 0 {
-        return Err(last_error());
+        return Err(refused());
     }
     wide.truncate(usize::try_from(n).expect("positive"));
+    Ok(wide)
+}
+
+/// `wide`, UTF-16 the system gave, in UTF-8, as the Unicode build gives
+/// the system's names (`curlx_convert_wchar_to_UTF8`): a unit that is no
+/// character becomes U+FFFD. Without a zero at the end.
+#[cfg(all(windows, feature = "unicode"))]
+fn utf8(wide: &[u16]) -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Globalization::{CP_UTF8, WideCharToMultiByte};
+    if wide.is_empty() {
+        return Ok(Vec::new());
+    }
+    let len = i32::try_from(wide.len()).expect("a name fits");
+    let null = std::ptr::null_mut();
+    // SAFETY: `wide` is `len` readable units; a null output asks for the
+    // room the conversion needs.
+    let need = unsafe {
+        WideCharToMultiByte(
+            CP_UTF8,
+            0,
+            wide.as_ptr(),
+            len,
+            null,
+            0,
+            std::ptr::null(),
+            null.cast(),
+        )
+    };
+    let need = usize::try_from(need).unwrap_or(0);
+    if need == 0 {
+        return Err(last_error());
+    }
+    let mut out = Vec::new();
+    curl_alloc::TryVec::try_resize(&mut out, need, 0u8)
+        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    let room = i32::try_from(need).expect("fits");
+    // SAFETY: as above, `out` writable for the `room` bytes it is told.
+    let n = unsafe {
+        WideCharToMultiByte(
+            CP_UTF8,
+            0,
+            wide.as_ptr(),
+            len,
+            out.as_mut_ptr(),
+            room,
+            std::ptr::null(),
+            null.cast(),
+        )
+    };
+    let n = usize::try_from(n).unwrap_or(0);
+    if n == 0 {
+        return Err(last_error());
+    }
+    out.truncate(n);
+    Ok(out)
+}
+
+/// `name` as [`wide`] reads it, made absolute and marked long (`\\?\`)
+/// when that is longer than `MAX_PATH`, as C's `fix_excessive_path`
+/// makes it, so that a long name opens too.
+#[cfg(windows)]
+pub(crate) fn wide_name(name: &CStr) -> io::Result<Vec<u16>> {
+    /// `MAX_PATH`, the longest name the system takes unmarked.
+    const MAX_PATH: usize = 260;
+    let wide = wide(name)?;
     let marked = |w: &[u16], prefix: &str| {
         w.len() >= prefix.len() && w.iter().zip(prefix.encode_utf16()).all(|(&a, b)| a == b)
     };
@@ -826,7 +899,7 @@ pub fn real_path<T>(path: &CStr, f: impl FnOnce(&[u8]) -> T) -> io::Result<T> {
 /// order the system's search mode puts them. `None` if it finds none. A
 /// path longer than C's buffer (`MAX_PATH`) is given empty, as C's buffer
 /// then is.
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "unicode")))]
 pub fn search_path<T>(name: &CStr, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
     const MAX_PATH: usize = 260;
     let mut found = [0u8; MAX_PATH];
@@ -848,6 +921,37 @@ pub fn search_path<T>(name: &CStr, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
     match n {
         0 => None,
         n if n < MAX_PATH => Some(f(&found[..n])),
+        _ => Some(f(b"")),
+    }
+}
+
+/// `f` given where the system finds a file named `name`, as above; in the
+/// Unicode build `SearchPathW`, its `MAX_PATH` units of answer given in
+/// UTF-8, as C's `FindWin32CACert` converts them. `None` too when memory
+/// for the name or the answer cannot be had.
+#[cfg(all(windows, feature = "unicode"))]
+pub fn search_path<T>(name: &CStr, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
+    const MAX_PATH: usize = 260;
+    let name = wide(name).ok()?;
+    let mut found = [0u16; MAX_PATH];
+    let mut part: *mut u16 = std::ptr::null_mut();
+    // SAFETY: `name` is a NUL-terminated name, `found` writable for the
+    // `MAX_PATH` units the call is told and `part` a pointer for it to
+    // set, all alive for the call; no path or extension is given.
+    let n = unsafe {
+        wfs::SearchPathW(
+            std::ptr::null(),
+            name.as_ptr(),
+            std::ptr::null(),
+            MAX_PATH as u32,
+            found.as_mut_ptr(),
+            &raw mut part,
+        )
+    };
+    let n = usize::try_from(n).expect("a u32 fits");
+    match n {
+        0 => None,
+        n if n < MAX_PATH => Some(f(&utf8(&found[..n]).ok()?)),
         _ => Some(f(b"")),
     }
 }
@@ -1077,12 +1181,23 @@ pub fn stderr_to(to: &impl AsHandle) -> io::Result<()> {
     Ok(())
 }
 
+/// The record a find fills: in the ANSI code page, or UTF-16 in the
+/// Unicode build.
+#[cfg(all(windows, not(feature = "unicode")))]
+type FindData = wfs::WIN32_FIND_DATAA;
+#[cfg(all(windows, feature = "unicode"))]
+type FindData = wfs::WIN32_FIND_DATAW;
+
 /// A directory's entries, as `FindFirstFile` and `FindNextFile` give them
-/// (C's `win32_file_list`), in the ANSI code page, in no order.
+/// (C's `win32_file_list`), in the ANSI code page, or in the Unicode
+/// build in UTF-8 (`curlx_convert_tchar_to_UTF8`), in no order.
 #[cfg(windows)]
 pub struct Dir {
     handle: wf::HANDLE,
-    entry: wfs::WIN32_FIND_DATAA,
+    entry: FindData,
+    /// The entry's name in UTF-8, made when it is given.
+    #[cfg(feature = "unicode")]
+    name: Vec<u8>,
     /// The entry the find began with, not given yet.
     first: bool,
     done: bool,
@@ -1091,7 +1206,8 @@ pub struct Dir {
 #[cfg(windows)]
 impl Dir {
     /// Open the directory at `path` to list it: `path\*`, as C asks, the
-    /// separator left out after one.
+    /// separator left out after one; in the Unicode build marked long as
+    /// C's `curlx_FindFirstFile` marks it.
     pub fn open(path: &CStr) -> io::Result<Dir> {
         use curl_alloc::TryVec as _;
         let bytes = path.to_bytes();
@@ -1107,16 +1223,27 @@ impl Dir {
         }
         pattern.try_extend_from_slice(b"*\0").map_err(oom)?;
         // SAFETY: all zeros is a value of the plain record the call fills.
-        let mut entry: wfs::WIN32_FIND_DATAA = unsafe { std::mem::zeroed() };
+        let mut entry: FindData = unsafe { std::mem::zeroed() };
         // SAFETY: `pattern` is a NUL-terminated name and `entry` the record
         // the call writes, both alive through it.
+        #[cfg(not(feature = "unicode"))]
         let handle = unsafe { wfs::FindFirstFileA(pattern.as_ptr(), &raw mut entry) };
+        #[cfg(feature = "unicode")]
+        let handle = {
+            let pattern = CStr::from_bytes_until_nul(&pattern).expect("a zero byte at the end");
+            let wide = wide_name(pattern)?;
+            // SAFETY: `wide` is a NUL-terminated name and `entry` the
+            // record the call writes, both alive through it.
+            unsafe { wfs::FindFirstFileW(wide.as_ptr(), &raw mut entry) }
+        };
         if handle == wf::INVALID_HANDLE_VALUE {
             return Err(last_error());
         }
         Ok(Dir {
             handle,
             entry,
+            #[cfg(feature = "unicode")]
+            name: Vec::new(),
             first: true,
             done: false,
         })
@@ -1133,27 +1260,47 @@ impl Dir {
         } else {
             // SAFETY: the find is open, and only this `Dir`, which `&mut`
             // makes exclusive, uses it; `entry` is the record it writes.
-            if unsafe { wfs::FindNextFileA(self.handle, &raw mut self.entry) } == 0 {
+            #[cfg(not(feature = "unicode"))]
+            let found = unsafe { wfs::FindNextFileA(self.handle, &raw mut self.entry) };
+            // SAFETY: as above.
+            #[cfg(feature = "unicode")]
+            let found = unsafe { wfs::FindNextFileW(self.handle, &raw mut self.entry) };
+            if found == 0 {
                 self.done = true;
                 let err = last_error();
                 return (err.raw_os_error() != Some(wf::ERROR_NO_MORE_FILES as i32))
                     .then_some(Err(err));
             }
         }
-        let name = self.entry_name();
-        let n = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-        Some(Ok(&name[..n]))
+        self.entry_name()
     }
 
-    /// The entry's name as bytes.
-    fn entry_name(&self) -> &[u8] {
+    /// The entry's name as bytes, to its first zero.
+    #[cfg(not(feature = "unicode"))]
+    fn entry_name(&self) -> Option<io::Result<&[u8]>> {
         // SAFETY: `cFileName` is an array of `i8`, which `u8` has the size
         // and alignment of, borrowed for as long as `self` is.
-        unsafe {
+        let name = unsafe {
             std::slice::from_raw_parts(
                 self.entry.cFileName.as_ptr().cast::<u8>(),
                 self.entry.cFileName.len(),
             )
+        };
+        let n = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        Some(Ok(&name[..n]))
+    }
+
+    /// The entry's name, to its first zero, in UTF-8.
+    #[cfg(feature = "unicode")]
+    fn entry_name(&mut self) -> Option<io::Result<&[u8]>> {
+        let name = &self.entry.cFileName;
+        let n = name.iter().position(|&u| u == 0).unwrap_or(name.len());
+        match utf8(&name[..n]) {
+            Ok(name) => {
+                self.name = name;
+                Some(Ok(&self.name))
+            }
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -1891,5 +2038,51 @@ mod windows_tests {
             got[3], want[1],
             "the console's code page is not the ANSI one"
         );
+    }
+
+    /// A name is read as C's build reads it: in the ANSI code page (1252
+    /// on the test machine), or in the Unicode build (`ENABLE_UNICODE`) as
+    /// UTF-8, where a name outside the code page opens and one that is not
+    /// UTF-8 is refused as C refuses it (`EINVAL`). A directory's entries
+    /// come back the same way.
+    #[test]
+    fn takes_names_in_the_build_s_encoding() {
+        let s = Scratch::new("encoding");
+        let dir = s.0.to_str().unwrap().as_bytes();
+        let named = |name: &[u8]| {
+            let mut full = dir.to_vec();
+            full.push(b'\\');
+            full.extend_from_slice(name);
+            CString::new(full).unwrap()
+        };
+        let ansi = b"caf\xe9";
+        let (wanted, listed): (&str, &[u8]) = if crate::UNICODE {
+            (
+                "\u{6f22}\u{5b57}-\u{e9}",
+                "\u{6f22}\u{5b57}-\u{e9}".as_bytes(),
+            )
+        } else {
+            ("caf\u{e9}", ansi)
+        };
+        drop(open_write(&named(listed), Keep::Nothing, 0o600).unwrap());
+        assert!(s.0.join(wanted).is_file(), "{wanted} made");
+        assert!(stat(&named(listed)).unwrap().is_file());
+        let mut entries = Vec::new();
+        let mut list = Dir::open(&c(&s.0)).unwrap();
+        while let Some(name) = list.next_name() {
+            entries.push(name.unwrap().to_vec());
+        }
+        assert!(entries.iter().any(|e| e == listed), "{entries:x?}");
+        let ansi_open = open_write(&named(ansi), Keep::Nothing, 0o600);
+        if crate::UNICODE {
+            let e = ansi_open.unwrap_err();
+            let text = crate::error::ErrorText::of(&e);
+            assert_eq!(text.as_bytes(), b"Invalid argument");
+            assert!(!s.0.join("caf\u{e9}").exists());
+        } else {
+            drop(ansi_open.unwrap());
+        }
+        remove(&named(listed)).unwrap();
+        assert!(!s.0.join(wanted).exists(), "{wanted} removed");
     }
 }

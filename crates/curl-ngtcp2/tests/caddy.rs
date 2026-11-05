@@ -309,7 +309,8 @@ fn run(
         match over.sock.recv_from(&mut buf) {
             Ok((n, from)) => {
                 let now = over.clock.now();
-                conn.read_packet(cx, now, from, 0, &buf[..n], &mut |_, e| told.hear(e))?;
+                let packets = buf[..n].chunks(n.max(1));
+                conn.read_packets(cx, now, from, 0, packets, &mut |_, e| told.hear(e))?;
             }
             Err(e)
                 if matches!(

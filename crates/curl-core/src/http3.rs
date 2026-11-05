@@ -369,16 +369,18 @@ impl From<OutOfMemory> for ConnectFailed {
 
 /// A client connection, QUIC's and HTTP/3's together.
 pub trait Connection: fmt::Debug + Send {
-    /// Feed it one packet `from` the peer, received at `now` with ECN
-    /// bits `ecn` (`ngtcp2_conn_read_pkt`): what it read is told to
-    /// `events`, in order.
-    fn read_packet(
+    /// Feed it `packets`, those of one datagram `from` the peer, received
+    /// at `now` with ECN bits `ecn`, one after the other
+    /// (`ngtcp2_conn_read_pkt` on each): what it read is told to `events`,
+    /// in order. The first packet it fails to read is the last read, and
+    /// its failure the call's.
+    fn read_packets(
         &mut self,
         cx: &mut TlsCx<'_>,
         now: Instant,
         from: SocketAddr,
         ecn: u8,
-        packet: &[u8],
+        packets: std::slice::Chunks<'_, u8>,
         events: Events<'_>,
     ) -> Result<(), QuicError>;
 

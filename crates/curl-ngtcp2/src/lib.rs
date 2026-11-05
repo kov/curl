@@ -805,13 +805,13 @@ fn encode_params(conn: *mut sys::ngtcp2_conn) -> Option<Vec<u8>> {
 }
 
 impl curl_core::http3::Connection for Connection {
-    fn read_packet(
+    fn read_packets(
         &mut self,
         cx: &mut TlsCx<'_>,
         now: Instant,
         from: SocketAddr,
         ecn: u8,
-        packet: &[u8],
+        packets: std::slice::Chunks<'_, u8>,
         events: Events<'_>,
     ) -> Result<(), QuicError> {
         let conn = self.conn();
@@ -826,24 +826,25 @@ impl curl_core::http3::Connection for Connection {
                 user_data: ptr::null_mut(),
             };
             let pi = sys::ngtcp2_pkt_info { ecn };
-            // SAFETY: the connection, path, packet info and packet, which
-            // outlive the call.
-            let rv = unsafe {
-                sys::ngtcp2_conn_read_pkt_versioned(
-                    conn,
-                    &path,
-                    sys::NGTCP2_PKT_INFO_VERSION,
-                    &pi,
-                    packet.as_ptr(),
-                    packet.len(),
-                    ts(now),
-                )
-            };
-            if rv == 0 {
-                Ok(())
-            } else {
-                Err(quic_error("ngtcp2_conn_read_pkt", rv))
+            for packet in packets {
+                // SAFETY: the connection, path, packet info and packet, which
+                // outlive the call.
+                let rv = unsafe {
+                    sys::ngtcp2_conn_read_pkt_versioned(
+                        conn,
+                        &path,
+                        sys::NGTCP2_PKT_INFO_VERSION,
+                        &pi,
+                        packet.as_ptr(),
+                        packet.len(),
+                        ts(now),
+                    )
+                };
+                if rv != 0 {
+                    return Err(quic_error("ngtcp2_conn_read_pkt", rv));
+                }
             }
+            Ok(())
         })
     }
 

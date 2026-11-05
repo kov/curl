@@ -403,28 +403,31 @@ pub fn quic_error(call: &'static str, code: i32) -> QuicError {
 }
 
 impl Connection for FakeConnection {
-    fn read_packet(
+    fn read_packets(
         &mut self,
         cx: &mut TlsCx<'_>,
         now: Instant,
         _from: SocketAddr,
         ecn: u8,
-        packet: &[u8],
+        packets: std::slice::Chunks<'_, u8>,
         events: Events<'_>,
     ) -> Result<(), QuicError> {
-        let told = {
-            let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
-            s.at(now);
-            own(|| s.read.push((packet.to_vec(), ecn)));
-            if let Some(code) = s.read_fails {
-                return Err(quic_error("ngtcp2_conn_read_pkt", code));
+        for packet in packets {
+            let told = {
+                let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+                s.at(now);
+                own(|| s.read.push((packet.to_vec(), ecn)));
+                if let Some(code) = s.read_fails {
+                    return Err(quic_error("ngtcp2_conn_read_pkt", code));
+                }
+                s.on_read.pop_front().unwrap_or_default()
+            };
+            match self.tell(cx, told, &mut *events) {
+                Heard::Fine => {}
+                Heard::Failed => return Err(quic_error("ngtcp2_conn_read_pkt", -502)),
             }
-            s.on_read.pop_front().unwrap_or_default()
-        };
-        match self.tell(cx, told, events) {
-            Heard::Fine => Ok(()),
-            Heard::Failed => Err(quic_error("ngtcp2_conn_read_pkt", -502)),
         }
+        Ok(())
     }
 
     fn write_packet(

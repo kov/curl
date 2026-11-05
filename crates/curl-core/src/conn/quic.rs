@@ -1592,30 +1592,31 @@ impl Quic {
         let from = d.from.unwrap_or(self.remote);
         let now = self.clock.now();
         self.state.now = now;
-        for packet in bytes.chunks(d.segment) {
-            let read = {
-                let Quic {
-                    conn, peer, state, ..
-                } = self;
-                let mut tcx = TlsCx::new(cx, state.component, peer);
-                conn.read_packet(&mut tcx, now, from, d.ecn, packet, &mut |tcx, e| {
-                    state.heard(tcx, e)
-                })
-            };
-            if let Err(error) = read {
-                let (text, code) = (error.text, error.code);
-                cx.of(
-                    self.state.component,
-                    format_args!("ingress, read_pkt -> {text} ({code})"),
-                );
-                self.failed(cx, error);
-                // A failed TLS, which an unverified peer often is.
-                return Err(if error.layer == Layer::Crypto {
-                    ErrorKind::PeerFailedVerification
-                } else {
-                    ErrorKind::RecvError
-                });
-            }
+        // Its packets in one call: what the libraries' callbacks reach is
+        // set up once for them all.
+        let read = {
+            let Quic {
+                conn, peer, state, ..
+            } = self;
+            let mut tcx = TlsCx::new(cx, state.component, peer);
+            let packets = bytes.chunks(d.segment);
+            conn.read_packets(&mut tcx, now, from, d.ecn, packets, &mut |tcx, e| {
+                state.heard(tcx, e)
+            })
+        };
+        if let Err(error) = read {
+            let (text, code) = (error.text, error.code);
+            cx.of(
+                self.state.component,
+                format_args!("ingress, read_pkt -> {text} ({code})"),
+            );
+            self.failed(cx, error);
+            // A failed TLS, which an unverified peer often is.
+            return Err(if error.layer == Layer::Crypto {
+                ErrorKind::PeerFailedVerification
+            } else {
+                ErrorKind::RecvError
+            });
         }
         Ok(())
     }
@@ -1709,6 +1710,10 @@ pub(crate) mod tests {
         pub(crate) sends: Mutex<VecDeque<Act>>,
         pub(crate) sent: Mutex<Vec<(usize, usize)>>,
         pub(crate) datagrams: Mutex<VecDeque<Result<Vec<u8>, i32>>>,
+        /// The size of the packets the kernel joined each datagram of
+        /// (GRO), if it did.
+        #[cfg(unix)]
+        pub(crate) segment: Mutex<Option<usize>>,
     }
 
     impl Scripted {
@@ -1810,7 +1815,7 @@ pub(crate) mod tests {
             assert!(len <= slot);
             out[0] = Datagram {
                 len,
-                segment: len,
+                segment: self.segment.lock().unwrap().unwrap_or(len),
                 ecn: 0,
                 from: None,
             };
@@ -2261,6 +2266,36 @@ pub(crate) mod tests {
         );
         let said = format!("vquic_{RECV_METHOD}(len=50, packets=3, calls=3) -> 0");
         assert!(cx.lines.contains(&said), "{:?}", cx.lines);
+    }
+
+    /// The packets of a datagram the kernel joined (GRO) are each read, in
+    /// order, and the first the library fails to read is the last; its
+    /// failure is said and is the receive's.
+    #[cfg(unix)]
+    #[test]
+    fn a_joined_datagram_s_packets_are_read_in_order_until_one_fails() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        *cx.socket.segment.lock().unwrap() = Some(10);
+        let joined = [vec![1; 10], vec![2; 10], vec![3; 5]];
+        let datagram = || Ok(joined.concat());
+        cx.socket.datagrams.lock().unwrap().push_back(datagram());
+        q.ingress(&mut cx).unwrap();
+        let read: Vec<Vec<u8>> = script.lock().unwrap().read.drain(..).map(|r| r.0).collect();
+        assert_eq!(read, joined);
+        let said = format!("vquic_{RECV_METHOD}(len=25, packets=3, ");
+        assert!(
+            cx.lines.iter().any(|l| l.starts_with(&said)),
+            "{:?}",
+            cx.lines
+        );
+
+        script.lock().unwrap().read_fails = Some(-215);
+        cx.socket.datagrams.lock().unwrap().push_back(datagram());
+        assert_eq!(q.ingress(&mut cx), Err(ErrorKind::RecvError));
+        assert_eq!(script.lock().unwrap().read.len(), 1, "the first, failed");
+        let said = "ingress, read_pkt -> ERR_FAKE (-215)";
+        assert!(cx.lines.iter().any(|l| l == said), "{:?}", cx.lines);
     }
 
     /// A refused datagram before the connect is done fails it as a

@@ -1266,3 +1266,11 @@ witness: curl-core proto::http::tests::h3_trace::a_sibling_runs_for_its_stream_s
         StreamEvent::Unblocked => was_blocked,
 --- new
         StreamEvent::Unblocked => false,
+
+=== a datagram the kernel joined is read as one packet
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_joined_datagram_s_packets_are_read_in_order_until_one_fails
+--- old
+            let packets = bytes.chunks(d.segment);
+--- new
+            let packets = bytes.chunks(bytes.len().max(1));

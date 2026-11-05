@@ -132,6 +132,15 @@ impl Default for H2Stream {
     }
 }
 
+/// What a send of a request's body came to, short of a failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Body {
+    /// The stream's buffer took some of it, or there was none to take.
+    Taken,
+    /// The stream's buffer had room for none of it (`CURLE_AGAIN`).
+    Full,
+}
+
 /// A line of the HTTP/2 filter's (`CURL_TRC_CF` of `cf-h2`).
 const H2: Component = Component::Http2;
 
@@ -637,7 +646,11 @@ impl Request {
         let id = stream.id.map_or(-1, |s| s.0);
         let body_eos = u8::from(stream.body_eos);
         let held = stream.sendbuf.len();
-        let code = sent.as_ref().err().map_or(0, |e| e.number());
+        let code = match sent {
+            Ok(Body::Taken) => 0,
+            Ok(Body::Full) => AGAIN_NUMBER,
+            Err(e) => e.number(),
+        };
         let (sw, cw, out) = lease.conn().h2().map_or((-1, -1, 0), |h2| {
             let (sw, cw) = h2.send_windows(StreamId(id));
             (sw, cw, h2.out_len())
@@ -650,10 +663,11 @@ impl Request {
                  (stream-conn), buffers {held}-{out} (stream-conn)"
             ),
         );
-        sent.map(|()| n)
+        sent.map(|_| n)
     }
 
-    /// `h2_send`, short of its last line: `n` is what was taken.
+    /// `h2_send`, short of its last line: `n` is what was taken, and
+    /// whether the stream's buffer had room for none of the body.
     fn h2_send_on<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -661,12 +675,13 @@ impl Request {
         end: usize,
         eos: bool,
         n: &mut usize,
-    ) -> Result<(), ErrorKind> {
+    ) -> Result<Body, ErrorKind> {
         let head = match self.outgoing {
             Sending::Head { left, .. } => left.get(),
             _ => 0,
         };
         let start = self.sent;
+        let mut full = Body::Taken;
         if self.stream().id.is_none() {
             // The head goes whole, before any of the body (`h2_submit`).
             let custom = self.custom_method(cx);
@@ -758,7 +773,13 @@ impl Request {
             if body_len > 0 || eos {
                 let body = self.h2_body(cx, lease, start..end, eos);
                 let id = self.stream().id.map_or(-1, |s| s.0);
+                // A buffer with no room for any of it takes none, which C's
+                // `Curl_bufq_write` says is `CURLE_AGAIN`.
                 let (code, k) = match &body {
+                    Ok(0) if body_len > 0 => {
+                        full = Body::Full;
+                        (AGAIN_NUMBER, 0)
+                    }
                     Ok(k) => (0, *k),
                     Err(e) => (e.number(), 0),
                 };
@@ -778,7 +799,7 @@ impl Request {
             trace::info(cx, format_args!("stream {id} closed"));
             return Err(ErrorKind::SendError);
         }
-        Ok(())
+        Ok(full)
     }
 
     /// Put `out[range]` of the body into the stream's buffer, as much as

@@ -539,3 +539,35 @@ fn a_shut_send_window_waits_for_the_update_not_the_socket() {
     assert_eq!(result, Ok(()), "{:#?}", seen.text());
     assert_eq!(data_sent(&talk.received()), body);
 }
+
+/// A body the stream's buffer has no room for is taken none of, which C
+/// says is `CURLE_AGAIN` (81): `Curl_bufq_write` into a full `sendbuf`
+/// fails so, and `cf_h2_send` returns it, traced on both its lines. The
+/// C build against `nghttpd -w 0` traces `cf_body_send(len=65536) -> 81,
+/// 0, eos=0` and its `cf_send` line `-> 81, 0`.
+#[test]
+fn a_full_body_buffer_traces_again() {
+    let body = vec![b'.'; 300_000];
+    let settings: &[u8] = b"S 100 0\n";
+    let talk = Conversation::replies(&[settings], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let (mut m, _, seen) = h2_upload_on(&clock, &body, &talk);
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    let lines = h2_lines(&seen);
+    let full = lines
+        .iter()
+        .position(|l| l == "[HTTP/2] [1] cf_body_send(len=65536) -> 81, 0, eos=0")
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert!(
+        lines[full + 1].starts_with("[HTTP/2] [1] cf_send(len=65536) -> 81, 0, eos=0, "),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("cf_body_send(len=65536) -> 0, 0,")),
+        "{lines:#?}"
+    );
+}

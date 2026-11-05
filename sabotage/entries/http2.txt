@@ -962,3 +962,11 @@ witness: curl-core proto::http::tests::h2_trace::a_shut_send_window_waits_for_th
             want_send && stream.is_some_and(|s| self.session.stream_remote_window(s) == 0);
 --- new
             want_send && stream.is_some_and(|_| false);
+
+=== a send the full body buffer took none of is traced as done
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_full_body_buffer_traces_again
+--- old
+            Ok(Body::Full) => AGAIN_NUMBER,
+--- new
+            Ok(Body::Full) => 0,

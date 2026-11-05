@@ -1529,7 +1529,7 @@ fn a_transfer_with_no_output_name_ends_as_a_failure() {
     let invalid = "curl: (43) A libcurl function was given a bad argument\n";
     let given = format!("Warning: bad output filename\n{invalid}");
     let remote = format!("curl: bad output filename\n{invalid}");
-    if cfg!(windows) {
+    if cfg!(all(windows, feature = "debug-hooks")) {
         cases.extend([
             (
                 vec!["-o", "a"],

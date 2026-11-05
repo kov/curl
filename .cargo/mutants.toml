@@ -70,6 +70,10 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # The pending queue's room only grows: making none at an equal size,
+    # or reserving more than the rows it fills, leaves the same rows.
+    'curl-core/src/multi/pending\.rs:.*: replace < with <= in PendingQueue<P>::reserve$',
+    'curl-core/src/multi/pending\.rs:.*: replace - with \+ in PendingQueue<P>::reserve$',
     # The cookies read with `NeverAsked` are those whose domains are never
     # checked: its `with_list` is never called, and says so by panicking.
     'curl-core/src/cookie\.rs:.*: replace <impl SuffixCheck for NeverAsked>::with_list with \(\)$',

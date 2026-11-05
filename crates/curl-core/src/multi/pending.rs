@@ -155,19 +155,20 @@ mod tests {
     }
 
     /// Let out in row order after the one let out last, whatever order
-    /// they came in, then round to the first (`multi_schedule_pending`).
+    /// they came in, then round to the first (`multi_schedule_pending`):
+    /// the one let out last, waiting again, comes after those after it.
     #[test]
     fn the_next_is_the_first_row_after_the_last_let_out() {
         let ids = ids();
         let mut q = queue();
         q.enter(ids[3], 3);
         assert_eq!(q.next().map(|(id, _)| id), Some(ids[3]));
-        for row in [1, 5] {
+        for row in [1, 3, 5] {
             q.enter(ids[row], row as u32);
         }
         assert_eq!(q.next().map(|(id, _)| id), Some(ids[5]));
         q.enter(ids[4], 4);
-        assert_eq!(rows(&mut q), [1, 4]);
+        assert_eq!(rows(&mut q), [1, 3, 4]);
     }
 
     /// A look that finds none starts the next from the first row.

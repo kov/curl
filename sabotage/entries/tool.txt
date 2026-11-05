@@ -1600,3 +1600,11 @@ witness: curl-tool tests::message_signatures_are_reported_as_the_tls_library_has
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
 --- new
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic"]
+
+=== OpenSSL's build reads no CA bundle from the environment
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_ca_bundle_from_the_environment_is_read_unless_the_library_trusts_the_system
+--- old
+    if !s.tls_has(|t| t.system_trust)
+--- new
+    if s.tls_has(|t| t.system_trust)

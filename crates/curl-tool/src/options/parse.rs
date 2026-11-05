@@ -1597,11 +1597,19 @@ mod tests {
         assert_eq!(proxy(&["x", "-x", "p", "--proxy-http2"]), h2);
         let off = proxy(&["x", "-x", "p", "--proxy-http2", "--no-proxy-http2"]);
         assert_eq!(off, (Some(&b"p"[..]), ProxyType::Https));
-        // `--proxy-http3` likewise, for HTTP/3.
-        let h3 = (Some(&b"p"[..]), ProxyType::Https3);
-        assert_eq!(proxy(&["x", "--proxy-http3", "-x", "p"]), h3);
-        let off = proxy(&["x", "-x", "p", "--proxy-http3", "--no-proxy-http3"]);
-        assert_eq!(off, (Some(&b"p"[..]), ProxyType::Https));
+        // `--proxy-http3` likewise, for HTTP/3, where the library has it;
+        // a build without (Schannel's) refuses the option, as C's tool.
+        if claims_proxy_http("HTTP3") {
+            let h3 = (Some(&b"p"[..]), ProxyType::Https3);
+            assert_eq!(proxy(&["x", "--proxy-http3", "-x", "p"]), h3);
+            let off = proxy(&["x", "-x", "p", "--proxy-http3", "--no-proxy-http3"]);
+            assert_eq!(off, (Some(&b"p"[..]), ProxyType::Https));
+        } else {
+            assert!(matches!(
+                parsed(&["x", "--proxy-http3", "-x", "p"]),
+                Err(ParamError::LibcurlDoesntSupport)
+            ));
+        }
     }
 
     /// Each authentication option adds its method, or takes it away.

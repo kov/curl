@@ -15,9 +15,23 @@ use std::process::Command;
 /// The tool's standard output and error for `args`, without a
 /// configuration file.
 fn run(args: &[&str]) -> (String, String) {
+    run_env(args, &[])
+}
+
+/// The same, with `env` set for it.
+fn run_env(args: &[&str], env: &[(&str, &str)]) -> (String, String) {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
-    let out = Command::new(tool).arg("-q").args(args).output().unwrap();
+    let mut command = Command::new(tool);
+    for name in ["CURL_CA_BUNDLE", "SSL_CERT_DIR", "SSL_CERT_FILE"] {
+        command.env_remove(name);
+    }
+    let out = command
+        .envs(env.iter().copied())
+        .arg("-q")
+        .args(args)
+        .output()
+        .unwrap();
     (
         String::from_utf8(out.stdout).unwrap(),
         String::from_utf8(out.stderr).unwrap(),
@@ -96,4 +110,32 @@ fn options_the_library_lacks_are_not_written() {
     assert!(!said.contains("ignoring"), "{said}");
     // And the program is written all the same.
     assert!(program.contains("curl_easy_perform"), "{program}");
+}
+
+/// `--engine list` lists the library's engines: OpenSSL's built-in
+/// `dynamic` among them; none for Schannel, which has none.
+#[test]
+fn the_engines_listed_are_the_library_s() {
+    let (out, said) = run(&["--engine", "list"]);
+    let out = out.replace("\r\n", "\n");
+    assert!(out.starts_with("Build-time engines:\n"), "{out}{said}");
+    if cfg!(feature = "schannel") {
+        assert_eq!(out, "Build-time engines:\n  <none>\n");
+    } else {
+        assert!(out.lines().any(|l| l == "  dynamic"), "{out}");
+    }
+}
+
+/// The CA bundle the environment names is trusted unless the library
+/// trusts the system's store by itself, as Schannel does, for which C's
+/// tool reads none (`win32_using_schannel`).
+#[test]
+fn a_ca_bundle_from_the_environment_is_read_unless_the_library_trusts_the_system() {
+    let (program, said) = run_env(
+        &["--libcurl", "-", "file:///this/file/is/not/there"],
+        &[("CURL_CA_BUNDLE", "/bundle")],
+    );
+    assert!(program.contains("curl_easy_perform"), "{program}{said}");
+    let named = program.contains("curl_easy_setopt(curl, CURLOPT_CAINFO, \"/bundle\");");
+    assert_eq!(named, !cfg!(feature = "schannel"), "{program}");
 }

@@ -2037,8 +2037,10 @@ fn sets_the_socks5_methods_asked_for() {
     assert_eq!(set(&[]), None);
 }
 
-/// `--engine list` lists the TLS library's engines, its built-in
-/// `dynamic` among them, and transfers nothing.
+/// `--engine list` lists the TLS library's engines, OpenSSL's built-in
+/// `dynamic` among them, and transfers nothing. Schannel's, which has
+/// none, `tls_library.rs` checks.
+#[cfg(feature = "openssl")]
 #[test]
 fn lists_the_engines() {
     let s = Scratch::new("engines");
@@ -2053,7 +2055,10 @@ fn lists_the_engines() {
 }
 
 /// `--cert-status` asks for the stapled status, and `--engine` names the
-/// engine, each as its own `--libcurl` line.
+/// engine, each as its own `--libcurl` line, where the TLS library has
+/// them, as OpenSSL does; with Schannel neither is set, as
+/// `tls_library.rs` checks.
+#[cfg(feature = "openssl")]
 #[test]
 fn asks_for_the_status_and_the_engine() {
     let s = Scratch::new("cert-status");
@@ -2165,7 +2170,9 @@ fn warns_of_more_than_one_auth_with_standard_input() {
 /// locations as given, else from the environment unless the peer goes
 /// unverified (`cacertpaths`); the oldest version 1.2 unless given, or
 /// the newest if that is older; the `CURLSSLOPT_*` bits by name. A blank
-/// value and a version range that cannot be met are refused.
+/// value and a version range that cannot be met are refused. With
+/// OpenSSL: Schannel's CA locations `tls_library.rs` checks.
+#[cfg(feature = "openssl")]
 #[test]
 fn sets_the_tls_options_as_c_does() {
     let s = Scratch::new("tls");
@@ -2695,8 +2702,9 @@ fn text_files_are_written_as_text() {
 /// On Windows the CA bundle found along the search path (`SearchPath`)
 /// is named as the build names files: in a directory named outside
 /// ASCII, the ANSI code page's bytes, or in the Unicode build the UTF-8 of
-/// `SearchPathW`'s answer, as `--libcurl` shows them.
-#[cfg(windows)]
+/// `SearchPathW`'s answer, as `--libcurl` shows them. Schannel, which
+/// trusts the system's store, has none looked for (`tls_library.rs`).
+#[cfg(all(windows, feature = "openssl"))]
 #[test]
 fn finds_a_ca_bundle_in_a_directory_named_as_the_build_does() {
     let s = Scratch::new(if cfg!(feature = "unicode") {
@@ -2739,7 +2747,9 @@ fn finds_a_ca_bundle_in_a_directory_named_as_the_build_does() {
 /// environment, the tool trusts a `curl-ca-bundle.crt` the system finds
 /// along its search path (`SearchPath`), here in the current directory;
 /// one named wins, and none is looked for when the peer goes unverified.
-#[cfg(windows)]
+/// Schannel, which trusts the system's store, has none looked for
+/// (`tls_library.rs`).
+#[cfg(all(windows, feature = "openssl"))]
 #[test]
 fn finds_a_ca_bundle_along_the_search_path() {
     let s = Scratch::new("ca-search");

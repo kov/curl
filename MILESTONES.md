@@ -1318,7 +1318,25 @@ through SSPI; MIT krb5 stays Unix-only.
     hand cases (CA file, pinning, certinfo, revocation and client-certificate flags, a cipher
     list, an untrusted root, a name mismatch, credential and CA store reuse, the options Schannel
     lacks) give C's verbose output but for the debug lines of when the peer's data arrived.
-98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **To do.**
+98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **Done.** On Windows a
+    handle's security library (`Libraries.security`) is SSPI (`curl-sspi`, behind
+    `curl_core::sspi::Sspi`) in GSS-API's place: SPNEGO by the Negotiate package without NTLM,
+    HTTP Digest and SASL DIGEST-MD5 by WDigest, SOCKS5's GSS-API method by Kerberos, each with
+    C's calls, flags and words (`lib/vauth/*_sspi.c`, `lib/socks_sspi.c`), in the ANSI or the
+    Unicode build's text. `curl -V` and `curl_version_info` list SSPI, Kerberos and SPNEGO and no
+    GSS-API, as every Windows C build. C would bind Negotiate to Schannel's channel through
+    `conn->sslContext`, which nothing in C sets: no bindings are passed. NTLM is not built
+    (SCOPE.md), and `--ntlm` and `--proxy-ntlm` are refused as by a C build without it. Measured
+    2026-11-05 on the guest, which is in no domain: the suite with CI's flags against the C build
+    with OpenSSL and WinIDN (`C:\work\c-ossl-winidn`), with the same 72 tests skipped for SSPI
+    on both legs, passes 1947 of 1962 on the Rust leg and 1949 of 1963 on C's; the Rust leg fails
+    no test C's passes but the replaced 96 and 558. Eleven hand cases (`--negotiate` as the
+    process's user, as a user and with `--fail`, `--proxy-negotiate`, `--digest` as a user and as
+    the process's, `--proxy-digest`, `--anyauth`, `--socks5-gssapi` with and without a service,
+    `--ntlm`) give the C build's exit codes, requests and trace; Microsoft's curl.exe 8.21.0
+    agrees but for sending NTLM's token in Negotiate, which it predates C's refusal of. Without
+    a KDC no context completes: the tokens SSPI makes from a peer's are checked only against a
+    scripted SSPI.
 99. **WinIDN.** **Done**, a Windows build's default as in both oracles (`libidn2` asks for
     libidn2 instead): `IdnToAscii` and `IdnToUnicode` on the name read as UTF-8, in C's 255-unit
     buffers, `WinIDN` in the version string and no `libidn`. Against
@@ -1365,7 +1383,7 @@ through SSPI; MIT krb5 stays Unix-only.
      threaded resolver. Measured 2026-11-05, the suite with CI's flags passes 2031 of 2045 on
      the Rust leg and 1918 of 1959 on C's; the Rust leg fails no test C's passes but 96, 558
      and 1014, as the other builds do, and the intermittent FTP 2307. `curl -V` lists curl.se's
-     8.23.0 features but for the SSPI and the GSS-API of step 98, and its versions but for
+     8.23.0 features, and its versions but for
      libssh2 and, with `libidn2` asked for, WinIDN. By hand against both legs, the same text
      and trace for https://curl.se/ over TLS and HTTP/3, the system's stores (with the suite's
      CA added to them and without), eleven combinations of the CA options, `--sigalgs` and

@@ -4066,6 +4066,9 @@ turns `LDAP_OPT_SSL` on, leaves the peer to the system's store or a callback acc
 certificate where it is not checked, and binds as `ldap_win_bind` chooses (`WinBind`: a simple
 bind with the login, an SSPI one with it, or one as the process's user). What both have
 (`LocalCalls`: the version, referrals, the search) is reached through `LocalSession::calls`.
+WinLDAP's binding makes C's `TCHAR` calls: the ANSI ones, or in the Unicode build the wide ones,
+with the strings converted from UTF-8 and back; there C's parser refuses a part that is not
+UTF-8 where it reads it (`parse_url_low`'s `utf8`, which the binding sets as it sets its calls).
 
 ## 6. HTTP/1.x
 

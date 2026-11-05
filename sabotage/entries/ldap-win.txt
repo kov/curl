@@ -76,9 +76,9 @@ witness: curl-core ldap::low_url::tests::the_attributes_end_at_an_empty_or_overl
 file: crates/curl-core/src/ldap/low_url.rs
 witness: curl-core ldap::low_url::tests::a_url_is_refused_as_c_refuses_it
 --- old
-        search.filter = Some(decoded(decode_but_control(filter))?);
+        search.filter = Some(decoded(decode_but_control(filter), utf8)?);
 --- new
-        search.filter = Some(decoded(decode_but_zero(filter))?);
+        search.filter = Some(decoded(decode_but_zero(filter), utf8)?);
 
 === a refused WinLDAP bind is named as OpenLDAP's call
 file: crates/curl-core/src/proto/ldap/local.rs
@@ -87,3 +87,50 @@ witness: curl-core proto::ldap::local::tests::a_windows_bind_is_made_as_ldap_win
                 LocalSession::Windows(_) => b"ldap_win_bind",
 --- new
                 LocalSession::Windows(_) => b"ldap_simple_bind_s",
+
+=== C's LDAP URL parser takes a part that is not UTF-8 in the Unicode build
+file: crates/curl-core/src/ldap/low_url.rs
+witness: curl-core ldap::low_url::tests::a_part_that_is_not_utf8_is_refused_where_it_must_be
+--- old
+    if utf8 && core::str::from_utf8(&part).is_err() {
+--- new
+    if false && core::str::from_utf8(&part).is_err() {
+
+=== C's LDAP URL parser refuses a part that is not UTF-8 in the ANSI build
+file: crates/curl-core/src/ldap/low_url.rs
+witness: curl-core ldap::low_url::tests::a_part_that_is_not_utf8_is_refused_where_it_must_be
+--- old
+    if utf8 && core::str::from_utf8(&part).is_err() {
+--- new
+    if core::str::from_utf8(&part).is_err() {
+
+=== C's LDAP URL parser takes a base that is not UTF-8 in the Unicode build
+file: crates/curl-core/src/ldap/low_url.rs
+witness: curl-core ldap::low_url::tests::a_part_that_is_not_utf8_is_refused_where_it_must_be
+--- old
+        search.dn = Some(decoded(decode_but_zero(dn), utf8)?);
+--- new
+        search.dn = Some(decoded(decode_but_zero(dn), false)?);
+
+=== a wide string for WinLDAP has no NUL after it
+file: crates/curl-ldap/src/strings.rs
+witness: curl-ldap strings::tests::text_converts_as_c_s_unicode_build_converts_it
+--- old
+    z.try_push(0)?;
+    Ok(Some(z))
+}
+
+/// The library's UTF-16 `units` as UTF-8
+--- new
+    Ok(Some(z))
+}
+
+/// The library's UTF-16 `units` as UTF-8
+
+=== a UTF-16 unit that is no character is read as something else than U+FFFD
+file: crates/curl-ldap/src/strings.rs
+witness: curl-ldap strings::tests::text_converts_as_c_s_unicode_build_converts_it
+--- old
+c.unwrap_or('\u{fffd}')
+--- new
+c.unwrap_or('?')

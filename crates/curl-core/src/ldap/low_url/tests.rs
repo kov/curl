@@ -1,7 +1,7 @@
 use super::*;
 
 fn parsed(path: &[u8], query: Option<&[u8]>) -> Result<Search, LowUrlError> {
-    parse_url_low(path, query)
+    parse_url_low(path, query, false)
 }
 
 fn list(items: &[&[u8]]) -> Option<Vec<Vec<u8>>> {
@@ -103,5 +103,46 @@ fn a_url_is_refused_as_c_refuses_it() {
     assert_eq!(
         parsed(b"/dc=%0a", None).map(|s| s.dn),
         Ok(Some(b"dc=\n".to_vec()))
+    );
+}
+
+/// Where each part must be UTF-8, as in C's Unicode build, a base, an
+/// attribute or a filter that decodes to something else is refused as if
+/// memory ran out, where it is read, before what follows it; UTF-8 is
+/// read as it is. Elsewhere any bytes are read.
+#[test]
+fn a_part_that_is_not_utf8_is_refused_where_it_must_be() {
+    let utf8 = |path: &[u8], query: Option<&[u8]>| parse_url_low(path, query, true);
+    assert_eq!(utf8(b"/dc=%e9", None), Err(LowUrlError::NoMemory));
+    assert_eq!(
+        utf8(b"/dc=%e9", Some(b"?nonsuch")),
+        Err(LowUrlError::NoMemory)
+    );
+    assert_eq!(
+        utf8(b"/", Some(b"cn,%e9?nonsuch")),
+        Err(LowUrlError::NoMemory)
+    );
+    assert_eq!(utf8(b"/", Some(b"??(cn=%e9)")), Err(LowUrlError::NoMemory));
+    assert_eq!(
+        utf8(b"/", Some(b"?nonsuch?(cn=%e9)")),
+        Err(LowUrlError::InvalidSyntax)
+    );
+    assert_eq!(
+        utf8(b"/dc=caf%c3%a9", Some(b"na%c3%afve??(cn=%c3%a9)")),
+        Ok(Search {
+            dn: Some("dc=café".as_bytes().to_vec()),
+            filter: Some("(cn=é)".as_bytes().to_vec()),
+            attrs: list(&["naïve".as_bytes()]),
+            ..Search::default()
+        })
+    );
+    assert_eq!(
+        parsed(b"/dc=%e9", Some(b"%e9??(cn=%e9)")),
+        Ok(Search {
+            dn: Some(b"dc=\xe9".to_vec()),
+            filter: Some(b"(cn=\xe9)".to_vec()),
+            attrs: list(&[b"\xe9"]),
+            ..Search::default()
+        })
     );
 }

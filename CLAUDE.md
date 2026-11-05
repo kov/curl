@@ -49,11 +49,12 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   the functions they call.
 - `crates/curl-ldap/src/local.rs`: libldap's session over a connection of its own, as
   `lib/ldap.c` drives it, and the entries of its search.
-- `crates/curl-ldap/src/win.rs`: WinLDAP's session as `lib/ldap.c` drives it on Windows, its
-  binds simply or by SSPI with an identity of its own, the callback that accepts any certificate,
-  and the entries of its search.
 - `crates/curl-ldap/src/common.rs`: libldap's URL parser, its words for a code, its version,
   and the strings and values passed to and from it, for both of the above.
+- `crates/curl-ldap/src/win.rs`: WinLDAP's session as `lib/ldap.c` drives it on Windows,
+  through the ANSI calls or, in the Unicode build, the wide ones: its binds simply or by SSPI
+  with an identity of its own, the callback that accepts any certificate, the entries of its
+  search, and the strings the library hands back.
 - `crates/curl-ares/src/lib.rs` and `src/sys.rs`: c-ares's channels, their callbacks and sockets,
   and the declarations of the functions they call.
 - `crates/curl-idn2/src/idn2.rs`: libidn2, converting host names to and from punycode.

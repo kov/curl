@@ -17,8 +17,9 @@ pub enum LowUrlError {
     /// empty extension.
     InvalidSyntax,
     /// A part did not decode, a zero byte in a name or a control byte in
-    /// a filter among the reasons, or memory ran out: C says all of them
-    /// as it says the last (`LDAP_NO_MEMORY`).
+    /// a filter among the reasons, was not UTF-8 where it must be, or
+    /// memory ran out: C says all of them as it says the last
+    /// (`LDAP_NO_MEMORY`).
     NoMemory,
 }
 
@@ -39,14 +40,15 @@ const MAX_ATTRIBUTE: usize = 1024;
 /// a comma-separated list, each decoded, the list ending at the first
 /// empty or overlong one; the scope a word C knows, `base` if none; the
 /// filter decoded; any extensions ignored, but an empty last part is an
-/// error.
-pub fn parse_url_low(path: &[u8], query: Option<&[u8]>) -> Result<Search, LowUrlError> {
+/// error. With `utf8`, each part decoded must be UTF-8, as C's Unicode
+/// build converts it to UTF-16 as it is read (`curlx_convert_UTF8_to_tchar`).
+pub fn parse_url_low(path: &[u8], query: Option<&[u8]>, utf8: bool) -> Result<Search, LowUrlError> {
     let Some(dn) = path.strip_prefix(b"/") else {
         return Err(LowUrlError::InvalidSyntax);
     };
     let mut search = Search::default();
     if !dn.is_empty() {
-        search.dn = Some(decoded(decode_but_zero(dn))?);
+        search.dn = Some(decoded(decode_but_zero(dn), utf8)?);
     }
     let Some(query) = query else {
         return Ok(search);
@@ -70,7 +72,7 @@ pub fn parse_url_low(path: &[u8], query: Option<&[u8]>) -> Result<Search, LowUrl
         return Ok(search);
     };
     if !attrs.is_empty() {
-        search.attrs = Some(attributes(attrs)?);
+        search.attrs = Some(attributes(attrs, utf8)?);
     }
     let Some(scope) = next() else {
         return Ok(search);
@@ -82,7 +84,7 @@ pub fn parse_url_low(path: &[u8], query: Option<&[u8]>) -> Result<Search, LowUrl
         return Ok(search);
     };
     if !filter.is_empty() {
-        search.filter = Some(decoded(decode_but_control(filter))?);
+        search.filter = Some(decoded(decode_but_control(filter), utf8)?);
     }
     match next() {
         Some([]) => Err(LowUrlError::InvalidSyntax),
@@ -93,7 +95,7 @@ pub fn parse_url_low(path: &[u8], query: Option<&[u8]>) -> Result<Search, LowUrl
 /// The attributes of the list `list`, each decoded, up to the first that
 /// is empty or longer than C reads, and not past one not followed by a
 /// comma.
-fn attributes(list: &[u8]) -> Result<Vec<Vec<u8>>, LowUrlError> {
+fn attributes(list: &[u8], utf8: bool) -> Result<Vec<Vec<u8>>, LowUrlError> {
     let mut attrs = Vec::new();
     let mut at = list;
     loop {
@@ -101,7 +103,7 @@ fn attributes(list: &[u8]) -> Result<Vec<Vec<u8>>, LowUrlError> {
         if len == 0 || len > MAX_ATTRIBUTE {
             break;
         }
-        attrs.try_push(decoded(decode_but_zero(&at[..len]))?)?;
+        attrs.try_push(decoded(decode_but_zero(&at[..len]), utf8)?)?;
         match at.get(len) {
             Some(b',') => at = &at[len + 1..],
             _ => break,
@@ -110,10 +112,18 @@ fn attributes(list: &[u8]) -> Result<Vec<Vec<u8>>, LowUrlError> {
     Ok(attrs)
 }
 
-/// A part as `Curl_urldecode` decoded it: any failure, a byte refused
+/// A part as `Curl_urldecode` decoded it, and with `utf8` as it converts
+/// to UTF-16: any failure, a byte refused or text that is not UTF-8
 /// among them, is said as running out of memory.
-fn decoded(part: Result<Option<Vec<u8>>, UrlErrorKind>) -> Result<Vec<u8>, LowUrlError> {
-    part.ok().flatten().ok_or(LowUrlError::NoMemory)
+fn decoded(
+    part: Result<Option<Vec<u8>>, UrlErrorKind>,
+    utf8: bool,
+) -> Result<Vec<u8>, LowUrlError> {
+    let part = part.ok().flatten().ok_or(LowUrlError::NoMemory)?;
+    if utf8 && core::str::from_utf8(&part).is_err() {
+        return Err(LowUrlError::NoMemory);
+    }
+    Ok(part)
 }
 
 /// The scope a word names, case aside (`str2scope`).

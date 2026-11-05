@@ -50,13 +50,23 @@ fn bind_of(message: &[u8]) -> Sent {
     }
 }
 
-/// A session of the library's own, of WinLDAP's kind, to `port`, for
-/// TLS if `secured`.
-fn open(port: u16, secured: bool) -> Box<dyn WinLdapSession> {
-    let LocalSession::Windows(session) = WINLDAP.open(b"127.0.0.1", port, secured).unwrap() else {
+/// WinLDAP through its ANSI calls, as a build without `UNICODE` drives
+/// it, and through its wide ones, as the Unicode build does.
+const ANSI: WinLdap = WinLdap { wide: false };
+const WIDE: WinLdap = WinLdap { wide: true };
+
+/// A session of `library`'s own, of WinLDAP's kind, to `port`, for TLS if
+/// `secured`.
+fn open_with(library: &WinLdap, port: u16, secured: bool) -> Box<dyn WinLdapSession> {
+    let LocalSession::Windows(session) = library.open(b"127.0.0.1", port, secured).unwrap() else {
         panic!("WinLDAP's session is WinLDAP's");
     };
     session
+}
+
+/// A session of the build's own WinLDAP to `port`, for TLS if `secured`.
+fn open(port: u16, secured: bool) -> Box<dyn WinLdapSession> {
+    open_with(&WINLDAP, port, secured)
 }
 
 fn search() -> Search {
@@ -211,42 +221,44 @@ fn an_sspi_bind_is_made_with_its_method() {
         0x63 => vec![ldap_message(id, &result_op(0x65, 0, b""))],
         _ => Vec::new(),
     };
-    let sent = |how: WinBind<'_>| {
-        let (port, server) = serve(answers);
-        let mut session = open(port, false);
-        session.set_version(Version::V3);
-        let code = session.bind(how);
-        drop(session);
-        let got = server.join().unwrap();
-        let binds: Vec<Sent> = got
-            .iter()
-            .filter(|(op, _)| *op == 0x60)
-            .map(|(_, m)| bind_of(m))
-            .collect();
-        let searches = got.iter().filter(|(op, _)| *op == 0x63).count();
-        (code, searches, binds)
-    };
-    let ntlm = Sent::Other(3, b"NTLM".to_vec(), 0x8a);
-    let (code, searches, binds) = sent(WinBind::Sspi {
-        method: SspiMethod::Negotiate,
-        user: b"DOM\\me",
-        password: b"pw",
-    });
-    assert_ne!(code, Code::SUCCESS);
-    assert!(searches > 0, "the root's mechanisms are asked for");
-    assert_eq!(binds, core::slice::from_ref(&ntlm));
-    let (code, searches, binds) = sent(WinBind::CurrentUser);
-    assert_ne!(code, Code::SUCCESS);
-    assert!(searches > 0);
-    assert_eq!(binds, [ntlm]);
-    let (code, searches, binds) = sent(WinBind::Sspi {
-        method: SspiMethod::Digest,
-        user: b"me",
-        password: b"pw",
-    });
-    assert_ne!(code, Code::SUCCESS);
-    assert!(searches > 0);
-    assert_eq!(binds, []);
+    for library in [&ANSI, &WIDE] {
+        let sent = |how: WinBind<'_>| {
+            let (port, server) = serve(answers);
+            let mut session = open_with(library, port, false);
+            session.set_version(Version::V3);
+            let code = session.bind(how);
+            drop(session);
+            let got = server.join().unwrap();
+            let binds: Vec<Sent> = got
+                .iter()
+                .filter(|(op, _)| *op == 0x60)
+                .map(|(_, m)| bind_of(m))
+                .collect();
+            let searches = got.iter().filter(|(op, _)| *op == 0x63).count();
+            (code, searches, binds)
+        };
+        let ntlm = Sent::Other(3, b"NTLM".to_vec(), 0x8a);
+        let (code, searches, binds) = sent(WinBind::Sspi {
+            method: SspiMethod::Negotiate,
+            user: b"DOM\\me",
+            password: b"pw",
+        });
+        assert_ne!(code, Code::SUCCESS);
+        assert!(searches > 0, "the root's mechanisms are asked for");
+        assert_eq!(binds, core::slice::from_ref(&ntlm));
+        let (code, searches, binds) = sent(WinBind::CurrentUser);
+        assert_ne!(code, Code::SUCCESS);
+        assert!(searches > 0);
+        assert_eq!(binds, [ntlm]);
+        let (code, searches, binds) = sent(WinBind::Sspi {
+            method: SspiMethod::Digest,
+            user: b"me",
+            password: b"pw",
+        });
+        assert_ne!(code, Code::SUCCESS);
+        assert!(searches > 0);
+        assert_eq!(binds, []);
+    }
 }
 
 /// The TLS options take; a session for TLS is made.
@@ -258,28 +270,131 @@ fn the_tls_options_take() {
 }
 
 /// An SSPI identity names the domain before a `\`, or else a `/`, and
-/// the user after it; the password whole; each with its length, and in
-/// the ANSI code page.
+/// the user after it; the password whole, up to a NUL; each with its
+/// length, in the ANSI code page or, for the wide calls, in UTF-16 units.
 #[test]
 fn an_identity_is_made_as_c_makes_it() {
-    let show = |p: *mut u8, len: u32| {
+    fn show<T: Copy>(p: *mut T, len: u32) -> Vec<T> {
         // SAFETY: one of the identity's strings and its length.
         unsafe { core::slice::from_raw_parts(p, len as usize) }.to_vec()
-    };
-    for (given, domain, user) in [
-        (&b"DOM\\me"[..], &b"DOM"[..], &b"me"[..]),
-        (b"DOM/me", b"DOM", b"me"),
-        (b"a/b\\c", b"a/b", b"c"),
-        (b"me", b"", b"me"),
-        (b"me@dom", b"", b"me@dom"),
-    ] {
-        let id = Identity::new(given, b"pw").unwrap();
-        assert_eq!(show(id.c.Domain, id.c.DomainLength), domain);
-        assert_eq!(show(id.c.User, id.c.UserLength), user);
-        assert_eq!(show(id.c.Password, id.c.PasswordLength), b"pw");
-        assert_eq!(id.c.Flags, IDENTITY_ANSI);
-        assert_eq!(id.c.Version, 0x200);
     }
+    let utf16 = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    for (given, domain, user) in [
+        ("DOM\\me", "DOM", "me"),
+        ("DOM/me", "DOM", "me"),
+        ("a/b\\c", "a/b", "c"),
+        ("me", "", "me"),
+        ("me@dom", "", "me@dom"),
+        ("DÖM\\mé", "DÖM", "mé"),
+    ] {
+        let mut id = Identity::new(given.as_bytes(), b"pw\0more").unwrap();
+        let c = id.ansi();
+        assert_eq!(show(c.Domain, c.DomainLength), domain.as_bytes());
+        assert_eq!(show(c.User, c.UserLength), user.as_bytes());
+        assert_eq!(show(c.Password, c.PasswordLength), b"pw");
+        assert_eq!(c.Flags, IDENTITY_ANSI);
+        assert_eq!(c.Version, 0x200);
+        assert_eq!(c.Length as usize, size_of_val(&c));
+
+        let mut id = Identity::new(&utf16(given), &utf16("pé")).unwrap();
+        let c = id.wide();
+        assert_eq!(show(c.Domain, c.DomainLength), utf16(domain));
+        assert_eq!(show(c.User, c.UserLength), utf16(user));
+        assert_eq!(show(c.Password, c.PasswordLength), utf16("pé"));
+        assert_eq!(c.Flags, IDENTITY_UNICODE);
+        assert_eq!(c.Version, 0x200);
+        assert_eq!(c.Length as usize, size_of_val(&c));
+    }
+}
+
+/// The answers of a server whose entry and attribute are named outside
+/// ASCII, in UTF-8 as LDAP has them: a bind taken, then the entry and a
+/// result.
+fn finds_one_named_in_utf8(op: u8, id: u8) -> Vec<Vec<u8>> {
+    match op {
+        0x60 => vec![ldap_message(id, &result_op(0x61, 0, b""))],
+        0x63 => vec![
+            ldap_message(
+                id,
+                &entry_op(
+                    "cn=é,dc=x".as_bytes(),
+                    &[("naïve".as_bytes(), &["é".as_bytes()])],
+                ),
+            ),
+            ldap_message(id, &result_op(0x65, 0, b"")),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Through the wide calls, as C's Unicode build makes them, the login,
+/// the base, the filter and the attributes asked for are UTF-8 on the
+/// wire, and the entry's name and its attributes' types come back as
+/// UTF-8, the values as they are.
+#[test]
+fn the_wide_calls_speak_utf8() {
+    let (port, server) = serve(finds_one_named_in_utf8);
+    let mut session = open_with(&WIDE, port, false);
+    session.set_version(Version::V3);
+    let login = WinBind::Simple {
+        user: "cn=é".as_bytes(),
+        password: "pé".as_bytes(),
+    };
+    assert_eq!(session.bind(login), Code::SUCCESS);
+    let search = Search {
+        dn: Some("dc=café".as_bytes().to_vec()),
+        scope: Scope::Subtree,
+        filter: Some("(cn=é)".as_bytes().to_vec()),
+        attrs: Some(vec!["naïve".as_bytes().to_vec()]),
+    };
+    let (code, mut found) = session.search(&search).unwrap();
+    assert_eq!(code, Code::SUCCESS);
+    assert!(found.next_entry());
+    assert_eq!(found.dn().unwrap(), "cn=é,dc=x".as_bytes());
+    let a = found.next_attribute().unwrap().unwrap();
+    assert_eq!(
+        (a.name, a.values),
+        ("naïve".as_bytes(), Some(vec!["é".as_bytes()]))
+    );
+    assert!(found.next_attribute().unwrap().is_none());
+    assert!(!found.next_entry());
+    drop(found);
+    drop(session);
+    let got = server.join().unwrap();
+    assert_eq!(ops(&got), [0x60, 0x63, 0x42]);
+    assert_eq!(
+        bind_of(&got[0].1),
+        Sent::Simple(3, "cn=é".as_bytes().to_vec(), "pé".as_bytes().to_vec())
+    );
+    let sent = operation(&got[1].1);
+    assert_eq!(sent[0].1, "dc=café".as_bytes());
+    let attrs: Vec<_> = elements(&sent[7].1).into_iter().map(|(_, a)| a).collect();
+    assert_eq!(attrs, ["naïve".as_bytes().to_vec()]);
+    // The filter's equality match: its type and its value.
+    let filter = elements(&sent[6].1);
+    assert_eq!(filter[1].1, "é".as_bytes());
+}
+
+/// Through the wide calls a part of a simple bind that is not UTF-8 is
+/// handed over as NULL, as C's Unicode build hands it: a user so is a
+/// bind with no name.
+#[test]
+fn the_wide_calls_bind_with_no_name_for_a_user_that_is_not_utf8() {
+    let (port, server) = serve(|op, id| finds_two(op, id, 0));
+    let mut session = open_with(&WIDE, port, false);
+    session.set_version(Version::V3);
+    let login = WinBind::Simple {
+        user: b"cn=\xe9",
+        password: b"pw",
+    };
+    assert_eq!(session.bind(login), Code::SUCCESS);
+    drop(session);
+    let got = server.join().unwrap();
+    assert_eq!(ops(&got), [0x60, 0x42]);
+    assert_eq!(
+        bind_of(&got[0].1),
+        Sent::Simple(3, Vec::new(), b"pw".to_vec())
+    );
 }
 
 /// The library names itself, its vendor and its codes as C's build has
@@ -303,4 +418,17 @@ fn the_library_names_itself_as_c_s_build_does() {
         query: None,
     };
     assert_eq!(WINLDAP.parse_url(&url), Err(UrlError(0x5a)));
+    // A part that is not UTF-8 is refused as the wide calls cannot take
+    // it, and taken as it is by the ANSI ones.
+    let url = LocalUrl {
+        text: b"ldap://h/dc=%e9",
+        path: b"/dc=%e9",
+        query: None,
+    };
+    assert_eq!(WIDE.parse_url(&url), Err(UrlError(0x5a)));
+    assert_eq!(
+        ANSI.parse_url(&url).map(|s| s.dn),
+        Ok(Some(b"dc=\xe9".to_vec()))
+    );
+    assert_eq!(WINLDAP.wide, curl_os::UNICODE);
 }

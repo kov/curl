@@ -129,6 +129,7 @@ dependencies = [
  "curl-alloc",
  "curl-build",
  "curl-core",
+ "curl-os",
  "proptest",
  "windows-sys",
 ]

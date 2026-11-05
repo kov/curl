@@ -11,8 +11,10 @@ links = "ldap"
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 
-# WinLDAP, its certificates and SSPI's identities.
+# WinLDAP, its certificates and SSPI's identities; whether the build is
+# Windows' Unicode one, which calls WinLDAP's wide functions.
 [target.'cfg(windows)'.dependencies]
+curl-os = { path = "../curl-os" }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Networking_Ldap",
     "Win32_Security_Authentication_Identity",

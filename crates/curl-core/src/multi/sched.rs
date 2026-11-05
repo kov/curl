@@ -4,33 +4,56 @@ use curl_alloc::{OutOfMemory, TryVec};
 
 /// A set of arena rows, walked in ascending order (C's `uint32_bset`).
 /// Room is reserved when a transfer is added, so changing it never
-/// allocates.
+/// allocates; the first 64 rows are held in place, so a multi of no more
+/// transfers than that allocates nothing for it.
 #[derive(Debug, Default)]
 pub(crate) struct RowSet {
-    words: Vec<u64>,
+    /// Rows 0 to 63.
+    first: u64,
+    /// The rows from 64, a word for each 64.
+    rest: Vec<u64>,
+    /// The rows room is reserved for.
+    rows: u32,
 }
 
 impl RowSet {
     /// Make room for rows below `rows`.
     pub(crate) fn reserve(&mut self, rows: u32) -> Result<(), OutOfMemory> {
-        let words = (rows as usize).div_ceil(64);
-        if self.words.len() < words {
-            self.words.try_reserve_exact(words - self.words.len())?;
-            while self.words.len() < words {
-                self.words.try_push(0)?;
+        let words = (rows as usize).div_ceil(64).saturating_sub(1);
+        if self.rest.len() < words {
+            self.rest.try_reserve_exact(words - self.rest.len())?;
+            while self.rest.len() < words {
+                self.rest.try_push(0)?;
             }
         }
+        self.rows = self.rows.max(rows);
         Ok(())
     }
 
+    /// The word holding row word `w`'s 64 rows, if room is made for it.
+    fn word_mut(&mut self, w: usize) -> Option<&mut u64> {
+        match w {
+            0 => Some(&mut self.first),
+            _ => self.rest.get_mut(w - 1),
+        }
+    }
+
+    fn word(&self, w: usize) -> Option<u64> {
+        match w {
+            0 => Some(self.first),
+            _ => self.rest.get(w - 1).copied(),
+        }
+    }
+
     pub(crate) fn insert(&mut self, row: u32) {
+        assert!(row < self.rows, "room is reserved at add");
         let (w, bit) = place(row);
-        *self.words.get_mut(w).expect("room is reserved at add") |= bit;
+        *self.word_mut(w).expect("room is reserved at add") |= bit;
     }
 
     pub(crate) fn remove(&mut self, row: u32) {
         let (w, bit) = place(row);
-        if let Some(word) = self.words.get_mut(w) {
+        if let Some(word) = self.word_mut(w) {
             *word &= !bit;
         }
     }
@@ -38,25 +61,26 @@ impl RowSet {
     #[cfg(test)]
     pub(crate) fn contains(&self, row: u32) -> bool {
         let (w, bit) = place(row);
-        self.words.get(w).is_some_and(|word| word & bit != 0)
+        self.word(w).is_some_and(|word| word & bit != 0)
     }
 
     /// The first row in the set at or after `from`.
     pub(crate) fn first_from(&self, from: u32) -> Option<u32> {
         let (mut w, _) = place(from);
-        let mut word = *self.words.get(w)? & (u64::MAX << (from % 64));
+        let mut word = self.word(w)? & (u64::MAX << (from % 64));
         loop {
             if word != 0 {
                 let row = w * 64 + word.trailing_zeros() as usize;
                 return Some(u32::try_from(row).expect("rows fit their u32 ids"));
             }
             w += 1;
-            word = *self.words.get(w)?;
+            word = self.word(w)?;
         }
     }
 
     pub(crate) fn clear(&mut self) {
-        self.words.fill(0);
+        self.first = 0;
+        self.rest.fill(0);
     }
 }
 
@@ -166,5 +190,25 @@ mod tests {
         assert_eq!(set.first_from(4), Some(130));
         set.clear();
         assert_eq!(set.first_from(0), None);
+    }
+
+    /// The first 64 rows take no memory of their own, the 65th a word:
+    /// a multi of a few transfers allocates nothing for its sets, as
+    /// test 2500's budget of allocations needs.
+    #[test]
+    fn the_first_word_of_rows_is_held_in_place() {
+        let mut set = RowSet::default();
+        set.reserve(64).unwrap();
+        for row in [0, 31, 63] {
+            set.insert(row);
+        }
+        assert_eq!(set.rest.capacity(), 0, "64 rows allocate nothing");
+        assert_eq!(set.first_from(1), Some(31));
+        assert_eq!(set.first_from(64), None);
+        set.reserve(65).unwrap();
+        set.insert(64);
+        assert_eq!(set.rest.len(), 1);
+        assert_eq!(set.first_from(32), Some(63));
+        assert_eq!(set.first_from(64), Some(64));
     }
 }

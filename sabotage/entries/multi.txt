@@ -956,3 +956,11 @@ witness: curl-core multi::tests::a_dead_multi_fails_a_waiting_transfer_out_of_th
                     .expect("a waiting transfer's plan is queued");
             }
 --- new
+
+=== a row set allocates for its first 64 rows
+file: crates/curl-core/src/multi/sched.rs
+witness: curl-core multi::sched::tests::the_first_word_of_rows_is_held_in_place
+--- old
+        let words = (rows as usize).div_ceil(64).saturating_sub(1);
+--- new
+        let words = (rows as usize).div_ceil(64);

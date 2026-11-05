@@ -70,6 +70,9 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # A line's first CR and first zero byte are never at one place, so
+    # whether the CR is before the zero byte reads the same with `<=`.
+    'curl-core/src/proto/http1/fields\.rs:\d+:33: replace < with <= in verify_line$',
     # `tells` only spares a route comparison: where it is false the
     # verdict's arm notes nothing (a pending connection for a transfer
     # that does not multiplex), or notes a single-use one already noted.

@@ -136,7 +136,25 @@ struct Entry<'a, 'l> {
     unfinished: Option<Ended>,
 }
 
-impl Entry<'_, '_> {
+impl<'a, 'l> Entry<'a, 'l> {
+    /// A transfer just made, to the list.
+    #[inline(always)]
+    fn boxed(
+        per: PerTransfer<'a, 'l>,
+        easy: Handle,
+        unfinished: Option<Ended>,
+    ) -> Result<Box<Entry<'a, 'l>>, ErrorKind> {
+        let counted = Counted::new().map_err(|_| ErrorKind::OutOfMemory)?;
+        try_box(Entry {
+            per,
+            place: Place::Here(easy),
+            counted,
+            start_at: 0,
+            unfinished,
+        })
+        .map_err(|_| ErrorKind::OutOfMemory)
+    }
+
     /// Added, or not to be (C's `added`, `skip`).
     fn passed(&self) -> bool {
         matches!(self.place, Place::Added(_)) || self.per.skip || self.unfinished.is_some()
@@ -202,25 +220,20 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                 Ok(false) => return Ok(()),
                 Err(ending) => return ending,
             }
-            let (per, easy, unfinished) = match create(self.run, self.transfers.item()) {
-                Made::Ready(per, easy) => (per, easy, None),
-                Made::Unfinished(per, easy, ended) => (per, easy, Some(ended)),
+            // Boxed straight from what was made: a handle is large, and
+            // each move of it a copy.
+            let entry = match create(self.run, self.transfers.item()) {
+                Made::Ready(per, easy) => Entry::boxed(per, easy, None)?,
+                Made::Unfinished(per, easy, ended) => Entry::boxed(per, easy, Some(ended))?,
                 Made::Failed(e) => return Err(e),
                 Made::Abandoned => {
                     self.transfers.abandon();
                     continue;
                 }
             };
-            self.terminal = per.terminal;
-            let skip = per.skip;
-            let entry = Entry {
-                per,
-                place: Place::Here(easy),
-                counted: Counted::new().map_err(|_| ErrorKind::OutOfMemory)?,
-                start_at: 0,
-                unfinished,
-            };
-            let entry = try_box(entry).map_err(|_| ErrorKind::OutOfMemory)?;
+            self.terminal = entry.per.terminal;
+            let skip = entry.per.skip;
+            let unfinished = entry.unfinished;
             self.list
                 .try_push(entry)
                 .map_err(|_| ErrorKind::OutOfMemory)?;

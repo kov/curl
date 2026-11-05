@@ -313,7 +313,10 @@ unsafe extern "C" fn debug_kinds(
 
 /// A handle that only connected, sending and receiving over TLS itself,
 /// has the records traced to its debug function while verbose, not after,
-/// and hands out the connection's `SSL` once it holds it.
+/// and hands out the connection's `SSL` once it holds it. LibreSSL calls
+/// the message callback for TLS 1.3's handshake alone, never for its
+/// application data: C's build over it traces the handshake and none of
+/// the raw call's records.
 #[test]
 fn a_raw_call_over_tls_traces_its_records() {
     let (port, server) = serve();
@@ -340,12 +343,20 @@ fn a_raw_call_over_tls_traces_its_records() {
         curl_easy_setopt(c, ffi::CURLOPT_DEBUGFUNCTION, debug as *mut c_void);
         curl_easy_setopt(c, ffi::CURLOPT_DEBUGDATA, (&raw mut kinds).cast::<c_void>());
         assert_eq!(crate::easy::curl_easy_perform(c), CURLE_OK);
+        #[cfg(libressl)]
+        assert!(
+            kinds.contains(&ffi::CURLINFO_SSL_DATA_OUT),
+            "the handshake: {kinds:?}"
+        );
         kinds.clear();
         let r =
             crate::easy::curl_easy_send(c, request.as_ptr().cast(), request.len(), &raw mut sent);
         assert_eq!((r, sent), (CURLE_OK, request.len()));
     }
+    #[cfg(not(libressl))]
     assert!(kinds.contains(&ffi::CURLINFO_SSL_DATA_OUT), "{kinds:?}");
+    #[cfg(libressl)]
+    assert!(kinds.is_empty(), "{kinds:?}");
     let (_, backend, ssl) = session_info(c, ffi::CURLINFO_TLS_SSL_PTR);
     assert_eq!(backend, openssl);
     assert!(!ssl.is_null(), "the connection the handle holds");
@@ -384,6 +395,8 @@ unsafe extern "C" fn session_until(
 /// A TLS 1.3 session that comes as a handle that only connected receives
 /// over it is kept good for its time from now, the time of day the raw
 /// call's, as any transfer's is (`Curl_ssl_scache_put`'s `time(NULL)`).
+/// LibreSSL's TLS 1.3 sends and takes no ticket, and C's build over it
+/// keeps no session.
 #[test]
 fn a_session_a_raw_call_receives_is_good_from_now() {
     let (port, server) = serve();
@@ -444,7 +457,10 @@ fn a_session_a_raw_call_receives_is_good_from_now() {
         crate::ssls::curl_easy_ssls_export(c, Some(session_until), (&raw mut until).cast())
     };
     assert_eq!(code, CURLE_OK);
+    #[cfg(not(libressl))]
     assert!(!until.is_empty(), "the session was kept");
+    #[cfg(libressl)]
+    assert!(until.is_empty(), "{until:?}");
     for &u in &until {
         assert!(u > now && u <= now + 7 * 24 * 3600, "{u} against {now}");
     }
@@ -458,7 +474,7 @@ fn a_session_a_raw_call_receives_is_good_from_now() {
 
 /// A TLS 1.3 session a transfer receives as it reads its response is
 /// kept good for its time from now (`Curl_ssl_scache_put`'s
-/// `time(NULL)`).
+/// `time(NULL)`). Over LibreSSL none comes, as above.
 #[test]
 fn a_session_a_transfer_receives_is_good_from_now() {
     let (port, server) = serve();
@@ -500,7 +516,10 @@ fn a_session_a_transfer_receives_is_good_from_now() {
         crate::ssls::curl_easy_ssls_export(c, Some(session_until), (&raw mut until).cast())
     };
     assert_eq!(code, CURLE_OK);
+    #[cfg(not(libressl))]
     assert!(!until.is_empty(), "the session was kept");
+    #[cfg(libressl)]
+    assert!(until.is_empty(), "{until:?}");
     for &u in &until {
         assert!(u > now && u <= now + 7 * 24 * 3600, "{u} against {now}");
     }
@@ -627,7 +646,10 @@ fn a_reset_forgets_the_ssl_ctx_data() {
 /// transfer's receiving: however often the multi runs, the handshake is
 /// not moved on and the callback is not called again; once the
 /// application unpauses the transfer, the handshake runs the callback
-/// again and the transfer ends.
+/// again and the transfer ends. LibreSSL has no retried verify: the ask
+/// fails, the callback answers a failure the unverified transfer ignores,
+/// and the transfer ends without a pause, which leaves the application
+/// nothing to unpause, as C's build over it does.
 #[test]
 fn a_retried_verify_waits_for_the_application_to_unpause() {
     let (port, server) = serve();
@@ -667,8 +689,18 @@ fn a_retried_verify_waits_for_the_application_to_unpause() {
             );
         }
         assert_eq!((*seen).verifies, 1, "the handshake went on while paused");
+        #[cfg(not(libressl))]
         assert_eq!(running, 1);
+        #[cfg(not(libressl))]
         assert_eq!(curl_easy_pause(c, ffi::CURLPAUSE_CONT), CURLE_OK);
+        // A transfer that ended has no connection to unpause.
+        #[cfg(libressl)]
+        assert_eq!(running, 0);
+        #[cfg(libressl)]
+        assert_eq!(
+            curl_easy_pause(c, ffi::CURLPAUSE_CONT),
+            ffi::CURLE_BAD_FUNCTION_ARGUMENT
+        );
         let mut turns = 0;
         while running > 0 {
             turns += 1;
@@ -687,7 +719,10 @@ fn a_retried_verify_waits_for_the_application_to_unpause() {
         curl_easy_cleanup(c);
         assert_eq!(curl_multi_cleanup(m), CURLM_OK);
         server.join().unwrap();
+        #[cfg(not(libressl))]
         assert_eq!((*seen).verifies, 2);
+        #[cfg(libressl)]
+        assert_eq!((*seen).verifies, 1);
         assert!(!(*seen).in_write.is_empty());
     }
 }

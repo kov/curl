@@ -74,8 +74,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
 curl-core = { path = "../curl-core", features = ["test-util"] }
 # The TLS server of the tests of the application's hands on OpenSSL, and
 # the OpenSSL functions they call on what they are handed.
-openssl = "0.10.81"
-openssl-sys = "0.9.117"
+openssl = "0.10.82"
+openssl-sys = "0.9.118"
 
 [lints]
 workspace = true

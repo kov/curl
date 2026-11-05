@@ -17,14 +17,14 @@ curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os" }
 # Declarations only: the system's library, never the `vendored` copy.
-openssl-sys = "0.9.117"
+openssl-sys = "0.9.118"
 
 [dev-dependencies]
 curl-alloc = { path = "../curl-alloc", features = ["debug-hooks"] }
 # The manual clock, to age the multi's CA store.
 curl-core = { path = "../curl-core", features = ["test-util"] }
 # The peer's side of the tests' TLS, and the certificates it shows.
-openssl = "0.10.81"
+openssl = "0.10.82"
 
 [[test]]
 name = "peer"

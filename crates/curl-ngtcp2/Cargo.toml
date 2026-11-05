@@ -21,7 +21,7 @@ curl-core = { path = "../curl-core", features = ["test-util"] }
 # The TLS session a connection is handed, and its library linked.
 curl-openssl = { path = "../curl-openssl" }
 # The certificates the server the tests start shows.
-openssl = "0.10.81"
+openssl = "0.10.82"
 
 [build-dependencies]
 curl-build = { path = "../curl-build" }

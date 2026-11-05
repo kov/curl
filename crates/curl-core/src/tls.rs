@@ -38,6 +38,7 @@ pub use keylog::{KeyLog, SharedKeyLog};
 pub use pin::pin_peer_pubkey;
 
 pub(crate) mod cache;
+pub mod hostcheck;
 mod keylog;
 mod pin;
 

@@ -18,7 +18,7 @@ use openssl_sys::{BIO, SSL, SSL_CTX, X509, X509_STORE};
 
 use crate::cache::{self, StoreCache};
 use crate::ffi;
-use crate::hostcheck;
+use curl_core::tls::hostcheck;
 
 /// A certificate this crate holds a reference to, freed as it goes.
 pub(crate) struct Cert(NonNull<X509>);

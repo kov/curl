@@ -3056,7 +3056,8 @@ A revocation list (`CURLOPT_CRLFILE`, `--crlfile`) is loaded into the store afte
 anchors, by OpenSSL's file lookup, and turns the CRL check on for every certificate of the chain
 (` CRLfile:`; a file holding no list fails the setup with 82, `error loading CRL file:`); with
 one no chain is taken as partial (OpenSSL's issue 5081), and its store is not kept for the multi.
-The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
+The host check is hostcheck.c's, ported into the core for every library (`tls::hostcheck`,
+unit 1397), after `ossl_verifyhost`
 (`subjectAltName: "localhost" matches cert's "localhost"`); the failure texts are C's
 (`SSL certificate problem: …`). OpenSSL's verify result is the report's
 (`CURLINFO_SSL_VERIFYRESULT`, `%{ssl_verify_result}`): 1 from the session's first step, then

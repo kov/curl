@@ -7,7 +7,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 /// The certificate's name `pattern` names `host` (`Curl_cert_hostcheck`).
 /// Neither is taken to end at a zero byte: a pattern with one inside
 /// names no host.
-pub(crate) fn names(pattern: &[u8], host: &[u8]) -> bool {
+pub fn names(pattern: &[u8], host: &[u8]) -> bool {
     !pattern.is_empty() && !host.is_empty() && host_matches(host, pattern)
 }
 

@@ -4,7 +4,7 @@ Generate the certificate host check's test cases from C's own test.
 
 From tests/unit/unit1397.c, which tests `Curl_cert_hostcheck`:
 
-  crates/curl-openssl/src/hostcheck/c_tests.rs: each host, the pattern a
+  crates/curl-core/src/tls/hostcheck/c_tests.rs: each host, the pattern a
   certificate names, and whether they match; and the patterns with a
   zero byte inside that must match nothing.
 """
@@ -18,7 +18,7 @@ from genlib import ROOT, check
 
 HERE = pathlib.Path(__file__).resolve()
 UNIT1397 = ROOT / "tests" / "unit" / "unit1397.c"
-OUT = ROOT / "crates" / "curl-openssl" / "src" / "hostcheck" / "c_tests.rs"
+OUT = ROOT / "crates" / "curl-core" / "src" / "tls" / "hostcheck" / "c_tests.rs"
 
 # One or more C string literals side by side, as C joins them.
 LITERALS = r'((?:"(?:[^"\\]|\\.)*"\s*)+)'

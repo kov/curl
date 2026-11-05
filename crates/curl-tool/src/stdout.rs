@@ -15,6 +15,23 @@ use curl_os::fs::Std;
 
 use crate::stdio::{Failed, Layout, Sink, Stdio};
 
+/// Standard output as C's `printf`, `puts` and `fputs` write to `stdout`
+/// outside a transfer (the help, the manual, the version): in the mode
+/// the C library keeps for it, text on Windows until a transfer makes it
+/// binary. Each write is written through at once.
+pub(crate) struct Printed;
+
+impl io::Write for Printed {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        curl_os::fs::write_stdout(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The process's standard output, shared by whatever writes to it.
 #[derive(Clone)]
 pub(crate) struct Stdout(TryArc<Mutex<Stdio<Descriptor>>>);

@@ -1966,7 +1966,8 @@ fn lists_the_engines() {
     s.write("f", b"x");
     let r = curl(&s, &["--engine", "list", "-o", "out", &s.url("f")]);
     assert_eq!(r.code, 0, "{}", r.stderr);
-    let out = String::from_utf8(r.stdout).unwrap();
+    // In text mode, as C's `puts` writes it.
+    let out = messages(&r.stdout);
     assert!(out.starts_with("Build-time engines:\n"), "{out}");
     assert!(out.lines().any(|l| l == "  dynamic"), "{out}");
     assert!(!s.exists("out"));

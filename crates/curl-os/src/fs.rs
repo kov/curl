@@ -164,19 +164,41 @@ pub fn write_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io::Res
 /// [`stderr_to`] changes).
 #[cfg(windows)]
 pub fn write_stderr(bytes: &[u8]) -> io::Result<()> {
+    write_std(Std::Err, bytes)
+}
+
+/// Write all of `bytes` to standard output as C's `printf` and `puts`
+/// write to `stdout`, in the mode the C library keeps for it ([`mode`],
+/// [`write_as_c`]): text, its line ends written as CR LF, until a
+/// transfer makes it binary.
+#[cfg(windows)]
+pub fn write_stdout(bytes: &[u8]) -> io::Result<()> {
+    write_std(Std::Out, bytes)
+}
+
+/// Write all of `bytes` to `stream` in its C library mode, through the
+/// handle the process has for it now (`GetStdHandle`).
+#[cfg(windows)]
+fn write_std(stream: Std, bytes: &[u8]) -> io::Result<()> {
     use std::mem::ManuallyDrop;
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+    let which = match stream {
+        Std::Out => STD_OUTPUT_HANDLE,
+        Std::Err => STD_ERROR_HANDLE,
+        Std::In => unreachable!("standard input is not written"),
+    };
     // SAFETY: `GetStdHandle` takes no pointers.
-    let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    let handle = unsafe { GetStdHandle(which) };
     if handle.is_null() || handle == wf::INVALID_HANDLE_VALUE {
         return Err(io::Error::from_raw_os_error(
             wf::ERROR_INVALID_HANDLE as i32,
         ));
     }
     // SAFETY: the handle is the process's, open while it is its standard
-    // error; the `File` borrows it for the writes and never closes it.
+    // output or error; the `File` borrows it for the writes and never
+    // closes it.
     let file = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
-    write_all_as_c(&file, mode(Std::Err), bytes)
+    write_all_as_c(&file, mode(stream), bytes)
 }
 
 /// Write all of `bytes` to `file` as [`write_as_c`] writes some.
@@ -198,6 +220,16 @@ pub fn write_all_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io:
 pub fn write_stderr(bytes: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
     io::stderr().write_all(bytes)
+}
+
+/// Write all of `bytes` to standard output, as C's `printf` writes to
+/// `stdout`, and flush it.
+#[cfg(unix)]
+pub fn write_stdout(bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    let mut out = io::stdout().lock();
+    out.write_all(bytes)?;
+    out.flush()
 }
 
 #[cfg(unix)]

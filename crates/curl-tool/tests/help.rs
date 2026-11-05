@@ -12,8 +12,25 @@ use std::process::Command;
 
 struct Run {
     code: i32,
+    /// What went to standard output, as `text` reads it.
     stdout: String,
+    /// What went to standard output, byte for byte.
+    out: Vec<u8>,
+    /// What went to standard error, as `text` reads it.
     stderr: String,
+}
+
+/// Text the tool wrote through the C library's text mode, as C's
+/// `printf` writes to `stdout` and `stderr`: on Windows, where text mode
+/// writes a carriage return before each line feed, each such pair is read
+/// as its line feed.
+fn text(bytes: &[u8]) -> String {
+    let text = String::from_utf8(bytes.to_owned()).unwrap();
+    if cfg!(windows) {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    }
 }
 
 /// Run the tool with `args`, without a configuration file.
@@ -23,8 +40,44 @@ fn curl(args: &[&str]) -> Run {
     let out = Command::new(tool).arg("-q").args(args).output().unwrap();
     Run {
         code: out.status.code().unwrap(),
-        stdout: String::from_utf8(out.stdout).unwrap(),
-        stderr: String::from_utf8(out.stderr).unwrap(),
+        stdout: text(&out.stdout),
+        out: out.stdout,
+        stderr: text(&out.stderr),
+    }
+}
+
+/// Whether `bytes` has a line feed with no carriage return before it.
+fn has_bare_line_feed(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\n") || bytes.windows(2).any(|w| w[1] == b'\n' && w[0] != b'\r')
+}
+
+/// The help, the manual and the version go to standard output in text
+/// mode, as C's `printf` and `puts` write them: on Windows each line ends
+/// in CR LF.
+#[test]
+fn writes_help_as_text() {
+    let eol = if cfg!(windows) { "\r\n" } else { "\n" };
+    for (args, first) in [
+        (&["--help"][..], "Usage: curl [options...] <url>"),
+        (&["--help", "-v"], "    -v, --verbose"),
+        (
+            &["--help", "category"],
+            " auth        Authentication methods",
+        ),
+        (&["-V"], "curl "),
+        (&["--manual"], ""),
+    ] {
+        let run = curl(args);
+        assert_eq!(run.code, 0, "{args:?}: {}", run.stderr);
+        let out = String::from_utf8(run.out).unwrap();
+        let line = out.split_inclusive('\n').next().unwrap();
+        assert!(line.starts_with(first), "{args:?}: {line:?}");
+        assert!(line.ends_with(eol), "{args:?}: {line:?}");
+        assert_eq!(
+            has_bare_line_feed(out.as_bytes()),
+            !cfg!(windows),
+            "{args:?}"
+        );
     }
 }
 

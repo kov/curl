@@ -48,9 +48,8 @@ fn inflate(each: &mut dyn FnMut(&[u8]) -> bool) {
 /// `--manual`: the whole manual on standard output. A failed write has
 /// nowhere to be said, as in C.
 pub(crate) fn show_all() {
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = crate::stdout::Printed;
     inflate(&mut |piece| stdout.write_all(piece).is_ok());
-    let _ = stdout.flush();
 }
 
 /// Where in the manual one option's text is: after `trigger`, from
@@ -138,13 +137,12 @@ impl<'a> Scan<'a> {
 /// `arg`, up to `end` (`showhelp`).
 pub(crate) fn show_option(arg: &[u8], end: &[u8]) {
     let mut scan = Scan::new(b"\nALL OPTIONS\n", arg, end);
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = crate::stdout::Printed;
     inflate(&mut |piece| {
         scan.scan(piece, &mut |shown| {
             let _ = stdout.write_all(shown);
         })
     });
-    let _ = stdout.flush();
 }
 
 #[cfg(test)]

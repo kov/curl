@@ -155,9 +155,7 @@ impl Out {
     }
 
     fn flush(&mut self) {
-        let mut stdout = std::io::stdout().lock();
-        let _ = stdout.write_all(&self.buf[..self.len]);
-        let _ = stdout.flush();
+        let _ = crate::stdout::Printed.write_all(&self.buf[..self.len]);
         self.len = 0;
     }
 }

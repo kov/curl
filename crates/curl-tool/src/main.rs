@@ -234,7 +234,7 @@ fn list_engines() {
     use curl_core::tls::TlsBackend as _;
     use std::io::Write as _;
     let ids = curl_openssl::OPENSSL.engines().unwrap_or_default();
-    let mut out = std::io::stdout().lock();
+    let mut out = stdout::Printed;
     let none: &[&[u8]] = &[b"<none>"];
     let shown = ids.iter().map(Vec::as_slice);
     let written = out.write_all(b"Build-time engines:\n").and_then(|()| {
@@ -315,10 +315,13 @@ fn version_info() {
         .iter()
         .any(|f| f.name().eq_ignore_ascii_case("debug"))
     {
-        eprintln!("WARNING: this libcurl is Debug-enabled, do not use in production\n");
+        // Nowhere to say a failure, as in C.
+        let _ = curl_os::fs::write_stderr(
+            b"WARNING: this libcurl is Debug-enabled, do not use in production\n\n",
+        );
     }
     use std::io::Write as _;
-    let mut out = std::io::stdout().lock();
+    let mut out = stdout::Printed;
     // As C's, whose `printf` results go unchecked: a write that fails ends
     // the listing and nothing else.
     if write_version(&mut out, v).is_ok() {

@@ -38,6 +38,11 @@ pub(crate) struct Flags {
     /// Apple's SecTrust verified the peer (`sectrust_verified`), which the
     /// sessions it gives are kept with.
     pub(crate) sectrust_verified: bool,
+    /// The handshake is done as the connection counts it, the protocol
+    /// ALPN chose recorded (`connssl->negotiated.alpn`): a session the
+    /// library gives before then, inside the handshake as TLS 1.2's, is
+    /// kept with none, as C keeps it.
+    pub(crate) handshake_done: bool,
     /// The TLS 1.2 secret is logged, which LibreSSL's build logs once
     /// (`keylog_done`).
     #[cfg(libressl)]
@@ -287,9 +292,12 @@ pub(crate) unsafe extern "C" fn new_session(ssl: *mut SSL, session: *mut SSL_SES
     if !slot.io.cx().caches_sessions() {
         return 0;
     }
+    // A QUIC session's protocol is HTTP/3's whenever it comes, as C keeps
+    // it (`quic_ossl_new_session_cb`).
+    let alpn_known = slot.flags.handshake_done || slot.quic_params.is_some();
     // SAFETY: the SSL and the session the library calls back with, alive
     // for the callback.
-    let ticket = unsafe { crate::ssl::ticket_of(ssl, session, slot.io.cx()) };
+    let ticket = unsafe { crate::ssl::ticket_of(ssl, session, alpn_known, slot.io.cx()) };
     // Out of memory, the session is not kept, as C goes on without it.
     if let Ok(ticket) = ticket {
         // A QUIC session's goes with its connection's transport

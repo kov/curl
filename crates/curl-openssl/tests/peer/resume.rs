@@ -251,11 +251,17 @@ fn the_next_connection_resumes_a_tls_1_3_ticket() {
 }
 
 /// Before TLS 1.3, the session of the handshake, by its id, is resumed
-/// and given back to the cache for the next.
+/// and given back to the cache for the next. The library gives it inside
+/// the handshake, before the protocol ALPN chose is recorded: it is kept
+/// with none, as C keeps it, though the server agreed to HTTP/1.1.
 fn the_next_connection_resumes_a_tls_1_2_session() {
     let certs = certs("resume12", "localhost", &["localhost"]);
     let a = acceptor(&certs, |a| {
         a.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+        a.set_alpn_select_callback(|_, offer| {
+            openssl::ssl::select_next_proto(b"\x08http/1.1", offer)
+                .ok_or(openssl::ssl::AlpnError::NOACK)
+        });
     });
     let (at, server) = serve_each(vec![a.clone(), a.clone(), a]);
     let mut m = multi(try_box(SystemClock::new()).unwrap());
@@ -274,6 +280,14 @@ fn the_next_connection_resumes_a_tls_1_2_session() {
             got.seen.lines
         );
         assert_eq!(resumed(got), i > 0, "{i}: {:#?}", got.seen.lines);
+        assert!(said(got, "ALPN: server accepted http/1.1"), "{i}");
+        if i > 0 {
+            assert!(
+                said(got, "SSL reusing session with ALPN '-'"),
+                "{i}: {:#?}",
+                got.seen.lines
+            );
+        }
     }
 }
 

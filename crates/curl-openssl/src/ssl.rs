@@ -788,6 +788,7 @@ impl Session {
             self.flags.keylog_done = crate::bio::log_tls12_secret(self.ssl(), log);
         }
         if err == 1 {
+            self.flags.handshake_done = true;
             self.report_handshake(io);
             if !self.alpn.wire().is_empty() {
                 self.negotiated(io)?;
@@ -1189,14 +1190,16 @@ impl Session {
 
 /// The session the library made, as the cache keeps it
 /// (`Curl_ossl_add_session`): its DER, the version of its connection, the
-/// protocol ALPN chose there, the early data it allows, and until when it
-/// is good, by the library's timeout from now.
+/// protocol ALPN chose there if the connection has recorded it
+/// (`alpn_known`), the early data it allows, and until when it is good, by
+/// the library's timeout from now.
 ///
 /// # Safety
 /// `ssl` and `session` are the library's, alive for the call: a callback's.
 pub(crate) unsafe fn ticket_of(
     ssl: *mut SSL,
     session: *mut SSL_SESSION,
+    alpn_known: bool,
     io: &mut TlsCx<'_>,
 ) -> Result<TlsTicket, OutOfMemory> {
     // SAFETY: as the caller says; no pointer, so only the length.
@@ -1225,7 +1228,7 @@ pub(crate) unsafe fn ticket_of(
     // SAFETY: as the caller says; the protocol is the SSL's.
     unsafe { openssl_sys::SSL_get0_alpn_selected(ssl, &mut proto, &mut proto_len) };
     let alpn = match usize::try_from(proto_len) {
-        Ok(n) if n > 0 && !proto.is_null() => {
+        Ok(n) if alpn_known && n > 0 && !proto.is_null() => {
             // SAFETY: `n` bytes at `proto`, the SSL's for the callback.
             let name = unsafe { core::slice::from_raw_parts(proto, n) };
             Chosen::named(name)

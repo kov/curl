@@ -159,3 +159,11 @@ witness: curl-core tls::cache::tests::a_peer_keeps_the_library_s_object
             .position(|p| p.is_free() || (p.sessions.is_empty() && p.object.is_none()));
 --- new
             .position(|p| p.is_free() || p.sessions.is_empty());
+
+=== a TLS 1.2 session is kept with the protocol ALPN chose, which C has not recorded yet
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl the_next_connection_resumes_a_tls_1_2_session
+--- old
+        Ok(n) if alpn_known && n > 0 && !proto.is_null() => {
+--- new
+        Ok(n) if n > 0 && !proto.is_null() => {

@@ -219,12 +219,26 @@ fn an_https_origins_record_is_asked_for_under_its_port() {
         "{asked:?}"
     );
     // Each look at the record is said, as it starts and as the connect
-    // looks again for its answer: C says three.
+    // looks again for its answer. The start takes an answer the server
+    // gave already, as C's does, and is not looked at again: said
+    // `started -> 0`, its answer taken before. Else it is looked at again
+    // at once (`started -> 81`), and as the connect goes on.
     let said = String::from_utf8_lossy(&run.stderr);
-    let looks = said
-        .matches("cache lookup name.test:1 queries=HTTPS -> 0 not found")
-        .count();
-    assert!(looks >= 2, "{said}");
+    let lines: Vec<&str> = said.lines().collect();
+    let look = "* [DNS] cache lookup name.test:1 queries=HTTPS -> 0 not found";
+    let started = lines
+        .iter()
+        .position(|l| l.starts_with("* [DNS] [HTTPS] hostip_resolv started -> "))
+        .unwrap_or_else(|| panic!("{said}"));
+    assert!(lines[..started].contains(&look), "{said}");
+    if lines[started].ends_with("-> 81") {
+        assert_eq!(lines[started + 1], look, "{said}");
+    } else {
+        assert!(lines[started].ends_with("-> 0"), "{said}");
+        let taken = "* [DNS] [HTTPS] ares_take_result, result=0, ares_result=0, ares_status=0, \
+                     dns=found";
+        assert!(lines[..started].contains(&taken), "{said}");
+    }
 }
 
 #[test]
@@ -575,8 +589,23 @@ fn a_resolve_is_looked_at_as_soon_as_it_starts() {
     let lines: Vec<_> = said.lines().collect();
     let started = lines
         .iter()
-        .position(|l| l.contains("hostip_resolv started -> 81"))
+        .position(|l| l.contains("hostip_resolv started -> "))
         .unwrap_or_else(|| panic!("{said}"));
+    // Both answers given before the start's own look are taken there, as
+    // C takes them: the start fails, and nothing is looked at after.
+    if !lines[started].ends_with("-> 81") {
+        assert!(
+            lines[started].ends_with("[A+AAAA] hostip_resolv started -> 6"),
+            "{said}"
+        );
+        assert!(
+            lines[..started]
+                .iter()
+                .any(|l| l.contains("[A+AAAA] ares_take_result, result=6")),
+            "{said}"
+        );
+        return;
+    }
     assert!(
         lines[started - 1].contains("resolve incomplete, responses=-"),
         "{said}"

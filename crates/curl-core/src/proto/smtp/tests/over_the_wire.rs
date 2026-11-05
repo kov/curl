@@ -1680,3 +1680,27 @@ fn quit_waits_a_second_for_its_answer() {
     );
     assert_eq!(quit_answered(None), (std::time::Duration::from_secs(1), 6));
 }
+
+/// A connection closed as its transfer ends waits for its `QUIT`'s
+/// answer with its socket polled for reading, as C's
+/// `smtp_block_statemach` polls it (`Curl_pp_statemach`): the answer
+/// wakes the multi's wait as it comes.
+#[test]
+fn quit_awaiting_its_answer_is_polled_for_it() {
+    let talk = mailing(&[b"221 bye\r\n"]).held();
+    talk.allow(6);
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, URL, |o| {
+        mail(b"hi\r\n")(o);
+        o.limits.reuse.forbid = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(talk.received().ends_with(b".\r\nQUIT\r\n"));
+    assert_eq!(talk.answered(), 6);
+    talk.allow(7);
+    let max = std::time::Duration::from_secs(1);
+    let ready = m.wait(&mut [], max, crate::multi::WaitMode::Wait, &mut NoEvents);
+    assert_eq!(ready, Ok(1));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(talk.answered(), 7);
+}

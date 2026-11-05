@@ -1929,3 +1929,27 @@ fn logout_waits_for_its_tagged_answer_past_its_bye() {
     let second = std::time::Duration::from_secs(1);
     assert_eq!(logout_answered(&[untagged]), (second, 6));
 }
+
+/// A connection closed as its transfer ends waits for its `LOGOUT`'s
+/// answer with its socket polled for reading, as C's
+/// `imap_block_statemach` polls it (`Curl_pp_statemach`): the answer
+/// wakes the multi's wait as it comes.
+#[test]
+fn logout_awaiting_its_answer_is_polled_for_it() {
+    let talk = fetching(&[b"* BYE bye\r\nA005 OK done\r\n"]).held();
+    talk.allow(5);
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), FETCH_URL, |o| {
+        o.limits.reuse.forbid = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let sent = String::from_utf8_lossy(&talk.received()).into_owned();
+    assert!(sent.ends_with("A005 LOGOUT\r\n"), "{sent}");
+    assert_eq!(talk.answered(), 5);
+    talk.allow(6);
+    let max = std::time::Duration::from_secs(1);
+    let ready = m.wait(&mut [], max, crate::multi::WaitMode::Wait, &mut NoEvents);
+    assert_eq!(ready, Ok(1));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(talk.answered(), 6);
+}

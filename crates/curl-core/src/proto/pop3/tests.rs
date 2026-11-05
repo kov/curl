@@ -1768,4 +1768,27 @@ mod over_the_wire {
         );
         assert_eq!(quit_answered(None), (std::time::Duration::from_secs(1), 5));
     }
+
+    /// A connection closed as its transfer ends waits for its `QUIT`'s
+    /// answer with its socket polled for reading, as C's
+    /// `pop3_block_statemach` polls it (`Curl_pp_statemach`): the answer
+    /// wakes the multi's wait as it comes.
+    #[test]
+    fn quit_awaiting_its_answer_is_polled_for_it() {
+        let replies = [GREETING, CAPA, OK, OK, MESSAGE, b"+OK bye\r\n"];
+        let talk = Conversation::replies(&replies, false).greeting().held();
+        talk.allow(5);
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = transfer(&mut m, &plain(), &url, |o| o.limits.reuse.forbid = true);
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        assert_eq!(talk.answered(), 5);
+        talk.allow(6);
+        let max = std::time::Duration::from_secs(1);
+        let ready = m.wait(&mut [], max, crate::multi::WaitMode::Wait, &mut NoEvents);
+        assert_eq!(ready, Ok(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(talk.answered(), 6);
+    }
 }

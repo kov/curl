@@ -395,3 +395,13 @@ witness: curl-core proto::smtp::tests::over_the_wire::quit_waits_a_second_for_it
     }
 
     /// Send the rest of `QUIT`
+
+=== SMTP's QUIT awaiting its answer is not polled for it
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::quit_awaiting_its_answer_is_polled_for_it
+--- old
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        drive::waits(&self.pp)
+--- new
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        Events::NONE

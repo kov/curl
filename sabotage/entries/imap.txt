@@ -238,3 +238,13 @@ witness: curl-core proto::imap::tests::over_the_wire::logout_waits_for_its_tagge
             untagged: Untagged::Any,
             continuations: Continuations::Unexpected,
         }
+
+=== LOGOUT awaiting its answer is not polled for it
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::logout_awaiting_its_answer_is_polled_for_it
+--- old
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        drive::waits(&self.pp)
+--- new
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        Events::NONE

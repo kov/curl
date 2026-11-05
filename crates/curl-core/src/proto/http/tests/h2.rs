@@ -687,6 +687,41 @@ fn a_stream_limit_read_while_idle_is_news_to_the_multi() {
     );
 }
 
+/// A stream limit read while idle in a read that fails leaves the
+/// connection dead all the same, and the next transfer makes a new one:
+/// a failed read is "immediate error, considered dead"
+/// (`http2_connisalive`).
+#[test]
+fn a_stream_limit_read_while_idle_in_a_failed_read_is_dead() {
+    let mut first = b"S 100\nH 1 0\n:status: 200\ncontent-length: 5\n\nD 1 5 1\nhello".to_vec();
+    for _ in 0..600 {
+        first.extend_from_slice(b"P\n");
+    }
+    // The limit, then what the session cannot read.
+    first.extend_from_slice(b"S 5\nX\n");
+    let talk = Conversation::replies(&[&first], false).per_send();
+    let fresh =
+        Conversation::replies(&[b"S 100\nH 1 0\n:status: 200\n\nD 1 2 1\nok"], false).per_send();
+    let (mut m, clock) = clocked(&[&talk, &fresh]);
+    for (path, body, conversation) in [("/1", &b"hello"[..], &talk), ("/2", b"ok", &fresh)] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let ran = get_with(&mut m, e, path, conversation.clone(), |o| {
+            o.http.version = HttpVersion::Http2Prior;
+            o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        assert_eq!(ran.seen.body(), body);
+        let text = ran.seen.text();
+        assert!(
+            !text.iter().any(|l| l.starts_with("Reusing existing")),
+            "{text:?}"
+        );
+        clock.advance(std::time::Duration::from_millis(1000));
+    }
+    assert!(!fresh.received().is_empty(), "a new connection was made");
+}
+
 /// A body the application refuses resets its stream with what C resets
 /// it with, nghttp2's callback failure as an unsigned code, which no RFC
 /// defines (`on_data_chunk_recv`'s `NGHTTP2_ERR_CALLBACK_FAILURE`).

@@ -973,7 +973,9 @@ mod tests {
     }
 
     /// The program goes to the file named, or with `-` to standard
-    /// output; a file that cannot be made is warned of.
+    /// output; a file that cannot be made is warned of. The file is
+    /// written as text, as C opens it (`FOPEN_WRITETEXT`): on Windows
+    /// each line ends with a carriage return before its line feed.
     #[test]
     fn writes_the_program_to_the_file_named() {
         let dir = std::env::temp_dir().join(format!("curl-tool-easysrc-{}", std::process::id()));
@@ -990,7 +992,11 @@ mod tests {
         });
         let mut want = Source::new().unwrap();
         want.cleanup().unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), text(&want));
+        let mut want = text(&want);
+        if cfg!(windows) {
+            want = want.replace('\n', "\r\n");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
         assert_eq!(
             said,
             "Warning: Failed to open /nonexistent/dir/prog.c to write libcurl code\n"

@@ -846,3 +846,19 @@ features: test-util
     // The rest are said as the search found them too, before a connection
     // is made or attached: of no connection yet (`url_match_conn`).
     for note in notes.drain(..0) {
+
+=== a connection lent to another multi never says the server multiplexes
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_lent_connection_to_the_origin_says_the_server_multiplexes
+--- old
+                        if !seen.multiplex && route.reaches(wanted.route) {
+--- new
+                        if seen.multiplex && route.reaches(wanted.route) {
+
+=== a connection lent to another multi says the server multiplexes whatever its origin
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_lent_connection_to_the_origin_says_the_server_multiplexes
+--- old
+                        if !seen.multiplex && route.reaches(wanted.route) {
+--- new
+                        if !seen.multiplex || route.reaches(wanted.route) {

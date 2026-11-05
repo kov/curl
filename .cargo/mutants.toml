@@ -70,6 +70,17 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # `tells` only spares a route comparison: where it is false the
+    # verdict's arm notes nothing (a pending connection for a transfer
+    # that does not multiplex), or notes a single-use one already noted.
+    # (By column: `if tells && leased.route...`; the other `&&`s of
+    # `take` are tested.)
+    'curl-core/src/conn/pool\.rs:\d+:26: replace && with \|\| in Pool::take$',
+    # Counting the pool's places is a shortcut: past it the walk counts
+    # every place and compares the count with the same limit, so going on
+    # where it would have stopped returns the same none. (By column: the
+    # `||` before `conns.len() <= max`.)
+    'curl-core/src/conn/pool\.rs:\d+:36: replace \|\| with && in over_limit$',
     # The pending queue's room only grows: making none at an equal size,
     # or reserving more than the rows it fills, leaves the same rows.
     'curl-core/src/multi/pending\.rs:.*: replace < with <= in PendingQueue<P>::reserve$',

@@ -1886,3 +1886,67 @@ fn a_multiplexed_connection_is_joined_only_as_it_may_be() {
     let found = search_lent(Versions::ALL, true);
     assert!(!matches!(found, Found::Lent(_)), "{found:?}");
 }
+
+/// What a share's search finds for a transfer that multiplexes and waits
+/// for it, with a connection to its origin still being set up, one up
+/// to it taking one request at a time, and one that multiplexes lent to
+/// another multi, to the transfer's origin (port 1) or another's (4).
+fn search_beside_a_lent_one(lent_port: u16) -> Found {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let share = crate::share::Share::new().unwrap();
+    let home = Home::Share(share.clone());
+    let pending = new(&mut share.pool(), &home, tcp(1), &mut net, now);
+    let mut single = new(&mut share.pool(), &home, tcp(1), &mut net, now);
+    up(&mut single, &mut net, now);
+    share.pool().settle(&home, &single, true);
+    let mut lent = new(&mut share.pool(), &home, tcp(lent_port), &mut net, now);
+    up(&mut lent, &mut net, now);
+    speaks_h2(&mut lent);
+    let mut theirs = Pool::new().unwrap();
+    theirs.borrow(&mut lent).unwrap();
+    share.pool().lend(lent.id());
+    let route = tcp(1);
+    let wanted = Wanted {
+        route: &route,
+        auth: Wants::NONE,
+        last: None,
+        versions: crate::proto::http::Versions::ALL,
+        multiplex: NonZeroU32::new(100),
+        pipewait: true,
+        lending: Lending::NONE,
+    };
+    let mine = Pool::new().unwrap();
+    let lending = mine.lending(&share, &wanted).unwrap();
+    let wanted = Wanted {
+        lending: lending.lending(),
+        ..wanted
+    };
+    let found = share
+        .pool()
+        .find(&home, wanted, RULES, &mut net, now, &mut Vec::new())
+        .unwrap();
+    let LentBack::Last(back) = theirs.release_lent(lent, Instant::EPOCH) else {
+        panic!("its one key");
+    };
+    for lease in [back, single, pending] {
+        share
+            .pool()
+            .release(&home, lease, Finish::default(), UNLIMITED, &mut net, now);
+    }
+    found
+}
+
+/// A connection that multiplexes, lent to another multi, still says the
+/// server multiplexes when it goes to the transfer's origin: with one
+/// taking a request at a time seen too, the transfer waits for the one
+/// being set up, as C's `seen_multiplex_conn` has it wait
+/// (`url_match_multiplex_needs`, `url_match_result`). One to another
+/// origin says nothing of this one, and none is waited for.
+#[test]
+fn a_lent_connection_to_the_origin_says_the_server_multiplexes() {
+    let found = search_beside_a_lent_one(1);
+    assert!(matches!(found, Found::Wait), "{found:?}");
+    let found = search_beside_a_lent_one(4);
+    assert!(matches!(found, Found::Nothing), "{found:?}");
+}

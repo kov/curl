@@ -1185,3 +1185,14 @@ witness: curl-core proto::http::tests::h2::a_stream_limit_read_while_idle_in_a_f
                 if alive && limit_changed {
 --- new
                 if alive || limit_changed {
+
+=== an idle connection its server closed is taken for dead
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_its_server_closed_is_alive_and_reused
+--- old
+            Ok(Recv::Eof) => {
+                let wants = self.session.wants();
+                wants.read || wants.write
+            }
+--- new
+            Ok(Recv::Eof) => false,

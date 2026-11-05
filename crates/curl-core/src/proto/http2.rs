@@ -638,7 +638,14 @@ impl H2Conn {
         );
         let alive = match read {
             Ok(Recv::WouldBlock) => true,
-            Ok(Recv::Eof) | Err(_) => false,
+            // The peer's close is nothing for the session to read: alive
+            // while it wants more (`should_close_session`), as C's
+            // buffered read takes the end of the stream for no error.
+            Ok(Recv::Eof) => {
+                let wants = self.session.wants();
+                wants.read || wants.write
+            }
+            Err(_) => false,
             Ok(Recv::Data(_)) => {
                 let mut rx = std::mem::take(below.rx_mut());
                 let mut goaway = false;

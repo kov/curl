@@ -722,6 +722,72 @@ fn a_stream_limit_read_while_idle_in_a_failed_read_is_dead() {
     assert!(!fresh.received().is_empty(), "a new connection was made");
 }
 
+/// An idle connection whose server closed it, sending no GOAWAY, is alive
+/// to its health check: the end of the stream is nothing for the session
+/// to read, which still wants more (`http2_connisalive`'s
+/// `should_close_session`). The next transfer reuses it, and fails as the
+/// server's close reaches its stream. The C build, against a server that
+/// sends its FIN a moment after its response, says the same of its
+/// internal handle a second and a half later, reuses the connection, and
+/// fails the transfer with `CURLE_HTTP2`, making no new connection.
+#[test]
+fn an_idle_connection_its_server_closed_is_alive_and_reused() {
+    #[derive(Clone, Default)]
+    struct Written(Arc<Mutex<Vec<u8>>>);
+    impl crate::handler::TextSink for Written {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+    let talk = Conversation::replies(&[RESPONSE], true).per_send();
+    let (mut m, clock) = clocked(&[&talk]);
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Http2,
+        crate::components::Level::Info,
+    );
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut results = Vec::new();
+    for path in ["/1", "/2"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let ran = get_with(&mut m, e, path, talk.clone(), |o| {
+            o.http.version = HttpVersion::Http2Prior;
+        });
+        let reused = ran
+            .seen
+            .text()
+            .iter()
+            .any(|l| l.starts_with("Reusing existing"));
+        results.push((ran.result, reused));
+        // Idle long enough to be checked.
+        clock.advance(std::time::Duration::from_millis(1500));
+    }
+    assert_eq!(
+        results,
+        [(Ok(()), false), (Err(ErrorKind::Http2), true)],
+        "the second reuses the closed connection and fails"
+    );
+    let internal = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
+    let said: Vec<&str> = internal
+        .lines()
+        .filter(|l| l.starts_with("* [HTTP/2] ") && !l.contains("FRAME["))
+        .take(2)
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "* [HTTP/2] connisalive, recv pending input -> 0, 0",
+            "* [HTTP/2] conn alive -> 1, input_pending=0",
+        ],
+        "{internal}"
+    );
+}
+
 /// A body the application refuses resets its stream with what C resets
 /// it with, nghttp2's callback failure as an unsigned code, which no RFC
 /// defines (`on_data_chunk_recv`'s `NGHTTP2_ERR_CALLBACK_FAILURE`).

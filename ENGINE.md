@@ -2026,7 +2026,10 @@ take it answers in HTTP/1.1.
 
 **The connection's life.** An idle HTTP/2 connection with input waiting is not dead as an HTTP/1
 one is: the session's `is_alive` reads the frames (a SETTINGS or PING), and it is alive unless the
-session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). A
+session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). The
+peer's close with no GOAWAY before it is nothing for the session to read, so the connection is
+still alive to the check, and the transfer that reuses it fails with `CURLE_HTTP2` as the close
+reaches its stream, as C's does (its buffered read takes the end for no error). A
 connection that shuts down has the session say GOAWAY first, with C's debug data, through its
 `shutdown`, which never waits (`cf_h2_shutdown`). A read the session fails, whichever
 transfer's step it is in, is the session's, not the stream's: the session (`H2Conn`) records it

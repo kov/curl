@@ -43,6 +43,11 @@ impl DebugHandler for Text {
 
 /// A multi whose server at `PORT` takes `conversations` in turn.
 fn serving(conversations: &[&Conversation]) -> Multi {
+    clocked(conversations).0
+}
+
+/// `serving`'s multi, and the clock it runs on.
+fn clocked(conversations: &[&Conversation]) -> (Multi, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
@@ -50,12 +55,12 @@ fn serving(conversations: &[&Conversation]) -> Multi {
         net = net.with_conversation(at, (*c).clone());
     }
     let env = Env {
-        clock: Box::new(clock),
+        clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    (Multi::new(env).unwrap(), clock)
 }
 
 fn plain() -> SharedLibraries {
@@ -1895,4 +1900,32 @@ fn the_meter_starts_over_as_the_request_is_made() {
         Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, b"A003 OK\r\n"], false).greeting();
     assert_eq!(meter(&talk, "imap://u:p@127.0.0.1:PORT/"), [zeros; 5]);
     assert_eq!(meter(&fetching(&[]), FETCH_URL), [zeros; 2]);
+}
+
+/// The `LOGOUT` the connection says as it closes waits for its tagged
+/// answer before the socket closes, past the untagged `BYE` that comes
+/// first, as C's `imap_block_statemach` reads on in `IMAP_LOGOUT`; a
+/// second at most with nothing more coming, as the C build lets a silent
+/// server go after 1.03 s. `answer` is the server's: how long the multi's
+/// cleanup took, and how many replies were read.
+fn logout_answered(answer: &[&[u8]]) -> (std::time::Duration, usize) {
+    use crate::time::Clock as _;
+    let talk = fetching(answer);
+    let (mut m, clock) = clocked(&[&talk]);
+    let ran = transfer(&mut m, &plain(), FETCH_URL, |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let before = clock.now();
+    drop(m);
+    let sent = String::from_utf8_lossy(&talk.received()).into_owned();
+    assert!(sent.ends_with("A005 LOGOUT\r\n"), "{sent}");
+    (clock.now().since(before), talk.answered())
+}
+
+#[test]
+fn logout_waits_for_its_tagged_answer_past_its_bye() {
+    let bye: &[u8] = b"* BYE bye\r\nA005 OK done\r\n";
+    assert_eq!(logout_answered(&[bye]), (std::time::Duration::ZERO, 6));
+    let untagged: &[u8] = b"* BYE bye\r\n";
+    let second = std::time::Duration::from_secs(1);
+    assert_eq!(logout_answered(&[untagged]), (second, 6));
 }

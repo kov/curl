@@ -4032,12 +4032,13 @@ fn quit_waits_for_the_abor_s_answer_before_the_socket_closes() {
     assert!(control.answered() > before_abor, "{said}");
 }
 
-/// A `QUIT` whose answer never comes is waited on for the shutdown's
-/// time, two seconds, even by a multi's cleanup that gives its
-/// shutdowns none: C waits inside its disconnect, whatever the cleanup
-/// gives the layers after it (`DEFAULT_SHUTDOWN_TIMEOUT_MS`).
+/// A `QUIT` whose answer never comes is waited on for a second, even by
+/// a multi's cleanup that gives its shutdowns no time: C waits inside
+/// its disconnect, whatever the cleanup gives the layers after it, and
+/// gives up on a poll of a second that found nothing (`Curl_pp_statemach`
+/// disconnecting). The C build lets a silent server go after 1.03 s.
 #[test]
-fn quit_waits_for_an_answer_no_longer_than_the_shutdown_s_time() {
+fn quit_waits_for_an_answer_no_longer_than_a_second_of_silence() {
     let control = cut_short(None, None);
     let file = data(b"hello");
     let (mut m, counted, clock) = clocked(&[&control], &[&file]);
@@ -4050,10 +4051,10 @@ fn quit_waits_for_an_answer_no_longer_than_the_shutdown_s_time() {
     assert_eq!(counted.open(), 0);
     let sent = String::from_utf8_lossy(&control.received()).into_owned();
     assert!(sent.ends_with("ABOR\r\nQUIT\r\n"), "{sent}");
-    // C's `DEFAULT_SHUTDOWN_TIMEOUT_MS`, counted from the `QUIT`.
+    // A second, counted from the `QUIT`.
     assert_eq!(
         clock.now().since(released),
-        std::time::Duration::from_secs(2)
+        std::time::Duration::from_secs(1)
     );
 }
 
@@ -5177,4 +5178,35 @@ fn a_connection_is_reused_only_with_the_same_account() {
     };
     assert!(!run(b"mine"), "the same account takes the connection");
     assert!(run(b"another"), "another makes its own");
+}
+
+/// Each part of the answer a `QUIT` awaits gives it another second, as
+/// each of C's polls that finds some lasts a second again
+/// (`Curl_pp_statemach`): here a two-line answer to `ABOR`, its first
+/// line 0.8 s after the `QUIT`, is still awaited 1.6 s after it, and
+/// read whole once its last line comes.
+#[test]
+fn quit_s_answer_in_parts_restarts_its_second_with_each() {
+    let control = cut_short(Some(b"500-no\r\n"), Some(b"500 ABOR\r\n")).held();
+    let before_abor = LOGIN_AND_SETUP.len() + 1;
+    control.allow(before_abor);
+    let file = data(b"hello");
+    let (mut m, counted, clock) = clocked(&[&control], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    assert!(String::from_utf8_lossy(&control.received()).ends_with("ABOR\r\nQUIT\r\n"));
+    assert_eq!(counted.open(), 1, "the control connection awaits");
+    let step = std::time::Duration::from_millis(800);
+    clock.advance(step);
+    control.allow(before_abor + 1);
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(step);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(counted.open(), 1, "still awaited after its first part");
+    control.allow(before_abor + 2);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(counted.open(), 0, "closed once answered");
+    assert_eq!(control.answered(), before_abor + 2);
 }

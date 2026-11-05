@@ -485,13 +485,13 @@ features: test-util debug-hooks
             return Tried::Waiting;
         }
 --- new
-        if self.answer_awaited {
-            self.answer_awaited = false;
+        if self.answer_due.is_some() {
+            self.answer_due = None;
         }
 
 === a multi's cleanup closes a connection whose QUIT still awaits its answer
 file: crates/curl-core/src/multi/mod.rs
-witness: curl-core proto::ftp::tests::quit_waits_for_an_answer_no_longer_than_the_shutdown_s_time
+witness: curl-core proto::ftp::tests::quit_waits_for_an_answer_no_longer_than_a_second_of_silence
 features: test-util debug-hooks
 --- old
             if spent >= limit && answer.is_none() {
@@ -507,20 +507,19 @@ features: test-util debug-hooks
         match carrier.send(cx, pp.unsent()) {
 --- new
     if pp.needs_flush() {
-        return Handshake::Done;
+        return Goodbye::Done;
         match carrier.send(cx, pp.unsent()) {
 
 === a connection awaiting its QUIT's answer is not polled for it
-file: crates/curl-core/src/conn/line.rs
+file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::quit_awaiting_its_answer_stalls_no_other_transfer
 features: test-util debug-hooks
 --- old
-            LineConn::Ftp(ref p) => p.goodbye_wants(),
+    pub(crate) fn goodbye_wants(&self) -> crate::conn::io::Events {
+        drive::waits(&self.pp)
 --- new
-            LineConn::Ftp(ref p) => {
-                let _ = p.goodbye_wants();
-                super::io::Events::NONE
-            }
+    pub(crate) fn goodbye_wants(&self) -> crate::conn::io::Events {
+        crate::conn::io::Events::NONE
 
 === a connection whose transfer was removed in DONE says QUIT
 file: crates/curl-core/src/proto/ftp.rs
@@ -530,3 +529,30 @@ features: test-util debug-hooks
         if dead || self.pp.needs_flush() || !self.ctl_valid {
 --- new
         if dead && self.pp.needs_flush() || !self.ctl_valid {
+
+=== a goodbye's answer is given up on at once, not after a second of silence
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::ftp::tests::quit_waits_for_the_abor_s_answer_before_the_socket_closes
+features: test-util debug-hooks
+--- old
+            Goodbye::Awaited { moved: false } => (now < due).then_some(due),
+--- new
+            Goodbye::Awaited { moved: false } => None,
+
+=== a goodbye's answer is waited on for the shutdown's whole time
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::ftp::tests::quit_waits_for_an_answer_no_longer_than_a_second_of_silence
+features: test-util debug-hooks
+--- old
+            Goodbye::Awaited { moved: false } => (now < due).then_some(due),
+--- new
+            Goodbye::Awaited { moved: false } => Some(due.after(BLOCKING_POLL)),
+
+=== a goodbye's second of silence is counted from the goodbye, whatever comes of its answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::ftp::tests::quit_s_answer_in_parts_restarts_its_second_with_each
+features: test-util debug-hooks
+--- old
+            Goodbye::Awaited { moved: true } => Some(now.after(BLOCKING_POLL)),
+--- new
+            Goodbye::Awaited { moved: true } => (now < due).then_some(due),

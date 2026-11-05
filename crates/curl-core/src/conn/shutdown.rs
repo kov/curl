@@ -20,9 +20,11 @@ use curl_alloc::TryVec as _;
 
 use super::io::{Events, Net, Socket, SocketKey};
 use super::layer::Handshake;
+use super::line::Goodbye;
 use super::{Conn, Peer, Route, Transport};
 use crate::components::Component;
 use crate::conn::quic::RecvRoom;
+use crate::proto::pingpong::drive::BLOCKING_POLL;
 use crate::time::Instant;
 use crate::trace::{Internal, InternalCx};
 
@@ -80,8 +82,9 @@ pub(crate) struct Shutting {
     said: bool,
     /// Its protocol's goodbye awaits an answer, which C's blocking
     /// disconnect waits for before the layers shut down (`ftp_quit`):
-    /// the shutdown waits for it, in its own time.
-    answer_awaited: bool,
+    /// the shutdown waits for it, in its own time, until this instant
+    /// unless more of it comes (`BLOCKING_POLL`).
+    answer_due: Option<Instant>,
     /// A try finished it, its layers done, failed or out of time
     /// (`bits.shutdown_filters`): its close is no forced one.
     finished: bool,
@@ -106,7 +109,7 @@ impl Shutting {
             started_ms,
             tried: false,
             said: false,
-            answer_awaited: false,
+            answer_due: None,
             finished: false,
         }
     }
@@ -116,25 +119,37 @@ impl Shutting {
     /// the connection is in.
     fn say_goodbye(&mut self, cx: &mut InternalCx<'_>, dead: bool) {
         if !std::mem::replace(&mut self.said, true) {
-            let trace = cx.trace;
-            self.answer_awaited = self.conn.protocol_goodbye(cx, trace, dead) == Handshake::Waiting;
+            let (trace, now) = (cx.trace, cx.now);
+            self.answer_due = match self.conn.protocol_goodbye(cx, trace, dead) {
+                Goodbye::Done => None,
+                Goodbye::Awaited { .. } => Some(now.after(BLOCKING_POLL)),
+            };
         }
     }
 
     /// Whether its protocol's goodbye still awaits an answer, read on as
-    /// far as the connection lets it now.
+    /// far as the connection lets it now: no longer once a poll of C's
+    /// blocking drive (`BLOCKING_POLL`) passed with none of it, as C's
+    /// gives up on one that found nothing as a connection disconnects
+    /// (`Curl_pp_statemach`).
     fn awaits_answer(&mut self, cx: &mut InternalCx<'_>) -> bool {
-        if self.answer_awaited {
-            self.answer_awaited = self.conn.goodbye_answer(cx) == Handshake::Waiting;
-        }
-        self.answer_awaited
+        let Some(due) = self.answer_due else {
+            return false;
+        };
+        let now = cx.now;
+        self.answer_due = match self.conn.goodbye_answer(cx) {
+            Goodbye::Done => None,
+            Goodbye::Awaited { moved: true } => Some(now.after(BLOCKING_POLL)),
+            Goodbye::Awaited { moved: false } => (now < due).then_some(due),
+        };
+        self.answer_due.is_some()
     }
 
     /// The time left for the answer its protocol's goodbye awaits, if it
-    /// awaits one.
+    /// awaits one: until it is due, within the shutdown's time.
     fn answer_time_left(&self, now: Instant) -> Option<Duration> {
-        self.answer_awaited
-            .then(|| Duration::from_millis(self.left_ms(now).max(0).unsigned_abs()))
+        let left = Duration::from_millis(self.left_ms(now).max(0).unsigned_abs());
+        self.answer_due.map(|due| due.since(now).min(left))
     }
 
     /// Milliseconds left at `now` of the shutdown's time, -1 for none
@@ -254,7 +269,7 @@ impl Shutting {
         let Transport::Stream(stream) = &self.conn.transport else {
             return None;
         };
-        if self.answer_awaited {
+        if self.answer_due.is_some() {
             let line = self.conn.line().expect("a goodbye awaits on a line");
             return Some((stream.socket(), line.goodbye_wants()));
         }
@@ -495,7 +510,13 @@ impl ShutdownSet {
                 self.closed(entry, net);
                 continue;
             }
-            let ms = self.conns[i].shutting.left_ms(now);
+            let mut ms = self.conns[i].shutting.left_ms(now);
+            // An answer awaited is given up on when due, a whole
+            // millisecond on at least, as it is not due yet.
+            if let Some(d) = self.conns[i].shutting.answer_time_left(now) {
+                let d = i64::try_from(d.as_micros().div_ceil(1000)).unwrap_or(i64::MAX);
+                ms = ms.min(d.max(1));
+            }
             if ms != 0 && (next_ms == 0 || ms < next_ms) {
                 next_ms = ms;
             }

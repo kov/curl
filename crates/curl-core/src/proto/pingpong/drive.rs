@@ -7,6 +7,7 @@ use super::{Ends, Pingpong, READ_SIZE, ReplySize, ResponseTime, Wants};
 use crate::conn::RecvFailed;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::layer::Lower as _;
+use crate::conn::line::Goodbye;
 use crate::conn::mux::Carrier;
 use crate::deliver::Pipeline;
 use crate::error::ErrorKind;
@@ -173,11 +174,36 @@ fn recv<H: Host>(
     }
 }
 
+/// Say a goodbye, `command` after `prefix` if one is given, as a
+/// connection shuts down, and read on its answer as far as the connection
+/// lets that now (`goodbye_answer`). A command that cannot be built or
+/// sent ends it, as a failed `Curl_pp_sendf` ends C's `ftp_quit` and the
+/// others' disconnects.
+pub(crate) fn goodbye<E: Ends>(
+    cx: &mut dyn crate::conn::layer::LayerCx,
+    pp: &mut Pingpong,
+    carrier: &mut Carrier<'_>,
+    ends: &E,
+    prefix: Option<&[u8]>,
+    command: &[u8],
+) -> Goodbye {
+    let Ok(unsent) = pp.command(prefix, &[command]) else {
+        return Goodbye::Done;
+    };
+    let n = match carrier.send(cx, unsent.bytes()) {
+        Ok(Sent::Bytes(n)) => n.get(),
+        Ok(Sent::WouldBlock) => 0,
+        Err(_) => return Goodbye::Done,
+    };
+    let _sent = unsent.wrote(n, cx.now());
+    goodbye_answer(cx, pp, carrier, ends)
+}
+
 /// Send the rest of a goodbye and read on its answer as a connection
 /// shuts down, as far as it lets that now (C's blocking
-/// `Curl_pp_statemach` in `ftp_quit`): done once any whole reply is read,
-/// or the connection fails or closes, all of which C's wait ends on;
-/// waiting while it would block. What is held is looked through before
+/// `Curl_pp_statemach` in `ftp_quit` and the others' disconnects): done
+/// once a whole reply is read, or the connection fails or closes;
+/// awaited while it would block. What is held is looked through before
 /// anything is read, as C reads its `overflow` first. Untraced and given
 /// to no application: the transfer is gone (C's internal handle reads
 /// it).
@@ -186,36 +212,40 @@ pub(crate) fn goodbye_answer<E: Ends>(
     pp: &mut Pingpong,
     carrier: &mut Carrier<'_>,
     ends: &E,
-) -> crate::conn::layer::Handshake {
-    use crate::conn::layer::Handshake;
+) -> Goodbye {
+    let mut moved = false;
     if pp.needs_flush() {
         match carrier.send(cx, pp.unsent()) {
-            Ok(Sent::Bytes(n)) => pp.flushed(n.get(), cx.now()),
+            Ok(Sent::Bytes(n)) => {
+                pp.flushed(n.get(), cx.now());
+                moved = true;
+            }
             Ok(Sent::WouldBlock) => {}
-            Err(_) => return Handshake::Done,
+            Err(_) => return Goodbye::Done,
         }
         if pp.needs_flush() {
-            return Handshake::Waiting;
+            return Goodbye::Awaited { moved };
         }
     }
     loop {
         match pp.next(ends) {
             Ok(super::Event::NeedMore) => {}
             Ok(super::Event::Line(_)) => continue,
-            Ok(super::Event::Reply { .. }) | Err(_) => return Handshake::Done,
+            Ok(super::Event::Reply { .. }) | Err(_) => return Goodbye::Done,
         }
         match carrier.recv(cx, READ_SIZE) {
-            Ok(Recv::WouldBlock) => return Handshake::Waiting,
+            Ok(Recv::WouldBlock) => return Goodbye::Awaited { moved },
             Ok(Recv::Data(_)) => {
                 let rx = carrier.rx_mut();
                 let n = rx.filled().len().min(READ_SIZE);
                 let pushed = pp.push(&rx.filled()[..n]);
                 rx.consume(n);
                 if pushed.is_err() {
-                    return Handshake::Done;
+                    return Goodbye::Done;
                 }
+                moved = true;
             }
-            Ok(Recv::Eof) | Err(_) => return Handshake::Done,
+            Ok(Recv::Eof) | Err(_) => return Goodbye::Done,
         }
     }
 }
@@ -369,7 +399,7 @@ pub(crate) fn holds(pp: &Pingpong, carrier: &mut Carrier<'_>) -> bool {
 
 /// The longest C's blocking drive polls before it checks the progress
 /// again (`Curl_pp_statemach`'s `interval_ms`).
-const BLOCKING_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+pub(crate) const BLOCKING_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What a back and forth waits for on its connection (`Curl_pp_pollset`).
 pub(crate) fn waits(pp: &Pingpong) -> Events {

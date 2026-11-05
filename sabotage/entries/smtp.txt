@@ -193,16 +193,10 @@ witness: curl-core proto::smtp::tests::over_the_wire::a_mail_is_sent_with_its_en
 features: test-util
 --- old
         if dead || self.pp.needs_flush() {
-            return;
-        }
-        // What does not go now is not said.
-        let _sent = below.send(cx, b"QUIT\r\n");
+            return Goodbye::Done;
 --- new
         if dead || !self.pp.needs_flush() {
-            return;
-        }
-        // What does not go now is not said.
-        let _sent = below.send(cx, b"QUIT\r\n");
+            return Goodbye::Done;
 
 === a command's answer is written though no body is wanted
 file: crates/curl-core/src/proto/smtp.rs
@@ -382,3 +376,22 @@ witness: curl-core proto::smtp::tests::over_the_wire::starttls_is_timed_and_said
 --- new
         let mut topped = *self;
         topped.push(filter, connected);
+
+=== SMTP's QUIT is not waited on for its answer
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::quit_waits_a_second_for_its_answer
+--- old
+            None,
+            b"QUIT",
+        )
+    }
+
+    /// Send the rest of `QUIT`
+--- new
+            None,
+            b"QUIT",
+        );
+        Goodbye::Done
+    }
+
+    /// Send the rest of `QUIT`

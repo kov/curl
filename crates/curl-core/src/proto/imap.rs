@@ -19,7 +19,7 @@ use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
 use crate::conn::io::Events;
-use crate::conn::line::LineConn;
+use crate::conn::line::{Goodbye, LineConn};
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, ConnNumber, RouteCold, Scheme};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
@@ -143,25 +143,57 @@ impl ImapConn {
     }
 
     /// Say `LOGOUT`, as the connection shuts down, unless it is `dead`
-    /// or a command waits half sent (`imap_disconnect`): sent as the
-    /// connection takes it now, its answer not waited on.
+    /// or a command waits half sent (`imap_disconnect`): awaited while
+    /// what the connection did not take of it waits to go, or its tagged
+    /// answer does, which [`goodbye_answer`](Self::goodbye_answer) moves
+    /// on.
     pub(crate) fn goodbye(
         &mut self,
         cx: &mut dyn crate::conn::layer::LayerCx,
         mut below: Carrier<'_>,
         dead: bool,
-    ) {
+    ) -> Goodbye {
         if dead || self.pp.needs_flush() {
-            return;
+            return Goodbye::Done;
         }
         let tag = self.next_tag();
-        let mut line = [0u8; 4 + 1 + 6 + 2];
-        let t = tag.bytes();
-        line[..t.len()].copy_from_slice(t);
-        let rest = b" LOGOUT\r\n";
-        line[t.len()..t.len() + rest.len()].copy_from_slice(rest);
-        // What does not go now is not said.
-        let _sent = below.send(cx, &line[..t.len() + rest.len()]);
+        let ends = self.goodbye_ends();
+        drive::goodbye(
+            cx,
+            &mut self.pp,
+            &mut below,
+            &ends,
+            Some(tag.bytes()),
+            b"LOGOUT",
+        )
+    }
+
+    /// Send the rest of `LOGOUT`, then read on to its tagged answer, the
+    /// untagged `BYE` before it passed over (`imap_block_statemach` in
+    /// `IMAP_LOGOUT`).
+    pub(crate) fn goodbye_answer(
+        &mut self,
+        cx: &mut dyn crate::conn::layer::LayerCx,
+        mut below: Carrier<'_>,
+    ) -> Goodbye {
+        let ends = self.goodbye_ends();
+        drive::goodbye_answer(cx, &mut self.pp, &mut below, &ends)
+    }
+
+    /// Where the answer to `LOGOUT` ends: its tagged reply, as C's
+    /// `IMAP_LOGOUT` state reads no untagged one.
+    fn goodbye_ends(&self) -> Imap<'static> {
+        Imap {
+            tag: self.tag,
+            untagged: Untagged::Ignored,
+            continuations: Continuations::Unexpected,
+        }
+    }
+
+    /// What the goodbye waits on: to send the rest of `LOGOUT`, or its
+    /// answer.
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        drive::waits(&self.pp)
     }
 }
 

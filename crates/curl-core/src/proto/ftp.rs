@@ -30,7 +30,8 @@ use crate::components::Component;
 use std::net::{IpAddr, SocketAddr};
 
 use crate::conn::io::{Closer, Events, InterfaceAddress, Remote, Sock, Socket};
-use crate::conn::layer::{Handshake, LayerAnswer, LayerQuery, Lower as _};
+use crate::conn::layer::{LayerAnswer, LayerQuery, Lower as _};
+use crate::conn::line::Goodbye;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, Held, NetRoute, Peer, RouteCold, Scheme};
@@ -199,23 +200,12 @@ impl FtpConn {
         cx: &mut dyn crate::conn::layer::LayerCx,
         mut below: Carrier<'_>,
         dead: bool,
-    ) -> Handshake {
+    ) -> Goodbye {
         if dead || self.pp.needs_flush() || !self.ctl_valid {
-            return Handshake::Done;
+            return Goodbye::Done;
         }
         self.state = State::Quit;
-        // A command that cannot be built or sent ends it, as a failed
-        // `Curl_pp_sendf` ends `ftp_quit`.
-        let Ok(unsent) = self.pp.command(None, &[b"QUIT"]) else {
-            return Handshake::Done;
-        };
-        let n = match below.send(cx, unsent.bytes()) {
-            Ok(crate::conn::io::Sent::Bytes(n)) => n.get(),
-            Ok(crate::conn::io::Sent::WouldBlock) => 0,
-            Err(_) => return Handshake::Done,
-        };
-        let _sent = unsent.wrote(n, cx.now());
-        self.goodbye_answer(cx, below)
+        drive::goodbye(cx, &mut self.pp, &mut below, &Ends, None, b"QUIT")
     }
 
     /// Send the rest of `QUIT`, then read on the answer it awaits,
@@ -228,17 +218,14 @@ impl FtpConn {
         &mut self,
         cx: &mut dyn crate::conn::layer::LayerCx,
         mut below: Carrier<'_>,
-    ) -> Handshake {
+    ) -> Goodbye {
         drive::goodbye_answer(cx, &mut self.pp, &mut below, &Ends)
     }
 
     /// What the goodbye waits on: to send the rest of `QUIT`, or its
     /// answer.
     pub(crate) fn goodbye_wants(&self) -> crate::conn::io::Events {
-        match self.pp.wants() {
-            super::pingpong::Wants::Send => crate::conn::io::Events::OUT,
-            super::pingpong::Wants::Recv => crate::conn::io::Events::IN,
-        }
+        drive::waits(&self.pp)
     }
 }
 

@@ -43,6 +43,11 @@ impl DebugHandler for Text {
 
 /// A multi whose server at `PORT` takes `conversations` in turn.
 fn serving(conversations: &[&Conversation]) -> Multi {
+    clocked(conversations).0
+}
+
+/// `serving`'s multi, and the clock it runs on.
+fn clocked(conversations: &[&Conversation]) -> (Multi, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
@@ -50,12 +55,12 @@ fn serving(conversations: &[&Conversation]) -> Multi {
         net = net.with_conversation(at, (*c).clone());
     }
     let env = Env {
-        clock: Box::new(clock),
+        clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    (Multi::new(env).unwrap(), clock)
 }
 
 fn plain() -> SharedLibraries {
@@ -1646,4 +1651,32 @@ fn a_command_s_answer_to_come_waits_on_its_socket() {
         "{said}"
     );
     assert_eq!(waits(&mut m), [Events::IN]);
+}
+
+/// The `QUIT` the connection says as it closes waits for its answer
+/// before the socket closes, as C's `smtp_block_statemach` does in its
+/// disconnect; a second at most with nothing of it coming, as the C build
+/// lets a silent server go after 1.03 s. `quit` is the server's answer,
+/// if it gives one: how long the multi's cleanup took, and how many
+/// replies were read.
+fn quit_answered(quit: Option<&[u8]>) -> (std::time::Duration, usize) {
+    use crate::time::Clock as _;
+    let talk = mailing(quit.as_slice());
+    let (mut m, clock) = clocked(&[&talk]);
+    let ran = transfer(&mut m, URL, mail(b"hi\r\n"));
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let before = clock.now();
+    drop(m);
+    assert!(talk.received().ends_with(b".\r\nQUIT\r\n"));
+    (clock.now().since(before), talk.answered())
+}
+
+#[test]
+fn quit_waits_a_second_for_its_answer() {
+    // The greeting, EHLO, MAIL, RCPT, DATA, the body's, and QUIT's.
+    assert_eq!(
+        quit_answered(Some(b"221 bye\r\n")),
+        (std::time::Duration::ZERO, 7)
+    );
+    assert_eq!(quit_answered(None), (std::time::Duration::from_secs(1), 6));
 }

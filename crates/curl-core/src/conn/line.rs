@@ -7,7 +7,7 @@
 //! the test protocol's. A WebSocket's is put on the HTTP/1.1 connection
 //! its upgrade switched.
 
-use super::layer::{Handshake, LayerCx};
+use super::layer::LayerCx;
 use super::mux::Carrier;
 
 /// A protocol's state on its connection.
@@ -53,23 +53,24 @@ impl LineConn {
 
     /// Say goodbye to the peer as the connection shuts down, asked once
     /// whatever the shutdown does after (`cshutdn_run_conn_handler`):
-    /// sent as the connection takes it now. FTP's `QUIT` awaits an
-    /// answer, as C's blocking wait does: `Waiting` while it has not
-    /// come, which [`goodbye_answer`](Self::goodbye_answer) reads on;
-    /// the others' answers are never waited on. A connection `dead`,
-    /// whose state no one knows (a transfer on it aborted), is told so
-    /// and says nothing (`dead_connection`).
+    /// sent as the connection takes it now. FTP's `QUIT`, POP3's and
+    /// SMTP's, and IMAP's `LOGOUT` await an answer, as C's blocking waits
+    /// do (`ftp_quit`, `pop3_block_statemach` and the others):
+    /// [`Goodbye::Awaited`] while it has not come, which
+    /// [`goodbye_answer`](Self::goodbye_answer) reads on. A connection
+    /// `dead`, whose state no one knows (a transfer on it aborted), is
+    /// told so and says nothing (`dead_connection`).
     pub(crate) fn goodbye(
         &mut self,
         cx: &mut dyn LayerCx,
         below: Carrier<'_>,
         dead: bool,
-    ) -> Handshake {
+    ) -> Goodbye {
         match *self {
             LineConn::Ftp(ref mut p) => return p.goodbye(cx, below, dead),
-            LineConn::Pop3(ref mut p) => p.goodbye(cx, below, dead),
-            LineConn::Imap(ref mut p) => p.goodbye(cx, below, dead),
-            LineConn::Smtp(ref mut p) => p.goodbye(cx, below, dead),
+            LineConn::Pop3(ref mut p) => return p.goodbye(cx, below, dead),
+            LineConn::Imap(ref mut p) => return p.goodbye(cx, below, dead),
+            LineConn::Smtp(ref mut p) => return p.goodbye(cx, below, dead),
             // Said dead or not, as C's SSH disconnect ignores it.
             LineConn::Ssh(ref mut p) => p.goodbye(cx),
             // Unbound dead or not, as C's LDAP disconnect ignores it.
@@ -78,16 +79,19 @@ impl LineConn {
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
         }
-        Handshake::Done
+        Goodbye::Done
     }
 
     /// Read on the answer its goodbye awaits, as far as the connection
     /// lets that now: `Done` once it came, or once the connection failed
     /// or closed.
-    pub(crate) fn goodbye_answer(&mut self, cx: &mut dyn LayerCx, below: Carrier<'_>) -> Handshake {
+    pub(crate) fn goodbye_answer(&mut self, cx: &mut dyn LayerCx, below: Carrier<'_>) -> Goodbye {
         match *self {
             LineConn::Ftp(ref mut p) => p.goodbye_answer(cx, below),
-            _ => panic!("only FTP's goodbye awaits an answer"),
+            LineConn::Pop3(ref mut p) => p.goodbye_answer(cx, below),
+            LineConn::Imap(ref mut p) => p.goodbye_answer(cx, below),
+            LineConn::Smtp(ref mut p) => p.goodbye_answer(cx, below),
+            _ => panic!("only a pingpong protocol's goodbye awaits an answer"),
         }
     }
 
@@ -96,9 +100,23 @@ impl LineConn {
     pub(crate) fn goodbye_wants(&self) -> super::io::Events {
         match *self {
             LineConn::Ftp(ref p) => p.goodbye_wants(),
-            _ => panic!("only FTP's goodbye awaits an answer"),
+            LineConn::Pop3(ref p) => p.goodbye_wants(),
+            LineConn::Imap(ref p) => p.goodbye_wants(),
+            LineConn::Smtp(ref p) => p.goodbye_wants(),
+            _ => panic!("only a pingpong protocol's goodbye awaits an answer"),
         }
     }
+}
+
+/// How a protocol's goodbye stands, said or read on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Goodbye {
+    /// Nothing is awaited: it awaits no answer, or the answer came, or
+    /// the connection failed or closed.
+    Done,
+    /// Its answer is awaited; `moved` if this call sent some of the
+    /// goodbye or read some of the answer.
+    Awaited { moved: bool },
 }
 
 /// The test protocol's state: the goodbye it sends.

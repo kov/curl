@@ -226,3 +226,15 @@ witness: curl-core proto::imap::tests::over_the_wire::a_failed_starttls_is_said_
             if let Some(chain) = chain(false) {
 --- new
             if let Some(chain) = chain(true) {
+
+=== LOGOUT's answer ends at its untagged BYE
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::logout_waits_for_its_tagged_answer_past_its_bye
+--- old
+            untagged: Untagged::Ignored,
+            continuations: Continuations::Unexpected,
+        }
+--- new
+            untagged: Untagged::Any,
+            continuations: Continuations::Unexpected,
+        }

@@ -183,6 +183,11 @@ mod over_the_wire {
 
     /// A multi whose server at `PORT` takes `conversations` in turn.
     fn serving(conversations: &[&Conversation]) -> Multi {
+        clocked(conversations).0
+    }
+
+    /// `serving`'s multi, and the clock it runs on.
+    fn clocked(conversations: &[&Conversation]) -> (Multi, ManualClock) {
         let clock = ManualClock::new().unwrap();
         let at = SocketAddr::from(([127, 0, 0, 1], PORT));
         let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
@@ -190,12 +195,12 @@ mod over_the_wire {
             net = net.with_conversation(at, (*c).clone());
         }
         let env = Env {
-            clock: Box::new(clock),
+            clock: Box::new(clock.clone()),
             net: Box::new(net),
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        Multi::new(env).unwrap()
+        (Multi::new(env).unwrap(), clock)
     }
 
     /// The fake TLS library's libraries.
@@ -1732,5 +1737,35 @@ mod over_the_wire {
         assert_eq!(lines.len(), 5, "{lines:?}");
         assert_eq!(lines[..2], [zeros; 2]);
         assert!(lines[2..].iter().all(|l| l.starts_with("100")), "{lines:?}");
+    }
+
+    /// The `QUIT` the connection says as it closes waits for its answer,
+    /// a whole reply, before the socket closes, as C's
+    /// `pop3_block_statemach` does in its disconnect; a second at most
+    /// with nothing of it coming, as the C build lets a silent server go
+    /// after 1.03 s. `quit` is the server's answer, if it gives one: how
+    /// long the multi's cleanup took, and how many replies were read.
+    fn quit_answered(quit: Option<&[u8]>) -> (std::time::Duration, usize) {
+        use crate::time::Clock as _;
+        let mut replies = vec![GREETING, CAPA, OK, OK, MESSAGE];
+        replies.extend(quit);
+        let talk = Conversation::replies(&replies, false).greeting();
+        let (mut m, clock) = clocked(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = transfer(&mut m, &plain(), &url, |_| {});
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let before = clock.now();
+        drop(m);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        (clock.now().since(before), talk.answered())
+    }
+
+    #[test]
+    fn quit_waits_a_second_for_its_answer() {
+        assert_eq!(
+            quit_answered(Some(b"+OK bye\r\n")),
+            (std::time::Duration::ZERO, 6)
+        );
+        assert_eq!(quit_answered(None), (std::time::Duration::from_secs(1), 5));
     }
 }

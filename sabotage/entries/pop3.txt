@@ -365,3 +365,18 @@ witness: curl-core proto::pop3::tests::over_the_wire::stls_is_timed_and_said_con
         self.in_place = crate::multi::state::tls::InPlace::of(lease.conn());
 --- new
         self.in_place = Default::default();
+
+=== POP3's QUIT is not waited on for its answer
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_waits_a_second_for_its_answer
+--- old
+            &Pop3 { capa: false },
+            None,
+            b"QUIT",
+        )
+--- new
+            &Pop3 { capa: false },
+            None,
+            b"QUIT",
+        );
+        Goodbye::Done

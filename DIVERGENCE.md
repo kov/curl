@@ -169,13 +169,28 @@ not a difference: it is tracked in `MILESTONES.md`.
   and once done the chain it says `connected` and `reduced to`. Not said are the blocking
   connect's waits, `do poll` and `Curl_poll() -> 1`, which the multi's pollset and wait lines
   stand in for; their timing was not measured against the C build.
-  The same holds for the goodbye on a closing connection: FTP's `QUIT` awaits a reply as C's
-  does, but in the shutdown set, the other transfers going on meanwhile. So an application
-  driving the multi by its socket callback may be told to watch a plain FTP control
-  connection for input while it waits, and hears its removal later, where C closes it before
-  DONE ends. POP3's and SMTP's `QUIT` and IMAP's `LOGOUT` are not waited on at all, where C
-  waits; to be looked at again against the command-line corpus, should anything there depend
-  on C's blocking. Pinned by `an_answer_awaited_in_done_stalls_no_other_transfer`
+  The same holds for the goodbye on a closing connection: FTP's, POP3's and SMTP's `QUIT` and
+  IMAP's `LOGOUT` await a reply as C's do, but in the shutdown set, the other transfers going
+  on meanwhile. So an application driving the multi by its socket callback may be told to
+  watch a plain control connection for input while it waits, and hears its removal later,
+  where C closes it before DONE ends. Both give up after a second with nothing more of the
+  answer, and within the shutdown's 2 s. What ends the wait differs: C's FTP, SMTP and IMAP
+  waits end at the first byte that can be read, which they leave unread (their state machines
+  fail without the transfer's state, `FAILED_INIT`), where ours read a whole reply, IMAP's the
+  tagged one after its `BYE`; C's POP3 reads a whole reply, as ours does. Measured against the
+  C build: a silent server is let go after 1.03 s, a partial reply at once by C's FTP, SMTP
+  and IMAP. A connection closed at once rather than kept in the set (evicted for room, the set
+  full or out of memory, or evicted by a share's pool) is an open question, not a settled
+  difference: it sends its goodbye but does not wait for the answer, where C blocks the multi
+  for it before any of these decisions, and no test pins either way yet. Pinned by
+  `quit_waits_a_second_for_its_answer`
+  (`crates/curl-core/src/proto/pop3/tests.rs`,
+  `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs`),
+  `logout_waits_for_its_tagged_answer_past_its_bye`
+  (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`),
+  `quit_waits_for_an_answer_no_longer_than_a_second_of_silence`
+  (`crates/curl-core/src/proto/ftp/tests.rs`), and by
+  `an_answer_awaited_in_done_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`,
   `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs` and
   `crates/curl-core/src/proto/ftp/tests.rs`), and by

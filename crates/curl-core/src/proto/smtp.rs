@@ -18,7 +18,7 @@ use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
 use crate::components::Component;
 use crate::conn::io::Events;
-use crate::conn::line::LineConn;
+use crate::conn::line::{Goodbye, LineConn};
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, RouteCold, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline, Reach};
@@ -110,19 +110,51 @@ pub(crate) struct SmtpConn {
 
 impl SmtpConn {
     /// Say `QUIT`, as the connection shuts down, unless it is `dead` or
-    /// a command waits half sent (`smtp_disconnect`): sent as the
-    /// connection takes it now, its answer not waited on.
+    /// a command waits half sent (`smtp_disconnect`): awaited while what the
+    /// connection did not take of it waits to go, or its answer does,
+    /// which [`goodbye_answer`](Self::goodbye_answer) moves on.
     pub(crate) fn goodbye(
         &mut self,
         cx: &mut dyn crate::conn::layer::LayerCx,
         mut below: Carrier<'_>,
         dead: bool,
-    ) {
+    ) -> Goodbye {
         if dead || self.pp.needs_flush() {
-            return;
+            return Goodbye::Done;
         }
-        // What does not go now is not said.
-        let _sent = below.send(cx, b"QUIT\r\n");
+        drive::goodbye(
+            cx,
+            &mut self.pp,
+            &mut below,
+            &Smtp {
+                continuations: false,
+            },
+            None,
+            b"QUIT",
+        )
+    }
+
+    /// Send the rest of `QUIT`, then read on its answer, a whole reply
+    /// (`smtp_block_statemach` in `SMTP_QUIT`).
+    pub(crate) fn goodbye_answer(
+        &mut self,
+        cx: &mut dyn crate::conn::layer::LayerCx,
+        mut below: Carrier<'_>,
+    ) -> Goodbye {
+        drive::goodbye_answer(
+            cx,
+            &mut self.pp,
+            &mut below,
+            &Smtp {
+                continuations: false,
+            },
+        )
+    }
+
+    /// What the goodbye waits on: to send the rest of `QUIT`, or its
+    /// answer.
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        drive::waits(&self.pp)
     }
 }
 

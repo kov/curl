@@ -11,6 +11,7 @@
 use curl_alloc::try_box;
 
 use super::*;
+use crate::bufq::ChunkQueue;
 use crate::components::Component;
 use crate::conn::RecvFailed;
 use crate::conn::layer::LayerCalls as _;
@@ -21,7 +22,7 @@ use crate::multi::PushFields;
 use crate::multi::push::Full;
 use crate::multi::state::{Offered, start_pushed};
 use crate::proto::http2::{
-    EgressFailed, GoAway, H2Conn, SEND_MAX, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
+    EgressFailed, GoAway, H2Conn, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
     trace_frame, trace_settings,
 };
 use crate::text::Text;
@@ -70,13 +71,13 @@ impl Trailers {
 }
 
 /// A request's stream, and what came of it (`h2_stream_ctx`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct H2Stream {
     /// Its id, once its head went.
     id: Option<StreamId>,
-    /// Body bytes for the session to frame (`sendbuf`): `sendbuf[taken..]`.
-    sendbuf: Vec<u8>,
-    taken: usize,
+    /// Body bytes for the session to frame (`sendbuf`), as many as its
+    /// chunks have room for.
+    sendbuf: ChunkQueue,
     /// All of the body is in the buffer (`body_eos`).
     body_eos: bool,
     /// The stream closed (`closed`), with this error code (`error`); one
@@ -109,6 +110,28 @@ pub(super) struct H2Stream {
     write_paused: bool,
 }
 
+impl Default for H2Stream {
+    fn default() -> H2Stream {
+        H2Stream {
+            id: None,
+            sendbuf: crate::proto::http2::send_buffer(),
+            body_eos: false,
+            closed: false,
+            error: H2Error::default(),
+            reset: false,
+            reset_by_server: false,
+            status: None,
+            body_started: false,
+            trailers: Trailers::default(),
+            after: After::default(),
+            failed: None,
+            out_pending: false,
+            promise: PushFields::default(),
+            write_paused: false,
+        }
+    }
+}
+
 /// A line of the HTTP/2 filter's (`CURL_TRC_CF` of `cf-h2`).
 const H2: Component = Component::Http2;
 
@@ -128,9 +151,7 @@ impl H2Stream {
     /// `cx`: an empty buffer is C's `CURLE_AGAIN`.
     fn body_read(&mut self, cx: &mut dyn LayerCx, room: &mut [u8]) -> BodyRead {
         let len = room.len();
-        let n = (self.sendbuf.len() - self.taken).min(len);
-        room[..n].copy_from_slice(&self.sendbuf[self.taken..self.taken + n]);
-        self.taken += n;
+        let n = self.sendbuf.read(room);
         let id = self.id.map_or(0, |s| s.0);
         let eos = u8::from(self.body_eos);
         let code = if n == 0 { AGAIN_NUMBER } else { 0 };
@@ -138,12 +159,17 @@ impl H2Stream {
             H2,
             format_args!("[{id}] req_body_read(len={len}) eos={eos} -> {n}, {code}"),
         );
-        let empty = self.taken == self.sendbuf.len();
-        match (n, empty && self.body_eos) {
+        match (n, self.sendbuf.is_empty() && self.body_eos) {
             (_, true) => BodyRead::Last(n),
             (0, false) => BodyRead::Later,
             (n, false) => BodyRead::Bytes(n),
         }
+    }
+
+    /// What of `bytes` the body's buffer has room for, put into it
+    /// (`Curl_bufq_write` into `sendbuf`): how much.
+    fn buffer(&mut self, bytes: &[u8]) -> Result<usize, OutOfMemory> {
+        self.sendbuf.fill(bytes)
     }
 
     /// The session closed the stream as it sent, with `error`.
@@ -605,7 +631,7 @@ impl Request {
         let stream = self.stream();
         let id = stream.id.map_or(-1, |s| s.0);
         let body_eos = u8::from(stream.body_eos);
-        let held = stream.sendbuf.len() - stream.taken;
+        let held = stream.sendbuf.len();
         let code = sent.as_ref().err().map_or(0, |e| e.number());
         let (sw, cw, out) = lease.conn().h2().map_or((-1, -1, 0), |h2| {
             let (sw, cw) = h2.send_windows(StreamId(id));
@@ -779,20 +805,13 @@ impl Request {
             trace::info(cx, format_args!("stream {} closed", id.0));
             return Err(ErrorKind::SendError);
         }
-        if stream.taken == stream.sendbuf.len() {
-            stream.sendbuf.clear();
-            stream.taken = 0;
-        }
-        let held = stream.sendbuf.len() - stream.taken;
-        let n = len.min(SEND_MAX.saturating_sub(held));
-        stream
-            .sendbuf
-            .try_extend_from_slice(&out[range.start..range.start + n])
-            .map_err(|_| ErrorKind::OutOfMemory)?;
+        let n = stream
+            .buffer(&out[range])
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         if eos && n == len {
             stream.body_eos = true;
         }
-        if eos || stream.taken < stream.sendbuf.len() {
+        if eos || !stream.sendbuf.is_empty() {
             // Only a fatal failure fails the send: one not deferred is.
             match with_session(lease, |h2, _| h2.session().resume(id)) {
                 Err(e) if e.fatal => return Err(ErrorKind::SendError),
@@ -1564,7 +1583,7 @@ impl Request {
                 stream: Some(stream),
             } if ours(stream) => {
                 let s = self.stream();
-                if s.taken < s.sendbuf.len() {
+                if !s.sendbuf.is_empty() {
                     return pushed(after.resumes.try_push(stream));
                 }
                 Heard::Fine

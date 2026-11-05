@@ -36,3 +36,30 @@ fn trailers_are_held_to_c_s_limits_at_their_edges() {
     }
     assert_eq!(t.add(b"a", b"b"), Err(OutOfMemory));
 }
+
+/// A request body's buffer keeps no more than its chunks, 64 KiB
+/// (`H2_STREAM_SEND_CHUNKS` of `H2_CHUNK_SIZE`), however the session
+/// takes from it: one that never empties it, as a peer's window holds
+/// the body back, does not make it grow with all that went through it.
+#[test]
+fn a_body_s_buffer_stays_within_its_chunks() {
+    const HELD: usize = 64 * 1024;
+    let mut stream = H2Stream::default();
+    let mut cx = crate::tls::Notes::default();
+    let body = vec![b'x'; HELD];
+    let mut room = vec![0u8; 16 * 1024];
+    let mut went = 0;
+    for _ in 0..1000 {
+        stream.buffer(&body).unwrap();
+        assert!(stream.sendbuf.len() <= HELD, "{}", stream.sendbuf.len());
+        // Less than it holds, never all of it.
+        match stream.body_read(&mut cx, &mut room[..10_000]) {
+            BodyRead::Bytes(n) => went += n,
+            other => panic!("{other:?}"),
+        }
+        cx.0.clear();
+    }
+    assert_eq!(went, 1000 * 10_000);
+    let stored = stream.sendbuf.stored();
+    assert!(stored <= 3 * HELD, "{stored} bytes kept for {HELD}");
+}

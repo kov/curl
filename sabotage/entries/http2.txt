@@ -938,3 +938,19 @@ witness: curl-nghttp2 tests::a_frame_is_told_sent_once_the_connection_took_it_wh
         Took::Blocked => sys::NGHTTP2_ERR_WOULDBLOCK as sys::nghttp2_ssize,
 --- new
         Took::Blocked => length as sys::nghttp2_ssize,
+
+=== a request body's buffer takes more than its chunks have room for
+file: crates/curl-core/src/bufq.rs
+witness: curl-core proto::http::h2::tests::a_body_s_buffer_stays_within_its_chunks
+--- old
+        let n = more.len().min(self.room());
+--- new
+        let n = more.len();
+
+=== what is read of a chunked buffer is kept until all of it is read
+file: crates/curl-core/src/bufq.rs
+witness: curl-core proto::http::h2::tests::a_body_s_buffer_stays_within_its_chunks
+--- old
+            if self.taken >= self.len() {
+--- new
+            if false {

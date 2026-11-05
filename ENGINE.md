@@ -1962,8 +1962,10 @@ HTTP/1's form with `HTTP/2` in its request line and traced as sent, then read ba
 stream's fields (`proto::http2::fields_of`, C's `Curl_h1_req_parse_read` and
 `Curl_http_req_to_h2`): `:method`, `:scheme`, `:authority` from `Host:` and `:path` first, names
 in lowercase, the connection's own headers left out, `TE` only as `trailers`. Neither chunked
-framing nor an added `Expect:` goes over HTTP/2. The body goes into the stream's buffer, at most
-64 KiB, which the session frames as the peer's window lets it; the body's end with no bytes left
+framing nor an added `Expect:` goes over HTTP/2. The body goes into the stream's buffer, four
+chunks of 16 KiB filled no further than they have room for (`sendbuf`), which the session frames
+as the peer's window lets it: a full buffer takes nothing more, so the body is read no faster
+than it goes and the buffer never holds more than its chunks. The body's end with no bytes left
 goes as an empty send (`req_flush`).
 
 A response head reaches the HTTP head parser as C hands it on: the status as

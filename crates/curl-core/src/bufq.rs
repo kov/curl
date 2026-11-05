@@ -134,6 +134,12 @@ impl ChunkQueue {
         self.skip(n);
         n
     }
+
+    /// The bytes it keeps room for, held or not.
+    #[cfg(test)]
+    pub(crate) fn stored(&self) -> usize {
+        self.bytes.capacity()
+    }
 }
 
 #[cfg(test)]

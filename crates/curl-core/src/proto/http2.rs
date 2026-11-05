@@ -36,17 +36,24 @@ pub(crate) const STREAM_WINDOW_MAX: i32 = 10 * 1024 * 1024;
 /// own windows doing the flow control (`HTTP2_HUGE_WINDOW_SIZE`).
 pub(crate) const CONNECTION_WINDOW: i32 = 100 * STREAM_WINDOW_MAX;
 
-/// The size of the chunks the session's output is buffered in
-/// (`H2_CHUNK_SIZE`).
+/// The size of the chunks the session's output and a request's body are
+/// buffered in (`H2_CHUNK_SIZE`).
 const CHUNK: usize = 16 * 1024;
 
 /// The session's output is one chunk (`H2_NW_SEND_CHUNKS`): the
 /// connection is sent a chunk at a time, whatever the frames' sizes.
 const OUT_CHUNKS: usize = 1;
 
-/// The most of a request's body held for the session to frame
-/// (`H2_STREAM_SEND_CHUNKS` of `H2_CHUNK_SIZE`).
-pub(crate) const SEND_MAX: usize = 64 * 1024;
+/// A request's body is held for the session to frame in four chunks
+/// (`H2_STREAM_SEND_CHUNKS`), 64 KiB.
+const SEND_CHUNKS: usize = 4;
+
+/// The buffer a request's body waits in for the session to frame it
+/// (`h2_stream_ctx`'s `sendbuf`): its chunks take no more than they have
+/// room for, so that a body is read only as fast as it goes.
+pub(crate) fn send_buffer() -> ChunkQueue {
+    ChunkQueue::new(CHUNK, SEND_CHUNKS)
+}
 
 /// What a connection that speaks HTTP/2 keeps (`cf_h2_ctx`).
 pub(crate) struct H2Conn {

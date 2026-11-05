@@ -587,6 +587,104 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
     }
 }
 
+/// A server's SETTINGS that an idle connection's health check reads are
+/// traced on the multi's internal trace, as C's internal handle traces
+/// them, and a stream limit other than the one last said is news to the
+/// multi, which the transfer reusing the connection hears as its next
+/// step starts; the limit read is the one the next SETTINGS are told
+/// against (`http2_connisalive`, `on_frame_recv`'s
+/// `Curl_multi_connchanged`). The C build says the same against a server
+/// sending `MAX_CONCURRENT_STREAMS` 5 on an idle connection.
+#[test]
+fn a_stream_limit_read_while_idle_is_news_to_the_multi() {
+    #[derive(Clone, Default)]
+    struct Written(Arc<Mutex<Vec<u8>>>);
+    impl crate::handler::TextSink for Written {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+    let mut first = b"S 100\nH 1 0\n:status: 200\ncontent-length: 5\n\nD 1 5 1\nhello".to_vec();
+    // The first read leaves the frames behind the response, the limit
+    // last, to the health check.
+    for _ in 0..600 {
+        first.extend_from_slice(b"P\n");
+    }
+    first.extend_from_slice(b"S 5\n");
+    let second: &[u8] = b"S 5\nH 3 0\n:status: 200\n\nD 3 2 1\nok";
+    let talk = Conversation::replies(&[&first, second], false).per_send();
+    let (mut m, clock) = clocked(&[&talk]);
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Http2,
+        crate::components::Level::Info,
+    );
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut states = Vec::new();
+    for path in ["/1", "/2"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"http/2,multi");
+        e.set_components(Some(c));
+        let ran = get_with(&mut m, e, path, talk.clone(), |o| {
+            o.http.version = HttpVersion::Http2Prior;
+            o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        states = ran
+            .seen
+            .text()
+            .into_iter()
+            .map(|l| l.trim_end().to_owned())
+            .filter(|l| {
+                l.starts_with("[MULTI] [") && (l.contains("] -> [") || l.contains("changed"))
+                    || l.contains("MAX_CONCURRENT_STREAMS")
+            })
+            .collect();
+        // Idle long enough to be checked.
+        clock.advance(std::time::Duration::from_millis(1000));
+    }
+    let internal = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
+    let said: Vec<&str> = internal
+        .lines()
+        .filter(|l| l.contains("[0] MAX_") || l.contains("[0] ENABLE_") || l.contains("notify"))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "* [HTTP/2] [0] MAX_CONCURRENT_STREAMS: 5",
+            "* [HTTP/2] [0] ENABLE_PUSH: TRUE",
+            "* [HTTP/2] [0] notify MAX_CONCURRENT_STREAMS: 5",
+        ],
+        "{internal}"
+    );
+    // The second transfer's lines, as the C build's but for the limit the
+    // server says again, which is no news.
+    assert_eq!(
+        states,
+        [
+            "[MULTI] [INIT] -> [SETUP]",
+            "[MULTI] [SETUP] -> [CONNECT]",
+            "[MULTI] [CONNECT] -> [CONNECTING]",
+            "[MULTI] [CONNECTING] multi changed, check CONNECT_PEND queue",
+            "[MULTI] [CONNECTING] -> [PROTOCONNECT]",
+            "[MULTI] [PROTOCONNECT] -> [DO]",
+            "[MULTI] [DO] -> [DID]",
+            "[MULTI] [DID] -> [PERFORMING]",
+            "[HTTP/2] [0] MAX_CONCURRENT_STREAMS: 5",
+            "[MULTI] [PERFORMING] -> [DONE]",
+            "[MULTI] [DONE] -> [COMPLETED]",
+            "[MULTI] [COMPLETED] -> [MSGSENT]",
+        ],
+        "{states:#?}"
+    );
+}
+
 /// A body the application refuses resets its stream with what C resets
 /// it with, nghttp2's callback failure as an unsigned code, which no RFC
 /// defines (`on_data_chunk_recv`'s `NGHTTP2_ERR_CALLBACK_FAILURE`).

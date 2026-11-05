@@ -1360,7 +1360,9 @@ connection it closes passes: set as a connection closes, from the set or at once
 (`Curl_cshutdn_terminate`), and by a transfer's step as a connection is first found to
 multiplex (`Conn::tell_multiplex`, once per connection, as `bits.multiplex`), as an HTTP/2
 server's stream limit changes or its GOAWAY comes, or as the final response or 101 to an upgrade
-asked for is read (`http_on_response`). Each
+asked for is read (`http_on_response`). The pool sets it too as the health check of an idle
+HTTP/2 connection reads a new stream limit (`Alive::Changed`), as C's internal handle tells its
+multi. Each
 step of a transfer that is neither completed nor ending a request that failed (which C ends in
 the call that failed it) first takes the note: it traces "multi changed, check CONNECT_PEND
 queue" in its state and lets one waiting transfer look again, itself if it is the next waiting.

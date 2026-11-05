@@ -1225,7 +1225,7 @@ impl Pool {
         {
             Err(None)
         } else {
-            health(conn, since, rules, now, internal(exits).as_ref()).map_err(Some)
+            health(conn, since, rules, now, exits).map_err(Some)
         };
         match verdict {
             Ok(()) => {
@@ -2204,8 +2204,7 @@ fn prune(
         cursor = Some(id);
         if let Some(conn) = conns.get_mut(id).and_then(Place::idle_mut)
             && let Use::Idle { since, .. } = conn.use_
-            && (conn.number.get() < stale_below
-                || health(conn, since, rules, now, internal(exits).as_ref()).is_err())
+            && (conn.number.get() < stale_below || health(conn, since, rules, now, exits).is_err())
         {
             close(conns, id, Evicted::Linger, exits, now);
         }
@@ -2268,13 +2267,15 @@ fn internal(exits: &mut dyn Exits) -> Option<crate::trace::Internal> {
 /// Whether an idle connection may be reused
 /// (`Curl_cpool_conn_seems_healthy`): not idle or alive too long, and with
 /// nothing to read, as an idle HTTP/1 connection must not have (RFC 9112,
-/// section 9.2) and a closed one has.
+/// section 9.2) and a closed one has. What the check reads is said on
+/// the multi's internal trace, and a change it finds is the multi's
+/// news, behind `exits`.
 fn health(
     conn: &mut Conn,
     idle_since: Instant,
     rules: ReuseRules,
     now: Instant,
-    trace: Option<&crate::trace::Internal>,
+    exits: &mut dyn Exits,
 ) -> Result<(), Option<PoolNote>> {
     let idle = now.since(idle_since);
     if let Some(max) = rules.max_idle
@@ -2302,7 +2303,7 @@ fn health(
     {
         return Ok(());
     }
-    let healthy = alive(conn, now, trace);
+    let healthy = alive(conn, now, exits);
     let made_ms = ms_since_made(conn, now);
     if healthy.is_ok()
         && let Use::Idle { checked_ms, .. } = &mut conn.use_
@@ -2321,21 +2322,26 @@ fn ms_since_made(conn: &Conn, now: Instant) -> u32 {
 /// Whether `conn` is alive and has no input it should not: input waiting
 /// is unhealthy on an idle HTTP/1 connection; a session reads its peer's
 /// frames (`http2_connisalive`), and RTSP's server may send RTP between
-/// requests (`rtsp_conn_is_dead`).
-fn alive(
-    conn: &mut Conn,
-    now: Instant,
-    trace: Option<&crate::trace::Internal>,
-) -> Result<(), Option<PoolNote>> {
+/// requests (`rtsp_conn_is_dead`). A change the session read of how
+/// many transfers the connection takes is the news of the multi behind
+/// `exits`, if there is one (`Curl_multi_connchanged`).
+fn alive(conn: &mut Conn, now: Instant, exits: &mut dyn Exits) -> Result<(), Option<PoolNote>> {
+    let trace = internal(exits);
     let mut cx = crate::trace::InternalCx {
         now,
-        trace,
+        trace: trace.as_ref(),
         room: None,
     };
     match conn.alive(&mut cx) {
         Alive::Alive {
             input_pending: false,
         } => Ok(()),
+        Alive::Changed => {
+            if let Some(linger) = exits.parts().1 {
+                linger.set.conn_changed();
+            }
+            Ok(())
+        }
         Alive::Alive {
             input_pending: true,
         } if !conn.multiplexes() && !conn.speaks_rtsp() => Err(Some(PoolNote::InputPending)),

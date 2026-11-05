@@ -74,7 +74,7 @@ witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_search_closes_what_it_must_not_reuse
 --- old
-            health(conn, since, rules, now, internal(exits).as_ref()).map_err(Some)
+            health(conn, since, rules, now, exits).map_err(Some)
 --- new
             Ok(())
 
@@ -606,10 +606,9 @@ witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_m
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_made_before
 --- old
-            && (conn.number.get() < stale_below
-                || health(conn, since, rules, now, internal(exits).as_ref()).is_err())
+            && (conn.number.get() < stale_below || health(conn, since, rules, now, exits).is_err())
 --- new
-            && health(conn, since, rules, now, internal(exits).as_ref()).is_err()
+            && health(conn, since, rules, now, exits).is_err()
 
 === a network change leaves the idle connections open
 file: crates/curl-core/src/conn/pool.rs

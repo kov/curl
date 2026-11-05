@@ -619,7 +619,9 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
     /// What an idle connection has to read, read by the session, which a
     /// frame for no stream leaves alive: whether it still is, its session
     /// neither failed, told to go away nor done (`http2_connisalive`,
-    /// `should_close_session`).
+    /// `should_close_session`), and whether the server's settings changed
+    /// its limit on streams, which the multi hears as C's internal handle
+    /// tells its multi (`on_frame_recv`'s `Curl_multi_connchanged`).
     fn is_alive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'a>) -> Alive {
         use crate::http2::{Event, Heard};
         if self.broken {
@@ -640,6 +642,7 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
                 let mut rx = std::mem::take(below.rx_mut());
                 let mut goaway = false;
                 let said = &mut self.max_said;
+                let mut limit_changed = false;
                 let read = self.session.recv(rx.filled(), &mut |event| {
                     trace_frame(&mut *cx, &event);
                     match event {
@@ -648,9 +651,7 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
                             max_concurrent,
                             enable_push,
                         } => {
-                            // No multi is told: the connection is idle,
-                            // read as a transfer looks it over.
-                            let _changed =
+                            limit_changed |=
                                 trace_settings(&mut *cx, said, max_concurrent, enable_push);
                         }
                         _ => {}
@@ -662,7 +663,11 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
                 *below.rx_mut() = rx;
                 self.broken = read.is_err();
                 let wants = self.session.wants();
-                read.is_ok() && !goaway && (wants.read || wants.write)
+                let alive = read.is_ok() && !goaway && (wants.read || wants.write);
+                if alive && limit_changed {
+                    return Alive::Changed;
+                }
+                alive
             }
         };
         if alive {

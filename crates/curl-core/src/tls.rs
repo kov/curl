@@ -820,7 +820,7 @@ impl TlsIo<'_> {
     pub fn peer_alive(&mut self) -> bool {
         matches!(
             self.below.reborrow().alive(self.cx.cx),
-            crate::conn::layer::Alive::Alive { .. }
+            crate::conn::layer::Alive::Alive { .. } | crate::conn::layer::Alive::Changed
         )
     }
 }

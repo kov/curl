@@ -882,6 +882,7 @@ impl Part<Below<'_>> for H2Proxy {
             } => Alive::Alive {
                 input_pending: false,
             },
+            Alive::Changed => Alive::Changed,
             Alive::Alive {
                 input_pending: true,
             } => {

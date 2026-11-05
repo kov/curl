@@ -31,6 +31,7 @@ pub enum Handshake {
 /// Whether a connection seems usable, as its layers and its socket say
 /// (`Curl_conn_is_alive`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(clippy::enum_variant_names, reason = "`Alive::Alive` reads as C's")]
 pub(crate) enum Alive {
     Dead,
     /// Usable; with input waiting, which an idle HTTP/1 connection must
@@ -38,6 +39,10 @@ pub(crate) enum Alive {
     Alive {
         input_pending: bool,
     },
+    /// Usable, nothing waiting, and what its session read of the peer
+    /// changed how many transfers it takes, which its multi hears (a
+    /// server's new limit on streams, `Curl_multi_connchanged`).
+    Changed,
 }
 
 /// A question asked of a connection's layers, from the top (C's

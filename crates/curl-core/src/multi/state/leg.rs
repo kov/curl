@@ -1040,7 +1040,7 @@ fn parse_proxy<H: Host>(
 ) -> Result<(ProxyType, TryArc<Peer>, Option<TryArc<ProxyCreds>>), ErrorKind> {
     let options = &cx.easy().options().proxy;
     let kind = if pre { ProxyType::Socks4 } else { options.kind };
-    let tls = cx.easy().libraries().tls.is_some();
+    let tls = crate::tls::TlsSupport::of(cx.easy().libraries()).https_proxy;
     let parsed = match proxy::parse(text, kind, options.port, tls) {
         Ok(parsed) => parsed,
         Err(Refused::OutOfMemory) => return Err(ErrorKind::OutOfMemory),

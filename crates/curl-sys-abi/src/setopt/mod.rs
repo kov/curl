@@ -35,6 +35,7 @@ use curl_core::options::{
     Ccc, CreateDirs, FtpMethod, RtspRequest, RtspSession, SslAuth, TftpBlockSize,
 };
 use curl_core::time::TimeLimit;
+use curl_core::tls::TlsSupport;
 
 use crate::callbacks::{self, CCallbacks, CSettings, PostFields};
 use crate::easy::{self, PostBody, ShimEasy};
@@ -559,6 +560,37 @@ unsafe fn copy_post_fields(p: *mut c_void, size: i64) -> Result<PostFields, Refu
     Ok(PostFields::Copied(TryArc::try_new(copy)?))
 }
 
+/// Refuse `option` as not built in if it asks for what the TLS library,
+/// which can do what `has` says, cannot, as C's `curl_easy_setopt` does
+/// before it reads the value (`Curl_ssl_supports`, and the engine's
+/// check of the library's id).
+fn tls_supports(option: CURLoption, has: &TlsSupport) -> Result<(), Refused> {
+    let supported = match option {
+        ffi::CURLOPT_CAPATH | ffi::CURLOPT_PROXY_CAPATH => has.ca_path,
+        ffi::CURLOPT_CAINFO_BLOB | ffi::CURLOPT_PROXY_CAINFO_BLOB => has.ca_blob,
+        ffi::CURLOPT_CA_CACHE_TIMEOUT => has.ca_cache,
+        ffi::CURLOPT_CERTINFO => has.cert_info,
+        ffi::CURLOPT_PINNEDPUBLICKEY | ffi::CURLOPT_PROXY_PINNEDPUBLICKEY => has.pinned_key,
+        ffi::CURLOPT_SSL_CTX_FUNCTION | ffi::CURLOPT_SSL_CTX_DATA => has.context_handler,
+        ffi::CURLOPT_SSL_CIPHER_LIST | ffi::CURLOPT_PROXY_SSL_CIPHER_LIST => has.ciphers,
+        ffi::CURLOPT_TLS13_CIPHERS | ffi::CURLOPT_PROXY_TLS13_CIPHERS => has.tls13_ciphers,
+        ffi::CURLOPT_SSL_EC_CURVES => has.curves,
+        ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS => has.signature_algorithms,
+        ffi::CURLOPT_CRLFILE | ffi::CURLOPT_PROXY_CRLFILE => has.crl_file,
+        ffi::CURLOPT_ISSUERCERT | ffi::CURLOPT_PROXY_ISSUERCERT => has.issuer_cert,
+        ffi::CURLOPT_ISSUERCERT_BLOB | ffi::CURLOPT_PROXY_ISSUERCERT_BLOB => has.issuer_cert_blob,
+        ffi::CURLOPT_ECH => has.ech,
+        ffi::CURLOPT_SSL_VERIFYSTATUS | ffi::CURLOPT_DOH_SSL_VERIFYSTATUS => has.cert_status,
+        ffi::CURLOPT_SSLENGINE | ffi::CURLOPT_SSLENGINE_DEFAULT => has.engines,
+        _ => true,
+    };
+    if supported {
+        Ok(())
+    } else {
+        Err(Refused::NotBuiltIn)
+    }
+}
+
 /// Apply `option` with `arg` to the handle at `me`.
 fn apply(
     me: NonNull<ShimEasy>,
@@ -570,8 +602,9 @@ fn apply(
     arg: Arg,
 ) -> Result<(), Refused> {
     use Arg::{Long, Off, Ptr};
-    if crate::tlslib::LACKS.contains(&option) {
-        return Err(Refused::NotBuiltIn);
+    {
+        use curl_core::tls::TlsBackend as _;
+        tls_supports(option, &crate::tlslib::TLS.support())?;
     }
     match (option, arg) {
         (ffi::CURLOPT_VERBOSE, Long(n)) => options.output.verbose = n != 0,
@@ -2234,10 +2267,85 @@ fn upload_flags(n: c_long) -> UploadFlags {
 mod tests {
     use super::*;
 
-    /// The options the TLS library lacks are not built in, as C's
-    /// `Curl_ssl_supports` refuses them: Schannel's CA path, revocation
-    /// list, issuer, TLS 1.3 suites, context callback, curves and
-    /// signature algorithms; none of OpenSSL's.
+    /// One capability of a library's, to change.
+    type Capability = fn(&mut TlsSupport) -> &mut bool;
+
+    /// Every option C refuses where its TLS library lacks what the option
+    /// asks for, with the capability it asks for.
+    const TLS_GATED: &[(CURLoption, Capability)] = &[
+        (ffi::CURLOPT_CAPATH, |t| &mut t.ca_path),
+        (ffi::CURLOPT_PROXY_CAPATH, |t| &mut t.ca_path),
+        (ffi::CURLOPT_CAINFO_BLOB, |t| &mut t.ca_blob),
+        (ffi::CURLOPT_PROXY_CAINFO_BLOB, |t| &mut t.ca_blob),
+        (ffi::CURLOPT_CA_CACHE_TIMEOUT, |t| &mut t.ca_cache),
+        (ffi::CURLOPT_CERTINFO, |t| &mut t.cert_info),
+        (ffi::CURLOPT_PINNEDPUBLICKEY, |t| &mut t.pinned_key),
+        (ffi::CURLOPT_PROXY_PINNEDPUBLICKEY, |t| &mut t.pinned_key),
+        (ffi::CURLOPT_SSL_CTX_FUNCTION, |t| &mut t.context_handler),
+        (ffi::CURLOPT_SSL_CTX_DATA, |t| &mut t.context_handler),
+        (ffi::CURLOPT_SSL_CIPHER_LIST, |t| &mut t.ciphers),
+        (ffi::CURLOPT_PROXY_SSL_CIPHER_LIST, |t| &mut t.ciphers),
+        (ffi::CURLOPT_TLS13_CIPHERS, |t| &mut t.tls13_ciphers),
+        (ffi::CURLOPT_PROXY_TLS13_CIPHERS, |t| &mut t.tls13_ciphers),
+        (ffi::CURLOPT_SSL_EC_CURVES, |t| &mut t.curves),
+        (ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS, |t| {
+            &mut t.signature_algorithms
+        }),
+        (ffi::CURLOPT_CRLFILE, |t| &mut t.crl_file),
+        (ffi::CURLOPT_PROXY_CRLFILE, |t| &mut t.crl_file),
+        (ffi::CURLOPT_ISSUERCERT, |t| &mut t.issuer_cert),
+        (ffi::CURLOPT_PROXY_ISSUERCERT, |t| &mut t.issuer_cert),
+        (ffi::CURLOPT_ISSUERCERT_BLOB, |t| &mut t.issuer_cert_blob),
+        (ffi::CURLOPT_PROXY_ISSUERCERT_BLOB, |t| {
+            &mut t.issuer_cert_blob
+        }),
+        (ffi::CURLOPT_ECH, |t| &mut t.ech),
+        (ffi::CURLOPT_SSL_VERIFYSTATUS, |t| &mut t.cert_status),
+        (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, |t| &mut t.cert_status),
+        (ffi::CURLOPT_SSLENGINE, |t| &mut t.engines),
+        (ffi::CURLOPT_SSLENGINE_DEFAULT, |t| &mut t.engines),
+    ];
+
+    /// An option is refused as not built in exactly when the library
+    /// lacks the one capability C checks it against: each refused with
+    /// that capability alone missing, and taken with it alone present.
+    /// The options no library decides are taken with nothing.
+    #[test]
+    fn an_option_is_not_built_in_where_the_tls_library_lacks_what_it_asks() {
+        let mut all = TlsSupport::NONE;
+        for &(_, capability) in TLS_GATED {
+            *capability(&mut all) = true;
+        }
+        for &(option, capability) in TLS_GATED {
+            let mut lacking = all;
+            *capability(&mut lacking) = false;
+            assert!(
+                matches!(tls_supports(option, &lacking), Err(Refused::NotBuiltIn)),
+                "{option:?}"
+            );
+            let mut only = TlsSupport::NONE;
+            *capability(&mut only) = true;
+            assert!(tls_supports(option, &only).is_ok(), "{option:?}");
+        }
+        for option in [
+            ffi::CURLOPT_CAINFO,
+            ffi::CURLOPT_PROXY_CAINFO,
+            ffi::CURLOPT_SSLCERT,
+            ffi::CURLOPT_SSL_OPTIONS,
+            ffi::CURLOPT_URL,
+        ] {
+            assert!(
+                tls_supports(option, &TlsSupport::NONE).is_ok(),
+                "{option:?}"
+            );
+        }
+    }
+
+    /// The build's TLS library refuses what C's build with it refuses:
+    /// Schannel the CA path, the revocation list, the issuer, TLS 1.3's
+    /// suites, the context callback, the curves, the signature
+    /// algorithms, the stapled status and the engine; OpenSSL none of
+    /// them. Neither has Encrypted Client Hello.
     #[test]
     fn the_tls_library_s_lacking_options_are_not_built_in() {
         let c = crate::easy::curl_easy_init();
@@ -2245,25 +2353,55 @@ mod tests {
             // SAFETY: a live handle, and a string option given a C string.
             unsafe { curl_easy_setopt(c, option, c"x".as_ptr()) }
         };
-        let lacking = [
+        let long = |option| {
+            // SAFETY: a live handle, and a long option given a long.
+            unsafe { curl_easy_setopt(c, option, 1 as c_long) }
+        };
+        let schannel = cfg!(feature = "schannel");
+        let want = |lacks: bool| if lacks { CURLE_NOT_BUILT_IN } else { CURLE_OK };
+        for option in [
             ffi::CURLOPT_CAPATH,
             ffi::CURLOPT_PROXY_CAPATH,
             ffi::CURLOPT_CRLFILE,
+            ffi::CURLOPT_PROXY_CRLFILE,
+            ffi::CURLOPT_ISSUERCERT,
             ffi::CURLOPT_PROXY_ISSUERCERT,
             ffi::CURLOPT_TLS13_CIPHERS,
+            ffi::CURLOPT_PROXY_TLS13_CIPHERS,
             ffi::CURLOPT_SSL_EC_CURVES,
             ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS,
-        ];
-        let want = if cfg!(feature = "schannel") {
-            CURLE_NOT_BUILT_IN
-        } else {
-            CURLE_OK
-        };
-        for option in lacking {
-            assert_eq!(text(option), want, "{option:?}");
+            ffi::CURLOPT_SSLENGINE,
+        ] {
+            assert_eq!(text(option), want(schannel), "{option:?}");
         }
-        // One every library has.
-        assert_eq!(text(ffi::CURLOPT_CAINFO), CURLE_OK);
+        for option in [
+            ffi::CURLOPT_SSL_VERIFYSTATUS,
+            ffi::CURLOPT_DOH_SSL_VERIFYSTATUS,
+            ffi::CURLOPT_SSLENGINE_DEFAULT,
+        ] {
+            assert_eq!(long(option), want(schannel), "{option:?}");
+        }
+        // SAFETY: a live handle, and a pointer option given NULL.
+        let ctx_data = unsafe {
+            curl_easy_setopt(
+                c,
+                ffi::CURLOPT_SSL_CTX_DATA,
+                core::ptr::null_mut::<c_void>(),
+            )
+        };
+        assert_eq!(ctx_data, want(schannel));
+        // What both have.
+        for option in [
+            ffi::CURLOPT_CAINFO,
+            ffi::CURLOPT_SSL_CIPHER_LIST,
+            ffi::CURLOPT_PINNEDPUBLICKEY,
+        ] {
+            assert_eq!(text(option), CURLE_OK, "{option:?}");
+        }
+        assert_eq!(long(ffi::CURLOPT_CERTINFO), CURLE_OK);
+        assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), CURLE_OK);
+        // What neither has.
+        assert_eq!(text(ffi::CURLOPT_ECH), CURLE_NOT_BUILT_IN);
         // SAFETY: the handle made above, not used again.
         unsafe { crate::easy::curl_easy_cleanup(c) };
     }

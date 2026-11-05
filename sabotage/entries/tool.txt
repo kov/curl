@@ -1578,12 +1578,20 @@ witness: curl-tool operate::tests::transfers_share_one_library_text_sink
     if let Some(text) = run.library_text.get().filter(|_| false) {
 
 === OpenSSL's build warns that the proxy's CA path is ignored
-file: crates/curl-tool/src/tlslib.rs
+file: crates/curl-tool/src/operate.rs
 witness: curl-tool options_the_library_lacks_are_warned_of
 --- old
-    pub(crate) const LACKS: &[&str] = &[];
+        if s.tls_has(|t| t.ca_path) {
 --- new
-    pub(crate) const LACKS: &[&str] = &["CURLOPT_PROXY_CAPATH"];
+        if s.tls_has(|t| t.ech) {
+
+=== OpenSSL's build leaves the revocation list out of --libcurl's program
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool options_the_library_lacks_are_not_written
+--- old
+    if s.tls_has(|t| t.crl_file) {
+--- new
+    if s.tls_has(|t| t.ech) {
 
 === OpenSSL's build claims no message signatures
 file: crates/curl-tool/Cargo.toml

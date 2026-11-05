@@ -858,3 +858,11 @@ witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_a
     if chain.connects(Component::HttpProxy) {
 --- new
     if chain.connects(Component::HttpProxy) && udp {
+
+=== an HTTPS proxy is taken by a TLS library that cannot reach one
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::tls::an_https_proxy_is_not_built_in_where_the_tls_library_lacks_it
+--- old
+    let tls = crate::tls::TlsSupport::of(cx.easy().libraries()).https_proxy;
+--- new
+    let tls = cx.easy().libraries().tls.is_some();

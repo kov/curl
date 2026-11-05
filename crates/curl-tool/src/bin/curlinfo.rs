@@ -6,6 +6,12 @@
 
 #![forbid(unsafe_code)]
 
+/// The tool's TLS library, which says what it can do; the rest of it is
+/// the tool's.
+#[allow(dead_code)]
+#[path = "../tlslib.rs"]
+mod tlslib;
+
 /// The toggles fixed whatever the build; `resolv-threaded` follows the
 /// library's resolver (`toggles`).
 const TOGGLES: &[(&str, bool)] = &[
@@ -50,7 +56,7 @@ const TOGGLES: &[(&str, bool)] = &[
 ];
 
 /// Each toggle, `httpsig` ON where the library signs messages,
-/// `cert-status` ON where its TLS library checks a stapled status,
+/// `cert-status` ON where the TLS library checks a stapled status,
 /// `resolv-threaded` ON when the library resolves with the
 /// threaded resolver, and `override-dns` where a debug build's c-ares takes
 /// `CURL_DNS_SERVER`. On Windows `wakeup` and `getrlimit` are OFF, as C's
@@ -68,8 +74,8 @@ fn toggles() -> impl Iterator<Item = (&'static str, bool)> {
         // A build without an Ed25519 library (Schannel's) signs nothing,
         // as C's build with it.
         "httpsig" => (name, on && signs),
-        // Schannel staples no certificate status, as C's build with it.
-        "cert-status" => (name, on && !cfg!(feature = "schannel")),
+        // Schannel checks no stapled status, as C's build with it.
+        "cert-status" => (name, on && tlslib::support().cert_status),
         _ => (name, on),
     })
 }

@@ -28,7 +28,7 @@ mod backend {
     use curl_alloc::{OutOfMemory, TryArc, try_box};
     use curl_core::error::ErrorKind;
     use curl_core::tls::{
-        Alpn, CaDefaults, TlsBackend, TlsIdentity, TlsPeer, TlsSession, TlsShared,
+        Alpn, CaDefaults, TlsBackend, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
     };
 
     use crate::session::Session;
@@ -62,5 +62,36 @@ mod backend {
         fn ca_defaults(&self) -> CaDefaults {
             CaDefaults::default()
         }
+
+        /// What C's Schannel build has (`Curl_ssl_schannel.supports`):
+        /// the chain reported, CA blobs and their cache, pinning, HTTPS
+        /// proxies and a cipher list; no stapled status
+        /// (`cert_status_request` is NULL) nor engines; and the system's
+        /// store trusted by itself.
+        fn support(&self) -> TlsSupport {
+            SUPPORT
+        }
     }
+
+    /// What Schannel can do: see `support`.
+    pub(crate) const SUPPORT: TlsSupport = TlsSupport {
+        ca_path: false,
+        ca_blob: true,
+        ca_cache: true,
+        cert_info: true,
+        pinned_key: true,
+        context_handler: false,
+        https_proxy: true,
+        ciphers: true,
+        tls13_ciphers: false,
+        curves: false,
+        signature_algorithms: false,
+        crl_file: false,
+        issuer_cert: false,
+        issuer_cert_blob: false,
+        ech: false,
+        cert_status: false,
+        engines: false,
+        system_trust: true,
+    };
 }

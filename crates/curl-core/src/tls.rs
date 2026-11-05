@@ -88,6 +88,11 @@ pub trait TlsBackend: Send + Sync {
     /// none, as its build found them.
     fn ca_defaults(&self) -> CaDefaults;
 
+    /// What it can do past the handshake every library makes, which the
+    /// options asking for it need (C's `supports` bits): an option asking
+    /// for what it lacks is not built in.
+    fn support(&self) -> TlsSupport;
+
     /// Its name and version, as a session's key in the cache names the
     /// library (`ssl_impl->version`): `OpenSSL/3.5.9`.
     fn id(&self) -> &dyn fmt::Display;
@@ -107,6 +112,94 @@ pub trait TlsBackend: Send + Sync {
 pub struct CaDefaults {
     pub file: Option<&'static str>,
     pub path: Option<&'static str>,
+}
+
+/// What a TLS library can do past the handshake, each named so that a
+/// library says yes or no to every one: the options asking for one it
+/// lacks are not built in (C's `SSLSUPP_*` bits, `Curl_ssl_supports`,
+/// and the checks C makes of the library by name). The application's
+/// way in is where the refusal is made, as C's `curl_easy_setopt` makes
+/// it; the library is given only what it said it can do.
+///
+/// It has no default: a capability added is one every library has to
+/// declare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TlsSupport {
+    /// A directory of certificates to trust (`SSLSUPP_CA_PATH`).
+    pub ca_path: bool,
+    /// The certificates to trust given in memory (`SSLSUPP_CAINFO_BLOB`).
+    pub ca_blob: bool,
+    /// The certificates to trust kept for the multi's next connections
+    /// (`SSLSUPP_CA_CACHE`).
+    pub ca_cache: bool,
+    /// The peer's chain reported (`SSLSUPP_CERTINFO`).
+    pub cert_info: bool,
+    /// The peer's public key pinned (`SSLSUPP_PINNEDPUBKEY`).
+    pub pinned_key: bool,
+    /// The application told of the library's context
+    /// (`SSLSUPP_SSL_CTX`).
+    pub context_handler: bool,
+    /// An HTTPS proxy (`SSLSUPP_HTTPS_PROXY`).
+    pub https_proxy: bool,
+    /// The cipher list before TLS 1.3 (`SSLSUPP_CIPHER_LIST`), and TLS
+    /// 1.3's suites (`SSLSUPP_TLS13_CIPHERSUITES`).
+    pub ciphers: bool,
+    pub tls13_ciphers: bool,
+    /// The curves (`SSLSUPP_SSL_EC_CURVES`) and signature algorithms
+    /// (`SSLSUPP_SIGNATURE_ALGORITHMS`) allowed.
+    pub curves: bool,
+    pub signature_algorithms: bool,
+    /// A revocation list (`SSLSUPP_CRLFILE`).
+    pub crl_file: bool,
+    /// The certificate the peer's must be issued by, in a file
+    /// (`SSLSUPP_ISSUERCERT`) and in memory (`SSLSUPP_ISSUERCERT_BLOB`).
+    pub issuer_cert: bool,
+    pub issuer_cert_blob: bool,
+    /// Encrypted Client Hello (`SSLSUPP_ECH`).
+    pub ech: bool,
+    /// The peer's stapled certificate status checked
+    /// (`cert_status_request`).
+    pub cert_status: bool,
+    /// Crypto engines or providers to use (C allows `CURLOPT_SSLENGINE`
+    /// with OpenSSL alone).
+    pub engines: bool,
+    /// The library trusts the system's certificates by itself when a
+    /// transfer names none, so the tool names none from the environment
+    /// (C's tool asks whether the library is Schannel).
+    pub system_trust: bool,
+}
+
+impl TlsSupport {
+    /// Nothing: a build without a TLS library, of which C's
+    /// `Curl_ssl_supports` says no to all.
+    pub const NONE: TlsSupport = TlsSupport {
+        ca_path: false,
+        ca_blob: false,
+        ca_cache: false,
+        cert_info: false,
+        pinned_key: false,
+        context_handler: false,
+        https_proxy: false,
+        ciphers: false,
+        tls13_ciphers: false,
+        curves: false,
+        signature_algorithms: false,
+        crl_file: false,
+        issuer_cert: false,
+        issuer_cert_blob: false,
+        ech: false,
+        cert_status: false,
+        engines: false,
+        system_trust: false,
+    };
+
+    /// What `libraries` has: nothing without a TLS library.
+    pub fn of(libraries: &crate::libraries::Libraries) -> TlsSupport {
+        libraries
+            .tls
+            .as_ref()
+            .map_or(TlsSupport::NONE, |tls| tls.support())
+    }
 }
 
 /// What a TLS library keeps for one multi across the connections made

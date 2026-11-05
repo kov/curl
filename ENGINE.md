@@ -2929,7 +2929,15 @@ pub trait TlsBackend: Send + Sync {
     fn session(&self, identity: &TryArc<TlsIdentity>, peer: &TlsPeer<'_>, alpn: Alpn,
                shared: &TlsShared) -> Result<Box<dyn TlsSession>, ErrorKind>;
     fn ca_defaults(&self) -> CaDefaults;           // the build's CA file and path
+    fn support(&self) -> TlsSupport;               // what it can do past the handshake
     fn id(&self) -> &dyn fmt::Display;             // `OpenSSL/3.5.9`, as a session's key names it
+}
+pub struct TlsSupport {                            // C's SSLSUPP_* and the checks by name; no Default
+    pub ca_path: bool, pub ca_blob: bool, pub ca_cache: bool, pub cert_info: bool,
+    pub pinned_key: bool, pub context_handler: bool, pub https_proxy: bool, pub ciphers: bool,
+    pub tls13_ciphers: bool, pub curves: bool, pub signature_algorithms: bool,
+    pub crl_file: bool, pub issuer_cert: bool, pub issuer_cert_blob: bool, pub ech: bool,
+    pub cert_status: bool, pub engines: bool, pub system_trust: bool,
 }
 pub enum Alpn { None, Http11, Http10 }             // the offer, from the HTTP version
 #[derive(Clone)] pub struct TlsShared(/* TryArc<Mutex<Option<Box<dyn Any + Send>>>> */);

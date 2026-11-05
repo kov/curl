@@ -2235,8 +2235,9 @@ fn setopts(
 
 /// Where the certificates to trust are (`ssl_ca_setopts`): as given, or
 /// as the environment says (`cacertpaths`) unless the peer goes
-/// unverified, or Schannel, which trusts the system's store, is the TLS
-/// library (`win32_using_schannel`).
+/// unverified, or the TLS library trusts the system's store by itself
+/// (Schannel: `win32_using_schannel`). A CA path the library cannot take
+/// is passed over, the proxy's with a warning.
 fn ssl_ca_setopts(
     s: &mut Setopt<'_>,
     op: &Operation<'_>,
@@ -2247,7 +2248,7 @@ fn ssl_ca_setopts(
         tls.cacert.as_deref().map(Cow::Borrowed),
         tls.capath.as_deref().map(Cow::Borrowed),
     );
-    if !cfg!(feature = "schannel")
+    if !s.tls_has(|t| t.system_trust)
         && cacert.is_none()
         && capath.is_none()
         && (!tls.insecure || (tls.doh_url.is_some() && !tls.doh_insecure))
@@ -2287,7 +2288,9 @@ fn ssl_ca_setopts(
             Ok(())
         })?;
     }
-    if let Some(path) = capath.as_deref() {
+    if let Some(path) = capath.as_deref()
+        && s.tls_has(|t| t.ca_path)
+    {
         s.str("CURLOPT_CAPATH", Some(path), |o| {
             o.tls.options.make_mut().map_err(oom)?.ca_path =
                 options::CaSetting::Given(copy(easysrc::c_string(path)).map_err(oom)?);
@@ -2296,27 +2299,24 @@ fn ssl_ca_setopts(
     }
     // The proxy's is `--capath`'s unless it has its own (C's #1257).
     if let Some(path) = tls.proxy.capath.or(capath.as_deref()) {
-        s.str("CURLOPT_PROXY_CAPATH", Some(path), |o| {
-            proxy_tls(o)?.ca_path =
-                options::CaSetting::Given(copy(easysrc::c_string(path)).map_err(oom)?);
-            Ok(())
-        })?;
-        warn_lacked(
-            msgs,
-            "CURLOPT_PROXY_CAPATH",
-            "setting the CA path for the proxy",
-        );
+        if s.tls_has(|t| t.ca_path) {
+            s.str("CURLOPT_PROXY_CAPATH", Some(path), |o| {
+                proxy_tls(o)?.ca_path =
+                    options::CaSetting::Given(copy(easysrc::c_string(path)).map_err(oom)?);
+                Ok(())
+            })?;
+        } else {
+            warn_ignored(msgs, "setting the CA path for the proxy");
+        }
     }
     Ok(())
 }
 
-/// What C's tool warns of an option the TLS library lacks: `ignoring
-/// <what>, not supported by libcurl with Schannel`.
-fn warn_lacked(msgs: &Messages, name: &str, what: &str) {
+/// What C's tool warns of some of the options the TLS library lacks:
+/// `ignoring <what>, not supported by libcurl with Schannel`.
+fn warn_ignored(msgs: &Messages, what: &str) {
     // A warning that cannot be made is not said.
-    if crate::tlslib::lacks(name)
-        && let Ok(library) = try_format(format_args!("{}", crate::tlslib::version()))
-    {
+    if let Ok(library) = try_format(format_args!("{}", crate::tlslib::version())) {
         // The library's name, up to its first space, as `ssl_backend`
         // cuts it.
         let library = library.split(' ').next().unwrap_or_default();
@@ -2339,25 +2339,41 @@ fn proxy_tls(o: &mut options::Options) -> Result<&mut options::TlsOptions, Error
 fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Result<(), ErrorKind> {
     let tls = &op.tls;
     let proxy = &tls.proxy;
-    string_setopt(s, "CURLOPT_CRLFILE", tls.crlfile, |t| &mut t.crl_file)?;
-    // The proxy's is `--crlfile`'s unless it has its own.
-    proxy_string_setopt(
-        s,
-        "CURLOPT_PROXY_CRLFILE",
-        proxy.crlfile.or(tls.crlfile),
-        |t| &mut t.crl_file,
-    )?;
-    string_setopt(s, "CURLOPT_PINNEDPUBLICKEY", tls.pinned_key, |t| {
-        &mut t.pinned_key
-    })?;
-    proxy_string_setopt(s, "CURLOPT_PROXY_PINNEDPUBLICKEY", proxy.pinned_key, |t| {
-        &mut t.pinned_key
-    })?;
-    string_setopt(s, "CURLOPT_SSL_EC_CURVES", tls.curves, |t| &mut t.curves)?;
-    string_setopt(s, "CURLOPT_SSL_SIGNATURE_ALGORITHMS", tls.sigalgs, |t| {
-        &mut t.signature_algorithms
-    })?;
-    if op.write_out.is_some() {
+    if s.tls_has(|t| t.crl_file) {
+        string_setopt(s, "CURLOPT_CRLFILE", tls.crlfile, |t| &mut t.crl_file)?;
+        // The proxy's is `--crlfile`'s unless it has its own.
+        proxy_string_setopt(
+            s,
+            "CURLOPT_PROXY_CRLFILE",
+            proxy.crlfile.or(tls.crlfile),
+            |t| &mut t.crl_file,
+        )?;
+    }
+    let pins = s.tls_has(|t| t.pinned_key);
+    if pins {
+        string_setopt(s, "CURLOPT_PINNEDPUBLICKEY", tls.pinned_key, |t| {
+            &mut t.pinned_key
+        })?;
+        proxy_string_setopt(s, "CURLOPT_PROXY_PINNEDPUBLICKEY", proxy.pinned_key, |t| {
+            &mut t.pinned_key
+        })?;
+    } else {
+        if tls.pinned_key.is_some() {
+            warn_ignored(msgs, "--pinnedpubkey");
+        }
+        if proxy.pinned_key.is_some() {
+            warn_ignored(msgs, "--proxy-pinnedpubkey");
+        }
+    }
+    if s.tls_has(|t| t.curves) {
+        string_setopt(s, "CURLOPT_SSL_EC_CURVES", tls.curves, |t| &mut t.curves)?;
+    }
+    if s.tls_has(|t| t.signature_algorithms) {
+        string_setopt(s, "CURLOPT_SSL_SIGNATURE_ALGORITHMS", tls.sigalgs, |t| {
+            &mut t.signature_algorithms
+        })?;
+    }
+    if op.write_out.is_some() && s.tls_has(|t| t.cert_info) {
         // For `%{certs}` and `%{num_certs}`, whatever the format says.
         s.long("CURLOPT_CERTINFO", 1, |o| {
             o.tls.certinfo = true;
@@ -2411,13 +2427,14 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Resul
             Ok(())
         })?;
     }
-    if tls.cert_status {
+    let stapled = s.tls_has(|t| t.cert_status);
+    if tls.cert_status && stapled {
         s.long("CURLOPT_SSL_VERIFYSTATUS", 1, |o| {
             o.tls.options.make_mut().map_err(oom)?.verify_status = true;
             Ok(())
         })?;
     }
-    if tls.doh_cert_status {
+    if tls.doh_cert_status && stapled {
         s.long("CURLOPT_DOH_SSL_VERIFYSTATUS", 1, |o| {
             o.doh.make_mut().map_err(oom)?.verify_status = true;
             Ok(())
@@ -2503,23 +2520,35 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Resul
             },
         )?;
     }
-    string_setopt(s, "CURLOPT_SSL_CIPHER_LIST", tls.ciphers, |t| {
-        &mut t.ciphers
-    })?;
-    proxy_string_setopt(s, "CURLOPT_PROXY_SSL_CIPHER_LIST", proxy.ciphers, |t| {
-        &mut t.ciphers
-    })?;
-    string_setopt(s, "CURLOPT_TLS13_CIPHERS", tls.tls13_ciphers, |t| {
-        &mut t.tls13_ciphers
-    })?;
-    if tls.tls13_ciphers.is_some() {
-        warn_lacked(msgs, "CURLOPT_TLS13_CIPHERS", "--tls13-ciphers");
+    if s.tls_has(|t| t.ciphers) {
+        string_setopt(s, "CURLOPT_SSL_CIPHER_LIST", tls.ciphers, |t| {
+            &mut t.ciphers
+        })?;
+        proxy_string_setopt(s, "CURLOPT_PROXY_SSL_CIPHER_LIST", proxy.ciphers, |t| {
+            &mut t.ciphers
+        })?;
+    } else {
+        if tls.ciphers.is_some() {
+            warn_ignored(msgs, "--ciphers");
+        }
+        if proxy.ciphers.is_some() {
+            warn_ignored(msgs, "--proxy-ciphers");
+        }
     }
-    proxy_string_setopt(s, "CURLOPT_PROXY_TLS13_CIPHERS", proxy.tls13_ciphers, |t| {
-        &mut t.tls13_ciphers
-    })?;
-    if proxy.tls13_ciphers.is_some() {
-        warn_lacked(msgs, "CURLOPT_PROXY_TLS13_CIPHERS", "--proxy-tls13-ciphers");
+    if s.tls_has(|t| t.tls13_ciphers) {
+        string_setopt(s, "CURLOPT_TLS13_CIPHERS", tls.tls13_ciphers, |t| {
+            &mut t.tls13_ciphers
+        })?;
+        proxy_string_setopt(s, "CURLOPT_PROXY_TLS13_CIPHERS", proxy.tls13_ciphers, |t| {
+            &mut t.tls13_ciphers
+        })?;
+    } else {
+        if tls.tls13_ciphers.is_some() {
+            warn_ignored(msgs, "--tls13-ciphers");
+        }
+        if proxy.tls13_ciphers.is_some() {
+            warn_ignored(msgs, "--proxy-tls13-ciphers");
+        }
     }
     if tls.no_sessionid {
         s.long("CURLOPT_SSL_SESSIONID_CACHE", 0, |o| {
@@ -2527,7 +2556,9 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Resul
             Ok(())
         })?;
     }
-    string_setopt(s, "CURLOPT_SSLENGINE", tls.engine, |t| &mut t.engine)?;
+    if s.tls_has(|t| t.engines) {
+        string_setopt(s, "CURLOPT_SSLENGINE", tls.engine, |t| &mut t.engine)?;
+    }
     let use_ssl = if op.ssl_reqd {
         Some((options::UseSsl::All, 3))
     } else if op.ssl {

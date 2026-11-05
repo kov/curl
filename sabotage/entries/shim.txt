@@ -563,10 +563,26 @@ witness: curl-sys-abi handle_tests::a_url_refused_leaves_the_last_one_set_as_the
 --- new
         drop(text);
 
-=== OpenSSL's build refuses the CA path as not built in
-file: crates/curl-sys-abi/src/tlslib.rs
+=== OpenSSL's build refuses a revocation list as not built in
+file: crates/curl-openssl/src/ssl.rs
 witness: curl-sys-abi setopt::tests::the_tls_library_s_lacking_options_are_not_built_in
 --- old
-    pub(crate) const LACKS: &[ffi::CURLoption] = &[];
+    crl_file: true,
 --- new
-    pub(crate) const LACKS: &[ffi::CURLoption] = &[ffi::CURLOPT_CAPATH];
+    crl_file: false,
+
+=== the proxy's revocation list is taken where the library has none
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::an_option_is_not_built_in_where_the_tls_library_lacks_what_it_asks
+--- old
+        ffi::CURLOPT_CRLFILE | ffi::CURLOPT_PROXY_CRLFILE => has.crl_file,
+--- new
+        ffi::CURLOPT_CRLFILE => has.crl_file,
+
+=== the engine is taken by a library without engines
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::an_option_is_not_built_in_where_the_tls_library_lacks_what_it_asks
+--- old
+        ffi::CURLOPT_SSLENGINE | ffi::CURLOPT_SSLENGINE_DEFAULT => has.engines,
+--- new
+        ffi::CURLOPT_SSLENGINE_DEFAULT => has.engines,

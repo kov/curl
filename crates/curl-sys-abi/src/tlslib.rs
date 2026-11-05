@@ -47,9 +47,6 @@ mod library {
     pub(crate) fn quic() -> Option<impl fmt::Display> {
         Some(curl_ngtcp2::version())
     }
-
-    /// The options it lacks the support of (`Curl_ssl_supports`): none.
-    pub(crate) const LACKS: &[ffi::CURLoption] = &[];
 }
 
 #[cfg(feature = "schannel")]
@@ -76,28 +73,6 @@ mod library {
     pub(crate) fn quic() -> Option<&'static str> {
         None
     }
-
-    /// The options it lacks the support of, which setting refuses as not
-    /// built in (`Curl_ssl_supports`): Schannel's `supports` has no
-    /// `SSLSUPP_CA_PATH`, `_CRLFILE`, `_ISSUERCERT`, `_ISSUERCERT_BLOB`,
-    /// `_TLS13_CIPHERSUITES`, `_SSL_CTX`, `_SSL_EC_CURVES` nor
-    /// `_SIGNATURE_ALGORITHMS`.
-    pub(crate) const LACKS: &[ffi::CURLoption] = &[
-        ffi::CURLOPT_CAPATH,
-        ffi::CURLOPT_PROXY_CAPATH,
-        ffi::CURLOPT_CRLFILE,
-        ffi::CURLOPT_PROXY_CRLFILE,
-        ffi::CURLOPT_ISSUERCERT,
-        ffi::CURLOPT_PROXY_ISSUERCERT,
-        ffi::CURLOPT_ISSUERCERT_BLOB,
-        ffi::CURLOPT_PROXY_ISSUERCERT_BLOB,
-        ffi::CURLOPT_TLS13_CIPHERS,
-        ffi::CURLOPT_PROXY_TLS13_CIPHERS,
-        ffi::CURLOPT_SSL_CTX_FUNCTION,
-        ffi::CURLOPT_SSL_CTX_DATA,
-        ffi::CURLOPT_SSL_EC_CURVES,
-        ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS,
-    ];
 }
 
 pub(crate) use library::*;

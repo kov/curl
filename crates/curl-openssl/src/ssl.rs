@@ -19,7 +19,7 @@ use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
     Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicTls,
     SharedKeyLog, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
-    TlsSession, TlsShared, TlsTicket, TlsWait,
+    TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -55,6 +55,28 @@ impl OpenSsl {
         }
     }
 }
+
+/// What OpenSSL can do: see `support`.
+pub(crate) const SUPPORT: TlsSupport = TlsSupport {
+    ca_path: true,
+    ca_blob: true,
+    ca_cache: true,
+    cert_info: true,
+    pinned_key: true,
+    context_handler: true,
+    https_proxy: true,
+    ciphers: true,
+    tls13_ciphers: true,
+    curves: true,
+    signature_algorithms: true,
+    crl_file: true,
+    issuer_cert: true,
+    issuer_cert_blob: true,
+    ech: false,
+    cert_status: true,
+    engines: true,
+    system_trust: false,
+};
 
 /// The library's name and version, as `version` says it.
 struct Id;
@@ -108,6 +130,14 @@ impl TlsBackend for OpenSsl {
             file: ca::CA_BUNDLE,
             path: ca::CA_PATH,
         }
+    }
+
+    /// All C's OpenSSL build has (`Curl_ssl_openssl.supports`, with the
+    /// OpenSSL 3 it is built on: TLS 1.3's suites and signature
+    /// algorithms), the stapled status (`ossl_cert_status_request`) and
+    /// engines; not Encrypted Client Hello, which that OpenSSL lacks.
+    fn support(&self) -> TlsSupport {
+        SUPPORT
     }
 
     /// The engines of the library, made ready first, which loads its

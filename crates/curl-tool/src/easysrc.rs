@@ -11,6 +11,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::ErrorKind;
 use curl_core::options::{AuthMethods, Options, ProxyType, Socks5Auth};
+use curl_core::tls::TlsSupport;
 
 use crate::msgs::Messages;
 use crate::stdout::Stdout;
@@ -434,6 +435,14 @@ impl<'a> Setopt<'a> {
         Setopt { easy, source }
     }
 
+    /// Whether the build's TLS library has what `needs` picks of what it
+    /// can do (libcurl's `Curl_ssl_supports`). An option asking for what
+    /// it lacks is not built in: libcurl refuses it, and C's tool passes
+    /// it over (`setopt_bad`), setting nothing and writing nothing.
+    pub(crate) fn tls_has(&self, needs: fn(&TlsSupport) -> bool) -> bool {
+        needs(&crate::tlslib::support())
+    }
+
     /// Apply `apply`; the program, if one is written.
     fn apply(
         &mut self,
@@ -585,11 +594,6 @@ impl<'a> Setopt<'a> {
         value: Option<&[u8]>,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        // One the TLS library lacks is not built in: set nowhere, written
-        // nowhere, and not a failure, as C's tool takes it.
-        if crate::tlslib::lacks(name) {
-            return Ok(());
-        }
         let Some(source) = self.apply(apply)? else {
             return Ok(());
         };

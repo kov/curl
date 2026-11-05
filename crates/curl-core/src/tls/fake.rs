@@ -95,6 +95,8 @@ pub struct FakeTls {
     quic_verify: Option<i64>,
     /// What each session binds a channel with.
     binding: FakeBinding,
+    /// What it says it can do.
+    support: crate::tls::TlsSupport,
 }
 
 /// When a fake QUIC session gives its ticket to keep: as its handshake
@@ -236,6 +238,15 @@ impl FakeTls {
             quic_tickets: None,
             quic_verify: None,
             binding: FakeBinding::None,
+            support: SUPPORT,
+        })
+    }
+
+    /// The same, saying it can do what `support` says.
+    pub fn supporting(support: crate::tls::TlsSupport) -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            support,
+            ..FakeTls::new()?
         })
     }
 
@@ -344,9 +355,37 @@ impl FakeTls {
     }
 }
 
+/// What the fake library can do: everything but Encrypted Client
+/// Hello, as OpenSSL's build, so that the core is given whatever a
+/// transfer sets.
+pub const SUPPORT: crate::tls::TlsSupport = crate::tls::TlsSupport {
+    ca_path: true,
+    ca_blob: true,
+    ca_cache: true,
+    cert_info: true,
+    pinned_key: true,
+    context_handler: true,
+    https_proxy: true,
+    ciphers: true,
+    tls13_ciphers: true,
+    curves: true,
+    signature_algorithms: true,
+    crl_file: true,
+    issuer_cert: true,
+    issuer_cert_blob: true,
+    ech: false,
+    cert_status: true,
+    engines: true,
+    system_trust: false,
+};
+
 impl TlsBackend for FakeTls {
     fn id(&self) -> &dyn fmt::Display {
         &"FakeTLS/1.0"
+    }
+
+    fn support(&self) -> crate::tls::TlsSupport {
+        self.support
     }
 
     fn quic_session(

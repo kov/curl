@@ -6,7 +6,7 @@
 use core::fmt;
 
 use curl_alloc::{OutOfMemory, try_box};
-use curl_core::tls::{SharedKeyLog, TlsBackend};
+use curl_core::tls::{SharedKeyLog, TlsBackend, TlsSupport};
 
 #[cfg(all(feature = "openssl", feature = "schannel"))]
 compile_error!("one TLS library: the `openssl` and `schannel` features exclude each other");
@@ -48,8 +48,10 @@ mod library {
         Some(curl_ngtcp2::version())
     }
 
-    /// The options it lacks the support of: none.
-    pub(crate) const LACKS: &[&str] = &[];
+    /// What it can do past the handshake.
+    pub(crate) fn support() -> TlsSupport {
+        curl_openssl::OPENSSL.support()
+    }
 }
 
 #[cfg(feature = "schannel")]
@@ -83,26 +85,10 @@ mod library {
         None
     }
 
-    /// The options it lacks the support of, which libcurl refuses as not
-    /// built in (its `Curl_ssl_supports`), by the names the tool sets
-    /// them by.
-    pub(crate) const LACKS: &[&str] = &[
-        "CURLOPT_CAPATH",
-        "CURLOPT_PROXY_CAPATH",
-        "CURLOPT_CRLFILE",
-        "CURLOPT_PROXY_CRLFILE",
-        "CURLOPT_ISSUERCERT",
-        "CURLOPT_PROXY_ISSUERCERT",
-        "CURLOPT_TLS13_CIPHERS",
-        "CURLOPT_PROXY_TLS13_CIPHERS",
-        "CURLOPT_SSL_EC_CURVES",
-        "CURLOPT_SSL_SIGNATURE_ALGORITHMS",
-    ];
-}
-
-/// Whether the library lacks the option named `name`.
-pub(crate) fn lacks(name: &str) -> bool {
-    LACKS.contains(&name)
+    /// What it can do past the handshake.
+    pub(crate) fn support() -> TlsSupport {
+        curl_schannel::SCHANNEL.support()
+    }
 }
 
 pub(crate) use library::*;

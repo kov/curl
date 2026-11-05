@@ -57,7 +57,7 @@ fn pump(from: &mut Session, to: &mut Session, body: &mut Vec<u8>, seen: &mut Vec
     from.send(
         &mut |b| {
             wire.extend_from_slice(b);
-            true
+            Took::Bytes(core::num::NonZeroUsize::new(b.len()).unwrap())
         },
         &mut |_, room| {
             let n = body.len().min(room.len());
@@ -166,7 +166,7 @@ fn frames_are_told_as_c_describes_them() {
         .send(
             &mut |b| {
                 wire.extend_from_slice(b);
-                true
+                Took::Bytes(core::num::NonZeroUsize::new(b.len()).unwrap())
             },
             &mut |_, _| BodyRead::Failed,
             &mut |e| {
@@ -213,7 +213,7 @@ fn frames_are_told_as_c_describes_them() {
             .send(
                 &mut |b| {
                     wire.extend_from_slice(b);
-                    true
+                    Took::Bytes(core::num::NonZeroUsize::new(b.len()).unwrap())
                 },
                 &mut |_, room| {
                     let n = reply.len();
@@ -451,4 +451,78 @@ fn an_error_code_s_text_is_nghttp2_s() {
         "REFUSED_STREAM"
     );
     assert_eq!(NGHTTP2.error_text(H2Error(0xff)), "unknown");
+}
+
+/// All that `session` wants sent, each frame told sent, the connection
+/// taking at most `most` bytes a call and blocking on every `block`th
+/// call: what went, and what was told, `None` where it blocked.
+fn send_all(session: &mut Session, most: usize, block: usize) -> (Vec<u8>, Vec<Option<Seen>>) {
+    let wire = core::cell::RefCell::new(Vec::new());
+    let told = core::cell::RefCell::new(Vec::new());
+    let mut calls = 0;
+    while session.wants().write {
+        session
+            .send(
+                &mut |b| {
+                    calls += 1;
+                    if calls % block == 0 {
+                        told.borrow_mut().push(None);
+                        return Took::Blocked;
+                    }
+                    let n = b.len().min(most);
+                    wire.borrow_mut().extend_from_slice(&b[..n]);
+                    Took::Bytes(core::num::NonZeroUsize::new(n).unwrap())
+                },
+                &mut |_, _| BodyRead::Failed,
+                &mut |e| {
+                    told.borrow_mut().push(Some(own(e)));
+                    Heard::Fine
+                },
+            )
+            .unwrap();
+    }
+    (wire.into_inner(), told.into_inner())
+}
+
+/// A frame is told sent once the connection took all of it: what it took
+/// part of, or none of, the session gives again first, sending no other
+/// frame before it, as C's send callback has nghttp2 do
+/// (`nghttp2_session_send`).
+#[test]
+fn a_frame_is_told_sent_once_the_connection_took_it_whole() {
+    let session = || {
+        let mut client = Session::client().unwrap();
+        client
+            .submit_settings(&[Setting::MaxConcurrentStreams(100)])
+            .unwrap();
+        client.ping().unwrap();
+        client
+    };
+    let (whole, told) = send_all(&mut session(), usize::MAX, usize::MAX);
+    assert_eq!(told.len(), 2, "{told:?}");
+    let (cut, told) = send_all(&mut session(), 7, 3);
+    assert_eq!(cut, whole);
+    let order: Vec<&str> = told
+        .iter()
+        .map(|t| match t {
+            None => "blocked",
+            Some(Seen::Sent(f)) if f.starts_with("FRAME[SETTINGS") => "settings",
+            Some(Seen::Sent(f)) if f.starts_with("FRAME[PING") => "ping",
+            Some(other) => panic!("{other:?}"),
+        })
+        .collect();
+    let blocked_before = |frame: &str| {
+        order[..order.iter().position(|o| *o == frame).unwrap()]
+            .iter()
+            .filter(|o| **o == "blocked")
+            .count()
+    };
+    // Seven bytes a call, every third call blocked: each frame is told
+    // only after the calls that blocked it.
+    assert!(blocked_before("settings") >= 1, "{order:?}");
+    assert!(
+        blocked_before("ping") > blocked_before("settings"),
+        "{order:?}"
+    );
+    assert_eq!(order.iter().filter(|o| **o != "blocked").count(), 2);
 }

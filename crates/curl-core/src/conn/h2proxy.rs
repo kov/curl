@@ -18,6 +18,7 @@ use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
 use crate::http2::{
     BodyRead, DEFAULT_WEIGHT, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId,
+    Took,
 };
 
 /// What the session reads and writes at a time (`PROXY_H2_CHUNK_SIZE`).
@@ -511,11 +512,14 @@ impl H2Proxy {
             let tunnel_events = std::cell::RefCell::new(Vec::new());
             let sent = session.send(
                 &mut |bytes| {
+                    if out.len() >= OUT_MAX {
+                        return Took::Blocked;
+                    }
                     if out.try_extend_from_slice(bytes).is_err() {
                         oom = true;
-                        return false;
+                        return Took::Failed;
                     }
-                    out.len() < OUT_MAX
+                    std::num::NonZeroUsize::new(bytes.len()).map_or(Took::Blocked, Took::Bytes)
                 },
                 &mut |_, room| {
                     // `tunnel_send_callback`: what is held, the end once

@@ -336,3 +336,116 @@ fn alpn_agreeing_h2_makes_the_session_as_the_connection_is_set_up() {
         "{lines:#?}"
     );
 }
+
+/// A POST of `body` by prior knowledge, its handle tracing the HTTP/2
+/// filter and the socket's sends, `talk` the server: the sends the
+/// socket was given in order, what each was given and what it took, in
+/// runs each a send or a receive of the request's ends, at the filter's
+/// `cf_send` or `cf_recv` line; and the run.
+fn h2_upload(body: &[u8], talk: Conversation) -> (Vec<Vec<(usize, usize)>>, Ran) {
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = tracing();
+    let c = Components::new().unwrap();
+    c.configure(b"http/2,tcp");
+    e.set_components(Some(c));
+    let body = body.to_vec();
+    let ran = get_with(&mut m, e, "/up", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+        o.upload = crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(body).unwrap());
+        o.method = Method::Post;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let mut runs = vec![Vec::new()];
+    for line in ran.seen.text() {
+        if let Some(rest) = line.split("[TCP] send(len=").nth(1) {
+            // "<given>) -> <code>, <taken>"
+            let (given, rest) = rest.split_once(") -> ").unwrap();
+            let taken = rest.split(", ").nth(1).unwrap().trim();
+            let send = (given.parse().unwrap(), taken.parse().unwrap());
+            runs.last_mut().unwrap().push(send);
+        } else if line.contains("[HTTP/2] [1] cf_send(") || line.contains("[HTTP/2] [1] cf_recv(") {
+            runs.push(Vec::new());
+        }
+    }
+    runs.retain(|r| !r.is_empty());
+    (runs, ran)
+}
+
+/// The DATA payloads in what the fake server was sent, in order.
+fn data_sent(request: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    let mut at = 0;
+    while let Some(i) = request[at..].windows(4).position(|w| w == b"D 1 ") {
+        let start = at + i;
+        let nl = start + request[start..].iter().position(|&b| b == b'\n').unwrap();
+        let line = std::str::from_utf8(&request[start..nl]).unwrap();
+        let n: usize = line.split(' ').nth(2).unwrap().parse().unwrap();
+        payload.extend_from_slice(&request[nl + 1..nl + 1 + n]);
+        at = nl + 1 + n;
+    }
+    payload
+}
+
+/// The connection is sent the session's frames a 16 KiB chunk at a
+/// time, the chunks cut across the frames, and what is left of the last
+/// chunk once the session frames no more: C's `nw_out_writer` passes its
+/// output buffer of one chunk on as it fills, and `nw_out_flush` the
+/// rest (`Curl_cf_send_bufq`, `H2_NW_SEND_CHUNKS`). C's against nghttpd
+/// sends 16384 bytes at a time of nghttp2's 16393-byte DATA frames.
+#[test]
+fn a_body_goes_to_the_connection_a_chunk_at_a_time() {
+    let body = vec![b'.'; 200_000];
+    let reply: &[u8] = b"S 100\nH 1 1\n:status: 201\n\n";
+    let talk = Conversation::replies(&[reply], false).per_send();
+    let (runs, ran) = h2_upload(&body, talk);
+    for run in &runs {
+        assert!(run.iter().all(|(given, taken)| given == taken), "{runs:?}");
+        let (last, whole) = run.split_last().unwrap();
+        assert!(whole.iter().all(|&(n, _)| n == 16384), "{runs:?}");
+        assert!(last.0 <= 16384, "{runs:?}");
+    }
+    let chunks = runs.iter().flatten().filter(|&&(n, _)| n == 16384).count();
+    assert!(chunks >= body.len() / 16384, "{runs:?}");
+    assert_eq!(data_sent(&ran.request), body);
+}
+
+/// A connection that takes less than a chunk at a time is sent the rest
+/// of the chunk each time, never past its end: C's `Curl_bufq_pass`
+/// looks at the first chunk alone.
+#[test]
+fn a_chunk_goes_whole_before_the_next_however_little_a_send_takes() {
+    let body = vec![b'.'; 100_000];
+    let reply: &[u8] = b"S 100\nH 1 1\n:status: 201\n\n";
+    let takes = std::num::NonZeroUsize::new(5000).unwrap();
+    let talk = Conversation::replies(&[reply], false)
+        .per_send()
+        .taking(takes);
+    let (runs, ran) = h2_upload(&body, talk);
+    let sends: Vec<(usize, usize)> = runs.into_iter().flatten().collect();
+    let chunk = [(16384, 5000), (11384, 5000), (6384, 5000), (1384, 1384)];
+    assert_eq!(sends[..4], chunk, "{sends:?}");
+    assert_eq!(sends[4..8], chunk, "{sends:?}");
+    assert_eq!(data_sent(&ran.request), body);
+}
+
+/// A connection that blocks holds what the session framed: the chunk
+/// waits, traced as C's flush traces it, and the frame that did not fit
+/// waits in the session, sent first once the connection takes again, no
+/// byte of the body lost or sent twice.
+#[test]
+fn a_blocked_connection_keeps_the_frames_in_order() {
+    let body = vec![b'.'; 100_000];
+    let reply: &[u8] = b"S 100\nH 1 1\n:status: 201\n\n";
+    let talk = Conversation::replies(&[reply], false)
+        .per_send()
+        .stalling_sends_after(2, 3);
+    let (_, ran) = h2_upload(&body, talk);
+    let lines = h2_lines(&ran.seen);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "[HTTP/2] flush nw send buffer(16384) -> EAGAIN"),
+        "{lines:#?}"
+    );
+    assert_eq!(data_sent(&ran.request), body);
+}

@@ -9,7 +9,6 @@
 //! through a [`Said`].
 
 pub(crate) mod frame;
-pub(crate) mod queue;
 #[cfg(test)]
 mod tests;
 
@@ -17,10 +16,10 @@ use std::fmt;
 
 use curl_alloc::OutOfMemory;
 
+use crate::bufq::ChunkQueue;
 use crate::error::ErrorKind;
 use crate::ws::{Asked, AskedFrame, Frame, FrameKind, FrameLen, FrameType, SendFlags, Sent};
 use frame::{Decoder, Encoder, MAX_CONTROL, Passed, Take};
-use queue::ChunkQueue;
 
 /// The size of a WebSocket buffer's chunks (`WS_CHUNK_SIZE`), and how
 /// many make one full (`WS_CHUNK_COUNT`).

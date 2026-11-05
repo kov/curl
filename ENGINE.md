@@ -1920,8 +1920,13 @@ root and the tool own it and hand it to the backend.
 not a library-agnostic API: the binding's own failure numbers cross it only inside `FrameError`,
 for C's messages; error codes on the wire are `H2Error`, and a window update names its stream or
 none for the connection's. The core feeds the session the connection's bytes and takes the
-bytes it wants sent; it hands back events per stream (headers, data, end, window, close, reset)
-and per connection (settings, goaway). An event the caller cannot take fails the session's
+bytes it wants sent as the session frames them (C's send callback): into one 16 KiB chunk
+(`outbufq`, `crate::bufq::ChunkQueue`), passed to the connection whole each time the next frame
+needs its room and what is left of it once the session frames no more, so the connection is
+sent chunks cut across frames, as C sends them. What the chunk has no room for, the connection
+blocking, stays in the session, which gives it again first; a frame is told sent once it is
+taken whole. The session hands back events per stream (headers, data, end, window, close,
+reset) and per connection (settings, goaway). An event the caller cannot take fails the session's
 reading, as C's callbacks return `NGHTTP2_ERR_CALLBACK_FAILURE`; what C's callbacks call back
 into the session for (consuming, resetting, resuming, windows) is gathered as the read runs and
 done once it returns, in scratch kept on the request's stream between reads, so a body's frames

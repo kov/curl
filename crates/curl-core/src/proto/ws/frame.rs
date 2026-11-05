@@ -5,8 +5,8 @@
 
 use std::fmt;
 
-use super::queue::ChunkQueue;
 use super::{Said, Stop, Wire};
+use crate::bufq::ChunkQueue;
 use crate::error::ErrorKind;
 use crate::ws::{FrameKind, FrameType, SendFlags};
 

@@ -9,6 +9,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::bufq::ChunkQueue;
 use crate::components::Component;
 use crate::conn::io::{Recv, Sent};
 use crate::conn::layer::LayerCalls as _;
@@ -18,7 +19,7 @@ use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
 use crate::http2::{
     BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Session, Setting,
-    StreamId,
+    StreamId, Took,
 };
 use crate::multi::TransferId;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
@@ -35,9 +36,13 @@ pub(crate) const STREAM_WINDOW_MAX: i32 = 10 * 1024 * 1024;
 /// own windows doing the flow control (`HTTP2_HUGE_WINDOW_SIZE`).
 pub(crate) const CONNECTION_WINDOW: i32 = 100 * STREAM_WINDOW_MAX;
 
-/// The most the session's output may hold before it is sent on
-/// (`H2_NW_SEND_CHUNKS` of `H2_CHUNK_SIZE`).
-const OUT_MAX: usize = 16 * 1024;
+/// The size of the chunks the session's output is buffered in
+/// (`H2_CHUNK_SIZE`).
+const CHUNK: usize = 16 * 1024;
+
+/// The session's output is one chunk (`H2_NW_SEND_CHUNKS`): the
+/// connection is sent a chunk at a time, whatever the frames' sizes.
+const OUT_CHUNKS: usize = 1;
 
 /// The most of a request's body held for the session to frame
 /// (`H2_STREAM_SEND_CHUNKS` of `H2_CHUNK_SIZE`).
@@ -49,9 +54,8 @@ pub(crate) struct H2Conn {
     library: &'static dyn Http2,
     session: Box<dyn Session>,
     /// What the session gave to send and the connection has not taken
-    /// yet (`outbufq`): `out[sent..]`.
-    out: Vec<u8>,
-    sent: usize,
+    /// yet (`outbufq`), a chunk sent whole once it is full.
+    out: ChunkQueue,
     /// The peer said GOAWAY: streams past `last` are not served.
     goaway: Option<GoAway>,
     /// The peer closed the connection.
@@ -154,7 +158,7 @@ pub(crate) enum WindowFailed {
 impl std::fmt::Debug for H2Conn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H2Conn")
-            .field("pending", &(self.out.len() - self.sent))
+            .field("pending", &self.out.len())
             .field("goaway", &self.goaway)
             .field("closed", &self.closed)
             .finish_non_exhaustive()
@@ -241,8 +245,7 @@ impl H2Conn {
             H2Conn {
                 library,
                 session,
-                out: Vec::new(),
-                sent: 0,
+                out: ChunkQueue::new(CHUNK, OUT_CHUNKS),
                 goaway: None,
                 closed: false,
                 broken: false,
@@ -352,7 +355,7 @@ impl H2Conn {
 
     /// The session's output not sent yet (`Curl_bufq_len(&ctx->outbufq)`).
     pub(crate) fn out_len(&self) -> usize {
-        self.out.len() - self.sent
+        self.out.len()
     }
 
     /// Ask for `stream`'s receive window to be `wanted`, as its transfer
@@ -428,112 +431,177 @@ impl H2Conn {
     /// Ask the session for what it wants sent, reading bodies and telling
     /// what it says of streams through `with`, and send what the
     /// connection takes (`h2_progress_egress`): whether all of it went.
+    ///
+    /// The session's frames go into its output, which is sent on a
+    /// chunk at a time, as it fills, while the session frames; what is
+    /// left of the last chunk goes once it frames no more (`nw_out_flush`).
+    /// The connection is sent chunks, not frames, as C sends it.
     pub(crate) fn egress(
         &mut self,
         with: &mut dyn Egress,
         io: &mut Carrier<'_>,
     ) -> Result<bool, EgressFailed> {
-        loop {
-            // What the session frames goes behind what waits, and all of
-            // it to the connection together, as C's output buffer sends it
-            // (`h2_progress_egress`, `nw_out_flush`).
-            self.frame(with)?;
-            if self.out_len() == 0 {
-                self.out.clear();
-                self.sent = 0;
-                return Ok(true);
-            }
-            if !self.flush(with.layer_cx(), io)? {
-                return Ok(false);
-            }
-        }
+        let blocked = self.frame(with, Some(&mut *io))?;
+        self.flush(with.layer_cx(), io)?;
+        Ok(self.out.is_empty() && !blocked)
     }
 
-    /// Have the session frame what it wants sent into its output, while
-    /// there is room, reading bodies and telling what it says of streams
-    /// through `with`.
-    fn frame(&mut self, with: &mut dyn Egress) -> Result<(), EgressFailed> {
-        if self.out_len() >= OUT_MAX {
-            return Ok(());
-        }
+    /// Have the session frame what it wants sent into its output, until
+    /// it has no more or the connection blocks, reading bodies and
+    /// telling what it says of streams through `with`
+    /// (`nghttp2_session_send`, its send callback `send_callback`). Each
+    /// full chunk goes to `io` as the next frame needs its room; without
+    /// `io`, the connection not set up yet, the output only fills. Whether
+    /// the session holds what the output had no room for.
+    fn frame(
+        &mut self,
+        with: &mut dyn Egress,
+        mut io: Option<&mut Carrier<'_>>,
+    ) -> Result<bool, EgressFailed> {
         let H2Conn {
             session,
             out,
-            sent: gone,
             routes,
             sent_goaway,
             library,
             ..
         } = self;
-        let gone = *gone;
         let sent_goaway = *sent_goaway;
-        let mut oom = false;
+        let mut blocked = false;
+        let mut failed = None;
         let with = std::cell::RefCell::new(&mut *with);
-        session
-            .send(
-                &mut |bytes| {
-                    if out.try_extend_from_slice(bytes).is_err() {
-                        oom = true;
-                        return false;
+        let sent = session.send(
+            &mut |bytes| {
+                let mut with = with.borrow_mut();
+                let cx = with.layer_cx();
+                match put(out, bytes, cx, io.as_deref_mut()) {
+                    Ok(n) => std::num::NonZeroUsize::new(n).map_or_else(
+                        || {
+                            blocked = true;
+                            Took::Blocked
+                        },
+                        Took::Bytes,
+                    ),
+                    Err(e) => {
+                        if let EgressFailed::Send = e {
+                            // Said, as C's `failf` says it; the failure is
+                            // the send's.
+                            let _said = cx.fails(
+                                ErrorKind::SendError,
+                                format_args!("Failed sending HTTP2 data"),
+                            );
+                        }
+                        failed = Some(e);
+                        Took::Failed
                     }
-                    out.len() - gone < OUT_MAX
-                },
-                &mut |stream, room| {
-                    with.borrow_mut()
-                        .body(stream, routes.route_of(stream), room)
-                },
-                &mut |event| {
-                    let mut with = with.borrow_mut();
-                    if let Event::Sent(frame) = &event {
-                        sent(with.layer_cx(), *library, frame, sent_goaway);
-                        return Heard::Fine;
-                    }
-                    let to = event.stream().and_then(|s| routes.route_of(s));
-                    with.event(event, to)
-                },
-            )
-            .map_err(EgressFailed::Session)?;
-        if oom {
-            return Err(EgressFailed::OutOfMemory);
+                }
+            },
+            &mut |stream, room| {
+                with.borrow_mut()
+                    .body(stream, routes.route_of(stream), room)
+            },
+            &mut |event| {
+                let mut with = with.borrow_mut();
+                if let Event::Sent(frame) = &event {
+                    sent(with.layer_cx(), *library, frame, sent_goaway);
+                    return Heard::Fine;
+                }
+                let to = event.stream().and_then(|s| routes.route_of(s));
+                with.event(event, to)
+            },
+        );
+        match (sent, failed) {
+            (Err(e), Some(EgressFailed::Send)) => {
+                // The session fails with its callback, as C traces it
+                // (`h2_progress_egress`).
+                let (text, code) = (e.text, e.code);
+                with.borrow_mut().layer_cx().of(
+                    Component::Http2,
+                    format_args!("nghttp2_session_send error ({text}){code}"),
+                );
+                Err(EgressFailed::Send)
+            }
+            (_, Some(failed)) => Err(failed),
+            (Err(e), None) => Err(EgressFailed::Session(e)),
+            (Ok(()), None) => Ok(blocked),
         }
-        Ok(())
     }
 
     /// Have the session frame what it starts with, its SETTINGS, kept to
     /// go with the first request (`cf_h2_connect`'s egress, which C does
     /// not flush while the filter connects).
     pub(crate) fn frame_first(&mut self, cx: &mut dyn LayerCx) -> Result<(), EgressFailed> {
-        self.frame(&mut Bare(cx))
+        self.frame(&mut Bare(cx), None).map(drop)
     }
 
     /// Send what the session's output holds, as far as the connection
-    /// takes it: whether all of it went.
-    fn flush(&mut self, cx: &mut dyn LayerCx, io: &mut Carrier<'_>) -> Result<bool, EgressFailed> {
-        let mut wrote = false;
-        while self.sent < self.out.len() {
-            match io.send(cx, &self.out[self.sent..]) {
-                Ok(Sent::Bytes(n)) => {
-                    self.sent += n.get();
-                    wrote = true;
-                }
-                Ok(_) => {
-                    // Blocked with nothing taken (`nw_out_flush`).
-                    if !wrote {
-                        let held = self.out_len();
-                        cx.of(
-                            Component::Http2,
-                            format_args!("flush nw send buffer({held}) -> EAGAIN"),
-                        );
-                    }
-                    return Ok(false);
-                }
-                Err(_) => return Err(EgressFailed::Send),
+    /// takes it (`nw_out_flush`).
+    fn flush(&mut self, cx: &mut dyn LayerCx, io: &mut Carrier<'_>) -> Result<(), EgressFailed> {
+        if self.out.is_empty() {
+            return Ok(());
+        }
+        if pass(&mut self.out, cx, io)? == 0 {
+            let held = self.out.len();
+            cx.of(
+                Component::Http2,
+                format_args!("flush nw send buffer({held}) -> EAGAIN"),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Put `bytes` into the session's output `out`, sending its chunk to
+/// `io` each time it is full and more is to go, as far as the connection
+/// takes it (`Curl_bufq_write_pass`); with no `io`, only as far as `out`
+/// has room (`Curl_bufq_write`). How many of `bytes` went in.
+fn put(
+    out: &mut ChunkQueue,
+    mut bytes: &[u8],
+    cx: &mut dyn LayerCx,
+    mut io: Option<&mut Carrier<'_>>,
+) -> Result<usize, EgressFailed> {
+    let mut n = 0;
+    while !bytes.is_empty() {
+        if out.is_full() {
+            let Some(io) = io.as_deref_mut() else {
+                break;
+            };
+            if pass(out, cx, io)? == 0 {
+                break;
             }
         }
-        self.out.clear();
-        self.sent = 0;
-        Ok(true)
+        let k = out
+            .fill(bytes)
+            .map_err(|OutOfMemory| EgressFailed::OutOfMemory)?;
+        if k == 0 {
+            break;
+        }
+        bytes = &bytes[k..];
+        n += k;
     }
+    Ok(n)
+}
+
+/// Send what `out` holds to `io`, its chunk's rest each time, until it is
+/// empty or the connection blocks (`Curl_bufq_pass`): how much went.
+fn pass(
+    out: &mut ChunkQueue,
+    cx: &mut dyn LayerCx,
+    io: &mut Carrier<'_>,
+) -> Result<usize, EgressFailed> {
+    let mut went = 0;
+    while !out.is_empty() {
+        match io.send(cx, out.peek()) {
+            Ok(Sent::Bytes(n)) => {
+                out.skip(n.get());
+                went += n.get();
+            }
+            Ok(Sent::WouldBlock) => break,
+            Err(_) => return Err(EgressFailed::Send),
+        }
+    }
+    Ok(went)
 }
 
 impl<'a> ConnPart<Carrier<'a>> for H2Conn {

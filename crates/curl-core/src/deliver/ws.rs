@@ -7,6 +7,7 @@
 use std::fmt;
 
 use super::{Client, ClientOut, handler_paused, write_trace};
+use crate::bufq::ChunkQueue;
 use crate::coding::Decoder;
 use crate::components::Component;
 use crate::error::ErrorKind;
@@ -14,7 +15,6 @@ use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::proto::http::ws::{lent, ws_of};
 use crate::proto::ws::frame::{Passed, Take};
-use crate::proto::ws::queue::ChunkQueue;
 use crate::proto::ws::{CHUNK_SIZE, Said, Stop};
 use crate::trace;
 use crate::ws::{FrameKind, FrameType};

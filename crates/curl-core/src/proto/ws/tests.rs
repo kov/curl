@@ -3,8 +3,8 @@ use std::fmt;
 use proptest::prelude::*;
 
 use super::frame::{Decoder, Encoder, Passed, Take, send_byte};
-use super::queue::ChunkQueue;
 use super::*;
+use crate::bufq::ChunkQueue;
 use crate::untrusted;
 use crate::ws::{FrameKind, FrameLen, FrameType, SendFlags};
 

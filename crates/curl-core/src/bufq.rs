@@ -1,10 +1,11 @@
-//! The buffers a WebSocket reads frames from and writes them into, cut
-//! into chunks as C's `bufq` cuts them (`lib/bufq.c`): what one look at
-//! the front gives is what is left of its chunk, a chunk begins afresh
-//! once the queue is empty, and the queue is full once its chunks are,
-//! though a write always fits (`BUFQ_OPT_SOFT_LIMIT`). C sends a frame's
-//! bytes and hands a frame's payload on a chunk at a time, so the chunks
-//! decide the sizes of the sends and of the writes the application sees.
+//! Buffers cut into chunks as C's `bufq` cuts them (`lib/bufq.c`): what
+//! one look at the front gives is what is left of its chunk, a chunk
+//! begins afresh once the queue is empty, and the queue is full once its
+//! chunks are. A write always fits (`BUFQ_OPT_SOFT_LIMIT`), as a
+//! WebSocket's buffers take it; a fill takes only what the chunks have
+//! room for (`BUFQ_OPT_NONE`), as HTTP/2's do. C sends and hands on what
+//! it buffers a chunk at a time, so the chunks decide the sizes of the
+//! sends and of the writes the application sees.
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
@@ -91,6 +92,26 @@ impl ChunkQueue {
         self.bytes.try_extend_from_slice(more)
     }
 
+    /// What of `more` the chunks have room for put after what is held,
+    /// the rest left (`Curl_bufq_write` with a hard limit): how much. A
+    /// chunk read from is not written to again until it is empty.
+    pub(crate) fn fill(&mut self, more: &[u8]) -> Result<usize, OutOfMemory> {
+        let n = more.len().min(self.room());
+        self.bytes.try_extend_from_slice(&more[..n])?;
+        Ok(n)
+    }
+
+    /// The bytes the chunks have room for: all of them once the queue is
+    /// empty, else what the first's read part and what is held leave.
+    pub(crate) fn room(&self) -> usize {
+        let all = self.chunk.saturating_mul(self.max);
+        if self.is_empty() {
+            all
+        } else {
+            all.saturating_sub(self.at + self.len())
+        }
+    }
+
     /// One byte put after what is held.
     pub(crate) fn push(&mut self, byte: u8) -> Result<(), OutOfMemory> {
         self.bytes.try_push(byte)
@@ -162,5 +183,35 @@ mod tests {
         assert_eq!(q.tail_room(), 4);
         q.push(b'a').unwrap();
         assert_eq!(q.tail_room(), 3, "what the last chunk has left");
+    }
+
+    /// A fill takes what its chunks have room for and no more; a chunk
+    /// read from takes nothing again until it is empty, as C's chunk
+    /// takes nothing past its end however much of it was read.
+    #[test]
+    fn a_fill_takes_what_the_chunks_have_room_for() {
+        let mut q = ChunkQueue::new(4, 2);
+        assert_eq!(q.room(), 8);
+        assert_eq!(q.fill(b"abcdefghij").unwrap(), 8);
+        assert_eq!(q.room(), 0);
+        assert_eq!(q.fill(b"k").unwrap(), 0);
+        let mut out = [0u8; 3];
+        assert_eq!(q.read(&mut out), 3);
+        assert_eq!(q.room(), 0, "the first chunk is not written again");
+        assert_eq!(q.read(&mut out[..1]), 1);
+        assert_eq!(q.room(), 4, "the first chunk, emptied, is free");
+        assert_eq!(q.fill(b"klmnop").unwrap(), 4);
+        assert_eq!(q.peek(), b"efgh");
+        let mut all = [0u8; 8];
+        assert_eq!(q.read(&mut all), 8);
+        assert_eq!(&all, b"efghklmn");
+        assert_eq!(q.room(), 8, "an empty queue starts afresh");
+        assert_eq!(q.fill(b"ab").unwrap(), 2);
+        assert_eq!(q.read(&mut out[..1]), 1);
+        assert_eq!(
+            q.room(),
+            6,
+            "a part read of the last chunk is not taken again"
+        );
     }
 }

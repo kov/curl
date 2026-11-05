@@ -34,7 +34,7 @@ use curl_alloc::OutOfMemory;
 
 use super::{
     BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Session, Setting,
-    StreamId, Wants,
+    StreamId, Took, Wants,
 };
 
 /// Run `f`, the fake's own bookkeeping, untracked: a library's memory is
@@ -164,6 +164,17 @@ pub struct FakeSession {
     local_window: i32,
     /// The debug data of the GOAWAY the client queued.
     goaway_debug: Vec<u8>,
+    /// A frame the connection took only some of, given again first.
+    unsent: Option<Unsent>,
+}
+
+/// A frame the connection took only some of: from `at` on, and the
+/// stream it ends, a last DATA's.
+#[derive(Debug)]
+struct Unsent {
+    frame: Vec<u8>,
+    at: usize,
+    ends: Option<i32>,
 }
 
 /// A frame of the fake's, as the trace describes it: its length the
@@ -238,6 +249,42 @@ fn described<'a>(frame: &[u8], goaway_debug: &'a [u8]) -> Frame<'a> {
 }
 
 impl FakeSession {
+    /// Give `out` what is left of `frame` from `at`, until it took all of
+    /// it, told sent and ending the stream `ends` if any, as nghttp2 tells
+    /// a frame once its send callback took it whole; or until it blocks,
+    /// what is left kept to be given first next time. Whether all went.
+    fn offer(
+        &mut self,
+        frame: Vec<u8>,
+        mut at: usize,
+        ends: Option<i32>,
+        out: &mut dyn FnMut(&[u8]) -> Took,
+        events: &mut dyn FnMut(Event<'_>) -> Heard,
+    ) -> Result<bool, FrameError> {
+        while at < frame.len() {
+            match out(&frame[at..]) {
+                Took::Bytes(n) => at += n.get(),
+                Took::Blocked => {
+                    self.unsent = Some(Unsent { frame, at, ends });
+                    return Ok(false);
+                }
+                Took::Failed => {
+                    return Err(FrameError {
+                        code: -902,
+                        text: "The user callback function failed",
+                        fatal: true,
+                    });
+                }
+            }
+        }
+        events(Event::Sent(described(&frame, &self.goaway_debug)));
+        if let Some(id) = ends {
+            self.stream(id).unwrap().local_end = true;
+            self.maybe_close(id, events);
+        }
+        Ok(true)
+    }
+
     fn stream(&mut self, id: i32) -> Option<&mut Stream> {
         self.streams
             .iter_mut()
@@ -584,7 +631,7 @@ impl Session for FakeSession {
 
     fn send(
         &mut self,
-        out: &mut dyn FnMut(&[u8]) -> bool,
+        out: &mut dyn FnMut(&[u8]) -> Took,
         body: &mut dyn FnMut(StreamId, &mut [u8]) -> BodyRead,
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<(), FrameError> {
@@ -596,12 +643,16 @@ impl Session for FakeSession {
                 error,
             });
         }
+        if let Some(Unsent { frame, at, ends }) = self.unsent.take()
+            && !self.offer(frame, at, ends, out, events)?
+        {
+            return Ok(());
+        }
         while let Some(frame) = self.queued.pop_front() {
             if self.stale_update(&frame) {
                 continue;
             }
-            events(Event::Sent(described(&frame, &self.goaway_debug)));
-            if !out(&frame) {
+            if !self.offer(frame, 0, None, out, events)? {
                 return Ok(());
             }
         }
@@ -638,15 +689,12 @@ impl Session for FakeSession {
                     frame.extend_from_slice(&room[..n]);
                     frame
                 });
-                events(Event::Sent(described(&frame, &[])));
-                let more = out(&frame);
-                if last {
-                    self.stream(id).unwrap().local_end = true;
-                    self.maybe_close(id, events);
-                    break;
-                }
-                if !more {
+                let ends = last.then_some(id);
+                if !self.offer(frame, 0, ends, out, events)? {
                     return Ok(());
+                }
+                if last {
+                    break;
                 }
             }
         }
@@ -654,8 +702,7 @@ impl Session for FakeSession {
             if self.stale_update(&frame) {
                 continue;
             }
-            events(Event::Sent(described(&frame, &self.goaway_debug)));
-            if !out(&frame) {
+            if !self.offer(frame, 0, None, out, events)? {
                 return Ok(());
             }
         }
@@ -782,7 +829,7 @@ impl Session for FakeSession {
             .any(|(_, s)| s.body && !s.local_end && !s.deferred && !s.closed);
         Wants {
             read: !self.goaway || self.streams.iter().any(|(_, s)| !s.closed),
-            write: !self.queued.is_empty() || body,
+            write: !self.queued.is_empty() || body || self.unsent.is_some(),
         }
     }
 }

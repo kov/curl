@@ -215,6 +215,19 @@ pub enum BodyRead {
     Failed,
 }
 
+/// What the connection took of the bytes the session gave it to send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Took {
+    /// This many, from the first: the session gives the rest again.
+    Bytes(std::num::NonZeroUsize),
+    /// None now: the session keeps them, to give them again first, and
+    /// sends no more in this call (`NGHTTP2_ERR_WOULDBLOCK`).
+    Blocked,
+    /// Sending failed, and the session with it
+    /// (`NGHTTP2_ERR_CALLBACK_FAILURE`).
+    Failed,
+}
+
 /// A setting the client tells its peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setting {
@@ -289,13 +302,15 @@ pub trait Session: fmt::Debug + Send {
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<usize, FrameError>;
 
-    /// The bytes the session wants sent next, given to `out`, which takes
-    /// all it is given and says whether it wants more; a body is read
-    /// with `body`. A stream that closes as its last frame goes is told
-    /// to `events`.
+    /// The bytes the session wants sent, given to `out` as it frames
+    /// them, which says what it took (`nghttp2_session_send`'s send
+    /// callback): a frame is told sent, and a stream its last frame
+    /// closes closed, to `events` once `out` took all of it. Until the
+    /// session has nothing more to send, or `out` takes none. A body is
+    /// read with `body`.
     fn send(
         &mut self,
-        out: &mut dyn FnMut(&[u8]) -> bool,
+        out: &mut dyn FnMut(&[u8]) -> Took,
         body: &mut dyn FnMut(StreamId, &mut [u8]) -> BodyRead,
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<(), FrameError>;

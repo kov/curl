@@ -10,6 +10,7 @@
 pub mod altsvc;
 mod auth;
 mod base64;
+mod bufq;
 pub mod coding;
 pub mod components;
 pub mod conn;

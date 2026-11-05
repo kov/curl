@@ -18,7 +18,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use curl_core::http2::Http2;
 pub use curl_core::http2::{
-    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Setting, StreamId, Wants,
+    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Setting, StreamId, Took, Wants,
 };
 
 /// The library, as the handles are given it.
@@ -121,7 +121,11 @@ pub fn version_number() -> u32 {
 struct Lent {
     events: Option<*mut EventSink>,
     body: Option<*mut BodySource>,
+    out: Option<*mut OutSink>,
 }
+
+/// What takes the bytes the session sends.
+type OutSink = dyn FnMut(&[u8]) -> Took;
 
 /// What hears what the session read.
 type EventSink = dyn FnMut(Event<'_>) -> Heard;
@@ -147,6 +151,7 @@ impl UserData {
         let lent = try_box(Lent {
             events: None,
             body: None,
+            out: None,
         })?;
         Ok(UserData(NonNull::from(Box::leak(lent))))
     }
@@ -245,6 +250,8 @@ impl Session {
         unsafe {
             sys::nghttp2_session_callbacks_set_on_stream_close_callback(callbacks.0, Some(on_close))
         };
+        // SAFETY: as above.
+        unsafe { sys::nghttp2_session_callbacks_set_send_callback2(callbacks.0, Some(send_out)) };
         // SAFETY: as above.
         unsafe { sys::nghttp2_option_set_no_auto_window_update(option.0, 1) };
         // SAFETY: as above.
@@ -378,12 +385,17 @@ impl curl_core::http2::Session for Session {
 
     fn send(
         &mut self,
-        out: &mut dyn FnMut(&[u8]) -> bool,
+        out: &mut dyn FnMut(&[u8]) -> Took,
         body: &mut dyn FnMut(StreamId, &mut [u8]) -> BodyRead,
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<(), FrameError> {
-        let body: *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_) = body;
+        let out: *mut (dyn FnMut(&[u8]) -> Took + '_) = out;
         // SAFETY: lent for the call only, taken back below.
+        self.lent().out = Some(unsafe {
+            core::mem::transmute::<*mut (dyn FnMut(&[u8]) -> Took + '_), *mut OutSink>(out)
+        });
+        let body: *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_) = body;
+        // SAFETY: as above.
         self.lent().body = Some(unsafe {
             core::mem::transmute::<
                 *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_),
@@ -397,23 +409,10 @@ impl curl_core::http2::Session for Session {
                 events,
             )
         });
-        let r = loop {
-            let mut data = ptr::null();
-            // SAFETY: the session and an out pointer to fill.
-            let n = unsafe { sys::nghttp2_session_mem_send2(self.raw.as_ptr(), &mut data) };
-            let Ok(len) = usize::try_from(n) else {
-                break Err(error(c_int::try_from(n).unwrap_or(sys::NGHTTP2_ERR_NOMEM)));
-            };
-            if len == 0 {
-                break Ok(());
-            }
-            // SAFETY: the session's own bytes, valid until its next call.
-            let bytes = unsafe { core::slice::from_raw_parts(data, len) };
-            if !out(bytes) {
-                break Ok(());
-            }
-        };
+        // SAFETY: the session; what its callbacks reach is lent above.
+        let r = check_h2(unsafe { sys::nghttp2_session_send(self.raw.as_ptr()) });
         let lent = self.lent();
+        lent.out = None;
         lent.body = None;
         lent.events = None;
         r
@@ -920,6 +919,36 @@ unsafe extern "C" fn on_close(
                 error: H2Error(error),
             },
         )
+    }
+}
+
+/// # Safety
+///
+/// Called by the library with the bytes it sends and the session's user
+/// data.
+unsafe extern "C" fn send_out(
+    _session: *mut sys::nghttp2_session,
+    data: *const u8,
+    length: usize,
+    _flags: c_int,
+    user: *mut c_void,
+) -> sys::nghttp2_ssize {
+    // SAFETY: the session's user data.
+    let lent = unsafe { &*user.cast::<Lent>() };
+    let Some(out) = lent.out else {
+        return sys::NGHTTP2_ERR_WOULDBLOCK as sys::nghttp2_ssize;
+    };
+    // SAFETY: the library's `length` bytes, for the call.
+    let bytes = unsafe { core::slice::from_raw_parts(data, length) };
+    // SAFETY: lent by `send` for the call that runs this callback.
+    match unsafe { (*out)(bytes) } {
+        Took::Bytes(n) => {
+            // What is taken is of what was given.
+            assert!(n.get() <= length, "took {n} of {length} bytes");
+            n.get() as sys::nghttp2_ssize
+        }
+        Took::Blocked => sys::NGHTTP2_ERR_WOULDBLOCK as sys::nghttp2_ssize,
+        Took::Failed => sys::NGHTTP2_ERR_CALLBACK_FAILURE as sys::nghttp2_ssize,
     }
 }
 

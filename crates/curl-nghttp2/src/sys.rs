@@ -147,6 +147,7 @@ pub(crate) struct nghttp2_info {
 
 pub(crate) const NGHTTP2_ERR_DEFERRED: c_int = -508;
 pub(crate) const NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE: c_int = -521;
+pub(crate) const NGHTTP2_ERR_WOULDBLOCK: c_int = -504;
 pub(crate) const NGHTTP2_ERR_NOMEM: c_int = -901;
 pub(crate) const NGHTTP2_NV_FLAG_NONE: u8 = 0;
 pub(crate) const NGHTTP2_DATA: u8 = 0;
@@ -184,6 +185,15 @@ type OnHeader = Option<
 type OnDataChunk = Option<
     unsafe extern "C" fn(*mut nghttp2_session, u8, i32, *const u8, usize, *mut c_void) -> c_int,
 >;
+type Send = Option<
+    unsafe extern "C" fn(
+        *mut nghttp2_session,
+        *const u8,
+        usize,
+        c_int,
+        *mut c_void,
+    ) -> nghttp2_ssize,
+>;
 type OnStreamClose =
     Option<unsafe extern "C" fn(*mut nghttp2_session, i32, u32, *mut c_void) -> c_int>;
 
@@ -194,6 +204,10 @@ unsafe extern "C" {
 
     pub(crate) fn nghttp2_session_callbacks_new(out: *mut *mut nghttp2_session_callbacks) -> c_int;
     pub(crate) fn nghttp2_session_callbacks_del(callbacks: *mut nghttp2_session_callbacks);
+    pub(crate) fn nghttp2_session_callbacks_set_send_callback2(
+        cbs: *mut nghttp2_session_callbacks,
+        cb: Send,
+    );
     pub(crate) fn nghttp2_session_callbacks_set_on_frame_recv_callback(
         cbs: *mut nghttp2_session_callbacks,
         cb: OnFrameRecv,
@@ -287,10 +301,7 @@ unsafe extern "C" {
         input: *const u8,
         inlen: usize,
     ) -> nghttp2_ssize;
-    pub(crate) fn nghttp2_session_mem_send2(
-        session: *mut nghttp2_session,
-        data_ptr: *mut *const u8,
-    ) -> nghttp2_ssize;
+    pub(crate) fn nghttp2_session_send(session: *mut nghttp2_session) -> c_int;
     pub(crate) fn nghttp2_session_consume(
         session: *mut nghttp2_session,
         stream_id: i32,

@@ -1354,29 +1354,32 @@ through SSPI; MIT krb5 stays Unix-only.
      Microsoft's curl.exe 8.21.0 agrees on names, `-K`, the environment and the console; it
      lists no `file://` directory and reads no `.curlrc` beside a copy of itself.
 102. **The curl.se build's set**: LibreSSL (with ngtcp2 over it) and the native CA store
-     (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **Done** (`win-curlse`), libssh2
-     left to milestone 10. `cfg(libressl)` takes C's
-     `LIBRESSL_VERSION_NUMBER` branches, HTTP/3 goes over ngtcp2's LibreSSL crypto, and
-     Windows' ROOT and CA stores are read in as C reads them; the `native-ca` feature is
-     `CURL_CA_NATIVE`. The C leg is this tree built with CMake over vcpkg's LibreSSL 4.4.0
-     (`C:\vcpkg-lsl`, its `openssl` port an empty one depending on `libressl`), with
-     `CURL_CA_NATIVE`, libssh2, libidn2 and the threaded resolver (`C:\work\c-libressl`). The
-     suite with CI's flags passes 2027 of 2043 on the Rust leg and 1946 of 1960 on C's; the
-     Rust leg fails no test C's passes but 96, 558, 1013 and 1014, as the other builds do, and
-     the flaky FTP 135 and 1057. `curl -V` lists curl.se's 8.23.0 features but for the SSPI
-     and the GSS-API of step 98, and its versions but for WinIDN, WinLDAP and libssh2. By hand
-     against both legs, the same text and trace for https://curl.se/ over TLS and HTTP/3, the
-     system's stores (with the suite's CA added to them and without), eleven combinations of
-     the CA options, a peer that closes or resets in the handshake, engine and provider
+     (`CURLSSLOPT_NATIVE_CA`). **Done**; libssh2 is milestone 10's. `cfg(libressl)` takes C's
+     `LIBRESSL_VERSION_NUMBER` branches, its `TlsSupport` is OpenSSL's but for the signature
+     algorithms, HTTP/3 goes over ngtcp2's LibreSSL crypto, and Windows' ROOT and CA stores are
+     read in as C reads them. The `native-ca` feature is `CURL_CA_NATIVE`: OpenSSL's
+     `CaDefaults` make the system's store the default, and `NativeCA` is claimed. The C leg is
+     this tree built with CMake over vcpkg's LibreSSL 4.4.0 (`C:\vcpkg-lsl`, its `openssl` port
+     an empty one depending on `libressl`), with `CURL_CA_NATIVE`, libssh2, libidn2 and the
+     threaded resolver (`C:\work\c-libressl`); the Rust leg has `native-ca`, `libidn2` and the
+     threaded resolver. Measured 2026-11-05, the suite with CI's flags passes 2031 of 2045 on
+     the Rust leg and 1918 of 1959 on C's; the Rust leg fails no test C's passes but 96, 558
+     and 1014, as the other builds do, and the intermittent FTP 2307. `curl -V` lists curl.se's
+     8.23.0 features but for the SSPI and the GSS-API of step 98, and its versions but for
+     libssh2 and, with `libidn2` asked for, WinIDN. By hand against both legs, the same text
+     and trace for https://curl.se/ over TLS and HTTP/3, the system's stores (with the suite's
+     CA added to them and without), eleven combinations of the CA options, `--sigalgs` and
+     `--engine list`, a peer that closes or resets in the handshake, engine and provider
      certificate types, TLS 1.2 resumption and the TLS 1.2 key log. curl-openssl's unit tests
-     pass over LibreSSL. Its peer tests pass on the guest, 87 of 87 run over LibreSSL and 89 of
+     pass over LibreSSL, and its peer tests on the guest, 87 of 87 run over LibreSSL and 89 of
      89 over OpenSSL. Where the library or Windows answers otherwise than OpenSSL 3 on Linux,
-     each expects what C's build there says. That was checked with `curl.exe` on both legs
-     against the same servers. The blob, channel binding and failures planted below the
-     socket follow C's branch by reading; C's SSPI build never asks for a channel binding.
-     Not built: over LibreSSL, the Ed25519 server certificate and the peer without a
-     certificate, neither of which the test's server can be over LibreSSL; on Windows, the
-     engine compiled by `cc`.
+     each expects what C's build there says, checked with `curl.exe` on both legs against the
+     same servers. The blob, channel binding and failures planted below the socket follow C's
+     branch by reading; C's SSPI build never asks for a channel binding. Not built: over
+     LibreSSL, the Ed25519 server certificate and the peer without a certificate, neither of
+     which the test's server can be over LibreSSL; on Windows, the engine compiled by `cc`.
+     Left: six of the shim's unit tests still expect OpenSSL over LibreSSL (its engine list
+     and configuration, a raw call's trace, TLS 1.3 sessions kept, the retried verify).
 
 ## Milestone 10: the other backends
 

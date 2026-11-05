@@ -171,8 +171,16 @@ class Leg:
         return self.build / "perf"
 
     def env(self):
-        """The environment the leg's programs run with."""
-        if self.side == "c":
+        """
+        The environment the leg's programs run with.
+
+        Not on macOS, where perf's rpath alone finds the leg's library: with
+        DYLD_LIBRARY_PATH set, the loader takes some 40 ms more to start
+        each program (measured 2026-11-05 on an M1 Max: `curl
+        file:///etc/hosts` 16 ms without, 54 ms with), which the
+        scorecard's single transfers would count as the leg's.
+        """
+        if self.side == "c" or MACOS:
             return dict(os.environ)
         return {**os.environ, LIBRARY_PATH: str(self.build / "lib")}
 

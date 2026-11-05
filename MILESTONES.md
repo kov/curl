@@ -1378,8 +1378,10 @@ through SSPI; MIT krb5 stays Unix-only.
      branch by reading; C's SSPI build never asks for a channel binding. Not built: over
      LibreSSL, the Ed25519 server certificate and the peer without a certificate, neither of
      which the test's server can be over LibreSSL; on Windows, the engine compiled by `cc`.
-     Left: six of the shim's unit tests still expect OpenSSL over LibreSSL (its engine list
-     and configuration, a raw call's trace, TLS 1.3 sessions kept, the retried verify).
+     The shim's unit tests pass on the guest, 205 of 205 run over LibreSSL and over OpenSSL;
+     over LibreSSL six expect what C's build there does, checked with a program linked against
+     it: no engines, `OPENSSL_CONF` not read, a raw call's TLS 1.3 records not traced, no TLS
+     1.3 session kept, and no retried verify.
 
 ## Milestone 10: the other backends
 

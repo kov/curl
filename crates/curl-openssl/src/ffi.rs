@@ -96,8 +96,6 @@ unsafe extern "C" {
         path: *const c_char,
     ) -> c_int;
     pub(crate) fn SSL_set_bio(s: *mut SSL, rbio: *mut BIO, wbio: *mut BIO);
-    pub(crate) fn ERR_set_mark() -> c_int;
-    pub(crate) fn ERR_pop_to_mark() -> c_int;
     pub(crate) fn SSL_get_client_random(s: *const SSL, out: *mut u8, outlen: usize) -> usize;
     pub(crate) fn SSL_SESSION_get_master_key(
         session: *const openssl_sys::SSL_SESSION,
@@ -218,6 +216,8 @@ unsafe extern "C" {
     pub(crate) fn d2i_PKCS12_bio(bio: *mut BIO, out: *mut *mut PKCS12) -> *mut PKCS12;
     pub(crate) fn BIO_set_shutdown(bio: *mut BIO, shut: c_int);
     pub(crate) fn i2a_ASN1_OBJECT(bio: *mut BIO, a: *const ASN1_OBJECT) -> c_int;
+    pub(crate) fn ERR_set_mark() -> c_int;
+    pub(crate) fn ERR_pop_to_mark() -> c_int;
     pub(crate) fn i2t_ASN1_OBJECT(buf: *mut c_char, len: c_int, a: *const ASN1_OBJECT) -> c_int;
     pub(crate) fn X509_PUBKEY_get0_param(
         ppkalg: *mut *mut ASN1_OBJECT,

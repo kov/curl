@@ -184,8 +184,25 @@ pub(crate) type Kept = StoreCache<Store>;
 /// Set the trust store of `ctx` up for a session with `identity`
 /// (`Curl_ssl_setup_x509_store`): the store `shared` keeps for the
 /// multi, if one serves it, and nothing is said; else one loaded, and
-/// kept for the connections after if they may take it.
+/// kept for the connections after if they may take it. What the library
+/// queued meanwhile is dropped, as C drops it: a file passed over must not
+/// read, to the handshake after, as its failure.
 pub(crate) fn setup_store(
+    ctx: NonNull<SSL_CTX>,
+    identity: &TryArc<TlsIdentity>,
+    shared: Option<&TlsShared>,
+    io: &mut TlsCx<'_>,
+) -> Result<(), ErrorKind> {
+    // SAFETY: the thread's error queue.
+    unsafe { ffi::ERR_set_mark() };
+    let set_up = setup_store_marked(ctx, identity, shared, io);
+    // SAFETY: as above, back to the mark just set.
+    unsafe { ffi::ERR_pop_to_mark() };
+    set_up
+}
+
+/// `setup_store`'s work, between its marks.
+fn setup_store_marked(
     ctx: NonNull<SSL_CTX>,
     identity: &TryArc<TlsIdentity>,
     shared: Option<&TlsShared>,

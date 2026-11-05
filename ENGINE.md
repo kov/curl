@@ -2205,8 +2205,10 @@ each egress starts (`flush_below`), as C flushes its filters before it drives th
 trace C's. For the call the session is taken off the connection (`Conn::take_h3`) and the
 request's step is the libraries' context, `H3Step`: what the library tells of a stream goes to
 the stream's transfer as it is read, the stepping one's own or a sibling's through
-`with_sibling`, routed by `conn::mux::Routes`, which HTTP/2 shares; a stream no transfer has is
-heard as C's callbacks hear one without user data. The response's head reaches the request a
+`lend_sibling`, routed by `conn::mux::Routes`, which HTTP/2 shares; a stream no transfer has is
+heard as C's callbacks hear one without user data. A sibling is marked to run only for its head's
+end, its stream's close or reset, and its flow unblocked once blocked, as C's callbacks mark it;
+its body, written to it as it is read, is not (HTTP/2's siblings are marked for every event). The response's head reaches the request a
 line at a time, as HTTP/2's does; the windows its reading opens are opened once the call
 returns. How the stream ended is one field, closed or reset with the peer's error (C's `closed`,
 `reset` and `error3`). The library's timer, set in a step, is armed on the transfer after it. The stream is

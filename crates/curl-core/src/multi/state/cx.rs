@@ -322,14 +322,26 @@ impl<'a, H: Host> StepCx<'a, H> {
 }
 
 impl<H: Host> StepCx<'_, H> {
+    /// `lend_sibling`, and the sibling marked dirty, to run when its turn
+    /// next comes, as C marks it (`Curl_multi_mark_dirty`), unless it is
+    /// gone.
+    pub(crate) fn with_sibling<R>(
+        &mut self,
+        id: TransferId,
+        f: impl FnOnce(&mut StepCx<'_, H>, &mut crate::proto::http::Request) -> R,
+    ) -> Option<R> {
+        let r = self.lend_sibling(id, f);
+        self.wake(id);
+        r
+    }
+
     /// Run `f` with transfer `id`'s step context and its HTTP request, its
     /// run out of its slot meanwhile, as the stepping transfer hands it
     /// what the connection they share did for it (ENGINE.md 4.4); the
-    /// connection's TLS objects, the same, are lent to it, and it is
-    /// marked dirty, to run when its turn next comes, as C marks it
-    /// (`Curl_multi_mark_dirty`). None if it is gone or makes no HTTP
-    /// request.
-    pub(crate) fn with_sibling<R>(
+    /// connection's TLS objects, the same, are lent to it. It is not
+    /// marked to run: what `f` did says whether it must (`wake`). None if
+    /// it is gone or makes no HTTP request.
+    pub(crate) fn lend_sibling<R>(
         &mut self,
         id: TransferId,
         f: impl FnOnce(&mut StepCx<'_, H>, &mut crate::proto::http::Request) -> R,
@@ -348,7 +360,6 @@ impl<H: Host> StepCx<'_, H> {
             _ => None,
         };
         super::super::put_back(self.rest.tell.slots, self.rest.dirty, id, run);
-        self.rest.dirty.insert(id.index());
         r
     }
 

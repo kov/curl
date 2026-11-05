@@ -230,9 +230,15 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
             let to = self.routes.route_of(stream).filter(|&to| to != me);
             let lease = &mut *self.lease;
             let told = to.and_then(|to| {
-                self.cx.with_sibling(to, |scx, sib| {
-                    sib.h3_event(scx, lease, event.clone(), &mut extend)
-                })
+                let told = self.cx.lend_sibling(to, |scx, sib| {
+                    let blocked = sib.h3_stream().flow_blocked;
+                    let heard = sib.h3_event(scx, lease, event.clone(), &mut extend);
+                    (heard, wakes_sibling(&event, blocked))
+                });
+                if let Some((_, true)) = told {
+                    self.cx.wake(to);
+                }
+                told.map(|(heard, _)| heard)
             });
             told.unwrap_or_else(|| crate::conn::quic::unrouted(&mut *self.cx, stream, &event))
         };
@@ -243,6 +249,20 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
             return Heard::Failed;
         }
         heard
+    }
+}
+
+/// Whether what the library told of a sibling's stream has the sibling
+/// run when its turn next comes: its head complete, its stream closed or
+/// reset, or its flow unblocked once it was blocked; C's callbacks mark it
+/// dirty for these alone (`cb_h3_end_headers`, `cb_h3_stream_close`,
+/// `cb_extend_max_stream_data`). Its body, written to it as it is read,
+/// does not.
+fn wakes_sibling(event: &StreamEvent<'_>, was_blocked: bool) -> bool {
+    match event {
+        StreamEvent::HeadersDone | StreamEvent::Closed(_) => true,
+        StreamEvent::Unblocked => was_blocked,
+        _ => false,
     }
 }
 

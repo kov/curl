@@ -1240,3 +1240,21 @@ witness: curl-core proto::http::tests::h3_trace::a_body_in_flight_waits_for_its_
         if self.sent < self.filled && self.filled == self.out.len() {
 --- new
         if self.sent < self.filled && self.filled == self.out.len() && false {
+
+=== a sibling is run for every event of its stream read in another's step
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_sibling_runs_for_its_stream_s_close_and_not_for_its_body
+--- old
+        StreamEvent::Unblocked => was_blocked,
+        _ => false,
+--- new
+        StreamEvent::Unblocked => was_blocked,
+        _ => true,
+
+=== a sibling whose stream closed in another's step is not run
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_sibling_runs_for_its_stream_s_close_and_not_for_its_body
+--- old
+        StreamEvent::HeadersDone | StreamEvent::Closed(_) => true,
+--- new
+        StreamEvent::HeadersDone => true,

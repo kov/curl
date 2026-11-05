@@ -4559,6 +4559,38 @@ fn a_refused_stream_is_said_on_its_own_transfer() {
     );
 }
 
+/// What a transfer's step reads for its sibling's stream has the sibling
+/// run when its turn next comes only if it must act on it, as C's
+/// callbacks mark it dirty: its body, written to it as it is read, does
+/// not (`cb_h3_recv_data`); its stream's close does (`cb_h3_stream_close`).
+/// The first runs alone, by its timer, and reads the packet with the
+/// second's.
+#[test]
+fn a_sibling_runs_for_its_stream_s_close_and_not_for_its_body() {
+    use crate::multi::SocketEvent;
+    let ran = |then: Vec<Told>| {
+        let mut two = two_heads_on_quic(then);
+        two.talk.allow(4);
+        two.clock.advance(std::time::Duration::from_millis(1000));
+        let before = two.seen[1].text().len();
+        two.m
+            .socket_action(SocketEvent::Timeout, &mut NoEvents)
+            .unwrap();
+        let after: Vec<String> = two.seen[1].text()[before..].to_vec();
+        let ran = after.iter().any(|l| l.contains("multi_run_dirty"));
+        (ran, two.seen[1].body(), after)
+    };
+    let (sibling_ran, body, after) = ran(vec![Told::Data(4, b"part".to_vec())]);
+    assert_eq!(body, b"part", "written to it in the first's step");
+    assert!(!sibling_ran, "not run for its body: {after:#?}");
+    let (sibling_ran, body, after) = ran(vec![
+        Told::Data(4, b"all of it".to_vec()),
+        Told::Closed(4, 0x100),
+    ]);
+    assert_eq!(body, b"all of it");
+    assert!(sibling_ran, "run for its close: {after:#?}");
+}
+
 /// A read that fails in a step its socket did not start, the first
 /// transfer's run by its timer, fails the other transfer on the
 /// connection in the same call: the connection's failure has the other

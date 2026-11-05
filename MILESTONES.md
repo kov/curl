@@ -1321,10 +1321,12 @@ through SSPI; MIT krb5 stays Unix-only.
 98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **Done.** On Windows a
     handle's security library (`Libraries.security`) is SSPI (`curl-sspi`, behind
     `curl_core::sspi::Sspi`) in GSS-API's place: SPNEGO by the Negotiate package without NTLM,
-    HTTP Digest and SASL DIGEST-MD5 by WDigest, SOCKS5's GSS-API method by Kerberos, each with
-    C's calls, flags and words (`lib/vauth/*_sspi.c`, `lib/socks_sspi.c`), in the ANSI or the
-    Unicode build's text. `curl -V` and `curl_version_info` list SSPI, Kerberos and SPNEGO and no
-    GSS-API, as every Windows C build. C would bind Negotiate to Schannel's channel through
+    HTTP Digest and SASL DIGEST-MD5 by WDigest, SASL GSSAPI and SOCKS5's GSS-API method by
+    Kerberos, each with C's calls, flags and words (`lib/vauth/*_sspi.c`, `lib/socks_sspi.c`),
+    in the ANSI or the Unicode build's text. `curl -V` and `curl_version_info` list SSPI, Kerberos and SPNEGO and no
+    GSS-API, as every Windows C build. Digest's token is completed with the credentials'
+    handle where SSPI asks, as C hands it. SSPI's buffers and handles are `curl-sspi`'s, which
+    `curl-schannel` shares. C would bind Negotiate to Schannel's channel through
     `conn->sslContext`, which nothing in C sets: no bindings are passed. NTLM is not built
     (SCOPE.md), and `--ntlm` and `--proxy-ntlm` are refused as by a C build without it. Measured
     2026-11-05 on the guest, which is in no domain: the suite with CI's flags against the C build
@@ -1337,10 +1339,19 @@ through SSPI; MIT krb5 stays Unix-only.
     Microsoft's curl.exe 8.21.0 agrees but for sending NTLM's token in Negotiate, which it
     predates C's refusal of. Through `--socks5`, C's build resolves the origin with c-ares
     alongside the handshake and may fail on the name first (exit 6), as the Rust leg's threaded
-    resolver does not. No KDC was set up, so no Kerberos context completes: a peer's token goes
-    to SSPI as a token only in NTLM's exchange inside Negotiate, and the Kerberos tokens are
-    checked against a scripted SSPI. The 84 Digest, Negotiate and GSS-API tests that run on Linux,
-    where the reshaped Digest and Negotiate paths are GSS-API's, pass on the Rust leg.
+    resolver does not. Measured 2026-11-05 against a Samba AD domain (`CURLTEST.LAN`, a VM on
+    banana with Apache, Squid, Dovecot and Dante requiring Kerberos) with the guest joined:
+    47 cases (`--negotiate` and `--proxy-negotiate` as the domain's logon and with given
+    credentials, `--anyauth`, IMAP, POP3 and SMTP with `AUTH=GSSAPI`, with and without
+    `--sasl-ir`, `--socks5-gssapi`, `--digest` with a domain account) give the same exit codes
+    and traces on both Rust builds as on C's Schannel and OpenSSL builds; Microsoft's curl.exe
+    agrees on exit codes, and sends NTLM in Negotiate where no ticket is to be had. Every client
+    stops `--socks5-gssapi` at Dante's grant of confidentiality ("protection not yet
+    implemented"). WDigest with a domain account answers with the domain as its realm, whatever
+    the server's. The Digest and Kerberos decisions are also checked against a scripted SSPI.
+    SASL GSSAPI over GSS-API (`krb5_gssapi.c`) is not built: Linux says it is not. The 84
+    Digest, Negotiate and GSS-API tests that run on Linux, where the reshaped Digest and
+    Negotiate paths are GSS-API's, pass on the Rust leg.
 99. **WinIDN.** **Done**, a Windows build's default as in both oracles (`libidn2` asks for
     libidn2 instead): `IdnToAscii` and `IdnToUnicode` on the name read as UTF-8, in C's 255-unit
     buffers, `WinIDN` in the version string and no `libidn`. Against

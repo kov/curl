@@ -19,6 +19,7 @@ use super::{
     Conn, ConnId, ConnNumber, ConnSlot, Dial, Peer, Route, TransferNumber, Transport, Use,
 };
 use crate::id::{Arena, ArenaPolicy};
+use crate::proto::http::StreamSending;
 use crate::proto::http::negotiate::Wants;
 use crate::share::Share;
 use crate::time::Instant;
@@ -269,12 +270,16 @@ impl ConnSlot {
     /// wants: its layers' say, once it is up. A transfer wanting nothing
     /// is not asked about, as its layers' sockets would then be ready
     /// forever (`Curl_conn_adjust_pollset`).
-    /// An HTTP/3 connection weighs `h3`, the transfer's stream.
-    pub(crate) fn adjust_pollset(
-        &self,
-        wanted: Events,
-        h3: Option<crate::proto::http::StreamSend>,
-    ) -> Events {
+    /// A multiplexed connection weighs `sending`, the transfer's stream.
+    pub(crate) fn adjust_pollset(&self, wanted: Events, sending: Option<StreamSending>) -> Events {
+        let h2 = sending.and_then(|s| match s {
+            StreamSending::H2(id) => Some(id),
+            StreamSending::H3(_) => None,
+        });
+        let h3 = sending.and_then(|s| match s {
+            StreamSending::H3(s) => Some(s),
+            StreamSending::H2(_) => None,
+        });
         match self {
             ConnSlot::Open(Conn {
                 transport: Transport::Stream(stream),
@@ -282,6 +287,9 @@ impl ConnSlot {
                 ..
             }) if !wanted.is_empty() => {
                 let wanted = match session {
+                    super::mux::Speaks::Made(super::mux::Session::H2(h2conn)) => {
+                        h2conn.adjust_pollset(wanted, h2)
+                    }
                     super::mux::Speaks::Made(super::mux::Session::H3(h3conn)) => {
                         h3conn.adjust_pollset(wanted, h3)
                     }

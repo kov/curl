@@ -49,6 +49,16 @@ mod h2;
 pub(crate) use h2::{decode_status, open_session};
 mod h3;
 pub(crate) use h3::StreamSend;
+
+/// What of a request's sending its multiplexed connection weighs as the
+/// transfer's pollset is made: its HTTP/2 stream, whose window the peer
+/// may have shut (`cf_h2_adjust_pollset`), or its HTTP/3 stream's
+/// sending (`cf_ngtcp2_adjust_pollset`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum StreamSending {
+    H2(crate::http2::StreamId),
+    H3(StreamSend),
+}
 pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;
@@ -1086,9 +1096,14 @@ impl Request {
         events
     }
 
-    /// What of its sending an HTTP/3 connection weighs in its pollset.
-    pub(crate) fn h3_sending(&self) -> Option<h3::StreamSend> {
-        self.wire.h3().and_then(h3::H3Stream::sending)
+    /// What of its sending its multiplexed connection weighs in its
+    /// pollset, once its stream is open.
+    pub(crate) fn stream_sending(&self) -> Option<StreamSending> {
+        match &self.wire {
+            Wire::H1 => None,
+            Wire::H2(s) => s.id().map(StreamSending::H2),
+            Wire::H3(s) => s.sending().map(StreamSending::H3),
+        }
     }
 
     /// The request signed with AWS SigV4, if it has credentials to sign

@@ -136,6 +136,11 @@ impl Default for H2Stream {
 const H2: Component = Component::Http2;
 
 impl H2Stream {
+    /// Its id, once its head went.
+    pub(super) fn id(&self) -> Option<StreamId> {
+        self.id
+    }
+
     /// Whether the session's output waits for the connection.
     pub(super) fn out_pending(&self) -> bool {
         self.out_pending

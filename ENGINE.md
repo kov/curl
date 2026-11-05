@@ -1966,7 +1966,10 @@ framing nor an added `Expect:` goes over HTTP/2. The body goes into the stream's
 chunks of 16 KiB filled no further than they have room for (`sendbuf`), which the session frames
 as the peer's window lets it: a full buffer takes nothing more, so the body is read no faster
 than it goes and the buffer never holds more than its chunks. The body's end with no bytes left
-goes as an empty send (`req_flush`).
+goes as an empty send (`req_flush`). While the peer's window is shut, the stream's or the
+connection's, the transfer's pollset, made from the connection as it is asked
+(`H2Conn::adjust_pollset`), waits to read the peer's update instead of to write, but for what the
+session itself has to send (`cf_h2_adjust_pollset`).
 
 A response head reaches the HTTP head parser as C hands it on: the status as
 `HTTP/2 <code> \r\n` and each field as `name: value\r\n`, through one entry that takes a whole

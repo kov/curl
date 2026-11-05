@@ -449,3 +449,93 @@ fn a_blocked_connection_keeps_the_frames_in_order() {
     );
     assert_eq!(data_sent(&ran.request), body);
 }
+
+/// A POST of `body` by prior knowledge over `talk`, added to a multi on
+/// `clock`, its handle tracing the HTTP/2 filter: the multi, the
+/// transfer and what it saw.
+fn h2_upload_on(
+    clock: &ManualClock,
+    body: &[u8],
+    talk: &Conversation,
+) -> (Multi, crate::multi::TransferId, Seen) {
+    let mut m = serving_on(clock.clone(), Peer::Accepts, &[talk]);
+    let mut e = tracing();
+    let seen = Seen::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/up").as_bytes()))
+        .unwrap();
+    o.output.verbose = true;
+    o.limits.total = crate::time::TimeLimit::from_millis(100_000);
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.http.version = HttpVersion::Http2Prior;
+    o.upload =
+        crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap());
+    o.method = Method::Post;
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    (m, id, seen)
+}
+
+/// One wait of at most a second, and one perform.
+fn round(m: &mut Multi) {
+    let poll = crate::multi::WaitMode::Poll;
+    m.wait(&mut [], Duration::from_secs(1), poll, &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+}
+
+/// The sends with stream 1's send window shut, as the filter's
+/// `cf_send` lines say.
+fn shut_sends(seen: &Seen) -> usize {
+    seen.text()
+        .iter()
+        .filter(|l| l.contains("[HTTP/2] [1] cf_send(") && l.contains("h2 windows 0-"))
+        .count()
+}
+
+/// A stream whose send window the server shut waits to read the
+/// server's update, not to write: C takes the transfer's wish to write
+/// out of its pollset while the window is nothing (`cf_h2_adjust_pollset`'s
+/// `s_exhaust`), so a full body buffer is not offered more again and
+/// again, each time taking none. The C build against `nghttpd -w 0` sends
+/// once a second, its wait timing out each time; a transfer that waits to
+/// write spins, and the fake clock never moves. The update opens the
+/// window, and the body goes whole.
+#[test]
+fn a_shut_send_window_waits_for_the_update_not_the_socket() {
+    let body = vec![b'.'; 300_000];
+    let settings: &[u8] = b"S 100 0\n";
+    let update: &[u8] = b"U 1 1000000\n";
+    let reply: &[u8] = b"H 1 1\n:status: 201\n\n";
+    let talk = Conversation::replies(&[settings, update, reply], false)
+        .per_send()
+        .held();
+    talk.allow(1);
+    let clock = ManualClock::new().unwrap();
+    let (mut m, id, seen) = h2_upload_on(&clock, &body, &talk);
+    let start = clock.now();
+    let mut rounds = 0;
+    while clock.now().since(start) < Duration::from_secs(5) && rounds < 100 {
+        round(&mut m);
+        rounds += 1;
+    }
+    // A round a second, its wait timing out, and a send in each.
+    assert!(rounds <= 7, "{rounds} rounds in 5 s of a shut window");
+    let sends = shut_sends(&seen);
+    assert!(
+        (1..=8).contains(&sends),
+        "{sends} sends with the window shut"
+    );
+    assert!(data_sent(&talk.received()).len() < body.len());
+    talk.allow(2);
+    let mut rounds = 0;
+    while data_sent(&talk.received()).len() < body.len() {
+        assert!(rounds < 100, "the body did not go once the window opened");
+        round(&mut m);
+        rounds += 1;
+    }
+    talk.allow(3);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{:#?}", seen.text());
+    assert_eq!(data_sent(&talk.received()), body);
+}

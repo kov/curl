@@ -11,7 +11,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::bufq::ChunkQueue;
 use crate::components::Component;
-use crate::conn::io::{Recv, Sent};
+use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::layer::LayerCalls as _;
 use crate::conn::layer::{Alive, Handshake, LayerCx, Lower as _, Part as ConnPart};
 use crate::conn::mux::{Carrier, Routes};
@@ -363,6 +363,33 @@ impl H2Conn {
     /// The session's output not sent yet (`Curl_bufq_len(&ctx->outbufq)`).
     pub(crate) fn out_len(&self) -> usize {
         self.out.len()
+    }
+
+    /// What a transfer waits for, given what it `wanted` and its stream:
+    /// a window the peer shut, the connection's or the stream's, waits to
+    /// read the peer's update instead of to write, as nothing can go
+    /// until it comes; the session's own frames and its output still wait
+    /// to write (`cf_h2_adjust_pollset`).
+    pub(crate) fn adjust_pollset(&self, wanted: Events, stream: Option<StreamId>) -> Events {
+        let want_recv = wanted.contains(Events::IN);
+        let want_send = wanted.contains(Events::OUT);
+        if !want_recv && !want_send {
+            return wanted;
+        }
+        let c_exhaust = want_send && self.session.remote_window() == 0;
+        let s_exhaust =
+            want_send && stream.is_some_and(|s| self.session.stream_remote_window(s) == 0);
+        let mut events = Events::NONE;
+        if want_recv || c_exhaust || s_exhaust {
+            events = events | Events::IN;
+        }
+        if (!s_exhaust && want_send)
+            || (!c_exhaust && self.session.wants().write)
+            || !self.out.is_empty()
+        {
+            events = events | Events::OUT;
+        }
+        events
     }
 
     /// Ask for `stream`'s receive window to be `wanted`, as its transfer

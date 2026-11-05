@@ -5,7 +5,12 @@
 //! The client sends, and the server is written as, these frames:
 //!
 //! - `S\n`: SETTINGS; the client's with its settings, `S MCS=100;...\n`,
-//!   the server's with its limit on streams open at once, `S <n>\n`.
+//!   the server's with its limit on streams open at once, `S <n>\n`, and
+//!   the window each stream of the client's starts with, `S <n> <w>\n`.
+//!   Until a server says one, the client's streams send unlimited; once
+//!   it has, a stream sends no more DATA than its window, which the
+//!   server's `U <id> <n>\n` opens by `<n>`, and which reads as nothing
+//!   once shut, as nghttp2's does.
 //! - `H <id> <end>\n` then `name: value\n` per field and `\n`: a header
 //!   block; `<end>` is 1 if it ends the stream.
 //! - `D <id> <len> <end>\n` then `<len>` bytes: DATA.
@@ -141,6 +146,10 @@ struct Stream {
     /// What the server sent on it since the client last opened its
     /// window by as much (`effective_recv_data_length`).
     received: i32,
+    /// The DATA bytes the client sent on it.
+    sent: i64,
+    /// What the server's updates opened its send window by.
+    granted: i64,
 }
 
 /// Each stream's receive window as it opens.
@@ -166,6 +175,8 @@ pub struct FakeSession {
     goaway_debug: Vec<u8>,
     /// A frame the connection took only some of, given again first.
     unsent: Option<Unsent>,
+    /// The send window each stream starts with, once the server said one.
+    send_window: Option<i64>,
 }
 
 /// A frame the connection took only some of: from `at` on, and the
@@ -285,6 +296,12 @@ impl FakeSession {
         Ok(true)
     }
 
+    /// What `s` may send, as the server's windows say.
+    fn send_room(&self, s: &Stream) -> i64 {
+        self.send_window
+            .map_or(i64::from(i32::MAX), |w| (w + s.granted - s.sent).max(0))
+    }
+
     fn stream(&mut self, id: i32) -> Option<&mut Stream> {
         self.streams
             .iter_mut()
@@ -377,10 +394,13 @@ impl FakeSession {
                 if words.len() > 1 {
                     self.max_concurrent = Some(u32::try_from(num(1)?).map_err(|_| bad)?);
                 }
-                // The server's settings say one setting, if any.
+                if words.len() > 2 {
+                    self.send_window = Some(num(2)?);
+                }
+                // The server's settings say six bytes a setting.
                 let frame = Frame {
                     stream: StreamId(0),
-                    length: if words.len() > 1 { 6 } else { 0 },
+                    length: 6 * (words.len() - 1),
                     flags: 0,
                     kind: FrameKind::Settings,
                 };
@@ -404,6 +424,11 @@ impl FakeSession {
             }
             "U" => {
                 let id = num(1)? as i32;
+                if words.len() > 2
+                    && let Some(s) = self.stream(id)
+                {
+                    s.granted += num(2)?;
+                }
                 check(events(Event::Received(described(&input[..nl], &[]))))?;
                 // Stream 0's is the connection's.
                 check(events(Event::WindowUpdate {
@@ -665,8 +690,16 @@ impl Session for FakeSession {
         });
         for id in open {
             loop {
+                // A stream whose window is shut waits for the server's
+                // update, framing nothing (nghttp2's flow control).
+                let s = &self.streams.iter().find(|(i, _)| *i == id).unwrap().1;
+                let window = self.send_room(s);
+                if window == 0 {
+                    break;
+                }
                 let mut room = [0u8; 16384];
-                let (n, last) = match body(StreamId(id), &mut room) {
+                let room = &mut room[..usize::try_from(window.min(16384)).unwrap()];
+                let (n, last) = match body(StreamId(id), room) {
                     BodyRead::Bytes(n) => (n, false),
                     BodyRead::Last(n) => (n, true),
                     BodyRead::Later => {
@@ -689,6 +722,7 @@ impl Session for FakeSession {
                     frame.extend_from_slice(&room[..n]);
                     frame
                 });
+                self.stream(id).unwrap().sent += i64::try_from(n).unwrap();
                 let ends = last.then_some(id);
                 if !self.offer(frame, 0, ends, out, events)? {
                     return Ok(());
@@ -761,7 +795,8 @@ impl Session for FakeSession {
         true
     }
 
-    /// The fake keeps no send windows: the peer always has room.
+    /// The fake keeps no connection send window: the peer always has
+    /// room.
     fn remote_window(&self) -> i32 {
         i32::MAX
     }
@@ -770,7 +805,9 @@ impl Session for FakeSession {
         self.streams
             .iter()
             .find(|(i, s)| *i == stream.0 && !s.closed)
-            .map_or(-1, |_| i32::MAX)
+            .map_or(-1, |(_, s)| {
+                i32::try_from(self.send_room(s)).unwrap_or(i32::MAX)
+            })
     }
 
     fn submit_window_update(&mut self, stream: StreamId, by: i32) -> Result<(), FrameError> {
@@ -823,10 +860,11 @@ impl Session for FakeSession {
     }
 
     fn wants(&self) -> Wants {
-        let body = self
-            .streams
-            .iter()
-            .any(|(_, s)| s.body && !s.local_end && !s.deferred && !s.closed);
+        // A stream its window holds back wants nothing written, as
+        // nghttp2 takes it off its queue until the window opens.
+        let body = self.streams.iter().any(|(_, s)| {
+            s.body && !s.local_end && !s.deferred && !s.closed && self.send_room(s) > 0
+        });
         Wants {
             read: !self.goaway || self.streams.iter().any(|(_, s)| !s.closed),
             write: !self.queued.is_empty() || body || self.unsent.is_some(),

@@ -1373,10 +1373,11 @@ impl ProtoState {
         }
     }
 
-    /// What of its sending an HTTP/3 connection weighs in its pollset.
-    pub(crate) fn h3_sending(&self) -> Option<crate::proto::http::StreamSend> {
+    /// What of its sending a multiplexed connection weighs in its
+    /// pollset.
+    pub(crate) fn stream_sending(&self) -> Option<crate::proto::http::StreamSending> {
         match *self {
-            ProtoState::Http(ref r) => r.h3_sending(),
+            ProtoState::Http(ref r) => r.stream_sending(),
             _ => None,
         }
     }

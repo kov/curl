@@ -954,3 +954,11 @@ witness: curl-core proto::http::h2::tests::a_body_s_buffer_stays_within_its_chun
             if self.taken >= self.len() {
 --- new
             if false {
+
+=== a stream whose send window is shut still waits to write
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2_trace::a_shut_send_window_waits_for_the_update_not_the_socket
+--- old
+            want_send && stream.is_some_and(|s| self.session.stream_remote_window(s) == 0);
+--- new
+            want_send && stream.is_some_and(|_| false);

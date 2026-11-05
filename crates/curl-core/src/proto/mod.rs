@@ -1441,12 +1441,13 @@ impl ProtoState {
     pub(crate) fn side_pollset(
         &self,
         wanted: Events,
-    ) -> impl Iterator<Item = (&dyn crate::conn::io::Socket, Events)> {
-        let ftp = match self {
+    ) -> Option<impl Iterator<Item = (&dyn crate::conn::io::Socket, Events)>> {
+        // None for the others, not an empty iterator: FTP's is large, and
+        // a pollset is made at every step.
+        match self {
             ProtoState::Ftp(r) => Some(r.data_pollset(wanted)),
             _ => None,
-        };
-        ftp.into_iter().flatten()
+        }
     }
 
     /// Whether the request may be made again on a fresh connection, its

@@ -1099,8 +1099,10 @@ impl TransferState {
                     }
                     // A second connection, set up beside it, waits for
                     // what its setup does (`ftp_domore_pollset`).
-                    for (s, events) in x.proto.side_pollset(Events::NONE) {
-                        set.add(s, events)?;
+                    if let Some(side) = x.proto.side_pollset(Events::NONE) {
+                        for (s, events) in side {
+                            set.add(s, events)?;
+                        }
                     }
                 }
             }
@@ -1126,8 +1128,10 @@ impl TransferState {
                     }
                     // The data a second connection moves (`Curl_xfer_setup_recv`
                     // of `SECONDARYSOCKET`).
-                    for (s, events) in x.proto.side_pollset(x.proto.side_interest(pause)) {
-                        set.add(s, events)?;
+                    if let Some(side) = x.proto.side_pollset(x.proto.side_interest(pause)) {
+                        for (s, events) in side {
+                            set.add(s, events)?;
+                        }
                     }
                 }
             }

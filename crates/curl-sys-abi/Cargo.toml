@@ -17,7 +17,7 @@ default = ["c-ares", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
 # over ngtcp2 and Ed25519 for message signatures, or Schannel (Windows),
 # with neither, as C's build with it.
-openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "dep:openssl-sys", "curl-core/quic", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
 # The hooks of a C debug build: the curl_dbg_* exports, memory tracking
@@ -65,6 +65,9 @@ curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 curl-zstd = { path = "../curl-zstd" }
 libc = "0.2"
+# Linked by curl-openssl already: here for the build script, which learns
+# from it whether the library is LibreSSL (`cfg(libressl)`).
+openssl-sys = { version = "0.9.118", optional = true }
 
 # Winsock's socket addresses, which an opener is handed; the names the
 # debug build's `curl_dbg_fopen` opens, read as the build reads a name.

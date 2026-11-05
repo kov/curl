@@ -1,10 +1,17 @@
-//! Give the library the soname of the C build it replaces, and build the
-//! C helper that reads `long double` arguments on stable Rust.
+//! Give the library the soname of the C build it replaces, build the C
+//! helper that reads `long double` arguments on stable Rust, and say
+//! whether the OpenSSL linked is LibreSSL (`cfg(libressl)`), as
+//! openssl-sys reports it.
 
 // A build script is no library: aborting on a failed allocation is fine.
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 fn main() {
+    println!("cargo::rerun-if-env-changed=DEP_OPENSSL_LIBRESSL_VERSION_NUMBER");
+    println!("cargo::rustc-check-cfg=cfg(libressl)");
+    if std::env::var_os("DEP_OPENSSL_LIBRESSL_VERSION_NUMBER").is_some() {
+        println!("cargo::rustc-cfg=libressl");
+    }
     let debug = std::env::var_os("CARGO_FEATURE_DEBUG_HOOKS").is_some();
     // Windows has no soname: a program names the DLL's file, which the
     // build tree lays out as C's CMake names it (`libcurl-d.dll`). macOS's

@@ -540,6 +540,8 @@ fn the_session_cache_is_off_only_with_0() {
 /// but 0, `CURLOPT_SSLENGINE_DEFAULT` for the engine as the default only
 /// with 1, as C reads them; `CURLINFO_SSL_ENGINES` lists OpenSSL's, its
 /// built-in `dynamic` among them, in a list the application frees.
+/// LibreSSL has no engines (`OPENSSL_NO_ENGINE`), and C's build over it
+/// lists none.
 #[test]
 fn the_engines_are_listed_and_one_made_the_default_with_1() {
     let c = curl_easy_init();
@@ -571,7 +573,10 @@ fn the_engines_are_listed_and_one_made_the_default_with_1() {
     }
     // SAFETY: the list the call made, freed once.
     unsafe { crate::strings::curl_slist_free_all(list) };
+    #[cfg(not(libressl))]
     assert!(ids.iter().any(|id| id == b"dynamic"), "{ids:?}");
+    #[cfg(libressl)]
+    assert!(list.is_null(), "{ids:?}");
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
@@ -7157,19 +7162,26 @@ fn curl_debug_applied() {
 /// `curl_global_init` initialises OpenSSL as C's does (`ossl_init`),
 /// reading the configuration `OPENSSL_CONF` names then: the file, which
 /// lets the library fetch no algorithm, is emptied after the call, and
-/// signing still fails. Checked in a process of its own.
+/// signing still fails. LibreSSL reads its configuration from its own
+/// directory alone, never `OPENSSL_CONF`, and C's build over it no more:
+/// the object the file names stays unknown. Checked in a process of its
+/// own.
 #[test]
 fn the_global_init_reads_openssl_s_configuration() {
     let path = std::env::temp_dir().join(format!("curl-sys-abi-{}.cnf", std::process::id()));
-    std::fs::write(
-        &path,
-        "openssl_conf = init\n\
-         [init]\n\
-         alg_section = algorithms\n\
-         [algorithms]\n\
-         default_properties = \"provider=none\"\n",
-    )
-    .unwrap();
+    #[cfg(not(libressl))]
+    let text = "openssl_conf = init\n\
+                [init]\n\
+                alg_section = algorithms\n\
+                [algorithms]\n\
+                default_properties = \"provider=none\"\n";
+    #[cfg(libressl)]
+    let text = "openssl_conf = init\n\
+                [init]\n\
+                oid_section = objects\n\
+                [objects]\n\
+                curlTestOid = 1.2.3.4.5.6.7\n";
+    std::fs::write(&path, text).unwrap();
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "handle_tests::openssl_configured", "--ignored"])
         .env("OPENSSL_CONF", &path)
@@ -7181,6 +7193,7 @@ fn the_global_init_reads_openssl_s_configuration() {
     assert!(stdout.contains("1 passed"), "the test ran: {stdout}");
 }
 
+#[cfg(not(libressl))]
 #[test]
 #[ignore = "run by the_global_init_reads_openssl_s_configuration, OPENSSL_CONF set"]
 fn openssl_configured() {
@@ -7192,6 +7205,17 @@ fn openssl_configured() {
         curl_openssl::ED25519.sign(&[1; 32], b"message"),
         Err(Ed25519Error::Failed)
     );
+    crate::root::curl_global_cleanup();
+}
+
+#[cfg(libressl)]
+#[test]
+#[ignore = "run by the_global_init_reads_openssl_s_configuration, OPENSSL_CONF set"]
+fn openssl_configured() {
+    assert_eq!(crate::root::curl_global_init(0), CURLE_OK);
+    // SAFETY: a C string.
+    let nid = unsafe { openssl_sys::OBJ_sn2nid(c"curlTestOid".as_ptr()) };
+    assert_eq!(nid, openssl_sys::NID_undef);
     crate::root::curl_global_cleanup();
 }
 

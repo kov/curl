@@ -69,6 +69,54 @@ impl ErrorText {
         text
     }
 
+    /// The text of a system error (`curlx_winapi_strerror`): the
+    /// system's, or `Unknown error <n> (0x<n>)` where it has none.
+    #[cfg(windows)]
+    pub fn winapi(code: u32) -> ErrorText {
+        let mut text = ErrorText::empty();
+        if !text.system_text(code) {
+            // Short enough for the buffer whatever the number.
+            let _ = fmt::write(
+                &mut text,
+                format_args!("Unknown error {code} (0x{code:08x})"),
+            );
+        }
+        text
+    }
+
+    /// The text of an SSPI status (`Curl_sspi_strerror`): its name, its
+    /// number and the system's text for it, as `SEC_E_X (0x80090325) -
+    /// <text>`, without the text where the system has none.
+    #[cfg(windows)]
+    pub fn sspi(status: i32) -> ErrorText {
+        let code = status.cast_unsigned();
+        let mut text = ErrorText::empty();
+        let name = sspi_name(code);
+        if code == 0x8009_0326 {
+            // Short enough for the buffer.
+            let _ = fmt::write(
+                &mut text,
+                format_args!(
+                    "SEC_E_ILLEGAL_MESSAGE (0x{code:08x}) - This error usually occurs when a fatal \
+                     SSL/TLS alert is received (e.g. handshake failed). More detail may be \
+                     available in the Windows System event log."
+                ),
+            );
+            return text;
+        }
+        let mut system = ErrorText::empty();
+        if system.system_text(code) {
+            // Cut to the buffer, as C's snprintf cuts it.
+            let _ = fmt::write(
+                &mut text,
+                format_args!("{name} (0x{code:08x}) - {}", ansi_text(system.as_bytes())),
+            );
+        } else {
+            let _ = fmt::write(&mut text, format_args!("{name} (0x{code:08x})"));
+        }
+        text
+    }
+
     /// The system's text for `code` (`curlx_get_winapi_error`), its first
     /// line, in the ANSI code page; false if it has none.
     #[cfg(windows)]
@@ -198,6 +246,118 @@ fn errno_of_system_error(code: i32) -> Option<i32> {
         1816 => libc::ENOMEM,
         _ => libc::EINVAL,
     })
+}
+
+/// Bytes of the ANSI code page shown as C's `%s` shows them: each byte
+/// that is not UTF-8 as the character of its number.
+#[cfg(windows)]
+fn ansi_text(bytes: &[u8]) -> impl fmt::Display + '_ {
+    struct Shown<'a>(&'a [u8]);
+    impl fmt::Display for Shown<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for chunk in self.0.utf8_chunks() {
+                f.write_str(chunk.valid())?;
+                for &b in chunk.invalid() {
+                    fmt::Write::write_char(f, char::from(b))?;
+                }
+            }
+            Ok(())
+        }
+    }
+    Shown(bytes)
+}
+
+/// The name C gives an SSPI status (`Curl_sspi_strerror`'s `SEC2TXT`).
+#[cfg(windows)]
+fn sspi_name(code: u32) -> &'static str {
+    match code {
+        0 => "No error",
+        0x8009_2010 => "CRYPT_E_REVOKED",
+        0x8009_2011 => "CRYPT_E_NO_REVOCATION_DLL",
+        0x8009_2012 => "CRYPT_E_NO_REVOCATION_CHECK",
+        0x8009_2013 => "CRYPT_E_REVOCATION_OFFLINE",
+        0x8009_2014 => "CRYPT_E_NOT_IN_REVOCATION_DATABASE",
+        0x8009_0331 => "SEC_E_ALGORITHM_MISMATCH",
+        0x8009_0346 => "SEC_E_BAD_BINDINGS",
+        0x8009_0316 => "SEC_E_BAD_PKGID",
+        0x8009_0321 => "SEC_E_BUFFER_TOO_SMALL",
+        0x8009_0307 => "SEC_E_CANNOT_INSTALL",
+        0x8009_0309 => "SEC_E_CANNOT_PACK",
+        0x8009_0328 => "SEC_E_CERT_EXPIRED",
+        0x8009_0327 => "SEC_E_CERT_UNKNOWN",
+        0x8009_0349 => "SEC_E_CERT_WRONG_USAGE",
+        0x8009_0317 => "SEC_E_CONTEXT_EXPIRED",
+        0x8009_0357 => "SEC_E_CROSSREALM_DELEGATION_FAILURE",
+        0x8009_0337 => "SEC_E_CRYPTO_SYSTEM_INVALID",
+        0x8009_0330 => "SEC_E_DECRYPT_FAILURE",
+        0x8009_035e => "SEC_E_DELEGATION_POLICY",
+        0x8009_0345 => "SEC_E_DELEGATION_REQUIRED",
+        0x8009_0350 => "SEC_E_DOWNGRADE_DETECTED",
+        0x8009_0329 => "SEC_E_ENCRYPT_FAILURE",
+        0x8009_0326 => "SEC_E_ILLEGAL_MESSAGE",
+        0x8009_0320 => "SEC_E_INCOMPLETE_CREDENTIALS",
+        0x8009_0318 => "SEC_E_INCOMPLETE_MESSAGE",
+        0x8009_0300 => "SEC_E_INSUFFICIENT_MEMORY",
+        0x8009_0304 => "SEC_E_INTERNAL_ERROR",
+        0x8009_0301 => "SEC_E_INVALID_HANDLE",
+        0x8009_035d => "SEC_E_INVALID_PARAMETER",
+        0x8009_0308 => "SEC_E_INVALID_TOKEN",
+        0x8009_0352 => "SEC_E_ISSUING_CA_UNTRUSTED",
+        0x8009_0359 => "SEC_E_ISSUING_CA_UNTRUSTED_KDC",
+        0x8009_035a => "SEC_E_KDC_CERT_EXPIRED",
+        0x8009_035b => "SEC_E_KDC_CERT_REVOKED",
+        0x8009_0340 => "SEC_E_KDC_INVALID_REQUEST",
+        0x8009_0341 => "SEC_E_KDC_UNABLE_TO_REFER",
+        0x8009_0342 => "SEC_E_KDC_UNKNOWN_ETYPE",
+        0x8009_030c => "SEC_E_LOGON_DENIED",
+        0x8009_0338 => "SEC_E_MAX_REFERRALS_EXCEEDED",
+        0x8009_030f => "SEC_E_MESSAGE_ALTERED",
+        0x8009_0347 => "SEC_E_MULTIPLE_ACCOUNTS",
+        0x8009_0339 => "SEC_E_MUST_BE_KDC",
+        0x8009_0306 => "SEC_E_NOT_OWNER",
+        0x8009_0311 => "SEC_E_NO_AUTHENTICATING_AUTHORITY",
+        0x8009_030e => "SEC_E_NO_CREDENTIALS",
+        0x8009_030b => "SEC_E_NO_IMPERSONATION",
+        0x8009_0335 => "SEC_E_NO_IP_ADDRESSES",
+        0x8009_0348 => "SEC_E_NO_KERB_KEY",
+        0x8009_033c => "SEC_E_NO_PA_DATA",
+        0x8009_0356 => "SEC_E_NO_S4U_PROT_SUPPORT",
+        0x8009_0334 => "SEC_E_NO_TGT_REPLY",
+        0x8009_0310 => "SEC_E_OUT_OF_SEQUENCE",
+        0x8009_0354 => "SEC_E_PKINIT_CLIENT_FAILURE",
+        0x8009_033d => "SEC_E_PKINIT_NAME_MISMATCH",
+        0x8009_035f => "SEC_E_POLICY_NLTM_ONLY",
+        0x8009_030a => "SEC_E_QOP_NOT_SUPPORTED",
+        0x8009_0353 => "SEC_E_REVOCATION_OFFLINE_C",
+        0x8009_0358 => "SEC_E_REVOCATION_OFFLINE_KDC",
+        0x8009_0305 => "SEC_E_SECPKG_NOT_FOUND",
+        0x8009_0332 => "SEC_E_SECURITY_QOS_FAILED",
+        0x8009_033f => "SEC_E_SHUTDOWN_IN_PROGRESS",
+        0x8009_0355 => "SEC_E_SMARTCARD_CERT_EXPIRED",
+        0x8009_0351 => "SEC_E_SMARTCARD_CERT_REVOKED",
+        0x8009_033e => "SEC_E_SMARTCARD_LOGON_REQUIRED",
+        0x8009_033a => "SEC_E_STRONG_CRYPTO_NOT_SUPPORTED",
+        0x8009_0303 => "SEC_E_TARGET_UNKNOWN",
+        0x8009_0324 => "SEC_E_TIME_SKEW",
+        0x8009_033b => "SEC_E_TOO_MANY_PRINCIPALS",
+        0x8009_0333 => "SEC_E_UNFINISHED_CONTEXT_DELETED",
+        0x8009_030d => "SEC_E_UNKNOWN_CREDENTIALS",
+        0x8009_0302 => "SEC_E_UNSUPPORTED_FUNCTION",
+        0x8009_0343 => "SEC_E_UNSUPPORTED_PREAUTH",
+        0x8009_0325 => "SEC_E_UNTRUSTED_ROOT",
+        0x8009_0336 => "SEC_E_WRONG_CREDENTIAL_HANDLE",
+        0x8009_0322 => "SEC_E_WRONG_PRINCIPAL",
+        0x0009_0314 => "SEC_I_COMPLETE_AND_CONTINUE",
+        0x0009_0313 => "SEC_I_COMPLETE_NEEDED",
+        0x0009_0317 => "SEC_I_CONTEXT_EXPIRED",
+        0x0009_0312 => "SEC_I_CONTINUE_NEEDED",
+        0x0009_0320 => "SEC_I_INCOMPLETE_CREDENTIALS",
+        0x0009_0315 => "SEC_I_LOCAL_LOGON",
+        0x0009_0323 => "SEC_I_NO_LSA_CONTEXT",
+        0x0009_0321 => "SEC_I_RENEGOTIATE",
+        0x0009_035c => "SEC_I_SIGNATURE_NEEDED",
+        _ => "Unknown error",
+    }
 }
 
 #[cfg(windows)]

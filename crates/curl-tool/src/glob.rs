@@ -82,13 +82,15 @@ impl GlobError {
     }
 
     /// The message about `text`, the pattern refused, with a caret under
-    /// the column if there is one (`glob_show_error`).
-    pub(crate) fn show(&self, text: &[u8], msgs: &Messages) {
+    /// the column if there is one (`glob_show_error`). Whether there is
+    /// one: running out of memory has none.
+    pub(crate) fn show(&self, text: &[u8], msgs: &Messages) -> bool {
         let Some(what) = self.what else {
-            return;
+            return false;
         };
         // Out of memory, the message is lost and the error stays.
         let _ = self.try_show(what, text, msgs);
+        true
     }
 
     fn try_show(&self, what: &str, text: &[u8], msgs: &Messages) -> Result<(), OutOfMemory> {
@@ -810,7 +812,9 @@ mod tests {
                         e.show(&name, &msgs);
                     }
                 }
-                Err(e) => e.show(&url, &msgs),
+                Err(e) => {
+                    e.show(&url, &msgs);
+                }
             }
         }
     }

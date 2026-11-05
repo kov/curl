@@ -1543,3 +1543,10 @@ witness: curl-tool options::number::tests::reads_digits_as_c_against_every_max
 --- new
         if d > base {
 
+=== an output that could not be named is passed over without its error or --write-out
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_transfer_with_no_output_name_ends_as_a_failure
+--- old
+    if let Some(ended) = unnamed {
+--- new
+    if let Some(ended) = unnamed.filter(|_| false) {

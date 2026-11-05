@@ -1406,6 +1406,92 @@ fn takes_an_output_name_as_it_is_without_globbing() {
     assert_eq!(r.code, 43);
 }
 
+/// A transfer whose output cannot be named ends as one that ran and
+/// failed (`setup_outfile` fails once the transfer exists): its error is
+/// said after the reason, and `--write-out` is written; a pattern refused
+/// says its own error. On Windows a name the debug build's
+/// `CURL_FN_SANITIZE_BAD` refuses is one, and so is one
+/// `CURL_FN_SANITIZE_OOM` runs out of memory for.
+#[test]
+fn a_transfer_with_no_output_name_ends_as_a_failure() {
+    let s = Scratch::new("unnamed");
+    s.write("f", b"x");
+    let w = ["-w", "[%{exitcode}]"];
+    let mut cases = vec![
+        (
+            vec!["-o", "#1"],
+            s.url("{,f}"),
+            vec![],
+            23,
+            "Warning: output glob produces empty string\n\
+             curl: (23) Failed writing received data to disk/application\n",
+            "[23]",
+        ),
+        (
+            vec!["-O"],
+            "http://127.0.0.1:1/a b/".to_owned(),
+            vec![],
+            3,
+            "curl: Failed to extract a filename from the URL to use for storage\n\
+             curl: (3) URL using bad/illegal format or missing URL\n",
+            "[3]",
+        ),
+        (
+            vec!["-o", "#<x>"],
+            s.url("{f}"),
+            vec![],
+            43,
+            "curl: (43) no glob exists with this name in position 4:\n#<x>\n   ^\n",
+            "[43]",
+        ),
+    ];
+    let bad = [("CURL_FN_SANITIZE_BAD", "1")];
+    let oom = [("CURL_FN_SANITIZE_OOM", "1")];
+    let invalid = "curl: (43) A libcurl function was given a bad argument\n";
+    let given = format!("Warning: bad output filename\n{invalid}");
+    let remote = format!("curl: bad output filename\n{invalid}");
+    if cfg!(windows) {
+        cases.extend([
+            (
+                vec!["-o", "a"],
+                s.url("f"),
+                bad.to_vec(),
+                43,
+                &given[..],
+                "[43]",
+            ),
+            (
+                vec!["-O"],
+                s.url("f"),
+                bad.to_vec(),
+                43,
+                &remote[..],
+                "[43]",
+            ),
+            (
+                vec!["-o", "a"],
+                s.url("f"),
+                oom.to_vec(),
+                27,
+                "curl: (27) Out of memory\n",
+                "[27]",
+            ),
+        ]);
+    }
+    for (args, url, env, code, stderr, stdout) in cases {
+        let mut all = vec!["--no-progress-meter"];
+        all.extend(&args);
+        all.extend(w);
+        all.push(&url);
+        let r = curl_env(&s, &all, &env);
+        assert_eq!(
+            (r.code, &r.stderr[..], &r.stdout[..]),
+            (code, stderr, stdout.as_bytes()),
+            "{args:?} {env:?}"
+        );
+    }
+}
+
 /// `--create-dirs` makes the directories of the `-D` file too.
 #[test]
 fn creates_the_header_file_directories() {

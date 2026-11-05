@@ -1030,56 +1030,36 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     };
     let output_is_remote = output == Output::Remote;
     let to_stdout = matches!(output, Output::Unset | Output::Stdout | Output::File(b"-"));
-    // A name given reads the URL's patterns (`glob_match_url`).
+    // A name given reads the URL's patterns (`glob_match_url`). A name
+    // that cannot be had fails the transfer once it exists, below; until
+    // then it has no output.
+    let mut unnamed = None;
     let globbed;
     let output = match (output, names) {
-        (Output::File(name), Some(names)) if !to_stdout => {
-            let made = match names.url.output_name(name, names.upload) {
-                Ok(made) => made,
-                Err(e) => {
-                    e.show(name, &msgs);
-                    return Made::Failed(e.kind);
-                }
-            };
-            // On Windows the name is made fit, a path and a device left as
-            // they are.
-            globbed = match sanitize::for_windows(made, Allow::EVERYTHING) {
-                Ok(name) => name,
-                Err(Unfit::OutOfMemory) => return Made::Failed(ErrorKind::OutOfMemory),
-                Err(Unfit::InvalidPath) => {
-                    msgs.warn(&[b"bad output filename"]);
-                    return Made::Failed(ErrorKind::BadFunctionArgument);
-                }
-            };
-            if globbed.is_empty() {
-                msgs.warn(&[b"output glob produces empty string"]);
-                return Made::Failed(ErrorKind::WriteError);
+        (Output::File(name), Some(names)) if !to_stdout => match given_name(name, names, &msgs) {
+            Ok(name) => {
+                globbed = name;
+                Output::File(&globbed)
             }
-            Output::File(&globbed)
-        }
+            Err(ended) => {
+                unnamed = Some(ended);
+                Output::Null
+            }
+        },
         (output, _) => output,
     };
     let remote_name;
     let output = match output {
-        Output::Remote => {
-            let named = match url_file_name(url, &msgs) {
-                Ok(name) => name,
-                Err(e) => {
-                    msgs.error(&[b"Failed to extract a filename from the URL to use for storage"]);
-                    return Made::Failed(e);
-                }
-            };
-            // On Windows the name is made fit, no path and no device in it.
-            remote_name = match sanitize::for_windows(named, Allow::NOTHING) {
-                Ok(name) => name,
-                Err(Unfit::OutOfMemory) => return Made::Failed(ErrorKind::OutOfMemory),
-                Err(Unfit::InvalidPath) => {
-                    msgs.error(&[b"bad output filename"]);
-                    return Made::Failed(ErrorKind::BadFunctionArgument);
-                }
-            };
-            Output::File(&remote_name)
-        }
+        Output::Remote => match remote_file_name(url, &msgs) {
+            Ok(name) => {
+                remote_name = name;
+                Output::File(&remote_name)
+            }
+            Err(e) => {
+                unnamed = Some(Ended::Ran(Err(e)));
+                Output::Null
+            }
+        },
         output => output,
     };
     // A file goes in the output directory.
@@ -1106,7 +1086,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     // A body to standard output, or none, makes standard output binary
     // unless `--use-ascii` asks for text, from now on for the rest of the
     // run (`CURL_BINMODE`).
-    if (to_stdout || output == Output::Null) && !op.use_ascii {
+    if (to_stdout || output == Output::Null) && !op.use_ascii && unnamed.is_none() {
         fs::set_binary(fs::Std::Out);
     }
     let mut easy = Handle(Easy::new());
@@ -1134,6 +1114,9 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
             Err(output::DumpFailed::OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
             Err(output::DumpFailed::Open) => return failed(easy, ErrorKind::WriteError),
         }
+    }
+    if let Some(ended) = unnamed {
+        return unfinished(op, &out, method, easy, orig, ended);
     }
     // Where the transfer starts (`setup_outfile`, `setup_transfer_upload`).
     let mut resume_from = match op.resume {
@@ -3740,6 +3723,55 @@ fn with_file_name(url: &[u8], file: &[u8]) -> Result<Option<Vec<u8>>, ErrorKind>
         ..GetOptions::NONE
     };
     url.get(Part::Url, shown).map(Some).map_err(url_error)
+}
+
+/// The file `-o`'s `name` names (`glob_match_url`): with the URL's and
+/// the upload's patterns read, and on Windows made fit, a path and a
+/// device left as they are. How the transfer ends if it cannot be had.
+fn given_name(name: &[u8], names: Names<'_>, msgs: &Messages) -> Result<Vec<u8>, Ended> {
+    let made = match names.url.output_name(name, names.upload) {
+        Ok(made) => made,
+        Err(e) => {
+            if e.show(name, msgs) {
+                return Err(Ended::Said(e.kind));
+            }
+            msgs.warn(&[b"bad output glob"]);
+            return Err(Ended::Ran(Err(e.kind)));
+        }
+    };
+    let name = match sanitize::for_windows(made, Allow::EVERYTHING) {
+        Ok(name) => name,
+        Err(Unfit::OutOfMemory) => return Err(Ended::Ran(Err(ErrorKind::OutOfMemory))),
+        Err(Unfit::InvalidPath) => {
+            msgs.warn(&[b"bad output filename"]);
+            return Err(Ended::Ran(Err(ErrorKind::BadFunctionArgument)));
+        }
+    };
+    if name.is_empty() {
+        msgs.warn(&[b"output glob produces empty string"]);
+        return Err(Ended::Ran(Err(ErrorKind::WriteError)));
+    }
+    Ok(name)
+}
+
+/// The file `--remote-name` saves `url` to ([`url_file_name`]), on Windows
+/// made fit, no path and no device in it. Why it cannot be had.
+fn remote_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
+    let named = match url_file_name(url, msgs) {
+        Ok(name) => name,
+        Err(e) => {
+            msgs.error(&[b"Failed to extract a filename from the URL to use for storage"]);
+            return Err(e);
+        }
+    };
+    match sanitize::for_windows(named, Allow::NOTHING) {
+        Ok(name) => Ok(name),
+        Err(Unfit::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+        Err(Unfit::InvalidPath) => {
+            msgs.error(&[b"bad output filename"]);
+            Err(ErrorKind::BadFunctionArgument)
+        }
+    }
 }
 
 /// The file name `--remote-name` saves `url` to: what its path has after

@@ -438,6 +438,24 @@ fn the_engines_are_the_library_s() {
     assert_eq!(engines, crate::engine::ids().unwrap());
 }
 
+/// The system's store is the default where C's build makes it so
+/// (`CURL_CA_NATIVE`, `USE_APPLE_SECTRUST`), and only asked for in any
+/// other: never OpenSSL's own.
+#[test]
+fn the_system_s_store_is_the_default_where_the_build_says() {
+    use curl_core::tls::{SystemStore, TlsBackend as _};
+    let native = cfg!(any(
+        feature = "native-ca",
+        all(target_os = "macos", feature = "apple-sectrust")
+    ));
+    let want = if native {
+        SystemStore::Default
+    } else {
+        SystemStore::Asked
+    };
+    assert_eq!(crate::OPENSSL.ca_defaults().system, want);
+}
+
 /// `ossl_strerror`'s buffer of 256 bytes: the version and `: ` first if
 /// they fit, with at least the text's zero byte after them; the text in
 /// what is left.

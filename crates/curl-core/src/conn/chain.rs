@@ -467,7 +467,8 @@ mod tests {
             shown(Made::default(), None),
             "[0][!DNS][!SETUP][HAPPY-EYEBALLS][TCP]"
         );
-        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let tls =
+            crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap();
         let route = NetRoute {
             tls: Some(tls),
             ..route.clone()
@@ -505,7 +506,8 @@ mod tests {
         let scheme = Scheme::HTTP;
         let peer =
             |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
-        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let tls =
+            crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap();
         let proxy = crate::conn::ProxyRoute::new(
             crate::options::ProxyType::Https,
             peer(b"p.test", 443).unwrap(),
@@ -575,7 +577,8 @@ mod tests {
         let scheme = Scheme::HTTP;
         let peer =
             |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
-        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let tls =
+            crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap();
         let proxy = crate::conn::ProxyRoute::new(
             crate::options::ProxyType::Https3,
             peer(b"p.test", 443).unwrap(),
@@ -661,7 +664,8 @@ mod tests {
             false,
             false,
         );
-        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let tls =
+            crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap();
         let route = NetRoute {
             origin: peer(b"o.test", 443).unwrap(),
             via: None,

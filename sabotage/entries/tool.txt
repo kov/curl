@@ -1605,6 +1605,6 @@ openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic"]
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool a_ca_bundle_from_the_environment_is_read_unless_the_library_trusts_the_system
 --- old
-    if !s.tls_has(|t| t.system_trust)
+    if crate::tlslib::ca_defaults().system != SystemStore::Own
 --- new
-    if s.tls_has(|t| t.system_trust)
+    if crate::tlslib::ca_defaults().system == SystemStore::Own

@@ -145,7 +145,7 @@ witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_load
 file: crates/curl-openssl/src/cache.rs
 witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
 --- old
-        && !identity.native_ca_store(NATIVE_CA_DEFAULT)
+        && !identity.native_ca_store()
 --- new
         && true
 

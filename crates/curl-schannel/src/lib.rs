@@ -28,7 +28,8 @@ mod backend {
     use curl_alloc::{OutOfMemory, TryArc, try_box};
     use curl_core::error::ErrorKind;
     use curl_core::tls::{
-        Alpn, CaDefaults, TlsBackend, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
+        Alpn, CaDefaults, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession, TlsShared,
+        TlsSupport,
     };
 
     use crate::session::Session;
@@ -57,17 +58,20 @@ mod backend {
             Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
         }
 
-        /// None: the system's store is Schannel's, and a build of it
-        /// names no bundle.
+        /// No bundle, which a build of it does not name, and the
+        /// system's store its own, trusted by itself.
         fn ca_defaults(&self) -> CaDefaults {
-            CaDefaults::default()
+            CaDefaults {
+                file: None,
+                path: None,
+                system: SystemStore::Own,
+            }
         }
 
         /// What C's Schannel build has (`Curl_ssl_schannel.supports`):
         /// the chain reported, CA blobs and their cache, pinning, HTTPS
         /// proxies and a cipher list; no stapled status
-        /// (`cert_status_request` is NULL) nor engines; and the system's
-        /// store trusted by itself.
+        /// (`cert_status_request` is NULL) nor engines.
         fn support(&self) -> TlsSupport {
             SUPPORT
         }
@@ -92,6 +96,5 @@ mod backend {
         ech: false,
         cert_status: false,
         engines: false,
-        system_trust: true,
     };
 }

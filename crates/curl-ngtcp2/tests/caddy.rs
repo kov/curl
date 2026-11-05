@@ -346,7 +346,7 @@ fn with_conn<R>(
             ca_file: CaSetting::Given(ca),
             ..TlsOptions::NONE
         },
-        ca_defaults: CaDefaults::default(),
+        ca_defaults: CaDefaults::NONE,
     })
     .unwrap();
     let peer = TlsPeer {
@@ -478,7 +478,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
             ca_file: CaSetting::Given(ca),
             ..TlsOptions::NONE
         },
-        ca_defaults: CaDefaults::default(),
+        ca_defaults: CaDefaults::NONE,
     })
     .unwrap();
     let peer = TlsPeer {

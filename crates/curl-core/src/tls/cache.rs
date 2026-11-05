@@ -211,7 +211,7 @@ impl SessionPeer {
     #[cfg(test)]
     pub(crate) fn testing() -> SessionPeer {
         let tls = crate::options::Tls::default();
-        let identity = TlsIdentity::of(&tls, super::CaDefaults::default()).unwrap();
+        let identity = TlsIdentity::of(&tls, super::CaDefaults::NONE).unwrap();
         let origin = Peer::new(crate::proto::http::HTTPS, b"localhost".to_vec(), 443, None);
         SessionPeer::new(&identity, &origin, None, &"FakeTLS/1", Dial::Stream).unwrap()
     }

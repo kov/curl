@@ -433,11 +433,15 @@ fn tls_options_are_kept_as_c_keeps_them() {
         p
     };
     let (file, path) = crate::version::ca_defaults();
-    // C's CMake build looks for none on Windows, nor with Apple's SecTrust
-    // verifying peers (`CURL_CA_BUNDLE` and `CURL_CA_PATH` unset).
+    // C's CMake build looks for none on Windows, nor where the system's
+    // store is the default (`CURL_CA_BUNDLE` and `CURL_CA_PATH` unset).
     assert_eq!(
         !file.is_null() || !path.is_null(),
-        cfg!(not(any(windows, feature = "apple-sectrust"))),
+        cfg!(not(any(
+            windows,
+            feature = "apple-sectrust",
+            feature = "native-ca"
+        ))),
         "the build has a default"
     );
     assert_eq!(given(ffi::CURLINFO_CAINFO), file);

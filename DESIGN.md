@@ -53,8 +53,12 @@ the shim passes on as C's `SSL_CTX *` and `SSL *`. A build has one backend, chos
 and the tool's Cargo features, which exclude each other: `openssl` (the default, the reference
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never
 openssl-sys's `vendored` copy, checked at build and at init) or `schannel` (Windows). The CA
-default is the one CMake detects at build time, kept as static strings. `curl_global_sslset`
-knows only the one built.
+default is the one CMake detects at build time, kept as static strings. How a backend takes the
+system's store is declared beside it (`CaDefaults::system`): only where asked
+(`CURLSSLOPT_NATIVE_CA`), also where a transfer names no CA (the `native-ca` feature, C's
+`CURL_CA_NATIVE`, and Apple's SecTrust), or as its own (Schannel). The core's default and the
+tool's reading of the CA environment both follow that one answer. `curl_global_sslset` knows
+only the one built.
 
 What a backend can do past the handshake is its own declaration, `TlsBackend::support`, a
 `TlsSupport` of one named `bool` per capability C's backends declare (`SSLSUPP_*`, the stapled

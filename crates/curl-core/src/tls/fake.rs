@@ -33,9 +33,9 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, QuicContextSetup, QuicTls, TLS1_3,
-    TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared,
-    TlsTicket, TlsWait,
+    Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, QuicContextSetup, QuicTls,
+    SystemStore, TLS1_3, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
+    TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -366,7 +366,6 @@ pub const SUPPORT: crate::tls::TlsSupport = crate::tls::TlsSupport {
     ech: false,
     cert_status: true,
     engines: true,
-    system_trust: false,
 };
 
 impl TlsBackend for FakeTls {
@@ -438,6 +437,7 @@ impl TlsBackend for FakeTls {
         CaDefaults {
             file: Some(CA_FILE),
             path: None,
+            system: SystemStore::Asked,
         }
     }
 

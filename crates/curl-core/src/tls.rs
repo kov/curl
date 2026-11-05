@@ -109,11 +109,41 @@ pub trait TlsBackend: Send + Sync {
 /// Where a TLS library finds the certificates to trust when a transfer
 /// names none: a file of them and a directory of them, decided as the
 /// library was built (CMake's `CURL_CA_BUNDLE` and `CURL_CA_PATH`), or
-/// none.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// none; and how it takes the system's own store.
+///
+/// It has no default: a library says how it takes the system's store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaDefaults {
     pub file: Option<&'static str>,
     pub path: Option<&'static str>,
+    pub system: SystemStore,
+}
+
+impl CaDefaults {
+    /// No file, no directory, and the system's store only where asked
+    /// for.
+    pub const NONE: CaDefaults = CaDefaults {
+        file: None,
+        path: None,
+        system: SystemStore::Asked,
+    };
+}
+
+/// How a TLS library takes the system's own store of certificates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemStore {
+    /// Only where a transfer asks for it (`CURLSSLOPT_NATIVE_CA`).
+    Asked,
+    /// Also where a transfer names no file, directory or blob of its own
+    /// (C's `CURL_CA_NATIVE` and `USE_APPLE_SECTRUST` builds), so that
+    /// naming one turns it off. The tool still names those the
+    /// environment gives.
+    Default,
+    /// It is the library's own, which verifies the peer against it by
+    /// itself: no default is set for it (C sets one only where the
+    /// backend is not Schannel), and the tool names no certificates from
+    /// the environment (`win32_using_schannel`).
+    Own,
 }
 
 /// What a TLS library can do past the handshake, each named so that a
@@ -165,10 +195,6 @@ pub struct TlsSupport {
     /// Crypto engines or providers to use (C allows `CURLOPT_SSLENGINE`
     /// with OpenSSL alone).
     pub engines: bool,
-    /// The library trusts the system's certificates by itself when a
-    /// transfer names none, so the tool names none from the environment
-    /// (C's tool asks whether the library is Schannel).
-    pub system_trust: bool,
 }
 
 impl TlsSupport {
@@ -192,7 +218,6 @@ impl TlsSupport {
         ech: false,
         cert_status: false,
         engines: false,
-        system_trust: false,
     };
 }
 
@@ -1302,14 +1327,14 @@ impl TlsIdentity {
 
     /// The peer is to be checked against the system's own trust store
     /// (`native_ca_store`): asked for (`CURLSSLOPT_NATIVE_CA`), or, where
-    /// the library's build makes it the default (`platform_default`, C's
-    /// `USE_APPLE_SECTRUST`), when the transfer names no file, directory or
-    /// blob of certificates of its own, naming none counting as naming one
+    /// the library makes it the default (`SystemStore::Default`), when
+    /// the transfer names no file, directory or blob of certificates of
+    /// its own, naming none counting as naming one
     /// (`Curl_ssl_filter_config_tmp_init`, `custom_cablob`).
-    pub fn native_ca_store(&self, platform_default: bool) -> bool {
+    pub fn native_ca_store(&self) -> bool {
         let o = &self.options;
         o.ssl_options.contains(SslOptions::NATIVE_CA)
-            || (platform_default
+            || (self.ca_defaults.system == SystemStore::Default
                 && matches!(o.ca_file, CaSetting::Default)
                 && matches!(o.ca_path, CaSetting::Default)
                 && matches!(o.ca_blob, CaSetting::Default))
@@ -1324,14 +1349,6 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     h.update(bytes);
     h.finish()
 }
-
-/// The system's own trust store is the default of this build where a
-/// transfer names no certificates of its own: C's `USE_APPLE_SECTRUST`,
-/// or its `CURL_CA_NATIVE` (the `native-ca` feature).
-pub const NATIVE_CA_DEFAULT: bool = cfg!(any(
-    all(target_os = "macos", feature = "apple-sectrust"),
-    feature = "native-ca"
-));
 
 /// A CA setting as it applies: the default where it keeps it.
 fn resolved<'a>(setting: &'a CaSetting, default: Option<&'static str>) -> Option<&'a [u8]> {
@@ -1357,7 +1374,8 @@ impl PartialEq for TlsIdentity {
             options,
             // Compared as the CA file and path they resolve: a handle
             // that names the default's path matches one that keeps it,
-            // as C, which copies the default in, finds them.
+            // as C, which copies the default in, finds them; the system's
+            // store as it resolves (`native_ca_store`).
             ca_defaults: _,
         } = self;
         let TlsOptions {
@@ -1411,7 +1429,7 @@ impl PartialEq for TlsIdentity {
             && self.ca_file() == other.ca_file()
             && self.ca_path() == other.ca_path()
             && self.ca_blob() == other.ca_blob()
-            && self.native_ca_store(NATIVE_CA_DEFAULT) == other.native_ca_store(NATIVE_CA_DEFAULT)
+            && self.native_ca_store() == other.native_ca_store()
             && *crl_file == o.crl_file
             && *issuer_cert == o.issuer_cert
             && *issuer_cert_blob == o.issuer_cert_blob

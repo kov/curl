@@ -2004,7 +2004,7 @@ pub(crate) mod tests {
             .client(&setup, crate::tls::fake::quic_session().unwrap())
             .unwrap();
         let identity =
-            crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+            crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap();
         let origin =
             crate::conn::Peer::new(crate::proto::http::HTTPS, b"q.test".to_vec(), 443, None);
         let peer =

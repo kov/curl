@@ -9,6 +9,7 @@ fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TlsIdentity {
         ca_defaults: CaDefaults {
             file: Some("/default/ca.pem"),
             path: None,
+            system: SystemStore::Asked,
         },
     };
     change(&mut id);
@@ -118,37 +119,53 @@ fn lists_match_in_any_case_and_paths_exactly() {
 /// the library's default file matches one that keeps the default, as in
 /// C, which copies the default into the setting; one that sets none
 /// matches neither. Defaults the library does not have resolve to none.
-/// Where the build makes the system's store the default, naming a file
+/// Where the library makes the system's store the default, naming a file
 /// turns it off, and the two do not match (`native_ca_store`).
 #[test]
 fn the_ca_default_compares_as_the_file_it_names() {
-    let kept = identity(|_| {});
-    let named = identity(|i| i.options.ca_file = CaSetting::Given(b"/default/ca.pem".to_vec()));
-    let none = identity(|i| i.options.ca_file = CaSetting::Unset);
-    assert_eq!(kept == named, !NATIVE_CA_DEFAULT);
-    assert_ne!(kept, none);
-    assert_ne!(named, none);
-    assert_eq!(kept.ca_file(), Some(&b"/default/ca.pem"[..]));
-    assert_eq!(none.ca_file(), None);
-    // No default path: keeping it is having none.
-    let no_path = identity(|i| i.options.ca_path = CaSetting::Unset);
-    assert_eq!(kept == no_path, !NATIVE_CA_DEFAULT);
-    assert_eq!(kept.ca_path(), None);
-    let other_default = identity(|i| i.ca_defaults.file = Some("/other/ca.pem"));
-    assert_ne!(kept, other_default);
+    for system in [SystemStore::Asked, SystemStore::Default, SystemStore::Own] {
+        let with = |change: Change| {
+            identity(|i| {
+                i.ca_defaults.system = system;
+                change(i);
+            })
+        };
+        let by_default = system == SystemStore::Default;
+        let kept = with(|_| {});
+        let named = with(|i| i.options.ca_file = CaSetting::Given(b"/default/ca.pem".to_vec()));
+        let none = with(|i| i.options.ca_file = CaSetting::Unset);
+        assert_eq!(kept == named, !by_default, "{system:?}");
+        assert_ne!(kept, none);
+        assert_ne!(named, none);
+        assert_eq!(kept.ca_file(), Some(&b"/default/ca.pem"[..]));
+        assert_eq!(none.ca_file(), None);
+        // No default path: keeping it is having none.
+        let no_path = with(|i| i.options.ca_path = CaSetting::Unset);
+        assert_eq!(kept == no_path, !by_default, "{system:?}");
+        assert_eq!(kept.ca_path(), None);
+        let other_default = with(|i| i.ca_defaults.file = Some("/other/ca.pem"));
+        assert_ne!(kept, other_default);
+    }
 }
 
-/// The system's store is used where asked for, or, in a build that makes
-/// it the default, where the transfer names no file, directory or blob of
-/// its own, naming none counting as naming one (`custom_cafile`,
-/// `custom_cablob`).
+/// The system's store is used where asked for, or, by a library that
+/// makes it the default, where the transfer names no file, directory or
+/// blob of its own, naming none counting as naming one (`custom_cafile`,
+/// `custom_cablob`). A library whose own store it is sets no default
+/// (C's `!= CURLSSLBACKEND_SCHANNEL`).
 #[test]
 fn the_native_store_is_the_default_only_where_no_ca_is_named() {
-    let kept = identity(|_| {});
-    assert!(kept.native_ca_store(true));
-    assert!(!kept.native_ca_store(false));
-    let asked = identity(|i| i.options.ssl_options = SslOptions::NATIVE_CA);
-    assert!(asked.native_ca_store(false));
+    let of = |system| identity(|i| i.ca_defaults.system = system);
+    assert!(of(SystemStore::Default).native_ca_store());
+    assert!(!of(SystemStore::Asked).native_ca_store());
+    assert!(!of(SystemStore::Own).native_ca_store());
+    for system in [SystemStore::Asked, SystemStore::Default, SystemStore::Own] {
+        let asked = identity(|i| {
+            i.ca_defaults.system = system;
+            i.options.ssl_options = SslOptions::NATIVE_CA;
+        });
+        assert!(asked.native_ca_store(), "{system:?}");
+    }
     let named: [Change; 5] = [
         |i| i.options.ca_file = CaSetting::Given(b"/certs/ca.pem".to_vec()),
         |i| i.options.ca_file = CaSetting::Unset,
@@ -157,21 +174,34 @@ fn the_native_store_is_the_default_only_where_no_ca_is_named() {
         |i| i.options.ca_blob = CaSetting::Unset,
     ];
     for change in named {
-        assert!(!identity(change).native_ca_store(true));
+        let id = identity(|i| {
+            i.ca_defaults.system = SystemStore::Default;
+            change(i);
+        });
+        assert!(!id.native_ca_store());
     }
 }
 
 /// A blob set to nothing holds no certificates, as one never set, so the
-/// two match where that is all they differ by; but where the build makes
-/// the system's store the default, one uses it and the other does not,
-/// and they do not match (`match_ssl_primary_config`'s
+/// two match where that is all they differ by; but where the library
+/// makes the system's store the default, one uses it and the other does
+/// not, and they do not match (`match_ssl_primary_config`'s
 /// `native_ca_store`).
 #[test]
 fn a_blob_set_to_nothing_matches_one_never_set_unless_the_store_differs() {
-    let never = identity(|_| {});
-    let nothing = identity(|i| i.options.ca_blob = CaSetting::Unset);
-    assert_eq!(nothing.ca_blob(), None);
-    assert_eq!(never == nothing, !NATIVE_CA_DEFAULT);
+    for system in [SystemStore::Asked, SystemStore::Default, SystemStore::Own] {
+        let never = identity(|i| i.ca_defaults.system = system);
+        let nothing = identity(|i| {
+            i.ca_defaults.system = system;
+            i.options.ca_blob = CaSetting::Unset;
+        });
+        assert_eq!(nothing.ca_blob(), None);
+        assert_eq!(
+            never == nothing,
+            system != SystemStore::Default,
+            "{system:?}"
+        );
+    }
 }
 
 type Change = fn(&mut TlsIdentity);
@@ -189,7 +219,7 @@ fn alpn_does_not_tell_identities_apart() {
 fn an_identity_copies_the_options() {
     let mut tls = Tls::default();
     tls.options.make_mut().unwrap().ca_blob = CaSetting::Given(b"pem".to_vec());
-    let id = TlsIdentity::of(&tls, CaDefaults::default()).unwrap();
+    let id = TlsIdentity::of(&tls, CaDefaults::NONE).unwrap();
     tls.options.make_mut().unwrap().ca_blob = CaSetting::Given(b"other".to_vec());
     tls.verify_peer = false;
     assert_eq!(id.options.ca_blob, CaSetting::Given(b"pem".to_vec()));

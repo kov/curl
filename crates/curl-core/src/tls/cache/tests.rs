@@ -14,6 +14,7 @@ fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
         ca_defaults: CaDefaults {
             file: Some("/etc/ssl/certs/ca-certificates.crt"),
             path: None,
+            system: crate::tls::SystemStore::Asked,
         },
     };
     id.options.ca_file = CaSetting::Given(CA.as_bytes().to_vec());

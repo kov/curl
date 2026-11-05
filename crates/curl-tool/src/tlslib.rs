@@ -6,7 +6,7 @@
 use core::fmt;
 
 use curl_alloc::{OutOfMemory, try_box};
-use curl_core::tls::{SharedKeyLog, TlsBackend, TlsSupport};
+use curl_core::tls::{CaDefaults, SharedKeyLog, TlsBackend, TlsSupport};
 
 #[cfg(all(feature = "openssl", feature = "schannel"))]
 compile_error!("one TLS library: the `openssl` and `schannel` features exclude each other");
@@ -52,6 +52,11 @@ mod library {
     pub(crate) fn support() -> TlsSupport {
         curl_openssl::OPENSSL.support()
     }
+
+    /// What it trusts where a transfer names nothing.
+    pub(crate) fn ca_defaults() -> CaDefaults {
+        curl_openssl::OPENSSL.ca_defaults()
+    }
 }
 
 #[cfg(feature = "schannel")]
@@ -88,6 +93,11 @@ mod library {
     /// What it can do past the handshake.
     pub(crate) fn support() -> TlsSupport {
         curl_schannel::SCHANNEL.support()
+    }
+
+    /// What it trusts where a transfer names nothing.
+    pub(crate) fn ca_defaults() -> CaDefaults {
+        curl_schannel::SCHANNEL.ca_defaults()
     }
 }
 

@@ -18,8 +18,8 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
     Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicContextSetup,
-    QuicTls, SharedKeyLog, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
-    TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
+    QuicTls, SharedKeyLog, SystemStore, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer,
+    TlsPeerKind, TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -76,7 +76,6 @@ pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     ech: false,
     cert_status: true,
     engines: true,
-    system_trust: false,
 };
 
 /// The library's name and version, as `version` says it.
@@ -127,10 +126,21 @@ impl TlsBackend for OpenSsl {
         Ok(try_box(QuicSession(session)).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
     }
 
+    /// The bundle and directory found at build, and the system's store
+    /// as the build's default where it is C's `CURL_CA_NATIVE` (the
+    /// `native-ca` feature) or `USE_APPLE_SECTRUST`.
     fn ca_defaults(&self) -> CaDefaults {
         CaDefaults {
             file: ca::CA_BUNDLE,
             path: ca::CA_PATH,
+            system: if cfg!(any(
+                feature = "native-ca",
+                all(target_os = "macos", feature = "apple-sectrust")
+            )) {
+                SystemStore::Default
+            } else {
+                SystemStore::Asked
+            },
         }
     }
 
@@ -1949,7 +1959,7 @@ mod tests {
             verify_peer: true,
             verify_host: true,
             options: TlsOptions::NONE,
-            ca_defaults: CaDefaults::default(),
+            ca_defaults: CaDefaults::NONE,
         };
         change(&mut id);
         TryArc::try_new(id).unwrap()

@@ -28,7 +28,7 @@ use curl_core::options::{self, Method, Progress, UploadSource};
 use curl_core::report::{OsErrno, Request as HeaderRequest};
 use curl_core::share::{Kind, Share};
 use curl_core::time::TimeLimit;
-use curl_core::tls::SharedKeyLog;
+use curl_core::tls::{SharedKeyLog, SystemStore};
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 use curl_core::version::Protocol;
 use curl_os::fs;
@@ -2304,7 +2304,7 @@ fn ssl_ca_setopts(
         tls.cacert.as_deref().map(Cow::Borrowed),
         tls.capath.as_deref().map(Cow::Borrowed),
     );
-    if !s.tls_has(|t| t.system_trust)
+    if crate::tlslib::ca_defaults().system != SystemStore::Own
         && cacert.is_none()
         && capath.is_none()
         && (!tls.insecure || (tls.doh_url.is_some() && !tls.doh_insecure))

@@ -404,16 +404,11 @@ mod tests {
 
     /// `NativeCA` is claimed by a build whose default trust store is the
     /// system's, unless it claims `AppleSecTrust` in its place (C's
-    /// `#elif`), and that build's default is the system's store.
+    /// `#elif`).
     #[test]
     fn the_native_ca_store_is_claimed_as_native_ca() {
         let native = cfg!(all(feature = "native-ca", not(feature = "apple-sectrust")));
         assert_eq!(version().claims("NativeCA"), native);
-        let sectrust = cfg!(all(target_os = "macos", feature = "apple-sectrust"));
-        assert_eq!(
-            crate::tls::NATIVE_CA_DEFAULT,
-            cfg!(feature = "native-ca") || sectrust
-        );
     }
 
     /// A feature is claimed by its name in any case, as C's tool matches

@@ -8,7 +8,7 @@
 use curl_alloc::TryArc;
 use curl_core::options::{CaCache, SslOptions};
 use curl_core::time::Instant;
-use curl_core::tls::{NATIVE_CA_DEFAULT, TlsIdentity};
+use curl_core::tls::TlsIdentity;
 
 /// A multi's kept store, of the library's type `S`.
 pub(crate) struct StoreCache<S> {
@@ -34,7 +34,7 @@ impl<S> Default for StoreCache<S> {
 /// loads (`Curl_ssl_setup_x509_store`'s `cache_criteria_met`): the cache
 /// is on, and the peer is verified against the CA file and path alone, no
 /// blob, no revocation list and not the system's own store, asked for
-/// or this build's default (`native_ca_store`). (C also
+/// or the library's default (`native_ca_store`). (C also
 /// leaves a store loaded under an OpenSSL provider out; this build loads
 /// none.)
 pub(crate) fn cacheable(identity: &TlsIdentity) -> bool {
@@ -43,7 +43,7 @@ pub(crate) fn cacheable(identity: &TlsIdentity) -> bool {
         && identity.verify_peer
         && identity.ca_blob().is_none()
         && o.crl_file.is_none()
-        && !identity.native_ca_store(NATIVE_CA_DEFAULT)
+        && !identity.native_ca_store()
 }
 
 /// A store loaded for `kept` serves `wanted`
@@ -101,7 +101,7 @@ mod tests {
             verify_peer: true,
             verify_host: true,
             options: TlsOptions::default(),
-            ca_defaults: Default::default(),
+            ca_defaults: curl_core::tls::CaDefaults::NONE,
         };
         i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
         set(&mut i);
@@ -153,6 +153,7 @@ mod tests {
         let defaults = curl_core::tls::CaDefaults {
             file: Some("/ca.pem"),
             path: None,
+            system: curl_core::tls::SystemStore::Asked,
         };
         let named = identity(|i| i.ca_defaults = defaults);
         let default = identity(|i| {
@@ -188,6 +189,16 @@ mod tests {
         assert!(!cacheable(&identity(
             |i| i.options.ssl_options = SslOptions::NATIVE_CA
         )));
+        // Nor where the library makes the system's store the default and
+        // nothing is named.
+        let native = |file| {
+            identity(move |i| {
+                i.ca_defaults.system = curl_core::tls::SystemStore::Default;
+                i.options.ca_file = file;
+            })
+        };
+        assert!(!cacheable(&native(CaSetting::Default)));
+        assert!(cacheable(&native(CaSetting::Given(b"/ca.pem".to_vec()))));
         // Not verifying the host still caches.
         assert!(cacheable(&identity(|i| i.verify_host = false)));
     }

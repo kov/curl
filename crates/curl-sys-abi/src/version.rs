@@ -437,6 +437,13 @@ mod tests {
             (true, "Kerberos", ffi::CURL_VERSION_KERBEROS5),
             (true, "Largefile", ffi::CURL_VERSION_LARGEFILE),
             (true, "libz", ffi::CURL_VERSION_LIBZ),
+            // The system's store as the default (`CURL_CA_NATIVE`), with
+            // no bit of its own, unless SecTrust is claimed in its place.
+            (
+                cfg!(all(feature = "native-ca", not(feature = "apple-sectrust"))),
+                "NativeCA",
+                0,
+            ),
             (quic, "proxy-HTTP3", 0),
             (true, "PSL", ffi::CURL_VERSION_PSL),
             (true, "SPNEGO", ffi::CURL_VERSION_SPNEGO),

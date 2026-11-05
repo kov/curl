@@ -13,7 +13,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::options::SslOptions;
-use curl_core::tls::{NATIVE_CA_DEFAULT, TlsCx, TlsIdentity, TlsPeerKind, TlsShared};
+use curl_core::tls::{TlsCx, TlsIdentity, TlsPeerKind, TlsShared};
 use openssl_sys::{BIO, SSL, SSL_CTX, X509, X509_STORE};
 
 use crate::cache::{self, StoreCache};
@@ -316,7 +316,7 @@ fn load_trust_anchors(
     // SecTrust, which checks the peer once OpenSSL has not verified it,
     // so that a file or directory that does not load then fails nothing.
     #[cfg(windows)]
-    if identity.native_ca_store(NATIVE_CA_DEFAULT) && crate::winstore::load(store, io)? {
+    if identity.native_ca_store() && crate::winstore::load(store, io)? {
         io.info(format_args!("  Native: Windows System Stores ROOT+CA"));
         empty = false;
     }
@@ -449,8 +449,7 @@ fn load_locations(
 /// default where the transfer names no certificates of its own
 /// (`native_ca_store` under `USE_APPLE_SECTRUST`).
 pub(crate) fn sectrust(identity: &TlsIdentity) -> bool {
-    cfg!(all(target_os = "macos", feature = "apple-sectrust"))
-        && identity.native_ca_store(NATIVE_CA_DEFAULT)
+    cfg!(all(target_os = "macos", feature = "apple-sectrust")) && identity.native_ca_store()
 }
 
 /// Add each certificate and revocation list of the PEM text `blob` to

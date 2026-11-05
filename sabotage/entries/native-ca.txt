@@ -50,3 +50,22 @@ features: native-ca
 --- new
     #[cfg(any())]
     Feature::NativeCa,
+
+=== a library whose own the system's store is makes it the default as well
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::the_native_store_is_the_default_only_where_no_ca_is_named
+--- old
+            || (self.ca_defaults.system == SystemStore::Default
+--- new
+            || (self.ca_defaults.system != SystemStore::Asked
+
+=== OpenSSL's native-ca build keeps the system's store for transfers that ask
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl tests::the_system_s_store_is_the_default_where_the_build_says
+features: native-ca
+--- old
+            system: if cfg!(any(
+                feature = "native-ca",
+--- new
+            system: if cfg!(any(
+                any(),

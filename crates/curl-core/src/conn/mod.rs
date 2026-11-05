@@ -2364,7 +2364,9 @@ mod tests {
         let Route::Net(r) = &mut https else {
             unreachable!()
         };
-        r.tls = Some(crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap());
+        r.tls = Some(
+            crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap(),
+        );
         assert!(!https.serves(&route("http", false)), "TLS for none");
     }
 
@@ -2401,7 +2403,8 @@ mod tests {
                     TryArc::try_new(RouteCold {
                         local: crate::options::LocalBind::NONE,
                         login: None,
-                        upgrade: upgrade.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
+                        upgrade: upgrade
+                            .map(|t| TlsIdentity::of(t, crate::tls::CaDefaults::NONE).unwrap()),
                         use_ssl,
                         ftp,
                         ssh: None,
@@ -2449,7 +2452,7 @@ mod tests {
                 via: None,
                 ip: IpVersion::Any,
                 proxy: None,
-                tls: tls.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
+                tls: tls.map(|t| TlsIdentity::of(t, crate::tls::CaDefaults::NONE).unwrap()),
                 cold: None,
                 delegation: Default::default(),
             })

@@ -2932,7 +2932,7 @@ MILESTONES.md step 43 lists the sub-steps.
 pub trait TlsBackend: Send + Sync {
     fn session(&self, identity: &TryArc<TlsIdentity>, peer: &TlsPeer<'_>, alpn: Alpn,
                shared: &TlsShared) -> Result<Box<dyn TlsSession>, ErrorKind>;
-    fn ca_defaults(&self) -> CaDefaults;           // the build's CA file and path
+    fn ca_defaults(&self) -> CaDefaults;           // the build's CA file and path, the system's store
     fn support(&self) -> TlsSupport;               // what it can do past the handshake
     fn id(&self) -> &dyn fmt::Display;             // `OpenSSL/3.5.9`, as a session's key names it
 }
@@ -2941,8 +2941,11 @@ pub struct TlsSupport {                            // C's SSLSUPP_* and the chec
     pub pinned_key: bool, pub context_handler: bool, pub https_proxy: bool, pub ciphers: bool,
     pub tls13_ciphers: bool, pub curves: bool, pub signature_algorithms: bool,
     pub crl_file: bool, pub issuer_cert: bool, pub issuer_cert_blob: bool, pub ech: bool,
-    pub cert_status: bool, pub engines: bool, pub system_trust: bool,
+    pub cert_status: bool, pub engines: bool,
 }
+pub struct CaDefaults { pub file: Option<&'static str>, pub path: Option<&'static str>,
+                        pub system: SystemStore }  // no Default
+pub enum SystemStore { Asked, Default, Own }       // NATIVE_CA only; also when none named; Schannel's
 pub enum Alpn { None, Http11, Http10 }             // the offer, from the HTTP version
 #[derive(Clone)] pub struct TlsShared(/* TryArc<Mutex<Option<Box<dyn Any + Send>>>> */);
 impl TlsShared {                                   // the library's per-multi state, its own type

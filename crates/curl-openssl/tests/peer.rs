@@ -688,13 +688,14 @@ fn cmake_s_bundle() -> Option<String> {
 }
 
 /// A transfer naming no CA trusts the bundle the build found, as CMake
-/// finds it for the C build.
+/// finds it for the C build; none where the system's store is the
+/// default, for which CMake looks for none.
 fn no_ca_named_trusts_the_build_s_default() {
     let certs = certs("default", "localhost", &["localhost"]);
     let (at, server) = serve(&certs);
     let got = get("localhost", at, |_| {});
     server.join().unwrap();
-    match cmake_s_bundle() {
+    match cmake_s_bundle().filter(|_| !cfg!(feature = "native-ca")) {
         Some(file) => assert!(
             said(&got, &format!("  CAfile: {file}")),
             "{:#?}",

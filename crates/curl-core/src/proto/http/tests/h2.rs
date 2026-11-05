@@ -2210,10 +2210,12 @@ fn a_transfer_paused_by_a_siblings_delivery_is_told_its_progress() {
     }
 }
 
-/// A step reads at most a buffer's worth of the connection, as C's
-/// `h2_progress_ingress` reads no more than the receive it serves: the
-/// rest waits for the transfer's next run, so that a transfer on a
-/// shared connection does not take all its siblings' input in its step.
+/// A step reads at most a buffer's worth of the connection: the rest
+/// waits for the transfer's next run, so that a transfer on a shared
+/// connection does not take all its siblings' input in its step. C's
+/// `h2_progress_ingress` stops once the receive's length is read too,
+/// but reads a whole 16 KiB chunk each time, so that with this 1024-byte
+/// buffer the C build reads 16384 bytes at once (DIVERGENCE.md).
 #[test]
 fn a_step_reads_a_buffer_of_the_connection_at_most() {
     let mut reply = b"S\nH 1 0\n:status: 200\ncontent-length: 3000\n\n".to_vec();

@@ -65,6 +65,7 @@ use crate::version::Protocol;
 
 use super::cx::{DriveCx, EngineRest, EventCx, TransferCalls, TransferCx};
 use super::mstate::{self, MState};
+use super::pending::PendingQueue;
 use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
@@ -257,8 +258,9 @@ pub(crate) enum TransferState {
     Init,
     /// Waiting for room for a connection under the multi's limits (C's
     /// PENDING): not run until a connection is given back or its time
-    /// is up.
-    Pending(Plan),
+    /// is up. The plan it looks again with is in the multi's queue of
+    /// those waiting, which holds one for each transfer in this state.
+    Pending,
     /// Let to look for a connection again (C's CONNECT, from PENDING).
     Setup(Plan),
     /// Holding a connection being set up (C's CONNECTING).
@@ -598,7 +600,7 @@ impl TransferState {
     /// finishing keeps its result, as `multi_done` runs once.
     pub(crate) fn fail(self, err: ErrorKind) -> TransferState {
         match self {
-            TransferState::Init | TransferState::Pending(_) | TransferState::Setup(_) => {
+            TransferState::Init | TransferState::Pending | TransferState::Setup(_) => {
                 TransferState::Completed(Completed {
                     outcome: Err(err),
                     message: Message::Unread,
@@ -646,7 +648,7 @@ impl TransferState {
     fn c_state(&self) -> Option<MState> {
         Some(match self {
             TransferState::Init => return None,
-            TransferState::Pending(_) => MState::Pending,
+            TransferState::Pending => MState::Pending,
             TransferState::Setup(_) => MState::Connect,
             TransferState::Connecting(_) => MState::Connecting,
             TransferState::ProtoConnect(_) => MState::ProtoConnect,
@@ -674,10 +676,15 @@ impl TransferState {
         // goes, as C's transfer still holds its connection in `multi_done`.
         cx.lent = self.tls_native(Some(&cx.rest.caches.pool));
         let done = match self {
-            TransferState::Init
-            | TransferState::Pending(_)
-            | TransferState::Setup(_)
-            | TransferState::Completed(_) => return,
+            // It waits no longer (`curl_multi_remove_handle`, multi.c:860).
+            TransferState::Pending => {
+                cx.rest
+                    .pending
+                    .take(cx.me)
+                    .expect("a waiting transfer's plan is queued");
+                return;
+            }
+            TransferState::Init | TransferState::Setup(_) | TransferState::Completed(_) => return,
             TransferState::Connecting(mut c) => Done {
                 unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
                 lease: c.lease,
@@ -1566,7 +1573,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             (next, Wake::Again)
         }
-        TransferState::Pending(plan) => pending(run, plan, cx),
+        TransferState::Pending => pending(run, cx),
         TransferState::Setup(mut plan) => {
             // Let out of PENDING by another transfer (`multi_schedule_pending`).
             mstate::enter(cx, MState::Connect);
@@ -2130,15 +2137,23 @@ fn progress_after_step<H: Host>(
 /// A transfer waiting for a connection runs only to find its time up
 /// (`multi_handle_timeout` from the timer sweep, "PENDING handle
 /// timeout"), and then fails as it looks for one again.
-fn pending<H: Host>(run: &mut Run, plan: Plan, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+fn pending<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let now = cx.rest.now;
     match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
         TimeLeft::Expired(_) => {
+            // Out of the queue as it looks again (`move_pending_to_connect`),
+            // before its handlers hear of it: a transfer whose run is out
+            // of its slot is never one to let out.
+            let plan = cx
+                .rest
+                .pending
+                .take(cx.me)
+                .expect("a waiting transfer's plan is queued");
             timed_out(cx, Phase::Connecting, true);
             trace::info(cx, format_args!("PENDING handle timeout"));
             (TransferState::Setup(plan), Wake::Again)
         }
-        TimeLeft::Remaining(_) | TimeLeft::Unlimited => (TransferState::Pending(plan), Wake::Idle),
+        TimeLeft::Remaining(_) | TimeLeft::Unlimited => (TransferState::Pending, Wake::Idle),
     }
 }
 

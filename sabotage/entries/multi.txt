@@ -673,9 +673,9 @@ witness: curl-core multi::tests::a_connection_closed_as_it_comes_back_is_no_one_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
 --- old
-            TransferState::Pending(_) => pending += 1,
+            TransferState::Pending => pending += 1,
 --- new
-            TransferState::Pending(_) => {}
+            TransferState::Pending => {}
 
 === a transfer out of time reads once more before it fails
 file: crates/curl-core/src/multi/state.rs
@@ -908,8 +908,41 @@ features: test-util
             let wake = if http && cx.running() > 0 {
 
 === a look for a waiting transfer that finds none keeps its place
-file: crates/curl-core/src/multi/state/leg.rs
+file: crates/curl-core/src/multi/pending.rs
 witness: curl-core multi::tests::a_wake_finding_no_one_starts_the_next_from_the_first
 --- old
-        *after = None;
+                self.after = None;
+--- new
+
+=== the next transfer let out of the queue is the first, not the first after the last let out
+file: crates/curl-core/src/multi/pending.rs
+witness: curl-core multi::pending::tests::the_next_is_the_first_row_after_the_last_let_out
+--- old
+        let row = match self.after.and_then(|r| self.rows.first_from(r + 1)) {
+--- new
+        let row = match self.after.and_then(|_| self.rows.first_from(0)) {
+
+=== a waiting transfer removed stays in the queue of those waiting
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_removed_waiting_transfer_is_let_out_no_more
+--- old
+            TransferState::Pending => {
+                cx.rest
+                    .pending
+                    .take(cx.me)
+                    .expect("a waiting transfer's plan is queued");
+                return;
+            }
+--- new
+            TransferState::Pending => return,
+
+=== a waiting transfer a dead multi fails stays in the queue of those waiting
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_dead_multi_fails_a_waiting_transfer_out_of_the_queue
+--- old
+            if matches!(run.state, TransferState::Pending) {
+                self.pending
+                    .take(id)
+                    .expect("a waiting transfer's plan is queued");
+            }
 --- new

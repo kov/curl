@@ -347,13 +347,12 @@ witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_waiting_transfer_runs_out_of_time
 --- old
-        TimeLeft::Expired(_) => {
             timed_out(cx, Phase::Connecting, true);
             trace::info(cx, format_args!("PENDING handle timeout"));
             (TransferState::Setup(plan), Wake::Again)
-        }
 --- new
-        TimeLeft::Expired(_) => (TransferState::Pending(plan), Wake::Idle),
+            cx.rest.pending.enter(cx.me, plan);
+            (TransferState::Pending, Wake::Idle)
 
 === a connection forbidden reuse is kept
 file: crates/curl-core/src/conn/pool.rs

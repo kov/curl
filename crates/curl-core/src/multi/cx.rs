@@ -48,8 +48,8 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) sockbuf: &'a mut RecvRoom,
     /// The connections shutting down.
     pub(super) shutdowns: &'a mut ShutdownSet,
-    /// The transfer last let look for a connection again.
-    pub(super) pending_after: &'a mut Option<TransferId>,
+    /// The transfers waiting for room for a connection.
+    pub(super) pending: &'a mut super::pending::PendingQueue,
     pub(super) net: &'a mut dyn Net,
     /// IPv6 works, as the multi's probe found.
     pub(crate) ipv6_works: bool,
@@ -86,7 +86,7 @@ impl<H: Host> EngineRest<'_, H> {
             tls: &mut *self.tls,
             sockbuf: &mut *self.sockbuf,
             shutdowns: &mut *self.shutdowns,
-            pending_after: &mut *self.pending_after,
+            pending: &mut *self.pending,
             net: &mut *self.net,
             ipv6_works: self.ipv6_works,
             fail_ipv6: self.fail_ipv6,

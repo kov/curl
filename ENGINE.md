@@ -27,7 +27,9 @@ numbers are those of `SCOPE.md`.
 3. **Set membership is derived from the state.** process, pending and msgsent are functions of
    the variant (msgsent is `Completed`'s `Message`); the trace's `MState` agrees with it,
    PENDING exactly while the variant is `Pending`, which the debug build's check holds. The
-   only stored set is `dirty`, which is a genuine separate fact (a work queue). Counters are an
+   only stored set that is a separate fact is `dirty` (a work queue). The pending queue is not
+   one: it owns the `Plan` of each transfer in `Pending`, keyed by its id, and the debug
+   build's check holds its entries to the `Pending` variants both ways. Counters are an
    index with one writer (the transition function) and a full recount in the debug build after
    every pass.
 4. **`Deadlines` is the only owner of time limits.** The wake-up and the "is it late" check are
@@ -784,7 +786,7 @@ pub struct Multi<H: Host = NoHost> {
     tls: Option<TlsShared>,          // what the TLS library keeps across its connections
     shutdowns: ShutdownSet,          // the connections saying goodbye, whichever pool they left
     limits: ConnLimits,              // MAXCONNECTS, MAX_HOST_CONNECTIONS, MAX_TOTAL_CONNECTIONS
-    pending_after: Option<TransferId>, // the transfer last let look for a connection again
+    pending: PendingQueue,           // the transfers waiting for a connection, each one's Plan
     sockets: SocketTable<H::Socket>, // fd → users and what each waits for, told, assigned value
     clock: SharedClock,              // the system's; a test's own under test-util
     net: Box<dyn Net + Send>,
@@ -897,7 +899,7 @@ socket's assigned value) are offered without the `H` part or not at all.
 ```rust
 pub(crate) enum TransferState {
     Init,                              // added, not yet run
-    Pending(Plan),                     // PENDING: no lease, runs only when its time is up
+    Pending,                           // PENDING: no lease, runs only when its time is up
     Setup(Plan),                       // CONNECT from PENDING: let look for a connection again
     Connecting(Connecting),            // holds a lease on a ConnSlot::Connecting
     ProtoConnect(Attached),            // PROTOCONNECT: one step, never waited in
@@ -935,7 +937,17 @@ pub(crate) struct Completed { outcome: Result<(), ErrorKind>, message: Message }
 pub(crate) enum Message { Unread, Read }
 ```
 
-`Pending` and `Setup` hold what the setup made before it looked for a connection, so that only
+The pending queue (`multi/pending.rs`, C's `multi->pending`) holds, by row, the `Plan` of each
+transfer in `Pending`, with a bitset of its rows to walk them a word at a time and the row last
+let out (`last_pending_mid`). Room is reserved as a transfer is added, so starting to wait
+allocates nothing. An entry is reached only by the full `TransferId` it went in with. A
+transfer goes in as its setup finds no room, and comes out as it is let out, as its own step
+finds its time up, as it is removed (before the look its removal makes, multi.c:860 and 867),
+and as a dead multi fails it. Letting one out takes the first row after the one let out last,
+or else the first row; a look that finds none after starts the next from the first row too
+(`multi_schedule_pending`). Insertion order does not matter: the order is C's, by row.
+
+A queued plan, and `Setup`'s, hold what the setup made before it looked for a connection, so that only
 the search is made again: the route, built once per leg, which `Connecting` keeps and reads its
 destination and target from. Its IP version alone is read again as a waiting transfer looks
 again, as C, which makes its connection anew then, reads `set.ipver`.
@@ -1096,7 +1108,7 @@ before DID and none from Done on (§3.6).
 |---|---|---|
 | Init | Exchanging setup | pretransfer: fresh `TransferReport` (header store empties), cookies and resolve list, `Starts::op`; on failure `fail` → Completed |
 | (setup) | Connecting / Exchanging / Pending | `Starts::single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait` |
-| Pending | Setup | `schedule_pending` (one per call, round robin after `pending_after`, marked dirty): after a connection is given back, after a setup finds or makes one, when a transfer is removed, and when a woken one fails; or its own step finding its time up ("PENDING handle timeout", after the timeout's failure is traced once) |
+| Pending | Setup | `schedule_pending` (one per call, the pending queue's next, marked dirty): after a connection is given back, after a setup finds or makes one, when a transfer is removed, and when a woken one fails; or its own step finding its time up ("PENDING handle timeout", after the timeout's failure is traced once) |
 | Setup | Connecting / Pending / Completed | the search again, as from setup; past its time, fails with the timeout traced a second time |
 | Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |
 | ProtoConnect | Do / ProtoConnecting / Done | over a reused connection, Do at once; else `ProtoState::connect` (`Connect::Done` or `Waiting`); a failure is premature; prereq callback at DO entry |
@@ -4680,11 +4692,13 @@ peer gets a protocol error, not an out-of-memory one.
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
-  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 48, some of these taking more than one: the multi, and the test's clock,
+  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 50, some of these taking more than one: the multi, and the test's clock,
   shared with the QUIC connections the multi makes (a build without `test-util` reads the system
   clock and holds none); the easy's URL, user
   agent and handlers; the transfer's place in the multi and its slot, boxed so the table's
-  empty rows cost little, as C's hold pointers; the URL as fetched and its parts; the URL read
+  empty rows cost little, as C's hold pointers, and its place in the pending queue with that
+  queue's bitset of rows (C's `multi->pending`, sized as the transfer table grows); the URL as
+  fetched and its parts; the URL read
   back once parsed, as C reads it back; the target grown by its query; the protocol's state;
   the peer; the effective URL kept for the report; the answer for the host kept in the DNS
   cache (its name, its addresses, the answer shared, the cache's table); the connection, as
@@ -4692,7 +4706,7 @@ peer gets a protocol error, not an out-of-memory one.
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - The core's own part of an HTTPS GET is pinned over the fake TLS library
-  (`HTTPS_FAKE_GET_BUDGET`, 57): the plain GET's 48, then the route's `TlsIdentity` (shared with
+  (`HTTPS_FAKE_GET_BUDGET`, 59): the plain GET's 50, then the route's `TlsIdentity` (shared with
   the connection), the handshake under way, the library's session (the fake's one box), its
   layer, the stream's layer stack and its list, the multi's `TlsShared` with the fake's state
   in its box, and the key the connection's sessions are kept by. The same GET is run with each

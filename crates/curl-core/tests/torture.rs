@@ -905,7 +905,9 @@ fn a_get_takes_no_refusal_for_success() {
 /// removal (`ENGINE.md` 8.1): the multi and its clock, shared with the
 /// QUIC connections it makes; the easy's URL, user agent and
 /// handlers; the transfer's place in the multi and its slot, boxed so
-/// the table's empty rows cost little, as C's hold pointers; then the URL as fetched
+/// the table's empty rows cost little, as C's hold pointers, and its
+/// place in the queue of those waiting for a connection with that
+/// queue's index of rows (C's `multi->pending`); then the URL as fetched
 /// and its parts, the URL read back once parsed (as C reads it back), the
 /// target grown by its query, the protocol's state, the peer, the
 /// effective URL kept for the report, the answer for the host kept in the
@@ -914,7 +916,7 @@ fn a_get_takes_no_refusal_for_success() {
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 48;
+const GET_BUDGET: u64 = 50;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.

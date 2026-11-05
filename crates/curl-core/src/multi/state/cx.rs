@@ -442,6 +442,7 @@ impl<H: Host> StepCx<'_, H> {
             slots: &mut *rest.tell.slots,
             timers: &mut *rest.timers,
             dirty: &mut *rest.dirty,
+            pending: &mut *rest.pending,
             notify: &mut *rest.tell.notify,
         };
         let inserted = super::super::insert(

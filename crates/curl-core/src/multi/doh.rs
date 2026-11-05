@@ -417,6 +417,7 @@ fn run_probe<H: Host>(
         slots: &mut *rest.tell.slots,
         timers: &mut *rest.timers,
         dirty: &mut *rest.dirty,
+        pending: &mut *rest.pending,
         notify: &mut *rest.tell.notify,
     };
     let owner = Owner::Internal {

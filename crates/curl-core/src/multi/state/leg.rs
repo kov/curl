@@ -1193,7 +1193,8 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
                 ),
             }
             mstate::enter(cx, MState::Pending);
-            return TransferState::Pending(plan);
+            cx.rest.pending.enter(cx.me, plan);
+            return TransferState::Pending;
         }
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
@@ -1235,7 +1236,7 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
 /// let, look for one again (`multi_schedule_pending`): one at a time, as
 /// a connection freed most often makes room for one.
 pub(crate) fn schedule_pending<H: Host>(rest: &mut EngineRest<'_, H>) {
-    if let Some(id) = wake_pending(rest.tell.slots, rest.dirty, rest.pending_after) {
+    if let Some(id) = wake_pending(rest.tell.slots, rest.dirty, rest.pending) {
         let mut cx = StepCx::new(id, rest.reborrow());
         mstate::enter(&mut cx, MState::Connect);
     }
@@ -1248,49 +1249,16 @@ pub(crate) fn schedule_pending<H: Host>(rest: &mut EngineRest<'_, H>) {
 pub(in crate::multi) fn wake_pending<H: Host>(
     slots: &mut Slots<H>,
     dirty: &mut RowSet,
-    after: &mut Option<TransferId>,
+    pending: &mut PendingQueue,
 ) -> Option<TransferId> {
-    let waiting = |slots: &Slots<H>, id| {
-        slots
-            .get(id)
-            .and_then(|slot| slot.run.as_ref())
-            .is_some_and(|run| matches!(run.state, TransferState::Pending(_)))
-    };
-    // From the one after the last let, round to the start.
-    let mut found = None;
-    let mut cursor = *after;
-    while let Some(id) = slots.next_after(cursor) {
-        cursor = Some(id);
-        if waiting(slots, id) {
-            found = Some(id);
-            break;
-        }
-    }
-    if found.is_none() {
-        // None after it: the next call starts from the first, whether
-        // this one finds one there or not.
-        *after = None;
-        let mut cursor = None;
-        while let Some(id) = slots.next_after(cursor) {
-            cursor = Some(id);
-            if waiting(slots, id) {
-                found = Some(id);
-                break;
-            }
-        }
-    }
-    let id = found?;
+    let (id, plan) = pending.next()?;
     let run = slots
         .get_mut(id)
         .and_then(|slot| slot.run.as_mut())
-        .expect("found waiting");
-    let TransferState::Pending(plan) = std::mem::replace(&mut run.state, TransferState::Init)
-    else {
-        unreachable!("found waiting");
-    };
+        .filter(|run| matches!(run.state, TransferState::Pending))
+        .unwrap_or_else(|| panic!("{id:?}, let out of the queue, does not wait"));
     run.state = TransferState::Setup(plan);
     dirty.insert(id.index());
-    *after = Some(id);
     Some(id)
 }
 

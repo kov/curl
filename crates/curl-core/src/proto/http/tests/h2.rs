@@ -1849,7 +1849,7 @@ fn a_pipewait_outlasts_the_pass_its_connection_settles() {
         assert!(
             matches!(
                 m.state_of(ids[1]),
-                crate::multi::state::TransferState::Pending(_)
+                crate::multi::state::TransferState::Pending
             ),
             "let go before its connection settled"
         );
@@ -1858,7 +1858,7 @@ fn a_pipewait_outlasts_the_pass_its_connection_settles() {
     assert!(
         matches!(
             m.state_of(ids[1]),
-            crate::multi::state::TransferState::Pending(_)
+            crate::multi::state::TransferState::Pending
         ),
         "let go by its connection settling"
     );

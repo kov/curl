@@ -376,7 +376,7 @@ fn closing_connections_count_toward_the_limits() {
         m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
         assert_eq!(wire.closed(), [1000], "closed to make room");
         assert!(
-            !matches!(m.state_of(b), state::TransferState::Pending(_)),
+            !matches!(m.state_of(b), state::TransferState::Pending),
             "not waiting"
         );
         assert_eq!(m.shutdowns.len(), 0);
@@ -404,7 +404,7 @@ fn a_closing_connection_counts_only_toward_its_own_host() {
     assert_eq!(wire.closed(), [], "to another host");
     assert_eq!(m.shutdowns.len(), 1);
     assert!(
-        !matches!(m.state_of(b), state::TransferState::Pending(_)),
+        !matches!(m.state_of(b), state::TransferState::Pending),
         "not waiting for room"
     );
 }
@@ -558,7 +558,7 @@ fn room_for_a_host_closes_that_host_s_closing_connection() {
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(wire.closed(), [1001], "the one to port 2");
     assert_eq!(m.shutdowns.len(), 1, "the one to port 1 stays");
-    assert!(!matches!(m.state_of(b), state::TransferState::Pending(_)));
+    assert!(!matches!(m.state_of(b), state::TransferState::Pending));
 }
 
 /// A multi over a server at port 4 holding `talk`, and the fake TLS
@@ -1101,7 +1101,7 @@ fn room_closes_only_as_many_closing_connections_as_it_needs() {
         m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
         assert_eq!(wire.closed(), [1000], "the oldest alone");
         assert_eq!(m.shutdowns.len(), 2);
-        assert!(!matches!(m.state_of(id), state::TransferState::Pending(_)));
+        assert!(!matches!(m.state_of(id), state::TransferState::Pending));
     }
 }
 
@@ -1126,10 +1126,7 @@ fn busy_connections_past_the_limit_close_every_closing_one() {
     // Its close lets the new one look again, to find the limit still
     // reached.
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
-    assert!(matches!(
-        m.state_of(waiting),
-        state::TransferState::Pending(_)
-    ));
+    assert!(matches!(m.state_of(waiting), state::TransferState::Pending));
     assert!(!m.state_of(busy).is_completed());
 }
 
@@ -1274,10 +1271,7 @@ fn a_closed_connection_lets_a_waiting_transfer_look_again() {
     e.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
     let waiting = m.add(e, (), &mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
-    assert!(matches!(
-        m.state_of(waiting),
-        state::TransferState::Pending(_)
-    ));
+    assert!(matches!(m.state_of(waiting), state::TransferState::Pending));
     let refused = "No more connections allowed to host\n";
     let refusals = |lines: &Lines| {
         lines
@@ -1351,7 +1345,7 @@ fn a_share_s_search_holds_every_closing_socket_it_closes() {
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(wire.closed(), (1000..1008).collect::<Vec<_>>());
     assert_eq!(m.shutdowns.len(), 0);
-    assert!(!matches!(m.state_of(id), state::TransferState::Pending(_)));
+    assert!(!matches!(m.state_of(id), state::TransferState::Pending));
 }
 
 /// The debug build's cleanup lets its connections shut down for as long

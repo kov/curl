@@ -4827,11 +4827,75 @@ fn a_wake_finding_no_one_starts_the_next_from_the_first() {
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.census().pending, 3, "all three wait again");
     m.wake_pending(clock.now(), &mut NoEvents);
-    let waiting = |m: &Multi, id| matches!(m.state_of(id), TransferState::Pending(_));
+    let waiting = |m: &Multi, id| matches!(m.state_of(id), TransferState::Pending);
     assert!(!waiting(&m, b), "the first row waiting is let out");
     assert!(waiting(&m, c) && waiting(&m, d));
     for id in [a, b, c, d] {
         m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
+/// A waiting transfer removed leaves the queue of those waiting
+/// (multi.c:860) before the look its removal makes (multi.c:867), which
+/// lets out the other waiting and not the one gone; the other, waiting
+/// again, is let out as the one holding the connection goes.
+#[test]
+fn a_removed_waiting_transfer_is_let_out_no_more() {
+    let (mut m, _clock) = networked();
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    let add = |m: &mut Multi| {
+        m.add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
+            .unwrap()
+    };
+    // The first holds the host's one connection, never connecting.
+    let a = add(&mut m);
+    let b = add(&mut m);
+    let c = add(&mut m);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().pending, 2);
+    m.remove(b, &mut NoEvents).unwrap();
+    assert!(!m.pending.holds(b), "the one removed waits no more");
+    assert!(
+        !matches!(m.state_of(c), TransferState::Pending),
+        "the other is let out as it goes"
+    );
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().pending, 1, "and waits again");
+    m.remove(a, &mut NoEvents).unwrap();
+    assert!(
+        !matches!(m.state_of(c), TransferState::Pending),
+        "the other is let out"
+    );
+    m.remove(c, &mut NoEvents).unwrap();
+}
+
+/// A dead multi fails a transfer waiting for a connection too, which
+/// waits no longer (`mstate_enter_completed`): of two waiting, the one
+/// the failing holder's connection does not let out.
+#[test]
+fn a_dead_multi_fails_a_waiting_transfer_out_of_the_queue() {
+    let (mut m, _clock) = networked();
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    let mut ev = RecordingEvents {
+        abort_at: Some(2),
+        ..RecordingEvents::default()
+    };
+    // The first holds the host's one connection, never connecting.
+    let ids = [0; 3].map(|_| {
+        m.add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut ev)
+            .unwrap()
+    });
+    assert_eq!(m.perform(&mut ev), Err(MultiErrorKind::AbortedByCallback));
+    assert!(m.pending.holds(ids[2]), "it waits as the multi dies");
+    m.perform(&mut ev).unwrap();
+    assert!(!m.pending.holds(ids[2]), "failed, it waits no more");
+    let failed = Err(ErrorKind::AbortedByCallback);
+    assert_eq!(
+        messages(&mut m),
+        [2u32, 1, 0].map(|left| (ids[2 - left as usize].index(), failed, left))
+    );
+    for id in ids {
+        m.remove(id, &mut ev).unwrap();
     }
 }
 

@@ -14,6 +14,7 @@ pub(crate) mod dns;
 pub(crate) mod doh;
 pub(crate) mod mstate;
 mod notify;
+mod pending;
 pub(crate) mod push;
 pub mod raw;
 mod sched;
@@ -62,6 +63,7 @@ pub use wait::{EventTable, drive_by_events_with};
 pub use wait::{WaitMode, drive_by_events, drive_to_completion};
 
 use notify::NotifyQueue;
+use pending::PendingQueue;
 use sched::{RowSet, Tally};
 use sockets::{SocketOwner, SocketTable, Wants};
 use state::{Message as MessageState, PollsetTrace, Run, StepCx, TransferState, Wake};
@@ -448,8 +450,9 @@ pub struct Multi<H: Host = NoHost> {
     /// The connections shutting down, whichever pool they left.
     shutdowns: ShutdownSet,
     limits: ConnLimits,
-    /// The transfer last let look for a connection again.
-    pending_after: Option<TransferId>,
+    /// The transfers waiting for room for a connection, and the plan
+    /// each looks again with.
+    pending: PendingQueue,
     sockets: SocketTable<H::Socket>,
     clock: crate::time::SharedClock,
     net: Box<dyn Net + Send>,
@@ -556,7 +559,7 @@ impl<H: Host> Multi<H> {
             sockbuf: crate::conn::quic::RecvRoom::Unmade,
             shutdowns: ShutdownSet::default(),
             limits,
-            pending_after: None,
+            pending: PendingQueue::default(),
             sockets: SocketTable::new(),
             #[cfg(any(test, feature = "test-util"))]
             clock: crate::time::SharedClock::new(env.clock)?,
@@ -706,6 +709,7 @@ impl<H: Host> Multi<H> {
                 slots: &mut self.slots,
                 timers: &mut self.timers,
                 dirty: &mut self.dirty,
+                pending: &mut self.pending,
                 notify: &mut self.notify,
             },
             &mut self.counts,
@@ -944,9 +948,7 @@ impl<H: Host> Multi<H> {
     /// Let one transfer waiting for a connection look for one again
     /// (`multi_schedule_pending`), traced entering CONNECT as it is let.
     fn wake_pending(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) {
-        if let Some(id) =
-            state::wake_pending(&mut self.slots, &mut self.dirty, &mut self.pending_after)
-        {
+        if let Some(id) = state::wake_pending(&mut self.slots, &mut self.dirty, &mut self.pending) {
             let mut cx = StepCx::new(id, self.rest(now, ev));
             mstate::enter(&mut cx, mstate::MState::Connect);
         }
@@ -1062,7 +1064,7 @@ impl<H: Host> Multi<H> {
     /// set): neither completed nor waiting its turn.
     fn in_process(&self, id: TransferId) -> bool {
         let state = &self.run_of(id).state;
-        !matches!(state, TransferState::Pending(_)) && !state.is_completed()
+        !matches!(state, TransferState::Pending) && !state.is_completed()
     }
 
     /// Transfer `id`'s pollset traced as it is made (`Curl_multi_pollset`),
@@ -1347,7 +1349,7 @@ impl<H: Host> Multi<H> {
             tls: &mut self.tls,
             sockbuf: &mut self.sockbuf,
             shutdowns: &mut self.shutdowns,
-            pending_after: &mut self.pending_after,
+            pending: &mut self.pending,
             net: &mut *self.net,
             ipv6_works: self.ipv6_works,
             fail_ipv6: self.fail_ipv6,
@@ -1471,6 +1473,12 @@ impl<H: Host> Multi<H> {
         if self.life == Life::Dead {
             // A callback aborted the multi: every transfer fails.
             let unstarted = matches!(run.state, TransferState::Init);
+            // One waiting waits no longer (`mstate_enter_completed`).
+            if matches!(run.state, TransferState::Pending) {
+                self.pending
+                    .take(id)
+                    .expect("a waiting transfer's plan is queued");
+            }
             run.state = std::mem::replace(&mut run.state, TransferState::Init)
                 .fail(ErrorKind::AbortedByCallback);
             if unstarted {
@@ -1788,7 +1796,7 @@ fn census_of<H: Host>(slots: &Slots<H>, counts: Counts) -> Census {
             continue;
         };
         match &run.state {
-            TransferState::Pending(_) => pending += 1,
+            TransferState::Pending => pending += 1,
             TransferState::Completed(c) if c.message == MessageState::Unread => unread += 1,
             _ => {}
         }
@@ -1866,6 +1874,7 @@ struct Rows<'a, H: Host> {
     slots: &'a mut Slots<H>,
     timers: &'a mut TimerQueue<Transfer>,
     dirty: &'a mut RowSet,
+    pending: &'a mut PendingQueue,
     notify: &'a mut NotifyQueue,
 }
 
@@ -1886,6 +1895,7 @@ fn insert<H: Host>(
     let n = vacancy.rows();
     if rows.timers.reserve(n).is_err()
         || rows.dirty.reserve(n).is_err()
+        || rows.pending.reserve(n).is_err()
         || rows.notify.reserve(n).is_err()
     {
         return refuse(MultiErrorKind::OutOfMemory, easy, owner);

@@ -20,6 +20,7 @@ impl<H: Host> Multi<H> {
         // Those of the multi's own pool; a share's may be any multi's.
         let mut own_leases = 0;
         let mut queued = 0;
+        let mut waiting = 0;
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
             cursor = Some(id);
@@ -49,10 +50,20 @@ impl<H: Host> Multi<H> {
             let mstate = self.slots.get(id).expect("just found").mstate;
             assert_eq!(
                 mstate == super::mstate::MState::Pending,
-                matches!(run.state, TransferState::Pending(_)),
+                matches!(run.state, TransferState::Pending),
                 "{id:?} is traced in {mstate:?} in {:?}",
                 run.state
             );
+            // The queue of those waiting holds the plan of each, and only
+            // theirs.
+            let pending = matches!(run.state, TransferState::Pending);
+            assert_eq!(
+                self.pending.holds(id),
+                pending,
+                "{id:?} in {:?} disagrees with the queue of those waiting",
+                run.state
+            );
+            waiting += usize::from(pending);
             // A push that could not start goes with the step that added it.
             assert!(
                 !self.slots.get(id).expect("just found").discard,
@@ -94,6 +105,11 @@ impl<H: Host> Multi<H> {
             (counts.running, counts.current),
             (running, current),
             "the counts disagree with a recount"
+        );
+        assert_eq!(
+            self.pending.checked_len(),
+            waiting,
+            "the queue of those waiting holds stale entries"
         );
         assert_eq!(
             self.timers.len(),

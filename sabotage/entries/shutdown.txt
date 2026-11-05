@@ -519,3 +519,12 @@ witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_
                 self.finished = true;
                 Tried::Done
             }
+
+=== a goodbye's answer is waited for past the shutdown's time
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::ftp::tests::a_share_waits_for_a_trickling_answer_to_quit_no_longer_than_the_shutdown
+features: test-util debug-hooks
+--- old
+            if self.left_ms(now) < 0 || !self.awaits_answer(&mut cx) {
+--- new
+            if !self.awaits_answer(&mut cx) {

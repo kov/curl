@@ -4120,6 +4120,42 @@ fn an_endless_answer_to_quit_is_read_no_further_than_64_kb() {
     assert_eq!(clock.now(), at, "no time limit ended it");
 }
 
+/// A share's last connection, closed as the share goes, waits for the
+/// answer to its `QUIT` no longer than the shutdown's time, however long
+/// the answer keeps coming: here a line each tenth of a second, which never
+/// leaves a second of silence and would take 7 s to reach 64 KB.
+#[test]
+fn a_share_waits_for_a_trickling_answer_to_quit_no_longer_than_the_shutdown() {
+    use crate::share::{Kind, Share};
+    let control = control(&[b"150 here\r\n226 done\r\n", b"221-going\r\n"])
+        .endless(std::time::Duration::from_millis(100))
+        .endless_lines(b"221-still going\r\n");
+    let file = data(b"hello");
+    let (mut m, counted, clock) = clocked(&[&control], &[&file]);
+    let share = Share::with_net(Box::new(counted.clone())).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut e = Easy::new();
+    e.set_share(Some(share.clone())).unwrap();
+    let (id, _, text) = added_easy(&mut m, URL, e, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    drop(m);
+    assert_eq!(counted.open(), 1, "kept by the share");
+    let at = clock.now();
+    drop(share);
+    assert_eq!(counted.open(), 0);
+    assert!(control.received().ends_with(b"QUIT\r\n"));
+    let reads = control.endless_reads();
+    assert!((1..30).contains(&reads), "{reads} reads of the answer");
+    // The 2 s, and the last pass of ten reads that crossed it.
+    let spent = clock.now().since(at);
+    assert!(
+        spent <= std::time::Duration::from_secs(3),
+        "waited {spent:?}"
+    );
+}
+
 /// A transfer that needs room under the total limit waits while the
 /// connection it would close for room awaits the answer to its `QUIT`,
 /// and connects once the answer came and that connection closed: the

@@ -621,7 +621,9 @@ done`), each read and write its BIO makes on the layer below with the length Ope
 with the caller's length and what OpenSSL still holds (`ossl_recv(len=102400) -> 0, 44
 (in_pending=1)`), `configuring OpenSSL's x509 trust store` at the first read, and
 `adjust_pollset, POLLIN fd=N` (or `POLLOUT`) while its session waits, connecting or not, above
-the socket's own pollset line. Its first connect checks the versions allowed first
+the socket's own pollset line; an HTTPS proxy's is said twice under an HTTP/1 tunnel, which asks
+it again, and once under an HTTP/2 proxy's session, whose own `[H2-PROXY] adjust_pollset,
+want_recv=N want_send=N -> 0` goes before it while the socket is waited on. Its first connect checks the versions allowed first
 (`ssl_prefs_check`): a newest older than the oldest fails it, `CURL_SSLVERSION_MAX incompatible
 with CURL_SSLVERSION`. Without a component, as text lines: `ALPN: curl offers …`, `SSL
 connection using …`, `ALPN: server did not agree on a protocol. Uses default.`, the `Server

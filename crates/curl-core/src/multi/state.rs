@@ -469,6 +469,28 @@ impl TransferState {
         Some((waits, tunneled))
     }
 
+    /// Whether the transfer's connection goes through a tunnel that is a
+    /// stream of an HTTP/2 session with its proxy, made or being made
+    /// (`[H2-PROXY]`).
+    fn tunnels_h2(&self, pool: &Pool) -> bool {
+        let answer = match self {
+            TransferState::Done(_) => None,
+            TransferState::Connecting(c) => {
+                if matches!(
+                    c.lead_handshake(),
+                    Some(connecting::Handshake::H2Connect(_))
+                ) {
+                    return true;
+                }
+                c.query(LayerQuery::Tunnel)
+            }
+            state => state
+                .slot(pool)
+                .and_then(|slot| slot.query(LayerQuery::Tunnel)),
+        };
+        answer == Some(LayerAnswer::Tunnel(Component::H2Proxy))
+    }
+
     /// What the TLS session `q` asks of waits for, if it waits.
     fn waits(&self, q: LayerQuery, pool: &Pool) -> Option<TlsWait> {
         let answer = match self {
@@ -1210,6 +1232,9 @@ pub(crate) struct PollsetTrace<T> {
     /// What an HTTPS proxy's waits for, if it waits, and whether a tunnel
     /// through it is made.
     proxy_tls: Option<(TlsWait, bool)>,
+    /// The connection goes through a tunnel that is a stream of an
+    /// HTTP/2 session with the proxy.
+    h2_proxy: bool,
     timers: T,
     /// Sending and receiving, paused.
     paused: (bool, bool),
@@ -1277,6 +1302,7 @@ impl Run {
             setup,
             tls: self.state.tls_waits(pool),
             proxy_tls: self.state.proxy_tls_waits(pool),
+            h2_proxy: self.state.tunnels_h2(pool),
             timers: self.deadlines.in_order(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         })
@@ -1293,6 +1319,7 @@ impl PollsetTrace<std::iter::Empty<(Instant, TimerKind)>> {
             setup: None,
             tls: None,
             proxy_tls: None,
+            h2_proxy: false,
             timers: std::iter::empty(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         }
@@ -1353,11 +1380,22 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
             };
             trace::of(cx, Component::Ssl, line);
         }
-        // An HTTPS proxy's, below it, asked twice once a tunnel through it
-        // is made: by the tunnel's filter and on its own.
+        // The session with an HTTP/2 proxy says what it asks of the
+        // socket, the layers above's wants with its own
+        // (`cf_h2_proxy_adjust_pollset`).
+        if let (true, Some(&(_, events))) = (self.h2_proxy, wants.first()) {
+            let (recv, send) = (events.contains(Events::IN), events.contains(Events::OUT));
+            if recv || send {
+                let (recv, send) = (u8::from(recv), u8::from(send));
+                let line = format_args!("adjust_pollset, want_recv={recv} want_send={send} -> 0");
+                trace::of(cx, Component::H2Proxy, line);
+            }
+        }
+        // An HTTPS proxy's, below it, asked twice once an HTTP/1 tunnel
+        // through it is made: by the tunnel's filter and on its own.
         if let (Some((waits, tunneled)), Some(&(key, _))) = (self.proxy_tls, wants.first()) {
             let fd = key.get();
-            for _ in 0..1 + u8::from(tunneled) {
+            for _ in 0..1 + u8::from(tunneled && !self.h2_proxy) {
                 let line = match waits {
                     TlsWait::Send => format_args!("adjust_pollset, POLLOUT fd={fd}"),
                     TlsWait::Recv | TlsWait::Nothing => {

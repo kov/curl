@@ -414,7 +414,7 @@ impl Connecting {
     }
 
     /// The leading setup's handshake under way, if one is.
-    fn lead_handshake(&self) -> Option<&Handshake> {
+    pub(super) fn lead_handshake(&self) -> Option<&Handshake> {
         self.handshake(self.leader())
     }
 

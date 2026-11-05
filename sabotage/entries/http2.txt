@@ -1121,3 +1121,11 @@ witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_tra
 --- new
     let sub = if h2 {
         "1.1"
+
+=== an HTTP/2 proxy's session says nothing of the pollset
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::an_http_2_proxy_s_session_says_its_pollset
+--- old
+        if let (true, Some(&(_, events))) = (self.h2_proxy, wants.first()) {
+--- new
+        if let (true, Some(&(_, events))) = (false, wants.first()) {

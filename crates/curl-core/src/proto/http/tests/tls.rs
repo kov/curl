@@ -2468,6 +2468,57 @@ fn h2_proxy_reads(answer: &[u8], then: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The session with an HTTP/2 proxy says what it asks of the socket as
+/// the pollset is made, as C's filter does above the proxy's TLS, which
+/// is asked once, as nothing between asks it again
+/// (`cf_h2_proxy_adjust_pollset`): the C build's `[H2-PROXY]
+/// adjust_pollset, want_recv=1 want_send=0 -> 0`, then `[SSL-PROXY]
+/// adjust_pollset, POLLIN` if that waits, as the tunnel is made and
+/// through it.
+#[test]
+fn an_http_2_proxy_s_session_says_its_pollset() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), response].concat();
+    let (_, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\n\n", &data);
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"h2-proxy,ssl-proxy");
+    e.set_components(Some(c));
+    e.set_libraries(libraries);
+    // Each answer a poll late, so that the transfer waits for it.
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false)
+        .per_send()
+        .late_replies();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        https_proxy(o, b"http://origin.example/p");
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.kind = crate::options::ProxyType::Https2;
+        proxy.tunnel = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let lines: Vec<String> = ran
+        .seen
+        .text()
+        .iter()
+        .filter(|l| l.contains("] adjust_pollset"))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let said = "[H2-PROXY] adjust_pollset, want_recv=1 want_send=0 -> 0";
+    // The proxy's TLS says its own as its handshake is made; the session
+    // its, once it is there, before the proxy's TLS's.
+    let from = lines
+        .iter()
+        .position(|l| l == said)
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    for (i, l) in lines.iter().enumerate().skip(from) {
+        if l.starts_with("[SSL-PROXY] ") {
+            assert_eq!(lines[i - 1], said, "{lines:#?}");
+        }
+    }
+}
+
 /// The tunnel's ends traced as C's callbacks and reads trace them: a
 /// reset read as its frame, then the stream's close with its code's
 /// name, then the tunnel's reads failing (`proxy_h2_on_stream_close`,

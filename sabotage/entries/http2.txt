@@ -1111,3 +1111,13 @@ witness: curl-core proto::http::tests::h2::the_session_reads_a_chunk_at_a_time
             let got = lease.get().recv(cx, left.min(CHUNK));
 --- new
             let got = lease.get().recv(cx, left);
+
+=== a tunnel through an HTTP/2 proxy installs its filter unsaid
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_traces_what_it_reads
+--- old
+    let sub = if h2 {
+        "2"
+--- new
+    let sub = if h2 {
+        "1.1"

@@ -2371,7 +2371,8 @@ fn a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read() {
 
 /// The tunnel's layer traces what it reads as C's `cf-h2-proxy.c` does,
 /// in its order, against the C build through `nghttpx --http2-proxy`:
-/// the session made and the `CONNECT` started, each read below with what
+/// its filter installed (`http_proxy_cf_connect`), the session made and
+/// the `CONNECT` started, each read below with what
 /// it came to (`read N bytes nw data -> code, n`, a read that would block
 /// among them), the frames it carried, the answer's status and fields as
 /// they are kept, what the session took of the bytes, the tunnel's state
@@ -2384,7 +2385,7 @@ fn a_tunnel_through_an_http_2_proxy_traces_what_it_reads() {
     let (_, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\nvia: x\n\n", &data);
     let mut e = Easy::new();
     let c = crate::components::Components::new().unwrap();
-    c.configure(b"h2-proxy");
+    c.configure(b"h2-proxy,http-proxy");
     e.set_components(Some(c));
     let (ran, _) = through_h2_proxy_by(e, libraries, &replies, b"http://origin.example/p");
     assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
@@ -2400,12 +2401,14 @@ fn a_tunnel_through_an_http_2_proxy_traces_what_it_reads() {
                 && !l.contains("cf_send")
                 && !l.contains("tunnel_send_callback")
                 || l.starts_with("CONNECT")
+                || l.starts_with("[HTTP-PROXY] installing")
         })
         .collect();
     assert_eq!(
         lines,
         [
             "CONNECT: 'h2' negotiated",
+            "[HTTP-PROXY] installing subfilter for HTTP/2",
             "[H2-PROXY] [0] init proxy ctx -> 0",
             "[H2-PROXY] [0] CONNECT start for origin.example:80",
             "[H2-PROXY] [1] new tunnel state 'connect'",

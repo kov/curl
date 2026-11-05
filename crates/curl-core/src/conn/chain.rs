@@ -338,6 +338,11 @@ impl Chain {
         topped
     }
 
+    /// Whether it holds `filter`, not connected yet.
+    pub(crate) fn connects(&self, filter: Component) -> bool {
+        self.filters[..self.len].contains(&(filter, false))
+    }
+
     /// The filter at its top, which a question of the connection is
     /// asked of first (`conn->cfilter[FIRSTSOCKET]`).
     pub(crate) fn top(&self) -> Option<Component> {

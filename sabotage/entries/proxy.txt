@@ -842,3 +842,19 @@ features: test-util debug-hooks
 --- new
         SocksTarget::Found(answer) => {
             trace::info_with(cx, &[b"Hostname ", answer.name(), b" was found in DNS cache"]);
+
+=== a tunnel through an HTTP/1.0 proxy says it installs HTTP/1.1's filter
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::setup_trace::a_tunnel_through_an_http_1_0_proxy_installs_its_filter
+--- old
+    } else if chosen == Some(Chosen::Http10) || kind == Some(ProxyType::Http10) {
+--- new
+    } else if chosen == Some(Chosen::Http10) {
+
+=== the tunnel's filter connects unsaid
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_as_c
+--- old
+    if chain.connects(Component::HttpProxy) {
+--- new
+    if chain.connects(Component::HttpProxy) && udp {

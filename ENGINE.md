@@ -554,12 +554,13 @@ connected setup filter` and `destroy` as the connection is up. `HTTP-PROXY` and 
 trace their removal and `destroy` with it, and the tunnel's two filters (`HTTP-PROXY`,
 `H1-PROXY`) their `destroy` as a redial discards them. The `DNS` and `HAPPY-EYEBALLS` filters,
 setup filters as well, go with them in the chain's order (`Chain::going`).
-Not traced: the
-`SOCKS`, `HTTP-PROXY` and `H1-PROXY` components' own lines: SOCKS's state changes, which name
-C's machine's states and source lines where the engine's sans-IO handshake has states of its
-own, and its `adjust pollset in (N)`; the tunnel's `CONNECT`, `installing subfilter`, `connect`,
-`CONNECT send`/`receive`/`response`, `new tunnel state` and its header lines, which follow C's
-two filters (HTTP-PROXY installing H1-PROXY) and its byte-at-a-time read of the answer.
+`HTTP-PROXY` says `CONNECT` (`CONNECT-UDP`) under each `cf_setup_connect` line while the tunnel
+is to be made, and `installing subfilter for HTTP/x` once the proxy's ALPN, or its type, names
+the tunnel's protocol (`http_proxy_cf_connect`). Not traced: the `SOCKS` and `H1-PROXY`
+components' own lines: SOCKS's state changes, which name C's machine's states and source lines
+where the engine's sans-IO handshake has states of its own, and its `adjust pollset in (N)`;
+H1-PROXY's `connect`, `CONNECT send`/`receive`/`response`, `new tunnel state` and its header
+lines, which follow C's byte-at-a-time read of the answer.
 
 `TIMER` names each of a transfer's timers by C's `expire_id` (`TimerKind::name`) where C arms or
 clears it: the leg's limits as it starts, the low-speed check, the rate limits, the next connect

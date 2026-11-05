@@ -841,6 +841,18 @@ fn enter_setup<H: Host>(
     ))
 }
 
+/// SETUP's connect entered over `chain`: its line, then, while the
+/// tunnel through a proxy is to be made, the HTTP-PROXY filter's under it
+/// (`cf_setup_connect`, `http_proxy_cf_connect`'s `CONNECT`, `CONNECT-UDP`
+/// for a tunnel of datagrams).
+fn setup_entered<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain, udp: bool) {
+    mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+    if chain.connects(Component::HttpProxy) {
+        let what = if udp { "CONNECT-UDP" } else { "CONNECT" };
+        trace::of(cx, Component::HttpProxy, format_args!("{what}"));
+    }
+}
+
 /// `enter_setup` of the chain `setup` makes over `plan`, under `head`,
 /// with the handshake `under_way` started.
 pub(super) fn enter_chain<H: Host>(
@@ -859,9 +871,8 @@ pub(super) fn enter_chain<H: Host>(
     let chain = |reached, under_way, installed| {
         Chain::of(route, head, reached, under_way, installed).on(rank)
     };
-    let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
-        mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
-    };
+    let udp = route.asks_udp();
+    let entry = |cx: &mut StepCx<'_, H>, chain: Chain| setup_entered(cx, chain, udp);
     match reached {
         SetupPoint::Resolving => return chain(reached, None, true),
         SetupPoint::Racing { started: false } => {
@@ -1311,7 +1322,7 @@ fn drive_other<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
             enter_setup(&c, cx, &mut entered, a);
         } else {
             let chain = Chain::of(other.dialing(), head_of(&c), other.reached(), None, true);
-            mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+            setup_entered(cx, chain, other.dialing().asks_udp());
         }
         match connect_once(run, c, cx, a) {
             (TransferState::Connecting(next), Wake::Again) => c = next,

@@ -122,9 +122,12 @@ fn the_proxy_protocol_s_filter_is_added_and_goes() {
 /// it first connects; the first goes with the setup, the second stays.
 const TUNNEL: &str = "[SETUP] added HTTP proxy tunnel filter
     [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+    [HTTP-PROXY] CONNECT
     [HAPPY-EYEBALLS] query ALPN
     CONNECT: no ALPN negotiated
-    [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]";
+    [HTTP-PROXY] installing subfilter for HTTP/1.1
+    [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]
+    [HTTP-PROXY] CONNECT";
 
 const TUNNEL_UP_TRACE: &str =
     "[MULTI] [CONNECTING] connected [0][DNS][SETUP][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
@@ -271,9 +274,12 @@ fn a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c() {
         {socks}
         [SETUP] added HTTP proxy tunnel filter
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!HTTP-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
+        [HTTP-PROXY] CONNECT
         [SOCKS] query ALPN
         CONNECT: no ALPN negotiated
+        [HTTP-PROXY] installing subfilter for HTTP/1.1
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
+        [HTTP-PROXY] CONNECT
         [MULTI] [CONNECTING] connected [0][DNS][DNS][SETUP][HTTP-PROXY][H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
         [SETUP] removing connected setup filter
         [SETUP] destroy
@@ -283,6 +289,29 @@ fn a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c() {
         [H1-PROXY] query ALPN"
     )));
     assert_eq!(setup_lines(&ran), want);
+}
+
+/// A tunnel through a proxy asked for in HTTP/1.0 installs HTTP/1.0's
+/// filter, said so as C's `http_proxy_cf_connect` says it.
+#[test]
+fn a_tunnel_through_an_http_1_0_proxy_installs_its_filter() {
+    let talk = Conversation::replies(&[TUNNEL_UP, OK], false).late_replies();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, tracing_setup(), "/", talk, |o| {
+        tunneled(o);
+        o.proxy.make_mut().unwrap().kind = crate::options::ProxyType::Http10;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let lines = setup_lines(&ran);
+    let at = lines
+        .iter()
+        .position(|l| l == "CONNECT: no ALPN negotiated")
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(
+        lines[at + 1],
+        "[HTTP-PROXY] installing subfilter for HTTP/1.0",
+        "{lines:#?}"
+    );
 }
 
 /// A reused connection is not set up: no chain, no setup filter.
@@ -339,8 +368,10 @@ fn a_tunnel_failing_as_it_starts_names_its_filter() {
     want.extend(expect(
         "[SETUP] added HTTP proxy tunnel filter
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+        [HTTP-PROXY] CONNECT
         [HAPPY-EYEBALLS] query ALPN
         CONNECT: no ALPN negotiated
+        [HTTP-PROXY] installing subfilter for HTTP/1.1
         [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]",
     ));
     assert_eq!(setup_lines(&ran), want);

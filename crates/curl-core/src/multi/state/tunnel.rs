@@ -103,7 +103,9 @@ pub(super) fn dialed<H: Host>(
     // none, the proxy type does: HTTP/2 for an HTTPS proxy asked for in
     // it.
     let what = method_name(s.machine.dialing().asks_udp());
-    let h2 = match super::query_alpn(cx, s.machine.query(LayerQuery::Alpn), below) {
+    let kind = lent.route.proxy.as_ref().map(|p| p.kind);
+    let chosen = super::query_alpn(cx, s.machine.query(LayerQuery::Alpn), below);
+    let h2 = match chosen {
         Some(chosen) => {
             let name = chosen.name();
             trace::info(cx, format_args!("{what}: '{name}' negotiated"));
@@ -111,10 +113,7 @@ pub(super) fn dialed<H: Host>(
         }
         None => {
             trace::info(cx, format_args!("{what}: no ALPN negotiated"));
-            lent.route
-                .proxy
-                .as_ref()
-                .is_some_and(|p| p.kind == ProxyType::Https2)
+            kind == Some(ProxyType::Https2)
         }
     };
     if h2 && cx.easy().libraries().h2.is_none() {
@@ -125,6 +124,20 @@ pub(super) fn dialed<H: Host>(
         );
         return Err(Failure::of(failed));
     }
+    // The tunnel's filter is put in (`http_proxy_cf_connect`): HTTP/1.0's
+    // for a proxy that chose it or was asked for in it.
+    let sub = if h2 {
+        "2"
+    } else if chosen == Some(Chosen::Http10) || kind == Some(ProxyType::Http10) {
+        "1.0"
+    } else {
+        "1.1"
+    };
+    trace::of(
+        cx,
+        Component::HttpProxy,
+        format_args!("installing subfilter for HTTP/{sub}"),
+    );
     let started = if h2 {
         super::h2tunnel::start(s, lent, cx)
     } else {

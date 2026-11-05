@@ -330,3 +330,19 @@ witness: curl-core multi::socket_tests::a_wait_beside_the_resolver_s_wake_counts
                 &mut few_sockets[..at]
 --- new
                 &mut few_sockets[..wanted]
+
+=== a wait polls a socket the transfers on one connection share once for each
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core proto::http::tests::h3_trace::a_wait_polls_a_shared_connection_s_socket_once
+--- old
+        match polls.iter_mut().rev().find(|p| p.socket.key() == key) {
+--- new
+        match polls.iter_mut().rev().find(|p| p.socket.key() == key && false) {
+
+=== a wait traces a shared socket once for each transfer on it
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core proto::http::tests::h3_trace::a_wait_polls_a_shared_connection_s_socket_once
+--- old
+            if !known.iter().rev().any(|&k| k == key) {
+--- new
+            if !known.iter().rev().any(|&k| k == key && false) {

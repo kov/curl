@@ -362,6 +362,20 @@ impl<'a> SocketPoll<'a> {
     pub fn revents(&self) -> Events {
         self.revents
     }
+
+    /// Add `events` to the entry of `polls` for `socket`, the newest
+    /// first, if there is one (`cpfds_add_sock`'s folding): whether there
+    /// was.
+    pub fn fold(polls: &mut [SocketPoll<'_>], socket: &dyn Socket, events: Events) -> bool {
+        let key = socket.key();
+        match polls.iter_mut().rev().find(|p| p.socket.key() == key) {
+            Some(p) => {
+                p.events = p.events | events;
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// The transfer a resolve is for, which the multi runs again once its

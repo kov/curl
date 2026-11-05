@@ -1321,7 +1321,9 @@ the socket callback but not the timer.
 
 **`wait`** (multi.c:1522) polls the multi's sockets, the application's `extra` descriptors and,
 when the wait will be one (`WaitMode::Poll`, or anything else to poll), the waker, through
-`Net::poll`, for `max` capped by `timeout()`. `WaitMode::Wait` with nothing to poll returns at
+`Net::poll`, for `max` capped by `timeout()`; a socket several transfers wait on, as those on one
+connection do, is one entry with what any of them wants (C's `cpfds_add_sock` folding), so it is
+counted and traced once. `WaitMode::Wait` with nothing to poll returns at
 once; `Poll` sleeps. The waker's event is drained and not counted; `extra`'s events are copied
 back into its entries; a failed poll is `UnrecoverablePoll`, a signal ending it early counts as
 nothing ready. A negative timeout is the shim's BAD_FUNCTION_ARGUMENT. `Net` has `poll` for the

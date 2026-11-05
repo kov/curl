@@ -47,18 +47,48 @@ impl<H: Host> Multi<H> {
         // After the pollsets, which may arm timers (multi.c:1602).
         let internal = self.multi_timeout(now, ev);
         let timeout = internal.map_or(max, |t| t.min(max));
+        let oom = |_| MultiErrorKind::OutOfMemory;
         let mut n_sockets = 0;
         pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |_, _| {
             n_sockets += 1
         })
         .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+        // A socket two transfers wait on, as the transfers on one
+        // connection do, is polled once for what either wants of it, as
+        // C folds it (`cpfds_add_sock`). A few entries are kept on the
+        // stack, more in memory of their own, as C's `a_few_on_stack`: a
+        // loop of waits allocates nothing.
+        let mut few_keys = [SocketKey::BAD; ON_STACK];
+        let mut more_keys = Vec::new();
+        if n_sockets > ON_STACK {
+            more_keys.try_reserve_exact(n_sockets).map_err(oom)?;
+        }
+        let mut distinct = 0;
+        pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |s, _| {
+            let key = s.key();
+            let known = if n_sockets <= ON_STACK {
+                &few_keys[..distinct]
+            } else {
+                &more_keys[..]
+            };
+            if !known.iter().rev().any(|&k| k == key) {
+                if n_sockets <= ON_STACK {
+                    few_keys[distinct] = key;
+                } else {
+                    more_keys.try_push(key).expect("reserved");
+                }
+                distinct += 1;
+            }
+        })
+        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+        drop(more_keys);
         // The resolver's wake, listened on while a transfer is alive, is
         // one of the multi's own (C's admin handle's pollset).
         let resolver_waker = self.alive.waker.clone().filter(|_| self.alive.count > 0);
         let resolver = resolver_waker
             .as_deref()
             .map(|w| PollFd::new(w.fd(), Events::IN));
-        let wanted = n_sockets + usize::from(resolver.is_some());
+        let wanted = distinct + usize::from(resolver.is_some());
         // The waker is watched when the wait will be one (multi.c:1574).
         let watch_waker = mode == WaitMode::Poll || wanted > 0 || !extra.is_empty();
         let waker_watched = self.waker.is_some() && watch_waker;
@@ -66,9 +96,6 @@ impl<H: Host> Multi<H> {
             let fds = wanted + usize::from(waker_watched) + extra.len();
             self.trace_wait(id, now, fds, timeout, internal, ev);
         }
-        let oom = |_| MultiErrorKind::OutOfMemory;
-        // A few entries are kept on the stack, more in memory of their
-        // own, as C's `a_few_on_stack`: a loop of waits allocates nothing.
         let mut first = None;
         pollsets(
             &self.slots,
@@ -91,23 +118,27 @@ impl<H: Host> Multi<H> {
                     &self.caches.pool,
                     &self.shutdowns,
                     |s, events| {
-                        few_sockets[at] = SocketPoll::new(s, events);
-                        at += 1;
+                        if !SocketPoll::fold(&mut few_sockets[..at], s, events) {
+                            few_sockets[at] = SocketPoll::new(s, events);
+                            at += 1;
+                        }
                     },
                 )
                 .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
                 &mut few_sockets[..at]
             }
             Some(_) => {
-                more_sockets.try_reserve_exact(n_sockets).map_err(oom)?;
+                more_sockets.try_reserve_exact(distinct).map_err(oom)?;
                 pollsets(
                     &self.slots,
                     &self.caches.pool,
                     &self.shutdowns,
                     |s, events| {
-                        more_sockets
-                            .try_push(SocketPoll::new(s, events))
-                            .expect("reserved");
+                        if !SocketPoll::fold(&mut more_sockets, s, events) {
+                            more_sockets
+                                .try_push(SocketPoll::new(s, events))
+                                .expect("reserved");
+                        }
                     },
                 )
                 .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;

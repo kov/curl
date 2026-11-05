@@ -4591,6 +4591,29 @@ fn a_sibling_runs_for_its_stream_s_close_and_not_for_its_body() {
     assert!(sibling_ran, "run for its close: {after:#?}");
 }
 
+/// The transfers on one connection wait on its socket together: a wait
+/// polls it once, counts it once as it is ready and says one descriptor,
+/// as C folds a socket listed twice (`cpfds_add_sock`).
+#[test]
+fn a_wait_polls_a_shared_connection_s_socket_once() {
+    let mut two = two_heads_on_quic(vec![]);
+    two.talk.allow(4);
+    let ready = two.m.wait(
+        &mut [],
+        std::time::Duration::ZERO,
+        crate::multi::WaitMode::Wait,
+        &mut NoEvents,
+    );
+    assert_eq!(ready, Ok(1));
+    let waits: Vec<String> = two.seen[1]
+        .text()
+        .into_iter()
+        .filter(|l| l.contains("multi_wait("))
+        .collect();
+    let last = waits.last().expect("the wait traced");
+    assert!(last.contains("multi_wait(fds=1, "), "{waits:#?}");
+}
+
 /// A read that fails in a step its socket did not start, the first
 /// transfer's run by its timer, fails the other transfer on the
 /// connection in the same call: the connection's failure has the other

@@ -668,12 +668,14 @@ impl Request {
 
     /// A request for `url`, whose scheme is `http`, or `https` if
     /// `secured`, after the transfer's earlier ones left it `before`.
+    /// Boxed as it is made, as its transfer's state holds it: a request is
+    /// large, and each move of it a copy.
     pub(crate) fn new<H: Host>(
         url: &Url,
         secured: bool,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
-    ) -> Result<Request, ErrorKind> {
+    ) -> Result<Box<Request>, ErrorKind> {
         let scheme = if secured { HTTPS } else { HTTP };
         Request::of_scheme(url, scheme, before, cx)
     }
@@ -686,7 +688,7 @@ impl Request {
         secured: bool,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
-    ) -> Result<Request, ErrorKind> {
+    ) -> Result<Box<Request>, ErrorKind> {
         let scheme = if secured {
             Scheme::of("wss")
         } else {
@@ -705,14 +707,17 @@ impl Request {
     }
 
     /// A request of `scheme`, with the credentials the options, the URL
-    /// and a `.netrc` file give it where it may send them.
+    /// and a `.netrc` file give it where it may send them; boxed, as
+    /// `new` says.
     fn of_scheme<H: Host>(
         url: &Url,
         scheme: Scheme,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
-    ) -> Result<Request, ErrorKind> {
-        let mut request = Request::uncredentialed(url, scheme, before, cx)?;
+    ) -> Result<Box<Request>, ErrorKind> {
+        let (peer, target, gate) = Request::addressed(url, scheme, before, cx)?;
+        let mut request = curl_alloc::try_box(Request::fresh(peer, target, gate, before))
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         // HTTP's user and password take control bytes
         // (`PROTOPT_USERPWDCTRL`), RTSP's not.
         let takes = Takes::of(Some(scheme));
@@ -731,6 +736,18 @@ impl Request {
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
+        let (peer, target, gate) = Request::addressed(url, scheme, before, cx)?;
+        Ok(Request::fresh(peer, target, gate, before))
+    }
+
+    /// Who a request of `scheme` for `url` goes to, its target, and what
+    /// it may send them.
+    fn addressed<H: Host>(
+        url: &Url,
+        scheme: Scheme,
+        before: Before<'_>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<(Peer, Vec<u8>, CredentialGate), ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
         let port = url
             .get(
@@ -777,7 +794,14 @@ impl Request {
                 CredentialGate::new(first, &peer, other_hosts)
             }
         };
-        Ok(Request {
+        Ok((peer, target, gate))
+    }
+
+    /// A request to `peer` for `target` not begun, with no credentials:
+    /// made in place where it is to live, as it is large.
+    #[inline(always)]
+    fn fresh(peer: Peer, target: Vec<u8>, gate: CredentialGate, before: Before<'_>) -> Request {
+        Request {
             base: super::base::RequestBase {
                 peer,
                 pipeline: Pipeline::collecting(),
@@ -813,7 +837,7 @@ impl Request {
             rtsp: None,
             unread: 0,
             neg: before.http.neg,
-        })
+        }
     }
 
     /// Send the request whole to a proxy that sends it on: its target is

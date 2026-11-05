@@ -492,7 +492,7 @@ impl Request {
         url: &crate::url::Url,
         before: super::super::Before<'_>,
         cx: &mut StepCx<'_, H>,
-    ) -> Result<Request, ErrorKind> {
+    ) -> Result<Box<Request>, ErrorKind> {
         let mut request = Request::of_scheme(url, crate::conn::Scheme::of("rtsp"), before, cx)?;
         request.neg.h1_only();
         request.neg.only_10 = false;

@@ -668,30 +668,19 @@ impl ProtoState {
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
-            b"http" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::new(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"http" => ProtoState::Http(http::Request::new(url, false, before, cx)?),
             // Over TLS, if the handle has a TLS library: without one, it
             // is a scheme the build leaves out, as in C built without.
-            b"https" if cx.easy().libraries().tls.is_some() => ProtoState::Http(
-                curl_alloc::try_box(http::Request::new(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"https" if cx.easy().libraries().tls.is_some() => {
+                ProtoState::Http(http::Request::new(url, true, before, cx)?)
+            }
             // A WebSocket is an HTTP/1.1 request until its 101.
-            b"ws" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::websocket(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
-            b"wss" if cx.easy().libraries().tls.is_some() => ProtoState::Http(
-                curl_alloc::try_box(http::Request::websocket(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"ws" => ProtoState::Http(http::Request::websocket(url, false, before, cx)?),
+            b"wss" if cx.easy().libraries().tls.is_some() => {
+                ProtoState::Http(http::Request::websocket(url, true, before, cx)?)
+            }
             // RTSP is spoken through HTTP's request (`lib/rtsp.c`).
-            b"rtsp" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::rtsp(url, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"rtsp" => ProtoState::Http(http::Request::rtsp(url, before, cx)?),
             b"imap" => ProtoState::Imap(
                 curl_alloc::try_box(imap::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,

@@ -724,9 +724,7 @@ pub(super) fn start_leg<H: Host>(
                     method: run.method,
                     http: &run.http,
                 };
-                match crate::proto::http::Request::new(&url, false, before, cx)
-                    .and_then(|r| curl_alloc::try_box(r).map_err(|_| ErrorKind::OutOfMemory))
-                {
+                match crate::proto::http::Request::new(&url, false, before, cx) {
                     Ok(http) => proto = ProtoState::Http(http),
                     Err(e) => return TransferState::Init.fail(e),
                 }

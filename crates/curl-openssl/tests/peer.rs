@@ -526,6 +526,12 @@ fn said(got: &Got, line: &str) -> bool {
     got.seen.lines.iter().any(|l| l == line)
 }
 
+/// What LibreSSL queues where its record layer's read or write failed
+/// below it, a reset or another failure: no system error of its own.
+#[cfg(libressl)]
+const LIBRESSL_FAILED_BELOW: &str =
+    "error:14FFF3E7:SSL routines:(UNKNOWN)SSL_internal:unknown failure occurred";
+
 fn a_verified_get_reads_the_body() {
     let certs = certs("verified", "localhost", &["localhost"]);
     let (at, server) = serve(&certs);

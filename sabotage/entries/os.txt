@@ -438,3 +438,11 @@ witness: curl-os error::tests::reads_errno_as_c_does
     return e.raw_os_error();
 --- new
     return e.raw_os_error().filter(|_| false);
+
+=== a system error is not left as the thread's last for the C library
+file: crates/curl-os/src/error.rs
+witness: curl-os error::tests::leaves_a_system_error_as_the_thread_s_last
+--- old
+    let Some(code) = e.raw_os_error() else {
+--- new
+    let Some(code) = e.raw_os_error().filter(|_| false) else {

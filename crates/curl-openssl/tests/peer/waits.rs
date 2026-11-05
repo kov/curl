@@ -247,15 +247,32 @@ fn a_socket_that_stutters_has_each_step_wait_and_go_on() {
     );
 }
 
+/// A send on an unconnected socket's failure, as C says it: its text and
+/// number, the C library's on Unix, curl's own text for Winsock's on
+/// Windows.
+#[cfg(not(windows))]
+const UNCONNECTED: (&str, i32) = ("Destination address required", 89);
+#[cfg(windows)]
+const UNCONNECTED: (&str, i32) = ("Socket is not connected", 10057);
+
 /// A send the socket fails, the request's, fails the transfer: the
 /// socket's failure said first, then OpenSSL's write said with the error
-/// the library queued for the system call (`SSL_ERROR_SYSCALL`).
+/// the library queued for the system call (`SSL_ERROR_SYSCALL`). On
+/// Windows OpenSSL queues the system's number, which the C library has no
+/// text for. LibreSSL makes the failure its own (`SSL_ERROR_SSL`), said
+/// with its error, as C says it over LibreSSL when a peer's reset fails
+/// the request.
 fn a_send_the_socket_fails_is_said_as_c_says() {
     let certs = certs("sendfails", "localhost", &["localhost"]);
     let (at, server) = serve(&certs);
     // The ClientHello, the Finished, then the request.
+    #[cfg(not(libressl))]
+    let request = 3;
+    // LibreSSL writes its change of cipher spec apart, before the Finished.
+    #[cfg(libressl)]
+    let request = 4;
     let plan = Plan {
-        fail_send: Some(3),
+        fail_send: Some(request),
         ..Plan::default()
     };
     let got = get_over(plan, "localhost", at, trusting(&certs));
@@ -266,18 +283,34 @@ fn a_send_the_socket_fails_is_said_as_c_says() {
         "{:#?}",
         got.seen.lines
     );
-    assert_eq!(got.failure, b"Send failure: Destination address required");
+    let (unconnected, _errno) = UNCONNECTED;
+    assert_eq!(
+        String::from_utf8_lossy(&got.failure),
+        format!("Send failure: {unconnected}")
+    );
+    #[cfg(all(not(libressl), not(windows)))]
     let line = format!(
         "OpenSSL SSL_write: OpenSSL/{}: error:80000059:system library::Destination address \
          required, errno 89",
         openssl::version::version().split(' ').nth(1).unwrap()
     );
-    assert!(said(&got, &line), "{:#?}", got.seen.lines);
+    #[cfg(all(not(libressl), windows))]
+    let line = format!(
+        "OpenSSL SSL_write: OpenSSL/{}: error:{:08X}:system library::Unknown error, errno \
+         {_errno}",
+        openssl::version::version().split(' ').nth(1).unwrap(),
+        0x8000_0000_u32 | _errno.cast_unsigned()
+    );
+    #[cfg(libressl)]
+    let line = format!("SSL_write() error: {}", super::LIBRESSL_FAILED_BELOW);
+    assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
 }
 
 /// A receive that fails without a system error, as a layer below may
 /// (`SOCKERRNO` 0), is said by what OpenSSL's answer was: in the
-/// handshake with the peer, after it with `errno 0`.
+/// handshake with the peer, after it with `errno 0`. LibreSSL makes the
+/// failure its own (`SSL_ERROR_SSL`), said with its error, as C says it
+/// over LibreSSL when a reset fails the handshake or the read.
 fn a_receive_failing_without_errno_is_said_as_c_says() {
     let certs = certs("recvfails", "localhost", &["localhost"]);
     // After the ClientHello: the handshake's first receive.

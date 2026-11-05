@@ -97,7 +97,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly
   (`GetEnvironmentVariableA` on Windows).
 - `crates/curl-os/src/error.rs`: the text of an operating-system error, `strerror_r` into a
-  buffer on the stack; on Windows `strerror_s`, then `FormatMessageA`.
+  buffer on the stack; on Windows `strerror_s`, then `FormatMessageA`; and leaving one as the
+  thread's last error (`errno`, `SetLastError`) for a C library to read.
 - `crates/curl-os/src/fnmatch.rs`: matching a name against a shell pattern, the system's
   `fnmatch` (on Windows C's own matcher, in safe Rust).
 - `crates/curl-os/src/fs.rs`: opening, cutting and closing files, a file's status, removing,

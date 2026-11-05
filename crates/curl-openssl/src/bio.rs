@@ -355,6 +355,8 @@ unsafe extern "C" fn out_write(bio: *mut BIO, buf: *const c_char, blen: c_int) -
         }
         Err(e) => {
             slot.below = Below::Failed(e.raw_os_error().unwrap_or(0));
+            // Where the library reads why, as C's failed send leaves it.
+            curl_os::error::set_last_error(&e);
             -1
         }
     }
@@ -394,6 +396,7 @@ unsafe extern "C" fn in_read(bio: *mut BIO, buf: *mut c_char, blen: c_int) -> c_
     ));
     // SAFETY: `bio` is the library's.
     unsafe { openssl_sys::BIO_clear_retry_flags(bio) };
+    let mut failed = None;
     let read = match got {
         Ok(Recv::Data(n)) => {
             slot.below = Below::Ok;
@@ -414,6 +417,7 @@ unsafe extern "C" fn in_read(bio: *mut BIO, buf: *mut c_char, blen: c_int) -> c_
         }
         Err(e) => {
             slot.below = Below::Failed(e.raw_os_error().unwrap_or(0));
+            failed = Some(e);
             -1
         }
     };
@@ -425,6 +429,10 @@ unsafe extern "C" fn in_read(bio: *mut BIO, buf: *mut c_char, blen: c_int) -> c_
             return -1;
         }
         slot.flags.store_ready = true;
+    }
+    if let Some(e) = failed {
+        // Where the library reads why, as C's failed receive leaves it.
+        curl_os::error::set_last_error(&e);
     }
     read
 }

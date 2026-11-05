@@ -1,7 +1,8 @@
 //! The text of an operating-system error, as `curlx_strerror` gives it:
 //! `strerror_r` into a buffer on the stack, so that making it allocates
 //! nothing. std's display of an `io::Error` copies the text to the heap
-//! with an allocation that cannot fail.
+//! with an allocation that cannot fail. And the error left as the
+//! thread's last, for a C library that reads it there.
 
 #![allow(unsafe_code)]
 
@@ -209,6 +210,34 @@ pub fn c_errno(e: &io::Error) -> Option<i32> {
     return e.raw_os_error().and_then(errno_of_system_error);
     #[cfg(unix)]
     return e.raw_os_error();
+}
+
+/// Leave `e`'s number as this thread's last error, where a C library
+/// reads why the call it made back into us failed: `errno` on Unix, the
+/// system's (`GetLastError`, which is Winsock's too) on Windows. C's
+/// failed system call leaves it so, and OpenSSL queues it as the system's
+/// error. An error the system did not give leaves it as it was.
+pub fn set_last_error(e: &io::Error) {
+    let Some(code) = e.raw_os_error() else {
+        return;
+    };
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    {
+        #[cfg(target_os = "linux")]
+        // SAFETY: a call of no arguments, for this thread's `errno`.
+        let errno = unsafe { libc::__errno_location() };
+        #[cfg(target_vendor = "apple")]
+        // SAFETY: as above.
+        let errno = unsafe { libc::__error() };
+        // SAFETY: it points to this thread's `errno`, valid to write for
+        // the thread's life.
+        unsafe { *errno = code };
+    }
+    #[cfg(windows)]
+    // SAFETY: `SetLastError` only sets the thread's error.
+    unsafe {
+        windows_sys::Win32::Foundation::SetLastError(code.cast_unsigned());
+    }
 }
 
 /// The `errno` the C library sets for system error `code`, as its
@@ -466,6 +495,17 @@ mod tests {
             assert_eq!(raw(libc::EACCES), Some(libc::EACCES));
             assert_eq!(raw(libc::EPERM), Some(libc::EPERM));
         }
+    }
+
+    /// A system error is left as the thread's last; another leaves what
+    /// was there.
+    #[test]
+    fn leaves_a_system_error_as_the_thread_s_last() {
+        let raw = 10_054;
+        set_last_error(&io::Error::from_raw_os_error(raw));
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(raw));
+        set_last_error(&io::Error::other("not the system's"));
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(raw));
     }
 
     #[test]

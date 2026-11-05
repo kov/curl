@@ -2214,6 +2214,18 @@ mod tests {
         assert_eq!(*body.0.lock().unwrap(), b"hello");
         let (mut e, _) = easy(&s.url("missing"));
         assert!(e.perform_ev().is_err());
+        // Boxed, in the same box, its failure still the transfer's.
+        let (e, body) = easy(&s.url("f"));
+        let e = Box::new(e);
+        let at: *const Easy = &*e;
+        let (mut e, result) = e.perform_ev_boxed();
+        assert_eq!(result, Ok(()));
+        assert!(std::ptr::eq(at, &*e), "the same box");
+        assert_eq!(*body.0.lock().unwrap(), b"hello");
+        e.options_mut().set_url(Some(&s.url("missing"))).unwrap();
+        let (e, result) = e.perform_ev_boxed();
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::FileCouldntReadFile);
+        assert!(std::ptr::eq(at, &*e), "the same box after a failure");
     }
 
     #[test]

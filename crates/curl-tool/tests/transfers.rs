@@ -1770,6 +1770,20 @@ fn parallel_transfers_keep_the_first_failure() {
     assert_eq!(r.code, 37);
 }
 
+/// The debug build's `--test-event` without `--parallel` drives each
+/// transfer by its events, its result the transfer's.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn test_event_runs_each_transfer_to_its_result() {
+    let s = Scratch::new("testevent");
+    s.write("a", b"A");
+    let w = "%{urlnum} %{exitcode}\n";
+    let (a, missing) = (s.url("a"), s.url("missing"));
+    let r = curl(&s, &["-s", "--test-event", "-w", w, &a, &missing]);
+    assert_eq!(r.stdout, b"A0 0\n1 37\n");
+    assert_eq!(r.code, 37);
+}
+
 /// The debug build's `--test-event` with `--parallel` wants libuv, which
 /// this build has not: C's tool says so, runs none of the transfers it
 /// added and ends each as if it succeeded, its output file made empty,

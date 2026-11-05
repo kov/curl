@@ -354,6 +354,35 @@ mod imp {
             let done = ctx.initialize(&call, &mut out).unwrap();
             assert_eq!(done.status, SecStatus::CONTINUE_NEEDED);
             assert!(out.len() <= room && !out.is_empty());
+            assert!(out.starts_with(b"NTLMSSP\0\x01\0\0\0"), "{out:?}");
+            // A peer's answer goes in as the token it is, and the context
+            // answers it: NTLM's challenge, then its authentication.
+            let mut challenge = Vec::new();
+            challenge.extend_from_slice(b"NTLMSSP\0\x02\0\0\0");
+            // No target name, at the payload's start.
+            challenge.extend_from_slice(&[0, 0, 0, 0, 56, 0, 0, 0]);
+            // Unicode, target, sign, seal, NTLM, always sign, a domain,
+            // extended session security, target info, version, 128-bit,
+            // key exchange, 56-bit.
+            challenge.extend_from_slice(&0xe289_8235_u32.to_le_bytes());
+            challenge.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+            challenge.extend_from_slice(&[0; 8]);
+            // The domain and the server by NetBIOS name, a time, the end.
+            let info: &[u8] = b"\x02\0\x06\0D\0O\0M\0\x01\0\x02\0S\0\
+                \x07\0\x08\0\0\x80\x3e\xd5\xde\xb1\x9d\x01\0\0\0\0";
+            let len = info.len() as u8;
+            challenge.extend_from_slice(&[len, 0, len, 0, 56, 0, 0, 0]);
+            challenge.extend_from_slice(&[10, 0, 0x61, 0x4a, 0, 0, 0, 15]);
+            challenge.extend_from_slice(info);
+            let input = [Input::Token(&challenge)];
+            let call = Initialize {
+                fresh: false,
+                input: &input,
+                ..call
+            };
+            let done = ctx.initialize(&call, &mut out).unwrap();
+            assert!(!done.status.is_error(), "{:#x}", done.status.code());
+            assert!(out.starts_with(b"NTLMSSP\0\x03\0\0\0"), "{out:?}");
         }
 
         /// SPNEGO without NTLM, for the process's user, refuses a target

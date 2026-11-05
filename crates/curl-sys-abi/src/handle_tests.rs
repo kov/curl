@@ -5524,7 +5524,8 @@ fn gss_options_are_read_as_c() {
         ptr::null_mut::<c_char>(),
     );
     assert_eq!(services(c), (None, None));
-    let gssapi = curl_core::version::version().claims("GSS-API");
+    // Read where GSS-API or SSPI is built in (`HAVE_GSSAPI || USE_WINDOWS_SSPI`).
+    let gssapi = curl_core::version::version().claims("Kerberos");
     let code = if gssapi {
         CURLE_OK
     } else {

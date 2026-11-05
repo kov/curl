@@ -191,6 +191,14 @@ witness: curl-tool stdio::tests::a_line_buffer_writes_each_line
             if false
                 && count >= n
 
+=== the descriptor is looked at again for the buffer it was looked at for
+file: crates/curl-tool/src/stdio.rs
+witness: curl-tool stdio::tests::the_sink_is_looked_at_once_for_its_buffer
+--- old
+                None => match self.allocate(fresh.expect("looked at with no buffer")) {
+--- new
+                None => match self.allocate(self.get_ref().layout()) {
+
 === a write that fails partway reads as taken whole
 file: crates/curl-tool/src/stdio.rs
 witness: curl-tool stdio::tests::counts_what_was_taken_as_glibc_does
@@ -1507,9 +1515,9 @@ witness: curl-tool stdio::tests::a_temporary_buffer_is_written_as_each_write_end
 file: crates/curl-tool/src/stdio.rs
 witness: curl-tool stdio::tests::a_temporary_buffer_is_written_as_each_write_ends
 --- old
-        if self.buf.is_none() && self.get_ref().layout().temporary {
+            && layout.temporary
 --- new
-        if false {
+            && false
 
 === a console sequence cut after its four-byte lead is not held for the next write
 file: crates/curl-tool/src/output.rs

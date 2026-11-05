@@ -189,12 +189,18 @@ impl<S: Sink> Stdio<S> {
         if data.is_empty() {
             return 0;
         }
-        if self.buf.is_none() && self.get_ref().layout().temporary {
+        // Looked at once, as glibc looks at the descriptor once for the
+        // buffer it makes (`_IO_file_doallocate`): one `fstat`, one
+        // `isatty`.
+        let fresh = self.buf.is_none().then(|| self.get_ref().layout());
+        if let Some(layout) = fresh
+            && layout.temporary
+        {
             // Without one the write goes unbuffered, as it does here when
             // no buffer can be had.
-            self.allocate();
+            self.allocate(layout);
         }
-        let took = self.fwrite_held(data);
+        let took = self.fwrite_held(data, fresh);
         if self.buf.as_ref().is_some_and(|buf| buf.layout.temporary) {
             // A failure is the stream's, for `ferror`, and not the count's.
             let _ = self.write_held();
@@ -202,8 +208,9 @@ impl<S: Sink> Stdio<S> {
         took
     }
 
-    /// [`Stdio::fwrite`], what is held left held.
-    fn fwrite_held(&mut self, data: &[u8]) -> usize {
+    /// [`Stdio::fwrite`], what is held left held; `fresh` is the sink's
+    /// layout if there was no buffer as the write began.
+    fn fwrite_held(&mut self, data: &[u8], fresh: Option<Layout>) -> usize {
         let n = data.len();
         let mut to_do = n;
         let mut at = 0;
@@ -241,7 +248,7 @@ impl<S: Sink> Stdio<S> {
                     }
                     size
                 }
-                None => match self.allocate() {
+                None => match self.allocate(fresh.expect("looked at with no buffer")) {
                     Some(size) => size,
                     // Unbuffered.
                     None => return self.write_out(data),
@@ -273,10 +280,9 @@ impl<S: Sink> Stdio<S> {
         }
     }
 
-    /// The buffer, as glibc sizes it; `None` if it cannot be had, and the
-    /// stream is then unbuffered.
-    fn allocate(&mut self) -> Option<usize> {
-        let layout = self.get_ref().layout();
+    /// The buffer, as glibc sizes it from the sink's `layout`; `None` if
+    /// it cannot be had, and the stream is then unbuffered.
+    fn allocate(&mut self, layout: Layout) -> Option<usize> {
         let mut held = Vec::new();
         held.try_reserve_exact(layout.size).ok()?;
         self.buf = Some(Buffer { held, layout });
@@ -373,6 +379,8 @@ mod tests {
         room: usize,
         writes: Vec<usize>,
         close_fails: bool,
+        /// How many times its layout was looked at.
+        looks: std::cell::Cell<usize>,
     }
 
     impl Sink for Script {
@@ -386,6 +394,7 @@ mod tests {
             Ok(n)
         }
         fn layout(&self) -> Layout {
+            self.looks.set(self.looks.get() + 1);
             self.layout
         }
     }
@@ -409,7 +418,22 @@ mod tests {
             room,
             writes: Vec::new(),
             close_fails: false,
+            looks: Default::default(),
         })
+    }
+
+    /// The descriptor is looked at once, for the buffer the first write
+    /// makes (`_IO_file_doallocate`'s one `fstat` and `isatty`), whether
+    /// or not the buffer is a temporary one, and not again.
+    #[test]
+    fn the_sink_is_looked_at_once_for_its_buffer() {
+        for temporary in [false, true] {
+            let mut s = stream(4096, false, usize::MAX);
+            s.get_mut().layout.temporary = temporary;
+            s.fwrite(&[1; 16384]);
+            s.fwrite(&[1; 3000]);
+            assert_eq!(s.get_ref().looks.get(), 1, "temporary: {temporary}");
+        }
     }
 
     /// A close fails if writing what is held fails, or if letting go of

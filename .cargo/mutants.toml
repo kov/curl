@@ -1067,4 +1067,8 @@ exclude_re = [
     # `left_ms` never returns 0: a shutdown with no time left is -1, as
     # `Curl_cshutdn_timeleft_ms` makes it, so `< 0` and `<= 0` agree.
     'curl-core/src/conn/shutdown\.rs:.*: replace < with <= in Shutting::await_answer$',
+    # With a multi's set, `discard` closes a connection at once only when
+    # its goodbye awaits no answer (one that awaits joins the set), so
+    # the clock to wait on is never read there.
+    "curl-core/src/conn/shutdown\\.rs:.*: replace <impl Exits for WithSet<'_>>::clock -> Option<SharedClock> with None$",
 ]

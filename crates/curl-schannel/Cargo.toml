@@ -20,5 +20,12 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_SystemInformation",
 ] }
 
+[target.'cfg(windows)'.dev-dependencies]
+curl-alloc = { path = "../curl-alloc" }
+# The multi's clock, given as the tests give it.
+curl-core = { path = "../curl-core", features = ["test-util"] }
+# The peer's side of the tests' TLS, and the certificate it shows.
+openssl = "0.10.81"
+
 [lints]
 workspace = true

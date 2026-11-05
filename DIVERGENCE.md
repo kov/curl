@@ -188,6 +188,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   HTTP transfer took 1.304 s on C's build, 0.301 s here. Pinned by
   `an_exchange_stalls_no_other_transfer` (`crates/curl-core/src/proto/telnet/tests.rs`).
 
+- **Schannel's sends and renegotiations wait without stalling the multi.** C's
+  `schannel_send` sends each record whole, waiting on the socket (`SOCKET_WRITABLE` with the
+  transfer's time left) whenever it takes only part, and `schannel_recv_renegotiate` waits on
+  the socket, up to `MAX_RENEG_BLOCK_TIME`, for the direction the renegotiation needs (TLS
+  1.3's tickets take every connection through it), so every other transfer of the multi waits
+  for the peer meanwhile. Here the session keeps what is left of the record, or where the
+  renegotiation stands, says what it waits for, and is called again once the socket is ready:
+  the rest of the record goes before anything else, and the renegotiation's own time limit and
+  failure text are C's. The bytes on the wire are C's; the waits are not timed against C's
+  build. The renegotiation's wait has no test of its own. Pinned by
+  `a_record_half_sent_is_waited_for_by_the_multi` (`crates/curl-schannel/tests/peer.rs`,
+  Windows only).
+
 - **The wait for TLS to end after FTP's `CCC` leaves the multi's other transfers moving.** C
   waits in `Curl_ssl_cfilter_remove` (`vtls_shutdown_blocking`), so every other transfer of the
   multi waits on the server's close_notify. Here it waits in the state after `CCC`, for what

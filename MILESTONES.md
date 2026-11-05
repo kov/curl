@@ -1311,7 +1311,9 @@ through SSPI; MIT krb5 stays Unix-only.
     test C passes but the replaced 96 and 558 and the WinLDAP and SSPI listings of 1013 and
     1014.
 97. **Schannel**, with its CA store and `CURLSSLOPT_*` options. **Done.** The `schannel` build has
-    no HTTP/3 and no message signatures, as C's. Against C's Schannel build on the guest's suite
+    no HTTP/3 and no message signatures, as C's; what each library can do it declares
+    (`TlsBackend::support`), and the shim and the tool refuse or pass over what it lacks as C's
+    do. Against C's Schannel build on the guest's suite
     the Rust leg fails no test C passes but 96, 558, 1013 and 1014, as step 96 left them; twelve
     hand cases (CA file, pinning, certinfo, revocation and client-certificate flags, a cipher
     list, an untrusted root, a name mismatch, credential and CA store reuse, the options Schannel

@@ -202,6 +202,7 @@ dependencies = [
  "curl-alloc",
  "curl-core",
  "curl-os",
+ "openssl",
  "windows-sys",
 ]
 

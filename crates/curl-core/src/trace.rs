@@ -95,11 +95,13 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
 /// Whether a verbose transfer traces `component`'s lines
 /// (`Curl_trc_ft_is_verbose`, `Curl_trc_cf_is_verbose`): a caller with
 /// work to do for a line asks first.
+#[inline]
 pub(crate) fn traces<H: Host>(cx: &StepCx<'_, H>, component: Component) -> bool {
     handle_traces(cx.easy(), component)
 }
 
 /// `traces`, of a handle whatever it is doing.
+#[inline]
 pub(crate) fn handle_traces(easy: &crate::easy::Easy, component: Component) -> bool {
     easy.options().output.verbose && easy.components().is_some_and(|c| c.traces(component))
 }
@@ -107,10 +109,17 @@ pub(crate) fn handle_traces(easy: &crate::easy::Easy, component: Component) -> b
 /// A line of `component`'s (`CURL_TRC_WRITE`, `CURL_TRC_CF` and their
 /// kind), after its name: traced when the transfer is verbose and the
 /// component is on.
+/// The check is inlined where the line is said, and only a line traced
+/// is made.
+#[inline]
 pub(crate) fn of<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fmt::Arguments<'_>) {
-    if !traces(cx, component) {
-        return;
+    if traces(cx, component) {
+        of_traced(cx, component, args);
     }
+}
+
+#[inline(never)]
+fn of_traced<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fmt::Arguments<'_>) {
     let mut line = start_line(cx);
     if component.is_filter() {
         push_doing(cx, &mut line);

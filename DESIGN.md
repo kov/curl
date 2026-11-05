@@ -63,12 +63,13 @@ it says yes or no. No list of what a library lacks lives anywhere else. The opti
 capability is refused where it enters: the shim's `curl_easy_setopt` maps each `CURLOPT_*` to
 the capability C checks it against and refuses it with `CURLE_NOT_BUILT_IN` before reading the
 value; the tool asks the same declaration where C's tool sees libcurl's refusal, passing the
-option over (and leaving it out of `--libcurl`'s program) or warning as C's does; the core
-refuses an HTTPS proxy the library cannot reach with C's message. A Rust caller that sets a
-field the library lacks is not stopped at the type level: the library is a run-time `dyn` in
-`Libraries`, and the option groups are plain public fields, so making such a setting
-unrepresentable would need the option types generic over the library, which the C ABI's run-time
-option numbers could not use. The library ignores what it cannot do, as C's never sees it.
+option over (and leaving it out of `--libcurl`'s program) or warning as C's does. Making such a
+setting unrepresentable to a Rust caller is not feasible: the library is a run-time `dyn` in
+`Libraries`, and the option groups are plain public fields, so it would need the option types
+generic over the library, which the C ABI's run-time option numbers could not use. A Rust caller
+that sets a field the library lacks is not refused yet: the session is made with it, and the
+library does not act on it. An HTTPS proxy is refused only where there is no TLS library; both
+libraries reach one.
 
 ## Execution model
 

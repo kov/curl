@@ -118,8 +118,8 @@ pub struct CaDefaults {
 /// library says yes or no to every one: the options asking for one it
 /// lacks are not built in (C's `SSLSUPP_*` bits, `Curl_ssl_supports`,
 /// and the checks C makes of the library by name). The application's
-/// way in is where the refusal is made, as C's `curl_easy_setopt` makes
-/// it; the library is given only what it said it can do.
+/// way in refuses them, as C's `curl_easy_setopt` does: the shim's
+/// setopt and the tool's.
 ///
 /// It has no default: a capability added is one every library has to
 /// declare.
@@ -192,14 +192,6 @@ impl TlsSupport {
         engines: false,
         system_trust: false,
     };
-
-    /// What `libraries` has: nothing without a TLS library.
-    pub fn of(libraries: &crate::libraries::Libraries) -> TlsSupport {
-        libraries
-            .tls
-            .as_ref()
-            .map_or(TlsSupport::NONE, |tls| tls.support())
-    }
 }
 
 /// What a TLS library keeps for one multi across the connections made

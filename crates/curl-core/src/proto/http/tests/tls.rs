@@ -646,36 +646,6 @@ fn https_through_a_proxy_reads_what_followed_its_answer_first() {
     assert_eq!((log.port, log.kind), (443, Some(TlsPeerKind::Name)));
 }
 
-/// An HTTPS proxy is not built in where the TLS library cannot reach
-/// one, as C refuses it (`SSLSUPP_HTTPS_PROXY`): the transfer fails
-/// before it connects, saying so.
-#[test]
-fn an_https_proxy_is_not_built_in_where_the_tls_library_lacks_it() {
-    let lacking = crate::tls::TlsSupport {
-        https_proxy: false,
-        ..crate::tls::fake::SUPPORT
-    };
-    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::supporting(lacking).unwrap()));
-    let libraries = SharedLibraries::new(Libraries {
-        tls: Some(Library::Static(backend)),
-        ..Libraries::NONE
-    })
-    .unwrap();
-    let (mut m, talk, _) = server(&[], false);
-    let mut e = Easy::new();
-    e.set_libraries(libraries);
-    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
-        https_proxy(o, b"http://origin.example/p");
-    });
-    assert_eq!(ran.result, Err(ErrorKind::NotBuiltIn));
-    let said = format!(
-        "Unsupported proxy 'https://127.0.0.1:{PORT}', libcurl is built without the HTTPS-proxy support."
-    );
-    assert_eq!(ran.easy.report().failure(), Some(said.as_bytes()));
-    assert!(talk.received().is_empty());
-    assert_eq!(backend.log().sessions, 0);
-}
-
 /// Set `o` to go through the HTTPS proxy on the test's port.
 fn https_proxy(o: &mut Options, url: &[u8]) {
     o.set_url(Some(url)).unwrap();

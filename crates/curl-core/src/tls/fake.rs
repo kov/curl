@@ -96,6 +96,8 @@ pub struct FakeTls {
     quic_verify: Option<i64>,
     /// What each session binds a channel with.
     binding: FakeBinding,
+    /// What it says it can do.
+    support: crate::tls::TlsSupport,
 }
 
 /// When a fake QUIC session gives its ticket to keep: as its handshake
@@ -237,6 +239,15 @@ impl FakeTls {
             quic_tickets: None,
             quic_verify: None,
             binding: FakeBinding::None,
+            support: SUPPORT,
+        })
+    }
+
+    /// The same, saying it can do only what `support` says.
+    pub fn supporting(support: crate::tls::TlsSupport) -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            support,
+            ..FakeTls::new()?
         })
     }
 
@@ -374,7 +385,7 @@ impl TlsBackend for FakeTls {
     }
 
     fn support(&self) -> crate::tls::TlsSupport {
-        SUPPORT
+        self.support
     }
 
     fn quic_session(

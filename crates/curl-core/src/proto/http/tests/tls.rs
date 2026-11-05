@@ -2670,3 +2670,241 @@ fn an_imported_session_resumes_the_peer_its_hmac_names() {
         "{said:#?}"
     );
 }
+
+/// A handler that leaves the library's context as it is.
+struct Untouched;
+
+impl crate::handler::TlsContextHandler for Untouched {
+    fn configure(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+        _: crate::tls::TlsNative,
+    ) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+}
+
+/// What a TLS library can do, one capability of it picked.
+type Capability = fn(&mut crate::tls::TlsSupport) -> &mut bool;
+
+/// The options a transfer sets.
+type Setting = fn(&mut Options);
+
+/// The origin's TLS options, made.
+fn origin_tls(o: &mut Options) -> &mut crate::options::TlsOptions {
+    o.tls.options.make_mut().unwrap()
+}
+
+/// The HTTPS proxy's TLS options, made.
+fn proxy_tls(o: &mut Options) -> &mut crate::options::TlsOptions {
+    o.proxy.make_mut().unwrap().tls.options.make_mut().unwrap()
+}
+
+/// Each option C's `curl_easy_setopt` refuses where the TLS library
+/// lacks what it asks for, set as the application would, for the origin
+/// or the proxy, and the capability it needs: the shim's own list.
+fn gated() -> Vec<(&'static str, Capability, Setting)> {
+    use crate::options::{CaCache, CaSetting};
+    vec![
+        (
+            "ca_path",
+            |s| &mut s.ca_path,
+            |o| {
+                origin_tls(o).ca_path = CaSetting::Given(b"/certs".to_vec());
+            },
+        ),
+        (
+            "proxy ca_path unset",
+            |s| &mut s.ca_path,
+            |o| {
+                proxy_tls(o).ca_path = CaSetting::Unset;
+            },
+        ),
+        (
+            "ca_blob",
+            |s| &mut s.ca_blob,
+            |o| {
+                origin_tls(o).ca_blob = CaSetting::Given(b"PEM".to_vec());
+            },
+        ),
+        (
+            "ca_cache",
+            |s| &mut s.ca_cache,
+            |o| {
+                origin_tls(o).ca_cache = CaCache::Off;
+            },
+        ),
+        ("certinfo", |s| &mut s.cert_info, |o| o.tls.certinfo = true),
+        (
+            "pinned_key",
+            |s| &mut s.pinned_key,
+            |o| {
+                proxy_tls(o).pinned_key = Some(b"sha256//x".to_vec());
+            },
+        ),
+        (
+            "context",
+            |s| &mut s.context_handler,
+            |o| {
+                origin_tls(o).context = Some(Handler::tls_context(Untouched).unwrap());
+            },
+        ),
+        (
+            "ciphers",
+            |s| &mut s.ciphers,
+            |o| {
+                origin_tls(o).ciphers = Some(b"AES128-SHA".to_vec());
+            },
+        ),
+        (
+            "tls13_ciphers",
+            |s| &mut s.tls13_ciphers,
+            |o| {
+                proxy_tls(o).tls13_ciphers = Some(b"TLS_AES_128_GCM_SHA256".to_vec());
+            },
+        ),
+        (
+            "curves",
+            |s| &mut s.curves,
+            |o| {
+                origin_tls(o).curves = Some(b"X25519".to_vec());
+            },
+        ),
+        (
+            "signature_algorithms",
+            |s| &mut s.signature_algorithms,
+            |o| {
+                origin_tls(o).signature_algorithms = Some(b"ed25519".to_vec());
+            },
+        ),
+        (
+            "crl_file",
+            |s| &mut s.crl_file,
+            |o| {
+                origin_tls(o).crl_file = Some(b"crl.pem".to_vec());
+            },
+        ),
+        (
+            "issuer_cert",
+            |s| &mut s.issuer_cert,
+            |o| {
+                proxy_tls(o).issuer_cert = Some(b"issuer.pem".to_vec());
+            },
+        ),
+        (
+            "issuer_cert_blob",
+            |s| &mut s.issuer_cert_blob,
+            |o| {
+                origin_tls(o).issuer_cert_blob = Some(b"PEM".to_vec());
+            },
+        ),
+        (
+            "verify_status",
+            |s| &mut s.cert_status,
+            |o| {
+                origin_tls(o).verify_status = true;
+            },
+        ),
+        (
+            "doh verify_status",
+            |s| &mut s.cert_status,
+            |o| {
+                o.doh.make_mut().unwrap().verify_status = true;
+            },
+        ),
+        (
+            "engine",
+            |s| &mut s.engines,
+            |o| {
+                origin_tls(o).engine = Some(b"dynamic".to_vec());
+            },
+        ),
+        (
+            "engine_default",
+            |s| &mut s.engines,
+            |o| {
+                origin_tls(o).engine_default = true;
+            },
+        ),
+    ]
+}
+
+/// A plain GET with `set` by a handle whose TLS library can do what
+/// `support` says, or with none: how it ended, what it failed with and
+/// what the server was sent.
+fn gated_get(
+    support: Option<crate::tls::TlsSupport>,
+    set: Setting,
+) -> (Result<(), ErrorKind>, Option<Vec<u8>>, Vec<u8>) {
+    let libraries = match support {
+        Some(support) => {
+            let backend: &'static FakeTls =
+                Box::leak(Box::new(FakeTls::supporting(support).unwrap()));
+            SharedLibraries::new(Libraries {
+                tls: Some(Library::Static(backend)),
+                ..Libraries::NONE
+            })
+            .unwrap()
+        }
+        None => SharedLibraries::new(Libraries::NONE).unwrap(),
+    };
+    let talk = Conversation::replies(&[OK], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), set);
+    let failure = ran.easy.report().failure().map(<[u8]>::to_vec);
+    (ran.result, failure, talk.received())
+}
+
+/// An option asking for what the TLS library lacks fails the transfer
+/// as not built in before it connects, whatever its URL, as C refuses
+/// the option as it is set (`Curl_ssl_supports` in `curl_easy_setopt`);
+/// so does any such option where the handle has no TLS library, as in a
+/// build without TLS. A library that has it takes the same option, and
+/// one that lacks it takes a transfer that does not ask for it.
+#[test]
+fn an_option_the_tls_library_lacks_fails_the_transfer_before_it_connects() {
+    for (name, capability, set) in gated() {
+        let mut lacking = fake::SUPPORT;
+        *capability(&mut lacking) = false;
+        let (result, failure, sent) = gated_get(Some(lacking), set);
+        assert_eq!(result, Err(ErrorKind::NotBuiltIn), "{name}");
+        assert!(sent.is_empty(), "{name}: {sent:?}");
+        let failure = String::from_utf8(failure.unwrap()).unwrap();
+        assert!(
+            failure.starts_with("The TLS library has no support for "),
+            "{name}: {failure}"
+        );
+        let (result, _, _) = gated_get(None, set);
+        assert_eq!(result, Err(ErrorKind::NotBuiltIn), "{name} without TLS");
+        let (result, _, sent) = gated_get(Some(fake::SUPPORT), set);
+        assert_eq!(result, Ok(()), "{name} supported");
+        assert!(!sent.is_empty(), "{name} supported");
+        let (result, _, _) = gated_get(Some(lacking), |_| {});
+        assert_eq!(result, Ok(()), "{name} not asked for");
+    }
+    let (result, _, _) = gated_get(None, |_| {});
+    assert_eq!(result, Ok(()));
+}
+
+/// An HTTPS proxy is refused where the TLS library cannot speak to one
+/// (`SSLSUPP_HTTPS_PROXY` in `parse_proxy`), as where there is none.
+#[test]
+fn an_https_proxy_the_tls_library_cannot_speak_to_is_not_built_in() {
+    let set: Setting = |o| {
+        o.proxy.make_mut().unwrap().url = Some(b"https://127.0.0.1:3128".to_vec());
+    };
+    let mut lacking = fake::SUPPORT;
+    lacking.https_proxy = false;
+    let (result, failure, sent) = gated_get(Some(lacking), set);
+    assert_eq!(result, Err(ErrorKind::NotBuiltIn));
+    assert!(sent.is_empty(), "{sent:?}");
+    assert_eq!(
+        failure.as_deref(),
+        Some(
+            &b"Unsupported proxy 'https://127.0.0.1:3128', libcurl is built without the \
+               HTTPS-proxy support."[..]
+        )
+    );
+}

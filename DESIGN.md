@@ -70,10 +70,14 @@ value; the tool asks the same declaration where C's tool sees libcurl's refusal,
 option over (and leaving it out of `--libcurl`'s program) or warning as C's does. Making such a
 setting unrepresentable to a Rust caller is not feasible: the library is a run-time `dyn` in
 `Libraries`, and the option groups are plain public fields, so it would need the option types
-generic over the library, which the C ABI's run-time option numbers could not use. A Rust caller
-that sets a field the library lacks is not refused yet: the session is made with it, and the
-library does not act on it. An HTTPS proxy is refused only where there is no TLS library; both
-libraries reach one.
+generic over the library, which the C ABI's run-time option numbers could not use; nor would a
+setter that checks hold, as a handle's libraries may be set after its options. A Rust caller
+that sets a field the library lacks, to anything but its default, has the transfer fail with
+`NotBuiltIn` as it starts, before it resolves or connects and whatever its URL, as C's
+transfer never gets the option: one check (`TlsSupport::asked_by` against the handle's
+library, or `TlsSupport::NONE` without one) covers every connection the transfer makes or
+reuses, STARTTLS and QUIC included. An HTTPS proxy is refused, as C's `parse_proxy` refuses it,
+where the library cannot speak to one or there is none (both libraries built here can).
 
 ## Execution model
 

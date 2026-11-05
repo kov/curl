@@ -219,6 +219,96 @@ impl TlsSupport {
         cert_status: false,
         engines: false,
     };
+
+    /// What a transfer's options ask of its TLS library: its own TLS
+    /// options `origin`, an HTTPS proxy's `proxy`, and its DoH server's
+    /// status check `doh_status`. Each option C's `curl_easy_setopt`
+    /// refuses where the library lacks it asks for it once set, to any
+    /// value but its default, as C refuses the setopt whatever the value.
+    /// What C sets for the origin alone (the curves, the signature
+    /// algorithms, the handle's own settings) is read from `origin`.
+    pub(crate) fn asked_by(origin: &Tls, proxy: &Tls, doh_status: bool) -> TlsSupport {
+        let (o, p) = (&*origin.options, &*proxy.options);
+        let either = |set: fn(&TlsOptions) -> bool| set(o) || set(p);
+        TlsSupport {
+            ca_path: either(|t| t.ca_path != CaSetting::Default),
+            ca_blob: either(|t| t.ca_blob != CaSetting::Default),
+            ca_cache: o.ca_cache != crate::options::CaCache::DEFAULT,
+            cert_info: origin.certinfo,
+            pinned_key: either(|t| t.pinned_key.is_some()),
+            context_handler: either(|t| t.context.is_some()),
+            // An HTTPS proxy is asked for by the proxy's URL, which its
+            // parse refuses (`SSLSUPP_HTTPS_PROXY` in `parse_proxy`).
+            https_proxy: false,
+            ciphers: either(|t| t.ciphers.is_some()),
+            tls13_ciphers: either(|t| t.tls13_ciphers.is_some()),
+            curves: o.curves.is_some(),
+            signature_algorithms: o.signature_algorithms.is_some(),
+            crl_file: either(|t| t.crl_file.is_some()),
+            issuer_cert: either(|t| t.issuer_cert.is_some()),
+            issuer_cert_blob: either(|t| t.issuer_cert_blob.is_some()),
+            // No option asks for it.
+            ech: false,
+            cert_status: o.verify_status || doh_status,
+            engines: o.engine.is_some() || o.engine_default,
+        }
+    }
+
+    /// The first of what `asked` asks for that this lacks, named as the
+    /// failure says it.
+    pub(crate) fn lacking(&self, asked: &TlsSupport) -> Option<&'static str> {
+        // Every field by name, so one added is checked too.
+        let TlsSupport {
+            ca_path,
+            ca_blob,
+            ca_cache,
+            cert_info,
+            pinned_key,
+            context_handler,
+            https_proxy,
+            ciphers,
+            tls13_ciphers,
+            curves,
+            signature_algorithms,
+            crl_file,
+            issuer_cert,
+            issuer_cert_blob,
+            ech,
+            cert_status,
+            engines,
+        } = *asked;
+        let pairs = [
+            (ca_path, self.ca_path, "a CA certificate directory"),
+            (ca_blob, self.ca_blob, "CA certificates in memory"),
+            (ca_cache, self.ca_cache, "a CA cache timeout"),
+            (cert_info, self.cert_info, "certificate info"),
+            (pinned_key, self.pinned_key, "a pinned public key"),
+            (context_handler, self.context_handler, "a context callback"),
+            (https_proxy, self.https_proxy, "an HTTPS proxy"),
+            (ciphers, self.ciphers, "a cipher list"),
+            (tls13_ciphers, self.tls13_ciphers, "TLS 1.3 cipher suites"),
+            (curves, self.curves, "a curve list"),
+            (
+                signature_algorithms,
+                self.signature_algorithms,
+                "signature algorithms",
+            ),
+            (crl_file, self.crl_file, "a CRL file"),
+            (issuer_cert, self.issuer_cert, "an issuer certificate"),
+            (
+                issuer_cert_blob,
+                self.issuer_cert_blob,
+                "an issuer certificate in memory",
+            ),
+            (ech, self.ech, "ECH"),
+            (cert_status, self.cert_status, "certificate status checks"),
+            (engines, self.engines, "a crypto engine"),
+        ];
+        pairs
+            .into_iter()
+            .find(|&(asked, has, _)| asked && !has)
+            .map(|(_, _, what)| what)
+    }
 }
 
 /// What a TLS library keeps for one multi across the connections made

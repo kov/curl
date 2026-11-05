@@ -9,6 +9,7 @@ pub(super) fn pretransfer<H: Host>(
     run: &mut Run,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Url, ErrorKind> {
+    tls_supported(cx)?;
     // The application's own URL goes first, as it is now: the host's,
     // then the options'; one that cannot be read back is none
     // (`Curl_pretransfer`). The host's share goes with this read.
@@ -88,6 +89,37 @@ pub(super) fn pretransfer<H: Host>(
             ))
         }
         Err(UrlRefused::Failed(kind)) => Err(kind),
+    }
+}
+
+/// The transfer asks nothing of TLS its library cannot do, or none
+/// where the handle has no TLS library: else it is not built in. C
+/// refuses such an option as it is set (`Curl_ssl_supports` in
+/// `curl_easy_setopt`), and so do the shim and the tool; the options
+/// here have no setter to refuse them, so the transfer fails before it
+/// does anything, whatever its URL, as C's would have done without it.
+/// Checked here, once per transfer, it holds for every connection the
+/// transfer makes or reuses, STARTTLS and QUIC too.
+fn tls_supported<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    let options = cx.easy().options();
+    let asked = crate::tls::TlsSupport::asked_by(
+        &options.tls,
+        &options.proxy.tls,
+        options.doh.verify_status,
+    );
+    let has = cx
+        .easy()
+        .libraries()
+        .tls
+        .as_deref()
+        .map_or(crate::tls::TlsSupport::NONE, |tls| tls.support());
+    match has.lacking(&asked) {
+        None => Ok(()),
+        Some(what) => Err(trace::fail(
+            cx,
+            ErrorKind::NotBuiltIn,
+            format_args!("The TLS library has no support for {what}"),
+        )),
     }
 }
 
@@ -1040,7 +1072,12 @@ fn parse_proxy<H: Host>(
 ) -> Result<(ProxyType, TryArc<Peer>, Option<TryArc<ProxyCreds>>), ErrorKind> {
     let options = &cx.easy().options().proxy;
     let kind = if pre { ProxyType::Socks4 } else { options.kind };
-    let tls = cx.easy().libraries().tls.is_some();
+    let tls = cx
+        .easy()
+        .libraries()
+        .tls
+        .as_deref()
+        .is_some_and(|tls| tls.support().https_proxy);
     let parsed = match proxy::parse(text, kind, options.port, tls) {
         Ok(parsed) => parsed,
         Err(Refused::OutOfMemory) => return Err(ErrorKind::OutOfMemory),

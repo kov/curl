@@ -906,8 +906,9 @@ fn a_get_takes_no_refusal_for_success() {
 /// QUIC connections it makes; the easy's URL, user agent and
 /// handlers; the transfer's place in the multi and its slot, boxed so
 /// the table's empty rows cost little, as C's hold pointers, and its
-/// place in the queue of those waiting for a connection with that
-/// queue's index of rows (C's `multi->pending`); then the URL as fetched
+/// place in the queue of those waiting for a connection (C's
+/// `multi->pending`), whose index of rows, as the multi's other sets of
+/// rows, holds its first 64 in place; then the URL as fetched
 /// and its parts, the URL read back once parsed (as C reads it back), the
 /// target grown by its query, the protocol's state, the peer, the
 /// effective URL kept for the report, the answer for the host kept in the
@@ -916,7 +917,7 @@ fn a_get_takes_no_refusal_for_success() {
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 50;
+const GET_BUDGET: u64 = 48;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.
@@ -1932,7 +1933,7 @@ fn an_http3_get_takes_no_refusal_for_success() {
 /// theirs. Measured, not itemised: the HTTPS GET's own beside QUIC's
 /// connection, its HTTP/3 session and stream, and the room datagrams
 /// are read into.
-const H3_GET_BUDGET: u64 = 73;
+const H3_GET_BUDGET: u64 = 71;
 
 fn an_http3_get_stays_within_its_allocation_budget() {
     fake_h3_libraries();

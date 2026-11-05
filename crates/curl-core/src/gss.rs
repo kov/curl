@@ -1,7 +1,8 @@
 //! What a GSS-API library does for the core (C's `lib/curl_gssapi.c`
 //! and the library under it): security contexts with a named service,
 //! by Kerberos or by SPNEGO, stepped one token at a time, for HTTP's
-//! Negotiate and SOCKS5's GSS-API method. The core links no library;
+//! Negotiate, SOCKS5's GSS-API method and SASL's GSSAPI mechanism. The
+//! core links no library;
 //! whoever builds a handle names one in its `Libraries`, and without
 //! one these methods are not built in, as in a C build without GSS-API.
 //!
@@ -110,7 +111,7 @@ pub enum Target<'a> {
 /// The mechanism a context uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mech {
-    /// Kerberos 5 itself (SOCKS5).
+    /// Kerberos 5 itself (SOCKS5, SASL's GSSAPI).
     Kerberos,
     /// SPNEGO (HTTP's Negotiate), never settling on NTLM: the library
     /// is told to leave it out where it can be, and a context that

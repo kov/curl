@@ -570,6 +570,7 @@ impl Request {
         let login = cold.as_deref().and_then(|c| c.login.as_ref());
         let (lc, _) = ldap_of(lease);
         let sasl_ir = cx.easy().options().line.sasl_ir;
+        let delegation = cx.easy().options().login.delegation;
         let libraries = cx.easy().shared_libraries();
         let mut random = |out: &mut [u8]| libraries.random(out).map_err(|_| ());
         let mut say = |to: sasl::Say, args: core::fmt::Arguments<'_>| match to {
@@ -582,9 +583,8 @@ impl Request {
             host: self.base.peer.name(),
             port: self.base.peer.port(),
             random: &mut random,
-            sspi: libraries
-                .security
-                .and_then(crate::libraries::Security::sspi),
+            security: libraries.security,
+            delegation,
             said: &mut say,
         };
         f(&mut lc.sasl, &mut sx)

@@ -8,7 +8,8 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::auth::creds::Secret;
 use crate::hash::{Hash as _, Md5};
-use crate::options::AuthMethods;
+use crate::libraries::Security;
+use crate::options::{AuthMethods, Delegation};
 use crate::sspi::{
     Completing, Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiFailure,
 };
@@ -154,7 +155,8 @@ pub(crate) enum SaslError {
     /// SSPI does not know DIGEST-MD5's package: C says "SSPI: could not
     /// get auth info" (`CURLE_AUTH_ERROR`).
     NoAuthInfo,
-    /// SSPI's DIGEST-MD5 failed otherwise (`CURLE_AUTH_ERROR`).
+    /// The security library failed DIGEST-MD5 or GSSAPI otherwise
+    /// (`CURLE_AUTH_ERROR`).
     AuthError,
 }
 
@@ -218,10 +220,15 @@ pub(crate) struct Ctx<'a> {
     pub(crate) port: u16,
     /// Random bytes, for DIGEST-MD5's client nonce.
     pub(crate) random: &'a mut dyn FnMut(&mut [u8]) -> Result<(), ()>,
-    /// SSPI, where the handle has it: DIGEST-MD5 and GSSAPI are its, as
-    /// in C's Windows build (`lib/vauth/digest_sspi.c`, `krb5_sspi.c`).
-    /// Without it GSSAPI is not built.
-    pub(crate) sspi: Option<&'static dyn Sspi>,
+    /// The security library, where the handle has one: GSSAPI is its,
+    /// by GSS-API (`lib/vauth/krb5_gssapi.c`) or by SSPI
+    /// (`krb5_sspi.c`), and so is DIGEST-MD5 where it is SSPI, as in C's
+    /// Windows build (`lib/vauth/digest_sspi.c`). Without one GSSAPI is
+    /// not built.
+    pub(crate) security: Option<Security>,
+    /// How far a GSS-API context delegates the user's credentials
+    /// (`CURLOPT_GSSAPI_DELEGATION`).
+    pub(crate) delegation: Delegation,
     /// What is said of the exchange, the debug build's lines and the
     /// verbose ones.
     pub(crate) said: &'a mut dyn FnMut(Say, core::fmt::Arguments<'_>),
@@ -444,13 +451,13 @@ impl Sasl {
                     State::Final,
                     resp,
                 )
-            } else if let Some(sspi) = cx.sspi.filter(|&sspi| {
+            } else if let Some(security) = cx.security.filter(|&security| {
                 enabled.has(Mechs::GSSAPI)
-                    && krb5::supported(sspi)
+                    && krb5::supported(security)
                     && krb5::user_contains_domain(cx.user())
             }) {
                 let resp = if ir {
-                    krb5::user_message(&mut self.krb5, cx, sspi, self.params.service)?
+                    krb5::user_message(&mut self.krb5, cx, security, self.params.service)?
                 } else {
                     None
                 };
@@ -596,7 +603,7 @@ impl Sasl {
                     if self.params.base64 {
                         next = State::DigestMd5Resp;
                     }
-                    match cx.sspi {
+                    match cx.security.and_then(Security::sspi) {
                         Some(sspi) => digest_md5_sspi(cx, sspi, &chlg, self.params.service)?,
                         None => digest_md5(cx, &chlg, self.params.service)?,
                     }
@@ -607,8 +614,8 @@ impl Sasl {
             State::DigestMd5Resp => Some(Vec::new()),
             State::Gssapi => {
                 next = State::GssapiToken;
-                let sspi = cx.sspi.expect("GSSAPI is chosen with SSPI");
-                let token = krb5::user_message(&mut self.krb5, cx, sspi, self.params.service)?;
+                let security = cx.security.expect("GSSAPI is chosen with a library");
+                let token = krb5::user_message(&mut self.krb5, cx, security, self.params.service)?;
                 // No token is an empty message.
                 Some(token.unwrap_or_default())
             }
@@ -664,7 +671,7 @@ impl Sasl {
         let has_user = !cx.user().is_empty();
         let has_password = cx.has_password();
         let has_bearer = cx.has_bearer();
-        let sspi = cx.sspi;
+        let security = cx.security;
         let mut say = |args: core::fmt::Arguments<'_>| (cx.said)(Say::Info, args);
         let say = &mut say;
         let enabled = self.offered.and(self.preferred);
@@ -715,10 +722,10 @@ impl Sasl {
             }
         };
         let bearer = (!has_bearer).then_some("CURLOPT_XOAUTH2_BEARER");
-        // Built with SSPI alone; whether it has Kerberos is asked whatever
-        // is enabled, as C asks it.
-        let kerberos = sspi.is_some_and(krb5::supported);
-        unchosen(say, Mechs::GSSAPI, sspi.is_some(), kerberos, None);
+        // Built with a security library; whether it has Kerberos is asked
+        // whatever is enabled, as C asks it.
+        let kerberos = security.is_some_and(krb5::supported);
+        unchosen(say, Mechs::GSSAPI, security.is_some(), kerberos, None);
         unchosen(say, Mechs::SCRAM_SHA_256, false, false, None);
         unchosen(say, Mechs::SCRAM_SHA_1, false, false, None);
         unchosen(say, Mechs::DIGEST_MD5, true, true, None);

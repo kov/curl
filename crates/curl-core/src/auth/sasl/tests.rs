@@ -25,7 +25,8 @@ fn with_cx<R>(
         host: b"127.0.0.1",
         port,
         random: &mut draw,
-        sspi: None,
+        security: None,
+        delegation: Delegation::default(),
         said: &mut said,
     };
     f(&mut cx)
@@ -240,7 +241,8 @@ fn with_said<R>(
         host: b"127.0.0.1",
         port: 110,
         random: &mut draw,
-        sspi: None,
+        security: None,
+        delegation: Delegation::default(),
         said: &mut said,
     };
     let r = f(&mut cx);
@@ -884,7 +886,8 @@ fn digest_md5_over_sspi_is_the_package_s() {
             host: b"mail.example",
             port: 110,
             random: &mut draw,
-            sspi: Some(sspi),
+            security: Some(Security::Sspi(sspi)),
+            delegation: Delegation::default(),
             said: &mut said,
         };
         let r = digest_md5_sspi(&mut cx, sspi, chlg, "pop");
@@ -966,3 +969,4 @@ fn digest_md5_over_sspi_is_the_package_s() {
 }
 
 mod gssapi;
+mod gssapi_gss;

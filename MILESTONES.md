@@ -1352,7 +1352,16 @@ through SSPI; MIT krb5 stays Unix-only.
     the server's, and its first call succeeds outright (`SEC_E_OK`): no live exchange reaches
     the completion call. The Digest and Kerberos decisions are also checked against a scripted
     SSPI.
-    SASL GSSAPI over GSS-API (`krb5_gssapi.c`) is not built: Linux says it is not. The 84
+    SASL GSSAPI is GSS-API's too where that is the security library (`krb5_gssapi.c`): the
+    core makes C's decisions for both and only the library's calls differ. Measured 2026-11-05
+    on banana against the same domain, C's GSS-API build from this tree beside the Rust debug
+    build: 19 GSSAPI cases (IMAP, POP3 and SMTP with `AUTH=GSSAPI` or any mechanism, with
+    and without `--sasl-ir`, an authorization identity, a wrong password, a user without a
+    domain, no ticket cache, an expired ticket, a service name, `--delegation always` with a
+    forwardable ticket, `--connect-to`, an address as the host) give the same exit codes and
+    verbose output but for the tokens' bytes, and the same ticket's service and token length;
+    POP3 and SMTP with `--sasl-ir` fail on both, as C steps its kept, already complete,
+    context again once the token is too long to go first. No test in the suite logs in by SASL GSSAPI. The 84
     Digest, Negotiate and GSS-API tests that run on Linux, where the reshaped Digest and
     Negotiate paths are GSS-API's, pass on the Rust leg.
 99. **WinIDN.** **Done**, a Windows build's default as in both oracles (`libidn2` asks for

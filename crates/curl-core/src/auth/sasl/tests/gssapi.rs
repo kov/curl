@@ -24,7 +24,8 @@ fn with_sspi<R>(
         host: b"mail.example",
         port: 110,
         random: &mut draw,
-        sspi: Some(sspi),
+        security: Some(Security::Sspi(sspi)),
+        delegation: Delegation::default(),
         said: &mut said,
     };
     let r = f(&mut cx);
@@ -216,7 +217,8 @@ fn gssapi_needs_kerberos_and_a_domain() {
             host: b"h",
             port: 110,
             random: &mut draw,
-            sspi: sspi.map(|s| s as &dyn Sspi),
+            security: sspi.map(|s| Security::Sspi(s)),
+            delegation: Delegation::default(),
             said: &mut said,
         };
         sasl.start_sent(&mut cx, false).unwrap()

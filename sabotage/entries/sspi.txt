@@ -72,9 +72,9 @@ witness: curl-core auth::sasl::tests::gssapi::a_domain_is_named_as_c_reads_it
 file: crates/curl-core/src/auth/sasl/krb5.rs
 witness: curl-core auth::sasl::tests::gssapi::refusals_are_c_s
 --- old
-                Err(SspiFailure::Status(_)) => return Err(SaslError::Denied),
+        Err(SspiFailure::Status(_)) => return Err(SaslError::Denied),
 --- new
-                Err(SspiFailure::Status(_)) => return Err(SaslError::AuthError),
+        Err(SspiFailure::Status(_)) => return Err(SaslError::AuthError),
 
 === GSSAPI's user token is asked in the network's representation
 file: crates/curl-core/src/auth/sasl/krb5.rs
@@ -128,7 +128,7 @@ witness: curl-core auth::sasl::tests::gssapi::gssapi_logs_in_by_the_user_s_token
 file: crates/curl-core/src/auth/sasl.rs
 witness: curl-core auth::sasl::tests::gssapi::gssapi_not_chosen_is_said_why
 --- old
-        unchosen(say, Mechs::GSSAPI, sspi.is_some(), kerberos, None);
+        unchosen(say, Mechs::GSSAPI, security.is_some(), kerberos, None);
 --- new
         unchosen(say, Mechs::GSSAPI, false, kerberos, None);
 

@@ -47,3 +47,81 @@ witness: curl-core auth::sasl::tests::a_raw_protocol_s_messages_are_not_base64
         if message.is_empty() || !self.params.base64 {
 --- new
         if message.is_empty() {
+
+=== SASL GSSAPI over GSS-API makes a new context where C steps the one it keeps
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::a_token_too_long_to_go_first_steps_the_same_context_again
+--- old
+        Some(k) => k,
+--- new
+        Some(_) => krb5.insert(match security {
+            Security::Sspi(sspi) => sspi_context(cx, sspi, service)?,
+            Security::Gss(gss) => gss_context(cx, gss, service)?,
+        }),
+
+=== SASL GSSAPI over GSS-API asks the peer for mutual authentication
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::gssapi_logs_in_by_the_user_s_token_then_the_layer
+--- old
+        mutual: false,
+--- new
+        mutual: true,
+
+=== SASL GSSAPI over GSS-API ignores the transfer's delegation
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::the_initial_response_is_the_user_s_token
+--- old
+        delegate: cx.delegation.always,
+--- new
+        delegate: false,
+
+=== SASL GSSAPI over GSS-API names the default service over the one given
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::the_initial_response_is_the_user_s_token
+--- old
+        service: cx.service(service),
+--- new
+        service: service.as_bytes(),
+
+=== a GSS-API library is taken to lack Kerberos
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::gssapi_needs_a_library_and_a_domain
+--- old
+        Security::Gss(_) => true,
+--- new
+        Security::Gss(_) => false,
+
+=== a security layer GSS-API cannot unwrap fails the login rather than cancelling
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::a_layer_that_cannot_be_read_cancels
+--- old
+                    logged(cx, gss, "gss_unwrap() failed: ", &status);
+                    return Ok(None);
+--- new
+                    logged(cx, gss, "gss_unwrap() failed: ", &status);
+                    return Err(SaslError::AuthError);
+
+=== GSSAPI's security layer is taken without the no-layer bit
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::a_layer_that_cannot_be_read_cancels
+--- old
+    if offered & 1 == 0 {
+--- new
+    if offered & 2 == 0 {
+
+=== a GSS-API library's refusal is not said
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::refusals_are_c_s
+--- old
+            logged(cx, gss, prefix, &status);
+            SaslError::AuthError
+--- new
+            SaslError::AuthError
+
+=== DIGEST-MD5 beside a GSS-API library is not the core's own
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::digest_md5_beside_gss_api_is_the_core_s
+--- old
+                    match cx.security.and_then(Security::sspi) {
+--- new
+                    match cx.security.map(|_| unreachable!()).and_then(Security::sspi) {

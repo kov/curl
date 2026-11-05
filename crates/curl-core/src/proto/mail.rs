@@ -26,6 +26,7 @@ pub(super) fn sasl_step<H: Host, R>(
     f: impl FnOnce(&mut Sasl, &mut sasl::Ctx<'_>) -> R,
 ) -> R {
     let sasl_ir = cx.easy().options().line.sasl_ir;
+    let delegation = cx.easy().options().login.delegation;
     let libraries = cx.easy().shared_libraries();
     let mut random = |out: &mut [u8]| libraries.random(out).map_err(|_| ());
     let mut say = |to: sasl::Say, args: core::fmt::Arguments<'_>| match to {
@@ -38,9 +39,8 @@ pub(super) fn sasl_step<H: Host, R>(
         host: peer.name(),
         port: peer.port(),
         random: &mut random,
-        sspi: libraries
-            .security
-            .and_then(crate::libraries::Security::sspi),
+        security: libraries.security,
+        delegation,
         said: &mut say,
     };
     f(state, &mut sx)

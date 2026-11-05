@@ -116,10 +116,11 @@ pub fn mode(stream: Std) -> crate::text::Mode {
 /// descriptor open on it in `mode` (`_write`): how many of `bytes` went.
 /// Binary goes as it is. Text has each line feed written after a
 /// carriage return ([`crate::text::Writer`]), and to a console it goes as
-/// the UCRT writes text there (`write_double_translated_ansi_nolock`):
-/// read in the ANSI code page and written as UTF-16 (`WriteConsoleW`),
-/// where binary goes to the console as bytes, for it to read in its own
-/// code page.
+/// the UCRT writes text there once the locale is set
+/// (`write_double_translated_ansi_nolock`): read in the ANSI code page,
+/// converted to the console's own (`GetConsoleOutputCP`), what that lacks
+/// becoming its best fit or `?`, and written as those bytes, as binary
+/// goes, for the console to read in its code page.
 #[cfg(windows)]
 pub fn write_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io::Result<usize> {
     use crate::text::{Mode, Writer};
@@ -128,9 +129,9 @@ pub fn write_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io::Res
     if mode == Mode::Binary {
         return to.write(bytes);
     }
-    let Some(console) = crate::terminal::Console::of(file.as_handle()) else {
+    if crate::terminal::Console::of(file.as_handle()).is_none() {
         return Writer::new(to, Mode::Text).write(bytes);
-    };
+    }
     // A piece at a time, in the ANSI code page's bytes, each a unit or
     // fewer in UTF-16: 256 bytes are 512 at most with their line ends.
     let mut ansi = [0u8; 512];
@@ -140,7 +141,11 @@ pub fn write_as_c(file: &File, mode: crate::text::Mode, bytes: &[u8]) -> io::Res
     let n = 512 - room.len();
     let mut wide = [0u16; 512];
     let units = crate::terminal::ansi_to_wide(&ansi[..n], &mut wide);
-    console.write(&wide[..units])?;
+    // Each unit is 4 bytes at most in any code page, UTF-8's included.
+    let mut paged = [0u8; 2048];
+    let page = crate::terminal::console_page();
+    let m = crate::terminal::wide_to_page(page, &wide[..units], &mut paged);
+    to.write_all(&paged[..m])?;
     Ok(took)
 }
 
@@ -2032,12 +2037,26 @@ mod windows_tests {
         let n = crate::terminal::ansi_to_wide(ansi, &mut wide);
         let mut want: Vec<u16> = wide[..n].to_vec();
         want.push(u16::from(b'c'));
-        let got = screen.read(4).unwrap();
+        // `Ã€` in the ANSI code page goes to the console in its own code
+        // page, which has neither: what the console shows is their best
+        // fit or `?` there, as the UCRT converts it, not the characters.
+        let ansi = &[0xc3, 0x80];
+        write_all_as_c(&console, Mode::Text, ansi).unwrap();
+        let mut wide = [0u16; 2];
+        let n = crate::terminal::ansi_to_wide(ansi, &mut wide);
+        let page = crate::terminal::console_page();
+        let mut paged = [0u8; 8];
+        let m = crate::terminal::wide_to_page(page, &wide[..n], &mut paged);
+        let mut shown = [0u16; 8];
+        let k = crate::terminal::page_to_wide(page, &paged[..m], &mut shown);
+        assert_ne!(&shown[..k], &wide[..n], "the console's page lacks them");
+        let got = screen.read(4 + k).unwrap();
         assert_eq!(&got[..3], &want[..], "{got:x?}");
         assert_ne!(
             got[3], want[1],
             "the console's code page is not the ANSI one"
         );
+        assert_eq!(&got[4..], &shown[..k], "{got:x?}");
     }
 
     /// A name is read as C's build reads it: in the ANSI code page (1252

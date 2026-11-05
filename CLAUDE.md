@@ -107,7 +107,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/resolve.rs`: the system's resolver, `getaddrinfo`.
 - `crates/curl-os/src/terminal.rs`: the terminal's width, and reading a password from it with
   echo off (the console and `_getch` on Windows); on Windows also telling a character device
-  and a console apart, and writing UTF-8 or the ANSI code page to a console as UTF-16.
+  and a console apart, writing UTF-8 to a console as UTF-16, and converting text between
+  UTF-16 and a code page, the console's own (`GetConsoleOutputCP`) among them.
 - `crates/curl-os/src/time.rs`: the monotonic clock on Windows, the local time of day, and
   formatting it in the process's locale (`strftime`).
 - `crates/curl-os/src/locale.rs`: the process's locale, from the environment (`setlocale`).

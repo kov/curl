@@ -189,7 +189,7 @@ impl ScreenBuffer {
 /// it would write. 0 for an empty `utf8`.
 #[cfg(windows)]
 pub fn utf8_to_wide(utf8: &[u8], out: &mut [u16]) -> usize {
-    to_wide(windows_sys::Win32::Globalization::CP_UTF8, utf8, out)
+    page_to_wide(windows_sys::Win32::Globalization::CP_UTF8, utf8, out)
 }
 
 /// `ansi`, text in the ANSI code page (`CP_ACP`), in UTF-16, as
@@ -197,11 +197,59 @@ pub fn utf8_to_wide(utf8: &[u8], out: &mut [u16]) -> usize {
 /// text in once the tool has set the environment's locale.
 #[cfg(windows)]
 pub fn ansi_to_wide(ansi: &[u8], out: &mut [u16]) -> usize {
-    to_wide(windows_sys::Win32::Globalization::CP_ACP, ansi, out)
+    page_to_wide(windows_sys::Win32::Globalization::CP_ACP, ansi, out)
 }
 
+/// The code page the process's console reads the bytes written to it in
+/// (`GetConsoleOutputCP`): its OEM code page unless changed (`chcp`).
 #[cfg(windows)]
-fn to_wide(page: u32, bytes: &[u8], out: &mut [u16]) -> usize {
+pub fn console_page() -> u32 {
+    // SAFETY: it takes nothing, and only asks the console.
+    unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() }
+}
+
+/// `wide` in code page `page`, as `WideCharToMultiByte` converts it with
+/// no flags: a character the page lacks becomes its best fit, or the
+/// page's default character, `?`. Into `out`: how many bytes it wrote, 0
+/// when they do not fit; with `out` empty, how many it would write. 0 for
+/// an empty `wide`.
+#[cfg(windows)]
+pub fn wide_to_page(page: u32, wide: &[u16], out: &mut [u8]) -> usize {
+    use windows_sys::Win32::Globalization::WideCharToMultiByte;
+    let (Ok(len), Ok(room)) = (i32::try_from(wide.len()), i32::try_from(out.len())) else {
+        return 0;
+    };
+    if len == 0 {
+        return 0;
+    }
+    let to = if out.is_empty() {
+        core::ptr::null_mut()
+    } else {
+        out.as_mut_ptr()
+    };
+    // SAFETY: `wide` is `len` readable units, and `to` is null (asking for
+    // the room needed) or `room` writable bytes, both alive through the
+    // call, which writes no further; no default character is given, and
+    // whether it was used is not asked.
+    let n = unsafe {
+        WideCharToMultiByte(
+            page,
+            0,
+            wide.as_ptr(),
+            len,
+            to,
+            room,
+            core::ptr::null(),
+            core::ptr::null_mut(),
+        )
+    };
+    usize::try_from(n).unwrap_or(0)
+}
+
+/// `bytes`, text in code page `page`, in UTF-16, as [`utf8_to_wide`]
+/// converts UTF-8.
+#[cfg(windows)]
+pub fn page_to_wide(page: u32, bytes: &[u8], out: &mut [u16]) -> usize {
     use windows_sys::Win32::Globalization::MultiByteToWideChar;
     let (Ok(len), Ok(room)) = (i32::try_from(bytes.len()), i32::try_from(out.len())) else {
         return 0;

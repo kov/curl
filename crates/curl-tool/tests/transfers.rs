@@ -799,6 +799,61 @@ fn writes_a_body_to_a_console_as_utf16() {
     assert_eq!(String::from_utf16_lossy(&got), text);
 }
 
+/// On Windows a message goes to a console through the C library's text
+/// mode, which reads it in the ANSI code page in either build and writes
+/// it in the console's own code page, what that lacks becoming its best
+/// fit or `?`: in the Unicode build a name from the command line is UTF-8
+/// there, and shows as its bytes read in the ANSI code page and fitted to
+/// the console's, as C's curl.exe and Microsoft's show it.
+#[cfg(windows)]
+#[test]
+fn writes_a_message_to_a_console_in_the_ansi_code_page() {
+    let s = Scratch::new("console-err");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let args = [
+        "-q",
+        "-sS",
+        "--cacert",
+        "\u{6f22}\u{5b57}-caf\u{e9}.pem",
+        "https://127.0.0.1:1/",
+    ];
+    let piped = Command::new(&tool)
+        .args(args)
+        .current_dir(&s.0)
+        .output()
+        .unwrap();
+    let line = piped.stderr.split(|&b| b == b'\r').next().unwrap();
+    let name: &[u8] = if cfg!(feature = "unicode") {
+        "\u{6f22}\u{5b57}-caf\u{e9}".as_bytes()
+    } else {
+        b"??-caf\xe9"
+    };
+    assert!(line.windows(name.len()).any(|w| w == name), "{line:x?}");
+    let screen = curl_os::terminal::ScreenBuffer::new().unwrap();
+    let stderr = screen.handle().try_clone_to_owned().unwrap();
+    let status = Command::new(&tool)
+        .args(args)
+        .current_dir(&s.0)
+        .stderr(std::process::Stdio::from(stderr))
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), piped.status.code());
+    let mut wide = vec![0u16; line.len()];
+    let n = curl_os::terminal::ansi_to_wide(line, &mut wide);
+    let page = curl_os::terminal::console_page();
+    let mut paged = vec![0u8; 4 * n];
+    let m = curl_os::terminal::wide_to_page(page, &wide[..n], &mut paged);
+    let mut want = vec![0u16; m];
+    let k = curl_os::terminal::page_to_wide(page, &paged[..m], &mut want);
+    want.truncate(k);
+    let got = screen.read(want.len()).unwrap();
+    assert_eq!(
+        String::from_utf16_lossy(&got),
+        String::from_utf16_lossy(&want)
+    );
+}
+
 /// On Windows a `.curlrc` beside the program is read when none is found
 /// in the user's directories, the program's directory named in the ANSI
 /// code page as C names it (`GetModuleFileName`), here with an accent;

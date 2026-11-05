@@ -1152,7 +1152,7 @@ impl Pool {
                         Ok(judged(verdict, notes, seen)?.then_some(Took::Lent(id)))
                     }
                     None => {
-                        if route.reaches(wanted.route) {
+                        if !seen.multiplex && route.reaches(wanted.route) {
                             seen.multiplex = true;
                         }
                         Ok(None)
@@ -1163,7 +1163,14 @@ impl Pool {
             // anything else is compared (`url_match_fully_connected`,
             // `url_match_multiplex_needs`).
             Some(Place::Leased(leased)) => {
-                if leased.route.reaches(wanted.route) {
+                // Compared only where the answer can tell: a pending one
+                // is noted only for a transfer that multiplexes, and one
+                // single-use connection seen says as much as many.
+                let tells = match leased.verdict {
+                    Verdict::Pending => wanted.multiplex.is_some(),
+                    Verdict::Single => !seen.single,
+                };
+                if tells && leased.route.reaches(wanted.route) {
                     match leased.verdict {
                         Verdict::Pending if wanted.multiplex.is_some() => {
                             seen.pending = true;
@@ -2029,7 +2036,9 @@ fn over_limit(
         Some(max) => (max.get(), 0),
         None => (limit.attached.saturating_mul(2), 1000),
     };
-    if max == 0 || max == u32::MAX {
+    // Every place counts, so the pool is within its limit without a
+    // look at its connections, as C counts them (`cpool->num_conn`).
+    if max == 0 || max == u32::MAX || conns.len() <= max {
         return None;
     }
     let mut count = 0;

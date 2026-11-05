@@ -88,6 +88,10 @@ fn main() {
             a_share_stays_within_its_allocation_budget,
         ),
         (
+            "a_wait_on_a_few_sockets_allocates_nothing",
+            a_wait_on_a_few_sockets_allocates_nothing,
+        ),
+        (
             "an_https_get_survives_every_allocation_failing",
             an_https_get_survives_every_allocation_failing,
         ),
@@ -1045,6 +1049,46 @@ fn a_share_stays_within_its_allocation_budget() {
         n <= SHARE_BUDGET,
         "a share made {n} allocations, over its {SHARE_BUDGET}"
     );
+}
+
+/// A wait on as many transfers' sockets as fit on the stack, ten, keeps
+/// them all there, as C's `a_few_on_stack`: an application's loop of
+/// waits allocates nothing.
+fn a_wait_on_a_few_sockets_allocates_nothing() {
+    const SOCKETS: usize = 10;
+    let mut m: Multi = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
+        let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+        for _ in 0..SOCKETS {
+            net = net.with_conversation(at, Conversation::new(b"", false));
+        }
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+            waker: None,
+        };
+        let mut m = Multi::new(env).expect("memory");
+        for _ in 0..SOCKETS {
+            let mut easy = Easy::new();
+            easy.options_mut().set_url(Some(URL)).expect("memory");
+            m.add(Box::new(easy), (), &mut NoEvents).expect("added");
+        }
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).expect("performed");
+        }
+        m
+    });
+    let (waited, n) =
+        track::count_allocations(|| m.wait(&mut [], Duration::ZERO, WaitMode::Wait, &mut NoEvents));
+    track::untracked(|| {
+        assert_eq!(waited, Ok(0));
+        assert_eq!(n, 0, "a wait on {SOCKETS} sockets made {n} allocations");
+        let census = m.census();
+        assert_eq!((census.working(), census.pending), (SOCKETS as u32, 0));
+        drop(m);
+    });
 }
 
 /// A plain GET from a handle with a TLS library makes the same

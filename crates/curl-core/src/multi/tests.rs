@@ -1039,6 +1039,20 @@ fn a_wait_takes_more_than_fit_on_the_stack() {
         m.wait(&mut [], Duration::ZERO, WaitMode::Wait, &mut NoEvents),
         Ok(0)
     );
+    // Polled, none ready: the wait takes its time, where one that lost
+    // the sockets would have nothing to wait on and return at once.
+    let took = slept(&clock, || {
+        assert_eq!(
+            m.wait(
+                &mut [],
+                Duration::from_secs(3),
+                WaitMode::Wait,
+                &mut NoEvents
+            ),
+            Ok(0)
+        );
+    });
+    assert!(took > Duration::ZERO, "the transfers' sockets were polled");
 }
 
 #[test]

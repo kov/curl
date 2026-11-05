@@ -346,3 +346,19 @@ witness: curl-core proto::http::tests::h3_trace::a_wait_polls_a_shared_connectio
             if !known.iter().rev().any(|&k| k == key) {
 --- new
             if !known.iter().rev().any(|&k| k == key && false) {
+
+=== a wait on as many sockets as fit on the stack allocates for them
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core a_wait_on_a_few_sockets_allocates_nothing
+--- old
+        if n_sockets > ON_STACK {
+--- new
+        if n_sockets >= ON_STACK {
+
+=== a wait on more sockets than fit on the stack keeps only those seen twice
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::a_wait_takes_more_than_fit_on_the_stack
+--- old
+                        if !SocketPoll::fold(&mut more_sockets, s, events) {
+--- new
+                        if SocketPoll::fold(&mut more_sockets, s, events) {

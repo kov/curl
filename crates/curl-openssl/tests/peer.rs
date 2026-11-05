@@ -695,7 +695,11 @@ fn no_ca_named_trusts_the_build_s_default() {
     let (at, server) = serve(&certs);
     let got = get("localhost", at, |_| {});
     server.join().unwrap();
-    match cmake_s_bundle().filter(|_| !cfg!(feature = "native-ca")) {
+    let native = cfg!(any(
+        feature = "native-ca",
+        all(target_os = "macos", feature = "apple-sectrust")
+    ));
+    match cmake_s_bundle().filter(|_| !native) {
         Some(file) => assert!(
             said(&got, &format!("  CAfile: {file}")),
             "{:#?}",

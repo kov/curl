@@ -906,3 +906,10 @@ features: test-util
             let wake = if http && cx.running() > 1 {
 --- new
             let wake = if http && cx.running() > 0 {
+
+=== a look for a waiting transfer that finds none keeps its place
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core multi::tests::a_wake_finding_no_one_starts_the_next_from_the_first
+--- old
+        *after = None;
+--- new

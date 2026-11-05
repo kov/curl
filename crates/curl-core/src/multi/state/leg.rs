@@ -1267,6 +1267,9 @@ pub(in crate::multi) fn wake_pending<H: Host>(
         }
     }
     if found.is_none() {
+        // None after it: the next call starts from the first, whether
+        // this one finds one there or not.
+        *after = None;
         let mut cursor = None;
         while let Some(id) = slots.next_after(cursor) {
             cursor = Some(id);

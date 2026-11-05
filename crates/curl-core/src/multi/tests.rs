@@ -4800,6 +4800,41 @@ fn a_transfer_finding_room_lets_the_next_look() {
     }
 }
 
+/// A look for a waiting transfer that finds none starts the next look
+/// from the first row, as `multi_schedule_pending` clears
+/// `last_pending_mid` before it looks from the start: of those waiting
+/// afterwards, the lowest row is let out, not the next after the one let
+/// out last.
+#[test]
+fn a_wake_finding_no_one_starts_the_next_from_the_first() {
+    let (mut m, clock) = networked();
+    m.conn_limits_mut().max_total = NonZeroU32::new(1);
+    let add = |m: &mut Multi| {
+        m.add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
+            .unwrap()
+    };
+    // The first holds the one connection, never connecting.
+    let a = add(&mut m);
+    let b = add(&mut m);
+    let c = add(&mut m);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().pending, 2);
+    // Both let out, then a look that finds no one.
+    for _ in 0..3 {
+        m.wake_pending(clock.now(), &mut NoEvents);
+    }
+    let d = add(&mut m);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().pending, 3, "all three wait again");
+    m.wake_pending(clock.now(), &mut NoEvents);
+    let waiting = |m: &Multi, id| matches!(m.state_of(id), TransferState::Pending(_));
+    assert!(!waiting(&m, b), "the first row waiting is let out");
+    assert!(waiting(&m, c) && waiting(&m, d));
+    for id in [a, b, c, d] {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
 /// Under the total limit, an idle connection to another host is closed
 /// to make room.
 #[test]

@@ -1354,20 +1354,27 @@ through SSPI; MIT krb5 stays Unix-only.
      Microsoft's curl.exe 8.21.0 agrees on names, `-K`, the environment and the console; it
      lists no `file://` directory and reads no `.curlrc` beside a copy of itself.
 102. **The curl.se build's set**: LibreSSL (with ngtcp2 over it) and the native CA store
-     (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **Done** but for libssh2 and
-     curl-openssl's peer tests, which assume OpenSSL 3: over LibreSSL, 35 of 89 fail on
-     its messages, engines and TLS 1.3 resumption, early data and key log. `cfg(libressl)`
-     takes C's `LIBRESSL_VERSION_NUMBER` branches, HTTP/3 goes over ngtcp2's LibreSSL crypto,
-     and Windows' ROOT and CA stores are read in as C reads them; the `native-ca` feature is
+     (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **In progress**: what is left is
+     curl-openssl's peer tests over LibreSSL. `cfg(libressl)` takes C's
+     `LIBRESSL_VERSION_NUMBER` branches, HTTP/3 goes over ngtcp2's LibreSSL crypto, and
+     Windows' ROOT and CA stores are read in as C reads them; the `native-ca` feature is
      `CURL_CA_NATIVE`. The C leg is this tree built with CMake over vcpkg's LibreSSL 4.4.0
      (`C:\vcpkg-lsl`, its `openssl` port an empty one depending on `libressl`), with
      `CURL_CA_NATIVE`, libssh2, libidn2 and the threaded resolver (`C:\work\c-libressl`). The
      suite with CI's flags passes 2027 of 2043 on the Rust leg and 1946 of 1960 on C's; the
      Rust leg fails no test C's passes but 96, 558, 1013 and 1014, as the other builds do, and
      the flaky FTP 135 and 1057. `curl -V` lists curl.se's 8.23.0 features but for the SSPI
-     and the GSS-API of milestone 9's step 98, and its versions but for WinIDN, WinLDAP and
-     libssh2. Against https://curl.se/, over TLS and HTTP/3, both legs import the same
-     certificates from the system's stores and trace the same lines.
+     and the GSS-API of step 98, and its versions but for WinIDN, WinLDAP and libssh2. By hand
+     against both legs, the same text and trace for https://curl.se/ over TLS and HTTP/3, the
+     system's stores (with the suite's CA added to them and without), eleven combinations of
+     the CA options, a peer that closes or resets in the handshake, engine and provider
+     certificate types, TLS 1.2 resumption and the TLS 1.2 key log. curl-openssl's unit tests
+     pass over LibreSSL; its peer tests pass 58 of 89 there and 80 of 90 over OpenSSL on the
+     same guest. 9 of LibreSSL's 31 failures fail over OpenSSL on Windows too; the other 22
+     expect what OpenSSL 3 says and does (its messages and error codes, engines, the key's
+     type, TLS 1.0, TLS 1.3 resumption, early data and key log) or make a server LibreSSL
+     cannot serve (an Ed25519 certificate, a PKCS#12 file's MAC), and are to be made to
+     expect C's LibreSSL leg.
 
 ## Milestone 10: the other backends
 

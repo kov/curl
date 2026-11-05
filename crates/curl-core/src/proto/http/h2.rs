@@ -1041,9 +1041,11 @@ impl Request {
     }
 
     /// Read from the connection and have the session read it, up to
-    /// `max` bytes, until the stream is over, a read would block, the
-    /// peer closed or the transfer paused (`h2_progress_ingress`): whether
-    /// it stopped at its most.
+    /// `max` bytes, until the stream is over, a read would block or the
+    /// peer closed (`h2_progress_ingress`): whether it stopped at its
+    /// most. A pause the reading brings on does not stop it, as C's does
+    /// not: what comes after is held for the transfer, and the window
+    /// the pause shut keeps what more the peer sends small.
     fn h2_ingress<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -1070,7 +1072,7 @@ impl Request {
         let mut spent = false;
         loop {
             let closed = lease.conn().h2().is_none_or(H2Conn::closed);
-            if closed || cx.pause().recv_paused() {
+            if closed {
                 break;
             }
             // Bounded by bytes, never by a count of reads, as C's

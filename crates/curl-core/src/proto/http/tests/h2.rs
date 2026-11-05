@@ -2402,6 +2402,45 @@ fn an_unpause_sends_the_window_update_before_it_returns() {
     m.remove(id, &mut NoEvents).unwrap();
 }
 
+/// A pause the write handler asks for in a read does not stop the read:
+/// the connection is read on as C's `h2_progress_ingress` reads it,
+/// what comes for the paused stream held, its end among it, and given
+/// whole once it is unpaused.
+#[test]
+fn a_pause_in_a_read_reads_on() {
+    let talk = Conversation::replies(
+        &[b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naaD 1 2 1\nbb"],
+        false,
+    )
+    .per_send()
+    .giving(std::num::NonZeroUsize::new(8).unwrap());
+    let seen = Seen::default();
+    let w = PausesFirst::default();
+    let (mut m, id) = traced_h2(&talk, &seen, w.clone());
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let lines = h2_lines_from(&seen, 0);
+    let paused = lines
+        .iter()
+        .position(|l| l == "[HTTP/2] [1] stream now paused")
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    let closed = lines
+        .iter()
+        .position(|l| l == "[HTTP/2] [1] CLOSED")
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert!(paused < closed, "{lines:#?}");
+    assert_eq!(&w.0.lock().unwrap()[..], b"\0");
+    m.pause(id, crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(&w.0.lock().unwrap()[1..], b"aabb");
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
 /// A receive pause from outside a step shuts the stream's window before
 /// it returns, nothing told the peer, and the unpause opens it again,
 /// told at once (`http2_data_pause`).

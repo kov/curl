@@ -1041,3 +1041,17 @@ witness: curl-core proto::http::tests::h2::a_stream_unpaused_in_a_siblings_step_
         if !req.h2_paused(paused) || cx.rest.caches.pool.slot_of(lease).is_none() {
 --- new
         if cx.rest.caches.pool.slot_of(lease).is_none() || !req.h2_paused(paused) {
+
+=== a pause in a read stops the read
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_pause_in_a_read_reads_on
+--- old
+            if closed {
+                break;
+            }
+            // Bounded by bytes
+--- new
+            if closed || cx.pause().recv_paused() {
+                break;
+            }
+            // Bounded by bytes

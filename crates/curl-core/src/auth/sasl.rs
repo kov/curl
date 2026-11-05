@@ -177,6 +177,8 @@ enum State {
     DigestMd5Resp,
     OAuth2,
     OAuth2Resp,
+    Gssapi,
+    GssapiToken,
     Cancel,
     Final,
 }
@@ -190,6 +192,8 @@ impl State {
             State::Login => "LOGIN",
             State::LoginPasswd => "LOGIN_PASSWD",
             State::External => "EXTERNAL",
+            State::Gssapi => "GSSAPI",
+            State::GssapiToken => "GSSAPI_TOKEN",
             State::CramMd5 => "CRAMMD5",
             State::DigestMd5 => "DIGESTMD5",
             State::DigestMd5Resp => "DIGESTMD5_RESP",
@@ -214,8 +218,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) port: u16,
     /// Random bytes, for DIGEST-MD5's client nonce.
     pub(crate) random: &'a mut dyn FnMut(&mut [u8]) -> Result<(), ()>,
-    /// SSPI, where the handle has it: DIGEST-MD5 is its, as in C's
-    /// Windows build (`lib/vauth/digest_sspi.c`).
+    /// SSPI, where the handle has it: DIGEST-MD5 and GSSAPI are its, as
+    /// in C's Windows build (`lib/vauth/digest_sspi.c`, `krb5_sspi.c`).
+    /// Without it GSSAPI is not built.
     pub(crate) sspi: Option<&'static dyn Sspi>,
     /// What is said of the exchange, the debug build's lines and the
     /// verbose ones.
@@ -294,6 +299,9 @@ pub(crate) struct Sasl {
     /// An initial response is sent whatever the application says
     /// (`force_ir`).
     force_ir: bool,
+    /// GSSAPI's Kerberos, once a message of it is made
+    /// (`Curl_auth_krb5_get`'s data, the connection's).
+    krb5: Option<krb5::Krb5>,
 }
 
 impl Sasl {
@@ -330,6 +338,7 @@ impl Sasl {
             used: Mechs::NONE,
             reset_prefs: true,
             force_ir: false,
+            krb5: None,
         }
     }
 
@@ -433,6 +442,23 @@ impl Sasl {
                     Mechs::EXTERNAL,
                     State::External,
                     State::Final,
+                    resp,
+                )
+            } else if let Some(sspi) = cx.sspi.filter(|&sspi| {
+                enabled.has(Mechs::GSSAPI)
+                    && krb5::supported(sspi)
+                    && krb5::user_contains_domain(cx.user())
+            }) {
+                let resp = if ir {
+                    krb5::user_message(&mut self.krb5, cx, sspi, self.params.service)?
+                } else {
+                    None
+                };
+                (
+                    "GSSAPI",
+                    Mechs::GSSAPI,
+                    State::Gssapi,
+                    State::GssapiToken,
                     resp,
                 )
             } else if enabled.has(Mechs::DIGEST_MD5) {
@@ -563,6 +589,20 @@ impl Sasl {
             },
             // An empty line.
             State::DigestMd5Resp => Some(Vec::new()),
+            State::Gssapi => {
+                next = State::GssapiToken;
+                let sspi = cx.sspi.expect("GSSAPI is chosen with SSPI");
+                let token = krb5::user_message(&mut self.krb5, cx, sspi, self.params.service)?;
+                // No token is an empty message.
+                Some(token.unwrap_or_default())
+            }
+            State::GssapiToken => match self.server_message(message)? {
+                Some(chlg) => {
+                    let krb5 = self.krb5.as_mut().expect("the user's token was made");
+                    krb5::security_message(krb5, cx, &chlg)?
+                }
+                None => None,
+            },
             State::OAuth2 if self.used == Mechs::OAUTHBEARER => {
                 // A failure may come as a continuation.
                 next = State::OAuth2Resp;
@@ -608,6 +648,7 @@ impl Sasl {
         let has_user = !cx.user().is_empty();
         let has_password = cx.has_password();
         let has_bearer = cx.has_bearer();
+        let sspi = cx.sspi;
         let mut say = |args: core::fmt::Arguments<'_>| (cx.said)(Say::Info, args);
         let say = &mut say;
         let enabled = self.offered.and(self.preferred);
@@ -658,7 +699,10 @@ impl Sasl {
             }
         };
         let bearer = (!has_bearer).then_some("CURLOPT_XOAUTH2_BEARER");
-        unchosen(say, Mechs::GSSAPI, false, false, None);
+        // Built with SSPI alone; whether it has Kerberos is asked whatever
+        // is enabled, as C asks it.
+        let kerberos = sspi.is_some_and(krb5::supported);
+        unchosen(say, Mechs::GSSAPI, sspi.is_some(), kerberos, None);
         unchosen(say, Mechs::SCRAM_SHA_256, false, false, None);
         unchosen(say, Mechs::SCRAM_SHA_1, false, false, None);
         unchosen(say, Mechs::DIGEST_MD5, true, true, None);
@@ -711,7 +755,10 @@ impl Sasl {
     /// Whether the next step reads the server's challenge, which a raw
     /// protocol must have to give (`get_server_message`'s callers).
     pub(crate) fn wants_challenge(&self) -> bool {
-        matches!(self.state, State::CramMd5 | State::DigestMd5)
+        matches!(
+            self.state,
+            State::CramMd5 | State::DigestMd5 | State::GssapiToken
+        )
     }
 }
 
@@ -1029,6 +1076,8 @@ impl core::fmt::Display for Lossy<'_> {
         Ok(())
     }
 }
+
+mod krb5;
 
 #[cfg(test)]
 mod tests;

@@ -1,8 +1,8 @@
 # Windows' SSPI as C's Windows build routes authentication through it
 # (crates/curl-core/src/proto/http/negotiate.rs, auth/digest_sspi.rs,
-# auth/sasl.rs, conn/socks/gss.rs), over a scripted SSPI. The binding
-# itself (crates/curl-sspi) is Windows-only: its faults are planted by
-# hand on the guest.
+# auth/sasl.rs, auth/sasl/krb5.rs, conn/socks/gss.rs), over a scripted
+# SSPI. The binding itself (crates/curl-sspi) is Windows-only: its faults
+# are planted by hand on the guest.
 
 === SPNEGO over SSPI may settle on NTLM
 file: crates/curl-core/src/proto/http/negotiate.rs
@@ -51,6 +51,86 @@ witness: curl-core conn::socks::tests::sspi::the_exchange_is_c_s
             Security::Sspi(_) => GssLine::GrantedNotUsed(granted),
 --- new
             Security::Sspi(_) => GssLine::Granted(granted),
+
+=== SASL's GSSAPI is never chosen over SSPI
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::gssapi::gssapi_logs_in_by_the_user_s_token_then_the_layer
+--- old
+                enabled.has(Mechs::GSSAPI)
+--- new
+                enabled.has(Mechs::NONE)
+
+=== a user starting with its separator names a domain for GSSAPI
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi::a_domain_is_named_as_c_reads_it
+--- old
+        .is_some_and(|at| at > 0 && at < user.len() - 1)
+--- new
+        .is_some_and(|at| at < user.len() - 1)
+
+=== GSSAPI's credentials refused by SSPI fail as an authentication error
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi::refusals_are_c_s
+--- old
+                Err(SspiFailure::Status(_)) => return Err(SaslError::Denied),
+--- new
+                Err(SspiFailure::Status(_)) => return Err(SaslError::AuthError),
+
+=== GSSAPI's user token is asked in the network's representation
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi::gssapi_logs_in_by_the_user_s_token_then_the_layer
+--- old
+        native: true,
+--- new
+        native: false,
+
+=== GSSAPI sends a user token of no bytes as an initial response
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi::the_initial_response_is_the_user_s_token
+--- old
+    Ok((!out.is_empty()).then_some(out))
+--- new
+    Ok(Some(out))
+
+=== GSSAPI takes a security layer that does not offer going without one
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi::a_layer_that_cannot_be_read_cancels
+--- old
+    if offered & 1 == 0 {
+--- new
+    if offered & 4 == 0 {
+
+=== GSSAPI answers the server's layer with the layers it offered
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi::gssapi_logs_in_by_the_user_s_token_then_the_layer
+--- old
+    message.try_extend_from_slice(&[1, 0, 0, 0])?;
+--- new
+    message.try_extend_from_slice(&[7, 0, 0x10, 0])?;
+
+=== GSSAPI's answer to the layer leaves out the identity acted for
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi::gssapi_logs_in_by_the_user_s_token_then_the_layer
+--- old
+    message.try_extend_from_slice(authzid)?;
+--- new
+    let _ = authzid;
+
+=== a raw protocol is not asked for GSSAPI's security layer
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::gssapi::gssapi_logs_in_by_the_user_s_token_then_the_layer
+--- old
+            State::CramMd5 | State::DigestMd5 | State::GssapiToken
+--- new
+            State::CramMd5 | State::DigestMd5
+
+=== GSSAPI not chosen over SSPI is said not built
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::gssapi::gssapi_not_chosen_is_said_why
+--- old
+        unchosen(say, Mechs::GSSAPI, sspi.is_some(), kerberos, None);
+--- new
+        unchosen(say, Mechs::GSSAPI, false, kerberos, None);
 
 === HTTP Digest over SSPI completes a token with the context's handle
 file: crates/curl-core/src/auth/digest_sspi.rs

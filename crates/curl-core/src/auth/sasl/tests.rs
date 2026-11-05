@@ -964,3 +964,5 @@ fn digest_md5_over_sspi_is_the_package_s() {
     );
     assert_eq!(sspi.unused(), 0);
 }
+
+mod gssapi;

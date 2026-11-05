@@ -1354,8 +1354,8 @@ through SSPI; MIT krb5 stays Unix-only.
      Microsoft's curl.exe 8.21.0 agrees on names, `-K`, the environment and the console; it
      lists no `file://` directory and reads no `.curlrc` beside a copy of itself.
 102. **The curl.se build's set**: LibreSSL (with ngtcp2 over it) and the native CA store
-     (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **In progress**: what is left is
-     curl-openssl's peer tests over LibreSSL. `cfg(libressl)` takes C's
+     (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **Done** (`win-curlse`), libssh2
+     left to milestone 10. `cfg(libressl)` takes C's
      `LIBRESSL_VERSION_NUMBER` branches, HTTP/3 goes over ngtcp2's LibreSSL crypto, and
      Windows' ROOT and CA stores are read in as C reads them; the `native-ca` feature is
      `CURL_CA_NATIVE`. The C leg is this tree built with CMake over vcpkg's LibreSSL 4.4.0
@@ -1369,12 +1369,14 @@ through SSPI; MIT krb5 stays Unix-only.
      system's stores (with the suite's CA added to them and without), eleven combinations of
      the CA options, a peer that closes or resets in the handshake, engine and provider
      certificate types, TLS 1.2 resumption and the TLS 1.2 key log. curl-openssl's unit tests
-     pass over LibreSSL; its peer tests pass 58 of 89 there and 80 of 90 over OpenSSL on the
-     same guest. 9 of LibreSSL's 31 failures fail over OpenSSL on Windows too; the other 22
-     expect what OpenSSL 3 says and does (its messages and error codes, engines, the key's
-     type, TLS 1.0, TLS 1.3 resumption, early data and key log) or make a server LibreSSL
-     cannot serve (an Ed25519 certificate, a PKCS#12 file's MAC), and are to be made to
-     expect C's LibreSSL leg.
+     pass over LibreSSL. Its peer tests pass on the guest, 87 of 87 run over LibreSSL and 89 of
+     89 over OpenSSL. Where the library or Windows answers otherwise than OpenSSL 3 on Linux,
+     each expects what C's build there says. That was checked with `curl.exe` on both legs
+     against the same servers. The blob, channel binding and failures planted below the
+     socket follow C's branch by reading; C's SSPI build never asks for a channel binding.
+     Not built: over LibreSSL, the Ed25519 server certificate and the peer without a
+     certificate, neither of which the test's server can be over LibreSSL; on Windows, the
+     engine compiled by `cc`.
 
 ## Milestone 10: the other backends
 

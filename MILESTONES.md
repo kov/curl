@@ -1317,8 +1317,11 @@ the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays U
      test C's passes but 96, 558, 1013 and 1014, as the ANSI build does, and FTP's 135 and 336,
      which fail now and then on the ANSI build too. 165, 1448, 2046, 2047, 1560 and 3203's
      Unicode branch run and pass on both legs, and with WinIDN (`C:\work\c-unicode-winidn`)
-     all but 165, which `DISABLED` lists for WinIDN. Hand cases give C's bytes and Microsoft's
-     curl.exe 8.21.0's results but for `--remove-on-error`, which DIVERGENCE.md records.
+     all but 165, which `DISABLED` lists for WinIDN. Hand cases (arguments, `-o`, `-T`, `-K`,
+     `--cacert`, cookie jars, `CURL_HOME` and the proxy variables, a `file://` listing, the
+     console) give C's bytes but for `--remove-on-error`, which DIVERGENCE.md records.
+     Microsoft's curl.exe 8.21.0 agrees on names, `-K`, the environment and the console; it
+     lists no `file://` directory and reads no `.curlrc` beside a copy of itself.
 102. **The curl.se build's set**: LibreSSL (with ngtcp2 over it) and the native CA store
      (`CURLSSLOPT_NATIVE_CA`), libssh2 from milestone 10. **To do.**
 

@@ -3188,6 +3188,33 @@ mod tests {
         net.close(Sock::new(s, Closer::System));
     }
 
+    /// An endless reply of lines repeats its line whole, across reads.
+    #[test]
+    fn an_endless_reply_repeats_its_line_across_reads() {
+        let clock = crate::time::ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], 1));
+        let talk = Conversation::new(b"", false)
+            .per_send()
+            .endless(Duration::ZERO)
+            .endless_lines(b"ab\r\n");
+        let mut net = FakeNet::new(clock)
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        let s = dial(&mut net, at);
+        s.send(b"hi").unwrap();
+        let mut got = Vec::new();
+        for room in [6, 5] {
+            let mut buf = vec![0; room];
+            let Ok(Recv::Data(n)) = s.recv(&mut buf) else {
+                panic!("the endless reply reads");
+            };
+            got.extend_from_slice(&buf[..n.get()]);
+        }
+        assert_eq!(got, b"ab\r\nab\r\nab\r\n"[..11]);
+        assert_eq!(talk.endless_reads(), 2);
+        net.close(Sock::new(s, Closer::System));
+    }
+
     /// The system's socket is set, and made nonblocking, through the
     /// library's view of it, as Linux's `/proc` shows.
     #[cfg(target_os = "linux")]

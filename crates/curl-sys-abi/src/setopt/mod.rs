@@ -2345,7 +2345,8 @@ mod tests {
     /// Schannel the CA path, the revocation list, the issuer, TLS 1.3's
     /// suites, the context callback, the curves, the signature
     /// algorithms, the stapled status and the engine; OpenSSL none of
-    /// them. Neither has Encrypted Client Hello.
+    /// them, and LibreSSL the signature algorithms alone. None has
+    /// Encrypted Client Hello.
     #[test]
     fn the_tls_library_s_lacking_options_are_not_built_in() {
         let c = crate::easy::curl_easy_init();
@@ -2369,11 +2370,13 @@ mod tests {
             ffi::CURLOPT_TLS13_CIPHERS,
             ffi::CURLOPT_PROXY_TLS13_CIPHERS,
             ffi::CURLOPT_SSL_EC_CURVES,
-            ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS,
             ffi::CURLOPT_SSLENGINE,
         ] {
             assert_eq!(text(option), want(schannel), "{option:?}");
         }
+        // LibreSSL's lack of them is pinned by curl-openssl's own test.
+        let sigalgs = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS).signature_algorithms;
+        assert_eq!(text(ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS), want(!sigalgs));
         for option in [
             ffi::CURLOPT_SSL_VERIFYSTATUS,
             ffi::CURLOPT_DOH_SSL_VERIFYSTATUS,

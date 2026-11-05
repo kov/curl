@@ -457,3 +457,11 @@ witness: curl-openssl a_passive_ccc_answers_no_close_notify
         if goodbye.sends() && sent() == 0 {
 --- new
         if sent() == 0 {
+
+=== the library's declaration of signature algorithms does not follow the library
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl tests::the_library_declares_what_c_s_build_over_it_has
+--- old
+    signature_algorithms: !cfg!(libressl),
+--- new
+    signature_algorithms: cfg!(libressl),

@@ -69,7 +69,8 @@ pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     ciphers: true,
     tls13_ciphers: true,
     curves: true,
-    signature_algorithms: true,
+    // LibreSSL takes no list (`HAVE_SSL_CTX_SET1_SIGALGS` unset).
+    signature_algorithms: !cfg!(libressl),
     crl_file: true,
     issuer_cert: true,
     issuer_cert_blob: true,
@@ -148,6 +149,10 @@ impl TlsBackend for OpenSsl {
     /// OpenSSL 3 it is built on: TLS 1.3's suites and signature
     /// algorithms), the stapled status (`ossl_cert_status_request`) and
     /// engines; not Encrypted Client Hello, which that OpenSSL lacks.
+    /// Over LibreSSL, C's `LIBRESSL_VERSION_NUMBER` build: the same but
+    /// for the signature algorithms; the engine option is still taken
+    /// (C checks the backend, which is OpenSSL's), and naming one fails
+    /// as the connection is made.
     fn support(&self) -> TlsSupport {
         SUPPORT
     }

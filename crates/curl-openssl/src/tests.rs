@@ -438,6 +438,40 @@ fn the_engines_are_the_library_s() {
     assert_eq!(engines, crate::engine::ids().unwrap());
 }
 
+/// What the library declares it can do is what C's build over it has
+/// (`Curl_ssl_openssl.supports`): over LibreSSL no signature algorithms
+/// (`HAVE_SSL_CTX_SET1_SIGALGS` unset), the rest as over OpenSSL, the
+/// engine option and the stapled status included; never Encrypted Client
+/// Hello.
+#[test]
+fn the_library_declares_what_c_s_build_over_it_has() {
+    use curl_core::tls::TlsBackend as _;
+    let all = curl_core::tls::TlsSupport {
+        ca_path: true,
+        ca_blob: true,
+        ca_cache: true,
+        cert_info: true,
+        pinned_key: true,
+        context_handler: true,
+        https_proxy: true,
+        ciphers: true,
+        tls13_ciphers: true,
+        curves: true,
+        signature_algorithms: true,
+        crl_file: true,
+        issuer_cert: true,
+        issuer_cert_blob: true,
+        ech: false,
+        cert_status: true,
+        engines: true,
+    };
+    let want = curl_core::tls::TlsSupport {
+        signature_algorithms: !cfg!(libressl),
+        ..all
+    };
+    assert_eq!(crate::OPENSSL.support(), want);
+}
+
 /// The system's store is the default where C's build makes it so
 /// (`CURL_CA_NATIVE`, `USE_APPLE_SECTRUST`), and only asked for in any
 /// other: never OpenSSL's own.

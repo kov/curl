@@ -417,8 +417,17 @@ fn tls_options_are_kept_as_c_keeps_them() {
             &t.signature_algorithms
         }),
     ];
+    let support = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS);
     for (option, list, field) in lists {
         let mut list = list.to_vec();
+        // LibreSSL takes no signature algorithms.
+        if option == ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS && !support.signature_algorithms {
+            assert_eq!(
+                pointer(c, option, list.as_mut_ptr()),
+                ffi::CURLE_NOT_BUILT_IN
+            );
+            continue;
+        }
         assert_eq!(pointer(c, option, list.as_mut_ptr()), CURLE_OK);
         assert_eq!(
             options(c, |o| field(&o.tls.options).clone()),

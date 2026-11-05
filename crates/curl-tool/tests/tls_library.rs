@@ -2,7 +2,8 @@
 //! Schannel, C's tool warns that the proxy's CA path and the TLS 1.3
 //! suites are ignored, and passes over the rest it lacks without a word
 //! and without writing them to `--libcurl`'s program; with OpenSSL,
-//! which has them, it says nothing and writes them all.
+//! which has them, it says nothing and writes them all, but for the
+//! signature algorithms where it is LibreSSL.
 //!
 //! The expectations are the C tool's: `CURL_TOOL_UNDER_TEST` names
 //! another tool to run them on.
@@ -43,6 +44,12 @@ fn stderr(args: &[&str]) -> String {
     run(args).1
 }
 
+/// The tool's library is LibreSSL, as its version names it: a build
+/// over it is OpenSSL's but for what LibreSSL lacks.
+fn over_libressl() -> bool {
+    run(&["-V"]).0.contains(" LibreSSL/")
+}
+
 /// `--capath` (which the proxy's takes too) and `--tls13-ciphers` are
 /// warned of as ignored, in C's words, where Schannel is the library.
 #[test]
@@ -76,11 +83,14 @@ fn options_the_library_lacks_are_warned_of() {
 
 /// The options Schannel lacks that C's tool says nothing of are set
 /// nowhere and left out of the program `--libcurl` writes, as libcurl
-/// refuses them; OpenSSL takes them all, and they are written.
+/// refuses them; OpenSSL takes them all, and they are written. LibreSSL
+/// takes all but the signature algorithms
+/// (`HAVE_SSL_CTX_SET1_SIGALGS`).
 #[test]
 fn options_the_library_lacks_are_not_written() {
     // A file that is there, as the tool checks a revocation list is.
     let crl = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+    let libressl = over_libressl();
     let (program, said) = run(&[
         "--libcurl",
         "-",
@@ -104,7 +114,9 @@ fn options_the_library_lacks_are_not_written() {
         "CURLOPT_SSLENGINE",
     ] {
         let written = program.contains(&format!("curl_easy_setopt(curl, {option},"));
-        assert_eq!(written, !cfg!(feature = "schannel"), "{option}: {program}");
+        let lacks = cfg!(feature = "schannel")
+            || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && libressl);
+        assert_eq!(written, !lacks, "{option}: {program}");
     }
     // Neither is warned of.
     assert!(!said.contains("ignoring"), "{said}");
@@ -113,13 +125,14 @@ fn options_the_library_lacks_are_not_written() {
 }
 
 /// `--engine list` lists the library's engines: OpenSSL's built-in
-/// `dynamic` among them; none for Schannel, which has none.
+/// `dynamic` among them; none for Schannel, which has none, nor for
+/// LibreSSL, which has none either (`OPENSSL_NO_ENGINE`).
 #[test]
 fn the_engines_listed_are_the_library_s() {
     let (out, said) = run(&["--engine", "list"]);
     let out = out.replace("\r\n", "\n");
     assert!(out.starts_with("Build-time engines:\n"), "{out}{said}");
-    if cfg!(feature = "schannel") {
+    if cfg!(feature = "schannel") || over_libressl() {
         assert_eq!(out, "Build-time engines:\n  <none>\n");
     } else {
         assert!(out.lines().any(|l| l == "  dynamic"), "{out}");

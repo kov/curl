@@ -716,6 +716,7 @@ not a difference: it is tracked in `MILESTONES.md`.
   past `MAX_PATH` made absolute. Both can fail, and the call fails with them. C's ANSI build
   converts in the C library (`_stati64`, `unlink`), whose allocations its memory tracker never
   sees, and its `fix_excessive_path` uses the system's `malloc` in the debug build for the same
-  reason; so under `CURL_MEMLIMIT` the Rust build can fail a file call C's makes. A removal with
-  its first allocation refused fails, the file left
-  (`operate::tests::removes_a_partial_file_named_long_without_allocating`).
+  reason; so under `CURL_MEMLIMIT` the Rust build can fail a file call C's makes. Pinned by
+  `removes_a_partial_file_named_long_without_allocating` (`crates/curl-tool/src/operate.rs`): on
+  Windows a removal with its first allocation refused fails and leaves the file, and on Unix the
+  removal allocates nothing.

@@ -1319,30 +1319,35 @@ through SSPI; MIT krb5 stays Unix-only.
     list, an untrusted root, a name mismatch, credential and CA store reuse, the options Schannel
     lacks) give C's verbose output but for the debug lines of when the peer's data arrived.
 98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **To do.**
-99. **WinIDN.** **Done** (`win-idn`): `IdnToAscii` and `IdnToUnicode` on the name read as
-    UTF-8, in C's 255-unit buffers, `WinIDN` in the version string and no `libidn`. Against
+99. **WinIDN.** **Done**, a Windows build's default as in both oracles (`libidn2` asks for
+    libidn2 instead): `IdnToAscii` and `IdnToUnicode` on the name read as UTF-8, in C's 255-unit
+    buffers, `WinIDN` in the version string and no `libidn`. Against
     C's build with OpenSSL and WinIDN (`C:\work\c-ossl-winidn`): 763, 1034, 1035 and 1560 pass
     on both legs, and 165, 1448, 2046 and 2047, which `DISABLED` lists for the non-Unicode
     build, fail alike when forced; 64 hand cases, by config file and by argv, give the same
     bytes as C's, and the same results as Microsoft's curl.exe 8.21.0.
 100. **WinLDAP.** **Done**: `lib/ldap.c`'s way over `wldap32` (`crates/curl-ldap/src/win.rs`),
-     C's own URL parser (`ldap::parse_url_low`), `ldap_sslinit` and `LDAP_OPT_SSL` for `ldaps:`
-     with any certificate accepted under `-k`, and `ldap_win_bind`'s simple, SSPI and
-     current-user binds; `ldap` and `ldaps` listed and `WinLDAP` in the version string. Against
-     C's WinLDAP build (`C:\work\c-ossl-winidn`), 36 hand cases on a fake server (searches,
-     the parser's errors, binds of each kind, `ldaps:` through stunnel) give the same output,
-     exit code, binds and trace, ports, timings and TLS record sizes aside; on the suite the Rust
-     leg passes 1013, 445 and 3690, and fails no test C passes but 96, 558 and 1014.
+     a session type of its own beside libldap's (`LocalSession`), C's own URL parser
+     (`ldap::parse_url_low`), `ldap_sslinit` and `LDAP_OPT_SSL` for `ldaps:` with any
+     certificate accepted under `-k`, and `ldap_win_bind`'s simple, SSPI and current-user binds;
+     the ANSI calls, or in the Unicode build the wide ones, as C's `TCHAR` calls are; `ldap` and
+     `ldaps` listed and `WinLDAP` in the version string. Against C's WinLDAP builds, 36 hand
+     cases on a fake server (searches, the parser's errors, binds of each kind, `ldaps:` through
+     stunnel) give the same output, exit code, binds and trace, ports, timings and TLS record
+     sizes aside, ANSI (`C:\work\c-ossl-winidn`) and Unicode (`C:\work\c-unicode-winidn`),
+     and 14 more with names outside ASCII in the URL, the login and the answer on the
+     Unicode one; on the suite the Rust leg passes 1013, 445 and 3690, and fails no test C
+     passes but 96, 558 and 1014 and FTP's intermittent ones.
 101. **`ENABLE_UNICODE`**: wide argv, paths and environment, beside the ANSI build. **Done**
      (the `unicode` feature): `wmain`'s arguments, the program's path, the CA bundle's search
      and a directory's entries in UTF-8, names opened as UTF-8 through the UTF-16 calls, a name
      that is not UTF-8 refused as C refuses it; the environment stays in the ANSI code page, as
      C's `curl_getenv` reads it, and libidn2 is asked with `idn2_lookup_u8`. Against C's build
-     with OpenSSL, libidn2 and `ENABLE_UNICODE` (`C:\work\c-unicode`), the suite with CI's
-     flags passes 2034 of 2049 on the Rust leg and 1955 of 1968 on C's; the Rust leg fails no
-     test C's passes but 96, 558, 1013 and 1014, as the ANSI build does, and FTP's 135 and 336,
-     which fail now and then on the ANSI build too. 165, 1448, 2046, 2047, 1560 and 3203's
-     Unicode branch run and pass on both legs, and with WinIDN (`C:\work\c-unicode-winidn`)
+     with OpenSSL, WinIDN, WinLDAP and `ENABLE_UNICODE` (`C:\work\c-unicode-winidn`), the
+     suite with CI's flags passes 2037 of 2050 on the Rust leg and 1954 of 1967 on C's; the
+     Rust leg fails no test C's passes but 96, 558 and 1014, as the ANSI build does, and FTP's
+     135 and 336, which fail now and then on the ANSI build too. 165, 1448, 2046, 2047, 1560
+     and 3203's Unicode branch run and pass on both legs, and with WinIDN (`C:\work\c-unicode-winidn`)
      all but 165, which `DISABLED` lists for WinIDN. Hand cases (arguments, `-o`, `-T`, `-K`,
      `--cacert`, cookie jars, `CURL_HOME` and the proxy variables, a `file://` listing, the
      console) give C's bytes but for `--remove-on-error`, which DIVERGENCE.md records.
@@ -1382,7 +1387,7 @@ behaviour oracle only.
      waits for LDAP (step 110) and 1560 is DIVERGENCE.md's "Allocations the platform makes".
 110. **LDAP through `lib/ldap.c`'s path**: macOS's OpenLDAP 2.4 has no `ldap_init_fd`, so C's
      build takes the code WinLDAP takes; one port for both. **Done** on macOS
-     (`Local`, a second LDAP library kind); WinLDAP implements the same traits later.
+     (`Local`, a second LDAP library kind), WinLDAP since (step 100).
 111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **Done**
      (`apple-sectrust`, `apple-idn`): runtests against C's build with both on (`~/work/c-apple`,
      2092 of 2092), the same failures as the plain build (96, 558, 1560).

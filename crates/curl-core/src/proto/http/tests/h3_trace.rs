@@ -4562,7 +4562,8 @@ fn a_refused_stream_is_said_on_its_own_transfer() {
 /// What a transfer's step reads for its sibling's stream has the sibling
 /// run when its turn next comes only if it must act on it, as C's
 /// callbacks mark it dirty: its body, written to it as it is read, does
-/// not (`cb_h3_recv_data`); its stream's close does (`cb_h3_stream_close`).
+/// not (`cb_h3_recv_data`); its stream's close does (`cb_h3_stream_close`),
+/// and so does its flow unblocked once it was blocked.
 /// The first runs alone, by its timer, and reads the packet with the
 /// second's.
 #[test]
@@ -4589,6 +4590,13 @@ fn a_sibling_runs_for_its_stream_s_close_and_not_for_its_body() {
     ]);
     assert_eq!(body, b"all of it");
     assert!(sibling_ran, "run for its close: {after:#?}");
+    // Its flow unblocked once it was blocked, it runs to send more
+    // (`cb_extend_max_stream_data`); unblocked when it was not, it has
+    // nothing to act on.
+    let (sibling_ran, _, after) = ran(vec![Told::Blocked(4), Told::Unblocked(4)]);
+    assert!(sibling_ran, "run for its flow unblocked: {after:#?}");
+    let (sibling_ran, _, after) = ran(vec![Told::Unblocked(4)]);
+    assert!(!sibling_ran, "not run, never blocked: {after:#?}");
 }
 
 /// The transfers on one connection wait on its socket together: a wait

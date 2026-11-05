@@ -262,8 +262,8 @@ static VERSION: VersionInfo = VersionInfo {
 };
 
 /// The protocols built, in C's order. LDAP's two only where the LDAP
-/// crate links an LDAP library (`curl_build::ldap`): Windows' build has
-/// WinLDAP, not bound yet, so it has neither LDAP protocol, as a C build
+/// crate links an LDAP library (`curl_build::ldap`), or on Windows,
+/// whose WinLDAP the system has; without one, neither, as a C build
 /// without LDAP has not.
 #[cfg(ldap)]
 const PROTOCOLS: &[Protocol] = &[

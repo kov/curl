@@ -130,6 +130,7 @@ dependencies = [
  "curl-build",
  "curl-core",
  "proptest",
+ "windows-sys",
 ]
 
 [[package]]

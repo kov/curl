@@ -1,0 +1,77 @@
+=== a WinLDAP bind with a login is made simply whatever method is asked for
+file: crates/curl-core/src/ldap.rs
+witness: curl-core proto::ldap::local::tests::a_windows_bind_is_made_as_ldap_win_bind_makes_it
+--- old
+        if let Some((user, password)) = creds.filter(|_| auth.contains(AuthMethods::BASIC)) {
+--- new
+        if let Some((user, password)) = creds {
+
+=== a WinLDAP bind asked for Negotiate and Digest is made with Digest
+file: crates/curl-core/src/ldap.rs
+witness: curl-core proto::ldap::local::tests::a_windows_bind_is_made_as_ldap_win_bind_makes_it
+--- old
+        let method = if auth.contains(AuthMethods::NEGOTIATE) {
+--- new
+        let method = if auth == AuthMethods::NEGOTIATE {
+
+=== a WinLDAP session over ldaps is made in the clear
+file: crates/curl-core/src/proto/ldap/local.rs
+witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the_peer_as_c_s_does
+--- old
+        let made = match library.open(peer.name(), port, ssl) {
+--- new
+        let made = match library.open(peer.name(), port, false) {
+
+=== a WinLDAP session over ldaps is not told to speak TLS
+file: crates/curl-core/src/proto/ldap/local.rs
+witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the_peer_as_c_s_does
+--- old
+                s.set_ssl();
+--- new
+
+=== a WinLDAP session told not to check the peer checks it all the same
+file: crates/curl-core/src/proto/ldap/local.rs
+witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the_peer_as_c_s_does
+--- old
+                    s.accept_any_cert();
+--- new
+
+=== a WinLDAP session checks no peer where only the name was to be checked
+file: crates/curl-core/src/proto/ldap/local.rs
+witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the_peer_as_c_s_does
+--- old
+                    if verify_host {
+--- new
+                    if false {
+
+=== a WinLDAP bind refused in version 3 is tried in version 2 as another bind
+file: crates/curl-core/src/proto/ldap/local.rs
+witness: curl-core proto::ldap::local::tests::a_windows_bind_is_made_as_ldap_win_bind_makes_it
+--- old
+            rc = s.bind(how);
+--- new
+            rc = s.bind(Bind::CurrentUser);
+
+=== C's LDAP URL parser takes a URL ending in an empty extension
+file: crates/curl-core/src/ldap/low_url.rs
+witness: curl-core ldap::low_url::tests::a_url_is_refused_as_c_refuses_it
+--- old
+        Some([]) => Err(LowUrlError::InvalidSyntax),
+--- new
+        Some([]) => Ok(search),
+
+=== C's LDAP URL parser reads past an empty or overlong attribute
+file: crates/curl-core/src/ldap/low_url.rs
+witness: curl-core ldap::low_url::tests::the_attributes_end_at_an_empty_or_overlong_one
+--- old
+        if len == 0 || len > MAX_ATTRIBUTE {
+--- new
+        if len == 0 {
+
+=== C's LDAP URL parser lets a control byte into a filter
+file: crates/curl-core/src/ldap/low_url.rs
+witness: curl-core ldap::low_url::tests::a_url_is_refused_as_c_refuses_it
+--- old
+        search.filter = Some(decoded(decode_but_control(filter))?);
+--- new
+        search.filter = Some(decoded(decode_but_zero(filter))?);

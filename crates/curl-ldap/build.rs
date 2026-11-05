@@ -2,7 +2,7 @@
 //! drives them: over the connection's socket where libldap has
 //! `ldap_init_fd` (`lib/openldap.c`, `USE_OPENLDAP`), over a connection
 //! of its own where it has not, as macOS's LDAP.framework (`lib/ldap.c`);
-//! and build the table of their headers' values and layouts the tests
+//! none on Windows, whose WinLDAP windows-sys links; and build the table of their headers' values and layouts the tests
 //! compare `src/sys.rs` with.
 
 // A build script is no library: aborting on a failed allocation is fine.
@@ -11,6 +11,10 @@
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(openldap)");
     println!("cargo::rustc-check-cfg=cfg(ldap)");
+    // Windows' WinLDAP is the system's, linked by windows-sys.
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        return;
+    }
     // The core lists the LDAP protocols by the same answer.
     let ldap = curl_build::ldap();
     if !ldap.links {

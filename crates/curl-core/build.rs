@@ -48,9 +48,11 @@ fn main() {
     let dest = Path::new(&env::var("OUT_DIR").unwrap()).join("curlver.rs");
     fs::write(dest, out).expect("write curlver.rs");
     // The LDAP protocols are built where the LDAP crate links its
-    // library, by the same check.
+    // library, by the same check, and on Windows, whose WinLDAP is the
+    // system's.
     println!("cargo::rustc-check-cfg=cfg(ldap)");
-    if curl_build::ldap().links {
+    let windows = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows");
+    if windows || curl_build::ldap().links {
         println!("cargo::rustc-cfg=ldap");
     }
 }

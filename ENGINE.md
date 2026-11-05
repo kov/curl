@@ -4050,14 +4050,20 @@ search's message and the URL's parts.
 
 Where libldap has no `ldap_init_fd`, as macOS's LDAP.framework, C's build takes `lib/ldap.c`
 instead, and so does the rewrite: `Libraries.ldap` is an `LdapLibrary`, `Fd` for the above or
-`Local` for `proto/ldap/local.rs` over the `Local` traits, which a WinLDAP binding would answer
-too (its TLS is a `LocalTls` of its own). The whole exchange is DO's, blocking in each library
-call as C's `ldap_do` does: the library opens a connection of its own to the host and port the
-transfer's connection reached (which carries nothing and is closed after), sets C's options
-(ldaps's CA file and certificate checks as `LDAP_OPT_X_TLS` options), binds (again in version 2
-if refused in the clear), searches, and the entries are written as `lib/ldap.c`'s LDIF, which
-differs from `openldap.c`'s: an attribute with no values is an empty line alone, no blank line
-ends an entry, and a size-limited search says how many entries came.
+`Local` for `proto/ldap/local.rs` over the `Local` traits, which WinLDAP's binding answers too.
+The whole exchange is DO's, blocking in each library call as C's `ldap_do` does: the library
+opens a connection of its own to the host and port the transfer's connection reached (which
+carries nothing and is closed after), sets C's options, binds (again in version 2 if refused in
+the clear), searches, and the entries are written as `lib/ldap.c`'s LDIF, which differs from
+`openldap.c`'s: an attribute with no values is an empty line alone, no blank line ends an entry,
+and a size-limited search says how many entries came. What differs by library is the library's
+to say: its URL parser (`parse_url`, handed the URL's text and its path and query; WinLDAP has
+none, so C's own `ldap_url_parse_low` is the core's `ldap::parse_url_low`), its TLS
+(`LocalTls`: OpenLDAP's CA file and certificate checks as `LDAP_OPT_X_TLS` options, or WinLDAP's
+session made for TLS, `LDAP_OPT_SSL`, the system's store, and a callback accepting any
+certificate where the peer is not checked) and its binds (`Binds`: simple, or `ldap_win_bind`'s
+choice of a simple bind, an SSPI one with the login, or one as the process's user, which the core
+makes as a `Bind`).
 
 ## 6. HTTP/1.x
 

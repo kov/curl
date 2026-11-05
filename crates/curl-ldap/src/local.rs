@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ldap::{
-    Attribute, Code, Entries, Local, LocalSession, LocalTls, NoName, Opened, RequireCert, Search,
-    UrlError, Version,
+    Attribute, Bind, Binds, Code, Entries, Local, LocalSession, LocalTls, LocalUrl, NoName, Opened,
+    RequireCert, Search, UrlError, Version,
 };
 
 use crate::common::{self, CSearch, bytes, scope_number, terminated};
@@ -50,8 +50,8 @@ impl Local for Legacy {
         (name, unsafe { sys::curl_ldap_vendor_version })
     }
 
-    fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError> {
-        common::parse_url(url)
+    fn parse_url(&self, url: &LocalUrl<'_>) -> Result<Search, UrlError> {
+        common::parse_url(url.text)
     }
 
     fn describe(&self, code: Code) -> &'static [u8] {
@@ -64,11 +64,21 @@ impl Local for Legacy {
         LocalTls::OpenLdap
     }
 
+    fn binds(&self) -> Binds {
+        Binds::Simple
+    }
+
     fn bind_call(&self) -> &'static str {
         "ldap_simple_bind_s"
     }
 
-    fn open(&self, host: &[u8], port: u16) -> Result<Box<dyn LocalSession>, Opened> {
+    /// The session is told to speak TLS by its options, after it is made.
+    fn open(
+        &self,
+        host: &[u8],
+        port: u16,
+        _secured: bool,
+    ) -> Result<Box<dyn LocalSession>, Opened> {
         let host = match terminated(host) {
             Ok(Some(host)) => host,
             // A name with a NUL reaches no host.
@@ -192,7 +202,18 @@ impl LocalSession for Session {
         checked(self.set_int(sys::LDAP_OPT_X_TLS, sys::LDAP_OPT_X_TLS_HARD))
     }
 
-    fn bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code {
+    fn set_ssl(&mut self) {
+        unreachable!("OpenLDAP's library is told to speak TLS by its X_TLS options");
+    }
+
+    fn accept_any_cert(&mut self) {
+        unreachable!("OpenLDAP's library is told how to check the peer by its X_TLS options");
+    }
+
+    fn bind(&mut self, how: Bind<'_>) -> Code {
+        let Bind::Simple { user, password } = how else {
+            unreachable!("OpenLDAP's library binds simply: {how:?}");
+        };
         let z = |s: Option<&[u8]>| match s {
             None => Ok(None),
             Some(s) => match terminated(s) {

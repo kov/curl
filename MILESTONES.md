@@ -1325,7 +1325,14 @@ through SSPI; MIT krb5 stays Unix-only.
     on both legs, and 165, 1448, 2046 and 2047, which `DISABLED` lists for the non-Unicode
     build, fail alike when forced; 64 hand cases, by config file and by argv, give the same
     bytes as C's, and the same results as Microsoft's curl.exe 8.21.0.
-100. **WinLDAP.** **To do.**
+100. **WinLDAP.** **Done**: `lib/ldap.c`'s way over `wldap32` (`crates/curl-ldap/src/win.rs`),
+     C's own URL parser (`ldap::parse_url_low`), `ldap_sslinit` and `LDAP_OPT_SSL` for `ldaps:`
+     with any certificate accepted under `-k`, and `ldap_win_bind`'s simple, SSPI and
+     current-user binds; `ldap` and `ldaps` listed and `WinLDAP` in the version string. Against
+     C's WinLDAP build (`C:\work\c-ossl-winidn`), 36 hand cases on a fake server (searches,
+     the parser's errors, binds of each kind, `ldaps:` through stunnel) give the same output,
+     exit code, binds and trace, ports, timings and TLS record sizes aside; on the suite the Rust
+     leg passes 1013, 445 and 3690, and fails no test C passes but 96, 558 and 1014.
 101. **`ENABLE_UNICODE`**: wide argv, paths and environment, beside the ANSI build. **Done**
      (the `unicode` feature): `wmain`'s arguments, the program's path, the CA bundle's search
      and a directory's entries in UTF-8, names opened as UTF-8 through the UTF-16 calls, a name

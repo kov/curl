@@ -825,12 +825,7 @@ const fn libraries_with(
         h2: Some(&curl_nghttp2::NGHTTP2),
         h3: crate::tlslib::H3,
         ssh: Some(&curl_libssh::LIBSSH),
-        // Windows' build has no LDAP library, as a C build without one;
-        // nor has macOS's yet (`curl_ldap`).
-        #[cfg(unix)]
         ldap: curl_ldap::library(),
-        #[cfg(windows)]
-        ldap: None,
         psl: Some(&curl_psl::LIBPSL),
         random: RANDOM,
     }

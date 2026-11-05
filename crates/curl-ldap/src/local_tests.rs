@@ -1,78 +1,14 @@
 use super::*;
 use crate::ber::*;
-use std::io::{Read as _, Write as _};
-use std::net::{TcpListener, TcpStream};
-use std::thread;
-
-/// One LDAP message read off `s`: its operation's tag and the whole
-/// message; none at the end.
-fn read_message(s: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
-    let mut head = [0u8; 2];
-    if s.read_exact(&mut head).is_err() {
-        return None;
-    }
-    assert_eq!(head[0], 0x30, "a message");
-    let len = if head[1] < 0x80 {
-        usize::from(head[1])
-    } else {
-        let mut n = vec![0u8; usize::from(head[1] & 0x7f)];
-        s.read_exact(&mut n).unwrap();
-        n.iter().fold(0, |a, &b| a << 8 | usize::from(b))
-    };
-    let mut content = vec![0u8; len];
-    s.read_exact(&mut content).unwrap();
-    // The message id, an integer, then the operation.
-    let id_len = usize::from(content[1]);
-    let op = content[2 + id_len];
-    Some((op, content))
-}
-
-/// The id of the message `content` is.
-fn id_of(content: &[u8]) -> u8 {
-    assert_eq!((content[0], content[1]), (0x02, 1), "a one-byte id");
-    content[2]
-}
-
-/// A server on a port of its own that answers each request as `answer`
-/// says, a message for each, and gives the operations it was sent.
-fn serve(answer: fn(u8, u8) -> Vec<Vec<u8>>) -> (u16, thread::JoinHandle<Vec<u8>>) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut s, _) = listener.accept().unwrap();
-        let mut ops = Vec::new();
-        while let Some((op, content)) = read_message(&mut s) {
-            ops.push(op);
-            for m in answer(op, id_of(&content)) {
-                s.write_all(&m).unwrap();
-            }
-        }
-        ops
-    });
-    (port, server)
-}
-
-/// The answers of a server that finds two entries: a bind taken, then
-/// the search's entries and its result, `code`.
-fn finds_two(op: u8, id: u8, code: u8) -> Vec<Vec<u8>> {
-    match op {
-        0x60 => vec![ldap_message(id, &result_op(0x61, 0, b""))],
-        0x63 => vec![
-            ldap_message(
-                id,
-                &entry_op(b"cn=a,dc=x", &[(b"cn", &[b"a", b"b"]), (b"sn", &[])]),
-            ),
-            ldap_message(id, &entry_op(b"cn=c,dc=x", &[(b"photo", &[b"\x00\x01"])])),
-            ldap_message(id, &result_op(0x65, code, b"")),
-        ],
-        _ => Vec::new(),
-    }
-}
 
 fn search() -> Search {
-    LEGACY
-        .parse_url(b"ldap://h/dc=x??sub?(objectClass=*)")
-        .unwrap()
+    let text = b"ldap://h/dc=x??sub?(objectClass=*)";
+    let url = LocalUrl {
+        text,
+        path: b"/dc=x",
+        query: Some(b"?sub?(objectClass=*)"),
+    };
+    LEGACY.parse_url(&url).unwrap()
 }
 
 /// A session of the library's own reaches the host and port it is
@@ -82,11 +18,17 @@ fn search() -> Search {
 #[test]
 fn a_session_binds_and_searches_on_a_connection_of_its_own() {
     let (port, server) = serve(|op, id| finds_two(op, id, 0));
-    let mut session = LEGACY.open(b"127.0.0.1", port).unwrap();
+    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
     session.set_network_timeout(Duration::from_secs(10));
     session.set_version(Version::V3);
     session.set_no_referrals();
-    assert_eq!(session.bind(None, None), Code::SUCCESS);
+    assert_eq!(
+        session.bind(Bind::Simple {
+            user: None,
+            password: None
+        }),
+        Code::SUCCESS
+    );
     let (code, mut found) = session.search(&search()).unwrap();
     assert_eq!(code, Code::SUCCESS);
     assert!(found.next_entry());
@@ -116,16 +58,22 @@ fn a_session_binds_and_searches_on_a_connection_of_its_own() {
     drop(found);
     drop(session);
     // The bind, the search, the unbind.
-    assert_eq!(server.join().unwrap(), [0x60, 0x63, 0x42]);
+    assert_eq!(ops(&server.join().unwrap()), [0x60, 0x63, 0x42]);
 }
 
 /// A search cut short by the size limit gives what came and says so.
 #[test]
 fn a_search_cut_short_gives_what_came() {
     let (port, server) = serve(|op, id| finds_two(op, id, 4));
-    let mut session = LEGACY.open(b"127.0.0.1", port).unwrap();
+    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
     session.set_version(Version::V3);
-    assert_eq!(session.bind(None, None), Code::SUCCESS);
+    assert_eq!(
+        session.bind(Bind::Simple {
+            user: None,
+            password: None
+        }),
+        Code::SUCCESS
+    );
     let (code, mut found) = session.search(&search()).unwrap();
     assert_eq!(code, Code::SIZELIMIT_EXCEEDED);
     assert!(found.next_entry());
@@ -143,10 +91,13 @@ fn refusals_are_the_server_s_codes() {
         0x60 => vec![ldap_message(id, &result_op(0x61, 49, b""))],
         _ => Vec::new(),
     });
-    let mut session = LEGACY.open(b"127.0.0.1", port).unwrap();
+    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
     session.set_version(Version::V3);
     assert_eq!(
-        session.bind(Some(b"cn=me"), Some(b"pw")),
+        session.bind(Bind::Simple {
+            user: Some(b"cn=me"),
+            password: Some(b"pw")
+        }),
         Code::INVALID_CREDENTIALS
     );
     drop(session);
@@ -157,9 +108,15 @@ fn refusals_are_the_server_s_codes() {
         0x63 => vec![ldap_message(id, &result_op(0x65, 32, b""))],
         _ => Vec::new(),
     });
-    let mut session = LEGACY.open(b"127.0.0.1", port).unwrap();
+    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
     session.set_version(Version::V3);
-    assert_eq!(session.bind(None, None), Code::SUCCESS);
+    assert_eq!(
+        session.bind(Bind::Simple {
+            user: None,
+            password: None
+        }),
+        Code::SUCCESS
+    );
     assert_eq!(session.search(&search()).err(), Some(Code(32)));
     drop(session);
     server.join().unwrap();
@@ -171,7 +128,7 @@ fn refusals_are_the_server_s_codes() {
 /// there, as ours does with the library's answer.
 #[test]
 fn the_tls_options_are_taken() {
-    let mut session = LEGACY.open(b"127.0.0.1", 9).unwrap();
+    let mut session = LEGACY.open(b"127.0.0.1", 9, false).unwrap();
     let ca = session.set_ca_file(b"/nonexistent/ca.pem");
     if cfg!(target_vendor = "apple") {
         assert_eq!(ca, Err(Code(-1)));

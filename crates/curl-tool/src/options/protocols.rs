@@ -154,12 +154,9 @@ mod tests {
     ];
 
     /// The protocols the library speaks: LDAP's only where the build has
-    /// an LDAP library (none on Windows).
+    /// an LDAP library.
     fn spoken() -> Vec<&'static str> {
-        #[cfg(unix)]
         let ldap = curl_ldap::library().is_some();
-        #[cfg(windows)]
-        let ldap = false;
         BUILT
             .iter()
             .copied()

@@ -246,12 +246,8 @@ pub extern "C" fn curl_version() -> *mut c_char {
             // A build without QUIC names no QUIC library.
             let h3 = crate::tlslib::quic();
             let gss = Library("mit-krb5", curl_gssapi::version());
-            // Named by the library itself (`Curl_ldap_version`). Windows'
-            // build has no LDAP library, nor has macOS's yet.
-            #[cfg(unix)]
+            // Named by the library itself (`Curl_ldap_version`).
             let ldap = curl_ldap::version();
-            #[cfg(windows)]
-            let ldap: Option<&str> = None;
             // A build with the threaded resolver does not use c-ares.
             let ares = (!cfg!(feature = "threaded-resolver")).then_some(ares);
             let libraries: [Option<&dyn fmt::Display>; 12] = [
@@ -313,13 +309,10 @@ mod tests {
     /// `curl_version` lists the libraries linked in after libcurl, in
     /// C's order and words, each version as the library says it.
     /// The LDAP library after a space, as the version string has it:
-    /// none where the build has none (Windows', macOS's).
+    /// none where the build has none.
     #[cfg(feature = "openssl")]
     fn ldap_shown() -> String {
-        #[cfg(unix)]
         let ldap = curl_ldap::version();
-        #[cfg(windows)]
-        let ldap: Option<&str> = None;
         ldap.map_or_else(String::new, |v| format!(" {v}"))
     }
 
@@ -362,12 +355,9 @@ mod tests {
         assert!(said.contains(&format!(" zlib/{info} ")), "{said}");
     }
 
-    /// Whether the build has an LDAP library: none on Windows.
+    /// Whether the build has an LDAP library.
     fn has_ldap() -> bool {
-        #[cfg(unix)]
-        return curl_ldap::library().is_some();
-        #[cfg(windows)]
-        return false;
+        curl_ldap::library().is_some()
     }
 
     /// The protocols the core reports reach the C struct as names.

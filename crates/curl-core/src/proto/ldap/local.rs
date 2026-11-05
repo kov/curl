@@ -15,9 +15,10 @@ use crate::auth::creds::{CredentialGate, Takes};
 use crate::conn::ConnLease;
 use crate::conn::io::Events;
 use crate::deliver::{Pipeline, Reach};
-use crate::error::{ErrorKind, url_error};
+use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::ldap::{
-    Code, Entries, Local, LocalSession, LocalTls, NoName, Opened, RequireCert, UrlError, Version,
+    Bind, Binds, Code, Entries, Local, LocalSession, LocalTls, LocalUrl, NoName, Opened,
+    RequireCert, UrlError, Version,
 };
 use crate::multi::Host;
 use crate::multi::state::StepCx;
@@ -36,6 +37,10 @@ pub(crate) struct Request {
     pub(in crate::proto) base: crate::proto::base::RequestBase,
     /// The URL, as the transfer names it (`state.url`).
     url_text: Vec<u8>,
+    /// The URL's path, as it is encoded (`state.up.path`).
+    path: Vec<u8>,
+    /// The URL's query, empty where it ends in `?` (`state.up.query`).
+    query: Option<Vec<u8>>,
 }
 
 /// What became of the exchange before the session was let go of: the
@@ -71,6 +76,20 @@ impl Request {
         let credentials = crate::proto::request_credentials(cx, gate.trusted(), url, takes)?;
         let credentials = crate::proto::with_netrc(credentials, peer.name(), takes, cx)?;
         let url_text = url.get(Part::Url, GetOptions::NONE).map_err(url_error)?;
+        let encoded = GetOptions {
+            url_encode: true,
+            ..GetOptions::NONE
+        };
+        let path = url.get(Part::Path, encoded).map_err(url_error)?;
+        let with_empty = GetOptions {
+            get_empty: true,
+            ..GetOptions::NONE
+        };
+        let query = match url.get(Part::Query, with_empty) {
+            Ok(query) => Some(query),
+            Err(UrlErrorKind::NoQuery) => None,
+            Err(e) => return Err(url_error(e)),
+        };
         Ok(Request {
             library,
             base: crate::proto::base::RequestBase {
@@ -79,6 +98,8 @@ impl Request {
                 credentials,
             },
             url_text,
+            path,
+            query,
         })
     }
 
@@ -117,7 +138,12 @@ impl Request {
             format_args!("LDAP local: LDAP Vendor = {vendor} ; LDAP Version = {version}"),
         );
         trace::info_with(cx, &[b"LDAP local: ", &self.url_text]);
-        let search = match library.parse_url(&self.url_text) {
+        let url = LocalUrl {
+            text: &self.url_text,
+            path: &self.path,
+            query: self.query.as_deref(),
+        };
+        let search = match library.parse_url(&url) {
             Ok(search) => search,
             // The URL's number named as the library names its codes, as C
             // has it (`ldap_err2string`).
@@ -141,7 +167,7 @@ impl Request {
             format_args!("LDAP local: trying to establish {state} connection"),
         );
         let peer = &self.base.peer;
-        let made = match library.open(peer.name(), port) {
+        let made = match library.open(peer.name(), port, ssl) {
             Ok(made) => made,
             Err(Opened::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
             Err(Opened::Refused) => {
@@ -172,11 +198,15 @@ impl Request {
         let secret = self.base.credentials.as_ref().map(|c| c.secret());
         let user = secret.map(|s| s.user());
         let password = secret.map(|s| s.password());
-        let mut rc = s.bind(user, password);
+        let how = match library.binds() {
+            Binds::Simple => Bind::Simple { user, password },
+            Binds::Windows => Bind::windows(user, password, cx.easy().options().http.auth.0),
+        };
+        let mut rc = s.bind(how);
         // A bind in the clear refused in version 3 is tried in version 2.
         if !ssl && rc != Code::SUCCESS {
             s.set_version(Version::V2);
-            rc = s.bind(user, password);
+            rc = s.bind(how);
         }
         if rc != Code::SUCCESS {
             return Err(trace::fail_with(
@@ -294,6 +324,28 @@ impl Request {
                             library.describe(rc),
                         ],
                     ));
+                }
+                Ok(())
+            }
+            LocalTls::Windows => {
+                // The system's store checks the peer, unless told to
+                // accept any; but it cannot check the name alone.
+                s.set_ssl();
+                let tls = &cx.easy().options().tls;
+                let verify_peer = identity.map_or(tls.verify_peer, |i| i.verify_peer);
+                let verify_host = identity.map_or(tls.verify_host, |i| i.verify_host);
+                if !verify_peer {
+                    if verify_host {
+                        return Err(trace::fail(
+                            cx,
+                            ErrorKind::NotBuiltIn,
+                            format_args!(
+                                "LDAP local: host verification cannot be enabled when peer \
+                                 verification is disabled for Windows native LDAP"
+                            ),
+                        ));
+                    }
+                    s.accept_any_cert();
                 }
                 Ok(())
             }

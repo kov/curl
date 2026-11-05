@@ -23,6 +23,11 @@ use std::time::Duration;
 use curl_alloc::OutOfMemory;
 use curl_os::socket::BorrowedSocket;
 
+use crate::options::AuthMethods;
+
+mod low_url;
+pub use low_url::{LowUrlError, parse_url_low};
+
 /// An LDAP library.
 pub trait Ldap: fmt::Debug + Send + Sync {
     /// The search `url` names (`ldap_url_parse`), or the library's
@@ -242,9 +247,10 @@ pub trait Local: fmt::Debug + Send + Sync {
     /// (`LDAP_VENDOR_NAME`, `LDAP_VENDOR_VERSION`).
     fn vendor(&self) -> (&'static str, i32);
 
-    /// The search `url` names (`ldap_url_parse`), or the library's
+    /// The search `url` names (`ldap_url_parse`, or C's own
+    /// `ldap_url_parse_low` where the library has none), or the library's
     /// number for what is wrong with it.
-    fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError>;
+    fn parse_url(&self, url: &LocalUrl<'_>) -> Result<Search, UrlError>;
 
     /// The library's words for `code` (`ldap_err2string`).
     fn describe(&self, code: Code) -> &'static [u8];
@@ -253,12 +259,103 @@ pub trait Local: fmt::Debug + Send + Sync {
     /// an `ldaps:` session's set-up.
     fn tls(&self) -> LocalTls;
 
+    /// How C binds with the library, which decides the call a bind is
+    /// made with.
+    fn binds(&self) -> Binds;
+
     /// The call a bind is made with, as a failed bind names it.
     fn bind_call(&self) -> &'static str;
 
     /// A session to `host`'s `port`, made but not connected
-    /// (`ldap_init`).
-    fn open(&self, host: &[u8], port: u16) -> Result<Box<dyn LocalSession>, Opened>;
+    /// (`ldap_init`); with TLS from the start if `secured` where the
+    /// library is told so as the session is made (`ldap_sslinit`).
+    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<Box<dyn LocalSession>, Opened>;
+}
+
+/// The URL a [`Local`] library is handed: the whole of it as the
+/// transfer names it (`state.url`), its path as it is encoded
+/// (`state.up.path`) and its query, empty where it ends in `?`
+/// (`state.up.query`).
+#[derive(Clone, Copy, Debug)]
+pub struct LocalUrl<'a> {
+    pub text: &'a [u8],
+    pub path: &'a [u8],
+    pub query: Option<&'a [u8]>,
+}
+
+/// How C binds with a [`Local`] library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binds {
+    /// Simply, with the credentials if there are any
+    /// (`ldap_simple_bind_s`).
+    Simple,
+    /// As WinLDAP's `ldap_win_bind` does: simply with credentials where
+    /// Basic is asked for, else by SSPI, with them as Negotiate or Digest
+    /// where asked, or as the user the process runs as.
+    Windows,
+}
+
+/// A bind, as the library is asked to make it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bind<'a> {
+    /// A simple bind as `user` with `password`, none for none
+    /// (`ldap_simple_bind_s`).
+    Simple {
+        user: Option<&'a [u8]>,
+        password: Option<&'a [u8]>,
+    },
+    /// By SSPI with `method`, as `user` (`domain\user` or `domain/user`
+    /// naming a domain) with `password` (`ldap_bind_s` with an SSPI
+    /// identity).
+    Sspi {
+        method: SspiMethod,
+        user: &'a [u8],
+        password: &'a [u8],
+    },
+    /// By SSPI's Negotiate, as the user the process runs as
+    /// (`ldap_bind_s` with no identity).
+    CurrentUser,
+}
+
+/// The SSPI method a bind with credentials is made with
+/// (`LDAP_AUTH_NEGOTIATE`, `LDAP_AUTH_DIGEST`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SspiMethod {
+    Negotiate,
+    Digest,
+}
+
+impl<'a> Bind<'a> {
+    /// The bind `ldap_win_bind` makes as `user` with `password`, none for
+    /// none, with the methods `auth` asks for (`CURLOPT_HTTPAUTH`).
+    pub fn windows(
+        user: Option<&'a [u8]>,
+        password: Option<&'a [u8]>,
+        auth: AuthMethods,
+    ) -> Bind<'a> {
+        let creds = user.zip(password);
+        if let Some((user, password)) = creds.filter(|_| auth.contains(AuthMethods::BASIC)) {
+            return Bind::Simple {
+                user: Some(user),
+                password: Some(password),
+            };
+        }
+        let method = if auth.contains(AuthMethods::NEGOTIATE) {
+            Some(SspiMethod::Negotiate)
+        } else if auth.contains(AuthMethods::DIGEST) {
+            Some(SspiMethod::Digest)
+        } else {
+            None
+        };
+        match (method, creds) {
+            (Some(method), Some((user, password))) => Bind::Sspi {
+                method,
+                user,
+                password,
+            },
+            _ => Bind::CurrentUser,
+        }
+    }
 }
 
 /// Why no session was made.
@@ -277,6 +374,10 @@ pub enum LocalTls {
     /// certificates to trust, how hard the peer's is checked, and TLS
     /// from the start.
     OpenLdap,
+    /// By WinLDAP's: TLS from the session's start (`ldap_sslinit`,
+    /// `LDAP_OPT_SSL`), the peer checked against the system's store unless
+    /// a callback accepts any (`LDAP_OPT_SERVER_CERTIFICATE`).
+    Windows,
     /// Not at all: the library has no TLS to set.
     None,
 }
@@ -310,10 +411,16 @@ pub trait LocalSession: fmt::Debug + Send {
     /// Speak TLS from the start (`LDAP_OPT_X_TLS` to
     /// `LDAP_OPT_X_TLS_HARD`).
     fn set_tls_hard(&mut self) -> Result<(), Code>;
-    /// Bind simply as `user` with `password`, none for none, the
-    /// connection made first if it is not yet (`ldap_simple_bind_s`): the
-    /// library's or the server's code.
-    fn bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code;
+    /// Speak TLS (`LDAP_OPT_SSL` on), the library's answer not looked at,
+    /// as C does not ([`LocalTls::Windows`]).
+    fn set_ssl(&mut self);
+    /// Accept whatever certificate the peer shows
+    /// (`LDAP_OPT_SERVER_CERTIFICATE`, C's `bypass_cert_verify`), the
+    /// library's answer not looked at ([`LocalTls::Windows`]).
+    fn accept_any_cert(&mut self);
+    /// Bind as `how` says, the connection made first if it is not yet:
+    /// the library's or the server's code.
+    fn bind(&mut self, how: Bind<'_>) -> Code;
     /// Search, waiting for the whole answer (`ldap_search_s`): its code,
     /// success or too many entries, and the entries; the code otherwise.
     fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code>;

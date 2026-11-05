@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ldap::{Code, Scope, Search, UrlError};
 
+pub(crate) use crate::strings::{c_list, terminated};
 use crate::sys;
 
 /// What `curl -V` names the library as, made once (`Curl_ldap_version`).
@@ -75,19 +76,6 @@ fn api_version(flavor: &str, fallback: &str) -> ([u8; 64], usize) {
 pub(crate) fn vendor_version(v: u32) -> (u32, u32, u32) {
     let (major, patch) = (v / 10000, v % 100);
     (major, (v - major * 10000 - patch) / 100, patch)
-}
-
-/// `text` with a NUL after it, for libldap; none for one with a NUL
-/// inside, which libldap could not be given.
-pub(crate) fn terminated(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    if text.contains(&0) {
-        return Ok(None);
-    }
-    let mut z = Vec::new();
-    z.try_reserve_exact(text.len() + 1)?;
-    z.try_extend_from_slice(text)?;
-    z.try_push(0)?;
-    Ok(Some(z))
 }
 
 /// A C string's bytes, copied; none for NULL.
@@ -203,17 +191,6 @@ pub(crate) fn describe(code: Code) -> &'static [u8] {
     assert!(!s.is_null(), "the library has words for every code");
     // SAFETY: a static C string of the library's.
     unsafe { CStr::from_ptr(s) }.to_bytes()
-}
-
-/// `items` as a NULL-terminated list of the C strings `zs` hold.
-pub(crate) fn c_list(zs: &[Vec<u8>]) -> Result<Vec<*mut c_char>, OutOfMemory> {
-    let mut list = Vec::new();
-    list.try_reserve_exact(zs.len() + 1)?;
-    for z in zs {
-        list.try_push(z.as_ptr().cast_mut().cast::<c_char>())?;
-    }
-    list.try_push(ptr::null_mut())?;
-    Ok(list)
 }
 
 /// A search's base, filter and attributes as C strings, and the attributes'

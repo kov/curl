@@ -6,9 +6,10 @@ use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
 use crate::handler::{DebugHandler, DebugKind, Write as Writes, WriteHandler};
 use crate::id::ArenaPolicy;
-use crate::ldap::{Attribute, LdapLibrary, Scope, Search};
+use crate::ldap::{Attribute, Bind, LdapLibrary, Scope, Search};
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
+use crate::options::AuthMethods;
 use crate::options::Options;
 use crate::time::ManualClock;
 
@@ -31,6 +32,9 @@ struct World {
     entries: Vec<Found>,
     url: Result<Search, UrlError>,
     tls: LocalTls,
+    binds_as: Binds,
+    /// The URL's path and query, as the library was handed them.
+    url_parts: Option<(Vec<u8>, Option<Vec<u8>>)>,
     calls: Vec<String>,
 }
 
@@ -48,6 +52,8 @@ impl Default for World {
                 attrs: None,
             }),
             tls: LocalTls::OpenLdap,
+            binds_as: Binds::Simple,
+            url_parts: None,
             calls: Vec::new(),
         }
     }
@@ -61,10 +67,11 @@ impl Local for FakeLocal {
         ("Fake", 20428)
     }
 
-    fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError> {
+    fn parse_url(&self, url: &LocalUrl<'_>) -> Result<Search, UrlError> {
         let mut w = self.0.lock().unwrap();
         w.calls
-            .push(format!("parse {}", String::from_utf8_lossy(url)));
+            .push(format!("parse {}", String::from_utf8_lossy(url.text)));
+        w.url_parts = Some((url.path.to_vec(), url.query.map(<[u8]>::to_vec)));
         w.url.clone()
     }
 
@@ -82,14 +89,21 @@ impl Local for FakeLocal {
         self.0.lock().unwrap().tls
     }
 
+    fn binds(&self) -> Binds {
+        self.0.lock().unwrap().binds_as
+    }
+
     fn bind_call(&self) -> &'static str {
         "ldap_simple_bind_s"
     }
 
-    fn open(&self, host: &[u8], port: u16) -> Result<Box<dyn LocalSession>, Opened> {
+    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<Box<dyn LocalSession>, Opened> {
         let mut w = self.0.lock().unwrap();
-        w.calls
-            .push(format!("open {}:{port}", String::from_utf8_lossy(host)));
+        let tls = if secured { " secured" } else { "" };
+        w.calls.push(format!(
+            "open {}:{port}{tls}",
+            String::from_utf8_lossy(host)
+        ));
         if !w.open {
             return Err(Opened::Refused);
         }
@@ -134,11 +148,29 @@ impl LocalSession for FakeSession {
         Ok(())
     }
 
-    fn bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code {
-        let show = |v: Option<&[u8]>| v.map(|v| String::from_utf8_lossy(v).into_owned());
+    fn set_ssl(&mut self) {
+        self.call("ssl".into());
+    }
+
+    fn accept_any_cert(&mut self) {
+        self.call("accept any".into());
+    }
+
+    fn bind(&mut self, how: Bind<'_>) -> Code {
+        let show = |v: &[u8]| String::from_utf8_lossy(v).into_owned();
+        let call = match how {
+            Bind::Simple { user, password } => {
+                format!("bind {:?} {:?}", user.map(show), password.map(show))
+            }
+            Bind::Sspi {
+                method,
+                user,
+                password,
+            } => format!("sspi {method:?} {:?} {:?}", show(user), show(password)),
+            Bind::CurrentUser => "bind as the process".to_owned(),
+        };
         let mut w = self.0.lock().unwrap();
-        w.calls
-            .push(format!("bind {:?} {:?}", show(user), show(password)));
+        w.calls.push(call);
         if w.binds.is_empty() {
             Code::SUCCESS
         } else {
@@ -229,6 +261,7 @@ struct Ran {
     body: Vec<u8>,
     said: String,
     calls: Vec<String>,
+    url_parts: Option<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
 /// Run `url` with the fake library as `world` sets it, the transfer as
@@ -289,6 +322,7 @@ fn run(
     m.remove(id, &mut NoEvents).unwrap();
     drop(m);
     let calls = w.lock().unwrap().calls.clone();
+    let url_parts = w.lock().unwrap().url_parts.clone();
     let body = body.0.lock().unwrap().clone();
     let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
     Ran {
@@ -296,6 +330,7 @@ fn run(
         body,
         said,
         calls,
+        url_parts,
     }
 }
 
@@ -683,4 +718,128 @@ fn an_entry_with_no_name_fails_the_transfer() {
     let ran = run(URL, false, |w| w.entries = vec![(None, Vec::new())], |_| {});
     assert_eq!(ran.result, Err(ErrorKind::FailedInit));
     assert_eq!(ran.calls.last().unwrap(), "unbind");
+}
+
+/// The library is handed the URL's text, its path as it is encoded and
+/// its query, an empty one kept, as C's own parser reads them.
+#[test]
+fn the_library_is_handed_the_urls_path_and_query() {
+    for (url, path, query) in [
+        (
+            "ldap://127.0.0.1:PORT/dc=x%2c?cn?sub",
+            &b"/dc=x%2C"[..],
+            Some(&b"cn?sub"[..]),
+        ),
+        ("ldap://127.0.0.1:PORT/dc=x?", b"/dc=x", Some(b"")),
+        ("ldap://127.0.0.1:PORT/dc=x", b"/dc=x", None),
+        ("ldap://127.0.0.1:PORT", b"/", None),
+    ] {
+        let ran = run(url, false, |_| {}, |_| {});
+        assert_eq!(ran.result, Ok(()), "{url}: {}", ran.said);
+        assert_eq!(
+            ran.url_parts,
+            Some((path.to_vec(), query.map(<[u8]>::to_vec))),
+            "{url}"
+        );
+    }
+}
+
+/// WinLDAP's way over `ldaps:`: the session made for TLS, TLS turned on,
+/// the peer left to the system's store; told not to check the peer, any
+/// certificate is accepted, but not where the name alone is to be
+/// checked, which C's build cannot do.
+#[test]
+fn a_windows_ldaps_session_checks_the_peer_as_c_s_does() {
+    let windows = |w: &mut World| w.tls = LocalTls::Windows;
+    let ran = run("ldaps://127.0.0.1:PORT/dc=x", true, windows, |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert!(
+        ran.calls
+            .contains(&"open 127.0.0.1:8389 secured".to_owned()),
+        "{:?}",
+        ran.calls
+    );
+    let at = ran.calls.iter().position(|c| c == "no referrals").unwrap();
+    assert_eq!(ran.calls[at + 1], "ssl");
+    assert!(ran.calls[at + 2].starts_with("bind"), "{:?}", ran.calls);
+
+    let ran = run("ldaps://127.0.0.1:PORT/dc=x", true, windows, |o| {
+        o.tls.verify_peer = false;
+        o.tls.verify_host = false;
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    let at = ran.calls.iter().position(|c| c == "ssl").unwrap();
+    assert_eq!(ran.calls[at + 1], "accept any");
+
+    let ran = run("ldaps://127.0.0.1:PORT/dc=x", true, windows, |o| {
+        o.tls.verify_peer = false;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::NotBuiltIn));
+    assert!(
+        ran.said.contains(
+            "LDAP local: host verification cannot be enabled when peer verification is \
+             disabled for Windows native LDAP\n"
+        ),
+        "{}",
+        ran.said
+    );
+    assert!(ran.calls.contains(&"ssl".to_owned()));
+    assert!(!ran.calls.iter().any(|c| c.starts_with("bind")));
+
+    // In the clear, nothing of it.
+    let ran = run(URL, false, windows, |_| {});
+    assert!(ran.calls.contains(&"open 127.0.0.1:8389".to_owned()));
+    assert!(!ran.calls.contains(&"ssl".to_owned()));
+}
+
+/// WinLDAP's binds: simple with a login where Basic is asked for, which
+/// it is unless set; by SSPI with the login as Negotiate or Digest where
+/// asked; as the process's user without a login, or with no SSPI method
+/// asked; and the same bind again in version 2.
+#[test]
+fn a_windows_bind_is_made_as_ldap_win_bind_makes_it() {
+    let windows = |w: &mut World| {
+        w.binds_as = Binds::Windows;
+        w.binds = vec![Code::INVALID_CREDENTIALS];
+    };
+    let binds = |url: &str, auth: Option<AuthMethods>| {
+        let ran = run(url, false, windows, |o| {
+            if let Some(auth) = auth {
+                o.http.auth = crate::options::HttpAuth(auth);
+            }
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.said);
+        let made: Vec<String> = ran
+            .calls
+            .iter()
+            .filter(|c| c.starts_with("bind") || c.starts_with("sspi"))
+            .cloned()
+            .collect();
+        assert_eq!(made.len(), 2, "{made:?}");
+        assert_eq!(made[0], made[1]);
+        made[0].clone()
+    };
+    let login = "ldap://u:p@127.0.0.1:PORT/dc=x";
+    assert_eq!(binds(login, None), r#"bind Some("u") Some("p")"#);
+    assert_eq!(binds(URL, None), "bind as the process");
+    assert_eq!(
+        binds(login, Some(AuthMethods::NEGOTIATE)),
+        r#"sspi Negotiate "u" "p""#
+    );
+    assert_eq!(
+        binds(login, Some(AuthMethods::DIGEST)),
+        r#"sspi Digest "u" "p""#
+    );
+    assert_eq!(
+        binds(login, Some(AuthMethods::NEGOTIATE | AuthMethods::DIGEST)),
+        r#"sspi Negotiate "u" "p""#
+    );
+    assert_eq!(
+        binds(login, Some(AuthMethods::BEARER)),
+        "bind as the process"
+    );
+    assert_eq!(
+        binds(URL, Some(AuthMethods::NEGOTIATE)),
+        "bind as the process"
+    );
 }

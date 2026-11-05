@@ -1,12 +1,11 @@
-//! LDAP and LDAPS for the curl rewrite, from libldap, driven the way C's
-//! build drives it: over the connection's socket where libldap has
+//! LDAP and LDAPS for the curl rewrite, driven the way C's build drives
+//! its library: libldap over the connection's socket where it has
 //! `ldap_init_fd` (`lib/openldap.c`, `USE_OPENLDAP`), over a connection
 //! of its own where it has not (`lib/ldap.c`), as macOS's LDAP.framework,
-//! an OpenLDAP 2.4. Windows' C build takes `lib/ldap.c` over WinLDAP,
-//! which is not bound yet: such a build has no LDAP library, as a C build
-//! without one.
+//! an OpenLDAP 2.4; and on Windows WinLDAP, over a connection of its own,
+//! as `lib/ldap.c` drives it there (`USE_WIN32_LDAP`).
 
-#[cfg(all(test, ldap))]
+#[cfg(all(test, any(ldap, windows)))]
 mod ber;
 #[cfg(ldap)]
 mod common;
@@ -17,29 +16,37 @@ mod common;
 mod local;
 #[cfg(openldap)]
 mod openldap;
+#[cfg(any(ldap, windows))]
+mod strings;
 #[cfg(ldap)]
 mod sys;
+#[cfg(windows)]
+mod win;
 
 use curl_core::ldap::LdapLibrary;
 
 /// The library each handle speaks LDAP with, and the way it is driven,
 /// if the build has one.
 pub const fn library() -> Option<LdapLibrary> {
+    #[cfg(windows)]
+    return Some(LdapLibrary::Local(&win::WINLDAP));
     #[cfg(openldap)]
     return Some(LdapLibrary::Fd(&openldap::LIBLDAP));
     #[cfg(all(ldap, not(openldap)))]
     return Some(LdapLibrary::Local(&local::LEGACY));
-    #[cfg(not(ldap))]
+    #[cfg(not(any(ldap, windows)))]
     return None;
 }
 
 /// The library's version, as `curl -V` names it (`Curl_ldap_version`),
 /// if the build has one.
 pub fn version() -> Option<&'static str> {
+    #[cfg(windows)]
+    return Some(win::version());
     #[cfg(openldap)]
     return Some(openldap::version());
     #[cfg(all(ldap, not(openldap)))]
     return Some(local::version());
-    #[cfg(not(ldap))]
+    #[cfg(not(any(ldap, windows)))]
     return None;
 }

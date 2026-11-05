@@ -1,6 +1,6 @@
 [package]
 name = "curl-ldap"
-description = "LDAP and LDAPS for the curl rewrite, from OpenLDAP's libldap"
+description = "LDAP and LDAPS for the curl rewrite, from OpenLDAP's libldap or WinLDAP"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,14 @@ links = "ldap"
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
+
+# WinLDAP, its certificates and SSPI's identities.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Networking_Ldap",
+    "Win32_Security_Authentication_Identity",
+    "Win32_Security_Cryptography",
+] }
 
 [dev-dependencies]
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }

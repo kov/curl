@@ -826,6 +826,37 @@ fn a_wait_polls_the_resolver_s_wake_while_a_transfer_is_alive() {
     assert_eq!(wait(&mut m, &mut ev), Ok(0), "polled, not ready");
 }
 
+/// With the resolver's wake watched, a wait polls each transfer's socket
+/// once: a ready one counts one, the wake not counted unless it is ready
+/// (C's `multi_wait` gives each of its pollfds once).
+#[test]
+fn a_wait_beside_the_resolver_s_wake_counts_a_ready_socket_once() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 4));
+    let net =
+        FakeNet::new(clock.clone()).with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5)));
+    let wake = TryArc::try_new(Waker::new().unwrap()).unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Waking(net, wake.clone(), None)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut ev = Sockets::default();
+    m.add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut ev)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    let wait = |m: &mut Multi<Tagged>, ev: &mut Sockets| {
+        m.wait(&mut [], Duration::ZERO, WaitMode::Wait, ev)
+    };
+    assert_eq!(wait(&mut m, &mut ev), Ok(0), "connecting");
+    clock.advance(Duration::from_millis(5));
+    assert_eq!(wait(&mut m, &mut ev), Ok(1), "connected, counted once");
+    wake.wake().unwrap();
+    assert_eq!(wait(&mut m, &mut ev), Ok(2), "and the wake");
+}
+
 /// A resolver library whose socket closes and whose next one has the same
 /// number: what the application registered is gone, so it is told Remove
 /// first (`sock_state_cb`, `Curl_multi_will_close`), and then told of the

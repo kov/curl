@@ -47,9 +47,9 @@ impl<H: Host> Multi<H> {
         // After the pollsets, which may arm timers (multi.c:1602).
         let internal = self.multi_timeout(now, ev);
         let timeout = internal.map_or(max, |t| t.min(max));
-        let mut wanted = 0;
+        let mut n_sockets = 0;
         pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |_, _| {
-            wanted += 1
+            n_sockets += 1
         })
         .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // The resolver's wake, listened on while a transfer is alive, is
@@ -58,7 +58,7 @@ impl<H: Host> Multi<H> {
         let resolver = resolver_waker
             .as_deref()
             .map(|w| PollFd::new(w.fd(), Events::IN));
-        wanted += usize::from(resolver.is_some());
+        let wanted = n_sockets + usize::from(resolver.is_some());
         // The waker is watched when the wait will be one (multi.c:1574).
         let watch_waker = mode == WaitMode::Poll || wanted > 0 || !extra.is_empty();
         let waker_watched = self.waker.is_some() && watch_waker;
@@ -83,7 +83,7 @@ impl<H: Host> Multi<H> {
         let mut more_sockets = Vec::new();
         let sockets: &mut [SocketPoll<'_>] = match first {
             None => &mut [],
-            Some((s, events)) if wanted <= ON_STACK => {
+            Some((s, events)) if n_sockets <= ON_STACK => {
                 few_sockets = [(); ON_STACK].map(|()| SocketPoll::new(s, events));
                 let mut at = 0;
                 pollsets(
@@ -96,10 +96,10 @@ impl<H: Host> Multi<H> {
                     },
                 )
                 .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
-                &mut few_sockets[..wanted]
+                &mut few_sockets[..at]
             }
             Some(_) => {
-                more_sockets.try_reserve_exact(wanted).map_err(oom)?;
+                more_sockets.try_reserve_exact(n_sockets).map_err(oom)?;
                 pollsets(
                     &self.slots,
                     &self.caches.pool,

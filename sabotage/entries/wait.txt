@@ -199,9 +199,9 @@ file: crates/curl-core/src/multi/wait.rs
 witness: curl-sys-abi handle_tests::a_wait_allocates_nothing
 features: debug-hooks
 --- old
-            Some((s, events)) if wanted <= ON_STACK => {
+            Some((s, events)) if n_sockets <= ON_STACK => {
 --- new
-            Some((s, events)) if wanted == usize::MAX => {
+            Some((s, events)) if n_sockets == usize::MAX => {
 
 === a wait allocates its descriptors
 file: crates/curl-core/src/multi/wait.rs
@@ -322,3 +322,11 @@ witness: curl-core multi::socket_tests::a_transfer_driven_by_events_polls_the_re
                 (None, Some(w)) if wake_key == Some(key) => {
 --- new
                 (None, Some(w)) if wake_key == Some(key) && key.get() < 0 => {
+
+=== a wait beside the resolver's wake polls the first socket twice
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::socket_tests::a_wait_beside_the_resolver_s_wake_counts_a_ready_socket_once
+--- old
+                &mut few_sockets[..at]
+--- new
+                &mut few_sockets[..wanted]

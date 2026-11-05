@@ -284,11 +284,12 @@ impl std::fmt::Display for CurlVersion {
         // Named by the library itself (`Curl_ldap_version`). Windows'
         // build has no LDAP library, nor has macOS's yet.
         #[cfg(unix)]
-        let ldap = curl_ldap::version();
+        let (has_ldap, ldap) = match curl_ldap::version() {
+            Some(ldap) => (true, ldap),
+            None => (false, ""),
+        };
         #[cfg(windows)]
-        let ldap: Option<&str> = None;
-        let has_ldap = ldap.is_some();
-        let ldap = ldap.unwrap_or_default();
+        let (has_ldap, ldap) = (false, "");
         let mut libraries: [&dyn std::fmt::Display; 12] = [
             &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
         ];

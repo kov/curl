@@ -1568,3 +1568,11 @@ witness: curl-tool operate::tests::says_why_a_directory_was_not_made_as_c_does
         Some(libc::ENAMETOOLONG) => [b"The directory name ", dir, b" is too long"],
 --- new
         Some(0) => [b"The directory name ", dir, b" is too long"],
+
+=== each transfer is given a library text sink of its own
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::transfers_share_one_library_text_sink
+--- old
+    if let Some(text) = run.library_text.get() {
+--- new
+    if let Some(text) = run.library_text.get().filter(|_| false) {

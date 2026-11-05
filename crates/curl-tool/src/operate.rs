@@ -20,7 +20,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{
-    Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed, SeekFailed,
+    Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed, SeekFailed, TextSink,
 };
 use curl_core::libraries::{Library, SharedLibraries};
 use curl_core::multi::TransferCx;
@@ -129,6 +129,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         started: Cell::new(None),
         stdin_relay: nonblocking::Relay::default(),
         stdin: OnceCell::new(),
+        library_text: OnceCell::new(),
     };
     let loaded = match line.global.ssl_sessions {
         Some(name) => ssl_sessions::load(&run, name),
@@ -725,6 +726,23 @@ struct Shared<'a, 'l> {
     /// descriptor for the run as C's transfers all read descriptor 0
     /// (`per->infd`); none if it is closed.
     stdin: OnceCell<Option<StdinFile>>,
+    /// Where the library's text goes, made for the first transfer and
+    /// given to every one after, as C's tool gives each the one
+    /// `tool_stderr`.
+    library_text: OnceCell<Handler<dyn TextSink>>,
+}
+
+/// Where the library's text goes, the run's one sink: made for the first
+/// transfer, a copy of it for each after.
+fn library_text(run: &Shared) -> Result<Handler<dyn TextSink>, OutOfMemory> {
+    if let Some(text) = run.library_text.get() {
+        return Ok(text.clone());
+    }
+    let text = Handler::text(crate::stderr::LibraryText)?;
+    if run.library_text.set(text.clone()).is_err() {
+        unreachable!("none was set just now");
+    }
+    Ok(text)
 }
 
 /// Standard input, read through one descriptor the transfers share.
@@ -2111,7 +2129,7 @@ fn setopts(
     }
     // `misc_setopts`: the library's text goes where the tool's does.
     s.ptr("CURLOPT_STDERR", Object, |o| {
-        o.callbacks.stderr = Some(Handler::text(crate::stderr::LibraryText).map_err(oom)?);
+        o.callbacks.stderr = Some(library_text(run).map_err(oom)?);
         Ok(())
     })?;
     if !op.resolve.is_empty() {
@@ -4562,6 +4580,7 @@ mod tests {
             started: Cell::new(None),
             stdin_relay: nonblocking::Relay::default(),
             stdin: OnceCell::new(),
+            library_text: OnceCell::new(),
         };
         let out = output::Output::null(msgs).unwrap();
         let post = op.post.as_deref().filter(|_| !op.get);
@@ -5343,6 +5362,7 @@ mod tests {
             started: Cell::new(None),
             stdin_relay: nonblocking::Relay::default(),
             stdin: OnceCell::new(),
+            library_text: OnceCell::new(),
         };
         let first = standard_input(&run, None).unwrap();
         let second = standard_input(&run, None).unwrap();
@@ -5353,5 +5373,38 @@ mod tests {
         let kept = run.stdin.get().unwrap().as_ref().unwrap();
         // The run's, and one for each transfer's read callback.
         assert_eq!(TryArc::count(kept), 3);
+    }
+
+    /// Every transfer's library text goes to the run's one sink, made
+    /// once, as C's tool gives each the one `tool_stderr`: a sink each is
+    /// an allocation each.
+    #[test]
+    fn transfers_share_one_library_text_sink() {
+        let argv: Vec<Vec<u8>> = vec![b"curl".to_vec(), b"http://h/".to_vec()];
+        let mut msgs = Messages::new();
+        msgs.silent = true;
+        let Ok(tool::Parsed::Run(line)) = tool::parse_args(&argv, &mut msgs, &mut |_, _| {}) else {
+            panic!("the command line parses");
+        };
+        let stdout = Stdout::new().unwrap();
+        let share = Share::new().unwrap();
+        let linked = Linked::new().unwrap();
+        let run = Shared {
+            libcurl: None,
+            global: &line.global,
+            stdout: &stdout,
+            tracer: None,
+            msgs,
+            share: &share,
+            linked: &linked,
+            claims: Claims::of_build(),
+            started: Cell::new(None),
+            stdin_relay: nonblocking::Relay::default(),
+            stdin: OnceCell::new(),
+            library_text: OnceCell::new(),
+        };
+        let first = library_text(&run).unwrap();
+        let second = library_text(&run).unwrap();
+        assert!(Handler::ptr_eq(&first, &second));
     }
 }

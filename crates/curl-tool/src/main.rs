@@ -25,6 +25,7 @@ mod msgs;
 mod operate;
 mod options;
 mod output;
+mod sanitize;
 mod slurp;
 mod sockopt;
 mod stderr;

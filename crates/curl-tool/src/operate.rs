@@ -44,6 +44,7 @@ use crate::options::{
 };
 use crate::os_message;
 use crate::output;
+use crate::sanitize::{self, Allow, Unfit};
 use crate::stdout::Stdout;
 use crate::trace::Tracer;
 use crate::write_out::{self, Facts};
@@ -1033,11 +1034,21 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let globbed;
     let output = match (output, names) {
         (Output::File(name), Some(names)) if !to_stdout => {
-            globbed = match names.url.output_name(name, names.upload) {
-                Ok(globbed) => globbed,
+            let made = match names.url.output_name(name, names.upload) {
+                Ok(made) => made,
                 Err(e) => {
                     e.show(name, &msgs);
                     return Made::Failed(e.kind);
+                }
+            };
+            // On Windows the name is made fit, a path and a device left as
+            // they are.
+            globbed = match sanitize::for_windows(made, Allow::EVERYTHING) {
+                Ok(name) => name,
+                Err(Unfit::OutOfMemory) => return Made::Failed(ErrorKind::OutOfMemory),
+                Err(Unfit::InvalidPath) => {
+                    msgs.warn(&[b"bad output filename"]);
+                    return Made::Failed(ErrorKind::BadFunctionArgument);
                 }
             };
             if globbed.is_empty() {
@@ -1051,11 +1062,20 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let remote_name;
     let output = match output {
         Output::Remote => {
-            remote_name = match url_file_name(url, &msgs) {
+            let named = match url_file_name(url, &msgs) {
                 Ok(name) => name,
                 Err(e) => {
                     msgs.error(&[b"Failed to extract a filename from the URL to use for storage"]);
                     return Made::Failed(e);
+                }
+            };
+            // On Windows the name is made fit, no path and no device in it.
+            remote_name = match sanitize::for_windows(named, Allow::NOTHING) {
+                Ok(name) => name,
+                Err(Unfit::OutOfMemory) => return Made::Failed(ErrorKind::OutOfMemory),
+                Err(Unfit::InvalidPath) => {
+                    msgs.error(&[b"bad output filename"]);
+                    return Made::Failed(ErrorKind::BadFunctionArgument);
                 }
             };
             Output::File(&remote_name)

@@ -1501,6 +1501,145 @@ fn reads_the_name_the_server_gives_as_c_does() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// On Windows a file is named as Windows allows (`sanitize_file_name`):
+/// `-o`'s name keeps its path and devices but not `?*<>|"`, unless
+/// globbing is off; the URL's name for `-O` and the server's for `-J`
+/// lose those, their trailing dots and spaces, and a device name, as C's
+/// curl.exe names them; one that is left with nothing names no file.
+#[cfg(windows)]
+#[test]
+fn names_files_as_windows_allows() {
+    let ok = || b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let disposed = |name: &str| {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"{name}\"\r\n\
+             Content-Length: 3\r\n\r\nok\n"
+        )
+        .into_bytes()
+    };
+    let moved = b"HTTP/1.1 301 Moved\r\nLocation: moved*x\r\nContent-Length: 0\r\n\r\n".to_vec();
+    let dir = scratch("windows-names");
+    let at = dir.to_str().unwrap();
+    let inside = |name: &str| format!("{at}\\{name}");
+    // The arguments before the URL, its path, the replies and the files
+    // made, or the exit code if none is.
+    type Case<'a> = (Vec<String>, &'a str, Script, Result<&'a [&'a str], i32>);
+    let cases: [Case; 14] = [
+        (
+            vec!["-o".into(), inside("a?b")],
+            "x",
+            vec![vec![ok()]],
+            Ok(&["a_b"]),
+        ),
+        (
+            vec!["-o".into(), inside("c*d<e>f|g\"h")],
+            "x",
+            vec![vec![ok()]],
+            Ok(&["c_d_e_f_g_h"]),
+        ),
+        (
+            vec!["-o".into(), inside("g?#1")],
+            "{a,b}",
+            vec![vec![ok()], vec![ok()]],
+            Ok(&["g_a", "g_b"]),
+        ),
+        (
+            vec!["-g".into(), "-o".into(), inside("e?f")],
+            "x",
+            vec![vec![ok()]],
+            Err(23),
+        ),
+        (
+            vec!["-O".into(), "--output-dir".into(), at.into()],
+            "d/CON",
+            vec![vec![ok()]],
+            Ok(&["_CON"]),
+        ),
+        (
+            vec!["-O".into(), "--output-dir".into(), at.into()],
+            "d/con.txt",
+            vec![vec![ok()]],
+            Ok(&["con_txt"]),
+        ),
+        (
+            vec!["-O".into(), "--output-dir".into(), at.into()],
+            "d/a*b",
+            vec![vec![ok()]],
+            Ok(&["a_b"]),
+        ),
+        (
+            vec!["-O".into(), "--output-dir".into(), at.into()],
+            "d/trail..",
+            vec![vec![ok()]],
+            Ok(&["trail"]),
+        ),
+        (
+            vec!["-O".into(), "--output-dir".into(), at.into()],
+            "d/...",
+            vec![vec![ok()]],
+            Err(23),
+        ),
+        (
+            vec!["-OJ".into(), "--output-dir".into(), at.into()],
+            "url-name",
+            vec![vec![disposed("a?b.txt")]],
+            Ok(&["a_b.txt"]),
+        ),
+        (
+            vec!["-OJ".into(), "--output-dir".into(), at.into()],
+            "url-name",
+            vec![vec![disposed("nul.txt")]],
+            Ok(&["nul_txt"]),
+        ),
+        (
+            vec!["-OJ".into(), "--output-dir".into(), at.into()],
+            "url-name",
+            vec![vec![disposed("dir\\lpt3")]],
+            Ok(&["_lpt3"]),
+        ),
+        (
+            vec!["-OJ".into(), "--output-dir".into(), at.into()],
+            "url-name",
+            vec![vec![disposed(" . ")]],
+            Ok(&["url-name"]),
+        ),
+        (
+            vec!["-L".into(), "-OJ".into(), "--output-dir".into(), at.into()],
+            "url-name",
+            vec![vec![moved], vec![ok()]],
+            Ok(&["moved_x"]),
+        ),
+    ];
+    for (i, (args, path, script, made)) in cases.into_iter().enumerate() {
+        let s = Server::script(script);
+        let url = format!("{}{path}", s.url());
+        let mut all = vec!["-s"];
+        all.extend(args.iter().map(String::as_str));
+        all.push(&url);
+        let run = curl(&all);
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        files.sort();
+        match made {
+            Ok(names) => {
+                assert_eq!(run.code, 0, "{i}: {}", run.stderr);
+                assert_eq!(files, names, "{i}");
+                for name in names {
+                    assert_eq!(std::fs::read(dir.join(name)).unwrap(), b"ok\n", "{i}");
+                    std::fs::remove_file(dir.join(name)).unwrap();
+                }
+            }
+            Err(code) => {
+                assert_eq!(run.code, code, "{i}: {}", run.stderr);
+                assert_eq!(files, [""; 0], "{i}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Run the tool with `args` and `typed` on standard input, outside any
 /// terminal: `setsid` leaves it without one, so a password asked for is
 /// read from standard input (`/dev/tty` would wait for a person). Linux

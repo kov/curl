@@ -17,6 +17,7 @@ use curl_os::fs::{self, Keep};
 use crate::msgs::Messages;
 use crate::options::Clobber;
 use crate::os_message;
+use crate::sanitize::{self, Allow};
 use crate::stdio::{self, Stdio};
 use crate::stdout::Stdout;
 
@@ -1023,8 +1024,9 @@ fn blanks(s: &[u8]) -> usize {
 /// The file name in `value`, the rest of a header line (`parse_filename`):
 /// up to `stop`, or the quote it starts with, for `Content-Disposition`;
 /// without a query or fragment for `Location`. Only the part after the
-/// last slash or backslash is kept, up to a line end. Nothing, `.` or
-/// `..` names no file.
+/// last slash or backslash is kept, up to a line end, and made fit on
+/// Windows. Nothing, `.` or `..` names no file, nor a name Windows could
+/// not make fit.
 fn file_name_in(value: &[u8], stop: Option<u8>) -> Option<Vec<u8>> {
     // C reads it as a string.
     let mut s = &value[..value.iter().position(|&b| b == 0).unwrap_or(value.len())];
@@ -1044,11 +1046,13 @@ fn file_name_in(value: &[u8], stop: Option<u8>) -> Option<Vec<u8>> {
         }
     }
     s = cut(cut(s, b'\r'), b'\n');
-    if s.is_empty() || s == b"." || s == b".." {
-        return None;
-    }
     let mut name = Vec::new();
     name.try_extend_from_slice(s).ok()?;
+    // On Windows the name is made fit first, no path and no device in it.
+    let name = sanitize::for_windows(name, Allow::NOTHING).ok()?;
+    if name.is_empty() || name == b"." || name == b".." {
+        return None;
+    }
     Some(name)
 }
 

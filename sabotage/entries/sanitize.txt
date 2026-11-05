@@ -1,0 +1,65 @@
+=== a superscript digit in UTF-8 does not make COM or LPT a device
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_as_c_does
+--- old
+        let len = if at(3) == 0xc2 { 4 } else { 3 };
+--- new
+        let len = 3;
+
+=== a file name keeps the dots and spaces it ends with
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_as_c_does
+--- old
+        target.truncate(target.len() - trailing);
+--- new
+        let _ = trailing;
+
+=== a device name is looked for only at the start of a path
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_as_c_does
+--- old
+        at = (p == 0 && base != 0).then_some(base);
+--- new
+        at = None;
+
+=== a path starting with two backslashes loses its device names
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_as_c_does
+--- old
+    if path && name.starts_with(b"\\\\") {
+--- new
+    if path && name.starts_with(b"\\\\\\") {
+
+=== the literal-path prefix loses its question mark
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_as_c_does
+--- old
+    let from = if allow.path && target.starts_with(b"\\\\?\\") {
+--- new
+    let from = if allow.path && target.starts_with(b"\\\\?\\\\") {
+
+=== a device name followed by a colon in a path is left as it is
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_as_c_does
+--- old
+                Some(b':') | None => true,
+--- new
+                None => true,
+                Some(b':') => false,
+
+=== a file name is read past a NUL in it
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_the_cases_c_leaves_out
+--- old
+    let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
+--- new
+
+=== a file name is sanitized on every platform
+file: crates/curl-tool/src/sanitize.rs
+witness: curl-tool sanitize::tests::sanitizes_only_on_windows
+--- old
+    if cfg!(windows) {
+        sanitize(&name, allow)
+--- new
+    if true {
+        sanitize(&name, allow)

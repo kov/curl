@@ -1393,8 +1393,15 @@ fn takes_an_output_name_as_it_is_without_globbing() {
     let s = Scratch::new("globoff-name");
     s.write("f", b"x");
     let r = curl(&s, &["-s", "-g", &s.url("f"), "-o", "out#<a>"]);
-    assert_eq!(r.code, 0, "{}", r.stderr);
-    assert_eq!(s.read("out#<a>"), b"x");
+    if cfg!(windows) {
+        // Nor made fit for Windows, as C's curl.exe does not: Windows
+        // refuses `<` and `>` in a name.
+        assert_eq!(r.code, 23, "{}", r.stderr);
+        assert!(!s.exists("out#_a_"));
+    } else {
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(s.read("out#<a>"), b"x");
+    }
     let r = curl(&s, &["-s", &s.url("f"), "-o", "out2#<a>"]);
     assert_eq!(r.code, 43);
 }

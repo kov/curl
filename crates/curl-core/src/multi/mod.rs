@@ -1088,6 +1088,11 @@ impl<H: Host> Multi<H> {
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<(), OutOfMemory> {
         let slot = self.slots.get(id).expect("a transfer in the multi");
+        // A transfer that is not verbose traces none of it: what it would
+        // say is not worked out.
+        if !slot.easy.options().output.verbose {
+            return Ok(());
+        }
         let run = slot
             .run
             .as_ref()

@@ -100,6 +100,30 @@ fn completions_are_read_in_id_order() {
     );
 }
 
+/// Completions are read lowest row first, not in the order they came:
+/// C keeps them as a set of mids and reads its first
+/// (`curl_multi_info_read`'s `Curl_uint32_bset_first`).
+#[test]
+fn a_later_completion_in_a_lower_row_is_read_first() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    let mut slow = easy("stall://a");
+    slow.options_mut().limits.total = TimeLimit::from_millis(1000);
+    let slow = m.add(Box::new(slow), (), ev).unwrap();
+    let fast = m.add(Box::new(easy("null://b")), (), ev).unwrap();
+    assert!(slow.index() < fast.index());
+    assert_eq!(m.perform(ev), Ok(1), "the fast one is done first");
+    clock.advance(Duration::from_millis(1000));
+    assert_eq!(m.perform(ev), Ok(0));
+    assert_eq!(
+        messages(&mut m),
+        [
+            (slow.index(), Err(ErrorKind::OperationTimedout), 1),
+            (fast.index(), Ok(()), 0),
+        ]
+    );
+}
+
 #[test]
 fn removing_twice_finds_nothing_the_second_time() {
     let (mut m, _clock) = multi();

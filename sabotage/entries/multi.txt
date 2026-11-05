@@ -11,6 +11,16 @@ witness: curl-core multi::tests::completions_are_read_in_id_order
             if true {
                 found = Some(id);
 
+=== a completion in a low row is read after a later one in a higher row
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_later_completion_in_a_lower_row_is_read_first
+--- old
+            if found.is_none() {
+                found = Some(id);
+--- new
+            if true {
+                found = Some(id);
+
 === removing a running transfer keeps its connection in the pool
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::removing_a_running_transfer_gives_its_connection_back

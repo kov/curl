@@ -1003,8 +1003,8 @@ impl<H: Host> Multi<H> {
         Ok(self.counts.get().running)
     }
 
-    /// The oldest-added unread completion, marked read
-    /// (`curl_multi_info_read`).
+    /// The unread completion in the lowest row, marked read, whenever it
+    /// completed (`curl_multi_info_read`).
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
         read_message(&mut self.slots)
     }

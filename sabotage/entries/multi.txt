@@ -964,3 +964,92 @@ witness: curl-core multi::sched::tests::the_first_word_of_rows_is_held_in_place
         let words = (rows as usize).div_ceil(64).saturating_sub(1);
 --- new
         let words = (rows as usize).div_ceil(64);
+
+=== a connection of the multi's that changed is never said, nor looked at again by a step
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_connection_found_to_multiplex_is_said_once_as_the_next_step_starts
+--- old
+    if !run.state.is_completed() && !run.state.ends_unshown() && cx.rest.shutdowns.take_changed()
+--- new
+    if false && !run.state.is_completed() && !run.state.ends_unshown() && cx.rest.shutdowns.take_changed()
+
+=== a request that failed says the multi changed before it ends
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2_trace::a_goaway_failing_the_transfer_is_no_news_to_it
+--- old
+    if !run.state.is_completed() && !run.state.ends_unshown() && cx.rest.shutdowns.take_changed()
+--- new
+    if !run.state.is_completed() && cx.rest.shutdowns.take_changed()
+
+=== a connection that multiplexes is news to the multi at every step on it
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::h2::a_connection_found_to_multiplex_is_said_once_as_the_next_step_starts
+--- old
+        self.multiplexes() && !std::mem::replace(&mut self.multiplex_told, true)
+--- new
+        self.multiplexes()
+
+=== a new connection that multiplexes lets no one waiting out as it is made
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::h3_trace::a_connection_made_to_multiplex_lets_one_waiting_out_and_says_so
+--- old
+    if c.lease.multiplexes() {
+        schedule_pending(&mut cx.rest);
+--- new
+    if false {
+        schedule_pending(&mut cx.rest);
+
+=== DID over a multiplexing connection lets no one waiting out
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::did_over_a_multiplexing_connection_lets_one_more_out
+--- old
+            if x.lease.multiplexes() {
+                schedule_pending(&mut cx.rest);
+--- new
+            if false {
+                schedule_pending(&mut cx.rest);
+
+=== a connection closed at once is no news to the multi
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::http::tests::multi_trace::a_connection_closed_at_once_is_said_by_the_next_step
+--- old
+    if let Some(l) = linger {
+        l.set.conn_changed();
+--- new
+    if let Some(l) = linger.filter(|_| false) {
+        l.set.conn_changed();
+
+=== a waiting transfer whose own step made room is let out by another's hand
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core multi::shutdown_tests::busy_connections_past_the_limit_close_every_closing_one
+--- old
+    if id == cx.me {
+--- new
+    if id == cx.me && false {
+
+=== a step that changed a connection lets its transfer wait before the multi looks again
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::h2::a_change_is_heard_in_the_call_that_made_it
+--- old
+                || (cx.rest.shutdowns.changed() && !run.state.is_completed())
+--- new
+                || (cx.rest.shutdowns.changed() && false)
+
+=== an upgrade refused is no news to the multi
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h2::a_refused_upgrade_is_said_as_the_next_step_starts
+--- old
+            if !interim && self.upgrade.take().is_some() {
+                cx.conn_changed();
+--- new
+            if !interim && self.upgrade.take().is_some() {
+
+=== a 101 taking up an upgrade is no news to the multi
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::ws::the_switch_is_said_as_the_next_step_starts
+--- old
+                    if self.upgrade.is_some() {
+                        cx.conn_changed();
+--- new
+                    if self.upgrade.is_some() && false {
+                        cx.conn_changed();

@@ -195,6 +195,94 @@ fn a_goaway_traces_the_refused_stream() {
     );
 }
 
+/// A verbose request by prior knowledge, as `h2_run` makes it, the
+/// multi's lines traced too: its state lines and its note that a
+/// connection changed, with how the transfer ended.
+fn h2_states(replies: &[&[u8]]) -> (Result<(), ErrorKind>, Vec<String>) {
+    let talk = Conversation::replies(replies, false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let e = tracing();
+    e.components().unwrap().configure(b"http/2,multi");
+    let ran = get_with(&mut m, e, "/x", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+    });
+    (ran.result, multi_states(&ran.seen))
+}
+
+/// The multi's state lines of `seen` and its note that a connection
+/// changed, and what the server's limit on streams and a GOAWAY said.
+fn multi_states(seen: &Seen) -> Vec<String> {
+    seen.text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| {
+            l.starts_with("[MULTI] [") && (l.contains("] -> [") || l.contains("multi changed"))
+                || l.contains("MAX_CONCURRENT_STREAMS")
+                || l.contains("GOAWAY")
+        })
+        .collect()
+}
+
+/// A server's stream limit other than the one last said is news to the
+/// multi, which hears it as the transfer's next step starts, after the
+/// connection found to multiplex was, in DID: C's lines, as the C build
+/// says them against nghttpd's `-m 50` (`on_frame_recv`'s
+/// `Curl_multi_connchanged`, `multi_runsingle`).
+#[test]
+fn a_new_stream_limit_is_said_as_the_next_step_starts() {
+    let reply: &[u8] = b"S 50\nH 1 0\n:status: 200\ncontent-length: 2\n\nD 1 2 1\nok";
+    let (result, states) = h2_states(&[reply]);
+    assert_eq!(result, Ok(()));
+    let changed = "multi changed, check CONNECT_PEND queue";
+    assert_eq!(
+        states,
+        [
+            "[MULTI] [INIT] -> [SETUP]".to_owned(),
+            "[MULTI] [SETUP] -> [CONNECT]".to_owned(),
+            "[MULTI] [CONNECT] -> [CONNECTING]".to_owned(),
+            "[MULTI] [CONNECTING] -> [PROTOCONNECT]".to_owned(),
+            "[MULTI] [PROTOCONNECT] -> [DO]".to_owned(),
+            "[MULTI] [DO] -> [DID]".to_owned(),
+            format!("[MULTI] [DID] {changed}"),
+            "[MULTI] [DID] -> [PERFORMING]".to_owned(),
+            "[HTTP/2] [0] MAX_CONCURRENT_STREAMS: 50".to_owned(),
+            "[HTTP/2] [0] notify MAX_CONCURRENT_STREAMS: 50".to_owned(),
+            "[MULTI] [PERFORMING] -> [DONE]".to_owned(),
+            format!("[MULTI] [DONE] {changed}"),
+            "[MULTI] [DONE] -> [COMPLETED]".to_owned(),
+            "[MULTI] [COMPLETED] -> [MSGSENT]".to_owned(),
+        ]
+    );
+    // The limit C guesses is no news.
+    let reply: &[u8] = b"S 100\nH 1 0\n:status: 200\ncontent-length: 2\n\nD 1 2 1\nok";
+    let (result, states) = h2_states(&[reply]);
+    assert_eq!(result, Ok(()));
+    let said = states.iter().filter(|l| l.contains(changed)).count();
+    assert_eq!(said, 1, "{states:#?}");
+}
+
+/// A GOAWAY is news to the multi too (`on_frame_recv`'s
+/// `Curl_multi_connchanged`), but not to the transfer it fails, which
+/// ends in the step that read it, as C's does in that call
+/// (`is_finished`). The C build says the same against a server answering
+/// with a GOAWAY alone.
+#[test]
+fn a_goaway_failing_the_transfer_is_no_news_to_it() {
+    let (result, states) = h2_states(&[b"S 100\nG 0 2\n"]);
+    assert_eq!(result, Err(ErrorKind::Http2Stream));
+    assert_eq!(
+        states[states.len() - 5..],
+        [
+            "[HTTP/2] [0] MAX_CONCURRENT_STREAMS: 100",
+            "[HTTP/2] [0] <- FRAME[GOAWAY, error=2, reason='', last_stream=0]",
+            "received GOAWAY, error=2, last_stream=0",
+            "[MULTI] [PERFORMING] -> [COMPLETED]",
+            "[MULTI] [COMPLETED] -> [MSGSENT]",
+        ],
+        "{states:#?}"
+    );
+}
+
 /// The connection's goodbye, on the multi's internal trace: its GOAWAY,
 /// with C's debug data, then its end, once (`cf_h2_shutdown`,
 /// `Curl_cshutdn_try_once_idx`).

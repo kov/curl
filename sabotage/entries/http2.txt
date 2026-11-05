@@ -297,41 +297,40 @@ witness: curl-core proto::http::tests::h2::a_single_use_connection_ends_a_pipewa
 --- new
         if false && seen.single && !seen.multiplex {
 
-=== a connection that never asked to upgrade wakes those waiting as it settles
-file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::h2::a_pipewait_on_a_connection_that_does_not_multiplex_waits_for_it
+=== a response to a request that asked no upgrade is news to the multi
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::multi_trace::a_connection_closed_at_once_is_said_by_the_next_step
 --- old
-        if single && asked_upgrade {
+            if !interim && self.upgrade.take().is_some() {
 --- new
-        if single {
+            if !interim && (self.upgrade.take().is_some() || true) {
 
 === a connection found not to multiplex leaves its waiters waiting
-file: crates/curl-core/src/conn/pool.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::a_pipewait_on_a_refused_upgrade_ends_with_its_answer
 --- old
-        let single = verdict == Verdict::Single && leased.verdict == Verdict::Pending;
+            if !interim && self.upgrade.take().is_some() {
+                cx.conn_changed();
 --- new
-        let single = false;
+            if !interim && self.upgrade.take().is_some() && false {
+                cx.conn_changed();
 
 === a connection that multiplexes leaves its waiters waiting
 file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::h2::a_transfer_that_pipewaits_joins_the_connection_being_set_up
+witness: curl-core proto::http::tests::h2::a_connection_found_to_multiplex_is_said_once_as_the_next_step_starts
 --- old
-            // One waiting to multiplex may join it now
-            // (`Curl_conn_set_multiplex`).
-            schedule_pending(&mut cx.rest);
+        && x.lease.get().tell_multiplex()
 --- new
+        && x.lease.get().tell_multiplex()
+        && false
 
 === a refused upgrade leaves its connection pending
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::a_pipewait_on_a_refused_upgrade_ends_with_its_answer
 --- old
-            if !interim {
-                // The upgrade was not taken: the connection speaks HTTP/1
-                // on.
-                self.upgrade = None;
-            }
+            if !interim && self.upgrade.take().is_some() {
 --- new
+            if !interim && self.upgrade.as_ref().is_some() {
 
 === the multi's check counts a shared connection as one lease
 file: crates/curl-core/src/conn/pool.rs
@@ -737,9 +736,9 @@ witness: curl-core proto::http::tests::h2_trace::a_shutdown_traces_its_goaway_an
 file: crates/curl-core/src/proto/http2.rs
 witness: curl-core proto::http::tests::h2_trace::a_get_traces_the_filter_s_lines_in_c_s_order
 --- old
-    if std::mem::replace(said, max_concurrent) != max_concurrent {
+    let changed = std::mem::replace(said, max_concurrent) != max_concurrent;
 --- new
-    if std::mem::replace(said, max_concurrent) == max_concurrent {
+    let changed = std::mem::replace(said, max_concurrent) == max_concurrent;
 
 === a reset stream is traced as closed cleanly
 file: crates/curl-core/src/proto/http/h2.rs
@@ -1129,3 +1128,19 @@ witness: curl-core proto::http::tests::tls::an_http_2_proxy_s_session_says_its_p
         if let (true, Some(&(_, events))) = (self.h2_proxy, wants.first()) {
 --- new
         if let (true, Some(&(_, events))) = (false, wants.first()) {
+
+=== a server's new limit on streams is no news to the multi
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_new_stream_limit_is_said_as_the_next_step_starts
+--- old
+        if limit_changed || goaway.is_some() {
+--- new
+        if goaway.is_some() {
+
+=== a GOAWAY is no news to the multi
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_goaway_is_said_as_the_next_step_starts
+--- old
+        if limit_changed || goaway.is_some() {
+--- new
+        if limit_changed {

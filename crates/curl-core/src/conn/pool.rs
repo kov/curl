@@ -1039,6 +1039,7 @@ impl Pool {
                 upkept_ms: 0,
                 served: false,
                 socks5_authenticated: false,
+                multiplex_told: false,
                 seen_version: None,
                 local: std::sync::OnceLock::new(),
                 close: false,
@@ -1715,24 +1716,19 @@ impl Pool {
 
     /// Keep what a lease's step left its connection as, for others'
     /// searches: whether it is up and takes one request at a time, its
-    /// transfer having found what it speaks if `settled`. Whether it was
-    /// found to, just now: a transfer waiting for it to multiplex waits
-    /// no more (`Curl_multi_connchanged`).
-    /// The lease must be from `here`, the pool this is.
-    pub(crate) fn settle(&mut self, here: &Home, lease: &ConnLease, settled: bool) -> bool {
+    /// transfer having found what it speaks if `settled`. The lease must
+    /// be from `here`, the pool this is.
+    pub(crate) fn settle(&mut self, here: &Home, lease: &ConnLease, settled: bool) {
         assert!(
             lease.home.is(here),
             "{:?} settled in another pool",
             lease.id
         );
         let Some(Place::Leased(leased)) = self.conns.get_mut(lease.id) else {
-            return false;
+            return;
         };
         let conn = lease.conn.as_deref().and_then(ConnSlot::open);
-        let verdict = Verdict::of(conn, settled);
-        let single = verdict == Verdict::Single && leased.verdict == Verdict::Pending;
-        leased.verdict = verdict;
-        single
+        leased.verdict = Verdict::of(conn, settled);
     }
 
     /// Whether `lease` is a key to a connection in its place here, one

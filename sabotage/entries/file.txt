@@ -208,9 +208,9 @@ witness: curl-core proto::file::tests::a_download_resumes_into_the_file
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
 --- old
-        TransferState::Did(x) if !x.proto.exchanges() && !x.proto.holds_output() => (
+            if !x.proto.exchanges() && !x.proto.holds_output() {
 --- new
-        TransferState::Did(x) if false => (
+            if false {
 
 === the user rule does not reach the parser
 file: crates/curl-core/src/multi/state/leg.rs

@@ -545,3 +545,44 @@ fn fragments_without_a_type_continue_the_message() {
         "{text:#?}"
     );
 }
+
+/// The 101 that takes up the upgrade is news to the multi
+/// (`http_on_101_upgrade`'s `conn_changed`), heard as the transfer's next
+/// step starts: in DONE, as the C build says against a server sending
+/// the 101, a frame and its close.
+#[test]
+fn the_switch_is_said_as_the_next_step_starts() {
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x81\x01x");
+    let (mut m, talk, _) = server(&[&reply], true);
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"multi");
+    e.set_components(Some(c));
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let states: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| l.starts_with("[MULTI] [") && (l.contains("] -> [") || l.contains("changed")))
+        .collect();
+    let done = states
+        .iter()
+        .position(|l| l == "[MULTI] [PERFORMING] -> [DONE]")
+        .unwrap_or_else(|| panic!("{states:#?}"));
+    assert_eq!(
+        states[done..],
+        [
+            "[MULTI] [PERFORMING] -> [DONE]",
+            "[MULTI] [DONE] multi changed, check CONNECT_PEND queue",
+            "[MULTI] [DONE] -> [COMPLETED]",
+            "[MULTI] [COMPLETED] -> [MSGSENT]",
+        ],
+        "{states:#?}"
+    );
+}

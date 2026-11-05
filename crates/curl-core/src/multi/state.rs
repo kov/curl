@@ -686,6 +686,12 @@ impl TransferState {
         }
     }
 
+    /// Its request is over otherwise than whole, which C ends within the
+    /// call that ended it, in no state of its own.
+    fn ends_unshown(&self) -> bool {
+        matches!(self, TransferState::Done(_)) && self.c_state().is_none()
+    }
+
     /// Where the transfer is in C's states, when the engine's say: a
     /// request ended otherwise than whole stays where it ended, as it is
     /// done with there.
@@ -1543,13 +1549,32 @@ fn starts<H: Host>(cx: &StepCx<'_, H>) -> Starts {
 /// the step if it multiplexes, and its TLS objects lent to its handlers
 /// meanwhile. A connection found to speak HTTP/2 in the step, the
 /// multi's own and let multiplex, becomes one that does (ENGINE.md 4.4).
+/// A connection of the multi's that changed since a step last looked is
+/// said first, and lets one waiting look again (`multi_runsingle`'s
+/// `multi_ischanged`).
 pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
+    // A completed transfer's run is over: C's loop has ended
+    // (`handle_completed`). A request ending otherwise than whole ends in
+    // the step that ended it, as C's does (`is_finished`).
+    if !run.state.is_completed() && !run.state.ends_unshown() && cx.rest.shutdowns.take_changed() {
+        mstate::trace(cx, format_args!("multi changed, check CONNECT_PEND queue"));
+        schedule_pending_from(run, cx);
+    }
     if let Some(lease) = run.state.lease_mut() {
         cx.rest.caches.pool.check_out(lease);
     }
     cx.lent = run.state.tls_native(Some(&cx.rest.caches.pool));
     let wake = step_lent(run, cx);
     cx.lent = None;
+    // A connection found to multiplex is news to the multi, once: one
+    // waiting may join it, as it looks again when a step next starts
+    // (`Curl_conn_set_multiplex`).
+    if let Some(x) = run.state.attached_mut()
+        && x.lease.multiplexes()
+        && x.lease.get().tell_multiplex()
+    {
+        cx.rest.shutdowns.conn_changed();
+    }
     // A connection of the multi's own found to speak HTTP/2 goes to its
     // place, for others to join as the search lets them
     // (`conn->bits.multiplex`).
@@ -1560,9 +1585,6 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             && lease.multiplexes()
         {
             cx.rest.caches.pool.attach(lease);
-            // One waiting to multiplex may join it now
-            // (`Curl_conn_set_multiplex`).
-            schedule_pending(&mut cx.rest);
             return wake;
         }
         // A share's is lent to the multi, whose transfers alone join it
@@ -1576,32 +1598,21 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // Out of room to lend it, it serves its transfer alone.
             if cx.rest.caches.pool.borrow(lease).is_ok() {
                 share.pool().lend(lease.id());
-                schedule_pending(&mut cx.rest);
                 return wake;
             }
         }
     }
     let settled = run.state.attached().is_some_and(|x| x.proto.settled_conn());
-    let asked_upgrade = run
-        .state
-        .attached()
-        .is_some_and(|x| x.proto.asked_upgrade());
     if let Some(lease) = run.state.lease_mut() {
         let pool = &mut cx.rest.caches.pool;
         let attached = pool.is_attached(lease);
         pool.check_in(lease);
         // A share's says what it is in the share's pool, unlocked as C
         // reads `bits.multiplex`; a key, lent or the multi's, says nothing.
-        let single = match lease.home() {
-            _ if attached => false,
+        match lease.home() {
+            _ if attached => {}
             Home::Multi => pool.settle(&Home::Multi, lease, settled),
             home @ Home::Share(share) => share.pool().settle(home, lease, settled),
-        };
-        // An upgrade refused is the news C pokes the multi with
-        // (`Curl_multi_connchanged`). A connection that never asked tells
-        // no one: those waiting look when it is given back.
-        if single && asked_upgrade {
-            schedule_pending(&mut cx.rest);
         }
     }
     wake
@@ -1808,27 +1819,36 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let kind = timed_out(cx, Phase::Transferring, x.proto.sizes_request());
             (TransferState::Did(x).fail(kind), Wake::Again)
         }
-        // Output the application paused is still held, and delivered in
-        // PERFORMING: C goes to DONE and drops it, the transfer reported
-        // a success (an open question, MILESTONES step 70).
-        TransferState::Did(x) if !x.proto.exchanges() && !x.proto.holds_output() => (
-            TransferState::Done(x.done(Ok(()), false, Reached::Made)),
-            Wake::Again,
-        ),
-        // With other transfers running, an HTTP request goes on in the
-        // next pass, giving the others a chance to send theirs first
-        // (`multistate_did`): its response is rarely there yet.
         TransferState::Did(x) => {
-            let http = x
-                .proto
-                .scheme()
-                .is_some_and(crate::conn::Scheme::http_family);
-            let wake = if http && cx.running() > 1 {
-                Wake::Idle
+            // Over a connection that multiplexes, one waiting may join it
+            // (`multistate_did`).
+            if x.lease.multiplexes() {
+                schedule_pending(&mut cx.rest);
+            }
+            // Output the application paused is still held, and delivered
+            // in PERFORMING: C goes to DONE and drops it, the transfer
+            // reported a success (an open question, MILESTONES step 70).
+            if !x.proto.exchanges() && !x.proto.holds_output() {
+                (
+                    TransferState::Done(x.done(Ok(()), false, Reached::Made)),
+                    Wake::Again,
+                )
             } else {
-                Wake::Again
-            };
-            (TransferState::Exchanging(x), wake)
+                // With other transfers running, an HTTP request goes on
+                // in the next pass, giving the others a chance to send
+                // theirs first (`multistate_did`): its response is rarely
+                // there yet.
+                let http = x
+                    .proto
+                    .scheme()
+                    .is_some_and(crate::conn::Scheme::http_family);
+                let wake = if http && cx.running() > 1 {
+                    Wake::Idle
+                } else {
+                    Wake::Again
+                };
+                (TransferState::Exchanging(x), wake)
+            }
         }
         // Out of time as the pass starts: nothing more is read or sent
         // (`multi_handle_timeout`, ahead of the state's work).

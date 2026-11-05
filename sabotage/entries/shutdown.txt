@@ -14,9 +14,9 @@ witness: curl-core multi::shutdown_tests::an_aborted_transfer_s_connection_close
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::perform_moves_each_shutdown_on
 --- old
-    match linger.filter(|_| may_linger) {
+            && let Some(l) = linger.as_mut().filter(|_| may_linger)
 --- new
-    match linger.filter(|_| false) {
+            && let Some(l) = linger.as_mut().filter(|_| false)
 
 === a share's connection given back is closed instead of joining the multi's set
 file: crates/curl-core/src/conn/pool.rs

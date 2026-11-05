@@ -1336,6 +1336,9 @@ pub(crate) struct Conn {
     /// Its SOCKS5 proxy authenticated the user
     /// (`bits.socks5_authenticated`).
     socks5_authenticated: bool,
+    /// The multi was told it multiplexes (`bits.multiplex`, set once by
+    /// `Curl_conn_set_multiplex`).
+    multiplex_told: bool,
     /// The version its last HTTP response said (`httpversion_seen`).
     seen_version: Option<ResponseVersion>,
     /// Its end here, as its socket said when first asked: a socket's
@@ -1428,6 +1431,12 @@ impl Conn {
     /// (`Curl_conn_is_multiplex`). One taken out for a step does not.
     pub(crate) fn multiplexes(&self) -> bool {
         self.session.session().is_some()
+    }
+
+    /// It multiplexes, and the multi is to be told so, which is once
+    /// (`Curl_conn_set_multiplex`).
+    pub(crate) fn tell_multiplex(&mut self) -> bool {
+        self.multiplexes() && !std::mem::replace(&mut self.multiplex_told, true)
     }
 
     /// The session it multiplexes over, if it does.

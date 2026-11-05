@@ -405,3 +405,69 @@ fn a_netrc_login_is_the_url_s_for_a_redirect() {
         "{text:?}"
     );
 }
+
+/// A connection closed at once as its transfer ends is news to the
+/// multi, as one closed by its set is (`Curl_cshutdn_terminate`): the
+/// transfer waiting for room, let out as that one is done, says so as its
+/// next step starts, in CONNECT. The C build says the same lines in the
+/// same order (`-Z --parallel-max-host 1` of two URLs, HTTP/1.0).
+#[test]
+fn a_connection_closed_at_once_is_said_by_the_next_step() {
+    let reply: &[u8] = b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    let talks = [0, 1].map(|_| Conversation::replies(&[reply], true));
+    let mut m = serving(Peer::Accepts, &[&talks[0], &talks[1]]);
+    m.conn_limits_mut().max_host = std::num::NonZeroU32::new(1);
+    let both = Seen::default();
+    let ids = [0, 1].map(|_| {
+        let mut e = tracing_multi();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(both.clone()).unwrap());
+        m.add(Box::new(e), (), &mut NoEvents).unwrap()
+    });
+    for id in ids {
+        let done = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(done, Ok(()));
+    }
+    let lines: Vec<String> = both
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| {
+            l.contains("] -> [") || l.contains("multi changed") || l.starts_with("shutting down")
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        expect(
+            "[MULTI] [INIT] -> [SETUP]
+            [MULTI] [SETUP] -> [CONNECT]
+            [MULTI] [CONNECT] -> [CONNECTING]
+            [MULTI] [INIT] -> [SETUP]
+            [MULTI] [SETUP] -> [CONNECT]
+            [MULTI] [CONNECT] -> [PENDING]
+            [MULTI] [CONNECTING] -> [PROTOCONNECT]
+            [MULTI] [PROTOCONNECT] -> [DO]
+            [MULTI] [DO] -> [DID]
+            [MULTI] [DID] -> [PERFORMING]
+            [MULTI] [PERFORMING] -> [DONE]
+            shutting down connection #0
+            [MULTI] [PENDING] -> [CONNECT]
+            [MULTI] [DONE] -> [COMPLETED]
+            [MULTI] [COMPLETED] -> [MSGSENT]
+            [MULTI] [CONNECT] multi changed, check CONNECT_PEND queue
+            [MULTI] [CONNECT] -> [CONNECTING]
+            [MULTI] [CONNECTING] -> [PROTOCONNECT]
+            [MULTI] [PROTOCONNECT] -> [DO]
+            [MULTI] [DO] -> [DID]
+            [MULTI] [DID] -> [PERFORMING]
+            [MULTI] [PERFORMING] -> [DONE]
+            shutting down connection #1
+            [MULTI] [DONE] -> [COMPLETED]
+            [MULTI] [COMPLETED] -> [MSGSENT]"
+        ),
+        "{lines:#?}"
+    );
+}

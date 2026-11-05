@@ -111,13 +111,14 @@ pub(crate) fn stream_of(event: &Event<'_>) -> Option<StreamId> {
 
 /// The peer's settings, traced as they come (`on_frame_recv`'s SETTINGS):
 /// its limit on streams, whether it allows push, and, if the limit is not
-/// the one last said, `said`, that it changed.
+/// the one last said, `said`, that it changed, which it returns.
+#[must_use]
 pub(crate) fn trace_settings(
     cx: &mut dyn LayerCx,
     said: &mut u32,
     max_concurrent: u32,
     enable_push: bool,
-) {
+) -> bool {
     let h2 = Component::Http2;
     cx.of(
         h2,
@@ -125,12 +126,14 @@ pub(crate) fn trace_settings(
     );
     let push = if enable_push { "TRUE" } else { "false" };
     cx.of(h2, format_args!("[0] ENABLE_PUSH: {push}"));
-    if std::mem::replace(said, max_concurrent) != max_concurrent {
+    let changed = std::mem::replace(said, max_concurrent) != max_concurrent;
+    if changed {
         cx.of(
             h2,
             format_args!("[0] notify MAX_CONCURRENT_STREAMS: {max_concurrent}"),
         );
     }
+    changed
 }
 
 /// A frame the session sent, traced; a GOAWAY the client did not ask
@@ -644,7 +647,12 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
                         Event::Settings {
                             max_concurrent,
                             enable_push,
-                        } => trace_settings(&mut *cx, said, max_concurrent, enable_push),
+                        } => {
+                            // No multi is told: the connection is idle,
+                            // read as a transfer looks it over.
+                            let _changed =
+                                trace_settings(&mut *cx, said, max_concurrent, enable_push);
+                        }
                         _ => {}
                     }
                     Heard::Fine

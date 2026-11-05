@@ -1116,7 +1116,7 @@ before DID and none from Done on (§3.6).
 |---|---|---|
 | Init | Exchanging setup | pretransfer: fresh `TransferReport` (header store empties), cookies and resolve list, `Starts::op`; on failure `fail` → Completed |
 | (setup) | Connecting / Exchanging / Pending | `Starts::single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait` |
-| Pending | Setup | `schedule_pending` (one per call, the pending queue's next, marked dirty): after a connection is given back, after a setup finds or makes one, when a transfer is removed, and when a woken one fails; or its own step finding its time up ("PENDING handle timeout", after the timeout's failure is traced once) |
+| Pending | Setup | `schedule_pending` (one per call, the pending queue's next, marked dirty): after a connection is given back, after a setup finds or makes one, when a transfer is removed, when a woken one fails, when a connection of the multi's changed (§3.5), as a new connection that multiplexes is made, and in DID over one; or its own step finding its time up ("PENDING handle timeout", after the timeout's failure is traced once) |
 | Setup | Connecting / Pending / Completed | the search again, as from setup; past its time, fails with the timeout traced a second time |
 | Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |
 | ProtoConnect | Do / ProtoConnecting / Done | over a reused connection, Do at once; else `ProtoState::connect` (`Connect::Done` or `Waiting`); a failure is premature; prereq callback at DO entry |
@@ -1295,8 +1295,8 @@ Dropping a `Multi` removes every transfer still in it (`curl_multi_cleanup`).
    its process set and is run on every `perform`;
 1. run every process transfer in ascending slot order with an index cursor, so a transfer
    added during the walk at a higher slot runs in the same pass;
-2. `schedule_pending` if a pass flagged a connection change: a closing connection closed by
-   the set (`Curl_multi_connchanged`), and later multiplexing;
+2. `schedule_pending` if a connection of the multi's changed since a step last looked
+   (`multi_ischanged`, below), untraced;
 3. dispatch notifications;
 4. sweep the timer queue for entries before `now`; a late `Pending` transfer goes to setup and
    fails there with the timeout;
@@ -1350,8 +1350,23 @@ out, is `BadEasyHandle`.
 `run_dirty` iterates by index cursor, re-reading the dirty set after each transfer; a transfer
 marked dirty by a callback at a higher index is visited in the same pass (C's `bset_next`).
 
+**A connection changed.** The multi keeps one note that a connection of its changed (C's
+`recheckstate`, set by `Curl_multi_connchanged`), held by its `ShutdownSet`, where every
+connection it closes passes: set as a connection closes, from the set or at once
+(`Curl_cshutdn_terminate`), and by a transfer's step as a connection is first found to
+multiplex (`Conn::tell_multiplex`, once per connection, as `bits.multiplex`), as an HTTP/2
+server's stream limit changes or its GOAWAY comes, or as the final response or 101 to an upgrade
+asked for is read (`http_on_response`). Each
+step of a transfer that is neither completed nor ending a request that failed (which C ends in
+the call that failed it) first takes the note: it traces "multi changed, check CONNECT_PEND
+queue" in its state and lets one waiting transfer look again, itself if it is the next waiting.
+The end of `perform` and `socket_action` takes it untraced. Apart from the note, a new
+connection that multiplexes lets one waiting look as it is made, before PROTOCONNECT
+(`multi_connecting`), and DID over one lets another (`multistate_did`).
+
 **`run_single(id, now)`** moves the `Run` out of the slot, and loops
-while the step returns `Wake::Again`: deadline check for connected states, dispatch on the
+while the step returns `Wake::Again`, or while the note is set and the transfer is not completed
+(`multi_runsingle`'s loop on `multi_ischanged`): deadline check for connected states, dispatch on the
 variant, the extra deadline check before DO, then `is_finished` (error → `fail`; else the
 progress callback once connected, `Abort` → `Done(Err)`). It puts the `Run` back before
 `assess` and before the next transfer runs. A dead multi completes the transfer with
@@ -2071,7 +2086,8 @@ noted once it reaches the transfer's origin (`Route::reaches`), before its proxy
 authentication are compared, as C notes it in `url_match_conn`; the notes are said as the
 search returns, before a connection is made or attached, so the tool's ids name none for the
 transfer (`[1-x]`). A connection
-attached, or found single-use by a refused upgrade, lets one waiting transfer look again, as does
+found to multiplex, or an upgrade's answer read, is news the multi takes as a step
+next starts (§3.5, "A connection changed"), which lets one waiting transfer look again, as does
 one given back; each one that then gets a connection lets the next. A connection that never asked
 to upgrade tells no one as it settles: a transfer pipewaiting on it reuses it once given back.
 

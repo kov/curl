@@ -926,52 +926,12 @@ fn an_http3_connection_is_passed_over_by_a_transfer_in_http1() {
 /// the connection is kept for the last.
 #[test]
 fn a_second_transfer_multiplexes_on_the_first_s_connection() {
-    let script = Script::new();
-    {
-        let mut s = script.lock().unwrap();
-        s.idle = Some(std::time::Duration::from_secs(30));
-        s.out.extend([vec![1; 1200], vec![2; 1200], vec![], vec![]]);
-        s.on_submit
-            .extend([vec![vec![3; 75], vec![]], vec![vec![4; 76], vec![]]]);
-        s.on_read
-            .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
-        // Stream 0's request is only acknowledged.
-        s.on_read.push_back(vec![]);
-        let mut both = Vec::new();
-        for (stream, body) in [(0, b"first".as_slice()), (4, b"second".as_slice())] {
-            let header = |name: &[u8], value: &[u8]| Told::Header {
-                stream,
-                name: name.to_vec(),
-                value: value.to_vec(),
-            };
-            both.extend([
-                header(b":status", b"200"),
-                header(b"content-length", body.len().to_string().as_bytes()),
-                Told::HeadersDone(stream),
-                Told::Data(stream, body.to_vec()),
-                Told::Closed(stream, 0x100),
-            ]);
-        }
-        s.on_read.push_back(both);
-    }
-    let mut m = quic_server(&[b"server flight", b"ack", b"responses"]);
-    let url = format!("https://localhost:{PORT}/");
+    let (script, mut m) = two_streams();
     let mut ids = Vec::new();
     let mut seen = Vec::new();
     for _ in 0..2 {
-        let mut e = tracing(FakeTls::new().unwrap(), &script);
         let s = Seen::default();
-        let o = e.options_mut();
-        o.set_url(Some(url.as_bytes())).unwrap();
-        o.output.verbose = true;
-        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
-        o.http.user_agent = Some(b"curl/test".to_vec());
-        o.http.version = crate::options::HttpVersion::Http3Only;
-        o.http.pipewait = true;
-        o.ip_version = IpVersion::Any;
-        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
-        o.callbacks.header = Some(Handler::header(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        let e = pipewaiting(&script, &s);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
     }
@@ -1023,6 +983,107 @@ fn a_second_transfer_multiplexes_on_the_first_s_connection() {
             Connection #0 to host localhost:{PORT} left intact"
         ))
     );
+}
+
+/// The fake HTTP/3 library's script for two transfers' streams on one
+/// connection, the first's request only acknowledged and both answered
+/// in one read, and a peer for it.
+fn two_streams() -> (Arc<Mutex<Script>>, Multi) {
+    let script = Script::new();
+    {
+        let mut s = script.lock().unwrap();
+        s.idle = Some(std::time::Duration::from_secs(30));
+        s.out.extend([vec![1; 1200], vec![2; 1200], vec![], vec![]]);
+        s.on_submit
+            .extend([vec![vec![3; 75], vec![]], vec![vec![4; 76], vec![]]]);
+        s.on_read
+            .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
+        // Stream 0's request is only acknowledged.
+        s.on_read.push_back(vec![]);
+        let mut both = Vec::new();
+        for (stream, body) in [(0, b"first".as_slice()), (4, b"second".as_slice())] {
+            let header = |name: &[u8], value: &[u8]| Told::Header {
+                stream,
+                name: name.to_vec(),
+                value: value.to_vec(),
+            };
+            both.extend([
+                header(b":status", b"200"),
+                header(b"content-length", body.len().to_string().as_bytes()),
+                Told::HeadersDone(stream),
+                Told::Data(stream, body.to_vec()),
+                Told::Closed(stream, 0x100),
+            ]);
+        }
+        s.on_read.push_back(both);
+    }
+    let m = quic_server(&[b"server flight", b"ack", b"responses"]);
+    (script, m)
+}
+
+/// A handle getting `https://localhost:PORT/` in HTTP/3 alone, by the
+/// fake libraries running `script`, that waits for a connection being
+/// set up to say whether it multiplexes; what it is given and says seen
+/// by `seen`.
+fn pipewaiting(script: &Arc<Mutex<Script>>, seen: &Seen) -> Easy {
+    let url = format!("https://localhost:{PORT}/");
+    let mut e = tracing(FakeTls::new().unwrap(), script);
+    let o = e.options_mut();
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.user_agent = Some(b"curl/test".to_vec());
+    o.http.version = crate::options::HttpVersion::Http3Only;
+    o.http.pipewait = true;
+    o.ip_version = IpVersion::Any;
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    e
+}
+
+/// The second, waiting for the first's connection, is let out as that
+/// connection is made, as it multiplexes, before the first goes on; the
+/// first then says the multi changed as its next step starts, once: C's
+/// lines in C's order (`build/m5-c-h3-par.trace`; `multi_connecting`,
+/// `Curl_conn_set_multiplex`, `multi_runsingle`).
+#[test]
+fn a_connection_made_to_multiplex_lets_one_waiting_out_and_says_so() {
+    let (script, mut m) = two_streams();
+    let both = Seen::default();
+    let ids = [0, 1].map(|_| {
+        let e = pipewaiting(&script, &both);
+        m.add(Box::new(e), (), &mut NoEvents).unwrap()
+    });
+    for id in ids {
+        let done = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(done, Ok(()));
+    }
+    let lines = lines_of(&both, &["[MULTI] ["]);
+    let states: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.contains("] -> [") || l.contains("multi changed") || l.contains("reduced"))
+        .collect();
+    let at = states
+        .iter()
+        .position(|l| l.starts_with("[MULTI] [CONNECTING] reduced to"))
+        .unwrap();
+    assert_eq!(
+        states[at + 1..at + 5],
+        [
+            "[MULTI] [PENDING] -> [CONNECT]",
+            "[MULTI] [CONNECTING] -> [PROTOCONNECT]",
+            "[MULTI] [PROTOCONNECT] multi changed, check CONNECT_PEND queue",
+            "[MULTI] [PROTOCONNECT] -> [DO]",
+        ],
+        "{states:#?}"
+    );
+    let said = states
+        .iter()
+        .filter(|l| l.contains("multi changed"))
+        .count();
+    assert_eq!(said, 1, "{states:#?}");
 }
 
 /// A connection kept idle is closed as the multi goes, saying goodbye:

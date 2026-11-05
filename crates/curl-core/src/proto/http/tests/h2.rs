@@ -1723,6 +1723,138 @@ fn a_transfer_that_pipewaits_joins_the_connection_being_set_up() {
     );
 }
 
+/// The multi's state lines of `seen`, and its note that a connection
+/// changed.
+fn multi_states(seen: &Seen) -> Vec<String> {
+    seen.text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| l.starts_with("[MULTI] [") && (l.contains("] -> [") || l.contains("changed")))
+        .collect()
+}
+
+/// Two transfers by prior knowledge, added together, the second waiting
+/// for the first's connection: the multi's lines of both, in order.
+/// The server answers the second's request with `second`.
+fn h2_pair_traced(second: &[u8]) -> Vec<String> {
+    let both = Seen::default();
+    // The limit C guesses, so that only the multiplexing is news.
+    let ([(a, _), (b, _)], _) = h2_pair_of(
+        &[&[b"S 100\nH 1 0\n:status: 200\n\n", WINDOW_SENT, second]],
+        true,
+        |_| {},
+        |_, o| {
+            o.http.pipewait = true;
+            o.callbacks.debug = Some(Handler::debug(both.clone()).unwrap());
+        },
+        |e| {
+            let c = crate::components::Components::new().unwrap();
+            c.configure(b"multi");
+            e.set_components(Some(c));
+        },
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())), "{:#?}", both.text());
+    multi_states(&both)
+}
+
+/// A connection found to speak HTTP/2 by prior knowledge, as its request
+/// is made, is news the multi hears as the transfer's next step starts,
+/// in DID, once: the one waiting is let out then, and DID would let out
+/// another (`Curl_conn_set_multiplex`, `multi_runsingle`,
+/// `multistate_did`). The C build says the same against nghttpd
+/// (`--http2-prior-knowledge -Z`).
+#[test]
+fn a_connection_found_to_multiplex_is_said_once_as_the_next_step_starts() {
+    let states = h2_pair_traced(SECOND);
+    let did = states
+        .iter()
+        .position(|l| l == "[MULTI] [DO] -> [DID]")
+        .unwrap();
+    assert_eq!(
+        states[did..did + 4],
+        [
+            "[MULTI] [DO] -> [DID]",
+            "[MULTI] [DID] multi changed, check CONNECT_PEND queue",
+            "[MULTI] [PENDING] -> [CONNECT]",
+            "[MULTI] [DID] -> [PERFORMING]",
+        ],
+        "{states:#?}"
+    );
+    let said = states
+        .iter()
+        .filter(|l| l.contains("multi changed"))
+        .count();
+    assert_eq!(said, 1, "the second's reuse is no news: {states:#?}");
+}
+
+/// Three transfers by prior knowledge, added together, the second and
+/// the third waiting for the first's connection: in DID, the news that
+/// it multiplexes lets one out, and DID lets out the other
+/// (`multistate_did`), before the first goes on, as the C build does
+/// against nghttpd (`--http2-prior-knowledge -Z` of three URLs).
+#[test]
+fn did_over_a_multiplexing_connection_lets_one_more_out() {
+    let talk = Conversation::replies(&[b"S 100\nH 1 0\n:status: 200\n\n"], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let all = Seen::default();
+    let ids: Vec<TransferId> = ["/a", "/b", "/c"]
+        .into_iter()
+        .map(|path| {
+            let mut e = Easy::new();
+            e.set_libraries(with_h2());
+            let c = crate::components::Components::new().unwrap();
+            c.configure(b"multi");
+            e.set_components(Some(c));
+            let o = e.options_mut();
+            let url = format!("http://127.0.0.1:{PORT}{path}");
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.output.verbose = true;
+            o.limits.total = crate::time::TimeLimit::from_millis(1_000);
+            o.http.version = HttpVersion::Http2Prior;
+            o.http.pipewait = true;
+            o.callbacks.debug = Some(Handler::debug(all.clone()).unwrap());
+            m.add(Box::new(e), (), &mut NoEvents).unwrap()
+        })
+        .collect();
+    for id in ids {
+        let _ended = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    }
+    let states = multi_states(&all);
+    let did = states
+        .iter()
+        .position(|l| l == "[MULTI] [DO] -> [DID]")
+        .unwrap();
+    assert_eq!(
+        states[did..did + 5],
+        [
+            "[MULTI] [DO] -> [DID]",
+            "[MULTI] [DID] multi changed, check CONNECT_PEND queue",
+            "[MULTI] [PENDING] -> [CONNECT]",
+            "[MULTI] [PENDING] -> [CONNECT]",
+            "[MULTI] [DID] -> [PERFORMING]",
+        ],
+        "{states:#?}"
+    );
+}
+
+/// A GOAWAY that lets both streams on the connection finish is news to
+/// the multi, heard as the next step starts (`on_frame_recv`'s
+/// `Curl_multi_connchanged`).
+#[test]
+fn a_goaway_is_said_as_the_next_step_starts() {
+    let second = [b"G 3 0\n".as_slice(), SECOND].concat();
+    let states = h2_pair_traced(&second);
+    let changed: Vec<&String> = states
+        .iter()
+        .filter(|l| l.contains("multi changed"))
+        .collect();
+    assert_eq!(changed.len(), 2, "{states:#?}");
+    assert_eq!(
+        changed[0],
+        "[MULTI] [DID] multi changed, check CONNECT_PEND queue"
+    );
+}
+
 /// A connection being set up to the transfer's origin is a candidate to
 /// wait for before what else the transfer asks is compared: one that
 /// would delegate differently is waited for, and not joined once it is
@@ -3524,4 +3656,75 @@ fn a_connection_closed_under_two_streams_ends_both_in_one_pass() {
     for id in ids {
         m.remove(id, &mut NoEvents).unwrap();
     }
+}
+
+/// The multi's lines of a request over clear text asking to upgrade to
+/// HTTP/2, answered with `reply`, driven `performs` times.
+fn refused_upgrade_states(reply: &[u8], performs: usize) -> Vec<String> {
+    let talk = Conversation::new(reply, false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"multi");
+    e.set_components(Some(c));
+    let s = Seen::default();
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.http.version = HttpVersion::Http2;
+    o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..performs {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    m.remove(id, &mut NoEvents).unwrap();
+    multi_states(&s)
+}
+
+/// An upgrade refused is news to the multi (`http_on_response`'s
+/// `conn_changed`), heard as the transfer's next step starts: in DONE
+/// for a response read whole, as the C build says against an HTTP/1.1
+/// server (`--http2`).
+#[test]
+fn a_refused_upgrade_is_said_as_the_next_step_starts() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    let states = refused_upgrade_states(reply, 4);
+    let done = states
+        .iter()
+        .position(|l| l == "[MULTI] [PERFORMING] -> [DONE]")
+        .unwrap_or_else(|| panic!("{states:#?}"));
+    assert_eq!(
+        states[done..done + 3],
+        [
+            "[MULTI] [PERFORMING] -> [DONE]",
+            "[MULTI] [DONE] multi changed, check CONNECT_PEND queue",
+            "[MULTI] [DONE] -> [COMPLETED]",
+        ],
+        "{states:#?}"
+    );
+}
+
+/// The note is heard in the same call that made it, the transfer's loop
+/// going on while it is set (`multi_runsingle`): a response whose body
+/// is still to come says it in PERFORMING, before the call returns.
+#[test]
+fn a_change_is_heard_in_the_call_that_made_it() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab";
+    let states = refused_upgrade_states(reply, 4);
+    let changed: Vec<&String> = states.iter().filter(|l| l.contains("changed")).collect();
+    assert_eq!(
+        changed,
+        ["[MULTI] [PERFORMING] multi changed, check CONNECT_PEND queue"],
+        "{states:#?}"
+    );
+    assert_eq!(
+        states[states.len() - 2..],
+        [
+            "[MULTI] [DID] -> [PERFORMING]",
+            "[MULTI] [PERFORMING] multi changed, check CONNECT_PEND queue",
+        ],
+        "{states:#?}"
+    );
 }

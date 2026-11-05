@@ -1494,9 +1494,12 @@ impl<H: Host> Multi<H> {
         // The clock is read before each step, as C reads it at the top of
         // `multi_runsingle`'s loop: a step that took time, a `file:`
         // transfer's or a slow handler's, is timed and checked as it ends.
+        // It runs again while a connection of the multi's changed, unless
+        // it completed (`multi_runsingle`'s loop on `multi_ischanged`).
         while {
             cx.rest.now = cx.rest.clock.now();
             state::step(&mut run, &mut cx) == Wake::Again
+                || (cx.rest.shutdowns.changed() && !run.state.is_completed())
         } {}
         // What the step dropped closed its libraries' sockets.
         cx.libraries_closed();

@@ -311,13 +311,11 @@ witness: curl-openssl an_aborted_transfer_s_connection_says_no_goodbye
 --- old
     if aborted {
         shutting.abandon(now, net, trace.as_ref(), in_multi);
-        return;
-    }
+    } else {
 --- new
     if false && aborted {
         shutting.abandon(now, net, trace.as_ref(), in_multi);
-        return;
-    }
+    } else {
 
 === the application's context handler is called before the context's trust store is set up
 file: crates/curl-openssl/src/ssl.rs

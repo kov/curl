@@ -183,9 +183,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::imap::tests::over_the_wire::a_paused_body_holds_the_transfer_open
 features: test-util
 --- old
-        TransferState::Did(x) if !x.proto.exchanges() && !x.proto.holds_output() => (
+            if !x.proto.exchanges() && !x.proto.holds_output() {
 --- new
-        TransferState::Did(x) if !x.proto.exchanges() => (
+            if !x.proto.exchanges() {
 
 === the TLS made in place is not timed
 file: crates/curl-core/src/multi/state/tls.rs

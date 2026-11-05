@@ -2406,6 +2406,7 @@ impl ConnectMachine {
             upkept_ms: u64::try_from(at.since(created).as_millis()).unwrap_or(u64::MAX),
             served: false,
             socks5_authenticated: false,
+            multiplex_told: false,
             seen_version: None,
             local: std::sync::OnceLock::new(),
             close: false,

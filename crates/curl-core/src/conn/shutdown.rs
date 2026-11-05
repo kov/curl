@@ -357,8 +357,14 @@ pub(crate) struct ShutdownSet {
     /// runs with the next dirty transfers, before them (the internal
     /// handle's dirty bit).
     dirty: bool,
-    /// A connection of it closed: a transfer waiting for room may find
-    /// some (`Curl_multi_connchanged`).
+    /// A connection of the multi's changed since the multi last looked
+    /// (C's `recheckstate`, set by `Curl_multi_connchanged`): one of the
+    /// set's, or one the multi closed at once, closed; or a transfer's
+    /// step found one to multiplex, its server's stream limit changed or
+    /// a GOAWAY came, or an upgrade it asked for was answered. The next
+    /// step of a transfer says so and lets one waiting look again, as
+    /// does the end of a pass. Kept here, where every connection the
+    /// multi closes passes, as the multi's one note of it.
     changed: bool,
     /// The multi's internal trace, if it has one.
     trace: Option<Internal>,
@@ -609,9 +615,21 @@ impl ShutdownSet {
         std::mem::take(&mut self.dirty)
     }
 
-    /// A connection closed since last asked.
+    /// A connection of the multi's changed since last asked.
     pub(crate) fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
+    }
+
+    /// Whether a connection of the multi's changed since last asked,
+    /// left to be asked again.
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Note that a connection of the multi's changed
+    /// (`Curl_multi_connchanged`).
+    pub(crate) fn conn_changed(&mut self) {
+        self.changed = true;
     }
 }
 
@@ -694,19 +712,21 @@ pub(crate) fn discard(
     let mut shutting = Shutting::start(conn, now);
     if aborted {
         shutting.abandon(now, net, trace.as_ref(), in_multi);
-        return;
-    }
-    let room = linger.as_mut().map(|l| &mut *l.room);
-    if shutting.try_once(now, trace.as_ref(), room) == Tried::Done {
-        shutting.close(net, trace.as_ref(), in_multi);
-        return;
-    }
-    match linger.filter(|_| may_linger) {
-        Some(l) => {
+    } else {
+        let room = linger.as_mut().map(|l| &mut *l.room);
+        if shutting.try_once(now, trace.as_ref(), room) != Tried::Done
+            && let Some(l) = linger.as_mut().filter(|_| may_linger)
+        {
             let max = max_shutdowns(l.max_total, l.multi_pool.unwrap_or(pool));
             l.set.add(shutting, max, net);
+            return;
         }
-        None => shutting.close(net, trace.as_ref(), in_multi),
+        shutting.close(net, trace.as_ref(), in_multi);
+    }
+    // Closed at once, which a multi notes as its set does
+    // (`Curl_cshutdn_terminate`).
+    if let Some(l) = linger {
+        l.set.conn_changed();
     }
 }
 

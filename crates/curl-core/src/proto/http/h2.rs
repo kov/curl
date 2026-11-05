@@ -1427,6 +1427,7 @@ impl Request {
         let prior = lease.conn().h2().and_then(H2Conn::goaway);
         let me = cx.me;
         let own = self.stream().id;
+        let mut limit_changed = false;
         let fed = with_session(lease, |h2, lease| {
             let read = h2.recv(bytes, &mut |event, routed, said| {
                 // A frame is traced by the transfer reading, whichever
@@ -1437,7 +1438,7 @@ impl Request {
                     enable_push,
                 } = event
                 {
-                    trace_settings(&mut *cx, said, max_concurrent, enable_push);
+                    limit_changed |= trace_settings(&mut *cx, said, max_concurrent, enable_push);
                 }
                 let stream = crate::proto::http2::stream_of(&event);
                 let to = stream.and_then(|s| {
@@ -1547,10 +1548,14 @@ impl Request {
             let kind = window_failed(cx, stream, wanted, e);
             self.stream().failed = Some(kind);
         }
+        // The multi looks again at a server's new limit on streams, or
+        // its GOAWAY (`Curl_multi_connchanged`).
+        if limit_changed || goaway.is_some() {
+            cx.conn_changed();
+        }
         if goaway.is_some() {
-            // Each stream on it learns so (`Curl_multi_connchanged`); no
-            // new request goes on it, as it takes no more transfers than
-            // it has (`cf_h2_query`).
+            // Each stream on it learns so; no new request goes on it, as
+            // it takes no more transfers than it has (`cf_h2_query`).
             self.wake_others(cx, lease);
         }
         if !matches!(fed, Ok(Ok(_))) {

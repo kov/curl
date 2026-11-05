@@ -1538,14 +1538,6 @@ impl ProtoState {
         }
     }
 
-    /// Whether the transfer asked its connection to switch protocols.
-    pub(crate) fn asked_upgrade(&self) -> bool {
-        match self {
-            ProtoState::Http(r) => r.asked_upgrade(),
-            _ => false,
-        }
-    }
-
     /// An HTTP/2 stream said HTTP/1.1 is required
     /// (`Curl_h2_http_1_1_error`).
     pub(crate) fn h1_required(&self) -> bool {

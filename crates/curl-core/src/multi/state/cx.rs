@@ -521,6 +521,12 @@ impl<H: Host> StepCx<'_, H> {
         Ok(pool.pushed(lease))
     }
 
+    /// A connection of the multi's changed: the multi looks again for
+    /// those waiting as a step next starts (`Curl_multi_connchanged`).
+    pub(crate) fn conn_changed(&mut self) {
+        self.rest.shutdowns.conn_changed();
+    }
+
     /// Step transfer `id` again in the pass: something it waits on, a
     /// connection it shares, changed.
     pub(crate) fn wake(&mut self, id: TransferId) {

@@ -1287,6 +1287,35 @@ pub(in crate::multi) fn wake_pending<H: Host>(
     pending: &mut PendingQueue,
 ) -> Option<TransferId> {
     let (id, plan) = pending.next()?;
+    let_out(slots, dirty, id, plan);
+    Some(id)
+}
+
+/// As `schedule_pending`, from the step of `run`, which may be the one
+/// let out: a transfer whose step made it wait looks again at once if a
+/// connection changed meanwhile, as it is the first waiting
+/// (`multi_runsingle`'s `multi_schedule_pending` in PENDING).
+pub(crate) fn schedule_pending_from<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
+    let Some((id, plan)) = cx.rest.pending.next() else {
+        return;
+    };
+    if id == cx.me {
+        assert!(
+            matches!(run.state, TransferState::Pending),
+            "{id:?}, let out of the queue, does not wait"
+        );
+        run.state = TransferState::Setup(plan);
+        mstate::enter(cx, MState::Connect);
+    } else {
+        let_out(cx.rest.tell.slots, cx.rest.dirty, id, plan);
+        let mut other = StepCx::new(id, cx.rest.reborrow());
+        mstate::enter(&mut other, MState::Connect);
+    }
+}
+
+/// Transfer `id`, waiting, with its `plan`, taken out of the queue: it
+/// looks for a connection again as it next runs.
+fn let_out<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, plan: Plan) {
     let run = slots
         .get_mut(id)
         .and_then(|slot| slot.run.as_mut())
@@ -1294,7 +1323,6 @@ pub(in crate::multi) fn wake_pending<H: Host>(
         .unwrap_or_else(|| panic!("{id:?}, let out of the queue, does not wait"));
     run.state = TransferState::Setup(plan);
     dirty.insert(id.index());
-    Some(id)
 }
 
 /// The peer the connect-to entries send a connection for `origin` to, if

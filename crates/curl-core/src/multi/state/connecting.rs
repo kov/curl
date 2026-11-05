@@ -1940,6 +1940,11 @@ pub(super) fn up<H: Host>(
     assert!(lost.is_none(), "the HTTPS connect filter goes");
     let reduced = connected.reduced();
     mstate::trace(cx, format_args!("reduced to {reduced}"));
+    // A new connection that multiplexes lets one waiting look again
+    // before the transfer goes on (`multi_connecting`).
+    if c.lease.multiplexes() {
+        schedule_pending(&mut cx.rest);
+    }
     (c.attached(), Wake::Again)
 }
 

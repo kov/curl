@@ -1333,10 +1333,14 @@ through SSPI; MIT krb5 stays Unix-only.
     no test C's passes but the replaced 96 and 558. Eleven hand cases (`--negotiate` as the
     process's user, as a user and with `--fail`, `--proxy-negotiate`, `--digest` as a user and as
     the process's, `--proxy-digest`, `--anyauth`, `--socks5-gssapi` with and without a service,
-    `--ntlm`) give the C build's exit codes, requests and trace; Microsoft's curl.exe 8.21.0
-    agrees but for sending NTLM's token in Negotiate, which it predates C's refusal of. Without
-    a KDC no context completes: the tokens SSPI makes from a peer's are checked only against a
-    scripted SSPI.
+    through `--socks5-hostname`, `--ntlm`) give the C build's exit codes, requests and trace;
+    Microsoft's curl.exe 8.21.0 agrees but for sending NTLM's token in Negotiate, which it
+    predates C's refusal of. Through `--socks5`, C's build resolves the origin with c-ares
+    alongside the handshake and may fail on the name first (exit 6), as the Rust leg's threaded
+    resolver does not. No KDC was set up, so no Kerberos context completes: a peer's token goes
+    to SSPI as a token only in NTLM's exchange inside Negotiate, and the Kerberos tokens are
+    checked against a scripted SSPI. The 84 Digest, Negotiate and GSS-API tests that run on Linux,
+    where the reshaped Digest and Negotiate paths are GSS-API's, pass on the Rust leg.
 99. **WinIDN.** **Done**, a Windows build's default as in both oracles (`libidn2` asks for
     libidn2 instead): `IdnToAscii` and `IdnToUnicode` on the name read as UTF-8, in C's 255-unit
     buffers, `WinIDN` in the version string and no `libidn`. Against

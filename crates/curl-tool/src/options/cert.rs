@@ -1,6 +1,7 @@
 //! `--cert`'s argument: a certificate's name and its passphrase after a
 //! colon, `\` escaping a colon or itself in the name
-//! (`parse_cert_parameter`, tool unit test 1394).
+//! (`parse_cert_parameter`, tool unit test 1394), and on Windows a drive
+//! letter's colon kept in the name.
 
 use std::borrow::Cow;
 
@@ -48,6 +49,16 @@ pub(crate) fn split(arg: &[u8]) -> Result<Split<'_>, ParamError> {
                     }
                 }
             }
+            // On Windows, a letter and a colon starting the argument, a
+            // separator after, are a drive's: the colon is the name's.
+            b':' if cfg!(windows)
+                && i == 1
+                && arg[0].is_ascii_alphabetic()
+                && matches!(arg.get(2), Some(b'\\' | b'/')) =>
+            {
+                put(b':');
+                i += 1;
+            }
             b':' => {
                 let rest = &arg[i + 1..];
                 let pass = (!rest.is_empty()).then_some(rest);
@@ -94,5 +105,42 @@ mod tests {
             assert_eq!(got_pass, pass, "{}", String::from_utf8_lossy(arg));
         }
         assert_eq!(split(b"").unwrap_err(), ParamError::BlankString);
+    }
+
+    /// Tool unit test 1394's Windows rows: a letter and a colon before a
+    /// separator start a name on a drive, its colon kept.
+    #[cfg(windows)]
+    #[test]
+    fn splits_a_drive_letter_as_unit_1394_on_windows() {
+        for (arg, name, pass) in [
+            (
+                &br"c:\foo:bar:baz"[..],
+                &br"c:\foo"[..],
+                Some(&br"bar:baz"[..]),
+            ),
+            (br"c:\foo\:bar:baz", br"c:\foo:bar", Some(br"baz")),
+            (br"c:\foo\\:bar:baz", br"c:\foo\", Some(br"bar:baz")),
+            (br"c:\foo:bar\:baz", br"c:\foo", Some(br"bar\:baz")),
+            (br"c:\foo:bar\\:baz", br"c:\foo", Some(br"bar\\:baz")),
+            (br"c:\foo\bar\baz", br"c:\foo\bar\baz", None),
+            (br"c:\foo\\bar\\baz", br"c:\foo\bar\baz", None),
+            (br"c:\foo\", br"c:\foo\", None),
+            (br"c:\foo\\", br"c:\foo\", None),
+            (br"c:\foo:bar\", br"c:\foo", Some(br"bar\")),
+            (br"c:\foo:bar\\", br"c:\foo", Some(br"bar\\")),
+            (br"c:\foo:bar:", br"c:\foo", Some(br"bar:")),
+            (br"c:\foo\::bar\:", br"c:\foo:", Some(br"bar\:")),
+            // A forward slash after the colon too, as MSYS hands a path.
+            (b"C:/work/a.crt:pw", b"C:/work/a.crt", Some(b"pw")),
+            // Not a letter, or not first, or no separator after: a
+            // separating colon.
+            (b"1:/a", b"1", Some(b"/a")),
+            (b"xc:/a", b"xc", Some(b"/a")),
+            (b"c:a", b"c", Some(b"a")),
+        ] {
+            let (got_name, got_pass) = split(arg).unwrap();
+            assert_eq!(&*got_name, name, "{}", String::from_utf8_lossy(arg));
+            assert_eq!(got_pass, pass, "{}", String::from_utf8_lossy(arg));
+        }
     }
 }

@@ -102,6 +102,9 @@ pub(crate) enum Tried {
     Done,
     /// Its layers wait for the socket.
     Waiting,
+    /// Its layers wait, but it closes all the same, unfinished (`once`):
+    /// what a try says only within, as `Done`.
+    Cut,
 }
 
 impl Shutting {
@@ -219,10 +222,15 @@ impl Shutting {
         trace: Option<&Internal>,
         room: Option<&mut RecvRoom>,
     ) -> Tried {
-        let tried = self.run_once(now, trace, room);
-        if tried == Tried::Done {
-            self.finished = true;
-        }
+        let tried = match self.run_once(now, trace, room) {
+            Tried::Done => {
+                self.finished = true;
+                Tried::Done
+            }
+            // C's terminate leaves its filters unfinished: a forced close.
+            Tried::Cut => Tried::Done,
+            Tried::Waiting => Tried::Waiting,
+        };
         if let Some(t) = trace {
             let done = u8::from(tried == Tried::Done);
             t.of(
@@ -271,8 +279,9 @@ impl Shutting {
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
-                Ok(Handshake::Waiting) if !self.once => Tried::Waiting,
-                Ok(Handshake::Waiting | Handshake::Done) | Err(_) => Tried::Done,
+                Ok(Handshake::Waiting) if self.once => Tried::Cut,
+                Ok(Handshake::Waiting) => Tried::Waiting,
+                Ok(Handshake::Done) | Err(_) => Tried::Done,
             },
             // A datagram socket is not drained: C reads the dangling bytes
             // off a TCP socket alone (`cf_socket_shutdown`).

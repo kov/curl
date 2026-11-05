@@ -348,7 +348,8 @@ witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
-                Ok(Handshake::Waiting) if !self.once => Tried::Waiting,
+                Ok(Handshake::Waiting) if self.once => Tried::Cut,
+                Ok(Handshake::Waiting) => Tried::Waiting,
 --- new
         if self.awaits_answer(&mut cx) {
             return Tried::Waiting;
@@ -357,7 +358,8 @@ witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
-                Ok(Handshake::Waiting) if !self.once => { self.say_goodbye(&mut cx, false); Tried::Waiting }
+                Ok(Handshake::Waiting) if self.once => Tried::Cut,
+                Ok(Handshake::Waiting) => { self.say_goodbye(&mut cx, false); Tried::Waiting }
 
 === a layer's shutdown does not say what its socket does
 file: crates/curl-core/src/conn/layer.rs
@@ -456,9 +458,9 @@ witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_the_set_for_its_answer
 --- old
-                Ok(Handshake::Waiting) if !self.once => Tried::Waiting,
+                Ok(Handshake::Waiting) if self.once => Tried::Cut,
 --- new
-                Ok(Handshake::Waiting) if true => Tried::Waiting,
+                Ok(Handshake::Waiting) if false => Tried::Cut,
 
 === a connection closed with no multi does not wait for its goodbye's answer
 file: crates/curl-core/src/conn/shutdown.rs
@@ -505,3 +507,14 @@ witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_soc
         cx.of(traced, format_args!("shut down successfully"));
 --- new
         let _ = traced;
+
+=== a share's evicted connection cut short is closed as if its layers finished
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_the_set_for_its_answer
+--- old
+            Tried::Cut => Tried::Done,
+--- new
+            Tried::Cut => {
+                self.finished = true;
+                Tried::Done
+            }

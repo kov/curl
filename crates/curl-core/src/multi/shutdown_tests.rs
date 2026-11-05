@@ -1746,6 +1746,16 @@ fn a_share_s_evicted_connection_waits_in_the_set_for_its_answer() {
     let (mut m, wire, _clock) = answering(&[(1, std::slice::from_ref(&first)), (2, &[second])]);
     m.linger_connections(Some(Linger::Passes(5)));
     m.conn_limits_mut().max_connects = NonZeroU32::new(1);
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Multi,
+        crate::components::Level::Info,
+    );
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
     let share = Share::with_net(Box::new(wire.clone())).unwrap();
     share.keep(Kind::Connections).unwrap();
     let mut ev = Rec::default();
@@ -1764,6 +1774,12 @@ fn a_share_s_evicted_connection_waits_in_the_set_for_its_answer() {
     m.perform(&mut ev).unwrap();
     assert_eq!(first.answered(), 1);
     assert_eq!(wire.closed(), [1000], "closed once answered");
+    // Its layers unfinished, the close is a forced one, as C's terminate.
+    let lines = written.lines();
+    assert!(
+        lines.contains(&"* [MULTI] [SHUTDOWN] force closing connection #0".to_owned()),
+        "{lines:#?}"
+    );
     drop(share);
 }
 

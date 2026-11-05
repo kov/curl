@@ -134,16 +134,22 @@ impl fmt::Display for BadLine {
 /// no NUL, a CR only before the line end, and a colon in a header unless
 /// it continues the one before.
 pub(crate) fn verify_line(line: &[u8], number: u32) -> Result<(), BadLine> {
-    let mut colon = false;
-    for (i, &b) in line.iter().enumerate() {
-        match b {
-            0 => return Err(BadLine::Nul),
-            b'\r' if i + 2 < line.len() => return Err(BadLine::StrayCr),
-            b':' => colon = true,
-            _ => {}
-        }
+    // Each byte looked for a word at a time, as C's `memchr` does: the
+    // first of a zero byte and a carriage return before the line's last
+    // two bytes is the line's fault.
+    use crate::url::find_byte;
+    let nul = find_byte(line, 0);
+    let cr = find_byte(&line[..line.len().saturating_sub(2)], b'\r');
+    match (nul, cr) {
+        (Some(n), Some(c)) if c < n => return Err(BadLine::StrayCr),
+        (Some(_), _) => return Err(BadLine::Nul),
+        (None, Some(_)) => return Err(BadLine::StrayCr),
+        (None, None) => {}
     }
-    if number < 2 || colon || (number > 2 && line.first().is_some_and(|&b| is_blank(b))) {
+    if number < 2
+        || find_byte(line, b':').is_some()
+        || (number > 2 && line.first().is_some_and(|&b| is_blank(b)))
+    {
         return Ok(());
     }
     Err(BadLine::NoColon)
@@ -315,6 +321,9 @@ mod tests {
         assert_eq!(verify_line(b"A: b\rc\r\n", 2), Err(BadLine::StrayCr));
         assert_eq!(verify_line(b"A: b\r\r\n", 3), Err(BadLine::StrayCr));
         assert_eq!(verify_line(b"A: b\r\r", 3), Ok(()), "a CR two from the end");
+        // The first fault is the one said.
+        assert_eq!(verify_line(b"A: \rb\0c\r\n", 2), Err(BadLine::StrayCr));
+        assert_eq!(verify_line(b"A: \0b\rc\r\n", 2), Err(BadLine::Nul));
         assert_eq!(verify_line(b"no colon\r\n", 2), Err(BadLine::NoColon));
         assert_eq!(verify_line(b" folded\r\n", 3), Ok(()));
         assert_eq!(
@@ -326,6 +335,23 @@ mod tests {
             BadLine::StrayCr.to_string(),
             "Carriage return found in header"
         );
+    }
+
+    /// `verify_line` a byte at a time, as `Curl_verify_header` reads.
+    fn verify_bytewise(line: &[u8], number: u32) -> Result<(), BadLine> {
+        let mut colon = false;
+        for (i, &b) in line.iter().enumerate() {
+            match b {
+                0 => return Err(BadLine::Nul),
+                b'\r' if i + 2 < line.len() => return Err(BadLine::StrayCr),
+                b':' => colon = true,
+                _ => {}
+            }
+        }
+        if number < 2 || colon || (number > 2 && line.first().is_some_and(|&b| is_blank(b))) {
+            return Ok(());
+        }
+        Err(BadLine::NoColon)
     }
 
     const WORDS: &[&[u8]] = &[
@@ -387,6 +413,7 @@ mod tests {
             header_says(&line, name, token);
             let verified = verify_line(&line, number);
             proptest::prop_assert!(verified.is_err() || !line.contains(&0));
+            proptest::prop_assert_eq!(verified, verify_bytewise(&line, number));
             if let Some(v) = framing::content_type(&line) {
                 proptest::prop_assert!(within(v));
             }

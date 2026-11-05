@@ -90,9 +90,17 @@ witness: curl-core proto::http1::fields::tests::values_are_read_as_c_reads_them
 file: crates/curl-core/src/proto/http1/fields.rs
 witness: curl-core proto::http1::fields::tests::lines_are_verified_as_c_verifies_them
 --- old
-            b'\r' if i + 2 < line.len() => return Err(BadLine::StrayCr),
+    let cr = find_byte(&line[..line.len().saturating_sub(2)], b'\r');
 --- new
-            b'\r' if i + 1 < line.len() => return Err(BadLine::StrayCr),
+    let cr = find_byte(&line[..line.len().saturating_sub(1)], b'\r');
+
+=== a stray CR after a zero byte is the fault said
+file: crates/curl-core/src/proto/http1/fields.rs
+witness: curl-core proto::http1::fields::tests::lines_are_verified_as_c_verifies_them
+--- old
+        (Some(n), Some(c)) if c < n => return Err(BadLine::StrayCr),
+--- new
+        (Some(n), Some(c)) if c > n => return Err(BadLine::StrayCr),
 
 === the second line may continue the status line
 file: crates/curl-core/src/proto/http1/fields.rs

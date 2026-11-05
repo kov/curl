@@ -389,7 +389,7 @@ impl HeadParser {
                 self.push(b" ")?;
                 self.unfolding = false;
             }
-            let Some(newline) = input.iter().position(|&b| b == b'\n') else {
+            let Some(newline) = crate::url::find_byte(input, b'\n') else {
                 self.push(input)?;
                 used += input.len();
                 if self.lines == 0 && self.looks(&self.line) == Looks::No {

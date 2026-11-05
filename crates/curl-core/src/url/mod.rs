@@ -63,7 +63,7 @@ pub fn unescape_into(bytes: &[u8], out: &mut [u8]) -> usize {
 
 /// Where `needle` first is in `hay`, looked for eight bytes at a time as
 /// C's `strchr` and `memchr` do, not one by one.
-fn find_byte(hay: &[u8], needle: u8) -> Option<usize> {
+pub(crate) fn find_byte(hay: &[u8], needle: u8) -> Option<usize> {
     const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
     const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
     let spread = ONES * u64::from(needle);

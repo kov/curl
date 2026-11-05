@@ -2034,7 +2034,11 @@ pub(crate) fn apply<'a>(
             let url = value.text();
             line.current().tls.doh_url = (!url.is_empty()).then_some(url);
         }
-        Opt::Ech | Opt::FalseStart | Opt::Ntlm | Opt::ProxyNtlm => line.not_implemented(spec, "--"),
+        // NTLM is never built (SCOPE.md): refused as by a C build without
+        // it, `--proxy-ntlm` even to turn off, as C's check has no toggle.
+        Opt::ProxyNtlm => return Err(ParamError::LibcurlDoesntSupport),
+        Opt::Ntlm if value.toggle() => return Err(ParamError::LibcurlDoesntSupport),
+        Opt::Ech | Opt::FalseStart | Opt::Ntlm => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
 }

@@ -1612,6 +1612,22 @@ mod tests {
         }
     }
 
+    /// NTLM, never built, is refused as a C build without it refuses it:
+    /// `--ntlm` when it turns it on, `--proxy-ntlm` either way.
+    #[test]
+    fn ntlm_is_not_supported() {
+        for args in [
+            &["x", "--ntlm"][..],
+            &["x", "--proxy-ntlm"],
+            &["x", "--no-proxy-ntlm"],
+        ] {
+            assert!(
+                matches!(parsed(args), Err(ParamError::LibcurlDoesntSupport)),
+                "{args:?}"
+            );
+        }
+    }
+
     /// Each authentication option adds its method, or takes it away.
     #[test]
     fn reads_the_auth_methods() {

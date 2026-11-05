@@ -756,6 +756,7 @@ pub struct Easy {
 }
 impl Easy {
     pub fn perform(&mut self) -> Result<(), Error>;
+    pub fn perform_boxed(self: Box<Self>) -> (Box<Easy>, Result<(), Error>);
     pub fn report(&self) -> &TransferReport;
     pub fn options_mut(&mut self) -> &mut Options;
     pub fn try_clone(&self) -> Result<Easy, OutOfMemory>;   // duphandle: options only
@@ -763,11 +764,12 @@ impl Easy {
 }
 ```
 
-`perform`:
+`perform` boxes `mem::take(self)`, which leaves an allocation-free default behind, runs
+`perform_boxed` on the box and writes the handle back into `*self`. `perform_boxed`, for a
+handle already in a box of its own (the tool's, from the moment it makes one):
 1. takes `self.private`, or creates it (`ArenaPolicy { initial: 16, .. }`, one `try_box`);
-2. `let easy = mem::take(self)`, which leaves an allocation-free default behind;
-3. `multi.add(easy, (), &mut NoEvents)`, then `drive_to_completion`, then `remove`;
-4. writes the returned `Easy` back into `*self` and puts the private multi into it.
+2. `multi.add(easy, (), &mut NoEvents)`, then `drive_to_completion`, then `remove`;
+3. puts the private multi into the handle and gives back the same box.
 
 Connections and DNS persist in the private multi across performs (1512, 3208).
 `Multi::add` drops an added `Easy`'s private multi (C's `multi_easy` destruction at

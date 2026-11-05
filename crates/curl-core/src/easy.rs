@@ -1347,8 +1347,57 @@ impl Easy {
         self.perform_by(true)
     }
 
+    /// Run the transfer to its end as `perform` does, for a handle already
+    /// in memory of its own, as a multi holds one: the box itself goes into
+    /// the handle's multi and comes back, nothing copied or allocated for
+    /// it. The handle, and the transfer's result.
+    pub fn perform_boxed(self: Box<Self>) -> (Box<Easy>, Result<(), Error>) {
+        self.perform_boxed_by(false)
+    }
+
+    /// `perform_boxed`, driven through `socket_action` as `perform_ev`
+    /// drives it.
+    #[cfg(feature = "debug-hooks")]
+    pub fn perform_ev_boxed(self: Box<Self>) -> (Box<Easy>, Result<(), Error>) {
+        self.perform_boxed_by(true)
+    }
+
     fn perform_by(&mut self, by_events: bool) -> Result<(), Error> {
-        let mut private = match self.private.take() {
+        // The multi holds its transfers in memory of their own.
+        match curl_alloc::try_box_or_back(std::mem::take(self)) {
+            Ok(easy) => {
+                let (easy, result) = easy.perform_boxed_by(by_events);
+                *self = *easy;
+                result
+            }
+            Err(easy) => {
+                *self = easy;
+                let kind = ErrorKind::OutOfMemory;
+                Err(Error::with_detail(kind, self.report().failure()))
+            }
+        }
+    }
+
+    fn perform_boxed_by(mut self: Box<Self>, by_events: bool) -> (Box<Easy>, Result<(), Error>) {
+        let mut private = match self.private_multi() {
+            Ok(private) => private,
+            Err(kind) => return (self, Err(kind.into())),
+        };
+        let Private { multi, events } = &mut *private;
+        let drive = if by_events {
+            Drive::Events(events.get_or_insert_with(EventTable::default))
+        } else {
+            Drive::Waits
+        };
+        let (mut easy, result) = run_in(multi, self, drive);
+        easy.private = Some(private);
+        (easy, result)
+    }
+
+    /// The multi a perform runs the handle in: the one it kept, or one
+    /// made now, the first time.
+    fn private_multi(&mut self) -> Result<Box<Private>, ErrorKind> {
+        let private = match self.private.take() {
             Some(private) => private,
             None => {
                 // Winsock, started while the multi's waker and network are
@@ -1382,36 +1431,38 @@ impl Easy {
                 .map_err(oom)?
             }
         };
-        let Private { multi, events } = &mut *private;
-        let result = if by_events {
-            let table = events.get_or_insert_with(EventTable::default);
-            self.perform_in(multi, Drive::Events(table))
-        } else {
-            self.perform_in(multi, Drive::Waits)
-        };
-        self.private = Some(private);
-        result
+        Ok(private)
     }
 
-    /// Run the transfer to its end in `multi`, driven as `drive` says.
+    /// Run the transfer to its end in `multi`, driven as `drive` says: a
+    /// test's multi in place of the handle's own.
+    #[cfg(test)]
     pub(crate) fn perform_in(&mut self, multi: &mut Multi, drive: Drive) -> Result<(), Error> {
-        // The easy handle's limit is its multi's (`curl_easy_perform`).
-        multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
-        multi.set_quick_exit(self.options().quick_exit);
         // The multi holds its transfers in memory of their own.
-        let result = match curl_alloc::try_box_or_back(std::mem::take(self)) {
+        match curl_alloc::try_box_or_back(std::mem::take(self)) {
             Ok(easy) => {
-                let (result, easy) = run_to_end(multi, easy, drive);
+                let (easy, result) = run_in(multi, easy, drive);
                 *self = *easy;
                 result
             }
             Err(easy) => {
                 *self = easy;
-                Err(ErrorKind::OutOfMemory)
+                let kind = ErrorKind::OutOfMemory;
+                Err(Error::with_detail(kind, self.report().failure()))
             }
-        };
-        result.map_err(|kind| Error::with_detail(kind, self.report().failure()))
+        }
     }
+}
+
+/// Run `easy`'s transfer to its end in `multi`, driven as `drive` says:
+/// the handle, and the transfer's result.
+fn run_in(multi: &mut Multi, easy: Box<Easy>, drive: Drive) -> (Box<Easy>, Result<(), Error>) {
+    // The easy handle's limit is its multi's (`curl_easy_perform`).
+    multi.conn_limits_mut().max_connects = Some(easy.options().limits.reuse.max_connects);
+    multi.set_quick_exit(easy.options().quick_exit);
+    let (result, easy) = run_to_end(multi, easy, drive);
+    let result = result.map_err(|kind| Error::with_detail(kind, easy.report().failure()));
+    (easy, result)
 }
 
 /// The jar's cookies, swept of those expired, to the file `to`.
@@ -1759,6 +1810,35 @@ mod tests {
         e.options_mut().set_url(Some(&s.url("f"))).unwrap();
         assert_eq!(e.perform(), Ok(()));
         assert_eq!(*body.0.lock().unwrap(), b"hellohello");
+    }
+
+    /// A boxed handle performs in its box, which comes back the same, with
+    /// the multi of its own kept for the next transfer and a failure's
+    /// detail said, as `perform` does.
+    #[test]
+    fn performs_a_boxed_handle_in_its_box() {
+        let s = Scratch::new("boxed");
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let (e, body) = easy(&s.url("f"));
+        let e = Box::new(e);
+        let at: *const Easy = &*e;
+        let (mut e, result) = e.perform_boxed();
+        assert_eq!(result, Ok(()));
+        assert!(std::ptr::eq(at, &*e), "the same box");
+        assert_eq!(*body.0.lock().unwrap(), b"hello");
+        assert_eq!(e.report().sizes().download(), 5);
+        let private: *const Private = &**e.private.as_ref().expect("kept");
+        e.options_mut().set_url(Some(&s.url("missing"))).unwrap();
+        let (e, result) = e.perform_boxed();
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::FileCouldntReadFile);
+        assert!(
+            err.detail()
+                .is_some_and(|d| d.starts_with(b"Could not open file "))
+        );
+        assert!(std::ptr::eq(at, &*e), "the same box after a failure");
+        let kept: *const Private = &**e.private.as_ref().expect("kept");
+        assert!(std::ptr::eq(private, kept), "the same multi");
     }
 
     /// A handle made on one thread, with its handlers and the multi of

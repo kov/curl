@@ -960,7 +960,7 @@ impl PerTransfer<'_, '_> {
                     let Ok(dup) = easy.try_clone() else {
                         return self.fail(run, &easy, ErrorKind::OutOfMemory);
                     };
-                    drop(Handle(std::mem::replace(&mut *easy, dup)));
+                    let_go(&mut std::mem::replace(&mut *easy, dup));
                     easy.set_share(Some(run.share.clone()))
                         .expect("a handle made now holds no connection");
                 }
@@ -1136,7 +1136,9 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     if unnamed.is_none() {
         binary_stdout(op, to_stdout, output);
     }
-    let mut easy = Handle(Easy::new());
+    let Ok(mut easy) = Handle::new() else {
+        return Made::Failed(ErrorKind::OutOfMemory);
+    };
     easy.set_share(Some(run.share.clone()))
         .expect("a handle made now holds no connection");
     easy.set_libraries(run.linked.for_handle(run.claims));
@@ -1404,33 +1406,87 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
 }
 
 /// A transfer's handle, which saves the cookie jar when it is done with,
-/// as C's `curl_easy_cleanup` does (`Curl_flush_cookies`).
-struct Handle(Easy);
+/// as C's `curl_easy_cleanup` does (`Curl_flush_cookies`). Boxed from
+/// the start, as a multi holds it: the box goes into the multi and comes
+/// back, and the handle is never copied. Empty only while its box is out,
+/// in a multi or a perform.
+struct Handle(Option<Box<Easy>>);
+
+impl Handle {
+    /// A new handle, in memory of its own.
+    fn new() -> Result<Handle, OutOfMemory> {
+        Ok(Handle(Some(try_box(Easy::new())?)))
+    }
+
+    /// The handle a multi gave back.
+    fn back(easy: Box<Easy>) -> Handle {
+        Handle(Some(easy))
+    }
+
+    /// Its box, to go into a multi: the handle is let go of only once it
+    /// is back.
+    fn take(&mut self) -> Box<Easy> {
+        self.0.take().expect("a handle's box goes out once")
+    }
+
+    /// Its box, back from a multi that did not take it.
+    fn put_back(&mut self, easy: Box<Easy>) {
+        assert!(self.0.is_none(), "a handle's box comes back once");
+        self.0 = Some(easy);
+    }
+
+    /// Run its transfer to its end, as `Easy::perform` does, the box going
+    /// to the perform's multi and back.
+    fn perform(&mut self) -> Result<(), curl_core::error::Error> {
+        let (easy, result) = self.take().perform_boxed();
+        self.put_back(easy);
+        result
+    }
+
+    /// `perform`, driven by events as `Easy::perform_ev` drives it.
+    #[cfg(feature = "debug-hooks")]
+    fn perform_ev(&mut self) -> Result<(), curl_core::error::Error> {
+        let (easy, result) = self.take().perform_ev_boxed();
+        self.put_back(easy);
+        result
+    }
+}
 
 impl Deref for Handle {
     type Target = Easy;
 
     fn deref(&self) -> &Easy {
-        &self.0
+        self.0
+            .as_deref()
+            .expect("a handle is used only with its box")
     }
 }
 
 impl DerefMut for Handle {
     fn deref_mut(&mut self) -> &mut Easy {
-        &mut self.0
+        self.0
+            .as_deref_mut()
+            .expect("a handle is used only with its box")
     }
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // A failure goes unsaid: C's cleanup stops tracing before it saves
-        // the jar, so its warning is never seen.
-        let _unsaid = self.0.save_cookies();
-        // Then the alt-svc and HSTS caches, as C's cleanup writes them,
-        // whose failures go unsaid too.
-        let _unsaid = self.0.save_alt_svc();
-        let _unsaid = self.0.save_hsts();
+        if let Some(easy) = &mut self.0 {
+            let_go(easy);
+        }
     }
+}
+
+/// What C's `curl_easy_cleanup` writes of a handle let go of.
+fn let_go(easy: &mut Easy) {
+    // A failure goes unsaid: C's cleanup stops tracing before it saves
+    // the jar, so its warning is never seen.
+    let _unsaid = easy.save_cookies();
+    // Then the alt-svc and HSTS caches, as C's cleanup writes them,
+    // whose failures go unsaid too.
+    let _unsaid = easy.save_alt_svc();
+    let _unsaid = easy.save_hsts();
 }
 
 /// The longest wait between attempts, unless the server asks for more

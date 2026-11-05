@@ -4,8 +4,19 @@
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::performs_a_file_url_on_its_own
 --- old
-        self.private = Some(private);
+        easy.private = Some(private);
 --- new
+
+=== a boxed handle's perform gives back a copy in a new box
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::performs_a_boxed_handle_in_its_box
+--- old
+        easy.private = Some(private);
+        (easy, result)
+--- new
+        easy.private = Some(private);
+        let easy = try_box(*easy).expect("memory for a copy");
+        (easy, result)
 
 === an added handle keeps its own multi
 file: crates/curl-core/src/multi/mod.rs

@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_box_or_back};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use curl_core::conn::io::{SystemNet, Waker};
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{Handler, ProgressHandler, ProgressNow, ProgressVerdict};
@@ -112,10 +112,6 @@ impl ProgressHandler for Gauged {
 }
 
 /// Where a transfer's handle is.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "few are listed: transfers are made one ahead of those added"
-)]
 enum Place {
     /// With the tool: not added yet, waiting to be added again, or not to
     /// be added at all.
@@ -168,7 +164,7 @@ struct Parallel<'r, 'a, 'l> {
     /// ended is taken out of the middle, and the rest move up.
     #[expect(
         clippy::vec_box,
-        reason = "an entry is 1.6 KB: removing one moves those after it"
+        reason = "an entry is a few hundred bytes: removing one moves those after it"
     )]
     list: Vec<Box<Entry<'a, 'l>>>,
     multi: Multi,
@@ -220,8 +216,8 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                 Ok(false) => return Ok(()),
                 Err(ending) => return ending,
             }
-            // Boxed straight from what was made: a handle is large, and
-            // each move of it a copy.
+            // Boxed straight from what was made: an entry is a few hundred
+            // bytes, and each move of it a copy.
             let entry = match create(self.run, self.transfers.item()) {
                 Made::Ready(per, easy) => Entry::boxed(per, easy, None)?,
                 Made::Unfinished(per, easy, ended) => Entry::boxed(per, easy, Some(ended))?,
@@ -316,19 +312,12 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                     })
                     .expect("setting a flag cannot fail");
             }
-            // The handle goes to the multi; what is left behind is a
-            // handle of no options, whose drop saves nothing.
-            let boxed = match try_box_or_back(std::mem::take(&mut **easy)) {
-                Ok(boxed) => boxed,
-                Err(taken) => {
-                    **easy = taken;
-                    return Err(ErrorKind::OutOfMemory);
-                }
-            };
-            match self.multi.add(boxed, (), &mut NoEvents) {
+            // The handle's box goes to the multi; what is left behind is
+            // empty, and its drop saves nothing.
+            match self.multi.add(easy.take(), (), &mut NoEvents) {
                 Ok(id) => entry.place = Place::Added(id),
                 Err(refused) => {
-                    **easy = *refused.easy;
+                    easy.put_back(refused.easy);
                     return Err(ErrorKind::OutOfMemory);
                 }
             }
@@ -437,7 +426,7 @@ impl Parallel<'_, '_, '_> {
                 .iter()
                 .position(|e| matches!(e.place, Place::Added(added) if added == id))
                 .expect("every transfer added is listed");
-            let mut easy = Handle(*removed.easy);
+            let mut easy = Handle::back(removed.easy);
             let entry = &mut self.list[at];
             let aborted = entry.counted.gauge.abort.load(Ordering::Relaxed);
             let told = match ended {
@@ -504,9 +493,8 @@ impl Parallel<'_, '_, '_> {
             let entry = *entry;
             let easy = match entry.place {
                 Place::Here(easy) => easy,
-                Place::Added(id) => Handle(
-                    *self
-                        .multi
+                Place::Added(id) => Handle::back(
+                    self.multi
                         .remove(id, &mut NoEvents)
                         .expect("an added transfer is in the multi")
                         .easy,

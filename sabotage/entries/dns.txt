@@ -324,9 +324,9 @@ witness: curl-core multi::socket_tests::the_resolver_s_settings_reach_its_pool
 file: crates/curl-core/src/easy.rs
 witness: curl-core multi::socket_tests::an_easy_handle_s_quick_exit_is_its_multi_s
 --- old
-        multi.set_quick_exit(self.options().quick_exit);
+    multi.set_quick_exit(easy.options().quick_exit);
 --- new
-        multi.set_quick_exit(false);
+    multi.set_quick_exit(false);
 
 === only a threaded build refuses a most threads of 0
 file: crates/curl-sys-abi/src/multi.rs

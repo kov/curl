@@ -572,7 +572,7 @@ fn rate_left(every: u64, took: u64) -> Option<u64> {
 /// backslash separates too, and a drive (`X:` before a separator) is
 /// not made.
 fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
-    let separator = |b: &u8| *b == b'/' || (cfg!(windows) && *b == b'\\');
+    let separator = |b: &u8| *b == b'/' || windows_separator(*b);
     let mut at = 0;
     loop {
         let seps = path[at..].iter().take_while(|b| separator(b)).count();
@@ -584,7 +584,7 @@ fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
         if at + seps + name == path.len() {
             return Ok(());
         }
-        let drive = cfg!(windows) && at == 0 && name == 2 && path.get(1) == Some(&b':');
+        let drive = is_drive(path, at, name);
         at += seps + name;
         if drive {
             continue;
@@ -600,6 +600,25 @@ fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
         msgs.error(&dir_error(errno, dir));
         return Err(ErrorKind::WriteError);
     }
+}
+
+/// Whether `b` separates directories on Windows only: a backslash there.
+/// Its mutants change nothing on Unix, where cargo-mutants runs;
+/// on Windows `creates_the_output_directories_on_windows` checks it.
+#[mutants::skip]
+fn windows_separator(b: u8) -> bool {
+    cfg!(windows) && b == b'\\'
+}
+
+/// Whether the part of `path` at `at`, `name` bytes after its
+/// separators, is a Windows drive (`X:`, the path's first part), which
+/// `create_dir_hierarchy` does not make; on Unix none is. Its mutants
+/// change nothing on Unix, where cargo-mutants runs, nor on
+/// Windows, which refuses to make a drive as it refuses to make one
+/// that exists.
+#[mutants::skip]
+fn is_drive(path: &[u8], at: usize, name: usize) -> bool {
+    cfg!(windows) && at == 0 && name == 2 && path.get(1) == Some(&b':')
 }
 
 /// What is said of `dir` that could not be made, for C's `errno`
@@ -1096,8 +1115,8 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     // A body to standard output, or none, makes standard output binary
     // unless `--use-ascii` asks for text, from now on for the rest of the
     // run (`CURL_BINMODE`).
-    if (to_stdout || output == Output::Null) && !op.use_ascii && unnamed.is_none() {
-        fs::set_binary(fs::Std::Out);
+    if unnamed.is_none() {
+        binary_stdout(op, to_stdout, output);
     }
     let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()))
@@ -3733,6 +3752,17 @@ fn with_file_name(url: &[u8], file: &[u8]) -> Result<Option<Vec<u8>>, ErrorKind>
         ..GetOptions::NONE
     };
     url.get(Part::Url, shown).map(Some).map_err(url_error)
+}
+
+/// Make standard output binary for a body written to it, or none,
+/// unless `--use-ascii` asks for text (`CURL_BINMODE`). Its mutants change
+/// nothing on Unix, where cargo-mutants runs and the mode is
+/// nothing; on Windows the text-mode tests check it.
+#[mutants::skip]
+fn binary_stdout(op: &Operation<'_>, to_stdout: bool, output: Output<'_>) {
+    if (to_stdout || output == Output::Null) && !op.use_ascii {
+        fs::set_binary(fs::Std::Out);
+    }
 }
 
 /// The file `-o`'s `name` names (`glob_match_url`): with the URL's and

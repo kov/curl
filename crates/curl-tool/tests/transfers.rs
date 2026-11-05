@@ -144,7 +144,7 @@ fn globs_unless_told_not_to() {
 }
 
 /// `--create-dirs` makes the directories an output file is in, those
-/// already there gone through.
+/// already there gone through; one that cannot be made is said.
 #[cfg(unix)]
 #[test]
 fn creates_the_output_directories() {
@@ -166,6 +166,26 @@ fn creates_the_output_directories() {
     assert_eq!(mode & 0o777, 0o750 & !umask(&dir));
     let run = curl(&dir, &[&dir.url("in"), "-o", &dir.path("e/out")]);
     assert_eq!(run.code, 23, "without, the file cannot be made");
+    // A backslash separates nothing here, and a name with a colon is no
+    // drive: each is a directory's name, as C makes it on Unix.
+    for (name, made) in [("a\\b/out", "a\\b"), ("x:/out", "x:")] {
+        let run = curl(&dir, &["--create-dirs", "-o", name, &dir.url("in")]);
+        assert_eq!(run.code, 0, "{name}: {}", run.stderr);
+        assert!(dir.0.join(made).is_dir(), "{name}");
+    }
+    // A directory that cannot be made, in a file, is said and fails.
+    let run = curl(
+        &dir,
+        &["-sS", "--create-dirs", "-o", "in/sub/out", &dir.url("in")],
+    );
+    assert_eq!(
+        (run.code, &run.stderr[..]),
+        (
+            23,
+            "curl: Error creating directory in/sub\n\
+             curl: (23) Failed writing received data to disk/application\n"
+        )
+    );
 }
 
 /// On Windows `--create-dirs` takes a backslash for a separator too, and

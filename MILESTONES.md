@@ -1344,11 +1344,14 @@ through SSPI; MIT krb5 stays Unix-only.
     47 cases (`--negotiate` and `--proxy-negotiate` as the domain's logon and with given
     credentials, `--anyauth`, IMAP, POP3 and SMTP with `AUTH=GSSAPI`, with and without
     `--sasl-ir`, `--socks5-gssapi`, `--digest` with a domain account) give the same exit codes
-    and traces on both Rust builds as on C's Schannel and OpenSSL builds; Microsoft's curl.exe
-    agrees on exit codes, and sends NTLM in Negotiate where no ticket is to be had. Every client
+    and traces on both Rust builds, at this step's last commit, as on C's Schannel and OpenSSL
+    builds; Microsoft's curl.exe agrees on exit codes, and sends NTLM in Negotiate where no
+    ticket is to be had. Every client
     stops `--socks5-gssapi` at Dante's grant of confidentiality ("protection not yet
     implemented"). WDigest with a domain account answers with the domain as its realm, whatever
-    the server's. The Digest and Kerberos decisions are also checked against a scripted SSPI.
+    the server's, and its first call succeeds outright (`SEC_E_OK`): no live exchange reaches
+    the completion call. The Digest and Kerberos decisions are also checked against a scripted
+    SSPI.
     SASL GSSAPI over GSS-API (`krb5_gssapi.c`) is not built: Linux says it is not. The 84
     Digest, Negotiate and GSS-API tests that run on Linux, where the reshaped Digest and
     Negotiate paths are GSS-API's, pass on the Rust leg.

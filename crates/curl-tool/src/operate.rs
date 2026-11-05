@@ -16,7 +16,7 @@ use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{

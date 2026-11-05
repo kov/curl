@@ -517,6 +517,17 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked`
   (`crates/curl-core/src/proto/http/tests/h2.rs`).
 
+- **An HTTP/2 stream paused or unpaused by a sibling's handler is told the peer in its own
+  step.** When a handler of one transfer pauses or unpauses another whose stream shares its
+  connection, while its own step has that connection out, the stream learns of it at once but
+  its window is set, and a grown one's WINDOW_UPDATE sent, as its own transfer next reads, and
+  `stream now (un)paused` is not said. C's `curl_easy_pause` reaches the stream's filter from
+  inside the sibling's write (`http2_data_pause`) and sends the update there; here the session
+  is the stepping transfer's until its step ends. A pause from outside any step, the common
+  case, tells the peer before it returns as C does. Pinned by
+  `a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own`
+  (`crates/curl-core/src/proto/http/tests/h2.rs`).
+
 ## Changing a handle's share
 
 - **`CURLOPT_SHARE` from a callback is refused.** A callback running on the handle's multi gets

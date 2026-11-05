@@ -1997,7 +1997,12 @@ fn pause_transfer<H: Host>(
         }
         None => slot.judge_pause = true,
     }
-    let replay = if was_held && slot.pause.recv == RecvPause::Running {
+    let replay = was_held && slot.pause.recv == RecvPause::Running;
+    // The connection hears of a change to receiving, once held output is
+    // replayed (`Curl_xfer_pause_recv`).
+    let paused = slot.pause.recv_paused();
+    let tell = (was.recv_paused() != paused).then_some(paused);
+    let run = if replay || tell.is_some() {
         slot.run.take()
     } else {
         None
@@ -2006,13 +2011,26 @@ fn pause_transfer<H: Host>(
         let mut cx = StepCx::new(id, rest.reborrow());
         readers.trace_unpause(&mut cx);
     }
-    if let Some(mut run) = replay {
-        let mut cx = StepCx::new(id, rest.reborrow());
-        let replayed = state::flush(&mut run, &mut cx);
-        put_back(rest.tell.slots, rest.dirty, id, run);
-        return replayed;
+    let Some(mut run) = run else {
+        return Ok(());
+    };
+    let mut cx = StepCx::new(id, rest.reborrow());
+    let replayed = if replay {
+        state::flush(&mut run, &mut cx)
+    } else {
+        Ok(())
+    };
+    if let Some(paused) = tell {
+        // A replay its handler paused again told the connection so as it
+        // paused (`cw_out`'s `Curl_xfer_pause_recv`), before the unpause
+        // does, whatever the replay came to.
+        if !paused && cx.pause().recv == RecvPause::Held {
+            run.state.data_pause(&mut cx, true);
+        }
+        run.state.data_pause(&mut cx, paused);
     }
-    Ok(())
+    put_back(rest.tell.slots, rest.dirty, id, run);
+    replayed
 }
 
 /// The TLS library's objects of the connection transfer `id`, whose run

@@ -2313,6 +2313,242 @@ fn a_paused_streams_window_closes_until_it_is_unpaused() {
     m.remove(id, &mut NoEvents).unwrap();
 }
 
+/// A transfer by prior knowledge to `talk`, tracing the HTTP/2 filter
+/// into `seen`, its body to `w`.
+fn traced_h2(
+    talk: &Conversation,
+    seen: &Seen,
+    w: impl WriteHandler + 'static,
+) -> (crate::multi::Multi, TransferId) {
+    let mut m = serving(Peer::Accepts, &[talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"http/2");
+    e.set_components(Some(c));
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.version = HttpVersion::Http2Prior;
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks.write = Some(Handler::write(w).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    (m, id)
+}
+
+/// The HTTP/2 filter's lines `seen` holds, from the `from`th line on.
+fn h2_lines_from(seen: &Seen, from: usize) -> Vec<String> {
+    seen.text()[from..]
+        .iter()
+        .filter(|l| l.starts_with("[HTTP/2] "))
+        .map(|l| l.trim_end().to_owned())
+        .collect()
+}
+
+/// An unpause from outside a step opens the paused stream's window and
+/// sends the update before it returns, as C's `curl_easy_pause` does
+/// (`http2_data_pause`): the window traced as it grows, the update's
+/// frame, then the stream said unpaused. The pause the write handler
+/// asked for in a step is said once the window it shuts is, as C says
+/// it inside the write, and not as output found paused after it.
+#[test]
+fn an_unpause_sends_the_window_update_before_it_returns() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naa",
+            WINDOW_SENT,
+            b"D 1 2 1\nbb",
+        ],
+        false,
+    )
+    .per_send();
+    let seen = Seen::default();
+    let w = PausesFirst::default();
+    let (mut m, id) = traced_h2(&talk, &seen, w.clone());
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let lines = h2_lines_from(&seen, 0);
+    let shut = lines
+        .iter()
+        .position(|l| l == "[HTTP/2] [1] local window size now 0")
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(
+        lines[shut + 1],
+        "[HTTP/2] [1] stream now paused",
+        "{lines:#?}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("output")), "{lines:#?}");
+    let from = seen.text().len();
+    m.pause(id, crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.ends_with("\n\nU 1 10420224\nU 1 10485760\n"), "{sent}");
+    assert_eq!(
+        h2_lines_from(&seen, from),
+        [
+            "[HTTP/2] [1] local window update by 10485760",
+            "[HTTP/2] [1] -> FRAME[WINDOW_UPDATE, incr=10485760]",
+            "[HTTP/2] [1] stream now unpaused",
+        ]
+    );
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(&w.0.lock().unwrap()[1..], b"aabb");
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
+/// A receive pause from outside a step shuts the stream's window before
+/// it returns, nothing told the peer, and the unpause opens it again,
+/// told at once (`http2_data_pause`).
+#[test]
+fn a_pause_from_outside_shuts_the_window_at_once() {
+    let talk = Conversation::replies(
+        &[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT, b"D 1 2 1\nbb"],
+        false,
+    )
+    .per_send();
+    let seen = Seen::default();
+    let body = Seen::default();
+    let (mut m, id) = traced_h2(&talk, &seen, body.clone());
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.ends_with("\n\nU 1 10420224\n"), "{sent}");
+    let from = seen.text().len();
+    m.pause(id, crate::deliver::PauseRequest::RECV, &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        h2_lines_from(&seen, from),
+        [
+            "[HTTP/2] [1] local window size now 0",
+            "[HTTP/2] [1] stream now paused",
+        ]
+    );
+    assert_eq!(String::from_utf8(talk.received()).unwrap(), sent);
+    let from = seen.text().len();
+    m.pause(id, crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.ends_with("\nU 1 10420224\nU 1 10485760\n"), "{sent}");
+    assert_eq!(
+        h2_lines_from(&seen, from),
+        [
+            "[HTTP/2] [1] local window update by 10485760",
+            "[HTTP/2] [1] -> FRAME[WINDOW_UPDATE, incr=10485760]",
+            "[HTTP/2] [1] stream now unpaused",
+        ]
+    );
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(body.body(), b"bb");
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
+/// Unpauses the transfer it is given, once, at its first write.
+#[derive(Clone, Default)]
+struct Unpauses(Arc<Mutex<Option<TransferId>>>);
+
+impl WriteHandler for Unpauses {
+    fn write(&self, cx: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+        if let Some(id) = self.0.lock().unwrap().take() {
+            cx.pause(id, crate::deliver::PauseRequest::CONT).unwrap();
+        }
+        Write::Accepted
+    }
+}
+
+/// A stream unpaused by a sibling's handler, while the sibling's step has
+/// the connection out, has its window opened as its own transfer next
+/// reads, and nothing says it was unpaused: C's `curl_easy_pause` reaches
+/// the stream's filter from inside the sibling's write, opens the window,
+/// sends the update and says `stream now unpaused` there
+/// (`DIVERGENCE.md`). `/b` is paused from outside first, which is said;
+/// `/a`'s body, let through after, unpauses it.
+#[test]
+fn a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\n",
+            WINDOW_SENT,
+            b"H 3 0\n:status: 200\n\n",
+            b"D 1 1 1\na",
+            // `/b`'s body, once its window reopens.
+            b"D 3 1 1\nb",
+        ],
+        false,
+    )
+    .per_send()
+    .held();
+    talk.allow(3);
+    let unpauses = Unpauses::default();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut ids = Vec::new();
+    let traced = [Seen::default(), Seen::default()];
+    for (path, seen) in ["/a", "/b"].into_iter().zip(&traced) {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"http/2");
+        e.set_components(Some(c));
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        let w = if path == "/a" {
+            Handler::write(unpauses.clone()).unwrap()
+        } else {
+            Handler::write(Seen::default()).unwrap()
+        };
+        o.callbacks.write = Some(w);
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    let from = traced[1].text().len();
+    m.pause(ids[1], crate::deliver::PauseRequest::RECV, &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        h2_lines_from(&traced[1], from),
+        [
+            "[HTTP/2] [3] local window size now 0",
+            "[HTTP/2] [3] stream now paused",
+        ]
+    );
+    *unpauses.0.lock().unwrap() = Some(ids[1]);
+    talk.allow(5);
+    assert_eq!(
+        drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert!(unpauses.0.lock().unwrap().is_none(), "/a wrote nothing");
+    let done = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert_eq!(done, Ok(()), "{sent}");
+    assert!(sent.ends_with("U 3 10485760\n"), "{sent}");
+    let b = h2_lines_from(&traced[1], from);
+    assert!(
+        b.iter()
+            .any(|l| l == "[HTTP/2] [3] local window update by 10485760"),
+        "{b:#?}"
+    );
+    assert!(!b.iter().any(|l| l.contains("unpaused")), "{b:#?}");
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
 /// Pauses once, at its `n`th write, and takes every other.
 #[derive(Clone)]
 struct PausesOnceAt(u32, Arc<Mutex<u32>>);

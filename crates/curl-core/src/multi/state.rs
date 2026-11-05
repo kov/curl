@@ -546,6 +546,28 @@ impl TransferState {
         }
     }
 
+    /// Tell the request its transfer's receiving was paused or unpaused
+    /// (`Curl_conn_ev_data_pause`): an HTTP/2 stream's window is set for
+    /// it at once, the connection out of its place meanwhile, unless
+    /// another transfer's step has it out; then the stream's next read
+    /// sets it.
+    pub(crate) fn data_pause<H: Host>(&mut self, cx: &mut StepCx<'_, H>, paused: bool) {
+        let Some(Attached {
+            proto: ProtoState::Http(req),
+            lease,
+            ..
+        }) = self.attached_mut()
+        else {
+            return;
+        };
+        if !req.h2_paused(paused) || cx.rest.caches.pool.slot_of(lease).is_none() {
+            return;
+        }
+        cx.rest.caches.pool.check_out(lease);
+        req.h2_data_pause(cx, lease, paused);
+        cx.rest.caches.pool.check_in(lease);
+    }
+
     /// Whether the request under way holds output for the application.
     #[cfg(debug_assertions)]
     pub(crate) fn holds_output(&self) -> bool {

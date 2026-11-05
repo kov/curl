@@ -2071,11 +2071,14 @@ to upgrade tells no one as it settles: a transfer pipewaiting on it reuses it on
 (`cf_h2_update_local_win`): the most once its head is in, what a receive limit allows under one,
 none while its output is paused or failed, so that the server holds back what would only be
 buffered. It is asked for as each piece of the response is written to the transfer, in whichever
-transfer's step the session read it, which is where a pause takes effect, and again as the
-transfer next reads, which is where an unpause does (a paused transfer does not read); a window
-grown tells the peer by how much. C asks again inside `curl_easy_pause` as well, sending the
-update before it returns; here an unpause marks the transfer to run, and the update goes out in
-that run, as the connection may be out with another transfer's step when the pause is asked for.
+transfer's step the session read it, and again as the transfer next reads; a window grown tells
+the peer by how much. A pause or unpause tells the stream as C's `http2_data_pause` does: from
+outside a step (`Multi::pause`, after held output is replayed) the window is set and the update
+sent before the pause returns, the connection checked out of its place for it, and `stream now
+(un)paused` said; one a write asked for in a step (the write handler's pause, or a handler
+pausing its own transfer) is said once the session's read returns and the window it asks for is
+set, where C sets it inside the write. A pause asked while another transfer's step has the
+connection out reaches the stream only: its next read sets the window, and nothing is said.
 
 **Server push.** The client says it takes pushes (`SETTINGS_ENABLE_PUSH`) when the application's
 events do (`MultiEvents::wants_push`). A PUSH_PROMISE's fields come to the request whose stream

@@ -357,25 +357,25 @@ witness: curl-core proto::http::tests::h2::a_paused_streams_window_closes_until_
 --- new
         Some(..=0) => STREAM_WINDOW_MAX,
 
-=== an unpaused stream's window is not reopened as it next reads
+=== a stream unpaused out of reach is not reopened as it next reads
 file: crates/curl-core/src/proto/http/h2.rs
-witness: curl-core proto::http::tests::h2::a_paused_streams_window_closes_until_it_is_unpaused
+witness: curl-core proto::http::tests::h2::a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own
 --- old
-            let wanted = wanted_window(cx, false);
+            let wanted = self.wanted_window(cx);
+            if let Err(e) = with_session(lease, |h2, _| h2.window_to(&mut *cx, id, wanted)) {
+                let kind
 --- new
-            let wanted = wanted_window(cx, true);
+            let wanted = 0;
+            if let Err(e) = with_session(lease, |h2, _| h2.window_to(&mut *cx, id, wanted)) {
+                let kind
 
 === a stream paused in a sibling's step keeps its window open
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own
 --- old
-                let wanted = wanted_window(cx, self.stream().failed.is_some());
-                pushed(
-                    after
+        Some(..=0) => 0,
 --- new
-                let wanted = STREAM_WINDOW_MAX;
-                pushed(
-                    after
+        Some(..=0) => STREAM_WINDOW_MAX,
 
 === a taken push's stream is not routed to its transfer as it is read
 file: crates/curl-core/src/proto/http/h2.rs
@@ -1009,3 +1009,35 @@ witness: curl-core proto::http::tests::h2::a_stream_paused_in_a_siblings_step_re
                 let to = h2.route_of(stream).filter(|&to| to != me);
 --- new
                 let to = h2.route_of(stream).filter(|_| false);
+
+=== an unpause from outside leaves the stream's window to its next read
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::h2::an_unpause_sends_the_window_update_before_it_returns
+--- old
+        run.state.data_pause(&mut cx, paused);
+--- new
+        let _ = paused;
+
+=== a pause from outside sets the window but sends nothing
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_pause_from_outside_shuts_the_window_at_once
+--- old
+        let _egress = self.h2_egress(cx, lease);
+--- new
+        let _egress = Ok::<(), ErrorKind>(());
+
+=== a pause the write handler asks for is not said
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::an_unpause_sends_the_window_update_before_it_returns
+--- old
+        match after.windows.try_push((stream, wanted, Some(paused))) {
+--- new
+        match after.windows.try_push((stream, wanted, None)) {
+
+=== an unpause that cannot reach the connection is not told the stream
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own
+--- old
+        if !req.h2_paused(paused) || cx.rest.caches.pool.slot_of(lease).is_none() {
+--- new
+        if cx.rest.caches.pool.slot_of(lease).is_none() || !req.h2_paused(paused) {

@@ -178,9 +178,9 @@ witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core deliver::tests::a_sibling_s_unpause_replays_at_once
 --- old
-    let replay = if was_held && slot.pause.recv == RecvPause::Running {
+    let replay = was_held && slot.pause.recv == RecvPause::Running;
 --- new
-    let replay = if false && was_held && slot.pause.recv == RecvPause::Running {
+    let replay = false && was_held && slot.pause.recv == RecvPause::Running;
 
 === a paused transfer reads on
 file: crates/curl-core/src/proto/script.rs
@@ -229,10 +229,12 @@ witness: curl-core deliver::held::tests::what_was_delivered_does_not_pile_up
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core deliver::tests::a_failed_replay_fails_the_unpause_and_then_the_transfer
 --- old
-        return replayed;
+    put_back(rest.tell.slots, rest.dirty, id, run);
+    replayed
 --- new
-        drop(replayed);
-        return Ok(());
+    put_back(rest.tell.slots, rest.dirty, id, run);
+    drop(replayed);
+    Ok(())
 
 === a failed replay leaves the output usable
 file: crates/curl-core/src/deliver/mod.rs

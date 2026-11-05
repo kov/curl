@@ -16,6 +16,7 @@ use crate::components::Component;
 use crate::conn::RecvFailed;
 use crate::conn::layer::LayerCalls as _;
 use crate::conn::layer::LayerCx;
+use crate::deliver::RecvPause;
 use crate::error::AGAIN_NUMBER;
 use crate::http2::{BodyRead, DEFAULT_WEIGHT, Event, Frame, FrameKind, H2Error, Heard, StreamId};
 use crate::multi::PushFields;
@@ -105,8 +106,9 @@ pub(super) struct H2Stream {
     /// The fields of a PUSH_PROMISE on it, until the promise is whole
     /// (`push_headers`).
     promise: PushFields,
-    /// Its transfer's output was paused when last written to
-    /// (`write_paused`).
+    /// Its transfer's receiving is paused, as last told or as its output
+    /// was found when last written to (`write_paused`): its window stays
+    /// shut.
     write_paused: bool,
 }
 
@@ -207,8 +209,9 @@ struct After {
     /// Streams promised and taken, each a new transfer's from here.
     routed: Vec<(StreamId, crate::multi::TransferId)>,
     /// The receive window each stream's transfer asks for, as it took
-    /// what came.
-    windows: Vec<(StreamId, i32)>,
+    /// what came; and, where taking it paused or unpaused the transfer,
+    /// which, said once the window is set (`http2_data_pause`).
+    windows: Vec<(StreamId, i32, Option<bool>)>,
     /// The peer said GOAWAY.
     goaway: Option<GoAway>,
 }
@@ -344,6 +347,16 @@ fn trace_closed<H: Host>(cx: &mut StepCx<'_, H>, stream: StreamId, error: H2Erro
     } else {
         let text = error_text(cx, error);
         trace::of(cx, H2, format_args!("[{id}] RESET: {text} (err {error})"));
+    }
+}
+
+/// A stream's transfer paused or unpaused, said once its window is set
+/// as it asks (`http2_data_pause`'s last line).
+fn said_pause<H: Host>(cx: &mut StepCx<'_, H>, stream: StreamId, paused: Option<bool>) {
+    if let Some(paused) = paused {
+        let id = stream.0;
+        let un = if paused { "" } else { "un" };
+        trace::of(cx, H2, format_args!("[{id}] stream now {un}paused"));
     }
 }
 
@@ -1182,13 +1195,15 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<StreamRecv, ErrorKind> {
-        // The window as the transfer asks now: it may have been paused or
-        // unpaused since (`stream_recv`'s `cf_h2_update_local_win`).
+        // The window as the transfer asks now: its rate limit may allow
+        // more, or it may have been unpaused while the connection was out
+        // with another transfer's step (`stream_recv`'s
+        // `cf_h2_update_local_win`).
         if self.stream().failed.is_none()
             && let Some(id) = self.stream().id
             && lease.conn().h2().is_some()
         {
-            let wanted = wanted_window(cx, false);
+            let wanted = self.wanted_window(cx);
             if let Err(e) = with_session(lease, |h2, _| h2.window_to(&mut *cx, id, wanted)) {
                 let kind = window_failed(cx, id, wanted, e);
                 self.stream().failed = Some(kind);
@@ -1216,6 +1231,89 @@ impl Request {
             });
         }
         Ok(StreamRecv::Again)
+    }
+
+    /// The receive window the stream asks for (`cf_h2_update_local_win`).
+    /// C's shuts it while `write_paused` too, which only says what the
+    /// transfer's pause says, and C's rate limit is blocked while that
+    /// does: the pause itself is asked here, so that a pause no stream
+    /// was told of (its transfer's run out with a step) cannot leave the
+    /// window shut.
+    fn wanted_window<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> i32 {
+        let failed = self.stream().failed.is_some();
+        wanted_window(cx, failed)
+    }
+
+    /// What a write to the stream's transfer did to its pause: one that
+    /// paused or unpaused it (the write handler's pause, or the handler
+    /// pausing its own transfer) tells the stream, as C's write tells the
+    /// connection inside it (`Curl_xfer_pause_recv`, `http2_data_pause`).
+    /// The window that asks for is set, and the change said, once the
+    /// session's read returns: C sets it inside the write.
+    fn paused_by_write<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        stream: StreamId,
+        was: Pause,
+        after: &mut After,
+    ) -> Heard {
+        let now = cx.pause();
+        let held = now.recv == RecvPause::Held && was.recv != RecvPause::Held;
+        if now.recv_paused() == was.recv_paused() && !held {
+            return Heard::Fine;
+        }
+        let paused = now.recv_paused();
+        self.stream().write_paused = paused;
+        let wanted = self.wanted_window(cx);
+        match after.windows.try_push((stream, wanted, Some(paused))) {
+            Ok(()) => Heard::Fine,
+            Err(_) => Heard::Failed,
+        }
+    }
+
+    /// The transfer's receiving was paused or unpaused from outside its
+    /// step: a stream it has knows it from here, whether or not its
+    /// connection can be reached now, so that what its writes say of its
+    /// output's pause is what C's say (`write_paused`). Whether the
+    /// request has one.
+    pub(crate) fn h2_paused(&mut self, paused: bool) -> bool {
+        match self.wire.h2_mut() {
+            Some(s) if s.id.is_some() => {
+                s.write_paused = paused;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The transfer's receiving was paused or unpaused from outside its
+    /// step, as `h2_paused` told its stream, the connection free to reach
+    /// (`http2_data_pause`): the stream's window is set as that asks, and
+    /// the update for it goes at once, before the pause returns.
+    /// Unpaused, the transfer runs again, which its caller sees to.
+    pub(crate) fn h2_data_pause<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        paused: bool,
+    ) {
+        let Some(id) = self.wire.h2().and_then(|s| s.id) else {
+            return;
+        };
+        if lease.conn().h2().is_none() {
+            return;
+        }
+        let wanted = self.wanted_window(cx);
+        if let Err(e) = with_session(lease, |h2, _| h2.window_to(&mut *cx, id, wanted)) {
+            // Said, but the pause does not fail for it: its caller drops
+            // what C's returns (`Curl_xfer_pause_recv`).
+            window_failed(cx, id, wanted, e);
+            return;
+        }
+        // What the egress came to is the stream's next read's to find.
+        let _egress = self.h2_egress(cx, lease);
+        let (n, un) = (id.0, if paused { "" } else { "un" });
+        trace::of(cx, H2, format_args!("[{n}] stream now {un}paused"));
     }
 
     /// The stream closed (`http2_handle_stream_close`): a reset fails the
@@ -1398,13 +1496,22 @@ impl Request {
             // consumes; traced by that transfer, as C's write traces it
             // on the stream's own handle (`cf_h2_update_local_win`).
             let mut unset = None;
-            for &(stream, wanted) in &after.windows {
+            for &(stream, wanted, paused) in &after.windows {
                 let to = h2.route_of(stream).filter(|&to| to != me);
-                let lent = to
-                    .and_then(|to| cx.with_sibling(to, |bcx, _| h2.window_to(bcx, stream, wanted)));
+                let lent = to.and_then(|to| {
+                    cx.with_sibling(to, |bcx, _| {
+                        let set = h2.window_to(bcx, stream, wanted);
+                        said_pause(bcx, stream, paused.filter(|_| set.is_ok()));
+                        set
+                    })
+                });
                 let set = match lent {
                     Some(set) => set,
-                    None => h2.window_to(&mut *cx, stream, wanted),
+                    None => {
+                        let set = h2.window_to(&mut *cx, stream, wanted);
+                        said_pause(cx, stream, paused.filter(|_| set.is_ok()));
+                        set
+                    }
                 };
                 if let Err(e) = set {
                     unset = Some((stream, wanted, e));
@@ -1513,6 +1620,7 @@ impl Request {
                 if made.is_err() {
                     return self.header_error(cx, ErrorKind::OutOfMemory, after);
                 }
+                let was = cx.pause();
                 self.h2_head_line(cx, lease, &line);
                 // Traced once written (`on_header`).
                 match self.stream().status.filter(|_| name == b":status") {
@@ -1522,9 +1630,10 @@ impl Request {
                     }
                     None => field_line(cx, stream, "header", name, value),
                 }
-                Heard::Fine
+                self.paused_by_write(cx, stream, was, after)
             }
             Event::HeadersDone { stream, end_stream } if ours(stream) => {
+                let was = cx.pause();
                 let s = self.stream();
                 if !s.body_started {
                     let Some(status) = s.status else {
@@ -1537,12 +1646,15 @@ impl Request {
                     }
                     self.h2_head_line(cx, lease, b"\r\n");
                 }
+                if self.paused_by_write(cx, stream, was, after) == Heard::Failed {
+                    return Heard::Failed;
+                }
                 if end_stream {
                     self.stream_end(cx, stream, after);
                     return Heard::Fine;
                 }
-                let wanted = wanted_window(cx, self.stream().failed.is_some());
-                pushed(after.windows.try_push((stream, wanted)))
+                let wanted = self.wanted_window(cx);
+                pushed(after.windows.try_push((stream, wanted, None)))
             }
             Event::Data { stream, bytes } if ours(stream) => {
                 if !self.stream().body_started {
@@ -1551,6 +1663,7 @@ impl Request {
                         .try_push((stream, H2Error::PROTOCOL_ERROR))
                         .ok();
                 }
+                let was = cx.pause();
                 if self.stream().failed.is_none() {
                     let written = self.input(cx, lease, bytes);
                     deliver::write_resp(cx, bytes.len(), false, written);
@@ -1563,9 +1676,13 @@ impl Request {
                             .ok();
                     }
                 }
-                // What the write came to (`h2_xfer_write_resp`).
+                if self.paused_by_write(cx, stream, was, after) == Heard::Failed {
+                    return Heard::Failed;
+                }
+                // What the write came to (`h2_xfer_write_resp`): output
+                // held that its pause did not say, or no longer held.
                 let id = stream.0;
-                let paused = cx.pause().recv_paused();
+                let held = cx.pause().recv == RecvPause::Held;
                 let s = self.stream();
                 if let Some(e) = s.failed {
                     let (code, len) = (e.number(), bytes.len());
@@ -1576,16 +1693,16 @@ impl Request {
                             "[{id}] error {code} writing {len} bytes of data, RST-ing stream"
                         ),
                     );
-                } else if paused != s.write_paused {
-                    s.write_paused = paused;
-                    let un = if paused { "" } else { "un" };
+                } else if held != s.write_paused {
+                    s.write_paused = held;
+                    let un = if held { "" } else { "un" };
                     trace::of(cx, H2, format_args!("[{id}] stream output {un}paused"));
                 }
-                let wanted = wanted_window(cx, self.stream().failed.is_some());
+                let wanted = self.wanted_window(cx);
                 pushed(
                     after
                         .windows
-                        .try_push((stream, wanted))
+                        .try_push((stream, wanted, None))
                         .and_then(|()| after.consumed.try_push((stream, bytes.len()))),
                 )
             }

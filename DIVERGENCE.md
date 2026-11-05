@@ -177,12 +177,16 @@ not a difference: it is tracked in `MILESTONES.md`.
   answer, and within the shutdown's 2 s. What ends the wait differs: C's FTP, SMTP and IMAP
   waits end at the first byte that can be read, which they leave unread (their state machines
   fail without the transfer's state, `FAILED_INIT`), where ours read a whole reply, IMAP's the
-  tagged one after its `BYE`; C's POP3 reads a whole reply, as ours does. Measured against the
-  C build: a silent server is let go after 1.03 s, a partial reply at once by C's FTP, SMTP
-  and IMAP. A connection closed at once rather than kept in the set (evicted for room, the set
+  tagged one after its `BYE`; C's POP3 reads a whole reply, as ours does. A whole reply is read
+  no further than 64 KB, as much as C holds of one (`DYN_PINGPPONG_CMD`): past that the
+  connection closes with the rest unread, as C's does after the first byte. Measured against
+  the C build: a silent server is let go after 1.03 s, a partial reply at once by C's FTP,
+  SMTP and IMAP, and a reply streamed without end after its first byte. A connection closed at once rather than kept in the set (evicted for room, the set
   full or out of memory, or evicted by a share's pool) is an open question, not a settled
   difference: it sends its goodbye but does not wait for the answer, where C blocks the multi
   for it before any of these decisions, and no test pins either way yet. Pinned by
+  `an_endless_answer_to_quit_is_read_no_further_than_64_kb`
+  (`crates/curl-core/src/proto/ftp/tests.rs`), and
   `quit_waits_a_second_for_its_answer`
   (`crates/curl-core/src/proto/pop3/tests.rs`,
   `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs`),

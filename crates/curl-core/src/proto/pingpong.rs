@@ -291,6 +291,11 @@ impl Pingpong {
         }
     }
 
+    /// The bytes read since the last reply ended (`nread_resp`).
+    pub(crate) fn read_for_reply(&self) -> usize {
+        self.pushed
+    }
+
     /// Whether an answer is still awaited (`pending_resp`): FTP's DONE
     /// reads the one to a command it sent before the transfer ended.
     pub(crate) fn pending_resp(&self) -> bool {

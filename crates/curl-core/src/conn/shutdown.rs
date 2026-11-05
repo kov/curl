@@ -116,15 +116,17 @@ impl Shutting {
 
     /// Its protocol's goodbye, unless said already
     /// (`cshutdn_run_conn_handler`); `dead` if no one knows what state
-    /// the connection is in.
-    fn say_goodbye(&mut self, cx: &mut InternalCx<'_>, dead: bool) {
-        if !std::mem::replace(&mut self.said, true) {
-            let (trace, now) = (cx.trace, cx.now);
-            self.answer_due = match self.conn.protocol_goodbye(cx, trace, dead) {
-                Goodbye::Done => None,
-                Goodbye::Awaited { .. } => Some(now.after(BLOCKING_POLL)),
-            };
+    /// the connection is in. Whether it was said now.
+    fn say_goodbye(&mut self, cx: &mut InternalCx<'_>, dead: bool) -> bool {
+        if std::mem::replace(&mut self.said, true) {
+            return false;
         }
+        let (trace, now) = (cx.trace, cx.now);
+        self.answer_due = match self.conn.protocol_goodbye(cx, trace, dead) {
+            Goodbye::Done => None,
+            Goodbye::Awaited { .. } => Some(now.after(BLOCKING_POLL)),
+        };
+        true
     }
 
     /// Whether its protocol's goodbye still awaits an answer, read on as
@@ -213,11 +215,16 @@ impl Shutting {
         }
         // Its protocol says goodbye first, once; then a session, each try
         // (`cshutdn_run_once`, `cf_h2_shutdown`).
-        self.say_goodbye(&mut cx, false);
+        let said_now = self.say_goodbye(&mut cx, false);
         // The answer goes before the layers shut down: closing a socket
         // with it unread, or before it comes, resets the connection, and
         // the peer may then lose what it had not read yet (Windows does).
-        if self.awaits_answer(&mut cx) {
+        // A goodbye said now read on as far as it could already.
+        let awaits = match said_now {
+            true => self.answer_due.is_some(),
+            false => self.awaits_answer(&mut cx),
+        };
+        if awaits {
             return Tried::Waiting;
         }
         self.conn.goodbye(&mut cx);
@@ -257,7 +264,7 @@ impl Shutting {
             trace,
             room: None,
         };
-        self.say_goodbye(&mut cx, true);
+        let _said = self.say_goodbye(&mut cx, true);
         self.close(net, trace, in_multi);
     }
 

@@ -481,11 +481,11 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core proto::ftp::tests::quit_waits_for_the_abor_s_answer_before_the_socket_closes
 features: test-util debug-hooks
 --- old
-        if self.awaits_answer(&mut cx) {
+        if awaits {
             return Tried::Waiting;
         }
 --- new
-        if self.answer_due.is_some() {
+        if awaits {
             self.answer_due = None;
         }
 

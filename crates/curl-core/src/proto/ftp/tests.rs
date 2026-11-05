@@ -4058,6 +4058,44 @@ fn quit_waits_for_an_answer_no_longer_than_a_second_of_silence() {
     );
 }
 
+/// An answer to `QUIT` that goes on without end, line after line, is read
+/// ten reads a pass, as C's `maxloops` lets the others run, and no more
+/// than 64 KB of it in all (`DYN_PINGPPONG_CMD`): then the connection
+/// closes with the rest unread, as C's would after its first byte. Here
+/// the clock stands still, so no time limit ends it.
+#[test]
+fn an_endless_answer_to_quit_is_read_no_further_than_64_kb() {
+    use crate::proto::pingpong::{MAX_READS, READ_SIZE};
+    let control = cut_short(None, Some(b"221-going\r\n"))
+        .endless(std::time::Duration::ZERO)
+        .endless_lines(b"221-still going\r\n");
+    let file = data(b"hello");
+    let (mut m, counted, clock) = clocked(&[&control], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    let at = clock.now();
+    m.remove(id, &mut NoEvents).unwrap();
+    let first = control.endless_reads();
+    assert!(first <= MAX_READS as usize, "{first} reads in one pass");
+    assert_eq!(counted.open(), 1, "the answer is still read on");
+    for _ in 0..100 {
+        if counted.open() == 0 {
+            break;
+        }
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(counted.open(), 0, "let go unanswered");
+    let reads = control.endless_reads();
+    // 64 KB in reads of at most `READ_SIZE`, the last one past it.
+    let least = (64 * 1024usize).div_ceil(READ_SIZE);
+    assert!(
+        (least..=least + 1).contains(&reads),
+        "{reads} reads of the endless answer"
+    );
+    assert_eq!(clock.now(), at, "no time limit ended it");
+}
+
 /// A transfer removed while DONE awaits an answer leaves its connection
 /// in a state no one knows, though the control connection was still
 /// trusted: it closes saying no `QUIT` (`dead_connection`).

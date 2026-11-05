@@ -3433,8 +3433,11 @@ before it comes, is reset, which on Windows drops the `QUIT` the server had not 
 wait polls the socket for input, holds the connection in the set, and gives up once a second
 passes with nothing more of it (`drive::BLOCKING_POLL`, C's `Curl_pp_statemach` disconnecting) or
 the shutdown's 2 s are spent; a multi's cleanup waits for it whatever time that gives the
-rest, as C's blocks inside the disconnect. A connection closed at once, not kept in the set,
-does not wait (DIVERGENCE.md). A connection discarded as its transfer aborted tells the
+rest, as C's blocks inside the disconnect. Each try reads at most `MAX_READS` (C's
+`maxloops`), and the whole answer at most `GOODBYE_READ_MAX`, 64 KB (`DYN_PINGPPONG_CMD`, the
+most C's back and forth holds of one reply): a server sending lines without end is let go with
+the rest unread, as C's would after the first byte. A connection closed at once, not kept in
+the set, does not wait (DIVERGENCE.md). A connection discarded as its transfer aborted tells the
 protocol it is dead, and nothing is said (`dead_connection`).
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the

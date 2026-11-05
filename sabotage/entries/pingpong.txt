@@ -170,3 +170,31 @@ features: test-util
         if !ready && now < ends {
 --- new
         if !ready && now > ends {
+
+=== a goodbye's answer is read on without end
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+--- old
+        if pp.read_for_reply() >= GOODBYE_READ_MAX {
+--- new
+        if pp.read_for_reply() >= usize::MAX {
+
+=== a goodbye's answer is read without letting the others run
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+--- old
+        if reads == MAX_READS {
+            return Goodbye::Awaited { moved };
+        }
+--- new
+        if reads == MAX_READS * 100 {
+            return Goodbye::Awaited { moved };
+        }
+
+=== a goodbye said reads its answer twice in one try
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+--- old
+            true => self.answer_due.is_some(),
+--- new
+            true => self.awaits_answer(&mut cx),

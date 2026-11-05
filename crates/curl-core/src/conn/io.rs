@@ -1117,6 +1117,10 @@ struct Wire {
     endless: Option<Duration>,
     /// The reads of the endless part so far.
     endless_reads: usize,
+    /// What the endless part repeats, and how far into it the next read
+    /// starts; `x` with no line end if nothing is given.
+    endless_lines: Option<&'static [u8]>,
+    endless_at: usize,
     /// The reads so far, and how much room the last one had.
     reads: usize,
     last_read_room: usize,
@@ -1344,6 +1348,17 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .answered
+    }
+
+    /// The same peer, its endless part (`endless`) `line` over and over:
+    /// whole lines, none of which ends a reply.
+    pub fn endless_lines(self, line: &'static [u8]) -> Conversation {
+        assert!(!line.is_empty(), "a line has bytes");
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .endless_lines = Some(line);
+        self
     }
 
     /// How many reads the endless part of the reply has had.
@@ -2433,7 +2448,15 @@ impl Socket for FakeSocket {
                 wire.endless_reads <= ENDLESS_READS,
                 "the transfer never stopped reading"
             );
-            buf.fill(b'x');
+            match wire.endless_lines {
+                Some(line) => {
+                    for b in buf.iter_mut() {
+                        *b = line[wire.endless_at];
+                        wire.endless_at = (wire.endless_at + 1) % line.len();
+                    }
+                }
+                None => buf.fill(b'x'),
+            }
             self.clock.advance(per_read);
             let n = std::num::NonZeroUsize::new(buf.len()).expect("checked above");
             return Ok(Recv::Data(n));

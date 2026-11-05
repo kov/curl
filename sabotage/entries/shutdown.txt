@@ -312,27 +312,36 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
 features: debug-hooks
 --- old
-        if !std::mem::replace(&mut self.said, true) {
+        if std::mem::replace(&mut self.said, true) {
+            return false;
+        }
 --- new
-        if { self.said = true; true } {
+        if { self.said = true; false } {
+            return false;
+        }
 
 === a dead connection's protocol says its goodbye
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_protocol_says_no_goodbye_on_a_dead_connection
 --- old
-        self.say_goodbye(&mut cx, true);
+        let _said = self.say_goodbye(&mut cx, true);
 --- new
-        self.say_goodbye(&mut cx, false);
+        let _said = self.say_goodbye(&mut cx, false);
 
 === a protocol says its goodbye after its layers shut down
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
 --- old
-        self.say_goodbye(&mut cx, false);
+        let said_now = self.say_goodbye(&mut cx, false);
         // The answer goes before the layers shut down: closing a socket
         // with it unread, or before it comes, resets the connection, and
         // the peer may then lose what it had not read yet (Windows does).
-        if self.awaits_answer(&mut cx) {
+        // A goodbye said now read on as far as it could already.
+        let awaits = match said_now {
+            true => self.answer_due.is_some(),
+            false => self.awaits_answer(&mut cx),
+        };
+        if awaits {
             return Tried::Waiting;
         }
         self.conn.goodbye(&mut cx);

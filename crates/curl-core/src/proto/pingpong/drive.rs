@@ -3,7 +3,7 @@
 //! time and handed line by line to the application, and whether the
 //! protocol's step has anything to do now.
 
-use super::{Ends, Pingpong, READ_SIZE, ReplySize, ResponseTime, Wants};
+use super::{BUFFER_MAX, Ends, MAX_READS, Pingpong, READ_SIZE, ReplySize, ResponseTime, Wants};
 use crate::conn::RecvFailed;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::layer::Lower as _;
@@ -202,8 +202,10 @@ pub(crate) fn goodbye<E: Ends>(
 /// Send the rest of a goodbye and read on its answer as a connection
 /// shuts down, as far as it lets that now (C's blocking
 /// `Curl_pp_statemach` in `ftp_quit` and the others' disconnects): done
-/// once a whole reply is read, or the connection fails or closes;
-/// awaited while it would block. What is held is looked through before
+/// once a whole reply is read, or the connection fails or closes, or
+/// [`GOODBYE_READ_MAX`] bytes of it came with no end; awaited while it
+/// would block, or after [`MAX_READS`] reads in one call, as C's
+/// `maxloops` lets the others run. What is held is looked through before
 /// anything is read, as C reads its `overflow` first. Untraced and given
 /// to no application: the transfer is gone (C's internal handle reads
 /// it).
@@ -214,6 +216,7 @@ pub(crate) fn goodbye_answer<E: Ends>(
     ends: &E,
 ) -> Goodbye {
     let mut moved = false;
+    let mut reads = 0;
     if pp.needs_flush() {
         match carrier.send(cx, pp.unsent()) {
             Ok(Sent::Bytes(n)) => {
@@ -233,9 +236,18 @@ pub(crate) fn goodbye_answer<E: Ends>(
             Ok(super::Event::Line(_)) => continue,
             Ok(super::Event::Reply { .. }) | Err(_) => return Goodbye::Done,
         }
+        // A peer that sends on and on is let go unanswered, its rest
+        // unread, as C lets it go after the first byte.
+        if pp.read_for_reply() >= GOODBYE_READ_MAX {
+            return Goodbye::Done;
+        }
+        if reads == MAX_READS {
+            return Goodbye::Awaited { moved };
+        }
         match carrier.recv(cx, READ_SIZE) {
             Ok(Recv::WouldBlock) => return Goodbye::Awaited { moved },
             Ok(Recv::Data(_)) => {
+                reads += 1;
                 let rx = carrier.rx_mut();
                 let n = rx.filled().len().min(READ_SIZE);
                 let pushed = pp.push(&rx.filled()[..n]);
@@ -249,6 +261,15 @@ pub(crate) fn goodbye_answer<E: Ends>(
         }
     }
 }
+
+/// The most of a goodbye's answer read before the connection is let go
+/// with the rest unread: as much as C's back and forth holds of one reply
+/// (`DYN_PINGPPONG_CMD`, [`BUFFER_MAX`]). C bounds only the line it has
+/// not seen the end of, and its goodbye stops at the answer's first byte;
+/// a whole reply read here is bounded by this instead, so a server
+/// sending lines without end neither grows what is held nor keeps the
+/// connection.
+pub(crate) const GOODBYE_READ_MAX: usize = BUFFER_MAX;
 
 /// The reader's failure, said as C says it.
 fn read_failed<H: Host>(cx: &mut StepCx<'_, H>, e: super::ReadError) -> ErrorKind {

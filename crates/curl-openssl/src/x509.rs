@@ -295,9 +295,14 @@ fn load_trust_anchors(
     io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let mut empty = true;
-    // The system's store, which Apple's SecTrust checks the peer against
-    // once OpenSSL has not verified it: a file or directory that does not
-    // load then fails nothing.
+    // The system's store: Windows' read into this one; on macOS, Apple's
+    // SecTrust, which checks the peer once OpenSSL has not verified it,
+    // so that a file or directory that does not load then fails nothing.
+    #[cfg(windows)]
+    if identity.native_ca_store(NATIVE_CA_DEFAULT) && crate::winstore::load(store, io)? {
+        io.info(format_args!("  Native: Windows System Stores ROOT+CA"));
+        empty = false;
+    }
     let native = sectrust(identity);
     if native {
         io.info(format_args!("  Native: Apple SecTrust"));
@@ -427,7 +432,8 @@ fn load_locations(
 /// default where the transfer names no certificates of its own
 /// (`native_ca_store` under `USE_APPLE_SECTRUST`).
 pub(crate) fn sectrust(identity: &TlsIdentity) -> bool {
-    NATIVE_CA_DEFAULT && identity.native_ca_store(true)
+    cfg!(all(target_os = "macos", feature = "apple-sectrust"))
+        && identity.native_ca_store(NATIVE_CA_DEFAULT)
 }
 
 /// Add each certificate and revocation list of the PEM text `blob` to

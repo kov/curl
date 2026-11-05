@@ -19,11 +19,15 @@ mod engine;
 #[path = "engine_none.rs"]
 mod engine;
 mod ffi;
+#[cfg(any(windows, test))]
+mod native;
 mod ocsp;
 mod sign;
 mod ssl;
 mod sys;
 mod text;
+#[cfg(windows)]
+mod winstore;
 mod x509;
 
 pub use sign::ED25519;

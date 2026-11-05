@@ -177,6 +177,7 @@ dependencies = [
  "curl-os",
  "openssl",
  "openssl-sys",
+ "windows-sys",
 ]
 
 [[package]]

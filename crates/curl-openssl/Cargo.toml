@@ -11,6 +11,10 @@ publish.workspace = true
 # system's trust settings, which are the default trust store (C's
 # `USE_APPLE_SECTRUST`); macOS only.
 apple-sectrust = ["curl-core/apple-sectrust"]
+# The system's own store of certificates is the default trust store where
+# a transfer names none (C's `CURL_CA_NATIVE`): Windows' read in, and no
+# CA bundle or directory looked for at build.
+native-ca = ["curl-core/native-ca"]
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
@@ -18,6 +22,10 @@ curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os" }
 # Declarations only: the system's library, never the `vendored` copy.
 openssl-sys = "0.9.118"
+
+[target.'cfg(windows)'.dependencies]
+# The system's certificate stores, read for the native CA store.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 curl-alloc = { path = "../curl-alloc", features = ["debug-hooks"] }

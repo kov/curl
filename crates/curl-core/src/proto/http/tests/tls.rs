@@ -378,9 +378,12 @@ fn a_multi_keeps_one_state_of_the_library_s_for_its_sessions() {
 /// connection of one that kept the default, as in C, which copies the
 /// default into the setting before it compares; one that trusts no file
 /// gets a connection of its own. Not where the build makes the system's
-/// store the default, which naming a file turns off (C's Apple build has
-/// no default file to name).
-#[cfg(not(all(target_os = "macos", feature = "apple-sectrust")))]
+/// store the default, which naming a file turns off (C's Apple build and
+/// its `CURL_CA_NATIVE` build have no default file to name).
+#[cfg(not(any(
+    all(target_os = "macos", feature = "apple-sectrust"),
+    feature = "native-ca"
+)))]
 #[test]
 fn naming_the_default_ca_file_reuses_a_connection_made_with_it() {
     use crate::options::CaSetting;

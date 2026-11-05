@@ -27,6 +27,10 @@ threaded-resolver = []
 # The TLS library verifies a peer it cannot with Apple's SecTrust, as C's
 # `USE_APPLE_SECTRUST`: claims the `AppleSecTrust` feature.
 apple-sectrust = []
+# The system's own store of certificates is the default trust store where
+# a transfer names none (C's `CURL_CA_NATIVE`): claims the `NativeCA`
+# feature.
+native-ca = []
 # Windows' Unicode build (C's `ENABLE_UNICODE`), which `curl-os` makes:
 # claims the `Unicode` feature.
 unicode = ["curl-os/unicode"]

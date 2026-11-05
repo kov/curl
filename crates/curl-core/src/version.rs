@@ -36,6 +36,11 @@ pub enum Feature {
     /// A debug build, for the test suite: never for production. Listed
     /// only by a build with the `debug-hooks` feature.
     Debug,
+    /// The system's own store of certificates is the default trust store
+    /// where a transfer names none (C's `CURL_CA_NATIVE`): claimed by a
+    /// build with the `native-ca` feature, unless it claims
+    /// `AppleSecTrust`.
+    NativeCa,
     /// GSS-API, by MIT krb5, which the tool and the C ABI give every
     /// handle.
     GssApi,
@@ -116,6 +121,7 @@ impl Feature {
             Feature::Kerberos => "Kerberos",
             Feature::Largefile => "Largefile",
             Feature::Libz => "libz",
+            Feature::NativeCa => "NativeCA",
             Feature::ProxyHttp3 => "proxy-HTTP3",
             Feature::Psl => "PSL",
             Feature::Spnego => "SPNEGO",
@@ -152,6 +158,8 @@ const FEATURES: &[Feature] = &[
     Feature::Kerberos,
     Feature::Largefile,
     Feature::Libz,
+    #[cfg(all(feature = "native-ca", not(feature = "apple-sectrust")))]
+    Feature::NativeCa,
     #[cfg(feature = "quic")]
     Feature::ProxyHttp3,
     Feature::Psl,
@@ -392,6 +400,20 @@ mod tests {
     #[test]
     fn the_debug_hooks_are_claimed_as_debug() {
         assert_eq!(version().claims("Debug"), cfg!(feature = "debug-hooks"));
+    }
+
+    /// `NativeCA` is claimed by a build whose default trust store is the
+    /// system's, unless it claims `AppleSecTrust` in its place (C's
+    /// `#elif`), and that build's default is the system's store.
+    #[test]
+    fn the_native_ca_store_is_claimed_as_native_ca() {
+        let native = cfg!(all(feature = "native-ca", not(feature = "apple-sectrust")));
+        assert_eq!(version().claims("NativeCA"), native);
+        let sectrust = cfg!(all(target_os = "macos", feature = "apple-sectrust"));
+        assert_eq!(
+            crate::tls::NATIVE_CA_DEFAULT,
+            cfg!(feature = "native-ca") || sectrust
+        );
     }
 
     /// A feature is claimed by its name in any case, as C's tool matches

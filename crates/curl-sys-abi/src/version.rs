@@ -96,6 +96,8 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Largefile => (c"Largefile", crate::ffi::CURL_VERSION_LARGEFILE),
         Feature::Libz => (c"libz", crate::ffi::CURL_VERSION_LIBZ),
         // A name alone, without a bit, as in C.
+        Feature::NativeCa => (c"NativeCA", 0),
+        // A name alone, without a bit, as in C.
         Feature::ProxyHttp3 => (c"proxy-HTTP3", 0),
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
         Feature::Spnego => (c"SPNEGO", crate::ffi::CURL_VERSION_SPNEGO),

@@ -1326,8 +1326,12 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// The system's own trust store is the default of this build where a
-/// transfer names no certificates of its own: C's `USE_APPLE_SECTRUST`.
-pub const NATIVE_CA_DEFAULT: bool = cfg!(all(target_os = "macos", feature = "apple-sectrust"));
+/// transfer names no certificates of its own: C's `USE_APPLE_SECTRUST`,
+/// or its `CURL_CA_NATIVE` (the `native-ca` feature).
+pub const NATIVE_CA_DEFAULT: bool = cfg!(any(
+    all(target_os = "macos", feature = "apple-sectrust"),
+    feature = "native-ca"
+));
 
 /// A CA setting as it applies: the default where it keeps it.
 fn resolved<'a>(setting: &'a CaSetting, default: Option<&'static str>) -> Option<&'a [u8]> {

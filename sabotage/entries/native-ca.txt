@@ -1,0 +1,52 @@
+=== a certificate of the system's store expired or not yet valid is trusted
+file: crates/curl-openssl/src/native.rs
+witness: curl-openssl native::tests::one_not_valid_now_is_left_out
+--- old
+    not_before <= now && now <= not_after
+--- new
+    not_before <= now || now <= not_after
+
+=== a certificate of the system's store whose key does not sign certificates is trusted
+file: crates/curl-openssl/src/native.rs
+witness: curl-openssl native::tests::its_key_must_sign_certificates_if_it_says
+--- old
+        KeyUsage::Says(bits) => bits & KEY_CERT_SIGN != 0,
+--- new
+        KeyUsage::Says(bits) => bits != 0,
+
+=== a certificate of the system's store whose key usage cannot be read is trusted
+file: crates/curl-openssl/src/native.rs
+witness: curl-openssl native::tests::its_key_must_sign_certificates_if_it_says
+--- old
+        KeyUsage::Unreadable => false,
+--- new
+        KeyUsage::Unreadable => true,
+
+=== a certificate of the system's store meant for no use is trusted
+file: crates/curl-openssl/src/native.rs
+witness: curl-openssl native::tests::it_must_be_for_server_authentication
+--- old
+        Uses::Unsaid | Uses::Unreadable | Uses::None => false,
+        Uses::Every => true,
+--- new
+        Uses::Unsaid | Uses::Unreadable => false,
+        Uses::Every | Uses::None => true,
+
+=== a use whose object id only begins with server authentication's is taken for it
+file: crates/curl-openssl/src/native.rs
+witness: curl-openssl native::tests::server_authentication_is_found_by_its_id
+--- old
+    oids.any(|oid| oid == SERVER_AUTH)
+--- new
+    oids.any(|oid| oid.starts_with(SERVER_AUTH))
+
+=== a build whose default trust store is the system's does not say NativeCA
+file: crates/curl-core/src/version.rs
+witness: curl-core version::tests::the_native_ca_store_is_claimed_as_native_ca
+features: native-ca
+--- old
+    #[cfg(all(feature = "native-ca", not(feature = "apple-sectrust")))]
+    Feature::NativeCa,
+--- new
+    #[cfg(any())]
+    Feature::NativeCa,

@@ -4058,12 +4058,14 @@ the clear), searches, and the entries are written as `lib/ldap.c`'s LDIF, which 
 `openldap.c`'s: an attribute with no values is an empty line alone, no blank line ends an entry,
 and a size-limited search says how many entries came. What differs by library is the library's
 to say: its URL parser (`parse_url`, handed the URL's text and its path and query; WinLDAP has
-none, so C's own `ldap_url_parse_low` is the core's `ldap::parse_url_low`), its TLS
-(`LocalTls`: OpenLDAP's CA file and certificate checks as `LDAP_OPT_X_TLS` options, or WinLDAP's
-session made for TLS, `LDAP_OPT_SSL`, the system's store, and a callback accepting any
-certificate where the peer is not checked) and its binds (`Binds`: simple, or `ldap_win_bind`'s
-choice of a simple bind, an SSPI one with the login, or one as the process's user, which the core
-makes as a `Bind`).
+none, so C's own `ldap_url_parse_low` is the core's `ldap::parse_url_low`), and the kind of
+session it opens (`LocalSession`), whose trait holds that library's settings and bind and no
+other's. `OpenLdap` (`OpenLdapSession`) has a connect timeout, the CA file and certificate checks
+as `LDAP_OPT_X_TLS` options, and a simple bind; `Windows` (`WinLdapSession`) is made for TLS,
+turns `LDAP_OPT_SSL` on, leaves the peer to the system's store or a callback accepting any
+certificate where it is not checked, and binds as `ldap_win_bind` chooses (`WinBind`: a simple
+bind with the login, an SSPI one with it, or one as the process's user). What both have
+(`LocalCalls`: the version, referrals, the search) is reached through `LocalSession::calls`.
 
 ## 6. HTTP/1.x
 

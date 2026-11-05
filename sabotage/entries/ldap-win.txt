@@ -26,31 +26,35 @@ witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the
 file: crates/curl-core/src/proto/ldap/local.rs
 witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the_peer_as_c_s_does
 --- old
-                s.set_ssl();
+        s.set_ssl();
 --- new
 
 === a WinLDAP session told not to check the peer checks it all the same
 file: crates/curl-core/src/proto/ldap/local.rs
 witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the_peer_as_c_s_does
 --- old
-                    s.accept_any_cert();
+            s.accept_any_cert();
 --- new
 
 === a WinLDAP session checks no peer where only the name was to be checked
 file: crates/curl-core/src/proto/ldap/local.rs
 witness: curl-core proto::ldap::local::tests::a_windows_ldaps_session_checks_the_peer_as_c_s_does
 --- old
-                    if verify_host {
+            if verify_host {
 --- new
-                    if false {
+            if false {
 
 === a WinLDAP bind refused in version 3 is tried in version 2 as another bind
 file: crates/curl-core/src/proto/ldap/local.rs
 witness: curl-core proto::ldap::local::tests::a_windows_bind_is_made_as_ldap_win_bind_makes_it
 --- old
-            rc = s.bind(how);
+            rc = bind(s);
 --- new
-            rc = s.bind(Bind::CurrentUser);
+            rc = if let LocalSession::Windows(w) = s {
+                w.bind(WinBind::CurrentUser)
+            } else {
+                bind(s)
+            };
 
 === C's LDAP URL parser takes a URL ending in an empty extension
 file: crates/curl-core/src/ldap/low_url.rs
@@ -75,3 +79,11 @@ witness: curl-core ldap::low_url::tests::a_url_is_refused_as_c_refuses_it
         search.filter = Some(decoded(decode_but_control(filter))?);
 --- new
         search.filter = Some(decoded(decode_but_zero(filter))?);
+
+=== a refused WinLDAP bind is named as OpenLDAP's call
+file: crates/curl-core/src/proto/ldap/local.rs
+witness: curl-core proto::ldap::local::tests::a_windows_bind_is_made_as_ldap_win_bind_makes_it
+--- old
+                LocalSession::Windows(_) => b"ldap_win_bind",
+--- new
+                LocalSession::Windows(_) => b"ldap_simple_bind_s",

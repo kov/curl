@@ -1,6 +1,14 @@
 use super::*;
 use crate::ber::*;
 
+/// A session of the library's own, of OpenLDAP's kind, to `port`.
+fn open(port: u16) -> Box<dyn OpenLdapSession> {
+    let LocalSession::OpenLdap(session) = LEGACY.open(b"127.0.0.1", port, false).unwrap() else {
+        panic!("libldap's session is OpenLDAP's");
+    };
+    session
+}
+
 fn search() -> Search {
     let text = b"ldap://h/dc=x??sub?(objectClass=*)";
     let url = LocalUrl {
@@ -18,17 +26,11 @@ fn search() -> Search {
 #[test]
 fn a_session_binds_and_searches_on_a_connection_of_its_own() {
     let (port, server) = serve(|op, id| finds_two(op, id, 0));
-    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port);
     session.set_network_timeout(Duration::from_secs(10));
     session.set_version(Version::V3);
     session.set_no_referrals();
-    assert_eq!(
-        session.bind(Bind::Simple {
-            user: None,
-            password: None
-        }),
-        Code::SUCCESS
-    );
+    assert_eq!(session.simple_bind(None, None), Code::SUCCESS);
     let (code, mut found) = session.search(&search()).unwrap();
     assert_eq!(code, Code::SUCCESS);
     assert!(found.next_entry());
@@ -65,15 +67,9 @@ fn a_session_binds_and_searches_on_a_connection_of_its_own() {
 #[test]
 fn a_search_cut_short_gives_what_came() {
     let (port, server) = serve(|op, id| finds_two(op, id, 4));
-    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port);
     session.set_version(Version::V3);
-    assert_eq!(
-        session.bind(Bind::Simple {
-            user: None,
-            password: None
-        }),
-        Code::SUCCESS
-    );
+    assert_eq!(session.simple_bind(None, None), Code::SUCCESS);
     let (code, mut found) = session.search(&search()).unwrap();
     assert_eq!(code, Code::SIZELIMIT_EXCEEDED);
     assert!(found.next_entry());
@@ -91,13 +87,10 @@ fn refusals_are_the_server_s_codes() {
         0x60 => vec![ldap_message(id, &result_op(0x61, 49, b""))],
         _ => Vec::new(),
     });
-    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port);
     session.set_version(Version::V3);
     assert_eq!(
-        session.bind(Bind::Simple {
-            user: Some(b"cn=me"),
-            password: Some(b"pw")
-        }),
+        session.simple_bind(Some(b"cn=me"), Some(b"pw")),
         Code::INVALID_CREDENTIALS
     );
     drop(session);
@@ -108,15 +101,9 @@ fn refusals_are_the_server_s_codes() {
         0x63 => vec![ldap_message(id, &result_op(0x65, 32, b""))],
         _ => Vec::new(),
     });
-    let mut session = LEGACY.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port);
     session.set_version(Version::V3);
-    assert_eq!(
-        session.bind(Bind::Simple {
-            user: None,
-            password: None
-        }),
-        Code::SUCCESS
-    );
+    assert_eq!(session.simple_bind(None, None), Code::SUCCESS);
     assert_eq!(session.search(&search()).err(), Some(Code(32)));
     drop(session);
     server.join().unwrap();
@@ -128,7 +115,7 @@ fn refusals_are_the_server_s_codes() {
 /// there, as ours does with the library's answer.
 #[test]
 fn the_tls_options_are_taken() {
-    let mut session = LEGACY.open(b"127.0.0.1", 9, false).unwrap();
+    let mut session = open(9);
     let ca = session.set_ca_file(b"/nonexistent/ca.pem");
     if cfg!(target_vendor = "apple") {
         assert_eq!(ca, Err(Code(-1)));
@@ -138,7 +125,6 @@ fn the_tls_options_are_taken() {
     assert_eq!(session.set_require_cert(RequireCert::Demand), Ok(()));
     assert_eq!(session.set_require_cert(RequireCert::Never), Ok(()));
     assert_eq!(session.set_tls_hard(), Ok(()));
-    assert_eq!(LEGACY.tls(), LocalTls::OpenLdap);
 }
 
 /// The vendor is the headers' and the version the library's, Apple's
@@ -156,5 +142,4 @@ fn the_vendor_and_version_are_the_library_s() {
     let number = rest.trim_end_matches("/Apple");
     let parts: Vec<u32> = number.split('.').map(|p| p.parse().unwrap()).collect();
     assert_eq!(parts.len(), 3, "{v}");
-    assert_eq!(LEGACY.bind_call(), "ldap_simple_bind_s");
 }

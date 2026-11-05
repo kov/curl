@@ -50,6 +50,15 @@ fn bind_of(message: &[u8]) -> Sent {
     }
 }
 
+/// A session of the library's own, of WinLDAP's kind, to `port`, for
+/// TLS if `secured`.
+fn open(port: u16, secured: bool) -> Box<dyn WinLdapSession> {
+    let LocalSession::Windows(session) = WINLDAP.open(b"127.0.0.1", port, secured).unwrap() else {
+        panic!("WinLDAP's session is WinLDAP's");
+    };
+    session
+}
+
 fn search() -> Search {
     Search {
         dn: Some(b"dc=x".to_vec()),
@@ -66,13 +75,12 @@ fn search() -> Search {
 #[test]
 fn a_session_binds_and_searches_on_a_connection_of_its_own() {
     let (port, server) = serve(|op, id| finds_two(op, id, 0));
-    let mut session = WINLDAP.open(b"127.0.0.1", port, false).unwrap();
-    session.set_network_timeout(Duration::from_secs(10));
+    let mut session = open(port, false);
     session.set_version(Version::V3);
     session.set_no_referrals();
-    let simple = Bind::Simple {
-        user: Some(b"cn=me"),
-        password: Some(b"pw"),
+    let simple = WinBind::Simple {
+        user: b"cn=me",
+        password: b"pw",
     };
     assert_eq!(session.bind(simple), Code::SUCCESS);
     let (code, mut found) = session.search(&search()).unwrap();
@@ -119,16 +127,16 @@ fn a_session_binds_and_searches_on_a_connection_of_its_own() {
     assert_eq!(attrs, [b"cn".to_vec(), b"photo".to_vec()]);
 }
 
-/// Version 2 when set; no login is a bind as no one; a search of every
+/// Version 2 when set; an empty login is a bind as no one; a search of every
 /// attribute asks for none by name, and a base search is one.
 #[test]
 fn a_session_binds_as_it_is_set_to() {
     let (port, server) = serve(|op, id| finds_two(op, id, 0));
-    let mut session = WINLDAP.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port, false);
     session.set_version(Version::V2);
-    let anonymous = Bind::Simple {
-        user: None,
-        password: None,
+    let anonymous = WinBind::Simple {
+        user: b"",
+        password: b"",
     };
     assert_eq!(session.bind(anonymous), Code::SUCCESS);
     let every = Search {
@@ -153,11 +161,11 @@ fn a_session_binds_as_it_is_set_to() {
 #[test]
 fn the_server_s_codes_are_given() {
     let (port, server) = serve(|op, id| finds_two(op, id, 4));
-    let mut session = WINLDAP.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port, false);
     session.set_version(Version::V3);
-    let anonymous = Bind::Simple {
-        user: None,
-        password: None,
+    let anonymous = WinBind::Simple {
+        user: b"",
+        password: b"",
     };
     assert_eq!(session.bind(anonymous), Code::SUCCESS);
     let (code, mut found) = session.search(&search()).unwrap();
@@ -173,7 +181,7 @@ fn the_server_s_codes_are_given() {
         0x60 => vec![ldap_message(id, &result_op(0x61, 49, b""))],
         _ => Vec::new(),
     });
-    let mut session = WINLDAP.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port, false);
     session.set_version(Version::V3);
     assert_eq!(session.bind(anonymous), Code::INVALID_CREDENTIALS);
     drop(session);
@@ -184,7 +192,7 @@ fn the_server_s_codes_are_given() {
         0x63 => vec![ldap_message(id, &result_op(0x65, 32, b""))],
         _ => Vec::new(),
     });
-    let mut session = WINLDAP.open(b"127.0.0.1", port, false).unwrap();
+    let mut session = open(port, false);
     session.set_version(Version::V3);
     assert_eq!(session.bind(anonymous), Code::SUCCESS);
     assert_eq!(session.search(&search()).err(), Some(Code(32)));
@@ -203,9 +211,9 @@ fn an_sspi_bind_is_made_with_its_method() {
         0x63 => vec![ldap_message(id, &result_op(0x65, 0, b""))],
         _ => Vec::new(),
     };
-    let sent = |how: Bind<'_>| {
+    let sent = |how: WinBind<'_>| {
         let (port, server) = serve(answers);
-        let mut session = WINLDAP.open(b"127.0.0.1", port, false).unwrap();
+        let mut session = open(port, false);
         session.set_version(Version::V3);
         let code = session.bind(how);
         drop(session);
@@ -219,19 +227,19 @@ fn an_sspi_bind_is_made_with_its_method() {
         (code, searches, binds)
     };
     let ntlm = Sent::Other(3, b"NTLM".to_vec(), 0x8a);
-    let (code, searches, binds) = sent(Bind::Sspi {
+    let (code, searches, binds) = sent(WinBind::Sspi {
         method: SspiMethod::Negotiate,
         user: b"DOM\\me",
         password: b"pw",
     });
     assert_ne!(code, Code::SUCCESS);
     assert!(searches > 0, "the root's mechanisms are asked for");
-    assert_eq!(binds, [ntlm.clone()]);
-    let (code, searches, binds) = sent(Bind::CurrentUser);
+    assert_eq!(binds, core::slice::from_ref(&ntlm));
+    let (code, searches, binds) = sent(WinBind::CurrentUser);
     assert_ne!(code, Code::SUCCESS);
     assert!(searches > 0);
     assert_eq!(binds, [ntlm]);
-    let (code, searches, binds) = sent(Bind::Sspi {
+    let (code, searches, binds) = sent(WinBind::Sspi {
         method: SspiMethod::Digest,
         user: b"me",
         password: b"pw",
@@ -244,10 +252,9 @@ fn an_sspi_bind_is_made_with_its_method() {
 /// The TLS options take; a session for TLS is made.
 #[test]
 fn the_tls_options_take() {
-    let mut session = WINLDAP.open(b"127.0.0.1", 9, true).unwrap();
+    let mut session = open(9, true);
     session.set_ssl();
     session.accept_any_cert();
-    assert_eq!(WINLDAP.tls(), LocalTls::Windows);
 }
 
 /// An SSPI identity names the domain before a `\`, or else a `/`, and
@@ -281,8 +288,6 @@ fn an_identity_is_made_as_c_makes_it() {
 fn the_library_names_itself_as_c_s_build_does() {
     assert_eq!(version(), "WinLDAP");
     assert_eq!(WINLDAP.vendor(), ("Microsoft Corporation.", 510));
-    assert_eq!(WINLDAP.bind_call(), "ldap_win_bind");
-    assert_eq!(WINLDAP.binds(), Binds::Windows);
     assert_eq!(WINLDAP.describe(Code::SUCCESS), b"Success");
     let url = LocalUrl {
         text: b"ldap://h/?a?nonsuch",

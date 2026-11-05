@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ldap::{
-    Attribute, Bind, Binds, Code, Entries, Local, LocalSession, LocalTls, LocalUrl, NoName, Opened,
-    RequireCert, Search, UrlError, Version,
+    Attribute, Code, Entries, Local, LocalCalls, LocalSession, LocalUrl, NoName, OpenLdapSession,
+    Opened, RequireCert, Search, UrlError, Version,
 };
 
 use crate::common::{self, CSearch, bytes, scope_number, terminated};
@@ -58,27 +58,10 @@ impl Local for Legacy {
         common::describe(code)
     }
 
-    /// OpenLDAP's library sets its TLS up by options
-    /// (`LDAP_OPT_X_TLS`), which its headers always have.
-    fn tls(&self) -> LocalTls {
-        LocalTls::OpenLdap
-    }
-
-    fn binds(&self) -> Binds {
-        Binds::Simple
-    }
-
-    fn bind_call(&self) -> &'static str {
-        "ldap_simple_bind_s"
-    }
-
-    /// The session is told to speak TLS by its options, after it is made.
-    fn open(
-        &self,
-        host: &[u8],
-        port: u16,
-        _secured: bool,
-    ) -> Result<Box<dyn LocalSession>, Opened> {
+    /// The session is told to speak TLS by its options
+    /// (`LDAP_OPT_X_TLS`, which the library's headers always have), after
+    /// it is made.
+    fn open(&self, host: &[u8], port: u16, _secured: bool) -> Result<LocalSession, Opened> {
         let host = match terminated(host) {
             Ok(Some(host)) => host,
             // A name with a NUL reaches no host.
@@ -93,10 +76,7 @@ impl Local for Legacy {
         // A box that cannot be made drops the session, which frees it.
         let session = Session { ld };
         match curl_alloc::try_box(session) {
-            Ok(b) => {
-                let b: Box<dyn LocalSession> = b;
-                Ok(b)
-            }
+            Ok(b) => Ok(LocalSession::OpenLdap(b)),
             Err(OutOfMemory) => Err(Opened::OutOfMemory),
         }
     }
@@ -140,7 +120,7 @@ impl Drop for Session {
     }
 }
 
-impl LocalSession for Session {
+impl OpenLdapSession for Session {
     fn set_network_timeout(&mut self, timeout: Duration) {
         assert_eq!(timeout.subsec_nanos(), 0, "whole seconds, as C's");
         let tv = sys::timeval {
@@ -157,22 +137,6 @@ impl LocalSession for Session {
                 (&raw const tv).cast::<c_void>(),
             )
         };
-    }
-
-    fn set_version(&mut self, version: Version) {
-        let v = match version {
-            Version::V2 => sys::LDAP_VERSION2,
-            Version::V3 => sys::LDAP_VERSION3,
-        };
-        // As C, the answer is not looked at: a version not taken shows
-        // in the bind's.
-        self.set_int(sys::LDAP_OPT_PROTOCOL_VERSION, v);
-    }
-
-    fn set_no_referrals(&mut self) {
-        // `LDAP_OPT_OFF`, a NULL pointer; as C, the answer is not looked at.
-        // SAFETY: a live session; the option takes the pointer's value.
-        unsafe { sys::ldap_set_option(self.ld, sys::LDAP_OPT_REFERRALS, ptr::null()) };
     }
 
     fn set_ca_file(&mut self, path: &[u8]) -> Result<(), Code> {
@@ -202,18 +166,7 @@ impl LocalSession for Session {
         checked(self.set_int(sys::LDAP_OPT_X_TLS, sys::LDAP_OPT_X_TLS_HARD))
     }
 
-    fn set_ssl(&mut self) {
-        unreachable!("OpenLDAP's library is told to speak TLS by its X_TLS options");
-    }
-
-    fn accept_any_cert(&mut self) {
-        unreachable!("OpenLDAP's library is told how to check the peer by its X_TLS options");
-    }
-
-    fn bind(&mut self, how: Bind<'_>) -> Code {
-        let Bind::Simple { user, password } = how else {
-            unreachable!("OpenLDAP's library binds simply: {how:?}");
-        };
+    fn simple_bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code {
         let z = |s: Option<&[u8]>| match s {
             None => Ok(None),
             Some(s) => match terminated(s) {
@@ -229,6 +182,24 @@ impl LocalSession for Session {
         let c = |z: &Option<Vec<u8>>| z.as_ref().map_or(ptr::null(), |z| z.as_ptr().cast());
         // SAFETY: a live session, and NULL or C strings the call reads.
         Code(unsafe { sys::ldap_simple_bind_s(self.ld, c(&user), c(&password)) })
+    }
+}
+
+impl LocalCalls for Session {
+    fn set_version(&mut self, version: Version) {
+        let v = match version {
+            Version::V2 => sys::LDAP_VERSION2,
+            Version::V3 => sys::LDAP_VERSION3,
+        };
+        // As C, the answer is not looked at: a version not taken shows
+        // in the bind's.
+        self.set_int(sys::LDAP_OPT_PROTOCOL_VERSION, v);
+    }
+
+    fn set_no_referrals(&mut self) {
+        // `LDAP_OPT_OFF`, a NULL pointer; as C, the answer is not looked at.
+        // SAFETY: a live session; the option takes the pointer's value.
+        unsafe { sys::ldap_set_option(self.ld, sys::LDAP_OPT_REFERRALS, ptr::null()) };
     }
 
     fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code> {

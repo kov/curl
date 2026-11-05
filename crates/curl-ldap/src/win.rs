@@ -12,12 +12,11 @@
 use core::ffi::{CStr, c_char, c_void};
 use core::marker::PhantomData;
 use core::ptr;
-use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ldap::{
-    Attribute, Bind, Binds, Code, Entries, Local, LocalSession, LocalTls, LocalUrl, LowUrlError,
-    NoName, Opened, RequireCert, Scope, Search, SspiMethod, UrlError, Version, parse_url_low,
+    Attribute, Code, Entries, Local, LocalCalls, LocalSession, LocalUrl, LowUrlError, NoName,
+    Opened, Scope, Search, SspiMethod, UrlError, Version, WinBind, WinLdapSession, parse_url_low,
 };
 use windows_sys::Win32::Networking::Ldap as sys;
 use windows_sys::Win32::Security::Authentication::Identity::{
@@ -89,19 +88,7 @@ impl Local for WinLdap {
         unsafe { CStr::from_ptr(s.cast::<c_char>()) }.to_bytes()
     }
 
-    fn tls(&self) -> LocalTls {
-        LocalTls::Windows
-    }
-
-    fn binds(&self) -> Binds {
-        Binds::Windows
-    }
-
-    fn bind_call(&self) -> &'static str {
-        "ldap_win_bind"
-    }
-
-    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<Box<dyn LocalSession>, Opened> {
+    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<LocalSession, Opened> {
         let host = match terminated(host) {
             Ok(Some(host)) => host,
             // A name with a NUL reaches no host.
@@ -121,10 +108,7 @@ impl Local for WinLdap {
         // A box that cannot be made drops the session, which frees it.
         let session = Session { ld };
         match curl_alloc::try_box(session) {
-            Ok(b) => {
-                let b: Box<dyn LocalSession> = b;
-                Ok(b)
-            }
+            Ok(b) => Ok(LocalSession::Windows(b)),
             Err(OutOfMemory) => Err(Opened::OutOfMemory),
         }
     }
@@ -165,11 +149,7 @@ unsafe extern "system" fn bypass_cert_verify(
     true
 }
 
-impl LocalSession for Session {
-    /// WinLDAP has no such timeout (`LDAP_OPT_NETWORK_TIMEOUT`), so C
-    /// sets none.
-    fn set_network_timeout(&mut self, _: Duration) {}
-
+impl LocalCalls for Session {
     fn set_version(&mut self, version: Version) {
         let v: i32 = match version {
             Version::V2 => sys::LDAP_VERSION2 as i32,
@@ -181,59 +161,6 @@ impl LocalSession for Session {
     fn set_no_referrals(&mut self) {
         // `LDAP_OPT_OFF`, a NULL pointer.
         self.set(sys::LDAP_OPT_REFERRALS, ptr::null());
-    }
-
-    fn set_ca_file(&mut self, _: &[u8]) -> Result<(), Code> {
-        unreachable!("WinLDAP trusts the system's store");
-    }
-
-    fn set_require_cert(&mut self, _: RequireCert) -> Result<(), Code> {
-        unreachable!("WinLDAP is told how to check the peer by a callback");
-    }
-
-    fn set_tls_hard(&mut self) -> Result<(), Code> {
-        unreachable!("WinLDAP is told to speak TLS by LDAP_OPT_SSL");
-    }
-
-    fn set_ssl(&mut self) {
-        self.set(sys::LDAP_OPT_SSL, OPT_ON);
-    }
-
-    fn accept_any_cert(&mut self) {
-        let callback: unsafe extern "system" fn(*mut sys::LDAP, *mut *mut CERT_CONTEXT) -> bool =
-            bypass_cert_verify;
-        // The option takes the callback itself, as C hands it.
-        self.set(sys::LDAP_OPT_SERVER_CERTIFICATE, callback as *const c_void);
-    }
-
-    fn bind(&mut self, how: Bind<'_>) -> Code {
-        match how {
-            Bind::Simple { user, password } => self.simple_bind(user, password),
-            Bind::Sspi {
-                method,
-                user,
-                password,
-            } => {
-                let method = match method {
-                    SspiMethod::Negotiate => AUTH_NEGOTIATE,
-                    SspiMethod::Digest => AUTH_DIGEST,
-                };
-                let Ok(mut identity) = Identity::new(user, password) else {
-                    return NO_MEMORY;
-                };
-                let cred = (&raw mut identity.c).cast::<u8>();
-                // SAFETY: a live session; no name; the identity, whose
-                // strings live in `identity` across the call.
-                Code(unsafe { sys::ldap_bind_sA(self.ld, ptr::null(), cred, method) } as i32)
-            }
-            Bind::CurrentUser => {
-                // SAFETY: a live session; no name and no identity, the
-                // process's user's then.
-                let rc =
-                    unsafe { sys::ldap_bind_sA(self.ld, ptr::null(), ptr::null(), AUTH_NEGOTIATE) };
-                Code(rc as i32)
-            }
-        }
     }
 
     fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code> {
@@ -301,6 +228,49 @@ impl LocalSession for Session {
     }
 }
 
+impl WinLdapSession for Session {
+    fn set_ssl(&mut self) {
+        self.set(sys::LDAP_OPT_SSL, OPT_ON);
+    }
+
+    fn accept_any_cert(&mut self) {
+        let callback: unsafe extern "system" fn(*mut sys::LDAP, *mut *mut CERT_CONTEXT) -> bool =
+            bypass_cert_verify;
+        // The option takes the callback itself, as C hands it.
+        self.set(sys::LDAP_OPT_SERVER_CERTIFICATE, callback as *const c_void);
+    }
+
+    fn bind(&mut self, how: WinBind<'_>) -> Code {
+        match how {
+            WinBind::Simple { user, password } => self.simple_bind(user, password),
+            WinBind::Sspi {
+                method,
+                user,
+                password,
+            } => {
+                let method = match method {
+                    SspiMethod::Negotiate => AUTH_NEGOTIATE,
+                    SspiMethod::Digest => AUTH_DIGEST,
+                };
+                let Ok(mut identity) = Identity::new(user, password) else {
+                    return NO_MEMORY;
+                };
+                let cred = (&raw mut identity.c).cast::<u8>();
+                // SAFETY: a live session; no name; the identity, whose
+                // strings live in `identity` across the call.
+                Code(unsafe { sys::ldap_bind_sA(self.ld, ptr::null(), cred, method) } as i32)
+            }
+            WinBind::CurrentUser => {
+                // SAFETY: a live session; no name and no identity, the
+                // process's user's then.
+                let rc =
+                    unsafe { sys::ldap_bind_sA(self.ld, ptr::null(), ptr::null(), AUTH_NEGOTIATE) };
+                Code(rc as i32)
+            }
+        }
+    }
+}
+
 /// `s` as a C string for the library, or the library's code for why it
 /// cannot be one.
 fn c_string(s: &[u8]) -> Result<Vec<u8>, Code> {
@@ -312,15 +282,14 @@ fn c_string(s: &[u8]) -> Result<Vec<u8>, Code> {
 }
 
 impl Session {
-    fn simple_bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code {
-        let z = |s: Option<&[u8]>| s.map(c_string).transpose();
-        let (user, password) = match (z(user), z(password)) {
+    /// A simple bind, which `ldap_win_bind` makes with a login alone.
+    fn simple_bind(&mut self, user: &[u8], password: &[u8]) -> Code {
+        let (user, password) = match (c_string(user), c_string(password)) {
             (Ok(u), Ok(p)) => (u, p),
             (Err(c), _) | (_, Err(c)) => return c,
         };
-        let c = |z: &Option<Vec<u8>>| z.as_ref().map_or(ptr::null(), |z| z.as_ptr());
-        // SAFETY: a live session, and NULL or C strings the call reads.
-        Code(unsafe { sys::ldap_simple_bind_sA(self.ld, c(&user), c(&password)) } as i32)
+        // SAFETY: a live session, and C strings the call reads.
+        Code(unsafe { sys::ldap_simple_bind_sA(self.ld, user.as_ptr(), password.as_ptr()) } as i32)
     }
 }
 

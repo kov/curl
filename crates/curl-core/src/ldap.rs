@@ -255,21 +255,10 @@ pub trait Local: fmt::Debug + Send + Sync {
     /// The library's words for `code` (`ldap_err2string`).
     fn describe(&self, code: Code) -> &'static [u8];
 
-    /// How the library is told to speak TLS, which decides the steps of
-    /// an `ldaps:` session's set-up.
-    fn tls(&self) -> LocalTls;
-
-    /// How C binds with the library, which decides the call a bind is
-    /// made with.
-    fn binds(&self) -> Binds;
-
-    /// The call a bind is made with, as a failed bind names it.
-    fn bind_call(&self) -> &'static str;
-
     /// A session to `host`'s `port`, made but not connected
     /// (`ldap_init`); with TLS from the start if `secured` where the
     /// library is told so as the session is made (`ldap_sslinit`).
-    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<Box<dyn LocalSession>, Opened>;
+    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<LocalSession, Opened>;
 }
 
 /// The URL a [`Local`] library is handed: the whole of it as the
@@ -283,27 +272,11 @@ pub struct LocalUrl<'a> {
     pub query: Option<&'a [u8]>,
 }
 
-/// How C binds with a [`Local`] library.
+/// A bind as WinLDAP is asked to make it, the way `ldap_win_bind` does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Binds {
-    /// Simply, with the credentials if there are any
-    /// (`ldap_simple_bind_s`).
-    Simple,
-    /// As WinLDAP's `ldap_win_bind` does: simply with credentials where
-    /// Basic is asked for, else by SSPI, with them as Negotiate or Digest
-    /// where asked, or as the user the process runs as.
-    Windows,
-}
-
-/// A bind, as the library is asked to make it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Bind<'a> {
-    /// A simple bind as `user` with `password`, none for none
-    /// (`ldap_simple_bind_s`).
-    Simple {
-        user: Option<&'a [u8]>,
-        password: Option<&'a [u8]>,
-    },
+pub enum WinBind<'a> {
+    /// A simple bind as `user` with `password` (`ldap_simple_bind_s`).
+    Simple { user: &'a [u8], password: &'a [u8] },
     /// By SSPI with `method`, as `user` (`domain\user` or `domain/user`
     /// naming a domain) with `password` (`ldap_bind_s` with an SSPI
     /// identity).
@@ -325,20 +298,16 @@ pub enum SspiMethod {
     Digest,
 }
 
-impl<'a> Bind<'a> {
+impl<'a> WinBind<'a> {
     /// The bind `ldap_win_bind` makes as `user` with `password`, none for
-    /// none, with the methods `auth` asks for (`CURLOPT_HTTPAUTH`).
-    pub fn windows(
-        user: Option<&'a [u8]>,
-        password: Option<&'a [u8]>,
-        auth: AuthMethods,
-    ) -> Bind<'a> {
+    /// none, with the methods `auth` asks for (`CURLOPT_HTTPAUTH`):
+    /// simply with both where Basic is asked for, else by SSPI with them
+    /// as Negotiate or Digest where asked, or as the user the process
+    /// runs as.
+    pub fn new(user: Option<&'a [u8]>, password: Option<&'a [u8]>, auth: AuthMethods) -> Self {
         let creds = user.zip(password);
         if let Some((user, password)) = creds.filter(|_| auth.contains(AuthMethods::BASIC)) {
-            return Bind::Simple {
-                user: Some(user),
-                password: Some(password),
-            };
+            return WinBind::Simple { user, password };
         }
         let method = if auth.contains(AuthMethods::NEGOTIATE) {
             Some(SspiMethod::Negotiate)
@@ -348,12 +317,12 @@ impl<'a> Bind<'a> {
             None
         };
         match (method, creds) {
-            (Some(method), Some((user, password))) => Bind::Sspi {
+            (Some(method), Some((user, password))) => WinBind::Sspi {
                 method,
                 user,
                 password,
             },
-            _ => Bind::CurrentUser,
+            _ => WinBind::CurrentUser,
         }
     }
 }
@@ -366,22 +335,6 @@ pub enum Opened {
     OutOfMemory,
 }
 
-/// How a [`Local`] library speaks TLS (the branches of `ldap_do`'s
-/// `ldap_ssl`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LocalTls {
-    /// By OpenLDAP's options (`LDAP_OPT_X_TLS`): the file of
-    /// certificates to trust, how hard the peer's is checked, and TLS
-    /// from the start.
-    OpenLdap,
-    /// By WinLDAP's: TLS from the session's start (`ldap_sslinit`,
-    /// `LDAP_OPT_SSL`), the peer checked against the system's store unless
-    /// a callback accepts any (`LDAP_OPT_SERVER_CERTIFICATE`).
-    Windows,
-    /// Not at all: the library has no TLS to set.
-    None,
-}
-
 /// How hard a session checks the peer's certificate
 /// (`LDAP_OPT_X_TLS_REQUIRE_CERT`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,16 +345,50 @@ pub enum RequireCert {
     Demand,
 }
 
-/// A [`Local`] library's session, its settings and calls one for one with
-/// the library's, each waited for. Dropping it unbinds and frees it, its
+/// A [`Local`] library's session, of its library's kind: each kind has
+/// the settings and the bind its library has and no other's, so the
+/// steps of an `ldaps:` session's set-up and the call a bind is made
+/// with are the library's. Dropping it unbinds and frees it, its
 /// connection closed (`ldap_unbind_s`).
-pub trait LocalSession: fmt::Debug + Send {
-    /// How long a connect may take (`LDAP_OPT_NETWORK_TIMEOUT`).
-    fn set_network_timeout(&mut self, timeout: Duration);
+#[derive(Debug)]
+pub enum LocalSession {
+    /// OpenLDAP's libldap (macOS's LDAP.framework): TLS by its
+    /// `LDAP_OPT_X_TLS` options, binds simple.
+    OpenLdap(Box<dyn OpenLdapSession>),
+    /// WinLDAP (`USE_WIN32_LDAP`): TLS from the session's start
+    /// (`ldap_sslinit`, `LDAP_OPT_SSL`), the peer checked against the
+    /// system's store unless a callback accepts any
+    /// (`LDAP_OPT_SERVER_CERTIFICATE`); binds as `ldap_win_bind` makes
+    /// them.
+    Windows(Box<dyn WinLdapSession>),
+}
+
+impl LocalSession {
+    /// What a session of any kind has.
+    pub fn calls(&mut self) -> &mut dyn LocalCalls {
+        match self {
+            LocalSession::OpenLdap(s) => &mut **s,
+            LocalSession::Windows(s) => &mut **s,
+        }
+    }
+}
+
+/// What a [`Local`] library's session of any kind has, its settings and
+/// calls one for one with the library's, each waited for.
+pub trait LocalCalls: fmt::Debug + Send {
     /// The protocol version it speaks (`LDAP_OPT_PROTOCOL_VERSION`).
     fn set_version(&mut self, version: Version);
     /// Chase no referrals (`LDAP_OPT_REFERRALS`).
     fn set_no_referrals(&mut self);
+    /// Search, waiting for the whole answer (`ldap_search_s`): its code,
+    /// success or too many entries, and the entries; the code otherwise.
+    fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code>;
+}
+
+/// A session of OpenLDAP's libldap, as `lib/ldap.c` drives it.
+pub trait OpenLdapSession: LocalCalls {
+    /// How long a connect may take (`LDAP_OPT_NETWORK_TIMEOUT`).
+    fn set_network_timeout(&mut self, timeout: Duration);
     /// Trust the certificates in the file `path` names
     /// (`LDAP_OPT_X_TLS_CACERTFILE`).
     fn set_ca_file(&mut self, path: &[u8]) -> Result<(), Code>;
@@ -411,19 +398,26 @@ pub trait LocalSession: fmt::Debug + Send {
     /// Speak TLS from the start (`LDAP_OPT_X_TLS` to
     /// `LDAP_OPT_X_TLS_HARD`).
     fn set_tls_hard(&mut self) -> Result<(), Code>;
+    /// Bind simply as `user` with `password`, none for none, the
+    /// connection made first if it is not yet (`ldap_simple_bind_s`): the
+    /// library's or the server's code.
+    fn simple_bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code;
+}
+
+/// A session of WinLDAP, as `lib/ldap.c` drives it with
+/// `USE_WIN32_LDAP`. It has no connect timeout to set: WinLDAP has no
+/// `LDAP_OPT_NETWORK_TIMEOUT`.
+pub trait WinLdapSession: LocalCalls {
     /// Speak TLS (`LDAP_OPT_SSL` on), the library's answer not looked at,
-    /// as C does not ([`LocalTls::Windows`]).
+    /// as C does not.
     fn set_ssl(&mut self);
     /// Accept whatever certificate the peer shows
     /// (`LDAP_OPT_SERVER_CERTIFICATE`, C's `bypass_cert_verify`), the
-    /// library's answer not looked at ([`LocalTls::Windows`]).
+    /// library's answer not looked at.
     fn accept_any_cert(&mut self);
-    /// Bind as `how` says, the connection made first if it is not yet:
-    /// the library's or the server's code.
-    fn bind(&mut self, how: Bind<'_>) -> Code;
-    /// Search, waiting for the whole answer (`ldap_search_s`): its code,
-    /// success or too many entries, and the entries; the code otherwise.
-    fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code>;
+    /// Bind as `how` says, the connection made first if it is not yet
+    /// (`ldap_win_bind`): the library's or the server's code.
+    fn bind(&mut self, how: WinBind<'_>) -> Code;
 }
 
 /// The entries a search found, read one at a time, and freed when

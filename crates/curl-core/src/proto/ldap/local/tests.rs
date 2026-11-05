@@ -6,7 +6,7 @@ use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
 use crate::handler::{DebugHandler, DebugKind, Write as Writes, WriteHandler};
 use crate::id::ArenaPolicy;
-use crate::ldap::{Attribute, Bind, LdapLibrary, Scope, Search};
+use crate::ldap::{Attribute, LdapLibrary, LocalCalls, Scope, Search};
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use crate::options::AuthMethods;
@@ -31,8 +31,8 @@ struct World {
     search: Result<Code, Code>,
     entries: Vec<Found>,
     url: Result<Search, UrlError>,
-    tls: LocalTls,
-    binds_as: Binds,
+    /// The kind of session the library makes.
+    kind: Kind,
     /// The URL's path and query, as the library was handed them.
     url_parts: Option<(Vec<u8>, Option<Vec<u8>>)>,
     calls: Vec<String>,
@@ -51,12 +51,18 @@ impl Default for World {
                 filter: Some(b"(cn=*)".to_vec()),
                 attrs: None,
             }),
-            tls: LocalTls::OpenLdap,
-            binds_as: Binds::Simple,
+            kind: Kind::OpenLdap,
             url_parts: None,
             calls: Vec::new(),
         }
     }
+}
+
+/// The library a fake one is: the kind of session it makes.
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    OpenLdap,
+    Windows,
 }
 
 #[derive(Debug)]
@@ -85,19 +91,7 @@ impl Local for FakeLocal {
         }
     }
 
-    fn tls(&self) -> LocalTls {
-        self.0.lock().unwrap().tls
-    }
-
-    fn binds(&self) -> Binds {
-        self.0.lock().unwrap().binds_as
-    }
-
-    fn bind_call(&self) -> &'static str {
-        "ldap_simple_bind_s"
-    }
-
-    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<Box<dyn LocalSession>, Opened> {
+    fn open(&self, host: &[u8], port: u16, secured: bool) -> Result<LocalSession, Opened> {
         let mut w = self.0.lock().unwrap();
         let tls = if secured { " secured" } else { "" };
         w.calls.push(format!(
@@ -107,7 +101,11 @@ impl Local for FakeLocal {
         if !w.open {
             return Err(Opened::Refused);
         }
-        Ok(Box::new(FakeSession(self.0.clone())))
+        let session = FakeSession(self.0.clone());
+        Ok(match w.kind {
+            Kind::OpenLdap => LocalSession::OpenLdap(Box::new(session)),
+            Kind::Windows => LocalSession::Windows(Box::new(session)),
+        })
     }
 }
 
@@ -118,19 +116,27 @@ impl FakeSession {
     fn call(&self, call: String) {
         self.0.lock().unwrap().calls.push(call);
     }
+
+    /// The bind `call` made: the next answer, success past the last.
+    fn bind_call(&self, call: String) -> Code {
+        let mut w = self.0.lock().unwrap();
+        w.calls.push(call);
+        if w.binds.is_empty() {
+            Code::SUCCESS
+        } else {
+            w.binds.remove(0)
+        }
+    }
 }
 
-impl LocalSession for FakeSession {
+/// A login as a call shows it.
+fn shown(v: Option<&[u8]>) -> Option<String> {
+    v.map(|v| String::from_utf8_lossy(v).into_owned())
+}
+
+impl OpenLdapSession for FakeSession {
     fn set_network_timeout(&mut self, timeout: Duration) {
         self.call(format!("timeout {}", timeout.as_secs()));
-    }
-
-    fn set_version(&mut self, version: Version) {
-        self.call(format!("version {version:?}"));
-    }
-
-    fn set_no_referrals(&mut self) {
-        self.call("no referrals".into());
     }
 
     fn set_ca_file(&mut self, path: &[u8]) -> Result<(), Code> {
@@ -148,6 +154,12 @@ impl LocalSession for FakeSession {
         Ok(())
     }
 
+    fn simple_bind(&mut self, user: Option<&[u8]>, password: Option<&[u8]>) -> Code {
+        self.bind_call(format!("bind {:?} {:?}", shown(user), shown(password)))
+    }
+}
+
+impl WinLdapSession for FakeSession {
     fn set_ssl(&mut self) {
         self.call("ssl".into());
     }
@@ -156,26 +168,33 @@ impl LocalSession for FakeSession {
         self.call("accept any".into());
     }
 
-    fn bind(&mut self, how: Bind<'_>) -> Code {
-        let show = |v: &[u8]| String::from_utf8_lossy(v).into_owned();
+    fn bind(&mut self, how: WinBind<'_>) -> Code {
         let call = match how {
-            Bind::Simple { user, password } => {
-                format!("bind {:?} {:?}", user.map(show), password.map(show))
+            WinBind::Simple { user, password } => {
+                format!("bind {:?} {:?}", shown(Some(user)), shown(Some(password)))
             }
-            Bind::Sspi {
+            WinBind::Sspi {
                 method,
                 user,
                 password,
-            } => format!("sspi {method:?} {:?} {:?}", show(user), show(password)),
-            Bind::CurrentUser => "bind as the process".to_owned(),
+            } => format!(
+                "sspi {method:?} {:?} {:?}",
+                shown(Some(user)).unwrap(),
+                shown(Some(password)).unwrap()
+            ),
+            WinBind::CurrentUser => "bind as the process".to_owned(),
         };
-        let mut w = self.0.lock().unwrap();
-        w.calls.push(call);
-        if w.binds.is_empty() {
-            Code::SUCCESS
-        } else {
-            w.binds.remove(0)
-        }
+        self.bind_call(call)
+    }
+}
+
+impl LocalCalls for FakeSession {
+    fn set_version(&mut self, version: Version) {
+        self.call(format!("version {version:?}"));
+    }
+
+    fn set_no_referrals(&mut self) {
+        self.call("no referrals".into());
     }
 
     fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code> {
@@ -530,26 +549,6 @@ fn an_ldaps_session_checks_the_peer_as_the_options_say() {
     );
 }
 
-/// A library with no TLS to set fails an `ldaps:` transfer as C's build
-/// without `LDAP_OPT_X_TLS` does.
-#[test]
-fn a_library_without_tls_fails_ldaps() {
-    let ran = run(
-        "ldaps://127.0.0.1:PORT/dc=x",
-        true,
-        |w| w.tls = LocalTls::None,
-        |_| {},
-    );
-    assert_eq!(ran.result, Err(ErrorKind::SslCertproblem));
-    assert!(
-        ran.said.contains(
-            "LDAP local: SSL/TLS not supported with this version of the OpenLDAP toolkit\n"
-        ),
-        "{}",
-        ran.said
-    );
-}
-
 /// TLS asked for over `ldap:` is not built in.
 #[test]
 fn tls_asked_for_over_ldap_is_not_built_in() {
@@ -750,7 +749,7 @@ fn the_library_is_handed_the_urls_path_and_query() {
 /// checked, which C's build cannot do.
 #[test]
 fn a_windows_ldaps_session_checks_the_peer_as_c_s_does() {
-    let windows = |w: &mut World| w.tls = LocalTls::Windows;
+    let windows = |w: &mut World| w.kind = Kind::Windows;
     let ran = run("ldaps://127.0.0.1:PORT/dc=x", true, windows, |_| {});
     assert_eq!(ran.result, Ok(()), "{}", ran.said);
     assert!(
@@ -759,6 +758,8 @@ fn a_windows_ldaps_session_checks_the_peer_as_c_s_does() {
         "{:?}",
         ran.calls
     );
+    // WinLDAP has no connect timeout to set.
+    assert_eq!(ran.calls[2], "version V3", "{:?}", ran.calls);
     let at = ran.calls.iter().position(|c| c == "no referrals").unwrap();
     assert_eq!(ran.calls[at + 1], "ssl");
     assert!(ran.calls[at + 2].starts_with("bind"), "{:?}", ran.calls);
@@ -799,7 +800,7 @@ fn a_windows_ldaps_session_checks_the_peer_as_c_s_does() {
 #[test]
 fn a_windows_bind_is_made_as_ldap_win_bind_makes_it() {
     let windows = |w: &mut World| {
-        w.binds_as = Binds::Windows;
+        w.kind = Kind::Windows;
         w.binds = vec![Code::INVALID_CREDENTIALS];
     };
     let binds = |url: &str, auth: Option<AuthMethods>| {
@@ -841,5 +842,19 @@ fn a_windows_bind_is_made_as_ldap_win_bind_makes_it() {
     assert_eq!(
         binds(URL, Some(AuthMethods::NEGOTIATE)),
         "bind as the process"
+    );
+
+    // Refused in both versions, it fails naming C's call.
+    let refused = |w: &mut World| {
+        w.kind = Kind::Windows;
+        w.binds = vec![Code::INVALID_CREDENTIALS, Code::INVALID_CREDENTIALS];
+    };
+    let ran = run(URL, false, refused, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::LdapCannotBind));
+    assert!(
+        ran.said
+            .contains("LDAP local: bind via ldap_win_bind Invalid credentials\n"),
+        "{}",
+        ran.said
     );
 }

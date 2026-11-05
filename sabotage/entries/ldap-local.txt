@@ -53,9 +53,9 @@ witness: curl-core proto::ldap::local::tests::a_search_ends_as_its_code_says
 file: crates/curl-core/src/proto/ldap/local.rs
 witness: curl-core proto::ldap::local::tests::an_ldaps_session_speaks_tls_from_the_start
 --- old
-                    RequireCert::Demand
+            RequireCert::Demand
 --- new
-                    RequireCert::Never
+            RequireCert::Never
 
 === TLS required over ldap: is not refused
 file: crates/curl-core/src/proto/ldap/local.rs
@@ -72,3 +72,10 @@ witness: curl-ldap local::tests::a_session_binds_and_searches_on_a_connection_of
             unsafe { sys::ldap_next_entry(self.ld, self.entry) }
 --- new
             ptr::null_mut()
+
+=== an OpenLDAP session's connect may take as long as the library likes
+file: crates/curl-core/src/proto/ldap/local.rs
+witness: curl-core proto::ldap::local::tests::an_anonymous_search_runs_over_a_session_of_the_librarys_own
+--- old
+            s.set_network_timeout(NETWORK_TIMEOUT);
+--- new

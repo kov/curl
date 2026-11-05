@@ -17,8 +17,8 @@ use crate::conn::io::Events;
 use crate::deliver::{Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::ldap::{
-    Bind, Binds, Code, Entries, Local, LocalSession, LocalTls, LocalUrl, NoName, Opened,
-    RequireCert, UrlError, Version,
+    Code, Entries, Local, LocalSession, LocalUrl, NoName, OpenLdapSession, Opened, RequireCert,
+    UrlError, Version, WinBind, WinLdapSession,
 };
 use crate::multi::Host;
 use crate::multi::state::StepCx;
@@ -128,7 +128,7 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &ConnLease,
-        session: &mut Option<Box<dyn LocalSession>>,
+        session: &mut Option<LocalSession>,
         ended: &mut Ended,
     ) -> Result<(), ErrorKind> {
         let library = self.library;
@@ -180,11 +180,17 @@ impl Request {
             }
         };
         let s = session.insert(made);
-        s.set_network_timeout(NETWORK_TIMEOUT);
-        s.set_version(Version::V3);
-        s.set_no_referrals();
+        // WinLDAP has no connect timeout to set.
+        if let LocalSession::OpenLdap(s) = s {
+            s.set_network_timeout(NETWORK_TIMEOUT);
+        }
+        s.calls().set_version(Version::V3);
+        s.calls().set_no_referrals();
         if ssl {
-            self.secure(cx, lease, &mut **s)?;
+            match s {
+                LocalSession::OpenLdap(s) => self.secure_openldap(cx, lease, &mut **s)?,
+                LocalSession::Windows(s) => self.secure_windows(cx, lease, &mut **s)?,
+            }
         } else if matches!(
             cx.easy().options().line.use_ssl,
             UseSsl::Control | UseSsl::All
@@ -198,30 +204,30 @@ impl Request {
         let secret = self.base.credentials.as_ref().map(|c| c.secret());
         let user = secret.map(|s| s.user());
         let password = secret.map(|s| s.password());
-        let how = match library.binds() {
-            Binds::Simple => Bind::Simple { user, password },
-            Binds::Windows => Bind::windows(user, password, cx.easy().options().http.auth.0),
+        let auth = cx.easy().options().http.auth.0;
+        let bind = |s: &mut LocalSession| match s {
+            LocalSession::OpenLdap(s) => s.simple_bind(user, password),
+            LocalSession::Windows(s) => s.bind(WinBind::new(user, password, auth)),
         };
-        let mut rc = s.bind(how);
+        let mut rc = bind(s);
         // A bind in the clear refused in version 3 is tried in version 2.
         if !ssl && rc != Code::SUCCESS {
-            s.set_version(Version::V2);
-            rc = s.bind(how);
+            s.calls().set_version(Version::V2);
+            rc = bind(s);
         }
         if rc != Code::SUCCESS {
+            let call: &[u8] = match s {
+                LocalSession::OpenLdap(_) => b"ldap_simple_bind_s",
+                LocalSession::Windows(_) => b"ldap_win_bind",
+            };
             return Err(trace::fail_with(
                 cx,
                 ErrorKind::LdapCannotBind,
-                &[
-                    b"LDAP local: bind via ",
-                    library.bind_call().as_bytes(),
-                    b" ",
-                    library.describe(rc),
-                ],
+                &[b"LDAP local: bind via ", call, b" ", library.describe(rc)],
             ));
         }
         crate::progress::reset(cx);
-        let (code, mut entries) = match s.search(&search) {
+        let (code, mut entries) = match s.calls().search(&search) {
             Ok(found) => found,
             Err(rc) => {
                 return Err(trace::fail_with(
@@ -253,110 +259,110 @@ impl Request {
         Ok(())
     }
 
-    /// Set the session to speak TLS from the start, checking the peer as
-    /// the connection's TLS settings say, the library's way (`ldap_do`'s
-    /// `ldap_ssl`).
-    fn secure<H: Host>(
+    /// Set OpenLDAP's session to speak TLS from the start, checking the
+    /// peer as the connection's TLS settings say, by its options
+    /// (`ldap_do`'s `ldap_ssl` with `LDAP_OPT_X_TLS`).
+    fn secure_openldap<H: Host>(
         &self,
         cx: &mut StepCx<'_, H>,
         lease: &ConnLease,
-        s: &mut dyn LocalSession,
+        s: &mut dyn OpenLdapSession,
     ) -> Result<(), ErrorKind> {
         let library = self.library;
         let identity = lease
             .conn()
             .net_route()
             .and_then(|route| route.tls.as_deref());
-        match library.tls() {
-            LocalTls::OpenLdap => {
-                let tls = &cx.easy().options().tls;
-                let verify_peer = identity.map_or(tls.verify_peer, |i| i.verify_peer);
-                let require = if verify_peer {
-                    // OpenLDAP's library reads PEM files alone.
-                    let cert_type = identity.map_or(tls.options.cert_type.as_deref(), |i| {
-                        i.options.cert_type.as_deref()
-                    });
-                    if cert_type.is_some_and(|t| !t.eq_ignore_ascii_case(b"PEM")) {
-                        return Err(trace::fail(
-                            cx,
-                            ErrorKind::SslCertproblem,
-                            format_args!("LDAP local: ERROR OpenLDAP only supports PEM cert-type"),
-                        ));
-                    }
-                    let Some(ca) = identity.and_then(|i| i.ca_file()) else {
-                        return Err(trace::fail(
-                            cx,
-                            ErrorKind::SslCertproblem,
-                            format_args!("LDAP local: ERROR PEM CA cert not set"),
-                        ));
-                    };
-                    trace::info_with(cx, &[b"LDAP local: using PEM CA cert: ", ca]);
-                    if let Err(rc) = s.set_ca_file(ca) {
-                        return Err(trace::fail_with(
-                            cx,
-                            ErrorKind::SslCertproblem,
-                            &[
-                                b"LDAP local: ERROR setting PEM CA cert: ",
-                                library.describe(rc),
-                            ],
-                        ));
-                    }
-                    RequireCert::Demand
-                } else {
-                    RequireCert::Never
-                };
-                if let Err(rc) = s.set_require_cert(require) {
-                    return Err(trace::fail_with(
-                        cx,
-                        ErrorKind::SslCertproblem,
-                        &[
-                            b"LDAP local: ERROR setting cert verify mode: ",
-                            library.describe(rc),
-                        ],
-                    ));
-                }
-                if let Err(rc) = s.set_tls_hard() {
-                    return Err(trace::fail_with(
-                        cx,
-                        ErrorKind::SslCertproblem,
-                        &[
-                            b"LDAP local: ERROR setting SSL/TLS mode: ",
-                            library.describe(rc),
-                        ],
-                    ));
-                }
-                Ok(())
+        let tls = &cx.easy().options().tls;
+        let verify_peer = identity.map_or(tls.verify_peer, |i| i.verify_peer);
+        let require = if verify_peer {
+            // OpenLDAP's library reads PEM files alone.
+            let cert_type = identity.map_or(tls.options.cert_type.as_deref(), |i| {
+                i.options.cert_type.as_deref()
+            });
+            if cert_type.is_some_and(|t| !t.eq_ignore_ascii_case(b"PEM")) {
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::SslCertproblem,
+                    format_args!("LDAP local: ERROR OpenLDAP only supports PEM cert-type"),
+                ));
             }
-            LocalTls::Windows => {
-                // The system's store checks the peer, unless told to
-                // accept any; but it cannot check the name alone.
-                s.set_ssl();
-                let tls = &cx.easy().options().tls;
-                let verify_peer = identity.map_or(tls.verify_peer, |i| i.verify_peer);
-                let verify_host = identity.map_or(tls.verify_host, |i| i.verify_host);
-                if !verify_peer {
-                    if verify_host {
-                        return Err(trace::fail(
-                            cx,
-                            ErrorKind::NotBuiltIn,
-                            format_args!(
-                                "LDAP local: host verification cannot be enabled when peer \
-                                 verification is disabled for Windows native LDAP"
-                            ),
-                        ));
-                    }
-                    s.accept_any_cert();
-                }
-                Ok(())
+            let Some(ca) = identity.and_then(|i| i.ca_file()) else {
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::SslCertproblem,
+                    format_args!("LDAP local: ERROR PEM CA cert not set"),
+                ));
+            };
+            trace::info_with(cx, &[b"LDAP local: using PEM CA cert: ", ca]);
+            if let Err(rc) = s.set_ca_file(ca) {
+                return Err(trace::fail_with(
+                    cx,
+                    ErrorKind::SslCertproblem,
+                    &[
+                        b"LDAP local: ERROR setting PEM CA cert: ",
+                        library.describe(rc),
+                    ],
+                ));
             }
-            LocalTls::None => Err(trace::fail(
+            RequireCert::Demand
+        } else {
+            RequireCert::Never
+        };
+        if let Err(rc) = s.set_require_cert(require) {
+            return Err(trace::fail_with(
                 cx,
                 ErrorKind::SslCertproblem,
-                format_args!(
-                    "LDAP local: SSL/TLS not supported with this version of the OpenLDAP toolkit"
-                ),
-            )),
+                &[
+                    b"LDAP local: ERROR setting cert verify mode: ",
+                    library.describe(rc),
+                ],
+            ));
         }
+        if let Err(rc) = s.set_tls_hard() {
+            return Err(trace::fail_with(
+                cx,
+                ErrorKind::SslCertproblem,
+                &[
+                    b"LDAP local: ERROR setting SSL/TLS mode: ",
+                    library.describe(rc),
+                ],
+            ));
+        }
+        Ok(())
+    }
+
+    /// Set WinLDAP's session to speak TLS, the system's store checking
+    /// the peer unless it is not to be checked (`ldap_do`'s `ldap_ssl`
+    /// with `USE_WIN32_LDAP`); it cannot check the name alone.
+    fn secure_windows<H: Host>(
+        &self,
+        cx: &mut StepCx<'_, H>,
+        lease: &ConnLease,
+        s: &mut dyn WinLdapSession,
+    ) -> Result<(), ErrorKind> {
+        let identity = lease
+            .conn()
+            .net_route()
+            .and_then(|route| route.tls.as_deref());
+        s.set_ssl();
+        let tls = &cx.easy().options().tls;
+        let verify_peer = identity.map_or(tls.verify_peer, |i| i.verify_peer);
+        let verify_host = identity.map_or(tls.verify_host, |i| i.verify_host);
+        if !verify_peer {
+            if verify_host {
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::NotBuiltIn,
+                    format_args!(
+                        "LDAP local: host verification cannot be enabled when peer \
+                         verification is disabled for Windows native LDAP"
+                    ),
+                ));
+            }
+            s.accept_any_cert();
+        }
+        Ok(())
     }
 }
 

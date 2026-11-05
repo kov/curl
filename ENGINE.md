@@ -3288,7 +3288,12 @@ tunnel's is. What came on the stream waits for the layer above in `conn/buf.rs`'
 one slice, what was read moved off its front before more is added once it is at least as much as
 what is held or the more would not fit, so what is stored stays within about twice what the
 stream's window lets be held however long the download, as C's `bufq` frees each chunk read; a
-read takes from it without moving anything. A refusal fails the transfer as `CouldntConnect`
+read takes from it without moving anything. The bytes going the other way are buffered as the
+direct HTTP/2 session's are: the layer above's in 128 KiB of 16 KiB chunks, a send taking only
+what they have room for (`sendbuf`), and the session's frames in one chunk passed below whole as
+the next frame needs its room, and what is left of it once the session frames no more
+(`outbufq`, the queue's `write_pass` and `pass`), so the proxy's TLS is sent chunks cut across
+frames, as C sends it. A refusal fails the transfer as `CouldntConnect`
 with no message; a 407 asks again only for a Negotiate challenge taken, as only Negotiate sets
 C's `newurl`. The layer opens the stream's window by what the layer above reads
 (`nghttp2_session_consume`), waits to read when the proxy's window for it is shut, answers

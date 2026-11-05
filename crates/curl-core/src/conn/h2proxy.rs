@@ -13,9 +13,10 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::buf::HeldBytes;
 use super::io::{Events, Recv, Sent};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
+use crate::bufq::{ChunkQueue, Passed};
 use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
-use crate::error::ErrorKind;
+use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http2::{
     BodyRead, DEFAULT_WEIGHT, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId,
     Took,
@@ -31,13 +32,13 @@ const TUNNEL_WINDOW: u32 = 10 * 1024 * 1024;
 /// The connection's receive window (`PROXY_HTTP2_HUGE_WINDOW_SIZE`).
 const CONNECTION_WINDOW: i32 = 100 * 1024 * 1024;
 
-/// The most of the layer above's bytes held for the session to frame
-/// (`H2_TUNNEL_SEND_CHUNKS`).
-const SEND_MAX: usize = 128 * 1024;
+/// The layer above's bytes are held for the session to frame in chunks
+/// of `CHUNK`, 128 KiB of them (`H2_TUNNEL_SEND_CHUNKS`).
+const SEND_CHUNKS: usize = 128 * 1024 / CHUNK;
 
-/// The most the session's output holds before it is sent on
-/// (`PROXY_H2_NW_SEND_CHUNKS`).
-const OUT_MAX: usize = CHUNK;
+/// The session's output is one chunk, sent on whole as the next frame
+/// needs its room (`PROXY_H2_NW_SEND_CHUNKS`).
+const OUT_CHUNKS: usize = 1;
 
 /// Where the tunnel's `CONNECT` stands (`h2_tunnel_state`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,8 +110,9 @@ struct Tunnel {
     final_answer: bool,
     /// Its DATA, not read by the layer above yet.
     recv: HeldBytes,
-    /// The layer above's bytes, not framed yet.
-    send: Vec<u8>,
+    /// The layer above's bytes, not framed yet (`sendbuf`), as many as
+    /// its chunks have room for.
+    send: ChunkQueue,
     closed: bool,
     /// The code it closed with, and whether the proxy reset it.
     error: H2Error,
@@ -125,7 +127,7 @@ impl Tunnel {
             answer: None,
             final_answer: false,
             recv: HeldBytes::default(),
-            send: Vec::new(),
+            send: ChunkQueue::new(CHUNK, SEND_CHUNKS),
             closed: false,
             error: H2Error::NO_ERROR,
             reset: false,
@@ -250,6 +252,32 @@ pub(crate) enum Progress {
     OutOfMemory,
 }
 
+impl From<OutOfMemory> for Progress {
+    fn from(_: OutOfMemory) -> Progress {
+        Progress::OutOfMemory
+    }
+}
+
+/// Send `bytes` of the session's output to the layers below, traced
+/// (`proxy_h2_nw_out_writer`).
+fn nw_out_writer(cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> Passed<Progress> {
+    let len = bytes.len();
+    let (passed, code, n) = match below.send(cx, bytes) {
+        Ok(Sent::Bytes(n)) => (Passed::Bytes(n), 0, n.get()),
+        Ok(Sent::WouldBlock) => (Passed::Blocked, AGAIN_NUMBER, 0),
+        Err(_) => (
+            Passed::Failed(Progress::Send),
+            ErrorKind::SendError.number(),
+            0,
+        ),
+    };
+    cx.of(
+        Component::H2Proxy,
+        format_args!("[0] nw_out_writer(len={len}) -> {code}, {n}"),
+    );
+    passed
+}
+
 impl Progress {
     pub(crate) fn kind(self) -> ErrorKind {
         match self {
@@ -268,9 +296,8 @@ pub(crate) struct H2Proxy {
     /// What was read from below and not fed to the session (`inbufq`).
     input: Vec<u8>,
     /// What the session gave to send and the layers below did not take
-    /// yet (`outbufq`): `out[sent..]`.
-    out: Vec<u8>,
-    sent: usize,
+    /// yet (`outbufq`), a chunk sent whole once it is full.
+    out: ChunkQueue,
     tunnel: Tunnel,
     /// The proxy closed the connection.
     conn_closed: bool,
@@ -290,7 +317,7 @@ impl std::fmt::Debug for H2Proxy {
             .field("stream", &self.tunnel.stream)
             .field("state", &self.tunnel.state)
             .field("held", &self.tunnel.held().len())
-            .field("pending", &(self.out.len() - self.sent))
+            .field("pending", &self.out.len())
             .finish_non_exhaustive()
     }
 }
@@ -321,8 +348,7 @@ impl H2Proxy {
             library,
             session,
             input: Vec::new(),
-            out: Vec::new(),
-            sent: 0,
+            out: ChunkQueue::new(CHUNK, OUT_CHUNKS),
             tunnel: Tunnel::new(),
             conn_closed: false,
             goaway: None,
@@ -384,7 +410,7 @@ impl H2Proxy {
         if wants.read {
             events = events | Events::IN;
         }
-        if wants.write || self.sent < self.out.len() || !self.tunnel.send.is_empty() {
+        if wants.write || !self.out.is_empty() || !self.tunnel.send.is_empty() {
             events = events | Events::OUT;
         }
         events
@@ -483,53 +509,70 @@ impl H2Proxy {
         }
     }
 
-    /// Ask the session for what it wants sent, the tunnel's bytes framed
-    /// as its stream's DATA, and send what the layers below take
-    /// (`proxy_h2_progress_egress`): whether all of it went.
+    /// Have the session frame what it wants sent, the tunnel's bytes as
+    /// its stream's DATA, while it wants to and the layers below do not
+    /// block, then send what its output holds (`proxy_h2_progress_egress`):
+    /// whether all of it went. The frames go into the output, which is sent
+    /// on a chunk at a time as it fills (`proxy_h2_on_session_send`), so
+    /// the layers below are sent chunks cut across frames, as C sends them.
     pub(crate) fn egress(
         &mut self,
         cx: &mut dyn LayerCx,
         mut below: Below<'_>,
     ) -> Result<bool, Progress> {
         self.blocked = false;
-        loop {
-            if !self.flush(cx, below.reborrow())? {
-                self.blocked = true;
-                return Ok(false);
-            }
-            if !self.session.wants().write {
-                return Ok(true);
-            }
+        while !self.blocked && self.session.wants().write {
             let H2Proxy {
                 session,
                 out,
                 tunnel,
+                blocked,
                 ..
             } = self;
-            let mut oom = false;
+            let mut failed = None;
             let closed = tunnel.closed;
+            let id = tunnel.stream.map_or(0, |s| s.0);
             let send = &mut tunnel.send;
             let tunnel_events = std::cell::RefCell::new(Vec::new());
+            let cx = std::cell::RefCell::new(&mut *cx);
             let sent = session.send(
                 &mut |bytes| {
-                    if out.len() >= OUT_MAX {
-                        return Took::Blocked;
+                    let mut cx = cx.borrow_mut();
+                    let put = out.write_pass(
+                        bytes,
+                        Some(&mut |b| nw_out_writer(&mut **cx, below.reborrow(), b)),
+                    );
+                    match put {
+                        Ok(n) => NonZeroUsize::new(n).map_or_else(
+                            || {
+                                *blocked = true;
+                                Took::Blocked
+                            },
+                            Took::Bytes,
+                        ),
+                        Err(e) => {
+                            if e == Progress::Send {
+                                cx.fails(
+                                    ErrorKind::SendError,
+                                    format_args!("Failed sending HTTP2 data"),
+                                );
+                            }
+                            failed = Some(e);
+                            Took::Failed
+                        }
                     }
-                    if out.try_extend_from_slice(bytes).is_err() {
-                        oom = true;
-                        return Took::Failed;
-                    }
-                    std::num::NonZeroUsize::new(bytes.len()).map_or(Took::Blocked, Took::Bytes)
                 },
                 &mut |_, room| {
                     // `tunnel_send_callback`: what is held, the end once
                     // the stream closed and nothing is.
-                    if send.is_empty() {
+                    let n = send.read(room);
+                    if n == 0 {
                         return BodyRead::Later;
                     }
-                    let n = room.len().min(send.len());
-                    room[..n].copy_from_slice(&send[..n]);
-                    send.drain(..n);
+                    cx.borrow_mut().of(
+                        Component::H2Proxy,
+                        format_args!("[{id}] tunnel_send_callback -> {n}"),
+                    );
                     if closed && send.is_empty() {
                         BodyRead::Last(n)
                     } else {
@@ -537,6 +580,13 @@ impl H2Proxy {
                     }
                 },
                 &mut |event| match event {
+                    Event::Sent(frame) => {
+                        // `proxy_h2_on_frame_send`.
+                        let stream = frame.stream.0;
+                        cx.borrow_mut()
+                            .of(Component::H2Proxy, format_args!("[{stream}] -> {frame}"));
+                        Heard::Fine
+                    }
                     Event::Closed { stream, error } => {
                         if tunnel_events
                             .borrow_mut()
@@ -556,37 +606,54 @@ impl H2Proxy {
                     .heard(&closed)
                     .map_err(|OutOfMemory| Progress::OutOfMemory)?;
             }
-            if oom {
-                return Err(Progress::OutOfMemory);
+            if let Some(failed) = failed {
+                if failed == Progress::Send
+                    && let Err(e) = &sent
+                {
+                    cx.borrow_mut().of(
+                        Component::H2Proxy,
+                        format_args!("[0] nghttp2_session_send error ({}){}", e.text, e.code),
+                    );
+                }
+                return Err(failed);
             }
-            if let Err(e) = sent
-                && e.fatal
-            {
-                cx.of(
-                    Component::H2Proxy,
-                    format_args!("[0] nghttp2_session_send error ({}){}", e.text, e.code),
-                );
-                return Err(Progress::Send);
-            }
-            if self.out.is_empty() {
-                return Ok(true);
+            if let Err(e) = sent {
+                if e.fatal {
+                    cx.borrow_mut().of(
+                        Component::H2Proxy,
+                        format_args!("[0] nghttp2_session_send error ({}){}", e.text, e.code),
+                    );
+                    return Err(Progress::Send);
+                }
+                break;
             }
         }
+        self.flush(cx, below)
     }
 
     /// Send what the output holds, as far as the layers below take it
     /// (`proxy_h2_nw_out_flush`): whether all of it went.
     fn flush(&mut self, cx: &mut dyn LayerCx, mut below: Below<'_>) -> Result<bool, Progress> {
-        while self.sent < self.out.len() {
-            match below.reborrow().send(cx, &self.out[self.sent..]) {
-                Ok(Sent::Bytes(n)) => self.sent += n.get(),
-                Ok(Sent::WouldBlock) => return Ok(false),
-                Err(_) => return Err(Progress::Send),
-            }
+        if self.out.is_empty() {
+            return Ok(true);
         }
-        self.out.clear();
-        self.sent = 0;
-        Ok(true)
+        let went = self
+            .out
+            .pass(&mut |b| nw_out_writer(&mut *cx, below.reborrow(), b))?;
+        if went == 0 {
+            let held = self.out.len();
+            cx.of(
+                Component::H2Proxy,
+                format_args!("[0] flush nw send buffer({held}) -> EAGAIN"),
+            );
+            self.blocked = true;
+            return Ok(false);
+        }
+        cx.of(
+            Component::H2Proxy,
+            format_args!("[0] nw send buffer flushed"),
+        );
+        Ok(self.out.is_empty())
     }
 
     /// The session wants neither to read nor to write: it is over
@@ -636,7 +703,7 @@ impl Part<Below<'_>> for H2Proxy {
     /// something to send (`cf_h2_proxy_adjust_pollset`).
     fn adjust_pollset(&self, wanted: Events) -> Events {
         let (want_recv, want_send) = (wanted.contains(Events::IN), wanted.contains(Events::OUT));
-        let held_out = self.sent < self.out.len() || !self.tunnel.send.is_empty();
+        let held_out = !self.out.is_empty() || !self.tunnel.send.is_empty();
         if self.sent_goaway {
             let wants = self.session.wants();
             return events(wants.read, wants.write || held_out);
@@ -784,8 +851,35 @@ impl Layer for H2Proxy {
 
     /// The layer above's bytes held for the stream's DATA, as much as is
     /// room for, and as much of them sent as the session and the layers
-    /// below take (`cf_h2_proxy_send`).
-    fn send(
+    /// below take (`cf_h2_proxy_send`), traced with the windows and the
+    /// buffers it left.
+    fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent> {
+        let sent = self.send_on(cx, below, bytes);
+        let (code, n) = match &sent {
+            Ok(Sent::Bytes(n)) => (0, n.get()),
+            Ok(Sent::WouldBlock) => (AGAIN_NUMBER, 0),
+            Err(_) => (self.failure.unwrap_or(ErrorKind::SendError).number(), 0),
+        };
+        let (len, id) = (bytes.len(), self.tunnel.stream.map_or(0, |s| s.0));
+        let (sw, cw) = (
+            self.session.stream_remote_window(StreamId(id)),
+            self.session.remote_window(),
+        );
+        let (held, out) = (self.tunnel.send.len(), self.out.len());
+        cx.of(
+            Component::H2Proxy,
+            format_args!(
+                "[{id}] cf_send(len={len}) -> {code}, {n}, h2 windows {sw}-{cw} (stream-conn), \
+                 buffers {held}-{out} (stream-conn)"
+            ),
+        );
+        sent
+    }
+}
+
+impl H2Proxy {
+    /// `send`, short of its last line.
+    fn send_on(
         &mut self,
         cx: &mut dyn LayerCx,
         mut below: Below<'_>,
@@ -794,12 +888,20 @@ impl Layer for H2Proxy {
         if self.tunnel.state != TunnelState::Established || self.tunnel.closed {
             return Err(self.failed(ErrorKind::SendError));
         }
-        let n = bytes
-            .len()
-            .min(SEND_MAX - self.tunnel.send.len().min(SEND_MAX));
-        if self.tunnel.send.try_extend_from_slice(&bytes[..n]).is_err() {
-            return Err(self.failed(ErrorKind::OutOfMemory));
-        }
+        let n = match self.tunnel.send.fill(bytes) {
+            Ok(n) => n,
+            Err(OutOfMemory) => return Err(self.failed(ErrorKind::OutOfMemory)),
+        };
+        // A buffer with no room for any of it is C's `CURLE_AGAIN`.
+        let code = if n == 0 && !bytes.is_empty() {
+            AGAIN_NUMBER
+        } else {
+            0
+        };
+        cx.of(
+            Component::H2Proxy,
+            format_args!("cf_send(), bufq_write {code}, {n}"),
+        );
         let stream = self
             .tunnel
             .stream

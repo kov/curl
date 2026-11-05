@@ -914,12 +914,35 @@ witness: curl-core base64::tests::base64_is_written_as_curlx_writes_it
     let Some(n) = group_bits(&last[..4]) else {
 
 === the session's output goes to the connection a frame at a time
-file: crates/curl-core/src/proto/http2.rs
+file: crates/curl-core/src/bufq.rs
 witness: curl-core proto::http::tests::h2_trace::a_body_goes_to_the_connection_a_chunk_at_a_time
 --- old
-        if out.is_full() {
+            if self.is_full() {
 --- new
-        if !out.is_empty() {
+            if !self.is_empty() {
+
+=== an HTTP/2 proxy's session sends below a frame at a time
+file: crates/curl-core/src/bufq.rs
+witness: curl-core proto::http::tests::tls::an_http_2_proxy_s_session_sends_below_a_chunk_at_a_time
+--- old
+            if self.is_full() {
+--- new
+            if !self.is_empty() {
+
+=== an HTTP/2 proxy's session sends below what it framed before it frames
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::an_http_2_proxy_s_session_sends_below_a_chunk_at_a_time
+--- old
+                    let put = out.write_pass(
+                        bytes,
+                        Some(&mut |b| nw_out_writer(&mut **cx, below.reborrow(), b)),
+                    );
+--- new
+                    let _ = out.pass(&mut |b| nw_out_writer(&mut **cx, below.reborrow(), b));
+                    let put = out.write_pass(
+                        bytes,
+                        Some(&mut |b| nw_out_writer(&mut **cx, below.reborrow(), b)),
+                    );
 
 === a frame the connection blocks is taken as sent
 file: crates/curl-core/src/proto/http2.rs
@@ -970,3 +993,11 @@ witness: curl-core proto::http::tests::h2_trace::a_full_body_buffer_traces_again
             Ok(Body::Full) => AGAIN_NUMBER,
 --- new
             Ok(Body::Full) => 0,
+
+=== an HTTP/2 proxy's tunnel holds all it is sent
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::an_http_2_proxy_tunnel_holds_its_chunks_and_no_more
+--- old
+        let n = match self.tunnel.send.fill(bytes) {
+--- new
+        let n = match self.tunnel.send.write(bytes).map(|()| bytes.len()) {

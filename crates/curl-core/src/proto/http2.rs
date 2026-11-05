@@ -9,7 +9,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::bufq::ChunkQueue;
+use crate::bufq::{ChunkQueue, Passed};
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::layer::LayerCalls as _;
@@ -223,6 +223,12 @@ pub(crate) enum EgressFailed {
     /// The connection did, and said why.
     Send,
     OutOfMemory,
+}
+
+impl From<OutOfMemory> for EgressFailed {
+    fn from(_: OutOfMemory) -> EgressFailed {
+        EgressFailed::OutOfMemory
+    }
 }
 
 impl H2Conn {
@@ -508,7 +514,11 @@ impl H2Conn {
             &mut |bytes| {
                 let mut with = with.borrow_mut();
                 let cx = with.layer_cx();
-                match put(out, bytes, cx, io.as_deref_mut()) {
+                let put = match io.as_deref_mut() {
+                    Some(io) => out.write_pass(bytes, Some(&mut |b| to_conn(cx, io, b))),
+                    None => out.write_pass(bytes, None),
+                };
+                match put {
                     Ok(n) => std::num::NonZeroUsize::new(n).map_or_else(
                         || {
                             blocked = true;
@@ -574,7 +584,7 @@ impl H2Conn {
         if self.out.is_empty() {
             return Ok(());
         }
-        if pass(&mut self.out, cx, io)? == 0 {
+        if self.out.pass(&mut |b| to_conn(cx, io, b))? == 0 {
             let held = self.out.len();
             cx.of(
                 Component::Http2,
@@ -585,57 +595,14 @@ impl H2Conn {
     }
 }
 
-/// Put `bytes` into the session's output `out`, sending its chunk to
-/// `io` each time it is full and more is to go, as far as the connection
-/// takes it (`Curl_bufq_write_pass`); with no `io`, only as far as `out`
-/// has room (`Curl_bufq_write`). How many of `bytes` went in.
-fn put(
-    out: &mut ChunkQueue,
-    mut bytes: &[u8],
-    cx: &mut dyn LayerCx,
-    mut io: Option<&mut Carrier<'_>>,
-) -> Result<usize, EgressFailed> {
-    let mut n = 0;
-    while !bytes.is_empty() {
-        if out.is_full() {
-            let Some(io) = io.as_deref_mut() else {
-                break;
-            };
-            if pass(out, cx, io)? == 0 {
-                break;
-            }
-        }
-        let k = out
-            .fill(bytes)
-            .map_err(|OutOfMemory| EgressFailed::OutOfMemory)?;
-        if k == 0 {
-            break;
-        }
-        bytes = &bytes[k..];
-        n += k;
+/// Send `bytes` of the session's output to the connection `io`
+/// (`nw_out_writer`).
+fn to_conn(cx: &mut dyn LayerCx, io: &mut Carrier<'_>, bytes: &[u8]) -> Passed<EgressFailed> {
+    match io.send(cx, bytes) {
+        Ok(Sent::Bytes(n)) => Passed::Bytes(n),
+        Ok(Sent::WouldBlock) => Passed::Blocked,
+        Err(_) => Passed::Failed(EgressFailed::Send),
     }
-    Ok(n)
-}
-
-/// Send what `out` holds to `io`, its chunk's rest each time, until it is
-/// empty or the connection blocks (`Curl_bufq_pass`): how much went.
-fn pass(
-    out: &mut ChunkQueue,
-    cx: &mut dyn LayerCx,
-    io: &mut Carrier<'_>,
-) -> Result<usize, EgressFailed> {
-    let mut went = 0;
-    while !out.is_empty() {
-        match io.send(cx, out.peek()) {
-            Ok(Sent::Bytes(n)) => {
-                out.skip(n.get());
-                went += n.get();
-            }
-            Ok(Sent::WouldBlock) => break,
-            Err(_) => return Err(EgressFailed::Send),
-        }
-    }
-    Ok(went)
 }
 
 impl<'a> ConnPart<Carrier<'a>> for H2Conn {

@@ -7,7 +7,22 @@
 //! it buffers a chunk at a time, so the chunks decide the sizes of the
 //! sends and of the writes the application sees.
 
+use std::num::NonZeroUsize;
+
 use curl_alloc::{OutOfMemory, TryVec as _};
+
+/// What a queue's bytes were passed on to took of them (`Curl_bufq_writer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Passed<E> {
+    /// This many, from the first.
+    Bytes(NonZeroUsize),
+    /// None now (`CURLE_AGAIN`).
+    Blocked,
+    Failed(E),
+}
+
+/// What a queue passes its bytes on to.
+pub(crate) type PassTo<'a, E> = dyn FnMut(&[u8]) -> Passed<E> + 'a;
 
 /// Bytes held in chunks of `chunk` bytes, full at `max` of them.
 #[derive(Debug)]
@@ -133,6 +148,54 @@ impl ChunkQueue {
         buf[..n].copy_from_slice(&self.held()[..n]);
         self.skip(n);
         n
+    }
+
+    /// What it holds passed on to `to`, the rest of its first chunk each
+    /// time, until it is empty or `to` takes none now (`Curl_bufq_pass`):
+    /// how much went, none if `to` would block at once.
+    pub(crate) fn pass<E>(&mut self, to: &mut PassTo<'_, E>) -> Result<usize, E> {
+        let mut went = 0;
+        while !self.is_empty() {
+            match to(self.peek()) {
+                Passed::Bytes(n) => {
+                    self.skip(n.get());
+                    went += n.get();
+                }
+                Passed::Blocked => break,
+                Passed::Failed(e) => return Err(e),
+            }
+        }
+        Ok(went)
+    }
+
+    /// What of `more` its chunks have room for put after what is held,
+    /// its chunks passed on to `to` each time they are full and more is to
+    /// go, as far as `to` takes them (`Curl_bufq_write_pass`); with no
+    /// `to`, as far as there is room (`Curl_bufq_write`). How much of
+    /// `more` went in, none if `to` would block at once.
+    pub(crate) fn write_pass<E: From<OutOfMemory>>(
+        &mut self,
+        mut more: &[u8],
+        mut to: Option<&mut PassTo<'_, E>>,
+    ) -> Result<usize, E> {
+        let mut n = 0;
+        while !more.is_empty() {
+            if self.is_full() {
+                let Some(to) = to.as_deref_mut() else {
+                    break;
+                };
+                if self.pass(to)? == 0 {
+                    break;
+                }
+            }
+            let k = self.fill(more)?;
+            if k == 0 {
+                break;
+            }
+            more = &more[k..];
+            n += k;
+        }
+        Ok(n)
     }
 
     /// The bytes it keeps room for, held or not.

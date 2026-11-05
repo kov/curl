@@ -1900,6 +1900,132 @@ fn a_tunnel_through_an_http_2_proxy_is_a_stream() {
     assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
 }
 
+/// What a run's trace says the session with an HTTP/2 proxy sent the
+/// layers below, in runs each ending as its output is flushed: the
+/// sizes of the chunks it passed on, each as given to its first send,
+/// the rest of a chunk given again until it is all taken
+/// (`nw_out_writer`, `nw send buffer flushed`).
+fn nw_out_runs(text: &[String]) -> Vec<Vec<usize>> {
+    let mut runs = vec![Vec::new()];
+    let mut rest = 0;
+    for line in text {
+        if let Some(said) = line.split("[H2-PROXY] [0] nw_out_writer(len=").nth(1) {
+            // "<given>) -> <code>, <taken>"
+            let (given, said) = said.split_once(") -> ").unwrap();
+            let given: usize = given.parse().unwrap();
+            let taken: usize = said.split(", ").nth(1).unwrap().trim().parse().unwrap();
+            if rest == 0 {
+                runs.last_mut().unwrap().push(given);
+            } else {
+                assert_eq!(given, rest, "the rest of the chunk, given again");
+            }
+            rest = given - taken;
+        } else if line.ends_with("[H2-PROXY] [0] nw send buffer flushed\n") {
+            runs.push(Vec::new());
+        }
+    }
+    runs.retain(|r| !r.is_empty());
+    runs
+}
+
+/// The DATA payloads of stream 1 in what the proxy was sent, in order.
+fn tunneled(sent: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    let mut at = 0;
+    while let Some(i) = sent[at..].windows(4).position(|w| w == b"D 1 ") {
+        let start = at + i;
+        let nl = start + sent[start..].iter().position(|&b| b == b'\n').unwrap();
+        let line = std::str::from_utf8(&sent[start..nl]).unwrap();
+        let n: usize = line.split(' ').nth(2).unwrap().parse().unwrap();
+        payload.extend_from_slice(&sent[nl + 1..nl + 1 + n]);
+        at = nl + 1 + n;
+    }
+    payload
+}
+
+/// The session with an HTTP/2 proxy passes the layers below its frames
+/// through an output of one 16 KiB chunk, sent whole as the next frame
+/// needs its room and what is left once the session frames no more
+/// (`proxy_h2_on_session_send`'s `Curl_bufq_write_pass`,
+/// `proxy_h2_nw_out_flush`), and holds the tunnel's bytes in 128 KiB of
+/// chunks, taking what they have room for (`cf_h2_proxy_send`'s
+/// `Curl_bufq_write`). The C build through `nghttpx --http2-proxy`
+/// passes its TLS 16384 bytes at a time of 16393-byte DATA frames, each
+/// run of them ended by what is left: `nw_out_writer(len=16384) -> 0,
+/// 16384`, then `nw_out_writer(len=35)` and `nw send buffer flushed`.
+#[test]
+fn an_http_2_proxy_s_session_sends_below_a_chunk_at_a_time() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), response].concat();
+    let (_, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\n\n", &data);
+    let body = vec![b'.'; 200_000];
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"h2-proxy");
+    e.set_components(Some(c));
+    let o = e.options_mut();
+    o.upload = crate::options::UploadSource::Bytes(TryArc::try_new(body.clone()).unwrap());
+    o.method = Method::Post;
+    let (ran, talk) = through_h2_proxy_by(e, libraries, &replies, b"http://origin.example/p");
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let text = ran.seen.text();
+    let runs = nw_out_runs(&text);
+    for run in &runs {
+        let (last, whole) = run.split_last().unwrap();
+        assert!(whole.iter().all(|&n| n == 16384), "{runs:?}");
+        assert!(*last <= 16384, "{runs:?}");
+    }
+    let chunks = runs.iter().flatten().filter(|&&n| n == 16384).count();
+    assert!(chunks >= body.len() / 16384, "{runs:?}");
+    // The tunnel's buffer takes the first send whole, C's 64 KiB of it.
+    assert!(
+        text.iter()
+            .any(|l| l.ends_with("[H2-PROXY] cf_send(), bufq_write 0, 65536\n")),
+        "{text:#?}"
+    );
+    let tunneled = tunneled(&sent(&talk));
+    assert!(tunneled.ends_with(&body), "{}", tunneled.len());
+}
+
+/// The tunnel's bytes wait in 128 KiB of chunks while the proxy's window
+/// is shut, and a send they have no room for takes none, which C says is
+/// `CURLE_AGAIN` (`cf_h2_proxy_send`'s `Curl_bufq_write` into a full
+/// `sendbuf`, `H2_TUNNEL_SEND_CHUNKS`), on both its lines.
+#[test]
+fn an_http_2_proxy_tunnel_holds_its_chunks_and_no_more() {
+    let (_, libraries, replies) = h2_proxy(b"S 100 0\nH 1 0\n:status: 200\n\n", b"");
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"h2-proxy");
+    e.set_components(Some(c));
+    let o = e.options_mut();
+    let body = vec![b'.'; 300_000];
+    o.upload = crate::options::UploadSource::Bytes(TryArc::try_new(body).unwrap());
+    o.method = Method::Post;
+    o.limits.total = crate::time::TimeLimit::from_millis(3000);
+    let (ran, _) = through_h2_proxy_by(e, libraries, &replies, b"http://origin.example/p");
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    let text = ran.seen.text();
+    let writes: Vec<&str> = text
+        .iter()
+        .filter_map(|l| l.split("[H2-PROXY] cf_send(), ").nth(1))
+        .map(str::trim_end)
+        .collect();
+    let took: usize = writes
+        .iter()
+        .filter_map(|w| w.strip_prefix("bufq_write 0, "))
+        .map(|n| n.parse::<usize>().unwrap())
+        .sum();
+    assert_eq!(took, 128 * 1024, "{writes:?}");
+    assert!(writes.contains(&"bufq_write 81, 0"), "{writes:?}");
+    let again = "[H2-PROXY] [1] cf_send(len=";
+    assert!(
+        text.iter()
+            .any(|l| l.contains(again) && l.contains(") -> 81, 0, h2 windows 0-")),
+        "{text:#?}"
+    );
+}
+
 /// ALPN off, a proxy asked for in HTTP/2 is still offered it, but the
 /// origin's TLS through its tunnel offers nothing: the proxy's ALPN is
 /// the proxy filter's alone (`cf_ssl_proxy_create`).

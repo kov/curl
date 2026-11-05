@@ -33,10 +33,9 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
         self.pool
             .get_mut()
             .expect("no panic holds a share's lock")
-            // With no clock, the one try of each shutdown is in time.
-            .close_idle(&mut NoSet(&mut **net), crate::time::Instant::EPOCH);
+            .close_idle(&mut NoSet(&mut **net, clock), now);
 --- new
-        let _ = (&mut self.pool, net);
+        let _ = (&mut self.pool, net, clock, now);
 
 === a share keeps every kind whatever is asked
 file: crates/curl-core/src/share.rs

@@ -120,6 +120,10 @@ fn main() {
             a_share_s_connection_survives_every_allocation_failing,
         ),
         (
+            "a_quit_said_is_answered_before_its_connection_closes_whatever_is_refused",
+            a_quit_said_is_answered_before_its_connection_closes_whatever_is_refused,
+        ),
+        (
             "a_push_that_cannot_start_leaves_nothing_running",
             a_push_that_cannot_start_leaves_nothing_running,
         ),
@@ -2243,5 +2247,149 @@ fn quic_receive_rooms_come_zeroed_from_the_allocator() {
             largest < room,
             "{what} allocated a block of {largest} bytes unzeroed, a receive room of {room} filled by hand"
         );
+    }
+}
+
+/// The multi's internal trace, kept untracked.
+struct Internal(TryArc<Traced>);
+
+impl curl_core::handler::TextSink for Internal {
+    fn write(&self, text: &[u8]) {
+        track::untracked(|| self.0.0.lock().unwrap().extend_from_slice(text));
+    }
+}
+
+/// What a run of `quit_scenario` came to.
+#[derive(Debug)]
+struct Quit {
+    /// The server was sent `QUIT`.
+    said: bool,
+    /// Its answer was read from the socket.
+    answered: bool,
+    /// The set could not take the connection in for want of memory.
+    not_added: bool,
+}
+
+/// The FTP server's answers to a request for a file's size alone, and to
+/// the `QUIT` after it.
+const QUIT_REPLIES: [&[u8]; 8] = [
+    b"220 hi\r\n",
+    b"331 password?\r\n",
+    b"230 in\r\n",
+    b"257 \"/\" is it\r\n",
+    b"200 binary\r\n",
+    b"213 5\r\n",
+    b"350 restarting\r\n",
+    b"221 bye\r\n",
+];
+
+/// An FTP request for a file's size alone over a connection closed once
+/// it is done, so that it says `QUIT`, whose answer the server gives a
+/// poll later; run from a new multi to its cleanup.
+fn quit_scenario() -> Quit {
+    let (clock, net, talk, traced, components) = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 8021));
+        let talk = Conversation::replies(&QUIT_REPLIES, false)
+            .per_send()
+            .greeting()
+            .late_replies();
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        let traced = TryArc::try_new(Traced::default()).expect("memory");
+        let components = Components::new().expect("memory");
+        components.set(
+            curl_core::components::Component::Multi,
+            curl_core::components::Level::Info,
+        );
+        (clock, net, talk, traced, components)
+    });
+    // A refusal anywhere may end the run early: what it said is checked.
+    let _ = quit_run(clock, net, components, &traced);
+    track::untracked(|| {
+        let sent = talk.received();
+        let text = traced.0.lock().unwrap();
+        let needle = b"adding failed";
+        Quit {
+            said: sent.ends_with(b"QUIT\r\n"),
+            answered: talk.answered() == QUIT_REPLIES.len(),
+            not_added: text.windows(needle.len()).any(|w| w == needle),
+        }
+    })
+}
+
+/// `quit_scenario`'s run, until it is done or a refusal ends it.
+fn quit_run(
+    clock: ManualClock,
+    net: FakeNet,
+    components: Components,
+    traced: &TryArc<Traced>,
+) -> Result<(), ()> {
+    let env = Env {
+        clock: try_box(clock).map_err(|_| ())?,
+        net: try_box(net).map_err(|_| ())?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).map_err(|_| ())?;
+    let sink = Handler::text(Internal(traced.clone())).map_err(|_| ())?;
+    m.trace_internally_to(components, sink);
+    let mut easy = Easy::new();
+    let o = easy.options_mut();
+    o.set_url(Some(b"ftp://127.0.0.1:8021/f")).map_err(|_| ())?;
+    o.method = curl_core::options::Method::Head;
+    o.limits.reuse.forbid = true;
+    let id = m
+        .add(try_box(easy).map_err(|_| ())?, (), &mut NoEvents)
+        .map_err(|_| ())?;
+    for _ in 0..100 {
+        if m.perform(&mut NoEvents).is_err() || m.info_read().is_some() {
+            break;
+        }
+        let wait = Duration::from_millis(100);
+        if m.wait(&mut [], wait, WaitMode::Wait, &mut NoEvents)
+            .is_err()
+        {
+            break;
+        }
+    }
+    drop(m.remove(id, &mut NoEvents));
+    Ok(())
+}
+
+/// Whatever allocation is refused, and every one after it, a `QUIT` the
+/// server was sent is answered before its connection closes: one the
+/// multi's set could not take in for want of memory has its answer waited
+/// for in place, allocating nothing, as C's disconnect blocks for it. A
+/// socket closed with the answer unread or still to come is reset, which
+/// on Windows loses the `QUIT` itself.
+fn a_quit_said_is_answered_before_its_connection_closes_whatever_is_refused() {
+    let mut limit = 0;
+    let mut not_added = 0;
+    loop {
+        let live = track::live_tracked();
+        let (outcome, refused) = track::fail_after(limit, quit_scenario);
+        assert_eq!(
+            track::live_tracked(),
+            live,
+            "a run allowed {limit} allocations left blocks behind"
+        );
+        if outcome.said && !outcome.answered {
+            track::untracked(|| panic!("a run allowed {limit} allocations gave {outcome:?}"));
+        }
+        if outcome.said && outcome.not_added {
+            not_added += 1;
+        }
+        if !refused {
+            assert!(outcome.said && outcome.answered, "{outcome:?}");
+            assert!(not_added > 0, "no run refused the set's room");
+            track::untracked(|| {
+                eprintln!("torture: {limit} allocations, {not_added} runs not added to the set")
+            });
+            return;
+        }
+        limit += 1;
+        assert!(limit < 100_000, "the scenario never ran to the end");
     }
 }

@@ -77,7 +77,7 @@ impl LineConn {
             LineConn::Ldap(ref mut p) => p.goodbye(cx, below),
             LineConn::Ws(_) | LineConn::Rtsp(_) => {}
             #[cfg(any(test, feature = "test-util"))]
-            LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
+            LineConn::Test(ref mut f) => return f.goodbye(cx, below, dead),
         }
         Goodbye::Done
     }
@@ -91,6 +91,8 @@ impl LineConn {
             LineConn::Pop3(ref mut p) => p.goodbye_answer(cx, below),
             LineConn::Imap(ref mut p) => p.goodbye_answer(cx, below),
             LineConn::Smtp(ref mut p) => p.goodbye_answer(cx, below),
+            #[cfg(any(test, feature = "test-util"))]
+            LineConn::Test(ref mut f) => f.answer(cx, below),
             _ => panic!("only a pingpong protocol's goodbye awaits an answer"),
         }
     }
@@ -103,6 +105,8 @@ impl LineConn {
             LineConn::Pop3(ref p) => p.goodbye_wants(),
             LineConn::Imap(ref p) => p.goodbye_wants(),
             LineConn::Smtp(ref p) => p.goodbye_wants(),
+            #[cfg(any(test, feature = "test-util"))]
+            LineConn::Test(_) => super::io::Events::IN,
             _ => panic!("only a pingpong protocol's goodbye awaits an answer"),
         }
     }
@@ -119,18 +123,48 @@ pub(crate) enum Goodbye {
     Awaited { moved: bool },
 }
 
-/// The test protocol's state: the goodbye it sends.
+/// The test protocol's state: the goodbye it sends, and whether it
+/// awaits a line in answer, as a pingpong protocol's does.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug)]
-pub(crate) struct Farewell(pub(crate) Vec<u8>);
+pub(crate) struct Farewell {
+    pub(crate) bye: Vec<u8>,
+    pub(crate) awaits: bool,
+}
 
 #[cfg(any(test, feature = "test-util"))]
 impl Farewell {
-    fn goodbye(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>, dead: bool) {
-        if !dead {
-            // What does not go now is not said, and no answer is
-            // awaited.
-            let _sent = below.send(cx, &self.0);
+    fn goodbye(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>, dead: bool) -> Goodbye {
+        if dead {
+            return Goodbye::Done;
+        }
+        // What does not go now is not said.
+        let _sent = below.send(cx, &self.bye);
+        match self.awaits {
+            true => self.answer(cx, below),
+            false => Goodbye::Done,
+        }
+    }
+
+    /// Read on the answer: done at the end of a line, or once the
+    /// connection failed or closed.
+    fn answer(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>) -> Goodbye {
+        let mut moved = false;
+        loop {
+            match below.recv(cx, 64) {
+                Ok(super::io::Recv::WouldBlock) => return Goodbye::Awaited { moved },
+                Ok(super::io::Recv::Data(_)) => {
+                    let rx = below.rx_mut();
+                    let lf = rx.filled().contains(&b'\n');
+                    let n = rx.filled().len();
+                    rx.consume(n);
+                    if lf {
+                        return Goodbye::Done;
+                    }
+                    moved = true;
+                }
+                Ok(super::io::Recv::Eof) | Err(_) => return Goodbye::Done,
+            }
         }
     }
 }

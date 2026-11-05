@@ -4096,6 +4096,62 @@ fn an_endless_answer_to_quit_is_read_no_further_than_64_kb() {
     assert_eq!(clock.now(), at, "no time limit ended it");
 }
 
+/// A transfer that needs room under the total limit waits while the
+/// connection it would close for room awaits the answer to its `QUIT`,
+/// and connects once the answer came and that connection closed: the
+/// order on the wire is C's, whose disconnect blocks the multi for the
+/// answer before the new connection is made. Measured against the C
+/// build, `CURLMOPT_MAX_TOTAL_CONNECTIONS` 1 and a server answering
+/// `QUIT` half a second late: the second host is connected to just after
+/// the first's answer.
+#[test]
+fn a_transfer_needing_room_waits_for_the_answer_to_quit() {
+    let first = control(&[b"150 here\r\n226 done\r\n", b"221 bye\r\n"]).held();
+    let before_quit = LOGIN_AND_SETUP.len() + 1;
+    first.allow(before_quit);
+    let second = control(&[b"150 here\r\n226 done\r\n"]);
+    let clock = ManualClock::new().unwrap();
+    let mut net = FakeNet::new(clock.clone());
+    for (host, talk) in [(1, &first), (2, &second)] {
+        let at = SocketAddr::from(([127, 0, 0, host], PORT));
+        let data_at = SocketAddr::from(([127, 0, 0, host], DATA_PORT));
+        net = net
+            .with_peer(at, Net::Accepts)
+            .with_peer(data_at, Net::Accepts)
+            .with_conversation(at, talk.clone())
+            .with_conversation(data_at, data(b"hello"));
+    }
+    let counted = Counted(Arc::new(Mutex::new(net)));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(counted.clone()),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    m.conn_limits_mut().max_total = std::num::NonZeroU32::new(1);
+    let (a, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, a, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(a, &mut NoEvents).unwrap();
+    assert_eq!(counted.open(), 1, "the first's control connection kept");
+    let (b, body, text) = added(&mut m, "ftp://127.0.0.2:PORT/f", |_| {});
+    for _ in 0..5 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(received(&first).ends_with("RETR f\r\n"), "QUIT said");
+    assert!(first.received().ends_with(b"QUIT\r\n"));
+    assert_eq!(first.answered(), before_quit, "QUIT not answered yet");
+    assert_eq!(second.received(), b"", "the second host waits");
+    assert_eq!(counted.open(), 1);
+    first.allow(before_quit + 1);
+    let result = drive_to_completion(&mut m, b, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    assert_eq!(first.answered(), before_quit + 1, "QUIT answered");
+    assert!(!second.received().is_empty());
+}
+
 /// A transfer removed while DONE awaits an answer leaves its connection
 /// in a state no one knows, though the control connection was still
 /// trusted: it closes saying no `QUIT` (`dead_connection`).

@@ -42,6 +42,9 @@ pub enum Piece {
     /// `tcp:` keeps state on its connection as it connects, which says
     /// these bytes as the connection shuts down.
     Goodbye(Vec<u8>),
+    /// As `Goodbye`, and then awaits a line in answer, as a pingpong
+    /// protocol's goodbye does.
+    GoodbyeAwaits(Vec<u8>),
 }
 
 /// The pieces, shared by every copy of the options.

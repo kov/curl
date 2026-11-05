@@ -324,7 +324,7 @@ impl Internal {
     }
 
     /// One whose lines go to `sink`.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn to(
         components: Components,
         sink: crate::handler::Handler<dyn crate::handler::TextSink>,

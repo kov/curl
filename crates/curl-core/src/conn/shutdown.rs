@@ -18,14 +18,14 @@ use std::time::Duration;
 
 use curl_alloc::TryVec as _;
 
-use super::io::{Events, Net, Socket, SocketKey};
+use super::io::{Events, Net, Socket, SocketKey, SocketPoll};
 use super::layer::Handshake;
 use super::line::Goodbye;
 use super::{Conn, Peer, Route, Transport};
 use crate::components::Component;
 use crate::conn::quic::RecvRoom;
 use crate::proto::pingpong::drive::BLOCKING_POLL;
-use crate::time::Instant;
+use crate::time::{Instant, SharedClock};
 use crate::trace::{Internal, InternalCx};
 
 /// What a connection keeps of its creating transfer's settings for the
@@ -88,6 +88,11 @@ pub(crate) struct Shutting {
     /// A try finished it, its layers done, failed or out of time
     /// (`bits.shutdown_filters`): its close is no forced one.
     finished: bool,
+    /// It is closed once its goodbye is answered, its layers given one
+    /// try, as C closes a connection a share's pool evicts
+    /// (`Curl_cshutdn_terminate` with `do_shutdown`): it waits in a set
+    /// only for the answer, which C blocks for.
+    once: bool,
 }
 
 /// What one try of a shutdown came to.
@@ -111,6 +116,41 @@ impl Shutting {
             said: false,
             answer_due: None,
             finished: false,
+            once: false,
+        }
+    }
+
+    /// Whether its protocol's goodbye awaits an answer.
+    fn awaits(&self) -> bool {
+        self.answer_due.is_some()
+    }
+
+    /// Wait here for the answer its protocol's goodbye awaits, if it awaits
+    /// one, polling its socket alone, as C's disconnect blocks for it
+    /// (`Curl_pp_statemach` blocking): until it comes, or a second passes
+    /// with nothing more of it, or the shutdown's time is spent, or a poll
+    /// fails. The time is `clock`'s, read after each poll. Allocates
+    /// nothing, so a connection that could not be kept for want of memory
+    /// is waited for too; a read that cannot hold what came ends the wait.
+    fn await_answer(&mut self, net: &mut dyn Net, clock: &SharedClock, trace: Option<&Internal>) {
+        loop {
+            let now = clock.now();
+            let mut cx = InternalCx {
+                now,
+                trace,
+                room: None,
+            };
+            if self.left_ms(now) < 0 || !self.awaits_answer(&mut cx) {
+                return;
+            }
+            let (Some(left), Some((socket, events))) = (self.answer_time_left(now), self.pollset())
+            else {
+                return;
+            };
+            let mut polls = [SocketPoll::new(socket, events)];
+            if net.poll(&mut polls, &mut [], left).is_err() {
+                return;
+            }
         }
     }
 
@@ -231,8 +271,8 @@ impl Shutting {
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
-                Ok(Handshake::Waiting) => Tried::Waiting,
-                Ok(Handshake::Done) | Err(_) => Tried::Done,
+                Ok(Handshake::Waiting) if !self.once => Tried::Waiting,
+                Ok(Handshake::Waiting | Handshake::Done) | Err(_) => Tried::Done,
             },
             // A datagram socket is not drained: C reads the dangling bytes
             // off a TCP socket alone (`cf_socket_shutdown`).
@@ -241,11 +281,24 @@ impl Shutting {
         }
     }
 
-    /// Close it at once, whatever its layers were doing
-    /// (`Curl_cshutdn_terminate`): only the socket closes, nothing more
-    /// is read from it. Said on `trace`, and, `in_multi`, that a transfer
-    /// waiting for room may find some.
-    pub(crate) fn close(self, net: &mut dyn Net, trace: Option<&Internal>, in_multi: bool) {
+    /// Close it, whatever its layers were doing (`Curl_cshutdn_terminate`):
+    /// once the answer its protocol's goodbye awaits is read, waiting here
+    /// on `clock` as C's disconnect does, as a socket closed with the
+    /// answer unread or still to come is reset, and the peer may lose the
+    /// goodbye (Windows does); then only the socket closes, nothing more
+    /// is read from it. With no clock (a pool's own tests) it does not
+    /// wait. Said on `trace`, and, `in_multi`, that a transfer waiting for
+    /// room may find some.
+    pub(crate) fn close(
+        mut self,
+        net: &mut dyn Net,
+        clock: Option<&SharedClock>,
+        trace: Option<&Internal>,
+        in_multi: bool,
+    ) {
+        if let Some(clock) = clock {
+            self.await_answer(net, clock, trace);
+        }
         terminate(self.conn, self.finished, net, trace, in_multi);
     }
 
@@ -265,7 +318,8 @@ impl Shutting {
             room: None,
         };
         let _said = self.say_goodbye(&mut cx, true);
-        self.close(net, trace, in_multi);
+        // Told it is dead, its protocol awaits nothing.
+        self.close(net, None, trace, in_multi);
     }
 
     /// What it waits on while it shuts down: what its protocol's goodbye
@@ -276,7 +330,7 @@ impl Shutting {
         let Transport::Stream(stream) = &self.conn.transport else {
             return None;
         };
-        if self.answer_due.is_some() {
+        if self.awaits() {
             let line = self.conn.line().expect("a goodbye awaits on a line");
             return Some((stream.socket(), line.goodbye_wants()));
         }
@@ -366,9 +420,12 @@ struct Entry {
 }
 
 /// A multi's connections shutting down, oldest first (`struct cshutdn`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ShutdownSet {
     conns: Vec<Entry>,
+    /// The multi's clock, which a goodbye's answer is waited for on when
+    /// a connection awaiting one must close at once.
+    clock: SharedClock,
     next_id: u64,
     /// When the set is next to be driven: the earliest time left of its
     /// connections, as its last pass found it, armed only by a pass and
@@ -392,6 +449,21 @@ pub(crate) struct ShutdownSet {
     trace: Option<Internal>,
 }
 
+/// How many times its cap (`max_shutdowns`) a set may hold, for the
+/// connections in it whose protocol's goodbye awaits an answer. C reads
+/// that answer before a connection joins its set, blocking the multi
+/// (`ftp_quit` and the others, in the first `Curl_cshutdn_try_once`), so
+/// its set never holds one; here such a connection waits in the set, and
+/// C's cap closes the oldest that awaits nothing instead. Past this
+/// bound, the oldest is closed after all, its answer read first by
+/// blocking as C does: a server that holds its answers back can make the
+/// multi keep no more sockets than this many times what C keeps for
+/// shutdowns, which scales with the application's own limit
+/// (`CURLMOPT_MAX_TOTAL_CONNECTIONS`) and is 256 with none. Each such
+/// connection waits two seconds at most and holds at most 64 KB of its
+/// answer (`GOODBYE_READ_MAX`).
+pub(crate) const AWAITING_CAP_FACTOR: usize = 2;
+
 /// How many connections a multi lets shut down at once, `pool` being the
 /// connections its own pool holds: the total limit less those, 1 once
 /// none is left, and with no limit a quarter of them, at least 128
@@ -406,6 +478,24 @@ pub(crate) fn max_shutdowns(max_total: Option<NonZeroU32>, pool: u32) -> usize {
 }
 
 impl ShutdownSet {
+    /// An empty set of a multi reading `clock`.
+    pub(crate) fn new(clock: SharedClock) -> ShutdownSet {
+        ShutdownSet {
+            conns: Vec::new(),
+            clock,
+            next_id: 0,
+            deadline: None,
+            dirty: false,
+            changed: false,
+            trace: None,
+        }
+    }
+
+    /// The multi's clock.
+    pub(crate) fn clock(&self) -> &SharedClock {
+        &self.clock
+    }
+
     /// Trace what happens here on `trace` from now on.
     pub(crate) fn trace_internally(&mut self, trace: Internal) {
         self.trace = Some(trace);
@@ -425,18 +515,31 @@ impl ShutdownSet {
     }
 
     /// Take `shutting` in, closing the oldest first if `max` are already
-    /// here (`Curl_cshutdn_add`). With no room for it, it is closed.
+    /// here (`Curl_cshutdn_add`): the oldest whose goodbye awaits no
+    /// answer, or, with every one awaiting, none until the set holds
+    /// [`AWAITING_CAP_FACTOR`] times `max`, and then the oldest, once its
+    /// answer is read. With no room for it, it is closed, its own answer
+    /// read first.
     pub(crate) fn add(&mut self, shutting: Shutting, max: usize, net: &mut dyn Net) {
-        if max <= self.conns.len() {
-            self.say(format_args!(
-                "[SHUTDOWN] discarding oldest shutdown connection due to shutdown limit of {max}"
-            ));
-            self.close_oldest(None, 1, net);
+        let len = self.conns.len();
+        if max <= len {
+            let unawaited = self.conns.iter().position(|e| !e.shutting.awaits());
+            let oldest = match unawaited {
+                Some(i) => Some(i),
+                None => (max.saturating_mul(AWAITING_CAP_FACTOR) <= len).then_some(0),
+            };
+            if let Some(i) = oldest {
+                self.say(format_args!(
+                    "[SHUTDOWN] discarding oldest shutdown connection due to shutdown limit of {max}"
+                ));
+                let entry = self.conns.remove(i);
+                self.closed(entry, net);
+            }
         }
         let n = shutting.conn.number.get();
         if self.conns.try_reserve(1).is_err() {
             self.say(format_args!("[SHUTDOWN] adding failed, discarding #{n}"));
-            shutting.close(net, self.trace.as_ref(), true);
+            shutting.close(net, Some(&self.clock), self.trace.as_ref(), true);
             self.changed = true;
             return;
         }
@@ -462,18 +565,19 @@ impl ShutdownSet {
         }
     }
 
-    /// Close up to `n` of the oldest, of those to `to` if given
-    /// (`Curl_cshutdn_close_oldest`); how many were.
+    /// Close up to `n` of the oldest, of those to `to` if given, to make
+    /// room for a new connection (`Curl_cshutdn_close_oldest`); how many
+    /// were. One whose protocol's goodbye awaits an answer is kept: it
+    /// counts toward the limits until the answer comes, and the transfer
+    /// needing the room waits for it, where C blocks for the answer
+    /// before the connection is in its set.
     pub(crate) fn close_oldest(&mut self, to: Option<&Peer>, n: u32, net: &mut dyn Net) -> u32 {
         let mut closed = 0;
         let mut i = 0;
         while closed < n && i < self.conns.len() {
-            let goes = to.is_none_or(|to| {
-                self.conns[i]
-                    .shutting
-                    .destination()
-                    .is_some_and(|d| d.same_bundle(to))
-            });
+            let shutting = &self.conns[i].shutting;
+            let goes = !shutting.awaits()
+                && to.is_none_or(|to| shutting.destination().is_some_and(|d| d.same_bundle(to)));
             if goes {
                 let entry = self.conns.remove(i);
                 self.closed(entry, net);
@@ -544,9 +648,12 @@ impl ShutdownSet {
         }
     }
 
-    /// Close `entry`, which has left the set.
+    /// Close `entry`, which has left the set, its goodbye's answer read
+    /// first if it awaits one.
     fn closed(&mut self, entry: Entry, net: &mut dyn Net) {
-        entry.shutting.close(net, self.trace.as_ref(), true);
+        entry
+            .shutting
+            .close(net, Some(&self.clock), self.trace.as_ref(), true);
         self.changed = true;
     }
 
@@ -664,23 +771,39 @@ impl ShutdownSet {
 /// Where the connections leaving a pool go: closed through a network, and,
 /// for one that shuts down slowly, kept in a multi's set if there is one.
 /// A network alone keeps none: what does not finish in one try is closed,
-/// as C does with no multi (a share's cleanup).
+/// as C does with no multi (a share's cleanup), once the answer its
+/// protocol's goodbye awaits is read, on the clock the exits read.
 pub(crate) trait Exits {
     fn parts(&mut self) -> (&mut dyn Net, Option<Linger<'_>>);
+
+    /// The clock a goodbye's answer is waited for on, if any.
+    fn clock(&self) -> Option<SharedClock>;
 }
 
+/// A network alone, in a pool's own tests: with no clock, a connection
+/// whose goodbye awaits an answer closes without it.
+#[cfg(test)]
 impl<N: Net> Exits for N {
     fn parts(&mut self) -> (&mut dyn Net, Option<Linger<'_>>) {
         (self, None)
     }
+
+    fn clock(&self) -> Option<SharedClock> {
+        None
+    }
 }
 
-/// A network known only by reference, which keeps no connection.
-pub(crate) struct NoSet<'a>(pub(crate) &'a mut dyn Net);
+/// A network known only by reference, which keeps no connection, and the
+/// clock of the handles that use it.
+pub(crate) struct NoSet<'a>(pub(crate) &'a mut dyn Net, pub(crate) SharedClock);
 
 impl Exits for NoSet<'_> {
     fn parts(&mut self) -> (&mut dyn Net, Option<Linger<'_>>) {
         (&mut *self.0, None)
+    }
+
+    fn clock(&self) -> Option<SharedClock> {
+        Some(self.1.clone())
     }
 }
 
@@ -718,12 +841,18 @@ impl Exits for WithSet<'_> {
             }),
         )
     }
+
+    fn clock(&self) -> Option<SharedClock> {
+        Some(self.set.clock().clone())
+    }
 }
 
 /// Discard `conn`, which left a pool holding `pool` connections now
 /// (`cpool_discard_conn`): closed at once for an aborted transfer; else
 /// shut down once, and kept in the multi's set if that does not finish
-/// and `may_linger` (a share's pool closes what it evicts), else closed.
+/// and `may_linger`, else closed. A share's pool closes what it evicts
+/// after the one try (`may_linger` false), but its goodbye's answer, if
+/// it awaits one, is awaited first, in the set if there is one.
 pub(crate) fn discard(
     conn: Conn,
     aborted: bool,
@@ -732,6 +861,7 @@ pub(crate) fn discard(
     exits: &mut dyn Exits,
     now: Instant,
 ) {
+    let clock = exits.clock();
     let (net, mut linger) = exits.parts();
     // Said on the multi's internal trace, as C says it on its internal
     // handle; a connection a multi closes lets one waiting for room look.
@@ -743,13 +873,15 @@ pub(crate) fn discard(
     } else {
         let room = linger.as_mut().map(|l| &mut *l.room);
         if shutting.try_once(now, trace.as_ref(), room) != Tried::Done
-            && let Some(l) = linger.as_mut().filter(|_| may_linger)
+            && let Some(l) = linger.as_mut()
+            && (may_linger || shutting.awaits())
         {
+            shutting.once = !may_linger;
             let max = max_shutdowns(l.max_total, l.multi_pool.unwrap_or(pool));
             l.set.add(shutting, max, net);
             return;
         }
-        shutting.close(net, trace.as_ref(), in_multi);
+        shutting.close(net, clock.as_ref(), trace.as_ref(), in_multi);
     }
     // Closed at once, which a multi notes as its set does
     // (`Curl_cshutdn_terminate`).

@@ -14,9 +14,9 @@ witness: curl-core multi::shutdown_tests::an_aborted_transfer_s_connection_close
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::perform_moves_each_shutdown_on
 --- old
-            && let Some(l) = linger.as_mut().filter(|_| may_linger)
+            && (may_linger || shutting.awaits())
 --- new
-            && let Some(l) = linger.as_mut().filter(|_| false)
+            && false
 
 === a share's connection given back is closed instead of joining the multi's set
 file: crates/curl-core/src/conn/pool.rs
@@ -63,11 +63,11 @@ witness: curl-core multi::shutdown_tests::a_closing_connection_counts_only_towar
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_full_set_closes_its_oldest
 --- old
-            self.close_oldest(None, 1, net);
+            let oldest = match unawaited {
+                Some(i) => Some(i),
 --- new
-            if let Some(e) = self.conns.pop() {
-                self.closed(e, net);
-            }
+            let oldest = match unawaited {
+                Some(_) => Some(len - 1),
 
 === a shutdown never runs out of time
 file: crates/curl-core/src/conn/shutdown.rs
@@ -180,9 +180,9 @@ witness: curl-sys-abi handle_tests::a_closing_connection_s_socket_is_removed_by_
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::room_for_a_host_closes_that_host_s_closing_connection
 --- old
-            let goes = to.is_none_or(|to| {
+                && to.is_none_or(|to| shutting.destination().is_some_and(|d| d.same_bundle(to)));
 --- new
-            let goes = true || to.is_none_or(|to| {
+                && to.is_none_or(|_| true);
 
 === a connection joining the shutdown set is not said
 file: crates/curl-core/src/conn/shutdown.rs
@@ -348,7 +348,7 @@ witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
-                Ok(Handshake::Waiting) => Tried::Waiting,
+                Ok(Handshake::Waiting) if !self.once => Tried::Waiting,
 --- new
         if self.awaits_answer(&mut cx) {
             return Tried::Waiting;
@@ -357,7 +357,7 @@ witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
-                Ok(Handshake::Waiting) => { self.say_goodbye(&mut cx, false); Tried::Waiting }
+                Ok(Handshake::Waiting) if !self.once => { self.say_goodbye(&mut cx, false); Tried::Waiting }
 
 === a layer's shutdown does not say what its socket does
 file: crates/curl-core/src/conn/layer.rs
@@ -393,3 +393,85 @@ witness: curl-core multi::shutdown_tests::a_reuse_check_says_what_the_socket_ans
                     cx.of(component, format_args!("is_alive: {line}"));
 --- new
                     let _ = (component, line);
+
+=== the set's cap closes a connection awaiting its goodbye's answer first
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap
+--- old
+            let unawaited = self.conns.iter().position(|e| !e.shutting.awaits());
+--- new
+            let unawaited = self.conns.iter().position(|_| true);
+
+=== connections awaiting their goodbye's answer are kept past the cap without bound
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap
+--- old
+pub(crate) const AWAITING_CAP_FACTOR: usize = 2;
+--- new
+pub(crate) const AWAITING_CAP_FACTOR: usize = 3;
+
+=== connections awaiting their goodbye's answer are capped as the others are
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap
+--- old
+pub(crate) const AWAITING_CAP_FACTOR: usize = 2;
+--- new
+pub(crate) const AWAITING_CAP_FACTOR: usize = 1;
+
+=== the set closes a connection without its goodbye's answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap
+--- old
+            .close(net, Some(&self.clock), self.trace.as_ref(), true);
+--- new
+            .close(net, None, self.trace.as_ref(), true);
+
+=== room is made by closing a connection awaiting its goodbye's answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::room_held_by_a_goodbye_awaiting_its_answer_is_waited_for
+--- old
+            let goes = !shutting.awaits()
+                && to.is_none_or
+--- new
+            let goes = to.is_none_or
+
+=== an FTP transfer needing room closes the connection whose QUIT awaits its answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::ftp::tests::a_transfer_needing_room_waits_for_the_answer_to_quit
+--- old
+            let goes = !shutting.awaits()
+                && to.is_none_or
+--- new
+            let goes = to.is_none_or
+
+=== a share's evicted connection is closed without its goodbye's answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_the_set_for_its_answer
+--- old
+            && (may_linger || shutting.awaits())
+--- new
+            && may_linger
+
+=== a share's evicted connection lingers in the set past its answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_the_set_for_its_answer
+--- old
+                Ok(Handshake::Waiting) if !self.once => Tried::Waiting,
+--- new
+                Ok(Handshake::Waiting) if true => Tried::Waiting,
+
+=== a connection closed with no multi does not wait for its goodbye's answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_share_s_last_connection_closes_once_its_goodbye_is_answered
+--- old
+        shutting.close(net, clock.as_ref(), trace.as_ref(), in_multi);
+--- new
+        shutting.close(net, None, trace.as_ref(), in_multi);
+
+=== a connection the set has no room for closes without its goodbye's answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core a_quit_said_is_answered_before_its_connection_closes_whatever_is_refused
+--- old
+            shutting.close(net, Some(&self.clock), self.trace.as_ref(), true);
+--- new
+            shutting.close(net, None, self.trace.as_ref(), true);

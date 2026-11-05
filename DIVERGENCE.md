@@ -181,12 +181,20 @@ not a difference: it is tracked in `MILESTONES.md`.
   no further than 64 KB, as much as C holds of one (`DYN_PINGPPONG_CMD`): past that the
   connection closes with the rest unread, as C's does after the first byte. Measured against
   the C build: a silent server is let go after 1.03 s, a partial reply at once by C's FTP,
-  SMTP and IMAP, and a reply streamed without end after its first byte. A connection closed at once rather than kept in the set (evicted for room, the set
-  full or out of memory, or evicted by a share's pool) is an open question, not a settled
-  difference: it sends its goodbye but does not wait for the answer, where C blocks the multi
-  for it before any of these decisions, and no test pins either way yet. Pinned by
+  SMTP and IMAP, and a reply streamed without end after its first byte. A connection awaiting
+  its answer stays in the set past the set's cap, which C's never meets, up to twice the cap;
+  past that, and where there is no set or no memory to grow it, the answer is waited for in
+  place, blocking the multi as C does. A new connection that needs the room such a connection
+  holds under `CURLMOPT_MAX_TOTAL_CONNECTIONS` or the host limit waits for the answer where C
+  blocks for it: measured with a limit of 1 and a server answering `QUIT` half a second late,
+  C connects to the next host just after the answer, as ours does, but its multi is blocked
+  meanwhile. Pinned by
+  `a_transfer_needing_room_waits_for_the_answer_to_quit`,
   `an_endless_answer_to_quit_is_read_no_further_than_64_kb`
-  (`crates/curl-core/src/proto/ftp/tests.rs`), and
+  (`crates/curl-core/src/proto/ftp/tests.rs`),
+  `a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap`,
+  `room_held_by_a_goodbye_awaiting_its_answer_is_waited_for`
+  (`crates/curl-core/src/multi/shutdown_tests.rs`), and
   `quit_waits_a_second_for_its_answer`
   (`crates/curl-core/src/proto/pop3/tests.rs`,
   `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs`),

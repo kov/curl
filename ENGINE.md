@@ -2547,16 +2547,22 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   not done, it joins the `ShutdownSet` of the releasing transfer's multi, whichever pool it
   came from, a share's included (conncache.c:242), and is terminated when there is no multi
   (a share's cleanup). A share's pool evicting for room terminates after the one try, as
-  `cpool_evict_conn` does for a pool with no multi of its own. The set is the one owner,
+  `cpool_evict_conn` does for a pool with no multi of its own; one whose protocol's goodbye
+  awaits its answer joins the set all the same, marked to close once answered with its layers
+  given one try (`Shutting::once`). The set is the one owner,
   holding the connection with its stream, settings and closer, each under a `ClosingId` of
   the set's own, as a connection there is no longer in an arena. It is capped as C caps it:
   `max_total` less the connections in the releasing multi's own pool, 1 when none is left,
   and with no limit `max(n / 4, 128)` for `n` in that pool; past the cap the oldest closing
-  connection is terminated. A termination from the set reads nothing first: the drain is part
-  of a shutdown, not of a close. Closing connections
+  connection whose goodbye awaits no answer is terminated. Those awaiting one (below, "A
+  protocol's goodbye") are kept past the cap, as C's set never meets one, up to
+  `AWAITING_CAP_FACTOR` (2) times it; past that the oldest is terminated after all, its answer
+  waited for in place. A termination from the set reads nothing first but that answer: the
+  drain is part of a shutdown, not of a close. Closing connections
   count toward the host and total limits a new connection is checked against
   (`cpool_check_limits`): after the oldest idle ones, the oldest closing ones to the same
-  destination, then any, are terminated to make room, and only what cannot be closed makes the
+  destination, then any, are terminated to make room, but not one awaiting its goodbye's
+  answer, and only what cannot be closed makes the
   transfer wait. Each connection's deadline is its `ConnSettings`' shutdown timeout, always
   C's default of 2 s (`set.shutdowntimeout` is set by no option), counted from the first try;
   the earliest is the set's own deadline (§3.4). Under a share's lock the room a new
@@ -3436,8 +3442,13 @@ the shutdown's 2 s are spent; a multi's cleanup waits for it whatever time that 
 rest, as C's blocks inside the disconnect. Each try reads at most `MAX_READS` (C's
 `maxloops`), and the whole answer at most `GOODBYE_READ_MAX`, 64 KB (`DYN_PINGPPONG_CMD`, the
 most C's back and forth holds of one reply): a server sending lines without end is let go with
-the rest unread, as C's would after the first byte. A connection closed at once, not kept in
-the set, does not wait (DIVERGENCE.md). A connection discarded as its transfer aborted tells the
+the rest unread, as C's would after the first byte. A connection awaiting its answer is never
+closed without it where C would have read it: one the set's cap or a full set closes, one
+there is no memory to keep, one the socket callback refuses to watch, and one closed with no
+multi (a share's pool, a share's cleanup) have it waited for in place, polling their socket
+alone on the multi's or the share's clock (`Shutting::await_answer`, allocating nothing),
+as C's disconnect blocks; one in the set is not closed to make room for a new connection,
+which waits for it instead (above). A connection discarded as its transfer aborted tells the
 protocol it is dead, and nothing is said (`dead_connection`).
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the

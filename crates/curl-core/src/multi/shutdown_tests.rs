@@ -1617,3 +1617,177 @@ fn a_protocol_says_no_goodbye_on_a_dead_connection() {
     assert_eq!(wire.closed(), [1000]);
     assert_eq!(talk.received(), b"");
 }
+
+/// What a `tcp:` connection says as it shuts down when its goodbye awaits
+/// an answer: a request's head to the fake server, which answers it as
+/// its next reply.
+const BYE: &[u8] = b"BYE\r\n\r\n";
+
+/// A multi over servers at the ports given, each taking its
+/// conversations in turn, with no layer of its own on a connection: a
+/// connection waits in the set only for its goodbye's answer.
+fn answering(peers: &[(u16, &[Conversation])]) -> (Multi, Wire, ManualClock) {
+    let clock = ManualClock::new().unwrap();
+    let mut net = FakeNet::new(clock.clone());
+    for (port, talks) in peers {
+        let at = SocketAddr::from(([127, 0, 0, 1], *port));
+        net = net.with_peer(at, Peer::Accepts);
+        for talk in *talks {
+            net = net.with_conversation(at, talk.clone());
+        }
+    }
+    let wire = Wire(Arc::new(Mutex::new(Wired {
+        net,
+        closed: Vec::new(),
+        close_takes: None,
+    })));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(wire.clone()),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), wire, clock)
+}
+
+/// A `tcp:` transfer to `port` whose protocol says `BYE` as its
+/// connection shuts down and awaits a line in answer, as FTP's `QUIT`
+/// does; its connection closed once it is done.
+fn awaiting_goodbye(port: u16) -> Box<Easy> {
+    use crate::options::script::{Piece, Script};
+    let mut e = Easy::new();
+    let url = format!("tcp://127.0.0.1:{port}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().limits.reuse.forbid = true;
+    let pieces = vec![Piece::GoodbyeAwaits(BYE.to_vec())];
+    e.options_mut().script = Some(Script::new(pieces).unwrap());
+    Box::new(e)
+}
+
+/// The set's cap does not close a connection whose goodbye awaits its
+/// answer: C reads that answer before a connection joins its set, so its
+/// cap never meets one. Such connections are kept past the cap, up to
+/// twice it (`AWAITING_CAP_FACTOR`); past that the oldest is closed after
+/// all, once its answer was waited for here as C's disconnect blocks for
+/// it: a second of silence on the clock.
+#[test]
+fn a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap() {
+    let talks: Vec<_> = (0..=256)
+        .map(|_| Conversation::replies(&[], false))
+        .collect();
+    let (mut m, wire, clock) = answering(&[(1, &talks)]);
+    let mut ev = NoEvents;
+    for n in 0..256 {
+        let id = m.add(awaiting_goodbye(1), (), &mut ev).unwrap();
+        by_perform(&mut m, id, &mut ev);
+        m.remove(id, &mut ev).unwrap();
+        assert_eq!(m.shutdowns.len(), n + 1, "after {n}");
+    }
+    assert_eq!(wire.closed(), [], "each awaits its answer");
+    assert_eq!(talks[0].received(), BYE);
+    let at = clock.now();
+    let id = m.add(awaiting_goodbye(1), (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    assert_eq!(wire.closed(), [1000], "the oldest, after all");
+    assert_eq!(clock.now().since(at), Duration::from_secs(1), "waited for");
+    assert_eq!(m.shutdowns.len(), 256);
+}
+
+/// A connection in the set whose goodbye awaits its answer counts toward
+/// the limits, and is not closed to make room: the transfer that needs
+/// the room waits for it, as C's blocks for the answer before the new
+/// connection is made. Unanswered, it is let go after a second.
+#[test]
+fn room_held_by_a_goodbye_awaiting_its_answer_is_waited_for() {
+    let silent = [Conversation::replies(&[], false)];
+    let next = [Conversation::replies(&[], false)];
+    let (mut m, wire, clock) = answering(&[(1, &silent), (2, &next)]);
+    m.conn_limits_mut().max_total = NonZeroU32::new(1);
+    let mut ev = Rec::default();
+    let a = m.add(awaiting_goodbye(1), (), &mut ev).unwrap();
+    by_perform(&mut m, a, &mut ev);
+    m.remove(a, &mut ev).unwrap();
+    assert_eq!(m.shutdowns.len(), 1);
+    let at = clock.now();
+    let b = m.add(awaiting_goodbye(2), (), &mut ev).unwrap();
+    for _ in 0..3 {
+        m.perform(&mut ev).unwrap();
+    }
+    assert!(
+        matches!(m.state_of(b), state::TransferState::Pending),
+        "waiting for room"
+    );
+    assert_eq!(wire.closed(), [], "kept for its answer");
+    for _ in 0..5 {
+        if m.state_of(b).is_completed() {
+            break;
+        }
+        m.wait(&mut [], Duration::from_secs(5), WaitMode::Wait, &mut ev)
+            .unwrap();
+        m.perform(&mut ev).unwrap();
+    }
+    assert!(m.state_of(b).is_completed());
+    assert_eq!(wire.closed(), [1000], "let go unanswered");
+    assert_eq!(clock.now().since(at), Duration::from_secs(1));
+    assert_eq!(next[0].received(), BYE, "connected, its own goodbye said");
+}
+
+/// A share's pool evicting an idle connection closes it after its one
+/// try (`cpool_evict_conn`), but a goodbye awaiting its answer is waited
+/// for first, as C's disconnect blocks for it: in the multi's set, which
+/// closes it once the answer came, its layers given one try more, though
+/// the test layer would wait longer.
+#[test]
+fn a_share_s_evicted_connection_waits_in_the_set_for_its_answer() {
+    use crate::share::{Kind, Share};
+    let first = Conversation::replies(&[b"bye\r\n"], false).held();
+    first.allow(0);
+    let second = Conversation::replies(&[], false);
+    let (mut m, wire, _clock) = answering(&[(1, std::slice::from_ref(&first)), (2, &[second])]);
+    m.linger_connections(Some(Linger::Passes(5)));
+    m.conn_limits_mut().max_connects = NonZeroU32::new(1);
+    let share = Share::with_net(Box::new(wire.clone())).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut ev = Rec::default();
+    for port in [1, 2] {
+        let mut e = awaiting_goodbye(port);
+        e.options_mut().limits.reuse.forbid = false;
+        e.set_share(Some(share.clone())).unwrap();
+        let id = m.add(e, (), &mut ev).unwrap();
+        by_perform(&mut m, id, &mut ev);
+        m.remove(id, &mut ev).unwrap();
+    }
+    assert_eq!(first.received(), BYE);
+    assert_eq!(wire.closed(), [], "awaiting its answer");
+    assert_eq!(m.shutdowns.len(), 1, "in the multi's set");
+    first.allow(1);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(first.answered(), 1);
+    assert_eq!(wire.closed(), [1000], "closed once answered");
+    drop(share);
+}
+
+/// A share's idle connection closed as the share goes, with no multi to
+/// keep it, has its goodbye's answer read first, waited for here as C's
+/// disconnect blocks for it (`Curl_cpool_destroy`).
+#[test]
+fn a_share_s_last_connection_closes_once_its_goodbye_is_answered() {
+    use crate::share::{Kind, Share};
+    let talk = Conversation::replies(&[b"bye\r\n"], false).late_replies();
+    let (mut m, wire, _clock) = answering(&[(1, std::slice::from_ref(&talk))]);
+    let share = Share::with_net(Box::new(wire.clone())).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut ev = Rec::default();
+    let mut e = awaiting_goodbye(1);
+    e.options_mut().limits.reuse.forbid = false;
+    e.set_share(Some(share.clone())).unwrap();
+    let id = m.add(e, (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    m.remove(id, &mut ev).unwrap();
+    drop(m);
+    assert_eq!(talk.received(), b"", "kept by the share");
+    drop(share);
+    assert_eq!(talk.received(), BYE);
+    assert_eq!(talk.answered(), 1, "read before the close");
+    assert_eq!(wire.closed(), [1000]);
+}

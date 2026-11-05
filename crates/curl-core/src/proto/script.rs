@@ -183,7 +183,7 @@ impl Player {
                 Piece::ProtoConnecting | Piece::Doing | Piece::DoingMore => {
                     panic!("a script's phases come before its exchange")
                 }
-                Piece::Goodbye(_) => panic!("a goodbye is `tcp:`'s"),
+                Piece::Goodbye(_) | Piece::GoodbyeAwaits(_) => panic!("a goodbye is `tcp:`'s"),
             }
             self.next += 1;
         }

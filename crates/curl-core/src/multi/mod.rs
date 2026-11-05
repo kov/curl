@@ -547,6 +547,10 @@ impl<H: Host> Multi<H> {
             alive.waker = r.waker();
             alive.pool = r.pool();
         });
+        #[cfg(any(test, feature = "test-util"))]
+        let clock = crate::time::SharedClock::new(env.clock)?;
+        #[cfg(not(any(test, feature = "test-util")))]
+        let clock = crate::time::SharedClock::system();
         Ok(Multi {
             slots,
             dirty: RowSet::default(),
@@ -557,14 +561,11 @@ impl<H: Host> Multi<H> {
             caches,
             tls: None,
             sockbuf: crate::conn::quic::RecvRoom::Unmade,
-            shutdowns: ShutdownSet::default(),
+            shutdowns: ShutdownSet::new(clock.clone()),
             limits,
             pending: PendingQueue::default(),
             sockets: SocketTable::new(),
-            #[cfg(any(test, feature = "test-util"))]
-            clock: crate::time::SharedClock::new(env.clock)?,
-            #[cfg(not(any(test, feature = "test-util")))]
-            clock: crate::time::SharedClock::system(),
+            clock,
             net,
             ipv6_works,
             fail_ipv6,
@@ -596,8 +597,8 @@ impl<H: Host> Multi<H> {
     }
 
     /// As `trace_internally`, to `sink`.
-    #[cfg(test)]
-    pub(crate) fn trace_internally_to(
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn trace_internally_to(
         &mut self,
         components: crate::components::Components,
         sink: crate::handler::Handler<dyn crate::handler::TextSink>,

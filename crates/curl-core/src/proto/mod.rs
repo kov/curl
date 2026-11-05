@@ -179,16 +179,18 @@ fn tcp_connect<H: Host>(
     };
     let mut pieces = (0..).map_while(|i| script.get(i));
     let goodbye = pieces.clone().find_map(|p| match p {
-        Piece::Goodbye(bytes) => Some(bytes),
+        Piece::Goodbye(bytes) => Some((bytes, false)),
+        Piece::GoodbyeAwaits(bytes) => Some((bytes, true)),
         _ => None,
     });
-    if let Some(bytes) = goodbye
+    if let Some((bytes, awaits)) = goodbye
         && !lease.get().keeps_line()
     {
-        let mut said = Vec::new();
-        said.try_extend_from_slice(bytes)
+        let mut bye = Vec::new();
+        bye.try_extend_from_slice(bytes)
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        let line = crate::conn::line::LineConn::Test(crate::conn::line::Farewell(said));
+        let farewell = crate::conn::line::Farewell { bye, awaits };
+        let line = crate::conn::line::LineConn::Test(farewell);
         let line = curl_alloc::try_box(line).map_err(|_| ErrorKind::OutOfMemory)?;
         lease.get().put_line(line);
     }

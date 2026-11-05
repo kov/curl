@@ -296,7 +296,9 @@ impl Share {
     /// pool closes one when the share goes.
     pub(crate) fn upkeep(&self, interval: std::time::Duration, now: crate::time::Instant) {
         let mut net = lock(&self.0.net);
-        self.pool().upkeep(interval, &mut NoSet(&mut **net), now);
+        let clock = self.0.clock();
+        self.pool()
+            .upkeep(interval, &mut NoSet(&mut **net, clock), now);
     }
 
     /// Whether its sessions are going out; none before its first export.
@@ -354,15 +356,31 @@ impl fmt::Debug for Share {
     }
 }
 
+impl Inner {
+    /// The clock of the multis that use it, the system's in a normal
+    /// build: a goodbye's answer is waited for on it as the share's pool
+    /// closes a connection with no multi (C's blocking disconnect).
+    fn clock(&self) -> SharedClock {
+        #[cfg(any(test, feature = "test-util"))]
+        let clock = self.clock.get().cloned().unwrap_or(SharedClock::System);
+        #[cfg(not(any(test, feature = "test-util")))]
+        let clock = SharedClock::system();
+        clock
+    }
+}
+
 impl Drop for Inner {
-    /// The share's idle connections close with it (`curl_share_cleanup`).
+    /// The share's idle connections close with it (`curl_share_cleanup`),
+    /// each once its goodbye's answer is read, as C's disconnect blocks for
+    /// it.
     fn drop(&mut self) {
+        let clock = self.clock();
+        let now = clock.now();
         let net = self.net.get_mut().expect("no panic holds a share's lock");
         self.pool
             .get_mut()
             .expect("no panic holds a share's lock")
-            // With no clock, the one try of each shutdown is in time.
-            .close_idle(&mut NoSet(&mut **net), crate::time::Instant::EPOCH);
+            .close_idle(&mut NoSet(&mut **net, clock), now);
     }
 }
 

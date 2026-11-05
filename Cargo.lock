@@ -196,6 +196,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-schannel"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-core",
+ "curl-os",
+ "windows-sys",
+]
+
+[[package]]
 name = "curl-sys-abi"
 version = "0.1.0"
 dependencies = [

@@ -140,6 +140,9 @@ curl-zlib     zlib's inflate, curl-brotli brotli's decoder, curl-zstd zstd's dec
 curl-openssl  OpenSSL 3.0 or later through openssl-sys's declarations: Ed25519 for HTTP
               signatures, behind `curl_core::libraries::Ed25519`; the TLS backend behind
               `curl_core::tls` (§4.9)
+curl-schannel Schannel through SSPI and CryptoAPI (Windows): the TLS backend a build takes
+              in OpenSSL's place (the `schannel` feature of the shim and the tool), its
+              credential kept per peer in the session cache, its CA file's store per multi
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```

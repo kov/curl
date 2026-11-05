@@ -222,7 +222,7 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
 /// before anything is sent, said as C says it.
 fn a_list_the_library_refuses_fails_as_c_says() {
     type Set = Box<dyn Fn(&mut curl_core::options::TlsOptions)>;
-    let cases: [(Set, &str); 4] = [
+    let cases: Vec<(Set, &str)> = vec![
         (
             Box::new(|t| t.ciphers = Some(b"NOSUCH".to_vec())),
             "failed setting cipher list: NOSUCH",
@@ -235,6 +235,10 @@ fn a_list_the_library_refuses_fails_as_c_says() {
             Box::new(|t| t.curves = Some(b"NOSUCH".to_vec())),
             "failed setting curves list: 'NOSUCH'",
         ),
+        // LibreSSL takes no list of signature algorithms, which C then
+        // does not give it (`HAVE_SSL_CTX_SET1_SIGALGS`): the handshake
+        // goes on.
+        #[cfg(not(libressl))]
         (
             Box::new(|t| t.signature_algorithms = Some(b"NOSUCH".to_vec())),
             "failed setting signature algorithms: 'NOSUCH'",

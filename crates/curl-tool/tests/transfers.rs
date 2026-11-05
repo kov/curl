@@ -11,9 +11,13 @@
 use std::os::unix::fs::MetadataExt as _;
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(unix)]
 use std::time::Duration;
 #[cfg(unix)]
 use std::time::SystemTime;
+
+/// The null device, as a name the tool opens.
+const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
 /// A directory of its own for a test, removed after it.
 struct Scratch(PathBuf);
@@ -37,6 +41,16 @@ impl Scratch {
             format!("file:///{}", self.path(name).replace('\\', "/"))
         } else {
             format!("file://{}", self.path(name))
+        }
+    }
+
+    /// How a `file:` transfer of `name` names it when it fails: on
+    /// Windows with the URL's slashes.
+    fn shown(&self, name: &str) -> String {
+        if cfg!(windows) {
+            self.path(name).replace('\\', "/")
+        } else {
+            self.path(name)
         }
     }
 
@@ -234,7 +248,7 @@ fn retries_a_failure() {
     assert_eq!(run.stdout, b"2\n");
     // Each attempt's failure is said; the warnings are wrapped as C wraps
     // them.
-    let failed = format!("curl: (37) Could not open file {}\n", dir.path("missing"));
+    let failed = format!("curl: (37) Could not open file {}\n", dir.shown("missing"));
     let expected = [
         &failed[..],
         "Warning: Problem (retrying all errors). Retrying in 0.010 seconds. 2 retries \n",
@@ -307,7 +321,8 @@ fn reads_urls_from_a_file() {
 fn reads_options_from_files() {
     let dir = Scratch::new("config");
     dir.write("in", b"data");
-    let inner = format!("output = \"{}\"\n", dir.path("out"));
+    // Quoted, a backslash escapes what follows it.
+    let inner = format!("output = \"{}\"\n", dir.path("out").replace('\\', "\\\\"));
     dir.write("inner", inner.as_bytes());
     let outer = format!(
         "# a comment\nurl {}\n-K {}\n",
@@ -387,7 +402,7 @@ fn reports_a_failure() {
     let s = Scratch::new("failure");
     let r = curl(&s, &["--no-progress-meter", &s.url("missing")]);
     assert_eq!(r.code, 37);
-    let line = format!("curl: (37) Could not open file {}\n", s.path("missing"));
+    let line = format!("curl: (37) Could not open file {}\n", s.shown("missing"));
     assert_eq!(r.stderr, line);
     let r = curl(&s, &["-s", &s.url("missing")]);
     assert_eq!((r.code, &r.stderr[..]), (37, ""));
@@ -939,6 +954,7 @@ fn reads_the_configuration_beside_the_program() {
 /// `abc` at once and `def` 1.5 s later from a writer that then holds it
 /// open for 6 s: how long the tool took, its exit code and what it
 /// wrote. `name` is `-` for standard input, or a FIFO the writer opens.
+#[cfg(unix)]
 fn upload_held_open(s: &Scratch, name: &str) -> (Duration, Option<i32>, Vec<u8>) {
     use std::io::Write as _;
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
@@ -982,6 +998,8 @@ fn upload_held_open(s: &Scratch, name: &str) -> (Duration, Option<i32>, Vec<u8>)
 /// Standard input and a named file alike; the tool is done when the
 /// late part came, not when its writer let go, and fails as out of time
 /// (exit 28): the library looks at its time limit as the upload ends.
+/// Windows has no FIFO, and C's tool waits for no input there.
+#[cfg(unix)]
 #[test]
 fn an_upload_ends_once_its_time_is_up() {
     let s = Scratch::new("upload-max-time");
@@ -1012,6 +1030,9 @@ fn an_upload_that_cannot_be_read_fails() {
 /// fails as a line too long to read fails there: an error reading a file,
 /// or a bad use of `-F`. C reads it as empty and goes on. A deliberate
 /// difference from C (DIVERGENCE.md), so this test fails on its tool.
+/// Windows opens no directory as a file: C's handling of a file that
+/// does not open applies there, the same error for all but `-F`, whose
+/// headers file is passed over, as both tools pass it.
 #[test]
 fn a_file_of_lines_that_cannot_be_read_fails() {
     let s = Scratch::new("unreadable-lines");
@@ -1028,6 +1049,10 @@ fn a_file_of_lines_that_cannot_be_read_fails() {
         assert_eq!(r.code, 26, "{named:?}");
     }
     let r = curl(&s, &["-F", "a=b;headers=@dir", "-o", "out", &src]);
+    if cfg!(windows) {
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        return;
+    }
     assert_eq!(r.code, 2);
     assert!(
         r.stderr.starts_with(
@@ -1040,7 +1065,9 @@ fn a_file_of_lines_that_cannot_be_read_fails() {
 
 /// Header lines `-i` cannot write fail the transfer though no body write
 /// follows to fail: those writes are not checked, and the output they
-/// are held in fails to be written when it is closed.
+/// are held in fails to be written when it is closed. Windows has no
+/// device whose writes fail.
+#[cfg(unix)]
 #[test]
 fn an_included_header_that_cannot_be_written_fails() {
     let s = Scratch::new("headerfull");
@@ -1247,7 +1274,7 @@ fn draws_a_progress_bar() {
     assert_eq!(bar("500"), line(393));
     let r = curl_env(&s, &["-#", &s.url("missing")], &[("COLUMNS", "30")]);
     assert_eq!(r.code, 37);
-    let want = format!("curl: (37) Could not open file {}\n", s.path("missing"));
+    let want = format!("curl: (37) Could not open file {}\n", s.shown("missing"));
     assert_eq!(r.stderr, want);
 }
 
@@ -1412,18 +1439,7 @@ fn numbers_the_urls() {
     let r = curl(
         &s,
         &[
-            "-s",
-            "-o",
-            "/dev/null",
-            "-w",
-            w,
-            &url,
-            "-o",
-            "/dev/null",
-            &url,
-            "-o",
-            "/dev/null",
-            &url,
+            "-s", "-o", NULL, "-w", w, &url, "-o", NULL, &url, "-o", NULL, &url,
         ],
     );
     assert_eq!((r.code, r.stdout), (0, as_text(b"0\n1\n2\n")));
@@ -1548,7 +1564,7 @@ fn creates_the_header_file_directories() {
             "-D",
             "d/sub/h",
             "-o",
-            "/dev/null",
+            NULL,
             &s.url("f"),
         ],
     );
@@ -1781,11 +1797,11 @@ fn parallel_fail_early_stops_the_others() {
     ];
     let r = curl(&s, &args);
     assert_eq!(r.code, 37);
-    assert_eq!(r.stdout, b"0 37\n1 42\n");
+    assert_eq!(r.stdout, as_text(b"0 37\n1 42\n"));
     let expected = format!(
         "curl: (37) Could not open file {}\n\
          curl: (42) Transfer aborted due to critical error in another transfer\n",
-        s.path("missing")
+        s.shown("missing")
     );
     assert_eq!(r.stderr, expected);
 }
@@ -1837,9 +1853,9 @@ fn parallel_skipped_transfers_end_last() {
     ];
     let r = curl(&s, &args);
     assert_eq!(r.code, 37);
-    assert_eq!(r.stdout, b"1 37\n0 37\n");
+    assert_eq!(r.stdout, as_text(b"1 37\n0 37\n"));
     // Its end says no failure of its own.
-    let line = format!("curl: (37) Could not open file {}\n", s.path("missing"));
+    let line = format!("curl: (37) Could not open file {}\n", s.shown("missing"));
     assert_eq!(r.stderr, line);
 }
 
@@ -1915,10 +1931,10 @@ fn parallel_fail_early_adds_nothing_more() {
         &a,
     ];
     let r = curl(&s, &args);
-    assert_eq!((r.code, &r.stdout[..]), (37, &b"0 37\n1 37\n"[..]));
+    assert_eq!((r.code, r.stdout), (37, as_text(b"0 37\n1 37\n")));
     let expected = format!(
         "curl: (37) Could not open file {}\ncurl: (37) Could not read a file:// file\n",
-        s.path("missing")
+        s.shown("missing")
     );
     assert_eq!(r.stderr, expected);
     assert!(!s.exists("o2"));
@@ -2091,6 +2107,9 @@ fn sets_the_ssl_options_bits_asked_for() {
 
 /// An upload of standard input, `-T -` or `-T .`, is warned of when more
 /// than one way to authenticate may need it sent again; a file's is not.
+/// On Windows `-T .` reads standard input through a thread, and a read
+/// before the thread found its end pauses, which a `file:` upload cannot:
+/// C's tool fails so now and then too (4 times in 120 under load).
 #[test]
 fn warns_of_more_than_one_auth_with_standard_input() {
     let s = Scratch::new("stdin-auth");
@@ -2099,11 +2118,19 @@ fn warns_of_more_than_one_auth_with_standard_input() {
                    involves a \nWarning: big risk of it not working. Use a temporary file \
                    or a fixed auth type \nWarning: instead\n";
     let dst = s.url("dst");
+    let paused = "curl: (26) Read callback asked for PAUSE when not supported\n";
     let warned = |args: &[&str]| {
         let r = curl(&s, &[&["--no-progress-meter"], args, &[&dst]].concat());
-        assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
-        assert!(r.stderr.is_empty() || r.stderr == warning, "{}", r.stderr);
-        r.stderr == warning
+        let dot = args.last() == Some(&".");
+        let stderr = match r.stderr.strip_suffix(paused) {
+            Some(said) if cfg!(windows) && dot && r.code == 26 => said,
+            _ => {
+                assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+                &r.stderr[..]
+            }
+        };
+        assert!(stderr.is_empty() || stderr == warning, "{}", r.stderr);
+        stderr == warning
     };
     assert!(warned(&["--anyauth", "-T", "-"]));
     assert!(warned(&["--anyauth", "-T", "."]));
@@ -2125,7 +2152,7 @@ fn sets_the_tls_options_as_c_does() {
     s.write("f", b"x");
     let ca = s.path("f");
     let dir = s.path("");
-    let dir = dir.trim_end_matches('/');
+    let dir = dir.trim_end_matches(['/', '\\']);
     let set = |args: &[&str], env: &[(&str, &str)]| -> Result<Vec<String>, String> {
         let r = curl_env(
             &s,
@@ -2159,11 +2186,13 @@ fn sets_the_tls_options_as_c_does() {
     let range = |min: &str, max: &str| {
         format!("CURLOPT_SSLVERSION, (long)(CURL_SSLVERSION_{min} | CURL_SSLVERSION_MAX_{max})")
     };
-    let cainfo = |f: &str| format!("CURLOPT_CAINFO, \"{f}\"");
+    // A C string: its backslashes escaped.
+    let quoted = |f: &str| f.replace('\\', "\\\\");
+    let cainfo = |f: &str| format!("CURLOPT_CAINFO, \"{}\"", quoted(f));
     let capath = |d: &str| {
         [
-            format!("CURLOPT_CAPATH, \"{d}\""),
-            format!("CURLOPT_PROXY_CAPATH, \"{d}\""),
+            format!("CURLOPT_CAPATH, \"{}\"", quoted(d)),
+            format!("CURLOPT_PROXY_CAPATH, \"{}\"", quoted(d)),
         ]
     };
     let unverified = [
@@ -2394,7 +2423,8 @@ fn hsts_and_alt_svc_files_are_read_and_written() {
         &dir,
         &["--alt-svc", &dir.path("alt"), "http://127.0.0.1:1/"],
     );
-    let alt = String::from_utf8(dir.read("alt")).unwrap();
+    // Written in text mode, as C writes it.
+    let alt = messages(&dir.read("alt"));
     assert!(alt.starts_with("# Your alt-svc cache."), "{alt}");
     assert!(
         alt.contains("\nh1 a.example 443 h1 b.example 443 \"20991231 00:00:00\" 0 0\n"),
@@ -2469,7 +2499,7 @@ fn the_first_url_goes_in_the_clear_if_asked() {
         &url,
     ];
     let r = curl_env(&s, &args, &[("CURL_DBG_NO_USE_SSL_ON_FIRST", "1")]);
-    assert_eq!(r.stdout, b"0 0\n1 64\n", "{}", r.stderr);
+    assert_eq!(r.stdout, as_text(b"0 0\n1 64\n"), "{}", r.stderr);
     let heard = heard.lock().unwrap();
     assert_eq!(heard.len(), 2, "{heard:?}");
     assert!(!heard[0].iter().any(|l| l == "STLS"), "{heard:?}");

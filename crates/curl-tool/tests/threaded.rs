@@ -1,6 +1,6 @@
 //! The threaded resolver's build, against C's (`build/c-threaded`).
 #![cfg(feature = "threaded-resolver")]
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::process::Command;
 
@@ -77,12 +77,19 @@ fn the_record_asked_of_the_threaded_resolver_is_let_go_of_as_c_s() {
 /// queued under the number of the record kept of its resolve, the third
 /// after the origin's record and its addresses, as C's threaded build
 /// says it for `-4 --interface host!localhost4 https://localhost4:1/`.
+/// Windows knows no `localhost4`: the machine's own name stands in.
 #[test]
 fn a_blocking_resolve_is_queued_under_its_record_s_number() {
+    let host = if cfg!(windows) {
+        std::env::var("COMPUTERNAME").unwrap()
+    } else {
+        "localhost4".to_owned()
+    };
     let run = Command::new(env!("CARGO_BIN_EXE_curl"))
         .args(["-sS", "-v", "-k", "-4", "--max-time", "5"])
-        .args(["--trace-config", "dns", "--interface", "host!localhost4"])
-        .arg("https://localhost4:1/")
+        .args(["--trace-config", "dns", "--interface"])
+        .arg(format!("host!{host}"))
+        .arg(format!("https://{host}:1/"))
         .output()
         .unwrap();
     let said = String::from_utf8_lossy(&run.stderr);
@@ -93,10 +100,14 @@ fn a_blocking_resolve_is_queued_under_its_record_s_number() {
     assert_eq!(
         queued,
         [
-            "* [DNS] queueing query [0/2] A localhost4:1",
-            "* [DNS] queueing query [0/3] A localhost4:80",
+            format!("* [DNS] queueing query [0/2] A {host}:1"),
+            format!("* [DNS] queueing query [0/3] A {host}:80"),
         ],
         "{said}"
     );
-    assert!(said.contains("* [DNS] [3] destroy async\n"), "{said}");
+    assert!(
+        said.contains("* [DNS] [3] destroy async\n")
+            || said.contains("* [DNS] [3] destroy async\r\n"),
+        "{said}"
+    );
 }

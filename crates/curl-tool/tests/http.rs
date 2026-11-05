@@ -16,6 +16,9 @@ use std::thread::JoinHandle;
 /// Each connection's replies, one for each request on it.
 type Script = Vec<Vec<Vec<u8>>>;
 
+/// The null device, as a name the tool opens.
+const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
 /// A server that answers one request with `reply`, then closes; joining
 /// it gives the request it got, its port written as `PORT`.
 struct Server {
@@ -401,14 +404,14 @@ fn gives_up_after_the_time_allowed() {
 /// `-I` with `-T` asks for two methods: the transfer is not made.
 #[test]
 fn takes_one_method() {
-    let run = curl(&["-I", "-T", "/dev/null", "http://127.0.0.1:1/"]);
+    let run = curl(&["-I", "-T", NULL, "http://127.0.0.1:1/"]);
     assert_eq!(run.code, 2);
     assert_eq!(
         run.stderr,
         "Warning: You can only select one HTTP request method! You asked for both PUT \n\
          Warning: (-T, --upload-file) and HEAD (-I, --head).\n"
     );
-    let run = curl(&["-d", "x", "-T", "/dev/null", "http://127.0.0.1:1/"]);
+    let run = curl(&["-d", "x", "-T", NULL, "http://127.0.0.1:1/"]);
     assert_eq!(run.code, 2);
     assert_eq!(
         run.stderr,
@@ -464,7 +467,7 @@ fn gets_the_data_in_the_query() {
     assert_eq!((run.code, &run.stderr[..]), (0, ""));
     let request = s.request();
     assert!(request.starts_with("HEAD /?a HTTP/1.1\r\n"), "{request}");
-    let run = curl(&["-G", "-d", "x", "-T", "/dev/null", "http://127.0.0.1:1/"]);
+    let run = curl(&["-G", "-d", "x", "-T", NULL, "http://127.0.0.1:1/"]);
     assert_eq!(run.code, 2);
     assert_eq!(
         run.stderr,
@@ -509,32 +512,26 @@ fn adds_the_url_query() {
     let request = s.request();
     assert!(request.starts_with("GET /?x HTTP/1.1\r\n"), "{request}");
     // Joined, they must fit in C's buffer of 100000 bytes, its
-    // terminating zero counted.
-    let half = format!("+{}", "a".repeat(49_999));
-    let more = format!("+{}", "a".repeat(50_000));
-    let run = curl(&[
-        "-s",
-        "--url-query",
-        &half,
-        "--url-query",
-        &half,
-        "http://127.0.0.1:1/",
-    ]);
-    assert_eq!(run.code, 7);
-    let run = curl(&[
-        "--url-query",
-        &more,
-        "--url-query",
-        &half,
-        "http://127.0.0.1:1/",
-    ]);
+    // terminating zero counted. Given in a configuration file, as
+    // Windows' command line holds no more than 32767 characters.
+    let dir = scratch("url-query");
+    let half = format!("url-query = +{}\n", "a".repeat(49_999));
+    let more = format!("url-query = +{}\n", "a".repeat(50_000));
+    let fits = dir.join("fits");
+    std::fs::write(&fits, [half.as_str(), &half].concat()).unwrap();
+    let run = curl(&["-s", "-K", fits.to_str().unwrap(), "http://127.0.0.1:1/"]);
+    assert_eq!(run.code, 7, "{}", run.stderr);
+    let over = dir.join("over");
+    std::fs::write(&over, [more.as_str(), &half].concat()).unwrap();
+    let over = over.to_str().unwrap();
+    let run = curl_columns(&["-K", over, "http://127.0.0.1:1/"], Some("500"));
+    std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(run.code, 2);
-    assert!(
-        run.stderr
-            .starts_with("curl: option --url-query: out of memory\n"),
-        "{}",
-        run.stderr
+    let said = format!(
+        "curl: {over}:2 config file option 'url-query' out of memory\n\
+         curl: option -K: out of memory\n"
     );
+    assert!(run.stderr.starts_with(&said), "{}", run.stderr);
 }
 
 /// `--request-target` replaces the request line's target, also to a
@@ -640,10 +637,16 @@ fn a_second_upload_of_standard_input_reads_what_the_first_left() {
 }
 
 /// A redirect that has `-T -` send its body again cannot, from a pipe:
-/// the seek fails, and the library says so after the tool's reason.
+/// the seek fails, and the library says so after the tool's reason. On
+/// Windows the C library's seek of a pipe succeeds, as C's tool finds
+/// it: the redirect sends what is left, nothing.
 #[test]
 fn cannot_send_piped_standard_input_again() {
-    let s = Server::new(b"HTTP/1.1 307 Again\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n");
+    // The server closes the first connection after its reply: the
+    // redirect goes on a second.
+    let again = b"HTTP/1.1 307 Again\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n".to_vec();
+    let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
+    let s = Server::script(vec![vec![again], vec![ok]]);
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut child = Command::new(tool)
@@ -655,7 +658,15 @@ fn cannot_send_piped_standard_input_again() {
         .unwrap();
     child.stdin.take().unwrap().write_all(b"hello").unwrap();
     let out = child.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stderr = messages(&out.stderr);
+    if cfg!(windows) {
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+        assert!(!stderr.contains("seek callback"), "{stderr}");
+        let requests = s.request();
+        let second = &requests[requests.find("PUT /b HTTP/1.1\r\n").unwrap()..];
+        assert!(second.ends_with("\r\n\r\n0\r\n\r\n"), "{second}");
+        return;
+    }
     assert_eq!(out.status.code(), Some(65), "{stderr}");
     assert!(
         stderr.contains(
@@ -740,7 +751,7 @@ fn warns_of_odd_header_and_version_options() {
         (&["-0", "-0"], String::new()),
     ] {
         // No transfer: the URL's port refuses.
-        let mut all = vec!["--no-progress-meter", "-o", "/dev/null"];
+        let mut all = vec!["--no-progress-meter", "-o", NULL];
         all.extend_from_slice(args);
         all.push("http://127.0.0.1:1/");
         let run = curl(&all);
@@ -831,7 +842,8 @@ fn saves_the_cookie_jar() {
     let s = Server::new(set);
     let run = curl(&["-sS", "-c", jar.to_str().unwrap(), &s.url()]);
     assert_eq!((run.code, &run.stderr[..]), (0, ""));
-    let saved = String::from_utf8(std::fs::read(&jar).unwrap()).unwrap();
+    // Written in text mode, as C writes it.
+    let saved = messages(&std::fs::read(&jar).unwrap());
     assert!(
         saved.ends_with("\n127.0.0.1\tFALSE\t/\tFALSE\t0\tn\tv\n"),
         "{saved}"
@@ -1941,14 +1953,16 @@ fn removes_the_file_a_failed_transfer_wrote() {
             "--remove-on-error",
             &s.url(),
             "-o",
-            "/dev/null",
+            NULL,
         ],
         Some("500"),
     );
     assert_eq!(
         run.stderr,
-        "curl: (18) end of response with 16 bytes missing\n\
-         Warning: Skipping removal; not a regular file: /dev/null\n"
+        format!(
+            "curl: (18) end of response with 16 bytes missing\n\
+             Warning: Skipping removal; not a regular file: {NULL}\n"
+        )
     );
     std::fs::write(&file, "before").unwrap();
     let run = curl_columns(
@@ -2120,13 +2134,20 @@ fn sends_standard_input_again_as_it_stood() {
 
 /// Standard input that cannot be read, a directory here, is read again
 /// as the part is sent, and that read failing is said and ends the
-/// transfer.
+/// transfer. Windows opens no directory, and the C library reads a file
+/// open only for writing as empty: the part is sent empty, as C's tool
+/// sends it.
 #[test]
 fn fails_on_standard_input_it_cannot_read() {
     let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
-    let dir = std::fs::File::open(std::env::temp_dir()).unwrap();
+    let unreadable = if cfg!(windows) {
+        let at = scratch("unreadable-stdin");
+        std::fs::File::create(at.join("w")).unwrap()
+    } else {
+        std::fs::File::open(std::env::temp_dir()).unwrap()
+    };
     let out = Command::new(tool)
         .args([
             "-q",
@@ -2137,18 +2158,25 @@ fn fails_on_standard_input_it_cannot_read() {
             "a=<-",
             &s.url(),
         ])
-        .stdin(dir)
+        .stdin(unreadable)
         .output()
         .unwrap();
-    assert_eq!(
-        (out.status.code(), &String::from_utf8_lossy(&out.stderr)[..]),
-        (
-            Some(42),
-            "Warning: Failed to read from stdin: Is a directory\n\
-             curl: (42) operation aborted by callback\n"
-        )
-    );
     let request = unbound(&s.request());
+    let (code, said, end) = if cfg!(windows) {
+        (0, "", "--B0--\r\n")
+    } else {
+        (
+            42,
+            "Warning: Failed to read from stdin: Is a directory\n\
+             curl: (42) operation aborted by callback\n",
+            "",
+        )
+    };
+    assert_eq!(
+        (out.status.code(), &messages(&out.stderr)[..]),
+        (Some(code), said)
+    );
+    let request = request.strip_suffix(end).unwrap();
     assert!(
         request.ends_with("--B0\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n\r\n"),
         "{request}"
@@ -2239,13 +2267,14 @@ fn writes_out_the_debug_build_s_times_and_sizes() {
     let run = |env: &[(&str, &str)], format: &str| {
         let s = Server::new(OK);
         let out = Command::new(&tool)
-            .args(["-q", "-s", "-o", "/dev/null", "-w", format, &s.url()])
+            .args(["-q", "-s", "-o", NULL, "-w", format, &s.url()])
             .envs(env.iter().copied())
             .output()
             .unwrap();
         s.request();
         assert_eq!(out.status.code(), Some(0), "{format}");
-        String::from_utf8(out.stdout).unwrap()
+        // In text mode: standard output is not a transfer's.
+        messages(&out.stdout)
     };
     assert_eq!(
         run(
@@ -2488,9 +2517,9 @@ fn serial_transfers_share_a_connection() {
     let run = curl(&[
         "-s",
         "-o",
-        "/dev/null",
+        NULL,
         "-o",
-        "/dev/null",
+        NULL,
         "-w",
         "%{num_connects}\n",
         &url,
@@ -2517,9 +2546,9 @@ fn parallel_transfers_share_cookies_and_connections() {
         "-b",
         "nosuchfile",
         "-o",
-        "/dev/null",
+        NULL,
         "-o",
-        "/dev/null",
+        NULL,
         "-w",
         "%{num_connects}\n",
         &url,
@@ -2796,10 +2825,15 @@ fn upload_dot(parts: &[&'static [u8]], pause: u64, args: &[&str]) -> (Run, Strin
 #[test]
 fn uploads_standard_input_without_waiting_for_it() {
     let paused = "\n* [READ] cr_in_read, callback returned CURL_READFUNC_PAUSE\n";
+    // With `-m` C's tool waits for input, but not on Windows (`waitfd` is not
+    // built there).
     for (mode, pauses) in [
         (&["-sSv", "--trace-config", "read"][..], true),
         (&["-Z", "-sSv", "--trace-config", "read"], true),
-        (&["-m", "10", "-sSv", "--trace-config", "read"], false),
+        (
+            &["-m", "10", "-sSv", "--trace-config", "read"],
+            cfg!(windows),
+        ),
     ] {
         let (run, request) = upload_dot(&[b"abc", b"def"], 300, mode);
         assert_eq!(

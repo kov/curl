@@ -13,6 +13,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::thread::JoinHandle;
 
+/// The null device, as a name the tool opens.
+const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
 struct Run {
     code: i32,
     stdout: String,
@@ -45,7 +48,7 @@ fn curl(args: &[&str]) -> Run {
 fn ftp_setopts(args: &[&str]) -> Vec<String> {
     let r = curl(
         &[
-            &["-s", "--libcurl", "-", "-o", "/dev/null"],
+            &["-s", "--libcurl", "-", "-o", NULL],
             args,
             &["ftp://127.0.0.1:1/a/f"],
         ]
@@ -149,7 +152,7 @@ fn sorts_the_quote_commands() {
         "--libcurl",
         "-",
         "-o",
-        "/dev/null",
+        NULL,
         "-Q",
         "NOOP",
         "-Q",
@@ -210,7 +213,7 @@ fn commands_server(pasv: &'static str) -> (u16, JoinHandle<Vec<String>>) {
 fn commands(path: &str, args: &[&str], pasv: &'static str) -> (Vec<String>, String) {
     let (port, server) = commands_server(pasv);
     let url = format!("ftp://127.0.0.1:{port}/{path}");
-    let r = curl(&[&["-v", "-o", "/dev/null"], args, &[url.as_str()]].concat());
+    let r = curl(&[&["-v", "-o", NULL], args, &[url.as_str()]].concat());
     let got = server.join().unwrap();
     let after: Vec<String> = got
         .into_iter()
@@ -281,7 +284,7 @@ fn skips_the_pasv_address_unless_told() {
 #[test]
 fn says_which_tls_option_overrides_which() {
     let said = |args: &[&str]| {
-        let quiet = ["--no-progress-meter", "-o", "/dev/null"];
+        let quiet = ["--no-progress-meter", "-o", NULL];
         curl(&[&quiet[..], args, &["ftp://127.0.0.1:1/f"]].concat()).stderr
     };
     let alone = said(&["--ssl"]);
@@ -355,7 +358,9 @@ fn upload_server() -> (u16, JoinHandle<Stored>) {
 
 /// `-T -` resumed seeks standard input when it is a file, and reads up to
 /// the point when it is a pipe (`tool_seek_cb`): past its end, the file
-/// is appended nothing, and the pipe fails to read.
+/// is appended nothing, and the pipe fails to read. On Windows the C
+/// library's seek of a pipe succeeds and moves nothing, as C's tool finds
+/// it: the pipe is sent whole.
 #[test]
 fn a_resumed_upload_seeks_standard_input_if_it_can() {
     let body = b"ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNO";
@@ -386,12 +391,29 @@ fn a_resumed_upload_seeks_standard_input_if_it_can() {
         let stderr = String::from_utf8(out.stderr).unwrap();
         (out.status.code().unwrap(), stderr, server.join().unwrap())
     };
-    let rest = Some(("APPE f".to_owned(), body[20..].to_vec()));
-    assert_eq!(run("20", false), (0, String::new(), rest.clone()));
-    assert_eq!(run("20", true), (0, String::new(), rest));
-    let nothing = Some(("APPE f".to_owned(), Vec::new()));
-    assert_eq!(run("50", false), (0, String::new(), nothing));
-    let short = "curl: (31) Failed to read data\n".to_owned();
-    assert_eq!(run("50", true), (31, short, None));
+    let got = [
+        run("20", false),
+        run("20", true),
+        run("50", false),
+        run("50", true),
+    ];
     std::fs::remove_dir_all(&dir).unwrap();
+    let rest = Some(("APPE f".to_owned(), body[20..].to_vec()));
+    let nothing = Some(("APPE f".to_owned(), Vec::new()));
+    let short = "curl: (31) Failed to read data\n".to_owned();
+    let (piped, piped_past) = if cfg!(windows) {
+        let whole = Some(("APPE f".to_owned(), body.to_vec()));
+        ((0, String::new(), whole.clone()), (0, String::new(), whole))
+    } else {
+        ((0, String::new(), rest.clone()), (31, short, None))
+    };
+    assert_eq!(
+        got,
+        [
+            (0, String::new(), rest),
+            piped,
+            (0, String::new(), nothing),
+            piped_past,
+        ]
+    );
 }

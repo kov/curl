@@ -1161,13 +1161,15 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         {
             return failed(easy, e);
         }
-        let exists = fs::with_c_name(name, fs::stat);
-        if op.skip_existing && exists.is_ok() {
+        // Looked up for each option that asks, as C's `setup_outfile`
+        // does: not at all for neither.
+        let stat = || fs::with_c_name(name, fs::stat);
+        if op.skip_existing && stat().is_ok() {
             msgs.note(&[b"skips transfer, \"", name, b"\" exists locally"]);
             skip = true;
         }
         if op.resume == Some(Resume::FromOutput) {
-            resume_from = exists.as_ref().ok().map(|m| m.len());
+            resume_from = stat().ok().map(|m| m.len());
         }
         if resume_from.is_some_and(|n| n > 0) && !out.stream().open_to_append() {
             return failed(easy, ErrorKind::WriteError);

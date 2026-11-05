@@ -13,7 +13,7 @@ witness: curl-tool an_empty_download_leaves_an_empty_file
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool resumes_into_the_output_file
 --- old
-            resume_from = exists.as_ref().ok().map(|m| m.len());
+            resume_from = stat().ok().map(|m| m.len());
 --- new
             resume_from = None;
 
@@ -1038,10 +1038,12 @@ file: crates/curl-tool/src/operate.rs
 witness: curl-tool downloads_with_long_names_under_torture
 features: debug-hooks
 --- old
-        let exists = fs::with_c_name(name, fs::stat);
+        let stat = || fs::with_c_name(name, fs::stat);
 --- new
-        let _ = std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
-        let exists = fs::with_c_name(name, fs::stat);
+        let stat = || {
+            let _ = std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+            fs::with_c_name(name, fs::stat)
+        };
 
 === --remove-on-error removes by a name std copies
 file: crates/curl-tool/src/operate.rs

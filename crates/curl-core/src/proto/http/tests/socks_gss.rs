@@ -12,7 +12,7 @@ use crate::libraries::{Libraries, SharedLibraries};
 fn scripted() -> (&'static Scripted, SharedLibraries) {
     let gss = Scripted::leaked();
     let libraries = SharedLibraries::new(Libraries {
-        gss: Some(gss),
+        security: Some(crate::libraries::Security::Gss(gss)),
         ..Libraries::NONE
     })
     .unwrap();
@@ -54,7 +54,7 @@ fn gss_lines(ran: &Ran) -> Vec<String> {
         .text()
         .into_iter()
         .filter(|l| {
-            ["GSS", "Opened SOCKS", "User", "Failed", "Unable"]
+            ["GSS", "SSPI", "Opened SOCKS", "User", "Failed", "Unable"]
                 .iter()
                 .any(|p| l.contains(p))
         })
@@ -334,4 +334,69 @@ fn an_unanswered_message_fails_its_read_when_the_time_is_out() {
         );
         assert!(ran.request.ends_with(b"\x01\x01\x00\x01t"));
     }
+}
+
+/// Over SSPI, as C's Windows build: the call and SSPI's words for its
+/// status, then the step and the method's end, each traced; a proxy
+/// closing is said in SSPI's words; the level granted is "NOT USED".
+#[test]
+fn sspi_s_failures_are_said_as_c_s_windows_build_says_them() {
+    use crate::sspi::testing::{Answer, Scripted};
+    use crate::sspi::{Initialized, SecStatus, SspiFailure};
+    let sspi = Scripted::leaked();
+    let libraries = SharedLibraries::new(Libraries {
+        security: Some(crate::libraries::Security::Sspi(sspi)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let refused = SecStatus::new(0x8009_030e_u32 as i32);
+    sspi.then(Answer::Credentials(Err(SspiFailure::Status(refused))));
+    let ran = through_gss(&libraries, &[b"\x05\x01"], false, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::Proxy));
+    assert_eq!(ran.easy.report().proxy_error(), Some(ProxyError::Gssapi));
+    assert_eq!(
+        gss_lines(&ran),
+        [
+            "SSPI error: AcquireCredentialsHandle failed: status 0x8009030e",
+            "Failed to acquire credentials.",
+            "Unable to negotiate SOCKS5 GSS-API context.",
+        ]
+    );
+
+    let step = |status| {
+        Answer::Initialized(Ok((
+            Initialized {
+                status,
+                confidentiality: false,
+                integrity: true,
+            },
+            b"t".to_vec(),
+        )))
+    };
+    sspi.then(Answer::Credentials(Ok(())))
+        .then(step(SecStatus::CONTINUE_NEEDED));
+    let ran = through_gss(&libraries, &[b"\x05\x01", b"\x01\x01"], true, |_| {});
+    assert_eq!(
+        gss_lines(&ran),
+        [
+            "Failed to receive SSPI authentication response.",
+            "Unable to negotiate SOCKS5 GSS-API context.",
+        ]
+    );
+
+    sspi.then(Answer::Credentials(Ok(())))
+        .then(step(SecStatus::OK))
+        .then(Answer::User(Ok(b"me".to_vec())));
+    let ran = through_gss(
+        &libraries,
+        &[b"\x05\x01", b"\x01\x02\x00\x01\x00", SOCKS5_GRANTED, OK],
+        false,
+        |o| o.proxy.make_mut().unwrap().socks5_gssapi_nec = true,
+    );
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l == "SOCKS5 access without GSS-API data protection granted BUT NOT USED.\n"),
+        "{text:?}"
+    );
 }

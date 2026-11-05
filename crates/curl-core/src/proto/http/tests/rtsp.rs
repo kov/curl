@@ -768,7 +768,7 @@ fn a_negotiate_token_goes_with_the_request() {
     let gss = crate::gss::testing::Scripted::leaked();
     gss.then_token(b"first");
     let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
-        gss: Some(gss),
+        security: Some(crate::libraries::Security::Gss(gss)),
         ..crate::libraries::Libraries::NONE
     })
     .unwrap();

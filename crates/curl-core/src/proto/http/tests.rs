@@ -5939,6 +5939,7 @@ mod h2_trace;
 // answers each send with its next reply, so the one datagram a call of
 // Windows and macOS, which cannot cut a run (`conn::quic` tests it),
 // takes replies a flight early; these run where the traces are C's.
+mod digest_sspi;
 #[cfg(target_os = "linux")]
 mod h3_trace;
 mod hsts;
@@ -5946,6 +5947,7 @@ mod https_trace;
 mod idn;
 mod multi_trace;
 mod negotiate;
+mod negotiate_sspi;
 mod netrc_reads;
 mod os_errno;
 mod range;

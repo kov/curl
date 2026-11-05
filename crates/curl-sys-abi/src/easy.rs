@@ -797,18 +797,27 @@ pub(crate) unsafe fn handle<'a>(curl: *mut CURL) -> Option<&'a ShimEasy> {
 
 /// What the libraries libcurl is linked with do for a handle: the content
 /// codings they undo, the signatures they make, the TLS they speak and,
-/// where the build claims it (`HAVE_GSSAPI`), the GSS-API they
-/// authenticate with; before then, as in a C build without it, SOCKS5
-/// offers no GSS-API.
-pub(crate) fn libraries(gssapi: bool) -> &'static curl_core::libraries::Libraries {
-    if gssapi { &LIBRARIES } else { &WITHOUT_GSS }
+/// where the build claims Kerberos (`USE_KERBEROS5`), the GSS-API or the
+/// SSPI they authenticate with; before then, as in a C build without
+/// either, SOCKS5 offers no GSS-API.
+pub(crate) fn libraries(kerberos: bool) -> &'static curl_core::libraries::Libraries {
+    if kerberos { &LIBRARIES } else { &WITHOUT_GSS }
 }
 
-static LIBRARIES: curl_core::libraries::Libraries = libraries_with(Some(&curl_gssapi::GSSAPI));
+static LIBRARIES: curl_core::libraries::Libraries = libraries_with(Some(SECURITY));
 static WITHOUT_GSS: curl_core::libraries::Libraries = libraries_with(None);
 
+/// Kerberos and SPNEGO by MIT krb5's GSS-API, or on Windows by SSPI, as
+/// every C build for Windows has them.
+#[cfg(not(windows))]
+const SECURITY: curl_core::libraries::Security =
+    curl_core::libraries::Security::Gss(&curl_gssapi::GSSAPI);
+#[cfg(windows)]
+const SECURITY: curl_core::libraries::Security =
+    curl_core::libraries::Security::Sspi(&curl_sspi::SSPI);
+
 const fn libraries_with(
-    gss: Option<&'static dyn curl_core::gss::Gss>,
+    security: Option<curl_core::libraries::Security>,
 ) -> curl_core::libraries::Libraries {
     use curl_core::coding::{Coding, Decoders};
     curl_core::libraries::Libraries {
@@ -819,7 +828,7 @@ const fn libraries_with(
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: crate::tlslib::ED25519,
         tls: Some(curl_core::libraries::Library::Static(&crate::tlslib::TLS)),
-        gss,
+        security,
         dns: crate::ares::LIBRARY,
         idn: Some(IDN),
         h2: Some(&curl_nghttp2::NGHTTP2),
@@ -851,7 +860,7 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
     }
     let mut handle = Easy::new();
     handle.set_libraries(curl_core::libraries::SharedLibraries::of_static(libraries(
-        crate::setopt::gssapi(),
+        crate::setopt::kerberos(),
     )));
     handle.set_components(Some(crate::root::components()));
     match ShimEasy::boxed(handle, CSide::new()) {
@@ -1511,13 +1520,17 @@ mod tests {
         curl_multi_perform, curl_multi_remove_handle,
     };
 
-    /// A handle has GSS-API only where the build claims it, as C has it
-    /// only where built with it: before the claim, SOCKS5 offers no
-    /// GSS-API.
+    /// A handle has GSS-API, or on Windows SSPI, only where the build
+    /// claims Kerberos, as C has either only where built with it: before
+    /// the claim, SOCKS5 offers no GSS-API.
     #[test]
     fn a_handle_has_gss_api_where_claimed() {
-        assert!(libraries(true).gss.is_some());
-        assert!(libraries(false).gss.is_none());
+        let sspi = |l: &curl_core::libraries::Libraries| {
+            matches!(l.security, Some(curl_core::libraries::Security::Sspi(_)))
+        };
+        assert!(libraries(true).security.is_some());
+        assert_eq!(sspi(libraries(true)), cfg!(windows));
+        assert!(libraries(false).security.is_none());
         let (with, without) = (libraries(true), libraries(false));
         assert!(with.tls.is_some() && without.tls.is_some());
         // Ed25519 is OpenSSL's: Schannel's build has none.

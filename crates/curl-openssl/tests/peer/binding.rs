@@ -96,7 +96,7 @@ static KEEPING: Keeping = Keeping;
 
 static BINDING_LIBRARIES: Libraries = Libraries {
     tls: Some(Library::Static(&curl_openssl::OPENSSL)),
-    gss: Some(&KEEPING),
+    security: Some(curl_core::libraries::Security::Gss(&KEEPING)),
     ..Libraries::NONE
 };
 

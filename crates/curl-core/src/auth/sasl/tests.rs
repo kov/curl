@@ -25,6 +25,7 @@ fn with_cx<R>(
         host: b"127.0.0.1",
         port,
         random: &mut draw,
+        sspi: None,
         said: &mut said,
     };
     f(&mut cx)
@@ -239,6 +240,7 @@ fn with_said<R>(
         host: b"127.0.0.1",
         port: 110,
         random: &mut draw,
+        sspi: None,
         said: &mut said,
     };
     let r = f(&mut cx);
@@ -860,4 +862,94 @@ fn a_raw_protocol_s_messages_are_not_base64() {
         assert_eq!(resp.len(), 5 + 32);
         assert!(!sasl.wants_challenge());
     });
+}
+
+/// Over SSPI, DIGEST-MD5's response is the package's to the challenge as
+/// it came, for `service/host`, as the user (C's Windows build); an
+/// empty challenge cancels, said; the package unknown, the credentials
+/// refused and a context refused are C's errors, the last said.
+#[test]
+fn digest_md5_over_sspi_is_the_package_s() {
+    use crate::sspi::Initialized;
+    use crate::sspi::testing::{Answer, Asked, Scripted};
+    let sspi = Scripted::leaked();
+    let creds = Secret::new(b"dom\\user", b"secret", b"");
+    let run = |chlg: &[u8]| {
+        let mut lines = Vec::new();
+        let mut draw = |_: &mut [u8]| Ok(());
+        let mut said = |_: Say, args: core::fmt::Arguments<'_>| lines.push(args.to_string());
+        let mut cx = Ctx {
+            creds: Some(creds),
+            sasl_ir: false,
+            host: b"mail.example",
+            port: 110,
+            random: &mut draw,
+            sspi: Some(sspi),
+            said: &mut said,
+        };
+        let r = digest_md5_sspi(&mut cx, sspi, chlg, "pop");
+        (r, lines)
+    };
+    let made = |status: SecStatus, token: &[u8]| {
+        Answer::Initialized(Ok((
+            Initialized {
+                status,
+                confidentiality: false,
+                integrity: false,
+            },
+            token.to_vec(),
+        )))
+    };
+    sspi.then(Answer::MaxToken(Ok(40)))
+        .then(Answer::Credentials(Ok(())))
+        .then(made(SecStatus::OK, b"resp"));
+    assert_eq!(run(b"nonce=\"n\"\0x"), (Ok(Some(b"resp".to_vec())), vec![]));
+    assert_eq!(
+        sspi.asked(),
+        [
+            Asked::MaxToken(Package::Digest),
+            Asked::Credentials(
+                Package::Digest,
+                Some([
+                    b"user".to_vec(),
+                    b"dom".to_vec(),
+                    b"secret".to_vec(),
+                    Vec::new()
+                ])
+            ),
+            Asked::Initialize {
+                target: b"pop/mail.example".to_vec(),
+                flags: Req::default(),
+                native: false,
+                fresh: true,
+                input: vec![(b'T', b"nonce=\"n\"\0x".to_vec())],
+                output: Output::Room(40),
+            },
+            Asked::Dropped,
+        ]
+    );
+    assert_eq!(
+        run(b""),
+        (
+            Ok(None),
+            vec!["DIGEST-MD5 handshake failure (empty challenge message)".to_string()]
+        )
+    );
+    sspi.then(Answer::MaxToken(Err(SecStatus::new(-1))));
+    assert_eq!(run(b"c").0, Err(SaslError::NoAuthInfo));
+    let refused = SecStatus::new(0x8009_030d_u32 as i32);
+    sspi.then(Answer::MaxToken(Ok(40)))
+        .then(Answer::Credentials(Err(SspiFailure::Status(refused))));
+    assert_eq!(run(b"c"), (Err(SaslError::Denied), vec![]));
+    sspi.then(Answer::MaxToken(Ok(40)))
+        .then(Answer::Credentials(Ok(())))
+        .then(made(refused, b""));
+    assert_eq!(
+        run(b"c"),
+        (
+            Err(SaslError::AuthError),
+            vec!["schannel: InitializeSecurityContext failed: status 0x8009030d".to_string()]
+        )
+    );
+    assert_eq!(sspi.unused(), 0);
 }

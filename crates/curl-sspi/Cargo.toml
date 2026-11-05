@@ -1,0 +1,21 @@
+[package]
+name = "curl-sspi"
+description = "Windows' SSPI for the curl rewrite: Negotiate, Kerberos and Digest, and the handles Schannel shares"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Windows' own: on any other system the crate is empty.
+[target.'cfg(windows)'.dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+curl-os = { path = "../curl-os" }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security_Authentication_Identity",
+    "Win32_Security_Credentials",
+] }
+
+[lints]
+workspace = true

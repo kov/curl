@@ -9,11 +9,12 @@ use super::{Failure, Handshake, Ip, Lent, SetupMut, StepCx, Wake, report_resolve
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::socks::{
     Creds, Dest, Failed, GssError, GssLine, GssMethod, Handshake as Exchange, Resolved, SocksError,
-    Took, Version,
+    Status, Took, Version,
 };
 use crate::conn::{Handshook, RecvFailed, SocksTarget};
 use crate::error::ErrorKind;
 use crate::gss::Style;
+use crate::libraries::Security;
 use crate::multi::Host;
 use crate::trace;
 
@@ -132,7 +133,7 @@ fn start<H: Host>(
     };
     let options = cx.easy().options();
     let auth = options.proxy.socks5_auth;
-    let gss = cx.easy().libraries().gss.map(|library| GssMethod {
+    let gss = cx.easy().libraries().security.map(|library| GssMethod {
         library,
         nec: options.proxy.socks5_gssapi_nec,
         delegation: options.login.delegation,
@@ -311,15 +312,33 @@ fn refused<H: Host>(cx: &mut StepCx<'_, H>, e: &SocksError) -> ErrorKind {
 
 /// The GSS-API method failed: what the library said of the call that
 /// failed (`check_gss_err`, which says nothing of a text too long for its
-/// buffer), what C says of the step, and that the method failed, each a
-/// reason of its own (`Curl_SOCKS5_gssapi_negotiate`'s caller).
+/// buffer; SSPI's `check_sspi_err`), what C says of the step, and that
+/// the method failed, each a reason of its own
+/// (`Curl_SOCKS5_gssapi_negotiate`'s caller).
 fn gss_refused<H: Host>(cx: &mut StepCx<'_, H>, e: &GssError) -> ErrorKind {
-    if let Some((call, status)) = e.status {
-        let gss = cx
-            .easy()
-            .libraries()
-            .gss
-            .expect("a GSS-API status is the library's");
+    let security = cx.easy().libraries().security;
+    if let Some(Status::Sspi(call, status)) = e.status {
+        let Some(Security::Sspi(sspi)) = security else {
+            unreachable!("an SSPI status is SSPI's");
+        };
+        // At most C's `STRERROR_LEN`, on the stack.
+        let mut text = crate::text::Text::<256>::new();
+        sspi.describe(status, &mut |part| text.push_clipped(part));
+        trace::fail_with(
+            cx,
+            ErrorKind::Proxy,
+            &[
+                b"SSPI error: ",
+                call.name().as_bytes(),
+                b" failed: ",
+                text.bytes(),
+            ],
+        );
+    }
+    if let Some(Status::Gss(call, status)) = e.status {
+        let Some(Security::Gss(gss)) = security else {
+            unreachable!("a GSS-API status is the library's");
+        };
         // At most C's 1024 bytes, on the stack.
         let mut text = crate::text::Text::<1024>::new();
         if gss
@@ -338,8 +357,20 @@ fn gss_refused<H: Host>(cx: &mut StepCx<'_, H>, e: &GssError) -> ErrorKind {
             );
         }
     }
-    if e.step != Failed::Silently {
-        trace::fail(cx, ErrorKind::Proxy, format_args!("{}", e.step));
+    // SSPI's build says nothing of a message it could not unwrap.
+    let said = !matches!(
+        (e.step, security),
+        (Failed::Silently, _) | (Failed::Unwrap, Some(Security::Sspi(_)))
+    );
+    if said {
+        match security {
+            Some(Security::Sspi(_)) => {
+                trace::fail(cx, ErrorKind::Proxy, format_args!("{}", e.step.sspi()));
+            }
+            _ => {
+                trace::fail(cx, ErrorKind::Proxy, format_args!("{}", e.step));
+            }
+        }
     }
     trace::fail(
         cx,

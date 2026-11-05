@@ -10,9 +10,9 @@ witness: curl-core conn::socks::tests::gss::gss_api_is_offered_where_built_in_an
 file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi easy::tests::a_handle_has_gss_api_where_claimed
 --- old
-    if gssapi { &LIBRARIES } else { &WITHOUT_GSS }
+    if kerberos { &LIBRARIES } else { &WITHOUT_GSS }
 --- new
-    if gssapi || true { &LIBRARIES } else { &WITHOUT_GSS }
+    if kerberos || true { &LIBRARIES } else { &WITHOUT_GSS }
 
 === the tool gives GSS-API to a build that does not claim it
 file: crates/curl-tool/src/operate.rs
@@ -55,11 +55,11 @@ witness: curl-core conn::socks::tests::gss::protection_granted_fails_once_the_re
 file: crates/curl-core/src/conn/socks/gss.rs
 witness: curl-core conn::socks::tests::gss::the_level_asked_is_the_last_step_s
 --- old
-        self.can = if step.confidentiality {
+        self.can = if confidentiality {
 --- new
         self.can = if input.is_some() {
             self.can
-        } else if step.confidentiality {
+        } else if confidentiality {
 
 === the credentials' service is not the context's
 file: crates/curl-core/src/conn/socks/gss.rs
@@ -90,20 +90,20 @@ witness: curl-core proto::http::tests::socks_gss::a_proxy_closing_is_said_of_the
 file: crates/curl-core/src/multi/state/socks.rs
 witness: curl-core proto::http::tests::socks_gss::a_gss_api_failure_gives_c_s_three_reasons
 --- old
-    if e.step != Failed::Silently {
+    if said {
 --- new
-    if e.step == Failed::Silently {
+    if !said {
 
 === the library's words come after the step's, not first
 file: crates/curl-core/src/multi/state/socks.rs
 witness: curl-core proto::http::tests::socks_gss::a_gss_api_failure_gives_c_s_three_reasons
 --- old
-    if let Some((call, status)) = e.status {
+    if let Some(Status::Gss(call, status)) = e.status {
 --- new
     if e.step != Failed::Silently {
         trace::fail(cx, ErrorKind::Proxy, format_args!("{}", e.step));
     }
-    if let Some((call, status)) = e.status {
+    if let Some(Status::Gss(call, status)) = e.status {
 
 === a GSS-API send that fails is said as the handshake's others
 file: crates/curl-core/src/multi/state/socks.rs

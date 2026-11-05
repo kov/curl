@@ -2320,7 +2320,7 @@ fn a_negotiate_challenge_through_an_http_2_proxy_asks_again() {
     let libraries = SharedLibraries::new(Libraries {
         tls: Some(Library::Static(backend)),
         h2: Some(&FAKE),
-        gss: Some(gss),
+        security: Some(crate::libraries::Security::Gss(gss)),
         ..Libraries::NONE
     })
     .unwrap();

@@ -57,7 +57,6 @@ curl-alloc = { path = "../curl-alloc" }
 curl-ares = { path = "../curl-ares", optional = true }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os", features = ["args", "fs", "net"] }
-curl-gssapi = { path = "../curl-gssapi" }
 curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
 curl-psl = { path = "../curl-psl" }
@@ -73,6 +72,13 @@ libc = "0.2"
 curl-zstd = { path = "../curl-zstd" }
 # `#[mutants::skip]`, for cargo-mutants: an attribute and nothing else.
 mutants = "0.0.4"
+
+# Kerberos and SPNEGO: MIT krb5's GSS-API, or on Windows SSPI, as C's
+# builds have them.
+[target.'cfg(not(windows))'.dependencies]
+curl-gssapi = { path = "../curl-gssapi" }
+[target.'cfg(windows)'.dependencies]
+curl-sspi = { path = "../curl-sspi" }
 
 [dev-dependencies]
 # The tests build what the core reports.

@@ -73,20 +73,20 @@ impl From<OutOfMemory> for DigestError {
     }
 }
 
-fn skip_blanks(s: &[u8]) -> &[u8] {
+pub(crate) fn skip_blanks(s: &[u8]) -> &[u8] {
     let n = s.iter().take_while(|&&b| b == b' ' || b == b'\t').count();
     &s[n..]
 }
 
 /// A pair's name, its value unquoted, and what follows it.
-type Pair<'a> = (&'a [u8], Vec<u8>, &'a [u8]);
+pub(crate) type Pair<'a> = (&'a [u8], Vec<u8>, &'a [u8]);
 
 /// A `name=value` pair at the start of `s`, the value quoted or not, and
 /// what follows it (`Curl_auth_digest_get_pair`). None where it is
 /// malformed: no `=`, a quote unclosed by the line's end or inside a bare
 /// value, a value too long. A value that cannot be held is an error, not
 /// the challenge's end.
-fn pair(s: &[u8]) -> Result<Option<Pair<'_>>, OutOfMemory> {
+pub(crate) fn pair(s: &[u8]) -> Result<Option<Pair<'_>>, OutOfMemory> {
     let Some(eq) = s.iter().position(|&b| b == b'=') else {
         return Ok(None);
     };

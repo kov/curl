@@ -51,7 +51,6 @@ unicode = ["curl-core/unicode"]
 [dependencies]
 curl-alloc = { version = "0.1.0", path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
-curl-gssapi = { path = "../curl-gssapi" }
 curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
 curl-psl = { path = "../curl-psl" }
@@ -69,11 +68,17 @@ libc = "0.2"
 # from it whether the library is LibreSSL (`cfg(libressl)`).
 openssl-sys = { version = "0.9.118", optional = true }
 
+# Kerberos and SPNEGO: MIT krb5's GSS-API, or on Windows SSPI, as C's
+# builds have them.
+[target.'cfg(not(windows))'.dependencies]
+curl-gssapi = { path = "../curl-gssapi" }
+
 # Winsock's socket addresses, which an opener is handed; the names the
 # debug build's `curl_dbg_fopen` opens, read as the build reads a name.
 [target.'cfg(windows)'.dependencies]
 curl-os = { path = "../curl-os", features = ["fs"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
+curl-sspi = { path = "../curl-sspi" }
 
 [dev-dependencies]
 # The `script:` test protocol, for bodies sent again.

@@ -4,6 +4,10 @@
 //! protection the rest of the connection would have agreed on, wrapped by
 //! the context unless NEC's reference implementation is followed.
 //!
+//! The context is the GSS-API library's, or, in C's Windows build,
+//! SSPI's Kerberos package (`lib/socks_sspi.c`): the same messages,
+//! said with SSPI's words where C's says them.
+//!
 //! C runs the exchange with the socket made blocking; here its messages
 //! are states of the handshake, sent and read as the socket lets them.
 
@@ -13,20 +17,39 @@ use curl_alloc::TryVec as _;
 
 use super::{Awaiting, Handshake, SocksError, Took, head};
 use crate::gss::{
-    Flags, Gss, GssCall, GssFailure, GssFailureKind, GssNote, GssStatus, Mech, Progress, StepSink,
-    Target,
+    Flags, GssCall, GssContext, GssFailure, GssFailureKind, GssNote, GssStatus, Mech, Progress,
+    StepSink, Target,
 };
+use crate::libraries::Security;
 use crate::options::Delegation;
+use crate::sspi::{
+    Identity, Initialize, Input, Output, Package, Req, SecStatus, SspiContext, SspiFailure,
+};
 
 /// SOCKS5's GSS-API method, built in with `library`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GssMethod {
-    pub(crate) library: &'static dyn Gss,
+    pub(crate) library: Security,
     /// The protection level goes unwrapped (`CURLOPT_SOCKS5_GSSAPI_NEC`).
     pub(crate) nec: bool,
-    /// What the credentials may be delegated (`CURLOPT_GSSAPI_DELEGATION`).
+    /// What the credentials may be delegated (`CURLOPT_GSSAPI_DELEGATION`);
+    /// SSPI's never are.
     pub(crate) delegation: Delegation,
 }
+
+/// The method's security context.
+#[derive(Debug)]
+pub(crate) enum MethodContext {
+    Gss(Box<dyn GssContext>),
+    /// SSPI's, with the service name each step names.
+    Sspi {
+        context: Box<dyn SspiContext>,
+        target: Vec<u8>,
+    },
+}
+
+/// A largest message's token: its length goes in 16 bits.
+const MAX_TOKEN: usize = 0xffff;
 
 /// The service a proxy is authenticated as where none is named.
 const DEFAULT_SERVICE: &[u8] = b"rcmd";
@@ -69,6 +92,8 @@ pub(crate) enum GssLine<'a> {
     Supports(Level),
     /// The protection the proxy granted.
     Granted(u8),
+    /// The protection the proxy granted, in SSPI's words.
+    GrantedNotUsed(u8),
 }
 
 impl fmt::Display for GssLine<'_> {
@@ -88,16 +113,23 @@ impl fmt::Display for GssLine<'_> {
                     Level::Confidentiality => "confidentiality",
                 }
             ),
-            GssLine::Granted(level) => write!(
+            GssLine::Granted(level) => {
+                write!(f, "SOCKS5 access {} protection granted.", granted(level))
+            }
+            GssLine::GrantedNotUsed(level) => write!(
                 f,
-                "SOCKS5 access {} protection granted.",
-                match level {
-                    0 => "without GSS-API data",
-                    1 => "with GSS-API integrity",
-                    _ => "with GSS-API confidentiality",
-                }
+                "SOCKS5 access {} protection granted BUT NOT USED.",
+                granted(level)
             ),
         }
+    }
+}
+
+fn granted(level: u8) -> &'static str {
+    match level {
+        0 => "without GSS-API data",
+        1 => "with GSS-API integrity",
+        _ => "with GSS-API confidentiality",
     }
 }
 
@@ -106,15 +138,49 @@ impl fmt::Display for GssLine<'_> {
 /// before "Unable to negotiate SOCKS5 GSS-API context.".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GssError {
-    pub(crate) status: Option<(GssCall, GssStatus)>,
+    pub(crate) status: Option<Status>,
     pub(crate) step: Failed,
+}
+
+/// A library call that said no, and what it said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Status {
+    Gss(GssCall, GssStatus),
+    Sspi(SspiCall, SecStatus),
+}
+
+/// The SSPI calls whose refusal C names (`check_sspi_err`'s
+/// `function`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SspiCall {
+    AcquireCredentialsHandle,
+    InitializeSecurityContext,
+    QueryCredentialsAttributes,
+    QueryContextAttributes,
+    EncryptMessage,
+    DecryptMessage,
+}
+
+impl SspiCall {
+    /// The name C gives the call; `QueryCredentialsAttributes` is
+    /// misspelt as C misspells it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            SspiCall::AcquireCredentialsHandle => "AcquireCredentialsHandle",
+            SspiCall::InitializeSecurityContext => "InitializeSecurityContext",
+            SspiCall::QueryCredentialsAttributes => "QueryCredentialAttributes",
+            SspiCall::QueryContextAttributes => "QueryContextAttributes",
+            SspiCall::EncryptMessage => "EncryptMessage",
+            SspiCall::DecryptMessage => "DecryptMessage",
+        }
+    }
 }
 
 impl GssError {
     fn of(failure: GssFailure, step: Failed) -> GssError {
         match failure.kind {
             GssFailureKind::Status(status) => GssError {
-                status: Some((failure.call, status)),
+                status: Some(Status::Gss(failure.call, status)),
                 step,
             },
             // Out of memory, C says no more than that it was unable to
@@ -122,6 +188,23 @@ impl GssError {
             GssFailureKind::OutOfMemory
             | GssFailureKind::NtlmChosen
             | GssFailureKind::EmptyToken => GssError::silent(),
+        }
+    }
+
+    /// `call` refused with `status`, then `step` said.
+    fn sspi(call: SspiCall, status: SecStatus, step: Failed) -> GssError {
+        GssError {
+            status: Some(Status::Sspi(call, status)),
+            step,
+        }
+    }
+
+    /// SSPI's `failure` of `call`; out of memory, said no more than that
+    /// the method failed.
+    fn of_sspi(failure: SspiFailure, call: SspiCall, step: Failed) -> GssError {
+        match failure {
+            SspiFailure::Status(status) => GssError::sspi(call, status, step),
+            SspiFailure::OutOfMemory => GssError::silent(),
         }
     }
 
@@ -177,6 +260,53 @@ pub(crate) enum Failed {
     RecvLevel,
     Unwrap,
     LevelLength(usize),
+}
+
+impl Failed {
+    /// The step said as C's SSPI build says it (`lib/socks_sspi.c`):
+    /// SSPI where the GSS-API build says GSS-API, and its own words for
+    /// the credentials, the context and its sizes. It says nothing of a
+    /// message it could not unwrap.
+    pub(crate) fn sspi(self) -> SspiWords {
+        SspiWords(self)
+    }
+}
+
+/// A step that failed, in SSPI's words.
+pub(crate) struct SspiWords(Failed);
+
+impl fmt::Display for SspiWords {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self.0 {
+            Failed::CreateName => "Failed to acquire credentials.",
+            Failed::InitToken => "Failed to initialize security context.",
+            Failed::Wrap => "Failed to query security context attributes.",
+            Failed::Unwrap => "",
+            Failed::SendAuthRequest => "Failed to send SSPI authentication request.",
+            Failed::SendAuthToken => "Failed to send SSPI authentication token.",
+            Failed::RecvAuthResponse => "Failed to receive SSPI authentication response.",
+            Failed::AuthType(v, t) => {
+                return write!(f, "Invalid SSPI authentication response type ({v} {t}).");
+            }
+            Failed::ZeroAuthToken => "Invalid zero-length SSPI authentication token.",
+            Failed::RecvAuthToken => "Failed to receive SSPI authentication token.",
+            Failed::SendLevelRequest => "Failed to send SSPI encryption request.",
+            Failed::SendLevel => "Failed to send SSPI encryption type.",
+            Failed::RecvLevelResponse => "Failed to receive SSPI encryption response.",
+            Failed::LevelType(v, t) => {
+                return write!(f, "Invalid SSPI encryption response type ({v} {t}).");
+            }
+            Failed::ZeroLevelToken => "Invalid zero-length SSPI encryption token.",
+            Failed::RecvLevel => "Failed to receive SSPI encryption type.",
+            Failed::LevelLength(n) => {
+                return write!(f, "Invalid SSPI encryption response length ({n}).");
+            }
+            Failed::Silently | Failed::Rejected(..) | Failed::Username => {
+                return fmt::Display::fmt(&self.0, f);
+            }
+        };
+        f.write_str(text)
+    }
 }
 
 impl fmt::Display for Failed {
@@ -265,23 +395,42 @@ impl Handshake {
             Some(c) if !c.service.is_empty() => &c.service[..],
             _ => DEFAULT_SERVICE,
         };
-        let target = if service.contains(&b'/') {
-            Target::Name(service)
-        } else {
-            Target::Service {
-                service,
-                host: proxy,
+        let context = match method.library {
+            Security::Gss(library) => {
+                let target = if service.contains(&b'/') {
+                    Target::Name(service)
+                } else {
+                    Target::Service {
+                        service,
+                        host: proxy,
+                    }
+                };
+                let flags = Flags {
+                    mutual: true,
+                    delegate_by_policy: method.delegation.by_policy,
+                    delegate: method.delegation.always,
+                };
+                let context = library
+                    .context(target, Mech::Kerberos, flags)
+                    .map_err(|f| GssError::of(f, Failed::CreateName))?;
+                MethodContext::Gss(context)
+            }
+            Security::Sspi(library) => {
+                // `service/proxy`, where the service names no host.
+                let mut target = Vec::new();
+                target.try_extend_from_slice(service)?;
+                if !service.contains(&b'/') {
+                    target.try_push(b'/')?;
+                    target.try_extend_from_slice(proxy)?;
+                }
+                let context = library
+                    .credentials(Package::Kerberos, &Identity::Current)
+                    .map_err(|f| {
+                        GssError::of_sspi(f, SspiCall::AcquireCredentialsHandle, Failed::CreateName)
+                    })?;
+                MethodContext::Sspi { context, target }
             }
         };
-        let flags = Flags {
-            mutual: true,
-            delegate_by_policy: method.delegation.by_policy,
-            delegate: method.delegation.always,
-        };
-        let context = method
-            .library
-            .context(target, Mech::Kerberos, flags)
-            .map_err(|f| GssError::of(f, Failed::CreateName))?;
         self.context = Some(context);
         self.gss_step(None, say)
     }
@@ -295,28 +444,37 @@ impl Handshake {
         input: Option<&[u8]>,
         say: &mut dyn FnMut(GssLine<'_>),
     ) -> Result<(), SocksError> {
-        let context = self.context.as_mut().expect("a context is made");
         self.out.clear();
         self.sent = 0;
         let mut framer = Framer {
             out: &mut self.out,
             too_long: false,
         };
-        let step = context
-            .step(input, None, &mut framer)
-            .map_err(|f| GssError::of(f, Failed::InitToken))?;
-        if framer.too_long {
-            return Err(GssError::at(Failed::InitToken).into());
-        }
+        let (more, confidentiality, integrity) =
+            match self.context.as_mut().expect("a context is made") {
+                MethodContext::Gss(context) => {
+                    let step = context
+                        .step(input, None, &mut framer)
+                        .map_err(|f| GssError::of(f, Failed::InitToken))?;
+                    if framer.too_long {
+                        return Err(GssError::at(Failed::InitToken).into());
+                    }
+                    let more = step.progress == Progress::Continue;
+                    (more, step.confidentiality, step.integrity)
+                }
+                MethodContext::Sspi { context, target } => {
+                    sspi_step(&mut **context, target, input, &mut framer)?
+                }
+            };
         // Each step says it anew (`gss_ret_flags`).
-        self.can = if step.confidentiality {
+        self.can = if confidentiality {
             Level::Confidentiality
-        } else if step.integrity {
+        } else if integrity {
             Level::Integrity
         } else {
             Level::None
         };
-        if step.progress == Progress::Continue {
+        if more {
             self.framing = Framing::Token { level_at: None };
             self.awaiting = Awaiting::GssToken;
             return Ok(());
@@ -362,14 +520,24 @@ impl Handshake {
     }
 
     /// Who the context says it authenticated (`socks5_gss_auth_verify`).
+    /// SSPI's, the credentials' user.
     fn verify(&mut self, say: &mut dyn FnMut(GssLine<'_>)) -> Result<(), SocksError> {
-        let context = self.context.as_mut().expect("a context is made");
-        context
-            .initiator(&mut |user| {
-                say(GssLine::Authenticated(user));
+        match self.context.as_mut().expect("a context is made") {
+            MethodContext::Gss(context) => context
+                .initiator(&mut |user| {
+                    say(GssLine::Authenticated(user));
+                    Ok(())
+                })
+                .map_err(|f| GssError::of(f, Failed::Username).into()),
+            MethodContext::Sspi { context, .. } => {
+                let mut user = Vec::new();
+                context.user_name(&mut user).map_err(|f| {
+                    GssError::of_sspi(f, SspiCall::QueryCredentialsAttributes, Failed::Username)
+                })?;
+                say(GssLine::Authenticated(&user));
                 Ok(())
-            })
-            .map_err(|f| GssError::of(f, Failed::Username).into())
+            }
+        }
     }
 
     /// The protection level asked for, after what is to be sent: wrapped
@@ -383,17 +551,35 @@ impl Handshake {
                 .try_extend_from_slice(&[VERSION, PROTECTION, 0, 1, level as u8])
                 .map_err(|_| GssError::silent())?;
         } else {
-            let context = self.context.as_mut().expect("a context is made");
             let out = &mut self.out;
-            context
-                .wrap(&[level as u8], &mut |token| {
-                    // C keeps the low 16 bits of a length that cannot need
-                    // more.
-                    let [hi, lo] = (token.len() as u16).to_be_bytes();
+            match self.context.as_mut().expect("a context is made") {
+                MethodContext::Gss(context) => context
+                    .wrap(&[level as u8], &mut |token| {
+                        // C keeps the low 16 bits of a length that cannot
+                        // need more.
+                        let [hi, lo] = (token.len() as u16).to_be_bytes();
+                        out.try_extend_from_slice(&[VERSION, PROTECTION, hi, lo])?;
+                        out.try_extend_from_slice(token)
+                    })
+                    .map_err(|f| GssError::of(f, Failed::Wrap))?,
+                MethodContext::Sspi { context, .. } => {
+                    let sizes = context.sizes().map_err(|s| {
+                        GssError::sspi(SspiCall::QueryContextAttributes, s, Failed::Wrap)
+                    })?;
+                    let mut token = Vec::new();
+                    context
+                        .wrap(sizes, &[level as u8], &mut token)
+                        .map_err(|f| {
+                            GssError::of_sspi(f, SspiCall::EncryptMessage, Failed::Silently)
+                        })?;
+                    let Ok(wrapped) = u16::try_from(token.len()) else {
+                        return Err(GssError::silent().into());
+                    };
+                    let [hi, lo] = wrapped.to_be_bytes();
                     out.try_extend_from_slice(&[VERSION, PROTECTION, hi, lo])?;
-                    out.try_extend_from_slice(token)
-                })
-                .map_err(|f| GssError::of(f, Failed::Wrap))?;
+                    out.try_extend_from_slice(&token)?;
+                }
+            }
         }
         self.awaiting = Awaiting::GssLevel;
         Ok(())
@@ -429,20 +615,36 @@ impl Handshake {
                 _ => return Err(GssError::at(Failed::LevelLength(token.len())).into()),
             }
         } else {
-            let context = self.context.as_mut().expect("a context is made");
-            let mut unwrapped = Err(0);
-            context
-                .unwrap(token, &mut |message| {
-                    unwrapped = match message {
-                        &[level] => Ok(level),
-                        _ => Err(message.len()),
-                    };
-                    Ok(())
-                })
-                .map_err(|f| GssError::of(f, Failed::Unwrap))?;
-            unwrapped.map_err(|n| GssError::at(Failed::LevelLength(n)))?
+            match self.context.as_mut().expect("a context is made") {
+                MethodContext::Gss(context) => {
+                    let mut unwrapped = Err(0);
+                    context
+                        .unwrap(token, &mut |message| {
+                            unwrapped = match message {
+                                &[level] => Ok(level),
+                                _ => Err(message.len()),
+                            };
+                            Ok(())
+                        })
+                        .map_err(|f| GssError::of(f, Failed::Unwrap))?;
+                    unwrapped.map_err(|n| GssError::at(Failed::LevelLength(n)))?
+                }
+                MethodContext::Sspi { context, .. } => {
+                    let mut message = Vec::new();
+                    context.unwrap(token, &mut message).map_err(|f| {
+                        GssError::of_sspi(f, SspiCall::DecryptMessage, Failed::Silently)
+                    })?;
+                    match message[..] {
+                        [level] => level,
+                        _ => return Err(GssError::at(Failed::LevelLength(message.len())).into()),
+                    }
+                }
+            }
         };
-        say(GssLine::Granted(granted));
+        say(match method.library {
+            Security::Gss(_) => GssLine::Granted(granted),
+            Security::Sspi(_) => GssLine::GrantedNotUsed(granted),
+        });
         self.granted = granted;
         if granted == 0 {
             self.context = None;
@@ -480,4 +682,53 @@ impl Handshake {
         };
         Some(GssError::at(step).into())
     }
+}
+
+/// The next step of SSPI's context with the service `target`, with the
+/// proxy's token if it sent one, its token framed into `framer`
+/// (`socks5_sspi_loop`): whether the proxy is to answer it, and the
+/// protection the context can give.
+fn sspi_step(
+    context: &mut dyn SspiContext,
+    target: &[u8],
+    input: Option<&[u8]>,
+    framer: &mut Framer<'_>,
+) -> Result<(bool, bool, bool), SocksError> {
+    // C hands over its input buffer empty on the first step.
+    let given = [Input::Token(input.unwrap_or_default())];
+    let call = Initialize {
+        target,
+        flags: Req {
+            mutual_auth: true,
+            allocate_memory: true,
+            confidentiality: true,
+            replay_detect: true,
+            ..Req::default()
+        },
+        native: true,
+        fresh: input.is_none(),
+        input: &given,
+        output: Output::Allocated,
+    };
+    let mut token = Vec::new();
+    let done = context.initialize(&call, &mut token).map_err(|f| {
+        GssError::of_sspi(f, SspiCall::InitializeSecurityContext, Failed::InitToken)
+    })?;
+    // `check_sspi_err`: no other status passes.
+    let passes = [
+        SecStatus::OK,
+        SecStatus::CONTINUE_NEEDED,
+        SecStatus::COMPLETE_NEEDED,
+        SecStatus::COMPLETE_AND_CONTINUE,
+    ];
+    if !passes.contains(&done.status) {
+        let call = SspiCall::InitializeSecurityContext;
+        return Err(GssError::sspi(call, done.status, Failed::InitToken).into());
+    }
+    if token.len() > MAX_TOKEN {
+        return Err(GssError::silent().into());
+    }
+    framer.token(&token)?;
+    let more = done.status == SecStatus::CONTINUE_NEEDED;
+    Ok((more, done.confidentiality, done.integrity))
 }

@@ -9,8 +9,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::auth::creds::Secret;
 use crate::auth::http::{
-    self as auth, AuthAct, AuthRequest, Challenges, HeardNote, Offered, Output, OutputError,
-    PeerAsked, Side,
+    self as auth, AuthAct, AuthRequest, Challenges, HeardNote, Offered, Output, PeerAsked, Side,
 };
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
@@ -288,15 +287,14 @@ pub(super) fn connect_head<H: Host>(
         .proxy
         .own_headers(&options.http)
         .replaces(b"Proxy-Authorization");
+    let mut said = auth::DigestSaid::default();
     let output = cx
         .easy_mut()
         .auth
         .side(Side::Proxy)
-        .output(secret, custom, &request, random);
-    let output = output.map_err(|e| match e {
-        OutputError::OutOfMemory => ErrorKind::OutOfMemory,
-        OutputError::Random => ErrorKind::FailedInit,
-    })?;
+        .output(secret, custom, &request, random, &mut said);
+    crate::proto::http::digest_said(cx, said);
+    let output = output.map_err(crate::proto::http::output_error)?;
     // Negotiate's token is the context's to make, the connection's to
     // be (`Curl_output_negotiate`).
     let output = if output.negotiate {
@@ -627,7 +625,7 @@ fn line<H: Host>(
 /// proxy: each Negotiate challenge it offers is taken into the context
 /// with the proxy (`auth_spnego`), and the request made again if one was.
 fn challenged<H: Host>(s: &mut SetupMut<'_>, lent: &mut Lent<'_>, cx: &mut StepCx<'_, H>) {
-    let Some(gss) = cx.easy().libraries().gss else {
+    let Some(security) = cx.easy().libraries().security else {
         return;
     };
     if !cx.easy().auth.proxy_picks_negotiate() {
@@ -635,7 +633,7 @@ fn challenged<H: Host>(s: &mut SetupMut<'_>, lent: &mut Lent<'_>, cx: &mut StepC
     }
     let (peer, credentials, _) = proxy(lent.route);
     let request = negotiate::Request {
-        gss,
+        security,
         side: Side::Proxy,
         credentials,
         peer,
@@ -667,7 +665,7 @@ fn negotiate<H: Host>(
     peer: &Peer,
     credentials: Option<Secret<'_>>,
 ) -> Result<Output, ErrorKind> {
-    let Some(gss) = cx.easy().libraries().gss else {
+    let Some(security) = cx.easy().libraries().security else {
         cx.easy_mut().auth.side(Side::Proxy).finish();
         return Ok(Output {
             header: None,
@@ -677,7 +675,7 @@ fn negotiate<H: Host>(
         });
     };
     let request = negotiate::Request {
-        gss,
+        security,
         side: Side::Proxy,
         credentials,
         peer,
@@ -696,9 +694,10 @@ fn negotiate<H: Host>(
 /// What the proxy is asked, for its challenges.
 pub(super) fn proxy_asked<H: Host>(lent: &Lent<'_>, cx: &StepCx<'_, H>) -> PeerAsked {
     let (peer, secret, _) = proxy(lent.route);
+    let sspi = cx.easy().libraries().sspi().is_some();
     cx.easy()
         .auth
-        .asked((None, peer), (secret, peer), false, true)
+        .asked((None, peer), (secret, peer), false, true, sspi)
         .proxy
 }
 
@@ -735,9 +734,10 @@ fn finish<H: Host>(
     // What the challenges lead to (`Curl_http_auth_act`).
     let asked = {
         let (peer, secret, _) = proxy(lent.route);
+        let sspi = cx.easy().libraries().sspi().is_some();
         cx.easy()
             .auth
-            .asked((None, peer), (secret, peer), false, true)
+            .asked((None, peer), (secret, peer), false, true, sspi)
     };
     let t = tunnel(&mut s.handshake);
     let closes = t.answer.closes() || t.closed;
@@ -757,9 +757,10 @@ fn finish<H: Host>(
         .as_ref()
         .expect("a tunnel goes through a proxy")
         .peer;
+    let sspi = cx.easy().libraries().sspi();
     cx.easy_mut()
         .auth
-        .apply(&act, offered, &route.origin, proxy)
+        .apply(&act, offered, &route.origin, proxy, sspi)
         .map_err(oom)?;
     if !act.again() {
         return Err(trace::fail(

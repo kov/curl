@@ -5,6 +5,7 @@ use proptest::prelude::*;
 use super::*;
 
 mod gss;
+mod sspi;
 
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
@@ -664,7 +665,7 @@ proptest! {
             let creds = creds.as_ref().map(|(user, password)| Creds { user, password, service: b"" });
             let d = Dest { name: &name, port, resolved };
             let library = library.map(|nec| GssMethod {
-                library: &gss::ECHO,
+                library: crate::libraries::Security::Gss(&gss::ECHO),
                 nec,
                 delegation: crate::options::Delegation::default(),
             });
@@ -687,7 +688,7 @@ proptest! {
         let start = || {
             let d = Dest { name: b"h", port: 80, resolved: Resolved::Remote };
             let library = Some(GssMethod {
-                library: &gss::ECHO,
+                library: crate::libraries::Security::Gss(&gss::ECHO),
                 nec,
                 delegation: crate::options::Delegation::default(),
             });

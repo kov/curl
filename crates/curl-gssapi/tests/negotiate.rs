@@ -22,7 +22,7 @@ use curl_core::options::{AuthMethods, HttpAuth, Login, Options};
 use curl_core::time::ManualClock;
 
 static LIBRARIES: Libraries = Libraries {
-    gss: Some(&curl_gssapi::GSSAPI),
+    security: Some(curl_core::libraries::Security::Gss(&curl_gssapi::GSSAPI)),
     ..Libraries::NONE
 };
 

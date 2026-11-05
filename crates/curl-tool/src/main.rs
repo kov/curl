@@ -282,7 +282,11 @@ impl std::fmt::Display for CurlVersion {
         let h2 = Library("nghttp2", curl_nghttp2::version());
         // A build without QUIC names no QUIC library.
         let h3 = tlslib::quic();
-        let gss = Library("mit-krb5", curl_gssapi::version());
+        // Kerberos is SSPI's on Windows, which names no library.
+        #[cfg(not(windows))]
+        let gss = Some(Library("mit-krb5", curl_gssapi::version()));
+        #[cfg(windows)]
+        let gss: Option<Library<&str>> = None;
         // Named by the library itself (`Curl_ldap_version`).
         let ldap = curl_ldap::version();
         // A build with the threaded resolver does not use c-ares.
@@ -298,7 +302,7 @@ impl std::fmt::Display for CurlVersion {
             Some(&ssh),
             Some(&h2),
             h3.as_ref().map(|h| h as &dyn std::fmt::Display),
-            Some(&gss),
+            gss.as_ref().map(|g| g as &dyn std::fmt::Display),
             ldap.as_ref().map(|l| l as &dyn std::fmt::Display),
         ];
         let mut linked: [&dyn std::fmt::Display; 12] = [&""; 12];
@@ -401,6 +405,16 @@ mod tests {
         assert_eq!(read("9223372036854775808"), None);
     }
 
+    /// The GSS-API library after a space: none on Windows, where Kerberos
+    /// is SSPI's.
+    #[cfg(feature = "openssl")]
+    fn gss_shown() -> String {
+        #[cfg(not(windows))]
+        return format!(" mit-krb5/{}", curl_gssapi::version());
+        #[cfg(windows)]
+        return String::new();
+    }
+
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
     #[cfg(feature = "openssl")]
@@ -415,7 +429,7 @@ mod tests {
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -432,7 +446,7 @@ mod tests {
             curl_nghttp2::version(),
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),
-            curl_gssapi::version(),
+            gss_shown(),
             ldap_shown()
         );
         assert_eq!(CurlVersion.to_string(), want);

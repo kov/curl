@@ -1,0 +1,696 @@
+//! SSPI's calls (`secur32`), as `lib/curl_sspi.c` and the files under it
+//! make them: in the build's text, the ANSI calls, or in the Unicode
+//! build the wide ones, as C's `TCHAR` table (`Curl_pSecFn`) is either.
+//! Handles are released as they go; buffers SSPI allocates are freed as
+//! they are copied out. What is generic to SSPI (a buffer SSPI
+//! allocated, the credential and context handles, the buffer
+//! descriptions) Schannel uses too.
+
+#![allow(unsafe_code)]
+
+use core::ffi::c_void;
+use core::ptr::{self, NonNull};
+
+use curl_alloc::{OutOfMemory, TryVec as _};
+use windows_sys::Win32::Security::Authentication::Identity as id;
+use windows_sys::Win32::Security::Credentials::SecHandle;
+
+/// `SECBUFFER_*` and the other numbers the calls take.
+pub mod kind {
+    pub const EMPTY: u32 = 0;
+    pub const DATA: u32 = 1;
+    pub const TOKEN: u32 = 2;
+    pub const PKG_PARAMS: u32 = 3;
+    pub const PADDING: u32 = 9;
+    pub const STREAM: u32 = 10;
+}
+
+/// `SECBUFFER_VERSION`.
+const VERSION: u32 = 0;
+/// `SECPKG_ATTR_SIZES`.
+const ATTR_SIZES: u32 = 0;
+/// `SECPKG_CRED_ATTR_NAMES`.
+const CRED_ATTR_NAMES: u32 = 1;
+/// `SEC_WINNT_AUTH_IDENTITY_VERSION`.
+const IDENTITY_VERSION: u32 = 0x200;
+/// `SEC_WINNT_AUTH_IDENTITY_ANSI` and `_UNICODE`.
+const IDENTITY_ANSI: u32 = 1;
+const IDENTITY_UNICODE: u32 = 2;
+/// `SECURITY_NATIVE_DREP`.
+const NATIVE_DREP: u32 = 0x10;
+/// `KERB_WRAP_NO_ENCRYPT`.
+const WRAP_NO_ENCRYPT: u32 = 0x8000_0001;
+
+/// A buffer description of `kind` over `len` bytes at `data`.
+pub fn buffer(kind: u32, data: *mut c_void, len: u32) -> id::SecBuffer {
+    id::SecBuffer {
+        cbBuffer: len,
+        BufferType: kind,
+        pvBuffer: data,
+    }
+}
+
+/// An empty buffer description.
+pub fn empty() -> id::SecBuffer {
+    buffer(kind::EMPTY, ptr::null_mut(), 0)
+}
+
+/// The description of `buffers`.
+pub fn desc(buffers: &mut [id::SecBuffer]) -> id::SecBufferDesc {
+    id::SecBufferDesc {
+        ulVersion: VERSION,
+        cBuffers: u32::try_from(buffers.len()).expect("a few"),
+        pBuffers: buffers.as_mut_ptr(),
+    }
+}
+
+/// A buffer SSPI allocated and handed over, freed as it goes.
+pub struct Token {
+    data: NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: memory SSPI allocated for the caller, freed from any thread.
+unsafe impl Send for Token {}
+
+impl Token {
+    /// Take over the buffer `b` says SSPI allocated, if it did.
+    fn of(b: &id::SecBuffer) -> Option<Token> {
+        let data = NonNull::new(b.pvBuffer.cast::<u8>())?;
+        Some(Token {
+            data,
+            len: usize::try_from(b.cbBuffer).expect("a u32 fits"),
+        })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        // SAFETY: the `len` bytes SSPI allocated, owned here until drop.
+        unsafe { core::slice::from_raw_parts(self.data.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        // SAFETY: a buffer SSPI allocated, freed once.
+        unsafe { id::FreeContextBuffer(self.data.as_ptr().cast()) };
+    }
+}
+
+/// A credential handle SSPI made, freed as it goes.
+pub struct CredHandle(SecHandle);
+
+// SAFETY: a credential handle may be used by any thread, and by several
+// contexts at once; SSPI serialises what it must.
+unsafe impl Send for CredHandle {}
+// SAFETY: as above.
+unsafe impl Sync for CredHandle {}
+
+impl CredHandle {
+    /// Adopt the handle a successful `AcquireCredentialsHandle` wrote.
+    ///
+    /// # Safety
+    ///
+    /// `handle` is one SSPI made, owned by no one else.
+    pub unsafe fn adopt(handle: SecHandle) -> CredHandle {
+        CredHandle(handle)
+    }
+
+    pub fn as_ptr(&self) -> *const SecHandle {
+        &self.0
+    }
+}
+
+impl Drop for CredHandle {
+    fn drop(&mut self) {
+        // SAFETY: a handle SSPI made, freed once, after every context
+        // made with it, each of which holds it or was deleted first.
+        unsafe { id::FreeCredentialsHandle(&self.0) };
+    }
+}
+
+/// A security context's handle, deleted as it goes. It stays at one
+/// place, which an application may be handed.
+pub struct CtxtHandle(Box<SecHandle>);
+
+// SAFETY: a context is used by one thread at a time, which `&mut self`
+// ensures; it moves between threads only whole.
+unsafe impl Send for CtxtHandle {}
+
+impl CtxtHandle {
+    /// Room for the handle a first `InitializeSecurityContext` writes.
+    pub fn room() -> Result<Box<SecHandle>, OutOfMemory> {
+        curl_alloc::try_box(SecHandle::default())
+    }
+
+    /// Adopt the handle a successful first call wrote in `room`.
+    ///
+    /// # Safety
+    ///
+    /// `room` holds a context SSPI made, owned by no one else.
+    pub unsafe fn adopt(room: Box<SecHandle>) -> CtxtHandle {
+        CtxtHandle(room)
+    }
+
+    pub fn as_ptr(&self) -> *const SecHandle {
+        &*self.0
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut SecHandle {
+        &mut *self.0
+    }
+}
+
+impl Drop for CtxtHandle {
+    fn drop(&mut self) {
+        // SAFETY: a context SSPI made, deleted once.
+        unsafe { id::DeleteSecurityContext(&*self.0) };
+    }
+}
+
+/// Text in the build's form, ended by a zero: the ANSI code page's bytes,
+/// or UTF-16.
+pub enum Text {
+    Ansi(Vec<u8>),
+    Wide(Vec<u16>),
+}
+
+impl Text {
+    /// Its length in characters, the zero not counted.
+    fn len(&self) -> u32 {
+        let n = match self {
+            Text::Ansi(t) => t.len(),
+            Text::Wide(t) => t.len(),
+        };
+        u32::try_from(n - 1).unwrap_or(u32::MAX)
+    }
+
+    fn ansi(&self) -> *const u8 {
+        match self {
+            Text::Ansi(t) => t.as_ptr(),
+            Text::Wide(_) => unreachable!("the build's text is one form"),
+        }
+    }
+
+    fn wide(&self) -> *const u16 {
+        match self {
+            Text::Wide(t) => t.as_ptr(),
+            Text::Ansi(_) => unreachable!("the build's text is one form"),
+        }
+    }
+
+    fn is_wide(&self) -> bool {
+        matches!(self, Text::Wide(_))
+    }
+}
+
+/// The largest token `package` makes (`QuerySecurityPackageInfo`), or
+/// the status.
+pub fn max_token(package: &Text) -> Result<u32, i32> {
+    let status;
+    let max;
+    if package.is_wide() {
+        let mut info: *mut id::SecPkgInfoW = ptr::null_mut();
+        // SAFETY: the name, ended by a zero, and room for the pointer.
+        status = unsafe { id::QuerySecurityPackageInfoW(package.wide(), &mut info) };
+        if status != 0 || info.is_null() {
+            return Err(status);
+        }
+        // SAFETY: the record SSPI allocated, read before it is freed.
+        max = unsafe { (*info).cbMaxToken };
+        // SAFETY: as above, freed once.
+        unsafe { id::FreeContextBuffer(info.cast()) };
+    } else {
+        let mut info: *mut id::SecPkgInfoA = ptr::null_mut();
+        // SAFETY: as above.
+        status = unsafe { id::QuerySecurityPackageInfoA(package.ansi(), &mut info) };
+        if status != 0 || info.is_null() {
+            return Err(status);
+        }
+        // SAFETY: as above.
+        max = unsafe { (*info).cbMaxToken };
+        // SAFETY: as above.
+        unsafe { id::FreeContextBuffer(info.cast()) };
+    }
+    Ok(max)
+}
+
+/// Whose credentials: none for the process's user; else the user, the
+/// domain and the password, each absent in an identity naming nothing
+/// but the packages, and the packages, if any are named.
+pub struct IdentityText {
+    pub given: Option<[Text; 3]>,
+    pub packages: Option<Text>,
+}
+
+/// Outbound credentials of `package` for `identity`
+/// (`AcquireCredentialsHandle`), or the status.
+pub fn acquire(package: &Text, identity: Option<&IdentityText>) -> Result<CredHandle, i32> {
+    let mut handle = SecHandle::default();
+    let len = |t: Option<&Text>| t.map_or(0, Text::len);
+    let status = if package.is_wide() {
+        let p = |t: Option<&Text>| t.map_or(ptr::null_mut(), |t| t.wide().cast_mut());
+        let auth = identity.map(|i| {
+            let [user, domain, password] = match &i.given {
+                Some([u, d, w]) => [Some(u), Some(d), Some(w)],
+                None => [None, None, None],
+            };
+            id::SEC_WINNT_AUTH_IDENTITY_EXW {
+                Version: IDENTITY_VERSION,
+                Length: u32::try_from(size_of::<id::SEC_WINNT_AUTH_IDENTITY_EXW>()).expect("small"),
+                User: p(user),
+                UserLength: len(user),
+                Domain: p(domain),
+                DomainLength: len(domain),
+                Password: p(password),
+                PasswordLength: len(password),
+                Flags: IDENTITY_UNICODE,
+                PackageList: p(i.packages.as_ref()),
+                PackageListLength: len(i.packages.as_ref()),
+            }
+        });
+        let auth: *const c_void = auth
+            .as_ref()
+            .map_or(ptr::null(), |a| ptr::from_ref(a).cast());
+        // SAFETY: the name, the identity and what it points at are alive
+        // for the call, which only reads them; the handle is written.
+        unsafe {
+            id::AcquireCredentialsHandleW(
+                ptr::null(),
+                package.wide(),
+                id::SECPKG_CRED_OUTBOUND,
+                ptr::null(),
+                auth,
+                None,
+                ptr::null(),
+                &mut handle,
+                ptr::null_mut(),
+            )
+        }
+    } else {
+        let p = |t: Option<&Text>| t.map_or(ptr::null_mut(), |t| t.ansi().cast_mut());
+        let auth = identity.map(|i| {
+            let [user, domain, password] = match &i.given {
+                Some([u, d, w]) => [Some(u), Some(d), Some(w)],
+                None => [None, None, None],
+            };
+            id::SEC_WINNT_AUTH_IDENTITY_EXA {
+                Version: IDENTITY_VERSION,
+                Length: u32::try_from(size_of::<id::SEC_WINNT_AUTH_IDENTITY_EXA>()).expect("small"),
+                User: p(user),
+                UserLength: len(user),
+                Domain: p(domain),
+                DomainLength: len(domain),
+                Password: p(password),
+                PasswordLength: len(password),
+                Flags: IDENTITY_ANSI,
+                PackageList: p(i.packages.as_ref()),
+                PackageListLength: len(i.packages.as_ref()),
+            }
+        });
+        let auth: *const c_void = auth
+            .as_ref()
+            .map_or(ptr::null(), |a| ptr::from_ref(a).cast());
+        // SAFETY: as above.
+        unsafe {
+            id::AcquireCredentialsHandleA(
+                ptr::null(),
+                package.ansi(),
+                id::SECPKG_CRED_OUTBOUND,
+                ptr::null(),
+                auth,
+                None,
+                ptr::null(),
+                &mut handle,
+                ptr::null_mut(),
+            )
+        }
+    };
+    if status != 0 {
+        return Err(status);
+    }
+    // SAFETY: the call succeeded and wrote a handle no one else owns.
+    Ok(unsafe { CredHandle::adopt(handle) })
+}
+
+/// What an `InitializeSecurityContext` gave.
+pub struct Initialized {
+    pub status: i32,
+    pub attrs: u32,
+}
+
+/// An input buffer: its kind and its bytes, which SSPI only reads.
+pub struct In<'a> {
+    pub kind: u32,
+    pub bytes: &'a [u8],
+}
+
+/// What an `InitializeSecurityContext` is asked.
+#[derive(Clone, Copy)]
+pub struct Call<'a> {
+    /// A new context replaces the one there is.
+    pub fresh: bool,
+    pub target: &'a Text,
+    pub req: u32,
+    /// `SECURITY_NATIVE_DREP`, else 0.
+    pub native: bool,
+    /// None passes no description.
+    pub input: &'a [In<'a>],
+    /// The output buffer's size; none for one SSPI allocates.
+    pub room: Option<usize>,
+}
+
+/// `InitializeSecurityContext` with `cred` as `call` says, on `context`
+/// unless the call is fresh, in which case a new context replaces it;
+/// the token into `out`.
+pub fn initialize(
+    cred: &CredHandle,
+    context: &mut Option<CtxtHandle>,
+    call: &Call<'_>,
+    out: &mut Vec<u8>,
+) -> Result<Initialized, OutOfMemory> {
+    let Call {
+        fresh,
+        target,
+        req,
+        native,
+        input,
+        room,
+    } = *call;
+    out.clear();
+    let mut inbufs = [empty(), empty(), empty()];
+    assert!(input.len() <= inbufs.len(), "at most three input buffers");
+    for (b, i) in inbufs.iter_mut().zip(input) {
+        // An empty buffer points nowhere, as C's NULL ones do.
+        let data = if i.bytes.is_empty() {
+            ptr::null_mut()
+        } else {
+            i.bytes.as_ptr().cast_mut().cast()
+        };
+        *b = buffer(
+            i.kind,
+            data,
+            u32::try_from(i.bytes.len()).unwrap_or(u32::MAX),
+        );
+    }
+    let indesc = desc(&mut inbufs[..input.len()]);
+    let room_len = room.unwrap_or(0);
+    if room.is_some() {
+        *out = curl_alloc::try_zeroed(room_len)?;
+    }
+    let mut outbuf = [buffer(
+        kind::TOKEN,
+        if room.is_some() {
+            out.as_mut_ptr().cast()
+        } else {
+            ptr::null_mut()
+        },
+        u32::try_from(room_len).unwrap_or(u32::MAX),
+    )];
+    let mut outdesc = desc(&mut outbuf);
+    let mut attrs = 0u32;
+    // The context goes on in place, or a new one is written to room of
+    // its own, which replaces the old once it is made.
+    let mut fresh_room = None;
+    let (old, new): (*const SecHandle, *mut SecHandle) = match context {
+        Some(c) if !fresh => (c.as_ptr(), c.as_mut_ptr()),
+        _ => {
+            let r = fresh_room.insert(CtxtHandle::room()?);
+            (ptr::null(), &mut **r)
+        }
+    };
+    let pinput = if input.is_empty() {
+        ptr::null()
+    } else {
+        &raw const indesc
+    };
+    let status = if target.is_wide() {
+        // SAFETY: the credential, the context, the target and the
+        // buffers are alive for the call; SSPI reads the input, writes
+        // the token into the room given or one it allocates, the
+        // context's handle and the attributes.
+        unsafe {
+            id::InitializeSecurityContextW(
+                cred.as_ptr(),
+                old,
+                target.wide(),
+                req,
+                0,
+                if native { NATIVE_DREP } else { 0 },
+                pinput,
+                0,
+                new,
+                &mut outdesc,
+                &mut attrs,
+                ptr::null_mut(),
+            )
+        }
+    } else {
+        // SAFETY: as above.
+        unsafe {
+            id::InitializeSecurityContextA(
+                cred.as_ptr(),
+                old,
+                target.ansi().cast(),
+                req,
+                0,
+                if native { NATIVE_DREP } else { 0 },
+                pinput,
+                0,
+                new,
+                &mut outdesc,
+                &mut attrs,
+                ptr::null_mut(),
+            )
+        }
+    };
+    if room.is_some() {
+        let n = usize::try_from(outbuf[0].cbBuffer).expect("a u32 fits");
+        out.truncate(n.min(room_len));
+    } else if let Some(token) = Token::of(&outbuf[0]) {
+        out.try_extend_from_slice(token.bytes())?;
+    }
+    if status >= 0
+        && let Some(r) = fresh_room
+    {
+        // SAFETY: a first call that did not fail made the context.
+        *context = Some(unsafe { CtxtHandle::adopt(r) });
+    }
+    Ok(Initialized { status, attrs })
+}
+
+/// `CompleteAuthToken` on `context` over `token`, which it may change.
+pub fn complete(context: Option<&CtxtHandle>, token: &mut Vec<u8>) -> i32 {
+    let mut b = [buffer(
+        kind::TOKEN,
+        token.as_mut_ptr().cast(),
+        u32::try_from(token.len()).unwrap_or(u32::MAX),
+    )];
+    let d = desc(&mut b);
+    let handle = context.map_or(ptr::null(), CtxtHandle::as_ptr);
+    // SAFETY: the context (or none, which SSPI refuses) and the token,
+    // alive for the call; SSPI writes within the token.
+    let status = unsafe { id::CompleteAuthToken(handle, &d) };
+    let n = usize::try_from(b[0].cbBuffer).expect("a u32 fits");
+    token.truncate(n);
+    status
+}
+
+/// `MakeSignature` on `context` with Digest's parameters, `method` and
+/// `uri`, the response written into `out`, a room of `room` bytes.
+pub fn make_signature(
+    context: &CtxtHandle,
+    method: &[u8],
+    uri: &[u8],
+    room: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), i32> {
+    *out = curl_alloc::try_zeroed(room)
+        .map_err(|OutOfMemory| windows_sys::Win32::Foundation::SEC_E_INSUFFICIENT_MEMORY)?;
+    let param = |bytes: &[u8]| {
+        buffer(
+            kind::PKG_PARAMS,
+            bytes.as_ptr().cast_mut().cast(),
+            u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+        )
+    };
+    let mut b = [
+        buffer(kind::TOKEN, ptr::null_mut(), 0),
+        param(method),
+        param(uri),
+        buffer(kind::PKG_PARAMS, ptr::null_mut(), 0),
+        buffer(
+            kind::PADDING,
+            out.as_mut_ptr().cast(),
+            u32::try_from(room).unwrap_or(u32::MAX),
+        ),
+    ];
+    let d = desc(&mut b);
+    // SAFETY: the context and the buffers, alive for the call; SSPI reads
+    // the parameters and writes within the room.
+    let status = unsafe { id::MakeSignature(context.as_ptr(), 0, &d, 0) };
+    if status != 0 {
+        out.clear();
+        return Err(status);
+    }
+    let n = usize::try_from(b[4].cbBuffer).expect("a u32 fits");
+    out.truncate(n.min(room));
+    Ok(())
+}
+
+/// The context's sizes (`SECPKG_ATTR_SIZES`): the trailer's and the
+/// block's.
+pub fn sizes(context: &CtxtHandle) -> Result<(u32, u32), i32> {
+    let mut s = id::SecPkgContext_Sizes::default();
+    // SAFETY: the context and room for the attribute, alive for the call.
+    let status =
+        unsafe { id::QueryContextAttributesW(context.as_ptr(), ATTR_SIZES, (&raw mut s).cast()) };
+    if status != 0 {
+        return Err(status);
+    }
+    Ok((s.cbSecurityTrailer, s.cbBlockSize))
+}
+
+/// Why a protecting call failed.
+pub enum Failed {
+    Status(i32),
+    OutOfMemory,
+}
+
+/// `message` protected without encryption (`EncryptMessage` with
+/// `KERB_WRAP_NO_ENCRYPT`) in a token of `trailer` bytes and padding of
+/// `block`, the three laid end to end into `out`.
+pub fn wrap(
+    context: &CtxtHandle,
+    trailer: u32,
+    block: u32,
+    message: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<(), Failed> {
+    let oom = |_| Failed::OutOfMemory;
+    let zeroed = |n: u32| -> Result<Vec<u8>, Failed> {
+        curl_alloc::try_zeroed(usize::try_from(n).expect("a u32 fits")).map_err(oom)
+    };
+    let mut token = zeroed(trailer)?;
+    let mut data = Vec::new();
+    data.try_extend_from_slice(message).map_err(oom)?;
+    let mut padding = zeroed(block)?;
+    let mut b = [
+        buffer(kind::TOKEN, token.as_mut_ptr().cast(), trailer),
+        buffer(
+            kind::DATA,
+            data.as_mut_ptr().cast(),
+            u32::try_from(data.len()).unwrap_or(u32::MAX),
+        ),
+        buffer(kind::PADDING, padding.as_mut_ptr().cast(), block),
+    ];
+    let d = desc(&mut b);
+    // SAFETY: the context and the buffers, alive for the call; SSPI
+    // writes within them and says how much of each it used.
+    let status = unsafe { id::EncryptMessage(context.as_ptr(), WRAP_NO_ENCRYPT, &d, 0) };
+    if status != 0 {
+        return Err(Failed::Status(status));
+    }
+    out.clear();
+    for (i, v) in [&token, &data, &padding].into_iter().enumerate() {
+        let n = usize::try_from(b[i].cbBuffer).expect("a u32 fits");
+        out.try_extend_from_slice(&v[..n.min(v.len())])
+            .map_err(oom)?;
+    }
+    Ok(())
+}
+
+/// The message `token` protects (`DecryptMessage` of a stream), into
+/// `out`.
+pub fn unwrap(context: &CtxtHandle, token: &[u8], out: &mut Vec<u8>) -> Result<(), Failed> {
+    let mut stream = Vec::new();
+    stream
+        .try_extend_from_slice(token)
+        .map_err(|_| Failed::OutOfMemory)?;
+    let base = stream.as_mut_ptr();
+    let len = stream.len();
+    let mut b = [
+        buffer(
+            kind::STREAM,
+            base.cast(),
+            u32::try_from(len).unwrap_or(u32::MAX),
+        ),
+        buffer(kind::DATA, ptr::null_mut(), 0),
+    ];
+    let d = desc(&mut b);
+    let mut qop = 0u32;
+    // SAFETY: the context and the buffers, alive for the call; SSPI
+    // decrypts within the stream and points the data buffer into it.
+    let status = unsafe { id::DecryptMessage(context.as_ptr(), &d, 0, &mut qop) };
+    if status != 0 {
+        return Err(Failed::Status(status));
+    }
+    out.clear();
+    let n = usize::try_from(b[1].cbBuffer).expect("a u32 fits");
+    if n == 0 {
+        return Ok(());
+    }
+    let at = (b[1].pvBuffer as usize)
+        .checked_sub(base as usize)
+        .filter(|at| at.checked_add(n).is_some_and(|end| end <= len))
+        .expect("SSPI's message lies within the stream");
+    out.try_extend_from_slice(&stream[at..at + n])
+        .map_err(|_| Failed::OutOfMemory)
+}
+
+/// The name of `cred`'s user (`SECPKG_CRED_ATTR_NAMES`): ANSI bytes, or
+/// UTF-16 units, as `wide` asks.
+pub enum UserName {
+    Ansi(Vec<u8>),
+    Wide(Vec<u16>),
+}
+
+pub fn user_name(cred: &CredHandle, wide: bool) -> Result<UserName, Failed> {
+    let mut name: *mut c_void = ptr::null_mut();
+    let status = if wide {
+        // SAFETY: the credential and room for the pointer, alive for the
+        // call.
+        unsafe {
+            id::QueryCredentialsAttributesW(cred.as_ptr(), CRED_ATTR_NAMES, (&raw mut name).cast())
+        }
+    } else {
+        // SAFETY: as above.
+        unsafe {
+            id::QueryCredentialsAttributesA(cred.as_ptr(), CRED_ATTR_NAMES, (&raw mut name).cast())
+        }
+    };
+    if status != 0 {
+        return Err(Failed::Status(status));
+    }
+    let Some(name) = NonNull::new(name) else {
+        return Ok(if wide {
+            UserName::Wide(Vec::new())
+        } else {
+            UserName::Ansi(Vec::new())
+        });
+    };
+    // Freed as it goes, whatever is copied.
+    let _owned = Token {
+        data: name.cast(),
+        len: 0,
+    };
+    let oom = |_| Failed::OutOfMemory;
+    if wide {
+        let p = name.as_ptr().cast::<u16>();
+        let mut n = 0;
+        // SAFETY: a string SSPI wrote, ended by a zero.
+        while unsafe { *p.wrapping_add(n) } != 0 {
+            n += 1;
+        }
+        // SAFETY: the `n` units counted above.
+        let units = unsafe { core::slice::from_raw_parts(p, n) };
+        let mut v = Vec::new();
+        v.try_extend_from_slice(units).map_err(oom)?;
+        Ok(UserName::Wide(v))
+    } else {
+        // SAFETY: as above, in bytes.
+        let bytes = unsafe { core::ffi::CStr::from_ptr(name.as_ptr().cast()) }.to_bytes();
+        let mut v = Vec::new();
+        v.try_extend_from_slice(bytes).map_err(oom)?;
+        Ok(UserName::Ansi(v))
+    }
+}

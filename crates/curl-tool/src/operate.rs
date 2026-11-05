@@ -756,7 +756,7 @@ type StdinFile = TryArc<std::sync::Mutex<std::fs::File>>;
 struct Claims {
     /// `SPNEGO`: Negotiate's bit is kept in a mask of methods.
     spnego: bool,
-    /// `GSS-API`: `CURLOPT_GSSAPI_DELEGATION` and
+    /// `Kerberos`, by GSS-API or SSPI: `CURLOPT_GSSAPI_DELEGATION` and
     /// `CURLOPT_SOCKS5_GSSAPI_NEC` are known.
     gssapi: bool,
 }
@@ -766,7 +766,7 @@ impl Claims {
         let v = curl_core::version::version();
         Claims {
             spnego: v.claims("SPNEGO"),
-            gssapi: v.claims("GSS-API"),
+            gssapi: v.claims("Kerberos"),
         }
     }
 
@@ -4295,12 +4295,22 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
     })
 }
 
+/// Kerberos and SPNEGO by MIT krb5's GSS-API, or on Windows by SSPI, as
+/// every C build for Windows has them.
+#[cfg(not(windows))]
+const SECURITY: curl_core::libraries::Security =
+    curl_core::libraries::Security::Gss(&curl_gssapi::GSSAPI);
+#[cfg(windows)]
+const SECURITY: curl_core::libraries::Security =
+    curl_core::libraries::Security::Sspi(&curl_sspi::SSPI);
+
 /// What the libraries this build is linked with do for the tool's
 /// handles, as C's: the content codings they undo, the signatures they
-/// make, the TLS they speak and, where the build claims it
-/// (`HAVE_GSSAPI`), the GSS-API they authenticate with; before then, as
-/// in a C build without it, SOCKS5 offers no GSS-API. `main` makes it as
-/// C's global init makes its state, and holds it for the run.
+/// make, the TLS they speak and, where the build claims Kerberos
+/// (`USE_KERBEROS5`), the GSS-API or the SSPI they authenticate with;
+/// before then, as in a C build without either, SOCKS5 offers no GSS-API.
+/// `main` makes it as C's global init makes its state, and holds it for
+/// the run.
 pub(crate) struct Linked {
     /// The file TLS secrets are logged to (`SSLKEYLOGFILE`), which
     /// OpenSSL's sessions hold.
@@ -4326,7 +4336,7 @@ impl Linked {
                 }
                 Ok(None)
             };
-        let with = |gss| -> Result<SharedLibraries, OutOfMemory> {
+        let with = |security| -> Result<SharedLibraries, OutOfMemory> {
             use curl_core::coding::{Coding, Decoders};
             let tls = crate::tlslib::tls(&keylog)?;
             SharedLibraries::new(curl_core::libraries::Libraries {
@@ -4337,7 +4347,7 @@ impl Linked {
                     .with(Coding::Zstd, curl_zstd::decoder),
                 ed25519: crate::tlslib::ED25519,
                 tls: Some(Library::Owned(tls)),
-                gss,
+                security,
                 dns: crate::ares::LIBRARY,
                 idn: Some(curl_idn2::IDN),
                 h2: Some(&curl_nghttp2::NGHTTP2),
@@ -4349,7 +4359,7 @@ impl Linked {
             })
         };
         Ok(Linked {
-            with_gss: with(Some(&curl_gssapi::GSSAPI))?,
+            with_gss: with(Some(SECURITY))?,
             without_gss: with(None)?,
             keylog,
         })
@@ -4381,8 +4391,8 @@ mod tests {
             gssapi,
         };
         let linked = super::Linked::new().unwrap();
-        assert!(linked.for_handle(claims(true)).gss.is_some());
-        assert!(linked.for_handle(claims(false)).gss.is_none());
+        assert!(linked.for_handle(claims(true)).security.is_some());
+        assert!(linked.for_handle(claims(false)).security.is_none());
         assert!(linked.for_handle(claims(false)).tls.is_some());
     }
 

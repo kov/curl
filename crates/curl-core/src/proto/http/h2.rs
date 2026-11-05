@@ -2014,11 +2014,12 @@ impl Request {
         let options = cx.easy().options();
         let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
         cx.easy_mut().auth.start(want, proxy_want);
+        let sspi = cx.easy().libraries().sspi().is_some();
         let peer = &request.base.peer;
         let auth = cx
             .easy()
             .auth
-            .asked((None, peer), (None, peer), false, true);
+            .asked((None, peer), (None, peer), false, true, sspi);
         let options = cx.easy().options();
         let http = &options.http;
         let exchange = Exchange {

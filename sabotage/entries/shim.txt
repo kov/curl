@@ -145,9 +145,9 @@ file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::names_the_libraries_as_c
 --- old
                 h3.as_ref().map(|h| h as &dyn fmt::Display),
-                Some(&gss),
+                gss.as_ref().map(|g| g as &dyn std::fmt::Display),
 --- new
-                Some(&gss),
+                gss.as_ref().map(|g| g as &dyn std::fmt::Display),
                 h3.as_ref().map(|h| h as &dyn fmt::Display),
 
 === HTTP/3's feature bit is HTTP/2's

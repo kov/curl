@@ -270,7 +270,7 @@ pub(super) fn challenged<H: Host>(
     cx.report_mut().add_proxy_auth_offered(challenges.offered);
     // Negotiate in use with the proxy takes each challenge into its
     // context (`auth_spnego`).
-    let Some(gss) = cx.easy().libraries().gss else {
+    let Some(security) = cx.easy().libraries().security else {
         return Ok(false);
     };
     if !cx.easy().auth.proxy_picks_negotiate() {
@@ -278,7 +278,7 @@ pub(super) fn challenged<H: Host>(
     }
     let (peer, credentials, _) = super::tunnel::proxy(lent.route);
     let request = negotiate::Request {
-        gss,
+        security,
         side: Side::Proxy,
         credentials,
         peer,

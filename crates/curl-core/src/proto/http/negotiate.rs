@@ -17,9 +17,13 @@ use crate::gss::{
     Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssNote, GssStatus, Mech,
     Progress, StepSink, Style, Target,
 };
+use crate::libraries::Security;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Delegation;
+use crate::sspi::{
+    Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiContext, SspiFailure,
+};
 use crate::trace;
 
 /// What a connection keeps of Negotiate (C's `conn->http_negotiate_state`,
@@ -61,7 +65,7 @@ pub(crate) enum State {
 struct Peering {
     state: State,
     /// The context, once a step made a token.
-    context: Option<Box<dyn GssContext>>,
+    context: Option<Context>,
     /// How far the last step took it (`status`).
     progress: Option<Progress>,
     /// The last token made, to send (`output_token`).
@@ -77,6 +81,18 @@ struct Peering {
     /// A request went with a token after a challenge that had one
     /// (`havemultiplerequests`).
     rounds: bool,
+}
+
+/// A context with one peer, of the library the handle has.
+#[derive(Debug)]
+enum Context {
+    Gss(Box<dyn GssContext>),
+    /// SSPI's credentials and context, and the room its tokens take
+    /// (`token_max`).
+    Sspi {
+        context: Box<dyn SspiContext>,
+        room: usize,
+    },
 }
 
 /// What a context with the origin was bound to.
@@ -197,7 +213,7 @@ impl Wants<'static> {
 /// delegated.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Request<'r> {
-    pub(crate) gss: &'static dyn Gss,
+    pub(crate) security: Security,
     /// The origin, or the HTTP proxy.
     pub(crate) side: Side,
     pub(crate) credentials: Option<Secret<'r>>,
@@ -365,15 +381,28 @@ fn input<H: Host>(
             return Err(ErrorKind::LoginDenied);
         }
     }
-    let binding = match request.tls.and_then(|s| s.channel_binding(&mut Notes(cx))) {
-        None => None,
-        Some(Ok(binding)) => binding,
-        Some(Err(e)) => {
-            nego.reset(side);
-            return Err(e);
+    let stepped = match request.security {
+        Security::Gss(gss) => {
+            let binding = match request.tls.and_then(|s| s.channel_binding(&mut Notes(cx))) {
+                None => None,
+                Some(Ok(binding)) => binding,
+                Some(Err(e)) => {
+                    nego.reset(side);
+                    return Err(e);
+                }
+            };
+            step(
+                cx,
+                nego.with(side),
+                request,
+                gss,
+                challenge,
+                binding.as_deref(),
+            )
         }
+        Security::Sspi(sspi) => sspi_step(cx, nego.with(side), request, sspi, challenge),
     };
-    if let Err(e) = step(cx, nego.with(side), request, challenge, binding.as_deref()) {
+    if let Err(e) = stepped {
         nego.reset(side);
         return Err(e);
     }
@@ -405,11 +434,12 @@ fn input<H: Host>(
 }
 
 /// The context made if there is none, and stepped with the challenge
-/// decoded (`Curl_auth_decode_spnego_message`).
+/// decoded (`Curl_auth_decode_spnego_message`, `spnego_gssapi.c`'s).
 fn step<H: Host>(
     cx: &mut StepCx<'_, H>,
     side: &mut Peering,
     request: &Request<'_>,
+    gss: &'static dyn Gss,
     challenge: &[u8],
     binding: Option<&[u8]>,
 ) -> Result<(), ErrorKind> {
@@ -419,14 +449,9 @@ fn step<H: Host>(
         side.clean();
         return Err(ErrorKind::LoginDenied);
     }
-    let gss = request.gss;
     if side.context.is_none() {
-        let service = request
-            .credentials
-            .and_then(|c| c.service())
-            .unwrap_or(b"HTTP");
         let target = Target::Service {
-            service,
+            service: service(request),
             host: request.peer.name(),
         };
         let flags = Flags {
@@ -435,30 +460,14 @@ fn step<H: Host>(
             delegate: request.delegation.always,
         };
         match gss.context(target, Mech::Spnego, flags) {
-            Ok(context) => side.context = Some(context),
+            Ok(context) => side.context = Some(Context::Gss(context)),
             Err(failure) => return Err(failed(cx, gss, failure)),
         }
     }
-    let input = if challenge.is_empty() {
-        None
-    } else {
-        let decoded = if challenge[0] == b'=' {
-            Vec::new()
-        } else {
-            crate::base64::decode(challenge)
-                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?
-                .ok_or(ErrorKind::BadContentEncoding)?
-        };
-        if decoded.is_empty() {
-            trace::info(
-                cx,
-                format_args!("SPNEGO handshake failure (empty challenge message)"),
-            );
-            return Err(ErrorKind::BadContentEncoding);
-        }
-        Some(decoded)
+    let input = decoded(cx, challenge)?;
+    let Some(Context::Gss(context)) = side.context.as_mut() else {
+        unreachable!("a GSS-API context made above");
     };
-    let context = side.context.as_mut().expect("made above");
     let mut sink = Sink {
         cx,
         gss,
@@ -472,6 +481,156 @@ fn step<H: Host>(
         }
         // Started over by the caller, whatever failed: NTLM chosen too.
         Err(failure) => Err(failed(sink.cx, gss, failure)),
+    }
+}
+
+/// The service the context is with: the one the credentials name, or
+/// `HTTP`.
+fn service<'r>(request: &Request<'r>) -> &'r [u8] {
+    request
+        .credentials
+        .and_then(|c| c.service())
+        .unwrap_or(b"HTTP")
+}
+
+/// The peer's token in `challenge`, base64 after `Negotiate `, or none
+/// where it sent none; an `=` at its start makes it empty, which is an
+/// error, as a token that does not decode is.
+fn decoded<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    challenge: &[u8],
+) -> Result<Option<Vec<u8>>, ErrorKind> {
+    if challenge.is_empty() {
+        return Ok(None);
+    }
+    let decoded = if challenge[0] == b'=' {
+        Vec::new()
+    } else {
+        crate::base64::decode(challenge)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?
+            .ok_or(ErrorKind::BadContentEncoding)?
+    };
+    if decoded.is_empty() {
+        trace::info(
+            cx,
+            format_args!("SPNEGO handshake failure (empty challenge message)"),
+        );
+        return Err(ErrorKind::BadContentEncoding);
+    }
+    Ok(Some(decoded))
+}
+
+/// The context made if there is none, and stepped with the challenge
+/// decoded, by SSPI (`Curl_auth_decode_spnego_message`,
+/// `spnego_sspi.c`'s): with the credentials given, if they name a user,
+/// else the process's user's, never by NTLM. C would bind it to
+/// Schannel's channel (`conn->sslContext`), which nothing sets: it is
+/// never bound.
+fn sspi_step<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    side: &mut Peering,
+    request: &Request<'_>,
+    sspi: &'static dyn Sspi,
+    challenge: &[u8],
+) -> Result<(), ErrorKind> {
+    if side.context.is_some() && side.progress == Some(Progress::Complete) {
+        side.clean();
+        return Err(ErrorKind::LoginDenied);
+    }
+    if side.context.is_none() {
+        let Ok(room) = sspi.max_token(Package::Negotiate) else {
+            return Err(trace::fail(
+                cx,
+                ErrorKind::AuthError,
+                format_args!("SSPI: could not get auth info"),
+            ));
+        };
+        let identity = match request.credentials.filter(|c| !c.user().is_empty()) {
+            Some(c) => Identity::of(c.user(), c.password()),
+            None => Identity::Current,
+        };
+        // "!ntlm" keeps NTLM out of what SPNEGO may settle on.
+        let identity = identity.with_packages(b"!ntlm");
+        let context = match sspi.credentials(Package::Negotiate, &identity) {
+            Ok(context) => context,
+            Err(SspiFailure::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+            // Nothing said of it.
+            Err(SspiFailure::Status(_)) => return Err(ErrorKind::AuthError),
+        };
+        side.context = Some(Context::Sspi { context, room });
+    }
+    let input = decoded(cx, challenge)?;
+    let Some(Context::Sspi { context, room }) = side.context.as_mut() else {
+        unreachable!("an SSPI context made above");
+    };
+    let given = input.as_deref().map(Input::Token);
+    let mut target = Vec::new();
+    for part in [service(request), b"/", request.peer.name()] {
+        target
+            .try_extend_from_slice(part)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    }
+    let delegate = request.delegation.always;
+    let call = Initialize {
+        target: &target,
+        flags: Req {
+            confidentiality: true,
+            delegate,
+            mutual_auth: delegate,
+            ..Req::default()
+        },
+        // Without a challenge, a new context in place of the last.
+        native: true,
+        fresh: input.is_none(),
+        input: given.as_slice(),
+        output: Output::Room(*room),
+    };
+    let mut token = Vec::new();
+    let mut status = match context.initialize(&call, &mut token) {
+        Ok(initialized) => initialized.status,
+        Err(SspiFailure::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+        Err(SspiFailure::Status(status)) => status,
+    };
+    if status.is_error() {
+        return Err(sspi_failed(
+            cx,
+            sspi,
+            "InitializeSecurityContext failed: ",
+            status,
+        ));
+    }
+    if status.wants_completion() {
+        status = context.complete(&mut token);
+        if status.is_error() {
+            return Err(sspi_failed(cx, sspi, "CompleteAuthToken failed: ", status));
+        }
+    }
+    side.progress = Some(if status == SecStatus::OK {
+        Progress::Complete
+    } else if status == SecStatus::CONTINUE_NEEDED {
+        Progress::Continue
+    } else {
+        Progress::Other
+    });
+    side.token = token;
+    Ok(())
+}
+
+/// An SSPI call failed with `status`: said as the transfer's error,
+/// `prefix` and the status's text, out of memory if that is what it says.
+fn sspi_failed<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    sspi: &'static dyn Sspi,
+    prefix: &str,
+    status: SecStatus,
+) -> ErrorKind {
+    let mut text = crate::text::Text::<256>::new();
+    sspi.describe(status, &mut |part| text.push_clipped(part));
+    trace::fail_with(cx, ErrorKind::AuthError, &[prefix.as_bytes(), text.bytes()]);
+    if status == SecStatus::INSUFFICIENT_MEMORY {
+        ErrorKind::OutOfMemory
+    } else {
+        ErrorKind::AuthError
     }
 }
 

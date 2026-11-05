@@ -211,6 +211,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-sspi"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-core",
+ "curl-os",
+ "windows-sys",
+]
+
+[[package]]
 name = "curl-sys-abi"
 version = "0.1.0"
 dependencies = [
@@ -229,6 +239,7 @@ dependencies = [
  "curl-os",
  "curl-psl",
  "curl-schannel",
+ "curl-sspi",
  "curl-zlib",
  "curl-zstd",
  "libc",
@@ -255,6 +266,7 @@ dependencies = [
  "curl-os",
  "curl-psl",
  "curl-schannel",
+ "curl-sspi",
  "curl-zlib",
  "curl-zstd",
  "libc",

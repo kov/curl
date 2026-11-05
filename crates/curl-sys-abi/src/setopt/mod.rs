@@ -182,10 +182,10 @@ fn gss_bool(n: c_long, gssapi: bool) -> Result<bool, Refused> {
     Ok(n != 0)
 }
 
-/// Whether the build claims GSS-API, which C decides when it is built
-/// (`HAVE_GSSAPI`).
-pub(crate) fn gssapi() -> bool {
-    curl_core::version::version().claims("GSS-API")
+/// Whether the build claims Kerberos, GSS-API's or SSPI's, which C decides
+/// when it is built (`HAVE_GSSAPI || USE_WINDOWS_SSPI`, `USE_KERBEROS5`).
+pub(crate) fn kerberos() -> bool {
+    curl_core::version::version().claims("Kerberos")
 }
 
 /// Whether the build claims SPNEGO, which C decides when it is built
@@ -1209,11 +1209,11 @@ fn apply(
             options.proxy.set(|g| &mut g.service, value)?;
         }
         (ffi::CURLOPT_GSSAPI_DELEGATION, Long(n)) => {
-            let delegation = delegation(n, gssapi())?;
+            let delegation = delegation(n, kerberos())?;
             options.login.make_mut()?.delegation = delegation;
         }
         (ffi::CURLOPT_SOCKS5_GSSAPI_NEC, Long(n)) => {
-            let nec = gss_bool(n, gssapi())?;
+            let nec = gss_bool(n, kerberos())?;
             options.proxy.make_mut()?.socks5_gssapi_nec = nec;
         }
         (ffi::CURLOPT_HAPROXY_CLIENT_IP, Ptr(p)) => {

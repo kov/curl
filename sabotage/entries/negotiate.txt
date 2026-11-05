@@ -175,14 +175,14 @@ witness: curl-core proto::http::tests::negotiate::a_step_over_https_is_bound_to_
 file: crates/curl-core/src/proto/http/negotiate.rs
 witness: curl-core proto::http::tests::negotiate::a_binding_not_made_fails_the_request
 --- old
-        Some(Err(e)) => {
-            nego.reset(side);
-            return Err(e);
-        }
-    };
+                Some(Err(e)) => {
+                    nego.reset(side);
+                    return Err(e);
+                }
+            };
 --- new
-        Some(Err(_)) => None,
-    };
+                Some(Err(_)) => None,
+            };
 
 === a reset of the origin's Negotiate leaves the connection bound
 file: crates/curl-core/src/proto/http/negotiate.rs

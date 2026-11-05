@@ -5,5 +5,6 @@
 
 pub(crate) mod creds;
 pub(crate) mod digest;
+pub(crate) mod digest_sspi;
 pub(crate) mod http;
 pub(crate) mod sasl;

@@ -41,6 +41,7 @@ pub mod report;
 mod save;
 pub mod share;
 pub mod ssh;
+pub mod sspi;
 #[cfg(test)]
 mod test_cell;
 /// The loopback interface's name, as the tests scope addresses by it:

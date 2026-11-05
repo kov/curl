@@ -608,22 +608,26 @@ impl Request {
             trusted: self.gate.trusted(),
         };
         let custom = options.http.headers.replaces(b"Authorization");
-        let auth = made(
+        let mut said = crate::auth::http::DigestSaid::default();
+        let auth =
             auth_state
                 .side(Side::Host)
-                .output(credentials, custom, &request, random),
-        )?;
+                .output(credentials, custom, &request, random, &mut said);
+        super::digest_said(cx, said);
+        let auth = made(auth)?;
         let auth = if auth.negotiate {
             self.negotiate(cx, lease, Side::Host, true)?
         } else {
             auth
         };
         let probe = auth.probe;
+        let sspi = cx.easy().libraries().sspi().is_some();
         let auth_asked = cx.easy().auth.asked(
             (credentials, &self.base.peer),
             (None, &self.base.peer),
             probe,
             true,
+            sspi,
         );
         cx.report_mut().set_auth_used(auth.used);
         auth_trace(cx, "Server", auth.used, credentials);

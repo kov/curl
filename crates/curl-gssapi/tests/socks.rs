@@ -26,7 +26,7 @@ use curl_core::time::{ManualClock, TimeLimit};
 mod ccache;
 
 static LIBRARIES: Libraries = Libraries {
-    gss: Some(&curl_gssapi::GSSAPI),
+    security: Some(curl_core::libraries::Security::Gss(&curl_gssapi::GSSAPI)),
     ..Libraries::NONE
 };
 

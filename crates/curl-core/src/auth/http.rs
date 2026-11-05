@@ -9,8 +9,10 @@ use curl_alloc::{OutOfMemory, try_box};
 
 use super::creds::{Answered, Secret, Trusted, copy};
 use super::digest::{Digest, DigestError};
+use super::digest_sspi::{self, Refused, SspiDigest, SspiDigestNote};
 use crate::conn::Peer;
 use crate::options::AuthMethods;
+use crate::sspi::Sspi;
 
 /// Authenticating over a handle's transfers, with the origin and with the
 /// HTTP proxy (C's `state.authhost` and `state.authproxy`), and whether
@@ -91,17 +93,18 @@ impl Auth {
 
     /// What a request asks of its response's challenges: with these
     /// credentials for the origin, and for the proxy, each kept with its
-    /// peer.
+    /// peer; Digest is SSPI's where `sspi` says the handle has it.
     pub(crate) fn asked(
         &self,
         host: (Option<Secret<'_>>, &Peer),
         proxy: (Option<Secret<'_>>, &Peer),
         probe: bool,
         get_or_head: bool,
+        sspi: bool,
     ) -> AuthAsked {
         AuthAsked {
-            host: self.host.asked(host.0, host.1),
-            proxy: self.proxy.asked(proxy.0, proxy.1),
+            host: self.host.asked(host.0, host.1, sspi),
+            proxy: self.proxy.asked(proxy.0, proxy.1, sspi),
             probe,
             get_or_head,
             problem: self.problem,
@@ -110,19 +113,21 @@ impl Auth {
 
     /// What a response offered, and what its challenges led to
     /// (`Curl_http_auth_act`): the origin's kept for `origin`, the
-    /// proxy's for `proxy`.
+    /// proxy's for `proxy`, a Digest challenge for `sspi` where it was
+    /// read for it.
     pub(crate) fn apply(
         &mut self,
         act: &AuthAct,
         offered: Offered,
         origin: &Peer,
         proxy: &Peer,
+        sspi: Option<&'static dyn Sspi>,
     ) -> Result<(), OutOfMemory> {
         self.problem = act.problem;
         self.host
-            .apply(act.picked, act.done, offered.host, origin)?;
+            .apply(act.picked, act.done, offered.host, origin, sspi)?;
         self.proxy
-            .apply(act.proxy_picked, false, offered.proxy, proxy)
+            .apply(act.proxy_picked, false, offered.proxy, proxy, sspi)
     }
 }
 
@@ -174,7 +179,24 @@ impl Picked {
 struct DigestState {
     origin: Peer,
     answered: Option<Answered>,
-    digest: Digest,
+    digest: DigestKind,
+}
+
+/// Digest, the core's or SSPI's.
+#[derive(Debug)]
+enum DigestKind {
+    Own(Digest),
+    Sspi(SspiDigest),
+}
+
+impl DigestKind {
+    /// A challenge to answer: a nonce, or SSPI's challenge.
+    fn answerable(&self) -> bool {
+        match self {
+            DigestKind::Own(d) => d.has_nonce(),
+            DigestKind::Sspi(d) => d.has_challenge(),
+        }
+    }
 }
 
 /// What a request is, for its credentials to answer.
@@ -217,6 +239,37 @@ pub(crate) enum OutputError {
     OutOfMemory,
     /// No random bytes for Digest's client nonce.
     Random,
+    /// SSPI refused Digest's credentials (`CURLE_LOGIN_DENIED`).
+    LoginDenied,
+    /// SSPI's Digest failed otherwise (`CURLE_AUTH_ERROR`).
+    AuthError,
+}
+
+impl From<Refused> for OutputError {
+    fn from(r: Refused) -> Self {
+        match r {
+            Refused::OutOfMemory => OutputError::OutOfMemory,
+            Refused::LoginDenied => OutputError::LoginDenied,
+            Refused::AuthError => OutputError::AuthError,
+        }
+    }
+}
+
+/// What SSPI's Digest said while a request's authentication was made,
+/// to be traced as C traces it, in order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DigestSaid([Option<SspiDigestNote>; 2]);
+
+impl DigestSaid {
+    fn push(&mut self, note: SspiDigestNote) {
+        if let Some(free) = self.0.iter_mut().find(|n| n.is_none()) {
+            *free = Some(note);
+        }
+    }
+
+    pub(crate) fn notes(self) -> impl Iterator<Item = SspiDigestNote> {
+        self.0.into_iter().flatten()
+    }
 }
 
 impl From<OutOfMemory> for OutputError {
@@ -247,13 +300,15 @@ impl PeerAuth {
     /// the peer (`Curl_http_output_auth`, `output_auth_headers`).
     /// `custom` says the application sends its own Authorization, which
     /// Basic and Bearer do not replace; Digest goes beside it, as C's
-    /// does. `random` makes Digest's client nonce.
+    /// does. `random` makes Digest's client nonce; what SSPI's Digest
+    /// says on the way goes to `said`.
     pub(crate) fn output(
         &mut self,
         credentials: Option<Secret<'_>>,
         custom: bool,
         request: &AuthRequest<'_>,
         random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
+        said: &mut DigestSaid,
     ) -> Result<Output, OutputError> {
         // A message signature signs with its own key, and Negotiate with
         // the library's credentials, credentials or not
@@ -306,7 +361,7 @@ impl PeerAuth {
             }
             (Some(AuthMethods::DIGEST), Some(credentials)) => {
                 // In use from the start; done once a challenge is answered.
-                let value = self.answer_digest(credentials, request, random)?;
+                let value = self.answer_digest(credentials, request, random, said)?;
                 self.done = value.is_some();
                 (true, value)
             }
@@ -363,12 +418,15 @@ impl PeerAuth {
     }
 
     /// The `Authorization: Digest` value answering the challenge kept for
-    /// `request`'s origin, if one with a nonce is (`Curl_output_digest`).
+    /// `request`'s origin, if one with a nonce is (`Curl_output_digest`);
+    /// by SSPI, where it is the handle's, which says what it says to
+    /// `said`.
     fn answer_digest(
         &mut self,
         credentials: Secret<'_>,
         request: &AuthRequest<'_>,
         random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
+        said: &mut DigestSaid,
     ) -> Result<Option<Vec<u8>>, OutputError> {
         let stale = self.digest.as_ref().is_some_and(|s| {
             s.origin != *request.origin
@@ -383,11 +441,24 @@ impl PeerAuth {
             return Ok(None);
         };
         state.answered = Some(credentials.answered()?);
-        if !state.digest.has_nonce() {
+        if !state.digest.answerable() {
             return Ok(None);
         }
+        let digest = match &mut state.digest {
+            DigestKind::Own(digest) => digest,
+            DigestKind::Sspi(digest) => {
+                let value = digest_sspi::respond(
+                    digest,
+                    credentials,
+                    request.method,
+                    request.uri,
+                    &mut |n| said.push(n),
+                )?;
+                return Ok(Some(value));
+            }
+        };
         let mut failed = false;
-        let value = state.digest.response(
+        let value = digest.response(
             credentials.user(),
             credentials.password(),
             request.method,
@@ -400,8 +471,10 @@ impl PeerAuth {
         Ok(Some(value))
     }
 
-    /// What a request to `origin` asks of its response's challenges.
-    fn asked(&self, credentials: Option<Secret<'_>>, origin: &Peer) -> PeerAsked {
+    /// What a request to `origin` asks of its response's challenges,
+    /// Digest SSPI's if `sspi`, as in C's Windows build
+    /// (`lib/vauth/digest_sspi.c`).
+    fn asked(&self, credentials: Option<Secret<'_>>, origin: &Peer, sspi: bool) -> PeerAsked {
         PeerAsked {
             want: self.want,
             picked: self.picked.methods(),
@@ -413,7 +486,8 @@ impl PeerAuth {
             digest_nonce: self
                 .digest
                 .as_ref()
-                .is_some_and(|s| s.origin == *origin && s.digest.has_nonce()),
+                .is_some_and(|s| s.origin == *origin && s.digest.answerable()),
+            sspi_digest: sspi,
         }
     }
 
@@ -427,6 +501,7 @@ impl PeerAuth {
         done: bool,
         challenges: Challenges,
         origin: &Peer,
+        sspi: Option<&'static dyn Sspi>,
     ) -> Result<(), OutOfMemory> {
         if let Some(picked) = picked {
             self.picked = if picked.is_empty() {
@@ -442,6 +517,13 @@ impl PeerAuth {
             None => challenges.open.unwrap_or(self.avail),
         };
         if let Some(digest) = challenges.digest {
+            let digest = match digest {
+                DigestRead::Own(digest) => DigestKind::Own(digest),
+                DigestRead::Sspi(challenge) => DigestKind::Sspi(SspiDigest::new(
+                    sspi.expect("read for SSPI where the handle has it"),
+                    challenge,
+                )),
+            };
             self.digest = Some(try_box(DigestState {
                 origin: origin.try_clone()?,
                 answered: None,
@@ -475,8 +557,11 @@ pub(crate) struct PeerAsked {
     done: bool,
     /// The methods offered before and not picked from.
     avail: AuthMethods,
-    /// A Digest nonce from the peer was answered already.
+    /// A Digest nonce from the peer was answered already: by SSPI, a
+    /// challenge was.
     digest_nonce: bool,
+    /// Digest is SSPI's: a challenge is kept as it came.
+    sspi_digest: bool,
 }
 
 impl PeerAsked {
@@ -495,6 +580,7 @@ impl PeerAsked {
         done: false,
         avail: AuthMethods::NONE,
         digest_nonce: false,
+        sspi_digest: false,
     };
 }
 
@@ -549,8 +635,9 @@ pub(crate) struct Challenges {
     pub(crate) offered: AuthMethods,
     /// The credentials were refused, or a challenge could not be read.
     refused: bool,
-    /// The Digest challenge, read whether or not Digest is wanted.
-    digest: Option<Digest>,
+    /// The Digest challenge, read whether or not Digest is wanted; none
+    /// where SSPI's refused one, which leaves what was kept.
+    digest: Option<DigestRead>,
     /// A Negotiate challenge was taken into the connection's context: the
     /// request is made again, whatever else the response leads to
     /// (`auth_spnego`'s `newurl`).
@@ -559,6 +646,14 @@ pub(crate) struct Challenges {
     /// this response or an earlier one of the transfer (`authproblem =
     /// FALSE`): only a refusal after it stands.
     cleared: bool,
+}
+
+/// A Digest challenge read: the core's, or, by SSPI, as it came (none
+/// for one that could not be read).
+#[derive(Debug)]
+enum DigestRead {
+    Own(Digest),
+    Sspi(Option<Vec<u8>>),
 }
 
 /// What C says as it reads one challenge line, in order (`infof`): at
@@ -697,6 +792,23 @@ impl Challenges {
         }
         *open = *open | AuthMethods::DIGEST;
         let rest = &value[AuthMethods::DIGEST.name().len()..];
+        if asked.sspi_digest {
+            // Kept as it came, the blanks after the name passed; one
+            // after another a refusal unless stale, which keeps the first.
+            let read = match rest.first() {
+                Some(b' ' | b'\t') => {
+                    let rest = super::digest::skip_blanks(rest);
+                    digest_sspi::decode(rest, asked.digest_nonce)?.map(Some)
+                }
+                _ => Some(None),
+            };
+            if !read.as_ref().is_some_and(Option::is_some) {
+                self.refused = true;
+                heard.push(HeardNote::Problem(AuthMethods::DIGEST));
+            }
+            self.digest = read.map(DigestRead::Sspi);
+            return Ok(());
+        }
         let (digest, read) = match rest.first() {
             // The blanks are passed as those between pairs are.
             Some(b' ' | b'\t') => Digest::decode(rest, asked.digest_nonce),
@@ -711,7 +823,7 @@ impl Challenges {
                 heard.push(HeardNote::Problem(AuthMethods::DIGEST));
             }
         }
-        self.digest = Some(digest);
+        self.digest = Some(DigestRead::Own(digest));
         Ok(())
     }
 }
@@ -891,6 +1003,7 @@ pub(crate) mod arbitrary {
                     done,
                     avail,
                     digest_nonce,
+                    sspi_digest: false,
                 }
             },
         )
@@ -993,7 +1106,7 @@ mod tests {
             (c.open.unwrap(), c.offered, c.refused),
             (d | AuthMethods::BASIC, d | AuthMethods::BASIC, false)
         );
-        assert!(notes.is_empty() && c.digest.as_ref().is_some_and(Digest::has_nonce));
+        assert!(notes.is_empty() && matches!(&c.digest, Some(DigestRead::Own(d)) if d.has_nonce()));
         let (c, notes) = read(&[b"Digest nonce=\"1\"", b"Digest nonce=\"2\""], false);
         assert_eq!(notes, [HeardNote::DuplicateDigest]);
         assert!(!c.refused);
@@ -1396,10 +1509,11 @@ mod tests {
                 open: Some(AuthMethods::DIGEST),
                 offered: AuthMethods::DIGEST,
                 refused: false,
-                digest: Some(digest),
+                digest: Some(DigestRead::Own(digest)),
                 ..Challenges::default()
             };
-            auth.apply(None, false, challenges, &peer(b"a")).unwrap();
+            auth.apply(None, false, challenges, &peer(b"a"), None)
+                .unwrap();
         };
         let answers = |auth: &mut PeerAuth, at: &Peer, c: &Credentials| {
             let request = AuthRequest {
@@ -1411,7 +1525,13 @@ mod tests {
                 trusted: Some(Trusted::own_url()),
             };
             let out = auth
-                .output(Some(c.secret()), false, &request, |_| Ok(()))
+                .output(
+                    Some(c.secret()),
+                    false,
+                    &request,
+                    |_| Ok(()),
+                    &mut DigestSaid::default(),
+                )
                 .unwrap();
             out.header.is_some()
         };
@@ -1419,9 +1539,9 @@ mod tests {
         let mut auth = PeerAuth::default();
         auth.start(AuthMethods::DIGEST);
         read(&mut auth);
-        assert_eq!(auth.asked(None, &a).avail, AuthMethods::DIGEST);
-        assert!(auth.asked(None, &a).digest_nonce);
-        assert!(!auth.asked(None, &b).digest_nonce);
+        assert_eq!(auth.asked(None, &a, false).avail, AuthMethods::DIGEST);
+        assert!(auth.asked(None, &a, false).digest_nonce);
+        assert!(!auth.asked(None, &b, false).digest_nonce);
         assert!(
             answers(&mut auth, &a, &right),
             "its own origin, in any case"
@@ -1444,11 +1564,11 @@ mod tests {
             open: Some(AuthMethods::DIGEST),
             offered: AuthMethods::DIGEST,
             refused: true,
-            digest: Some(digest),
+            digest: Some(DigestRead::Own(digest)),
             ..Challenges::default()
         };
-        auth.apply(None, false, challenges, &a).unwrap();
-        assert!(!auth.asked(None, &a).digest_nonce);
+        auth.apply(None, false, challenges, &a, None).unwrap();
+        assert!(!auth.asked(None, &a, false).digest_nonce);
         assert!(!answers(&mut auth, &a, &right), "no nonce to answer");
         // A pick leaves nothing open.
         let a_again = peer(b"a");
@@ -1457,9 +1577,10 @@ mod tests {
             false,
             Challenges::default(),
             &a_again,
+            None,
         )
         .unwrap();
-        assert_eq!(auth.asked(None, &a).avail, AuthMethods::NONE);
+        assert_eq!(auth.asked(None, &a, false).avail, AuthMethods::NONE);
     }
 
     /// The handle's state as transfers read it: a problem acted on, until
@@ -1475,7 +1596,7 @@ mod tests {
             problem: true,
             ..AuthAct::default()
         };
-        auth.apply(&problem, Offered::default(), &peer, &peer)
+        auth.apply(&problem, Offered::default(), &peer, &peer, None)
             .unwrap();
         assert!(auth.problem());
         auth.start(AuthMethods::ANY, AuthMethods::ANY);
@@ -1486,13 +1607,14 @@ mod tests {
             host: Challenges::default(),
             proxy: offered(AuthMethods::BASIC),
         };
-        auth.apply(&AuthAct::default(), open, &peer, &peer).unwrap();
+        auth.apply(&AuthAct::default(), open, &peer, &peer, None)
+            .unwrap();
         assert!(auth.proxy_offers(&Challenges::default()), "left open");
         assert!(
             !auth.proxy_offers(&offered(AuthMethods::NONE)),
             "a refusal closes them"
         );
-        let asked = |auth: &Auth| auth.asked((None, &peer), (None, &peer), false, true);
+        let asked = |auth: &Auth| auth.asked((None, &peer), (None, &peer), false, true, false);
         assert!(!asked(&auth).host.done && !asked(&auth).proxy.done);
         auth.side(Side::Proxy).finish();
         assert!(asked(&auth).proxy.done && !asked(&auth).host.done);
@@ -1500,7 +1622,8 @@ mod tests {
             done: true,
             ..AuthAct::default()
         };
-        auth.apply(&done, Offered::default(), &peer, &peer).unwrap();
+        auth.apply(&done, Offered::default(), &peer, &peer, None)
+            .unwrap();
         assert!(asked(&auth).host.done);
     }
 
@@ -1514,7 +1637,7 @@ mod tests {
         let pick = |secret: Secret<'_>, methods| {
             let mut auth = Auth::default();
             auth.start(AuthMethods::ANY, AuthMethods::NONE);
-            let asked = auth.asked((Some(secret), &peer), (None, &peer), false, true);
+            let asked = auth.asked((Some(secret), &peer), (None, &peer), false, true, false);
             let offered = Offered {
                 host: offered(methods),
                 proxy: Challenges::default(),
@@ -1538,9 +1661,15 @@ mod tests {
         let send = |c: &Credentials, custom| {
             let mut side = PeerAuth::default();
             side.start(br);
-            side.output(Some(c.secret()), custom, &request, |_| Ok(()))
-                .unwrap()
-                .header
+            side.output(
+                Some(c.secret()),
+                custom,
+                &request,
+                |_| Ok(()),
+                &mut DigestSaid::default(),
+            )
+            .unwrap()
+            .header
         };
         assert_eq!(send(&token(b"t"), false), Some((br, b"t".to_vec())));
         assert_eq!(send(&token(b"t"), true), None, "the application's own");
@@ -1567,7 +1696,13 @@ mod tests {
         let mut output = |side| {
             let out = auth
                 .side(side)
-                .output(secret(), false, &request, |_| Ok(()))
+                .output(
+                    secret(),
+                    false,
+                    &request,
+                    |_| Ok(()),
+                    &mut DigestSaid::default(),
+                )
                 .unwrap();
             (out.used, out.header, out.probe)
         };
@@ -1601,7 +1736,13 @@ mod tests {
             let mut output = |side| {
                 let out = auth
                     .side(side)
-                    .output(secret, false, &request, |_| Ok(()))
+                    .output(
+                        secret,
+                        false,
+                        &request,
+                        |_| Ok(()),
+                        &mut DigestSaid::default(),
+                    )
                     .unwrap();
                 (out.used, out.header, out.probe)
             };

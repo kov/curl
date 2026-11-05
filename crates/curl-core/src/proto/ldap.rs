@@ -582,6 +582,9 @@ impl Request {
             host: self.base.peer.name(),
             port: self.base.peer.port(),
             random: &mut random,
+            sspi: libraries
+                .security
+                .and_then(crate::libraries::Security::sspi),
             said: &mut say,
         };
         f(&mut lc.sasl, &mut sx)
@@ -1261,6 +1264,12 @@ fn sasl_failed<H: Host>(cx: &mut StepCx<'_, H>, e: SaslError) -> ErrorKind {
         SaslError::Random => {
             trace::fail(cx, ErrorKind::FailedInit, format_args!("no random bytes"))
         }
+        SaslError::NoAuthInfo => trace::fail(
+            cx,
+            ErrorKind::AuthError,
+            format_args!("SSPI: could not get auth info"),
+        ),
+        SaslError::AuthError => ErrorKind::AuthError,
     }
 }
 

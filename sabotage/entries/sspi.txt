@@ -1,0 +1,53 @@
+# Windows' SSPI as C's Windows build routes authentication through it
+# (crates/curl-core/src/proto/http/negotiate.rs, auth/digest_sspi.rs,
+# auth/sasl.rs, conn/socks/gss.rs), over a scripted SSPI. The binding
+# itself (crates/curl-sspi) is Windows-only: its faults are planted by
+# hand on the guest.
+
+=== SPNEGO over SSPI may settle on NTLM
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate_sspi::the_first_token_is_the_process_user_s_without_ntlm
+--- old
+        let identity = identity.with_packages(b"!ntlm");
+--- new
+        let identity = identity.with_packages(b"");
+
+=== a second Digest challenge over SSPI is taken as new, not a refusal
+file: crates/curl-core/src/auth/digest_sspi.rs
+witness: curl-core auth::digest_sspi::tests::a_challenge_after_one_is_a_refusal_unless_stale
+--- old
+    if had && !stale(challenge)? {
+--- new
+    if had && stale(challenge)? {
+
+=== Digest over SSPI makes a new context for each request in place of signing
+file: crates/curl-core/src/auth/digest_sspi.rs
+witness: curl-core auth::digest_sspi::tests::a_context_is_made_then_signs
+--- old
+    if let Some(context) = state.context.as_mut() {
+--- new
+    if let Some(context) = state.context.as_mut().filter(|_| false) {
+
+=== SASL DIGEST-MD5's credentials refused by SSPI fail as an authentication error
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::digest_md5_over_sspi_is_the_package_s
+--- old
+        Err(SspiFailure::Status(_)) => return Err(SaslError::Denied),
+--- new
+        Err(SspiFailure::Status(_)) => return Err(SaslError::AuthError),
+
+=== SOCKS5's SSPI context goes on with a status C's check refuses
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::sspi::failures_are_said_in_sspi_s_words
+--- old
+    if !passes.contains(&done.status) {
+--- new
+    if done.status.is_error() {
+
+=== SOCKS5's level granted over SSPI is said as the GSS-API build says it
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::sspi::the_exchange_is_c_s
+--- old
+            Security::Sspi(_) => GssLine::GrantedNotUsed(granted),
+--- new
+            Security::Sspi(_) => GssLine::Granted(granted),

@@ -10,14 +10,15 @@ use std::net::{IpAddr, Ipv6Addr};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::gss::GssContext;
 use crate::options::{IpVersion, ProxyType, Socks5Auth};
 
 mod gss;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use gss::{Failed, GssError, GssLine, GssMethod};
+#[cfg(test)]
+pub(crate) use gss::SspiCall;
+pub(crate) use gss::{Failed, GssError, GssLine, GssMethod, Status};
 
 /// What a SOCKS proxy's handshake failed at (`CURLproxycode`,
 /// `CURLINFO_PROXY_ERROR`).
@@ -181,7 +182,7 @@ pub(crate) struct Handshake {
     gss: Option<GssMethod>,
     /// Its security context, from the method's pick until the protection
     /// is agreed on, kept after that only if some was granted.
-    context: Option<Box<dyn GssContext>>,
+    context: Option<gss::MethodContext>,
     /// The protection the context can give, from its last step
     /// (`gss_ret_flags`).
     can: gss::Level,

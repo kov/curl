@@ -39,7 +39,8 @@ use super::http1::request::{
 };
 use super::{Before, Ended, ProtoStep};
 use crate::auth::creds::{CredentialGate, Credentials, Secret, Takes, Trusted};
-use crate::auth::http::{AuthAct, AuthRequest, Offered, Output, OutputError, Side};
+use crate::auth::digest_sspi::SspiDigestNote;
+use crate::auth::http::{AuthAct, AuthRequest, DigestSaid, Offered, Output, OutputError, Side};
 use crate::options::AuthMethods;
 use std::num::NonZeroUsize;
 
@@ -193,10 +194,58 @@ fn with_port(out: &mut Vec<u8>, host: &[u8], port: Option<u16>) -> Result<(), Ou
 }
 
 fn made(output: Result<Output, OutputError>) -> Result<Output, ErrorKind> {
-    output.map_err(|e| match e {
+    output.map_err(output_error)
+}
+
+/// The error a request's authentication not made is.
+pub(crate) fn output_error(e: OutputError) -> ErrorKind {
+    match e {
         OutputError::OutOfMemory => ErrorKind::OutOfMemory,
         OutputError::Random => ErrorKind::FailedInit,
-    })
+        OutputError::LoginDenied => ErrorKind::LoginDenied,
+        OutputError::AuthError => ErrorKind::AuthError,
+    }
+}
+
+/// What SSPI's Digest said making a request's authentication, traced as
+/// C traces it (`lib/vauth/digest_sspi.c`'s `failf` and `infof`).
+pub(crate) fn digest_said<H: Host>(cx: &mut StepCx<'_, H>, said: DigestSaid) {
+    for note in said.notes() {
+        match note {
+            SspiDigestNote::NoAuthInfo => {
+                trace::fail(
+                    cx,
+                    ErrorKind::AuthError,
+                    format_args!("SSPI: could not get auth info"),
+                );
+            }
+            SspiDigestNote::MakeSignature(status) => trace::info(
+                cx,
+                format_args!(
+                    "digest_sspi: MakeSignature failed, error 0x{:08x}",
+                    status.code().cast_unsigned()
+                ),
+            ),
+            SspiDigestNote::Initialize(status) => {
+                let mut text = crate::text::Text::<256>::new();
+                if let Some(sspi) = cx
+                    .easy()
+                    .libraries()
+                    .security
+                    .and_then(crate::libraries::Security::sspi)
+                {
+                    sspi.describe(status, &mut |part| text.push_clipped(part));
+                }
+                trace::info_with(
+                    cx,
+                    &[
+                        b"schannel: InitializeSecurityContext failed: ",
+                        text.bytes(),
+                    ],
+                );
+            }
+        }
+    }
 }
 
 /// What a request goes over: the connection's bytes, in HTTP/1, or a
@@ -1017,9 +1066,10 @@ impl Request {
                 report.set_proxy_auth_used(picked);
             }
             let proxy = proxy.expect("an HTTP request has an origin");
+            let sspi = cx.easy().libraries().sspi();
             cx.easy_mut()
                 .auth
-                .apply(&act, offered, origin, proxy)
+                .apply(&act, offered, origin, proxy, sspi)
                 .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
             if act.again() {
                 let mut location = Vec::new();
@@ -1230,7 +1280,7 @@ impl Request {
         side: Side,
         get_or_head: bool,
     ) -> Result<Output, ErrorKind> {
-        let Some(gss) = cx.easy().libraries().gss else {
+        let Some(security) = cx.easy().libraries().security else {
             cx.easy_mut().auth.side(side).finish();
             return Ok(Output {
                 header: None,
@@ -1258,7 +1308,7 @@ impl Request {
         let delegation = cx.easy().options().login.delegation;
         let (kept, tls) = lease.get().negotiate_over();
         let request = negotiate::Request {
-            gss,
+            security,
             side,
             credentials,
             peer,
@@ -1389,7 +1439,10 @@ impl Request {
                 .replaces(b"Proxy-Authorization");
             let side = auth_state.side(Side::Proxy);
             if forwarded {
-                made(side.output(proxy_secret, proxy_custom, &request, random))?
+                let mut said = DigestSaid::default();
+                let output = side.output(proxy_secret, proxy_custom, &request, random, &mut said);
+                digest_said(cx, said);
+                made(output)?
             } else {
                 side.finish();
                 Output {
@@ -1421,11 +1474,13 @@ impl Request {
             trusted: self.gate.trusted(),
         };
         let custom = http.headers.replaces(b"Authorization");
-        let auth = made(
+        let mut said = DigestSaid::default();
+        let auth =
             auth_state
                 .side(Side::Host)
-                .output(credentials, custom, &request, random),
-        )?;
+                .output(credentials, custom, &request, random, &mut said);
+        digest_said(cx, said);
+        let auth = made(auth)?;
         // The origin's likewise, after the proxy's line is made and said,
         // as C makes the proxy's first.
         let proxy_traced = if auth.negotiate && !proxy_traced {
@@ -1491,11 +1546,13 @@ impl Request {
             }
         };
         let probe = auth.probe || proxy_auth.probe;
+        let sspi = cx.easy().libraries().sspi().is_some();
         let auth_asked = cx.easy().auth.asked(
             (credentials, &self.base.peer),
             (proxy_secret, proxy_peer),
             probe,
             get_or_head,
+            sspi,
         );
         cx.report_mut().set_auth_used(auth.used);
         if forwarded {
@@ -2636,7 +2693,7 @@ impl Request {
         let mut negotiated = None;
         let code = cx.report_mut().response_code();
         if line.kind == LineKind::Header
-            && let Some(gss) = cx.easy().libraries().gss
+            && let Some(security) = cx.easy().libraries().security
         {
             let delegation = cx.easy().options().login.delegation;
             let forwarding = lease
@@ -2670,7 +2727,7 @@ impl Request {
                 for challenge in crate::auth::http::negotiate_challenges(value) {
                     let (kept, tls) = lease.get().negotiate_over();
                     let request = negotiate::Request {
-                        gss,
+                        security,
                         side,
                         credentials,
                         peer,

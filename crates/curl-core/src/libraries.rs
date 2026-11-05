@@ -18,6 +18,7 @@ use crate::idn::Idn;
 use crate::ldap::LdapLibrary;
 use crate::psl::SuffixLibrary;
 use crate::ssh::Ssh;
+use crate::sspi::Sspi;
 use crate::tls::TlsBackend;
 
 /// The libraries a handle uses. A handle without any is given
@@ -35,9 +36,11 @@ pub struct Libraries {
     /// built in, as in a C build without one. It may keep state (the key
     /// log), so a `Libraries` of its own may own it.
     pub tls: Option<Library<dyn TlsBackend>>,
-    /// The GSS-API library, if any: without it, Negotiate and SOCKS5's
-    /// GSS-API method are not built in, as in a C build without one.
-    pub gss: Option<&'static dyn Gss>,
+    /// What Kerberos and SPNEGO go through, if anything: a GSS-API
+    /// library, or Windows' SSPI, which takes Digest over too. Without
+    /// one, Negotiate and SOCKS5's GSS-API method are not built in, as in
+    /// a C build without either.
+    pub security: Option<Security>,
     /// What resolves names with a resolve of its own for each, if anything:
     /// without it, the network's resolver does.
     pub dns: Option<&'static dyn crate::conn::io::DnsLibrary>,
@@ -62,6 +65,27 @@ pub struct Libraries {
     /// Where random bytes come from in place of the system, if anywhere:
     /// the debug build's `CURL_ENTROPY` numbers.
     pub random: Option<Library<dyn Random>>,
+}
+
+/// What a handle authenticates with beyond what the core does itself,
+/// and so which of C's files decides how: a GSS-API library
+/// (`HAVE_GSSAPI`: `lib/vauth/spnego_gssapi.c`, `lib/socks_gssapi.c`), or
+/// SSPI (`USE_WINDOWS_SSPI`: `lib/vauth/spnego_sspi.c`,
+/// `lib/socks_sspi.c`, `lib/vauth/digest_sspi.c`).
+#[derive(Clone, Copy, Debug)]
+pub enum Security {
+    Gss(&'static dyn Gss),
+    Sspi(&'static dyn Sspi),
+}
+
+impl Security {
+    /// The SSPI, if that is what it is: Digest is its, not the core's.
+    pub(crate) fn sspi(self) -> Option<&'static dyn Sspi> {
+        match self {
+            Security::Sspi(sspi) => Some(sspi),
+            Security::Gss(_) => None,
+        }
+    }
 }
 
 /// A source of random bytes, standing in for the system's.
@@ -118,12 +142,17 @@ impl Random for ForcedEntropy {
 }
 
 impl Libraries {
+    /// SSPI, where it is the security library.
+    pub(crate) fn sspi(&self) -> Option<&'static dyn Sspi> {
+        self.security.and_then(Security::sspi)
+    }
+
     pub const NONE: Libraries = Libraries {
         dns: None,
         decoders: Decoders::none(),
         ed25519: None,
         tls: None,
-        gss: None,
+        security: None,
         idn: None,
         h2: None,
         h3: None,
@@ -336,7 +365,7 @@ mod tests {
         let printed = format!("{libraries:?}");
         assert!(
             printed.ends_with(
-                "ed25519: Some(Ed25519), tls: None, gss: None, dns: None, idn: None, h2: None, h3: None, ssh: None, ldap: None, psl: None, random: None }"
+                "ed25519: Some(Ed25519), tls: None, security: None, dns: None, idn: None, h2: None, h3: None, ssh: None, ldap: None, psl: None, random: None }"
             ),
             "{printed}"
         );

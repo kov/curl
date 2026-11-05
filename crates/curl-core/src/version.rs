@@ -42,7 +42,7 @@ pub enum Feature {
     /// `AppleSecTrust`.
     NativeCa,
     /// GSS-API, by MIT krb5, which the tool and the C ABI give every
-    /// handle.
+    /// handle, but on Windows, where SSPI stands in its place.
     GssApi,
     /// Strict Transport Security: hosts a server says to reach only over
     /// HTTPS are, from a file, the application or the server's word.
@@ -65,7 +65,8 @@ pub enum Feature {
     Idn,
     /// Connections over IPv6, and its addresses in URLs.
     Ipv6,
-    /// Kerberos 5 by GSS-API, as SOCKS5's GSS-API method uses it.
+    /// Kerberos 5 by GSS-API, or by SSPI on Windows, as SOCKS5's GSS-API
+    /// method uses it.
     Kerberos,
     /// Files, sizes and offsets past 2 GiB: every one is 64 bits (C's
     /// `curl_off_t` wider than 32).
@@ -79,12 +80,16 @@ pub enum Feature {
     /// Cookies' domains are checked against libpsl's public suffixes,
     /// which the tool and the C ABI give every handle.
     Psl,
-    /// HTTP Negotiate by GSS-API, with the origin and with a proxy.
+    /// HTTP Negotiate by GSS-API, or by SSPI on Windows, with the origin
+    /// and with a proxy.
     Spnego,
     /// TLS, by OpenSSL, which the tool and the C ABI give every handle.
     Ssl,
     /// TLS sessions go in and out of the cache (`curl_easy_ssls_import`).
     SslsExport,
+    /// Windows' SSPI (`USE_WINDOWS_SSPI`): Negotiate, Kerberos and Digest
+    /// go through it, as in every C build for Windows.
+    Sspi,
     /// Windows' Unicode build (C's `ENABLE_UNICODE`): names of files are
     /// UTF-8, opened through the system's UTF-16 calls. Claimed by a
     /// build with the `unicode` feature, which is `curl-os`'s.
@@ -127,6 +132,7 @@ impl Feature {
             Feature::Spnego => "SPNEGO",
             Feature::Ssl => "SSL",
             Feature::SslsExport => "SSLS-EXPORT",
+            Feature::Sspi => "SSPI",
             Feature::Threadsafe => "threadsafe",
             Feature::Unicode => "Unicode",
             Feature::UnixSockets => "UnixSockets",
@@ -144,6 +150,7 @@ const FEATURES: &[Feature] = &[
     Feature::Brotli,
     #[cfg(feature = "debug-hooks")]
     Feature::Debug,
+    #[cfg(not(windows))]
     Feature::GssApi,
     Feature::Hsts,
     Feature::Http2,
@@ -166,6 +173,8 @@ const FEATURES: &[Feature] = &[
     Feature::Spnego,
     Feature::Ssl,
     Feature::SslsExport,
+    #[cfg(windows)]
+    Feature::Sspi,
     Feature::Threadsafe,
     #[cfg(feature = "unicode")]
     Feature::Unicode,

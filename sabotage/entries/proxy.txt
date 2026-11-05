@@ -90,9 +90,9 @@ witness: curl-core auth::http::tests::acts_on_a_407_as_c
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::an_origin_s_digest_is_answered_through_a_proxy
 --- old
-            .apply(&act, offered, origin, proxy)
+            .apply(&act, offered, origin, proxy, sspi)
 --- new
-            .apply(&act, offered, proxy, proxy)
+            .apply(&act, offered, proxy, proxy, sspi)
 
 === a proxy's URL without credentials leaves out the options'
 file: crates/curl-core/src/multi/state/leg.rs
@@ -300,9 +300,9 @@ witness: curl-core proto::http1::request::tests::a_forwarded_request_sends_the_p
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_replaces_the_library_s
 --- old
-                made(side.output(proxy_secret, proxy_custom, &request, random))?
+                let output = side.output(proxy_secret, proxy_custom, &request, random, &mut said);
 --- new
-                made(side.output(proxy_secret, false, &request, random))?
+                let output = side.output(proxy_secret, false, &request, random, &mut said);
 
 === unified headers are not the proxy's own
 file: crates/curl-core/src/options/mod.rs

@@ -476,11 +476,11 @@ witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_ope
 file: crates/curl-core/src/multi/state/h2tunnel.rs
 witness: curl-core proto::http::tests::tls::a_refused_tunnel_through_an_http_2_proxy_fails_to_connect
 --- old
-    let Some(gss) = cx.easy().libraries().gss else {
+    let Some(security) = cx.easy().libraries().security else {
         return Ok(false);
     };
 --- new
-    let Some(gss) = cx.easy().libraries().gss else {
+    let Some(security) = cx.easy().libraries().security else {
         return Ok(true);
     };
 

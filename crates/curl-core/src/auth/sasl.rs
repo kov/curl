@@ -9,6 +9,9 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use crate::auth::creds::Secret;
 use crate::hash::{Hash as _, Md5};
 use crate::options::AuthMethods;
+use crate::sspi::{
+    Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiFailure,
+};
 
 /// A set of mechanisms (`SASL_MECH_*` bits).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -148,6 +151,11 @@ pub(crate) enum SaslError {
     /// Random bytes could not be had (`Curl_rand_hex`'s failure).
     Random,
     OutOfMemory,
+    /// SSPI does not know DIGEST-MD5's package: C says "SSPI: could not
+    /// get auth info" (`CURLE_AUTH_ERROR`).
+    NoAuthInfo,
+    /// SSPI's DIGEST-MD5 failed otherwise (`CURLE_AUTH_ERROR`).
+    AuthError,
 }
 
 impl From<OutOfMemory> for SaslError {
@@ -206,6 +214,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) port: u16,
     /// Random bytes, for DIGEST-MD5's client nonce.
     pub(crate) random: &'a mut dyn FnMut(&mut [u8]) -> Result<(), ()>,
+    /// SSPI, where the handle has it: DIGEST-MD5 is its, as in C's
+    /// Windows build (`lib/vauth/digest_sspi.c`).
+    pub(crate) sspi: Option<&'static dyn Sspi>,
     /// What is said of the exchange, the debug build's lines and the
     /// verbose ones.
     pub(crate) said: &'a mut dyn FnMut(Say, core::fmt::Arguments<'_>),
@@ -543,7 +554,10 @@ impl Sasl {
                     if self.params.base64 {
                         next = State::DigestMd5Resp;
                     }
-                    digest_md5(cx, &chlg, self.params.service)?
+                    match cx.sspi {
+                        Some(sspi) => digest_md5_sspi(cx, sspi, &chlg, self.params.service)?,
+                        None => digest_md5(cx, &chlg, self.params.service)?,
+                    }
                 }
                 None => None,
             },
@@ -931,6 +945,90 @@ fn digest_md5(cx: &mut Ctx<'_>, chlg: &[u8], service: &str) -> Result<Option<Vec
         &response,
         b",qop=auth",
     ])?))
+}
+
+/// DIGEST-MD5's response to `chlg` by SSPI's `WDigest`, or `None` for
+/// an empty challenge (`lib/vauth/digest_sspi.c`'s
+/// `Curl_auth_create_digest_md5_message`): the package makes it, for
+/// `service/host`, as the credentials' user or the process's.
+fn digest_md5_sspi(
+    cx: &mut Ctx<'_>,
+    sspi: &dyn Sspi,
+    chlg: &[u8],
+    service: &str,
+) -> Result<Option<Vec<u8>>, SaslError> {
+    if chlg.is_empty() {
+        (cx.said)(
+            Say::Info,
+            format_args!("DIGEST-MD5 handshake failure (empty challenge message)"),
+        );
+        return Ok(None);
+    }
+    let room = sspi
+        .max_token(Package::Digest)
+        .map_err(|_| SaslError::NoAuthInfo)?;
+    let spn = join(&[cx.service(service), b"/", cx.host])?;
+    let identity = if cx.user().is_empty() {
+        Identity::Current
+    } else {
+        Identity::of(cx.user(), cx.password())
+    };
+    let mut context = match sspi.credentials(Package::Digest, &identity) {
+        Ok(context) => context,
+        Err(SspiFailure::OutOfMemory) => return Err(SaslError::OutOfMemory),
+        Err(SspiFailure::Status(_)) => return Err(SaslError::Denied),
+    };
+    let input = [Input::Token(chlg)];
+    let call = Initialize {
+        target: &spn,
+        flags: Req::default(),
+        native: false,
+        fresh: true,
+        input: &input,
+        output: Output::Room(room),
+    };
+    let mut out = Vec::new();
+    let status = match context.initialize(&call, &mut out) {
+        Ok(done) => done.status,
+        Err(SspiFailure::OutOfMemory) => return Err(SaslError::OutOfMemory),
+        Err(SspiFailure::Status(status)) => status,
+    };
+    // C completes the token with the credentials' handle, which SSPI
+    // refuses, unread: the token goes as made.
+    let passes = status.wants_completion()
+        || status == SecStatus::OK
+        || status == SecStatus::CONTINUE_NEEDED;
+    if !passes {
+        if status == SecStatus::INSUFFICIENT_MEMORY {
+            return Err(SaslError::OutOfMemory);
+        }
+        let mut text = crate::text::Text::<256>::new();
+        sspi.describe(status, &mut |part| text.push_clipped(part));
+        (cx.said)(
+            Say::Info,
+            format_args!(
+                "schannel: InitializeSecurityContext failed: {}",
+                Lossy(text.bytes())
+            ),
+        );
+        return Err(SaslError::AuthError);
+    }
+    Ok(Some(out))
+}
+
+/// Bytes shown as text, what is not UTF-8 replaced.
+struct Lossy<'a>(&'a [u8]);
+
+impl core::fmt::Display for Lossy<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for chunk in self.0.utf8_chunks() {
+            f.write_str(chunk.valid())?;
+            if !chunk.invalid().is_empty() {
+                f.write_str("\u{FFFD}")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

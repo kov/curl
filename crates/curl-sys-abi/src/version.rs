@@ -104,6 +104,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Ssl => (c"SSL", crate::ffi::CURL_VERSION_SSL),
         // A name alone, without a bit, as in C.
         Feature::SslsExport => (c"SSLS-EXPORT", 0),
+        Feature::Sspi => (c"SSPI", crate::ffi::CURL_VERSION_SSPI),
         Feature::Threadsafe => (c"threadsafe", crate::ffi::CURL_VERSION_THREADSAFE),
         Feature::Unicode => (c"Unicode", crate::ffi::CURL_VERSION_UNICODE),
         Feature::UnixSockets => (c"UnixSockets", crate::ffi::CURL_VERSION_UNIX_SOCKETS),
@@ -247,7 +248,11 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let h2 = Library("nghttp2", curl_nghttp2::version());
             // A build without QUIC names no QUIC library.
             let h3 = crate::tlslib::quic();
-            let gss = Library("mit-krb5", curl_gssapi::version());
+            // Kerberos is SSPI's on Windows, which names no library.
+            #[cfg(not(windows))]
+            let gss = Some(Library("mit-krb5", curl_gssapi::version()));
+            #[cfg(windows)]
+            let gss: Option<Library<&str>> = None;
             // Named by the library itself (`Curl_ldap_version`).
             let ldap = curl_ldap::version();
             // A build with the threaded resolver does not use c-ares.
@@ -263,7 +268,7 @@ pub extern "C" fn curl_version() -> *mut c_char {
                 Some(&ssh),
                 Some(&h2),
                 h3.as_ref().map(|h| h as &dyn fmt::Display),
-                Some(&gss),
+                gss.as_ref().map(|g| g as &dyn std::fmt::Display),
                 ldap.as_ref().map(|l| l as &dyn fmt::Display),
             ];
             let mut linked: [&dyn fmt::Display; 12] = [&""; 12];
@@ -310,6 +315,16 @@ mod tests {
 
     /// `curl_version` lists the libraries linked in after libcurl, in
     /// C's order and words, each version as the library says it.
+    /// The GSS-API library after a space: none on Windows, where Kerberos
+    /// is SSPI's.
+    #[cfg(feature = "openssl")]
+    fn gss_shown() -> String {
+        #[cfg(not(windows))]
+        return format!(" mit-krb5/{}", curl_gssapi::version());
+        #[cfg(windows)]
+        return String::new();
+    }
+
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
     #[cfg(feature = "openssl")]
@@ -333,7 +348,7 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -346,7 +361,7 @@ mod tests {
             curl_nghttp2::version(),
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),
-            curl_gssapi::version(),
+            gss_shown(),
             ldap_shown()
         );
         assert_eq!(said, want);
@@ -425,7 +440,8 @@ mod tests {
             (asynch, "AsynchDNS", ffi::CURL_VERSION_ASYNCHDNS),
             (true, "brotli", ffi::CURL_VERSION_BROTLI),
             (debug, "Debug", ffi::CURL_VERSION_DEBUG),
-            (true, "GSS-API", ffi::CURL_VERSION_GSSAPI),
+            // SSPI in its place on Windows.
+            (!cfg!(windows), "GSS-API", ffi::CURL_VERSION_GSSAPI),
             (true, "HSTS", ffi::CURL_VERSION_HSTS),
             (true, "HTTP2", ffi::CURL_VERSION_HTTP2),
             (quic, "HTTP3", ffi::CURL_VERSION_HTTP3),
@@ -449,6 +465,7 @@ mod tests {
             (true, "SPNEGO", ffi::CURL_VERSION_SPNEGO),
             (true, "SSL", ffi::CURL_VERSION_SSL),
             (true, "SSLS-EXPORT", 0),
+            (cfg!(windows), "SSPI", ffi::CURL_VERSION_SSPI),
             (true, "threadsafe", ffi::CURL_VERSION_THREADSAFE),
             // Windows' Unicode build (`ENABLE_UNICODE`).
             (

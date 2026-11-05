@@ -150,18 +150,22 @@ curl-tool     drives transfers through the Rust API
 `curl-os` exposes safe functions; it does not implement `curl-core` traits (that would be a
 dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net` trait in safe
 code. The libraries the core does not depend on (libpsl, the decoders, the Ed25519 signer, the
-TLS library and the GSS-API library) are handed to a handle by whoever builds it: the shim and
-the tool. The decoders, the signer, the TLS library and the GSS-API library come as one
+TLS library and the security library) are handed to a handle by whoever builds it: the shim and
+the tool. The decoders, the signer, the TLS library and the security library come as one
 `Libraries` (`curl_core::libraries`), which a handle holds as `SharedLibraries`, as it holds its
 `Components`: the shim's are statics (`SharedLibraries::of_static`), the C ABI's one owned root;
 the tool's are made by `main` and shared with its handles (`SharedLibraries::new`, the TLS
 library owned by them, `Library::Owned`), so it keeps no static. A handle given none has
-`Libraries::NONE`. The TLS library is OpenSSL's (`curl_openssl::OpenSsl`); the GSS-API library
-is MIT krb5's (`curl_gssapi::GSSAPI`, behind `curl_core::gss::Gss`), with C's debug stub under
-`debug-hooks`, chosen per context by `CURL_STUB_GSS_CREDS` as C's wrappers choose per call. The
-shim and the tool each have a second static without it and hand a handle the one the build's
-GSS-API claim picks (`HAVE_GSSAPI` is C's library being linked): unclaimed, SOCKS5 offers no
-GSS-API, as a C build without it. Each initialises OpenSSL as C's
+`Libraries::NONE`. The TLS library is OpenSSL's (`curl_openssl::OpenSsl`); the security library
+(`Libraries.security`) is MIT krb5's GSS-API (`curl_gssapi::GSSAPI`, behind
+`curl_core::gss::Gss`), with C's debug stub under `debug-hooks`, chosen per context by
+`CURL_STUB_GSS_CREDS` as C's wrappers choose per call; on Windows it is SSPI
+(`curl_sspi::SSPI`, behind `curl_core::sspi::Sspi`), as C's `USE_WINDOWS_SSPI`. The core
+decides what C decides with either, and only the calls differ: SPNEGO's context, SOCKS5's
+GSS-API method, and, with SSPI, HTTP Digest and SASL DIGEST-MD5, which the package makes in
+place of the core's own. The shim and the tool each have a second static without it and hand a
+handle the one the build's Kerberos claim picks (`HAVE_GSSAPI` is C's library being linked):
+unclaimed, SOCKS5 offers no GSS-API, as a C build without it. Each initialises OpenSSL as C's
 global init does (`OPENSSL_init_ssl` with the configuration and the built-in engines): the shim
 at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
 program that never called `curl_global_init` signs the same.

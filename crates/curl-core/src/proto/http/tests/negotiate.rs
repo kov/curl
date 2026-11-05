@@ -14,7 +14,7 @@ use crate::options::{Delegation, HttpAuth};
 fn scripted() -> (&'static Scripted, SharedLibraries) {
     let gss = Scripted::leaked();
     let libraries = SharedLibraries::new(Libraries {
-        gss: Some(gss),
+        security: Some(crate::libraries::Security::Gss(gss)),
         ..Libraries::NONE
     })
     .unwrap();
@@ -1407,7 +1407,7 @@ fn scripted_over_tls(
         crate::tls::fake::FakeTls::binding(binding).unwrap(),
     ));
     let libraries = SharedLibraries::new(Libraries {
-        gss: Some(gss),
+        security: Some(crate::libraries::Security::Gss(gss)),
         tls: Some(Library::Static(tls)),
         ..Libraries::NONE
     })

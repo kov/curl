@@ -89,7 +89,7 @@ impl GssContext for Echoing {
 
 fn method(library: &'static Scripted, nec: bool) -> Option<GssMethod> {
     Some(GssMethod {
-        library,
+        library: crate::libraries::Security::Gss(library),
         nec,
         delegation: Delegation::default(),
     })
@@ -427,7 +427,7 @@ fn the_service_is_the_credentials_or_rcmd() {
             service,
         });
         let library = Some(GssMethod {
-            library: gss,
+            library: crate::libraries::Security::Gss(gss),
             nec: false,
             delegation,
         });
@@ -500,7 +500,10 @@ fn the_library_s_failures_are_said_as_c() {
     };
     let fails = |call| Answer::Fails(GssFailure::status(call, status(9, 8)));
     let e = failing(vec![fails(GssCall::InitSecContext)], &[]);
-    assert_eq!(e.status, Some((GssCall::InitSecContext, status(9, 8))));
+    assert_eq!(
+        e.status,
+        Some(Status::Gss(GssCall::InitSecContext, status(9, 8)))
+    );
     assert_eq!(e.step.to_string(), "Failed to initialize GSS-API token.");
     // Failing on the proxy's token.
     let e = failing(
@@ -522,7 +525,10 @@ fn the_library_s_failures_are_said_as_c() {
         ],
         &[],
     );
-    assert_eq!(e.status, Some((GssCall::InquireContext, status(9, 8))));
+    assert_eq!(
+        e.status,
+        Some(Status::Gss(GssCall::InquireContext, status(9, 8)))
+    );
     assert_eq!(e.step.to_string(), "Failed to determine username.");
     let e = failing(
         vec![
@@ -531,7 +537,10 @@ fn the_library_s_failures_are_said_as_c() {
         ],
         &[],
     );
-    assert_eq!(e.status, Some((GssCall::DisplayName, status(9, 8))));
+    assert_eq!(
+        e.status,
+        Some(Status::Gss(GssCall::DisplayName, status(9, 8)))
+    );
     let user = || Answer::Initiator(Ok(b"u".to_vec()));
     let e = failing(
         vec![
@@ -541,7 +550,7 @@ fn the_library_s_failures_are_said_as_c() {
         ],
         &[],
     );
-    assert_eq!(e.status, Some((GssCall::Wrap, status(9, 8))));
+    assert_eq!(e.status, Some(Status::Gss(GssCall::Wrap, status(9, 8))));
     assert_eq!(
         e.step.to_string(),
         "Failed to wrap GSS-API encryption value into token."
@@ -556,7 +565,7 @@ fn the_library_s_failures_are_said_as_c() {
         ],
         &[b"\x01\x02\x00\x01x"],
     );
-    assert_eq!(e.status, Some((GssCall::Unwrap, status(9, 8))));
+    assert_eq!(e.status, Some(Status::Gss(GssCall::Unwrap, status(9, 8))));
     assert_eq!(
         e.step.to_string(),
         "Failed to unwrap GSS-API encryption value into token."
@@ -583,7 +592,10 @@ fn the_library_s_failures_are_said_as_c() {
     gss.import_fails(status(5, 6));
     let mut h = offered(gss, false);
     let e = gss_error(picked(&mut h).unwrap_err());
-    assert_eq!(e.status, Some((GssCall::ImportName, status(5, 6))));
+    assert_eq!(
+        e.status,
+        Some(Status::Gss(GssCall::ImportName, status(5, 6)))
+    );
     assert_eq!(e.step.to_string(), "Failed to create service name.");
     assert_eq!(
         GssError::call_name(GssCall::ImportName),

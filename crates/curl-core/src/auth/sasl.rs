@@ -534,8 +534,24 @@ impl Sasl {
 
     /// Take the server's answer to the last step, `code` and its
     /// `message` as the protocol finds it, still encoded, and take the
-    /// next (`Curl_sasl_continue`).
+    /// next (`Curl_sasl_continue`). A step that fails stops the exchange,
+    /// but for the next mechanism's start after a cancel, which C returns
+    /// as it is.
     pub(crate) fn step(
+        &mut self,
+        cx: &mut Ctx<'_>,
+        code: Code,
+        message: &[u8],
+    ) -> Result<Progress, SaslError> {
+        let restarts = self.state == State::Cancel;
+        let progress = self.take_step(cx, code, message);
+        if progress.is_err() && !restarts {
+            self.set_state(cx, State::Stop);
+        }
+        progress
+    }
+
+    fn take_step(
         &mut self,
         cx: &mut Ctx<'_>,
         code: Code,

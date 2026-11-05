@@ -147,3 +147,11 @@ witness: curl-core auth::sasl::tests::digest_md5_over_sspi_is_the_package_s
         let _unread: SecStatus = context.complete(Completing::Credentials, &mut out);
 --- new
         let _unread = &context;
+
+=== a SASL step that fails leaves the exchange where it was
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::gssapi::a_step_that_fails_stops_the_exchange
+--- old
+        if progress.is_err() && !restarts {
+--- new
+        if progress.is_err() && restarts {

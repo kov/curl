@@ -400,3 +400,28 @@ fn gssapi_not_chosen_is_said_why() {
     );
     assert_eq!(sspi.unused(), 0);
 }
+
+/// A step that fails stops the exchange, said as C's debug build says
+/// it: the user's token refused after the command went without it.
+#[test]
+fn a_step_that_fails_stops_the_exchange() {
+    let sspi = Scripted::leaked();
+    let creds = Secret::new(b"dom\\user", b"", b"");
+    let mut sasl = offering();
+    sspi.then(Answer::MaxToken(Ok(48)));
+    let (p, _) = with_sspi(sspi, Some(creds), false, |cx| sasl.start_sent(cx, false));
+    assert_eq!(p, Ok(auth("GSSAPI", None)));
+    let refused = SecStatus::new(0x8009_030c_u32 as i32);
+    sspi.then(Answer::MaxToken(Ok(48)))
+        .then(Answer::Credentials(Ok(())))
+        .then(made(refused, b""));
+    let (p, said) = with_sspi(sspi, Some(creds), false, |cx| {
+        sasl.step(cx, Code::Continue, b"")
+    });
+    assert_eq!(p, Err(SaslError::AuthError));
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0].0, Say::Debug);
+    assert!(said[0].1.ends_with("from GSSAPI to STOP"), "{said:?}");
+    assert_eq!(sasl.state, State::Stop);
+    assert_eq!(sspi.unused(), 0);
+}

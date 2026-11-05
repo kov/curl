@@ -1950,8 +1950,9 @@ impl Request {
     }
 
     /// Send what is left of the request as far as the connection takes
-    /// it, reading at most one more buffer of its body if `read` and it
-    /// all went: whether the request is sent (`Curl_req_send_more`,
+    /// it, reading at most one more buffer of its body if `read` and the
+    /// buffer has room as the pass starts: whether the request is sent
+    /// (`Curl_req_send_more`,
     /// `req_set_upload_done`).
     fn send<H: Host>(
         &mut self,
@@ -1959,6 +1960,14 @@ impl Request {
         lease: &mut ConnLease,
         mut read: bool,
     ) -> Result<bool, ErrorKind> {
+        // A buffer full as the pass starts is only sent: nothing is read
+        // behind it once it went, as C reads only before it flushes and
+        // only into room there is (`Curl_req_send_more`'s
+        // `Curl_bufq_is_full`). Read then, it would be sent at once, a
+        // second send of the pass.
+        if self.sent < self.filled && self.filled == self.out.len() {
+            read = false;
+        }
         while self.sending() {
             // With some of the body still waiting, more is read behind it
             // first while there is room (`Curl_req_send_more` fills before

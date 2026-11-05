@@ -1343,9 +1343,16 @@ fn a_body_in_flight_waits_for_its_acknowledgement() {
                 || l.starts_with("[MULTI] [PERFORMING] pollset")
         })
         .collect();
+    // The rest of the body is read and sent in the pass after the one
+    // that sent the first buffer, as C reads before it flushes alone
+    // (`Curl_req_send_more`).
     assert_eq!(
-        said[..3],
+        said[..4],
         [
+            format!(
+                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
+                2 + alpn_eyeballs_timer()
+            ),
             "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
             format!(
                 "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
@@ -3927,6 +3934,10 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
     assert_eq!(
         said,
         [
+            format!(
+                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
+                2 + alpn
+            ),
             "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
             format!(
                 "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",

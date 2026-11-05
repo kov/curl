@@ -101,6 +101,7 @@ impl<P: std::fmt::Debug> PendingQueue<P> {
     }
 
     /// Whether transfer `id` waits.
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn holds(&self, id: TransferId) -> bool {
         self.entries
             .get(id.index() as usize)
@@ -108,6 +109,7 @@ impl<P: std::fmt::Debug> PendingQueue<P> {
     }
 
     /// How many wait, panicking if the index disagrees with the entries.
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn checked_len(&self) -> usize {
         let mut indexed = 0;
         let mut from = 0;

@@ -359,13 +359,13 @@ impl<T> TimerQueue<T> {
     }
 
     /// When `key` is queued to wake.
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(debug_assertions)]
     pub(crate) fn wake_of(&self, key: Key<T>) -> Option<Instant> {
         let i = self.position.get(row_of(key)).copied().flatten()?;
         (self.heap[i].key == key).then_some(self.heap[i].at)
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(debug_assertions)]
     pub(crate) fn len(&self) -> usize {
         self.heap.len()
     }

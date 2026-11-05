@@ -2542,31 +2542,43 @@ fn a_reset_connection_fails_the_others_as_their_sends_fail() {
 
 /// A stream paused by a delivery in a sibling's step has its window
 /// closed there, nothing told the peer, and reopened as its own transfer
-/// runs once unpaused.
+/// runs once unpaused. `/b` leaves the pass once its request is sent, so
+/// `/a` reads `/b`'s body, which pauses `/b` in `/a`'s step. The window's
+/// closing is traced by `/b`'s own transfer as `/a`'s read delivers to
+/// it, before `/b`'s last DATA, read in its own step: C's write to a
+/// stream updates its window on the stream's handle
+/// (`h2_xfer_write_resp`'s `cf_h2_update_local_win`, on `data_s`).
 #[test]
 fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
     let talk = Conversation::replies(
         &[
             b"S\nH 1 0\n:status: 200\n\n",
             WINDOW_SENT,
-            // b's own update is not sent: its stream ends in what it reads.
-            b"H 3 0\n:status: 200\n\nD 1 2 0\naaD 1 2 0\nbbD 3 1 1\nc",
-            b"D 1 1 1\nd",
+            b"H 3 0\n:status: 200\n\nD 3 2 0\naaD 3 2 0\nbbD 1 1 1\nc",
+            WINDOW_SENT,
+            // `/b`'s last DATA, once its window reopens.
+            b"D 3 1 1\nd",
         ],
         false,
     )
     .per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut ids = Vec::new();
-    for path in ["/a", "/b"] {
+    let traced = [Seen::default(), Seen::default()];
+    for (path, seen) in ["/a", "/b"].into_iter().zip(&traced) {
         let mut e = Easy::new();
         e.set_libraries(with_h2());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"http/2");
+        e.set_components(Some(c));
         let o = e.options_mut();
         let url = format!("http://127.0.0.1:{PORT}{path}");
         o.set_url(Some(url.as_bytes())).unwrap();
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
         o.http.version = HttpVersion::Http2Prior;
-        let w = if path == "/a" {
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        let w = if path == "/b" {
             Handler::write(PausesOnceAt(2, Arc::default())).unwrap()
         } else {
             Handler::write(Seen::default()).unwrap()
@@ -2578,20 +2590,35 @@ fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
         }
     }
     assert_eq!(
-        drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
+        drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
         Ok(())
     );
     let sent = String::from_utf8(talk.received()).unwrap();
-    assert_eq!(sent.matches("U 1 ").count(), 1, "{sent}");
-    m.pause(ids[0], crate::deliver::PauseRequest::CONT, &mut NoEvents)
+    assert_eq!(sent.matches("U 3 ").count(), 1, "{sent}");
+    m.pause(ids[1], crate::deliver::PauseRequest::CONT, &mut NoEvents)
         .unwrap();
-    let done = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
+    let done = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
     let sent = String::from_utf8(talk.received()).unwrap();
     assert_eq!(done, Ok(()), "{sent}");
-    assert!(sent.ends_with("U 1 10485760\n"), "{sent}");
+    assert!(sent.ends_with("U 3 10485760\n"), "{sent}");
     for id in ids {
         m.remove(id, &mut NoEvents).unwrap();
     }
+    let b = traced[1].text();
+    let datas: Vec<usize> = (0..b.len())
+        .filter(|&i| b[i].starts_with("[HTTP/2] [3] DATA, window="))
+        .collect();
+    assert_eq!(datas.len(), 3, "{b:#?}");
+    let shut = b
+        .iter()
+        .position(|l| l == "[HTTP/2] [3] local window size now 0\n")
+        .unwrap_or_else(|| panic!("{b:#?}"));
+    assert!(datas[1] < shut && shut < datas[2], "{b:#?}");
+    let a = traced[0].text();
+    assert!(
+        !a.iter().any(|l| l.starts_with("[HTTP/2] [3] local window")),
+        "{a:#?}"
+    );
 }
 
 /// What a test's application does with a push.

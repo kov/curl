@@ -1395,10 +1395,18 @@ impl Request {
             }
             // Each window as its transfer asks, before what it took is
             // consumed, as C's write does before `on_data_chunk_recv`
-            // consumes.
+            // consumes; traced by that transfer, as C's write traces it
+            // on the stream's own handle (`cf_h2_update_local_win`).
             let mut unset = None;
             for &(stream, wanted) in &after.windows {
-                if let Err(e) = h2.window_to(&mut *cx, stream, wanted) {
+                let to = h2.route_of(stream).filter(|&to| to != me);
+                let lent = to
+                    .and_then(|to| cx.with_sibling(to, |bcx, _| h2.window_to(bcx, stream, wanted)));
+                let set = match lent {
+                    Some(set) => set,
+                    None => h2.window_to(&mut *cx, stream, wanted),
+                };
+                if let Err(e) = set {
                     unset = Some((stream, wanted, e));
                     break;
                 }

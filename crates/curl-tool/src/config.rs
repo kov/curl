@@ -168,8 +168,11 @@ pub(crate) fn beside_program(
     Ok(None)
 }
 
+/// `parts` end to end, in one allocation of their length.
 fn join(parts: &[&[u8]]) -> Result<Vec<u8>, OutOfMemory> {
     let mut path = Vec::new();
+    path.try_reserve_exact(parts.iter().map(|p| p.len()).sum())
+        .map_err(|_| OutOfMemory)?;
     for part in parts {
         path.try_extend_from_slice(part)?;
     }

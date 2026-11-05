@@ -2369,6 +2369,145 @@ fn a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read() {
     assert!(sent.contains("\nU 1 "), "{sent}");
 }
 
+/// The tunnel's layer traces what it reads as C's `cf-h2-proxy.c` does,
+/// in its order, against the C build through `nghttpx --http2-proxy`:
+/// the session made and the `CONNECT` started, each read below with what
+/// it came to (`read N bytes nw data -> code, n`, a read that would block
+/// among them), the frames it carried, the answer's status and fields as
+/// they are kept, what the session took of the bytes, the tunnel's state
+/// as it moves; then each read of the tunnel's bytes, the window opened
+/// by as much, and the read's own line.
+#[test]
+fn a_tunnel_through_an_http_2_proxy_traces_what_it_reads() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), response].concat();
+    let (_, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\nvia: x\n\n", &data);
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"h2-proxy");
+    e.set_components(Some(c));
+    let (ran, _) = through_h2_proxy_by(e, libraries, &replies, b"http://origin.example/p");
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let text = ran.seen.text();
+    let lines: Vec<&str> = text
+        .iter()
+        .map(|l| l.trim_end())
+        .filter(|l| {
+            l.starts_with("[H2-PROXY] ")
+                && !l.contains("-> FRAME")
+                && !l.contains("nw_out_writer")
+                && !l.contains("send buffer")
+                && !l.contains("cf_send")
+                && !l.contains("tunnel_send_callback")
+                || l.starts_with("CONNECT")
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "CONNECT: 'h2' negotiated",
+            "[H2-PROXY] [0] init proxy ctx -> 0",
+            "[H2-PROXY] [0] CONNECT start for origin.example:80",
+            "[H2-PROXY] [1] new tunnel state 'connect'",
+            "[H2-PROXY] [0] read 29 bytes nw data -> 0, 29",
+            "[H2-PROXY] [0] <- FRAME[SETTINGS, len=0]",
+            "[H2-PROXY] [1] status: HTTP/2 200",
+            "[H2-PROXY] [1] header: via: x",
+            "[H2-PROXY] [1] <- FRAME[HEADERS, len=21, hend=1, eos=0]",
+            "[H2-PROXY] [1] got http status: 200",
+            "[H2-PROXY] [0] 29 bytes to nghttp2 -> 29",
+            "[H2-PROXY] [0] all data in connection buffer processed",
+            "[H2-PROXY] [0] read 0 bytes nw data -> 81, 0",
+            "[H2-PROXY] [1] new tunnel state 'response'",
+            "CONNECT Response Status 200",
+            "CONNECT tunnel established, response 200",
+            "[H2-PROXY] [1] new tunnel state 'established'",
+            "CONNECT phase completed for HTTP/2 proxy",
+            "[H2-PROXY] query ALPN",
+            "[H2-PROXY] [0] read 50 bytes nw data -> 0, 50",
+            "[H2-PROXY] [1] <- FRAME[DATA, len=41, eos=0, padlen=0]",
+            "[H2-PROXY] [0] 50 bytes to nghttp2 -> 50",
+            "[H2-PROXY] [0] all data in connection buffer processed",
+            "[H2-PROXY] [0] read 0 bytes nw data -> 81, 0",
+            "[H2-PROXY] [1] tunnel_recv(len=16384) -> 0, 41",
+            "[H2-PROXY] [1] increase window by 41",
+            "[H2-PROXY] [1] cf_recv(len=16384) -> 0, 41",
+        ]
+    );
+}
+
+/// The H2-PROXY lines of a run through an HTTP/2 proxy whose server says
+/// `answer` to the `CONNECT` and `then` through the tunnel, those of the
+/// frames it sent and its sends left out, past their ids.
+fn h2_proxy_reads(answer: &[u8], then: &[u8]) -> Vec<String> {
+    let (_, libraries, replies) = h2_proxy(answer, then);
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"h2-proxy");
+    e.set_components(Some(c));
+    let (ran, _) = through_h2_proxy_by(e, libraries, &replies, b"http://origin.example/p");
+    ran.seen
+        .text()
+        .iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| {
+            l.starts_with("[H2-PROXY] ")
+                && ![
+                    "-> FRAME",
+                    "nw_out_writer",
+                    "send buffer",
+                    "cf_send",
+                    "send_callback",
+                ]
+                .iter()
+                .any(|s| l.contains(s))
+        })
+        .collect()
+}
+
+/// The tunnel's ends traced as C's callbacks and reads trace them: a
+/// reset read as its frame, then the stream's close with its code's
+/// name, then the tunnel's reads failing (`proxy_h2_on_stream_close`,
+/// `tunnel_recv`); a refused `CONNECT`, the tunnel failed once its answer
+/// is looked at (`h2_tunnel_go_state`).
+#[test]
+fn a_tunnel_through_an_http_2_proxy_traces_its_ends() {
+    let half = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello";
+    let data = [
+        format!("D 1 {} 0\n", half.len()).as_bytes(),
+        half,
+        b"R 1 8\n",
+    ]
+    .concat();
+    let lines = h2_proxy_reads(b"S\nH 1 0\n:status: 200\n\n", &data);
+    let reset = lines
+        .iter()
+        .position(|l| l == "[H2-PROXY] [1] <- FRAME[RST_STREAM, len=4, flags=0, error=8]")
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(
+        lines[reset + 1],
+        "[H2-PROXY] [1] proxy_h2_on_stream_close, CANCEL (err 8)",
+        "{lines:#?}"
+    );
+    assert_eq!(
+        lines[lines.len() - 2..],
+        [
+            "[H2-PROXY] [1] tunnel_recv(len=5) -> 56, 0",
+            "[H2-PROXY] [1] cf_recv(len=5) -> 56, 0",
+        ],
+        "{lines:#?}"
+    );
+    let lines = h2_proxy_reads(b"S\nH 1 0\n:status: 403\n\n", b"");
+    assert_eq!(
+        lines[lines.len() - 2..],
+        [
+            "[H2-PROXY] [1] new tunnel state 'response'",
+            "[H2-PROXY] [1] new tunnel state 'failed'",
+        ],
+        "{lines:#?}"
+    );
+}
+
 /// What the progress handler saw on each call: the bytes downloaded, and
 /// whether the connection's TLS objects were within reach.
 #[derive(Clone, Default)]

@@ -16,6 +16,7 @@ use crate::multi::Host;
 use crate::proto::http::negotiate;
 use crate::proto::http1::framing::Note as HeadNote;
 use crate::proto::http2::{connect_udp_fields, fields_of};
+use crate::text::Text;
 use crate::trace;
 
 /// The session made with the proxy and its `CONNECT` sent on it
@@ -31,7 +32,14 @@ pub(super) fn start<H: Host>(
         .libraries()
         .h2
         .expect("HTTP/2 is offered to a proxy with a library to speak it");
-    let mut proxy = H2Proxy::open(library, cx.max_streams())?;
+    let opened = H2Proxy::open(library, cx.max_streams());
+    let code = opened.as_ref().err().map_or(0, |e| e.number());
+    trace::of(
+        cx,
+        Component::H2Proxy,
+        format_args!("[0] init proxy ctx -> {code}"),
+    );
+    let mut proxy = opened?;
     proxy.received(s.machine.dialed().stream().rx_mut().take());
     connect(&mut proxy, lent, cx, s.machine.dialing().asks_udp())?;
     let proxy = try_box(proxy).map_err(oom)?;
@@ -45,6 +53,14 @@ fn connect<H: Host>(
     cx: &mut StepCx<'_, H>,
     udp: bool,
 ) -> Result<(), ErrorKind> {
+    let target = lent.route.target();
+    let port = Text::<8>::clipped(format_args!(":{}", target.port())).0;
+    let parts = [
+        &b"[0] CONNECT start for "[..],
+        target.request_host(),
+        port.bytes(),
+    ];
+    trace::of_with(cx, Component::H2Proxy, &parts);
     let head = super::tunnel::connect_head(lent, cx, b"HTTP/2", udp)?;
     let fields = match &head.udp {
         Some(udp) => connect_udp_fields(
@@ -64,12 +80,7 @@ fn connect<H: Host>(
             format_args!("Failed sending CONNECT to proxy"),
         ));
     }
-    let stream = proxy.stream().map_or(-1, |s| s.0);
-    trace::of(
-        cx,
-        Component::H2Proxy,
-        format_args!("[{stream}] new tunnel state 'connect'"),
-    );
+    proxy.go_state(cx, TunnelState::Connect, udp);
     Ok(())
 }
 
@@ -92,8 +103,9 @@ pub(super) fn step<H: Host>(
         Ok(Ran::Again) => Ok(Wake::Again),
         Ok(Ran::Through) => Ok(Wake::Again),
         Err(kind) => {
+            let udp = s.machine.dialing().asks_udp();
             if let Some(Handshake::H2Connect(p)) = s.handshake.as_deref_mut() {
-                p.set_state(TunnelState::Failed);
+                p.go_state(cx, TunnelState::Failed, udp);
             }
             Err(Failure::of(kind))
         }
@@ -150,10 +162,12 @@ fn inspect<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Ran, ErrorKind> {
+    let udp = s.machine.dialing().asks_udp();
     let p = proxy(&mut s.handshake);
+    p.go_state(cx, TunnelState::Response, udp);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
-    let what = super::tunnel::method_name(s.machine.dialing().asks_udp());
+    let what = super::tunnel::method_name(udp);
     trace::info(cx, format_args!("{what} Response Status {status}"));
     let total = answer.fields.len();
     trace::info(cx, format_args!("Response Headers ({total} total):"));
@@ -177,7 +191,8 @@ fn inspect<H: Host>(
         && challenged(lent, cx, Component::H2Proxy, value)?
     {
         let mut p = take(s);
-        connect(&mut p, lent, cx, s.machine.dialing().asks_udp())?;
+        p.go_state(cx, TunnelState::Init, udp);
+        connect(&mut p, lent, cx, udp)?;
         s.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
         return Ok(Ran::Again);
     }
@@ -186,11 +201,11 @@ fn inspect<H: Host>(
         let answer = p.answer().expect("the answer is whole");
         let verdict = super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"));
         if verdict.is_err() {
-            p.set_state(TunnelState::Failed);
+            p.go_state(cx, TunnelState::Failed, udp);
         }
         verdict?;
     } else if status / 100 != 2 {
-        proxy(&mut s.handshake).set_state(TunnelState::Failed);
+        proxy(&mut s.handshake).go_state(cx, TunnelState::Failed, udp);
         return Err(ErrorKind::CouldntConnect);
     } else {
         trace::info(
@@ -199,14 +214,7 @@ fn inspect<H: Host>(
         );
     }
     let mut p = take(s);
-    p.set_state(TunnelState::Established);
-    let stream = p.stream().map_or(-1, |s| s.0);
-    trace::of(
-        cx,
-        Component::H2Proxy,
-        format_args!("[{stream}] new tunnel state 'established'"),
-    );
-    trace::info(cx, format_args!("{what} phase completed for HTTP/2 proxy"));
+    p.go_state(cx, TunnelState::Established, udp);
     cx.easy_mut().auth.side(Side::Proxy).finish();
     // The request follows the `CONNECT`: what reads it starts over
     // (`cf_h2_proxy_connect`'s `Curl_client_reset`).

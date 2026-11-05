@@ -3287,7 +3287,11 @@ stream's layers; once the proxy's 2xx is in, the same box is pushed as the layer
 bytes pass through, its stream's DATA, with whatever it read past the answer. The answer is
 traced as C traces it (`CONNECT Response Status`, each field, `CONNECT tunnel established`,
 `CONNECT phase completed for HTTP/2 proxy`) and is neither delivered nor counted as the HTTP/1.1
-tunnel's is. What came on the stream waits for the layer above in `conn/buf.rs`'s `HeldBytes`:
+tunnel's is. The layer's own lines are C's filter's, in its order: the session made and the
+`CONNECT` started, the tunnel's state as it moves (`H2Proxy::go_state`), each read below with
+what it came to, a read that would block among them, the frames read and the answer's fields as
+the session's callbacks see them, what the session took of the bytes, the tunnel's close, and
+each read of the tunnel's bytes with the window opened by it. What came on the stream waits for the layer above in `conn/buf.rs`'s `HeldBytes`:
 one slice, what was read moved off its front before more is added once it is at least as much as
 what is held or the more would not fit, so what is stored stays within about twice what the
 stream's window lets be held however long the download, as C's `bufq` frees each chunk read; a

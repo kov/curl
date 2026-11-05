@@ -461,9 +461,9 @@ witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_is_
 file: crates/curl-core/src/conn/h2proxy.rs
 witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read
 --- old
-                if self.session.consume(stream, n.get()).is_err() {
+            if self.session.consume(stream, n).is_err() {
 --- new
-                if self.session.consume(stream, 0).is_err() {
+            if self.session.consume(stream, 0).is_err() {
 
 === the connection's window update fails the tunnel's session
 file: crates/curl-core/src/conn/h2proxy.rs
@@ -1055,3 +1055,51 @@ witness: curl-core proto::http::tests::h2::a_pause_in_a_read_reads_on
                 break;
             }
             // Bounded by bytes
+
+=== an HTTP/2 proxy's reads below are not traced
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_traces_what_it_reads
+--- old
+                format_args!("[0] read {n} bytes nw data -> {code}, {n}"),
+--- new
+                format_args!("[0] read {n} bytes nw data -> {code}, {}", 0),
+
+=== what an HTTP/2 proxy's session took is not traced
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_traces_what_it_reads
+--- old
+                Ok(n) => cx.of(H2P, format_args!("[0] {blen} bytes to nghttp2 -> {n}")),
+--- new
+                Ok(_) => {}
+
+=== an HTTP/2 proxy's answer is not traced as its frame ends
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_traces_what_it_reads
+--- old
+                cx.of(H2P, format_args!("[{id}] got http status: {status}"));
+--- new
+                let _ = (id, status);
+
+=== an HTTP/2 proxy's tunnel closes unsaid
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_traces_its_ends
+--- old
+                format_args!("[{id}] proxy_h2_on_stream_close, {text} (err {error})"),
+--- new
+                format_args!("[{id}] proxy_h2_on_stream_close, {text}"),
+
+=== an HTTP/2 proxy's tunnel reads are not traced
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_traces_its_ends
+--- old
+            format_args!("[{id}] tunnel_recv(len={len}) -> {code}, {n}"),
+--- new
+            format_args!("[{id}] tunnel_recv(len={len}) -> {code}"),
+
+=== an HTTP/2 proxy's tunnel fails unsaid
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_traces_its_ends
+--- old
+        if self.tunnel.state == state {
+--- new
+        if self.tunnel.state == state || state == TunnelState::Failed {

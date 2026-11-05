@@ -47,9 +47,97 @@ pub(crate) enum TunnelState {
     Init,
     /// The `CONNECT` is sent, its answer not whole yet.
     Connect,
+    /// The proxy's final answer is whole, and being looked at.
+    Response,
     /// The proxy agreed: the stream carries the tunnel.
     Established,
     Failed,
+}
+
+/// A line of the layer's (`CURL_TRC_CF` of `cf-h2-proxy`).
+const H2P: Component = Component::H2Proxy;
+
+/// A field of the tunnel stream's answer, or of another stream's, as C's
+/// `proxy_h2_on_header` traces it: `[<id>] <what>: <name>: <value>`.
+fn field_line(cx: &mut dyn LayerCx, stream: StreamId, what: &str, name: &[u8], value: &[u8]) {
+    if !cx.traces(H2P) {
+        return;
+    }
+    let id = crate::text::Text::<64>::clipped(format_args!("[{}] {what}: ", stream.0)).0;
+    cx.of_with(H2P, &[id.bytes(), name, b": ", value]);
+}
+
+/// What the tunnel makes of an event of the session, traced as C's
+/// callbacks trace it (`proxy_h2_on_frame_recv`, `proxy_h2_on_header`,
+/// `proxy_h2_on_stream_close`): each frame read, the answer's status and
+/// fields, its end, the tunnel's close, and what is not the tunnel's.
+fn heard_traced(
+    tunnel: &mut Tunnel,
+    cx: &mut dyn LayerCx,
+    library: &dyn Http2,
+    event: &Event<'_>,
+) -> Result<Heard, OutOfMemory> {
+    let ours = |s: StreamId| Some(s) == tunnel.stream;
+    match *event {
+        Event::Received(f) => {
+            let id = f.stream.0;
+            cx.of(H2P, format_args!("[{id}] <- {f}"));
+            if id == 0 {
+                return Ok(Heard::Fine);
+            }
+            if !ours(f.stream) {
+                cx.of(H2P, format_args!("[{id}] rcvd FRAME not for tunnel"));
+                return Ok(Heard::Failed);
+            }
+            if let crate::http2::FrameKind::Headers = f.kind {
+                // Only a status makes an answer (`tunnel.resp`).
+                let Some(answer) = &tunnel.answer else {
+                    return Ok(Heard::Failed);
+                };
+                let status = answer.status;
+                cx.of(H2P, format_args!("[{id}] got http status: {status}"));
+            }
+            Ok(Heard::Fine)
+        }
+        Event::Header {
+            stream,
+            name,
+            value,
+        } => {
+            if !ours(stream) {
+                field_line(cx, stream, "header for non-tunnel stream", name, value);
+                return Ok(Heard::Failed);
+            }
+            let trailer = tunnel.final_answer;
+            let heard = tunnel.heard(event)?;
+            if heard == Heard::Fine && !trailer {
+                if name == b":status" {
+                    let status = tunnel.answer.as_ref().map_or(0, |a| a.status);
+                    let id = stream.0;
+                    cx.of(H2P, format_args!("[{id}] status: HTTP/2 {status:03}"));
+                } else {
+                    field_line(cx, stream, "header", name, value);
+                }
+            }
+            Ok(heard)
+        }
+        Event::Closed { stream, error } if ours(stream) => {
+            let (id, text) = (stream.0, library.error_text(error));
+            cx.of(
+                H2P,
+                format_args!("[{id}] proxy_h2_on_stream_close, {text} (err {error})"),
+            );
+            tunnel.heard(event)
+        }
+        Event::GoAway { last_stream, error } => {
+            let last = last_stream.0;
+            cx.info(format_args!(
+                "received GOAWAY, error={error}, last_stream={last}"
+            ));
+            tunnel.heard(event)
+        }
+        _ => tunnel.heard(event),
+    }
 }
 
 /// The proxy's final answer to the `CONNECT`: its status, and its fields
@@ -372,16 +460,31 @@ impl H2Proxy {
         self.tunnel = Tunnel::new();
         let stream = self.session.submit_request(fields, true, DEFAULT_WEIGHT)?;
         self.tunnel.stream = Some(stream);
-        self.tunnel.state = TunnelState::Connect;
         Ok(stream)
     }
 
-    pub(crate) fn stream(&self) -> Option<StreamId> {
-        self.tunnel.stream
-    }
-
-    pub(crate) fn set_state(&mut self, state: TunnelState) {
+    /// Move the tunnel to `state`, traced (`h2_tunnel_go_state`); `udp`
+    /// for a `CONNECT-UDP`'s.
+    pub(crate) fn go_state(&mut self, cx: &mut dyn LayerCx, state: TunnelState, udp: bool) {
+        if self.tunnel.state == state {
+            return;
+        }
+        let id = self.tunnel.stream.map_or(-1, |s| s.0);
+        let name = match state {
+            TunnelState::Init => "init",
+            TunnelState::Connect => "connect",
+            TunnelState::Response => "response",
+            TunnelState::Established => "established",
+            TunnelState::Failed => "failed",
+        };
+        cx.of(H2P, format_args!("[{id}] new tunnel state '{name}'"));
         self.tunnel.state = state;
+        if state == TunnelState::Established {
+            let udp = if udp { "-UDP" } else { "" };
+            cx.info(format_args!(
+                "CONNECT{udp} phase completed for HTTP/2 proxy"
+            ));
+        }
     }
 
     /// The proxy's final answer to the `CONNECT`, once it is whole.
@@ -425,6 +528,11 @@ impl H2Proxy {
         mut below: Below<'_>,
     ) -> Result<(), Progress> {
         if !self.input.is_empty() {
+            let n = self.input.len();
+            cx.of(
+                H2P,
+                format_args!("[0] process {n} bytes in connection buffer"),
+            );
             self.feed(cx)?;
         }
         while !self.conn_closed
@@ -433,7 +541,20 @@ impl H2Proxy {
             && self.tunnel.held().len() < TUNNEL_WINDOW as usize
         {
             let mut buf = [0u8; CHUNK];
-            match below.reborrow().recv(cx, &mut buf) {
+            let got = below.reborrow().recv(cx, &mut buf);
+            // What the read came to, the input as it left it
+            // (`Curl_cf_recv_bufq`).
+            let (code, n) = match &got {
+                Ok(Recv::Data(n)) => (0, n.get()),
+                Ok(Recv::WouldBlock) => (AGAIN_NUMBER, 0),
+                Ok(Recv::Eof) => (0, 0),
+                Err(_) => (ErrorKind::RecvError.number(), 0),
+            };
+            cx.of(
+                H2P,
+                format_args!("[0] read {n} bytes nw data -> {code}, {n}"),
+            );
+            match got {
                 Ok(Recv::Data(n)) => {
                     self.input
                         .try_extend_from_slice(&buf[..n.get()])
@@ -441,7 +562,7 @@ impl H2Proxy {
                 }
                 Ok(Recv::WouldBlock) => break,
                 Ok(Recv::Eof) => {
-                    cx.of(Component::H2Proxy, format_args!("server closed connection"));
+                    cx.of(H2P, format_args!("server closed connection"));
                     self.conn_closed = true;
                     break;
                 }
@@ -458,55 +579,76 @@ impl H2Proxy {
         Ok(())
     }
 
-    /// Hand the session what was read (`proxy_h2_process_pending_input`).
+    /// Hand the session what was read, until it has read all of it or
+    /// takes no more (`proxy_h2_process_pending_input`), traced as C
+    /// traces it.
     fn feed(&mut self, cx: &mut dyn LayerCx) -> Result<(), Progress> {
         let H2Proxy {
+            library,
             session,
             input,
             tunnel,
             goaway,
             ..
         } = self;
-        let mut oom = false;
-        let mut said = None;
-        let read = session.recv(input, &mut |event| {
-            if let Event::GoAway { last_stream, error } = event {
-                *goaway = Some(last_stream);
-                said = Some((error, last_stream));
-            }
-            match tunnel.heard(&event) {
-                Ok(heard) => heard,
-                Err(OutOfMemory) => {
-                    oom = true;
-                    Heard::Failed
+        while !input.is_empty() {
+            let blen = input.len();
+            let mut oom = false;
+            let read = session.recv(input, &mut |event| {
+                if let Event::GoAway { last_stream, .. } = event {
+                    *goaway = Some(last_stream);
+                }
+                match heard_traced(tunnel, &mut *cx, *library, &event) {
+                    Ok(heard) => heard,
+                    Err(OutOfMemory) => {
+                        oom = true;
+                        Heard::Failed
+                    }
+                }
+            });
+            match &read {
+                Ok(n) => cx.of(H2P, format_args!("[0] {blen} bytes to nghttp2 -> {n}")),
+                Err(e) => {
+                    let code = e.code;
+                    cx.of(H2P, format_args!("[0] {blen} bytes to nghttp2 -> {code}"));
                 }
             }
-        });
-        if oom {
-            return Err(Progress::OutOfMemory);
-        }
-        if let Some((error, last)) = said {
-            cx.info(format_args!(
-                "received GOAWAY, error={error}, last_stream={}",
-                last.0
-            ));
-        }
-        match read {
-            Ok(n) => {
-                input.drain(..n.min(input.len()));
-                Ok(())
+            if oom {
+                return Err(Progress::OutOfMemory);
             }
-            Err(e) => {
-                cx.fails(
-                    ErrorKind::RecvError,
-                    format_args!(
-                        "process_pending_input: nghttp2_session_mem_recv() returned {}:{}",
-                        e.code, e.text
-                    ),
-                );
-                Err(Progress::Recv)
+            match read {
+                Err(e) => {
+                    cx.fails(
+                        ErrorKind::RecvError,
+                        format_args!(
+                            "process_pending_input: nghttp2_session_mem_recv() returned {}:{}",
+                            e.code, e.text
+                        ),
+                    );
+                    return Err(Progress::Recv);
+                }
+                // Nothing taken, and no failure: what is left waits.
+                Ok(0) => break,
+                Ok(n) => {
+                    input.drain(..n.min(blen));
+                    if input.is_empty() {
+                        cx.of(
+                            H2P,
+                            format_args!("[0] all data in connection buffer processed"),
+                        );
+                    } else {
+                        let left = input.len();
+                        cx.of(
+                            H2P,
+                            format_args!(
+                                "[0] process_pending_input: {left} bytes left in connection buffer"
+                            ),
+                        );
+                    }
+                }
             }
         }
+        Ok(())
     }
 
     /// Have the session frame what it wants sent, the tunnel's bytes as
@@ -523,6 +665,7 @@ impl H2Proxy {
         self.blocked = false;
         while !self.blocked && self.session.wants().write {
             let H2Proxy {
+                library,
                 session,
                 out,
                 tunnel,
@@ -602,8 +745,7 @@ impl H2Proxy {
             );
             for (stream, error) in tunnel_events.into_inner() {
                 let closed = Event::Closed { stream, error };
-                tunnel
-                    .heard(&closed)
+                heard_traced(tunnel, &mut **cx.borrow_mut(), *library, &closed)
                     .map_err(|OutOfMemory| Progress::OutOfMemory)?;
             }
             if let Some(failed) = failed {
@@ -680,6 +822,7 @@ impl H2Proxy {
                 );
                 return Err(self.failed(ErrorKind::RecvError));
             }
+            cx.of(H2P, format_args!("[{stream}] handle_tunnel_close -> 0"));
             return Ok(Recv::Eof);
         }
         let gone = self.goaway.is_some_and(|last| last.0 < stream);
@@ -816,36 +959,15 @@ impl Part<Below<'_>> for H2Proxy {
 impl Layer for H2Proxy {
     /// The tunnel's DATA as they come, the stream's window opened by as
     /// much as is read (`cf_h2_proxy_recv`).
-    fn recv(
-        &mut self,
-        cx: &mut dyn LayerCx,
-        mut below: Below<'_>,
-        buf: &mut [u8],
-    ) -> io::Result<Recv> {
-        if self.tunnel.state != TunnelState::Established {
-            return Err(self.failed(ErrorKind::RecvError));
-        }
-        if self.tunnel.held().is_empty()
-            && let Err(e) = self.ingress(cx, below.reborrow())
-        {
-            return Err(self.failed(e.kind()));
-        }
-        let got = match NonZeroUsize::new(self.tunnel.take(buf)) {
-            Some(n) => {
-                let stream = self
-                    .tunnel
-                    .stream
-                    .expect("an established tunnel has its stream");
-                if self.session.consume(stream, n.get()).is_err() {
-                    return Err(self.failed(ErrorKind::RecvError));
-                }
-                Ok(Recv::Data(n))
-            }
-            None => self.nothing_held(cx),
-        };
-        if let Err(e) = self.egress(cx, below) {
-            return Err(self.failed(e.kind()));
-        }
+    fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+        let len = buf.len();
+        let got = self.recv_on(cx, below, buf);
+        let (code, n) = self.code_of(&got);
+        let id = self.tunnel.stream.map_or(-1, |s| s.0);
+        cx.of(
+            H2P,
+            format_args!("[{id}] cf_recv(len={len}) -> {code}, {n}"),
+        );
         got
     }
 
@@ -878,6 +1000,74 @@ impl Layer for H2Proxy {
 }
 
 impl H2Proxy {
+    /// The code and length C's lines give what a receive came to.
+    fn code_of(&self, got: &io::Result<Recv>) -> (u16, usize) {
+        match got {
+            Ok(Recv::Data(n)) => (0, n.get()),
+            Ok(Recv::WouldBlock) => (AGAIN_NUMBER, 0),
+            Ok(Recv::Eof) => (0, 0),
+            Err(_) => (self.failure.unwrap_or(ErrorKind::RecvError).number(), 0),
+        }
+    }
+
+    /// `recv`, short of its last line: what the stream holds, read from
+    /// below first if it holds nothing; the stream's window opened by as
+    /// much as is taken; then what the session has to send.
+    fn recv_on(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        mut below: Below<'_>,
+        buf: &mut [u8],
+    ) -> io::Result<Recv> {
+        if self.tunnel.state != TunnelState::Established {
+            return Err(self.failed(ErrorKind::RecvError));
+        }
+        if self.tunnel.held().is_empty()
+            && let Err(e) = self.ingress(cx, below.reborrow())
+        {
+            return Err(self.failed(e.kind()));
+        }
+        let got = self.tunnel_recv(cx, buf);
+        if let Ok(r) = &got
+            && !matches!(r, Recv::WouldBlock)
+        {
+            let n = self.code_of(&got).1;
+            let stream = self
+                .tunnel
+                .stream
+                .expect("an established tunnel has its stream");
+            cx.of(H2P, format_args!("[{}] increase window by {n}", stream.0));
+            if self.session.consume(stream, n).is_err() {
+                return Err(self.failed(ErrorKind::RecvError));
+            }
+        }
+        // A failure to send is the receive's only if it had none of its
+        // own (`Curl_1st_fatal`).
+        if let Err(e) = self.egress(cx, below)
+            && got.is_ok()
+        {
+            return Err(self.failed(e.kind()));
+        }
+        got
+    }
+
+    /// What the stream holds, as much as `buf` has room for, or what its
+    /// holding nothing means (`tunnel_recv`), traced.
+    fn tunnel_recv(&mut self, cx: &mut dyn LayerCx, buf: &mut [u8]) -> io::Result<Recv> {
+        let len = buf.len();
+        let got = match NonZeroUsize::new(self.tunnel.take(buf)) {
+            Some(n) => Ok(Recv::Data(n)),
+            None => self.nothing_held(cx),
+        };
+        let (code, n) = self.code_of(&got);
+        let id = self.tunnel.stream.map_or(-1, |s| s.0);
+        cx.of(
+            H2P,
+            format_args!("[{id}] tunnel_recv(len={len}) -> {code}, {n}"),
+        );
+        got
+    }
+
     /// `send`, short of its last line.
     fn send_on(
         &mut self,

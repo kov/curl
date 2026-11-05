@@ -528,12 +528,16 @@ fn a_shut_send_window_waits_for_the_update_not_the_socket() {
     );
     assert!(data_sent(&talk.received()).len() < body.len());
     talk.allow(2);
+    let opened = clock.now();
     let mut rounds = 0;
     while data_sent(&talk.received()).len() < body.len() {
         assert!(rounds < 100, "the body did not go once the window opened");
         round(&mut m);
         rounds += 1;
     }
+    // The update read, the transfer waits to write again at once: no
+    // wait timed out.
+    assert_eq!(clock.now(), opened, "the opened window waited");
     talk.allow(3);
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{:#?}", seen.text());

@@ -32,8 +32,12 @@ threaded-resolver = ["curl-core/threaded-resolver"]
 # `USE_APPLE_IDN`).
 apple-idn = ["curl-idn2/apple-idn"]
 # Host names converted by Windows' IdnToAscii and IdnToUnicode in place
-# of libidn2 (C's `USE_WIN32_IDN`).
+# of libidn2 (C's `USE_WIN32_IDN`): on Windows without asking, as both
+# reference Windows builds have them; refused elsewhere.
 win-idn = ["curl-idn2/win-idn"]
+# Host names converted by libidn2 on Windows, in place of its own
+# conversions (C's Windows build with `USE_LIBIDN2`).
+libidn2 = ["curl-idn2/libidn2"]
 # Peers verified by Apple's SecTrust where OpenSSL cannot (C's
 # `USE_APPLE_SECTRUST`).
 apple-sectrust = ["curl-openssl?/apple-sectrust"]

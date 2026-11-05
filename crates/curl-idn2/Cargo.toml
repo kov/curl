@@ -11,9 +11,13 @@ links = "idn2"
 # ICU's IDNA from the system on Apple's, in place of libidn2
 # (`USE_APPLE_IDN`).
 apple-idn = []
-# Windows' IdnToAscii and IdnToUnicode, in place of libidn2
-# (`USE_WIN32_IDN`).
+# Windows' IdnToAscii and IdnToUnicode in place of libidn2
+# (`USE_WIN32_IDN`): on Windows without asking, as both reference Windows
+# builds have them; the feature says so, and is refused elsewhere.
 win-idn = []
+# libidn2 on Windows, in place of its own conversions (C's Windows build
+# with `USE_LIBIDN2`); elsewhere libidn2 is the default.
+libidn2 = []
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }

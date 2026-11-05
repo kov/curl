@@ -153,6 +153,16 @@ impl ErrorText {
     }
 }
 
+/// The `errno` C reads after the call that failed with `e`: on Unix the
+/// error's own number; on Windows the system's, as the C library maps it
+/// (`_dosmaperr`). `None` for an error the system did not give.
+pub fn c_errno(e: &io::Error) -> Option<i32> {
+    #[cfg(windows)]
+    return e.raw_os_error().and_then(errno_of_system_error);
+    #[cfg(unix)]
+    return e.raw_os_error();
+}
+
 /// The `errno` the C library sets for system error `code`, as its
 /// `_dosmaperr` maps it; `None` for no error, and for Winsock's numbers
 /// and those past them, which are no file call's: each is named as it is.
@@ -276,6 +286,27 @@ mod tests {
     #![allow(clippy::disallowed_methods)]
 
     use super::*;
+
+    /// The `errno` of a failed call is the system's own on Unix, and the
+    /// C library's mapping of it on Windows; an error the system did not
+    /// report has none. `EPERM` stays apart from `EACCES`, though std
+    /// gives both one kind.
+    #[test]
+    fn reads_errno_as_c_does() {
+        let raw = |n| c_errno(&io::Error::from_raw_os_error(n));
+        assert_eq!(c_errno(&io::Error::other("not the system's")), None);
+        if cfg!(windows) {
+            // ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INVALID_NAME,
+            // ERROR_FILENAME_EXCED_RANGE.
+            assert_eq!(raw(5), Some(libc::EACCES));
+            assert_eq!(raw(183), Some(libc::EEXIST));
+            assert_eq!(raw(123), Some(libc::EINVAL));
+            assert_eq!(raw(206), Some(libc::ENOENT));
+        } else {
+            assert_eq!(raw(libc::EACCES), Some(libc::EACCES));
+            assert_eq!(raw(libc::EPERM), Some(libc::EPERM));
+        }
+    }
 
     #[test]
     #[cfg(unix)]

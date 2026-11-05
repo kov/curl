@@ -233,14 +233,6 @@ pub fn write_stdout(bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-/// Whether `e` is a refusal to look in or change a directory (`EACCES`),
-/// as distinct from an operation not permitted (`EPERM`), which std
-/// reports with the same kind.
-pub fn denied(e: &io::Error) -> bool {
-    e.raw_os_error() == Some(libc::EACCES)
-}
-
-#[cfg(unix)]
 /// The longest name the system takes, its ending zero byte included
 /// (`PATH_MAX`).
 const NAME_MAX_BYTES: usize = libc::PATH_MAX as usize;
@@ -575,13 +567,6 @@ use windows_sys::Win32::Storage::FileSystem as wfs;
 pub use std::os::fd::AsFd as AsFile;
 #[cfg(windows)]
 pub use std::os::windows::io::AsHandle as AsFile;
-
-/// Whether `e` is a refusal to look in or change a directory
-/// (`ERROR_ACCESS_DENIED`).
-#[cfg(windows)]
-pub fn denied(e: &io::Error) -> bool {
-    e.raw_os_error() == Some(wf::ERROR_ACCESS_DENIED as i32)
-}
 
 /// The longest name the system takes, in bytes, its ending zero byte
 /// included: C's `max_path_len`, past which it no longer makes a long name
@@ -1448,15 +1433,6 @@ mod tests {
         assert_eq!(missing.raw_os_error(), Some(libc::ENOENT));
     }
 
-    /// Only `EACCES` is a refusal: `EPERM` is not, though std gives both
-    /// the same kind, and neither is an error the system did not report.
-    #[test]
-    fn denied_is_eacces_alone() {
-        assert!(denied(&io::Error::from_raw_os_error(libc::EACCES)));
-        assert!(!denied(&io::Error::from_raw_os_error(libc::EPERM)));
-        assert!(!denied(&io::Error::other("not the system's")));
-    }
-
     /// Standard input reads through a descriptor of its own.
     #[test]
     fn standard_input_has_a_descriptor_of_its_own() {
@@ -1842,7 +1818,7 @@ mod windows_tests {
         assert_eq!(there.kind(), io::ErrorKind::AlreadyExists);
         // A directory does not open, as in the C library.
         let dir = open_read(&c(&s.0)).unwrap_err();
-        assert!(denied(&dir), "{dir}");
+        assert_eq!(crate::error::c_errno(&dir), Some(libc::EACCES), "{dir}");
         let in_missing = open_write(&s.c("no/f"), Keep::Nothing, 0o600).unwrap_err();
         assert_eq!(in_missing.kind(), io::ErrorKind::NotFound);
         // No write permission for its owner: made read-only.

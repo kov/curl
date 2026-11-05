@@ -239,6 +239,7 @@ dependencies = [
  "curl-psl",
  "curl-zlib",
  "curl-zstd",
+ "libc",
  "mutants",
  "proptest",
 ]

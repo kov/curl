@@ -1550,3 +1550,11 @@ witness: curl-tool a_transfer_with_no_output_name_ends_as_a_failure
     if let Some(ended) = unnamed {
 --- new
     if let Some(ended) = unnamed.filter(|_| false) {
+
+=== a directory name too long to make is said as any other failure
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::says_why_a_directory_was_not_made_as_c_does
+--- old
+        Some(libc::ENAMETOOLONG) => [b"The directory name ", dir, b" is too long"],
+--- new
+        Some(0) => [b"The directory name ", dir, b" is too long"],

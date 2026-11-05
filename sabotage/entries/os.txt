@@ -430,3 +430,11 @@ witness: curl-os text::tests::reads_a_line_end_as_its_line_feed_up_to_a_ctrl_z
 --- new
                 self.at += 1;
                 continue;
+
+=== the errno of a failed call is lost
+file: crates/curl-os/src/error.rs
+witness: curl-os error::tests::reads_errno_as_c_does
+--- old
+    return e.raw_os_error();
+--- new
+    return e.raw_os_error().filter(|_| false);

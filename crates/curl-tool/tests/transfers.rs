@@ -154,6 +154,49 @@ fn creates_the_output_directories() {
     assert_eq!(run.code, 23, "without, the file cannot be made");
 }
 
+/// On Windows `--create-dirs` takes a backslash for a separator too, and
+/// does not make a drive: a path from the root, one relative to the
+/// drive's directory and one with both separators make their
+/// directories (a drive made fails as one that exists does, so its skip
+/// is not seen). A name Windows refuses is said as C says an `errno` it
+/// has no words for.
+#[cfg(windows)]
+#[test]
+fn creates_the_output_directories_on_windows() {
+    let dir = Scratch::new("dirs");
+    dir.write("in", b"data");
+    let drive = &dir.path("")[..2];
+    for (name, made) in [
+        (dir.path("a\\b\\out"), "a/b/out"),
+        ("c\\d/out".to_owned(), "c/d/out"),
+        (format!("{drive}e\\out"), "e/out"),
+        ("f\\\\g//h\\out".to_owned(), "f/g/h/out"),
+    ] {
+        let run = curl(&dir, &["--create-dirs", "-g", "-o", &name, &dir.url("in")]);
+        assert_eq!(run.code, 0, "{name}: {}", run.stderr);
+        assert_eq!(dir.read(made), b"data", "{name}");
+    }
+    let run = curl(
+        &dir,
+        &[
+            "-sS",
+            "--create-dirs",
+            "-g",
+            "-o",
+            "x?y/out",
+            &dir.url("in"),
+        ],
+    );
+    assert_eq!(
+        (run.code, &run.stderr[..]),
+        (
+            23,
+            "curl: Error creating directory x?y\n\
+             curl: (23) Failed writing received data to disk/application\n"
+        )
+    );
+}
+
 /// The process's file mode mask, as a shell in `dir` reports it.
 #[cfg(unix)]
 fn umask(dir: &Scratch) -> u32 {

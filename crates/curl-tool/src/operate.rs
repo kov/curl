@@ -568,43 +568,53 @@ fn rate_left(every: u64, took: u64) -> Option<u64> {
 
 /// Make each directory `path`, a file's name, is in that is not there
 /// yet, with permissions `rwxr-x---` (`create_dir_hierarchy`). One that
-/// exists, or that may not be looked at, is gone through.
+/// exists, or that may not be looked at, is gone through. On Windows a
+/// backslash separates too, and a drive (`X:` before a separator) is
+/// not made.
 fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
-    use std::io::ErrorKind as Io;
+    let separator = |b: &u8| *b == b'/' || (cfg!(windows) && *b == b'\\');
     let mut at = 0;
     loop {
-        let seps = path[at..].iter().take_while(|&&b| b == b'/').count();
-        let name = path[at + seps..].iter().take_while(|&&b| b != b'/').count();
-        at += seps + name;
+        let seps = path[at..].iter().take_while(|b| separator(b)).count();
+        let name = path[at + seps..]
+            .iter()
+            .take_while(|b| !separator(b))
+            .count();
         // The last part is the file.
-        if at == path.len() {
+        if at + seps + name == path.len() {
             return Ok(());
+        }
+        let drive = cfg!(windows) && at == 0 && name == 2 && path.get(1) == Some(&b':');
+        at += seps + name;
+        if drive {
+            continue;
         }
         let dir = &path[..at];
         let Err(e) = fs::with_c_name(dir, |c| fs::make_dir(c, 0o750)) else {
             continue;
         };
-        if e.kind() == Io::AlreadyExists || curl_os::fs::denied(&e) {
+        let errno = curl_os::error::c_errno(&e);
+        if errno == Some(libc::EACCES) || errno == Some(libc::EEXIST) {
             continue;
         }
-        msgs.error(&dir_error(e.kind(), dir));
+        msgs.error(&dir_error(errno, dir));
         return Err(ErrorKind::WriteError);
     }
 }
 
-/// What is said of `dir` that could not be made, for the reason `kind`
+/// What is said of `dir` that could not be made, for C's `errno`
 /// (`show_dir_errno`).
-fn dir_error(kind: std::io::ErrorKind, dir: &[u8]) -> [&[u8]; 3] {
-    use std::io::ErrorKind as Io;
-    match kind {
-        Io::InvalidFilename => [b"The directory name ", dir, b" is too long"],
-        Io::ReadOnlyFilesystem => [dir, b" resides on a read-only file system", b""],
-        Io::StorageFull => [
+fn dir_error(errno: Option<i32>, dir: &[u8]) -> [&[u8]; 3] {
+    match errno {
+        Some(libc::ENAMETOOLONG) => [b"The directory name ", dir, b" is too long"],
+        Some(libc::EROFS) => [dir, b" resides on a read-only file system", b""],
+        Some(libc::ENOSPC) => [
             b"No space left on the file system that would contain the directory ",
             dir,
             b"",
         ],
-        Io::QuotaExceeded => [
+        #[cfg(unix)]
+        Some(libc::EDQUOT) => [
             b"Cannot create directory ",
             dir,
             b" because you exceeded your quota",
@@ -5096,29 +5106,30 @@ mod tests {
     /// `show_dir_errno`'s texts.
     #[test]
     fn says_why_a_directory_was_not_made_as_c_does() {
-        use std::io::ErrorKind as Io;
-        let said = |kind| dir_error(kind, b"d/e").concat();
-        for (kind, text) in [
+        let said = |errno| dir_error(Some(errno), b"d/e").concat();
+        for (errno, text) in [
             (
-                Io::InvalidFilename,
+                libc::ENAMETOOLONG,
                 &b"The directory name d/e is too long"[..],
             ),
+            (libc::EROFS, b"d/e resides on a read-only file system"),
             (
-                Io::ReadOnlyFilesystem,
-                b"d/e resides on a read-only file system",
-            ),
-            (
-                Io::StorageFull,
+                libc::ENOSPC,
                 b"No space left on the file system that would contain the directory d/e",
             ),
+            #[cfg(unix)]
             (
-                Io::QuotaExceeded,
+                libc::EDQUOT,
                 b"Cannot create directory d/e because you exceeded your quota",
             ),
-            (Io::NotADirectory, b"Error creating directory d/e"),
+            (libc::ENOTDIR, b"Error creating directory d/e"),
         ] {
-            assert_eq!(said(kind), text, "{kind:?}");
+            assert_eq!(said(errno), text, "{errno}");
         }
+        assert_eq!(
+            dir_error(None, b"d").concat(),
+            b"Error creating directory d"
+        );
     }
 
     /// `is_outfile_auto_resumable`: a GET resuming its output file, open,

@@ -54,6 +54,8 @@ curl-nghttp2 = { path = "../curl-nghttp2" }
 curl-ngtcp2 = { path = "../curl-ngtcp2" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
+# C's `errno` values, which the tool's messages are chosen by.
+libc = "0.2"
 curl-zstd = { path = "../curl-zstd" }
 # `#[mutants::skip]`, for cargo-mutants: an attribute and nothing else.
 mutants = "0.0.4"

@@ -4042,6 +4042,13 @@ fn quit_waits_for_an_answer_no_longer_than_a_second_of_silence() {
     let control = cut_short(None, None);
     let file = data(b"hello");
     let (mut m, counted, clock) = clocked(&[&control], &[&file]);
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Multi,
+        crate::components::Level::Info,
+    );
+    let internal = Written::default();
+    m.trace_internally_to(components, Handler::text(internal.clone()).unwrap());
     let (id, _, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{}", text.text());
@@ -4056,6 +4063,23 @@ fn quit_waits_for_an_answer_no_longer_than_a_second_of_silence() {
         clock.now().since(released),
         std::time::Duration::from_secs(1)
     );
+    // The cleanup waits for the answer before it ends, and the connection
+    // then finishes its shutdown: C's `ftp_quit` blocks inside the pass.
+    let said = String::from_utf8(internal.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        said.contains("[SHUTDOWN] shutdown finished cleanly") && !said.contains("force closing"),
+        "{said}"
+    );
+}
+
+/// The text written to it.
+#[derive(Clone, Default)]
+struct Written(Arc<Mutex<Vec<u8>>>);
+
+impl crate::handler::TextSink for Written {
+    fn write(&self, text: &[u8]) {
+        self.0.lock().unwrap().extend_from_slice(text);
+    }
 }
 
 /// An answer to `QUIT` that goes on without end, line after line, is read

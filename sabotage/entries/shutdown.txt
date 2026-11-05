@@ -145,7 +145,8 @@ witness: curl-core multi::shutdown_tests::cleanup_closes_every_connection_throug
         self.shutdowns.close_all(&mut net);
         // Nothing is left to schedule.
 --- new
-        std::mem::forget(std::mem::take(&mut self.shutdowns));
+        let clock = self.shutdowns.clock().clone();
+        std::mem::forget(std::mem::replace(&mut self.shutdowns, ShutdownSet::new(clock)));
         // Nothing is left to schedule.
 
 === a layer's shutdown starts before the one above it is done

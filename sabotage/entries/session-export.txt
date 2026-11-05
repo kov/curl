@@ -261,8 +261,9 @@ witness: curl-sys-abi ssls::tests::a_share_s_sessions_go_out_past_a_multi
         let own = match &self.caches.sessions_out {
 --- new
         if let Some(share) = kept_share(easy) {
-            let out = share.sessions_out().clone();
-            self.caches.sessions_out.get_or_insert(out);
+            if let Ok(out) = share.sessions_out_made().cloned() {
+                self.caches.sessions_out.get_or_insert(out);
+            }
         }
         let own = match &self.caches.sessions_out {
 

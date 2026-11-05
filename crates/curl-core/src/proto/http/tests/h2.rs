@@ -1886,12 +1886,9 @@ fn a_connection_found_to_multiplex_is_said_once_as_the_next_step_starts() {
 }
 
 /// Three transfers by prior knowledge, added together, the second and
-/// the third waiting for the first's connection: in DID, the news that
-/// it multiplexes lets one out, and DID lets out the other
-/// (`multistate_did`), before the first goes on, as the C build does
-/// against nghttpd (`--http2-prior-knowledge -Z` of three URLs).
-#[test]
-fn did_over_a_multiplexing_connection_lets_one_more_out() {
+/// the third waiting for the first's connection: the multi's lines of
+/// all three, in order, and the connection's ends each transfer says.
+fn h2_three_traced() -> (Vec<String>, Vec<Option<crate::report::Ends>>) {
     let talk = Conversation::replies(&[b"S 100\nH 1 0\n:status: 200\n\n"], false).per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
     let all = Seen::default();
@@ -1914,10 +1911,22 @@ fn did_over_a_multiplexing_connection_lets_one_more_out() {
             m.add(Box::new(e), (), &mut NoEvents).unwrap()
         })
         .collect();
+    let mut ends = Vec::new();
     for id in ids {
         let _ended = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let removed = m.remove(id, &mut NoEvents).unwrap();
+        ends.push(removed.easy.report().primary().cloned());
     }
-    let states = multi_states(&all);
+    (multi_states(&all), ends)
+}
+
+/// In DID, the news that the first's connection multiplexes lets one
+/// waiting out, and DID lets out the other (`multistate_did`), before
+/// the first goes on, as the C build does against nghttpd
+/// (`--http2-prior-knowledge -Z` of three URLs).
+#[test]
+fn did_over_a_multiplexing_connection_lets_one_more_out() {
+    let (states, _) = h2_three_traced();
     let did = states
         .iter()
         .position(|l| l == "[MULTI] [DO] -> [DID]")
@@ -1933,6 +1942,43 @@ fn did_over_a_multiplexing_connection_lets_one_more_out() {
         ],
         "{states:#?}"
     );
+}
+
+/// A transfer let out onto a connection another is on is connected at
+/// once, from CONNECT straight to PROTOCONNECT, where one reusing a
+/// connection no transfer is on goes through CONNECTING
+/// (`Curl_connect`'s `attached_xfers > 1`): the C build's lines against
+/// nghttpd (`--http2-prior-knowledge -Z` of three URLs). Each says the
+/// connection's ends, set as the connection is found
+/// (`Curl_conn_ev_data_setup`).
+#[test]
+fn a_transfer_joining_a_connection_in_use_skips_connecting() {
+    let (states, ends) = h2_three_traced();
+    assert!(ends[0].is_some(), "{ends:?}");
+    assert_eq!(ends[1..], [ends[0].clone(), ends[0].clone()]);
+    let first = states
+        .iter()
+        .position(|l| l == "[MULTI] [DID] -> [PERFORMING]")
+        .unwrap();
+    assert_eq!(
+        states[first + 1..first + 9],
+        [
+            "[MULTI] [CONNECT] -> [PROTOCONNECT]",
+            "[MULTI] [PROTOCONNECT] -> [DO]",
+            "[MULTI] [DO] -> [DID]",
+            "[MULTI] [DID] -> [PERFORMING]",
+            "[MULTI] [CONNECT] -> [PROTOCONNECT]",
+            "[MULTI] [PROTOCONNECT] -> [DO]",
+            "[MULTI] [DO] -> [DID]",
+            "[MULTI] [DID] -> [PERFORMING]",
+        ],
+        "{states:#?}"
+    );
+    let connecting = states
+        .iter()
+        .filter(|l| l.as_str() == "[MULTI] [CONNECT] -> [CONNECTING]")
+        .count();
+    assert_eq!(connecting, 1, "the first's alone: {states:#?}");
 }
 
 /// A GOAWAY that lets both streams on the connection finish is news to

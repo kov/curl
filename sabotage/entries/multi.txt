@@ -1053,3 +1053,29 @@ witness: curl-core proto::http::tests::ws::the_switch_is_said_as_the_next_step_s
 --- new
                     if self.upgrade.is_some() && false {
                         cx.conn_changed();
+
+=== a transfer joining a connection in use goes through CONNECTING
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::h2::a_transfer_joining_a_connection_in_use_skips_connecting
+--- old
+    if let Some(conn) = cx.rest.caches.pool.joined(&lease) {
+--- new
+    if let Some(conn) = cx.rest.caches.pool.joined(&lease).filter(|_| false) {
+
+=== a transfer joining a connection in use says no ends
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::h2::a_transfer_joining_a_connection_in_use_skips_connecting
+--- old
+        if let Some(ends) = ends {
+            cx.report_mut().set_primary(ends);
+--- new
+        if let Some(ends) = ends.filter(|_| false) {
+            cx.report_mut().set_primary(ends);
+
+=== a transfer reusing a connection no other is on skips CONNECTING
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_setup
+--- old
+            .filter(|conn| matches!(conn.use_, Use::Leased(n) if n.get() > 1))
+--- new
+            .filter(|conn| matches!(conn.use_, Use::Leased(n) if n.get() >= 1))

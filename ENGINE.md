@@ -1119,7 +1119,7 @@ before DID and none from Done on (§3.6).
 | From | To | Condition and work (C's order) |
 |---|---|---|
 | Init | Exchanging setup | pretransfer: fresh `TransferReport` (header store empties), cookies and resolve list, `Starts::op`; on failure `fail` → Completed |
-| (setup) | Connecting / Exchanging / Pending | `Starts::single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait` |
+| (setup) | Connecting / Exchanging / Pending | `Starts::single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait`; a connection joined while another transfer is on it (`Pool::joined`, C's `attached_xfers > 1`) goes to ProtoConnect at once, its ends set, where one reused with none on it goes through Connecting |
 | Pending | Setup | `schedule_pending` (one per call, the pending queue's next, marked dirty): after a connection is given back, after a setup finds or makes one, when a transfer is removed, when a woken one fails, when a connection of the multi's changed (§3.5), as a new connection that multiplexes is made, and in DID over one; or its own step finding its time up ("PENDING handle timeout", after the timeout's failure is traced once) |
 | Setup | Connecting / Pending / Completed | the search again, as from setup; past its time, fails with the timeout traced a second time |
 | Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |

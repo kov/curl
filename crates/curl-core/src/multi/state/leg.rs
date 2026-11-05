@@ -1239,6 +1239,24 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
         route,
         dial: _,
     } = plan;
+    // One joined as another transfer is on it is connected at once, its
+    // ends the transfer's as it is found: on to PROTOCONNECT without
+    // CONNECTING (`Curl_connect`'s `attached_xfers > 1`,
+    // `Curl_conn_ev_data_setup`).
+    if let Some(conn) = cx.rest.caches.pool.joined(&lease) {
+        let ends = conn.remote().cloned().map(|remote| crate::report::Ends {
+            remote,
+            local: conn.local(),
+        });
+        if let Some(ends) = ends {
+            cx.report_mut().set_primary(ends);
+        }
+        return TransferState::ProtoConnect(Attached {
+            lease,
+            proto,
+            origin: Some(route.origin),
+        });
+    }
     let mut https = None;
     if !lease.is_up() {
         // The HTTPS connect filter starts the chain, which puts the setup

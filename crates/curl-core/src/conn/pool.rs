@@ -1885,6 +1885,15 @@ impl Pool {
         shared.slot.as_ref().map(OpenSlot::as_slot)
     }
 
+    /// The connection `lease` names, if another transfer is on it too:
+    /// the transfer holding the lease joined it in use
+    /// (`attached_xfers > 1`).
+    pub(crate) fn joined<'a>(&'a self, lease: &'a ConnLease) -> Option<&'a Conn> {
+        self.slot_of(lease)
+            .and_then(ConnSlot::open)
+            .filter(|conn| matches!(conn.use_, Use::Leased(n) if n.get() > 1))
+    }
+
     /// Connections in the pool, busy or idle.
     pub(crate) fn len(&self) -> u32 {
         self.conns.len()

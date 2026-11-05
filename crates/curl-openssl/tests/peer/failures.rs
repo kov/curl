@@ -119,7 +119,8 @@ fn a_close_notify_ends_a_body_read_to_its_end() {
 
 /// A peer that closes the connection in the body's middle, without a
 /// close_notify, fails the read as OpenSSL 3 says it (an unexpected end),
-/// the library's version before its error.
+/// the library's version before its error. LibreSSL has no error for that
+/// end: the read finds the socket closed, said as C says it (`ossl_recv`).
 fn a_peer_gone_without_close_notify_fails_the_read() {
     let certs = certs("abrupt", "localhost", &["localhost"]);
     let (at, server) = serve_then(
@@ -141,6 +142,7 @@ fn a_peer_gone_without_close_notify_fails_the_read() {
         "{:#?}",
         got.seen.lines
     );
+    #[cfg(not(libressl))]
     assert_eq!(
         String::from_utf8(got.failure).unwrap(),
         format!(
@@ -149,11 +151,15 @@ fn a_peer_gone_without_close_notify_fails_the_read() {
             version()
         )
     );
+    #[cfg(libressl)]
+    assert_eq!(got.failure, b"Connection closed abruptly");
 }
 
 /// A peer that resets the connection (closing it with the request
 /// unread) fails the read: the socket's failure said first, then
 /// OpenSSL's read said with the socket's error (`SSL_ERROR_SYSCALL`).
+/// LibreSSL makes the read's failure its own (`SSL_ERROR_SSL`), said with
+/// its error and the socket's number.
 fn a_reset_fails_the_read_as_the_socket_says() {
     let certs = certs("reset", "localhost", &["localhost"]);
     let (at, server) = serve_then(
@@ -173,15 +179,19 @@ fn a_reset_fails_the_read_as_the_socket_says() {
         "{:#?}",
         got.seen.lines
     );
-    assert_eq!(got.failure, b"Recv failure: Connection reset by peer");
-    assert!(
-        said(
-            &got,
-            "OpenSSL SSL_read: Connection reset by peer, errno 104"
-        ),
-        "{:#?}",
-        got.seen.lines
+    let (reset, errno) = RESET;
+    assert_eq!(
+        String::from_utf8_lossy(&got.failure),
+        format!("Recv failure: {reset}")
     );
+    #[cfg(not(libressl))]
+    let line = format!("OpenSSL SSL_read: {reset}, errno {errno}");
+    #[cfg(libressl)]
+    let line = format!(
+        "LibreSSL SSL_read: LibreSSL/{}: {LIBRESSL_FAILED_BELOW}, errno {errno}",
+        version()
+    );
+    assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
 }
 
 /// A peer that closes during the handshake fails it as OpenSSL says (an
@@ -202,15 +212,32 @@ fn a_handshake_the_peer_ends_or_resets_fails_as_c_says() {
     let got = get("localhost", at, |_| {});
     ends.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
-    assert_eq!(
-        got.failure,
-        b"TLS connect error: error:0A000126:SSL routines::unexpected eof while reading"
-    );
-    assert!(
-        !starts(&got, "OpenSSL SSL_connect:"),
-        "{:#?}",
-        got.seen.lines
-    );
+    #[cfg(not(libressl))]
+    {
+        assert_eq!(
+            got.failure,
+            b"TLS connect error: error:0A000126:SSL routines::unexpected eof while reading"
+        );
+        assert!(
+            !starts(&got, "OpenSSL SSL_connect:"),
+            "{:#?}",
+            got.seen.lines
+        );
+    }
+    // LibreSSL queues nothing for the end (`SSL_ERROR_SYSCALL`): its empty
+    // error said, then the end with the peer.
+    #[cfg(libressl)]
+    {
+        assert_eq!(
+            got.failure,
+            b"TLS connect error: error:00000000:lib(0):func(0):reason(0)"
+        );
+        let line = format!(
+            "LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to localhost:{}",
+            at.port()
+        );
+        assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
+    }
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
@@ -224,12 +251,31 @@ fn a_handshake_the_peer_ends_or_resets_fails_as_c_says() {
     let got = get("localhost", at, |_| {});
     resets.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
-    assert_eq!(got.failure, b"Recv failure: Connection reset by peer");
-    let line = format!(
-        "OpenSSL SSL_connect: Connection reset by peer in connection to localhost:{}",
-        at.port()
+    let (reset, _) = RESET;
+    assert_eq!(
+        String::from_utf8_lossy(&got.failure),
+        format!("Recv failure: {reset}")
     );
-    assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
+    #[cfg(not(libressl))]
+    {
+        let line = format!(
+            "OpenSSL SSL_connect: {reset} in connection to localhost:{}",
+            at.port()
+        );
+        assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
+    }
+    // LibreSSL makes the failure its own (`SSL_ERROR_SSL`), said with its
+    // error alone.
+    #[cfg(libressl)]
+    {
+        let line = format!("TLS connect error: {LIBRESSL_FAILED_BELOW}");
+        assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
+        assert!(
+            !starts(&got, "LibreSSL SSL_connect:"),
+            "{:#?}",
+            got.seen.lines
+        );
+    }
 }
 
 /// A server that refuses the client's certificate as expired fails the
@@ -293,8 +339,15 @@ fn an_alert_in_the_handshake_fails_as_c_says() {
     });
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
+    #[cfg(not(libressl))]
     assert_eq!(
         got.failure,
         b"TLS connect error: error:0A000410:SSL routines::ssl/tls alert handshake failure"
+    );
+    #[cfg(libressl)]
+    assert_eq!(
+        got.failure,
+        b"TLS connect error: error:1401E410:SSL routines:CONNECT_CR_FINISHED:sslv3 alert \
+          handshake failure"
     );
 }

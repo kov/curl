@@ -22,6 +22,8 @@ pub(super) const TESTS: &[(&str, fn())] = &[
         "a_certificate_signed_with_sha_1_is_bound_by_sha_256",
         a_certificate_signed_with_sha_1_is_bound_by_sha_256,
     ),
+    // LibreSSL's server cannot show an Ed25519 certificate.
+    #[cfg(not(libressl))]
     (
         "an_ed25519_certificate_binds_nothing",
         an_ed25519_certificate_binds_nothing,
@@ -119,6 +121,24 @@ fn self_signed(key: &PKey<Private>, digest: MessageDigest) -> X509 {
 /// What a Negotiate GET of the server with `cert` and `key` binds its
 /// one step to, and what it says, its peer not verified.
 fn bound(tag: &str, cert: X509, key: PKey<Private>) -> (Option<Vec<u8>>, Got) {
+    let (request, mut steps, got) = negotiated(tag, cert, key);
+    assert!(
+        request
+            .windows(b"Authorization: Negotiate dA==".len())
+            .any(|w| w == b"Authorization: Negotiate dA=="),
+        "{request:?}"
+    );
+    assert_eq!(steps.len(), 1, "one step");
+    (steps.pop().unwrap(), got)
+}
+
+/// The bindings steps were given, in order.
+type Steps = Vec<Option<Vec<u8>>>;
+
+/// A Negotiate GET of the server with `cert` and `key`, its peer not
+/// verified: what the server was sent, the bindings the steps were given,
+/// and what the GET came to.
+fn negotiated(tag: &str, cert: X509, key: PKey<Private>) -> (Vec<u8>, Steps, Got) {
     let mut certs = certs(tag, "localhost", &["localhost"]);
     certs.cert = cert;
     certs.key = key;
@@ -147,15 +167,8 @@ fn bound(tag: &str, cert: X509, key: PKey<Private>) -> (Option<Vec<u8>>, Got) {
     // Its connection closed, a server sent nothing goes.
     drop(m);
     let request = server.join().unwrap();
-    assert!(
-        request
-            .windows(b"Authorization: Negotiate dA==".len())
-            .any(|w| w == b"Authorization: Negotiate dA=="),
-        "{request:?}"
-    );
     let seen = track::untracked(|| std::mem::take(&mut *seen.lock().unwrap()));
-    let mut steps = track::untracked(|| std::mem::take(&mut *BOUND.lock().unwrap()));
-    assert_eq!(steps.len(), 1, "one step");
+    let steps = track::untracked(|| std::mem::take(&mut *BOUND.lock().unwrap()));
     let got = Got {
         result,
         failure: Vec::new(),
@@ -164,7 +177,7 @@ fn bound(tag: &str, cert: X509, key: PKey<Private>) -> (Option<Vec<u8>>, Got) {
         verify: 0,
         early: 0,
     };
-    (steps.pop().unwrap(), got)
+    (request, steps, got)
 }
 
 /// `tls-server-end-point:` and the certificate's hash by `digest`.
@@ -236,6 +249,7 @@ fn a_certificate_signed_with_sha_1_is_bound_by_sha_256() {
     assert_eq!(got, Some(want));
 }
 
+#[cfg(not(libressl))]
 fn an_ed25519_certificate_binds_nothing() {
     let key = PKey::generate_ed25519().unwrap();
     let cert = self_signed(&key, MessageDigest::null());
@@ -268,11 +282,34 @@ fn a_certificate_signed_by_another_kind_of_key_binds_nothing() {
     cert.set_not_after(&Asn1Time::days_from_now(2).unwrap())
         .unwrap();
     cert.sign(&signer, MessageDigest::null()).unwrap();
-    let (got, ran) = bound("bind-mixed", cert.build(), key);
-    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.lines);
-    assert_eq!(got, None);
-    assert!(said(
-        &ran,
-        "certificate exposes no signing digest algorithm, nothing to add to channel binding"
-    ));
+    #[cfg(not(libressl))]
+    {
+        let (got, ran) = bound("bind-mixed", cert.build(), key);
+        assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.lines);
+        assert_eq!(got, None);
+        assert!(said(
+            &ran,
+            "certificate exposes no signing digest algorithm, nothing to add to channel binding"
+        ));
+    }
+    // Without OpenSSL 3, C asks for the digest the signature pairs with,
+    // which for Ed25519 is none, and fails the transfer before its
+    // request (`ossl_get_channel_binding`'s `#else`).
+    #[cfg(libressl)]
+    {
+        let (request, steps, ran) = negotiated("bind-mixed", cert.build(), key);
+        assert_eq!(
+            ran.result,
+            Err(ErrorKind::SslInvalidcertstatus),
+            "{:#?}",
+            ran.seen.lines
+        );
+        assert!(
+            said(&ran, "Could not find digest algorithm UNDEF (NID 0)"),
+            "{:#?}",
+            ran.seen.lines
+        );
+        assert!(steps.is_empty(), "{steps:?}");
+        assert!(request.is_empty(), "{request:?}");
+    }
 }

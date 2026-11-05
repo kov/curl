@@ -55,9 +55,16 @@ fn a_status_that_is_missing_or_unusable_fails_as_c_says() {
         .unwrap()
         .to_der()
         .unwrap();
+    // OpenSSL 3.6 and later parse what a server is given to staple, and
+    // send nothing that is not a response: the client then has none.
+    let not_der = if !cfg!(libressl) && openssl::version::number() >= 0x3060_0000 {
+        &b"No OCSP response received"[..]
+    } else {
+        b"Invalid OCSP response"
+    };
     for (status, failure) in [
         (None, &b"No OCSP response received"[..]),
-        (Some(b"not DER".to_vec()), b"Invalid OCSP response"),
+        (Some(b"not DER".to_vec()), not_der),
         (Some(later), b"Invalid OCSP response status: trylater (3)"),
     ] {
         let got = checking_status(&certs, status);

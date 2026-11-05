@@ -64,11 +64,20 @@ fn level_lines(got: &Got) -> Vec<&str> {
 
 /// A verified chain is said whole, the CA that verified it included; an
 /// unverified one as the peer sent it. An EC key is said with its group,
-/// an RSA key without.
+/// an RSA key without. Without OpenSSL 3, C names neither the key's type
+/// nor its group (LibreSSL's line).
 fn each_certificate_of_the_chain_is_said_by_its_level() {
     let certs = certs("levels", "localhost", &["localhost"]);
-    let ec = "Public key type EC/prime256v1 (256/128 Bits/secBits), signed using \
-              ecdsa-with-SHA256";
+    #[cfg(not(libressl))]
+    let (ec, rsa_key) = (
+        "Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256",
+        "Public key type RSA (2048/112 Bits/secBits), signed using sha256WithRSAEncryption",
+    );
+    #[cfg(libressl)]
+    let (ec, rsa_key) = (
+        "Public key type ? (256/128 Bits/secBits), signed using ecdsa-with-SHA256",
+        "Public key type ? (2048/112 Bits/secBits), signed using sha256WithRSAEncryption",
+    );
     let got = verified_get(&certs, trusting(&certs));
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     assert_eq!(
@@ -111,10 +120,7 @@ fn each_certificate_of_the_chain_is_said_by_its_level() {
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     assert_eq!(
         level_lines(&got),
-        [
-            "  Certificate level 0: Public key type RSA (2048/112 Bits/secBits), signed using \
-          sha256WithRSAEncryption"
-        ]
+        [format!("  Certificate level 0: {rsa_key}")]
     );
 }
 

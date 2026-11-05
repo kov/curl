@@ -167,9 +167,40 @@ fn early_pair(second: impl FnOnce(&SslAcceptor, &Certs) -> SslAcceptor) -> (Earl
     (seen, one, two)
 }
 
+/// LibreSSL keeps no TLS 1.3 session and sends no early data, nor does
+/// C's build over it: the second request goes after its handshake.
+#[cfg(libressl)]
+fn no_early_data(seen: &EarlySeen, two: &Got) {
+    let (early, late) = &seen[1];
+    assert!(early.is_empty(), "{early:?}");
+    assert!(late.starts_with(b"GET / HTTP/1.1\r\n"), "{late:?}");
+    assert_eq!(two.early, 0);
+    for line in [
+        "SSL session allows",
+        "SSL sending",
+        "Server accepted",
+        "Server rejected",
+    ] {
+        assert!(!starts(two, line), "{line:?} in {:#?}", two.seen.lines);
+    }
+}
+
+#[cfg(libressl)]
+fn a_resumed_session_sends_the_request_as_early_data() {
+    let (seen, _, two) = early_pair(|a, _| a.clone());
+    no_early_data(&seen, &two);
+}
+
+#[cfg(libressl)]
+fn early_data_a_server_refuses_is_sent_again() {
+    let (seen, _, two) = early_pair(|_, certs| early_acceptor(certs, 16384));
+    no_early_data(&seen, &two);
+}
+
 /// A session that allows early data, resumed, has the handshake put off
 /// until the request, which goes in it; the server taking it, it is not
 /// sent again (`ossl_send_earlydata`, `ssl_cf_connect_deferred`).
+#[cfg(not(libressl))]
 fn a_resumed_session_sends_the_request_as_early_data() {
     let (seen, _, two) = early_pair(|a, _| a.clone());
     let (early, late) = &seen[1];
@@ -196,6 +227,7 @@ fn a_resumed_session_sends_the_request_as_early_data() {
 
 /// A server that cannot resume the session refuses the early data: the
 /// request goes again after the handshake.
+#[cfg(not(libressl))]
 fn early_data_a_server_refuses_is_sent_again() {
     let (seen, _, two) = early_pair(|_, certs| early_acceptor(certs, 16384));
     let (early, late) = &seen[1];
@@ -232,6 +264,15 @@ fn the_next_connection_resumes_a_tls_1_3_ticket() {
     assert_eq!(two.result, Ok(()), "{:#?}", two.seen.lines);
     assert!(!resumed(&one), "{:#?}", one.seen.lines);
     assert!(one.chain.is_some(), "the first reports its chain");
+    // LibreSSL's server gives no TLS 1.3 ticket, and its client keeps no
+    // session without one: the second makes a handshake of its own, as
+    // C's build over it does against the same server.
+    #[cfg(libressl)]
+    {
+        assert!(!resumed(&two), "{:#?}", two.seen.lines);
+        assert!(two.chain.is_some(), "the second reports its chain");
+    }
+    #[cfg(not(libressl))]
     for line in [
         "SSL reusing session with ALPN '-'",
         "SSL verify result: 0",
@@ -247,6 +288,7 @@ fn the_next_connection_resumes_a_tls_1_3_ticket() {
         "{:#?}",
         two.seen.lines
     );
+    #[cfg(not(libressl))]
     assert!(two.chain.is_none(), "a resumed session's chain is not sent");
 }
 
@@ -476,20 +518,34 @@ fn the_key_log_has_each_connection_s_secrets() {
     }
     let log = std::fs::read_to_string(&path).unwrap();
     let labels: Vec<&str> = log.lines().map(|l| l.split(' ').next().unwrap()).collect();
-    let mut first: Vec<&str> = labels[..5].to_vec();
-    first.sort_unstable();
-    assert_eq!(
-        first,
-        [
-            "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
-            "CLIENT_TRAFFIC_SECRET_0",
-            "EXPORTER_SECRET",
-            "SERVER_HANDSHAKE_TRAFFIC_SECRET",
-            "SERVER_TRAFFIC_SECRET_0",
-        ],
-        "{log}"
-    );
-    assert_eq!(&labels[5..], ["CLIENT_RANDOM"], "{log}");
+    // LibreSSL gives no TLS 1.3 secrets, which C notes: the TLS 1.2
+    // connection's master secret alone is logged, as C's build over it
+    // logs it.
+    #[cfg(libressl)]
+    {
+        for seen in &gets {
+            let note = "Note LibreSSL only supports SSLKEYLOGFILE for TLS <= 1.2".to_owned();
+            assert!(seen.lines.contains(&note), "{:#?}", seen.lines);
+        }
+        assert_eq!(labels, ["CLIENT_RANDOM"], "{log}");
+    }
+    #[cfg(not(libressl))]
+    {
+        let mut first: Vec<&str> = labels[..5].to_vec();
+        first.sort_unstable();
+        assert_eq!(
+            first,
+            [
+                "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+                "CLIENT_TRAFFIC_SECRET_0",
+                "EXPORTER_SECRET",
+                "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+                "SERVER_TRAFFIC_SECRET_0",
+            ],
+            "{log}"
+        );
+        assert_eq!(&labels[5..], ["CLIENT_RANDOM"], "{log}");
+    }
     for line in log.lines() {
         let parts: Vec<&str> = line.split(' ').collect();
         assert_eq!(parts.len(), 3, "{line}");
@@ -505,13 +561,18 @@ fn the_key_log_has_each_connection_s_secrets() {
 /// A key log of the tool's kind, owned and shared rather than static,
 /// lasts while a session holds it: with the log's maker, the libraries
 /// naming it and the handle's hold on them all gone mid-handshake, the
-/// session still writes the connection's secrets to the file.
+/// session still writes the connection's secrets to the file. LibreSSL
+/// gives TLS 1.2's secret alone, which the session writes after the
+/// handshake: there the server speaks TLS 1.2.
 fn a_session_keeps_its_key_log_past_its_owner() {
     let path = certs_dir().join("keys-owned.log");
     std::fs::create_dir_all(certs_dir()).unwrap();
     std::fs::write(&path, b"").unwrap();
     let certs = certs("keylog-owned", "localhost", &["localhost"]);
-    let (at, server) = serve_each(vec![acceptor(&certs, |_| {})]);
+    let (at, server) = serve_each(vec![acceptor(&certs, |_a| {
+        #[cfg(libressl)]
+        _a.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+    })]);
     let mut m = multi(try_box(SystemClock::new()).unwrap());
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
     let mut easy = Easy::new();
@@ -557,5 +618,14 @@ fn a_session_keeps_its_key_log_past_its_owner() {
     let lines = track::untracked(|| std::mem::take(&mut seen.lock().unwrap().lines));
     assert!(lines.contains(&said), "{lines:#?}");
     let log = std::fs::read_to_string(&path).unwrap();
+    #[cfg(not(libressl))]
     assert_eq!(log.lines().count(), 5, "TLS 1.3's five secrets: {log}");
+    #[cfg(libressl)]
+    assert_eq!(
+        log.lines()
+            .map(|l| l.split(' ').next().unwrap())
+            .collect::<Vec<_>>(),
+        ["CLIENT_RANDOM"],
+        "TLS 1.2's master secret: {log}"
+    );
 }

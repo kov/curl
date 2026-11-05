@@ -526,6 +526,14 @@ fn said(got: &Got, line: &str) -> bool {
     got.seen.lines.iter().any(|l| l == line)
 }
 
+/// A connection the peer reset, as C says it: its text and its number,
+/// the C library's on Unix, curl's own text for Winsock's on Windows
+/// (`curlx_strerror`).
+#[cfg(not(windows))]
+const RESET: (&str, i32) = ("Connection reset by peer", 104);
+#[cfg(windows)]
+const RESET: (&str, i32) = ("Connection was reset", 10054);
+
 /// What LibreSSL queues where its record layer's read or write failed
 /// below it, a reset or another failure: no system error of its own.
 #[cfg(libressl)]
@@ -640,9 +648,17 @@ fn a_missing_ca_file_fails_as_a_bad_file_twice_said() {
     });
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslCacertBadfile));
+    #[cfg(not(libressl))]
     assert_eq!(
         got.failure,
         b"error adding trust anchors from file: /nonexistent/ca.pem"
+    );
+    // LibreSSL loads the file and the directory in one call, and C says
+    // both.
+    #[cfg(libressl)]
+    assert_eq!(
+        got.failure,
+        b"error adding trust anchors from locations:  CAfile: /nonexistent/ca.pem CApath: none"
     );
     let anchors = got
         .seen
@@ -717,6 +733,7 @@ fn the_library_reads_no_more_than_it_asks() {
     assert!(reads > 0, "no read traced in {:#?}", got.seen.lines);
     // After the handshake the library asks for what its read buffer
     // holds, C's `0x401e * 4` less its overhead: as C's trace says it.
+    #[cfg(not(libressl))]
     assert!(
         got.seen
             .lines
@@ -725,6 +742,20 @@ fn the_library_reads_no_more_than_it_asks() {
         "{:#?}",
         got.seen.lines
     );
+    // LibreSSL takes no read buffer's length (C sets none): it asks for
+    // each record's header, then for its body, never beyond, as C's trace
+    // over it says.
+    #[cfg(libressl)]
+    {
+        let asked = |len: &str| {
+            got.seen
+                .lines
+                .iter()
+                .any(|l| l.contains(&format!("ossl_bio_cf_in_read(len={len}) -> ")))
+        };
+        assert!(asked("5"), "{:#?}", got.seen.lines);
+        assert!(!asked("65653"), "{:#?}", got.seen.lines);
+    }
     // The bytes came in pieces, so the library was told of short reads.
     assert!(short > 0, "no short read in {:#?}", got.seen.lines);
 }
@@ -941,10 +972,14 @@ fn an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own() {
     assert_eq!(loads(&native), 1);
     assert!(said(&native, "SSL Trust Anchors:"));
     // A store loaded in a provider's library context is not kept past it.
-    let provider = verified_in(&mut m, &certs, |o| {
-        o.tls.options.make_mut().unwrap().engine = Some(b"default".to_vec());
-    });
-    assert_eq!(loads(&provider), 1);
+    // LibreSSL has no providers.
+    #[cfg(not(libressl))]
+    {
+        let provider = verified_in(&mut m, &certs, |o| {
+            o.tls.options.make_mut().unwrap().engine = Some(b"default".to_vec());
+        });
+        assert_eq!(loads(&provider), 1);
+    }
     // None of them kept theirs: the unverified one's is empty, and the
     // peer would not verify against it.
     let after = verified_in(&mut m, &certs, |_| {});
@@ -1118,6 +1153,12 @@ fn a_resumed_get_stays_within_its_allocation_budget() {
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
     acceptor.set_private_key(&certs.key).unwrap();
     acceptor.set_certificate(&certs.cert).unwrap();
+    // A TLS 1.3 session LibreSSL does not resume, nor does C's build over
+    // it: there the sessions are TLS 1.2's.
+    #[cfg(libressl)]
+    acceptor
+        .set_max_proto_version(Some(openssl::ssl::SslVersion::TLS1_2))
+        .unwrap();
     let acceptor = acceptor.build();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();

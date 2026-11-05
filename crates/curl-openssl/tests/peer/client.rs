@@ -201,10 +201,17 @@ fn a_pkcs12_file_is_opened_with_its_password() {
     });
     assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
     let failure = String::from_utf8(got.failure).unwrap();
+    #[cfg(not(libressl))]
     assert!(
         failure.starts_with("could not parse PKCS12 file, check password, OpenSSL error error:")
             && failure.ends_with("mac verify failure"),
         "{failure}"
+    );
+    #[cfg(libressl)]
+    assert_eq!(
+        failure,
+        "could not parse PKCS12 file, check password, LibreSSL error error:23FFF071:PKCS12 \
+         routines:CRYPTO_internal:mac verify failure"
     );
 }
 
@@ -243,6 +250,33 @@ fn a_certificate_or_key_that_cannot_be_used_fails_as_c_says() {
     let client = client("mtls-bad");
     let other = self::client("mtls-bad-other");
     type Set<'a> = Box<dyn Fn(&mut curl_core::options::TlsOptions) + 'a>;
+    #[cfg(not(libressl))]
+    let (no_engine, no_provider) = (
+        "crypto engine not set, cannot load certificate",
+        "crypto provider not set, cannot load private key",
+    );
+    // LibreSSL has no engines or providers, nor C's code for them.
+    #[cfg(libressl)]
+    let (no_engine, no_provider) = (
+        "SSL_FILETYPE_ENGINE not supported for certificate",
+        "SSL_FILETYPE_PROVIDER not supported for private key",
+    );
+    #[cfg(all(not(libressl), not(windows)))]
+    let missing = "could not load PEM client certificate from /nonexistent/cert.p12, OpenSSL \
+                   error error:80000002:system library::No such file or directory, (no key \
+                   found, wrong passphrase, or wrong file format?)";
+    // OpenSSL queues the system's own number for a path not found
+    // (`ERROR_PATH_NOT_FOUND`), which the C library's text then names as
+    // the `errno` 3 it is not.
+    #[cfg(all(not(libressl), windows))]
+    let missing = "could not load PEM client certificate from /nonexistent/cert.p12, OpenSSL \
+                   error error:80000003:system library::No such process, (no key found, \
+                   wrong passphrase, or wrong file format?)";
+    // LibreSSL queues the C library's `errno`, packed its own way.
+    #[cfg(libressl)]
+    let missing = "could not load PEM client certificate from /nonexistent/cert.p12, LibreSSL \
+                   error error:02FFF002:system library:func(4095):No such file or directory, \
+                   (no key found, wrong passphrase, or wrong file format?)";
     let cases: Vec<(Set<'_>, ErrorKind, String)> = vec![
         (
             Box::new(|t| {
@@ -287,7 +321,7 @@ fn a_certificate_or_key_that_cannot_be_used_fails_as_c_says() {
                 t.cert_type = Some(b"ENG".to_vec());
             }),
             ErrorKind::SslCertproblem,
-            "crypto engine not set, cannot load certificate".into(),
+            no_engine.into(),
         ),
         (
             Box::new(|t| {
@@ -296,15 +330,12 @@ fn a_certificate_or_key_that_cannot_be_used_fails_as_c_says() {
                 t.key_type = Some(b"PROV".to_vec());
             }),
             ErrorKind::SslCertproblem,
-            "crypto provider not set, cannot load private key".into(),
+            no_provider.into(),
         ),
         (
             Box::new(|t| t.cert = Some(b"/nonexistent/cert.p12".to_vec())),
             ErrorKind::SslCertproblem,
-            "could not load PEM client certificate from /nonexistent/cert.p12, OpenSSL error \
-             error:80000002:system library::No such file or directory, (no key found, wrong \
-             passphrase, or wrong file format?)"
-                .into(),
+            missing.into(),
         ),
     ];
     for (set, kind, failure) in cases {
@@ -332,11 +363,20 @@ fn no_client_certificate_fails_as_the_server_alerts() {
     let failure = String::from_utf8(got.failure).unwrap();
     let version = openssl::version::version().split(' ').nth(1).unwrap();
     assert_eq!(got.result, Err(ErrorKind::RecvError), "{failure}");
+    #[cfg(not(libressl))]
     assert_eq!(
         failure,
         format!(
             "OpenSSL SSL_read: OpenSSL/{version}: error:0A00045C:SSL routines::tlsv13 alert \
              certificate required, errno 0"
+        )
+    );
+    #[cfg(libressl)]
+    assert_eq!(
+        failure,
+        format!(
+            "LibreSSL SSL_read: LibreSSL/{version}: error:1404C45C:SSL routines:ST_OK:tlsv13 \
+             alert certificate required, errno 0"
         )
     );
 }
@@ -481,6 +521,7 @@ fn a_chain_blob_with_a_broken_certificate_fails() {
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
     let failure = String::from_utf8(got.failure).unwrap();
+    #[cfg(not(libressl))]
     assert!(
         failure.starts_with(
             "could not load PEM client certificate from CURLOPT_SSLCERT_BLOB, OpenSSL error \
@@ -490,6 +531,13 @@ fn a_chain_blob_with_a_broken_certificate_fails() {
              file format?)"
         ),
         "{failure}"
+    );
+    #[cfg(libressl)]
+    assert_eq!(
+        failure,
+        "could not load PEM client certificate from CURLOPT_SSLCERT_BLOB, LibreSSL error \
+         error:09FFF064:PEM routines:CRYPTO_internal:bad base64 decode, (no key found, wrong \
+         passphrase, or wrong file format?)"
     );
 }
 

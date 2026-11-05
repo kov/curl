@@ -323,15 +323,19 @@ fn a_receive_failing_without_errno_is_said_as_c_says() {
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
     assert_eq!(got.failure, b"Recv failure: the layer below failed");
+    #[cfg(not(libressl))]
     let line = format!(
         "OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to localhost:{}",
         at.port()
     );
+    #[cfg(libressl)]
+    let line = format!("TLS connect error: {}", super::LIBRESSL_FAILED_BELOW);
     assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
-    // After the request: the response's.
+    // After the request: the response's. LibreSSL writes its change of
+    // cipher spec apart.
     let (at, server) = serve(&certs);
     let plan = Plan {
-        fail_recv_after: Some(3),
+        fail_recv_after: Some(if cfg!(libressl) { 4 } else { 3 }),
         ..Plan::default()
     };
     let got = get_over(plan, "localhost", at, trusting(&certs));
@@ -343,11 +347,15 @@ fn a_receive_failing_without_errno_is_said_as_c_says() {
         got.seen.lines
     );
     assert_eq!(got.failure, b"Recv failure: the layer below failed");
-    assert!(
-        said(&got, "OpenSSL SSL_read: SSL_ERROR_SYSCALL, errno 0"),
-        "{:#?}",
-        got.seen.lines
+    #[cfg(not(libressl))]
+    let line = "OpenSSL SSL_read: SSL_ERROR_SYSCALL, errno 0".to_owned();
+    #[cfg(libressl)]
+    let line = format!(
+        "LibreSSL SSL_read: LibreSSL/{}: {}, errno 0",
+        openssl::version::version().split(' ').nth(1).unwrap(),
+        super::LIBRESSL_FAILED_BELOW
     );
+    assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
 }
 
 /// A server that answers the ClientHello after `delay`, then serves as

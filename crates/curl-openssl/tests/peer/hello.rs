@@ -189,11 +189,23 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
         t.signature_algorithms = Some(b"ECDSA+SHA384:ed25519".to_vec());
     });
     // TLS_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.
+    #[cfg(not(libressl))]
     assert_eq!(hello.suites, [0x1303, 0xc02b], "{hello:?}");
+    // LibreSSL adds the renegotiation signal (TLS_EMPTY_RENEGOTIATION_INFO_SCSV).
+    #[cfg(libressl)]
+    assert_eq!(hello.suites, [0x1303, 0xc02b, 0x00ff], "{hello:?}");
     // x25519, secp384r1.
     assert_eq!(hello.list(10), [0x001d, 0x0018]);
     // ecdsa_secp384r1_sha384, ed25519.
+    #[cfg(not(libressl))]
     assert_eq!(hello.list(13), [0x0503, 0x0807]);
+    // LibreSSL takes no list of signature algorithms, which C then does
+    // not give it (`HAVE_SSL_CTX_SET1_SIGALGS`): its own are offered.
+    #[cfg(libressl)]
+    assert!(
+        hello.list(13).len() > 2 && !hello.list(13).contains(&0x0807),
+        "{hello:?}"
+    );
     for line in [
         "Cipher selection: ECDHE-ECDSA-AES128-GCM-SHA256",
         "TLS 1.3 cipher selection: TLS_CHACHA20_POLY1305_SHA256",
@@ -205,8 +217,15 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
         t.min_version = curl_core::options::TlsMinVersion::Tls1_3;
         t.ciphers = Some(b"ECDHE-ECDSA-AES128-GCM-SHA256".to_vec());
     });
-    assert!(hello.suites.iter().all(|&s| tls13(s)), "{hello:?}");
-    assert!(hello.suites.len() > 1, "the library's own TLS 1.3 list");
+    // LibreSSL's renegotiation signal again.
+    let suites: Vec<u16> = hello
+        .suites
+        .iter()
+        .copied()
+        .filter(|&s| !(cfg!(libressl) && s == 0x00ff))
+        .collect();
+    assert!(suites.iter().all(|&s| tls13(s)), "{hello:?}");
+    assert!(suites.len() > 1, "the library's own TLS 1.3 list");
     assert!(!starts(&got, "Cipher selection:"), "{:#?}", got.seen.lines);
     // With TLS 1.2 as the ceiling, the TLS 1.3 list is not set.
     let (hello, got) = hello_to("localhost", |o| {
@@ -377,24 +396,44 @@ fn tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed() {
         });
         server.join().unwrap();
         let records = relay.join().unwrap();
-        assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
-        assert!(
-            starts(&got, "SSL connection using TLSv1 / AES128-SHA / "),
-            "{:#?}",
-            got.seen.lines
-        );
-        // The application's data: the request.
-        let data: Vec<usize> = records
-            .iter()
-            .filter(|(kind, _)| *kind == 23)
-            .map(|&(_, len)| len)
-            .collect();
-        if allow {
-            assert!(!data.contains(&36), "{records:?}");
-            assert_eq!(data.len(), 1, "{records:?}");
-        } else {
-            assert_eq!(data.len(), 2, "{records:?}");
-            assert_eq!(data[0], 36, "{records:?}");
+        // LibreSSL has no TLS 1.0: the handshake fails before a hello is
+        // sent, nothing queued, as C's build over it fails it.
+        #[cfg(libressl)]
+        {
+            let _ = allow;
+            assert_eq!(got.result, Err(ErrorKind::SslConnectError));
+            assert_eq!(
+                got.failure,
+                b"TLS connect error: error:00000000:lib(0):func(0):reason(0)"
+            );
+            assert!(records.is_empty(), "{records:?}");
         }
+        #[cfg(not(libressl))]
+        sends_empty_fragment_first(&got, &records, allow);
+    }
+}
+
+/// What `tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed`
+/// finds of a TLS 1.0 connection, BEAST allowed or not.
+#[cfg(not(libressl))]
+fn sends_empty_fragment_first(got: &Got, records: &[(u8, usize)], allow: bool) {
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert!(
+        starts(got, "SSL connection using TLSv1 / AES128-SHA / "),
+        "{:#?}",
+        got.seen.lines
+    );
+    // The application's data: the request.
+    let data: Vec<usize> = records
+        .iter()
+        .filter(|(kind, _)| *kind == 23)
+        .map(|&(_, len)| len)
+        .collect();
+    if allow {
+        assert!(!data.contains(&36), "{records:?}");
+        assert_eq!(data.len(), 1, "{records:?}");
+    } else {
+        assert_eq!(data.len(), 2, "{records:?}");
+        assert_eq!(data[0], 36, "{records:?}");
     }
 }

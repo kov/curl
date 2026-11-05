@@ -97,7 +97,12 @@ fn a_trusted_intermediate_is_an_anchor_unless_asked_not_to() {
     let crl = crl.to_str().unwrap().as_bytes().to_vec();
     // As C says it, checked against its build: the handshake passes, the
     // result after does not.
+    #[cfg(not(libressl))]
     let refused = "SSL certificate OpenSSL verify result: unable to get issuer certificate (2)";
+    // LibreSSL's verifier names the missing root as the local issuer.
+    #[cfg(libressl)]
+    let refused =
+        "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)";
     for (set, failure) in [
         (
             &(|_: &mut curl_core::options::TlsOptions| {}) as &dyn Fn(&mut _),

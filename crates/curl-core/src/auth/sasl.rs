@@ -10,7 +10,7 @@ use crate::auth::creds::Secret;
 use crate::hash::{Hash as _, Md5};
 use crate::options::AuthMethods;
 use crate::sspi::{
-    Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiFailure,
+    Completing, Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiFailure,
 };
 
 /// A set of mechanisms (`SASL_MECH_*` bits).
@@ -993,12 +993,11 @@ fn digest_md5_sspi(
         Err(SspiFailure::OutOfMemory) => return Err(SaslError::OutOfMemory),
         Err(SspiFailure::Status(status)) => status,
     };
-    // C completes the token with the credentials' handle, which SSPI
-    // refuses, unread: the token goes as made.
-    let passes = status.wants_completion()
-        || status == SecStatus::OK
-        || status == SecStatus::CONTINUE_NEEDED;
-    if !passes {
+    if status.wants_completion() {
+        // C hands the credentials' handle where the context's belongs, and
+        // reads nothing of the answer: the token goes as SSPI leaves it.
+        let _unread: SecStatus = context.complete(Completing::Credentials, &mut out);
+    } else if status != SecStatus::OK && status != SecStatus::CONTINUE_NEEDED {
         if status == SecStatus::INSUFFICIENT_MEMORY {
             return Err(SaslError::OutOfMemory);
         }

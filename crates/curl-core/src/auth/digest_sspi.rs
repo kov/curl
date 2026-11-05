@@ -8,7 +8,8 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::creds::Secret;
 use super::digest::{pair, skip_blanks};
 use crate::sspi::{
-    Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiContext, SspiFailure,
+    Completing, Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiContext,
+    SspiFailure,
 };
 
 /// What is kept of Digest by SSPI (`struct digestdata`'s `input_token`
@@ -192,10 +193,11 @@ pub(crate) fn respond(
         Err(SspiFailure::OutOfMemory) => return Err(Refused::OutOfMemory),
         Err(SspiFailure::Status(status)) => status,
     };
-    // C completes the token with the credentials' handle in place of the
-    // context's, which SSPI refuses, unread: the token goes as made.
-    if !status.wants_completion() && status != SecStatus::OK && status != SecStatus::CONTINUE_NEEDED
-    {
+    if status.wants_completion() {
+        // C hands the credentials' handle where the context's belongs, and
+        // reads nothing of the answer: the token goes as SSPI leaves it.
+        let _unread: SecStatus = context.complete(Completing::Credentials, &mut out);
+    } else if status != SecStatus::OK && status != SecStatus::CONTINUE_NEEDED {
         if status == SecStatus::INSUFFICIENT_MEMORY {
             return Err(Refused::OutOfMemory);
         }
@@ -313,6 +315,36 @@ mod tests {
         assert_eq!(third, Ok(b"third".to_vec()));
         assert_eq!(notes, [SspiDigestNote::MakeSignature(refused)]);
         assert_eq!(sspi.asked()[2], Asked::Dropped, "the old context deleted");
+        assert_eq!(sspi.unused(), 0);
+    }
+
+    /// A token SSPI says wants completing is completed as C completes it,
+    /// with the credentials' handle, whatever that answers.
+    #[test]
+    fn a_token_wanting_completion_is_completed_with_the_credentials() {
+        let sspi = Scripted::leaked();
+        let creds = Secret::new(b"u", b"p", b"");
+        for status in [SecStatus::COMPLETE_NEEDED, SecStatus::COMPLETE_AND_CONTINUE] {
+            let mut state = SspiDigest {
+                sspi,
+                challenge: Some(b"realm=\"r\"".to_vec()),
+                context: None,
+            };
+            let invalid_handle = SecStatus::new(0x8009_0301_u32 as i32);
+            sspi.then(Answer::MaxToken(Ok(8)))
+                .then(Answer::Credentials(Ok(())))
+                .then(made(status, b"made"))
+                .then(Answer::Completed(invalid_handle));
+            let r = respond(&mut state, creds, b"GET", b"/", &mut |_| {});
+            assert_eq!(r, Ok(b"made".to_vec()));
+            assert_eq!(
+                sspi.asked()[3],
+                Asked::Complete(Completing::Credentials, b"made".to_vec())
+            );
+            assert!(state.context.is_some());
+            drop(state);
+            assert_eq!(sspi.asked(), [Asked::Dropped]);
+        }
         assert_eq!(sspi.unused(), 0);
     }
 

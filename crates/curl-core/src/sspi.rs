@@ -52,9 +52,9 @@ pub trait SspiContext: Send {
         out: &mut Vec<u8>,
     ) -> Result<Initialized, SspiFailure>;
 
-    /// `CompleteAuthToken` on the context, over `token`, the token the
-    /// last `initialize` made, which it may change.
-    fn complete(&mut self, token: &mut Vec<u8>) -> SecStatus;
+    /// `CompleteAuthToken` over `token`, the token the last `initialize`
+    /// made, which it may change; handed the handle `with` names.
+    fn complete(&mut self, with: Completing, token: &mut Vec<u8>) -> SecStatus;
 
     /// `MakeSignature` on the context with Digest's parameters (the
     /// method and the URI), in a room of `room` bytes: the response it
@@ -90,6 +90,16 @@ impl fmt::Debug for dyn SspiContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SspiContext")
     }
+}
+
+/// The handle `CompleteAuthToken` is handed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Completing {
+    /// The context's, as SPNEGO hands it (`spnego_sspi.c`).
+    Context,
+    /// The credentials', where the context's belongs, as Digest hands
+    /// it (`digest_sspi.c`).
+    Credentials,
 }
 
 /// A security package, as C names it (`SP_NAME_*`).
@@ -176,7 +186,10 @@ pub struct Initialize<'a> {
     /// The call goes on with the context the last made, or makes a new
     /// one in its place.
     pub fresh: bool,
-    /// The input buffers, in order; none passes no input at all.
+    /// The input buffers, in order; none passes no input at all. C would
+    /// add the TLS channel's bindings (`SECBUFFER_CHANNEL_BINDINGS`) to
+    /// SPNEGO's from `conn->sslContext`, which nothing in C sets: none
+    /// are passed, as C passes none.
     pub input: &'a [Input<'a>],
     /// Where the output token goes.
     pub output: Output,
@@ -341,7 +354,7 @@ pub(crate) mod testing {
             input: Vec<(u8, Vec<u8>)>,
             output: Output,
         },
-        Complete(Vec<u8>),
+        Complete(Completing, Vec<u8>),
         MakeSignature {
             method: Vec<u8>,
             uri: Vec<u8>,
@@ -485,8 +498,8 @@ pub(crate) mod testing {
             }
         }
 
-        fn complete(&mut self, token: &mut Vec<u8>) -> SecStatus {
-            match self.0.next(Asked::Complete(token.clone())) {
+        fn complete(&mut self, with: Completing, token: &mut Vec<u8>) -> SecStatus {
+            match self.0.next(Asked::Complete(with, token.clone())) {
                 Answer::Completed(status) => status,
                 other => panic!("a completion scripted, not {other:?}"),
             }

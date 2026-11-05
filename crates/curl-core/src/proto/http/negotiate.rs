@@ -22,7 +22,8 @@ use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Delegation;
 use crate::sspi::{
-    Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiContext, SspiFailure,
+    Completing, Identity, Initialize, Input, Output, Package, Req, SecStatus, Sspi, SspiContext,
+    SspiFailure,
 };
 use crate::trace;
 
@@ -600,7 +601,7 @@ fn sspi_step<H: Host>(
         ));
     }
     if status.wants_completion() {
-        status = context.complete(&mut token);
+        status = context.complete(Completing::Context, &mut token);
         if status.is_error() {
             return Err(sspi_failed(cx, sspi, "CompleteAuthToken failed: ", status));
         }

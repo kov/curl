@@ -51,3 +51,19 @@ witness: curl-core conn::socks::tests::sspi::the_exchange_is_c_s
             Security::Sspi(_) => GssLine::GrantedNotUsed(granted),
 --- new
             Security::Sspi(_) => GssLine::Granted(granted),
+
+=== HTTP Digest over SSPI completes a token with the context's handle
+file: crates/curl-core/src/auth/digest_sspi.rs
+witness: curl-core auth::digest_sspi::tests::a_token_wanting_completion_is_completed_with_the_credentials
+--- old
+        let _unread: SecStatus = context.complete(Completing::Credentials, &mut out);
+--- new
+        let _unread: SecStatus = context.complete(Completing::Context, &mut out);
+
+=== SASL DIGEST-MD5 over SSPI does not complete a token that wants it
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::digest_md5_over_sspi_is_the_package_s
+--- old
+        let _unread: SecStatus = context.complete(Completing::Credentials, &mut out);
+--- new
+        let _unread = &context;

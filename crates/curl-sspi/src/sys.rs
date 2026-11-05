@@ -346,16 +346,26 @@ pub fn initialize(
     Ok(Initialized { status, attrs })
 }
 
-/// `CompleteAuthToken` on `context` over `token`, which it may change.
-pub fn complete(context: Option<&CtxtHandle>, token: &mut Vec<u8>) -> i32 {
+/// The handle `CompleteAuthToken` is handed: a context's (none, which
+/// SSPI refuses), or credentials'.
+pub enum Completing<'a> {
+    Context(Option<&'a CtxtHandle>),
+    Credentials(&'a CredHandle),
+}
+
+/// `CompleteAuthToken` with `handle` over `token`, which it may change.
+pub fn complete(handle: Completing<'_>, token: &mut Vec<u8>) -> i32 {
     let mut b = [buffer(
         kind::TOKEN,
         token.as_mut_ptr().cast(),
         u32::try_from(token.len()).unwrap_or(u32::MAX),
     )];
     let d = desc(&mut b);
-    let handle = context.map_or(ptr::null(), CtxtHandle::as_ptr);
-    // SAFETY: the context (or none, which SSPI refuses) and the token,
+    let handle = match handle {
+        Completing::Context(context) => context.map_or(ptr::null(), CtxtHandle::as_ptr),
+        Completing::Credentials(cred) => cred.as_ptr(),
+    };
+    // SAFETY: the handle (or none, which SSPI refuses) and the token,
     // alive for the call; SSPI writes within the token.
     let status = unsafe { id::CompleteAuthToken(handle, &d) };
     let n = usize::try_from(b[0].cbBuffer).expect("a u32 fits");

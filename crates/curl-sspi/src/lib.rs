@@ -20,8 +20,8 @@ pub use imp::{SSPI, WindowsSspi};
 mod imp {
     use curl_alloc::{OutOfMemory, TryVec as _, try_box};
     use curl_core::sspi::{
-        Identity, Initialize, Initialized, Input, Output, Package, SecStatus, Sizes, Sspi,
-        SspiContext, SspiFailure,
+        Completing, Identity, Initialize, Initialized, Input, Output, Package, SecStatus, Sizes,
+        Sspi, SspiContext, SspiFailure,
     };
 
     use crate::sys::{self, Text};
@@ -200,8 +200,12 @@ mod imp {
             })
         }
 
-        fn complete(&mut self, token: &mut Vec<u8>) -> SecStatus {
-            status(sys::complete(self.context.as_ref(), token))
+        fn complete(&mut self, with: Completing, token: &mut Vec<u8>) -> SecStatus {
+            let handle = match with {
+                Completing::Context => sys::Completing::Context(self.context.as_ref()),
+                Completing::Credentials => sys::Completing::Credentials(&self.cred),
+            };
+            status(sys::complete(handle, token))
         }
 
         fn make_signature(
@@ -386,6 +390,36 @@ mod imp {
             let done = ctx.initialize(&call, &mut out).unwrap();
             assert!(!done.status.is_error(), "{:#x}", done.status.code());
             assert!(out.starts_with(b"NTLMSSP\0\x03\0\0\0"), "{out:?}");
+        }
+
+        /// Completing hands the handle asked: the credentials', which
+        /// SSPI takes on the process's user's Negotiate (NTLM, no domain
+        /// here), or the context's, whose package does not complete.
+        #[test]
+        fn completing_hands_the_handle_asked() {
+            let room = SSPI.max_token(Package::Negotiate).unwrap();
+            let mut ctx = SSPI
+                .credentials(Package::Negotiate, &Identity::Current)
+                .unwrap();
+            let call = Initialize {
+                target: b"HTTP/127.0.0.1",
+                flags: curl_core::sspi::Req::default(),
+                native: true,
+                fresh: true,
+                input: &[],
+                output: Output::Room(room),
+            };
+            let mut out = Vec::new();
+            let done = ctx.initialize(&call, &mut out).unwrap();
+            assert_eq!(done.status, SecStatus::CONTINUE_NEEDED);
+            let mut token = out.clone();
+            let status = ctx.complete(Completing::Credentials, &mut token);
+            assert_eq!(status, SecStatus::OK);
+            assert_eq!(token, out);
+            let status = ctx.complete(Completing::Context, &mut token);
+            // `SEC_E_UNSUPPORTED_FUNCTION`.
+            assert_eq!(status.code(), 0x8009_0302_u32 as i32);
+            assert_eq!(token, out);
         }
 
         /// SPNEGO without NTLM, for the process's user, refuses a target

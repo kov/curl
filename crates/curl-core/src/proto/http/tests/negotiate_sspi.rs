@@ -8,7 +8,7 @@ use super::*;
 use crate::libraries::{Libraries, Security, SharedLibraries};
 use crate::options::{Delegation, HttpAuth};
 use crate::sspi::testing::{Answer, Asked, Scripted};
-use crate::sspi::{Initialized, Output, Package, Req, SecStatus, SspiFailure};
+use crate::sspi::{Completing, Initialized, Output, Package, Req, SecStatus, SspiFailure};
 
 const ROOM: usize = 48;
 
@@ -260,7 +260,10 @@ fn a_token_needing_completion_is_completed() {
         String::from_utf8(ran.request.clone()).unwrap(),
         negotiated_get("/", b"raw")
     );
-    assert_eq!(sspi.asked()[3], Asked::Complete(b"raw".to_vec()));
+    assert_eq!(
+        sspi.asked()[3],
+        Asked::Complete(Completing::Context, b"raw".to_vec())
+    );
 
     let (sspi, libraries) = scripted();
     sspi.then(Answer::MaxToken(Ok(ROOM)))

@@ -935,6 +935,17 @@ fn digest_md5_over_sspi_is_the_package_s() {
             vec!["DIGEST-MD5 handshake failure (empty challenge message)".to_string()]
         )
     );
+    // A token wanting completion is completed with the credentials'
+    // handle, as C completes it, whatever that answers.
+    sspi.then(Answer::MaxToken(Ok(40)))
+        .then(Answer::Credentials(Ok(())))
+        .then(made(SecStatus::COMPLETE_NEEDED, b"resp"))
+        .then(Answer::Completed(SecStatus::new(0x8009_0301_u32 as i32)));
+    assert_eq!(run(b"c"), (Ok(Some(b"resp".to_vec())), vec![]));
+    assert_eq!(
+        sspi.asked()[3],
+        Asked::Complete(Completing::Credentials, b"resp".to_vec())
+    );
     sspi.then(Answer::MaxToken(Err(SecStatus::new(-1))));
     assert_eq!(run(b"c").0, Err(SaslError::NoAuthInfo));
     let refused = SecStatus::new(0x8009_030d_u32 as i32);

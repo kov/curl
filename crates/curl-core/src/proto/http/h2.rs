@@ -23,7 +23,7 @@ use crate::multi::PushFields;
 use crate::multi::push::Full;
 use crate::multi::state::{Offered, start_pushed};
 use crate::proto::http2::{
-    EgressFailed, GoAway, H2Conn, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
+    CHUNK, EgressFailed, GoAway, H2Conn, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
     trace_frame, trace_settings,
 };
 use crate::text::Text;
@@ -1088,7 +1088,11 @@ impl Request {
                 break;
             }
             let said = cx.easy().report().reasons();
-            let got = lease.get().recv(cx, left);
+            // Each read fills at most one chunk of the session's input, as
+            // C reads into its `inbufq` (`Curl_cf_recv_bufq`): the layers
+            // below are asked for 16 KiB at a time, the step's last read
+            // for what is left of its allowance (DIVERGENCE.md).
+            let got = lease.get().recv(cx, left.min(CHUNK));
             match got {
                 Ok(Recv::WouldBlock) => break,
                 Ok(Recv::Eof) => {

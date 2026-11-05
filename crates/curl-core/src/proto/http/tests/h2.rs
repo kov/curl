@@ -2320,6 +2320,16 @@ fn traced_h2(
     seen: &Seen,
     w: impl WriteHandler + 'static,
 ) -> (crate::multi::Multi, TransferId) {
+    traced_h2_by(talk, seen, w, |_| {})
+}
+
+/// `traced_h2`, its options then set by `set`.
+fn traced_h2_by(
+    talk: &Conversation,
+    seen: &Seen,
+    w: impl WriteHandler + 'static,
+    set: impl FnOnce(&mut crate::options::Options),
+) -> (crate::multi::Multi, TransferId) {
     let mut m = serving(Peer::Accepts, &[talk]);
     let mut e = Easy::new();
     e.set_libraries(with_h2());
@@ -2334,6 +2344,7 @@ fn traced_h2(
     o.output.verbose = true;
     o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
     o.callbacks.write = Some(Handler::write(w).unwrap());
+    set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     (m, id)
 }
@@ -2438,6 +2449,42 @@ fn a_pause_in_a_read_reads_on() {
         Ok(())
     );
     assert_eq!(&w.0.lock().unwrap()[1..], b"aabb");
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
+/// The session reads what is below it a chunk of 16 KiB at a time, as C
+/// reads into its input queue's chunks (`h2_progress_ingress`,
+/// `Curl_cf_recv_bufq`): the C build's `ingress: read 16384 bytes` from a
+/// connection that has more, not the step's whole allowance at once.
+#[test]
+fn the_session_reads_a_chunk_at_a_time() {
+    let body = vec![b'x'; 60_000];
+    let mut answer = b"S\nH 1 0\n:status: 200\n\n".to_vec();
+    for (i, part) in body.chunks(15_000).enumerate() {
+        let last = u8::from(i == 3);
+        answer.extend_from_slice(format!("D 1 {} {last}\n", part.len()).as_bytes());
+        answer.extend_from_slice(part);
+    }
+    let talk = Conversation::replies(&[&answer], false).per_send();
+    let seen = Seen::default();
+    let w = PausesOnceAt(0, Arc::default());
+    let (mut m, id) = traced_h2_by(&talk, &seen, w, |o| {
+        // The tool's buffer, the step's allowance.
+        o.limits.buffer_size = crate::options::BufferSize::clamped(102_400);
+    });
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let reads: Vec<usize> = h2_lines_from(&seen, 0)
+        .iter()
+        .filter_map(|l| l.strip_prefix("[HTTP/2] [0] ingress: read "))
+        .map(|l| l.trim_end_matches(" bytes").parse().unwrap())
+        .collect();
+    assert!(reads.len() > 3, "{reads:?}");
+    let (last, whole) = reads.split_last().unwrap();
+    assert!(whole.iter().all(|&n| n == 16384), "{reads:?}");
+    assert!(*last <= 16384, "{reads:?}");
     m.remove(id, &mut NoEvents).unwrap();
 }
 

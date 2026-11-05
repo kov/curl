@@ -302,6 +302,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   handed the socket and reads past any buffer of ours: their tunnel reads the answer a byte at
   a time, as C's, so the SSH banner stays in the socket.
 
+## Reads C makes larger
+
+- **An HTTP/2 step's last read of the connection takes what is left of its allowance.** The
+  session reads the layers below 16 KiB at a time, as C reads into its input queue's chunks,
+  until a buffer's worth (`CURLOPT_BUFFERSIZE`) came in the step; the last read asks for what is
+  left of that buffer. C's `h2_progress_ingress` asks a whole chunk on every read
+  (`Curl_cf_recv_bufq` with no limit), so it can take up to 16 KiB less one byte past the
+  buffer, and with a buffer under 16 KiB reads a whole chunk at once. Here a step on a shared
+  connection takes no more than its buffer of what is meant for its siblings. The bytes and
+  their order are the same; the last `ingress: read` line of a step, and the TLS or socket read
+  under it, may be smaller than C's. Pinned by `a_step_reads_a_buffer_of_the_connection_at_most`
+  (`crates/curl-core/src/proto/http/tests/h2.rs`).
+
 ## Waits C times from the clock's origin
 
 - **A speed limit's first step is a whole second from the first look at it.** Before the body

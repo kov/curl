@@ -38,7 +38,7 @@ pub(crate) const CONNECTION_WINDOW: i32 = 100 * STREAM_WINDOW_MAX;
 
 /// The size of the chunks the session's output and a request's body are
 /// buffered in (`H2_CHUNK_SIZE`).
-const CHUNK: usize = 16 * 1024;
+pub(crate) const CHUNK: usize = 16 * 1024;
 
 /// The session's output is one chunk (`H2_NW_SEND_CHUNKS`): the
 /// connection is sent a chunk at a time, whatever the frames' sizes.

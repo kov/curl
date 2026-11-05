@@ -1103,3 +1103,11 @@ witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_tra
         if self.tunnel.state == state {
 --- new
         if self.tunnel.state == state || state == TunnelState::Failed {
+
+=== the session reads a step's whole allowance at once
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::the_session_reads_a_chunk_at_a_time
+--- old
+            let got = lease.get().recv(cx, left.min(CHUNK));
+--- new
+            let got = lease.get().recv(cx, left);

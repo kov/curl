@@ -131,6 +131,47 @@ impl KeyLog {
     }
 }
 
+/// The longest label a secret is written with
+/// (`KEYLOG_LABEL_MAXLEN`: `CLIENT_HANDSHAKE_TRAFFIC_SECRET`'s).
+const LABEL_MAX: usize = "CLIENT_HANDSHAKE_TRAFFIC_SECRET".len();
+
+/// The longest secret written (`SECRET_MAXLEN`: TLS 1.2's master key,
+/// and a 384-bit hash's).
+const SECRET_MAX: usize = 48;
+
+impl KeyLog {
+    /// Write the line of `secret` under `label` for the connection of
+    /// `client_random`, each in upper-case hex (`Curl_tls_keylog_write`),
+    /// for a TLS library that gives the secrets themselves; none for a
+    /// label too long, or a secret empty or too long. Whether it was
+    /// written.
+    pub fn write_secret(&self, label: &[u8], client_random: &[u8; 32], secret: &[u8]) -> bool {
+        if label.len() > LABEL_MAX || secret.is_empty() || secret.len() > SECRET_MAX {
+            return false;
+        }
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let mut line = [0u8; LABEL_MAX + 1 + 2 * 32 + 1 + 2 * SECRET_MAX + 1];
+        let mut at = label.len();
+        line[..at].copy_from_slice(label);
+        let mut put = |b: u8, at: &mut usize| {
+            line[*at] = b;
+            *at += 1;
+        };
+        put(b' ', &mut at);
+        for &b in client_random {
+            put(HEX[usize::from(b >> 4)], &mut at);
+            put(HEX[usize::from(b & 0xf)], &mut at);
+        }
+        put(b' ', &mut at);
+        for &b in secret {
+            put(HEX[usize::from(b >> 4)], &mut at);
+            put(HEX[usize::from(b & 0xf)], &mut at);
+        }
+        put(b'\n', &mut at);
+        self.write_line(&line[..at])
+    }
+}
+
 impl Default for KeyLog {
     fn default() -> KeyLog {
         KeyLog::new()
@@ -208,6 +249,33 @@ mod tests {
         want.extend_from_slice(&[b'y'; LINE_MAX]);
         want.push(b'\n');
         assert_eq!(std::fs::read(&path).unwrap(), want);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A secret is written as C writes it: its label, the client's
+    /// random and the secret in upper-case hex; a label too long, or a
+    /// secret empty or too long, is not written.
+    #[test]
+    fn a_secret_is_written_in_upper_case_hex() {
+        let path = std::env::temp_dir().join(format!("curl-keylog-secret-{}", std::process::id()));
+        let log = KeyLog::new();
+        let random: [u8; 32] = core::array::from_fn(|i| (i * 8) as u8);
+        assert!(!log.write_secret(b"CLIENT_RANDOM", &random, &[0xab]));
+        log.open_named(path.to_str().unwrap().as_bytes());
+        assert!(log.write_secret(b"CLIENT_RANDOM", &random, &[0xab, 0x0c]));
+        assert!(!log.write_secret(b"CLIENT_RANDOM", &random, &[]));
+        assert!(!log.write_secret(b"CLIENT_RANDOM", &random, &[1; SECRET_MAX + 1]));
+        assert!(log.write_secret(b"CLIENT_RANDOM", &random, &[0xff; SECRET_MAX]));
+        assert!(!log.write_secret(&[b'L'; LABEL_MAX + 1], &random, &[1]));
+        assert!(log.write_secret(&[b'L'; LABEL_MAX], &random, &[1]));
+        log.close();
+        let hex: String = random.iter().map(|b| format!("{b:02X}")).collect();
+        let want = format!(
+            "CLIENT_RANDOM {hex} AB0C\nCLIENT_RANDOM {hex} {}\n{} {hex} 01\n",
+            "FF".repeat(SECRET_MAX),
+            "L".repeat(LABEL_MAX)
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
         std::fs::remove_file(&path).unwrap();
     }
 

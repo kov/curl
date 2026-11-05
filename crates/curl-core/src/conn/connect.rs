@@ -1988,7 +1988,8 @@ impl ConnectMachine {
         let peer = crate::tls::TlsPeer::of(origin, early_data);
         let tls = {
             let mut tcx = crate::tls::TlsCx::new(cx, component, &kept_for);
-            backend.quic_session(identity, &peer, &making.shared, &mut tcx)
+            let setup = |ctx| h3.setup_tls_context(ctx);
+            backend.quic_session(identity, &peer, &making.shared, &setup, &mut tcx)
         };
         let tls = match tls {
             Ok(tls) => tls,

@@ -118,7 +118,9 @@ impl Drop for DigestCx {
     }
 }
 
-#[cfg(test)]
+// LibreSSL takes no allocator of ours (`CRYPTO_set_mem_functions`
+// refuses), so its allocations are not counted.
+#[cfg(all(test, not(libressl)))]
 mod tests {
     use super::*;
     use crate::sys::tests::{count_allocations, in_a_child, live_allocations};

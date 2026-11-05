@@ -1,6 +1,7 @@
 //! What this crate calls of OpenSSL that openssl-sys does not declare,
-//! as OpenSSL 3's headers declare it, and the values of the headers'
-//! macros it uses. Declarations only.
+//! as OpenSSL 3's headers declare it, or LibreSSL's where the build is
+//! LibreSSL's (`cfg(libressl)`), and the values of the headers' macros it
+//! uses, which are the same in both but where said. Declarations only.
 
 #![allow(unsafe_code)]
 
@@ -34,20 +35,116 @@ pub(crate) struct X509InfoHead {
     pub(crate) crl: *mut X509_CRL,
 }
 
+// The calls both libraries have that openssl-sys declares for OpenSSL
+// alone, or under OpenSSL 3's names: LibreSSL's stack is `_STACK`, its
+// calls `sk_*`, and C's `SSL_get1_peer_certificate` is its
+// `SSL_get_peer_certificate` (`openssl.h`'s `#ifndef HAVE_OPENSSL3`), as
+// `EVP_PKEY_get_security_bits` is its `EVP_PKEY_security_bits`.
+#[cfg(libressl)]
+pub(crate) use libressl::*;
+#[cfg(not(libressl))]
+pub(crate) use openssl_sys::{
+    EVP_PKEY_get_security_bits, OPENSSL_STACK as Stack, OPENSSL_init_ssl, OPENSSL_sk_num as sk_num,
+    OPENSSL_sk_pop as sk_pop, OPENSSL_sk_pop_free as sk_pop_free, OPENSSL_sk_value as sk_value,
+    SSL_get0_verified_chain, SSL_get1_peer_certificate, SSL_is_init_finished, X509_get_version,
+    X509_get0_extensions,
+};
+
+/// `SSL_is_init_finished`, a macro of LibreSSL's: the handshake is done
+/// (`SSL_ST_OK`).
+///
+/// # Safety
+/// `ssl` is an SSL.
+#[cfg(libressl)]
+#[allow(non_snake_case)]
+pub(crate) unsafe fn SSL_is_init_finished(ssl: *const SSL) -> c_int {
+    /// `SSL_ST_OK`.
+    const SSL_ST_OK: c_int = 0x03;
+    // SAFETY: as the caller says.
+    c_int::from(unsafe { SSL_state(ssl) } == SSL_ST_OK)
+}
+
+#[cfg(libressl)]
+mod libressl {
+    use core::ffi::{c_int, c_long, c_void};
+
+    pub(crate) use openssl_sys::{_STACK as Stack, sk_num, sk_pop, sk_pop_free, sk_value};
+    use openssl_sys::{EVP_PKEY, SSL, X509};
+
+    // SAFETY: each declaration is LibreSSL's header's, for a function the
+    // library this crate links (3.4.1 or later, checked at build) exports.
+    unsafe extern "C" {
+        pub(crate) fn OPENSSL_init_ssl(opts: u64, settings: *const c_void) -> c_int;
+        pub(crate) fn SSL_get0_verified_chain(ssl: *const SSL) -> *mut openssl_sys::stack_st_X509;
+        #[link_name = "SSL_get_peer_certificate"]
+        pub(crate) fn SSL_get1_peer_certificate(ssl: *const SSL) -> *mut X509;
+        pub(crate) fn SSL_state(ssl: *const SSL) -> c_int;
+        pub(crate) fn X509_get_version(x: *const X509) -> c_long;
+        pub(crate) fn X509_get0_extensions(x: *const X509) -> *const c_void;
+        #[link_name = "EVP_PKEY_security_bits"]
+        pub(crate) fn EVP_PKEY_get_security_bits(key: *const EVP_PKEY) -> c_int;
+    }
+}
+
+// SAFETY: each declaration is LibreSSL's header's, for a function its
+// build (C's `#ifdef LIBRESSL_VERSION_NUMBER` branches) calls.
+#[cfg(libressl)]
+unsafe extern "C" {
+    pub(crate) fn X509_STORE_load_locations(
+        store: *mut X509_STORE,
+        file: *const c_char,
+        path: *const c_char,
+    ) -> c_int;
+    pub(crate) fn SSL_set_bio(s: *mut SSL, rbio: *mut BIO, wbio: *mut BIO);
+    pub(crate) fn ERR_set_mark() -> c_int;
+    pub(crate) fn ERR_pop_to_mark() -> c_int;
+    pub(crate) fn SSL_get_client_random(s: *const SSL, out: *mut u8, outlen: usize) -> usize;
+    pub(crate) fn SSL_SESSION_get_master_key(
+        session: *const openssl_sys::SSL_SESSION,
+        out: *mut u8,
+        outlen: usize,
+    ) -> usize;
+    pub(crate) fn EVP_PKEY_get0_RSA(key: *mut EVP_PKEY) -> *mut c_void;
+    pub(crate) fn EVP_PKEY_get0_DSA(key: *mut EVP_PKEY) -> *mut c_void;
+    pub(crate) fn EVP_PKEY_get0_DH(key: *mut EVP_PKEY) -> *mut c_void;
+    pub(crate) fn RSA_get0_key(
+        rsa: *const c_void,
+        n: *mut *const BIGNUM,
+        e: *mut *const BIGNUM,
+        d: *mut *const BIGNUM,
+    );
+    pub(crate) fn DSA_get0_pqg(
+        dsa: *const c_void,
+        p: *mut *const BIGNUM,
+        q: *mut *const BIGNUM,
+        g: *mut *const BIGNUM,
+    );
+    pub(crate) fn DSA_get0_key(
+        dsa: *const c_void,
+        public: *mut *const BIGNUM,
+        private: *mut *const BIGNUM,
+    );
+    pub(crate) fn DH_get0_pqg(
+        dh: *const c_void,
+        p: *mut *const BIGNUM,
+        q: *mut *const BIGNUM,
+        g: *mut *const BIGNUM,
+    );
+    pub(crate) fn DH_get0_key(
+        dh: *const c_void,
+        public: *mut *const BIGNUM,
+        private: *mut *const BIGNUM,
+    );
+    pub(crate) fn OBJ_find_sigid_algs(sig: c_int, digest: *mut c_int, key: *mut c_int) -> c_int;
+    pub(crate) fn X509_get_signature_nid(x: *const X509) -> c_int;
+}
+
 // SAFETY: each declaration is OpenSSL 3's header's, for a function the
 // library this crate links (3.0 or later, checked at build) exports.
+#[cfg(not(libressl))]
 unsafe extern "C" {
-    pub(crate) fn SSL_CTX_set_msg_callback(ctx: *mut SSL_CTX, cb: Option<MsgCallback>);
     pub(crate) fn X509_STORE_load_file(store: *mut X509_STORE, file: *const c_char) -> c_int;
     pub(crate) fn X509_STORE_load_path(store: *mut X509_STORE, path: *const c_char) -> c_int;
-    pub(crate) fn X509_STORE_up_ref(store: *mut X509_STORE) -> c_int;
-    pub(crate) fn X509_STORE_add_crl(store: *mut X509_STORE, crl: *mut X509_CRL) -> c_int;
-    pub(crate) fn X509_NAME_print_ex(
-        out: *mut BIO,
-        name: *const X509_NAME,
-        indent: c_int,
-        flags: c_ulong,
-    ) -> c_int;
     pub(crate) fn EVP_PKEY_get_group_name(
         key: *const EVP_PKEY,
         name: *mut c_char,
@@ -55,11 +152,7 @@ unsafe extern "C" {
         len: *mut usize,
     ) -> c_int;
     pub(crate) fn EVP_PKEY_get0_type_name(key: *const EVP_PKEY) -> *const c_char;
-    pub(crate) fn ERR_error_string_n(e: c_ulong, buf: *mut c_char, len: usize);
-    pub(crate) fn ERR_peek_error() -> c_ulong;
-    pub(crate) fn SSL_alert_desc_string_long(value: c_int) -> *const c_char;
     pub(crate) fn SSL_CTX_set_default_read_buffer_len(ctx: *mut SSL_CTX, len: usize);
-    pub(crate) fn X509_get0_pubkey(x: *const X509) -> *mut EVP_PKEY;
     pub(crate) fn X509_get_signature_info(
         x: *mut X509,
         mdnid: *mut c_int,
@@ -72,19 +165,39 @@ unsafe extern "C" {
         mdname: *mut c_char,
         mdname_sz: usize,
     ) -> c_int;
+    pub(crate) fn SSL_set0_rbio(s: *mut SSL, rbio: *mut BIO);
+    pub(crate) fn SSL_set0_wbio(s: *mut SSL, wbio: *mut BIO);
+    pub(crate) fn SSL_get_peer_signature_type_nid(s: *const SSL, nid: *mut c_int) -> c_int;
+    #[cfg(ossl320)]
+    pub(crate) fn SSL_get0_group_name(s: *mut SSL) -> *const c_char;
+}
+
+// SAFETY: each declaration is OpenSSL 3's header's, for a function the
+// library this crate links exports, OpenSSL 3.0 or later or LibreSSL
+// 3.4.1 or later, both checked at build.
+unsafe extern "C" {
+    pub(crate) fn SSL_CTX_set_msg_callback(ctx: *mut SSL_CTX, cb: Option<MsgCallback>);
+    pub(crate) fn X509_STORE_up_ref(store: *mut X509_STORE) -> c_int;
+    pub(crate) fn X509_STORE_add_crl(store: *mut X509_STORE, crl: *mut X509_CRL) -> c_int;
+    pub(crate) fn X509_NAME_print_ex(
+        out: *mut BIO,
+        name: *const X509_NAME,
+        indent: c_int,
+        flags: c_ulong,
+    ) -> c_int;
+    pub(crate) fn ERR_error_string_n(e: c_ulong, buf: *mut c_char, len: usize);
+    pub(crate) fn ERR_peek_error() -> c_ulong;
+    pub(crate) fn SSL_alert_desc_string_long(value: c_int) -> *const c_char;
+    pub(crate) fn X509_get0_pubkey(x: *const X509) -> *mut EVP_PKEY;
     pub(crate) fn X509_get_X509_PUBKEY(x: *const X509) -> *mut X509Pubkey;
     pub(crate) fn i2d_X509_PUBKEY(a: *const X509Pubkey, out: *mut *mut u8) -> c_int;
     pub(crate) fn X509_get0_notBefore(x: *const X509) -> *const ASN1_TIME;
     pub(crate) fn X509_get0_notAfter(x: *const X509) -> *const ASN1_TIME;
     pub(crate) fn GENERAL_NAMES_free(names: *mut c_void);
-    pub(crate) fn SSL_set0_rbio(s: *mut SSL, rbio: *mut BIO);
-    pub(crate) fn SSL_set0_wbio(s: *mut SSL, wbio: *mut BIO);
     pub(crate) fn SSL_get_early_data_status(s: *const SSL) -> c_int;
+    #[cfg(not(libressl))]
     pub(crate) fn BIO_up_ref(bio: *mut BIO) -> c_int;
     pub(crate) fn BIO_free(bio: *mut BIO) -> c_int;
-    pub(crate) fn SSL_get_peer_signature_type_nid(s: *const SSL, nid: *mut c_int) -> c_int;
-    #[cfg(ossl320)]
-    pub(crate) fn SSL_get0_group_name(s: *mut SSL) -> *const c_char;
     pub(crate) fn PEM_X509_INFO_read_bio(
         bio: *mut BIO,
         stack: *mut c_void,
@@ -153,7 +266,7 @@ pub(crate) const SSL_CTRL_SET_MAX_PROTO_VERSION: c_int = 124;
 pub(crate) const SSL_CTRL_SET_GROUPS_LIST: c_int = 92;
 pub(crate) const SSL_CTRL_SET_SIGALGS_LIST: c_int = 98;
 /// `SSL_get_negotiated_group`, before 3.2 named the group itself.
-#[cfg(not(ossl320))]
+#[cfg(not(any(ossl320, libressl)))]
 pub(crate) const SSL_CTRL_GET_NEGOTIATED_GROUP: c_int = 134;
 /// `TLSEXT_NAMETYPE_host_name`.
 pub(crate) const TLSEXT_NAMETYPE_HOST_NAME: c_long = 0;
@@ -165,7 +278,12 @@ pub(crate) const SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED: c_int = 1045;
 pub(crate) const SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED: c_int = 1116;
 
 /// `OPENSSL_VERSION_STRING`: the version alone, `3.5.9`.
+#[cfg(not(libressl))]
 pub(crate) const OPENSSL_VERSION_STRING: c_int = 6;
+/// `OPENSSL_VERSION`: the library's version line, LibreSSL's
+/// `LibreSSL 4.4.0`.
+#[cfg(libressl)]
+pub(crate) const OPENSSL_VERSION: c_int = 0;
 
 /// The flags C prints a certificate's names with (`x509_name_oneline`):
 /// `XN_FLAG_SEP_SPLUS_SPC | (XN_FLAG_ONELINE & ~ASN1_STRFLGS_ESC_MSB &
@@ -230,7 +348,10 @@ mod tests {
             ),
             (20, 134, 1045, 1116)
         );
+        #[cfg(not(libressl))]
         assert_eq!(OPENSSL_VERSION_STRING, 6);
+        #[cfg(libressl)]
+        assert_eq!(OPENSSL_VERSION, 0);
         // C's expression over the headers' values: `XN_FLAG_SEP_SPLUS_SPC`
         // (0x30000) with `XN_FLAG_ONELINE` (0x82031f) less
         // `ASN1_STRFLGS_ESC_MSB` (4) and `XN_FLAG_SPC_EQ` (0x800000).

@@ -18,6 +18,7 @@ use openssl_sys::{BIO, SSL, SSL_CTX, X509, X509_STORE};
 
 use crate::cache::{self, StoreCache};
 use crate::ffi;
+use crate::sys::PACKAGE;
 use curl_core::tls::hostcheck;
 
 /// A certificate this crate holds a reference to, freed as it goes.
@@ -320,11 +321,33 @@ fn load_trust_anchors(
     } else {
         identity.ca_file()
     };
+    load_locations(store, file, identity.ca_path(), empty && !native, io)?;
+    if file.is_some() || identity.ca_path().is_some() {
+        empty = false;
+    }
+    if empty && !native {
+        io.info(format_args!("  no trust anchors configured"));
+    }
+    Ok(())
+}
+
+/// Load the file and the directory of certificates into the store, each
+/// as OpenSSL 3 loads it (`X509_STORE_load_file`, `_load_path`): one that
+/// does not load fails if nothing else could verify the peer
+/// (`insisting`), else is said and passed over.
+#[cfg(not(libressl))]
+fn load_locations(
+    store: NonNull<X509_STORE>,
+    file: Option<&[u8]>,
+    path: Option<&[u8]>,
+    mut insisting: bool,
+    io: &mut TlsCx<'_>,
+) -> Result<(), ErrorKind> {
     if let Some(file) = file {
         let c = c_string(file)?;
         // SAFETY: the store, and a C string alive for the call.
         if unsafe { ffi::X509_STORE_load_file(store.as_ptr(), c.as_ptr().cast()) } == 0 {
-            if empty && !native {
+            if insisting {
                 return Err(io.fail(
                     ErrorKind::SslCacertBadfile,
                     format_args!("error adding trust anchors from file: {}", Text(file)),
@@ -335,13 +358,13 @@ fn load_trust_anchors(
             ));
         }
         io.info(format_args!("  CAfile: {}", Text(file)));
-        empty = false;
+        insisting = false;
     }
-    if let Some(path) = identity.ca_path() {
+    if let Some(path) = path {
         let c = c_string(path)?;
         // SAFETY: as above.
         if unsafe { ffi::X509_STORE_load_path(store.as_ptr(), c.as_ptr().cast()) } == 0 {
-            if empty && !native {
+            if insisting {
                 return Err(io.fail(
                     ErrorKind::SslCacertBadfile,
                     format_args!("error adding trust anchors from path: {}", Text(path)),
@@ -352,10 +375,49 @@ fn load_trust_anchors(
             ));
         }
         io.info(format_args!("  CApath: {}", Text(path)));
-        empty = false;
     }
-    if empty && !native {
-        io.info(format_args!("  no trust anchors configured"));
+    Ok(())
+}
+
+/// LibreSSL's: both in one call, as C's build without OpenSSL 3 loads
+/// them (`X509_STORE_load_locations`), its failure said of both.
+#[cfg(libressl)]
+fn load_locations(
+    store: NonNull<X509_STORE>,
+    file: Option<&[u8]>,
+    path: Option<&[u8]>,
+    insisting: bool,
+    io: &mut TlsCx<'_>,
+) -> Result<(), ErrorKind> {
+    if file.is_none() && path.is_none() {
+        return Ok(());
+    }
+    let file_c = file.map(c_string).transpose()?;
+    let path_c = path.map(c_string).transpose()?;
+    let ptr_of = |c: &Option<Vec<u8>>| c.as_ref().map_or(ptr::null(), |c| c.as_ptr().cast());
+    // SAFETY: the store, and C strings alive for the call, or null.
+    let loaded =
+        unsafe { ffi::X509_STORE_load_locations(store.as_ptr(), ptr_of(&file_c), ptr_of(&path_c)) };
+    if loaded == 0 {
+        if insisting {
+            return Err(io.fail(
+                ErrorKind::SslCacertBadfile,
+                format_args!(
+                    "error adding trust anchors from locations:  CAfile: {} CApath: {}",
+                    Text(file.unwrap_or(b"none")),
+                    Text(path.unwrap_or(b"none"))
+                ),
+            ));
+        }
+        io.info(format_args!(
+            "error setting certificate verify locations, continuing anyway"
+        ));
+    }
+    if let Some(file) = file {
+        io.info(format_args!("  CAfile: {}", Text(file)));
+    }
+    if let Some(path) = path {
+        io.info(format_args!("  CApath: {}", Text(path)));
     }
     Ok(())
 }
@@ -392,13 +454,13 @@ fn load_from_memory(store: NonNull<X509_STORE>, blob: &[u8]) -> Result<(), Error
     if infos.is_null() {
         return Err(ErrorKind::SslCacertBadfile);
     }
-    let stack = infos.cast::<openssl_sys::OPENSSL_STACK>();
+    let stack = infos.cast::<ffi::Stack>();
     let mut count = 0;
     // SAFETY: the stack the library made of `X509_INFO`s.
-    let n = unsafe { openssl_sys::OPENSSL_sk_num(stack) };
+    let n = unsafe { ffi::sk_num(stack) };
     for i in 0..n {
         // SAFETY: an entry of the stack, the start of an `X509_INFO`.
-        let info = unsafe { openssl_sys::OPENSSL_sk_value(stack, i) }.cast::<ffi::X509InfoHead>();
+        let info = unsafe { ffi::sk_value(stack, i) }.cast::<ffi::X509InfoHead>();
         // SAFETY: as above, read through the pointer the stack gives.
         let ffi::X509InfoHead { x509, crl } = unsafe { info.read() };
         if !x509.is_null() {
@@ -420,7 +482,7 @@ fn load_from_memory(store: NonNull<X509_STORE>, blob: &[u8]) -> Result<(), Error
         }
     }
     // SAFETY: the stack and its entries, freed once.
-    unsafe { openssl_sys::OPENSSL_sk_pop_free(stack, Some(free_info)) };
+    unsafe { ffi::sk_pop_free(stack, Some(free_info)) };
     if count > 0 {
         Ok(())
     } else {
@@ -464,7 +526,7 @@ fn info_cert(cert: &Cert, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let e = ErrText::last();
         return Err(io.fail(
             ErrorKind::OutOfMemory,
-            format_args!("BIO_new return NULL, OpenSSL error {e}"),
+            format_args!("BIO_new return NULL, {PACKAGE} error {e}"),
         ));
     };
     // An HTTPS proxy's is the proxy's (`Curl_ssl_cf_is_proxy`).
@@ -513,7 +575,7 @@ fn info_chain(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
     let verified = unsafe { openssl_sys::SSL_get_verify_result(ssl.as_ptr()) };
     let chain = if verified == c_long::from(openssl_sys::X509_V_OK) {
         // SAFETY: as above; the chain is the SSL's, alive while it is.
-        unsafe { openssl_sys::SSL_get0_verified_chain(ssl.as_ptr()) }
+        unsafe { ffi::SSL_get0_verified_chain(ssl.as_ptr()) }
     } else {
         // SAFETY: as above.
         unsafe { openssl_sys::SSL_get_peer_cert_chain(ssl.as_ptr()) }
@@ -521,12 +583,12 @@ fn info_chain(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
     if chain.is_null() {
         return;
     }
-    let stack = chain.cast::<openssl_sys::OPENSSL_STACK>();
+    let stack = chain.cast::<ffi::Stack>();
     // SAFETY: a stack of certificates.
-    let n = unsafe { openssl_sys::OPENSSL_sk_num(stack) };
+    let n = unsafe { ffi::sk_num(stack) };
     for level in 0..n {
         // SAFETY: an entry of the stack, a certificate.
-        let cert = unsafe { openssl_sys::OPENSSL_sk_value(stack, level) }.cast::<X509>();
+        let cert = unsafe { ffi::sk_value(stack, level) }.cast::<X509>();
         if cert.is_null() {
             continue;
         }
@@ -550,14 +612,9 @@ fn info_chain(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
         // SAFETY: as above.
         let bits = unsafe { openssl_sys::EVP_PKEY_bits(key) };
         // SAFETY: as above.
-        let sec_bits = unsafe { openssl_sys::EVP_PKEY_get_security_bits(key) };
-        let room = group.as_mut_ptr().cast();
+        let sec_bits = unsafe { ffi::EVP_PKEY_get_security_bits(key) };
         // SAFETY: as above.
-        let has_group = unsafe { ffi::EVP_PKEY_get_group_name(key, room, 80, ptr::null_mut()) };
-        // SAFETY: as above.
-        let type_name = unsafe { ffi::EVP_PKEY_get0_type_name(key) };
-        // SAFETY: the key's text, or null.
-        let type_name = unsafe { c_text(type_name) };
+        let (has_group, type_name) = unsafe { key_group_and_type(key, &mut group) };
         let algorithm = until_zero(&algorithm);
         let group = until_zero(&group);
         let type_name = type_name.unwrap_or(b"?");
@@ -570,6 +627,34 @@ fn info_chain(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
             Text(group),
             Text(algorithm)
         ));
+    }
+}
+
+/// Whether `key` has a group, whose name is written to `group`, and the
+/// name of its type, as OpenSSL 3 says them; LibreSSL's build asks
+/// neither, as C's without OpenSSL 3 does not: no group, and no type.
+///
+/// # Safety
+/// `key` is a key; the name lives while it does.
+unsafe fn key_group_and_type<'a>(
+    key: *mut openssl_sys::EVP_PKEY,
+    group: &mut [u8; 80],
+) -> (c_int, Option<&'a [u8]>) {
+    #[cfg(not(libressl))]
+    {
+        let room = group.as_mut_ptr().cast();
+        // SAFETY: as the caller says; text is written within the buffer
+        // named, ended by a zero byte.
+        let has_group = unsafe { ffi::EVP_PKEY_get_group_name(key, room, 80, ptr::null_mut()) };
+        // SAFETY: as above.
+        let type_name = unsafe { ffi::EVP_PKEY_get0_type_name(key) };
+        // SAFETY: the key's text, or null.
+        (has_group, unsafe { c_text(type_name) })
+    }
+    #[cfg(libressl)]
+    {
+        let _ = (key, group);
+        (0, None)
     }
 }
 
@@ -630,13 +715,13 @@ fn verify_host(
         )
     };
     if !names.is_null() {
-        let stack = names.cast::<openssl_sys::OPENSSL_STACK>();
+        let stack = names.cast::<ffi::Stack>();
         // SAFETY: a stack of `GENERAL_NAME`s.
-        let n = unsafe { openssl_sys::OPENSSL_sk_num(stack) };
+        let n = unsafe { ffi::sk_num(stack) };
         let mut i = 0;
         while i < n && !matched {
             // SAFETY: an entry of the stack, a `GENERAL_NAME`.
-            let name = unsafe { openssl_sys::OPENSSL_sk_value(stack, i) };
+            let name = unsafe { ffi::sk_value(stack, i) };
             // SAFETY: as above, alive while the stack is, freed below.
             let name = unsafe { &*name.cast::<openssl_sys::GENERAL_NAME>() };
             i += 1;
@@ -827,7 +912,7 @@ pub(crate) fn check_peer(
     }
     // SAFETY: the session's SSL; a reference to the certificate, freed
     // as `cert` goes.
-    let cert = NonNull::new(unsafe { openssl_sys::SSL_get1_peer_certificate(ssl.as_ptr()) });
+    let cert = NonNull::new(unsafe { ffi::SSL_get1_peer_certificate(ssl.as_ptr()) });
     let Some(cert) = cert.map(Cert) else {
         if !(identity.verify_peer || identity.verify_host) && identity.options.pinned_key.is_none()
         {
@@ -969,7 +1054,7 @@ fn check_issuer(cert: &Cert, identity: &TlsIdentity, io: &mut TlsCx<'_>) -> Resu
                 let e = ErrText::last();
                 return Err(io.fail(
                     ErrorKind::OutOfMemory,
-                    format_args!("BIO_new_mem_buf NULL, OpenSSL error {e}"),
+                    format_args!("BIO_new_mem_buf NULL, {PACKAGE} error {e}"),
                 ));
             }
         }
@@ -989,7 +1074,7 @@ fn check_issuer(cert: &Cert, identity: &TlsIdentity, io: &mut TlsCx<'_>) -> Resu
                 let e = ErrText::last();
                 return Err(io.fail(
                     ErrorKind::OutOfMemory,
-                    format_args!("BIO_new return NULL, OpenSSL error {e}"),
+                    format_args!("BIO_new return NULL, {PACKAGE} error {e}"),
                 ));
             }
         }
@@ -1129,7 +1214,7 @@ pub(crate) struct Versioned<'a>(&'a ErrText);
 impl fmt::Display for Versioned<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if after_version(crate::sys::version_len()).is_some() {
-            write!(f, "OpenSSL/{}: ", crate::sys::version_text())?;
+            write!(f, "{}: ", crate::sys::version())?;
         }
         fmt::Display::fmt(self.0, f)
     }
@@ -1144,6 +1229,7 @@ impl fmt::Display for ErrText {
 /// Whether `key`, of its certificate's signer's kind, has none for its
 /// mandatory digest, as Ed25519's is: then nothing is bound. One naming
 /// a digest is said, though the binding then fails all the same.
+#[cfg(not(libressl))]
 fn key_names_no_digest(
     key: *mut openssl_sys::EVP_PKEY,
     notes: &mut dyn curl_core::tls::BindingNotes,
@@ -1165,6 +1251,7 @@ fn key_names_no_digest(
 }
 
 /// That the key's digest `name` is not one to bind with.
+#[cfg(not(libressl))]
 fn say_unavailable(mandatory: bool, name: &[u8], notes: &mut dyn curl_core::tls::BindingNotes) {
     let how = if mandatory {
         " [mandatory]"
@@ -1177,24 +1264,15 @@ fn say_unavailable(mandatory: bool, name: &[u8], notes: &mut dyn curl_core::tls:
     ));
 }
 
-/// The prefix of a channel binding (RFC 5929's `tls-server-end-point`).
-const BINDING_PREFIX: &[u8] = b"tls-server-end-point:";
-
-/// The channel binding of the session `ssl` (`ossl_get_channel_binding`):
-/// the prefix and the hash of the peer's certificate by the digest its
-/// signature names, SHA-256 for one by MD5 or SHA-1 (RFC 5929 4.1); none
-/// for a peer that showed no certificate, or one whose signature names no
-/// digest, as an Ed25519 or post-quantum one's does.
-pub(crate) fn channel_binding(
-    ssl: NonNull<SSL>,
+/// The digest the binding of `cert` is made with, as OpenSSL 3 finds it
+/// (`ossl_get_channel_binding`'s `HAVE_OPENSSL3` branch): the one its
+/// signature names, SHA-256 for MD5 or SHA-1; none, and whether that is
+/// accepted, for a signature that names none; and the digest's id.
+#[cfg(not(libressl))]
+fn binding_digest(
+    cert: &Cert,
     notes: &mut dyn curl_core::tls::BindingNotes,
-) -> Result<Option<Vec<u8>>, ErrorKind> {
-    // SAFETY: the session's SSL; a reference to the certificate, freed
-    // as `cert` goes.
-    let cert = NonNull::new(unsafe { openssl_sys::SSL_get1_peer_certificate(ssl.as_ptr()) });
-    let Some(cert) = cert.map(Cert) else {
-        return Ok(None);
-    };
+) -> Result<(*const openssl_sys::EVP_MD, bool, c_int), ErrorKind> {
     let (mut mdnid, mut pknid, mut secbits, mut flags) = (0, 0, 0, 0u32);
     // SAFETY: the certificate, and four places to write to.
     let known = unsafe {
@@ -1238,6 +1316,72 @@ pub(crate) fn channel_binding(
             no_digest_acceptable = key_names_no_digest(key, notes);
         }
     }
+    Ok((digest, no_digest_acceptable, mdnid))
+}
+
+/// The digest as C's build without OpenSSL 3 finds it, LibreSSL's: the
+/// one the signature's algorithm pairs with, SHA-256 for MD5 or SHA-1;
+/// one the library does not have fails, as does a signature it does not
+/// know.
+#[cfg(libressl)]
+fn binding_digest(
+    cert: &Cert,
+    notes: &mut dyn curl_core::tls::BindingNotes,
+) -> Result<(*const openssl_sys::EVP_MD, bool, c_int), ErrorKind> {
+    let mut mdnid = 0;
+    // SAFETY: the certificate.
+    let signature = unsafe { ffi::X509_get_signature_nid(cert.as_ptr()) };
+    // SAFETY: a lookup of any number, and a place to write to, the key's
+    // id not asked for.
+    let found = unsafe { ffi::OBJ_find_sigid_algs(signature, &raw mut mdnid, ptr::null_mut()) };
+    if found == 0 {
+        return Err(notes.fail(
+            ErrorKind::SslInvalidcertstatus,
+            format_args!("Unable to find digest NID for certificate signature algorithm"),
+        ));
+    }
+    let digest = if mdnid == openssl_sys::NID_md5 || mdnid == openssl_sys::NID_sha1 {
+        // SAFETY: a function of no state; the library's static method.
+        unsafe { openssl_sys::EVP_sha256() }
+    } else {
+        // SAFETY: a lookup of any number; the library's method, or null.
+        unsafe { openssl_sys::EVP_get_digestbynid(mdnid) }
+    };
+    if digest.is_null() {
+        // SAFETY: a function of no state, for any number.
+        let name = unsafe { openssl_sys::OBJ_nid2sn(mdnid) };
+        // SAFETY: the library's static text, or null.
+        let name = unsafe { c_text(name) }.unwrap_or(b"(null)");
+        return Err(notes.fail(
+            ErrorKind::SslInvalidcertstatus,
+            format_args!(
+                "Could not find digest algorithm {} (NID {mdnid})",
+                name.escape_ascii()
+            ),
+        ));
+    }
+    Ok((digest, false, mdnid))
+}
+
+/// The prefix of a channel binding (RFC 5929's `tls-server-end-point`).
+const BINDING_PREFIX: &[u8] = b"tls-server-end-point:";
+
+/// The channel binding of the session `ssl` (`ossl_get_channel_binding`):
+/// the prefix and the hash of the peer's certificate by the digest its
+/// signature names, SHA-256 for one by MD5 or SHA-1 (RFC 5929 4.1); none
+/// for a peer that showed no certificate, or one whose signature names no
+/// digest, as an Ed25519 or post-quantum one's does.
+pub(crate) fn channel_binding(
+    ssl: NonNull<SSL>,
+    notes: &mut dyn curl_core::tls::BindingNotes,
+) -> Result<Option<Vec<u8>>, ErrorKind> {
+    // SAFETY: the session's SSL; a reference to the certificate, freed
+    // as `cert` goes.
+    let cert = NonNull::new(unsafe { ffi::SSL_get1_peer_certificate(ssl.as_ptr()) });
+    let Some(cert) = cert.map(Cert) else {
+        return Ok(None);
+    };
+    let (digest, no_digest_acceptable, mdnid) = binding_digest(&cert, notes)?;
     if digest.is_null() {
         if no_digest_acceptable {
             notes.info(format_args!(

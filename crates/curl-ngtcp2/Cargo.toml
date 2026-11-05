@@ -12,6 +12,10 @@ curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os" }
 libc = "0.2"
+# The OpenSSL-family library found, which says whether it is LibreSSL
+# (`DEP_OPENSSL_LIBRESSL_VERSION_NUMBER`), for the crypto linked; the
+# library itself, as `curl-openssl` links it.
+openssl-sys = "0.9.118"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }

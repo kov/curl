@@ -13,6 +13,7 @@ use curl_core::error::ErrorKind;
 use curl_core::tls::TlsCx;
 use openssl_sys::{SSL, SSL_CTX, X509};
 
+use crate::ffi;
 use crate::x509::{Text, c_text};
 
 // SAFETY: the declarations are `ocsp.h`'s; the library exports them.
@@ -119,7 +120,7 @@ fn basic(
         io.fail(ErrorKind::SslInvalidcertstatus, why)
     };
     // SAFETY: the SSL; the chain is its own, alive while it is.
-    let chain = unsafe { openssl_sys::SSL_get0_verified_chain(s) };
+    let chain = unsafe { ffi::SSL_get0_verified_chain(s) };
     if chain.is_null() {
         return Err(fail(
             io,
@@ -133,17 +134,17 @@ fn basic(
         return Err(fail(io, format_args!("OCSP response verification failed")));
     }
     // SAFETY: the SSL; a reference to the certificate, freed below.
-    let cert = unsafe { openssl_sys::SSL_get1_peer_certificate(s) };
+    let cert = unsafe { ffi::SSL_get1_peer_certificate(s) };
     if cert.is_null() {
         return Err(fail(io, format_args!("Error getting peer certificate")));
     }
-    let stack = chain.cast::<openssl_sys::OPENSSL_STACK>();
+    let stack = chain.cast::<ffi::Stack>();
     let mut id = ptr::null_mut();
     // SAFETY: a stack of certificates.
-    let n = unsafe { openssl_sys::OPENSSL_sk_num(stack) };
+    let n = unsafe { ffi::sk_num(stack) };
     for i in 0..n.max(0) {
         // SAFETY: an entry of the stack, a certificate.
-        let issuer = unsafe { openssl_sys::OPENSSL_sk_value(stack, i) }.cast::<X509>();
+        let issuer = unsafe { ffi::sk_value(stack, i) }.cast::<X509>();
         // SAFETY: two certificates.
         if unsafe { openssl_sys::X509_check_issued(issuer, cert) } == openssl_sys::X509_V_OK {
             // SAFETY: the library's static SHA-1 (a lookup key, RFC 5019,

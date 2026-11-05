@@ -1,6 +1,6 @@
-//! The parts of ngtcp2.h, ngtcp2_crypto_ossl.h and nghttp3.h the
-//! connection uses, declared as the headers have them (ngtcp2 1.25,
-//! nghttp3 1.18). The structures the libraries are handed by version
+//! The parts of ngtcp2.h, ngtcp2_crypto_ossl.h (ngtcp2_crypto_quictls.h
+//! over LibreSSL) and nghttp3.h the connection uses, declared as the
+//! headers have them (ngtcp2 1.25, nghttp3 1.18). The structures the libraries are handed by version
 //! are declared at the version named beside them.
 
 #![allow(non_camel_case_types, dead_code)]
@@ -518,6 +518,11 @@ unsafe extern "C" {
     pub(crate) fn ngtcp2_crypto_delete_crypto_aead_ctx_cb();
     pub(crate) fn ngtcp2_crypto_delete_crypto_cipher_ctx_cb();
     pub(crate) fn ngtcp2_crypto_get_path_challenge_data2_cb();
+}
+
+// OpenSSL's crypto (`ngtcp2_crypto_ossl`), over its QUIC API of 3.5.
+#[cfg(not(libressl))]
+unsafe extern "C" {
     pub(crate) fn ngtcp2_crypto_ossl_init() -> c_int;
     pub(crate) fn ngtcp2_crypto_ossl_ctx_new(
         pctx: *mut *mut ngtcp2_crypto_ossl_ctx,
@@ -525,6 +530,15 @@ unsafe extern "C" {
     ) -> c_int;
     pub(crate) fn ngtcp2_crypto_ossl_ctx_del(ctx: *mut ngtcp2_crypto_ossl_ctx);
     pub(crate) fn ngtcp2_crypto_ossl_configure_client_session(ssl: *mut c_void) -> c_int;
+}
+
+// LibreSSL's (`ngtcp2_crypto_libressl`), over the QUIC API it shares
+// with quictls, whose names it keeps; and LibreSSL's own call C makes on
+// the session.
+#[cfg(libressl)]
+unsafe extern "C" {
+    pub(crate) fn ngtcp2_crypto_quictls_configure_client_context(ssl_ctx: *mut c_void) -> c_int;
+    pub(crate) fn SSL_set_quic_use_legacy_codepoint(ssl: *mut c_void, use_legacy: c_int);
 }
 
 pub(crate) const NGHTTP3_SETTINGS_VERSION: c_int = 4;
@@ -762,6 +776,7 @@ unsafe extern "C" {
     pub(crate) fn nghttp3_version(least_version: c_int) -> *const nghttp3_info;
 }
 
+#[cfg(not(libressl))]
 unsafe extern "C" {
     /// OpenSSL's, from 3.5: whether a QUIC session sends early data.
     pub(crate) fn SSL_set_quic_tls_early_data_enabled(ssl: *mut c_void, enabled: c_int) -> c_int;

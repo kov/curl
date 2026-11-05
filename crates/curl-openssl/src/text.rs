@@ -47,9 +47,15 @@ pub(crate) fn record_type(content_type: c_int) -> &'static str {
 }
 
 /// A handshake message type as `ssl_msg_type` names it, for the major
-/// version `major` (only SSLv3's and TLS's are named).
+/// version `major` (only SSLv3's and TLS's are named). LibreSSL's headers
+/// define no `SSL3_MT_ENCRYPTED_EXTENSIONS`, `_SUPPLEMENTAL_DATA`,
+/// `_END_OF_EARLY_DATA`, `_KEY_UPDATE`, `_NEXT_PROTO` or `_MESSAGE_HASH`,
+/// whose names C leaves out where they are not defined.
 pub(crate) fn message_type(major: c_int, msg: c_int) -> &'static str {
     if major != 3 {
+        return "Unknown";
+    }
+    if cfg!(libressl) && matches!(msg, 8 | 23 | 5 | 24 | 67 | 254) {
         return "Unknown";
     }
     match msg {
@@ -132,9 +138,10 @@ mod tests {
     }
 
     /// `ssl_msg_type`, each `SSL3_MT_*` C names (`ssl3.h`), for SSLv3 and
-    /// TLS alone.
+    /// TLS alone: those LibreSSL's headers define, under LibreSSL.
     #[test]
     fn every_message_type_is_named_as_c_names_it() {
+        let named = |name| if cfg!(libressl) { "Unknown" } else { name };
         for (msg, name) in [
             (0, "Hello request"),
             (1, "Client hello"),
@@ -148,12 +155,12 @@ mod tests {
             (15, "CERT verify"),
             (20, "Finished"),
             (22, "Certificate Status"),
-            (8, "Encrypted Extensions"),
-            (23, "Supplemental data"),
-            (5, "End of early data"),
-            (24, "Key update"),
-            (67, "Next protocol"),
-            (254, "Message hash"),
+            (8, named("Encrypted Extensions")),
+            (23, named("Supplemental data")),
+            (5, named("End of early data")),
+            (24, named("Key update")),
+            (67, named("Next protocol")),
+            (254, named("Message hash")),
             // `SSL3_MT_CERTIFICATE_URL` and `SSL3_MT_COMPRESSED_CERTIFICATE`,
             // which C does not name.
             (21, "Unknown"),

@@ -38,6 +38,10 @@ pub(crate) struct Flags {
     /// Apple's SecTrust verified the peer (`sectrust_verified`), which the
     /// sessions it gives are kept with.
     pub(crate) sectrust_verified: bool,
+    /// The TLS 1.2 secret is logged, which LibreSSL's build logs once
+    /// (`keylog_done`).
+    #[cfg(libressl)]
+    pub(crate) keylog_done: bool,
 }
 
 /// What the last read or write below came to (`io_result`).
@@ -89,7 +93,9 @@ pub(crate) struct Slot<'s, 'a> {
     pub(crate) below: Below,
     /// Sets the trust store up, unless `flags.store_ready`.
     pub(crate) store: StoreSetup<'s>,
-    /// Where the secrets the library tells of are logged, if anywhere.
+    /// Where the secrets the library tells of are logged, if anywhere;
+    /// LibreSSL tells of none (no keylog callback).
+    #[cfg(not(libressl))]
     pub(crate) keylog: Option<&'s KeyLog>,
     /// A QUIC session's: the transport parameters a session the peer
     /// gives is kept with, encoded, if the QUIC library has them.
@@ -222,6 +228,7 @@ pub(crate) unsafe fn with_cx<R>(ssl: NonNull<SSL>, f: impl FnOnce(&mut TlsCx<'_>
 
 /// The library tells of a secret, a line of the key log's
 /// (`ossl_keylog_callback`).
+#[cfg(not(libressl))]
 pub(crate) unsafe extern "C" fn keylog_line(ssl: *const SSL, line: *const c_char) {
     if line.is_null() {
         return;
@@ -234,6 +241,39 @@ pub(crate) unsafe extern "C" fn keylog_line(ssl: *const SSL, line: *const c_char
         // SAFETY: the library hands a C string, alive for the callback.
         log.write_line(unsafe { CStr::from_ptr(line) }.to_bytes());
     }
+}
+
+/// Log the TLS 1.2 master secret of `ssl`'s session, once it has one,
+/// as C's build logs it where the library calls back with no secrets
+/// (`ossl_log_tls12_secret`, LibreSSL's); the library's errors meanwhile
+/// left as they were. Whether the session had one, which C then logs no
+/// more.
+#[cfg(libressl)]
+pub(crate) fn log_tls12_secret(ssl: NonNull<SSL>, log: &KeyLog) -> bool {
+    /// `SSL3_RANDOM_SIZE` and `SSL_MAX_MASTER_KEY_LENGTH`.
+    const RANDOM: usize = 32;
+    const MASTER_KEY: usize = 48;
+    // SAFETY: the thread's error queue, marked to be restored below.
+    unsafe { ffi::ERR_set_mark() };
+    // SAFETY: the session's SSL; its session, if any, alive while it is.
+    let session = unsafe { openssl_sys::SSL_get_session(ssl.as_ptr()) };
+    let mut random = [0u8; RANDOM];
+    let mut key = [0u8; MASTER_KEY];
+    let mut len = 0;
+    if !session.is_null() {
+        // SAFETY: the SSL, and a buffer of the length given.
+        unsafe { ffi::SSL_get_client_random(ssl.as_ptr(), random.as_mut_ptr(), RANDOM) };
+        // SAFETY: the SSL's session, and a buffer of the length given.
+        len = unsafe { ffi::SSL_SESSION_get_master_key(session, key.as_mut_ptr(), MASTER_KEY) };
+    }
+    // SAFETY: the queue, back as it was at the mark.
+    unsafe { ffi::ERR_pop_to_mark() };
+    // None yet, or a TLS 1.3 session's, which has none.
+    if len == 0 {
+        return false;
+    }
+    log.write_secret(b"CLIENT_RANDOM", &random, &key[..len.min(MASTER_KEY)]);
+    true
 }
 
 /// The peer gave a session to resume (`ossl_new_session_cb`): kept in the

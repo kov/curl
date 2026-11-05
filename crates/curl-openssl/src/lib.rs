@@ -13,6 +13,10 @@ mod bio;
 mod cache;
 mod cert;
 mod certinfo;
+#[cfg(not(libressl))]
+mod engine;
+#[cfg(libressl)]
+#[path = "engine_none.rs"]
 mod engine;
 mod ffi;
 mod ocsp;

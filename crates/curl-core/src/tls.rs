@@ -68,16 +68,18 @@ pub trait TlsBackend: Send + Sync {
     /// A session for one QUIC connection to `peer`, offering HTTP/3 by
     /// ALPN (C's `Curl_vquic_tls_init`): made at once, its context and
     /// its library's session object, which `QuicTls::native` hands the
-    /// QUIC library; a session the cache kept for the peer is resumed.
-    /// A library that cannot carry QUIC has none.
+    /// QUIC library; the context handed to `setup` first, as soon as it
+    /// is made; a session the cache kept for the peer is resumed. A
+    /// library that cannot carry QUIC has none.
     fn quic_session(
         &self,
         identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
         shared: &TlsShared,
+        setup: QuicContextSetup<'_>,
         cx: &mut TlsCx<'_>,
     ) -> Result<Box<dyn QuicTls>, ErrorKind> {
-        let _ = (identity, peer, shared);
+        let _ = (identity, peer, shared, setup);
         Err(cx.fail(
             ErrorKind::QuicConnectError,
             format_args!("the TLS library has no QUIC"),
@@ -408,6 +410,12 @@ impl TlsNative {
         self.session
     }
 }
+
+/// What the QUIC library does to a QUIC session's context once it is
+/// made, before the session's own object is made from it (C's
+/// `cb_setup`, `cf_ngtcp2_tls_ctx_setup`): why it could not, as C says
+/// it, if it could not.
+pub type QuicContextSetup<'a> = &'a dyn Fn(TlsNative) -> Result<(), &'static str>;
 
 /// Whose close_notify a session's goodbye is made of (C's
 /// `send_shutdown`).

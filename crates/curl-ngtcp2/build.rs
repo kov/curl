@@ -4,6 +4,11 @@
 //! `CURL_NGTCP2_DIR` names another, and nghttp3 the system's. On Windows
 //! all three are vcpkg's libraries, beside the OpenSSL that `openssl-sys`
 //! finds, unless `CURL_NGTCP2_DIR` names ngtcp2's.
+//!
+//! The crypto is the library's that `openssl-sys` found: OpenSSL's
+//! (`ngtcp2_crypto_ossl`), or, for LibreSSL, the one over the QUIC API
+//! LibreSSL shares with quictls (`ngtcp2_crypto_libressl`, C's build
+//! without `OPENSSL_QUIC_API2`), told apart by `cfg(libressl)`.
 
 // A build script is not the library: an allocation it cannot make may
 // abort it, and its environment is cargo's.
@@ -13,20 +18,30 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo::rerun-if-env-changed=CURL_NGTCP2_DIR");
+    println!("cargo::rerun-if-env-changed=DEP_OPENSSL_LIBRESSL_VERSION_NUMBER");
+    println!("cargo::rustc-check-cfg=cfg(libressl)");
+    let libressl = std::env::var_os("DEP_OPENSSL_LIBRESSL_VERSION_NUMBER").is_some();
+    if libressl {
+        println!("cargo::rustc-cfg=libressl");
+    }
+    let crypto = if libressl {
+        "ngtcp2_crypto_libressl"
+    } else {
+        "ngtcp2_crypto_ossl"
+    };
     if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
         if let Some(dir) = std::env::var_os("CURL_NGTCP2_DIR") {
             let lib = PathBuf::from(dir).join("lib");
             println!("cargo::rustc-link-search=native={}", lib.display());
         }
         // vcpkg's names: import libraries of its DLLs, OpenSSL's with
-        // their `lib` prefix.
-        for lib in [
-            "ngtcp2_crypto_ossl",
-            "ngtcp2",
-            "nghttp3",
-            "libssl",
-            "libcrypto",
-        ] {
+        // their `lib` prefix, LibreSSL's without.
+        let (ssl, libcrypto) = if libressl {
+            ("ssl", "crypto")
+        } else {
+            ("libssl", "libcrypto")
+        };
+        for lib in [crypto, "ngtcp2", "nghttp3", ssl, libcrypto] {
             println!("cargo::rustc-link-lib={lib}");
         }
         return;
@@ -38,7 +53,7 @@ fn main() {
     let lib = dir.join("lib");
     println!("cargo::rerun-if-changed={}", lib.display());
     println!("cargo::rustc-link-search=native={}", lib.display());
-    println!("cargo::rustc-link-lib=static=ngtcp2_crypto_ossl");
+    println!("cargo::rustc-link-lib=static={crypto}");
     println!("cargo::rustc-link-lib=static=ngtcp2");
     // nghttp3 and OpenSSL from where pkg-config finds them, where that is
     // outside the linker's own paths (Homebrew's on macOS).

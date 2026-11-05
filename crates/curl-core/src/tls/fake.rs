@@ -33,8 +33,9 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, QuicTls, TLS1_3, TlsBackend, TlsCx,
-    TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, QuicContextSetup, QuicTls, TLS1_3,
+    TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared,
+    TlsTicket, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -382,6 +383,7 @@ impl TlsBackend for FakeTls {
         identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
         _shared: &TlsShared,
+        _setup: QuicContextSetup<'_>,
         cx: &mut TlsCx<'_>,
     ) -> Result<Box<dyn QuicTls>, ErrorKind> {
         let number = {

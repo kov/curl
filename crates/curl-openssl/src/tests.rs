@@ -82,11 +82,15 @@ fn signs_test_5001_s_base_with_the_test_key() {
 /// provider it selects, and a client certificate's CAs. The library's
 /// allocations are counted, in a process of their own, against an
 /// `openssl s_server` of another, whose allocations are its own.
+/// LibreSSL takes no allocator of ours (`CRYPTO_set_mem_functions`
+/// refuses), so its allocations are not counted.
+#[cfg(not(libressl))]
 #[test]
 fn a_transfer_frees_what_it_made_of_openssl_s() {
     crate::sys::tests::in_a_child("tests::counted_transfers", "/dev/null".as_ref());
 }
 
+#[cfg(not(libressl))]
 #[test]
 #[ignore = "run by a_transfer_frees_what_it_made_of_openssl_s"]
 fn counted_transfers() {
@@ -128,6 +132,7 @@ fn counted_transfers() {
 }
 
 /// The server and the transfers `counted_transfers` makes.
+#[cfg(not(libressl))]
 mod leaks {
     use std::io::BufRead as _;
     use std::path::PathBuf;
@@ -387,6 +392,7 @@ mod leaks {
 /// `ERR_GET_LIB` and `ERR_GET_REASON` (`err.h`): a library's error packs
 /// its library in the 8 bits above the 23 of its reason; a system
 /// error, its top bit set, is the system library's, its reason the rest.
+#[cfg(not(libressl))]
 #[test]
 fn an_error_s_library_and_reason_are_as_err_h_unpacks_them() {
     use crate::ssl::{error_lib, error_reason};
@@ -403,8 +409,27 @@ fn an_error_s_library_and_reason_are_as_err_h_unpacks_them() {
     assert_eq!(error_reason(0x8123_4567), 0x0123_4567);
 }
 
+/// LibreSSL's `ERR_GET_LIB` and `ERR_GET_REASON`: its library in the top 8
+/// bits, its reason in the low 12, its function between them; no system
+/// flag.
+#[cfg(libressl)]
+#[test]
+fn an_error_s_library_and_reason_are_as_libressl_s_err_h_unpacks_them() {
+    use crate::ssl::{error_lib, error_reason};
+    // `SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED`, `ERR_LIB_SSL`.
+    assert_eq!(error_lib(0x1400_045C), 20);
+    assert_eq!(error_reason(0x1400_045C), 1116);
+    // A function's bits are neither.
+    assert_eq!(error_lib(0x0BFF_F088), 11);
+    assert_eq!(error_reason(0x0BFF_F088), 0x088);
+    // `ERR_LIB_SYS` and its `errno`.
+    assert_eq!(error_lib(0x0200_0068), 2);
+    assert_eq!(error_reason(0x0200_0068), 104);
+}
+
 /// The engines a transfer can name are the library's: `dynamic`, which
 /// loads the rest, among them.
+#[cfg(not(libressl))]
 #[test]
 fn the_engines_are_the_library_s() {
     use curl_core::tls::TlsBackend as _;

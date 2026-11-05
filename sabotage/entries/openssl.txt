@@ -12,9 +12,9 @@ witness: curl-openssl tests::signs_test_5001_s_base_with_the_test_key
 file: crates/curl-openssl/src/sys.rs
 witness: curl-openssl sys::tests::three_or_later_is_supported
 --- old
-    if number < OLDEST { Err(TooOld) } else { Ok(()) }
+    if number < OLDEST && !cfg!(libressl) {
 --- new
-    if number <= OLDEST { Err(TooOld) } else { Ok(()) }
+    if number <= OLDEST && !cfg!(libressl) {
 
 === a verified peer's certificate is taken whatever names it holds
 file: crates/curl-openssl/src/x509.rs
@@ -193,9 +193,9 @@ witness: curl-openssl a_client_certificate_in_der_or_in_memory_is_shown
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl no_client_certificate_fails_as_the_server_alerts
 --- old
-                            format_args!("OpenSSL SSL_read: {}, errno {errno}", e.versioned()),
+                            format_args!("{PACKAGE} SSL_read: {}, errno {errno}", e.versioned()),
 --- new
-                            format_args!("OpenSSL SSL_read: {e}, errno {errno}"),
+                            format_args!("{PACKAGE} SSL_read: {e}, errno {errno}"),
 
 === a field's line holds the fields printed before it
 file: crates/curl-openssl/src/certinfo.rs

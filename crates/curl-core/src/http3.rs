@@ -349,6 +349,14 @@ pub trait Http3: fmt::Debug + Send + Sync {
     /// The libraries' names and versions, as curl's version says them:
     /// `ngtcp2/1.25.0 nghttp3/1.18.0`.
     fn version(&self) -> &dyn fmt::Display;
+
+    /// Set up a QUIC session's TLS context as the library's crypto needs
+    /// it before the session is made from it (`cf_ngtcp2_tls_ctx_setup`),
+    /// which most need nothing of: why it could not, as C says it.
+    fn setup_tls_context(&self, ctx: crate::tls::TlsNative) -> Result<(), &'static str> {
+        let _ = ctx;
+        Ok(())
+    }
 }
 
 /// Why a client connection could not be made: memory, the QUIC

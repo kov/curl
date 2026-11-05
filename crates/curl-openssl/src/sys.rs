@@ -5,11 +5,28 @@
 use core::ffi::c_ulong;
 
 /// `OPENSSL_INIT_LOAD_CONFIG`: read the configuration file.
+#[cfg(not(libressl))]
 const LOAD_CONFIG: u64 = 0x0000_0040;
+/// LibreSSL's.
+#[cfg(libressl)]
+const LOAD_CONFIG: u64 = 0x0000_0002;
 
 /// `OPENSSL_INIT_ENGINE_ALL_BUILTIN`: the built-in engines, rdrand,
 /// dynamic, cryptodev, capi and padlock, as `crypto.h` defines it.
+#[cfg(not(libressl))]
 const ENGINE_ALL_BUILTIN: u64 = 0x0000_0200 | 0x0000_0400 | 0x0000_1000 | 0x0000_2000 | 0x0000_4000;
+/// LibreSSL has no engines: the flag is its no-op one
+/// (`_OPENSSL_INIT_FLAG_NOOP`), which C passes all the same.
+#[cfg(libressl)]
+const ENGINE_ALL_BUILTIN: u64 = 0x8000_0000;
+
+/// The library's name, as C's messages and version line say it
+/// (`OSSL_PACKAGE`).
+#[cfg(not(libressl))]
+pub(crate) const PACKAGE: &str = "OpenSSL";
+/// LibreSSL's.
+#[cfg(libressl)]
+pub(crate) const PACKAGE: &str = "LibreSSL";
 
 /// The oldest library this build works with: 3.0.0.
 const OLDEST: c_ulong = 0x3000_0000;
@@ -41,10 +58,11 @@ fn init_ssl() {
     // what is asked of it next.
     // SAFETY: the flags are the library's own, and NULL asks for its
     // default settings; any thread may call it, any number of times.
-    unsafe { openssl_sys::OPENSSL_init_ssl(LOAD_CONFIG | ENGINE_ALL_BUILTIN, core::ptr::null()) };
+    unsafe { crate::ffi::OPENSSL_init_ssl(LOAD_CONFIG | ENGINE_ALL_BUILTIN, core::ptr::null()) };
 }
 
 /// The version of the library loaded as text: `3.5.9`.
+#[cfg(not(libressl))]
 pub(crate) fn version_text() -> &'static str {
     // SAFETY: a function of no state, for a value the library knows.
     let text = unsafe { openssl_sys::OpenSSL_version(crate::ffi::OPENSSL_VERSION_STRING) };
@@ -54,25 +72,68 @@ pub(crate) fn version_text() -> &'static str {
     text.to_str().unwrap_or("")
 }
 
+/// LibreSSL's: its version line, `LibreSSL 4.4.0`, less the name and the
+/// blank after it if it starts with them, as C takes it.
+#[cfg(libressl)]
+pub(crate) fn version_text() -> &'static str {
+    // SAFETY: a function of no state, for a value the library knows.
+    let text = unsafe { openssl_sys::OpenSSL_version(crate::ffi::OPENSSL_VERSION) };
+    // SAFETY: the library's static text for its version, alive for the
+    // process.
+    let text = unsafe { core::ffi::CStr::from_ptr(text) };
+    let text = text.to_str().unwrap_or("");
+    after_package(text)
+}
+
+/// `text` less `LibreSSL ` at its start, matched as C's
+/// `curl_strnequal` does, without regard to case.
+#[cfg(any(libressl, test))]
+fn after_package(text: &str) -> &str {
+    let lead = "LibreSSL ".len();
+    match text.get(..lead) {
+        Some(head) if head.eq_ignore_ascii_case("LibreSSL ") => &text[lead..],
+        _ => text,
+    }
+}
+
 /// The library as C names it in its version line (`Curl_ossl_version`):
-/// `OpenSSL/3.5.9`.
+/// `OpenSSL/3.5.9`; LibreSSL's with each blank of it an underscore.
 pub fn version() -> impl core::fmt::Display {
     struct Version;
     impl core::fmt::Display for Version {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            write!(f, "OpenSSL/{}", version_text())
+            write!(f, "{PACKAGE}/")?;
+            write_version(f, version_text())
         }
     }
     Version
 }
 
+/// `text` as the version line has it: as it is from OpenSSL, its blanks
+/// (`ISBLANK`: space and tab) made underscores from LibreSSL.
+fn write_version(f: &mut core::fmt::Formatter<'_>, text: &str) -> core::fmt::Result {
+    if cfg!(libressl) {
+        for c in text.chars() {
+            let mut buf = [0; 4];
+            f.write_str(match c {
+                ' ' | '\t' => "_",
+                c => c.encode_utf8(&mut buf),
+            })?;
+        }
+        Ok(())
+    } else {
+        f.write_str(text)
+    }
+}
+
 /// The length of `version`'s text.
 pub(crate) fn version_len() -> usize {
-    "OpenSSL/".len() + version_text().len()
+    PACKAGE.len() + 1 + version_text().len()
 }
 
 /// The version of the library loaded, as `OPENSSL_VERSION_NUMBER` says
-/// one: `0xMNN00PP0`.
+/// one: `0xMNN00PP0`. LibreSSL's says 2.0 whatever it is: C checks it at
+/// build alone, as this crate does.
 fn version_number() -> c_ulong {
     // SAFETY: it takes nothing and reads a constant.
     unsafe { openssl_sys::OpenSSL_version_num() }
@@ -80,27 +141,40 @@ fn version_number() -> c_ulong {
 
 /// Whether a library of version `number` is one this build works with.
 fn supported(number: c_ulong) -> Result<(), TooOld> {
-    if number < OLDEST { Err(TooOld) } else { Ok(()) }
+    if number < OLDEST && !cfg!(libressl) {
+        Err(TooOld)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg(not(libressl))]
     use core::ffi::{c_char, c_int, c_void};
+    #[cfg(not(libressl))]
     use core::sync::atomic::{AtomicIsize, Ordering};
 
     use super::*;
 
-    use curl_core::libraries::{Ed25519, Ed25519Error};
+    use curl_core::libraries::Ed25519;
+    #[cfg(not(libressl))]
+    use curl_core::libraries::Ed25519Error;
 
     /// The library's allocations not yet freed, once `count_allocations`
     /// has installed its functions.
+    #[cfg(not(libressl))]
     static LIVE: AtomicIsize = AtomicIsize::new(0);
 
+    #[cfg(not(libressl))]
     type Malloc = extern "C" fn(usize, *const c_char, c_int) -> *mut c_void;
+    #[cfg(not(libressl))]
     type Realloc = extern "C" fn(*mut c_void, usize, *const c_char, c_int) -> *mut c_void;
+    #[cfg(not(libressl))]
     type Free = extern "C" fn(*mut c_void, *const c_char, c_int);
 
     // SAFETY: the declarations are `crypto.h`'s and the C library's.
+    #[cfg(not(libressl))]
     unsafe extern "C" {
         fn CRYPTO_set_mem_functions(m: Malloc, r: Realloc, f: Free) -> c_int;
         fn malloc(size: usize) -> *mut c_void;
@@ -108,6 +182,7 @@ pub(crate) mod tests {
         fn free(p: *mut c_void);
     }
 
+    #[cfg(not(libressl))]
     extern "C" fn counted_malloc(size: usize, _: *const c_char, _: c_int) -> *mut c_void {
         // SAFETY: the C library's own.
         let p = unsafe { malloc(size) };
@@ -117,6 +192,7 @@ pub(crate) mod tests {
         p
     }
 
+    #[cfg(not(libressl))]
     extern "C" fn counted_realloc(
         p: *mut c_void,
         size: usize,
@@ -134,6 +210,7 @@ pub(crate) mod tests {
         unsafe { realloc(p, size) }
     }
 
+    #[cfg(not(libressl))]
     extern "C" fn counted_free(p: *mut c_void, _: *const c_char, _: c_int) {
         if !p.is_null() {
             LIVE.fetch_sub(1, Ordering::Relaxed);
@@ -145,6 +222,7 @@ pub(crate) mod tests {
 
     /// Count the library's allocations from now on: in a process of its
     /// own (`in_a_child`), before the library has allocated anything.
+    #[cfg(not(libressl))]
     pub(crate) fn count_allocations() {
         // SAFETY: the functions are a matching set over the C library's
         // allocator, installed before the library allocates.
@@ -154,6 +232,7 @@ pub(crate) mod tests {
     }
 
     /// The library's allocations not yet freed since `count_allocations`.
+    #[cfg(not(libressl))]
     pub(crate) fn live_allocations() -> isize {
         LIVE.load(Ordering::Relaxed)
     }
@@ -183,12 +262,14 @@ pub(crate) mod tests {
     /// As C's `ossl_init`, `init` loads the built-in engines: checked
     /// with an empty configuration, which loads none of its own. Only
     /// the dynamic engine is there on every machine; rdrand is when the
-    /// processor has the instruction.
+    /// processor has the instruction. LibreSSL has none.
+    #[cfg(not(libressl))]
     #[test]
     fn init_loads_the_built_in_engines() {
         in_a_child("sys::tests::engines_after_init", "/dev/null".as_ref());
     }
 
+    #[cfg(not(libressl))]
     #[test]
     #[ignore = "run by init_loads_the_built_in_engines, OPENSSL_CONF empty"]
     fn engines_after_init() {
@@ -201,13 +282,24 @@ pub(crate) mod tests {
         }
     }
 
+    /// LibreSSL has no engines: none is listed once it is initialised
+    /// (`OPENSSL_NO_ENGINE`).
+    #[cfg(libressl)]
+    #[test]
+    fn libressl_lists_no_engines() {
+        init();
+        assert_eq!(engines(), Vec::<String>::new());
+    }
+
     /// Signing without `init` first initialises the library as `init`
     /// does, its built-in engines loaded.
+    #[cfg(not(libressl))]
     #[test]
     fn signing_initialises_the_library() {
         in_a_child("sys::tests::engines_after_signing", "/dev/null".as_ref());
     }
 
+    #[cfg(not(libressl))]
     #[test]
     #[ignore = "run by signing_initialises_the_library, OPENSSL_CONF empty"]
     fn engines_after_signing() {
@@ -235,7 +327,9 @@ pub(crate) mod tests {
 
     /// `init` reads the configuration `OPENSSL_CONF` names then, not when
     /// the library is first used: the file is emptied after `init`, and
-    /// what it said still holds.
+    /// what it said still holds. OpenSSL 3's: LibreSSL's configuration has
+    /// no algorithm section to refuse with.
+    #[cfg(not(libressl))]
     #[test]
     fn init_reads_the_configuration() {
         let path = no_algorithm_file("init");
@@ -243,6 +337,7 @@ pub(crate) mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    #[cfg(not(libressl))]
     #[test]
     #[ignore = "run by init_reads_the_configuration, OPENSSL_CONF set"]
     fn configured_at_init() {
@@ -274,26 +369,53 @@ pub(crate) mod tests {
 
     /// The flags are those C passes, as `crypto.h` defines them: the
     /// configuration read, and every built-in engine, including those
-    /// this platform's library has none of (cryptodev, capi, padlock).
+    /// this platform's library has none of (cryptodev, capi, padlock);
+    /// LibreSSL's, whose engine flag does nothing.
     #[test]
     fn the_flags_are_c_s() {
-        assert_eq!(LOAD_CONFIG, 0x40);
-        assert_eq!(ENGINE_ALL_BUILTIN, 0x7600);
+        if cfg!(libressl) {
+            assert_eq!(LOAD_CONFIG, 0x02);
+            assert_eq!(ENGINE_ALL_BUILTIN, 0x8000_0000);
+        } else {
+            assert_eq!(LOAD_CONFIG, 0x40);
+            assert_eq!(ENGINE_ALL_BUILTIN, 0x7600);
+        }
     }
 
     /// The version line names the library as C's `Curl_ossl_version`
-    /// does, `OpenSSL/` and the version it says it is; `version_len` is
-    /// that text's length.
+    /// does, `OpenSSL/` or `LibreSSL/` and the version it says it is;
+    /// `version_len` is that text's length.
     #[test]
     fn the_version_is_named_as_c_names_it() {
-        // "OpenSSL 3.5.9 29 Sep 2026".
+        // "OpenSSL 3.5.9 29 Sep 2026", "LibreSSL 4.4.0".
         let said = openssl::version::version();
         let number = said.split(' ').nth(1).unwrap();
         let text = version().to_string();
-        assert_eq!(text, format!("OpenSSL/{number}"));
+        assert_eq!(text, format!("{PACKAGE}/{number}"));
         assert_eq!(version_len(), text.len());
     }
 
+    /// LibreSSL's version line loses its name, in any case, only where it
+    /// starts with it and a blank.
+    #[test]
+    fn libressl_s_name_is_taken_off_its_version() {
+        assert_eq!(after_package("LibreSSL 4.4.0"), "4.4.0");
+        assert_eq!(after_package("libressl 4.4.0"), "4.4.0");
+        assert_eq!(after_package("LibreSSL4.4.0"), "LibreSSL4.4.0");
+        assert_eq!(after_package("4.4.0"), "4.4.0");
+        assert_eq!(after_package("LibreSSL "), "");
+    }
+
+    /// OpenSSL from 3.0; any LibreSSL this crate builds against, whose
+    /// number says nothing (C checks it at build alone).
+    #[cfg(libressl)]
+    #[test]
+    fn any_libressl_is_supported() {
+        assert_eq!(supported(0x2000_0000), Ok(()));
+        assert_eq!(ready(), Ok(()));
+    }
+
+    #[cfg(not(libressl))]
     #[test]
     fn three_or_later_is_supported() {
         assert_eq!(supported(0x1010_1170), Err(TooOld));

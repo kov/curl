@@ -420,3 +420,11 @@ witness: curl-core tls::tests::the_native_store_is_the_default_only_where_no_ca_
                 && matches!(o.ca_blob, CaSetting::Default))
 --- new
                 && self.ca_blob().is_none())
+
+=== a key log line is written for a secret longer than a master key
+file: crates/curl-core/src/tls/keylog.rs
+witness: curl-core tls::keylog::tests::a_secret_is_written_in_upper_case_hex
+--- old
+        if label.len() > LABEL_MAX || secret.is_empty() || secret.len() > SECRET_MAX {
+--- new
+        if label.len() > LABEL_MAX || secret.is_empty() {

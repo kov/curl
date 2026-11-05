@@ -164,6 +164,7 @@ dependencies = [
  "curl-os",
  "libc",
  "openssl",
+ "openssl-sys",
  "windows-sys",
 ]
 

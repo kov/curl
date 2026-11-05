@@ -358,7 +358,15 @@ fn with_conn<R>(
     let mut notes = Notes::default();
     let r = TlsCx::testing(&identity, b"localhost", &mut notes, |shared, cx| {
         let clock = SystemClock::new();
-        let tls = OPENSSL.quic_session(&identity, &peer, shared, cx).unwrap();
+        let tls = OPENSSL
+            .quic_session(
+                &identity,
+                &peer,
+                shared,
+                &|ctx| NGTCP2.setup_tls_context(ctx),
+                cx,
+            )
+            .unwrap();
         let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         sock.connect(addr).unwrap();
         let setup = ClientSetup {
@@ -490,7 +498,15 @@ fn a_resumed_session_sends_its_get_as_early_data() {
     let told = TlsCx::testing_kept(&identity, b"localhost", &mut kept, |shared, cx| {
         let clock = SystemClock::new();
         let connect = |cx: &mut TlsCx<'_>, early: bool| {
-            let tls = OPENSSL.quic_session(&identity, &peer, shared, cx).unwrap();
+            let tls = OPENSSL
+                .quic_session(
+                    &identity,
+                    &peer,
+                    shared,
+                    &|ctx| NGTCP2.setup_tls_context(ctx),
+                    cx,
+                )
+                .unwrap();
             let params = tls.early_data().map(|t| t.quic_params.clone());
             let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
             sock.connect(addr).unwrap();

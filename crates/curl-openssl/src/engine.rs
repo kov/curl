@@ -268,23 +268,19 @@ impl Crypto {
         self.libctx.is_some()
     }
 
-    /// A context of `method`, in the provider's library context if there
-    /// is one, with its properties; null if it cannot be made.
-    pub(crate) fn new_ctx(&self, method: *const SSL_METHOD) -> *mut SSL_CTX {
-        match self.libctx {
-            Some(libctx) => {
-                let propq = self
-                    .propq
-                    .as_ref()
-                    .map_or(ptr::null(), |p| p.as_ptr().cast());
-                // SAFETY: the library context, alive as long as `self`,
-                // which the session drops after the context; a C string
-                // or null; the library's method.
-                unsafe { SSL_CTX_new_ex(libctx.as_ptr(), propq, method) }
-            }
-            // SAFETY: the library's method.
-            None => unsafe { openssl_sys::SSL_CTX_new(method) },
-        }
+    /// A context of `method` in the provider's library context, with its
+    /// properties, if there is one (null if it cannot be made); none
+    /// without one, which makes it in the library's own.
+    pub(crate) fn libctx_ctx(&self, method: *const SSL_METHOD) -> Option<*mut SSL_CTX> {
+        let libctx = self.libctx?;
+        let propq = self
+            .propq
+            .as_ref()
+            .map_or(ptr::null(), |p| p.as_ptr().cast());
+        // SAFETY: the library context, alive as long as `self`, which the
+        // session drops after the context; a C string or null; the
+        // library's method.
+        Some(unsafe { SSL_CTX_new_ex(libctx.as_ptr(), propq, method) })
     }
 }
 

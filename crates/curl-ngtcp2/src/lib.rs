@@ -40,7 +40,7 @@ use curl_core::http3::{
     SubmitFailed,
 };
 use curl_core::time::Instant;
-use curl_core::tls::{DriveCall, QuicTls, TlsCx};
+use curl_core::tls::{DriveCall, QuicTls, TlsCx, TlsNative};
 
 /// The libraries, as the handles are given them.
 pub static NGTCP2: Ngtcp2 = Ngtcp2;
@@ -61,6 +61,22 @@ impl Http3 for Ngtcp2 {
 
     fn version(&self) -> &dyn fmt::Display {
         &Versions
+    }
+
+    /// LibreSSL's crypto sets the context up for QUIC before the session
+    /// is made from it, which copies its QUIC method
+    /// (`ngtcp2_crypto_quictls_configure_client_context`); OpenSSL's needs
+    /// nothing (`OPENSSL_QUIC_API2`).
+    fn setup_tls_context(&self, ctx: TlsNative) -> Result<(), &'static str> {
+        #[cfg(libressl)]
+        // SAFETY: the session's context, just made, not yet shared.
+        if unsafe { sys::ngtcp2_crypto_quictls_configure_client_context(ctx.context().as_ptr()) }
+            != 0
+        {
+            return Err("ngtcp2_crypto_quictls_configure_client_context failed");
+        }
+        let _ = ctx;
+        Ok(())
     }
 }
 
@@ -177,13 +193,17 @@ fn nanos(d: Duration) -> u64 {
 }
 
 /// ngtcp2's crypto, set up once in the process (`Curl_vquic_init`): it
-/// fetches the ciphers QUIC uses.
+/// fetches the ciphers QUIC uses. LibreSSL's needs nothing, and C asks
+/// nothing of it (`OPENSSL_QUIC_API2` unset).
 fn crypto_init() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
+        #[cfg(not(libressl))]
         // SAFETY: no arguments; what it fails to fetch it leaves unset,
         // which the library handles.
-        unsafe { sys::ngtcp2_crypto_ossl_init() };
+        unsafe {
+            sys::ngtcp2_crypto_ossl_init()
+        };
     });
 }
 
@@ -494,6 +514,9 @@ fn inner_of(user_data: *mut c_void) -> *mut Inner {
 /// A client connection (`ngtcp2_conn` and `nghttp3_conn`).
 pub struct Connection {
     inner: UserData,
+    /// OpenSSL's crypto's state for the session; LibreSSL's keeps it in
+    /// the session itself.
+    #[cfg(not(libressl))]
     ossl_ctx: *mut sys::ngtcp2_crypto_ossl_ctx,
     /// The session ngtcp2's crypto drives, freed first as C frees it.
     tls: ManuallyDrop<Box<dyn QuicTls>>,
@@ -524,9 +547,12 @@ impl Drop for Connection {
         }
         // SAFETY: made by `ngtcp2_conn_client_new`, freed once.
         unsafe { sys::ngtcp2_conn_del(conn) };
+        #[cfg(not(libressl))]
         // SAFETY: made by `ngtcp2_crypto_ossl_ctx_new`, freed once, after
         // the connection that used it.
-        unsafe { sys::ngtcp2_crypto_ossl_ctx_del(self.ossl_ctx) };
+        unsafe {
+            sys::ngtcp2_crypto_ossl_ctx_del(self.ossl_ctx)
+        };
     }
 }
 
@@ -710,6 +736,7 @@ impl Connection {
         let conn_ref = ptr::from_mut(&mut state.conn_ref);
         let mut made = Connection {
             inner,
+            #[cfg(not(libressl))]
             ossl_ctx: ptr::null_mut(),
             tls: ManuallyDrop::new(tls),
         };
@@ -723,22 +750,52 @@ impl Connection {
         // application data is ngtcp2's crypto's, which finds the
         // connection through it, until the SSL goes.
         unsafe { sys::ssl_set_app_data(ssl, conn_ref.cast()) };
+        made.set_native_handle(conn, ssl)?;
+        Ok(made)
+    }
+
+    /// Hand the connection its crypto's handle on the session's SSL: from
+    /// OpenSSL, a crypto context made for it, and the SSL set up for QUIC
+    /// by ngtcp2.
+    #[cfg(not(libressl))]
+    fn set_native_handle(
+        &mut self,
+        conn: *mut sys::ngtcp2_conn,
+        ssl: *mut c_void,
+    ) -> Result<(), ConnectFailed> {
         // SAFETY: an out pointer, and the session's SSL.
-        if unsafe { sys::ngtcp2_crypto_ossl_ctx_new(&mut made.ossl_ctx, ssl) } != 0 {
+        if unsafe { sys::ngtcp2_crypto_ossl_ctx_new(&mut self.ossl_ctx, ssl) } != 0 {
             return Err(ConnectFailed::Crypto {
                 why: "ngtcp2_crypto_ossl_ctx_new failed",
             });
         }
         // SAFETY: the connection, and the crypto context, which outlives
         // it.
-        unsafe { sys::ngtcp2_conn_set_tls_native_handle(conn, made.ossl_ctx.cast()) };
+        unsafe { sys::ngtcp2_conn_set_tls_native_handle(conn, self.ossl_ctx.cast()) };
         // SAFETY: the session's SSL.
         if unsafe { sys::ngtcp2_crypto_ossl_configure_client_session(ssl) } != 0 {
             return Err(ConnectFailed::Crypto {
                 why: "ngtcp2_crypto_ossl_configure_client_session failed",
             });
         }
-        Ok(made)
+        Ok(())
+    }
+
+    /// From LibreSSL, the SSL itself, its context set up for QUIC when it
+    /// was made (`setup_tls_context`), told to use QUIC's code point for
+    /// its transport parameters.
+    #[cfg(libressl)]
+    fn set_native_handle(
+        &mut self,
+        conn: *mut sys::ngtcp2_conn,
+        ssl: *mut c_void,
+    ) -> Result<(), ConnectFailed> {
+        // SAFETY: the session's SSL.
+        unsafe { sys::SSL_set_quic_use_legacy_codepoint(ssl, 0) };
+        // SAFETY: the connection, and the SSL, which outlives it (the
+        // session is freed after the connection).
+        unsafe { sys::ngtcp2_conn_set_tls_native_handle(conn, ssl) };
+        Ok(())
     }
 
     fn conn(&self) -> *mut sys::ngtcp2_conn {
@@ -952,11 +1009,17 @@ impl curl_core::http3::Connection for Connection {
             .session()
             .expect("a QUIC session is made with its SSL")
             .as_ptr();
+        // From OpenSSL, the session is told to send early data, which it
+        // may refuse; LibreSSL's, over the quictls API, is not asked
+        // (`OPENSSL_QUIC_API2` unset).
+        #[cfg(not(libressl))]
         // SAFETY: the session's SSL, set up for QUIC by ngtcp2's crypto,
         // after which OpenSSL takes the setting.
         if unsafe { sys::SSL_set_quic_tls_early_data_enabled(ssl, 1) } == 0 {
             return Ok(EarlyStart::Refused);
         }
+        #[cfg(libressl)]
+        let _ = ssl;
         // SAFETY: as above.
         unsafe { (*p).early = true };
         Ok(EarlyStart::Started)

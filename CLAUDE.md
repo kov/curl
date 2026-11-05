@@ -40,8 +40,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-nghttp2/src/lib.rs` and `src/sys.rs`: nghttp2's HTTP/2 session, its callbacks and
   the declarations of the functions it calls.
 - `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection with its OpenSSL
-  crypto, and nghttp3's HTTP/3 session over it: their callbacks and the declarations of the
-  functions they call.
+  or LibreSSL crypto, and nghttp3's HTTP/3 session over it: their callbacks and the declarations
+  of the functions they call.
 - `crates/curl-libssh/src/lib.rs` and `src/sys.rs`: libssh's session over the connection's
   socket, its SCP channel and SFTP session, and the declarations of the functions they call.
 - `crates/curl-ldap/src/openldap.rs` and `src/sys.rs`: libldap's session over the connection's
@@ -81,7 +81,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-openssl/src/engine.rs`: OpenSSL's crypto engines and providers, and a provider's
   store.
 - `crates/curl-openssl/src/ocsp.rs`: the peer's stapled certificate status.
-- `crates/curl-openssl/src/ffi.rs`: the OpenSSL functions openssl-sys does not declare.
+- `crates/curl-openssl/src/ffi.rs`: the OpenSSL functions openssl-sys does not declare, and
+  LibreSSL's under the names the rest of the crate calls.
 - `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, its
   trace of the records, and the callbacks that keep its sessions and log its keys.
 - `crates/curl-openssl/src/ssl.rs`: OpenSSL's TLS session: the context, the handshake, the

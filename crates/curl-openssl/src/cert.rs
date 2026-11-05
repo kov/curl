@@ -18,6 +18,7 @@ use openssl_sys::{EVP_PKEY, SSL_CTX, X509};
 use crate::engine::{Crypto, Wanted};
 use crate::ffi;
 use crate::ssl::{error_lib, error_reason};
+use crate::sys::PACKAGE;
 use crate::x509::{ErrText, MemBio, Text, c_string};
 
 /// What a certificate or key file holds (`ossl_do_file_type`).
@@ -284,7 +285,7 @@ fn pkcs12_load(
                 let e = ErrText::last();
                 return Err(io.fail(
                     ErrorKind::SslCertproblem,
-                    format_args!("BIO_new_mem_buf NULL, OpenSSL error {e}"),
+                    format_args!("BIO_new_mem_buf NULL, {PACKAGE} error {e}"),
                 ));
             }
         },
@@ -300,7 +301,7 @@ fn pkcs12_load(
                 let e = ErrText::last();
                 return Err(io.fail(
                     ErrorKind::SslCertproblem,
-                    format_args!("BIO_new return NULL, OpenSSL error {e}"),
+                    format_args!("BIO_new return NULL, {PACKAGE} error {e}"),
                 ));
             }
         },
@@ -332,7 +333,7 @@ fn pkcs12_load(
         let e = ErrText::last();
         return Err(io.fail(
             ErrorKind::SslCertproblem,
-            format_args!("could not parse PKCS12 file, check password, OpenSSL error {e}"),
+            format_args!("could not parse PKCS12 file, check password, {PACKAGE} error {e}"),
         ));
     }
     let result = pkcs12_use(ctx, key, x509, ca, shown, io);
@@ -343,7 +344,7 @@ fn pkcs12_load(
     unsafe { openssl_sys::X509_free(x509) };
     if !ca.is_null() {
         // SAFETY: as above.
-        unsafe { openssl_sys::OPENSSL_sk_pop_free(ca.cast(), Some(free_x509)) };
+        unsafe { ffi::sk_pop_free(ca.cast(), Some(free_x509)) };
     }
     result
 }
@@ -368,7 +369,7 @@ fn pkcs12_use(
         let e = ErrText::last();
         return Err(io.fail(
             ErrorKind::SslCertproblem,
-            format_args!("could not load PKCS12 client certificate, OpenSSL error {e}"),
+            format_args!("could not load PKCS12 client certificate, {PACKAGE} error {e}"),
         ));
     }
     // SAFETY: as above.
@@ -390,11 +391,11 @@ fn pkcs12_use(
     if ca.is_null() {
         return Ok(());
     }
-    let stack = ca.cast::<openssl_sys::OPENSSL_STACK>();
+    let stack = ca.cast::<ffi::Stack>();
     // SAFETY: the stack of CAs the parse gave.
-    while unsafe { openssl_sys::OPENSSL_sk_num(stack) } > 0 {
+    while unsafe { ffi::sk_num(stack) } > 0 {
         // SAFETY: as above: its last certificate, now this function's.
-        let x = unsafe { openssl_sys::OPENSSL_sk_pop(stack) }.cast::<X509>();
+        let x = unsafe { ffi::sk_pop(stack) }.cast::<X509>();
         // SAFETY: the context, which copies the CA's name.
         if unsafe { openssl_sys::SSL_CTX_add_client_CA(c, x) } == 0 {
             // SAFETY: not taken: freed once.
@@ -422,6 +423,7 @@ fn pkcs12_use(
 /// none of that kind selected, a PKCS#11 URI selects `pkcs11` as C does,
 /// kept for the session if it had nothing selected. A provider's store
 /// is read; an engine is asked, a key with `password`, a C string.
+#[cfg(not(libressl))]
 fn from_crypto(
     ctx: NonNull<SSL_CTX>,
     kind: FileType,
@@ -483,6 +485,35 @@ fn from_crypto(
     }
 }
 
+/// LibreSSL's: no engine or provider can be asked, as C's build without
+/// `USE_OPENSSL_ENGINE` and `OPENSSL_HAS_PROVIDERS` cannot
+/// (`engineload`'s, `enginecheck`'s, `providerload`'s and
+/// `providercheck`'s `#else`).
+#[cfg(libressl)]
+fn from_crypto(
+    _ctx: NonNull<SSL_CTX>,
+    kind: FileType,
+    wanted: Wanted,
+    _file: Option<&[u8]>,
+    _password: Option<&Vec<u8>>,
+    _crypto: &mut Crypto,
+    io: &mut TlsCx<'_>,
+) -> Result<(), ErrorKind> {
+    let name = if kind == FileType::Engine {
+        "ENGINE"
+    } else {
+        "PROVIDER"
+    };
+    let what = match wanted {
+        Wanted::Certificate => "certificate",
+        Wanted::PrivateKey => "private key",
+    };
+    Err(io.fail(
+        ErrorKind::SslCertproblem,
+        format_args!("SSL_FILETYPE_{name} not supported for {what}"),
+    ))
+}
+
 /// Load the client's certificate and key into `ctx` (`client_cert`), as
 /// the options name them, if they name a certificate or its type; the
 /// password, as a C string, is `password`, which the caller keeps alive
@@ -536,7 +567,7 @@ pub(crate) fn client_cert(
                 return Err(io.fail(
                     ErrorKind::SslCertproblem,
                     format_args!(
-                        "could not load PEM client certificate from {from}, OpenSSL error {e}, \
+                        "could not load PEM client certificate from {from}, {PACKAGE} error {e}, \
                          (no key found, wrong passphrase, or wrong file format?)"
                     ),
                 ));
@@ -562,7 +593,7 @@ pub(crate) fn client_cert(
                 return Err(io.fail(
                     ErrorKind::SslCertproblem,
                     format_args!(
-                        "could not load ASN1 client certificate from {from}, OpenSSL error {e}, \
+                        "could not load ASN1 client certificate from {from}, {PACKAGE} error {e}, \
                          (no key found, wrong passphrase, or wrong file format?)"
                     ),
                 ));

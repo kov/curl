@@ -29,9 +29,9 @@ pub(crate) fn report(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) -> Result<(), ErrorK
     if chain.is_null() {
         return Err(ErrorKind::SslConnectError);
     }
-    let stack = chain.cast::<openssl_sys::OPENSSL_STACK>();
+    let stack = chain.cast::<ffi::Stack>();
     // SAFETY: a stack of certificates.
-    let n = unsafe { openssl_sys::OPENSSL_sk_num(stack) };
+    let n = unsafe { ffi::sk_num(stack) };
     let count = usize::try_from(n).unwrap_or(0);
     if count > MAX_CERTS {
         return Err(io.fail(
@@ -44,7 +44,7 @@ pub(crate) fn report(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) -> Result<(), ErrorK
         let mut mem = MemBio::new().ok_or(OutOfMemory)?;
         for i in 0..count {
             // SAFETY: an entry of the stack, a certificate, the chain's.
-            let x = unsafe { openssl_sys::OPENSSL_sk_value(stack, i as c_int) }.cast::<X509>();
+            let x = unsafe { ffi::sk_value(stack, i as c_int) }.cast::<X509>();
             let Some(x) = NonNull::new(x) else { continue };
             certificate(&mut info, i, x, &mut mem, io)?;
         }
@@ -131,7 +131,7 @@ fn certificate(
     push(info, i, b"Issuer", mem)?;
 
     // SAFETY: the certificate.
-    let version = unsafe { openssl_sys::X509_get_version(x) };
+    let version = unsafe { ffi::X509_get_version(x) };
     let text = curl_alloc::try_format(format_args!("{:x}", version as u64))?;
     print(mem, text.as_bytes());
     push(info, i, b"Version", mem)?;
@@ -218,16 +218,15 @@ fn certificate(
 /// (`X509V3_ext`).
 fn extensions(info: &mut CertInfo, i: usize, x: *mut X509) -> Result<(), OutOfMemory> {
     // SAFETY: the certificate; the stack is its own.
-    let exts = unsafe { openssl_sys::X509_get0_extensions(x) }.cast::<openssl_sys::OPENSSL_STACK>();
+    let exts = unsafe { ffi::X509_get0_extensions(x) }.cast::<ffi::Stack>();
     if exts.is_null() {
         return Ok(());
     }
     // SAFETY: a stack of extensions.
-    let n = unsafe { openssl_sys::OPENSSL_sk_num(exts) };
+    let n = unsafe { ffi::sk_num(exts) };
     for e in 0..n.max(0) {
         // SAFETY: an entry of the stack, an extension.
-        let ext =
-            unsafe { openssl_sys::OPENSSL_sk_value(exts, e) }.cast::<openssl_sys::X509_EXTENSION>();
+        let ext = unsafe { ffi::sk_value(exts, e) }.cast::<openssl_sys::X509_EXTENSION>();
         // As C, an extension whose BIO cannot be made ends them, and no
         // error is made of it.
         let Some(mut out) = MemBio::new() else {
@@ -250,6 +249,79 @@ fn extensions(info: &mut CertInfo, i: usize, x: *mut X509) -> Result<(), OutOfMe
         push(info, i, name, &mut out)?;
     }
     Ok(())
+}
+
+/// A number of a key's, or null: one OpenSSL 3 gave this crate, freed as
+/// it goes (`FREE_PKEY_PARAM_BIGNUM`).
+#[cfg(not(libressl))]
+struct Num(*mut openssl_sys::BIGNUM);
+
+#[cfg(not(libressl))]
+impl Num {
+    /// The parameter `param`, a C string, of `key`
+    /// (`EVP_PKEY_get_bn_param`).
+    ///
+    /// # Safety
+    /// `key` is a key.
+    unsafe fn param(key: *mut EVP_PKEY, param: &[u8]) -> Num {
+        let mut bn: *mut openssl_sys::BIGNUM = ptr::null_mut();
+        // SAFETY: as the caller says, and a parameter's name as a C
+        // string; the number, if any, is this one's to free.
+        unsafe { openssl_sys::EVP_PKEY_get_bn_param(key, param.as_ptr().cast(), &mut bn) };
+        Num(bn)
+    }
+}
+
+#[cfg(not(libressl))]
+impl Drop for Num {
+    fn drop(&mut self) {
+        // SAFETY: the number, or null, freed once.
+        unsafe { openssl_sys::BN_free(self.0) };
+    }
+}
+
+/// A number the key keeps, or null: LibreSSL's, read as C's build
+/// without OpenSSL 3 reads them (`RSA_get0_key`, `DSA_get0_pqg`, ...).
+#[cfg(libressl)]
+#[derive(Clone, Copy)]
+struct Num(*mut openssl_sys::BIGNUM);
+
+/// The numbers `public_key` shows of an RSA, DSA or DH key, in its order:
+/// `n` and `e`; or `p`, `q`, `g` and the public key.
+///
+/// # Safety
+/// `key` is a key of the kind `kind` names; the numbers live while it
+/// does.
+#[cfg(libressl)]
+unsafe fn numbers(key: *mut EVP_PKEY, kind: &str) -> [Num; 4] {
+    let mut n = [ptr::null::<openssl_sys::BIGNUM>(); 4];
+    let [a, b, c, d] = &mut n;
+    match kind {
+        "rsa" => {
+            // SAFETY: as the caller says; the key's own RSA key.
+            let rsa = unsafe { ffi::EVP_PKEY_get0_RSA(key) };
+            // SAFETY: the RSA key, or null, which gives nothing; the
+            // numbers are its own.
+            unsafe { ffi::RSA_get0_key(rsa, a, b, ptr::null_mut()) };
+        }
+        "dsa" => {
+            // SAFETY: as above, for DSA.
+            let dsa = unsafe { ffi::EVP_PKEY_get0_DSA(key) };
+            // SAFETY: as above.
+            unsafe { ffi::DSA_get0_pqg(dsa, a, b, c) };
+            // SAFETY: as above.
+            unsafe { ffi::DSA_get0_key(dsa, d, ptr::null_mut()) };
+        }
+        _ => {
+            // SAFETY: as above, for DH.
+            let dh = unsafe { ffi::EVP_PKEY_get0_DH(key) };
+            // SAFETY: as above.
+            unsafe { ffi::DH_get0_pqg(dh, a, b, c) };
+            // SAFETY: as above.
+            unsafe { ffi::DH_get0_key(dh, d, ptr::null_mut()) };
+        }
+    }
+    n.map(|bn| Num(bn.cast_mut()))
 }
 
 fn until_zero(bytes: &[u8]) -> &[u8] {
@@ -290,12 +362,17 @@ fn public_key(
         ),
         _ => return Ok(()),
     };
+    #[cfg(libressl)]
+    // SAFETY: the key, of the kind matched.
+    let mut numbers = unsafe { numbers(key, kind) }.into_iter();
     let mut first = true;
-    for (param, shown) in params {
-        let mut bn: *mut openssl_sys::BIGNUM = ptr::null_mut();
-        // SAFETY: the key and a parameter's name as a C string; the
-        // number, if any, is this function's to free.
-        unsafe { openssl_sys::EVP_PKEY_get_bn_param(key, param.as_ptr().cast(), &mut bn) };
+    for (_param, shown) in params {
+        #[cfg(not(libressl))]
+        // SAFETY: the key and a parameter's name as a C string.
+        let bn = unsafe { Num::param(key, _param) };
+        #[cfg(libressl)]
+        let bn = numbers.next().expect("a number for each parameter");
+        let bn = bn.0;
         if first && kind == "rsa" {
             let bits = if bn.is_null() {
                 0
@@ -309,8 +386,6 @@ fn public_key(
                 push(info, i, b"RSA Public Key", mem)
             });
             if let Err(e) | Ok(Err(e)) = pushed {
-                // SAFETY: the number, or null, freed once.
-                unsafe { openssl_sys::BN_free(bn) };
                 return Err(e);
             }
         }
@@ -319,8 +394,6 @@ fn public_key(
             // SAFETY: the BIO and the number.
             unsafe { ffi::BN_print(mem.as_ptr(), bn) };
         }
-        // SAFETY: the number, or null, freed once.
-        unsafe { openssl_sys::BN_free(bn) };
         let label = curl_alloc::try_format(format_args!("{kind}({shown})"))?;
         push(info, i, label.as_bytes(), mem)?;
     }

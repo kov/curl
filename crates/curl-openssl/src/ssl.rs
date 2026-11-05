@@ -17,8 +17,8 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicTls,
-    SharedKeyLog, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
+    Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicContextSetup,
+    QuicTls, SharedKeyLog, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
     TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
@@ -27,6 +27,7 @@ use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
 use crate::bio::{self, Below, Flags, Method, Slot};
 use crate::engine::Crypto;
 use crate::ffi;
+use crate::sys::PACKAGE;
 use crate::text;
 use crate::x509::{self, ErrText};
 
@@ -113,11 +114,12 @@ impl TlsBackend for OpenSsl {
         identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
         shared: &TlsShared,
+        setup: QuicContextSetup<'_>,
         cx: &mut TlsCx<'_>,
     ) -> Result<Box<dyn QuicTls>, ErrorKind> {
         crate::sys::ready().map_err(|_| ErrorKind::QuicConnectError)?;
         let mut session = self.new_session(identity, peer, Alpn::H3, shared, true)?;
-        session.make(cx)?;
+        session.make(cx, Some(setup))?;
         // The BIO is never read or written: the QUIC library carries the
         // records. It carries what the callbacks reach, as a stream
         // session's does.
@@ -305,6 +307,7 @@ struct Session {
 }
 
 /// The library's major error codes C tells apart.
+#[cfg(not(libressl))]
 pub(crate) fn error_lib(e: c_ulong) -> c_int {
     // `ERR_GET_LIB`: the library is the 8 bits above the 23 of the
     // reason, unless the error is a system error.
@@ -316,12 +319,26 @@ pub(crate) fn error_lib(e: c_ulong) -> c_int {
 }
 
 /// `ERR_GET_REASON`.
+#[cfg(not(libressl))]
 pub(crate) fn error_reason(e: c_ulong) -> c_int {
     if e & (1 << 31) != 0 {
         (e & 0x7fff_ffff) as c_int
     } else {
         (e & 0x7f_ffff) as c_int
     }
+}
+
+/// LibreSSL's `ERR_GET_LIB`: the 8 bits above the 24 of the function and
+/// the reason, a system error's library among them (`ERR_LIB_SYS`).
+#[cfg(libressl)]
+pub(crate) fn error_lib(e: c_ulong) -> c_int {
+    ((e >> 24) & 0xff) as c_int
+}
+
+/// LibreSSL's `ERR_GET_REASON`: the low 12 bits.
+#[cfg(libressl)]
+pub(crate) fn error_reason(e: c_ulong) -> c_int {
+    (e & 0xfff) as c_int
 }
 
 /// A C string of `bytes`, for a call that takes one.
@@ -383,6 +400,7 @@ impl Session {
             flags: &mut self.flags,
             below: Below::Ok,
             store: &mut setup,
+            #[cfg(not(libressl))]
             keylog: self.keylog.as_deref(),
             quic_params: None,
         };
@@ -397,7 +415,7 @@ impl Session {
     /// Make the context and the SSL, reading and writing through the
     /// layers below, as C does (`ossl_connect_step1`).
     fn step1(&mut self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
-        self.make(io)?;
+        self.make(io, None)?;
         self.attach_bio()?;
         if let Some(offer) = self.alpn.offer().filter(|_| self.deferred.is_none()) {
             io.info(format_args!("ALPN: curl offers {offer}"));
@@ -413,20 +431,18 @@ impl Session {
         let method = Method::new().ok_or(ErrorKind::OutOfMemory)?;
         let bio = method.bio().ok_or(ErrorKind::OutOfMemory)?;
         self.method = Some(method);
-        // The SSL takes a reference to the BIO for each of its ends, the
-        // second taken here, and frees them with itself.
-        // SAFETY: a BIO just made.
-        unsafe { ffi::BIO_up_ref(bio.as_ptr()) };
-        // SAFETY: the SSL, and a reference to the BIO it now owns.
-        unsafe { ffi::SSL_set0_rbio(ssl.as_ptr(), bio.as_ptr()) };
-        // SAFETY: as above, the other reference.
-        unsafe { ffi::SSL_set0_wbio(ssl.as_ptr(), bio.as_ptr()) };
+        set_bio(ssl, bio);
         Ok(())
     }
 
     /// Make the context and the SSL as C does (`Curl_ossl_ctx_init`): for
-    /// a stream, or for QUIC.
-    fn make(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+    /// a stream, or for QUIC, the QUIC library's `setup` given the context
+    /// first (`cb_setup`), its failure 2 as C says it.
+    fn make(
+        &mut self,
+        io: &mut TlsCx<'_>,
+        setup: Option<QuicContextSetup<'_>>,
+    ) -> Result<(), ErrorKind> {
         // SAFETY: asks the library whether it is seeded.
         if unsafe { openssl_sys::RAND_status() } == 0 {
             return Err(io.fail(
@@ -474,8 +490,13 @@ impl Session {
             // SAFETY: the library's static client method.
             unsafe { openssl_sys::TLS_client_method() }
         };
-        // A context of that method, owned by `Ctx` below.
-        let ctx = self.crypto.new_ctx(method);
+        // A context of that method, owned by `Ctx` below, in the
+        // provider's library context if there is one.
+        let ctx = match self.crypto.libctx_ctx(method) {
+            Some(ctx) => ctx,
+            // SAFETY: the library's method.
+            None => unsafe { openssl_sys::SSL_CTX_new(method) },
+        };
         let Some(ctx) = NonNull::new(ctx) else {
             // SAFETY: the thread's error queue, looked at.
             let e = ErrText::of(unsafe { ffi::ERR_peek_error() });
@@ -485,13 +506,18 @@ impl Session {
             ));
         };
         self.ctx = Some(Ctx(ctx));
+        if let Some(setup) = setup
+            && let Err(why) = setup(TlsNative::new(ctx.cast(), None))
+        {
+            return Err(io.fail(ErrorKind::FailedInit, format_args!("{why}")));
+        }
         // QUIC's records are not TLS's, which the trace reads.
         if io.debugs() && !self.quic {
             // SAFETY: the context, and a callback of the library's
             // signature, which reaches only the BIO's slot.
             unsafe { ffi::SSL_CTX_set_msg_callback(ctx.as_ptr(), Some(bio::trace)) };
         }
-        let mut ctx_options: u64 = openssl_sys::SSL_OP_ALL
+        let mut ctx_options = openssl_sys::SSL_OP_ALL
             | openssl_sys::SSL_OP_NO_TICKET
             | openssl_sys::SSL_OP_NO_COMPRESSION;
         if !options.ssl_options.contains(SslOptions::ALLOW_BEAST) {
@@ -533,8 +559,13 @@ impl Session {
         unsafe { openssl_sys::SSL_CTX_set_options(c, ctx_options as _) };
         // SAFETY: as above (`SSL_CTX_set_read_ahead`).
         unsafe { openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_SET_READ_AHEAD, 1, ptr::null_mut()) };
+        // LibreSSL has no read buffer to size
+        // (`HAVE_SSL_CTX_SET_DEFAULT_READ_BUFFER_LEN`).
+        #[cfg(not(libressl))]
         // SAFETY: as above.
-        unsafe { ffi::SSL_CTX_set_default_read_buffer_len(c, 0x401e * 4) };
+        unsafe {
+            ffi::SSL_CTX_set_default_read_buffer_len(c, 0x401e * 4)
+        };
         let mode = openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER;
         // SAFETY: as above (`SSL_CTX_set_mode`).
         unsafe { openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_MODE, mode, ptr::null_mut()) };
@@ -582,6 +613,13 @@ impl Session {
         // SAFETY: the context. OpenSSL 1.1.1 and later need the client
         // to opt in to authenticating after the handshake.
         unsafe { openssl_sys::SSL_CTX_set_post_handshake_auth(ctx.as_ptr(), 1) };
+        // LibreSSL takes no list of signature algorithms, which C then
+        // leaves unset (`HAVE_SSL_CTX_SET1_SIGALGS`).
+        let sigalgs = if cfg!(libressl) {
+            &None
+        } else {
+            &options.signature_algorithms
+        };
         for (list, command, what) in [
             (
                 &options.curves,
@@ -589,7 +627,7 @@ impl Session {
                 "curves list",
             ),
             (
-                &options.signature_algorithms,
+                sigalgs,
                 ffi::SSL_CTRL_SET_SIGALGS_LIST,
                 "signature algorithms",
             ),
@@ -617,6 +655,9 @@ impl Session {
         unsafe {
             openssl_sys::SSL_CTX_set_verify(ctx.as_ptr(), openssl_sys::SSL_VERIFY_NONE, None)
         };
+        // LibreSSL's callback is never called: its TLS 1.2 secrets are
+        // logged once the handshake has them (`HAVE_KEYLOG_CALLBACK`).
+        #[cfg(not(libressl))]
         if self.keylog.as_deref().is_some_and(KeyLog::enabled) {
             // SAFETY: the context, and a callback of the library's
             // signature, which reaches only the BIO's slot.
@@ -740,6 +781,12 @@ impl Session {
             // multi's state alive, wherever it goes.
             self.shared = None;
         }
+        #[cfg(libressl)]
+        if let Some(log) = self.keylog.as_deref().filter(|l| KeyLog::enabled(l))
+            && !self.flags.keylog_done
+        {
+            self.flags.keylog_done = crate::bio::log_tls12_secret(self.ssl(), log);
+        }
         if err == 1 {
             self.report_handshake(io);
             if !self.alpn.wire().is_empty() {
@@ -767,6 +814,9 @@ impl Session {
                 self.waits = TlsWait::Recv;
                 return Ok(Handshake::Waiting);
             }
+            // LibreSSL has no such answer, which C's build then does not
+            // know (`#ifdef SSL_ERROR_WANT_RETRY_VERIFY`).
+            #[cfg(not(libressl))]
             SSL_ERROR_WANT_RETRY_VERIFY => {
                 // A verify callback the application installed waits for
                 // its verdict: the transfer's receiving pauses, and the
@@ -828,7 +878,7 @@ impl Session {
                 io.fail(
                     kind,
                     format_args!(
-                        "OpenSSL SSL_connect: {} in connection to {host}:{port} ",
+                        "{PACKAGE} SSL_connect: {} in connection to {host}:{port} ",
                         Text(why.as_bytes())
                     ),
                 );
@@ -836,7 +886,7 @@ impl Session {
                 io.fail(
                     kind,
                     format_args!(
-                        "OpenSSL SSL_connect: {} in connection to {host}:{port} ",
+                        "{PACKAGE} SSL_connect: {} in connection to {host}:{port} ",
                         text::ssl_error(detail)
                     ),
                 );
@@ -914,11 +964,10 @@ impl Session {
 /// # Safety
 /// `ssl` is a session's SSL, its handshake done, alive for the call.
 unsafe fn report_handshake(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
-    let mut nid: c_int = 0;
     let s = ssl.as_ptr();
     // SAFETY: as the caller says; the texts are the library's, static or
     // alive while the SSL is, which outlives this function.
-    unsafe { ffi::SSL_get_peer_signature_type_nid(s, &mut nid) };
+    let nid = unsafe { peer_signature_nid(ssl) };
     // SAFETY: as above.
     let version = unsafe { openssl_sys::SSL_get_version(s) };
     // SAFETY: as above.
@@ -1020,7 +1069,7 @@ impl Session {
                             io.fail(
                                 ErrorKind::SendError,
                                 format_args!(
-                                    "OpenSSL SSL_write:early_data: {}, errno {errno}",
+                                    "{PACKAGE} SSL_write:early_data: {}, errno {errno}",
                                     e.versioned()
                                 ),
                             )
@@ -1029,7 +1078,7 @@ impl Session {
                             io.fail(
                                 ErrorKind::SendError,
                                 format_args!(
-                                    "OpenSSL SSL_write:early_data: {}, errno {errno}",
+                                    "{PACKAGE} SSL_write:early_data: {}, errno {errno}",
                                     Text(why.as_bytes())
                                 ),
                             )
@@ -1037,7 +1086,7 @@ impl Session {
                             io.fail(
                                 ErrorKind::SendError,
                                 format_args!(
-                                    "OpenSSL SSL_write:early_data: {}, errno {errno}",
+                                    "{PACKAGE} SSL_write:early_data: {}, errno {errno}",
                                     text::ssl_error(err)
                                 ),
                             )
@@ -1053,7 +1102,7 @@ impl Session {
                     _ => Err(io.fail(
                         ErrorKind::SendError,
                         format_args!(
-                            "OpenSSL SSL_write_early_data: {}, errno {errno}",
+                            "{PACKAGE} SSL_write_early_data: {}, errno {errno}",
                             text::ssl_error(err)
                         ),
                     )),
@@ -1200,6 +1249,7 @@ pub(crate) unsafe fn ticket_of(
 /// `SSL_ERROR_WANT_ASYNC`.
 const SSL_ERROR_WANT_ASYNC: c_int = 9;
 /// `SSL_ERROR_WANT_RETRY_VERIFY`, OpenSSL 3.0's.
+#[cfg(not(libressl))]
 const SSL_ERROR_WANT_RETRY_VERIFY: c_int = 12;
 
 /// The text of a C string the library returns, or none.
@@ -1227,7 +1277,7 @@ unsafe fn group_name<'a>(ssl: NonNull<SSL>) -> Option<&'a [u8]> {
 ///
 /// # Safety
 /// As above.
-#[cfg(not(ossl320))]
+#[cfg(not(any(ossl320, libressl)))]
 unsafe fn group_name<'a>(ssl: NonNull<SSL>) -> Option<&'a [u8]> {
     let command = ffi::SSL_CTRL_GET_NEGOTIATED_GROUP;
     // SAFETY: as the caller says (`SSL_get_negotiated_group`).
@@ -1236,6 +1286,59 @@ unsafe fn group_name<'a>(ssl: NonNull<SSL>) -> Option<&'a [u8]> {
     let name = unsafe { openssl_sys::OBJ_nid2sn((group & 0xffff) as c_int) };
     // SAFETY: the library's static text, or null.
     unsafe { c_text(name) }
+}
+
+/// LibreSSL's: none looked for, as C's build without OpenSSL 3 looks for
+/// none (`ossl_trace_ciphers`), and said `[blank]`.
+///
+/// # Safety
+/// None needed: nothing is asked of `ssl`.
+#[cfg(libressl)]
+unsafe fn group_name<'a>(_ssl: NonNull<SSL>) -> Option<&'a [u8]> {
+    None
+}
+
+/// The peer's signature type, as an object id: OpenSSL 3's, or, from
+/// LibreSSL, as C's build without OpenSSL 3 has it, none
+/// (`NID_undef`, which reads `UNDEF`).
+///
+/// # Safety
+/// `ssl`'s handshake is done.
+unsafe fn peer_signature_nid(ssl: NonNull<SSL>) -> c_int {
+    #[cfg(not(libressl))]
+    {
+        let mut nid: c_int = 0;
+        // SAFETY: as the caller says; it writes the id if it knows one.
+        unsafe { ffi::SSL_get_peer_signature_type_nid(ssl.as_ptr(), &mut nid) };
+        nid
+    }
+    #[cfg(libressl)]
+    {
+        let _ = ssl;
+        openssl_sys::NID_undef
+    }
+}
+
+/// Give `ssl` the BIO it reads and writes through, which it frees with
+/// itself (`ossl_connect_step1`): from OpenSSL a reference for each end
+/// (`HAVE_SSL_SET0_WBIO`), the second taken here; from LibreSSL, which has
+/// no `SSL_set0_wbio`, both ends at once on the one reference.
+fn set_bio(ssl: NonNull<SSL>, bio: NonNull<openssl_sys::BIO>) {
+    #[cfg(not(libressl))]
+    {
+        // SAFETY: a BIO just made.
+        unsafe { ffi::BIO_up_ref(bio.as_ptr()) };
+        // SAFETY: the SSL, and a reference to the BIO it now owns.
+        unsafe { ffi::SSL_set0_rbio(ssl.as_ptr(), bio.as_ptr()) };
+        // SAFETY: as above, the other reference.
+        unsafe { ffi::SSL_set0_wbio(ssl.as_ptr(), bio.as_ptr()) };
+    }
+    #[cfg(libressl)]
+    {
+        // SAFETY: the SSL, and the reference to the BIO it now owns, for
+        // both its ends (`rbio == wbio` takes one reference).
+        unsafe { ffi::SSL_set_bio(ssl.as_ptr(), bio.as_ptr(), bio.as_ptr()) };
+    }
 }
 
 impl TlsSession for Session {
@@ -1292,6 +1395,10 @@ impl TlsSession for Session {
                 io.info(format_args!(
                     "SSLKEYLOGFILE set, all TLS secrets are logged to '{}'",
                     Text(name)
+                ));
+                #[cfg(libressl)]
+                io.info(format_args!(
+                    "Note LibreSSL only supports SSLKEYLOGFILE for TLS <= 1.2"
                 ));
             });
         }
@@ -1379,18 +1486,24 @@ impl TlsSession for Session {
                     let e = ErrText::of(e);
                     io.fail(
                         ErrorKind::SendError,
-                        format_args!("OpenSSL SSL_write: {}, errno {errno}", e.versioned()),
+                        format_args!("{PACKAGE} SSL_write: {}, errno {errno}", e.versioned()),
                     );
                 } else if errno != 0 {
                     let why = ErrorText::of_code(errno);
                     io.fail(
                         ErrorKind::SendError,
-                        format_args!("OpenSSL SSL_write: {}, errno {errno}", Text(why.as_bytes())),
+                        format_args!(
+                            "{PACKAGE} SSL_write: {}, errno {errno}",
+                            Text(why.as_bytes())
+                        ),
                     );
                 } else {
                     io.fail(
                         ErrorKind::SendError,
-                        format_args!("OpenSSL SSL_write: {}, errno {errno}", text::ssl_error(err)),
+                        format_args!(
+                            "{PACKAGE} SSL_write: {}, errno {errno}",
+                            text::ssl_error(err)
+                        ),
                     );
                 }
                 Err(said(errno))
@@ -1403,7 +1516,10 @@ impl TlsSession for Session {
             _ => {
                 io.fail(
                     ErrorKind::SendError,
-                    format_args!("OpenSSL SSL_write: {}, errno {errno}", text::ssl_error(err)),
+                    format_args!(
+                        "{PACKAGE} SSL_write: {}, errno {errno}",
+                        text::ssl_error(err)
+                    ),
                 );
                 Err(said(errno))
             }
@@ -1536,6 +1652,7 @@ impl QuicTls for QuicSession {
             flags: &mut s.flags,
             below: Below::Ok,
             store: &mut setup,
+            #[cfg(not(libressl))]
             keylog: s.keylog.as_deref(),
             quic_params: Some(params),
         };
@@ -1577,7 +1694,7 @@ impl DriveCall for Check<'_> {
             from_sectrust,
         } = *self;
         // SAFETY: the session's SSL, alive while the check is.
-        let finished = unsafe { openssl_sys::SSL_is_init_finished(ssl.as_ptr()) };
+        let finished = unsafe { ffi::SSL_is_init_finished(ssl.as_ptr()) };
         assert_eq!(
             finished, 1,
             "the QUIC library says a handshake is done once it is"
@@ -1763,14 +1880,14 @@ impl Session {
                         let e = ErrText::of(e);
                         io.fail(
                             ErrorKind::RecvError,
-                            format_args!("OpenSSL SSL_read: {}, errno {errno}", e.versioned()),
+                            format_args!("{PACKAGE} SSL_read: {}, errno {errno}", e.versioned()),
                         );
                     } else if errno != 0 && err == openssl_sys::SSL_ERROR_SYSCALL {
                         let why = ErrorText::of_code(errno);
                         io.fail(
                             ErrorKind::RecvError,
                             format_args!(
-                                "OpenSSL SSL_read: {}, errno {errno}",
+                                "{PACKAGE} SSL_read: {}, errno {errno}",
                                 Text(why.as_bytes())
                             ),
                         );
@@ -1778,7 +1895,7 @@ impl Session {
                         io.fail(
                             ErrorKind::RecvError,
                             format_args!(
-                                "OpenSSL SSL_read: {}, errno {errno}",
+                                "{PACKAGE} SSL_read: {}, errno {errno}",
                                 text::ssl_error(err)
                             ),
                         );
@@ -1803,7 +1920,7 @@ impl Session {
                         io.fail(
                             ErrorKind::RecvError,
                             format_args!(
-                                "OpenSSL SSL_read: Connection closed abruptly, errno {errno}"
+                                "{PACKAGE} SSL_read: Connection closed abruptly, errno {errno}"
                             ),
                         );
                     }
@@ -1850,7 +1967,7 @@ mod tests {
         let floor = identity(|i| i.options.min_version = TlsMinVersion::Tls1_0);
         let mut notes = Notes::default();
         let made = TlsCx::testing(&floor, b"localhost", &mut notes, |shared, cx| {
-            OPENSSL.quic_session(&floor, &PEER, shared, cx)
+            OPENSSL.quic_session(&floor, &PEER, shared, &|_| Ok(()), cx)
         });
         let session = made.unwrap();
         let ssl = session.native().session().unwrap().cast::<SSL>();
@@ -1871,7 +1988,7 @@ mod tests {
         let capped = identity(|i| i.options.max_version = TlsMaxVersion::Tls1_2);
         let mut notes = Notes::default();
         let made = TlsCx::testing(&capped, b"localhost", &mut notes, |shared, cx| {
-            OPENSSL.quic_session(&capped, &PEER, shared, cx)
+            OPENSSL.quic_session(&capped, &PEER, shared, &|_| Ok(()), cx)
         });
         assert_eq!(made.err(), Some(ErrorKind::SslConnectError));
         assert_eq!(
@@ -1889,7 +2006,9 @@ mod tests {
         let id = identity(|_| {});
         let mut notes = Notes::default();
         TlsCx::testing(&id, b"localhost", &mut notes, |shared, cx| {
-            let mut session = OPENSSL.quic_session(&id, &PEER, shared, cx).unwrap();
+            let mut session = OPENSSL
+                .quic_session(&id, &PEER, shared, &|_| Ok(()), cx)
+                .unwrap();
             session.drive(cx, &mut || None, &mut |check| {
                 assert!(check.handshake_done().is_err());
             });

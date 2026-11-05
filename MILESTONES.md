@@ -1292,7 +1292,18 @@ the C build with OpenSSL stands in. Kerberos goes through SSPI; MIT krb5 stays U
 
 94. **The C ABI per target, `curl-os` and `curl-core` on Windows.** **Done.**
 95. **The shim DLL and curl.exe on Windows**: names in the ANSI code page, console writes, the
-    DLL named as CMake names it. **Done.**
+    DLL named as CMake names it. **Done.** Output names made fit for Windows as
+    `sanitize_file_name` makes them (`-o`, `-O`, `-J`, a redirect's), `--create-dirs` through
+    both separators, help and the version in text mode, and the debug build's `curl_dbg_fopen`
+    reading names as the build does, with the Unicode DLL's `curl_dbg_wcsdup`. curl-tool's
+    tests all pass on Windows, ANSI and Unicode; where Windows differs they say what C's
+    curl.exe does, checked on the C build with OpenSSL (`C:\work\c-openssl`), which fails
+    only the tests of DIVERGENCE.md's differences and, built with c-ares, the one of DNS
+    options without it. 48 hand cases of names and 11 of directories give that build's bytes
+    but for an `-O` name sanitized to nothing, which C's debug build asserts on and its release
+    build fails with 23, as the Rust does. Microsoft's curl.exe 8.21.0 agrees on all of them
+    but two `-J` names it fails with 23 where the C build and the Rust save a file: `%20.%20`
+    as it is, and `com` and a Latin-1 `¹`, a device to them, as `_com¹`.
 96. **Text mode** on stderr, `-w`, stdout before binary mode and the files C opens in text mode,
     as one translating filter (`curl_os::text`); C's `curl-ca-bundle.crt` search. **Done.**
     Byte for byte against the C build on 41 cases; on the guest's suite the Rust leg fails no

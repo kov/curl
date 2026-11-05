@@ -233,6 +233,28 @@ def cargo(leg, *args):
                  str(leg.target), *features])
 
 
+def cargo_env():
+    """
+    The environment cargo builds a Rust leg in: curl-ngtcp2 links the
+    ngtcp2 the C leg links, the one deps.py names, whatever a caller's
+    CURL_NGTCP2_DIR or the build script's default would pick.
+    """
+    return {**os.environ, "CURL_NGTCP2_DIR": str(deps.NGTCP2)}
+
+
+def check_ngtcp2_link(messages):
+    """
+    Fail unless cargo's JSON `messages` show curl-ngtcp2's build script
+    linking ngtcp2 from deps.NGTCP2, as the C leg does.
+    """
+    want = f"native={deps.NGTCP2 / 'lib'}"
+    paths = [m.get("linked_paths", []) for m in map(json.loads, messages)
+             if m.get("reason") == "build-script-executed"
+             and "curl-ngtcp2" in m.get("package_id", "")]
+    check(paths and all(want in p for p in paths),
+          f"curl-ngtcp2 links from {paths}, not {want}")
+
+
 def port_binaries(leg):
     """Build each PORTS test binary; return their paths by program."""
     out = {}
@@ -240,7 +262,8 @@ def port_binaries(leg):
         r = subprocess.run(
             cargo(leg, "test", "--no-run", "-p", crate, *target,
                   "--message-format=json"),
-            cwd=ROOT, check=True, capture_output=True, text=True)
+            cwd=ROOT, check=True, capture_output=True, text=True,
+            env=cargo_env())
         exes = [m["executable"] for m in map(json.loads, r.stdout.splitlines())
                 if m.get("reason") == "compiler-artifact"
                 and m.get("executable") and m["target"]["name"] ==
@@ -253,8 +276,12 @@ def port_binaries(leg):
 
 def build_rust(leg):
     """Build the Rust crates and lay out the leg's tree over C's."""
-    subprocess.run(cargo(leg, "build", "-p", "curl-sys-abi", "-p",
-                         "curl-tool"), cwd=ROOT, check=True)
+    r = subprocess.run(cargo(leg, "build", "-p", "curl-sys-abi", "-p",
+                             "curl-tool",
+                             "--message-format=json-render-diagnostics"),
+                       cwd=ROOT, check=True, stdout=subprocess.PIPE,
+                       text=True, env=cargo_env())
+    check_ngtcp2_link(r.stdout.splitlines())
     out = leg.target / "release"
     c_build = leg.c_build
     if leg.build.exists():
@@ -316,6 +343,35 @@ def loaded_libcurl(binary, env):
                          capture_output=True, text=True).stdout
     m = re.search(rf"^\s*{re.escape(SONAME)} => (\S+)", ldd, re.MULTILINE)
     return m and pathlib.Path(m.group(1)).resolve()
+
+
+def loaded(binary, env, name):
+    """The library `name` (its file name's start) `binary` loads."""
+    if MACOS:
+        return None
+    ldd = subprocess.run(["ldd", str(binary)], env=env, check=True,
+                         capture_output=True, text=True).stdout
+    m = re.search(rf"^\s*{re.escape(name)}\S* => (\S+)", ldd, re.MULTILINE)
+    return m and str(pathlib.Path(m.group(1)).resolve())
+
+
+def check_quic(legs):
+    """
+    Fail unless every leg's library loads the same nghttp3, and the C
+    legs' the ngtcp2 deps.py names: the Rust legs link that build's
+    static archives (check_ngtcp2_link).
+    """
+    if MACOS:
+        return
+    found = set()
+    for leg in legs:
+        library = (next(leg.build.glob(C_LIBRARY)) if leg.side == "c"
+                   else leg.build / "lib" / SONAME)
+        found.add(loaded(library, leg.env(), "libnghttp3.so"))
+        if leg.side == "c":
+            deps.check_linked(library)
+    check(len(found) == 1 and None not in found,
+          f"the legs load nghttp3 from {found}")
 
 
 def check_loading(leg):
@@ -429,6 +485,16 @@ def measure_scorecard(legs):
                 json.dumps(runs[leg.name]))
 
 
+def quic():
+    """The HTTP/3 libraries both legs link, as deps.py describes them,
+    with the nghttp3 the C leg loads."""
+    described = deps.describe()
+    leg = LEGS[0]
+    described["nghttp3-loaded"] = loaded(next(leg.build.glob(C_LIBRARY)),
+                                         leg.env(), "libnghttp3.so")
+    return described
+
+
 def rust_commit():
     sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                          check=True, capture_output=True,
@@ -448,6 +514,7 @@ def build():
             build_rust(leg)
     for leg in LEGS:
         check_loading(leg)
+    check_quic(LEGS)
 
 
 def run():
@@ -468,7 +535,7 @@ def run():
             "scorecard-runs": SCORECARD_RUNS,
             "scorecard-args": SCORECARD_ARGS,
             "url-dataset": {k: str(v) for k, v in URL_DATASET.items()},
-            "c-commit": commit, "commit": rust}
+            "quic": quic(), "c-commit": commit, "commit": rust}
     measure_perf([leg for leg in LEGS if leg.config.perf],
                  sorted(tests["perf"]))
     measure_scorecard(LEGS)
@@ -606,6 +673,23 @@ def scorecard_md(config, c, rust, runs):
     return md
 
 
+def quic_md(quic):
+    """What the summary says of the HTTP/3 libraries the legs link."""
+    if not quic:
+        return ["The HTTP/3 libraries the legs linked were not recorded.\n"]
+    ngtcp2 = quic["ngtcp2"]
+    where = pathlib.Path(ngtcp2["dir"])
+    if where.is_relative_to(ROOT):
+        where = where.relative_to(ROOT)
+    built = (f"ngtcp2 {ngtcp2['built']} (inventory/measure/deps.py: "
+             f"`configure {' '.join(ngtcp2['configure'])}`)"
+             if ngtcp2["built"] else "ngtcp2 of no recorded build")
+    return [f"Both legs link one HTTP/3 build: {built} from `{where}`, the "
+            "C legs its shared libraries and the Rust legs its static "
+            f"archives; nghttp3 {quic['nghttp3']} "
+            f"(`{quic.get('nghttp3-loaded')}`).\n"]
+
+
 def main():
     if "--build" in sys.argv[1:]:
         build()
@@ -647,6 +731,7 @@ def main():
             "scorecard-runs": meta["scorecard-runs"],
             "scorecard-args": meta["scorecard-args"],
             "url-dataset": meta["url-dataset"],
+            "quic": meta.get("quic"),
             "ports": {k: {"crate": v[0], "test": v[2]}
                       for k, v in PORTS.items()},
             "legs": legs}
@@ -667,6 +752,7 @@ def main():
            "builds measured on this machine, in one run of this script.\n"),
           "```", *(f"{name}: {legs[name]['curl-version'][0]}"
                    for name in legs), "```\n",
+          *quic_md(meta.get("quic")),
           f"## tests/perf ({meta['samples']} runs each, reference "
           "configuration)\n",
           ("A program marked *port* times a C internal on the C leg and its "

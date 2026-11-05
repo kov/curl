@@ -34,6 +34,12 @@ NGTCP2 = DEPS / "ngtcp2" if OWN_NGTCP2 else pathlib.Path(
     os.environ["CURL_NGTCP2_DIR"])
 
 
+# How ngtcp2 is configured here, besides its prefix; a build's stamp names
+# its version and this recipe (`pic`).
+CONFIGURE = ["--disable-dependency-tracking", "--enable-lib-only",
+             "--with-openssl", "--with-pic"]
+
+
 def pinned(name):
     """Return the version curl's HTTP/3 CI pins for `name`."""
     m = re.search(rf"^  {name}: (\S+)$", common.read(WORKFLOW), re.MULTILINE)
@@ -59,10 +65,7 @@ def build():
                 f"v{version}", "https://github.com/ngtcp2/ngtcp2", str(src)],
                cwd=src.parent)
         sh(["autoreconf", "-fi"], cwd=src)
-        sh(["./configure", "--disable-dependency-tracking",
-            f"--prefix={NGTCP2}", "--enable-lib-only", "--with-openssl",
-            "--with-pic"],
-           cwd=src)
+        sh(["./configure", f"--prefix={NGTCP2}", *CONFIGURE], cwd=src)
         # Without dependency tracking, objects an earlier configure built
         # would be kept.
         sh(["make", "clean"], cwd=src)
@@ -75,6 +78,22 @@ def build():
     check(pc.stdout.strip() == version,
           f"pkg-config finds ngtcp2 {pc.stdout.strip()}, want {version}")
     return {"PKG_CONFIG_PATH": f"{NGTCP2}/lib/pkgconfig"}
+
+
+def describe():
+    """
+    Which ngtcp2 and nghttp3 a build here links, for a measurement to
+    name: ngtcp2's directory and the stamp its build left (version and
+    recipe), and the nghttp3 pkg-config finds, the system's.
+    """
+    stamp = NGTCP2 / ".version"
+    nghttp3 = subprocess.run(["pkg-config", "--modversion", "libnghttp3"],
+                             check=True, capture_output=True, text=True)
+    return {"ngtcp2": {"dir": str(NGTCP2),
+                       "built": stamp.read_text().strip()
+                       if stamp.exists() else None,
+                       "configure": CONFIGURE},
+            "nghttp3": nghttp3.stdout.strip()}
 
 
 def check_linked(binary):

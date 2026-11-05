@@ -15,6 +15,7 @@
 //! peer imported by a salt and the HMAC of its key under that salt has no
 //! key until a connection's key hashes to the same.
 
+use std::any::Any;
 use std::fmt;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
@@ -390,6 +391,10 @@ struct CachePeer {
     password: Option<Vec<u8>>,
     /// Oldest first; two at most, so taken from the front in place.
     sessions: Vec<TlsTicket>,
+    /// What the TLS library keeps for the peer in place of sessions, of
+    /// its own type (`sobj`): Schannel's credential, which resumes the
+    /// sessions the system keeps for it. Dropped with the slot.
+    object: Option<Box<dyn Any + Send>>,
     /// The higher the more recently a session was taken from it.
     age: u64,
 }
@@ -401,6 +406,7 @@ impl CachePeer {
         cert: PeerCert::None,
         password: None,
         sessions: Vec::new(),
+        object: None,
         age: 0,
     };
 
@@ -574,7 +580,7 @@ impl SessionCache {
         let idle = self
             .peers
             .iter()
-            .position(|p| p.is_free() || p.sessions.is_empty());
+            .position(|p| p.is_free() || (p.sessions.is_empty() && p.object.is_none()));
         let i = match idle {
             Some(i) => i,
             None if self.peers.len() < self.slots => {
@@ -627,6 +633,7 @@ impl SessionCache {
                 cert,
                 password,
                 sessions: Vec::new(),
+                object: None,
                 age: 0,
             })
         })();
@@ -813,6 +820,49 @@ impl SessionCache {
             None => {
                 trace(format_args!("no cached session for {}", Shown(key)));
                 None
+            }
+        }
+    }
+
+    /// What the library keeps for `peer` (`Curl_ssl_scache_get_obj`), if
+    /// it is of the type `T` that library keeps: a copy of it.
+    pub(crate) fn object<T: Any + Clone>(
+        &mut self,
+        peer: &SessionPeer,
+        trace: &mut dyn FnMut(fmt::Arguments<'_>),
+    ) -> Option<T> {
+        let key = peer.key();
+        let found = self.find(key, peer.auth(), trace).ok().flatten();
+        let object = found.and_then(|i| self.peers[i].object.as_deref());
+        trace(format_args!(
+            "{} cached session for '{}'",
+            if object.is_some() { "Found" } else { "No" },
+            Shown(key)
+        ));
+        object.and_then(|o| o.downcast_ref::<T>()).cloned()
+    }
+
+    /// Keep `object` for `peer`, in place of any it had
+    /// (`Curl_ssl_scache_add_obj`); in a cache of no slot, nothing is
+    /// kept.
+    pub(crate) fn put_object(
+        &mut self,
+        peer: &SessionPeer,
+        object: Box<dyn Any + Send>,
+        trace: &mut dyn FnMut(fmt::Arguments<'_>),
+    ) -> Result<(), OutOfMemory> {
+        match self.add_peer(peer.key(), peer.auth(), trace) {
+            Ok(Some(i)) => {
+                self.peers[i].object = Some(object);
+                Ok(())
+            }
+            Ok(None) => {
+                trace(format_args!("unable to add scache peer: 0"));
+                Ok(())
+            }
+            Err(OutOfMemory) => {
+                trace(format_args!("unable to add scache peer: 27"));
+                Err(OutOfMemory)
             }
         }
     }

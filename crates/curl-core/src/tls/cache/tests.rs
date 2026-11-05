@@ -372,6 +372,46 @@ fn a_new_peer_takes_the_least_recently_used_slot() {
     assert_eq!(cache.peers.len(), 3);
 }
 
+/// A library's object is found again for its peer, of its own type
+/// alone, replaced by the next kept; a peer holding one is not an idle
+/// slot for another peer, only the oldest, as C's `sobj` is kept.
+#[test]
+fn a_peer_keeps_the_library_s_object() {
+    let mut cache = SessionCache::new(1);
+    let mut said = Vec::new();
+    let at = |port| {
+        let o = origin("localhost", port);
+        SessionPeer::new(&identity(|_| {}), &o, None, &"Schannel", Dial::Stream).unwrap()
+    };
+    let (a, b) = (at(1), at(2));
+    let mut trace = |line: fmt::Arguments<'_>| said.push(line.to_string());
+    assert_eq!(cache.object::<u32>(&a, &mut trace), None);
+    cache.put_object(&a, Box::new(7u32), &mut trace).unwrap();
+    assert_eq!(cache.object::<u32>(&a, &mut trace), Some(7));
+    assert_eq!(cache.object::<u64>(&a, &mut trace), None, "another type");
+    cache.put_object(&a, Box::new(8u32), &mut trace).unwrap();
+    assert_eq!(cache.object::<u32>(&a, &mut trace), Some(8));
+    // A second slot is made for `b` before `a`'s, holding its object,
+    // is taken.
+    let mut two = SessionCache::new(2);
+    two.put_object(&a, Box::new(7u32), &mut trace).unwrap();
+    two.put(&b, ticket(0x303, 0), 1000, &mut trace).unwrap();
+    assert_eq!(two.object::<u32>(&a, &mut trace), Some(7));
+    assert_eq!(two.peers.len(), 2);
+    // With the one slot, `b` takes it as the oldest, and the object goes
+    // with it.
+    cache.put(&b, ticket(0x303, 0), 1000, &mut trace).unwrap();
+    assert_eq!(cache.object::<u32>(&a, &mut trace), None);
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("Found cached session for '"))
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("No cached session for '"))
+    );
+}
+
 /// A peer's sessions serve only the client certificate and key password
 /// it was added with; one added with a certificate blob serves none, as
 /// C names it by its address; a cache of no slot keeps nothing.

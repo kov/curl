@@ -151,3 +151,11 @@ witness: curl-sys-abi tls_tests::a_session_a_raw_call_receives_is_good_from_now
 --- new
     fn seconds_since_1970(&self) -> i64 {
         0
+
+=== a peer holding only the library's object is taken as an idle slot
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_peer_keeps_the_library_s_object
+--- old
+            .position(|p| p.is_free() || (p.sessions.is_empty() && p.object.is_none()));
+--- new
+            .position(|p| p.is_free() || p.sessions.is_empty());

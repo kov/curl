@@ -2966,6 +2966,9 @@ impl TlsIo<'_> {                                   // what a library's BIO and c
     pub fn keep_session(&mut self, t: TlsTicket);          // Curl_ssl_scache_put
     pub fn return_session(&mut self, t: Option<TlsTicket>); // Curl_ssl_scache_return
     pub fn forget_sessions(&mut self);             // Curl_ssl_scache_remove_all
+    pub fn session_object<T: Any + Clone>(&mut self) -> Option<T>;   // Curl_ssl_scache_get_obj
+    pub fn keep_session_object<T: Any + Send>(&mut self, o: T) -> Result<(), ErrorKind>;
+                                                   // Curl_ssl_scache_add_obj
 }
 pub struct TlsTicket { pub data: Vec<u8>, pub version: u16, pub alpn: Option<Chosen>,
                        pub earlydata_max: usize, /* valid_until */ }
@@ -3156,6 +3159,9 @@ recently taken from. A peer keeps two tickets: one before TLS 1.3 replaces the o
 TLS 1.3 joins those still good, the oldest dropped; a lifetime is cut to a week for TLS 1.3, a
 day before, and none given is a day; a ticket out of date is dropped as it is looked at. A
 ticket taken is TLS 1.3's alone, never given back (RFC 8446 C.4); one before is kept again.
+A peer also holds one object of the library's own in place of tickets (`sobj`): Schannel keeps
+its credential there, a shared handle whose last holder frees it, since the system resumes
+sessions per credential; a peer holding an object is not taken as idle, only as the oldest.
 The key (`SessionPeer`, made with the TLS layer, `Curl_ssl_peer_key_make`) is the origin and
 every setting a session must share, each text after its length, a blob by its SHA-256, a
 relative path made absolute (`realpath`) or the key made local (`:L`), and the library's id:

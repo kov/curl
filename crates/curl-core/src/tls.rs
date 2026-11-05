@@ -685,7 +685,7 @@ impl TlsCx<'_> {
 
     /// A line only C's debug build says (`DEBUGF(infof(...))`): `info`
     /// in the debug-hooks build, nothing in any other.
-    pub(crate) fn debug_info(&mut self, line: fmt::Arguments<'_>) {
+    pub fn debug_info(&mut self, line: fmt::Arguments<'_>) {
         if cfg!(feature = "debug-hooks") {
             self.cx.info(line);
         }
@@ -822,6 +822,32 @@ impl TlsCx<'_> {
         if let Some(t) = ticket.filter(|t| t.version < TLS1_3) {
             self.keep_session(t);
         }
+    }
+
+    /// What the library keeps for the connection's peer in place of
+    /// sessions, of its own type `T`, if it keeps one there
+    /// (`Curl_ssl_scache_get_obj`): a copy of it.
+    pub fn session_object<T: Any + Clone>(&mut self) -> Option<T> {
+        let peer = self.peer;
+        let mut found = None;
+        self.cx.with_tls_sessions(&mut |cache, cx| {
+            found = cache.object::<T>(peer, &mut |line| cx.say_line(Component::Ssls, line));
+        });
+        found
+    }
+
+    /// Keep `object` for the connection's peer, in place of any the
+    /// library kept there before (`Curl_ssl_scache_add_obj`).
+    pub fn keep_session_object<T: Any + Send>(&mut self, object: T) -> Result<(), ErrorKind> {
+        let object: Box<dyn Any + Send> = try_box(object).map_err(|_| ErrorKind::OutOfMemory)?;
+        let peer = self.peer;
+        let mut object = Some(object);
+        let mut kept = Ok(());
+        self.cx.with_tls_sessions(&mut |cache, cx| {
+            let object = object.take().expect("called once");
+            kept = cache.put_object(peer, object, &mut |line| cx.say_line(Component::Ssls, line));
+        });
+        kept.map_err(|OutOfMemory| ErrorKind::OutOfMemory)
     }
 
     /// Forget the sessions kept for the connection's peer, as its check
@@ -1195,6 +1221,15 @@ impl TlsIdentity {
                 && matches!(o.ca_path, CaSetting::Default)
                 && matches!(o.ca_blob, CaSetting::Default))
     }
+}
+
+/// The SHA-256 of `bytes` (`Curl_sha256it`), by which a library tells
+/// two blobs of certificates apart.
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use crate::hash::Hash as _;
+    let mut h = crate::hash::Sha256::default();
+    h.update(bytes);
+    h.finish()
 }
 
 /// The system's own trust store is the default of this build where a

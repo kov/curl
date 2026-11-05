@@ -1161,3 +1161,19 @@ witness: curl-core proto::http::tests::h2::a_stream_limit_read_while_idle_is_new
                 if alive && limit_changed {
 --- new
                 if alive && limit_changed && false {
+
+=== the health check's read of an idle connection is not said
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2::a_stream_limit_read_while_idle_is_news_to_the_multi
+--- old
+            format_args!("connisalive, recv pending input -> {code}, {n}"),
+--- new
+            format_args!("connisalive, recv pending input -> {code}, {}", n + 1),
+
+=== the health check's answer on an idle connection is not said
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2::a_stream_limit_read_while_idle_is_news_to_the_multi
+--- old
+        let up = u8::from(alive != Alive::Dead);
+--- new
+        let up = u8::from(alive == Alive::Dead);

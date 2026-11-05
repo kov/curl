@@ -608,21 +608,10 @@ fn to_conn(cx: &mut dyn LayerCx, io: &mut Carrier<'_>, bytes: &[u8]) -> Passed<E
     }
 }
 
-impl<'a> ConnPart<Carrier<'a>> for H2Conn {
-    /// What came behind a 101 and the session has not read yet is input
-    /// pending, as what is below holds (`cf_h2_data_pending`'s
-    /// `inbufq`).
-    fn data_pending(&self, below: Carrier<'a>) -> bool {
-        !self.held.is_empty() || below.data_pending()
-    }
-
-    /// What an idle connection has to read, read by the session, which a
-    /// frame for no stream leaves alive: whether it still is, its session
-    /// neither failed, told to go away nor done (`http2_connisalive`,
-    /// `should_close_session`), and whether the server's settings changed
-    /// its limit on streams, which the multi hears as C's internal handle
-    /// tells its multi (`on_frame_recv`'s `Curl_multi_connchanged`).
-    fn is_alive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'a>) -> Alive {
+impl H2Conn {
+    /// `is_alive`'s answer, its read said as C says it
+    /// (`http2_connisalive`).
+    fn connisalive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>) -> Alive {
         use crate::http2::{Event, Heard};
         if self.broken {
             return Alive::Dead;
@@ -635,7 +624,19 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
         {
             return below_alive;
         }
-        let alive = match below.recv(cx, 16 * 1024) {
+        let read = below.recv(cx, 16 * 1024);
+        let (code, n) = match &read {
+            Ok(Recv::Data(n)) => (0, n.get()),
+            Ok(Recv::Eof) => (0, 0),
+            Ok(Recv::WouldBlock) => (crate::error::AGAIN_NUMBER, 0),
+            Err(crate::conn::RecvFailed::OutOfMemory) => (ErrorKind::OutOfMemory.number(), 0),
+            Err(crate::conn::RecvFailed::Os(_)) => (ErrorKind::RecvError.number(), 0),
+        };
+        cx.of(
+            Component::Http2,
+            format_args!("connisalive, recv pending input -> {code}, {n}"),
+        );
+        let alive = match read {
             Ok(Recv::WouldBlock) => true,
             Ok(Recv::Eof) | Err(_) => false,
             Ok(Recv::Data(_)) => {
@@ -677,6 +678,32 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
         } else {
             Alive::Dead
         }
+    }
+}
+
+impl<'a> ConnPart<Carrier<'a>> for H2Conn {
+    /// What came behind a 101 and the session has not read yet is input
+    /// pending, as what is below holds (`cf_h2_data_pending`'s
+    /// `inbufq`).
+    fn data_pending(&self, below: Carrier<'a>) -> bool {
+        !self.held.is_empty() || below.data_pending()
+    }
+
+    /// What an idle connection has to read, read by the session, which a
+    /// frame for no stream leaves alive: whether it still is, its session
+    /// neither failed, told to go away nor done (`http2_connisalive`,
+    /// `should_close_session`), and whether the server's settings changed
+    /// its limit on streams, which the multi hears as C's internal handle
+    /// tells its multi (`on_frame_recv`'s `Curl_multi_connchanged`); said
+    /// as C's filter says it (`cf_h2_is_alive`).
+    fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Carrier<'a>) -> Alive {
+        let alive = self.connisalive(cx, below);
+        let up = u8::from(alive != Alive::Dead);
+        cx.of(
+            Component::Http2,
+            format_args!("conn alive -> {up}, input_pending=0"),
+        );
+        alive
     }
 
     /// PING the peer (`cf_h2_keep_alive`, `http2_send_ping`). With no

@@ -652,14 +652,16 @@ fn a_stream_limit_read_while_idle_is_news_to_the_multi() {
     let internal = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
     let said: Vec<&str> = internal
         .lines()
-        .filter(|l| l.contains("[0] MAX_") || l.contains("[0] ENABLE_") || l.contains("notify"))
+        .filter(|l| l.starts_with("* [HTTP/2] ") && !l.contains("FRAME["))
         .collect();
     assert_eq!(
         said,
         [
+            "* [HTTP/2] connisalive, recv pending input -> 0, 237",
             "* [HTTP/2] [0] MAX_CONCURRENT_STREAMS: 5",
             "* [HTTP/2] [0] ENABLE_PUSH: TRUE",
             "* [HTTP/2] [0] notify MAX_CONCURRENT_STREAMS: 5",
+            "* [HTTP/2] conn alive -> 1, input_pending=0",
         ],
         "{internal}"
     );

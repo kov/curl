@@ -132,8 +132,11 @@ pub(crate) fn auth_mask(methods: AuthMethods, spnego: bool) -> c_long {
     .fold(0, |mask, (_, bit)| mask | bit as c_long)
 }
 
+/// The bit `CURLINFO_PROTOCOL` tells of `p` (`conn_protocol`): its
+/// `CURLPROTO_*` bit within `CURLPROTO_MASK`, so none for the protocols
+/// C names only inside (ws, wss, mqtts).
 fn proto_bit(p: Protocol) -> c_long {
-    crate::protocols::BITS[p.index()] as c_long
+    (crate::protocols::BITS[p.index()] & crate::protocols::MASK) as c_long
 }
 
 /// The name of `p`'s scheme, as C's scheme table spells it
@@ -683,6 +686,19 @@ mod tests {
         assert_eq!(secs(d), 1.50025);
         assert_eq!(micros(Duration::MAX), curl_off_t::MAX);
         assert_eq!(proto_bit(Protocol::File), 1 << 10);
+    }
+
+    /// unit3219: `CURLPROTO_MASK` keeps HTTP's bit and the highest public
+    /// one, gophers', and drops ws's, wss's and mqtts's from the protocol
+    /// a transfer is told as.
+    #[test]
+    fn unit3219_protocol_mask() {
+        assert_eq!(proto_bit(Protocol::Http), ffi::CURLPROTO_HTTP);
+        assert_eq!(proto_bit(Protocol::Gophers), ffi::CURLPROTO_GOPHERS);
+        for p in [Protocol::Ws, Protocol::Wss, Protocol::Mqtts] {
+            assert_ne!(crate::protocols::BITS[p.index()], 0, "{p:?}");
+            assert_eq!(proto_bit(p), 0, "{p:?}");
+        }
     }
 
     /// The debug build's stand-ins, for the infos C's takes them for.

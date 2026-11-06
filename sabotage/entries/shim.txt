@@ -586,3 +586,11 @@ witness: curl-sys-abi setopt::tests::an_option_is_not_built_in_where_the_tls_lib
         ffi::CURLOPT_SSLENGINE | ffi::CURLOPT_SSLENGINE_DEFAULT => has.engines,
 --- new
         ffi::CURLOPT_SSLENGINE_DEFAULT => has.engines,
+
+=== a ws, wss or mqtts transfer tells its protocol as an internal bit
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi getinfo::tests::unit3219_protocol_mask
+--- old
+    (crate::protocols::BITS[p.index()] & crate::protocols::MASK) as c_long
+--- new
+    crate::protocols::BITS[p.index()] as c_long

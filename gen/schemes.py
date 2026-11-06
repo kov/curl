@@ -196,6 +196,8 @@ pub(crate) static KNOWN: &[Known] = &[
 {table}];
 """)
 
+    mask = re.search(r"#define CURLPROTO_MASK\s+(0x[0-9a-fA-F]+)\s", header_text)
+    check(mask, "no CURLPROTO_MASK in protocol.h")
     bit_list = "".join(f"    1 << {bits[p]},\n" for p in protocols)
     name_list = "".join(f'    c"{names[p]}",\n' for p in protocols)
     genlib.write(SHIM_OUT, f"""\
@@ -211,6 +213,10 @@ use curl_core::version::Protocol;
 #[rustfmt::skip]
 pub(crate) static BITS: [i64; Protocol::ALL.len()] = [
 {bit_list}];
+
+/// The bits a transfer's protocol is told as (`CURLPROTO_MASK`): the
+/// public ones, not those of protocols C names only inside.
+pub(crate) const MASK: i64 = {mask[1]};
 
 /// Each protocol's scheme name, as C's scheme table spells it: one
 /// string for the process, as the application may compare its address.

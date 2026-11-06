@@ -5568,6 +5568,31 @@ fn gss_options_are_read_as_c() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// unit3302: `CURLOPT_GSSAPI_DELEGATION` stores each flag, both, none,
+/// and of 0xFF only the two flags, in a build with GSS-API or SSPI (the
+/// C program checks nothing elsewhere).
+#[test]
+fn unit3302_delegation_flags() {
+    if !curl_core::version::version().claims("Kerberos") {
+        return;
+    }
+    let c = curl_easy_init();
+    let both = ffi::CURLGSSAPI_DELEGATION_FLAG | ffi::CURLGSSAPI_DELEGATION_POLICY_FLAG;
+    for (set, always, by_policy) in [
+        (ffi::CURLGSSAPI_DELEGATION_FLAG, true, false),
+        (ffi::CURLGSSAPI_DELEGATION_POLICY_FLAG, false, true),
+        (both, true, true),
+        (ffi::CURLGSSAPI_DELEGATION_NONE, false, false),
+        (0xFF, true, true),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_GSSAPI_DELEGATION, set), CURLE_OK);
+        let d = options(c, |o| o.login.delegation);
+        assert_eq!((d.always, d.by_policy), (always, by_policy), "{set:#x}");
+    }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_PROXYUSERPWD` splits at the first colon and decodes each
 /// part, refusing a zero byte, as setopt.c does; the proxy's methods are
 /// read as `CURLOPT_HTTPAUTH`'s.

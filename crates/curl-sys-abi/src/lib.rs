@@ -59,6 +59,61 @@ mod ws;
 mod tests {
     use std::path::{Path, PathBuf};
 
+    /// unit3214: the public structs are no larger than C allows them,
+    /// its limits read from its source, doubled past 64-bit pointers. C
+    /// also limits its own `Curl_easy`, `connectdata`, `Curl_multi`,
+    /// `curl_mime` and `curl_mimepart`, which the rewrite has no
+    /// counterpart of: its handles are opaque behind the shim, and what
+    /// they hold is curl-core's.
+    #[test]
+    fn unit3214_public_struct_sizes() {
+        use crate::ffi;
+        let scale = (size_of::<*const u8>() / 8).max(1);
+        let max = |name: &str| {
+            let n = curl_core::c_source::constant("tests/unit/unit3214.c", name);
+            usize::try_from(n).unwrap() * scale
+        };
+        for (name, size, limit) in [
+            (
+                "curl_httppost",
+                size_of::<ffi::curl_httppost>(),
+                "MAX_CURL_HTTPPOST",
+            ),
+            ("curl_slist", size_of::<ffi::curl_slist>(), "MAX_CURL_SLIST"),
+            ("curl_khkey", size_of::<ffi::curl_khkey>(), "MAX_CURL_KHKEY"),
+            (
+                "curl_hstsentry",
+                size_of::<ffi::curl_hstsentry>(),
+                "MAX_CURL_HSTSENTRY",
+            ),
+            ("curl_index", size_of::<ffi::curl_index>(), "MAX_CURL_INDEX"),
+            (
+                "curl_certinfo",
+                size_of::<ffi::curl_certinfo>(),
+                "MAX_CURL_CERTINFO",
+            ),
+            (
+                "curl_tlssessioninfo",
+                size_of::<ffi::curl_tlssessioninfo>(),
+                "MAX_CURL_TLSSESSIONINFO",
+            ),
+            ("curl_blob", size_of::<ffi::curl_blob>(), "MAX_CURL_BLOB"),
+            ("CURLMsg", size_of::<ffi::CURLMsg>(), "MAX_CURLMSG"),
+            (
+                "curl_header",
+                size_of::<ffi::curl_header>(),
+                "MAX_CURL_HEADER",
+            ),
+        ] {
+            assert!(
+                size <= max(limit),
+                "struct {name} is {size} bytes, past {limit}"
+            );
+        }
+        // The limits were read: two pointers' worth for a list's link.
+        assert_eq!(max("MAX_CURL_SLIST"), 16 * scale);
+    }
+
     fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
         bytes.iter().fold(hash, |h, &b| {
             (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)

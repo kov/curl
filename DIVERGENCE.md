@@ -542,7 +542,16 @@ not a difference: it is tracked in `MILESTONES.md`.
   "Failure establishing ssh session". Measured 2026-11-01 on C's libssh build, against a
   proxy that grants the tunnel: `SSH-2.0-libssh_0.12.2` was next on its TCP stream, and its
   TLS read failed. Pinned by `the_socket_is_not_handed_over_under_a_proxy_s_tls`
-  (`crates/curl-core/src/proto/ssh/tests.rs`).
+  (`crates/curl-core/src/proto/ssh/tests.rs`). The libssh2 build reads and writes the proxy's
+  TLS as C's does.
+- **SCP or SFTP over libssh2 through an HTTP/2 proxy fails before SSH starts.** C's sets
+  libssh2's send and receive callbacks over the connection's filters for an HTTPS proxy alone
+  (`CURLPROXY_HTTPS`, `ssh_connect`); under one that speaks HTTP/2 (`CURLPROXY_HTTPS2`) it
+  hands the library the raw socket, past the proxy's TLS, as its libssh build does above. The
+  rewrite refuses such a transfer with 2 (`CURLE_FAILED_INIT`), "SSH is not built over this
+  proxy's TLS", where C's fails as its libssh build does above. Pinned by
+  `only_an_https_proxy_s_tls_is_read_through_pipes`
+  (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`).
 
 ## Codes C passes through
 

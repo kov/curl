@@ -26,6 +26,7 @@ const int64_t curl_libssh2_values[] = {
   libssh2_no_crypto, libssh2_openssl, libssh2_gcrypt, libssh2_mbedtls,
   libssh2_wincng, libssh2_os400qc3,
   SSH_DISCONNECT_BY_APPLICATION, LIBSSH2_METHOD_HOSTKEY, LIBSSH2_FLAG_COMPRESS,
+  LIBSSH2_CALLBACK_SEND, LIBSSH2_CALLBACK_RECV,
   LIBSSH2_SESSION_BLOCK_INBOUND, LIBSSH2_SESSION_BLOCK_OUTBOUND,
   LIBSSH2_HOSTKEY_HASH_MD5, LIBSSH2_HOSTKEY_HASH_SHA256,
   LIBSSH2_HOSTKEY_TYPE_RSA, LIBSSH2_HOSTKEY_TYPE_DSS,
@@ -65,4 +66,4 @@ const int64_t curl_libssh2_values[] = {
 };
 
 _Static_assert(sizeof(curl_libssh2_values) / sizeof(curl_libssh2_values[0])
-               == 102, "src/sys.rs's LAYOUT_LEN");
+               == 104, "src/sys.rs's LAYOUT_LEN");

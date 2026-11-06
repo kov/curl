@@ -23,6 +23,7 @@ use super::path::{self, Home, RangeError};
 use super::{Keys, Quotes, Request, S_IFLNK, S_IFMT, c_string, copy, quote_command};
 use crate::components::Component;
 use crate::conn::io::{Events, Sent, SocketPoll};
+use crate::conn::layer::{LayerCalls as _, LayerCx};
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, RouteCold};
@@ -422,13 +423,28 @@ impl Ssh2Conn {
         self.state = state;
     }
 
+    /// Move what waits between a session over pipes and the connection's
+    /// layers: whether anything moved, for the call that would have
+    /// waited to be made again now. Nothing moves for a session over the
+    /// socket.
+    fn pump(&mut self, cx: &mut dyn LayerCx, carrier: &mut Carrier<'_>) -> bool {
+        self.session
+            .as_deref_mut()
+            .is_some_and(|s| pump(s, cx, carrier))
+    }
+
     /// What the session waits for, if a call would have (`block`)
     /// (`ssh_block2waitfor`).
     fn block2waitfor(&mut self, block: bool) {
-        let dir = match (&self.session, block) {
+        let mut dir = match (&self.session, block) {
             (Some(s), true) => s.block_directions(),
             _ => PollFlags::default(),
         };
+        // What the session sent through its pipes and the connection has
+        // not taken yet waits for the connection to take more.
+        if let Some(pipes) = self.session.as_deref_mut().and_then(|s| s.pipes()) {
+            dir.write |= !pipes.outbound().is_empty();
+        }
         self.waitfor = dir;
     }
 
@@ -650,9 +666,8 @@ impl Ssh2Conn {
     /// (`scp_disconnect`, `sftp_disconnect`): its run blocking, waiting on
     /// the socket at most a second in all (`ssh_block_statemach`), then
     /// all freed.
-    pub(crate) fn goodbye(&mut self, cx: &mut dyn crate::conn::layer::LayerCx, below: Carrier<'_>) {
+    pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>) {
         let start = cx.now();
-        let socket = below.stream_socket();
         let says = &mut LayerSays(cx);
         if self.session.is_some() {
             let first = if self.sftp {
@@ -676,10 +691,21 @@ impl Ssh2Conn {
                     break;
                 }
                 if block {
+                    if let Some(s) = self.session.as_deref_mut()
+                        && pump(s, says.0, &mut below)
+                    {
+                        continue;
+                    }
                     let dir = self
                         .session
-                        .as_deref()
-                        .map(|s| s.block_directions())
+                        .as_deref_mut()
+                        .map(|s| {
+                            let mut dir = s.block_directions();
+                            if let Some(pipes) = s.pipes() {
+                                dir.write |= !pipes.outbound().is_empty();
+                            }
+                            dir
+                        })
                         .unwrap_or_default();
                     let mut events = Events::NONE;
                     if dir.read {
@@ -688,7 +714,7 @@ impl Ssh2Conn {
                     if dir.write {
                         events = events | Events::OUT;
                     }
-                    if let Some(socket) = socket {
+                    if let Some(socket) = below.stream_socket() {
                         let mut polls = [SocketPoll::new(socket, events)];
                         // What the wait comes to the next call reads.
                         let _waited = crate::conn::io::poll_together(
@@ -705,6 +731,72 @@ impl Ssh2Conn {
             }
         }
         let _cleaned = self.cleanup(says, true);
+    }
+}
+
+/// Move what waits between `session`'s pipes, if it reads and writes
+/// through them, and the connection's layers, each piece traced as it
+/// moves, as C's callbacks trace it (`ssh_tls_send`, `ssh_tls_recv`):
+/// what it sent goes out, as much as the connection takes; then, if it
+/// waits to read, what came for it, at most as much as it asked for.
+/// Whether anything moved, a failure or the connection's end among it.
+fn pump(session: &mut dyn Session2, cx: &mut dyn LayerCx, carrier: &mut Carrier<'_>) -> bool {
+    let Some(pipes) = session.pipes() else {
+        return false;
+    };
+    let mut moved = false;
+    while !pipes.outbound().is_empty() {
+        match carrier.send(cx, pipes.outbound()) {
+            Ok(Sent::Bytes(n)) => {
+                cx.bytes(DebugKind::DataOut, &pipes.outbound()[..n.get()]);
+                pipes.sent(n.get());
+                moved = true;
+            }
+            Ok(Sent::WouldBlock) => break,
+            Err(_) => {
+                pipes.break_off();
+                return true;
+            }
+        }
+    }
+    if let Some(wanted) = pipes.wanted() {
+        let Some(room) = pipes.room(wanted) else {
+            pipes.break_off();
+            return true;
+        };
+        match carrier.recv_into(cx, room) {
+            Ok(Some(0)) => {
+                pipes.end();
+                moved = true;
+            }
+            Ok(Some(n)) => {
+                cx.bytes(DebugKind::DataIn, &room[..n]);
+                pipes.came(n);
+                moved = true;
+            }
+            Ok(None) => pipes.came(0),
+            Err(_) => {
+                pipes.break_off();
+                moved = true;
+            }
+        }
+    }
+    moved
+}
+
+/// Whether the session reads and writes through the connection's layers,
+/// under a proxy of `kind` if any, the socket `bare` or not: through an
+/// HTTPS proxy, its TLS (`CURLPROXY_HTTPS` in `ssh_connect`); otherwise
+/// the socket itself, which no layer of ours may work on, nor any bytes
+/// received wait unread in. C's hands the library the socket past an
+/// HTTP/2 proxy's TLS, where SSH cannot go: such a transfer is refused.
+fn over_layers(kind: Option<crate::options::ProxyType>, bare: bool) -> Result<bool, ()> {
+    if kind == Some(crate::options::ProxyType::Https) {
+        Ok(true)
+    } else if bare {
+        Ok(false)
+    } else {
+        Err(())
     }
 }
 
@@ -782,17 +874,25 @@ impl Request {
             let secs = limit.duration().as_millis() / 1000;
             session.set_read_timeout(i64::try_from(secs).unwrap_or(i64::MAX));
         }
-        // The library reads the socket itself: no layer of ours may work
-        // on its bytes, nor any received wait unread. C's reads and writes
-        // an HTTPS proxy's TLS through callbacks of the library's
-        // (`ssh_tls_recv`), which are not built here: such a transfer is
-        // refused.
-        if lease.get().carrier().bare_socket().is_none() {
-            return Err(trace::fail(
-                cx,
-                ErrorKind::FailedInit,
-                format_args!("SSH through an HTTPS proxy is not built over libssh2"),
-            ));
+        let kind = lease
+            .conn()
+            .net_route()
+            .and_then(|r| r.proxy.as_ref())
+            .map(|p| p.kind);
+        let bare = lease.get().carrier().bare_socket().is_some();
+        match over_layers(kind, bare) {
+            Ok(true) => {
+                trace::info(cx, format_args!("SSH: using HTTPS proxy"));
+                session.use_pipes();
+            }
+            Ok(false) => {}
+            Err(()) => {
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::FailedInit,
+                    format_args!("SSH is not built over this proxy's TLS"),
+                ));
+            }
         }
         if cx.easy().options().ssh.compression && session.enable_compression().is_err() {
             trace::info(
@@ -844,9 +944,8 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
-        let (sc, carrier) = ssh2_of(lease);
-        let socket = carrier.bare_socket().and_then(|s| s.descriptor());
-        let (result, block) = self.machine2(cx, sc, socket);
+        let (sc, mut carrier) = ssh2_of(lease);
+        let (result, block) = self.machine2(cx, sc, &mut carrier);
         let stopped = sc.state == State::Stop;
         sc.block2waitfor(block);
         let freed = sc.session.is_none();
@@ -863,15 +962,23 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         sc: &mut Ssh2Conn,
-        socket: Option<curl_os::socket::BorrowedSocket<'_>>,
+        carrier: &mut Carrier<'_>,
     ) -> (Result<(), ErrorKind>, bool) {
         let mut ran;
         loop {
-            ran = self.state2(cx, sc, socket);
+            ran = self.state2(cx, sc, carrier);
+            // A session over pipes waits on them: once bytes move, the
+            // call is made again, as C's callbacks would have moved them
+            // inside it.
+            if matches!(ran, Err(Halt::Again)) && sc.pump(cx, carrier) {
+                continue;
+            }
             if ran.is_err() || sc.state == State::Stop {
                 break;
             }
         }
+        // What the last call sent goes out now.
+        sc.pump(cx, carrier);
         let (result, block) = match ran {
             Err(Halt::Again) => (Ok(()), true),
             Err(Halt::Fail(e)) => (Err(e), false),
@@ -891,11 +998,11 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         sc: &mut Ssh2Conn,
-        socket: Option<curl_os::socket::BorrowedSocket<'_>>,
+        carrier: &mut Carrier<'_>,
     ) -> Ran {
         match sc.state {
             State::Init => self.init(cx, sc),
-            State::SStartup => startup(cx, sc, socket),
+            State::SStartup => startup(cx, sc, carrier),
             State::Hostkey => {
                 self.check_fingerprint(cx, sc)?;
                 sc.to(cx, State::Authlist);
@@ -2312,6 +2419,7 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         sc: &mut Ssh2Conn,
+        carrier: &mut Carrier<'_>,
     ) -> Result<ProtoStep, ErrorKind> {
         let mut reads = 0;
         loop {
@@ -2355,6 +2463,10 @@ impl Request {
             } else {
                 s.channel_read(buf)
             };
+            if read == Err(Code::EAGAIN) && sc.pump(cx, carrier) {
+                reads -= 1;
+                continue;
+            }
             sc.block2waitfor(read == Err(Code::EAGAIN));
             let n = match read {
                 Err(rc) if rc.again() => return Ok(ProtoStep::Blocked),
@@ -2386,9 +2498,9 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.base.pipeline.flush(cx)?;
-        let (sc, _) = ssh2_of(lease);
+        let (sc, mut carrier) = ssh2_of(lease);
         if self.receiving {
-            let read = self.read_body2(cx, sc);
+            let read = self.read_body2(cx, sc, &mut carrier);
             match read {
                 Ok(ProtoStep::AtReadLimit) => crate::multi::mstate::trace(
                     cx,
@@ -2405,7 +2517,11 @@ impl Request {
         let Some(sending) = self.sending.as_mut() else {
             return Ok(ProtoStep::Done);
         };
-        let mut outlet = Ssh2Outlet { sc, failed: None };
+        let mut outlet = Ssh2Outlet {
+            sc,
+            carrier,
+            failed: None,
+        };
         let sent = sending.send_to(cx, &mut outlet);
         let failed = outlet.failed;
         match sent {
@@ -2522,13 +2638,15 @@ impl Request {
     }
 }
 
-/// `SSH_S_STARTUP`: the session set up over the connection's socket.
-fn startup<H: Host>(
-    cx: &mut StepCx<'_, H>,
-    sc: &mut Ssh2Conn,
-    socket: Option<curl_os::socket::BorrowedSocket<'_>>,
-) -> Ran {
-    match sc.session().handshake(socket) {
+/// `SSH_S_STARTUP`: the session set up over the connection's socket,
+/// which a session over pipes is handed all the same, as C's is.
+fn startup<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, carrier: &Carrier<'_>) -> Ran {
+    let session = sc.session();
+    let socket = match session.pipes() {
+        Some(_) => carrier.stream_socket(),
+        None => carrier.bare_socket(),
+    };
+    match session.handshake(socket.and_then(|s| s.descriptor())) {
         Err(rc) if rc.again() => Err(Halt::Again),
         Err(rc) => {
             let text = sc.error_text();
@@ -3089,18 +3207,25 @@ fn readdir_link<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
 /// nonblocking (`scp_send`, `sftp_send`).
 struct Ssh2Outlet<'s> {
     sc: &'s mut Ssh2Conn,
+    carrier: Carrier<'s>,
     /// The failure a write came to, past the send failure it is told as.
     failed: Option<ErrorKind>,
 }
 
 impl<H: Host> Outlet<H> for Ssh2Outlet<'_> {
-    fn put(&mut self, _: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent> {
+    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent> {
         let sc = &mut *self.sc;
-        let s = sc.session.as_deref_mut().expect("a live session");
-        let wrote = if sc.sftp {
-            s.sftp_write(bytes)
-        } else {
-            s.channel_write(bytes)
+        let wrote = loop {
+            let s = sc.session.as_deref_mut().expect("a live session");
+            let wrote = if sc.sftp {
+                s.sftp_write(bytes)
+            } else {
+                s.channel_write(bytes)
+            };
+            let moved = sc.pump(cx, &mut self.carrier);
+            if wrote != Err(Code::EAGAIN) || !moved {
+                break wrote;
+            }
         };
         sc.block2waitfor(wrote == Err(Code::EAGAIN));
         match wrote {

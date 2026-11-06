@@ -7,10 +7,16 @@
 //! call waits, is the library's as in C. Every call is nonblocking: one
 //! that would wait fails with [`Code::EAGAIN`], to be made again once the
 //! socket is ready for what [`Session2::block_directions`] says.
+//!
+//! Through an HTTPS proxy, the session reads and writes the proxy's TLS,
+//! not the socket: C hands libssh2 send and receive callbacks that call
+//! the connection's layers (`ssh_tls_recv`, `ssh_tls_send`). Here the
+//! session's callbacks read and write its [`Pipes`], which the core
+//! moves to and from the connection's layers between calls.
 
 use std::fmt;
 
-use curl_alloc::OutOfMemory;
+use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_os::socket::BorrowedSocket;
 
 pub use crate::ssh::{Blocking, Failed, OpenMode, PollFlags};
@@ -23,6 +29,136 @@ pub trait Ssh2: fmt::Debug + Send + Sync {
     /// The cryptography library it was built with
     /// (`libssh2_crypto_engine`).
     fn crypto(&self) -> Crypto;
+}
+
+/// The bytes between a session that reads and writes through the
+/// connection's layers and those layers, from [`Session2::use_pipes`] on:
+/// what the session's receive callback takes and its send callback
+/// gives, moved to and from the connection by the core after each call
+/// that would wait.
+#[derive(Debug, Default)]
+pub struct Pipes {
+    /// Bytes read from the connection, the session's from `taken` on.
+    inbound: Vec<u8>,
+    taken: usize,
+    /// How much the session asked for when nothing waited for it.
+    wanted: usize,
+    /// Bytes the session sent, for the connection.
+    outbound: Vec<u8>,
+    /// The connection's end was read.
+    ended: bool,
+    /// A read or write on the connection failed.
+    broken: bool,
+}
+
+/// What the session's receive callback answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Took {
+    /// This many bytes.
+    Bytes(usize),
+    /// None yet: the call would wait.
+    Wait,
+    /// The connection's end.
+    End,
+    /// The connection failed.
+    Broken,
+}
+
+/// What the session's send callback answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gave {
+    /// All of them, to go out.
+    All,
+    /// None: what was given before has not gone out yet.
+    Wait,
+    /// The connection failed, or there was no room for them.
+    Broken,
+}
+
+impl Pipes {
+    /// For the session's receive callback: into `buf`, what came for it.
+    pub fn take(&mut self, buf: &mut [u8]) -> Took {
+        let waiting = &self.inbound[self.taken..];
+        if !waiting.is_empty() {
+            let n = waiting.len().min(buf.len());
+            buf[..n].copy_from_slice(&waiting[..n]);
+            self.taken += n;
+            if self.taken == self.inbound.len() {
+                self.inbound.clear();
+                self.taken = 0;
+            }
+            return Took::Bytes(n);
+        }
+        if self.broken {
+            Took::Broken
+        } else if self.ended {
+            Took::End
+        } else {
+            self.wanted = buf.len();
+            Took::Wait
+        }
+    }
+
+    /// For the session's send callback: `bytes` to go out.
+    pub fn give(&mut self, bytes: &[u8]) -> Gave {
+        if self.broken {
+            return Gave::Broken;
+        }
+        if !self.outbound.is_empty() {
+            return Gave::Wait;
+        }
+        match self.outbound.try_extend_from_slice(bytes) {
+            Ok(()) => Gave::All,
+            Err(_) => Gave::Broken,
+        }
+    }
+
+    /// What the session sent that has not gone out.
+    pub fn outbound(&self) -> &[u8] {
+        &self.outbound
+    }
+
+    /// The first `n` of them went out.
+    pub fn sent(&mut self, n: usize) {
+        self.outbound.drain(..n);
+    }
+
+    /// How much the session waits to read, if it waits for anything and
+    /// nothing came for it yet.
+    pub fn wanted(&self) -> Option<usize> {
+        (self.wanted > 0 && self.taken == self.inbound.len() && !self.ended && !self.broken)
+            .then_some(self.wanted)
+    }
+
+    /// Room for the `n` bytes it waits for, to read into: none if there
+    /// is no memory for it.
+    pub fn room(&mut self, n: usize) -> Option<&mut [u8]> {
+        self.inbound.clear();
+        self.taken = 0;
+        self.inbound.try_reserve_exact(n).ok()?;
+        self.inbound.try_resize(n, 0).ok()?;
+        Some(&mut self.inbound)
+    }
+
+    /// `n` bytes of the room came: what the session waited for.
+    pub fn came(&mut self, n: usize) {
+        self.inbound.truncate(n);
+        if n > 0 {
+            self.wanted = 0;
+        }
+    }
+
+    /// The connection's end was read.
+    pub fn end(&mut self) {
+        self.inbound.clear();
+        self.ended = true;
+    }
+
+    /// A read or write on the connection failed.
+    pub fn break_off(&mut self) {
+        self.inbound.clear();
+        self.broken = true;
+    }
 }
 
 /// The cryptography library libssh2 was built with
@@ -302,6 +438,12 @@ pub trait Session2: fmt::Debug + Send {
     /// None for a socket of no descriptor the library could read, which
     /// it refuses (`LIBSSH2_ERROR_SOCKET_NONE`).
     fn handshake(&mut self, socket: Option<BorrowedSocket<'_>>) -> Result<(), Code>;
+    /// Read and write through [`Pipes`] from now on, not the socket
+    /// (`libssh2_session_callback_set2` of `LIBSSH2_CALLBACK_RECV` and
+    /// `LIBSSH2_CALLBACK_SEND`), before the handshake.
+    fn use_pipes(&mut self);
+    /// The pipes it reads and writes through, once it does.
+    fn pipes(&mut self) -> Option<&mut Pipes>;
     /// The server's host key, raw, and its type
     /// (`libssh2_session_hostkey`).
     fn host_key(&self) -> Option<(&[u8], HostKeyType)>;

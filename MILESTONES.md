@@ -1443,10 +1443,9 @@ it there, Windows.
      `score.py --libssh2` against the reference build: every SCP and SFTP test, 3500, 3990
      and 3991 with them, passes as on C, and what each traces of SSH matches C's (1725's
      `Applied default protocol` and 2004's progress meter after its TFTP transfer differ on the
-     libssh leg too: the URL's and the tool's, not SSH's). Left: SSH through an
-     HTTPS proxy, which C reads and writes through libssh2's send and receive callbacks over
-     the proxy's TLS (`ssh_tls_recv`), is refused (`CURLE_FAILED_INIT`); and the state
-     machine's mutants that no test catches.
+     libssh leg too: the URL's and the tool's, not SSH's). SSH through an HTTPS proxy reads
+     and writes the proxy's TLS, as C's does through libssh2's callbacks: 3992 on both legs.
+     Left: the state machine's mutants that no test catches.
 106. **GSS-API**: Heimdal and GNU GSS beside MIT krb5, as C's build can choose. **To do.**
 
 macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the

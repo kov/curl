@@ -15,8 +15,9 @@ use std::sync::OnceLock;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ssh2::{
-    AttrFlags, Attrs, Blocking, Check, Code, Crypto, DirEntry, Failed, Fx, HostKeyType, Identity,
-    KeyForm, KnownEntry, KnownKeyType, Let, OpenMode, PollFlags, Session2, Ssh2, Statvfs,
+    AttrFlags, Attrs, Blocking, Check, Code, Crypto, DirEntry, Failed, Fx, Gave, HostKeyType,
+    Identity, KeyForm, KnownEntry, KnownKeyType, Let, OpenMode, Pipes, PollFlags, Session2, Ssh2,
+    Statvfs, Took,
 };
 use curl_os::socket::BorrowedSocket;
 
@@ -60,18 +61,18 @@ impl Ssh2 for Libssh2 {
         if !init() {
             return None;
         }
-        let kbd = curl_alloc::try_box(Kbd {
-            password: Vec::new(),
-        })
-        .ok()?;
+        let shared = Box::into_raw(curl_alloc::try_box(Shared::default()).ok()?);
         // The library's own allocators: C's go to the C library's
         // untracked ones, as these do.
-        // SAFETY: NULL functions ask for the library's defaults, and the
-        // abstract pointer is set before each call that reads it.
+        // SAFETY: NULL functions ask for the library's defaults; the
+        // abstract pointer is the session's `Shared`, which outlives it.
         let session = unsafe {
-            sys::libssh2_session_init_ex(ptr::null(), ptr::null(), ptr::null(), ptr::null_mut())
+            sys::libssh2_session_init_ex(ptr::null(), ptr::null(), ptr::null(), shared.cast())
         };
         if session.is_null() {
+            // SAFETY: made by `Box::into_raw` above, and named by nothing
+            // else.
+            drop(unsafe { Box::from_raw(shared) });
             return None;
         }
         let made = Libsession {
@@ -84,7 +85,7 @@ impl Ssh2 for Libssh2 {
             sftp: ptr::null_mut(),
             handle: ptr::null_mut(),
             channel: ptr::null_mut(),
-            kbd,
+            shared,
             scratch: Vec::new(),
             name: [0; PATH_MAX + 1],
             long: [0; PATH_MAX + 1],
@@ -111,11 +112,14 @@ impl Ssh2 for Libssh2 {
 /// line (`CURL_PATH_MAX`).
 const PATH_MAX: usize = 1024;
 
-/// What the keyboard-interactive callback answers with, at a place of its
-/// own the session's abstract pointer names during the call.
-#[derive(Debug)]
-struct Kbd {
+/// What the session's callbacks reach through its abstract pointer, which
+/// names this from the session's making to its freeing: the password the
+/// keyboard-interactive callback answers with, and the pipes the send and
+/// receive callbacks use once they are set.
+#[derive(Debug, Default)]
+struct Shared {
     password: Vec<u8>,
+    pipes: Option<Pipes>,
 }
 
 /// A session and what it has open, each NULL until made: C's `ssh_conn`'s
@@ -135,7 +139,9 @@ struct Libsession {
     sftp: *mut sys::LIBSSH2_SFTP,
     handle: *mut sys::LIBSSH2_SFTP_HANDLE,
     channel: *mut sys::LIBSSH2_CHANNEL,
-    kbd: Box<Kbd>,
+    /// Made by `Box::into_raw`, freed after the session: never a
+    /// reference while a libssh2 call runs, as its callbacks reach it.
+    shared: *mut Shared,
     /// The C strings of a call that may be made again and again while it
     /// would wait, its room kept from one to the next.
     scratch: Vec<u8>,
@@ -270,13 +276,9 @@ unsafe extern "C" fn kbd_callback(
     if num_prompts != 1 {
         return;
     }
-    // SAFETY: libssh2 passes a pointer to the session's abstract
-    // pointer.
-    let named = unsafe { *abstract_ };
-    // SAFETY: the abstract pointer names the session's `Kbd` for the call
-    // that runs this, read only.
-    let kbd = unsafe { &*named.cast::<Kbd>() };
-    let password = &kbd.password;
+    // SAFETY: as `shared` says.
+    let shared = unsafe { shared(abstract_) };
+    let password = &shared.password;
     // SAFETY: room for the password and its NUL, or NULL.
     let text = unsafe { libc::malloc(password.len() + 1) }.cast::<u8>();
     let length = if text.is_null() {
@@ -297,7 +299,83 @@ unsafe extern "C" fn kbd_callback(
     response.length = length;
 }
 
+/// The session's `Shared`, from inside one of its callbacks.
+///
+/// # Safety
+///
+/// `abstract_` is what libssh2 passes a callback of the session's: a
+/// pointer to its abstract pointer, which names the session's `Shared`,
+/// reached by nothing else while the libssh2 call that runs the callback
+/// does.
+unsafe fn shared<'a>(abstract_: *mut *mut c_void) -> &'a mut Shared {
+    // SAFETY: as the caller says.
+    let named = unsafe { *abstract_ };
+    // SAFETY: as the caller says.
+    unsafe { &mut *named.cast::<Shared>() }
+}
+
+/// The receive callback over the session's pipes (`ssh_tls_recv`): what
+/// came for it, or `-EAGAIN` while nothing has.
+unsafe extern "C" fn pipe_recv(
+    _socket: sys::libssh2_socket_t,
+    buffer: *mut c_void,
+    length: usize,
+    _flags: c_int,
+    abstract_: *mut *mut c_void,
+) -> isize {
+    // SAFETY: as `shared` says.
+    let shared = unsafe { shared(abstract_) };
+    let Some(pipes) = shared.pipes.as_mut() else {
+        return -1;
+    };
+    if length == 0 {
+        return 0;
+    }
+    // SAFETY: libssh2 passes room for `length` bytes.
+    let buf = unsafe { core::slice::from_raw_parts_mut(buffer.cast::<u8>(), length) };
+    match pipes.take(buf) {
+        Took::Bytes(n) => isize::try_from(n).expect("at most the buffer's length"),
+        Took::Wait => -(libc::EAGAIN as isize),
+        Took::End => 0,
+        Took::Broken => -1,
+    }
+}
+
+/// The send callback over the session's pipes (`ssh_tls_send`): all of
+/// `buffer` taken, or `-EAGAIN` while what it took before has not gone.
+unsafe extern "C" fn pipe_send(
+    _socket: sys::libssh2_socket_t,
+    buffer: *const c_void,
+    length: usize,
+    _flags: c_int,
+    abstract_: *mut *mut c_void,
+) -> isize {
+    // SAFETY: as `shared` says.
+    let shared = unsafe { shared(abstract_) };
+    let Some(pipes) = shared.pipes.as_mut() else {
+        return -1;
+    };
+    if length == 0 {
+        return 0;
+    }
+    // SAFETY: libssh2 passes `length` bytes.
+    let bytes = unsafe { core::slice::from_raw_parts(buffer.cast::<u8>(), length) };
+    match pipes.give(bytes) {
+        Gave::All => isize::try_from(length).expect("a buffer's length"),
+        Gave::Wait => -(libc::EAGAIN as isize),
+        Gave::Broken => -1,
+    }
+}
+
 impl Libsession {
+    /// The session's `Shared`, while no libssh2 call runs: `&mut self`
+    /// makes none.
+    fn shared(&mut self) -> &mut Shared {
+        // SAFETY: made by `Box::into_raw` and freed only on drop; no
+        // callback reaches it while no call of the session's runs.
+        unsafe { &mut *self.shared }
+    }
+
     fn sftp(&self) -> *mut sys::LIBSSH2_SFTP {
         assert!(!self.sftp.is_null(), "an SFTP call within its session");
         self.sftp
@@ -603,6 +681,31 @@ impl Session2 for Libsession {
         rc(unsafe { sys::libssh2_session_handshake(self.session, raw) })
     }
 
+    fn use_pipes(&mut self) {
+        self.shared().pipes = Some(Pipes::default());
+        let recv: sys::recv_func = pipe_recv;
+        let send: sys::send_func = pipe_send;
+        // SAFETY: the callback of the type `LIBSSH2_CALLBACK_RECV` says,
+        // cast to the generic type libssh2 takes and casts back before
+        // calling.
+        let recv = unsafe { core::mem::transmute::<sys::recv_func, sys::libssh2_cb_generic>(recv) };
+        // SAFETY: as above, of `LIBSSH2_CALLBACK_SEND`'s type.
+        let send = unsafe { core::mem::transmute::<sys::send_func, sys::libssh2_cb_generic>(send) };
+        // SAFETY: the session libssh2 made, and a callback that reads the
+        // pipes of the `Shared` its abstract pointer names.
+        let _before = unsafe {
+            sys::libssh2_session_callback_set2(self.session, sys::LIBSSH2_CALLBACK_RECV, Some(recv))
+        };
+        // SAFETY: as above.
+        let _before = unsafe {
+            sys::libssh2_session_callback_set2(self.session, sys::LIBSSH2_CALLBACK_SEND, Some(send))
+        };
+    }
+
+    fn pipes(&mut self) -> Option<&mut Pipes> {
+        self.shared().pipes.as_mut()
+    }
+
     fn host_key(&self) -> Option<(&[u8], HostKeyType)> {
         let mut len = 0;
         let mut kind = 0;
@@ -709,20 +812,13 @@ impl Session2 for Libsession {
     }
 
     fn auth_keyboard_interactive(&mut self, user: &[u8], password: &[u8]) -> Result<(), Code> {
-        self.kbd.password.clear();
-        self.kbd
-            .password
-            .try_extend_from_slice(password.split(|&b| b == 0).next().unwrap_or_default())
+        let kept = &mut self.shared().password;
+        kept.clear();
+        kept.try_extend_from_slice(password.split(|&b| b == 0).next().unwrap_or_default())
             .map_err(|_| Code::ALLOC)?;
-        let kbd: *mut Kbd = &raw mut *self.kbd;
-        // SAFETY: the session libssh2 made; its abstract pointer is set to
-        // the session's own `Kbd`, which lives as long as the session, for
-        // the callback this call runs.
-        let abstract_ = unsafe { sys::libssh2_session_abstract(self.session) };
-        // SAFETY: the session's own abstract pointer, set for the call.
-        unsafe { abstract_.write(kbd.cast()) };
         // SAFETY: the session, the user's bytes for the call, and the
-        // callback, which reads the `Kbd` the abstract pointer names.
+        // callback, which reads the password of the `Shared` the abstract
+        // pointer names.
         let n = unsafe {
             sys::libssh2_userauth_keyboard_interactive_ex(
                 self.session,
@@ -1174,6 +1270,9 @@ impl Drop for Libsession {
         if !self.session.is_null() {
             let _ignored = self.session_free(Let::Go);
         }
+        // SAFETY: made by `Box::into_raw`, and reached by no callback with
+        // the session freed.
+        drop(unsafe { Box::from_raw(self.shared) });
     }
 }
 

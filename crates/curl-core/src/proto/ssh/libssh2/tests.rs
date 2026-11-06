@@ -15,7 +15,7 @@ use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use crate::options::Options;
 use crate::ssh::SshLibrary;
-use crate::ssh2::{DirEntry, Failed, KnownEntry, Ssh2, Statvfs};
+use crate::ssh2::{DirEntry, Failed, Gave, KnownEntry, Pipes, Ssh2, Statvfs, Took};
 use crate::time::ManualClock;
 use curl_alloc::OutOfMemory;
 use curl_os::socket::BorrowedSocket;
@@ -23,6 +23,10 @@ use curl_os::socket::BorrowedSocket;
 const PORT: u16 = 8022;
 const HOME: &[u8] = b"/home/u";
 const HOST_KEY: &[u8] = b"the server's key";
+const PROXY_PORT: u16 = 8080;
+/// What the session says first, and what the server does, over pipes.
+const HELLO: &[u8] = b"SSH-2.0-libssh2_fake\r\n";
+const BANNER: &[u8] = b"SSH-2.0-OpenSSH_9.9\r\n";
 
 /// What the fake server holds, and what it was asked.
 #[derive(Debug, Default)]
@@ -40,6 +44,8 @@ struct World {
     refuses_writes: bool,
     /// Each attribute set, by path.
     set: Vec<(Vec<u8>, Attrs)>,
+    /// What a session over pipes read of the server's banner.
+    heard: Vec<u8>,
 }
 
 impl World {
@@ -77,6 +83,8 @@ impl Ssh2 for FakeSsh2 {
             channel: false,
             session: true,
             home: HOME.to_vec(),
+            pipes: None,
+            said_hello: false,
         }))
     }
 
@@ -97,6 +105,10 @@ struct FakeSession {
     channel: bool,
     session: bool,
     home: Vec<u8>,
+    /// Once set, the handshake says hello and reads the banner through
+    /// them.
+    pipes: Option<Pipes>,
+    said_hello: bool,
 }
 
 impl FakeSession {
@@ -177,7 +189,32 @@ impl Session2 for FakeSession {
         self.kh = false;
     }
     fn handshake(&mut self, _: Option<BorrowedSocket<'_>>) -> Result<(), Code> {
+        if let Some(pipes) = self.pipes.as_mut() {
+            if !self.said_hello {
+                match pipes.give(HELLO) {
+                    Gave::All => self.said_hello = true,
+                    Gave::Wait => return Err(Code::EAGAIN),
+                    Gave::Broken => return Err(Code::SOCKET_SEND),
+                }
+            }
+            let mut w = self.world.lock().unwrap();
+            while !w.heard.ends_with(b"\r\n") {
+                let mut buf = [0; 8];
+                match pipes.take(&mut buf) {
+                    Took::Bytes(n) => w.heard.extend_from_slice(&buf[..n]),
+                    Took::Wait => return Err(Code::EAGAIN),
+                    Took::End | Took::Broken => return Err(Code(-43)),
+                }
+            }
+            drop(w);
+        }
         self.called("handshake", &[])
+    }
+    fn use_pipes(&mut self) {
+        self.pipes = Some(Pipes::default());
+    }
+    fn pipes(&mut self) -> Option<&mut Pipes> {
+        self.pipes.as_mut()
     }
     fn host_key(&self) -> Option<(&[u8], HostKeyType)> {
         Some((HOST_KEY, HostKeyType::Ed25519))
@@ -418,14 +455,21 @@ impl WriteHandler for Body {
     }
 }
 
-/// Collects the trace's text.
+/// Collects the trace's text, and the data it traces.
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>);
+struct Text(Arc<Mutex<Vec<u8>>>, Arc<Mutex<Traced>>);
+
+/// The data a trace says, piece by piece.
+type Traced = Vec<(DebugKind, Vec<u8>)>;
 
 impl DebugHandler for Text {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
-        if kind == DebugKind::Text {
-            self.0.lock().unwrap().extend_from_slice(data);
+        match kind {
+            DebugKind::Text => self.0.lock().unwrap().extend_from_slice(data),
+            DebugKind::DataIn | DebugKind::DataOut => {
+                self.1.lock().unwrap().push((kind, data.to_vec()));
+            }
+            _ => {}
         }
     }
 }
@@ -449,11 +493,28 @@ fn run_in(
     url: &str,
     set: impl FnOnce(&mut Options),
 ) -> (Result<(), ErrorKind>, Vec<u8>, String, Vec<String>) {
+    let silent = Conversation::replies(&[], false);
+    let (result, body, text) = run_over(w, url, PORT, &silent, None, set);
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    let calls = w.lock().unwrap().calls.clone();
+    (result, body, said, calls)
+}
+
+/// The same, the peer at `port` saying `talk`, with `tls` as the TLS
+/// library if any: the trace whole.
+fn run_over(
+    w: &Arc<Mutex<World>>,
+    url: &str,
+    port: u16,
+    talk: &Conversation,
+    tls: Option<crate::libraries::Library<dyn crate::tls::TlsBackend>>,
+    set: impl FnOnce(&mut Options),
+) -> (Result<(), ErrorKind>, Vec<u8>, Text) {
     let clock = ManualClock::new().unwrap();
-    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let at = SocketAddr::from(([127, 0, 0, 1], port));
     let net = FakeNet::new(clock.clone())
         .with_peer(at, Net::Accepts)
-        .with_conversation(at, Conversation::replies(&[], false));
+        .with_conversation(at, talk.clone());
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(net),
@@ -466,6 +527,7 @@ fn run_in(
     e.set_libraries(
         SharedLibraries::new(Libraries {
             ssh: Some(SshLibrary::Libssh2(ssh)),
+            tls,
             ..Libraries::NONE
         })
         .unwrap(),
@@ -487,10 +549,8 @@ fn run_in(
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     m.remove(id, &mut NoEvents).unwrap();
     drop(m);
-    let calls = w.lock().unwrap().calls.clone();
     let body = body.0.lock().unwrap().clone();
-    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
-    (result, body, said, calls)
+    (result, body, text)
 }
 
 /// An SFTP download makes libssh2's calls in C's order: the handshake,
@@ -775,4 +835,113 @@ fn an_scp_file_is_downloaded() {
             "session_free"
         ]
     );
+}
+
+/// Through an HTTPS proxy, the session reads and writes the proxy's TLS
+/// through its pipes, as C's does through its callbacks: it says so, its
+/// hello goes out inside the TLS records after the CONNECT, the server's
+/// banner comes back to it out of them, and each piece is traced as data.
+#[test]
+fn ssh_goes_through_an_https_proxy_s_tls() {
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let answer = tls(b"HTTP/1.1 200 Connection established\r\n\r\n");
+    let banner = tls(BANNER);
+    let talk = Conversation::replies(&[WELCOME, &answer, &banner], false).per_send();
+    let w = world_with(&[("/home/u/f", "tunneled")], |_| {});
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let library = crate::libraries::Library::Static(backend as &dyn crate::tls::TlsBackend);
+    let url = "sftp://u@127.0.0.1:PORT/~/f";
+    let (result, body, text) = run_over(&w, url, PROXY_PORT, &talk, Some(library), |o| {
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes());
+        proxy.tunnel = true;
+    });
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"tunneled");
+    assert!(said.contains("SSH: using HTTPS proxy\n"), "{said}");
+    assert_eq!(w.lock().unwrap().heard, BANNER);
+    let wire = talk.received();
+    let sent = fake::read_client(&wire).unwrap();
+    let sent = String::from_utf8_lossy(&sent).into_owned();
+    let connect = sent
+        .find("CONNECT 127.0.0.1:8022 HTTP/1.1\r\n")
+        .expect(&sent);
+    let hello = std::str::from_utf8(HELLO).unwrap();
+    let at = sent.find(hello).expect(&sent);
+    assert!(connect < at, "{sent}");
+    // Inside the records, never in clear.
+    assert!(!wire.windows(HELLO.len()).any(|w| w == HELLO));
+    let data = text.1.lock().unwrap().clone();
+    assert!(
+        data.contains(&(DebugKind::DataOut, HELLO.to_vec())),
+        "{data:?}"
+    );
+    // In as many pieces as the session asked for, then the body.
+    let came: Vec<u8> = data
+        .iter()
+        .filter(|(kind, _)| *kind == DebugKind::DataIn)
+        .flat_map(|(_, d)| d.clone())
+        .collect();
+    assert_eq!(came, [BANNER, b"tunneled"].concat(), "{data:?}");
+}
+
+/// The pipes give the session what came, as much as it asks for at a
+/// time, and ask for more only once it has all of it; what it sends is
+/// taken whole, and more only once that has gone; the connection's end
+/// and its failures are what the session is told after what came before
+/// them.
+#[test]
+fn the_pipes_move_what_the_session_asks_for() {
+    let mut p = Pipes::default();
+    let mut buf = [0; 4];
+    assert_eq!(p.wanted(), None);
+    assert_eq!(p.take(&mut buf), Took::Wait);
+    assert_eq!(p.wanted(), Some(4));
+    p.room(4).unwrap()[..3].copy_from_slice(b"abc");
+    p.came(3);
+    assert_eq!(p.wanted(), None);
+    let mut two = [0; 2];
+    assert_eq!(p.take(&mut two), Took::Bytes(2));
+    assert_eq!(&two, b"ab");
+    assert_eq!(p.wanted(), None, "a byte still waits for it");
+    assert_eq!(p.take(&mut buf), Took::Bytes(1));
+    assert_eq!(buf[0], b'c');
+    assert_eq!(p.take(&mut buf), Took::Wait);
+    assert_eq!(p.wanted(), Some(4));
+    p.room(4).unwrap();
+    p.came(0);
+    assert_eq!(p.wanted(), Some(4), "nothing came");
+
+    assert_eq!(p.give(b"hi"), Gave::All);
+    assert_eq!(p.give(b"more"), Gave::Wait);
+    assert_eq!(p.outbound(), b"hi");
+    p.sent(1);
+    assert_eq!(p.outbound(), b"i");
+    p.sent(1);
+    assert_eq!(p.give(b"more"), Gave::All);
+
+    p.end();
+    assert_eq!(p.take(&mut buf), Took::End);
+    assert_eq!(p.wanted(), None);
+    p.break_off();
+    assert_eq!(p.take(&mut buf), Took::Broken);
+    assert_eq!(p.give(b"x"), Gave::Broken);
+}
+
+/// The session reads and writes through pipes under an HTTPS proxy alone,
+/// as C's does; under a proxy asked to speak HTTP/2, whose TLS it is not
+/// handed the socket past, the transfer is refused (DIVERGENCE.md); with
+/// no layer over the socket, it reads the socket.
+#[test]
+fn only_an_https_proxy_s_tls_is_read_through_pipes() {
+    use crate::options::ProxyType;
+    assert_eq!(over_layers(Some(ProxyType::Https), false), Ok(true));
+    assert_eq!(over_layers(Some(ProxyType::Https2), false), Err(()));
+    assert_eq!(over_layers(Some(ProxyType::Https3), false), Err(()));
+    assert_eq!(over_layers(None, false), Err(()));
+    assert_eq!(over_layers(None, true), Ok(false));
+    assert_eq!(over_layers(Some(ProxyType::Socks5), true), Ok(false));
+    assert_eq!(over_layers(Some(ProxyType::Http), true), Ok(false));
 }

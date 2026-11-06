@@ -32,3 +32,19 @@ witness: curl-core proto::ssh::libssh2::tests::the_host_key_handler_decides_on_t
             if !fine {
 --- new
             if false {
+
+=== the session under an HTTPS proxy reads the socket, not its TLS
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::ssh_goes_through_an_https_proxy_s_tls
+--- old
+                session.use_pipes();
+--- new
+                let _not = &session;
+
+=== the pipes give the session a byte it took again
+file: crates/curl-core/src/ssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::the_pipes_move_what_the_session_asks_for
+--- old
+            self.taken += n;
+--- new
+            self.taken += n.saturating_sub(1);

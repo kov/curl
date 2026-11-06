@@ -33,6 +33,8 @@ fn the_declarations_are_the_headers() {
         SSH_DISCONNECT_BY_APPLICATION as i64,
         LIBSSH2_METHOD_HOSTKEY as i64,
         LIBSSH2_FLAG_COMPRESS as i64,
+        LIBSSH2_CALLBACK_SEND as i64,
+        LIBSSH2_CALLBACK_RECV as i64,
         LIBSSH2_SESSION_BLOCK_INBOUND as i64,
         LIBSSH2_SESSION_BLOCK_OUTBOUND as i64,
         LIBSSH2_HOSTKEY_HASH_MD5 as i64,

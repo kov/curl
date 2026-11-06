@@ -112,6 +112,27 @@ pub(crate) type libssh2_socket_t = c_int;
 #[cfg(windows)]
 pub(crate) type libssh2_socket_t = usize;
 
+/// `libssh2_cb_generic`, which a callback is cast to and from.
+pub(crate) type libssh2_cb_generic = unsafe extern "C" fn();
+
+/// `LIBSSH2_RECV_FUNC`.
+pub(crate) type recv_func = unsafe extern "C" fn(
+    socket: libssh2_socket_t,
+    buffer: *mut c_void,
+    length: usize,
+    flags: c_int,
+    abstract_: *mut *mut c_void,
+) -> isize;
+
+/// `LIBSSH2_SEND_FUNC`.
+pub(crate) type send_func = unsafe extern "C" fn(
+    socket: libssh2_socket_t,
+    buffer: *const c_void,
+    length: usize,
+    flags: c_int,
+    abstract_: *mut *mut c_void,
+) -> isize;
+
 /// `LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC`.
 pub(crate) type kbdint_response_func = unsafe extern "C" fn(
     name: *const c_char,
@@ -152,6 +173,9 @@ pub(crate) const libssh2_os400qc3: c_int = 5;
 pub(crate) const SSH_DISCONNECT_BY_APPLICATION: c_int = 11;
 pub(crate) const LIBSSH2_METHOD_HOSTKEY: c_int = 1;
 pub(crate) const LIBSSH2_FLAG_COMPRESS: c_int = 2;
+/// `libssh2_session_callback_set2`'s callbacks.
+pub(crate) const LIBSSH2_CALLBACK_SEND: c_int = 5;
+pub(crate) const LIBSSH2_CALLBACK_RECV: c_int = 6;
 pub(crate) const LIBSSH2_SESSION_BLOCK_INBOUND: c_int = 0x0001;
 pub(crate) const LIBSSH2_SESSION_BLOCK_OUTBOUND: c_int = 0x0002;
 pub(crate) const LIBSSH2_HOSTKEY_HASH_MD5: c_int = 1;
@@ -218,6 +242,11 @@ unsafe extern "C" {
         abstract_: *mut c_void,
     ) -> *mut LIBSSH2_SESSION;
     pub(crate) fn libssh2_session_abstract(session: *mut LIBSSH2_SESSION) -> *mut *mut c_void;
+    pub(crate) fn libssh2_session_callback_set2(
+        session: *mut LIBSSH2_SESSION,
+        cbtype: c_int,
+        callback: Option<libssh2_cb_generic>,
+    ) -> Option<libssh2_cb_generic>;
     pub(crate) fn libssh2_session_set_read_timeout(session: *mut LIBSSH2_SESSION, timeout: c_long);
     pub(crate) fn libssh2_session_flag(
         session: *mut LIBSSH2_SESSION,
@@ -463,4 +492,4 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
-pub(crate) const LAYOUT_LEN: usize = 102;
+pub(crate) const LAYOUT_LEN: usize = 104;

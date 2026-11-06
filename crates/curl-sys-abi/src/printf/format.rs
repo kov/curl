@@ -545,12 +545,6 @@ impl<S: Sink> Out<'_, S> {
         }
         self.run(&src[..left])
     }
-
-    /// The bytes before the first NUL.
-    fn zrun(&mut self, bytes: &[u8]) -> Result<(), Stop> {
-        let n = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        self.run(&bytes[..n])
-    }
 }
 
 struct Props {
@@ -683,7 +677,8 @@ fn out_string<S: Sink>(o: &mut Out<'_, S>, p: &Props, s: Option<&[u8]>) -> Resul
         o.pad(b' ', width)?;
         width = 0;
     }
-    o.zrun(&s[..len.min(s.len())])?;
+    // The string ends at its NUL or the precision (`Args::string`).
+    o.run(&s[..len.min(s.len())])?;
     if flags & LEFT != 0 {
         o.pad(b' ', width)?;
     }
@@ -819,7 +814,8 @@ fn render_into<const N: usize, A: Args, S: Sink>(
 ) -> Result<(), Stop> {
     for seg in &parsed.segments[..parsed.nsegments] {
         if seg.outlen > 0 {
-            o.zrun(&fmt[seg.start..seg.start + seg.outlen])?;
+            // Parsing stops at the format's NUL: none is in its text.
+            o.run(&fmt[seg.start..seg.start + seg.outlen])?;
             if seg.flags & SUBSTR != 0 {
                 continue;
             }

@@ -1102,6 +1102,38 @@ pub(crate) mod testing {
         }
     }
 
+    /// Passes the bytes, counts the times it is asked what to wait for,
+    /// and asks to read then, as unit2606's filter does.
+    #[derive(Debug)]
+    pub(crate) struct Asked(pub(crate) std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Part<Below<'_>> for Asked {
+        fn adjust_pollset(&self, wanted: Events) -> Events {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            wanted | Events::IN
+        }
+    }
+
+    impl Layer for Asked {
+        fn recv(
+            &mut self,
+            cx: &mut dyn LayerCx,
+            below: Below<'_>,
+            buf: &mut [u8],
+        ) -> io::Result<Recv> {
+            below.recv(cx, buf)
+        }
+
+        fn send(
+            &mut self,
+            cx: &mut dyn LayerCx,
+            below: Below<'_>,
+            bytes: &[u8],
+        ) -> io::Result<Sent> {
+            below.send(cx, bytes)
+        }
+    }
+
     /// Makes the letters it passes upper case, both ways.
     #[derive(Debug)]
     pub(crate) struct Upper;

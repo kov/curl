@@ -564,3 +564,10 @@ witness: curl-core proto::ftp::reply::tests::unit1668_mdtm_times
     (t.month <= 12 && t.day <= 31 && t.hour <= 23 && t.minute <= 59 && t.second <= 60).then_some(t)
 --- new
     (t.month <= 12 && t.day <= 31 && t.hour <= 23 && t.minute <= 59 && t.second <= 70).then_some(t)
+
+=== a quiet data connection is polled for what its layers add while the transfer wants nothing
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::data::tests::unit2606_second_chain
+--- old
+                    None if transfer.is_empty() => Events::NONE,
+--- new

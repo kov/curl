@@ -2010,3 +2010,81 @@ fn a_lent_connection_to_the_origin_says_the_server_multiplexes() {
     let found = search_beside_a_lent_one(4);
     assert!(matches!(found, Found::Nothing), "{found:?}");
 }
+
+/// unit2606's first chain, the connection's own: up and not shutting
+/// down, its layers are asked what to wait for only if the transfer
+/// wants anything of it; shutting down, as the connection's shutdown
+/// polls it, they are asked with nothing wanted. A connection still being
+/// set up (`c0_connected` false) has no counterpart here: its sockets are
+/// its attempts' and handshake's, always polled (`attempt_pollset`). The
+/// second chain's cases are `unit2606_second_chain`'s.
+#[test]
+fn unit2606_first_chain() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let cases =
+        crate::c_source::table("tests/unit/unit2606.c", "TEST_CASES[] =", |c| panic!("{c}"));
+    assert_eq!(cases.len(), 9);
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+    up(&mut lease, &mut net, now);
+    let calls = Arc::new(AtomicUsize::new(0));
+    {
+        let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() else {
+            panic!("not up");
+        };
+        let Transport::Stream(stream) = &mut conn.transport else {
+            panic!("not a stream");
+        };
+        let asked = crate::conn::layer::testing::Asked(calls.clone());
+        stream
+            .layers_mut()
+            .push(curl_alloc::try_box(asked).unwrap())
+            .unwrap();
+    }
+    let mut ported = 0;
+    for case in &cases {
+        let v = case.group();
+        let flag = |i: usize| match v[i].word() {
+            "TRUE" => true,
+            "FALSE" => false,
+            other => panic!("{other}"),
+        };
+        let id = v[0].int();
+        let (c0_connected, c0_shutdown, xfer_io) = (flag(2), flag(4), flag(6));
+        let want = usize::try_from(v[8].int()).unwrap();
+        if !c0_connected {
+            assert_eq!(want, 1, "case {id}");
+            continue;
+        }
+        let before = calls.load(Ordering::Relaxed);
+        let Some(slot @ ConnSlot::Open(conn)) = lease.conn.as_deref() else {
+            panic!("not up");
+        };
+        let events = if c0_shutdown {
+            let Transport::Stream(stream) = &conn.transport else {
+                panic!("not a stream");
+            };
+            stream.shutdown_pollset(0)
+        } else {
+            slot.adjust_pollset(if xfer_io { Events::IN } else { Events::NONE }, None)
+        };
+        assert_eq!(calls.load(Ordering::Relaxed) - before, want, "case {id}");
+        if want == 0 {
+            assert!(events.is_empty(), "case {id}: {events:?}");
+        }
+        ported += 1;
+    }
+    assert_eq!(ported, 7);
+    pool.release(
+        &Home::Multi,
+        lease,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        now,
+    );
+    pool.close_idle(&mut net, now);
+}

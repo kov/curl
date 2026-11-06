@@ -1428,15 +1428,16 @@ impl ProtoState {
 
     /// The sockets of the second connection the request has open beside
     /// its own, FTP's data, and what each waits for, the request wanting
-    /// `wanted` of it.
+    /// `wanted` of it and `transfer` of all its connections.
     pub(crate) fn side_pollset(
         &self,
         wanted: Events,
+        transfer: Events,
     ) -> Option<impl Iterator<Item = (&dyn crate::conn::io::Socket, Events)>> {
         // None for the others, not an empty iterator: FTP's is large, and
         // a pollset is made at every step.
         match self {
-            ProtoState::Ftp(r) => Some(r.data_pollset(wanted)),
+            ProtoState::Ftp(r) => Some(r.data_pollset(wanted, transfer)),
             _ => None,
         }
     }

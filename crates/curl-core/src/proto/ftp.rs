@@ -553,15 +553,17 @@ impl Request {
     }
 
     /// The data connection's sockets, and what each waits for, the
-    /// transfer wanting `wanted` of it.
+    /// transfer wanting `wanted` of it and `transfer` of all its
+    /// connections.
     pub(crate) fn data_pollset(
         &self,
         wanted: Events,
+        transfer: Events,
     ) -> impl Iterator<Item = (&dyn Socket, Events)> {
         self.data
             .as_deref()
             .into_iter()
-            .flat_map(move |d| d.pollset(wanted))
+            .flat_map(move |d| d.pollset(wanted, transfer))
     }
 
     /// `f` run with the data connection, if there is one, and the request

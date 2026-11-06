@@ -1143,13 +1143,14 @@ impl TransferState {
                     _ => Waiting::More,
                 };
                 if let Some(slot) = pool.slot_of(&x.lease) {
-                    let events = slot.adjust_pollset(x.proto.waits(phase, slot.line()), None);
+                    let waits = x.proto.waits(phase, slot.line());
+                    let events = slot.adjust_pollset(waits, None);
                     for s in slot.sockets() {
                         set.add(s, events)?;
                     }
                     // A second connection, set up beside it, waits for
                     // what its setup does (`ftp_domore_pollset`).
-                    if let Some(side) = x.proto.side_pollset(Events::NONE) {
+                    if let Some(side) = x.proto.side_pollset(Events::NONE, waits) {
                         for (s, events) in side {
                             set.add(s, events)?;
                         }
@@ -1169,16 +1170,18 @@ impl TransferState {
                 // A connection another transfer's step has out waits for
                 // nothing of this one's until it is back.
                 if let Some(slot) = pool.slot_of(&x.lease) {
-                    let events = slot.adjust_pollset(
-                        x.proto.interest(pause, slot.line()),
-                        x.proto.stream_sending(),
-                    );
+                    let interest = x.proto.interest(pause, slot.line());
+                    let side_interest = x.proto.side_interest(pause);
+                    let events = slot.adjust_pollset(interest, x.proto.stream_sending());
                     for s in slot.sockets() {
                         set.add(s, events)?;
                     }
                     // The data a second connection moves (`Curl_xfer_setup_recv`
                     // of `SECONDARYSOCKET`).
-                    if let Some(side) = x.proto.side_pollset(x.proto.side_interest(pause)) {
+                    if let Some(side) = x
+                        .proto
+                        .side_pollset(side_interest, interest | side_interest)
+                    {
                         for (s, events) in side {
                             set.add(s, events)?;
                         }

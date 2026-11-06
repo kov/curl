@@ -467,8 +467,16 @@ impl DataConn {
 
     /// Its sockets, and what each waits for: a setup's attempts to
     /// connect, or the stream for `wanted` as its layers adjust it, and
-    /// for what a handshake under way waits for.
-    pub(crate) fn pollset(&self, wanted: Events) -> impl Iterator<Item = (&dyn Socket, Events)> {
+    /// for what a handshake under way waits for. Once it is up, its
+    /// layers are asked only if the transfer wants anything, `transfer`
+    /// being all it wants on its connections: a layer's say for a
+    /// transfer wanting nothing would be ready forever
+    /// (`Curl_conn_adjust_pollset`).
+    pub(crate) fn pollset(
+        &self,
+        wanted: Events,
+        transfer: Events,
+    ) -> impl Iterator<Item = (&dyn Socket, Events)> {
         let (racing, up) = match self.phase.as_ref() {
             Some(Phase::Connecting(m, side)) => (Some(side.pollset(m)), None),
             Some(Phase::Listening { sock, .. }) => (None, Some((sock.socket(), Events::IN))),
@@ -477,6 +485,7 @@ impl DataConn {
                     Some(shut) => stream.shutdown_pollset(shut),
                     // A handshake waits for what its layer says.
                     None if !*shaken => stream.adjust_pollset(Events::IN),
+                    None if transfer.is_empty() => Events::NONE,
                     None => stream.adjust_pollset(wanted),
                 };
                 (None, Some((stream.socket(), events)))
@@ -593,4 +602,81 @@ fn established<H: Host>(
         remote.port()
     ));
     trace::info_with(cx, &[line.bytes()]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conn::io::{Conversation, FakeNet, Peer};
+    use crate::conn::layer::testing::Asked;
+    use crate::time::ManualClock;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// unit2606's second chain, the data connection (`SECONDARYSOCKET`):
+    /// up and not shutting down, its layers are asked what to wait for
+    /// only if the transfer wants anything of its connections, whatever
+    /// the first chain is doing or adds; shutting down, they are asked
+    /// whatever the transfer wants. A data connection still being set up
+    /// (`c1_connected` false) has no counterpart here: its sockets are its
+    /// setup's attempts and handshake, always polled
+    /// (`SideSetup::pollset`). The first chain's cases are
+    /// `unit2606_first_chain`'s.
+    #[test]
+    fn unit2606_second_chain() {
+        let cases =
+            crate::c_source::table("tests/unit/unit2606.c", "TEST_CASES[] =", |c| panic!("{c}"));
+        assert_eq!(cases.len(), 9);
+        let clock = ManualClock::new().unwrap();
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+        let mut net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, Conversation::replies(&[], false));
+        let mut ported = 0;
+        for case in &cases {
+            let v = case.group();
+            let flag = |i: usize| match v[i].word() {
+                "TRUE" => true,
+                "FALSE" => false,
+                other => panic!("{other}"),
+            };
+            let id = v[0].int();
+            let (has_c1, c1_connected, c1_shutdown, xfer_io) = (flag(1), flag(3), flag(5), flag(6));
+            let want = usize::try_from(v[9].int()).unwrap();
+            if !has_c1 || !c1_connected {
+                assert_eq!(want, usize::from(has_c1), "case {id}");
+                continue;
+            }
+            let calls = Arc::new(AtomicUsize::new(0));
+            let socket = Sock::new(crate::conn::io::dial(&mut net, at), Closer::System);
+            let mut stream = Stream::new(socket);
+            stream
+                .layers_mut()
+                .push(curl_alloc::try_box(Asked(calls.clone())).unwrap())
+                .unwrap();
+            let data = DataConn {
+                phase: Some(Phase::Up {
+                    stream: Box::new(stream),
+                    shaken: true,
+                    peer: None,
+                    chain: Chain::accepted(),
+                }),
+                tls: None,
+                socket: Component::Tcp,
+                shut: c1_shutdown.then_some(0),
+            };
+            // The transfer's own wants, before any chain adds to them.
+            let transfer = if xfer_io { Events::IN } else { Events::NONE };
+            let added: Vec<Events> = data.pollset(transfer, transfer).map(|(_, e)| e).collect();
+            assert_eq!(calls.load(Ordering::Relaxed), want, "case {id}");
+            if want == 0 {
+                assert!(added.iter().all(|e| e.is_empty()), "case {id}: {added:?}");
+            }
+            if let Some(Phase::Up { stream, .. }) = data.phase {
+                net.close(stream.into_socket());
+            }
+            ported += 1;
+        }
+        assert_eq!(ported, 6);
+    }
 }

@@ -479,3 +479,11 @@ witness: curl-core url::path::tests::removes_dot_segments_as_byte_by_byte
     while let Some(at) = super::find_any(p, *b".%") {
 --- new
     while let Some(at) = super::find_any(p, *b".") {
+
+=== a plain run ends at the very next %
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::decodes_as_c_byte_by_byte
+--- old
+            let run = super::find_byte(&s[i + 1..], b'%').map_or(s.len(), |n| i + 1 + n);
+--- new
+            let run = super::find_byte(s.get(i + 2..).unwrap_or_default(), b'%').map_or(s.len(), |n| i + 2 + n);

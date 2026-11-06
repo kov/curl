@@ -263,10 +263,7 @@ pub(super) fn decode_into(s: &[u8], reject: impl Fn(u8) -> bool, out: &mut [u8])
             o += 1;
             i += 1;
         } else {
-            let run = s[i + 1..]
-                .iter()
-                .position(|&b| b == b'%')
-                .map_or(s.len(), |n| i + 1 + n);
+            let run = super::find_byte(&s[i + 1..], b'%').map_or(s.len(), |n| i + 1 + n);
             let plain = &s[i..run];
             if plain.iter().any(|&b| reject(b)) {
                 return None;

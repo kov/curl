@@ -72,9 +72,9 @@ pub(crate) struct Shutting {
     /// goes down the stack, a layer's starting once the one above is done
     /// (`Curl_cshutdn_try_once_idx`).
     shut: usize,
-    /// When the shutdown started, in whole milliseconds after the
-    /// connection was created (C's `shutdown.start_ms`).
-    started_ms: u64,
+    /// When the shutdown started, in milliseconds after the connection
+    /// was created as C counts them (C's `shutdown.start_ms`).
+    started_ms: i64,
     /// It was tried once at least: its start was said.
     tried: bool,
     /// Its protocol said goodbye, or was told the connection is dead
@@ -110,7 +110,7 @@ pub(crate) enum Tried {
 impl Shutting {
     /// The shutdown of `conn` starts at `now` (`Curl_cshutdn_start_timer`).
     pub(crate) fn start(conn: Conn, now: Instant) -> Shutting {
-        let started_ms = whole_ms(now.since(conn.created));
+        let started_ms = now.ms_since(conn.created);
         Shutting {
             conn,
             shut: 0,
@@ -201,8 +201,10 @@ impl Shutting {
     /// (`Curl_cshutdn_timeleft_ms`, whose 0 means no limit).
     fn left_ms(&self, now: Instant) -> i64 {
         let limit = i64::from(self.conn.settings.shutdown_ms);
-        let spent = whole_ms(now.since(self.conn.created)).saturating_sub(self.started_ms);
-        match limit.saturating_sub(i64::try_from(spent).unwrap_or(i64::MAX)) {
+        let spent = now
+            .ms_since(self.conn.created)
+            .saturating_sub(self.started_ms);
+        match limit.saturating_sub(spent) {
             0 => -1,
             left => left,
         }
@@ -920,10 +922,6 @@ pub(crate) fn discard(
     if let Some(l) = linger {
         l.set.conn_changed();
     }
-}
-
-fn whole_ms(d: Duration) -> u64 {
-    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

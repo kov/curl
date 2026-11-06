@@ -673,9 +673,9 @@ impl Request {
         if self.state != State::First || self.ping_sent || interval.is_zero() {
             return Ok(());
         }
-        // C counts in whole milliseconds.
-        let idle = cx.now().since(self.last_time).as_millis();
-        if idle > interval.as_millis() {
+        // In milliseconds, as C counts them.
+        let idle = cx.now().ms_since(self.last_time);
+        if idle > crate::time::millis(interval) {
             let sent = self.send(cx, lease, &[0xc0, 0x00]);
             if sent.is_ok() {
                 self.ping_sent = true;

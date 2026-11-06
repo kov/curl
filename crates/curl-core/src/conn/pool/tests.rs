@@ -1051,6 +1051,66 @@ fn a_search_closes_what_it_must_not_reuse() {
     assert_eq!(net.open_sockets(), 0);
 }
 
+/// Idle 400.6 ms from 0.9995 s on the clock is 401 ms as C counts it
+/// across the second's turn (`curlx_ptimediff_ms`, unit1323), past a
+/// limit of 400.
+#[test]
+fn unit1323_idle_across_a_second_counts_as_c_does() {
+    let (mut net, clock) = net();
+    let mut pool = Pool::new().unwrap();
+    clock.advance(Duration::from_micros(999_500));
+    let start = clock.now();
+    let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, start);
+    up(&mut lease, &mut net, start);
+    pool.release(
+        &Home::Multi,
+        lease,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        start,
+    );
+    clock.advance(Duration::from_micros(400_600));
+    let mut notes = Vec::new();
+    let rules = ReuseRules {
+        max_idle: Some(Duration::from_millis(400)),
+        max_age: None,
+        fresh: false,
+    };
+    let got = pool
+        .acquire(
+            &Home::Multi,
+            tcp(1),
+            rules,
+            AddLimits::default(),
+            &mut net,
+            clock.now(),
+            &mut notes,
+        )
+        .unwrap();
+    let Acquired::New(lease) = got else {
+        panic!("reused");
+    };
+    pool.release(
+        &Home::Multi,
+        lease,
+        Finish {
+            premature: true,
+            ..Finish::default()
+        },
+        UNLIMITED,
+        &mut net,
+        clock.now(),
+    );
+    assert_eq!(
+        notes[0],
+        PoolNote::IdleTooLong {
+            idle_ms: 401,
+            max_ms: 400
+        }
+    );
+}
+
 /// The limits are counted in whole milliseconds, and a connection at its
 /// limit is within it, for the search and for the prune alike.
 #[test]

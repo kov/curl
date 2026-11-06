@@ -500,7 +500,7 @@ witness: curl-core proto::http::tests::a_body_waits_for_a_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-                        self.outgoing = Sending::AwaitingContinue(until);
+                        self.outgoing = Sending::AwaitingContinue { since, wait };
 --- new
                         self.outgoing = Sending::Body(Reading { eos_read: false, announced: true });
 
@@ -508,9 +508,9 @@ witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::an_interim_response_does_not_end_the_wait_for_a_100
 --- old
-                    Sending::AwaitingContinue(until) if cx.now() < until => {
+                        if cx.now().ms_since(since) < crate::time::millis(wait) =>
 --- new
-                    Sending::AwaitingContinue(until) if false && cx.now() < until => {
+                        if false && cx.now().ms_since(since) < crate::time::millis(wait) =>
 
 === a 100 does not release the body
 file: crates/curl-core/src/proto/http.rs

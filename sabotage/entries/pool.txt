@@ -82,9 +82,9 @@ witness: curl-core conn::pool::tests::a_search_closes_what_it_must_not_reuse
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_search_prunes_once_a_second
 --- old
-            .is_none_or(|at| now.since(at) >= Duration::from_secs(1))
+        if self.last_prune.is_none_or(|at| now.ms_since(at) >= 1000) {
 --- new
-            .is_none_or(|_| true)
+        if self.last_prune.is_none_or(|_| true) {
 
 === a transfer's arrival is told of to no one
 file: crates/curl-core/src/multi/mod.rs
@@ -113,23 +113,23 @@ witness: curl-core multi::tests::a_multi_closes_its_idle_connections_when_droppe
 --- new
             let _ = (&mut exits, now);
 
-=== a limit is compared to the exact time, not whole milliseconds
+=== a connection at its limit is past it
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_after_it
 --- old
-    whole_ms(elapsed) > whole_ms(max)
+    elapsed_ms > crate::time::millis(max)
 --- new
-    elapsed > max
+    elapsed_ms >= crate::time::millis(max)
 
 === a connection at its age limit is pruned
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_after_it
 --- old
-        .is_some_and(|max| past(now.since(conn.created), max))
+        .is_some_and(|max| past(made_ms(conn, now), max))
     {
         return Err(None);
 --- new
-        .is_some_and(|max| whole_ms(now.since(conn.created)) >= whole_ms(max))
+        .is_some_and(|max| made_ms(conn, now) >= crate::time::millis(max))
     {
         return Err(None);
 
@@ -202,9 +202,9 @@ witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::unit2600_attempts_race
 --- old
-                && r.last_start.is_none_or(|at| now >= at.after(delay)));
+                    .is_none_or(|at| now.ms_since(at) >= crate::time::millis(delay)));
 --- new
-                && r.attempts.is_empty());
+                    .is_some_and(|_| r.attempts.is_empty()));
 
 === attempts run without a cap
 file: crates/curl-core/src/conn/connect.rs
@@ -623,17 +623,17 @@ witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_m
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::an_idle_connection_s_health_is_looked_at_once_a_second
 --- old
-        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 1000
+        && made_ms(conn, now) - i64::from(checked_ms) < 1000
 --- new
-        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 0
+        && made_ms(conn, now) - i64::from(checked_ms) < 0
 
 === an idle HTTP/2 connection is let alone a second and more
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::an_idle_connection_s_health_is_looked_at_once_a_second
 --- old
-        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 1000
+        && made_ms(conn, now) - i64::from(checked_ms) < 1000
 --- new
-        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) <= 1000
+        && made_ms(conn, now) - i64::from(checked_ms) <= 1000
 
 === a connection is boxed infallibly as it is added
 file: crates/curl-core/src/conn/pool.rs
@@ -859,3 +859,11 @@ witness: curl-core conn::pool::tests::a_lent_connection_to_the_origin_says_the_s
                         if !seen.multiplex && route.reaches(wanted.route) {
 --- new
                         if !seen.multiplex || route.reaches(wanted.route) {
+
+=== a connection's idle time is the whole milliseconds since its return
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::unit1323_idle_across_a_second_counts_as_c_does
+--- old
+    now.ms_since(conn.created)
+--- new
+    i64::try_from(whole_ms(now.since(conn.created))).unwrap()

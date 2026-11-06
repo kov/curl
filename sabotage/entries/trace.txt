@@ -375,9 +375,9 @@ witness: curl-core multi::tests::timers_are_traced_as_c_arms_and_fires_them
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_and_cleared_as_c_does
 --- old
-                        state::trace_set(cx, TimerKind::Proto, until);
+                        state::trace_set(cx, TimerKind::Proto, since.after(wait));
 --- new
-                        let _ = until;
+                        let _ = (since, wait);
 
 === the 100's wait is not cleared as the 100 comes
 file: crates/curl-core/src/proto/http.rs

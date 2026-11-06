@@ -75,9 +75,9 @@ witness: curl-openssl a_second_connection_takes_the_multi_s_store
 file: crates/curl-openssl/src/cache.rs
 witness: curl-openssl the_kept_store_serves_for_the_cache_s_age
 --- old
-        CaCache::For(age) => now.since(made) >= age,
+        CaCache::For(age) => now.ms_since(made) >= curl_core::time::millis(age),
 --- new
-        CaCache::For(age) => now.since(made) > age,
+        CaCache::For(age) => now.ms_since(made) > curl_core::time::millis(age),
 
 === a transfer with the CA cache off takes the kept store
 file: crates/curl-openssl/src/cache.rs

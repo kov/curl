@@ -494,9 +494,9 @@ file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::ftp::tests::quit_waits_for_an_answer_no_longer_than_a_second_of_silence
 features: test-util debug-hooks
 --- old
-            if spent >= limit && answer.is_none() {
+            if spent_ms >= limit_ms && answer.is_none() {
 --- new
-            if spent >= limit {
+            if spent_ms >= limit_ms {
 
 === a QUIT the socket took only part of is left unfinished
 file: crates/curl-core/src/proto/pingpong/drive.rs

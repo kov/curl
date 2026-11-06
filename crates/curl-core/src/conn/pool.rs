@@ -1079,10 +1079,7 @@ impl Pool {
         now: Instant,
         notes: &mut Vec<PoolNote>,
     ) -> Result<Found, OutOfMemory> {
-        if self
-            .last_prune
-            .is_none_or(|at| now.since(at) >= Duration::from_secs(1))
-        {
+        if self.last_prune.is_none_or(|at| now.ms_since(at) >= 1000) {
             self.last_prune = Some(now);
             prune(&mut self.conns, self.stale_below, rules, exits, now);
         }
@@ -1221,7 +1218,7 @@ impl Pool {
         // (`CPOOL_MATCH_TOO_OLD`); one not healthy is reported.
         let verdict = if rules
             .max_age
-            .is_some_and(|max| past(now.since(conn.created), max))
+            .is_some_and(|max| past(made_ms(conn, now), max))
         {
             Err(None)
         } else {
@@ -2062,13 +2059,11 @@ fn over_limit(
         let Some(place) = conns.get(id) else {
             continue;
         };
-        if let Some(Conn {
-            use_: Use::Idle { since, .. },
-            ..
-        }) = place.idle()
+        if let Some(conn) = place.idle()
+            && let Use::Idle { since, .. } = conn.use_
         {
             // In C's milliseconds: of two as old, the first.
-            let idle_ms = now.since(*since).as_millis();
+            let idle_ms = idle_ms(conn, since, now);
             if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms > ms) {
                 oldest = Some((id, idle_ms));
             }
@@ -2179,18 +2174,16 @@ fn oldest_idle(
     which: impl Fn(&Place) -> bool,
     now: Instant,
 ) -> Option<ConnId> {
-    let mut oldest: Option<(ConnId, u128)> = None;
+    let mut oldest: Option<(ConnId, i64)> = None;
     let mut cursor = None;
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
         if let Some(place) = conns.get(id)
-            && let Some(Conn {
-                use_: Use::Idle { since, .. },
-                ..
-            }) = place.idle()
+            && let Some(conn) = place.idle()
+            && let Use::Idle { since, .. } = conn.use_
             && which(place)
         {
-            let idle_ms = now.since(*since).as_millis();
+            let idle_ms = idle_ms(conn, since, now);
             if oldest.is_none_or(|(_, ms)| idle_ms > ms) {
                 oldest = Some((id, idle_ms));
             }
@@ -2286,29 +2279,29 @@ fn health(
     now: Instant,
     exits: &mut dyn Exits,
 ) -> Result<(), Option<PoolNote>> {
-    let idle = now.since(idle_since);
+    let idle = idle_ms(conn, idle_since, now);
     if let Some(max) = rules.max_idle
         && past(idle, max)
     {
         return Err(Some(PoolNote::IdleTooLong {
-            idle_ms: whole_ms(idle),
+            idle_ms: idle.unsigned_abs(),
             max_ms: whole_ms(max),
         }));
     }
     // Only the prune meets one alive too long here, and says nothing.
     if rules
         .max_age
-        .is_some_and(|max| past(now.since(conn.created), max))
+        .is_some_and(|max| past(made_ms(conn, now), max))
     {
         return Err(None);
     }
     // A multiplexed one is looked at once a second at most, healthy
     // meanwhile; an HTTP/1 one's input is polled at every reuse
-    // (`Curl_cpool_conn_seems_healthy`), each in whole milliseconds since
-    // the connection was made, as C counts them.
+    // (`Curl_cpool_conn_seems_healthy`), each in milliseconds since the
+    // connection was made, as C counts them.
     if let Use::Idle { checked_ms, .. } = conn.use_
         && conn.multiplexes()
-        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 1000
+        && made_ms(conn, now) - i64::from(checked_ms) < 1000
     {
         return Ok(());
     }
@@ -2322,10 +2315,22 @@ fn health(
     healthy
 }
 
-/// The whole milliseconds from `conn`'s making to `now`, as C keeps its
-/// times of use; `u32::MAX` past its range.
+/// The milliseconds from `conn`'s making to `now`, as C keeps its times
+/// of use (`curlx_ptimediff_ms(pnow, &conn->created)`).
+fn made_ms(conn: &Conn, now: Instant) -> i64 {
+    now.ms_since(conn.created)
+}
+
+/// [`made_ms`] as a connection keeps it; `u32::MAX` past its range.
 fn ms_since_made(conn: &Conn, now: Instant) -> u32 {
-    u32::try_from(whole_ms(now.since(conn.created))).unwrap_or(u32::MAX)
+    u32::try_from(made_ms(conn, now).max(0)).unwrap_or(u32::MAX)
+}
+
+/// The milliseconds `conn` has been idle at `now`, since `since`, as C
+/// counts them: from its making to now, less from its making to its
+/// return (`lastused_ms`).
+fn idle_ms(conn: &Conn, since: Instant, now: Instant) -> i64 {
+    made_ms(conn, now) - made_ms(conn, since)
 }
 
 /// Whether `conn` is alive and has no input it should not: input waiting
@@ -2364,10 +2369,10 @@ fn alive(conn: &mut Conn, now: Instant, exits: &mut dyn Exits) -> Result<(), Opt
     }
 }
 
-/// Whether `elapsed` is past the limit `max`, counted in whole
-/// milliseconds as C counts them (`age_ms > conn_max_idle_ms`).
-fn past(elapsed: Duration, max: Duration) -> bool {
-    whole_ms(elapsed) > whole_ms(max)
+/// Whether `elapsed_ms` is past the limit `max`, in milliseconds as C
+/// counts them (`age_ms > conn_max_idle_ms`).
+fn past(elapsed_ms: i64, max: Duration) -> bool {
+    elapsed_ms > crate::time::millis(max)
 }
 
 fn whole_ms(d: Duration) -> u64 {

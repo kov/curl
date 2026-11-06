@@ -137,7 +137,8 @@ impl Speedometer {
         }
         match self.slow_since {
             None => self.slow_since = Some(now),
-            Some(since) if now.since(since) >= Duration::from_secs(low.time.get().into()) => {
+            // In milliseconds, as C counts them.
+            Some(since) if now.ms_since(since) >= i64::from(low.time.get()) * 1000 => {
                 return Err(ErrorKind::OperationTimedout);
             }
             Some(_) => {}

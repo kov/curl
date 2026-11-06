@@ -567,9 +567,9 @@ impl Quic {
 
     /// How long after its connect started the first datagram came, once
     /// one has (`CF_QUERY_CONNECT_REPLY_MS`).
-    pub(crate) fn reply_ms(&self) -> Option<u128> {
+    pub(crate) fn reply_ms(&self) -> Option<i64> {
         let at = self.state.first_byte_at?;
-        Some(at.since(self.state.started).as_millis())
+        Some(at.ms_since(self.state.started))
     }
 
     /// When the handshake completed.
@@ -811,8 +811,9 @@ impl Quic {
         }
         match self.conn.peer_idle_timeout() {
             Some(max) if max > Duration::ZERO => {
-                let idle = self.clock.now().since(self.state.last_io).as_millis();
-                idle == 0 || idle <= max.as_millis()
+                // In milliseconds, as C counts them.
+                let idle = self.clock.now().ms_since(self.state.last_io);
+                idle <= 0 || idle <= crate::time::millis(max)
             }
             _ => true,
         }
@@ -1641,7 +1642,7 @@ impl State {
                 self.handshake_at = Some(now);
                 self.verified = checked;
                 if checked.is_ok() {
-                    let ms = now.since(self.started).as_millis();
+                    let ms = now.ms_since(self.started);
                     cx.trace(format_args!(
                         "handshake complete after {ms}ms, remote transport[max_udp_payload={max_udp_payload}, initial_max_data={initial_max_data}]"
                     ));

@@ -590,7 +590,7 @@ impl Pingpong {
     ) -> ResponseTime {
         let ms = |d: Duration| i64::try_from(d.as_millis()).unwrap_or(i64::MAX);
         let limit = ms(limit.map_or(RESPONSE_TIMEOUT, TimeLimit::duration));
-        let mut left = limit.saturating_sub(ms(now.since(self.response)));
+        let mut left = limit.saturating_sub(now.ms_since(self.response));
         match transfer {
             TimeLeft::Unlimited => {}
             TimeLeft::Remaining(d) => left = left.min(ms(d)),

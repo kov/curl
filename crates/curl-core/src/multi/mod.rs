@@ -2266,11 +2266,14 @@ impl<H: Host> Multi<H> {
                 break;
             }
             let at = self.clock.now();
-            let spent = at.since(now);
+            // In milliseconds, as C counts them.
+            let spent_ms = at.ms_since(now);
+            let limit_ms = crate::time::millis(limit);
+            let spent = Duration::from_millis(spent_ms.max(0).unsigned_abs());
             // A goodbye awaiting its answer is waited for in its own
             // time, as C's protocol disconnect blocks for it.
             let answer = self.shutdowns.answer_time_left(at);
-            if spent >= limit && answer.is_none() {
+            if spent_ms >= limit_ms && answer.is_none() {
                 let why = if limit.is_zero() {
                     "best effort done"
                 } else {

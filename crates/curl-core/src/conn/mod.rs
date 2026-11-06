@@ -1326,10 +1326,10 @@ pub(crate) struct Conn {
     created: Instant,
     connected_at: Instant,
     use_: Use,
-    /// When it was last kept alive, or else used: whole milliseconds
-    /// after it was made, as it was found connected, given back by a
+    /// When it was last kept alive, or else used: milliseconds after it
+    /// was made as C counts them, as it was found connected, given back by a
     /// transfer or sent a keep-alive (C's `lastupkeep_ms`).
-    upkept_ms: u64,
+    upkept_ms: i64,
     /// It carried a request before the one leasing it (C's
     /// `bits.reuse`).
     served: bool,
@@ -1771,8 +1771,8 @@ impl Conn {
         at: Instant,
     ) -> Option<Result<(), crate::error::ErrorKind>> {
         use part::Part as _;
-        let made_ms = u64::try_from(at.since(self.created).as_millis()).unwrap_or(u64::MAX);
-        let interval_ms = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX);
+        let made_ms = at.ms_since(self.created);
+        let interval_ms = crate::time::millis(interval);
         if made_ms.saturating_sub(self.upkept_ms) < interval_ms {
             return None;
         }
@@ -1786,7 +1786,7 @@ impl Conn {
     /// It was given back by a transfer at `now` (`Curl_cpool_return`):
     /// its next keep-alive is due an interval from then.
     pub(crate) fn returned(&mut self, now: Instant) {
-        self.upkept_ms = u64::try_from(now.since(self.created).as_millis()).unwrap_or(u64::MAX);
+        self.upkept_ms = now.ms_since(self.created);
     }
 
     /// The filter at the top of its chain once it is up, which a question

@@ -60,7 +60,8 @@ fn same(kept: &TlsIdentity, wanted: &TlsIdentity) -> bool {
 fn expired(made: Instant, now: Instant, cache: CaCache) -> bool {
     match cache {
         CaCache::Forever => false,
-        CaCache::For(age) => now.since(made) >= age,
+        // In milliseconds, as C counts them.
+        CaCache::For(age) => now.ms_since(made) >= curl_core::time::millis(age),
         // Not asked: nothing is taken without the cache on.
         CaCache::Off => true,
     }

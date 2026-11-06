@@ -515,9 +515,12 @@ enum Sending {
     /// asked for (`EXP100_SENDING_REQUEST`, the request all sent).
     HeadSent,
     /// The head has gone; the body, announced with `Expect:
-    /// 100-continue` and not read yet, waits for a 100 until this
-    /// instant (`EXP100_AWAITING_CONTINUE`).
-    AwaitingContinue(Instant),
+    /// 100-continue` and not read yet, waits for a 100 for `wait` from
+    /// `since` (`EXP100_AWAITING_CONTINUE`).
+    AwaitingContinue {
+        since: Instant,
+        wait: std::time::Duration,
+    },
     /// The body goes, read as what is read of it goes.
     Body(Reading),
     /// All of it went (`upload_done`), or the response ended the request
@@ -582,7 +585,7 @@ impl Sending {
                 ..
             }
             | Sending::HeadSent
-            | Sending::AwaitingContinue(_) => true,
+            | Sending::AwaitingContinue { .. } => true,
             Sending::Head {
                 then: AfterHead::Body(reading),
                 ..
@@ -1136,7 +1139,7 @@ impl Request {
     /// When a body waiting for a 100 is sent anyway.
     pub(crate) fn due(&self) -> Option<Instant> {
         match self.outgoing {
-            Sending::AwaitingContinue(until) => Some(until),
+            Sending::AwaitingContinue { since, wait } => Some(since.after(wait)),
             _ => None,
         }
     }
@@ -1148,7 +1151,7 @@ impl Request {
             events = events | Events::IN;
         }
         // A body waiting for a 100 waits on the clock, not the socket.
-        let waiting = matches!(self.outgoing, Sending::AwaitingContinue(_));
+        let waiting = matches!(self.outgoing, Sending::AwaitingContinue { .. });
         if self.sending() && !pause.send_paused() && !waiting {
             events = events | Events::OUT;
         }
@@ -2093,17 +2096,20 @@ impl Request {
                             return Ok(false);
                         }
                         let wait = cx.easy().options().http.continue_wait.get();
-                        let until = cx.now().after(wait);
-                        self.outgoing = Sending::AwaitingContinue(until);
-                        state::trace_set(cx, TimerKind::Proto, until);
+                        let since = cx.now();
+                        self.outgoing = Sending::AwaitingContinue { since, wait };
+                        state::trace_set(cx, TimerKind::Proto, since.after(wait));
                         self.held_back(cx, Held::Starts);
                         return Ok(false);
                     }
-                    Sending::AwaitingContinue(until) if cx.now() < until => {
+                    // In milliseconds, as C counts them.
+                    Sending::AwaitingContinue { since, wait }
+                        if cx.now().ms_since(since) < crate::time::millis(wait) =>
+                    {
                         self.held_back(cx, Held::Waits);
                         return Ok(false);
                     }
-                    Sending::AwaitingContinue(_) => {
+                    Sending::AwaitingContinue { .. } => {
                         self.release(cx);
                         trace::info(cx, format_args!("Done waiting for 100-continue"));
                     }
@@ -2927,7 +2933,7 @@ impl Request {
             Sending::Head { then, .. } if *then == AfterHead::Continue => {
                 *then = AfterHead::Body(open);
             }
-            Sending::HeadSent | Sending::AwaitingContinue(_) => {
+            Sending::HeadSent | Sending::AwaitingContinue { .. } => {
                 self.outgoing = Sending::Body(open);
             }
             _ => return,
@@ -2954,7 +2960,7 @@ impl Request {
         if code == 417 && self.outgoing.announced() {
             // Made again without `Expect`, its body started over if any
             // went.
-            if self.body_sent == 0 && matches!(self.outgoing, Sending::AwaitingContinue(_)) {
+            if self.body_sent == 0 && matches!(self.outgoing, Sending::AwaitingContinue { .. }) {
                 trace::info(
                     cx,
                     format_args!("Got HTTP failure 417 while waiting for a 100"),

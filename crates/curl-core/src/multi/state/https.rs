@@ -1044,10 +1044,9 @@ pub(super) fn second_due<H: Host>(
     let now = cx.now();
     let hard = cx.easy().options().limits.eyeballs.0;
     let soft = hard / 2;
-    let elapsed = now.since(race.at);
-    // C counts in whole milliseconds.
-    let elapsed_ms = elapsed.as_millis();
-    if elapsed_ms >= hard.as_millis() {
+    // In milliseconds, as C counts them.
+    let elapsed_ms = now.ms_since(race.at);
+    if elapsed_ms >= crate::time::millis(hard) {
         let hard = hard.as_millis();
         trace::of(
             cx,
@@ -1056,12 +1055,12 @@ pub(super) fn second_due<H: Host>(
         );
         return true;
     }
-    if elapsed_ms >= soft.as_millis() {
+    if elapsed_ms >= crate::time::millis(soft) {
         if !race.replied {
             race.replied = match c.lease.setup().map(ConnectMachine::reply) {
                 Some(Reply::Dialed(heard)) => heard,
                 Some(Reply::Racing(reply)) => {
-                    let shown = reply.map_or(-1, |ms| i128::try_from(ms).unwrap_or(i128::MAX));
+                    let shown = reply.unwrap_or(-1);
                     trace::of(
                         cx,
                         Component::HappyEyeballs,
@@ -1088,7 +1087,9 @@ pub(super) fn second_due<H: Host>(
             );
             return true;
         }
-        let at = deadlines.arm_in(TimerKind::AlpnEyeballs, now, hard.saturating_sub(elapsed));
+        let left_ms = crate::time::millis(hard).saturating_sub(elapsed_ms).max(0);
+        let left = std::time::Duration::from_millis(left_ms.unsigned_abs());
+        let at = deadlines.arm_in(TimerKind::AlpnEyeballs, now, left);
         super::trace_set(cx, TimerKind::AlpnEyeballs, at);
     }
     false

@@ -48,7 +48,7 @@ impl KeptStore {
             CaCache::Off => return None,
             CaCache::Forever => {}
             CaCache::For(most) => {
-                if now.since(self.made?) >= most {
+                if now.ms_since(self.made?) >= curl_core::time::millis(most) {
                     return None;
                 }
             }

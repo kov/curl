@@ -557,7 +557,7 @@ impl SocketKept {
     #[cfg(windows)]
     fn fit_send_buffer(&self, socket: &dyn Socket, now: Instant) {
         let (asked, size) = self.send_buffer.get();
-        if asked.is_some_and(|at| now.since(at).as_millis() <= 1000) {
+        if asked.is_some_and(|at| now.ms_since(at) <= 1000) {
             return;
         }
         let size = socket.fit_send_buffer(size).unwrap_or(size);

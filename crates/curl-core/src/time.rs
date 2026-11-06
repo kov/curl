@@ -25,10 +25,36 @@ impl Instant {
         Duration::from_micros(self.0.get().saturating_sub(earlier.0.get()))
     }
 
+    /// The milliseconds from `earlier` to this instant, negative if
+    /// `earlier` is later, counted as C counts them (`curlx_timediff_ms`):
+    /// the whole seconds between their readings in thousands, plus the
+    /// difference of their microseconds divided towards zero. That is one
+    /// more than the whole milliseconds between them when this instant's
+    /// microseconds into its second are fewer than `earlier`'s (and not by
+    /// whole milliseconds).
+    pub fn ms_since(self, earlier: Instant) -> i64 {
+        // The reading C's `curltime` holds: the clock's seconds, and the
+        // microseconds into the second.
+        let split = |t: Instant| {
+            let us = t.0.get() - Instant::EPOCH.0.get();
+            let secs = i64::try_from(us / 1_000_000).expect("u64 µs in i64 s");
+            let micros = i64::try_from(us % 1_000_000).expect("under a second");
+            (secs, micros)
+        };
+        let ((s1, u1), (s0, u0)) = (split(self), split(earlier));
+        (s1 - s0) * 1000 + (u1 - u0) / 1000
+    }
+
     /// The instant `d` after this one, at most the latest representable.
     pub fn after(self, d: Duration) -> Instant {
         Instant(self.0.saturating_add(micros(d)))
     }
+}
+
+/// `d` in whole milliseconds, saturating: a limit to hold an
+/// [`Instant::ms_since`] against.
+pub fn millis(d: Duration) -> i64 {
+    i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
 }
 
 /// `d` in whole microseconds, saturating.
@@ -313,6 +339,25 @@ mod tests {
         assert_eq!(size_of::<Option<Instant>>(), size_of::<Instant>());
         // Below a microsecond counts as nothing.
         assert_eq!(t.after(Duration::from_nanos(999)), t);
+    }
+
+    /// unit1323's `curlx_timediff_ms` table: 12.419 ms across a second's
+    /// turn counts as 13, either way round.
+    #[test]
+    fn unit1323_ms_since() {
+        let at = |secs: u64, micros: u32| Instant::EPOCH.after(Duration::new(secs, micros * 1000));
+        for (first, second, ms) in [
+            (at(36762, 8345), at(36761, 995_926), 13),
+            (at(36761, 995_926), at(36762, 8345), -13),
+            (at(36761, 995_926), at(0, 0), 36_761_995),
+            (at(0, 0), at(36761, 995_926), -36_761_995),
+        ] {
+            assert_eq!(first.ms_since(second), ms, "{first:?} {second:?}");
+        }
+        // Within a second, and across one with the later microseconds
+        // more: whole milliseconds, as `since` counts them.
+        assert_eq!(at(5, 900_999).ms_since(at(5, 100_000)), 800);
+        assert_eq!(at(6, 100_999).ms_since(at(5, 100_000)), 1000);
     }
 
     #[test]

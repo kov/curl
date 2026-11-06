@@ -957,7 +957,7 @@ impl Session {
             }
         };
         let result = loop {
-            if now.since(start) >= RENEG_MOST {
+            if now.ms_since(start) >= curl_core::time::millis(RENEG_MOST) {
                 break Err(io.fail(
                     ErrorKind::SslConnectError,
                     format_args!("schannel: renegotiation timeout"),

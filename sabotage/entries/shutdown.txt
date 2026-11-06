@@ -73,9 +73,11 @@ witness: curl-core multi::shutdown_tests::a_full_set_closes_its_oldest
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::the_shutdown_deadline_is_the_multi_s_own_row
 --- old
-        let spent = whole_ms(now.since(self.conn.created)).saturating_sub(self.started_ms);
+        let spent = now
+            .ms_since(self.conn.created)
+            .saturating_sub(self.started_ms);
 --- new
-        let spent = 0u64;
+        let spent = 0i64;
 
 === the set's deadline is not one of the multi's
 file: crates/curl-core/src/multi/mod.rs

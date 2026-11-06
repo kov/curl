@@ -429,6 +429,16 @@ connections, TLS sessions or suffix list (`Share::used_under`), and the debug bu
 use under a second clock, as the share's entries and connections carry one clock's instants:
 the multis of a test that share one are given clones of one `ManualClock`.
 
+An instant keeps the reading C's `curltime` holds (the clock's seconds and the microseconds into
+the second), so where C counts the time between two readings in milliseconds
+(`curlx_timediff_ms`), `Instant::ms_since` counts it the same way: the seconds apart in
+thousands plus the microseconds' difference divided towards zero, one more than the whole
+milliseconds between them when the later reading's microseconds are the fewer. The pool's ages,
+idle times and upkeep, the shutdown's time left, the DNS cache's ages, the races' delays, the
+server's and the 100-continue's waits, the low-speed check and the TLS store cache count so.
+Where C counts in microseconds (`Curl_pgrs_since_ms` for a transfer's time left, the `-w`
+timings), `since` does.
+
 ### 2.5 Errors and outcomes
 
 ```rust
@@ -2137,13 +2147,13 @@ back through `MultiEvents::unpushed` for the host to close, as C closes the hand
 
 An idle multiplexed connection's health is looked at once a second at most, healthy meanwhile,
 where an idle HTTP/1 one's input is polled at every reuse (`Curl_cpool_conn_seems_healthy`): its
-`Use::Idle` keeps when it was last found healthy as C does, in whole milliseconds since it was
+`Use::Idle` keeps when it was last found healthy as C does, in milliseconds since it was
 made (`lastchecked_ms`), set as it is returned.
 
 The upkeep (`curl_easy_upkeep`, `Curl_cpool_upkeep`; `Easy::upkeep`, `Multi::upkeep`) visits
 every connection of the calling handle's pool the pool holds, idle, reserved or attached
 between steps; one leased whole is its transfer's and is passed over. Each is due once the
-caller's `CURLOPT_UPKEEP_INTERVAL_MS` has passed since `Conn::upkept_ms`, whole milliseconds
+caller's `CURLOPT_UPKEEP_INTERVAL_MS` has passed since `Conn::upkept_ms`, milliseconds
 since it was made, set as it is found connected, at every lease given back and at each
 keep-alive (`lastupkeep_ms`). A due connection asks its session to keep it alive
 (`Part::keep_alive`): HTTP/2 sends a PING, at once on a connection with no stream open, else
@@ -2272,7 +2282,7 @@ call under which the count moved has every other transfer on the connection run 
 known stream`).
 
 **The connection's life.** A kept connection is dead once it shuts down, or once idle, since its
-last datagram went or came, past the idle timeout the peer gave, in whole milliseconds; else it
+last datagram went or came, past the idle timeout the peer gave, in milliseconds; else it
 is as its socket is, and input waiting on it is read there and then, alive if that reads
 (`Curl_cf_ngtcp2_cmn_conn_is_alive`). Its goodbye is the close packet, sent as the pool shuts it
 down (`Curl_cf_ngtcp2_cmn_shutdown`). Neither call has a transfer stepping it: the connection is

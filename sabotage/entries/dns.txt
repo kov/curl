@@ -21,9 +21,9 @@ witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
-        !self.permanent && self.age(now) >= max_age
+        !self.permanent && self.age_ms(now) >= crate::time::millis(max_age)
 --- new
-        !self.permanent && self.age(now) >= max_age * 1000
+        !self.permanent && self.age_ms(now) >= crate::time::millis(max_age) * 1000
 
 === the cache is not looked in
 file: crates/curl-core/src/conn/connect.rs

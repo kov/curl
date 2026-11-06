@@ -535,10 +535,10 @@ impl DnsCache {
                 .entries
                 .values()
                 .filter(|e| !e.permanent)
-                .map(|e| e.age(now))
+                .map(|e| e.age_ms(now))
                 .max()
                 .unwrap_or_default();
-            max_age = oldest / 2;
+            max_age = Duration::from_millis((oldest / 2).max(0).unsigned_abs());
             if max_age.is_zero() {
                 return;
             }
@@ -548,14 +548,14 @@ impl DnsCache {
 
 impl Entry {
     fn stale_at(&self, now: Instant, max_age: Duration) -> bool {
-        !self.permanent && self.age(now) >= max_age
+        !self.permanent && self.age_ms(now) >= crate::time::millis(max_age)
     }
 
-    /// How old the entry is by `now`: one saying the name does not exist,
-    /// or has no HTTPS record, ages twice as fast
-    /// (`dnscache_entry_is_stale`).
-    fn age(&self, now: Instant) -> Duration {
-        let age = now.since(self.added);
+    /// How old the entry is by `now`, in milliseconds as C counts them:
+    /// one saying the name does not exist, or has no HTTPS record, ages
+    /// twice as fast (`dnscache_entry_is_stale`).
+    fn age_ms(&self, now: Instant) -> i64 {
+        let age = now.ms_since(self.added);
         if self.says_no {
             age.saturating_mul(2)
         } else {

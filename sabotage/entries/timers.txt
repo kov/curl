@@ -211,3 +211,11 @@ witness: curl-core multi::timers::tests::every_kind_keeps_its_own_instant
 --- new
         self.at = [None; TimerKind::COUNT];
         self.at[kind.ordinal()] = Some(at);
+
+=== elapsed milliseconds are counted whole, as Duration::as_millis floors them
+file: crates/curl-core/src/time.rs
+witness: curl-core time::tests::unit1323_ms_since
+--- old
+        (s1 - s0) * 1000 + (u1 - u0) / 1000
+--- new
+        (s1 * 1_000_000 + u1 - s0 * 1_000_000 - u0).div_euclid(1000)

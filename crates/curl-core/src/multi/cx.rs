@@ -578,8 +578,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
             super::timers::TimeLeft::Remaining(left) => Some(left),
             super::timers::TimeLeft::Expired(_) => None,
             // `CURL_TIMEOUT_RESOLVE_MS`.
+            // In milliseconds, as C counts them.
             super::timers::TimeLeft::Unlimited => {
-                Duration::from_secs(300).checked_sub(now.since(since))
+                let left = 300_000 - now.ms_since(since);
+                (left > 0).then(|| Duration::from_millis(left.unsigned_abs()))
             }
         }
     }

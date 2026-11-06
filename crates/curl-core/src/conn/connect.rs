@@ -117,7 +117,7 @@ pub(crate) enum Reply {
     /// Racing, its happy eyeballs filter answers, and says so: the
     /// milliseconds its first QUIC attempt took to hear from its peer, if
     /// one has.
-    Racing(Option<u128>),
+    Racing(Option<i64>),
     /// Dialed, the filter connected, the first hop answers, saying
     /// nothing: whether it has heard from its peer.
     Dialed(bool),
@@ -1442,9 +1442,12 @@ impl ConnectMachine {
                                 // (`cf_dns_ready_to_connect`).
                                 let oom = |OutOfMemory| ConnectError::OutOfMemory;
                                 if let Some(part) = p.partial().map_err(oom)? {
-                                    if !part.v6_answered && now < p.await_until {
-                                        let until = p.await_until;
-                                        let left = p.await_until.since(now).as_millis();
+                                    // In milliseconds, as C counts them.
+                                    let left = crate::time::millis(p.aaaa_wait)
+                                        .saturating_sub(now.ms_since(p.asked));
+                                    if !part.v6_answered && left > 0 {
+                                        let until =
+                                            now.after(Duration::from_millis(left.unsigned_abs()));
                                         let queries = family_queries(p.family);
                                         cx.of(
                                             Component::DnsFilter,
@@ -1567,10 +1570,12 @@ impl ConnectMachine {
             }
         }
         // With none running another is wanted; with some, one is if an
-        // address is left and the last started long enough ago.
+        // address is left and the last started long enough ago, in
+        // milliseconds as C counts them.
         let do_more = r.attempts.is_empty()
             || (r.eyeballs.more_asked(cx, of)
-                && r.last_start.is_none_or(|at| now >= at.after(delay)));
+                && r.last_start
+                    .is_none_or(|at| now.ms_since(at) >= crate::time::millis(delay)));
         if !do_more {
             let until = r.next_due(cx, of, delay);
             return Ok(Drove::Connecting(self, Progress::Waiting { until }));
@@ -2403,7 +2408,7 @@ impl ConnectMachine {
             connected_at: at,
             use_: Use::Leased(NonZeroU32::MIN),
             // As it is found connected (`Curl_cpool_conn_was_used`).
-            upkept_ms: u64::try_from(at.since(created).as_millis()).unwrap_or(u64::MAX),
+            upkept_ms: at.ms_since(created),
             served: false,
             socks5_authenticated: false,
             multiplex_told: false,
@@ -3245,8 +3250,10 @@ pub(super) struct Pending<V = Via> {
     found: fn(Asked) -> Found,
     keep_negative: bool,
     queried: Queried,
-    /// Until when AAAA is waited for.
-    await_until: Instant,
+    /// When the resolve was asked, and how long AAAA is waited for from
+    /// then.
+    asked: Instant,
+    aaaa_wait: Duration,
     /// How the cache is looked in as its answer is taken.
     looks: Looks,
     /// A resolver's resolve whose lines are said as it goes, as C's
@@ -3367,7 +3374,8 @@ impl<V: Into<Via>> Pending<V> {
             found,
             keep_negative,
             queried,
-            await_until,
+            asked,
+            aaaa_wait,
             looks,
             live,
             record,
@@ -3378,7 +3386,8 @@ impl<V: Into<Via>> Pending<V> {
             found,
             keep_negative,
             queried,
-            await_until,
+            asked,
+            aaaa_wait,
             looks,
             live,
             record,
@@ -3954,7 +3963,8 @@ fn start<V: Backend>(
             family,
             found,
             keep_negative,
-            await_until: now.after(aaaa_await()),
+            asked: now,
+            aaaa_wait: aaaa_await(),
             looks,
             live: None,
         };
@@ -4001,7 +4011,8 @@ fn start<V: Backend>(
                 family,
                 found,
                 keep_negative,
-                await_until: now.after(aaaa_await()),
+                asked: now,
+                aaaa_wait: aaaa_await(),
                 looks,
                 live: None,
             };
@@ -4308,7 +4319,8 @@ mod tests {
             keep_negative: false,
             queried: Queried { v6: true, v4: true },
             record: None,
-            await_until: ManualClock::new().unwrap().now(),
+            asked: ManualClock::new().unwrap().now(),
+            aaaa_wait: Duration::ZERO,
             looks: Looks {
                 holder: Holder::Addresses(crate::multi::state::ConnRank::First),
                 wildcard: false,

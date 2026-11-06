@@ -168,9 +168,9 @@ witness: curl-core multi::doh_tests::a_master_timing_out_takes_its_probes
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::doh_tests::what_came_is_connected_to_after_a_wait_for_aaaa
 --- old
-                                    if !part.v6_answered && now < p.await_until {
+                                    if !part.v6_answered && left > 0 {
 --- new
-                                    if !part.v6_answered && now < now {
+                                    if !part.v6_answered && left > left {
 
 === a race out of addresses fails with more to come
 file: crates/curl-core/src/conn/connect.rs

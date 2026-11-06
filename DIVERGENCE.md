@@ -378,9 +378,10 @@ not a difference: it is tracked in `MILESTONES.md`.
   `chown` take a decimal id up to what a `curl_off_t` holds, as C's libssh2 build means to
   (`curlx_str_number` bounded by `ULONG_MAX`, `lib/vssh/libssh2.c`). That bound is -1 as a
   `curl_off_t` where a `long` is 64 bits, so C reads no id at all: its debug build aborts on
-  `DEBUGASSERT(max >= 0)` in `str_num_base`, and its release build fails every such command
-  with `Syntax error: chgrp gid not a number` (21, `CURLE_QUOTE_ERROR`). Measured against the
-  C build: `-Q "chgrp 1000 file"` over SFTP aborts it. C's libssh build bounds the id by
+  `DEBUGASSERT(max >= 0)` in `str_num_base`, and its release build, which takes any digit as
+  past the bound, fails every such command with `Syntax error: chgrp gid not a number` (21,
+  `CURLE_QUOTE_ERROR`). Measured against the C debug build: `-Q "chgrp 1000 file"` over SFTP
+  aborts it; the release build's answer is read from the code. C's libssh build bounds the id by
   `UINT_MAX` and reads it. Pinned by `chgrp_and_chown_take_an_id_past_32_bits`
   (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`).
 

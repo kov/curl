@@ -1441,7 +1441,9 @@ it there, Windows.
      core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,
      chosen by the `libssh2` feature in place of `libssh` (the default); scored with
      `score.py --libssh2` against the reference build: every SCP and SFTP test, 3500, 3990
-     and 3991 with them, passes as on C, and the traces of each match C's. Left: SSH through an
+     and 3991 with them, passes as on C, and what each traces of SSH matches C's (1725's
+     `Applied default protocol` and 2004's progress meter after its TFTP transfer differ on the
+     libssh leg too: the URL's and the tool's, not SSH's). Left: SSH through an
      HTTPS proxy, which C reads and writes through libssh2's send and receive callbacks over
      the proxy's TLS (`ssh_tls_recv`), is refused (`CURLE_FAILED_INIT`).
 106. **GSS-API**: Heimdal and GNU GSS beside MIT krb5, as C's build can choose. **To do.**

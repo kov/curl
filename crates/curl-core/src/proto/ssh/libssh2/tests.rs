@@ -49,6 +49,9 @@ struct World {
     /// SFTP status some of them leave.
     fails: Vec<(&'static str, Code)>,
     leaves: Vec<(&'static str, Fx)>,
+    /// The multi's internal trace, as C's debug build writes it under
+    /// `CURL_DEBUG`: what is done for no transfer, a goodbye among it.
+    internal: Internal,
     /// The library's last failure, as its error and its words say it.
     last: Code,
     error: Vec<u8>,
@@ -105,6 +108,7 @@ impl Default for World {
             waited: Vec::new(),
             fails: Vec::new(),
             leaves: Vec::new(),
+            internal: Internal::default(),
             last: Code(-31),
             error: b"fake failure".to_vec(),
             fx: Fx::NO_SUCH_FILE,
@@ -763,11 +767,13 @@ fn run_over(
     let mut m: Multi = Multi::new(env).unwrap();
     let ssh: &'static FakeSsh2 = Box::leak(Box::new(FakeSsh2(w.clone())));
     let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
     if w.lock().unwrap().trace_ssh {
-        let c = crate::components::Components::new().unwrap();
-        c.configure(b"ssh");
-        e.set_components(Some(c));
+        components.configure(b"ssh");
+        e.set_components(Some(components.clone()));
     }
+    let internal = w.lock().unwrap().internal.clone();
+    m.trace_internally_to(components, Handler::text(internal).unwrap());
     e.set_libraries(
         SharedLibraries::new(Libraries {
             ssh: Some(SshLibrary::Libssh2(ssh)),
@@ -798,6 +804,22 @@ fn run_over(
     drop(m);
     let body = body.0.lock().unwrap().clone();
     (result, body, text)
+}
+
+/// Collects the multi's internal trace.
+#[derive(Clone, Debug, Default)]
+struct Internal(Arc<Mutex<Vec<u8>>>);
+
+impl Internal {
+    fn said(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl crate::handler::TextSink for Internal {
+    fn write(&self, text: &[u8]) {
+        self.0.lock().unwrap().extend_from_slice(text);
+    }
 }
 
 /// An SFTP download makes libssh2's calls in C's order: the handshake,
@@ -3149,4 +3171,63 @@ fn the_session_s_settings_and_its_closing() {
             "{calls:?}"
         );
     }
+}
+
+/// The goodbye, done for no transfer, is said in the multi's internal
+/// trace as C's debug build says it on its internal handle: the SSH
+/// trace's states between `DISCONNECT starts now` and its end, and each
+/// call's failure in C's words, the goodbye going on past it.
+#[test]
+fn the_goodbye_is_said_for_no_transfer() {
+    let states = |failed: Option<(usize, &str)>| {
+        let mut lines = vec![
+            "* [SSH] DISCONNECT starts now",
+            "* [SSH] [SSH_STOP] -> [SSH_SFTP_SHUTDOWN]",
+            "* [SSH] [SSH_SFTP_SHUTDOWN] -> [SSH_SESSION_DISCONNECT]",
+            "* [SSH] [SSH_SESSION_DISCONNECT] -> [SSH_SESSION_FREE]",
+            "* [SSH] [SSH_SESSION_FREE] -> [SSH_STOP]",
+            "* [SSH] [SSH_STOP] statemachine() -> 0, block=0",
+            "* [SSH] DISCONNECT is done -> 0",
+        ];
+        if let Some((at, line)) = failed {
+            lines.insert(at, line);
+        }
+        lines.join("\n") + "\n"
+    };
+    for (fail, failed) in [
+        ("none", None),
+        (
+            "sftp_shutdown",
+            Some((2, "* Failed to stop libssh2 sftp subsystem")),
+        ),
+        (
+            "disconnect",
+            Some((3, "* Failed to disconnect libssh2 session: -5 fake failure")),
+        ),
+        (
+            "session_free",
+            Some((4, "* Failed to free libssh2 session: -5 fake failure")),
+        ),
+    ] {
+        let w = world_with(&[("/home/u/f", "x")], |w| {
+            w.trace_ssh = true;
+            w.fails = vec![(fail, Code(-5))];
+        });
+        let (r, _, said, _) = run_in(&w, URL, |o| o.limits.reuse.forbid = true);
+        assert_eq!(r, Ok(()), "{said}");
+        assert_eq!(w.lock().unwrap().internal.said(), states(failed), "{fail}");
+        // None of it the transfer's.
+        assert!(!said.contains("DISCONNECT"), "{said}");
+    }
+    // Kept for reuse, it closes with the multi: said there too, the SSH
+    // trace off.
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.fails = vec![("disconnect", Code(-5))]
+    });
+    let (r, _, said, _) = run_in(&w, URL, |_| {});
+    assert_eq!(r, Ok(()), "{said}");
+    assert_eq!(
+        w.lock().unwrap().internal.said(),
+        "* Failed to disconnect libssh2 session: -5 fake failure\n"
+    );
 }

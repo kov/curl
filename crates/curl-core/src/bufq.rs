@@ -283,4 +283,91 @@ mod tests {
             "a part read of the last chunk is not taken again"
         );
     }
+
+    /// unit2601: an empty queue gives nothing to a read, and for each of
+    /// `check_bufq`'s queues, a queue with a hard limit takes writes until
+    /// it holds its chunks' worth exactly and gives all of it back to
+    /// reads; writes and reads in turn keep what is held what went in less
+    /// what came out; and a queue with a soft limit takes every write
+    /// whole, full or not, and gives back what went in.
+    ///
+    /// C's spare chunks, its chunk pool (`pool_spares`) and
+    /// `BUFQ_OPT_NO_SPARES` have no counterpart: the queue holds its bytes
+    /// in one buffer, not in chunks it allocates and keeps, so each call's
+    /// queue is checked the same whatever its spares. So have C's head,
+    /// tail and spare pointers, checked after init and once emptied: an
+    /// emptied queue starts afresh (`a_peek_ends_with_its_chunk`).
+    #[test]
+    fn unit2601_bufq() {
+        const FILE: &str = "tests/unit/unit2601.c";
+        let num = |v: &crate::c_source::Value| {
+            usize::try_from(crate::c_source::constant(FILE, v.word())).unwrap()
+        };
+        let mut buf = [0u8; 16 * 1024];
+        let mut q = ChunkQueue::new(8 * 1024, 12);
+        assert_eq!(q.read(&mut buf[..128]), 0, "read empty");
+
+        let calls = crate::c_source::calls(FILE, "check_bufq");
+        assert_eq!(calls.len(), 13);
+        // The data written, numbered so that what comes out is checked
+        // to be what went in, in order.
+        let data: Vec<u8> = (0..32 * 1024usize)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        for call in &calls {
+            let [_spares, chunk, max, wsize, rsize, _opts] = &call[..] else {
+                panic!("check_bufq's arguments: {call:?}");
+            };
+            let (chunk, max, wsize, rsize) = (num(chunk), num(max), num(wsize), num(rsize));
+            let what = format!("chunk {chunk}, max {max}, write {wsize}, read {rsize}");
+            let max_len = chunk * max;
+            let mut q = ChunkQueue::new(chunk, max);
+            assert_eq!(q.chunk_size(), chunk);
+            assert!(q.is_empty(), "{what}");
+            assert!(q.fill(&data[..wsize]).unwrap() <= wsize, "{what}");
+
+            // Write the emptied queue full.
+            q.reset();
+            let mut written = Vec::new();
+            while !q.is_full() {
+                let n = q.fill(&data[..wsize]).unwrap();
+                assert_ne!(n, 0, "{what}: no room before full");
+                written.extend_from_slice(&data[..n]);
+            }
+            assert_eq!(written.len(), max_len, "{what}: full but written wrong");
+            // Read it empty.
+            let mut read = Vec::new();
+            while !q.is_empty() {
+                let n = q.read(&mut buf[..rsize]);
+                read.extend_from_slice(&buf[..n]);
+            }
+            assert_eq!(read, written, "{what}: emptied but read wrong");
+
+            let (mut put, mut got) = (0, 0);
+            for _ in 0..1000 {
+                put += q.fill(&data[..wsize]).unwrap();
+                got += q.read(&mut buf[..rsize]);
+                assert_eq!(q.len(), put - got, "{what}: write and read in turn");
+                assert!(q.len() <= max_len, "{what}: past the hard limit");
+            }
+
+            // BUFQ_OPT_SOFT_LIMIT: every write is taken whole.
+            let mut q = ChunkQueue::new(chunk, max);
+            let mut written = Vec::new();
+            while !q.is_full() {
+                q.write(&data[..wsize]).unwrap();
+                written.extend_from_slice(&data[..wsize]);
+            }
+            assert!(written.len() >= max_len, "{what}: full but written wrong");
+            q.write(&data[..wsize]).unwrap();
+            written.extend_from_slice(&data[..wsize]);
+            let mut read = Vec::new();
+            while !q.is_empty() {
+                let n = q.read(&mut buf[..rsize]);
+                assert_ne!(n, 0, "{what}");
+                read.extend_from_slice(&buf[..n]);
+            }
+            assert_eq!(read, written, "{what}: not the same out as in");
+        }
+    }
 }

@@ -21,7 +21,7 @@ witness: curl-core easy::tests::a_failure_says_why
 
 === a trace line that just fits is cut
 file: crates/curl-core/src/trace.rs
-witness: curl-core trace::tests::ends_lines_as_c
+witness: curl-core trace::tests::unit1652_line_ends
 --- old
     if line.bytes().len() >= LINE_MAX - 2 {
 --- new

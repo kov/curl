@@ -72,7 +72,7 @@ witness: curl-core proto::http1::request::tests::connection_headers_come_last
 
 === a token matches as a prefix of a longer word
 file: crates/curl-core/src/proto/http1/fields.rs
-witness: curl-core proto::http1::fields::tests::tokens_are_found_as_c_finds_them
+witness: curl-core proto::http1::fields::tests::unit1625_tokens_are_found
 --- old
                 .is_none_or(|&b| b == b',' || is_blank(b) || is_newline(b))
 --- new
@@ -80,7 +80,7 @@ witness: curl-core proto::http1::fields::tests::tokens_are_found_as_c_finds_them
 
 === a header's value keeps its blanks
 file: crates/curl-core/src/proto/http1/fields.rs
-witness: curl-core proto::http1::fields::tests::values_are_read_as_c_reads_them
+witness: curl-core proto::http1::fields::tests::unit1626_values_are_read
 --- old
     Some(trim_blanks(&rest[..end]))
 --- new

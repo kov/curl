@@ -476,7 +476,7 @@ not a difference: it is tracked in `MILESTONES.md`.
   empty key's buffer, NULL, to a `%s` (`canon_query`, `lib/http_aws_sigv4.c`), which its printf
   writes as `(nil)`: it signs `(nil)=x`, a request no server computes the same signature for.
   Measured against the C build: its string to sign for `GET /f?=x` hashes the canonical request
-  with `(nil)=x`. Pinned by `canonical_queries_as_unit_1980`
+  with `(nil)=x`. Pinned by `unit1980_canonical_queries`
   (`crates/curl-core/src/proto/http/sigv4/tests.rs`).
 
 - **The form API refuses or leaves empty what C dereferences as NULL.** `curl_formadd` given a

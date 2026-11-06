@@ -51,7 +51,7 @@ witness: curl-core proto::http::sigv4::tests::hashes_the_payload_as_c
 
 === a decoded plus in a query stays encoded
 file: crates/curl-core/src/proto/http/sigv4.rs
-witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
+witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
 --- old
                 if decoded == b'+' {
 --- new
@@ -59,7 +59,7 @@ witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
 
 === a query of 128 components is too large
 file: crates/curl-core/src/proto/http/sigv4.rs
-witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
+witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
 --- old
         if pairs.len() + 1 == MAX_QUERY {
 --- new
@@ -67,7 +67,7 @@ witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
 
 === query parts of empty keys keep their order, whatever their values
 file: crates/curl-core/src/proto/http/sigv4.rs
-witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
+witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
 --- old
         (true, true) => std::cmp::Ordering::Equal,
 --- new
@@ -75,7 +75,7 @@ witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
 
 === S3's services sign the path as it is
 file: crates/curl-core/src/proto/http/sigv4.rs
-witness: curl-core proto::http::sigv4::tests::canonical_paths_as_unit_1979
+witness: curl-core proto::http::sigv4::tests::unit1979_canonical_paths
 --- old
         b"s3" | b"s3express" | b"s3-outposts" | b"s3-object-lambda"
 --- new

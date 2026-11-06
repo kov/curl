@@ -33,7 +33,7 @@ fn render(f: impl FnOnce(&mut String) -> std::fmt::Result) -> String {
 /// unit1606: the low-speed check, a second a step, with the speed falling
 /// by `dec` each second, times out at the second it should.
 #[test]
-fn the_speed_check_times_out_as_unit1606_says() {
+fn unit1606_speed_check() {
     for case in UNIT1606 {
         let low = LowSpeed {
             limit: NonZeroU64::new(case.limit).unwrap(),
@@ -60,7 +60,7 @@ fn the_speed_check_times_out_as_unit1606_says() {
 
 /// test1636: durations in seven columns, byte counts in six.
 #[test]
-fn the_meter_shows_numbers_as_test1636_says() {
+fn unit1636_meter_numbers() {
     for &(secs, text) in TIME2STR {
         assert_eq!(render(|s| meter::time2str(secs, s)), text, "{secs} s");
         assert_eq!(text.len(), 7, "{secs} s");

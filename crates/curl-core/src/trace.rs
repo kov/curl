@@ -811,17 +811,46 @@ mod tests {
         assert!(lines[0].ends_with(b"x\n"));
     }
 
-    /// A line that leaves room for C's newline and zero byte keeps all of
-    /// itself; a longer one keeps 2043 bytes and `...`.
+    /// unit1652: a line that leaves room for C's newline and zero byte
+    /// keeps all of itself and gains the newline; a longer one, ending in
+    /// a newline or not, keeps 2043 bytes and `...`. C's line of a NULL
+    /// string, `(nil)`, has no counterpart: a Rust string is never one.
     #[test]
-    fn ends_lines_as_c() {
+    fn unit1652_line_ends() {
+        let ended = |text: &str| {
+            let (mut line, _) = Text::<LINE_MAX>::clipped(format_args!("{text}"));
+            end_line(&mut line);
+            line.bytes().to_vec()
+        };
+        let input = "Simple Test";
+        assert_eq!(ended(input), b"Simple Test\n");
+        assert_eq!(
+            ended(&format!("{input} {} testing {}", 42, 43)),
+            b"Simple Test 42 testing 43\n"
+        );
+        assert_eq!(ended(""), b"\n");
+        let fits = "A".repeat(2045);
+        assert_eq!(ended(&fits), [fits.as_bytes(), b"\n"].concat());
+        for long in [
+            "A".repeat(2049),
+            format!("{}\n", "A".repeat(2049)),
+            "A".repeat(4095),
+        ] {
+            let cut = ended(&long);
+            assert_eq!(cut.len(), 2047, "{}", long.len());
+            assert_eq!(cut, [&long.as_bytes()[..2043], b"...\n"].concat());
+        }
+    }
+
+    /// The edges of the cut: one short of it and at it.
+    #[test]
+    fn ends_lines_at_the_edge_as_c() {
         let ended = |len: usize| {
             let long = "x".repeat(len);
             let (mut line, _) = Text::<LINE_MAX>::clipped(format_args!("{long}"));
             end_line(&mut line);
             line.bytes().to_vec()
         };
-        assert_eq!(ended(3), b"xxx\n");
         let fits = ended(LINE_MAX - 3);
         assert_eq!(fits.len(), LINE_MAX - 2);
         assert!(fits.ends_with(b"xx\n"));

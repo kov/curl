@@ -4,7 +4,7 @@
 
 === the low-speed check never fails
 file: crates/curl-core/src/progress/mod.rs
-witness: curl-core progress::tests::the_speed_check_times_out_as_unit1606_says
+witness: curl-core progress::tests::unit1606_speed_check
 --- old
                 return Err(ErrorKind::OperationTimedout);
 --- new
@@ -12,7 +12,7 @@ witness: curl-core progress::tests::the_speed_check_times_out_as_unit1606_says
 
 === the low-speed time counts from each check
 file: crates/curl-core/src/progress/mod.rs
-witness: curl-core progress::tests::the_speed_check_times_out_as_unit1606_says
+witness: curl-core progress::tests::unit1606_speed_check
 --- old
             Some(_) => {}
         }

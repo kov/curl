@@ -488,7 +488,7 @@ mod tests {
 
     /// Unit 1304: hosts and users found and not.
     #[test]
-    fn finds_entries_as_c() {
+    fn unit1304_finds_entries() {
         let scan =
             |host: &str, user: Option<&str>| scan(FILE, host.as_bytes(), user.map(str::as_bytes));
         let none = Err(NetrcError::NoMatch);
@@ -506,7 +506,7 @@ mod tests {
 
     /// Unit 1304's empty literals.
     #[test]
-    fn reads_empty_literals_as_c() {
+    fn unit1304_reads_empty_literals() {
         let scan = |text: &str| scan(text.as_bytes(), b"example.com", None);
         assert_eq!(scan("default login \"\""), found("", ""));
         assert_eq!(scan("default password \"\""), found("", ""));

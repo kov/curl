@@ -48,7 +48,7 @@ const ALL: Versions = Versions {
 
 /// unit1654: a file read, fields parsed, a lookup, and the file written.
 #[test]
-fn unit1654() {
+fn unit1654_load_parse_save() {
     let file = Temp::new(
         "1654",
         b"h2 example.com 443 h3 shiny.example.com 8443 \"20191231 00:00:00\" 0 0\n\
@@ -178,7 +178,7 @@ fn unit1654() {
 
 /// unit1669: a file of more entries than the cache keeps keeps the most.
 #[test]
-fn unit1669() {
+fn unit1669_most_entries_kept() {
     let mut text = Vec::new();
     for n in 0..5010 {
         let line = format!("h2 host{n}.example 443 h3 alt.example 443 \"20391231 00:00:00\" 0 0\n");

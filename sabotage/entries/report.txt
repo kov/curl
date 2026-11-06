@@ -3,14 +3,14 @@
 
 === STARTTRANSFER adds up on every call
 file: crates/curl-core/src/report.rs
-witness: curl-core report::tests::phases_add_up_across_a_redirect
+witness: curl-core report::tests::unit1399_phases_add_up_across_a_redirect
 --- old
             Timer::StartTransfer if self.starttransfer_added => return Marked::Ignored,
 --- new
 
 === a phase counts from the transfer's start, not its request's
 file: crates/curl-core/src/report.rs
-witness: curl-core report::tests::phases_add_up_across_a_redirect
+witness: curl-core report::tests::unit1399_phases_add_up_across_a_redirect
 --- old
         let since_single = since_start.saturating_sub(self.since_single_start());
 --- new

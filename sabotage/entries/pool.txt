@@ -200,7 +200,7 @@ witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 
 === the next attempt waits for the last to fail
 file: crates/curl-core/src/conn/connect.rs
-witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
+witness: curl-core conn::connect::tests::unit2600_attempts_race
 --- old
                 && r.last_start.is_none_or(|at| now >= at.after(delay)));
 --- new
@@ -208,7 +208,7 @@ witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
 
 === attempts run without a cap
 file: crates/curl-core/src/conn/connect.rs
-witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
+witness: curl-core conn::connect::tests::unit2600_attempts_race
 --- old
         if r.attempts.len() == MAX_ATTEMPTS {
 --- new

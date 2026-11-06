@@ -58,7 +58,7 @@ mod tests {
     /// checks it, and the patterns with a zero byte inside, which match
     /// neither host.
     #[test]
-    fn unit1397() {
+    fn unit1397_host_checks() {
         for &(host, pattern, matches) in c_tests::UNIT1397 {
             assert_eq!(
                 names(pattern, host),

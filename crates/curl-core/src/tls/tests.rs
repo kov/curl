@@ -24,7 +24,7 @@ fn text(t: &str) -> Option<Vec<u8>> {
 /// `match_ssl_primary_config` compares them: a change to any one makes
 /// a connection serve no transfer that has the other.
 #[test]
-fn every_setting_tells_two_identities_apart() {
+fn unit3303_every_setting_tells_identities_apart() {
     type Change = fn(&mut TlsIdentity);
     let changes: &[(&str, Change)] = &[
         ("verify_peer", |i| i.verify_peer = false),

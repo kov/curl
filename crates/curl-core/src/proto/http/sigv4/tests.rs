@@ -12,7 +12,7 @@ fn path(p: &str, encode: bool) -> String {
 
 /// Unit test 1979's cases.
 #[test]
-fn canonical_paths_as_unit_1979() {
+fn unit1979_canonical_paths() {
     let cases = [
         ("/a=b", true, "/a%3Db"),
         ("/a=b", false, "/a=b"),
@@ -59,7 +59,7 @@ fn query(q: &str) -> String {
 
 /// Unit test 1980's cases, and the limit on components.
 #[test]
-fn canonical_queries_as_unit_1980() {
+fn unit1980_canonical_queries() {
     let cases = [
         ("Param1=", "Param1="),
         (

@@ -19,7 +19,7 @@ witness: curl-core conn::proxy::tests::the_environment_names_proxies_as_c
 
 === a no-proxy name matches a host it only ends
 file: crates/curl-core/src/conn/proxy.rs
-witness: curl-core conn::proxy::tests::the_no_proxy_list_names_hosts_as_c
+witness: curl-core conn::proxy::tests::unit1614_no_proxy_names_hosts
 --- old
         && name[name.len() - token.len() - 1] == b'.'
 --- new

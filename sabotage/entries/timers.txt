@@ -45,7 +45,7 @@ witness: curl-core multi::timers::tests::unit1303_time_left
 
 === the error text's leg time is measured from the transfer's start
 file: crates/curl-core/src/report.rs
-witness: curl-core report::tests::phases_add_up_across_a_redirect
+witness: curl-core report::tests::unit1399_phases_add_up_across_a_redirect
 --- old
             .saturating_sub(self.since_single_start())
             / 1000

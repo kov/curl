@@ -4,7 +4,7 @@ use super::*;
 
 /// Unit 1614's cases for the address ranges.
 #[test]
-fn ranges_hold_addresses_as_c() {
+fn unit1614_ranges_hold_addresses() {
     let bits = |b: i32| u32::try_from(b).ok();
     for (ip, net, b, want) in [
         ("192.160.0.1", "192.160.0.1", 33, false),
@@ -57,7 +57,7 @@ fn ranges_hold_addresses_as_c() {
 
 /// Unit 1614's cases for the no-proxy list.
 #[test]
-fn the_no_proxy_list_names_hosts_as_c() {
+fn unit1614_no_proxy_names_hosts() {
     let long128 = "localhost,127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.\
                    127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.127.\
                    0.0.1.127.0.0.1.127.0.0.";

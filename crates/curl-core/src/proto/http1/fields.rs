@@ -195,7 +195,7 @@ mod tests {
 
     /// Unit 1626's table.
     #[test]
-    fn values_are_read_as_c_reads_them() {
+    fn unit1626_values_are_read() {
         let cases: [(&str, &str); 28] = [
             ("Header: value", "value"),
             ("Header:value", "value"),
@@ -239,7 +239,7 @@ mod tests {
 
     /// Unit 1625's table.
     #[test]
-    fn tokens_are_found_as_c_finds_them() {
+    fn unit1625_tokens_are_found() {
         let cases: [(&str, &str, &str, bool); 34] = [
             ("Encoding: gzip, chunked", "Encoding:", "chunked", true),
             ("Encoding: chunked", "Encoding:", "chunked", true),

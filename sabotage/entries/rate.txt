@@ -3,7 +3,7 @@
 
 === an update earns a step more than the time gives
 file: crates/curl-core/src/progress/rate.rs
-witness: curl-core progress::rate::tests::unit3216
+witness: curl-core progress::rate::tests::unit3216_buckets
 --- old
             elapsed_us / self.step_us()
         };
@@ -13,7 +13,7 @@ witness: curl-core progress::rate::tests::unit3216
 
 === a debt waits no longer than an empty bucket
 file: crates/curl-core/src/progress/rate.rs
-witness: curl-core progress::rate::tests::unit3216
+witness: curl-core progress::rate::tests::unit3216_buckets
 --- old
             if debt_pct != 0 {
 --- new
@@ -21,7 +21,7 @@ witness: curl-core progress::rate::tests::unit3216
 
 === the burst does not cap the tokens
 file: crates/curl-core/src/progress/rate.rs
-witness: curl-core progress::rate::tests::unit3216
+witness: curl-core progress::rate::tests::unit3216_buckets
 --- old
         if burst != 0 && self.tokens > burst {
 --- new

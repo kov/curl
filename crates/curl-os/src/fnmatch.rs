@@ -474,7 +474,7 @@ mod tests {
     /// no test of it: 1307 is in `DISABLED`, the systems differing).
     #[test]
     #[cfg(unix)]
-    fn patterns_match_as_c_s_unit_test_expects_of_linux() {
+    fn unit1307_system_matcher() {
         /// The rows macOS's `fnmatch` fails: a bracket left open, a class
         /// it does not know, and a pattern ending in a backslash.
         const MACOS_FAILS: [usize; 6] = [0, 2, 3, 100, 101, 131];
@@ -656,7 +656,7 @@ mod tests {
     /// C's unit test 1307's table, with the results it expects of C's own
     /// matcher: the one Windows uses, checked here on each platform.
     #[test]
-    fn c_s_own_matcher_gives_unit_1307_s_results() {
+    fn unit1307_own_matcher() {
         let rows: &[(&[u8], &[u8], Matched)] = &[
             (b"*[*[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[\x01\x7f[[[[[[[[[[[[[[[[[[[[[", b"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[", Matched::NoMatch),
             (b"\\[", b"[", Matched::Match),

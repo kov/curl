@@ -1195,7 +1195,7 @@ mod tests {
     /// unit1399: across a redirect each phase adds up, counted from the
     /// start of its own request, and STARTTRANSFER counts once per request.
     #[test]
-    fn phases_add_up_across_a_redirect() {
+    fn unit1399_phases_add_up_across_a_redirect() {
         let start = 12_345_678_000_000;
         let mut t = started(at(start));
         t.mark(Timer::StartOp, at(start));

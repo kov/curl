@@ -23,7 +23,7 @@ const START: u64 = 5_000_000;
 /// C's unit test 3216, line for line. Blocking is a pause, which stops
 /// the bucket from outside it; unblocking starts it over.
 #[test]
-fn unit3216() {
+fn unit3216_buckets() {
     // A limit that is no limit.
     let mut ts = at(START);
     let mut r = bucket(0, 0, ts);

@@ -4933,7 +4933,7 @@ mod tests {
     /// started, or once none runs; six run at most, the oldest making
     /// room.
     #[test]
-    fn attempts_race_as_unit_2600_has_them() {
+    fn unit2600_attempts_race() {
         use IpVersion::{Any, V4, V6};
         let raced = |v4: &[u64], v6: &[u64], most_running, failed_at| Raced {
             v4_starts: v4.to_vec(),

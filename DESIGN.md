@@ -22,6 +22,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-nghttp2` | nghttp2's HTTP/2 session, behind `curl_core::http2::Http2`. | yes: it is a binding |
 | `curl-ngtcp2` | ngtcp2 and nghttp3: QUIC and HTTP/3, behind `curl_core::http3::Http3`. | yes: it is a binding |
 | `curl-libssh` | libssh's SCP and SFTP, behind `curl_core::ssh`'s traits. | yes: it is a binding |
+| `curl-libssh2` | libssh2's SCP and SFTP, behind `curl_core::ssh2`'s traits: the SSH library a build with the `libssh2` feature takes in libssh's place. | yes: it is a binding |
 | `curl-ldap` | OpenLDAP's libldap, behind `curl_core::ldap`'s traits. | yes: it is a binding |
 | `curl-idn2` | libidn2's host names, behind `curl_core::idn::Idn`. | yes: it is a binding |
 | `curl-ares` | c-ares's resolves, behind `curl_core::conn::io::DnsLibrary`. | yes: it is a binding |

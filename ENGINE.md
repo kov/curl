@@ -325,8 +325,10 @@ curl-core/src/
     xfer.rs                  the receive side of FTP, IMAP, POP3, DICT and Gopher (`Receive`,
                              its `Source` and `Sink`): `sendrecv_dl`'s reads and traces
     ssh/                     SCP and SFTP (libssh.c): mod.rs, SshConn and the state
-                             machine over the `ssh` library traits; path.rs, the
-                             request's path, quote paths, ranges and numbers
+                             machine over the `ssh` library traits; libssh2.rs
+                             (libssh2.c), Ssh2Conn and its machine over the `ssh2`
+                             traits; path.rs, the request's path, quote paths, ranges
+                             and numbers
     ldap.rs                  LDAP (openldap.c): LdapConn, the connect's binds over the
                              `ldap` library traits, the search, the entries as LDIF;
                              ldap/local.rs, LDAP (ldap.c) over the `Local` traits
@@ -4013,6 +4015,19 @@ range and resume point, and the body read or sent.
 - **DONE** closes the file or channel and runs the commands after the transfer, blocking as
   C runs them, its waits answered as `Finish::Waiting`; the session says goodbye as the
   connection shuts down.
+- **libssh2 is the other library**, as C's configure chooses `USE_LIBSSH2` over
+  `USE_LIBSSH`: `Libraries::ssh` is an `SshLibrary`, libssh's traits or libssh2's (`ssh2.rs`,
+  answered by `curl-libssh2`), and the connect over libssh2 makes the connection's
+  `LineConn::Ssh2` (`libssh2.rs`'s `Ssh2Conn`), whose machine is `lib/vssh/libssh2.c`'s state
+  for state: every call nonblocking, its wait the session's block directions; the known-hosts
+  entry for the host picks the key type asked for before the handshake; the host key handler
+  (`CURLOPT_SSH_HOSTKEYFUNCTION`) is libssh2's alone; logins by key files, password, the
+  agent, then keyboard-interactive; SFTP's `statvfs` quote command. The `Request`, its path,
+  range and body, is the one both machines share; `Request`'s steps go to the libssh2
+  machine's when the connection holds it. SCP's channel ends with its EOF and close waited
+  for, and its connection is kept. The goodbye runs the shutdown's states blocking, a second
+  at most ("Disconnect timed out"). Under an HTTPS proxy's TLS the transfer is refused: C's
+  reads it through the library's send and receive callbacks, not built.
 
 ### 5.9 DICT and Gopher
 

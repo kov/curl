@@ -95,10 +95,13 @@ These are not covered by this build:
 
 Each of these needs its own build configuration to be measured.
 
-The rewrite binds libssh for SCP and SFTP, as distributions build libcurl, not the reference
-build's libssh2. Its SSH behaviour is checked against a C oracle of its own, `build/c-libssh`:
-the reference configuration with `CURL_USE_LIBSSH` in place of `CURL_USE_LIBSSH2`, built and
-measured by `baseline.py --libssh` and scored against by `score.py --libssh`.
+The rewrite binds libssh for SCP and SFTP by default, as distributions build libcurl, and
+libssh2, the reference build's, with the `libssh2` feature in its place, as C's configure
+chooses one. libssh's SSH behaviour is checked against a C oracle of its own,
+`build/c-libssh`: the reference configuration with `CURL_USE_LIBSSH` in place of
+`CURL_USE_LIBSSH2`, built and measured by `baseline.py --libssh` and scored against by
+`score.py --libssh`. libssh2's is checked against the reference build, by `score.py
+--libssh2`.
 
 The threaded resolver has one: a second C oracle in `build/c-threaded`, the reference build's
 configuration with `ENABLE_ARES` off and `ENABLE_THREADED_RESOLVER` on, as distributions build

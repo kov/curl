@@ -1437,7 +1437,13 @@ it there, Windows.
 103. **TLS**: GnuTLS, wolfSSL, mbedTLS, Rustls; the OpenSSL forks C supports (BoringSSL,
      AWS-LC, LibreSSL, quictls) as variants of the OpenSSL backend. **To do.**
 104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **To do.**
-105. **SSH**: libssh2. **To do.**
+105. **SSH**: libssh2. **Done** but for SSH through an HTTPS proxy: `curl-libssh2` behind the
+     core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,
+     chosen by the `libssh2` feature in place of `libssh` (the default); scored with
+     `score.py --libssh2` against the reference build: every SCP and SFTP test, 3500, 3990
+     and 3991 with them, passes as on C, and the traces of each match C's. Left: SSH through an
+     HTTPS proxy, which C reads and writes through libssh2's send and receive callbacks over
+     the proxy's TLS (`ssh_tls_recv`), is refused (`CURLE_FAILED_INIT`).
 106. **GSS-API**: Heimdal and GNU GSS beside MIT krb5, as C's build can choose. **To do.**
 
 macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the

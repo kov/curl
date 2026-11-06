@@ -778,6 +778,43 @@ mod tests {
         assert_eq!(value("dh(pub_key)").as_deref(), Some("51"));
     }
 
+    /// unit1651: curl.se's certificate of 2018 is read whole, each of its
+    /// first 45 bytes set in turn to every 17th value is read without a
+    /// crash, and a key whose exponent is a UniversalString holding
+    /// 0x200000, no Unicode code point, fails the read.
+    #[test]
+    fn unit1651_certinfo_survives_bad_bytes() {
+        let read = |name: &str| -> Vec<u8> {
+            crate::c_source::table("tests/unit/unit1651.c", name, |c| panic!("{c}"))
+                .iter()
+                .map(|b| u8::try_from(b.int()).unwrap())
+                .collect()
+        };
+        let mut cert = read("cert[] =");
+        let badkey = read("badkey[] =");
+        assert_eq!(cert.len(), 0x0F5B + 4, "the certificate was read");
+        assert_eq!(badkey.len(), 0x019B + 4, "the bad key was read");
+        let identity = curl_alloc::TryArc::try_new(crate::tls::tests::identity(|_| {})).unwrap();
+        let mut notes = crate::tls::Notes::default();
+        let extract = |der: &[u8], notes: &mut crate::tls::Notes| {
+            let mut info = CertInfo::new(1).unwrap();
+            TlsCx::testing(&identity, b"localhost", notes, |_, cx| {
+                certinfo(cx, &mut info, 0, der)
+            })
+        };
+        extract(&cert, &mut notes).unwrap();
+        for byte in (1..255).step_by(17) {
+            for i in 0..45 {
+                let backup = cert[i];
+                cert[i] = byte;
+                // Whether it reads is not asked, as C's `(void)` says.
+                let _ = extract(&cert, &mut notes);
+                cert[i] = backup;
+            }
+        }
+        assert!(extract(&badkey, &mut notes).is_err());
+    }
+
     /// Identifiers are dotted, named where C names them; padding is
     /// refused (C's unit test 1666).
     #[test]

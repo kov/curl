@@ -211,6 +211,61 @@ fn a_session_serves_only_the_settings_it_was_made_with() {
     assert!(cache.take(&one, 1000, &mut trace).is_some());
 }
 
+/// unit3304: the key of a client with a certificate and key, made twice
+/// the same, carries `KEY-V3` after the port (an exported session is
+/// found by it), and is told apart by a key, a key type or a certificate
+/// type, but not by the key's password (compared when a session is
+/// found, `a_session_serves_only_its_client`) nor by the case of a type.
+/// A delimiter inside a CA file or a cipher list makes no field of its
+/// own. The settings are C's, short words written out.
+#[test]
+fn unit3304_client_settings_in_the_key() {
+    let base = |o: &mut TlsOptions| {
+        o.ca_file = CaSetting::Unset;
+        o.ca_path = CaSetting::Unset;
+        o.cert = Some(b"client.pem".to_vec());
+        o.key = Some(b"client.key".to_vec());
+        o.key_password = Some(b"secret".to_vec());
+        o.cert_type = Some(b"PEM".to_vec());
+        o.key_type = Some(b"PEM".to_vec());
+    };
+    let make = |change: &dyn Fn(&mut TlsOptions)| {
+        let mut id = TlsIdentity {
+            verify_peer: true,
+            verify_host: true,
+            options: TlsOptions::NONE,
+            ca_defaults: CaDefaults::NONE,
+        };
+        base(&mut id.options);
+        change(&mut id.options);
+        let id = TryArc::try_new(id).unwrap();
+        let o = origin("example.com", 443);
+        let p = SessionPeer::new(&id, &o, None, &"test", Dial::Stream).unwrap();
+        String::from_utf8(p.key().to_vec()).unwrap()
+    };
+    let same = make(&|_| {});
+    assert_eq!(same, make(&|_| {}));
+    assert!(same.starts_with("https:example.com:443:KEY-V3:"), "{same}");
+    let one = make(&|o| o.ca_file = CaSetting::Given(b"/root:CApath-/certs".to_vec()));
+    let two = make(&|o| {
+        o.ca_file = CaSetting::Given(b"/root".to_vec());
+        o.ca_path = CaSetting::Given(b"/certs".to_vec());
+    });
+    assert_ne!(one, two);
+    let one = make(&|o| o.ciphers = Some(b"DEFAULT:CIPHER13-TLS_AES_128_GCM_SHA256".to_vec()));
+    let two = make(&|o| {
+        o.ciphers = Some(b"DEFAULT".to_vec());
+        o.tls13_ciphers = Some(b"TLS_AES_128_GCM_SHA256".to_vec());
+    });
+    assert_ne!(one, two);
+    assert_eq!(same, make(&|o| o.key_password = None));
+    assert_ne!(same, make(&|o| o.key = Some(b"other.key".to_vec())));
+    assert_ne!(same, make(&|o| o.key_type = Some(b"DER".to_vec())));
+    assert_ne!(same, make(&|o| o.cert_type = Some(b"P12".to_vec())));
+    assert_eq!(same, make(&|o| o.cert_type = Some(b"pem".to_vec())));
+    assert_eq!(same, make(&|o| o.key_type = Some(b"pem".to_vec())));
+}
+
 fn ticket(version: u16, valid_until: i64) -> TlsTicket {
     TlsTicket::new(b"der".to_vec(), version, None, 0, valid_until)
 }

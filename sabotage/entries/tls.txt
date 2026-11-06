@@ -460,3 +460,11 @@ witness: curl-core proto::http::tests::tls::an_https_proxy_the_tls_library_canno
         .is_some_and(|tls| tls.support().https_proxy);
 --- new
         .is_some();
+
+=== a session key holds a certificate or key type in the case it was given
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::unit3304_client_settings_in_the_key
+--- old
+                out.bytes(&[b.to_ascii_uppercase()]);
+--- new
+                out.bytes(&[*b]);

@@ -587,10 +587,29 @@ impl Url {
     }
 
     /// `parse_hostname_login`: `[user[:password][;options]]@` at the start
-    /// of the authority; returns where the host starts.
+    /// of the authority; returns where the host starts. A password or
+    /// options the login does not give leave those held; an authority
+    /// without a login, or with one refused, clears all three.
     fn parse_login(&mut self, auth: &[u8], opts: ParseOptions) -> Result<usize, UrlErrorKind> {
+        match self.take_login(auth, opts) {
+            Ok(Some(at)) => Ok(at),
+            other => {
+                self.user = None;
+                self.password = None;
+                self.options = None;
+                other.map(|_| 0)
+            }
+        }
+    }
+
+    /// The login `parse_login` takes, if the authority has one.
+    fn take_login(
+        &mut self,
+        auth: &[u8],
+        opts: ParseOptions,
+    ) -> Result<Option<usize>, UrlErrorKind> {
         let Some(at) = auth.iter().position(|&b| b == b'@') else {
-            return Ok(0);
+            return Ok(None);
         };
         let login = &auth[..at];
         let with_options = self
@@ -642,9 +661,13 @@ impl Url {
             return Err(UrlErrorKind::MalformedInput);
         }
         self.user = Some(user);
-        self.password = password;
-        self.options = options;
-        Ok(at + 1)
+        if password.is_some() {
+            self.password = password;
+        }
+        if options.is_some() {
+            self.options = options;
+        }
+        Ok(Some(at + 1))
     }
 
     /// A copy (`curl_url_dup`).
@@ -858,13 +881,7 @@ impl Url {
         let mut url = Bytes::new();
         let built = (|| {
             push(&mut url, &base[..keep])?;
-            let mut rest = rel;
-            if new_host {
-                let host_end = host_sep(rel);
-                push(&mut url, &rel[..host_end])?;
-                rest = &rel[host_end..];
-            }
-            encode::reencode(&mut url, rest, Query::NotYet)
+            urlencode(&mut url, rel, !new_host, Query::NotYet)
         })();
         // C reports any failure to build it as out of memory.
         built.map_err(|_| UrlErrorKind::OutOfMemory)?;
@@ -1219,6 +1236,15 @@ impl Url {
         out.put(self.path.as_deref().unwrap_or(b"/"))?;
         tail(&mut out)
     }
+}
+
+/// `s` re-encoded onto `out` (`urlencode_str`): a URL that is not
+/// `relative` has what runs to the end of its host copied as it is, as a
+/// host is never encoded.
+fn urlencode(out: &mut Bytes, s: &[u8], relative: bool, query: Query) -> Result<(), UrlErrorKind> {
+    let host_end = if relative { 0 } else { host_sep(s) };
+    push(out, &s[..host_end])?;
+    encode::reencode(out, &s[host_end..], query)
 }
 
 /// Where the host of `url` ends, after any `//`: at its first `/` or `?`
@@ -1985,6 +2011,138 @@ mod tests {
             let got = [&url.user, &url.password, &url.options].map(|p| p.as_deref());
             let want = [user.bytes(), password.bytes(), options.bytes()];
             assert_eq!(got, want, "{}", show(login.str()));
+        }
+    }
+
+    /// unit1675's `urlencode_str` table, read from its source: each
+    /// string re-encoded, relative or after a host copied as it is, in
+    /// or out of a query.
+    #[test]
+    fn unit1675_urlencode() {
+        let rows = crate::c_source::table("tests/unit/unit1675.c", "urlencode_test tests[]", |c| {
+            panic!("{c}")
+        });
+        assert!(rows.len() > 20, "the table was read");
+        for row in rows {
+            let [input, relative, query, out] = row.group() else {
+                panic!("{row:?}")
+            };
+            let relative = match relative.word() {
+                "TRUE" => true,
+                "FALSE" => false,
+                other => panic!("{other}"),
+            };
+            let query = match query.word() {
+                "QUERY_NO" => Query::No,
+                "QUERY_YES" => Query::Yes,
+                "QUERY_NOT_YET" => Query::NotYet,
+                other => panic!("{other}"),
+            };
+            let mut got = Bytes::new();
+            urlencode(&mut got, input.str(), relative, query).unwrap();
+            assert_eq!(
+                show(&got),
+                show(out.str()),
+                "{} {query:?}",
+                show(input.str())
+            );
+        }
+    }
+
+    /// unit1675's `parse_file` table, read from its source, its Windows
+    /// rows on Windows: each `file:` URL's path, or its refusal.
+    #[test]
+    fn unit1675_parse_file() {
+        let rows = crate::c_source::table("tests/unit/unit1675.c", "file_test tests[]", |c| {
+            assert_eq!(c, "defined(_WIN32)");
+            cfg!(windows)
+        });
+        assert!(rows.len() >= 7, "the table was read");
+        for row in rows {
+            let [input, path, fine] = row.group() else {
+                panic!("{row:?}")
+            };
+            let got = Url::default().parse_file(input.str()).map(show);
+            match fine.word() {
+                "TRUE" => assert_eq!(got, Ok(show(path.str())), "{}", show(input.str())),
+                "FALSE" => assert!(got.is_err(), "{}: {got:?}", show(input.str())),
+                other => panic!("{other}"),
+            }
+        }
+    }
+
+    /// unit1675's `parse_hostname_login` table, read from its source: a
+    /// URL holding a user, password and options, of the scheme given or
+    /// none, takes an authority's login, keeping a password or options
+    /// it does not give, and clearing all three without one or with one
+    /// refused; where the host starts.
+    #[test]
+    fn unit1675_parse_hostname_login() {
+        let rows = crate::c_source::table("tests/unit/unit1675.c", "struct test tests[]", |c| {
+            panic!("{c}")
+        });
+        assert_eq!(rows.len(), 5, "the table was read");
+        let held = |s: &[u8]| Some(s.to_vec());
+        for row in rows {
+            let [code, input, scheme, flags, user, password, options, offset] = row.group() else {
+                panic!("{row:?}")
+            };
+            let mut url = Url::default();
+            url.scheme = scheme.bytes().map(|name| Scheme {
+                name: name.to_vec(),
+                guessed: false,
+            });
+            url.user = held(b"u");
+            url.password = held(b"p");
+            url.options = held(b"o");
+            let opts = ParseOptions {
+                disallow_user: match flags.word() {
+                    "0" => false,
+                    "CURLU_DISALLOW_USER" => true,
+                    other => panic!("{other}"),
+                },
+                ..ParseOptions::NONE
+            };
+            let want = match code.word() {
+                "CURLUE_OK" => Ok(usize::try_from(offset.int()).unwrap()),
+                "CURLUE_USER_NOT_ALLOWED" => Err(UrlErrorKind::UserNotAllowed),
+                other => panic!("{other}"),
+            };
+            let name = show(input.str());
+            assert_eq!(url.parse_login(input.str(), opts), want, "{name}");
+            let got = [&url.user, &url.password, &url.options].map(|p| p.as_deref());
+            let want = [user.bytes(), password.bytes(), options.bytes()];
+            assert_eq!(got, want, "{name}");
+        }
+    }
+
+    /// unit1675's hosts, read from its source, set as a whole URL and as
+    /// a host alone: an IPv4 address in any of its forms comes back the
+    /// same, dotted, either way. Its table of `Curl_url_same_origin` has
+    /// no counterpart: the rewrite compares origins as peers, a pushed
+    /// URL's against its request's (`Request::pushed_url`), not two URL
+    /// handles.
+    #[test]
+    fn unit1675_host_parity() {
+        let rows = crate::c_source::table("tests/unit/unit1675.c", "host_test tests[]", |c| {
+            panic!("{c}")
+        });
+        assert!(rows.len() > 10, "the table was read");
+        for row in rows {
+            let [host, out] = row.group() else {
+                panic!("{row:?}")
+            };
+            let host = host.str();
+            let url = Url::parse(&[b"http://", host, b"/"].concat(), ParseOptions::NONE).unwrap();
+            let mut alone = Url::default();
+            alone
+                .set(Part::Scheme, Some(b"http"), SetOptions::NONE)
+                .unwrap();
+            alone.set(Part::Host, Some(host), SetOptions::NONE).unwrap();
+            for u in [url, alone] {
+                let got = u.get(Part::Host, GetOptions::NONE).unwrap();
+                assert_eq!(show(&got), show(out.str()), "{}", show(host));
+            }
         }
     }
 

@@ -441,22 +441,47 @@ mod tests {
         }
     }
 
-    /// unit1675's `ipv6_parse` table, and hosts ending other than in a
-    /// bracket as the C build takes them through `CURLUPART_HOST`: the
-    /// last byte stands for the bracket, but an address running to the
-    /// end has none.
+    /// unit1675's `ipv4_normalize` table, read from its source: each host
+    /// an IPv4 address in its dotted form, or not one at all.
+    #[test]
+    fn unit1675_ipv4_normalize() {
+        let rows = crate::c_source::table("tests/unit/unit1675.c", "ipv4_test tests[]", |c| {
+            panic!("{c}")
+        });
+        assert!(rows.len() > 60, "the table was read");
+        for row in rows {
+            let [input, out] = row.group() else {
+                panic!("{row:?}")
+            };
+            let input = std::str::from_utf8(input.str()).unwrap();
+            let want = out.bytes().map(|o| String::from_utf8(o.to_vec()).unwrap());
+            assert_eq!(v4(input), want, "{input}");
+        }
+    }
+
+    /// unit1675's `ipv6_parse` table, read from its source, and hosts
+    /// ending other than in a bracket as the C build takes them through
+    /// `CURLUPART_HOST`: the last byte stands for the bracket, but an
+    /// address running to the end has none.
     #[test]
     fn unit1675_ipv6_parse() {
-        assert_eq!(v6("[::1]").unwrap(), ("[::1]".into(), None));
-        assert_eq!(
-            v6("[fe80::1%eth0]").unwrap(),
-            ("[fe80::1]".into(), Some("eth0".into()))
-        );
-        assert_eq!(
-            v6("[fe80::1%25eth0]").unwrap(),
-            ("[fe80::1]".into(), Some("eth0".into()))
-        );
-        for bad in ["[::1", "[]", "[0::1", "[::1.2.3.4", "[::", "[::1%eth0"] {
+        let rows = crate::c_source::table("tests/unit/unit1675.c", "ipv6_test tests[]", |c| {
+            panic!("{c}")
+        });
+        assert_eq!(rows.len(), 5, "the table was read");
+        let text =
+            |v: &crate::c_source::Value| v.bytes().map(|b| String::from_utf8(b.to_vec()).unwrap());
+        for row in rows {
+            let [input, host, zone] = row.group() else {
+                panic!("{row:?}")
+            };
+            let input = std::str::from_utf8(input.str()).unwrap();
+            match text(host) {
+                Some(host) => assert_eq!(v6(input).unwrap(), (host, text(zone)), "{input}"),
+                None => assert_eq!(v6(input), Err(UrlErrorKind::BadIpv6), "{input}"),
+            }
+        }
+        for bad in ["[0::1", "[::1.2.3.4", "[::", "[::1%eth0"] {
             assert_eq!(v6(bad), Err(UrlErrorKind::BadIpv6), "{bad}");
         }
         for (taken, host) in [("[::1x", "[::1]"), ("[::1%", "[::1]"), ("[1::2x", "[1::2]")] {

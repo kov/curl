@@ -1549,6 +1549,10 @@ fn every_call_that_waits_is_made_again() {
         });
         let (r2, b2, s2, c2) = run_in(&waits, url, set);
         assert_eq!(r1, r2, "{url}: {s1}\n---\n{s2}");
+        // A wait is never said as a failure by the transfer's states: no
+        // line carries libssh2's number for it. (Freeing the session as it
+        // closes says any failure, a wait's too, as C's `sshc_cleanup`.)
+        assert!(!s2.contains("-37"), "{url}: {s2}");
         assert_eq!(b1, b2, "{url}");
         let mut c2: Vec<_> = c2
             .into_iter()
@@ -3693,4 +3697,162 @@ fn a_read_that_fails_fails_the_download() {
             "{url}: {said}"
         );
     }
+}
+
+/// A write callback that fails, breaking a download midway.
+struct Fails;
+
+impl WriteHandler for Fails {
+    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Wrote {
+        Wrote::Fail
+    }
+}
+
+/// Past its second, the goodbye frees what is still open blocking, as
+/// C's `sshc_cleanup` does as it disconnects: each call that waits let go
+/// of, said with its wait's number, and the rest freed after it.
+#[test]
+fn the_goodbye_frees_all_past_its_deadline() {
+    let goodbye = |url: &str, stuck: &'static str, broken: bool| {
+        let w = world_with(&[("/home/u/f", "x")], |w| w.stuck = vec![stuck]);
+        let (_, _, said, calls) = run_in(&w, url, |o| {
+            o.limits.reuse.forbid = true;
+            if broken {
+                o.callbacks.write = Some(Handler::write(Fails).unwrap());
+            }
+        });
+        let internal = w.lock().unwrap().internal.said();
+        (calls, internal, said)
+    };
+    for (url, stuck, broken, line, after) in [
+        (
+            URL,
+            "sftp_close",
+            true,
+            "* Failed to close libssh2 file: -37 ",
+            &["sftp_shutdown", "session_free"][..],
+        ),
+        (
+            "scp://u@127.0.0.1:PORT/home/u/f",
+            "channel_free",
+            true,
+            "* Failed to free libssh2 scp subsystem: -37 ",
+            &["session_free"][..],
+        ),
+        (
+            URL,
+            "sftp_shutdown",
+            false,
+            "* Failed to stop libssh2 sftp subsystem: -37 ",
+            &["session_free"][..],
+        ),
+    ] {
+        let (calls, internal, said) = goodbye(url, stuck, broken);
+        assert!(
+            internal.contains("* Disconnect timed out\n"),
+            "{stuck}: {internal}"
+        );
+        let timed_out = internal.find("Disconnect timed out").unwrap();
+        assert!(
+            internal[timed_out..].contains(line),
+            "{stuck}: {internal}\n{said}"
+        );
+        let last = calls
+            .iter()
+            .rposition(|c| *c == format!("waits {stuck}"))
+            .unwrap();
+        assert_eq!(calls[last + 1..], *after, "{stuck}: {calls:?}");
+    }
+}
+
+/// The agent the login used is let go of as the session is freed, a
+/// failure said and passed, not taken for a wait.
+#[test]
+fn the_agent_is_let_go_of_as_the_session_is_freed() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.fails = vec![
+            ("auth_publickey_fromfile", Code(-18)),
+            ("auth_password", Code(-18)),
+            ("agent_disconnect", Code(-5)),
+        ];
+        w.agent = Some(vec![(b"one".to_vec(), true)]);
+    });
+    let (r, _, said, calls) = run_in(&w, URL, |o| o.limits.reuse.forbid = true);
+    assert_eq!(r, Ok(()), "{said}");
+    let freeing: Vec<_> = calls.iter().skip_while(|c| *c != "disconnect").collect();
+    assert_eq!(
+        freeing,
+        ["disconnect", "fails agent_disconnect", "session_free"],
+        "{calls:?}"
+    );
+    let internal = w.lock().unwrap().internal.said();
+    assert!(
+        internal.contains("* Failed to disconnect from libssh2 agent: -5 fake failure\n"),
+        "{internal}"
+    );
+}
+
+/// A broken SCP download's channel failing to be freed by the goodbye is
+/// said and passed, the goodbye going on.
+#[test]
+fn a_channel_that_fails_to_be_freed_is_passed() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.fails = vec![("channel_free", Code(-5))]
+    });
+    let (r, _, said, calls) = run_in(&w, "scp://u@127.0.0.1:PORT/home/u/f", |o| {
+        o.callbacks.write = Some(Handler::write(Fails).unwrap());
+        o.limits.reuse.forbid = true;
+    });
+    assert_eq!(r, Err(ErrorKind::WriteError), "{said}");
+    let at = calls
+        .iter()
+        .position(|c| c == "fails channel_free")
+        .expect("tried");
+    assert_eq!(
+        calls[at..],
+        ["fails channel_free", "disconnect", "session_free"]
+    );
+    let internal = w.lock().unwrap().internal.said();
+    assert!(
+        internal.contains("* Failed to free libssh2 scp subsystem: -5 fake failure\n"),
+        "{internal}"
+    );
+}
+
+/// A body longer than a step reads at most a step's reads at a time, the
+/// rest left for the next step, which the multi says (`sendrecv_dl`).
+#[test]
+fn a_long_body_is_read_a_step_s_reads_at_a_time() {
+    let long = "x".repeat(11 * 1024 + 1);
+    let w = world_with(&[("/home/u/f", &long)], |w| w.trace_multi = true);
+    let (r, b, said, _) = run_in(&w, URL, |o| {
+        o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+    });
+    assert_eq!(r, Ok(()), "{said}");
+    assert_eq!(b.len(), long.len());
+    assert!(
+        said.contains("sendrecv_dl() no EAGAIN/pending data, mark as dirty"),
+        "{said}"
+    );
+}
+
+/// A download that failed runs no commands after it: C's `sftp_done`
+/// runs them only for a transfer that went well.
+#[test]
+fn a_failed_download_runs_no_commands_after_it() {
+    let w = world_with(&[("/home/u/f", "x")], |_| {});
+    let (r, _, said, calls) = run_in(&w, URL, |o| {
+        o.callbacks.write = Some(Handler::write(Fails).unwrap());
+        o.line
+            .make_mut()
+            .unwrap()
+            .postquote
+            .set([&b"rm /home/u/f"[..]])
+            .unwrap();
+    });
+    assert_eq!(r, Err(ErrorKind::WriteError), "{said}");
+    assert!(
+        !calls.iter().any(|c| c.starts_with("sftp_unlink")),
+        "{calls:?}"
+    );
 }

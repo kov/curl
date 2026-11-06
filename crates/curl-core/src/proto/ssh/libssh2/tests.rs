@@ -54,6 +54,12 @@ struct World {
     /// quarter of a second by each.
     stuck: Vec<&'static str>,
     clock: Option<ManualClock>,
+    /// What the session waits for when a call would wait.
+    dirs: PollFlags,
+    /// The multi's own trace on too, with the SSH component's.
+    trace_multi: bool,
+    /// The sizes the transfer announced: the download's and the upload's.
+    sizes: (Option<u64>, Option<u64>),
     /// The multi's internal trace, as C's debug build writes it under
     /// `CURL_DEBUG`: what is done for no transfer, a goodbye among it.
     internal: Internal,
@@ -115,6 +121,12 @@ impl Default for World {
             leaves: Vec::new(),
             stuck: Vec::new(),
             clock: None,
+            dirs: PollFlags {
+                read: true,
+                write: false,
+            },
+            trace_multi: false,
+            sizes: (None, None),
             internal: Internal::default(),
             last: Code(-31),
             error: b"fake failure".to_vec(),
@@ -157,6 +169,12 @@ impl World {
     fn waits(&mut self, name: &'static str) -> bool {
         if self.stuck.contains(&name) {
             self.call("waits", &[name.as_bytes()]);
+            let waited = self
+                .calls
+                .iter()
+                .filter(|c| c.starts_with("waits "))
+                .count();
+            assert!(waited < 50, "the goodbye never gave up on {name}");
             if let Some(clock) = &self.clock {
                 clock.advance(Duration::from_millis(250));
             }
@@ -320,10 +338,7 @@ impl Session2 for FakeSession {
         self.w().last
     }
     fn block_directions(&self) -> PollFlags {
-        PollFlags {
-            read: true,
-            write: false,
-        }
+        self.w().dirs
     }
     fn knownhost_init(&mut self) -> Result<(), Failed> {
         self.kh = true;
@@ -799,8 +814,16 @@ fn run_over(
     let ssh: &'static FakeSsh2 = Box::leak(Box::new(FakeSsh2(w.clone())));
     let mut e = Easy::new();
     let components = crate::components::Components::new().unwrap();
-    if w.lock().unwrap().trace_ssh {
-        components.configure(b"ssh");
+    let (trace_ssh, trace_multi) = {
+        let w = w.lock().unwrap();
+        (w.trace_ssh, w.trace_multi)
+    };
+    if trace_ssh || trace_multi {
+        components.configure(if trace_multi {
+            &b"ssh,multi"[..]
+        } else {
+            b"ssh"
+        });
         e.set_components(Some(components.clone()));
     }
     let internal = w.lock().unwrap().internal.clone();
@@ -831,7 +854,12 @@ fn run_over(
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let removed = m.remove(id, &mut NoEvents).unwrap();
-    w.lock().unwrap().filetime = removed.easy.report().filetime();
+    let report = removed.easy.report();
+    w.lock().unwrap().filetime = report.filetime();
+    w.lock().unwrap().sizes = (
+        report.sizes().download_expected(),
+        report.sizes().upload_expected(),
+    );
     drop(m);
     let body = body.0.lock().unwrap().clone();
     (result, body, text)
@@ -840,6 +868,16 @@ fn run_over(
 /// Collects the multi's internal trace.
 #[derive(Clone, Debug, Default)]
 struct Internal(Arc<Mutex<Vec<u8>>>);
+
+/// What the internal trace says as connection #0's protocol is told to
+/// shut down: a line of C's debug build alone.
+fn shutdown_said() -> &'static str {
+    if cfg!(feature = "debug-hooks") {
+        "* connection #0, shutdown protocol handler (aborted=0)\n"
+    } else {
+        ""
+    }
+}
 
 impl Internal {
     fn said(&self) -> String {
@@ -1936,6 +1974,14 @@ fn the_known_hosts_entry_s_key_type_is_asked_for() {
         .filter(|c| c.starts_with("knownhost_check"))
         .count();
     assert_eq!(checks, 2, "{calls:?}");
+    // The port given with the host, as it is not SSH's own: each check
+    // before the handshake.
+    let before: Vec<_> = calls
+        .iter()
+        .take_while(|c| *c != "handshake")
+        .filter(|c| c.starts_with("knownhost_check"))
+        .collect();
+    assert_eq!(before, ["knownhost_check 127.0.0.1 8022"; 2], "{calls:?}");
     // A wrong port, or another host, is not the host's entry.
     let (_, _, said, calls) = over(
         "x",
@@ -1945,6 +1991,8 @@ fn the_known_hosts_entry_s_key_type_is_asked_for() {
                 entry(Some("[127.0.0.1]:22"), KnownKeyType::ED25519),
                 entry(Some("[127.0.0.1]:x"), KnownKeyType::ED25519),
                 entry(Some("[127.0.0.12]:8022"), KnownKeyType::ED25519),
+                // As long as the host's name, not it.
+                entry(Some("[127.0.0.2]:8022"), KnownKeyType::ED25519),
                 entry(Some("127.0.0.12"), KnownKeyType::ED25519),
             ];
         },
@@ -3256,7 +3304,7 @@ fn the_goodbye_is_said_for_no_transfer() {
         if let Some((at, line)) = failed {
             lines.insert(at, line);
         }
-        lines.join("\n") + "\n"
+        format!("{}{}\n", shutdown_said(), lines.join("\n"))
     };
     for (fail, failed) in [
         ("none", None),
@@ -3292,6 +3340,303 @@ fn the_goodbye_is_said_for_no_transfer() {
     assert_eq!(r, Ok(()), "{said}");
     assert_eq!(
         w.lock().unwrap().internal.said(),
-        "* Failed to disconnect libssh2 session: -5 fake failure\n"
+        format!(
+            "{}* Failed to disconnect libssh2 session: -5 fake failure\n",
+            shutdown_said()
+        )
     );
+}
+
+/// The SSH trace says the pollset the session's wait asks for, its flags
+/// in hex: the session's wait over the body's way, as it reads or writes;
+/// nothing of one made while it asks for nothing, the multi then waiting
+/// on the live session's input (`Curl_ssh_pollset`).
+#[test]
+fn the_ssh_trace_says_what_the_session_waits_for() {
+    let said = |url: &str, dirs: (bool, bool), waiting: Vec<&'static str>, upload: bool| {
+        let w = world_with(&[("/home/u/f", "x")], |w| {
+            w.trace_multi = true;
+            w.dirs = PollFlags {
+                read: dirs.0,
+                write: dirs.1,
+            };
+            w.waiting = waiting;
+        });
+        let (r, _, said, _) = run_in(&w, url, |o| {
+            if upload {
+                uploads(o, b"up");
+            }
+        });
+        assert_eq!(r, Ok(()), "{said}");
+        said
+    };
+    let polled = |said: &str| -> Vec<String> {
+        said.lines()
+            .filter(|l| l.contains("pollset[fd="))
+            .map(str::to_owned)
+            .collect()
+    };
+    // The handshake waits both ways: once as it connects, and again
+    // once it is waited on.
+    let both = said(URL, (true, true), vec!["handshake", "handshake"], false);
+    assert!(both.contains("[SSH] pollset, flags=3\n"), "{both}");
+    assert!(
+        polled(&both)
+            .iter()
+            .any(|l| l.contains(" IN") && l.contains("OUT")),
+        "{both}"
+    );
+    // A read that waits for the session to send waits to send.
+    let sending = said(URL, (false, true), vec!["read", "read"], false);
+    assert!(sending.contains("[SSH] pollset, flags=2\n"), "{sending}");
+    assert!(!sending.contains("flags=1"), "{sending}");
+    // A write that waits for the session to read waits to read.
+    let reading = said(URL, (true, false), vec!["write", "write"], true);
+    assert!(reading.contains("[SSH] pollset, flags=1\n"), "{reading}");
+    assert!(!reading.contains("flags=2"), "{reading}");
+    // A session asking for nothing: unsaid, the multi waits on its input.
+    let quiet = said(URL, (false, false), vec!["handshake", "handshake"], false);
+    assert!(!quiet.contains("[SSH] pollset"), "{quiet}");
+    assert!(
+        polled(&quiet)
+            .iter()
+            .any(|l| l.contains("pollset[fd=1000 IN]")),
+        "{quiet}"
+    );
+}
+
+/// The sizes a transfer announces, as C's: a download's of the file the
+/// server stated, none if its stat fails; an upload's of its source, less
+/// the point it resumes from, and none for an empty one
+/// (`sftp_download_stat`, `sftp_upload_init`).
+#[test]
+fn the_sizes_announced_are_c_s() {
+    use crate::options::{Resume, ResumeOffset};
+    let sizes = |stored: &str, world: &dyn Fn(&mut World), set: &dyn Fn(&mut Options)| {
+        let w = world_with(&[("/home/u/f", stored)], |w| world(w));
+        let (r, _, said, calls) = run_in(&w, URL, |o| set(o));
+        assert_eq!(r, Ok(()), "{said}");
+        let w = w.lock().unwrap();
+        (w.sizes, calls, w.files.clone())
+    };
+    let (s, _, _) = sizes("0123456789", &|_| {}, &|_| {});
+    assert_eq!(s.0, Some(10));
+    let (s, _, _) = sizes(
+        "0123456789",
+        &|w| w.fails = vec![("sftp_stat", Code(-31))],
+        &|_| {},
+    );
+    assert_eq!(s.0, None);
+    // An upload, from its start: no seek.
+    let (s, calls, _) = sizes("old", &|_| {}, &|o| uploads(o, b"abcdef"));
+    assert_eq!(s.1, Some(6));
+    assert!(
+        !calls.iter().any(|c| c.starts_with("sftp_seek")),
+        "{calls:?}"
+    );
+    let (s, _, _) = sizes("old", &|_| {}, &|o| {
+        uploads(o, b"abcdef");
+        o.resume = Some(Resume::At(ResumeOffset::new(2).unwrap()));
+    });
+    assert_eq!(s.1, Some(4));
+    let (s, _, _) = sizes("old", &|_| {}, &|o| uploads(o, b""));
+    assert_eq!(s.1, None);
+    // Resumed at the end of a file that is there and empty: from its
+    // start, the file truncated.
+    let (_, calls, files) = sizes(
+        "",
+        &|w| {
+            w.attrs = vec![(
+                b"/home/u/f".to_vec(),
+                Attrs {
+                    flags: AttrFlags::SIZE,
+                    filesize: 0,
+                    ..Attrs::default()
+                },
+            )];
+        },
+        &|o| {
+            uploads(o, b"abc");
+            o.resume = Some(Resume::AtEnd);
+        },
+    );
+    assert_eq!(files, [(b"/home/u/f".to_vec(), b"abc".to_vec())]);
+    assert!(
+        !calls.iter().any(|c| c.starts_with("sftp_seek")),
+        "{calls:?}"
+    );
+}
+
+/// An upload's resume point at the end, its stat waiting: waited on, the
+/// file then written past what it holds, from as far into the source.
+#[test]
+fn an_upload_s_stat_that_waits_is_made_again() {
+    let w = world_with(&[("/home/u/f", "abc")], |w| w.waiting = vec!["sftp_stat"]);
+    let (r, _, said, calls) = run_in(&w, URL, |o| {
+        // As much of the source skipped as the file holds.
+        uploads(o, b"abcdef");
+        o.resume = Some(crate::options::Resume::AtEnd);
+    });
+    assert_eq!(r, Ok(()), "{said}");
+    let w = w.lock().unwrap();
+    assert_eq!(w.opened[0].1, OpenMode::Write, "{calls:?}");
+    assert_eq!(
+        w.files,
+        [(b"/home/u/f".to_vec(), b"abcdef".to_vec())],
+        "{calls:?}\n{said}"
+    );
+}
+
+/// A file's time whose stat fails is unknown, the download going on.
+#[test]
+fn a_file_time_not_stated_is_unknown() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.attrs = vec![(
+            b"/home/u/f".to_vec(),
+            Attrs {
+                flags: AttrFlags(0xf),
+                filesize: 1,
+                mtime: 1234,
+                ..Attrs::default()
+            },
+        )];
+        w.fails = vec![("sftp_stat", Code(-31))];
+    });
+    let (r, b, said, calls) = run_in(&w, URL, |o| o.filetime = true);
+    assert_eq!((r, b), (Ok(()), b"x".to_vec()), "{said}");
+    assert_eq!(w.lock().unwrap().filetime, None);
+    assert_eq!(
+        calls.iter().filter(|c| *c == "sftp_stat /home/u/f").count(),
+        1,
+        "{calls:?}"
+    );
+}
+
+/// An upload to the root that the server refuses is refused as any, no
+/// directory to make for it.
+#[test]
+fn an_upload_to_the_root_makes_no_directory() {
+    let w = world_with(&[], |w| {
+        w.refuses_writes = true;
+        w.fx = Fx::NO_SUCH_FILE;
+    });
+    let (r, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/", |o| {
+        uploads(o, b"x");
+        o.line.make_mut().unwrap().ftp.create_dirs = CreateDirs::Create;
+    });
+    assert_eq!(r, Err(ErrorKind::RemoteFileNotFound), "{said}");
+    says(&said, &["Upload failed: No such file or directory (2/-31)"]);
+    assert_eq!(
+        calls.iter().filter(|c| c.starts_with("sftp_open")).count(),
+        1,
+        "{calls:?}"
+    );
+}
+
+/// A date past what 32 bits hold is refused where a `long` is 32 bits
+/// (Windows), as C's is, and set elsewhere.
+#[test]
+fn a_late_date_is_refused_only_where_a_long_cannot_hold_it() {
+    let (r, _, said, _) = over(
+        "x",
+        URL,
+        |_| {},
+        |o| {
+            quotes(o, &["mtime \"Sat, 01 Jan 2107 00:00:00 GMT\" /home/u/f"]);
+        },
+    );
+    if size_of::<std::ffi::c_long>() < size_of::<i64>() {
+        assert_eq!(r, Err(ErrorKind::QuoteError), "{said}");
+        says(&said, &["date overflow"]);
+    } else {
+        assert_eq!(r, Ok(()), "{said}");
+    }
+}
+
+/// An upload's write failing fails it with the session's failure, as C's
+/// `sftp_send` and `scp_send` map it; a read callback's abort is the
+/// abort.
+#[test]
+fn an_upload_s_failures_are_c_s() {
+    for url in [URL, "scp://u@127.0.0.1:PORT/home/u/up"] {
+        let w = world_with(&[], |w| w.fails = vec![("write", Code(-1))]);
+        let (r, _, said, _) = run_in(&w, url, |o| uploads(o, b"abc"));
+        assert_eq!(r, Err(ErrorKind::CouldntConnect), "{url}: {said}");
+    }
+    struct Aborts;
+    impl crate::handler::ReadHandler for Aborts {
+        fn read(&self, _: &mut TransferCx<'_>, _: &mut [u8]) -> crate::handler::Read {
+            crate::handler::Read::Abort
+        }
+    }
+    let w = world_with(&[], |_| {});
+    let (r, _, said, _) = run_in(&w, URL, |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Read {
+            handler: Handler::read(Aborts).unwrap(),
+            rewind: None,
+            size: Some(3),
+        };
+    });
+    assert_eq!(r, Err(ErrorKind::AbortedByCallback), "{said}");
+}
+
+/// Host-based login is tried only if the user may and the server offers
+/// it, and goes straight on to the agent's (`SSH_AUTH_HOST`).
+#[test]
+fn host_based_login_is_visited_only_when_offered_and_allowed() {
+    use crate::options::SshAuthTypes;
+    let states = |authlist: &[u8], types: SshAuthTypes| {
+        let authlist = authlist.to_vec();
+        let w = world_with(&[("/home/u/f", "x")], move |w| {
+            w.trace_ssh = true;
+            w.authlist = Some(authlist);
+            w.fails = vec![
+                ("auth_publickey_fromfile", Code(-18)),
+                ("auth_password", Code(-18)),
+            ];
+        });
+        let (_, _, said, _) = run_in(&w, URL, |o| o.ssh.make_mut().unwrap().auth_types = types);
+        said
+    };
+    let all = SshAuthTypes::ANY;
+    let no_host = SshAuthTypes::from_bits(!0x04);
+    for said in [
+        states(b"publickey,password,keyboard-interactive", all),
+        states(
+            b"publickey,password,hostbased,keyboard-interactive",
+            no_host,
+        ),
+    ] {
+        says(
+            &said,
+            &["[SSH] [SSH_AUTH_HOST_INIT] -> [SSH_AUTH_AGENT_INIT]"],
+        );
+        assert!(!said.contains("[SSH_AUTH_HOST]"), "{said}");
+    }
+    let said = states(b"publickey,password,hostbased,keyboard-interactive", all);
+    says(
+        &said,
+        &[
+            "[SSH] [SSH_AUTH_HOST_INIT] -> [SSH_AUTH_HOST]",
+            "[SSH] [SSH_AUTH_HOST] -> [SSH_AUTH_AGENT_INIT]",
+        ],
+    );
+}
+
+/// A body's read failing fails the download with the session's failure,
+/// as C's `sftp_recv` and `scp_recv` map it.
+#[test]
+fn a_read_that_fails_fails_the_download() {
+    for url in [URL, "scp://u@127.0.0.1:PORT/home/u/f"] {
+        let w = world_with(&[("/home/u/f", "body")], |w| {
+            w.fails = vec![("read", Code(-7))]
+        });
+        let (r, b, said, _) = run_in(&w, url, |_| {});
+        assert_eq!(
+            (r, b),
+            (Err(ErrorKind::SendError), Vec::new()),
+            "{url}: {said}"
+        );
+    }
 }

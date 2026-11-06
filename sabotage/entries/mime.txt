@@ -280,3 +280,11 @@ features: test-util
         if mail && !request.replaces(b"Mime-Version") {
 --- new
         if mail {
+
+=== a mail part's name may carry a line break
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::unit3227_line_breaks_in_part_names
+--- old
+    if escaping == Escape::Backslash && (breaks(part.name) || breaks(part.filename)) {
+--- new
+    if escaping == Escape::Backslash && breaks(part.name) {

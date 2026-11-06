@@ -270,6 +270,47 @@ fn a_part_s_headers_are_c_s() {
     assert_eq!(r.size(), Some(body.len() as u64));
 }
 
+/// unit3227: a mail part whose name or file name holds a CR or an LF is
+/// refused, a plain one makes a head of whole lines, and a form's CR and
+/// LF are percent-encoded, splitting no line. C prepares one part's
+/// headers alone; here each part is a message of its own.
+#[test]
+fn unit3227_line_breaks_in_part_names() {
+    let part = |name: Option<&[u8]>, filename: Option<&[u8]>| Part {
+        name: name.map(<[u8]>::to_vec),
+        filename: filename.map(<[u8]>::to_vec),
+        content: bytes(b"x"),
+        ..Part::default()
+    };
+    let mail = |p: Part| MimeReader::mail(TryArc::try_new(tree([p])).unwrap(), &UserHeaders::NONE);
+    for p in [
+        part(None, Some(b"a\r\nX-Injected: 1")),
+        part(Some(b"a\nb"), None),
+        part(None, Some(b"a\rb")),
+    ] {
+        assert_eq!(mail(p).err(), Some(MakeError::BadName));
+    }
+    let head_lines = |body: &[u8]| -> Vec<Vec<u8>> {
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let at = text.find("Content-Disposition").unwrap();
+        let head = &text[at..at + text[at..].find("\r\n\r\n").unwrap()];
+        head.split("\r\n").map(|l| l.as_bytes().to_vec()).collect()
+    };
+    let mut r = mail(part(Some(b"field"), Some(b"readme.txt"))).unwrap();
+    let body = all(&mut r, &mut Script::default());
+    for l in head_lines(&body) {
+        assert!(!l.contains(&b'\r') && !l.contains(&b'\n'), "{l:?}");
+    }
+    let mut r = reader(tree([part(None, Some(b"a\r\nX-Injected: 1"))]));
+    let body = all(&mut r, &mut Script::default());
+    let lines = head_lines(&body);
+    assert!(
+        lines[0].ends_with(b"filename=\"a%0D%0AX-Injected: 1\""),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|l| l.starts_with(b"X-Injected")));
+}
+
 /// Quoted with backslashes, a name cannot carry a line break: the body
 /// is refused before anything is read.
 #[test]

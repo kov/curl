@@ -56,8 +56,8 @@ yet meet.
    both with their data generated from the C tests by `gen/timer_c_tests.py`, and unit 3230
    (the timer callback's dedupe, a sequence of calls rather than a table). Tests: the two anchors told apart, timers consumed by an expiry pass, an
    unchanged wake-up keeping its place, a stale key caught. `inventory/measure/ported.py` lists
-   each unit-test program as ported or missing from the Rust tests named after it, and fails on
-   a port of a program that does not exist. A new leg (`start_leg`, as at a follow) keeps `started_op` and resets
+   each unit-test program as ported or missing from the Rust tests named after it, or as having
+   no counterpart in the rewrite, and fails on a port of a program that does not exist. A new leg (`start_leg`, as at a follow) keeps `started_op` and resets
    `started_single`, pinned by the two-anchor test.
 5. **The multi, in five commits.**
    - **5a — conn: add a networkless connection pool.** **Done.** `conn/`: `Pool`, `ConnLease`,

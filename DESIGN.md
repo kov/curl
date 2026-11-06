@@ -413,5 +413,8 @@ provably test the same thing as its C original:
 - **A checker compares the two lists.** `inventory/measure/ported.py` maps the unit-test
   programs the inventory records to the Rust tests named after them (`cargo test -- --list`),
   reports each program as ported or missing, and fails on a port of a program that does not
-  exist. It does not count cases: the C tests share no notion of one. A port tests the same
-  cases as its original because its tables are generated from it.
+  exist. A program that tests a C internal with no counterpart in the rewrite (C's own lists,
+  hash table and thread pool), or that the reference build compiles to nothing, is listed in its
+  `NO_COUNTERPART` with the reason and counted apart; the checker fails if one of them gains a
+  port, or names no program. It does not count cases: the C tests share no notion of one. A
+  port tests the same cases as its original because its tables are generated or read from it.

@@ -479,11 +479,13 @@ impl Sink for Growing {
                 let fits = APRINTF_MAX - self.buf.len - self.staged - 1;
                 self.stage(&bytes[accepted..accepted + fits]);
                 accepted += fits;
-                if !self.flush() || !self.append(&bytes[accepted..=accepted]) {
-                    return accepted;
+                // Filled to the limit with its NUL, the buffer refuses
+                // that byte, and is given back.
+                if self.flush() {
+                    let refused = !self.append(&bytes[accepted..=accepted]);
+                    assert!(refused, "no byte fits past the limit");
                 }
-                accepted += 1;
-                continue;
+                return accepted;
             }
             self.stage(&bytes[accepted..accepted + n]);
             accepted += n;

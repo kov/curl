@@ -556,3 +556,11 @@ features: test-util debug-hooks
             Goodbye::Awaited { moved: true } => Some(now.after(BLOCKING_POLL)),
 --- new
             Goodbye::Awaited { moved: true } => (now < due).then_some(due),
+
+=== an MDTM time past the minute's last second is taken
+file: crates/curl-core/src/proto/ftp/reply.rs
+witness: curl-core proto::ftp::reply::tests::unit1668_mdtm_times
+--- old
+    (t.month <= 12 && t.day <= 31 && t.hour <= 23 && t.minute <= 59 && t.second <= 60).then_some(t)
+--- new
+    (t.month <= 12 && t.day <= 31 && t.hour <= 23 && t.minute <= 59 && t.second <= 70).then_some(t)

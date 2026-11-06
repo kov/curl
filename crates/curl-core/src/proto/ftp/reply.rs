@@ -293,6 +293,34 @@ mod tests {
         assert_eq!(file_time(b"213 2004x912163218\r\n"), None);
     }
 
+    /// unit1668's `ftp_213_date` table: each text after the reply's code,
+    /// the time it gives printed as the C program prints it, or none.
+    #[test]
+    fn unit1668_mdtm_times() {
+        let rows =
+            crate::c_source::table("tests/unit/unit1668.c", "test_specs[] =", |c| panic!("{c}"));
+        assert!(rows.len() > 70, "{} rows", rows.len());
+        for row in rows {
+            let [input, out, rc] = row.group() else {
+                panic!("{row:?}")
+            };
+            let mut line = b"213 ".to_vec();
+            line.extend_from_slice(input.str());
+            let got = file_time(&line).map(|t| {
+                format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    t.year, t.month, t.day, t.hour, t.minute, t.second
+                )
+            });
+            let want = match rc.word() {
+                "TRUE" => Some(String::from_utf8(out.str().to_vec()).unwrap()),
+                "FALSE" => None,
+                other => panic!("{other}"),
+            };
+            assert_eq!(got, want, "{:?}", String::from_utf8_lossy(input.str()));
+        }
+    }
+
     #[test]
     fn the_system_is_the_first_word() {
         assert_eq!(system(b"215 UNIX Type: L8\r\n"), b"UNIX");

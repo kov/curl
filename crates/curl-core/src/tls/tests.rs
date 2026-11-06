@@ -20,11 +20,41 @@ fn text(t: &str) -> Option<Vec<u8>> {
     Some(t.as_bytes().to_vec())
 }
 
+/// unit3303: a client's certificate, key, password and types; the same
+/// again matches, and another password, key, key type or certificate
+/// type each does not, until it is put back.
+#[test]
+fn unit3303_client_identity() {
+    let client = |i: &mut TlsIdentity| {
+        i.options.cert = text("client.pem");
+        i.options.key = text("client.key");
+        i.options.key_password = text("secret");
+        i.options.cert_type = text("PEM");
+        i.options.key_type = text("PEM");
+    };
+    let base = identity(client);
+    assert_eq!(base, identity(client), "identical");
+    type Change = fn(&mut TlsIdentity);
+    let changes: [(&str, Change); 4] = [
+        ("key_password", |i| i.options.key_password = text("wrong")),
+        ("key", |i| i.options.key = text("other.key")),
+        ("key_type", |i| i.options.key_type = text("DER")),
+        ("cert_type", |i| i.options.cert_type = text("P12")),
+    ];
+    for (name, change) in changes {
+        let mut changed = identity(client);
+        change(&mut changed);
+        assert_ne!(base, changed, "{name}");
+        client(&mut changed);
+        assert_eq!(base, changed, "{name} put back");
+    }
+}
+
 /// Two identities match only if every setting does, as
 /// `match_ssl_primary_config` compares them: a change to any one makes
 /// a connection serve no transfer that has the other.
 #[test]
-fn unit3303_every_setting_tells_identities_apart() {
+fn every_setting_tells_two_identities_apart() {
     type Change = fn(&mut TlsIdentity);
     let changes: &[(&str, Change)] = &[
         ("verify_peer", |i| i.verify_peer = false),

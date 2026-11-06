@@ -190,6 +190,13 @@ fn unit1669_most_entries_kept() {
     assert_eq!(a.len(), MAX_ENTRIES);
     // The oldest went.
     assert_eq!(a.entries[0].src.host, b"host10.example");
+    // test1669's own file: one line 5010 times, which loading does not
+    // merge.
+    let line = b"h2 example.com 443 h3 shiny.example.com 8443 \"20191231 00:00:00\" 0 0\n";
+    let file = Temp::new("1669-same", &line.repeat(5010));
+    let mut a = AltSvc::default();
+    a.load(file.name(), NOW).unwrap();
+    assert_eq!(a.len(), MAX_ENTRIES);
 }
 
 /// A lookup finds the first alternative of the origin to a version

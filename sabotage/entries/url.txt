@@ -426,9 +426,9 @@ witness: curl-core url::encode::tests::decodes_as_c_byte_by_byte
 file: crates/curl-core/src/url/mod.rs
 witness: curl-core url::tests::finds_a_byte_as_one_at_a_time
 --- old
-        let word = u64::from_ne_bytes(chunk) ^ spread;
+            .any(|&n| has_below(word ^ (ONES * u64::from(n)), 1))
 --- new
-        let word = u64::from_ne_bytes(chunk) ^ spread << 8;
+            .any(|&n| has_below(word ^ (ONES * u64::from(n)) << 8, 1))
 
 === a bracketed host ending inside its address is taken as one closed
 file: crates/curl-core/src/url/host.rs
@@ -437,3 +437,45 @@ witness: curl-core url::host::tests::unit1675_ipv6_parse
     let mut len = host[1..]
 --- new
     let mut len = host[1..host.len() - 1]
+
+=== the second of two needles is looked for in words too
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::finds_a_byte_as_one_at_a_time
+--- old
+        if needles
+            .iter()
+--- new
+        if needles[..1]
+            .iter()
+
+=== DEL is a bad octet in a word
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::bad_octets_are_found_in_words_as_byte_by_byte
+--- old
+        has_below(word, control + 1) || has_below(word ^ (ONES * 0x7f), 1)
+--- new
+        has_below(word, control + 1)
+
+=== the control limit holds in a word as in the tail
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::bad_octets_are_found_in_words_as_byte_by_byte
+--- old
+        has_below(word, control + 1) || has_below(word ^ (ONES * 0x7f), 1)
+--- new
+        has_below(word, control) || has_below(word ^ (ONES * 0x7f), 1)
+
+=== a kept segment ends at the next slash, not past it
+file: crates/curl-core/src/url/path.rs
+witness: curl-core url::path::tests::removes_dot_segments_as_byte_by_byte
+--- old
+        let end = 1 + super::find_byte(&input[1..], b'/').unwrap_or(input.len() - 1);
+--- new
+        let end = 2 + super::find_byte(&input[1..], b'/').unwrap_or(input.len() - 2);
+
+=== a dot segment is looked for at a % as at a dot
+file: crates/curl-core/src/url/path.rs
+witness: curl-core url::path::tests::removes_dot_segments_as_byte_by_byte
+--- old
+    while let Some(at) = super::find_any(p, *b".%") {
+--- new
+    while let Some(at) = super::find_any(p, *b".") {

@@ -73,23 +73,42 @@ pub fn unescape_into(bytes: &[u8], out: &mut [u8]) -> usize {
     encode::decode_into(bytes, |_| false, out).expect("nothing is refused")
 }
 
+/// A byte of 1 in each of a word's eight.
+pub(crate) const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+/// The high bit of each of a word's eight bytes.
+pub(crate) const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
+
+/// Whether some byte of `word` is below `n`, which is at most 128.
+pub(crate) const fn has_below(word: u64, n: u8) -> bool {
+    word.wrapping_sub(ONES * n as u64) & !word & HIGHS != 0
+}
+
 /// Where `needle` first is in `hay`, looked for eight bytes at a time as
 /// C's `strchr` and `memchr` do, not one by one.
 pub(crate) fn find_byte(hay: &[u8], needle: u8) -> Option<usize> {
-    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
-    const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
-    let spread = ONES * u64::from(needle);
+    find_any(hay, [needle])
+}
+
+/// Where the first of `needles` is in `hay`, looked for eight bytes at a
+/// time as C's `strcspn` and `memchr` do, not one by one.
+pub(crate) fn find_any<const N: usize>(hay: &[u8], needles: [u8; N]) -> Option<usize> {
     let (words, _) = hay.as_chunks::<8>();
     let mut at = 0;
     for &chunk in words {
-        let word = u64::from_ne_bytes(chunk) ^ spread;
-        // Nonzero exactly when some byte of `word` is zero.
-        if word.wrapping_sub(ONES) & !word & HIGHS != 0 {
+        let word = u64::from_ne_bytes(chunk);
+        // A byte equal to a needle is a zero byte once xor'ed with it.
+        if needles
+            .iter()
+            .any(|&n| has_below(word ^ (ONES * u64::from(n)), 1))
+        {
             break;
         }
         at += 8;
     }
-    hay[at..].iter().position(|&b| b == needle).map(|i| at + i)
+    hay[at..]
+        .iter()
+        .position(|b| needles.contains(b))
+        .map(|i| at + i)
 }
 
 /// The longest URL C accepts (`CURL_MAX_INPUT_LENGTH`); its buffers also
@@ -541,10 +560,7 @@ impl Url {
             }
         };
         let rest = &url[host_start..];
-        let host_len = rest
-            .iter()
-            .position(|&b| matches!(b, b'/' | b'?' | b'#'))
-            .unwrap_or(rest.len());
+        let host_len = find_any(rest, *b"/?#").unwrap_or(rest.len());
         let (authority, path) = rest.split_at(host_len);
         if !authority.is_empty() {
             let host = self.parse_authority(authority, opts)?;
@@ -620,7 +636,7 @@ impl Url {
         auth: &[u8],
         opts: ParseOptions,
     ) -> Result<Option<usize>, UrlErrorKind> {
-        let Some(at) = auth.iter().position(|&b| b == b'@') else {
+        let Some(at) = find_byte(auth, b'@') else {
             return Ok(None);
         };
         let login = &auth[..at];
@@ -1336,7 +1352,7 @@ fn parse_port(host: &mut Bytes, has_scheme: bool) -> Result<Option<u16>, UrlErro
             Some(_) => return Err(UrlErrorKind::BadPortNumber),
         }
     } else {
-        host.iter().position(|&b| b == b':')
+        find_byte(host, b':')
     };
     let Some(colon) = colon else {
         return Ok(None);
@@ -1494,6 +1510,9 @@ mod tests {
                             }
                             let want = hay.iter().position(|&b| b == needle);
                             assert_eq!(find_byte(&hay, needle), want, "{hay:?} {needle}");
+                            let other = needle ^ 0x55;
+                            let want = hay.iter().position(|&b| b == needle || b == other);
+                            assert_eq!(find_any(&hay, [other, needle]), want, "{hay:?}");
                         }
                     }
                 }

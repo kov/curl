@@ -28,8 +28,15 @@ pub(super) fn copy(s: &[u8]) -> Result<Bytes, UrlErrorKind> {
 /// Whether `s` holds a control byte, DEL, or a space unless allowed
 /// (`badoctets`).
 pub(super) fn bad_octets(s: &[u8], allow_space: bool) -> bool {
+    use super::{ONES, has_below};
     let control = if allow_space { 0x1f } else { 0x20 };
-    s.iter().any(|&b| b <= control || b == 0x7f)
+    // Eight bytes at a time: one below the control limit, or DEL, which
+    // xor'ed with DEL is zero.
+    let (words, tail) = s.as_chunks::<8>();
+    words.iter().any(|&w| {
+        let word = u64::from_ne_bytes(w);
+        has_below(word, control + 1) || has_below(word ^ (ONES * 0x7f), 1)
+    }) || tail.iter().any(|&b| b <= control || b == 0x7f)
 }
 
 /// Whether a re-encoded part may turn `?` into the start of a query.
@@ -497,6 +504,28 @@ mod tests {
             for reject in rejects {
                 let got = decode_rejecting(s, reject).unwrap();
                 assert_eq!(got.as_deref(), one_by_one(s, reject).as_deref(), "{s:?}");
+            }
+        }
+    }
+
+    /// Eight bytes at a time, a control byte, DEL or (unless allowed) a
+    /// space is found wherever it is, and no other byte is taken for one.
+    #[test]
+    fn bad_octets_are_found_in_words_as_byte_by_byte() {
+        for allow_space in [false, true] {
+            let bad = |b: u8| b < 0x20 || b == 0x7f || (b == b' ' && !allow_space);
+            for b in 0..=255u8 {
+                for len in 1..20 {
+                    for at in 0..len {
+                        let mut s = vec![b'a'; len];
+                        s[at] = b;
+                        assert_eq!(bad_octets(&s, allow_space), bad(b), "{b} at {at} of {len}");
+                        // Bytes around it that are not bad leave it alone.
+                        s.fill(0x80 | b);
+                        s[at] = b;
+                        assert_eq!(bad_octets(&s, allow_space), bad(b), "{b} in high bytes");
+                    }
+                }
             }
         }
     }

@@ -3261,9 +3261,9 @@ impl Request {
             std::time::Duration::from_secs(60),
             crate::time::TimeLimit::duration,
         );
-        let deadline = cx.now().after(timeout);
+        let since = cx.now();
         let listening = sock.take().expect("a socket listens");
-        let data = DataConn::listening(cx, listening, tls, deadline);
+        let data = DataConn::listening(cx, listening, tls, since, timeout);
         if let Some(old) = self.data.take() {
             old.discard(cx);
         }
@@ -3275,7 +3275,7 @@ impl Request {
             }
         }
         self.do_more = false;
-        self.due = Some(deadline);
+        self.due = Some(since.after(timeout));
         Ok(())
     }
 

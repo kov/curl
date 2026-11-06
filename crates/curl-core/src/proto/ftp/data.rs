@@ -59,11 +59,12 @@ pub(crate) struct DataConn {
 enum Phase {
     /// Being set up: its first hop dialed, then the handshakes over it.
     Connecting(ConnectMachine, SideSetup),
-    /// Listening for the server to connect, until `deadline`
+    /// Listening for the server to connect, for `wait` from `since`
     /// (`cf_tcp_accept`).
     Listening {
         sock: Sock,
-        deadline: crate::time::Instant,
+        since: crate::time::Instant,
+        wait: std::time::Duration,
     },
     /// Connected, its TLS made if `shaken`; until then, the peer it is
     /// said to be connected to once it is made.
@@ -122,7 +123,7 @@ impl DataConn {
         })
     }
 
-    /// One accepted on `sock`, listening, before `deadline`; protected by
+    /// One accepted on `sock`, listening for `wait` from `since`; protected by
     /// `tls` once connected, if given. The socket accepted is closed by the
     /// library, never the application's closer (`cf_socket_close`'s
     /// `!ctx->accepted`).
@@ -130,7 +131,8 @@ impl DataConn {
         cx: &mut StepCx<'_, H>,
         sock: Sock,
         tls: Option<DataTls>,
-        deadline: crate::time::Instant,
+        since: crate::time::Instant,
+        wait: std::time::Duration,
     ) -> DataConn {
         cx.as_second(|cx| {
             let accept = Component::TcpAccept;
@@ -143,7 +145,7 @@ impl DataConn {
             );
         });
         DataConn {
-            phase: Some(Phase::Listening { sock, deadline }),
+            phase: Some(Phase::Listening { sock, since, wait }),
             tls,
             socket: Component::TcpAccept,
             shut: None,
@@ -255,9 +257,10 @@ impl DataConn {
                         Err(e) => return Err(crate::multi::state::connect_failed(cx, &route, e)),
                     }
                 }
-                Phase::Listening { sock, deadline } => {
-                    // Its timer wakes it at the deadline itself.
-                    if cx.now() >= deadline {
+                Phase::Listening { sock, since, wait } => {
+                    // Its timer wakes it when the wait is over; counted in
+                    // milliseconds, as C counts them (`cf_tcp_accept_timeleft`).
+                    if cx.now().ms_since(since) >= crate::time::millis(wait) {
                         close_in(cx, sock);
                         return Err(trace::fail(
                             cx,
@@ -281,7 +284,7 @@ impl DataConn {
                                 format_args!("nothing heard from the server yet"),
                             );
                             side::call_waits(cx, accept);
-                            self.phase = Some(Phase::Listening { sock, deadline });
+                            self.phase = Some(Phase::Listening { sock, since, wait });
                             return Ok(Reached::Connecting);
                         }
                         Ok(Some(accepted)) => accepted,

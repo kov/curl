@@ -187,3 +187,74 @@ fn a_connect_udp_s_fields_put_its_protocol_after_authorization() {
     .concat();
     assert_eq!(fields(head, false), owned(&want));
 }
+
+/// unit2603: each request head C's HTTP/1 request parser reads, as the
+/// HTTP/2 request made of it has it (`Curl_h1_req_parse_read`, then
+/// `Curl_http_req_to_h2`): its method, the application's custom one if
+/// the line starts with it; its scheme, the default given or the
+/// origin's (none for CONNECT); its authority, the target's or the
+/// `Host:` header's; its path; and its headers, all but those HTTP/2
+/// leaves out. The pieces C feeds the parser are one head here, as the
+/// rewrite turns the head it made itself into fields, so what is left
+/// of the input past the head (`input_remain`) has no counterpart.
+#[test]
+fn unit2603_request_heads() {
+    const FILE: &str = "tests/unit/unit2603.c";
+    // The origin's scheme, which C takes when the parse found none.
+    const ORIGIN: &[u8] = b"origin-scheme";
+    let holds = |c: &str| {
+        assert_eq!(c, "!(defined(CURL_DISABLE_HTTP))");
+        true
+    };
+    let calls = crate::c_source::calls_where(FILE, "parse_success", holds);
+    assert_eq!(calls.len(), 8);
+    for call in calls {
+        let name = call[0].word().strip_prefix('&').unwrap();
+        let t = crate::c_source::table(FILE, &format!("{name} ="), |c| panic!("{c}"));
+        let [
+            input,
+            default,
+            custom,
+            method,
+            scheme,
+            authority,
+            path,
+            count,
+            _,
+        ] = &t[..]
+        else {
+            panic!("{name}: {t:?}");
+        };
+        let head: Vec<u8> =
+            crate::c_source::table(FILE, &format!("{}[] =", input.word()), |c| panic!("{c}"))
+                .iter()
+                .filter_map(|piece| piece.bytes())
+                .flatten()
+                .copied()
+                .collect();
+        let fields = fields_of(&head, custom.bytes(), default.bytes().unwrap_or(ORIGIN))
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let pairs = fields.pairs().unwrap();
+        let get = |n: &[u8]| pairs.iter().find(|(k, _)| *k == n).map(|(_, v)| *v);
+        assert_eq!(get(b":method"), method.bytes(), "{name}");
+        let want = (method.str() != b"CONNECT").then(|| scheme.bytes().unwrap_or(ORIGIN));
+        assert_eq!(get(b":scheme"), want, "{name}");
+        // The head's header lines, up to the blank one.
+        let lines: Vec<&[u8]> = head
+            .split(|&b| b == b'\n')
+            .map(|l| l.strip_suffix(b"\r").unwrap_or(l))
+            .skip(1)
+            .take_while(|l| !l.is_empty())
+            .collect();
+        assert_eq!(lines.len(), usize::try_from(count.int()).unwrap(), "{name}");
+        let host = lines.iter().find_map(|l| l.strip_prefix(b"Host: "));
+        assert_eq!(get(b":authority"), authority.bytes().or(host), "{name}");
+        assert_eq!(get(b":path"), path.bytes(), "{name}");
+        let kept = lines
+            .iter()
+            .filter(|l| !NOT_FIELDS.iter().any(|n| l.starts_with(n)))
+            .count();
+        let fields = pairs.iter().filter(|(n, _)| !n.starts_with(b":")).count();
+        assert_eq!(fields, kept, "{name}");
+    }
+}

@@ -12,8 +12,6 @@ mod format;
 use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_short, c_uint, c_ulong};
 use core::ptr;
 
-use curl_alloc::TryVec;
-
 use crate::ffi::{self, FILE};
 use crate::root;
 use format::{ArgType, Args, BUFFSIZE, CountSize, MAX, Parsed, Sink, Unparsed};
@@ -326,26 +324,186 @@ impl Sink for Stream {
     }
 }
 
-/// A growing buffer for `curl_maprintf`.
+/// The first allocation of a `DynBuf` that needs less (`MIN_FIRST_ALLOC`).
+const MIN_FIRST_ALLOC: usize = 32;
+
+/// libcurl's dynbuf as `curl_maprintf` grows it (`lib/curlx/dynbuf.c`):
+/// memory from the application's allocator, NUL-terminated after every
+/// append, allocated as C's is so that the allocator sees the same calls,
+/// and handed to the application as it is.
+struct DynBuf {
+    alloc: root::Allocator,
+    /// NULL until the first append.
+    ptr: *mut u8,
+    /// Bytes held, before the NUL.
+    len: usize,
+    /// Bytes allocated.
+    size: usize,
+}
+
+/// Why an append failed: the output is dropped either way.
+struct Refused;
+
+impl DynBuf {
+    fn new(alloc: root::Allocator) -> DynBuf {
+        DynBuf {
+            alloc,
+            ptr: ptr::null_mut(),
+            len: 0,
+            size: 0,
+        }
+    }
+
+    /// Append `mem` (`curlx_dyn_addn`): the buffer is freed if it would
+    /// pass `APRINTF_MAX` with its NUL or cannot grow.
+    fn addn(&mut self, mem: &[u8]) -> Result<(), Refused> {
+        let fit = mem.len() + self.len + 1;
+        if fit > APRINTF_MAX {
+            self.free();
+            return Err(Refused);
+        }
+        let size = if self.size == 0 {
+            fit.clamp(MIN_FIRST_ALLOC, APRINTF_MAX)
+        } else {
+            let mut a = self.size;
+            while a < fit {
+                a *= 2;
+            }
+            a.min(APRINTF_MAX)
+        };
+        if size != self.size {
+            // SAFETY: `ptr` is NULL or this allocator's block of `size`
+            // bytes, replaced by the result when that is not NULL.
+            let p = unsafe { self.alloc.realloc(self.ptr.cast(), size) }.cast::<u8>();
+            if p.is_null() {
+                self.free();
+                return Err(Refused);
+            }
+            self.ptr = p;
+            self.size = size;
+        }
+        // SAFETY: the block holds `size >= fit` bytes, room for the `len`
+        // held, `mem` and the NUL; `mem` is the caller's, not in it.
+        unsafe {
+            ptr::copy_nonoverlapping(mem.as_ptr(), self.ptr.wrapping_add(self.len), mem.len());
+        }
+        self.len += mem.len();
+        // SAFETY: within the `fit` bytes, as above.
+        unsafe { self.ptr.wrapping_add(self.len).write(0) };
+        Ok(())
+    }
+
+    /// Give the buffer back (`curlx_dyn_free`).
+    fn free(&mut self) {
+        // SAFETY: NULL or this allocator's block, not used again: the
+        // pointer is cleared with it.
+        unsafe { self.alloc.free(self.ptr.cast()) };
+        self.ptr = ptr::null_mut();
+        self.len = 0;
+        self.size = 0;
+    }
+
+    /// The NUL-terminated string, the caller's to free with `curl_free`.
+    fn into_c_string(mut self) -> *mut c_char {
+        let p = self.ptr;
+        self.ptr = ptr::null_mut();
+        p.cast()
+    }
+}
+
+impl Drop for DynBuf {
+    fn drop(&mut self) {
+        self.free();
+    }
+}
+
+/// How many bytes `curl_maprintf` stages before appending them to its
+/// buffer (`ASPRINTF_STAGE_SIZE`).
+const STAGE: usize = 512;
+
+/// The sink of `curl_maprintf`: output staged, then appended to a
+/// `DynBuf` a stageful at a time, as C's `alloc_addrun` does.
 struct Growing {
-    buf: Vec<u8>,
+    stage: [core::mem::MaybeUninit<u8>; STAGE],
+    /// Bytes of `stage` written.
+    staged: usize,
+    buf: DynBuf,
     failed: bool,
+}
+
+impl Growing {
+    fn new(alloc: root::Allocator) -> Growing {
+        Growing {
+            stage: [core::mem::MaybeUninit::uninit(); STAGE],
+            staged: 0,
+            buf: DynBuf::new(alloc),
+            failed: false,
+        }
+    }
+
+    /// Whether `more` bytes still fit the buffer's limit, counting what
+    /// is staged (`alloc_fits`).
+    fn fits(&self, more: usize) -> bool {
+        self.buf.len + self.staged + more < APRINTF_MAX
+    }
+
+    fn stage(&mut self, bytes: &[u8]) {
+        self.stage[self.staged..self.staged + bytes.len()].write_copy_of_slice(bytes);
+        self.staged += bytes.len();
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> bool {
+        if self.buf.addn(bytes).is_err() {
+            self.failed = true;
+            return false;
+        }
+        true
+    }
 }
 
 impl Sink for Growing {
     fn write(&mut self, bytes: &[u8]) -> usize {
-        // Bytes beyond the cap are refused one byte short of it, leaving
-        // room for the NUL, as libcurl's dynbuf does.
-        let room = APRINTF_MAX - 1 - self.buf.len();
-        let n = bytes.len().min(room);
-        if self.buf.try_extend_from_slice(&bytes[..n]).is_err() {
-            self.failed = true;
-            return 0;
+        let mut accepted = 0;
+        while accepted < bytes.len() {
+            let mut room = STAGE - self.staged;
+            if room == 0 {
+                if !self.flush() {
+                    return accepted;
+                }
+                room = STAGE;
+            }
+            let n = (bytes.len() - accepted).min(room);
+            if !self.fits(n) {
+                // Stage what fits, then append the first byte that does
+                // not on its own, so the limit is reported at that byte.
+                let fits = APRINTF_MAX - self.buf.len - self.staged - 1;
+                self.stage(&bytes[accepted..accepted + fits]);
+                accepted += fits;
+                if !self.flush() || !self.append(&bytes[accepted..=accepted]) {
+                    return accepted;
+                }
+                accepted += 1;
+                continue;
+            }
+            self.stage(&bytes[accepted..accepted + n]);
+            accepted += n;
         }
-        if n < bytes.len() {
-            self.failed = true;
+        accepted
+    }
+
+    fn flush(&mut self) -> bool {
+        if self.staged == 0 {
+            return true;
         }
-        n
+        let staged = core::mem::replace(&mut self.staged, 0);
+        // SAFETY: the first `staged` bytes of the stage were written by
+        // `stage`.
+        let bytes = unsafe { self.stage[..staged].assume_init_ref() };
+        if self.buf.addn(bytes).is_err() {
+            self.failed = true;
+            return false;
+        }
+        true
     }
 }
 
@@ -497,16 +655,20 @@ const _: ffi::proto::curl_mprintf = curl_mprintf;
 /// As `curl_mvaprintf(3)`: the format and arguments match.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_mvaprintf(format: *const c_char, args: VaList<'_>) -> *mut c_char {
-    let mut sink = Growing {
-        buf: Vec::new(),
-        failed: false,
-    };
+    let alloc = root::allocator();
+    let mut sink = Growing::new(alloc);
     // SAFETY: the caller's format and arguments match.
     unsafe { formatf(&mut sink, format, args) };
+    if !sink.failed {
+        sink.flush();
+    }
     if sink.failed {
         return ptr::null_mut();
     }
-    root::allocator().c_string(&sink.buf)
+    if sink.buf.len > 0 {
+        return sink.buf.into_c_string();
+    }
+    alloc.c_string(b"")
 }
 const _: ffi::proto::curl_mvaprintf = curl_mvaprintf;
 
@@ -649,5 +811,68 @@ mod tests {
         }
         assert_eq!(with_128!(c128), (128, "a".repeat(128)));
         assert_eq!(with_128!(c129, x), (0, String::new()), "129 conversions");
+    }
+
+    /// `curl_maprintf`'s buffer grows as C's dynbuf does, behind a stage
+    /// of 512 bytes: the application's allocator is asked for the sizes
+    /// C asks for, so the block handed over is as large (each checked
+    /// against libcurl's).
+    #[test]
+    fn aprintf_allocates_as_c_does() {
+        let big = [b'x'; 3000];
+        for (len, size) in [
+            (1, 32),
+            (31, 32),
+            (32, 33),
+            (100, 101),
+            (511, 512),
+            (512, 513),
+            (513, 1026),
+            (1100, 2052),
+            (2999, 4104),
+        ] {
+            let mut sink = Growing::new(root::allocator());
+            assert_eq!(sink.write(&big[..len]), len);
+            assert!(sink.flush());
+            assert_eq!((sink.buf.len, sink.buf.size), (len, size), "{len}");
+            let p = sink.buf.into_c_string();
+            // SAFETY: the NUL-terminated block the sink made.
+            assert_eq!(unsafe { CStr::from_ptr(p) }.to_bytes(), &big[..len]);
+            // SAFETY: handed over above, not used again.
+            unsafe { root::curl_free(p.cast()) };
+        }
+        // `%n` flushes the stage: the buffer is first made for what came
+        // before it, at the size C's is.
+        let mut sink = Growing::new(root::allocator());
+        assert_eq!(sink.write(b"abc"), 3);
+        assert!(sink.flush());
+        assert_eq!(sink.buf.size, 32);
+        assert_eq!(sink.write(&big), big.len());
+        assert!(sink.flush());
+        assert_eq!((sink.buf.len, sink.buf.size), (3003, 4096));
+        // Nothing written: the empty string, as C's `strdup("")`.
+        // SAFETY: a format without conversions.
+        let p = unsafe { curl_maprintf(c"".as_ptr()) };
+        // SAFETY: a C string the library made, freed once read.
+        assert_eq!(unsafe { CStr::from_ptr(p) }.to_bytes(), b"");
+        // SAFETY: as above.
+        unsafe { root::curl_free(p.cast()) };
+    }
+
+    /// Output reaching `curl_maprintf`'s limit with its NUL is refused at
+    /// the byte that passes it, and the buffer given back.
+    #[test]
+    fn aprintf_refuses_output_at_its_limit() {
+        let mut sink = Growing::new(root::allocator());
+        let chunk = vec![b'y'; 1 << 20];
+        let mut total = 0;
+        while total + chunk.len() < APRINTF_MAX {
+            assert_eq!(sink.write(&chunk), chunk.len());
+            total += chunk.len();
+        }
+        let room = APRINTF_MAX - 1 - total;
+        assert_eq!(sink.write(&chunk), room, "accepted up to the limit");
+        assert!(sink.failed);
+        assert!(sink.buf.ptr.is_null(), "the buffer is given back");
     }
 }

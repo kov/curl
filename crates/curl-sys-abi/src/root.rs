@@ -304,6 +304,25 @@ impl Allocator {
         self.raw_malloc(size)
     }
 
+    /// `p` grown or shrunk to `size` bytes, or NULL with `p` untouched; a
+    /// NULL `p` allocates.
+    ///
+    /// # Safety
+    ///
+    /// `p` is NULL or came from this allocator, and is not used again if
+    /// this succeeds.
+    #[track_caller]
+    pub(crate) unsafe fn realloc(&self, p: *mut c_void, size: usize) -> *mut c_void {
+        #[cfg(feature = "debug-hooks")]
+        // SAFETY: as the caller guarantees.
+        return unsafe { crate::debug::realloc(self, p, size, crate::debug::Source::caller()) };
+        #[cfg(not(feature = "debug-hooks"))]
+        // SAFETY: as the caller guarantees.
+        unsafe {
+            self.raw_realloc(p, size)
+        }
+    }
+
     /// Free memory from this allocator.
     ///
     /// # Safety

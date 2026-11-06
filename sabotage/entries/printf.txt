@@ -15,3 +15,27 @@ witness: curl-sys-abi printf::tests::formats_past_the_first_room_are_written_as_
     let full = if N == MAX {
 --- new
     let full = if true {
+
+=== curl_maprintf's first block is only as large as its output
+file: crates/curl-sys-abi/src/printf/mod.rs
+witness: curl-sys-abi printf::tests::aprintf_allocates_as_c_does
+--- old
+            fit.clamp(MIN_FIRST_ALLOC, APRINTF_MAX)
+--- new
+            fit.min(APRINTF_MAX)
+
+=== curl_maprintf stages less output than C before appending it
+file: crates/curl-sys-abi/src/printf/mod.rs
+witness: curl-sys-abi printf::tests::aprintf_allocates_as_c_does
+--- old
+const STAGE: usize = 512;
+--- new
+const STAGE: usize = 64;
+
+=== curl_maprintf's output may reach its limit with the NUL
+file: crates/curl-sys-abi/src/printf/mod.rs
+witness: curl-sys-abi printf::tests::aprintf_refuses_output_at_its_limit
+--- old
+        self.buf.len + self.staged + more < APRINTF_MAX
+--- new
+        self.buf.len + self.staged + more <= APRINTF_MAX

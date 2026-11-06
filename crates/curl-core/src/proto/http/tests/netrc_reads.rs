@@ -51,7 +51,7 @@ fn every_library() -> SharedLibraries {
     let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
     SharedLibraries::new(Libraries {
         tls: Some(Library::Static(tls)),
-        ssh: Some(&NoSsh),
+        ssh: Some(crate::ssh::SshLibrary::Libssh(&NoSsh)),
         ldap: Some(crate::ldap::LdapLibrary::Fd(&NoLdap)),
         ..Libraries::NONE
     })

@@ -13,13 +13,18 @@ path = "src/main.rs"
 [features]
 # Answers names by c-ares (C's `--enable-ares`), unless the threaded resolver
 # is chosen; one or the other is needed.
-default = ["c-ares", "openssl"]
+default = ["c-ares", "libssh", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
 # over ngtcp2 and Ed25519 for message signatures, or Schannel (Windows),
 # with neither, as C's build with it.
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
+# One SSH library for SCP and SFTP, chosen as the library is built: libssh
+# (C's `CURL_USE_LIBSSH`), as distributions build it, or libssh2 (C's
+# `CURL_USE_LIBSSH2`), as the reference build has it.
+libssh = ["dep:curl-libssh"]
+libssh2 = ["dep:curl-libssh2"]
 # The debug test build: track allocations as the C tool's debug build does.
 debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`).
@@ -61,7 +66,8 @@ curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-idn2 = { path = "../curl-idn2" }
-curl-libssh = { path = "../curl-libssh" }
+curl-libssh = { path = "../curl-libssh", optional = true }
+curl-libssh2 = { path = "../curl-libssh2", optional = true }
 curl-ldap = { path = "../curl-ldap" }
 curl-nghttp2 = { path = "../curl-nghttp2" }
 curl-ngtcp2 = { path = "../curl-ngtcp2", optional = true }

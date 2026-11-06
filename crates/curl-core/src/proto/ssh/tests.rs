@@ -809,7 +809,7 @@ fn added_with_tls(
     }
     e.set_libraries(
         SharedLibraries::new(Libraries {
-            ssh: Some(ssh),
+            ssh: Some(crate::ssh::SshLibrary::Libssh(ssh)),
             tls,
             ..Libraries::NONE
         })
@@ -1373,7 +1373,7 @@ impl crate::handler::SshKeyHandler for Decides {
         found: crate::handler::HostKey<'_>,
         matched: KeyMatch,
     ) -> crate::handler::KeyVerdict {
-        assert_eq!(found.base64, b"AAAA");
+        assert_eq!(found.key, b"AAAA");
         assert_eq!(known.is_some(), matched != KeyMatch::Missing);
         self.1.lock().unwrap().push(matched);
         self.0

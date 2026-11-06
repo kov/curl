@@ -256,12 +256,26 @@ pub trait PrereqHandler: Send + Sync {
     ) -> Result<(), crate::multi::Abort>;
 }
 
-/// A host key, as an SSH key handler is given it: base64, as a
-/// known-hosts file holds it, and its type.
+/// A host key, as an SSH key handler is given it: its bytes, how they
+/// are written, and its type.
 #[derive(Clone, Copy, Debug)]
 pub struct HostKey<'a> {
-    pub base64: &'a [u8],
+    pub key: &'a [u8],
+    pub encoding: KeyEncoding,
     pub kind: crate::ssh::KeyType,
+}
+
+/// How a host key's bytes are written, as each SSH library gives them
+/// (`struct curl_khkey`'s `key` and `len`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyEncoding {
+    /// Base64, as a known-hosts file holds it, its length told (libssh's).
+    Base64,
+    /// Base64 its length is not told of, to be read as a string ended by
+    /// a zero byte (libssh2's known key, `len` 0).
+    Base64Text,
+    /// The key's own bytes, its length told (libssh2's found key).
+    Raw,
 }
 
 /// How the server's key compares with the known-hosts file's
@@ -272,6 +286,17 @@ pub enum KeyMatch {
     Mismatch,
     /// The file has none for the host.
     Missing,
+    /// The file could not be checked (libssh2's
+    /// `LIBSSH2_KNOWNHOST_CHECK_FAILURE`, passed on as the number past
+    /// C's names).
+    Failure,
+}
+
+/// Decides on an SSH server's key, raw, of type `kind`, in place of the
+/// known-hosts file (`CURLOPT_SSH_HOSTKEYFUNCTION`, libssh2's alone):
+/// whether it is fine.
+pub trait SshHostKeyHandler: Send + Sync {
+    fn check(&self, cx: &mut TransferCx<'_>, kind: crate::ssh::KeyType, key: &[u8]) -> bool;
 }
 
 /// What an SSH key handler decides of the server's key
@@ -508,6 +533,12 @@ impl Handler<dyn PrereqHandler> {
 
 impl Handler<dyn SshKeyHandler> {
     pub fn ssh_key(handler: impl SshKeyHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn SshHostKeyHandler> {
+    pub fn ssh_host_key(handler: impl SshHostKeyHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

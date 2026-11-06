@@ -374,6 +374,16 @@ not a difference: it is tracked in `MILESTONES.md`.
 
 ## Input C misreads
 
+- **An SFTP quote command's group or owner is read as a number, over libssh2.** `chgrp` and
+  `chown` take a decimal id up to what a `curl_off_t` holds, as C's libssh2 build means to
+  (`curlx_str_number` bounded by `ULONG_MAX`, `lib/vssh/libssh2.c`). That bound is -1 as a
+  `curl_off_t` where a `long` is 64 bits, so C reads no id at all: its debug build aborts on
+  `DEBUGASSERT(max >= 0)` in `str_num_base`, and its release build fails every such command
+  with `Syntax error: chgrp gid not a number` (21, `CURLE_QUOTE_ERROR`). Measured against the
+  C build: `-Q "chgrp 1000 file"` over SFTP aborts it. C's libssh build bounds the id by
+  `UINT_MAX` and reads it. Pinned by `chgrp_and_chown_take_an_id_past_32_bits`
+  (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`).
+
 - **A zero byte in a config file line ends that line, and nothing else.** C's `get_line`
   (`src/tool_parsecfg.c`) reads in 128-byte `fgets` pieces and takes each as a string: the rest
   of a piece after a zero is lost, its newline with it, so the next line is glued onto this one

@@ -28,6 +28,9 @@ pub(crate) enum LineConn {
     /// SCP's and SFTP's: the SSH library's session over the connection's
     /// socket, and where its state machine is.
     Ssh(crate::proto::ssh::SshConn),
+    /// SCP's and SFTP's over libssh2: its session over the connection's
+    /// socket, and where its state machine is.
+    Ssh2(crate::proto::ssh::libssh2::Ssh2Conn),
     /// LDAP's: the library's session over a copy of the connection's
     /// socket, and where its set-up is.
     Ldap(crate::proto::ldap::LdapConn),
@@ -73,6 +76,7 @@ impl LineConn {
             LineConn::Smtp(ref mut p) => return p.goodbye(cx, below, dead),
             // Said dead or not, as C's SSH disconnect ignores it.
             LineConn::Ssh(ref mut p) => p.goodbye(cx),
+            LineConn::Ssh2(ref mut p) => p.goodbye(cx, below),
             // Unbound dead or not, as C's LDAP disconnect ignores it.
             LineConn::Ldap(ref mut p) => p.goodbye(cx, below),
             LineConn::Ws(_) | LineConn::Rtsp(_) => {}

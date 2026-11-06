@@ -1,0 +1,23 @@
+[package]
+name = "curl-libssh2"
+description = "SCP and SFTP for the curl rewrite, from libssh2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "ssh2"
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+curl-os = { path = "../curl-os" }
+# `struct stat`, which `libssh2_scp_recv2` fills, and `malloc`, which the
+# keyboard-interactive answers are made with for libssh2 to free.
+libc = "0.2"
+
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+cc = "1.10.0"
+
+[lints]
+workspace = true

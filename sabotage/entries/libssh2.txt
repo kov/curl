@@ -1,0 +1,34 @@
+# SCP and SFTP over libssh2 (crates/curl-core/src/proto/ssh/libssh2.rs),
+# over the fake libssh2 in its tests.
+
+=== a known-hosts entry of a longer host name is taken for the host's
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::the_host_s_known_hosts_entry_picks_its_key_type
+--- old
+                        if size == host.len() && name[1..1 + size] == host[..] {
+--- new
+                        if name[1..].starts_with(&host) {
+
+=== an upload's directories are made again each time its file cannot be
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::an_upload_s_directories_are_made_once
+--- old
+            if sc.second_create_dirs {
+--- new
+            if sc.second_create_dirs && sc.slash > 1000 {
+
+=== a group or owner past 32 bits is refused
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::chgrp_and_chown_take_an_id_past_32_bits
+--- old
+    let id = || path::number(&arg, i64::MAX, 10).map(|(n, _)| n.unsigned_abs());
+--- new
+    let id = || path::number(&arg, i64::from(u32::MAX), 10).map(|(n, _)| n.unsigned_abs());
+
+=== the host key handler's refusal is passed over
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::the_host_key_handler_decides_on_the_raw_key
+--- old
+            if !fine {
+--- new
+            if false {

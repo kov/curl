@@ -43,6 +43,7 @@ pub mod report;
 mod save;
 pub mod share;
 pub mod ssh;
+pub mod ssh2;
 pub mod sspi;
 #[cfg(test)]
 mod test_cell;

@@ -364,13 +364,11 @@ const SHOWN_IP_MAX: usize = 46;
 file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi setopt::tests::takes_the_ssh_options_as_c_s_libssh_build
 --- old
+        (ffi::CURLOPT_SSH_HOSTKEYFUNCTION | ffi::CURLOPT_SSH_HOSTKEYDATA, _) => {
             return Err(Refused::Unknown);
-        }
-        (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
 --- new
+        (ffi::CURLOPT_SSH_HOSTKEYFUNCTION | ffi::CURLOPT_SSH_HOSTKEYDATA, _) => {
             return Err(Refused::NotBuiltIn);
-        }
-        (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
 
 === the shim's seek takes an unknown answer for one that cannot seek
 file: crates/curl-sys-abi/src/callbacks.rs

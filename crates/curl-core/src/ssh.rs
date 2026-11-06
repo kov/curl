@@ -11,6 +11,15 @@ use std::ops::BitOr;
 use curl_alloc::OutOfMemory;
 use curl_os::socket::BorrowedSocket;
 
+/// The SSH library a build has, as C's configure chooses it, and so
+/// which of C's files drives it: libssh (`USE_LIBSSH`,
+/// `lib/vssh/libssh.c`) or libssh2 (`USE_LIBSSH2`, `lib/vssh/libssh2.c`).
+#[derive(Clone, Copy, Debug)]
+pub enum SshLibrary {
+    Libssh(&'static dyn Ssh),
+    Libssh2(&'static dyn crate::ssh2::Ssh2),
+}
+
 /// An SSH library.
 pub trait Ssh: fmt::Debug + Send + Sync {
     /// A new session, set to nothing yet (`ssh_new`); none if the

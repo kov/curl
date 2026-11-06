@@ -44,6 +44,7 @@ mod root;
 mod setopt;
 mod share;
 mod sockets;
+mod sshlib;
 mod ssls;
 mod strerror;
 mod strings;

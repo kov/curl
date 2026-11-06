@@ -2492,6 +2492,9 @@ pub struct Ssh {
     /// Decides on the server's key, against the known-hosts file's
     /// (`CURLOPT_SSH_KEYFUNCTION`).
     pub key_handler: Option<Handler<dyn crate::handler::SshKeyHandler>>,
+    /// Decides on the server's key in place of the known-hosts file
+    /// (`CURLOPT_SSH_HOSTKEYFUNCTION`): libssh2's alone.
+    pub host_key_handler: Option<Handler<dyn crate::handler::SshHostKeyHandler>>,
     /// zlib compression is offered (`CURLOPT_SSH_COMPRESSION`).
     pub compression: bool,
     /// What a directory SFTP makes may be opened for
@@ -2732,6 +2735,7 @@ impl ColdGroup for Ssh {
         host_key_sha256: None,
         known_hosts: None,
         key_handler: None,
+        host_key_handler: None,
         compression: false,
         new_directory_mode: FileMode::DIRECTORY,
     };
@@ -2747,6 +2751,7 @@ impl Ssh {
             host_key_sha256: self.host_key_sha256.as_deref().map(copy).transpose()?,
             known_hosts: self.known_hosts.as_deref().map(copy).transpose()?,
             key_handler: self.key_handler.clone(),
+            host_key_handler: self.host_key_handler.clone(),
             compression: self.compression,
             new_directory_mode: self.new_directory_mode,
         })

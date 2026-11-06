@@ -13,6 +13,7 @@
 //! from its channel's, only an SFTP file's reads and writes left
 //! nonblocking.
 
+pub(crate) mod libssh2;
 mod path;
 
 use std::fmt;
@@ -713,6 +714,7 @@ impl Request {
     fn pollset(io: Directions, line: Option<&LineConn>) -> Events {
         match Self::waited(io, line) {
             Some(events) => events,
+            None if libssh2::ssh2_on(line).is_some_and(|sc| sc.waits().1) => Events::IN,
             None if ssh_on(line).is_some_and(|sc| sc.session.is_some()) => Events::IN,
             None => Events::NONE,
         }
@@ -721,7 +723,10 @@ impl Request {
     /// What the session's wait, else the body's way `io`, asks for, if
     /// either asks: the pollset C traces as it makes it.
     fn waited(io: Directions, line: Option<&LineConn>) -> Option<Events> {
-        let waitfor = ssh_on(line).map_or(PollFlags::default(), |sc| sc.waitfor);
+        let waitfor = match libssh2::ssh2_on(line) {
+            Some(sc) => sc.waits().0,
+            None => ssh_on(line).map_or(PollFlags::default(), |sc| sc.waitfor),
+        };
         let (read, write) = if waitfor.read || waitfor.write {
             (waitfor.read, waitfor.write)
         } else {
@@ -1184,11 +1189,13 @@ impl Request {
         let verdict = handler.check(
             &mut crate::multi::TransferCx::new(cx),
             known.as_ref().map(|(b, kind)| crate::handler::HostKey {
-                base64: b,
+                key: b,
+                encoding: crate::handler::KeyEncoding::Base64,
                 kind: *kind,
             }),
             crate::handler::HostKey {
-                base64: found,
+                key: found,
+                encoding: crate::handler::KeyEncoding::Base64,
                 kind: key.kind,
             },
             matched,
@@ -1981,6 +1988,9 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
+        if libssh2::ssh2_on(lease.conn().line()).is_some() {
+            return self.step2(cx, lease);
+        }
         self.base.pipeline.flush(cx)?;
         let sc = ssh_of(lease);
         if self.receiving {
@@ -2028,6 +2038,9 @@ impl Request {
         next: &AfterRequest,
         exchanged: bool,
     ) -> Finish {
+        if libssh2::ssh2_on(lease.conn().line()).is_some() {
+            return self.done2(cx, lease, result, premature, next, exchanged);
+        }
         if result.is_ok() && lease.conn().keeps_line() {
             let sc = ssh_of(lease);
             if sc.sftp {
@@ -2058,6 +2071,9 @@ impl Request {
         lease: &mut ConnLease,
         exchanged: bool,
     ) -> Finish {
+        if libssh2::ssh2_on(lease.conn().line()).is_some() {
+            return self.finishing2(cx, lease, exchanged);
+        }
         let ran = self.run(cx, lease);
         let checked = crate::progress::check(cx, exchanged);
         match (ran, checked) {
@@ -2093,7 +2109,7 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         let sftp = self.base.peer.scheme() == Scheme::of("sftp");
         cx.ssh(format_args!("myssh_connect"));
-        let Some(library) = cx.easy().libraries().ssh else {
+        let Some(crate::ssh::SshLibrary::Libssh(library)) = cx.easy().libraries().ssh else {
             return Err(ErrorKind::UnsupportedProtocol);
         };
         let Some(mut session) = library.session() else {
@@ -2837,6 +2853,7 @@ impl<H: Host> Outlet<H> for SshOutlet<'_> {
 fn ssh_on(line: Option<&LineConn>) -> Option<&SshConn> {
     match line {
         Some(LineConn::Ssh(sc)) => Some(sc),
+        Some(LineConn::Ssh2(_)) => None,
         Some(_) => unreachable!("an SSH transfer's connection keeps SSH's state"),
         None => None,
     }
@@ -2856,6 +2873,9 @@ impl super::Phases for Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<Connect, ErrorKind> {
+        if let Some(crate::ssh::SshLibrary::Libssh2(library)) = cx.easy().libraries().ssh {
+            return self.connect2(cx, lease, library);
+        }
         if !lease.conn().keeps_line() {
             self.conn_state(cx, lease)?;
         }
@@ -2872,6 +2892,9 @@ impl super::Phases for Request {
         lease: &mut ConnLease,
         asked: DoPhase,
     ) -> Result<DoStep, ErrorKind> {
+        if libssh2::ssh2_on(lease.conn().line()).is_some() {
+            return self.make2(cx, lease, asked);
+        }
         let ran = match asked {
             DoPhase::Do => {
                 self.size = None;

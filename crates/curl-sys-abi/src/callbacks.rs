@@ -15,10 +15,10 @@ use core::ptr::{self, NonNull};
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::handler::{
     ChunkBegin, ChunkBeginHandler, ChunkEndHandler, DebugHandler, DebugKind, FileInfo, FileType,
-    FnMatchHandler, Handler, HeaderHandler, HeaderOrigin, HostKey, KeyMatch, KeyVerdict, LentBytes,
-    Matched, ProgressHandler, ProgressNow, ProgressVerdict, Read, ReadHandler, Rewind,
-    RewindFailed, SeekFailed, SshKeyHandler, TextSink, TrailerHandler, TrailerLines, Trailers,
-    Write, WriteHandler,
+    FnMatchHandler, Handler, HeaderHandler, HeaderOrigin, HostKey, KeyEncoding, KeyMatch,
+    KeyVerdict, LentBytes, Matched, ProgressHandler, ProgressNow, ProgressVerdict, Read,
+    ReadHandler, Rewind, RewindFailed, SeekFailed, SshHostKeyHandler, SshKeyHandler, TextSink,
+    TrailerHandler, TrailerLines, Trailers, Write, WriteHandler,
 };
 use curl_core::multi::TransferCx;
 use curl_core::options::{Method, Options, Progress, UploadSource};
@@ -101,6 +101,10 @@ pub(crate) struct CCallbacks {
     /// `CURLOPT_SSH_KEYFUNCTION` and `CURLOPT_SSH_KEYDATA`.
     pub(crate) ssh_key: ffi::curl_sshkeycallback,
     pub(crate) ssh_key_data: *mut c_void,
+    /// `CURLOPT_SSH_HOSTKEYFUNCTION` and `CURLOPT_SSH_HOSTKEYDATA`,
+    /// libssh2's alone.
+    pub(crate) ssh_host_key: ffi::curl_sshhostkeycallback,
+    pub(crate) ssh_host_key_data: *mut c_void,
     /// Where text goes without a debug function (`CURLOPT_STDERR`).
     pub(crate) stderr: *mut libc::FILE,
 }
@@ -188,6 +192,8 @@ impl CCallbacks {
             trailer_data: ptr::null_mut(),
             ssh_key: None,
             ssh_key_data: ptr::null_mut(),
+            ssh_host_key: None,
+            ssh_host_key_data: ptr::null_mut(),
             stderr: error,
         }
     }
@@ -255,6 +261,7 @@ pub(crate) fn install_defaults(
     sync_progress(options, easy, set, ccb)?;
     sync_trailer(options, easy, ccb)?;
     sync_ssh_key(options, easy, ccb)?;
+    sync_ssh_host_key(options, easy, ccb)?;
     sync_input(options, easy, ccb)?;
     sync_upload(options, easy, set)
 }
@@ -461,6 +468,26 @@ pub(crate) fn sync_ssh_key(
             options.ssh.make_mut()?.key_handler = Some(Handler::ssh_key(Adapter(easy))?);
         }
         (false, true) => options.ssh.make_mut()?.key_handler = None,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The SSH host key adapter, while there is a host key function.
+pub(crate) fn sync_ssh_host_key(
+    options: &mut Options,
+    easy: NonNull<ShimEasy>,
+    ccb: &CCallbacks,
+) -> Result<(), OutOfMemory> {
+    let set = options
+        .ssh
+        .made_mut()
+        .is_some_and(|s| s.host_key_handler.is_some());
+    match (ccb.ssh_host_key.is_some(), set) {
+        (true, false) => {
+            options.ssh.make_mut()?.host_key_handler = Some(Handler::ssh_host_key(Adapter(easy))?);
+        }
+        (false, true) => options.ssh.make_mut()?.host_key_handler = None,
         _ => {}
     }
     Ok(())
@@ -880,10 +907,10 @@ impl TrailerHandler for Adapter {
 
 impl SshKeyHandler for Adapter {
     /// The key function, given the known-hosts file's key and the
-    /// server's as `struct curl_khkey`, each in base64 ended by a zero
-    /// byte, its length the text's as C's libssh code gives it, how they
-    /// compare and its data; an answer it has no name for rejects the
-    /// key.
+    /// server's as `struct curl_khkey`, each ended by a zero byte, its
+    /// length as the SSH library's C code gives it (the base64 text's,
+    /// none for a text, or the raw key's), how they compare and its data;
+    /// an answer it has no name for rejects the key.
     fn check(
         &self,
         cx: &mut TransferCx<'_>,
@@ -895,25 +922,29 @@ impl SshKeyHandler for Adapter {
         let Some(f) = ccb.ssh_key else {
             return KeyVerdict::Reject;
         };
-        let (Ok(known_text), Ok(found_text)) = (
-            known.map(|k| c_text(k.base64)).transpose(),
-            c_text(found.base64),
-        ) else {
+        let (Ok(known_text), Ok(found_text)) =
+            (known.map(|k| c_text(k.key)).transpose(), c_text(found.key))
+        else {
             return KeyVerdict::Reject;
         };
-        let khkey = |text: &[u8], kind| ffi::curl_khkey {
+        let khkey = |text: &[u8], key: HostKey<'_>| ffi::curl_khkey {
             key: text.as_ptr().cast(),
-            // Without its zero byte (`strlen`).
-            len: text.len() - 1,
-            keytype: key_type(kind),
+            len: match key.encoding {
+                // Without its zero byte (`strlen`).
+                KeyEncoding::Base64 | KeyEncoding::Raw => text.len() - 1,
+                // Read to its zero byte.
+                KeyEncoding::Base64Text => 0,
+            },
+            keytype: key_type(key.kind),
         };
-        let known = known.map(|k| khkey(known_text.as_deref().unwrap_or_default(), k.kind));
-        let found = khkey(&found_text, found.kind);
+        let known = known.map(|k| khkey(known_text.as_deref().unwrap_or_default(), k));
+        let found = khkey(&found_text, found);
         let known_ptr = known.as_ref().map_or(ptr::null(), |k| k as *const _);
         let matched = match matched {
             KeyMatch::Ok => ffi::CURLKHMATCH_OK,
             KeyMatch::Mismatch => ffi::CURLKHMATCH_MISMATCH,
             KeyMatch::Missing => ffi::CURLKHMATCH_MISSING,
+            KeyMatch::Failure => ffi::CURLKHMATCH_LAST,
         };
         let handle = self.handle();
         // SAFETY: the application's key function takes the handle, the
@@ -929,6 +960,25 @@ impl SshKeyHandler for Adapter {
             a if a == ffi::CURLKHSTAT_FINE_REPLACE.0 => KeyVerdict::FineReplace,
             _ => KeyVerdict::Reject,
         }
+    }
+}
+
+impl SshHostKeyHandler for Adapter {
+    /// The host key function, given its data, the key's type as
+    /// `enum curl_khtype` names it, and the raw key and its length: only
+    /// `CURLKHMATCH_OK` takes the key.
+    fn check(&self, cx: &mut TransferCx<'_>, kind: curl_core::ssh::KeyType, key: &[u8]) -> bool {
+        let ccb = self.easy().ccb.get();
+        let Some(f) = ccb.ssh_host_key else {
+            return false;
+        };
+        let kind = key_type(kind).0;
+        // SAFETY: the application's host key function takes its data, the
+        // key's type, and the key's bytes, alive through the call.
+        let answer = self.call(cx, || unsafe {
+            f(ccb.ssh_host_key_data, kind, key.as_ptr().cast(), key.len())
+        });
+        answer == ffi::CURLKHMATCH_OK.0
     }
 }
 

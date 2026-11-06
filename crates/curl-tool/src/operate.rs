@@ -4361,7 +4361,7 @@ impl Linked {
                 idn: Some(curl_idn2::IDN),
                 h2: Some(&curl_nghttp2::NGHTTP2),
                 h3: crate::tlslib::H3,
-                ssh: Some(&curl_libssh::LIBSSH),
+                ssh: Some(crate::sshlib::LIBRARY),
                 ldap: curl_ldap::library(),
                 psl: Some(&curl_psl::LIBPSL),
                 random: random()?,

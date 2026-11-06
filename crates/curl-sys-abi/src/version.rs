@@ -184,7 +184,13 @@ fn info() -> &'static curl_version_info_data {
     let zstd = ZSTD.get_or_init(|| cbuf(format_args!("zstd/{}", curl_zstd::version())));
     let quic = crate::tlslib::quic().map(|q| QUIC.get_or_init(|| cbuf(format_args!("{q}"))));
     // Named, as C's `Curl_ssh_version` names it.
-    let libssh = LIBSSH.get_or_init(|| cbuf(format_args!("libssh/{}", curl_libssh::version())));
+    let libssh = LIBSSH.get_or_init(|| {
+        cbuf(format_args!(
+            "{}/{}",
+            crate::sshlib::NAME,
+            crate::sshlib::version()
+        ))
+    });
     &INFO
         .get_or_init(|| {
             Data(curl_version_info_data {
@@ -244,7 +250,7 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let ares = Library("c-ares", crate::ares::version());
             let idn = curl_idn2::Shown;
             let psl = Library("libpsl", curl_psl::version());
-            let ssh = Library("libssh", curl_libssh::version());
+            let ssh = Library(crate::sshlib::NAME, crate::sshlib::version());
             let h2 = Library("nghttp2", curl_nghttp2::version());
             // A build without QUIC names no QUIC library.
             let h3 = crate::tlslib::quic();
@@ -348,7 +354,7 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -357,7 +363,8 @@ mod tests {
             ares_shown(),
             curl_idn2::Shown,
             curl_psl::version(),
-            curl_libssh::version(),
+            crate::sshlib::NAME,
+            crate::sshlib::version(),
             curl_nghttp2::version(),
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),

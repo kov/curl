@@ -145,6 +145,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-libssh2"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "curl-alloc",
+ "curl-build",
+ "curl-core",
+ "curl-os",
+ "libc",
+]
+
+[[package]]
 name = "curl-nghttp2"
 version = "0.1.0"
 dependencies = [
@@ -234,6 +246,7 @@ dependencies = [
  "curl-idn2",
  "curl-ldap",
  "curl-libssh",
+ "curl-libssh2",
  "curl-nghttp2",
  "curl-ngtcp2",
  "curl-openssl",
@@ -261,6 +274,7 @@ dependencies = [
  "curl-idn2",
  "curl-ldap",
  "curl-libssh",
+ "curl-libssh2",
  "curl-nghttp2",
  "curl-ngtcp2",
  "curl-openssl",

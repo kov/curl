@@ -28,6 +28,7 @@ mod output;
 mod sanitize;
 mod slurp;
 mod sockopt;
+mod sshlib;
 mod stderr;
 mod stdio;
 mod stdout;
@@ -278,7 +279,7 @@ impl std::fmt::Display for CurlVersion {
         let ares = Library("c-ares", ares::version());
         let idn = curl_idn2::Shown;
         let psl = Library("libpsl", curl_psl::version());
-        let ssh = Library("libssh", curl_libssh::version());
+        let ssh = Library(sshlib::NAME, sshlib::version());
         let h2 = Library("nghttp2", curl_nghttp2::version());
         // A build without QUIC names no QUIC library.
         let h3 = tlslib::quic();
@@ -429,7 +430,7 @@ mod tests {
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -442,7 +443,8 @@ mod tests {
             },
             curl_idn2::Shown,
             curl_psl::version(),
-            curl_libssh::version(),
+            sshlib::NAME,
+            sshlib::version(),
             curl_nghttp2::version(),
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),

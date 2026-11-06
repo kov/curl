@@ -1696,9 +1696,19 @@ fn apply(
         }
         (ffi::CURLOPT_SSH_KEYDATA, Ptr(p)) => ccb.ssh_key_data = p,
         // libssh2's alone in C: a build with libssh does not know them.
+        #[cfg(not(feature = "libssh2"))]
         (ffi::CURLOPT_SSH_HOSTKEYFUNCTION | ffi::CURLOPT_SSH_HOSTKEYDATA, _) => {
             return Err(Refused::Unknown);
         }
+        #[cfg(feature = "libssh2")]
+        (ffi::CURLOPT_SSH_HOSTKEYFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL, which leaves the key to the known-hosts file.
+            ccb.ssh_host_key = unsafe { function(p) };
+            callbacks::sync_ssh_host_key(options, me, ccb)?;
+        }
+        #[cfg(feature = "libssh2")]
+        (ffi::CURLOPT_SSH_HOSTKEYDATA, Ptr(p)) => ccb.ssh_host_key_data = p,
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.
@@ -2424,6 +2434,11 @@ mod tests {
             // SAFETY: a live handle, and an option NULL may be given.
             unsafe { curl_easy_setopt(c, option, core::ptr::null_mut::<c_void>()) }
         };
+        let want_libssh2 = if cfg!(feature = "libssh2") {
+            CURLE_OK
+        } else {
+            CURLE_UNKNOWN_OPTION
+        };
         let answers = [
             long(ffi::CURLOPT_NEW_DIRECTORY_PERMS, 0o755),
             long(ffi::CURLOPT_NEW_DIRECTORY_PERMS, 0o1000),
@@ -2439,8 +2454,9 @@ mod tests {
                 CURLE_BAD_FUNCTION_ARGUMENT,
                 CURLE_OK,
                 CURLE_OK,
-                CURLE_UNKNOWN_OPTION,
-                CURLE_UNKNOWN_OPTION,
+                // libssh2's alone.
+                want_libssh2,
+                want_libssh2,
             ]
         );
         // SAFETY: a live handle.

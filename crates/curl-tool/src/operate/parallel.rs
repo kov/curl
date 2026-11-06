@@ -838,10 +838,10 @@ mod tests {
         format!("{d}")
     }
 
-    /// Counts in five columns, as `max5data`: C's unit test 1622's
+    /// Counts in five columns, as `max5data`: tool unit test 1622's
     /// cases, and the largest.
     #[test]
-    fn counts_fit_five_columns() {
+    fn tool1622_max5data() {
         for (n, s) in [
             (0, "    0"),
             (99_999, "99999"),
@@ -857,10 +857,10 @@ mod tests {
         }
     }
 
-    /// Times in eight columns, blank for none, as `timebuf`: C's unit
+    /// Times in eight columns, blank for none, as `timebuf`: tool unit
     /// test 1622's cases.
     #[test]
-    fn times_fit_eight_columns() {
+    fn tool1622_timebuf() {
         for (n, s) in [
             (0, "        "),
             (1, "00:00:01"),
@@ -871,6 +871,28 @@ mod tests {
             (4_398_046_511_103, " >99999y"),
         ] {
             assert_eq!(shown(time(n)), s, "{n}");
+        }
+    }
+
+    /// Tool unit test 1622's widths: every count and time from 0 through
+    /// 2^62 - 1, each one more than twice the last, and its byte counts,
+    /// each as wide as its column.
+    #[test]
+    fn tool1622_widths() {
+        let mut n: u64 = 0;
+        for _ in 0..63 {
+            assert_eq!(shown(time(n)).len(), 8, "{n}");
+            assert_eq!(shown(Max5(n)).len(), 5, "{n}");
+            n = n * 2 + 1;
+        }
+        for n in [
+            131_072,
+            12_645_826,
+            1_073_741_824,
+            12_938_588_979,
+            1_099_445_657_078_333,
+        ] {
+            assert_eq!(shown(Max5(n)).len(), 5, "{n}");
         }
     }
 

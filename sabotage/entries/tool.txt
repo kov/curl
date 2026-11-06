@@ -245,7 +245,7 @@ witness: curl-tool output::tests::shows_header_names_in_bold_on_a_terminal
 
 === a size's fraction keeps digits its unit cannot tell apart
 file: crates/curl-tool/src/options/number.rs
-witness: curl-tool options::number::tests::size_like_c
+witness: curl-tool options::number::tests::tool1623_size
 --- old
                 while mlen <= plen {
 --- new
@@ -1434,7 +1434,7 @@ witness: curl-tool an_upload_ends_once_its_time_is_up
 
 === a backslash escapes only a colon in `--cert`'s name
 file: crates/curl-tool/src/options/cert.rs
-witness: curl-tool options::cert::tests::splits_as_unit_1394
+witness: curl-tool options::cert::tests::tool1394_splits
 --- old
                     Some(&c @ (b'\\' | b':')) => {
 --- new
@@ -1608,3 +1608,11 @@ witness: curl-tool a_ca_bundle_from_the_environment_is_read_unless_the_library_t
     if crate::tlslib::ca_defaults().system != SystemStore::Own
 --- new
     if crate::tlslib::ca_defaults().system == SystemStore::Own
+
+=== `--create-dirs` makes each directory named by the last part alone
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::tool1720_dirs_of
+--- old
+                return Some(&path[..at]);
+--- new
+                return Some(&path[at - name..at]);

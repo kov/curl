@@ -79,7 +79,7 @@ mod tests {
 
     /// Tool unit test 1394's table, its non-Windows rows.
     #[test]
-    fn splits_as_unit_1394() {
+    fn tool1394_splits() {
         for (arg, name, pass) in [
             (&br"foo:bar:baz"[..], &br"foo"[..], Some(&br"bar:baz"[..])),
             (br"foo\:bar:baz", br"foo:bar", Some(br"baz")),
@@ -111,7 +111,7 @@ mod tests {
     /// separator start a name on a drive, its colon kept.
     #[cfg(windows)]
     #[test]
-    fn splits_a_drive_letter_as_unit_1394_on_windows() {
+    fn tool1394_splits_a_drive_letter_on_windows() {
         for (arg, name, pass) in [
             (
                 &br"c:\foo:bar:baz"[..],

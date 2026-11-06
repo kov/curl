@@ -569,28 +569,9 @@ fn rate_left(every: u64, took: u64) -> Option<u64> {
 
 /// Make each directory `path`, a file's name, is in that is not there
 /// yet, with permissions `rwxr-x---` (`create_dir_hierarchy`). One that
-/// exists, or that may not be looked at, is gone through. On Windows a
-/// backslash separates too, and a drive (`X:` before a separator) is
-/// not made.
+/// exists, or that may not be looked at, is gone through.
 fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
-    let separator = |b: &u8| *b == b'/' || windows_separator(*b);
-    let mut at = 0;
-    loop {
-        let seps = path[at..].iter().take_while(|b| separator(b)).count();
-        let name = path[at + seps..]
-            .iter()
-            .take_while(|b| !separator(b))
-            .count();
-        // The last part is the file.
-        if at + seps + name == path.len() {
-            return Ok(());
-        }
-        let drive = is_drive(path, at, name);
-        at += seps + name;
-        if drive {
-            continue;
-        }
-        let dir = &path[..at];
+    for dir in dirs_of(path) {
         let Err(e) = fs::with_c_name(dir, |c| fs::make_dir(c, 0o750)) else {
             continue;
         };
@@ -601,6 +582,34 @@ fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
         msgs.error(&dir_error(errno, dir));
         return Err(ErrorKind::WriteError);
     }
+    Ok(())
+}
+
+/// The directories `path`, a file's name, is in, outermost first, each
+/// as much of `path` as names it, as `create_dir_hierarchy` makes them.
+/// On Windows a backslash separates too, and a drive (`X:` before a
+/// separator) is not one.
+fn dirs_of(path: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let separator = |b: &u8| *b == b'/' || windows_separator(*b);
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        loop {
+            let seps = path[at..].iter().take_while(|b| separator(b)).count();
+            let name = path[at + seps..]
+                .iter()
+                .take_while(|b| !separator(b))
+                .count();
+            // The last part is the file.
+            if at + seps + name == path.len() {
+                return None;
+            }
+            let drive = is_drive(path, at, name);
+            at += seps + name;
+            if !drive {
+                return Some(&path[..at]);
+            }
+        }
+    })
 }
 
 /// Whether `b` separates directories on Windows only: a backslash there.
@@ -4397,6 +4406,38 @@ mod tests {
     }
 
     use super::*;
+
+    /// Tool unit test 1720's table: a file's name and the directories
+    /// made for it, each followed by `|`; `None` where none is.
+    #[test]
+    fn tool1720_dirs_of() {
+        let mut rows = vec![
+            ("", None),
+            ("filename", None),
+            ("foo/bar/", Some("foo|foo/bar|")),
+            ("foo/bar/filename", Some("foo|foo/bar|")),
+            ("/foo/bar/filename", Some("/foo|/foo/bar|")),
+        ];
+        if cfg!(windows) {
+            rows.extend([
+                ("C:/foo/bar/filename", Some("C:/foo|C:/foo/bar|")),
+                ("C:foo/bar/filename", Some("C:foo|C:foo/bar|")),
+                ("foo\\bar\\filename", Some("foo|foo\\bar|")),
+                ("\\foo\\bar\\filename", Some("\\foo|\\foo\\bar|")),
+                ("C:\\foo\\bar\\filename", Some("C:\\foo|C:\\foo\\bar|")),
+                ("C:foo\\bar\\filename", Some("C:foo|C:foo\\bar|")),
+            ]);
+        }
+        for (path, want) in rows {
+            let mut got = Vec::new();
+            for dir in dirs_of(path.as_bytes()) {
+                got.extend_from_slice(dir);
+                got.push(b'|');
+            }
+            let got = (!got.is_empty()).then_some(got);
+            assert_eq!(got.as_deref(), want.map(str::as_bytes), "{path}");
+        }
+    }
 
     /// A fatal error ends the run, and with `--fail-early` any failure.
     #[test]

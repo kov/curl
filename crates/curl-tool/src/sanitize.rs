@@ -201,9 +201,10 @@ mod tests {
         reserved: true,
     };
 
-    /// tests/tunit/tool1604.c's table, which C runs only on Windows.
+    /// Tool unit test 1604's table, which C runs only on Windows; its
+    /// last row, a NULL name, has no counterpart in a slice.
     #[test]
-    fn sanitizes_as_c_does() {
+    fn tool1604_sanitizes() {
         let n = Allow::NOTHING;
         let both = Allow::EVERYTHING;
         let table: &[(&[u8], Allow, &[u8])] = &[

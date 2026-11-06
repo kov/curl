@@ -230,9 +230,9 @@ mod tests {
         }
     }
 
-    /// Unit test 1623's cases, read from its source.
+    /// Tool unit test 1623's cases, read from its source.
     #[test]
-    fn size_like_c() {
+    fn tool1623_size() {
         let source = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/tunit/tool1623.c"

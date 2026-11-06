@@ -147,4 +147,39 @@ mod tests {
         assert_eq!(strip("ftp.h/a").as_deref(), Some("ftp://ftp.h/a"));
         assert_eq!(strip("http://[::1"), None);
     }
+
+    /// Tool unit test 1621's table: a URL, and what is stored of it, or
+    /// `None` where C's `stripcredentials` gives NULL.
+    #[test]
+    fn tool1621_strips_credentials() {
+        for (url, want) in [
+            ("ninja://foo@example.com", None),
+            ("pop3s://foo@example.com", Some("pop3s://example.com/")),
+            ("ldap://foo@example.com", Some("ldap://example.com/")),
+            ("https://foo@example.com", Some("https://example.com/")),
+            ("https://localhost:45", Some("https://localhost:45/")),
+            ("https://foo@localhost:45", Some("https://localhost:45/")),
+            (
+                "https://user:pass@localhost:45",
+                Some("https://localhost:45/"),
+            ),
+            (
+                "http://daniel:password@localhost",
+                Some("http://localhost/"),
+            ),
+            ("http://daniel@localhost", Some("http://localhost/")),
+            ("http://localhost/", Some("http://localhost/")),
+            ("http://odd%40host/", None),
+            ("http://user@odd%40host/", None),
+            ("http://host/@path/", Some("http://host/@path/")),
+            ("http://emptypw:@host/", Some("http://host/")),
+            ("http://:emptyuser@host/", Some("http://host/")),
+            ("http://odd%40user@host/", Some("http://host/")),
+            ("http://only%40one%40host/", None),
+            ("http://odder%3auser@host/", Some("http://host/")),
+        ] {
+            let got = strip_credentials(url.as_bytes());
+            assert_eq!(got.as_deref(), want.map(str::as_bytes), "{url}");
+        }
+    }
 }

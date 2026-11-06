@@ -32,3 +32,10 @@ witness: curl-tool stores_where_a_download_came_from
         && op.xattr
 --- new
     if op.xattr
+
+=== the URL a download came from is stored with its password
+file: crates/curl-tool/src/xattr.rs
+witness: curl-tool xattr::tests::tool1621_strips_credentials
+--- old
+    url.set(Part::Password, None, SetOptions::NONE).ok()?;
+--- new

@@ -1,6 +1,6 @@
 === a superscript digit in UTF-8 does not make COM or LPT a device
 file: crates/curl-tool/src/sanitize.rs
-witness: curl-tool sanitize::tests::sanitizes_as_c_does
+witness: curl-tool sanitize::tests::tool1604_sanitizes
 --- old
         let len = if at(3) == 0xc2 { 4 } else { 3 };
 --- new
@@ -8,7 +8,7 @@ witness: curl-tool sanitize::tests::sanitizes_as_c_does
 
 === a file name keeps the dots and spaces it ends with
 file: crates/curl-tool/src/sanitize.rs
-witness: curl-tool sanitize::tests::sanitizes_as_c_does
+witness: curl-tool sanitize::tests::tool1604_sanitizes
 --- old
         target.truncate(target.len() - trailing);
 --- new
@@ -16,7 +16,7 @@ witness: curl-tool sanitize::tests::sanitizes_as_c_does
 
 === a device name is looked for only at the start of a path
 file: crates/curl-tool/src/sanitize.rs
-witness: curl-tool sanitize::tests::sanitizes_as_c_does
+witness: curl-tool sanitize::tests::tool1604_sanitizes
 --- old
         at = (p == 0 && base != 0).then_some(base);
 --- new
@@ -24,7 +24,7 @@ witness: curl-tool sanitize::tests::sanitizes_as_c_does
 
 === a path starting with two backslashes loses its device names
 file: crates/curl-tool/src/sanitize.rs
-witness: curl-tool sanitize::tests::sanitizes_as_c_does
+witness: curl-tool sanitize::tests::tool1604_sanitizes
 --- old
     if path && name.starts_with(b"\\\\") {
 --- new
@@ -32,7 +32,7 @@ witness: curl-tool sanitize::tests::sanitizes_as_c_does
 
 === the literal-path prefix loses its question mark
 file: crates/curl-tool/src/sanitize.rs
-witness: curl-tool sanitize::tests::sanitizes_as_c_does
+witness: curl-tool sanitize::tests::tool1604_sanitizes
 --- old
     let from = if allow.path && target.starts_with(b"\\\\?\\") {
 --- new
@@ -40,7 +40,7 @@ witness: curl-tool sanitize::tests::sanitizes_as_c_does
 
 === a device name followed by a colon in a path is left as it is
 file: crates/curl-tool/src/sanitize.rs
-witness: curl-tool sanitize::tests::sanitizes_as_c_does
+witness: curl-tool sanitize::tests::tool1604_sanitizes
 --- old
                 Some(b':') | None => true,
 --- new

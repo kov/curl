@@ -26,3 +26,8 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+# One unit, optimised whole across the crates: the transfer path spans
+# curl-core, the TLS backend and the tool or the C ABI, and split it
+# misses the instruction cache more than C's build does.
+lto = "fat"
+codegen-units = 1

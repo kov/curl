@@ -341,17 +341,29 @@ mod tests {
         assert_eq!(t.after(Duration::from_nanos(999)), t);
     }
 
-    /// unit1323's `curlx_timediff_ms` table: 12.419 ms across a second's
-    /// turn counts as 13, either way round.
+    /// unit1323's `curlx_timediff_ms` table, each row two times of
+    /// seconds and microseconds and the milliseconds between them:
+    /// 12.419 ms across a second's turn counts as 13, either way round.
     #[test]
     fn unit1323_ms_since() {
         let at = |secs: u64, micros: u32| Instant::EPOCH.after(Duration::new(secs, micros * 1000));
-        for (first, second, ms) in [
-            (at(36762, 8345), at(36761, 995_926), 13),
-            (at(36761, 995_926), at(36762, 8345), -13),
-            (at(36761, 995_926), at(0, 0), 36_761_995),
-            (at(0, 0), at(36761, 995_926), -36_761_995),
-        ] {
+        let read = |v: &crate::c_source::Value| {
+            let [secs, micros] = v.group() else {
+                panic!("{v:?}")
+            };
+            at(
+                u64::try_from(secs.int()).unwrap(),
+                u32::try_from(micros.int()).unwrap(),
+            )
+        };
+        let rows = crate::c_source::table("tests/unit/unit1323.c", "tests[] =", |c| panic!("{c}"));
+        assert_eq!(rows.len(), 4);
+        for row in rows {
+            let [first, second, ms] = row.group() else {
+                panic!("{row:?}")
+            };
+            let (first, second) = (read(first), read(second));
+            let ms = i64::try_from(ms.int()).unwrap();
             assert_eq!(first.ms_since(second), ms, "{first:?} {second:?}");
         }
         // Within a second, and across one with the later microseconds

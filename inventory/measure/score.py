@@ -31,6 +31,12 @@ inventory/baseline-libssh.json, laid out in build/rust-libssh. Its SCP and
 SFTP results are the ones that count; the default leg's C reference
 speaks SSH through libssh2.
 
+`--libssh2` scores the build with libssh2 in place of libssh, as the
+reference C build has it, against that build (build/c and
+inventory/baseline.json), laid out in build/rust-libssh2. Its SCP and SFTP
+results are the ones libssh2's binding is held to; the rest is the
+default leg's.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -71,6 +77,8 @@ class Leg:
     # Its own target directory, so neither build undoes the other's.
     target: pathlib.Path
     features: tuple
+    # Built without the crates' default features, `features` naming all.
+    no_default: bool = False
 
     @property
     def results(self):
@@ -91,6 +99,14 @@ THREADED = Leg(baseline.THREADED, ROOT / "build" / "rust-threaded",
 # The default leg's build, against the C build with libssh.
 LIBSSH = Leg(baseline.LIBSSH, ROOT / "build" / "rust-libssh",
              ROOT / "build" / "target", DEBUG_HOOKS)
+# libssh2 in place of libssh, against the reference build, which has it.
+LIBSSH2 = Leg(baseline.REFERENCE, ROOT / "build" / "rust-libssh2",
+              ROOT / "build" / "target-libssh2",
+              DEBUG_HOOKS + tuple(f"{crate}/{feature}"
+                                  for crate in ("curl-sys-abi", "curl-tool")
+                                  for feature in ("c-ares", "openssl",
+                                                  "libssh2")),
+              no_default=True)
 
 
 def git(*args):
@@ -134,7 +150,9 @@ def assemble(leg, lib, tool):
     cargo = subprocess.run(
         ["cargo", "build", "-p", "curl-sys-abi", "-p", "curl-tool",
          "--target-dir", str(leg.target), "--features",
-         ",".join(leg.features)], cwd=ROOT, check=False)
+         ",".join(leg.features),
+         *(["--no-default-features"] if leg.no_default else [])],
+        cwd=ROOT, check=False)
     check(cargo.returncode == 0, "cargo build failed")
     c_build = leg.oracle.build
     if leg.build.exists():
@@ -354,9 +372,11 @@ def main():
     ap.add_argument("--tool", choices=["rust", "c"], default="rust")
     ap.add_argument("--threaded", action="store_true")
     ap.add_argument("--libssh", action="store_true")
+    ap.add_argument("--libssh2", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
-    leg = THREADED if args.threaded else LIBSSH if args.libssh else RUST
+    leg = (THREADED if args.threaded else LIBSSH if args.libssh
+           else LIBSSH2 if args.libssh2 else RUST)
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

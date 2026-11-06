@@ -618,30 +618,39 @@ fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> R
         prec = 1;
     }
 
-    // Digits are written backwards from the end of `work`.
-    let mut work = [0u8; BUFFSIZE + 2];
-    let workend = BUFFSIZE - 2;
-    let mut w = workend as isize;
-    while num > 0 {
-        work[w as usize] = digits[(num % base) as usize];
-        num /= base;
-        w -= 1;
+    // Digits are written backwards from the end of `work`: at most 22, in
+    // octal, and the alternate form's `0`. C writes the precision's zeros
+    // before them in its buffer of `WORK` bytes, as many as fit; here they
+    // are counted and padded.
+    const WORK: usize = BUFFSIZE - 1;
+    let mut work = [0u8; 23];
+    let mut w = work.len();
+    // Decimal apart: a constant divisor is a multiplication.
+    if base == 10 {
+        while num > 0 {
+            w -= 1;
+            work[w] = b'0' + (num % 10) as u8;
+            num /= 10;
+        }
+    } else {
+        while num > 0 {
+            w -= 1;
+            work[w] = digits[(num % base) as usize];
+            num /= base;
+        }
     }
-    let ndigits = workend as isize - w;
-    width -= ndigits as i32;
-    prec -= ndigits as i32;
+    let ndigits = (work.len() - w) as i32;
+    width -= ndigits;
+    prec -= ndigits;
     if alt && base == 8 && prec <= 0 {
-        work[w as usize] = b'0';
         w -= 1;
+        work[w] = b'0';
         width -= 1;
     }
+    let mut zeros = 0;
     if prec > 0 {
         width -= prec;
-        while prec > 0 && w >= 0 {
-            prec -= 1;
-            work[w as usize] = b'0';
-            w -= 1;
-        }
+        zeros = prec.min((WORK - (work.len() - w)) as i32);
     }
     if alt && base == 16 {
         width -= 2;
@@ -667,7 +676,8 @@ fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> R
         o.pad(b'0', width)?;
         width = 0;
     }
-    o.run(&work[(w + 1) as usize..=workend])?;
+    o.pad(b'0', zeros)?;
+    o.run(&work[w..])?;
     if flags & LEFT != 0 {
         o.pad(b' ', width)?;
     }

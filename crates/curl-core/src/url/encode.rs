@@ -579,6 +579,10 @@ mod tests {
             }
         }
         assert_eq!(escape(&all).unwrap(), want);
+        // Into memory not yet written, as `curl_easy_escape` asks: the
+        // length it gives (the bytes are compared through the C ABI).
+        let mut room = vec![core::mem::MaybeUninit::<u8>::uninit(); 3 * all.len()];
+        assert_eq!(super::super::escape_into(&all, &mut room), want.len());
         assert_eq!(escape(b"").unwrap(), b"");
         let kept = vec![b'a'; MAX_INPUT + 1];
         assert_eq!(escape(&kept).unwrap(), kept);

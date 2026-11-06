@@ -55,3 +55,11 @@ witness: curl-sys-abi printf::tests::numbers_are_written_as_c_writes_them
         zeros = prec.min((WORK - (work.len() - w)) as i32);
 --- new
         zeros = prec;
+
+=== bytes already staged are left out of what fits at the limit
+file: crates/curl-sys-abi/src/printf/mod.rs
+witness: curl-sys-abi printf::tests::aprintf_refuses_output_at_its_limit
+--- old
+                let fits = APRINTF_MAX - self.buf.len - self.staged - 1;
+--- new
+                let fits = APRINTF_MAX - self.buf.len - 1;

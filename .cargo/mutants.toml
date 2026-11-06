@@ -1071,4 +1071,10 @@ exclude_re = [
     # its goodbye awaits no answer (one that awaits joins the set), so
     # the clock to wait on is never read there.
     "curl-core/src/conn/shutdown\\.rs:.*: replace <impl Exits for WithSet<'_>>::clock -> Option<SharedClock> with None$",
+    # Multiplying the word index leaves it at 0, and the byte-by-byte
+    # scan from there finds the same `%`, only more slowly.
+    'curl-sys-abi/src/printf/format\.rs:\d+:\d+: replace \+= with \*= in find$',
+    # Only conversions have no text before them (both text segments are
+    # pushed only when not empty), and running no text writes nothing.
+    'curl-sys-abi/src/printf/format\.rs:\d+:23: replace > with >= in render_into$',
 ]

@@ -850,6 +850,13 @@ mod tests {
         assert_eq!(sink.write(&big), big.len());
         assert!(sink.flush());
         assert_eq!((sink.buf.len, sink.buf.size), (3003, 4096));
+        // A buffer exactly filled, its NUL included, is not grown.
+        let mut sink = Growing::new(root::allocator());
+        assert_eq!(sink.write(b"abc"), 3);
+        assert!(sink.flush());
+        assert_eq!(sink.write(&big[..28]), 28);
+        assert!(sink.flush());
+        assert_eq!((sink.buf.len, sink.buf.size), (31, 32));
         // Nothing written: the empty string, as C's `strdup("")`.
         // SAFETY: a format without conversions.
         let p = unsafe { curl_maprintf(c"".as_ptr()) };
@@ -863,16 +870,83 @@ mod tests {
     /// the byte that passes it, and the buffer given back.
     #[test]
     fn aprintf_refuses_output_at_its_limit() {
-        let mut sink = Growing::new(root::allocator());
         let chunk = vec![b'y'; 1 << 20];
-        let mut total = 0;
-        while total + chunk.len() < APRINTF_MAX {
-            assert_eq!(sink.write(&chunk), chunk.len());
-            total += chunk.len();
+        // The limit met where a stage begins, and where bytes are staged
+        // already (the limit is a multiple of the stage).
+        for before in [APRINTF_MAX - STAGE, APRINTF_MAX - 300] {
+            let mut sink = Growing::new(root::allocator());
+            let mut total = 0;
+            while total < before {
+                let n = chunk.len().min(before - total);
+                assert_eq!(sink.write(&chunk[..n]), n);
+                total += n;
+            }
+            // A full stage is flushed by the next write, not at once.
+            assert_eq!(sink.staged, (before - 1) % STAGE + 1);
+            let room = APRINTF_MAX - 1 - total;
+            assert_eq!(sink.write(&chunk), room, "accepted up to the limit");
+            assert!(sink.failed);
+            assert!(sink.buf.ptr.is_null(), "the buffer is given back");
         }
-        let room = APRINTF_MAX - 1 - total;
-        assert_eq!(sink.write(&chunk), room, "accepted up to the limit");
+    }
+
+    /// The buffer takes output up to its limit with the NUL, and
+    /// refuses a byte past it, giving the buffer back
+    /// (`curlx_dyn_addn`).
+    #[test]
+    fn dynbuf_takes_output_up_to_its_limit() {
+        let mut buf = DynBuf::new(root::allocator());
+        let most = vec![b'z'; APRINTF_MAX - 1];
+        assert!(buf.addn(&most).is_ok());
+        assert_eq!((buf.len, buf.size), (APRINTF_MAX - 1, APRINTF_MAX));
+        assert!(buf.addn(b"z").is_err());
+        assert!(buf.ptr.is_null(), "the buffer is given back");
+    }
+
+    /// A buffer dropped unfinished, or refused memory as it grows, gives
+    /// back what it held.
+    #[test]
+    fn aprintf_frees_what_it_does_not_hand_over() {
+        use crate::formdata::tests::{HELD, LEFT, counting};
+        counting();
+        let held = || HELD.with(core::cell::Cell::get);
+        let before = held();
+        let mut sink = Growing::new(root::allocator());
+        assert_eq!(sink.write(&[b'q'; 2000]), 2000);
+        assert!(held() > before);
+        drop(sink);
+        assert_eq!(held(), before, "dropped");
+        // Refused as it grows: what it had is freed with it.
+        let mut sink = Growing::new(root::allocator());
+        LEFT.with(|l| l.set(Some(1)));
+        let took = sink.write(&[b'q'; 2000]);
+        LEFT.with(|l| l.set(None));
+        assert!(took < 2000, "{took}");
         assert!(sink.failed);
-        assert!(sink.buf.ptr.is_null(), "the buffer is given back");
+        assert!(sink.buf.ptr.is_null());
+        drop(sink);
+        assert_eq!(held(), before, "refused");
+    }
+
+    /// Literal text of every length up to three words, around and
+    /// between conversions, is written as it stands; a format that names
+    /// its arguments and then does not is refused, as C's is.
+    #[test]
+    fn literal_text_is_written_whole() {
+        for len in 0..24u8 {
+            let text: String = (0..len).map(|i| char::from(b'a' + i)).collect();
+            let fmt = std::ffi::CString::new(format!("{text}%d{text}%%{text}")).unwrap();
+            let want = format!("{text}7{text}%{text}");
+            let n = c_int::try_from(want.len()).unwrap();
+            assert_eq!(snprintf!(fmt, 7 as c_int), (n, want), "{len}");
+        }
+        assert_eq!(
+            snprintf!(c"%1$d %d", 5 as c_int, 6 as c_int),
+            (0, String::new())
+        );
+        assert_eq!(
+            snprintf!(c"%2$d %1$d %d", 5 as c_int, 6 as c_int, 7 as c_int),
+            (0, String::new())
+        );
     }
 }

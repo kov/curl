@@ -1027,7 +1027,7 @@ pub unsafe extern "C" fn curl_formget(
 const _: ffi::proto::curl_formget = curl_formget;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(
         clippy::multiple_unsafe_ops_per_block,
         reason = "one contract covers each test's sequence of calls"
@@ -1498,10 +1498,10 @@ mod tests {
 
     std::thread_local! {
         /// Blocks this thread holds from the counting allocator.
-        static HELD: core::cell::Cell<isize> = const { core::cell::Cell::new(0) };
+        pub(crate) static HELD: core::cell::Cell<isize> = const { core::cell::Cell::new(0) };
         /// How many more allocations this thread may make before one is
         /// refused, if any is.
-        static LEFT: core::cell::Cell<Option<usize>> = const { core::cell::Cell::new(None) };
+        pub(crate) static LEFT: core::cell::Cell<Option<usize>> = const { core::cell::Cell::new(None) };
     }
 
     /// Whether this allocation is the one refused.
@@ -1567,7 +1567,7 @@ mod tests {
     /// Install, once for the process, an allocator that counts each
     /// thread's blocks and can refuse one: it hands out `malloc`'s, so
     /// the other tests' frees still find their blocks.
-    fn counting() {
+    pub(crate) fn counting() {
         static INSTALLED: std::sync::Once = std::sync::Once::new();
         INSTALLED.call_once(|| {
             let code = crate::root::curl_global_init_mem(

@@ -283,6 +283,17 @@ mod tests {
                 assert_eq!(decode(&broken).unwrap(), None, "{bad} at {at}");
             }
         }
+        // Two bad digits in one group do not cancel out.
+        for group in 0..text.len() / 4 - 1 {
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    let mut broken = text.clone();
+                    broken[group * 4 + i] = b'!';
+                    broken[group * 4 + j] = b'!';
+                    assert_eq!(decode(&broken).unwrap(), None, "{i} and {j} of {group}");
+                }
+            }
+        }
     }
 
     #[test]

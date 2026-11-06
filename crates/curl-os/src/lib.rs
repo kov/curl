@@ -23,6 +23,12 @@ compile_error!("the `unicode` feature is Windows' Unicode build (`ENABLE_UNICODE
 
 #[cfg(feature = "args")]
 pub mod args;
+// The reader of C's unit-test tables, for the ports here: curl-core's own
+// file, compiled again, as this crate sits below curl-core.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../curl-core/src/c_source.rs"]
+mod c_source;
 pub mod env;
 pub mod error;
 pub mod fnmatch;

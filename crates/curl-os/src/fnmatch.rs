@@ -466,10 +466,41 @@ mod tests {
         }
     }
 
-    /// C's unit test 1307's table, with the results it expects of Linux's
-    /// `fnmatch`, in the C locale the tests run in: there a byte past
-    /// ASCII is a character like any other, and the rows that fail in a
-    /// UTF-8 locale give the table's portable result. macOS's `fnmatch`
+    /// A row of unit1307's: the pattern, the name, the result of C's own
+    /// matcher, and the systems' results where they differ.
+    type Row1307 = (Vec<u8>, Vec<u8>, Matched, Vec<String>);
+
+    /// unit1307's table, read from its source: each row's pattern, name
+    /// and the result C expects of its own matcher, and of Linux's and
+    /// macOS's `fnmatch` where they differ (`LINUX_MATCH`, `MAC_FAIL`).
+    #[allow(clippy::disallowed_methods)]
+    fn unit1307_rows() -> Vec<Row1307> {
+        let rows = crate::c_source::table("tests/unit/unit1307.c", "tests[] =", |c| panic!("{c}"));
+        rows.iter()
+            .map(|row| {
+                let [pattern, name, result] = row.group() else {
+                    panic!("{row:?}")
+                };
+                let mut words = result.word().split('|').map(|w| w.trim().to_owned());
+                let own = match words.next().as_deref() {
+                    Some("MATCH") => Matched::Match,
+                    Some("NOMATCH") => Matched::NoMatch,
+                    other => panic!("{other:?}"),
+                };
+                (
+                    pattern.str().to_vec(),
+                    name.str().to_vec(),
+                    own,
+                    words.collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// unit1307's table, with the results C expects of Linux's `fnmatch`,
+    /// in the C locale the tests run in: there a byte past ASCII is a
+    /// character like any other, so a row C expects to fail in a UTF-8
+    /// locale (`LINUX_FAIL`) gives its portable result. macOS's `fnmatch`
     /// fails the rows `MACOS_FAILS` names, as measured on macOS 27 (C runs
     /// no test of it: 1307 is in `DISABLED`, the systems differing).
     #[test]
@@ -478,356 +509,41 @@ mod tests {
         /// The rows macOS's `fnmatch` fails: a bracket left open, a class
         /// it does not know, and a pattern ending in a backslash.
         const MACOS_FAILS: [usize; 6] = [0, 2, 3, 100, 101, 131];
-        let rows: &[(&[u8], &[u8], Matched)] = &[
-        (b"*[*[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[\x01\x7f[[[[[[[[[[[[[[[[[[[[[", b"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[", Matched::NoMatch),
-        (b"\\[", b"[", Matched::Match),
-        (b"[", b"[", Matched::Match),
-        (b"[]", b"[]", Matched::Match),
-        (b"[][]", b"[", Matched::Match),
-        (b"[][]", b"]", Matched::Match),
-        (b"[[]", b"[", Matched::Match),
-        (b"[[[]", b"[", Matched::Match),
-        (b"[[[[]", b"[", Matched::Match),
-        (b"[[[[]", b"[", Matched::Match),
-        (b"[][[]", b"]", Matched::Match),
-        (b"[][[[]", b"[", Matched::Match),
-        (b"[[]", b"]", Matched::NoMatch),
-        (b"[a@]", b"a", Matched::Match),
-        (b"[a-z]", b"a", Matched::Match),
-        (b"[a-z]", b"A", Matched::NoMatch),
-        (b"?[a-z]", b"?Z", Matched::NoMatch),
-        (b"[A-Z]", b"C", Matched::Match),
-        (b"[A-Z]", b"c", Matched::NoMatch),
-        (b"[0-9]", b"7", Matched::Match),
-        (b"[7-8]", b"7", Matched::Match),
-        (b"[7-]", b"7", Matched::Match),
-        (b"[7-]", b"-", Matched::Match),
-        (b"[7-]", b"[", Matched::NoMatch),
-        (b"[a-bA-F]", b"F", Matched::Match),
-        (b"[a-bA-B9]", b"9", Matched::Match),
-        (b"[a-bA-B98]", b"8", Matched::Match),
-        (b"[a-bA-B98]", b"C", Matched::NoMatch),
-        (b"[a-bA-Z9]", b"F", Matched::Match),
-        (b"[a-bA-Z9]ero*", b"Zero chance.", Matched::Match),
-        (b"S[a-][x]opho*", b"Saxophone", Matched::Match),
-        (b"S[a-][x]opho*", b"SaXophone", Matched::NoMatch),
-        (b"S[a-][x]*.txt", b"S-x.txt", Matched::Match),
-        (b"[\\a-\\b]", b"a", Matched::Match),
-        (b"[\\a-\\b]", b"b", Matched::Match),
-        (b"[?*[][?*[][?*[]", b"?*[", Matched::Match),
-        (b"[][?*-]", b"]", Matched::Match),
-        (b"[][?*-]", b"[", Matched::Match),
-        (b"[][?*-]", b"?", Matched::Match),
-        (b"[][?*-]", b"*", Matched::Match),
-        (b"[][?*-]", b"-", Matched::Match),
-        (b"[]?*-]", b"-", Matched::Match),
-        (b"[\xff]", b"\xff", Matched::Match),
-        (b"?/b/c", b"a/b/c", Matched::Match),
-        (b"^_{}~", b"^_{}~", Matched::Match),
-        (b"!#%+,-./01234567889", b"!#%+,-./01234567889", Matched::Match),
-        (b"PQRSTUVWXYZ]abcdefg", b"PQRSTUVWXYZ]abcdefg", Matched::Match),
-        (b":;=@ABCDEFGHIJKLMNO", b":;=@ABCDEFGHIJKLMNO", Matched::Match),
-        (b"[!a]", b"b", Matched::Match),
-        (b"[!a]", b"a", Matched::NoMatch),
-        (b"[^a]", b"b", Matched::Match),
-        (b"[^a]", b"a", Matched::NoMatch),
-        (b"[^a-z0-9A-Z]", b"a", Matched::NoMatch),
-        (b"[^a-z0-9A-Z]", b"-", Matched::Match),
-        (b"curl[!a-z]lib", b"curl lib", Matched::Match),
-        (b"curl[! ]lib", b"curl lib", Matched::NoMatch),
-        (b"[! ][ ]", b"  ", Matched::NoMatch),
-        (b"[! ][ ]", b"a ", Matched::Match),
-        (b"*[^a].t?t", b"a.txt", Matched::NoMatch),
-        (b"*[^a].t?t", b"ca.txt", Matched::NoMatch),
-        (b"*[^a].t?t", b"ac.txt", Matched::Match),
-        (b"*[^a]", b"", Matched::NoMatch),
-        (b"[!\xff]", b"", Matched::NoMatch),
-        (b"[!\xff]", b"\xff", Matched::NoMatch),
-        (b"[!\xff]", b"a", Matched::Match),
-        (b"[!?*[]", b"?", Matched::NoMatch),
-        (b"[!!]", b"!", Matched::NoMatch),
-        (b"[!!]", b"x", Matched::Match),
-        (b"[[:alpha:]]", b"a", Matched::Match),
-        (b"[[:alpha:]]", b"9", Matched::NoMatch),
-        (b"[[:alnum:]]", b"a", Matched::Match),
-        (b"[[:alnum:]]", b"[", Matched::NoMatch),
-        (b"[[:alnum:]]", b"]", Matched::NoMatch),
-        (b"[[:alnum:]]", b"9", Matched::Match),
-        (b"[[:digit:]]", b"9", Matched::Match),
-        (b"[[:xdigit:]]", b"9", Matched::Match),
-        (b"[[:xdigit:]]", b"F", Matched::Match),
-        (b"[[:xdigit:]]", b"G", Matched::NoMatch),
-        (b"[[:upper:]]", b"U", Matched::Match),
-        (b"[[:upper:]]", b"u", Matched::NoMatch),
-        (b"[[:lower:]]", b"l", Matched::Match),
-        (b"[[:lower:]]", b"L", Matched::NoMatch),
-        (b"[[:print:]]", b"L", Matched::Match),
-        (b"[[:print:]]", b"\x08", Matched::NoMatch),
-        (b"[[:print:]]", b"\x08", Matched::NoMatch),
-        (b"[[:print:]]", b"\x09", Matched::NoMatch),
-        (b"[[:print:]]", b"\x0a", Matched::NoMatch),
-        (b"[[:print:]]", b"\x0d", Matched::NoMatch),
-        (b"[[:space:]]", b" ", Matched::Match),
-        (b"[[:space:]]", b"x", Matched::NoMatch),
-        (b"[[:graph:]]", b" ", Matched::NoMatch),
-        (b"[[:graph:]]", b"x", Matched::Match),
-        (b"[[:graph:]]", b"\x09", Matched::NoMatch),
-        (b"[[:graph:]]", b"\x0d", Matched::NoMatch),
-        (b"[[:blank:]]", b"\x09", Matched::Match),
-        (b"[[:blank:]]", b" ", Matched::Match),
-        (b"[[:blank:]]", b"\x0d", Matched::NoMatch),
-        (b"[^[:blank:]]", b"\x09", Matched::NoMatch),
-        (b"[^[:print:]]", b"\x08", Matched::Match),
-        (b"[[:lower:]][[:lower:]]", b"ll", Matched::Match),
-        (b"[[:foo:]]", b"bar", Matched::NoMatch),
-        (b"[[:foo:]]", b"f]", Matched::NoMatch),
-        (b"curl[[:blank:]];-)", b"curl ;-)", Matched::Match),
-        (b"*[[:blank:]]*", b" ", Matched::Match),
-        (b"*[[:blank:]]*", b"", Matched::NoMatch),
-        (b"*[[:blank:]]*", b"hi, im_Pavel", Matched::Match),
-        (b"Filename.dat", b"Filename.dat", Matched::Match),
-        (b"*curl*", b"lets use curl!!", Matched::Match),
-        (b"filename.txt", b"filename.dat", Matched::NoMatch),
-        (b"*.txt", b"text.txt", Matched::Match),
-        (b"*.txt", b"a.txt", Matched::Match),
-        (b"*.txt", b".txt", Matched::Match),
-        (b"*.txt", b"txt", Matched::NoMatch),
-        (b"??.txt", b"99.txt", Matched::Match),
-        (b"??.txt", b"a99.txt", Matched::NoMatch),
-        (b"?.???", b"a.txt", Matched::Match),
-        (b"*.???", b"somefile.dat", Matched::Match),
-        (b"*.???", b"photo.jpeg", Matched::NoMatch),
-        (b".*", b".htaccess", Matched::Match),
-        (b".*", b".", Matched::Match),
-        (b".*", b"..", Matched::Match),
-        (b"**.txt", b"text.txt", Matched::Match),
-        (b"***.txt", b"t.txt", Matched::Match),
-        (b"****.txt", b".txt", Matched::Match),
-        (b"*a*b*c", b"abc", Matched::Match),
-        (b"", b"", Matched::Match),
-        (b"", b"hello", Matched::NoMatch),
-        (b"file", b"", Matched::NoMatch),
-        (b"?", b"", Matched::NoMatch),
-        (b"*", b"", Matched::Match),
-        (b"x", b"", Matched::NoMatch),
-        (b"\\", b"\\", Matched::NoMatch),
-        (b"\\\\", b"\\", Matched::Match),
-        (b"\\\\", b"\\\\", Matched::NoMatch),
-        (b"\\?", b"?", Matched::Match),
-        (b"\\*", b"*", Matched::Match),
-        (b"?.txt", b"?.txt", Matched::Match),
-        (b"*.txt", b"*.txt", Matched::Match),
-        (b"\\?.txt", b"?.txt", Matched::Match),
-        (b"\\*.txt", b"*.txt", Matched::Match),
-        (b"\\?.txt", b"x.txt", Matched::NoMatch),
-        (b"\\*.txt", b"x.txt", Matched::NoMatch),
-        (b"\\*\\\\.txt", b"*\\.txt", Matched::Match),
-        (b"*\\**\\?*\\\\*", b"cc*cc?cccc", Matched::NoMatch),
-        (b"*\\?*\\**", b"cc?cc", Matched::NoMatch),
-        (b"\\\"\\$\\&\\'\\(\\)", b"\"$&'()", Matched::Match),
-        (b"\\*\\?\\[\\\\\\`\\|", b"*?[\\`|", Matched::Match),
-        (b"[\\a\\b]c", b"ac", Matched::Match),
-        (b"[\\a\\b]c", b"bc", Matched::Match),
-        (b"[\\a\\b]d", b"bc", Matched::NoMatch),
-        (b"[a-bA-B\\?]", b"?", Matched::Match),
-        (b"cu[a-ab-b\\r]l", b"curl", Matched::Match),
-        (b"[\\a-z]", b"c", Matched::Match),
-        (b"?*?*?.*?*", b"abc.c", Matched::Match),
-        (b"?*?*?.*?*", b"abcc", Matched::NoMatch),
-        (b"?*?*?.*?*", b"abc.", Matched::NoMatch),
-        (b"?*?*?.*?*", b"abc.c++", Matched::Match),
-        (b"?*?*?.*?*", b"abcdef.c++", Matched::Match),
-        (b"?*?*?.?", b"abcdef.c", Matched::Match),
-        (b"?*?*?.?", b"abcdef.cd", Matched::NoMatch),
-        (b"Lindm\xc3\xa4tarv", b"Lindm\xc3\xa4tarv", Matched::Match),
-        (b"", b"", Matched::Match),
-        (b"**]*[*[\x13]**[*\x13)]*]*[**[*\x13~r-]*]**[.*]*[\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3*[\x13]**[*\x13)]*]*[*[\x13]*[~r]*]*\xba\x13\xa6~b-]*", b"a", Matched::NoMatch),
-        ];
-        for (i, &(pattern, name, want)) in rows.iter().enumerate() {
-            let want = if cfg!(target_vendor = "apple") && MACOS_FAILS.contains(&i) {
-                Matched::Fail
-            } else {
-                want
-            };
+        let rows = unit1307_rows();
+        assert_eq!(rows.len(), 163);
+        for (i, (pattern, name, own, differ)) in rows.iter().enumerate() {
+            let mut want = *own;
+            for d in differ {
+                match d.as_str() {
+                    "LINUX_MATCH" => want = Matched::Match,
+                    "LINUX_NOMATCH" => want = Matched::NoMatch,
+                    "LINUX_FAIL" | "MAC_FAIL" | "MAC_MATCH" => {}
+                    other => panic!("{other}"),
+                }
+            }
+            if cfg!(target_vendor = "apple") && MACOS_FAILS.contains(&i) {
+                want = Matched::Fail;
+            }
             assert_eq!(fnmatch(pattern, name).unwrap(), want, "row {i}");
         }
     }
 
-    /// C's unit test 1307's table, with the results it expects of C's own
-    /// matcher: the one Windows uses, checked here on each platform.
+    /// unit1307's table, with the results C expects of its own matcher:
+    /// the one Windows uses, checked here on each platform.
     #[test]
     fn unit1307_own_matcher() {
-        let rows: &[(&[u8], &[u8], Matched)] = &[
-            (b"*[*[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[\x01\x7f[[[[[[[[[[[[[[[[[[[[[", b"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[", Matched::NoMatch),
-            (b"\\[", b"[", Matched::Match),
-            (b"[", b"[", Matched::NoMatch),
-            (b"[]", b"[]", Matched::NoMatch),
-            (b"[][]", b"[", Matched::Match),
-            (b"[][]", b"]", Matched::Match),
-            (b"[[]", b"[", Matched::Match),
-            (b"[[[]", b"[", Matched::Match),
-            (b"[[[[]", b"[", Matched::Match),
-            (b"[[[[]", b"[", Matched::Match),
-            (b"[][[]", b"]", Matched::Match),
-            (b"[][[[]", b"[", Matched::Match),
-            (b"[[]", b"]", Matched::NoMatch),
-            (b"[a@]", b"a", Matched::Match),
-            (b"[a-z]", b"a", Matched::Match),
-            (b"[a-z]", b"A", Matched::NoMatch),
-            (b"?[a-z]", b"?Z", Matched::NoMatch),
-            (b"[A-Z]", b"C", Matched::Match),
-            (b"[A-Z]", b"c", Matched::NoMatch),
-            (b"[0-9]", b"7", Matched::Match),
-            (b"[7-8]", b"7", Matched::Match),
-            (b"[7-]", b"7", Matched::Match),
-            (b"[7-]", b"-", Matched::Match),
-            (b"[7-]", b"[", Matched::NoMatch),
-            (b"[a-bA-F]", b"F", Matched::Match),
-            (b"[a-bA-B9]", b"9", Matched::Match),
-            (b"[a-bA-B98]", b"8", Matched::Match),
-            (b"[a-bA-B98]", b"C", Matched::NoMatch),
-            (b"[a-bA-Z9]", b"F", Matched::Match),
-            (b"[a-bA-Z9]ero*", b"Zero chance.", Matched::Match),
-            (b"S[a-][x]opho*", b"Saxophone", Matched::Match),
-            (b"S[a-][x]opho*", b"SaXophone", Matched::NoMatch),
-            (b"S[a-][x]*.txt", b"S-x.txt", Matched::Match),
-            (b"[\\a-\\b]", b"a", Matched::Match),
-            (b"[\\a-\\b]", b"b", Matched::Match),
-            (b"[?*[][?*[][?*[]", b"?*[", Matched::Match),
-            (b"[][?*-]", b"]", Matched::Match),
-            (b"[][?*-]", b"[", Matched::Match),
-            (b"[][?*-]", b"?", Matched::Match),
-            (b"[][?*-]", b"*", Matched::Match),
-            (b"[][?*-]", b"-", Matched::Match),
-            (b"[]?*-]", b"-", Matched::Match),
-            (b"[\xff]", b"\xff", Matched::Match),
-            (b"?/b/c", b"a/b/c", Matched::Match),
-            (b"^_{}~", b"^_{}~", Matched::Match),
-            (b"!#%+,-./01234567889", b"!#%+,-./01234567889", Matched::Match),
-            (b"PQRSTUVWXYZ]abcdefg", b"PQRSTUVWXYZ]abcdefg", Matched::Match),
-            (b":;=@ABCDEFGHIJKLMNO", b":;=@ABCDEFGHIJKLMNO", Matched::Match),
-            (b"[!a]", b"b", Matched::Match),
-            (b"[!a]", b"a", Matched::NoMatch),
-            (b"[^a]", b"b", Matched::Match),
-            (b"[^a]", b"a", Matched::NoMatch),
-            (b"[^a-z0-9A-Z]", b"a", Matched::NoMatch),
-            (b"[^a-z0-9A-Z]", b"-", Matched::Match),
-            (b"curl[!a-z]lib", b"curl lib", Matched::Match),
-            (b"curl[! ]lib", b"curl lib", Matched::NoMatch),
-            (b"[! ][ ]", b"  ", Matched::NoMatch),
-            (b"[! ][ ]", b"a ", Matched::Match),
-            (b"*[^a].t?t", b"a.txt", Matched::NoMatch),
-            (b"*[^a].t?t", b"ca.txt", Matched::NoMatch),
-            (b"*[^a].t?t", b"ac.txt", Matched::Match),
-            (b"*[^a]", b"", Matched::NoMatch),
-            (b"[!\xff]", b"", Matched::NoMatch),
-            (b"[!\xff]", b"\xff", Matched::NoMatch),
-            (b"[!\xff]", b"a", Matched::Match),
-            (b"[!?*[]", b"?", Matched::NoMatch),
-            (b"[!!]", b"!", Matched::NoMatch),
-            (b"[!!]", b"x", Matched::Match),
-            (b"[[:alpha:]]", b"a", Matched::Match),
-            (b"[[:alpha:]]", b"9", Matched::NoMatch),
-            (b"[[:alnum:]]", b"a", Matched::Match),
-            (b"[[:alnum:]]", b"[", Matched::NoMatch),
-            (b"[[:alnum:]]", b"]", Matched::NoMatch),
-            (b"[[:alnum:]]", b"9", Matched::Match),
-            (b"[[:digit:]]", b"9", Matched::Match),
-            (b"[[:xdigit:]]", b"9", Matched::Match),
-            (b"[[:xdigit:]]", b"F", Matched::Match),
-            (b"[[:xdigit:]]", b"G", Matched::NoMatch),
-            (b"[[:upper:]]", b"U", Matched::Match),
-            (b"[[:upper:]]", b"u", Matched::NoMatch),
-            (b"[[:lower:]]", b"l", Matched::Match),
-            (b"[[:lower:]]", b"L", Matched::NoMatch),
-            (b"[[:print:]]", b"L", Matched::Match),
-            (b"[[:print:]]", b"\x08", Matched::NoMatch),
-            (b"[[:print:]]", b"\x08", Matched::NoMatch),
-            (b"[[:print:]]", b"\x09", Matched::NoMatch),
-            (b"[[:print:]]", b"\x0a", Matched::NoMatch),
-            (b"[[:print:]]", b"\x0d", Matched::NoMatch),
-            (b"[[:space:]]", b" ", Matched::Match),
-            (b"[[:space:]]", b"x", Matched::NoMatch),
-            (b"[[:graph:]]", b" ", Matched::NoMatch),
-            (b"[[:graph:]]", b"x", Matched::Match),
-            (b"[[:graph:]]", b"\x09", Matched::NoMatch),
-            (b"[[:graph:]]", b"\x0d", Matched::NoMatch),
-            (b"[[:blank:]]", b"\x09", Matched::Match),
-            (b"[[:blank:]]", b" ", Matched::Match),
-            (b"[[:blank:]]", b"\x0d", Matched::NoMatch),
-            (b"[^[:blank:]]", b"\x09", Matched::NoMatch),
-            (b"[^[:print:]]", b"\x08", Matched::Match),
-            (b"[[:lower:]][[:lower:]]", b"ll", Matched::Match),
-            (b"[[:foo:]]", b"bar", Matched::NoMatch),
-            (b"[[:foo:]]", b"f]", Matched::Match),
-            (b"curl[[:blank:]];-)", b"curl ;-)", Matched::Match),
-            (b"*[[:blank:]]*", b" ", Matched::Match),
-            (b"*[[:blank:]]*", b"", Matched::NoMatch),
-            (b"*[[:blank:]]*", b"hi, im_Pavel", Matched::Match),
-            (b"Filename.dat", b"Filename.dat", Matched::Match),
-            (b"*curl*", b"lets use curl!!", Matched::Match),
-            (b"filename.txt", b"filename.dat", Matched::NoMatch),
-            (b"*.txt", b"text.txt", Matched::Match),
-            (b"*.txt", b"a.txt", Matched::Match),
-            (b"*.txt", b".txt", Matched::Match),
-            (b"*.txt", b"txt", Matched::NoMatch),
-            (b"??.txt", b"99.txt", Matched::Match),
-            (b"??.txt", b"a99.txt", Matched::NoMatch),
-            (b"?.???", b"a.txt", Matched::Match),
-            (b"*.???", b"somefile.dat", Matched::Match),
-            (b"*.???", b"photo.jpeg", Matched::NoMatch),
-            (b".*", b".htaccess", Matched::Match),
-            (b".*", b".", Matched::Match),
-            (b".*", b"..", Matched::Match),
-            (b"**.txt", b"text.txt", Matched::Match),
-            (b"***.txt", b"t.txt", Matched::Match),
-            (b"****.txt", b".txt", Matched::Match),
-            (b"*a*b*c", b"abc", Matched::NoMatch),
-            (b"", b"", Matched::Match),
-            (b"", b"hello", Matched::NoMatch),
-            (b"file", b"", Matched::NoMatch),
-            (b"?", b"", Matched::NoMatch),
-            (b"*", b"", Matched::Match),
-            (b"x", b"", Matched::NoMatch),
-            (b"\\", b"\\", Matched::Match),
-            (b"\\\\", b"\\", Matched::Match),
-            (b"\\\\", b"\\\\", Matched::NoMatch),
-            (b"\\?", b"?", Matched::Match),
-            (b"\\*", b"*", Matched::Match),
-            (b"?.txt", b"?.txt", Matched::Match),
-            (b"*.txt", b"*.txt", Matched::Match),
-            (b"\\?.txt", b"?.txt", Matched::Match),
-            (b"\\*.txt", b"*.txt", Matched::Match),
-            (b"\\?.txt", b"x.txt", Matched::NoMatch),
-            (b"\\*.txt", b"x.txt", Matched::NoMatch),
-            (b"\\*\\\\.txt", b"*\\.txt", Matched::Match),
-            (b"*\\**\\?*\\\\*", b"cc*cc?cccc", Matched::NoMatch),
-            (b"*\\?*\\**", b"cc?cc", Matched::NoMatch),
-            (b"\\\"\\$\\&\\'\\(\\)", b"\"$&'()", Matched::Match),
-            (b"\\*\\?\\[\\\\\\`\\|", b"*?[\\`|", Matched::Match),
-            (b"[\\a\\b]c", b"ac", Matched::Match),
-            (b"[\\a\\b]c", b"bc", Matched::Match),
-            (b"[\\a\\b]d", b"bc", Matched::NoMatch),
-            (b"[a-bA-B\\?]", b"?", Matched::Match),
-            (b"cu[a-ab-b\\r]l", b"curl", Matched::Match),
-            (b"[\\a-z]", b"c", Matched::Match),
-            (b"?*?*?.*?*", b"abc.c", Matched::Match),
-            (b"?*?*?.*?*", b"abcc", Matched::NoMatch),
-            (b"?*?*?.*?*", b"abc.", Matched::NoMatch),
-            (b"?*?*?.*?*", b"abc.c++", Matched::Match),
-            (b"?*?*?.*?*", b"abcdef.c++", Matched::Match),
-            (b"?*?*?.?", b"abcdef.c", Matched::Match),
-            (b"?*?*?.?", b"abcdef.cd", Matched::NoMatch),
-            (b"Lindm\xc3\xa4tarv", b"Lindm\xc3\xa4tarv", Matched::Match),
-            (b"", b"", Matched::Match),
-            (b"**]*[*[\x13]**[*\x13)]*]*[**[*\x13~r-]*]**[.*]*[\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3\xe3*[\x13]**[*\x13)]*]*[*[\x13]*[~r]*]*\xba\x13\xa6~b-]*", b"a", Matched::NoMatch),
-        ];
-        for (i, &(pattern, name, want)) in rows.iter().enumerate() {
-            assert_eq!(own::matches(pattern, name), want, "row {i}");
+        let rows = unit1307_rows();
+        assert_eq!(rows.len(), 163);
+        for (i, (pattern, name, want, _)) in rows.iter().enumerate() {
+            assert_eq!(own::matches(pattern, name), *want, "row {i}");
         }
+    }
+
+    /// A zero byte ends either, and at most two stars are gone back to.
+    #[test]
+    fn the_own_matcher_stops_at_a_zero_byte_and_two_stars() {
         assert_eq!(own::matches(b"a*\0b", b"abc"), Matched::Match);
         assert_eq!(own::matches(b"abc", b"ab\0c"), Matched::NoMatch);
-        // At most two stars are gone back to.
         assert_eq!(own::matches(b"*a*b", b"xaxb"), Matched::Match);
         assert_eq!(own::matches(b"*a*b*c", b"xaxbxc"), Matched::NoMatch);
     }

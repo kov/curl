@@ -1045,7 +1045,7 @@ witness: curl-core proto::http::tests::a_netrc_file_gives_the_host_s_credentials
 
 === a netrc machine matches only in the same case
 file: crates/curl-core/src/netrc.rs
-witness: curl-core netrc::tests::unit1304_finds_entries
+witness: curl-core netrc::tests::finds_a_host_in_any_case_and_no_user_for_an_empty_one
 --- old
                 Token::Literal => entry.matches_host = lexer.literal.eq_ignore_ascii_case(host),
 --- new

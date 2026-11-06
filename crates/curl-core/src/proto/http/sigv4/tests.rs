@@ -10,37 +10,31 @@ fn path(p: &str, encode: bool) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// Unit test 1979's cases.
+/// unit1979's cases, read from its source: each path, whether it is
+/// encoded, and its canonical form.
 #[test]
 fn unit1979_canonical_paths() {
-    let cases = [
-        ("/a=b", true, "/a%3Db"),
-        ("/a=b", false, "/a=b"),
-        (
-            "/tables/arn%3Aaws%3As3tables%3Aus-east-1%3A022954301426%3Abucket%2Fjasoehartablebucket/jasoeharnamespace/jasoehartable/encryption",
-            true,
-            "/tables/arn%253Aaws%253As3tables%253Aus-east-1%253A022954301426%253Abucket%252Fjasoehartablebucket/jasoeharnamespace/jasoehartable/encryption",
-        ),
-        ("/", true, "/"),
-        (
-            "/-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-            true,
-            "/-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-        ),
-        ("//example//", false, "//example//"),
-        ("/example space/", true, "/example%20space/"),
-        ("/example+space/", true, "/example%2Bspace/"),
-        ("/./", false, "/./"),
-        ("//", false, "//"),
-        (
-            "/example1/example2/../..",
-            false,
-            "/example1/example2/../..",
-        ),
-    ];
-    for (given, encode, want) in cases {
-        assert_eq!(path(given, encode), want, "{given}");
+    let rows = crate::c_source::table("tests/unit/unit1979.c", "testcases[] =", |c| panic!("{c}"));
+    assert_eq!(rows.len(), 11);
+    for row in &rows {
+        let [name, encode, given, want] = row.group() else {
+            panic!("{row:?}")
+        };
+        let encode = match encode.word() {
+            "TRUE" => true,
+            "FALSE" => false,
+            other => panic!("{other}"),
+        };
+        let given = std::str::from_utf8(given.str()).unwrap();
+        let want = std::str::from_utf8(want.str()).unwrap();
+        assert_eq!(path(given, encode), want, "{name:?}");
     }
+}
+
+/// The S3 services leave a path as it is, in that case only; an empty
+/// path is `/` either way.
+#[test]
+fn s3_paths_are_not_encoded() {
     for service in ["s3", "s3express", "s3-outposts", "s3-object-lambda"] {
         assert!(!should_encode(service.as_bytes()), "{service}");
     }
@@ -57,28 +51,27 @@ fn query(q: &str) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// Unit test 1980's cases, and the limit on components.
+/// unit1980's cases, read from its source: each query and its
+/// canonical form.
 #[test]
 fn unit1980_canonical_queries() {
+    let rows = crate::c_source::table("tests/unit/unit1980.c", "testcases[] =", |c| panic!("{c}"));
+    assert_eq!(rows.len(), 9);
+    for row in &rows {
+        let [name, given, want] = row.group() else {
+            panic!("{row:?}")
+        };
+        let given = std::str::from_utf8(given.str()).unwrap();
+        let want = std::str::from_utf8(want.str()).unwrap();
+        assert_eq!(query(given), want, "{name:?}");
+    }
+}
+
+/// Empty parts, `=` in a value, empty keys, no query, and the limit on
+/// components.
+#[test]
+fn canonical_queries_c_leaves_out() {
     let cases = [
-        ("Param1=", "Param1="),
-        (
-            "name=me&noval&aim=b%aad&weirdo=*.//-",
-            "aim=b%AAd&name=me&noval=&weirdo=%2A.%2F%2F-",
-        ),
-        ("hello=a&b&c=&d", "b=&c=&d=&hello=a"),
-        ("Param2=value2&Param1=value1", "Param1=value1&Param2=value2"),
-        (
-            "-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz=-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-            "-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz=-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-        ),
-        ("Param1=value1", "Param1=value1"),
-        (
-            "Param-3=Value3&Param=Value2&%E1%88%B4=Value1",
-            "%E1%88%B4=Value1&Param=Value2&Param-3=Value3",
-        ),
-        ("p3= &p1=+&p2=%20", "p1=%20&p2=%20&p3=%20"),
-        ("p3=%2b&p1=+", "p1=%20&p3=%2B"),
         // Not unit 1980's: empty parts left out, `=` in a value encoded,
         // a key of nothing first, and signed as nothing. C signs it as
         // `(nil)=x`, its printf's text for the NULL an empty buffer holds

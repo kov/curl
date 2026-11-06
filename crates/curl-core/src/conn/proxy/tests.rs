@@ -2,47 +2,52 @@ use proptest::prelude::*;
 
 use super::*;
 
-/// Unit 1614's cases for the address ranges.
+/// unit1614's table `name`, read from its source, its IPv6 rows kept:
+/// each row's values, the end marker left out.
+fn unit1614_rows(name: &str) -> Vec<Vec<crate::c_source::Value>> {
+    let rows = crate::c_source::table("tests/unit/unit1614.c", name, |c| match c {
+        "defined(USE_IPV6)" => true,
+        other => panic!("{other}"),
+    });
+    rows.iter()
+        .map(|row| row.group().to_vec())
+        .filter(|row| row[0].bytes().is_some())
+        .collect()
+}
+
+/// A C `bool` in a table.
+fn truth(v: &crate::c_source::Value) -> bool {
+    match v.word() {
+        "TRUE" => true,
+        "FALSE" => false,
+        other => panic!("{other}"),
+    }
+}
+
+/// unit1614's cases for the address ranges, IPv4 and IPv6.
 #[test]
 fn unit1614_ranges_hold_addresses() {
-    let bits = |b: i32| u32::try_from(b).ok();
-    for (ip, net, b, want) in [
-        ("192.160.0.1", "192.160.0.1", 33, false),
-        ("192.160.0.1", "192.160.0.1", 32, true),
-        ("192.160.0.1", "192.160.0.1", 0, true),
-        ("192.160.0.1", "192.160.0.1", 24, true),
-        ("192.160.0.1", "192.160.0.1", 26, true),
-        ("192.160.0.1", "192.160.0.1", 20, true),
-        ("192.160.0.1", "192.160.0.1", 18, true),
-        ("192.160.0.1", "192.160.0.1", 12, true),
-        ("192.160.0.1", "192.160.0.1", 8, true),
-        ("192.160.0.1", "10.0.0.1", 8, false),
-        ("192.160.0.1", "10.0.0.1", 32, false),
-        ("192.160.0.1", "10.0.0.1", 0, false),
-        ("192.160.0.1", "0.0.0.0", 0, true),
-        ("0.0.0.1", "0.0.0.0", 0, true),
-        ("127.0.0.1", "0.0.0.0", 0, true),
-        ("0.0.0.1", "0.0.0.0", -1, false),
-        ("127.0.0.1", "0.0.0.0", -1, false),
-    ] {
-        let got = cidr4(ip.as_bytes(), net.as_bytes(), bits(b));
-        assert_eq!(got, want, "{ip} in {net}/{b}");
+    let bits = |b: &crate::c_source::Value| u32::try_from(b.int()).ok();
+    let list4 = unit1614_rows("list4[] =");
+    assert_eq!(list4.len(), 17);
+    for row in &list4 {
+        let (ip, net, want) = (row[0].str(), row[1].str(), truth(&row[3]));
+        let got = cidr4(ip, net, bits(&row[2]));
+        assert_eq!(got, want, "{row:?}");
     }
+    let list6 = unit1614_rows("list6[] =");
+    assert_eq!(list6.len(), 8);
+    for row in &list6 {
+        let (ip, net, want) = (row[0].str(), row[1].str(), truth(&row[3]));
+        let got = cidr6(ip, net, bits(&row[2]));
+        assert_eq!(got, want, "{row:?}");
+    }
+}
+
+/// A prefix that ends inside a byte holds that byte's leading bits.
+#[test]
+fn an_ipv6_prefix_ends_inside_a_byte() {
     for (ip, net, b, want) in [
-        ("::1", "::1", 0, true),
-        ("::1", "::1", 128, true),
-        ("::1", "0:0::1", 128, true),
-        ("::1", "0:0::1", 129, false),
-        (
-            "fe80::ab47:4396:55c9:8474",
-            "fe80::ab47:4396:55c9:8474",
-            64,
-            true,
-        ),
-        ("fe80::ab47:4396:55c9:8474", "::", 0, true),
-        ("::1", "::", 0, true),
-        ("::1", "::", -1, false),
-        // A prefix that ends inside a byte: that byte's leading bits.
         ("2001:db8::8000:0:0:1", "2001:db8:0:0:8000::", 65, true),
         ("2001:db8::7fff:0:0:1", "2001:db8::", 65, true),
         ("2001:db8::8000:0:0:1", "2001:db8::", 65, false),
@@ -50,122 +55,26 @@ fn unit1614_ranges_hold_addresses() {
         ("2001:db8::400:0:0:1", "2001:db8::", 70, false),
         ("2001:db8::200:0:0:1", "2001:db8::", 71, false),
     ] {
-        let got = cidr6(ip.as_bytes(), net.as_bytes(), bits(b));
+        let got = cidr6(ip.as_bytes(), net.as_bytes(), Some(b));
         assert_eq!(got, want, "{ip} in {net}/{b}");
     }
 }
 
-/// Unit 1614's cases for the no-proxy list.
+/// unit1614's cases for the no-proxy list.
 #[test]
 fn unit1614_no_proxy_names_hosts() {
-    let long128 = "localhost,127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.\
-                   127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.127.0.0.1.127.\
-                   0.0.1.127.0.0.1.127.0.0.";
-    let long127 = &long128[..long128.len() - 1];
+    let list = unit1614_rows("list[] =");
+    assert_eq!(list.len(), 83);
+    for row in &list {
+        let (name, names, want) = (row[0].str(), row[1].str(), truth(&row[2]));
+        assert_eq!(excluded(name, names), want, "{row:?}");
+    }
+}
+
+/// No list, no name, and a star.
+#[test]
+fn no_proxy_without_a_list_or_a_name() {
     for (name, list, want) in [
-        (
-            "www.example.com",
-            "localhost .example.com .example.de",
-            false,
-        ),
-        (
-            "www.example.com",
-            "localhost,.example.com,.example.de",
-            true,
-        ),
-        (
-            "www.example.com.",
-            "localhost,.example.com,.example.de",
-            true,
-        ),
-        ("example.com", "localhost,.example.com,.example.de", true),
-        ("example.com.", "localhost,.example.com,.example.de", true),
-        (
-            "www.example.com",
-            "localhost,.example.com.,.example.de",
-            true,
-        ),
-        (
-            "www.example.com",
-            "localhost,www.example.com.,.example.de",
-            true,
-        ),
-        ("example.com", "localhost,example.com,.example.de", true),
-        ("example.com.", "localhost,example.com,.example.de", true),
-        ("nexample.com", "localhost,example.com,.example.de", false),
-        ("www.example.com", "localhost,example.com,.example.de", true),
-        ("127.0.0.1", "127.0.0.1,localhost", true),
-        ("127.0.0.1", "127.0.0.1,localhost,", true),
-        ("127.0.0.1", "127.0.0.1/8,localhost,", true),
-        ("127.0.0.1", "127.0.0.1/28,localhost,", true),
-        ("127.0.0.1", "127.0.0.1/31,localhost,", true),
-        ("127.0.0.1", "localhost,127.0.0.1", true),
-        ("127.0.0.1", long128, false),
-        ("127.0.0.1", long127, false),
-        ("localhost", "localhost,127.0.0.1", true),
-        ("localhost", "127.0.0.1,localhost", true),
-        ("foobar", "barfoo", false),
-        ("foobar", "foobar", true),
-        ("192.168.0.1", "foobar", false),
-        ("192.168.0.1", "192.168.0.0/16", true),
-        ("192.168.0.1", "192.168.0.0/16a", false),
-        ("192.168.0.1", "192.168.0.0/16 ", true),
-        ("192.168.0.1", "192.168.0.0/a16", false),
-        ("192.168.0.1", "192.168.0.0/ 16", false),
-        ("192.168.0.1", "192.168.0.0/24", true),
-        ("192.168.0.1", "192.168.0.0/32", false),
-        ("192.168.0.1", "192.168.0.1/32", true),
-        ("192.168.0.1", "192.168.0.1/33", false),
-        ("192.168.0.1", "192.168.0.0", false),
-        ("192.168.1.1", "192.168.0.0/24", false),
-        ("192.168.1.1", "192.168.0.0/33", false),
-        ("192.168.1.1", "foo, bar, 192.168.0.0/24", false),
-        ("192.168.1.1", "foo, bar, 192.168.0.0/16", true),
-        ("192.168.1.1", "0.0.0.0/0", true),
-        ("192.168.1.1", "0.0.0.0", false),
-        ("::1", "::/0", true),
-        ("::1", "::", false),
-        ("::1", "::/128", false),
-        ("::1", "foo, bar, 192.168.0.0/16", false),
-        ("::1", "foo, bar, ::1/64", true),
-        ("::1", "::1/64", true),
-        ("::1", "::1/96", true),
-        ("::1", "::1/129", false),
-        ("::1", "::1/128", true),
-        ("::1", "::1/127", true),
-        ("::1", "::1/a127", false),
-        ("::1", "::1/127a", false),
-        ("::1", "::1/ 127", false),
-        ("::1", "::1/127 ", true),
-        ("::1", "::1/126", true),
-        ("::1", "::1/125", true),
-        ("::1", "::1/124", true),
-        ("::1", "::1/123", true),
-        ("::1", "::1/122", true),
-        ("2001:db8:8000::1", "2001:db8::/65", false),
-        ("2001:db8:8000::1", "2001:db8::/66", false),
-        ("2001:db8:8000::1", "2001:db8::/67", false),
-        ("2001:db8:8000::1", "2001:db8::/68", false),
-        ("2001:db8:8000::1", "2001:db8::/69", false),
-        ("2001:db8:8000::1", "2001:db8::/70", false),
-        ("2001:db8:8000::1", "2001:db8::/71", false),
-        ("2001:db8:8000::1", "2001:db8::/72", false),
-        ("2001:db8::1", "2001:db8::/65", true),
-        ("2001:db8::1", "2001:db8::/66", true),
-        ("2001:db8::1", "2001:db8::/67", true),
-        ("2001:db8::1", "2001:db8::/68", true),
-        ("2001:db8::1", "2001:db8::/69", true),
-        ("2001:db8::1", "2001:db8::/70", true),
-        ("2001:db8::1", "2001:db8::/71", true),
-        ("2001:db8::1", "2001:db8::/72", true),
-        ("bar", "foo, bar, ::1/64", true),
-        ("BAr", "foo, bar, ::1/64", true),
-        ("BAr", "foo,,,,,              bar, ::1/64", true),
-        ("www.example.com", "foo, .example.com", true),
-        ("www.example.com", "www2.example.com, .example.net", false),
-        ("example.com", ".example.com, .example.net", true),
-        ("nonexample.com", ".example.com, .example.net", false),
-        // And without a list or a name.
         ("example.com", "", false),
         ("", "*", false),
         ("example.com", "*", true),

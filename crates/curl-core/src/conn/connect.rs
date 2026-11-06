@@ -4939,13 +4939,62 @@ mod tests {
         net.close(stream.into_socket());
     }
 
-    /// Unit 2600's cases: how many attempts of each family start, and
-    /// when, how many run at once, and when the setup fails. The next
-    /// attempt starts once the delay has passed since the last one
-    /// started, or once none runs; six run at most, the oldest making
-    /// room.
+    /// unit2600's cases, read from its source: how many attempts of each
+    /// family start, how many run at once, that the setup fails no sooner
+    /// than C expects, and where both families start, that the preferred
+    /// one starts at once and the other no sooner than the delay. Each
+    /// address refuses after the case's delay, the same for each family.
     #[test]
     fn unit2600_attempts_race() {
+        let rows = crate::c_source::table("tests/unit/unit2600.c", "TEST_CASES[] =", |c| match c {
+            "defined(USE_IPV6)" => true,
+            other => panic!("{other}"),
+        });
+        assert_eq!(rows.len(), 10);
+        let ms = |v: &crate::c_source::Value| u64::try_from(v.int()).unwrap();
+        let count = |v: &crate::c_source::Value| usize::try_from(v.int()).unwrap();
+        for row in &rows {
+            let r = row.group();
+            let id = r[0].int();
+            let resolve = std::str::from_utf8(r[2].str()).unwrap();
+            let addrs: Vec<&str> = resolve
+                .strip_prefix("abc.test:123:")
+                .unwrap()
+                .split(',')
+                .collect();
+            let ip = match r[3].word() {
+                "CURL_IPRESOLVE_WHATEVER" => IpVersion::Any,
+                "CURL_IPRESOLVE_V4" => IpVersion::V4,
+                "CURL_IPRESOLVE_V6" => IpVersion::V6,
+                other => panic!("{other}"),
+            };
+            let (he, fail4, fail6) = (ms(&r[5]), ms(&r[6]), ms(&r[7]));
+            assert_eq!(fail4, fail6, "case {id}: one delay for both families");
+            let got = race(&addrs, ip, he, fail4);
+            assert_eq!(got.v4_starts.len(), count(&r[8]), "case {id}: {got:?}");
+            assert_eq!(got.v6_starts.len(), count(&r[9]), "case {id}: {got:?}");
+            assert!(got.failed_at >= ms(&r[10]), "case {id}: {got:?}");
+            assert_eq!(r[12].word(), "R_FAIL");
+            assert_eq!(got.most_running, count(&r[14]), "case {id}: {got:?}");
+            let starts = (got.v4_starts.first(), got.v6_starts.first());
+            if let ((Some(&v4), Some(&v6)), Some(pref)) = (starts, r[13].bytes()) {
+                let (first, other) = match pref {
+                    b"v6" => (v6, v4),
+                    b"v4" => (v4, v6),
+                    other => panic!("{other:?}"),
+                };
+                assert!(first <= 100, "case {id}: {got:?}");
+                assert!(other >= he, "case {id}: {got:?}");
+            }
+        }
+    }
+
+    /// unit2600's cases as the rewrite times them: when each attempt of
+    /// each family starts, and when the setup fails. The next attempt
+    /// starts once the delay has passed since the last one started, or
+    /// once none runs; six run at most, the oldest making room.
+    #[test]
+    fn attempts_start_on_the_delay() {
         use IpVersion::{Any, V4, V6};
         let raced = |v4: &[u64], v6: &[u64], most_running, failed_at| Raced {
             v4_starts: v4.to_vec(),

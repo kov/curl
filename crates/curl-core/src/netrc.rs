@@ -486,54 +486,118 @@ mod tests {
         })
     }
 
-    /// Unit 1304: hosts and users found and not.
-    #[test]
-    fn unit1304_finds_entries() {
-        let scan =
-            |host: &str, user: Option<&str>| scan(FILE, host.as_bytes(), user.map(str::as_bytes));
-        let none = Err(NetrcError::NoMatch);
-        assert_eq!(scan("test.example.com", None), none);
-        assert_eq!(scan("example.com", Some("me")), none);
-        assert_eq!(scan("test.example.com", Some("me")), none);
-        assert_eq!(scan("example.com", Some("a")), none);
-        assert_eq!(scan("example.com", Some("administrator")), none);
-        assert_eq!(scan("example.com", None), found("admin", "passwd"));
-        assert_eq!(scan("curl.example.com", None), found("none", "none"));
-        assert_eq!(scan("curl.example.com", Some("hilarious")), none);
-        assert_eq!(scan("EXAMPLE.com", Some("admin")), found("admin", "passwd"));
-        assert_eq!(scan("example.com", Some("")), found("admin", "passwd"));
+    /// The netrc file of test 1304, which runs unit1304.
+    fn file_1304() -> Vec<u8> {
+        crate::proto::http1::fixture::section(1304, "client", "file")
+            .expect("test 1304 has a file")
+            .text
     }
 
-    /// Unit 1304's empty literals.
+    /// The quoted string after `marker` in a C expression.
+    fn quoted_after<'a>(expr: &'a str, marker: &str) -> Option<&'a str> {
+        let at = expr.find(marker)? + marker.len();
+        let rest = expr[at..].trim_start().strip_prefix('"')?;
+        Some(&rest[..rest.find('"')?])
+    }
+
+    /// Unit 1304: hosts and users found and not, in test 1304's file. Its
+    /// scans and what it expects of each are read from its source: the
+    /// result each `fail_unless` compares, and the login and password a
+    /// found entry gives.
     #[test]
-    fn unit1304_reads_empty_literals() {
-        let scan = |text: &str| scan(text.as_bytes(), b"example.com", None);
-        assert_eq!(scan("default login \"\""), found("", ""));
-        assert_eq!(scan("default password \"\""), found("", ""));
+    fn unit1304_finds_entries() {
+        const SRC: &str = "tests/unit/unit1304.c";
+        let holds = |c: &str| match c {
+            "!(defined(CURL_DISABLE_NETRC))" => true,
+            "!(!(defined(CURL_DISABLE_NETRC)))" => false,
+            other => panic!("{other}"),
+        };
+        let file = file_1304();
+        // The scans of the file the test is given, `arg`.
+        let scans: Vec<_> = crate::c_source::every_call(SRC, "Curl_netrc_scan", holds)
+            .into_iter()
+            .filter(|args| args[4].word() == "arg")
+            .collect();
+        // What follows each: its result, then the entry's fields.
+        let mut expected: Vec<(bool, Option<String>, Option<String>)> = Vec::new();
+        for check in crate::c_source::every_call(SRC, "fail_unless", holds) {
+            // A check of a call alone, such as `t1304_no_passwd(cr_out)`,
+            // holds of an entry not found.
+            let crate::c_source::Value::Word(expr) = &check[0] else {
+                continue;
+            };
+            let expr = expr.as_str();
+            match expr {
+                "res == NETRC_OK" => expected.push((true, None, None)),
+                "res == NETRC_NO_MATCH" => expected.push((false, None, None)),
+                _ => {
+                    let Some(last) = expected.last_mut() else {
+                        continue;
+                    };
+                    if let Some(p) = quoted_after(expr, "Curl_creds_passwd(cr_out),") {
+                        last.2 = Some(p.to_owned());
+                    } else if let Some(u) = quoted_after(expr, "Curl_creds_user(cr_out),") {
+                        last.1 = Some(u.to_owned());
+                    }
+                }
+            }
+        }
+        assert_eq!(scans.len(), 8);
+        assert_eq!(scans.len(), expected.len());
+        for (args, (ok, user, password)) in scans.iter().zip(&expected) {
+            let (host, who) = (args[2].str(), args[3].bytes());
+            let got = scan(&file, host, who);
+            let show = (
+                String::from_utf8_lossy(host),
+                who.map(String::from_utf8_lossy),
+            );
+            if *ok {
+                let (user, password) = (user.as_deref().unwrap(), password.as_deref().unwrap());
+                assert_eq!(got, found(user, password), "{show:?}");
+            } else {
+                assert_eq!(got, Err(NetrcError::NoMatch), "{show:?}");
+            }
+        }
+    }
+
+    /// A host matches in any case, and an empty user is no user.
+    #[test]
+    fn finds_a_host_in_any_case_and_no_user_for_an_empty_one() {
+        let file = file_1304();
         assert_eq!(
-            scan("default login \"\" password secret"),
-            found("", "secret")
-        );
-        assert_eq!(
-            scan("default password \"\" login admin"),
-            found("admin", "")
-        );
-        assert_eq!(scan("default login \"\" password \"\""), found("", ""));
-        assert_eq!(
-            scan("machine \"\" login ignored password ignored"),
-            Err(NetrcError::NoMatch)
-        );
-        assert_eq!(
-            scan(
-                "machine \"\" login ignored password ignored\n\
-                 machine example.com login admin password passwd"
-            ),
+            scan(&file, b"EXAMPLE.com", Some(b"admin")),
             found("admin", "passwd")
         );
         assert_eq!(
-            scan("machine example.com login \"\" password \"\""),
-            found("", "")
+            scan(&file, b"example.com", Some(b"")),
+            found("admin", "passwd")
         );
+    }
+
+    /// Unit 1304's empty literals, its table read from its source: each
+    /// content scanned for `example.com`, no user given.
+    #[test]
+    fn unit1304_reads_empty_literals() {
+        let rows = crate::c_source::table("tests/unit/unit1304.c", "tests[] =", |c| panic!("{c}"));
+        assert_eq!(rows.len(), 8);
+        for row in &rows {
+            let [content, result, login, passwd] = row.group() else {
+                panic!("{row:?}")
+            };
+            let got = scan(content.str(), b"example.com", None);
+            let show = String::from_utf8_lossy(content.str());
+            match result.word() {
+                "NETRC_OK" => {
+                    let want = Found {
+                        user: login.str().to_vec(),
+                        password: passwd.str().to_vec(),
+                    };
+                    assert_eq!(got, Ok(want), "{show}");
+                }
+                "NETRC_NO_MATCH" => assert_eq!(got, Err(NetrcError::NoMatch), "{show}"),
+                other => panic!("{other}"),
+            }
+        }
     }
 
     /// Quotes, escapes, macros, keywords in any case, and what is passed

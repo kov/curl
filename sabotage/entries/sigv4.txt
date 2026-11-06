@@ -59,7 +59,7 @@ witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
 
 === a query of 128 components is too large
 file: crates/curl-core/src/proto/http/sigv4.rs
-witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
+witness: curl-core proto::http::sigv4::tests::canonical_queries_c_leaves_out
 --- old
         if pairs.len() + 1 == MAX_QUERY {
 --- new
@@ -67,7 +67,7 @@ witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
 
 === query parts of empty keys keep their order, whatever their values
 file: crates/curl-core/src/proto/http/sigv4.rs
-witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
+witness: curl-core proto::http::sigv4::tests::canonical_queries_c_leaves_out
 --- old
         (true, true) => std::cmp::Ordering::Equal,
 --- new
@@ -75,7 +75,7 @@ witness: curl-core proto::http::sigv4::tests::unit1980_canonical_queries
 
 === S3's services sign the path as it is
 file: crates/curl-core/src/proto/http/sigv4.rs
-witness: curl-core proto::http::sigv4::tests::unit1979_canonical_paths
+witness: curl-core proto::http::sigv4::tests::s3_paths_are_not_encoded
 --- old
         b"s3" | b"s3express" | b"s3-outposts" | b"s3-object-lambda"
 --- new

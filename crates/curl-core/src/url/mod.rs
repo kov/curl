@@ -2017,40 +2017,62 @@ mod tests {
     /// unit1653: the port taken off a host, an IPv6 address's after its
     /// `]` (what is inside it is not looked at here), none where there is
     /// no port or only a `:` in a URL with a scheme, and an error for
-    /// anything else after it. C checks only that a port is refused, not
-    /// with what code, but for its last row.
+    /// anything else after it. Its hosts, whether each URL has a scheme,
+    /// and what it expects of each are read from its source: whether
+    /// `parse_port` succeeds (with what code for its last row), and the
+    /// port the URL then has or that it has none. Where C checks only
+    /// success, the port is the digits after the `]:`, or none.
     #[test]
     fn unit1653_ports() {
-        let ip = "fe80::250:56ff:fea7:da15";
-        let a64 = "a".repeat(64);
-        let rows: [(String, bool, Option<Option<u16>>); 12] = [
-            (format!("[{ip}]"), false, Some(None)),
-            (format!("[{ip}|"), false, None),
-            (
-                "[fe80::250:56ff;fea7:da15]:808".into(),
-                false,
-                Some(Some(808)),
-            ),
-            (format!("[{ip}%25eth3]:80"), false, Some(Some(80))),
-            (format!("[{ip}%25eth3]"), false, Some(None)),
-            (format!("[{ip}]:81"), false, Some(Some(81))),
-            (format!("[{ip}];81"), false, None),
-            (format!("[{ip}]80"), false, None),
-            (format!("[{ip}]:"), true, Some(None)),
-            (format!("[{ip}!25eth3]:180"), false, Some(Some(180))),
-            (format!("[{ip}%eth3]:80"), false, Some(Some(80))),
-            (format!("{a64}:"), false, None),
-        ];
-        for (host, has_scheme, want) in rows {
-            let mut h = host.clone().into_bytes();
-            let got = parse_port(&mut h, has_scheme);
-            assert_eq!(got.as_ref().ok().copied(), want, "{host}: {got:?}");
-            if let Some(Some(_)) = want {
-                assert_eq!(h, host.as_bytes()[..host.rfind(':').unwrap()], "{host}");
+        const SRC: &str = "tests/unit/unit1653.c";
+        let no = |c: &str| panic!("{c}");
+        let hosts = crate::c_source::every_call(SRC, "curlx_strdup", no);
+        let schemes = crate::c_source::every_call(SRC, "my_parse_port", no);
+        // Per host: the result `parse_port` is expected to give, and
+        // then what the URL's port is checked to be.
+        let mut expected: Vec<(String, Option<Option<u16>>)> = Vec::new();
+        for check in crate::c_source::every_call(SRC, "fail_unless", no) {
+            let (expr, what) = (check[0].word(), check[1].str());
+            if what.starts_with(b"parse_port") {
+                expected.push((expr.to_owned(), None));
+            } else if what == b"curl_url_get portnum returned something" {
+                expected.last_mut().unwrap().1 = Some(None);
+            } else if let Some(n) = expr.strip_prefix("portnum && !strcmp(portnum, \"") {
+                let n = n.strip_suffix("\")").unwrap().parse().unwrap();
+                expected.last_mut().unwrap().1 = Some(Some(n));
             }
         }
-        let mut h = format!("{a64}:").into_bytes();
-        assert_eq!(parse_port(&mut h, false), Err(UrlErrorKind::BadPortNumber));
+        assert_eq!(hosts.len(), 12);
+        assert_eq!(schemes.len(), hosts.len());
+        assert_eq!(expected.len(), hosts.len());
+        for ((host, scheme), (result, port)) in hosts.iter().zip(&schemes).zip(&expected) {
+            let host = host[0].str();
+            let has_scheme = match scheme[2].word() {
+                "TRUE" => true,
+                "FALSE" => false,
+                other => panic!("{other}"),
+            };
+            let show = String::from_utf8_lossy(host);
+            let mut h = host.to_vec();
+            let got = parse_port(&mut h, has_scheme);
+            match result.as_str() {
+                "ret == CURLUE_OK" => {
+                    let digits = show.rsplit_once("]:").map(|(_, p)| p).unwrap_or("");
+                    let own = digits.parse().ok();
+                    let want = port.unwrap_or(own);
+                    assert_eq!(want, own, "{show}");
+                    assert_eq!(got, Ok(want), "{show}");
+                    if want.is_some() {
+                        assert_eq!(h, host[..show.rfind(':').unwrap()], "{show}");
+                    }
+                }
+                "ret != CURLUE_OK" => assert!(got.is_err(), "{show}: {got:?}"),
+                "ret == CURLUE_BAD_PORT_NUMBER" => {
+                    assert_eq!(got, Err(UrlErrorKind::BadPortNumber), "{show}")
+                }
+                other => panic!("{other}"),
+            }
+        }
     }
 
     /// unit1395: dot segments removed as `dedotdotify` removes them.

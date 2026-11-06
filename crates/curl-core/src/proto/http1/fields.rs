@@ -191,111 +191,53 @@ mod tests {
         assert!(!says(b"Connection: abcde,f"));
         assert!(!says(b"Connection: abcde,f\r\n"));
         assert!(says(b"Connection: a,  close\r\n"));
+        // A value that starts with a comma.
+        assert!(!header_says(
+            b"Encoding: , chunked",
+            b"Encoding:",
+            b"chunked"
+        ));
     }
 
-    /// Unit 1626's table.
+    /// unit1626's table, read from its source.
     #[test]
     fn unit1626_values_are_read() {
-        let cases: [(&str, &str); 28] = [
-            ("Header: value", "value"),
-            ("Header:value", "value"),
-            ("Header:    value", "value"),
-            ("Header: \tvalue", "value"),
-            ("Header: value  ", "value"),
-            ("Header:    value   ", "value"),
-            ("Header:", ""),
-            ("Header:  ", ""),
-            ("Header: \t ", ""),
-            ("Header: one two", "one two"),
-            ("Header: one two a b c ", "one two a b c"),
-            ("Header: text/html", "text/html"),
-            ("Header: value\r", "value"),
-            ("Header: value\n", "value"),
-            ("Header: \"value\"\n", "\"value\""),
-            ("Header: \"value\"  ", "\"value\""),
-            (" Header: value", "value"),
-            ("Header\t: value", "value"),
-            ("Header:\t  value", "value"),
-            ("Header: foo:bar", "foo:bar"),
-            ("Header: foo:bar:baz", "foo:bar:baz"),
-            ("Header:\t\t", ""),
-            ("Header: value\r\n", "value"),
-            ("Header: foo\tbar", "foo\tbar"),
-            ("Header:\tfoo", "foo"),
-            ("Header : value", "value"),
-            ("Header    : value", "value"),
-            ("Header :    value", "value"),
-        ];
-        for (line, value) in cases {
-            assert_eq!(
-                header_value(line.as_bytes()),
-                Some(value.as_bytes()),
-                "{line:?}"
-            );
+        let rows = crate::c_source::table("tests/unit/unit1626.c", "list[] =", |c| panic!("{c}"));
+        assert_eq!(rows.len(), 28);
+        for row in &rows {
+            let [line, value] = row.group() else {
+                panic!("{row:?}")
+            };
+            assert_eq!(header_value(line.str()), Some(value.str()), "{row:?}");
         }
+    }
+
+    /// A line with no colon, or no name before it, has no value.
+    #[test]
+    fn no_value_without_a_name_and_a_colon() {
         assert_eq!(header_value(b"no colon"), None);
         assert_eq!(header_value(b": value"), None);
     }
 
-    /// Unit 1625's table.
+    /// unit1625's table, read from its source, and its token past a
+    /// value as long as a response's headers may be.
     #[test]
     fn unit1625_tokens_are_found() {
-        let cases: [(&str, &str, &str, bool); 34] = [
-            ("Encoding: gzip, chunked", "Encoding:", "chunked", true),
-            ("Encoding: chunked", "Encoding:", "chunked", true),
-            ("Encoding: a, b, chunked", "Encoding:", "chunked", true),
-            ("Encoding: a, b, c, chunked", "Encoding:", "chunked", true),
-            ("Encoding: a, chunked, ninja", "Encoding:", "chunked", true),
-            ("Encoding:", "Encoding:", "chunked", false),
-            ("Encoding:   ", "Encoding:", "chunked", false),
-            ("Encoding: ab,cd,ef,gh,ig,kl", "Encoding:", "kl", true),
-            ("Encoding: ab,,kl", "Encoding:", "kl", true),
-            ("Encoding: ab,cd,,,,kl", "Encoding:", "kl", true),
-            ("Encoding: chunked, a, b, c", "Encoding:", "chunked", true),
-            ("Encoding: gzip, chunked", "Encoding:", "CHUNKED", true),
-            ("Encoding: gzip, CHUNKED", "Encoding:", "chunked", true),
-            ("encoDING: gzip, CHUNKED", "encoding:", "chunked", true),
-            ("ENCODING: gzip, chunked", "encoding:", "chunked", true),
-            ("Encoding: gzip, chunked", "Encoding:", "gzip", true),
-            ("Encoding: gzip,chunked", "Encoding:", "gzip", true),
-            (
-                "Encoding:    gzip,     chunked",
-                "Encoding:",
-                "chunked",
-                true,
-            ),
-            ("Encoding: gzip, \tchunked", "Encoding:", "chunked", true),
-            ("Encoding: gzip\r\n", "Encoding:", "gzip", true),
-            ("Encoding: gzip\n", "Encoding:", "gzip", true),
-            ("Encoding: gzip\t", "Encoding:", "gzip", true),
-            ("Encoding: gzip \n", "Encoding:", "gzip", true),
-            ("Encoding: gzip, chunked", "Encoding:", "br", false),
-            ("Encoding: gzip, chunked", "Encodin:", "chunked", false),
-            ("Encoding: gzip2, chunked", "Encoding:", "gzip", false),
-            ("Encoding: gzipp, chunked", "Encoding:", "gzip", false),
-            ("Encoding: agzip, chunked", "Encoding:", "gzip", false),
-            ("Decoding: gzip, chunked", "Encoding:", "gzip", false),
-            ("Encoding: super-nice", "Encoding:", "super-nice", true),
-            (
-                "Encoding: extra-good, super-nice",
-                "Encoding:",
-                "super-nice",
-                true,
-            ),
-            ("Encoding: gzipped,  ", "Encoding:", "gzip", false),
-            (
-                "Encoding: gzipped,  \r\nEncoding: gzip, chunked",
-                "Encoding:",
-                "chunked",
-                false,
-            ),
-            ("Encoding: , chunked", "Encoding:", "chunked", false),
-        ];
-        for (line, name, token, says) in cases {
+        let rows = crate::c_source::table("tests/unit/unit1625.c", "list[] =", |c| panic!("{c}"));
+        assert_eq!(rows.len(), 33);
+        for row in &rows {
+            let [line, name, token, says] = row.group() else {
+                panic!("{row:?}")
+            };
+            let says = match says.word() {
+                "TRUE" => true,
+                "FALSE" => false,
+                other => panic!("{other}"),
+            };
             assert_eq!(
-                header_says(line.as_bytes(), name.as_bytes(), token.as_bytes()),
+                header_says(line.str(), name.str(), token.str()),
                 says,
-                "{line:?} {name:?} {token:?}"
+                "{row:?}"
             );
         }
         let mut large = b"Encoding: ".to_vec();

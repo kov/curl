@@ -10314,7 +10314,57 @@ fn a_copy_s_adapters_are_its_own() {
     ) -> c_int {
         0
     }
+    unsafe extern "C" fn io(_p: *mut c_char, _s: usize, _n: usize, _u: *mut c_void) -> usize {
+        0
+    }
+    unsafe extern "C" fn trailer(_l: *mut *mut ffi::curl_slist, _u: *mut c_void) -> c_int {
+        0
+    }
+    unsafe extern "C" fn xferinfo(
+        _u: *mut c_void,
+        _a: curl_off_t,
+        _b: curl_off_t,
+        _c: curl_off_t,
+        _d: curl_off_t,
+    ) -> c_int {
+        0
+    }
+    unsafe extern "C" fn open(
+        _u: *mut c_void,
+        _p: ffi::curlsocktype,
+        _a: *mut ffi::curl_sockaddr,
+    ) -> ffi::curl_socket_t {
+        ffi::CURL_SOCKET_BAD
+    }
     let c = curl_easy_init();
+    let w: ffi::curl_write_callback = Some(io);
+    // SAFETY: a function of each option's type.
+    let wp = unsafe { core::mem::transmute::<ffi::curl_write_callback, *mut c_void>(w) };
+    for o in [
+        ffi::CURLOPT_HEADERFUNCTION,
+        ffi::CURLOPT_INTERLEAVEFUNCTION,
+        ffi::CURLOPT_READFUNCTION,
+    ] {
+        assert_eq!(pointer(c, o, wp), CURLE_OK);
+    }
+    let t: ffi::curl_trailer_callback = Some(trailer);
+    // SAFETY: as above.
+    let tp = unsafe { core::mem::transmute::<ffi::curl_trailer_callback, *mut c_void>(t) };
+    assert_eq!(pointer(c, ffi::CURLOPT_TRAILERFUNCTION, tp), CURLE_OK);
+    let x: ffi::curl_xferinfo_callback = Some(xferinfo);
+    // SAFETY: as above.
+    let xp = unsafe { core::mem::transmute::<ffi::curl_xferinfo_callback, *mut c_void>(x) };
+    assert_eq!(pointer(c, ffi::CURLOPT_XFERINFOFUNCTION, xp), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_NOPROGRESS, 0), CURLE_OK);
+    let s: ffi::curl_opensocket_callback = Some(open);
+    // SAFETY: as above.
+    let sp = unsafe { core::mem::transmute::<ffi::curl_opensocket_callback, *mut c_void>(s) };
+    assert_eq!(pointer(c, ffi::CURLOPT_OPENSOCKETFUNCTION, sp), CURLE_OK);
+    let mut errbuf = [0 as c_char; ffi::CURL_ERROR_SIZE as usize];
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_ERRORBUFFER, errbuf.as_mut_ptr()),
+        CURLE_OK
+    );
     let k: ffi::curl_sshkeycallback = Some(key);
     // SAFETY: a function of the option's type.
     let kp = unsafe { core::mem::transmute::<ffi::curl_sshkeycallback, *mut c_void>(k) };
@@ -10343,10 +10393,24 @@ fn a_copy_s_adapters_are_its_own() {
             let key = o.ssh.key_handler.clone().expect("a key adapter");
             let host = o.ssh.host_key_handler.clone();
             let debug = o.callbacks.debug.clone().expect("a debug adapter");
-            (key, host, debug)
+            let progress = match &o.progress {
+                Progress::Handler(h) => h.clone(),
+                other => panic!("a progress adapter, not {other:?}"),
+            };
+            let c = &o.callbacks;
+            let rest = (
+                c.header.clone().expect("a header adapter"),
+                c.trailer.clone().expect("a trailer adapter"),
+                c.failure.clone().expect("an error buffer adapter"),
+                o.small.interleave.clone().expect("an interleave adapter"),
+                o.small.input.clone().expect("a read adapter"),
+                o.sockets.open.clone().expect("an open socket adapter"),
+                progress,
+            );
+            (key, host, debug, rest)
         })
     };
-    let (key, host, debug) = handlers(c);
+    let (key, host, debug, rest) = handlers(c);
     assert_eq!(
         host.is_some(),
         cfg!(feature = "libssh2"),
@@ -10355,10 +10419,32 @@ fn a_copy_s_adapters_are_its_own() {
     // SAFETY: a live handle.
     let copy = unsafe { easy::curl_easy_duphandle(c) };
     assert!(!copy.is_null());
-    let (copy_key, copy_host, copy_debug) = handlers(copy);
+    let (copy_key, copy_host, copy_debug, copy_rest) = handlers(copy);
     use curl_core::handler::Handler;
     assert!(!Handler::ptr_eq(&key, &copy_key), "the key adapter");
     assert!(!Handler::ptr_eq(&debug, &copy_debug), "the debug adapter");
+    assert!(
+        !Handler::ptr_eq(&rest.0, &copy_rest.0),
+        "the header adapter"
+    );
+    assert!(
+        !Handler::ptr_eq(&rest.1, &copy_rest.1),
+        "the trailer adapter"
+    );
+    assert!(!Handler::ptr_eq(&rest.2, &copy_rest.2), "the error buffer");
+    assert!(
+        !Handler::ptr_eq(&rest.3, &copy_rest.3),
+        "the interleave adapter"
+    );
+    assert!(!Handler::ptr_eq(&rest.4, &copy_rest.4), "the read adapter");
+    assert!(
+        !Handler::ptr_eq(&rest.5, &copy_rest.5),
+        "the socket adapter"
+    );
+    assert!(
+        !Handler::ptr_eq(&rest.6, &copy_rest.6),
+        "the progress adapter"
+    );
     assert_eq!(host.is_some(), copy_host.is_some());
     if let (Some(host), Some(copy_host)) = (host, copy_host) {
         assert!(!Handler::ptr_eq(&host, &copy_host), "the host key adapter");

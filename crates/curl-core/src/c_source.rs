@@ -112,6 +112,104 @@ impl Value {
     }
 }
 
+/// The output the case of `test` (`tests/data/testN`) expects on
+/// standard output, its `<verify>`'s `<stdout>`, with the variables for
+/// blanks (`%SP`, `%TAB`, `%CR`) replaced, for a program that prints its
+/// results rather than checking them.
+#[track_caller]
+pub fn expected_stdout(test: u32) -> Vec<u8> {
+    let case = source(&format!("tests/data/test{test}"));
+    let verify = &case[case.find("<verify>").expect("a <verify>")..];
+    let open = verify.find("<stdout").expect("a <stdout>");
+    let body = &verify[open..];
+    let body = &body[body.find('>').expect("the tag ends") + 1..];
+    let body = body.strip_prefix('\n').unwrap_or(body);
+    let body = &body[..body.find("</stdout>").expect("</stdout>")];
+    body.replace("%SP", " ")
+        .replace("%TAB", "\t")
+        .replace("%CR", "\r")
+        .into_bytes()
+}
+
+/// The lines of `output` that follow its line `header` up to the next
+/// line that starts with `next`, each with its newline: a section of what
+/// a program prints. A line a printed value breaks is not one that
+/// starts anew, so a section is read whole.
+#[track_caller]
+pub fn section<'a>(output: &'a [u8], header: &str, next: &str) -> &'a [u8] {
+    let at = output
+        .split_inclusive(|&b| b == b'\n')
+        .scan(0, |at, line| {
+            let start = *at;
+            *at += line.len();
+            Some((start, line))
+        })
+        .collect::<Vec<_>>();
+    let start = at
+        .iter()
+        .position(|(_, l)| l.strip_suffix(b"\n").unwrap_or(l) == header.as_bytes())
+        .unwrap_or_else(|| panic!("no section {header}"));
+    let from = at[start].0 + at[start].1.len();
+    let to = at[start + 1..]
+        .iter()
+        .find(|(_, l)| l.starts_with(next.as_bytes()))
+        .map_or(output.len(), |(s, _)| *s);
+    &output[from..to]
+}
+
+/// The result code of a line a C program prints, as a port knows it.
+#[derive(Clone, Copy, Debug)]
+pub enum Code {
+    /// The code itself.
+    Exact(i128),
+    /// Only whether it succeeded, the code being 0: a port whose
+    /// counterpart tells failures apart no further.
+    Ok(bool),
+}
+
+/// A line a C program prints: what comes before its result code, the
+/// code, and what follows it, its newline among it.
+#[derive(Clone, Debug)]
+pub struct Printed {
+    pub before: String,
+    pub code: Code,
+    pub after: String,
+}
+
+/// The text `rows` print, as the C program printed `expected`: a code a
+/// port knows only as a failure is taken from `expected` at its place,
+/// if it is a failure there. The result is compared with `expected`
+/// whole, so a row that differs shows where.
+#[track_caller]
+pub fn print(expected: &[u8], rows: &[Printed]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for row in rows {
+        out.extend_from_slice(row.before.as_bytes());
+        let code = match row.code {
+            Code::Exact(n) => n.to_string(),
+            Code::Ok(true) => "0".to_owned(),
+            Code::Ok(false) => {
+                // The C's code at this place, if the lines so far agree.
+                let theirs: String = expected
+                    .get(out.len()..)
+                    .unwrap_or_default()
+                    .iter()
+                    .take_while(|b| b.is_ascii_digit())
+                    .map(|&b| char::from(b))
+                    .collect();
+                match theirs.as_str() {
+                    "" | "0" => "a failure".to_owned(),
+                    _ if !expected.starts_with(&out) => "a failure".to_owned(),
+                    _ => theirs,
+                }
+            }
+        };
+        out.extend_from_slice(code.as_bytes());
+        out.extend_from_slice(row.after.as_bytes());
+    }
+    out
+}
+
 /// The source of `file`, a path from the top of the tree.
 #[track_caller]
 pub fn source(file: &str) -> String {
@@ -131,11 +229,64 @@ pub fn table(file: &str, name: &str, holds: impl Fn(&str) -> bool) -> Vec<Value>
     table_in(&source(file), file, name, holds)
 }
 
+/// The rows of the first table named `name` after the first `after` in
+/// `file`, as [`table`] reads them: for a source that gives several
+/// tables one name, each in a block of its own.
+#[track_caller]
+pub fn table_after(
+    file: &str,
+    after: &str,
+    name: &str,
+    holds: impl Fn(&str) -> bool,
+) -> Vec<Value> {
+    let src = source(file);
+    let from = src
+        .find(after)
+        .unwrap_or_else(|| panic!("{file}: no {after}"));
+    table_from(&src, from, file, name, holds)
+}
+
+/// The arguments of the first call of `name` after the first `after` in
+/// `file`, wherever on its line it is, as a table's values.
+#[track_caller]
+pub fn call_after(file: &str, after: &str, name: &str) -> Vec<Value> {
+    let src = source(file);
+    let from = src
+        .find(after)
+        .unwrap_or_else(|| panic!("{file}: no {after}"));
+    let call = format!("{name}(");
+    let at = src[from..]
+        .find(&call)
+        .unwrap_or_else(|| panic!("{file}: no call of {name} after {after}"))
+        + from;
+    let macros = defines(&src);
+    let mut p = Parser {
+        s: src.as_bytes(),
+        at: at + call.len(),
+        conditions: Vec::new(),
+        holds: &|c: &str| panic!("{c} inside a call"),
+        macros: &macros,
+    };
+    p.items(b')')
+}
+
 #[track_caller]
 fn table_in(src: &str, file: &str, name: &str, holds: impl Fn(&str) -> bool) -> Vec<Value> {
-    let at = src
+    table_from(src, 0, file, name, holds)
+}
+
+#[track_caller]
+fn table_from(
+    src: &str,
+    from: usize,
+    file: &str,
+    name: &str,
+    holds: impl Fn(&str) -> bool,
+) -> Vec<Value> {
+    let at = src[from..]
         .find(name)
-        .unwrap_or_else(|| panic!("{file}: no {name}"));
+        .unwrap_or_else(|| panic!("{file}: no {name}"))
+        + from;
     let open = src[at..]
         .find("= {")
         .unwrap_or_else(|| panic!("{file}: no initializer after {name}"))

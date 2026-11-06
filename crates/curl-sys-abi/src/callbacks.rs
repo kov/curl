@@ -306,23 +306,12 @@ pub(crate) fn sync_text(
 ) -> Result<(), OutOfMemory> {
     let c = &mut options.callbacks;
     let headers = ccb.header.is_some() || !ccb.header_data.is_null();
-    match (headers, c.header.is_some()) {
-        (true, false) => c.header = Some(Handler::header(Adapter(easy))?),
-        (false, true) => c.header = None,
-        _ => {}
-    }
-    match (ccb.debug.is_some(), c.debug.is_some()) {
-        (true, false) => c.debug = Some(Handler::debug(Adapter(easy))?),
-        (false, true) => c.debug = None,
-        _ => {}
-    }
+    bind(&mut c.header, headers, || Handler::header(Adapter(easy)))?;
+    bind(&mut c.debug, ccb.debug.is_some(), || {
+        Handler::debug(Adapter(easy))
+    })?;
     let elsewhere = ccb.stderr != standard().2;
-    match (elsewhere, c.stderr.is_some()) {
-        (true, false) => c.stderr = Some(Handler::text(Adapter(easy))?),
-        (false, true) => c.stderr = None,
-        _ => {}
-    }
-    Ok(())
+    bind(&mut c.stderr, elsewhere, || Handler::text(Adapter(easy)))
 }
 
 /// The ERRORBUFFER adapter, while the application has given one
@@ -332,13 +321,9 @@ pub(crate) fn sync_error_buffer(
     easy: NonNull<ShimEasy>,
     errbuf: *mut c_char,
 ) -> Result<(), OutOfMemory> {
-    let c = &mut options.callbacks;
-    match (errbuf.is_null(), c.failure.is_some()) {
-        (false, false) => c.failure = Some(Handler::text(ErrorBuffer(easy))?),
-        (true, true) => c.failure = None,
-        _ => {}
-    }
-    Ok(())
+    bind(&mut options.callbacks.failure, !errbuf.is_null(), || {
+        Handler::text(ErrorBuffer(easy))
+    })
 }
 
 /// Copies a transfer's first reason for failing into ERRORBUFFER.
@@ -439,13 +424,11 @@ pub(crate) fn sync_trailer(
     easy: NonNull<ShimEasy>,
     ccb: &CCallbacks,
 ) -> Result<(), OutOfMemory> {
-    let c = &mut options.callbacks;
-    match (ccb.trailer.is_some(), c.trailer.is_some()) {
-        (true, false) => c.trailer = Some(Handler::trailer(Adapter(easy))?),
-        (false, true) => c.trailer = None,
-        _ => {}
-    }
-    Ok(())
+    bind(
+        &mut options.callbacks.trailer,
+        ccb.trailer.is_some(),
+        || Handler::trailer(Adapter(easy)),
+    )
 }
 
 /// The interleave adapter, while there is an interleave function: without
@@ -465,24 +448,37 @@ pub(crate) fn sync_interleave(
     Ok(())
 }
 
+/// A slot of an adapter the handle at `easy` installs: made for `easy`
+/// while `wanted`, none otherwise. It is made anew every time, never kept:
+/// a copy of the handle arrives holding its original's options, whose
+/// adapters name the original, and an adapter kept would call the
+/// application with the original's handle and settings, or with one freed.
+fn bind<T: ?Sized>(
+    slot: &mut Option<Handler<T>>,
+    wanted: bool,
+    make: impl FnOnce() -> Result<Handler<T>, OutOfMemory>,
+) -> Result<(), OutOfMemory> {
+    *slot = if wanted { Some(make()?) } else { None };
+    Ok(())
+}
+
 /// The SSH key adapter, while there is a key function.
 pub(crate) fn sync_ssh_key(
     options: &mut Options,
     easy: NonNull<ShimEasy>,
     ccb: &CCallbacks,
 ) -> Result<(), OutOfMemory> {
-    let set = options
-        .ssh
-        .made_mut()
-        .is_some_and(|s| s.key_handler.is_some());
-    match (ccb.ssh_key.is_some(), set) {
-        (true, false) => {
-            options.ssh.make_mut()?.key_handler = Some(Handler::ssh_key(Adapter(easy))?);
-        }
-        (false, true) => options.ssh.make_mut()?.key_handler = None,
-        _ => {}
-    }
-    Ok(())
+    let wanted = ccb.ssh_key.is_some();
+    let Some(ssh) = (match options.ssh.made_mut() {
+        Some(made) => Some(made),
+        None if !wanted => None,
+        None => Some(options.ssh.make_mut()?),
+    }) else {
+        return Ok(());
+    };
+    bind(&mut ssh.key_handler, wanted, || {
+        Handler::ssh_key(Adapter(easy))
+    })
 }
 
 /// The SSH host key adapter, while there is a host key function.
@@ -492,18 +488,17 @@ pub(crate) fn sync_ssh_host_key(
     easy: NonNull<ShimEasy>,
     c: &CHostKey,
 ) -> Result<(), OutOfMemory> {
-    let set = options
-        .ssh
-        .made_mut()
-        .is_some_and(|s| s.host_key_handler.is_some());
-    match (c.function.is_some(), set) {
-        (true, false) => {
-            options.ssh.make_mut()?.host_key_handler = Some(Handler::ssh_host_key(Adapter(easy))?);
-        }
-        (false, true) => options.ssh.make_mut()?.host_key_handler = None,
-        _ => {}
-    }
-    Ok(())
+    let wanted = c.function.is_some();
+    let Some(ssh) = (match options.ssh.made_mut() {
+        Some(made) => Some(made),
+        None if !wanted => None,
+        None => Some(options.ssh.make_mut()?),
+    }) else {
+        return Ok(());
+    };
+    bind(&mut ssh.host_key_handler, wanted, || {
+        Handler::ssh_host_key(Adapter(easy))
+    })
 }
 
 /// What `CURLOPT_POSTFIELDS`, `CURLOPT_COPYPOSTFIELDS` and

@@ -10289,3 +10289,82 @@ fn a_probes_handle_is_the_multis() {
         "getinfo may recurse"
     );
 }
+
+/// Each adapter a copy of the handle holds is the copy's own, never its
+/// original's: the original's would call the application with the
+/// original's handle and data, and with a handle freed once the original
+/// is.
+#[test]
+fn a_copy_s_adapters_are_its_own() {
+    unsafe extern "C" fn key(
+        _easy: *mut CURL,
+        _known: *const ffi::curl_khkey,
+        _found: *const ffi::curl_khkey,
+        _m: ffi::curl_khmatch,
+        _data: *mut c_void,
+    ) -> c_int {
+        0
+    }
+    unsafe extern "C" fn debug(
+        _easy: *mut CURL,
+        _t: ffi::curl_infotype,
+        _d: *mut c_char,
+        _n: usize,
+        _u: *mut c_void,
+    ) -> c_int {
+        0
+    }
+    let c = curl_easy_init();
+    let k: ffi::curl_sshkeycallback = Some(key);
+    // SAFETY: a function of the option's type.
+    let kp = unsafe { core::mem::transmute::<ffi::curl_sshkeycallback, *mut c_void>(k) };
+    assert_eq!(pointer(c, ffi::CURLOPT_SSH_KEYFUNCTION, kp), CURLE_OK);
+    let d: ffi::curl_debug_callback = Some(debug);
+    // SAFETY: as above.
+    let dp = unsafe { core::mem::transmute::<ffi::curl_debug_callback, *mut c_void>(d) };
+    assert_eq!(pointer(c, ffi::CURLOPT_DEBUGFUNCTION, dp), CURLE_OK);
+    #[cfg(feature = "libssh2")]
+    {
+        unsafe extern "C" fn host(
+            _d: *mut c_void,
+            _t: c_int,
+            _k: *const c_char,
+            _n: usize,
+        ) -> c_int {
+            0
+        }
+        let h: ffi::curl_sshhostkeycallback = Some(host);
+        // SAFETY: as above.
+        let hp = unsafe { core::mem::transmute::<ffi::curl_sshhostkeycallback, *mut c_void>(h) };
+        assert_eq!(pointer(c, ffi::CURLOPT_SSH_HOSTKEYFUNCTION, hp), CURLE_OK);
+    }
+    let handlers = |c| {
+        options(c, |o| {
+            let key = o.ssh.key_handler.clone().expect("a key adapter");
+            let host = o.ssh.host_key_handler.clone();
+            let debug = o.callbacks.debug.clone().expect("a debug adapter");
+            (key, host, debug)
+        })
+    };
+    let (key, host, debug) = handlers(c);
+    assert_eq!(
+        host.is_some(),
+        cfg!(feature = "libssh2"),
+        "a host key adapter"
+    );
+    // SAFETY: a live handle.
+    let copy = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!copy.is_null());
+    let (copy_key, copy_host, copy_debug) = handlers(copy);
+    use curl_core::handler::Handler;
+    assert!(!Handler::ptr_eq(&key, &copy_key), "the key adapter");
+    assert!(!Handler::ptr_eq(&debug, &copy_debug), "the debug adapter");
+    assert_eq!(host.is_some(), copy_host.is_some());
+    if let (Some(host), Some(copy_host)) = (host, copy_host) {
+        assert!(!Handler::ptr_eq(&host, &copy_host), "the host key adapter");
+    }
+    // SAFETY: live handles, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    // SAFETY: as above.
+    unsafe { curl_easy_cleanup(copy) };
+}

@@ -323,14 +323,17 @@ pub(super) fn ipv6(host: &mut Bytes) -> Result<Option<Bytes>, UrlErrorKind> {
     if host.len() < 4 {
         return Err(UrlErrorKind::BadIpv6);
     }
-    let inner = &host[1..host.len() - 1];
-    let mut len = inner
+    // The last byte stands for the closing bracket, whatever it is; but
+    // the address is counted to the end, as C's `strspn` counts it, so a
+    // host that ends inside its address (`[::1`) is refused.
+    let inner = host.len() - 2;
+    let mut len = host[1..]
         .iter()
         .take_while(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.'))
         .count();
     let mut zone = None;
-    if len != inner.len() {
-        if inner[len] != b'%' {
+    if len != inner {
+        if host.get(1 + len) != Some(&b'%') {
             return Err(UrlErrorKind::BadIpv6);
         }
         // A zone id, after its `%` or an encoded `%25`.
@@ -435,6 +438,29 @@ mod tests {
             "[1:2:3:4:5:6:7:8:9:0]",
         ] {
             assert_eq!(v6(bad), Err(UrlErrorKind::BadIpv6), "{bad}");
+        }
+    }
+
+    /// unit1675's `ipv6_parse` table, and hosts ending other than in a
+    /// bracket as the C build takes them through `CURLUPART_HOST`: the
+    /// last byte stands for the bracket, but an address running to the
+    /// end has none.
+    #[test]
+    fn unit1675_ipv6_parse() {
+        assert_eq!(v6("[::1]").unwrap(), ("[::1]".into(), None));
+        assert_eq!(
+            v6("[fe80::1%eth0]").unwrap(),
+            ("[fe80::1]".into(), Some("eth0".into()))
+        );
+        assert_eq!(
+            v6("[fe80::1%25eth0]").unwrap(),
+            ("[fe80::1]".into(), Some("eth0".into()))
+        );
+        for bad in ["[::1", "[]", "[0::1", "[::1.2.3.4", "[::", "[::1%eth0"] {
+            assert_eq!(v6(bad), Err(UrlErrorKind::BadIpv6), "{bad}");
+        }
+        for (taken, host) in [("[::1x", "[::1]"), ("[::1%", "[::1]"), ("[1::2x", "[1::2]")] {
+            assert_eq!(v6(taken).unwrap(), (host.into(), None), "{taken}");
         }
     }
 

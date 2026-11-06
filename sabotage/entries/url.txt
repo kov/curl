@@ -410,3 +410,11 @@ witness: curl-core url::tests::finds_a_byte_as_one_at_a_time
         let word = u64::from_ne_bytes(chunk) ^ spread;
 --- new
         let word = u64::from_ne_bytes(chunk) ^ spread << 8;
+
+=== a bracketed host ending inside its address is taken as one closed
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::host::tests::unit1675_ipv6_parse
+--- old
+    let mut len = host[1..]
+--- new
+    let mut len = host[1..host.len() - 1]

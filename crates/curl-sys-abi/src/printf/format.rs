@@ -133,6 +133,25 @@ impl<const N: usize> Parsed<N> {
     }
 }
 
+/// Where `needle` first is in `hay`, looked for eight bytes at a time as
+/// C's `strchr` does, not one by one.
+fn find(hay: &[u8], needle: u8) -> Option<usize> {
+    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+    const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
+    let spread = ONES * u64::from(needle);
+    let (words, _) = hay.as_chunks::<8>();
+    let mut at = 0;
+    for &chunk in words {
+        let word = u64::from_ne_bytes(chunk) ^ spread;
+        // Nonzero exactly when some byte of `word` is zero.
+        if word.wrapping_sub(ONES) & !word & HIGHS != 0 {
+            break;
+        }
+        at += 8;
+    }
+    hay[at..].iter().position(|&b| b == needle).map(|i| at + i)
+}
+
 /// The byte at `i`, or NUL past the end, as the C walks a C string.
 fn at(fmt: &[u8], i: usize) -> u8 {
     fmt.get(i).copied().unwrap_or(0)
@@ -326,6 +345,7 @@ impl<const N: usize> Parsed<N> {
 /// filled in place rather than returned, it is not copied on every call.
 /// `Rejected` for a format libcurl rejects, which outputs nothing; `Full`
 /// for one that needs more room than `parsed`, if smaller than libcurl's.
+/// `fmt` is a C string's bytes, without the NUL.
 pub(crate) fn parse<const N: usize>(fmt: &[u8], parsed: &mut Parsed<N>) -> Result<(), Unparsed> {
     // libcurl's own limits reject a format; a smaller `parsed` only asks
     // for a larger one.
@@ -362,12 +382,10 @@ pub(crate) fn parse<const N: usize>(fmt: &[u8], parsed: &mut Parsed<N>) -> Resul
     };
     let rejected = Unparsed::Rejected;
 
-    while at(fmt, p) != 0 {
-        if at(fmt, p) != b'%' {
-            p += 1;
-            continue;
-        }
-        p += 1;
+    debug_assert!(!fmt.contains(&0), "a C string's bytes, without its NUL");
+    // The literal text up to the next `%` is skipped whole.
+    while let Some(percent) = fmt.get(p..).and_then(|rest| find(rest, b'%')) {
+        p += percent + 1;
         let outlen = p - start - 1;
         if at(fmt, p) == b'%' {
             // `%%`: the text so far, then the second `%` starts the next.
@@ -459,6 +477,8 @@ pub(crate) fn parse<const N: usize>(fmt: &[u8], parsed: &mut Parsed<N>) -> Resul
         )?;
         start = p;
     }
+    // The text after the last conversion runs to the end.
+    p = fmt.len();
     if p > start {
         push(
             parsed,

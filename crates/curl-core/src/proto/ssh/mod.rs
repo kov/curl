@@ -1096,7 +1096,7 @@ impl Request {
                 return false;
             };
             let mut found = Vec::new();
-            if crate::base64::encode(sha.iter().copied(), sha.len(), &mut found).is_err() {
+            if crate::base64::encode(&sha, &mut found).is_err() {
                 return false;
             }
             trace::info_with(cx, &[b"SSH SHA256 fingerprint: ", &found]);

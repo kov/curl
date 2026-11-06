@@ -1284,7 +1284,7 @@ fn an_initial_response_too_long_for_the_line_waits_to_be_asked() {
         plain.push(0);
         plain.extend_from_slice(b"ppp");
         let mut initial = Vec::new();
-        crate::base64::encode(plain.iter().copied(), plain.len(), &mut initial).unwrap();
+        crate::base64::encode(&plain, &mut initial).unwrap();
         let initial = String::from_utf8(initial).unwrap();
         assert_eq!(initial.len(), if asked { 504 } else { 100 });
         let auth = if asked {

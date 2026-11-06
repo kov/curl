@@ -18,6 +18,29 @@ const DIGITS: [u8; 256] = {
     digits
 };
 
+/// What `PLACED` holds for a byte that is no base64 digit: a bit no group
+/// of digits sets.
+const NOT_PLACED: u32 = 1 << 31;
+
+/// The value of each byte as the first, second, third and fourth digit of
+/// a group, shifted to its place in the group's 24 bits, or `NOT_PLACED`:
+/// a group's bits are its digits' or'ed, a lookup each.
+static PLACED: [[u32; 256]; 4] = {
+    let mut placed = [[NOT_PLACED; 256]; 4];
+    let mut b = 0;
+    while b < 256 {
+        if DIGITS[b] != NOT_DIGIT {
+            let v = DIGITS[b] as u32;
+            placed[0][b] = v << 18;
+            placed[1][b] = v << 12;
+            placed[2][b] = v << 6;
+            placed[3][b] = v;
+        }
+        b += 1;
+    }
+    placed
+};
+
 /// The 24 bits of a group of base64 digits, none if one is no digit.
 fn group_bits(group: &[u8]) -> Option<u32> {
     let mut n = 0u32;
@@ -41,42 +64,70 @@ pub(crate) fn decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
     if padding > 2 {
         return Ok(None);
     }
-    // Allocated once, at its length, and written in place: appending
-    // three bytes at a time costs a copy call each.
+    // Allocated once, at its length, and appended to within it: eight
+    // groups at a time, decoded on the stack.
     let len = text.len() / 4 * 3 - padding;
     let mut out = Vec::new();
     out.try_reserve_exact(len).map_err(|_| OutOfMemory)?;
-    out.try_resize(len, 0)?;
     let (whole, last) = text.split_at(text.len() - 4);
-    let mut rest = &mut out[..];
-    for group in whole.as_chunks::<4>().0 {
-        let Some(n) = group_bits(group) else {
+    let bits = |g: &[u8; 4]| {
+        PLACED[0][usize::from(g[0])]
+            | PLACED[1][usize::from(g[1])]
+            | PLACED[2][usize::from(g[2])]
+            | PLACED[3][usize::from(g[3])]
+    };
+    let (eights, groups) = whole.as_chunks::<32>();
+    for eight in eights {
+        // Each group's three bytes are one four-byte store, the next
+        // group's overwriting the fourth; their bits checked together.
+        let mut decoded = [0u8; 25];
+        let mut all = 0;
+        for (k, group) in eight.as_chunks::<4>().0.iter().enumerate() {
+            let n = bits(group);
+            all |= n;
+            let dst: &mut [u8; 4] = (&mut decoded[3 * k..3 * k + 4])
+                .try_into()
+                .expect("four bytes");
+            *dst = (n << 8).to_be_bytes();
+        }
+        if all & NOT_PLACED != 0 {
             return Ok(None);
-        };
-        let [a, b, c, tail @ ..] = rest else {
-            unreachable!("the length counted holds every group")
-        };
-        [*a, *b, *c] = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        rest = tail;
+        }
+        out.try_extend_from_slice(&decoded[..24])?;
+    }
+    for group in groups.as_chunks::<4>().0 {
+        let n = bits(group);
+        if n & NOT_PLACED != 0 {
+            return Ok(None);
+        }
+        out.try_extend_from_slice(&n.to_be_bytes()[1..])?;
     }
     let Some(n) = group_bits(&last[..4 - padding]) else {
         return Ok(None);
     };
-    rest.copy_from_slice(&n.to_be_bytes()[1..4 - padding]);
+    out.try_extend_from_slice(&n.to_be_bytes()[1..4 - padding])?;
     Ok(Some(out))
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// `len` bytes from `bytes` in base64 with padding, into `out`, as
+/// Each 12 bits as the two base64 digits they are: a group of three bytes
+/// is two lookups.
+static PAIRS: [[u8; 2]; 4096] = {
+    let mut pairs = [[0; 2]; 4096];
+    let mut n = 0;
+    while n < 4096 {
+        pairs[n] = [ALPHABET[n >> 6], ALPHABET[n & 0x3f]];
+        n += 1;
+    }
+    pairs
+};
+
+/// `bytes` in base64 with padding, after what `out` holds, as
 /// `curlx_base64_encode` writes them.
-pub(crate) fn encode(
-    mut bytes: impl Iterator<Item = u8>,
-    len: usize,
-    out: &mut Vec<u8>,
-) -> Result<(), OutOfMemory> {
+pub(crate) fn encode(bytes: &[u8], out: &mut Vec<u8>) -> Result<(), OutOfMemory> {
     // Grown once, to its length, and written in place.
-    let groups = len.div_ceil(3);
+    let groups = bytes.len().div_ceil(3);
     let start = out.len();
     let end = groups
         .checked_mul(4)
@@ -85,19 +136,26 @@ pub(crate) fn encode(
     out.try_reserve_exact(end - start)
         .map_err(|_| OutOfMemory)?;
     out.try_resize(end, 0)?;
-    for chunk in out[start..].as_chunks_mut::<4>().0 {
-        let group = [bytes.next(), bytes.next(), bytes.next()];
-        let n = group
-            .iter()
-            .fold(0u32, |n, b| n << 8 | u32::from(b.unwrap_or(0)));
-        let have = group.iter().filter(|b| b.is_some()).count();
-        for (i, c) in chunk.iter_mut().enumerate() {
-            *c = if i <= have {
-                ALPHABET[(n >> (18 - 6 * i) & 0x3f) as usize]
-            } else {
-                b'='
-            };
+    let digit = |n: u32, shift: u32| ALPHABET[(n >> shift & 0x3f) as usize];
+    let (triples, rest) = bytes.as_chunks::<3>();
+    let (quads, _) = out[start..].as_chunks_mut::<4>();
+    let (whole, last) = quads.split_at_mut(triples.len());
+    for (&[a, b, c], quad) in triples.iter().zip(whole) {
+        let n = u32::from(a) << 16 | u32::from(b) << 8 | u32::from(c);
+        let ([d0, d1], [d2, d3]) = (PAIRS[(n >> 12) as usize], PAIRS[(n & 0xfff) as usize]);
+        *quad = [d0, d1, d2, d3];
+    }
+    match (last, rest) {
+        ([], []) => {}
+        ([quad], &[a]) => {
+            let n = u32::from(a) << 16;
+            *quad = [digit(n, 18), digit(n, 12), b'=', b'='];
         }
+        ([quad], &[a, b]) => {
+            let n = u32::from(a) << 16 | u32::from(b) << 8;
+            *quad = [digit(n, 18), digit(n, 12), digit(n, 6), b'='];
+        }
+        _ => unreachable!("one group for each three bytes, and one for what is left"),
     }
     Ok(())
 }
@@ -145,7 +203,7 @@ mod tests {
     fn unit1302_encode() {
         for (bytes, want) in unit1302("struct etest encode[]") {
             let mut out = Vec::new();
-            encode(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
+            encode(&bytes, &mut out).unwrap();
             assert_eq!(out, want, "{bytes:?}");
             assert_eq!(decode(&want).unwrap(), Some(bytes), "{want:?}");
         }
@@ -158,7 +216,7 @@ mod tests {
         let binary: Vec<u8> = (0..=255).collect();
         for len in 1..=binary.len() {
             let mut out = Vec::new();
-            encode(binary[..len].iter().copied(), len, &mut out).unwrap();
+            encode(&binary[..len], &mut out).unwrap();
             assert_eq!(out.len(), len.div_ceil(3) * 4, "{len}");
             assert_eq!(decode(&out).unwrap().as_deref(), Some(&binary[..len]));
         }
@@ -199,11 +257,30 @@ mod tests {
             (b"", b""),
         ] {
             let mut out = b"held".to_vec();
-            encode(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
+            encode(bytes, &mut out).unwrap();
             assert_eq!(&out[..4], b"held");
             assert_eq!(&out[4..], want, "{bytes:?}");
             if !bytes.is_empty() {
                 assert_eq!(decode(want).unwrap().as_deref(), Some(bytes));
+            }
+        }
+    }
+
+    /// A byte that is no digit, or a `=` before the padding, anywhere in
+    /// a text of eight groups at a time and more, refuses it whole, as
+    /// C's decoder does; the text untouched decodes.
+    #[test]
+    fn a_bad_digit_anywhere_is_refused() {
+        let binary: Vec<u8> = (0..=255).collect();
+        let mut text = Vec::new();
+        encode(&binary, &mut text).unwrap();
+        assert_eq!(decode(&text).unwrap().as_deref(), Some(&binary[..]));
+        let digits = text.len() - 2;
+        for at in 0..digits {
+            for bad in [b'!', b'=', b'\0', 0x80] {
+                let mut broken = text.clone();
+                broken[at] = bad;
+                assert_eq!(decode(&broken).unwrap(), None, "{bad} at {at}");
             }
         }
     }
@@ -265,7 +342,7 @@ f4+fr7/P3+/w==";
             // As the callers do: a new buffer for each encoding.
             let mut out = Vec::new();
             let bytes = black_box(&array[..]);
-            super::encode(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
+            super::encode(bytes, &mut out).unwrap();
             black_box(out);
         }
         report(LOOPS, start);

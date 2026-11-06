@@ -621,8 +621,7 @@ fn fields(sink: &mut Sink<'_, '_>, c: &super::Certificate<'_>, der: &[u8]) -> Re
     sink.push("Signature", &out.text)?;
     out.reset();
     let mut b64 = Vec::new();
-    crate::base64::encode(der.iter().copied(), der.len(), &mut b64)
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    crate::base64::encode(der, &mut b64).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     out.add(b"-----BEGIN CERTIFICATE-----\n")?;
     for line in b64.chunks(64) {
         out.add(line)?;

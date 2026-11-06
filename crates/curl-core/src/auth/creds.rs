@@ -524,12 +524,16 @@ impl<'a> Secret<'a> {
         if self.user.is_empty() && self.password.is_empty() {
             return Ok(None);
         }
-        let len = self.user.len() + 1 + self.password.len();
-        let mut out = Vec::new();
-        out.try_reserve_exact(len.div_ceil(3) * 4)
+        // As C does: `user:password` put together, then encoded.
+        let mut plain = Vec::new();
+        plain
+            .try_reserve_exact(self.user.len() + 1 + self.password.len())
             .map_err(|_| OutOfMemory)?;
-        let bytes = self.user.iter().chain(b":").chain(self.password).copied();
-        crate::base64::encode(bytes, len, &mut out)?;
+        plain.try_extend_from_slice(self.user)?;
+        plain.try_extend_from_slice(b":")?;
+        plain.try_extend_from_slice(self.password)?;
+        let mut out = Vec::new();
+        crate::base64::encode(&plain, &mut out)?;
         Ok(Some(out))
     }
 }

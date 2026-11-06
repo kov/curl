@@ -331,7 +331,7 @@ fn signed(request: &Request<'_>, notes: &mut Vec<Vec<u8>>) -> Result<Option<Vec<
     let mut signature = Part::new();
     let mut encoded = Vec::new();
     let mac = mac.bytes();
-    crate::base64::encode(mac.iter().copied(), mac.len(), &mut encoded)?;
+    crate::base64::encode(mac, &mut encoded)?;
     signature.put(&[LABEL, b"=:", &encoded, b":"])?;
     let mut input = Part::new();
     input.put(&[LABEL, b"=", &params.0])?;

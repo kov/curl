@@ -900,9 +900,34 @@ witness: curl-core proto::http::tests::h2::a_failed_read_fails_every_stream_on_t
 file: crates/curl-core/src/base64.rs
 witness: curl-core base64::tests::base64_is_written_as_curlx_writes_it
 --- old
-    for chunk in out[start..].as_chunks_mut::<4>().0 {
+    let (quads, _) = out[start..].as_chunks_mut::<4>();
 --- new
-    for chunk in out.as_chunks_mut::<4>().0 {
+    let (quads, _) = out.as_chunks_mut::<4>();
+
+=== a whole group's base64 digits are looked up in the wrong half
+file: crates/curl-core/src/base64.rs
+witness: curl-core base64::tests::unit1302_binary
+--- old
+        let ([d0, d1], [d2, d3]) = (PAIRS[(n >> 12) as usize], PAIRS[(n & 0xfff) as usize]);
+--- new
+        let ([d2, d3], [d0, d1]) = (PAIRS[(n >> 12) as usize], PAIRS[(n & 0xfff) as usize]);
+
+=== a bad digit is missed unless it is in the last of eight groups
+file: crates/curl-core/src/base64.rs
+witness: curl-core base64::tests::a_bad_digit_anywhere_is_refused
+--- old
+            all |= n;
+--- new
+            all = n;
+
+=== the bytes past the last eight groups are decoded from the wrong place
+file: crates/curl-core/src/base64.rs
+witness: curl-core base64::tests::unit1302_binary
+--- old
+    let (eights, groups) = whole.as_chunks::<32>();
+--- new
+    let (eights, _) = whole.as_chunks::<32>();
+    let groups = &whole[whole.len() % 32..];
 
 === a padded last base64 group is decoded as if whole
 file: crates/curl-core/src/base64.rs

@@ -211,8 +211,7 @@ pub(crate) fn needs_base64(s: &[u8]) -> bool {
 /// `bytes` in base64.
 fn base64(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     let mut out = Vec::new();
-    crate::base64::encode(bytes.iter().copied(), bytes.len(), &mut out)
-        .map_err(|_| ErrorKind::OutOfMemory)?;
+    crate::base64::encode(bytes, &mut out).map_err(|_| ErrorKind::OutOfMemory)?;
     Ok(out)
 }
 

@@ -346,7 +346,7 @@ fn ed25519_signs_the_base_with_the_handle_s_signer() {
     let mut want = key.0.clone();
     want.extend_from_slice(&hmac_sha256(&key.0, &[base.as_bytes()]));
     let mut encoded = Vec::new();
-    crate::base64::encode(want.iter().copied(), want.len(), &mut encoded).unwrap();
+    crate::base64::encode(&want, &mut encoded).unwrap();
     let signature = format!("sig1=:{}:", text(&encoded));
     assert_eq!(
         text(&result.unwrap().unwrap()),

@@ -1736,8 +1736,7 @@ impl Request {
                     .random(&mut nonce)
                     .map_err(|_| ErrorKind::FailedInit)?;
                 let mut key = Vec::new();
-                crate::base64::encode(nonce.into_iter(), nonce.len(), &mut key)
-                    .map_err(|_| ErrorKind::OutOfMemory)?;
+                crate::base64::encode(&nonce, &mut key).map_err(|_| ErrorKind::OutOfMemory)?;
                 Some(key)
             }
             _ => None,

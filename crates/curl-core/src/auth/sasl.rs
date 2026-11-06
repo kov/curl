@@ -755,7 +755,7 @@ fn join(parts: &[&[u8]]) -> Result<Vec<u8>, OutOfMemory> {
 /// A message encoded to go (`build_message`): base64, none for none.
 fn base64(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut out = Vec::new();
-    crate::base64::encode(bytes.iter().copied(), bytes.len(), &mut out)?;
+    crate::base64::encode(bytes, &mut out)?;
     Ok(out)
 }
 

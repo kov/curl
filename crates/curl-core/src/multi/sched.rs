@@ -211,4 +211,66 @@ mod tests {
         assert_eq!(set.first_from(32), Some(63));
         assert_eq!(set.first_from(64), Some(64));
     }
+
+    /// unit3211's `uint32_bset` checks, its sets and capacities read from
+    /// its source: rows added and found, walked in ascending order,
+    /// every other removed, cleared and added again, and kept as room
+    /// for twice as many is made. C's capacity rounded up to 64 rows, its
+    /// add past the capacity refused and its shrinking have no
+    /// counterpart: room is made at a transfer's add, a row past it is a
+    /// bug that asserts, and the set never shrinks. Its `u8_strset`,
+    /// `u32_ptrset` and `ptrarray` have none either: options are fields,
+    /// and HTTP/2's streams and the connections shutting down are held in
+    /// std's collections.
+    #[test]
+    fn unit3211_row_sets() {
+        let checks = crate::c_source::calls("tests/unit/unit3211.c", "t3211_check_bset");
+        assert_eq!(checks.len(), 2, "the calls were read");
+        let walk = |set: &RowSet| {
+            let mut rows = Vec::new();
+            while let Some(row) = set.first_from(rows.last().map_or(0, |r| r + 1)) {
+                rows.push(row);
+            }
+            rows
+        };
+        for check in checks {
+            let [name, capacity, s, _] = &check[..] else {
+                panic!("{check:?}")
+            };
+            let name = std::str::from_utf8(name.str()).unwrap();
+            let table = format!("{}[]", s.word());
+            let rows: Vec<u32> =
+                crate::c_source::table("tests/unit/unit3211.c", &table, |c| panic!("{c}"))
+                    .iter()
+                    .map(|v| u32::try_from(v.int()).unwrap())
+                    .collect();
+            assert!(rows.len() >= 10, "{name} was read");
+            let capacity = u32::try_from(capacity.int()).unwrap();
+            let mut set = RowSet::default();
+            set.reserve(capacity).unwrap();
+            set.clear();
+            assert_eq!(walk(&set), [], "{name}");
+            for (i, &row) in rows.iter().enumerate() {
+                set.insert(row);
+                assert!(rows[i + 1..].iter().all(|&r| !set.contains(r)), "{name}");
+            }
+            assert!(rows.iter().all(|&r| set.contains(r)), "{name}");
+            assert_eq!(walk(&set), rows, "{name}");
+            for &row in rows.iter().step_by(2) {
+                set.remove(row);
+                assert!(!set.contains(row), "{name}");
+            }
+            let odd: Vec<u32> = rows.iter().skip(1).step_by(2).copied().collect();
+            assert!(odd.iter().all(|&r| set.contains(r)), "{name}");
+            assert_eq!(walk(&set).len(), rows.len() / 2, "{name}");
+            set.clear();
+            assert!(rows.iter().all(|&r| !set.contains(r)), "{name}");
+            for &row in &rows {
+                set.insert(row);
+            }
+            set.reserve(capacity * 2).unwrap();
+            assert!(rows.iter().all(|&r| set.contains(r)), "{name}");
+            assert_eq!(walk(&set), rows, "{name}");
+        }
+    }
 }

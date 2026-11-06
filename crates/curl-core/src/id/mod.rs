@@ -435,4 +435,68 @@ mod tests {
         assert!(ArenaPolicy::new(MAX_ROWS, 0).is_none());
         assert!(ArenaPolicy::new(2, 1).is_some());
     }
+
+    /// unit3212's `uint32_tbl` checks, its size read from its source: a
+    /// table filled in key order, every other key removed (once: a key
+    /// removed again removes nothing), the rest found and walked in
+    /// order, from the first and from after a key gone; a fresh table's
+    /// first key 0 and its next one past it after a removal; and a full
+    /// table's removed key handed out again, the search wrapping around.
+    /// C's fixed capacity, an add to a full table refused, and its
+    /// resizing and clearing have no counterpart: an arena grows as its
+    /// policy says, never shrinks, and a fresh one stands in for one
+    /// cleared. The full table here is a doubling arena at a size it
+    /// has, where C's is its table of `TBL_SIZE / 2`.
+    #[test]
+    fn unit3212_rows() {
+        let size = u32::try_from(crate::c_source::constant(
+            "tests/unit/unit3212.c",
+            "TBL_SIZE",
+        ))
+        .unwrap();
+        let mut arena: Arena<u32> = Arena::new(ArenaPolicy::new(size, 0).unwrap()).unwrap();
+        let keys: Vec<_> = (0..size)
+            .map(|n| arena.reserve().unwrap().fill(n))
+            .collect();
+        assert!(keys.iter().map(|k| k.index()).eq(0..size), "keys in order");
+        assert_eq!(arena.len(), size);
+        let mut n = size;
+        for key in keys.iter().step_by(2) {
+            assert!(arena.remove(*key).is_some());
+            n -= 1;
+            assert_eq!(arena.len(), n);
+        }
+        for key in keys.iter().step_by(2) {
+            assert_eq!(arena.remove(*key), None);
+            assert_eq!(arena.len(), n);
+        }
+        for key in keys.iter().skip(1).step_by(2) {
+            assert_eq!(arena.get(*key), Some(&key.index()));
+        }
+        let first = arena.next_after(None).unwrap();
+        assert_eq!(first.index(), 1);
+        assert_eq!(arena.next_after(Some(first)).unwrap().index(), 3);
+        // After a key whose value is gone: the row's next.
+        assert_eq!(arena.next_after(Some(keys[42])).unwrap().index(), 43);
+
+        let mut fresh: Arena<u32> = Arena::new(ArenaPolicy::new(size / 2, 0).unwrap()).unwrap();
+        let key = fresh.reserve().unwrap().fill(0);
+        assert_eq!(key.index(), 0);
+        fresh.remove(key);
+        assert_eq!(fresh.reserve().unwrap().fill(1).index(), 1);
+
+        let mut full: Arena<u32> = Arena::new(ArenaPolicy::DOUBLING).unwrap();
+        let mut keys = Vec::new();
+        while keys.len() < 32 {
+            keys.push(full.reserve().unwrap().fill(0));
+        }
+        assert_eq!(full.capacity(), 32, "full at a size it has");
+        full.remove(keys[17]);
+        let again = full.reserve().unwrap().fill(1);
+        assert_eq!(again.index(), 17);
+        // And again, the search from the key just handed out wrapping.
+        full.remove(again);
+        assert_eq!(full.reserve().unwrap().fill(2).index(), 17);
+        assert_eq!(full.capacity(), 32);
+    }
 }

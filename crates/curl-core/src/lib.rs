@@ -11,6 +11,8 @@ pub mod altsvc;
 mod auth;
 mod base64;
 mod bufq;
+#[cfg(any(test, feature = "test-util"))]
+pub mod c_source;
 pub mod coding;
 pub mod components;
 pub mod conn;

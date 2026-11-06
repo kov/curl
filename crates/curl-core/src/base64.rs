@@ -122,20 +122,65 @@ pub(crate) fn encode_url(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 mod tests {
     use super::*;
 
-    /// unit1302's base64url cases.
+    /// A table of unit1302's: each row's input, as long as it says,
+    /// and its output, as long as it says.
+    fn unit1302(name: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let rows = crate::c_source::table("tests/unit/unit1302.c", name, |c| panic!("{c}"));
+        assert!(rows.len() > 10, "{name} was read");
+        rows.iter()
+            .map(|row| {
+                let [input, ilen, output, olen] = row.group() else {
+                    panic!("{row:?}")
+                };
+                let cut = |v: &crate::c_source::Value, n: &crate::c_source::Value| {
+                    v.str()[..usize::try_from(n.int()).unwrap()].to_vec()
+                };
+                (cut(input, ilen), cut(output, olen))
+            })
+            .collect()
+    }
+
+    /// unit1302's base64 table: each encoded, and decoded back.
     #[test]
-    fn base64url_is_written_as_curlx_writes_it() {
-        for (bytes, want) in [
-            (&b"\xff\x01\xfe\x02"[..], &b"_wH-Ag"[..]),
-            (b"\xff\xff\xff\xff", b"_____w"),
-            (b"\x00\xff\x00\xff", b"AP8A_w"),
-            (b"\x00\x00\x00\x00", b"AAAAAA"),
-            (b"\x01", b"AQ"),
-            (b"\x0f", b"Dw"),
-            (b"Man", b"TWFu"),
-            (b"", b""),
-        ] {
-            assert_eq!(encode_url(bytes).unwrap(), want, "{bytes:?}");
+    fn unit1302_encode() {
+        for (bytes, want) in unit1302("struct etest encode[]") {
+            let mut out = Vec::new();
+            encode(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
+            assert_eq!(out, want, "{bytes:?}");
+            assert_eq!(decode(&want).unwrap(), Some(bytes), "{want:?}");
+        }
+    }
+
+    /// unit1302: every length of the bytes 0 to 255, encoded to a whole
+    /// number of quads and decoded back.
+    #[test]
+    fn unit1302_binary() {
+        let binary: Vec<u8> = (0..=255).collect();
+        for len in 1..=binary.len() {
+            let mut out = Vec::new();
+            encode(binary[..len].iter().copied(), len, &mut out).unwrap();
+            assert_eq!(out.len(), len.div_ceil(3) * 4, "{len}");
+            assert_eq!(decode(&out).unwrap().as_deref(), Some(&binary[..len]));
+        }
+    }
+
+    /// unit1302's base64url table.
+    #[test]
+    fn unit1302_url() {
+        for (bytes, want) in unit1302("struct etest url[]") {
+            assert_eq!(encode_url(&bytes).unwrap(), want, "{bytes:?}");
+        }
+    }
+
+    /// unit1302's bad inputs, each refused: the text whole, as C's
+    /// decoder reads it to its end.
+    #[test]
+    fn unit1302_bad() {
+        let rows = crate::c_source::table("tests/unit/unit1302.c", "badecode[]", |c| panic!("{c}"));
+        assert!(rows.len() > 10, "badecode was read");
+        for row in rows {
+            let text = row.group()[2].str();
+            assert_eq!(decode(text).unwrap(), None, "{text:?}");
         }
     }
 

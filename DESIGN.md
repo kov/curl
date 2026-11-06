@@ -401,9 +401,15 @@ use them are scored apart, and their Rust ports stand in for them (see below).
 `tests/unit` and `tests/tunit` become Rust tests beside the code they exercise. Each port must
 provably test the same thing as its C original:
 - **Tables are generated, not copied.** Where a C unit test is driven by a table of inputs and
-  expected outputs, a generator extracts the table into data the Rust test reads.
-- **Ports are named after their originals.** Each Rust test carries the number of the C test
-  it replaces.
+  expected outputs, a generator extracts the table into data the Rust test reads (`gen/*_c_tests.py`
+  into a `c_tests.rs`), or the test reads it from the C source as it runs
+  (`curl_core::c_source::table`, which joins literals, reads escapes as C does and asks the
+  test which preprocessor conditions hold). A few short vectors, such as a hash's digests of two
+  strings, are written out instead.
+- **Ports are named after their originals.** Each Rust test is named `unitNNNN_<what>` or
+  `toolNNNN_<what>`, after the C test it replaces. A test renamed so is a whole port: one that
+  checks only some of the original's cases gets the rest first, and a case with no counterpart
+  in Rust is said so in its doc comment.
 - **A checker compares the two lists.** `inventory/measure/ported.py` maps the unit-test
   programs the inventory records to the Rust tests named after them (`cargo test -- --list`),
   reports each program as ported or missing, and fails on a port of a program that does not

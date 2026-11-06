@@ -115,7 +115,7 @@ witness: curl-core proto::http::tests::h2::an_asked_chunked_body_goes_plain
 
 === an upgrade's settings go padded as plain base64
 file: crates/curl-core/src/base64.rs
-witness: curl-core base64::tests::base64url_is_written_as_curlx_writes_it
+witness: curl-core base64::tests::unit1302_url
 --- old
         for i in 0..=group.len() {
 --- new

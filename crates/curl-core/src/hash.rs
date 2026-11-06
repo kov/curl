@@ -474,9 +474,6 @@ mod tests {
             .collect()
     }
 
-    /// Units 1601, 1610 and 1615, and RFC 1321's, FIPS 180's vectors.
-    /// The test cases of RFC 4231, the fifth's output truncated as it
-    /// is there; the message also fed in two parts.
     /// A key of a block's length is used as it is, as a shorter one is
     /// padded with zeros to it: only a longer one is hashed first.
     #[test]
@@ -489,6 +486,8 @@ mod tests {
         );
     }
 
+    /// The test cases of RFC 4231, the fifth's output truncated as it
+    /// is there; the message also fed in two parts.
     #[test]
     fn hmacs_as_rfc_4231() {
         let hex = |d: &[u8]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
@@ -539,17 +538,19 @@ mod tests {
         }
     }
 
+    /// unit1601: MD5's digests.
     #[test]
-    fn hashes_as_c() {
+    fn unit1601_md5() {
         assert_eq!(hex::<Md5>(b"1"), "c4ca4238a0b923820dcc509a6f75849b");
         assert_eq!(
             hex::<Md5>(b"hello-you-fool"),
             "88670b6d5d742fada5cdf9b682875f22"
         );
-        assert_eq!(hex::<Md5>(b""), "d41d8cd98f00b204e9800998ecf8427e");
-        let alnum =
-            b"12345678901234567890123456789012345678901234567890123456789012345678901234567890";
-        assert_eq!(hex::<Md5>(alnum), "57edf4a22be3c955ac49da2e2107b67a");
+    }
+
+    /// unit1610: SHA-256's digests.
+    #[test]
+    fn unit1610_sha256() {
         assert_eq!(
             hex::<Sha256>(b"1"),
             "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
@@ -558,11 +559,33 @@ mod tests {
             hex::<Sha256>(b"hello-you-fool"),
             "cbb16a8ab9cbb935a8cba02e28c02630d1199c1f0217f47c9620f3efe82715ae"
         );
+    }
+
+    /// unit1612: HMAC-MD5's, keyed with a password.
+    #[test]
+    fn unit1612_hmac_md5() {
+        let hex = |d: &[u8]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
         assert_eq!(
-            hex::<Sha256>(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+            hex(&hmac_md5(b"Pa55worD", &[b"1"])),
+            "d129754358dcab78dfcd7f2b29311337"
         );
-        let cases: [(&[u8], &str); 5] = [
+        assert_eq!(
+            hex(&hmac_md5(b"Pa55worD", &[b"hello-you-fool"])),
+            "75f1a7b9f540e5a498839f645a276dd0"
+        );
+    }
+
+    /// unit1615: SHA-512/256's digests, of one block and of several.
+    #[test]
+    fn unit1615_sha512_256() {
+        let twice = b"abcdefghijklmnopqrstuvwxyzzyxwvutsrqponMLKJIHGFEDCBA".repeat(2);
+        let long = [
+            &b"/long".repeat(66)[..],
+            b"/long/long/long/long/path?with%20some=parameters",
+        ]
+        .concat();
+        let seq: Vec<u8> = (1..=255).rev().collect();
+        let cases: [(&[u8], &str); 8] = [
             (
                 b"1",
                 "18d27566bd1ac66b2332d8c54ad43f7bb22079c906d05f491f3f07a28d5c6990",
@@ -580,17 +603,37 @@ mod tests {
                 "c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a",
             ),
             (
+                &twice,
+                "ade95d553b9e4569db53a40492e78794ffc9985f93038645e19717727cbc3115",
+            ),
+            (
+                &long,
+                "bcabc62c0a22d5cbacace925cfceaaaf0ea1ed42468ae201ee2fdb39754773f1",
+            ),
+            (
                 b"Simple string.",
                 "decb3c81654ba0f5f0456b7e61f50df538a4fcb18a95ff59bc0482cf23b23256",
             ),
+            (
+                &seq,
+                "2231f2a1b489b244f766a0b831edb7738a34dc11c82cf2b58860396b5c067037",
+            ),
         ];
         for (input, want) in cases {
-            assert_eq!(hex::<Sha512_256>(input), want);
+            assert_eq!(hex::<Sha512_256>(input), want, "{}", input.len());
         }
-        let seq: Vec<u8> = (1..=255).rev().collect();
+    }
+
+    /// RFC 1321's and FIPS 180's vectors.
+    #[test]
+    fn hashes_as_the_standards() {
+        assert_eq!(hex::<Md5>(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        let alnum =
+            b"12345678901234567890123456789012345678901234567890123456789012345678901234567890";
+        assert_eq!(hex::<Md5>(alnum), "57edf4a22be3c955ac49da2e2107b67a");
         assert_eq!(
-            hex::<Sha512_256>(&seq),
-            "2231f2a1b489b244f766a0b831edb7738a34dc11c82cf2b58860396b5c067037"
+            hex::<Sha256>(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
     }
 

@@ -2,7 +2,7 @@
 
 === SHA-512/256 starts from SHA-512's values
 file: crates/curl-core/src/hash.rs
-witness: curl-core hash::tests::hashes_as_c
+witness: curl-core hash::tests::unit1615_sha512_256
 --- old
                 0x22312194fc2bf72c,
 --- new
@@ -18,7 +18,7 @@ witness: curl-core hash::tests::pads_at_every_length
 
 === MD5 reads its words big-endian
 file: crates/curl-core/src/hash.rs
-witness: curl-core hash::tests::hashes_as_c
+witness: curl-core hash::tests::unit1601_md5
 --- old
         *word = u32::from_le_bytes(block[i * 4..i * 4 + 4].try_into().expect("four bytes"));
 --- new

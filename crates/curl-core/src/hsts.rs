@@ -543,7 +543,7 @@ fn file_line(line: &[u8]) -> Option<HstsEntry<'_>> {
     }
     let (host, rest) = line.split_at(host_len);
     let rest = rest.strip_prefix(b" ")?;
-    let (date, rest) = quoted(rest, MAX_DATE_LEN)?;
+    let (date, rest) = quoted_word(rest, MAX_DATE_LEN)?;
     let rest = rest.strip_prefix(b"\r").unwrap_or(rest);
     if !(rest.is_empty() || rest == b"\n") {
         return None;
@@ -555,12 +555,25 @@ fn file_line(line: &[u8]) -> Option<HstsEntry<'_>> {
     })
 }
 
-/// A word in double quotes at the start of `s`, no longer than `max`,
-/// and what follows it (`curlx_str_quotedword`).
-fn quoted(s: &[u8], max: usize) -> Option<(&[u8], &[u8])> {
+/// What is between the double quotes at the start of `s`, a backslash
+/// keeping the byte after it, no more than `max` bytes, returned as
+/// written; and what follows the closing quote (`curlx_str_quotedword`).
+pub(crate) fn quoted_word(s: &[u8], max: usize) -> Option<(&[u8], &[u8])> {
     let s = s.strip_prefix(b"\"")?;
-    let end = s.iter().position(|&b| b == b'"')?;
-    (end <= max).then(|| (&s[..end], &s[end + 1..]))
+    let mut at = 0;
+    while at < s.len() && s[at] != b'"' {
+        if s[at] == b'\\' && at + 1 < s.len() {
+            at += 1;
+            if at > max {
+                return None;
+            }
+        }
+        at += 1;
+        if at > max {
+            return None;
+        }
+    }
+    (at < s.len()).then(|| (&s[..at], &s[at + 1..]))
 }
 
 /// What a header's directives say.
@@ -595,7 +608,7 @@ fn directives(header: &[u8]) -> Result<Directives, StsError> {
         if let Some(rest) = p.strip_prefix(b"=") {
             p = &rest[rest.iter().take_while(|b| blank(b)).count()..];
             if p.first() == Some(&b'"') {
-                let Some((v, rest)) = quoted(p, MAX_LINE) else {
+                let Some((v, rest)) = quoted_word(p, MAX_LINE) else {
                     break;
                 };
                 value = Some(v);
@@ -747,6 +760,50 @@ mod tests {
         assert!(h.applies(b"www.example.org", NOW));
         h.parse(b"example.org", b"max-age=0", NOW).unwrap();
         assert!(!h.applies(b"www.example.org", NOW));
+    }
+
+    /// unit1664's `curlx_str_quotedword` table, at its limit of 7: the
+    /// word, and how far the line moved; `None` where C fails.
+    #[test]
+    fn unit1664_quoted_word() {
+        type Row = (&'static [u8], Option<(&'static [u8], usize)>);
+        let rows: &[Row] = &[
+            (br#""word""#, Some((b"word", 6))),
+            (br#""word"#, None),
+            (br#"word""#, None),
+            (br#""word"""#, Some((b"word", 6))),
+            (br#""word" "#, Some((b"word", 6))),
+            (br#" "word""#, None),
+            (br#""perfect""#, Some((b"perfect", 9))),
+            (br#""p r e t""#, Some((b"p r e t", 9))),
+            (br#""perfec\""#, None),
+            (br#""trail\"""#, Some((br#"trail\""#, 9))),
+            (br#""trail2\"""#, None),
+            (br#""trail33\"""#, None),
+            (br#""0\\\\\\""#, Some((br"0\\\\\\", 9))),
+            (br#""1\\\\\\\""#, None),
+            (br#""""#, Some((b"", 2))),
+            (b"", None),
+            (br#""longerth""#, None),
+        ];
+        for &(line, want) in rows {
+            let got = quoted_word(line, 7).map(|(w, rest)| (w, line.len() - rest.len()));
+            assert_eq!(got, want, "{}", String::from_utf8_lossy(line));
+        }
+    }
+
+    /// A header's quoted `max-age` runs to its closing quote, past a quote
+    /// a backslash keeps: what follows in it is no directive of its own.
+    #[test]
+    fn a_quoted_value_keeps_an_escaped_quote() {
+        let mut h = Hsts::default();
+        h.parse(b"this.example", br#"max-age="5\";includeSubDomains;""#, NOW)
+            .unwrap();
+        assert_eq!(names(&h), [("this.example".into(), false, NOW + 5)]);
+        // Two max-age directives are refused; one hidden in a quote is not.
+        h.parse(b"that.example", br#"max-age="5\";max-age=6""#, NOW)
+            .unwrap();
+        assert!(h.applies(b"that.example", NOW));
     }
 
     /// A line as long as C's buffer holds, its newline and the zero after

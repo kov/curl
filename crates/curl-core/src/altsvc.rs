@@ -7,7 +7,7 @@
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::date::HttpDate;
-use crate::hsts::{LoadError, line_fits, read_file};
+use crate::hsts::{LoadError, line_fits, quoted_word, read_file};
 use crate::save::CacheFile;
 
 /// The most entries kept: past it, the oldest goes (`MAX_ALTSVC_ENTRIES`).
@@ -676,29 +676,12 @@ impl<'a> Cursor<'a> {
         Some(word)
     }
 
-    /// What is between double quotes, a backslash keeping the byte after
-    /// it, no more than `max` bytes; returned as written
-    /// (`curlx_str_quotedword`).
+    /// What is between double quotes, no more than `max` bytes
+    /// ([`quoted_word`]).
     fn quoted(&mut self, max: usize) -> Option<&'a [u8]> {
-        let s = self.0.strip_prefix(b"\"")?;
-        let mut at = 0;
-        while at < s.len() && s[at] != b'"' {
-            if s[at] == b'\\' && at + 1 < s.len() {
-                at += 1;
-                if at > max {
-                    return None;
-                }
-            }
-            at += 1;
-            if at > max {
-                return None;
-            }
-        }
-        if at == s.len() {
-            return None;
-        }
-        self.0 = &s[at + 1..];
-        Some(&s[..at])
+        let (word, rest) = quoted_word(self.0, max)?;
+        self.0 = rest;
+        Some(word)
     }
 
     /// A decimal number no larger than `max`, digits only

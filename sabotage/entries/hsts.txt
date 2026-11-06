@@ -97,3 +97,11 @@ witness: curl-core hsts::tests::unit3200_hsts_line_fits_c_s_buffer
     line.len() + usize::from(!line.ends_with(b"\n")) < limit
 --- new
     line.len() + usize::from(!line.ends_with(b"\n")) <= limit
+
+=== a backslash in a quoted directive value keeps no quote after it
+file: crates/curl-core/src/hsts.rs
+witness: curl-core hsts::tests::a_quoted_value_keeps_an_escaped_quote
+--- old
+        if s[at] == b'\\' && at + 1 < s.len() {
+--- new
+        if false && s[at] == b'\\' && at + 1 < s.len() {

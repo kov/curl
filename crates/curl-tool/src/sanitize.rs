@@ -196,79 +196,45 @@ mod tests {
         path: true,
         reserved: false,
     };
-    const RESERVED: Allow = Allow {
-        path: false,
-        reserved: true,
-    };
 
-    /// Tool unit test 1604's table, which C runs only on Windows; its
-    /// last row, a NULL name, has no counterpart in a slice.
+    /// Tool unit test 1604's table, read from its source, which C runs
+    /// only on Windows (its rows for Windows, not MS-DOS); its last row,
+    /// a NULL name refused, has no counterpart in a slice.
     #[test]
     fn tool1604_sanitizes() {
-        let n = Allow::NOTHING;
-        let both = Allow::EVERYTHING;
-        let table: &[(&[u8], Allow, &[u8])] = &[
-            (b"", n, b""),
-            (b"normal filename", n, b"normal filename"),
-            (b"control\tchar", n, b"control_char"),
-            (b"banned*char", n, b"banned_char"),
-            (b"f:foo", n, b"f_foo"),
-            (b"f:foo", PATH, b"f:foo"),
-            (b"f:\\foo", n, b"f__foo"),
-            (b"f:\\foo", PATH, b"f:\\foo"),
-            (b"f:/foo", n, b"f__foo"),
-            (b"f:/foo", PATH, b"f:/foo"),
-            (b"\\\\?\\C:\\foo", PATH, b"\\\\?\\C:\\foo"),
-            (b"\\\\?\\C:\\foo", n, b"____C__foo"),
-            (b"foo:bar", n, b"foo_bar"),
-            (b"foo|<>/bar\\\":?*baz", n, b"foo____bar_____baz"),
-            (b"f:foo::$DATA", n, b"f_foo__$DATA"),
-            (b"con . air", n, b"con _ air"),
-            (b"con.air", n, b"con_air"),
-            (b"con:/x", n, b"con__x"),
-            (b"file . . . .  ..  .", n, b"file"),
-            (b"foo . . ? . . ", n, b"foo . . _"),
-            (b"com1", n, b"_com1"),
-            (b"com4", n, b"_com4"),
-            (b"com6", n, b"_com6"),
-            (b"com9", n, b"_com9"),
-            (b"com1", RESERVED, b"com1"),
-            (b"f:\\com1", n, b"f__com1"),
-            (b"f:\\com1", PATH, b"f:\\_com1"),
-            (b"f:\\com1", RESERVED, b"f__com1"),
-            (b"f:\\com1", both, b"f:\\com1"),
-            (b"com1:\\com1", PATH, b"_com1:\\_com1"),
-            (b"com1:\\com1", both, b"com1:\\com1"),
-            (b"com1:\\com1", RESERVED, b"com1__com1"),
-            (b"\\com1", PATH, b"\\_com1"),
-            (b"\\\\com1", PATH, b"\\\\com1"),
-            (b"\\\\?\\C:\\com1", PATH, b"\\\\?\\C:\\com1"),
-            (b"CoM1", n, b"_CoM1"),
-            (b"CoM1", RESERVED, b"CoM1"),
-            (b"COM56", n, b"COM56"),
-            (b"COM\xc2\xb9", n, b"_COM\xc2\xb9"),
-            (b"COM\xc2\xb2", n, b"_COM\xc2\xb2"),
-            (b"COM\xc2\xb3", n, b"_COM\xc2\xb3"),
-            (b"COM\xb9", n, b"_COM\xb9"),
-            (b"COM\xb2", n, b"_COM\xb2"),
-            (b"COM\xb3", n, b"_COM\xb3"),
-            (b"lpt\xc2\xb9", n, b"_lpt\xc2\xb9"),
-            (b"lpt\xc2\xb2", n, b"_lpt\xc2\xb2"),
-            (b"lpt\xc2\xb3", n, b"_lpt\xc2\xb3"),
-            (b"lpt\xc2\xb9.txt", n, b"lpt\xc2\xb9_txt"),
-            (b"lpt\xc2\xb2.txt", n, b"lpt\xc2\xb2_txt"),
-            (b"lpt\xc2\xb3.txt", n, b"lpt\xc2\xb3_txt"),
-            (b"COM\xc2\xb3", RESERVED, b"COM\xc2\xb3"),
-        ];
-        for &(input, allow, expected) in table {
+        let rows = curl_core::c_source::table("tests/tunit/tool1604.c", "data[] =", |c| match c {
+            "!(defined(MSDOS))" => true,
+            other => panic!("{other}"),
+        });
+        let mut checked = 0;
+        for row in &rows {
+            let [input, flags, expected, result] = row.group() else {
+                panic!("{row:?}")
+            };
+            let Some(input) = input.bytes() else {
+                assert_eq!(result.word(), "SANITIZE_ERR_BAD_ARGUMENT");
+                continue;
+            };
+            assert_eq!(result.word(), "SANITIZE_ERR_OK");
+            let mut allow = Allow::NOTHING;
+            for flag in flags.word().split('|').map(str::trim) {
+                match flag {
+                    "0" => {}
+                    "SANITIZE_ALLOW_PATH" => allow.path = true,
+                    "SANITIZE_ALLOW_RESERVED" => allow.reserved = true,
+                    other => panic!("{other}"),
+                }
+            }
             let got = sanitize(input, allow).unwrap();
             assert_eq!(
                 got.escape_ascii().to_string(),
-                expected.escape_ascii().to_string(),
+                expected.str().escape_ascii().to_string(),
                 "{} with {allow:?}",
                 input.escape_ascii()
             );
+            checked += 1;
         }
+        assert_eq!(checked, 51);
     }
 
     /// The cases C's table leaves out: each device name, `CLOCK$`, a

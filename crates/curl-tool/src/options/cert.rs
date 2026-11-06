@@ -77,63 +77,53 @@ pub(crate) fn split(arg: &[u8]) -> Result<Split<'_>, ParamError> {
 mod tests {
     use super::*;
 
-    /// Tool unit test 1394's table, its non-Windows rows.
+    /// Tool unit test 1394's table, read from its source, its Windows rows
+    /// (a letter and a colon before a separator start a name on a drive,
+    /// its colon kept) on Windows: the name, and the passphrase or none.
     #[test]
     fn tool1394_splits() {
-        for (arg, name, pass) in [
-            (&br"foo:bar:baz"[..], &br"foo"[..], Some(&br"bar:baz"[..])),
-            (br"foo\:bar:baz", br"foo:bar", Some(br"baz")),
-            (br"foo\\:bar:baz", br"foo\", Some(br"bar:baz")),
-            (br"foo:bar\:baz", br"foo", Some(br"bar\:baz")),
-            (br"foo:bar\\:baz", br"foo", Some(br"bar\\:baz")),
-            (br"foo\bar\baz", br"foo\bar\baz", None),
-            (br"foo\\bar\\baz", br"foo\bar\baz", None),
-            (br"foo\", br"foo\", None),
-            (br"foo\\", br"foo\", None),
-            (br"foo:bar\", br"foo", Some(br"bar\")),
-            (br"foo:bar\\", br"foo", Some(br"bar\\")),
-            (br"foo:bar:", br"foo", Some(br"bar:")),
-            (br"foo\::bar\:", br"foo:", Some(br"bar\:")),
-            (b"pkcs11:foobar", b"pkcs11:foobar", None),
-            (b"PKCS11:foobar", b"PKCS11:foobar", None),
-            (b"PkCs11:foobar", b"PkCs11:foobar", None),
-            // A colon with nothing after gives no passphrase.
-            (b"foo:", b"foo", None),
-        ] {
+        let rows =
+            curl_core::c_source::table("tests/tunit/tool1394.c", "values[] =", |c| match c {
+                "defined(_WIN32)" => cfg!(windows),
+                other => panic!("{other}"),
+            });
+        let mut checked = 0;
+        for row in &rows {
+            let [arg, name, pass] = row.group() else {
+                panic!("{row:?}")
+            };
+            // The table ends with a row of NULLs.
+            let Some(arg) = arg.bytes() else { continue };
             let (got_name, got_pass) = split(arg).unwrap();
-            assert_eq!(&*got_name, name, "{}", String::from_utf8_lossy(arg));
-            assert_eq!(got_pass, pass, "{}", String::from_utf8_lossy(arg));
+            let show = String::from_utf8_lossy(arg);
+            assert_eq!(&*got_name, name.str(), "{show}");
+            assert_eq!(got_pass, pass.bytes(), "{show}");
+            checked += 1;
         }
+        assert_eq!(checked, if cfg!(windows) { 29 } else { 16 });
+    }
+
+    /// A colon with nothing after gives no passphrase, and an empty
+    /// argument is refused.
+    #[test]
+    fn a_trailing_colon_gives_no_passphrase() {
+        let (name, pass) = split(b"foo:").unwrap();
+        assert_eq!((&*name, pass), (&b"foo"[..], None));
         assert_eq!(split(b"").unwrap_err(), ParamError::BlankString);
     }
 
-    /// Tool unit test 1394's Windows rows: a letter and a colon before a
-    /// separator start a name on a drive, its colon kept.
+    /// A drive's colon is kept before a forward slash too, as MSYS hands
+    /// a path; not a letter, not first, or no separator after, and the
+    /// colon separates.
     #[cfg(windows)]
     #[test]
-    fn tool1394_splits_a_drive_letter_on_windows() {
+    fn a_drive_letter_starts_a_name_on_windows() {
         for (arg, name, pass) in [
             (
-                &br"c:\foo:bar:baz"[..],
-                &br"c:\foo"[..],
-                Some(&br"bar:baz"[..]),
+                &b"C:/work/a.crt:pw"[..],
+                &b"C:/work/a.crt"[..],
+                Some(&b"pw"[..]),
             ),
-            (br"c:\foo\:bar:baz", br"c:\foo:bar", Some(br"baz")),
-            (br"c:\foo\\:bar:baz", br"c:\foo\", Some(br"bar:baz")),
-            (br"c:\foo:bar\:baz", br"c:\foo", Some(br"bar\:baz")),
-            (br"c:\foo:bar\\:baz", br"c:\foo", Some(br"bar\\:baz")),
-            (br"c:\foo\bar\baz", br"c:\foo\bar\baz", None),
-            (br"c:\foo\\bar\\baz", br"c:\foo\bar\baz", None),
-            (br"c:\foo\", br"c:\foo\", None),
-            (br"c:\foo\\", br"c:\foo\", None),
-            (br"c:\foo:bar\", br"c:\foo", Some(br"bar\")),
-            (br"c:\foo:bar\\", br"c:\foo", Some(br"bar\\")),
-            (br"c:\foo:bar:", br"c:\foo", Some(br"bar:")),
-            (br"c:\foo\::bar\:", br"c:\foo:", Some(br"bar\:")),
-            // A forward slash after the colon too, as MSYS hands a path.
-            (b"C:/work/a.crt:pw", b"C:/work/a.crt", Some(b"pw")),
-            // Not a letter, or not first, or no separator after: a
-            // separating colon.
             (b"1:/a", b"1", Some(b"/a")),
             (b"xc:/a", b"xc", Some(b"/a")),
             (b"c:a", b"c", Some(b"a")),

@@ -148,38 +148,32 @@ mod tests {
         assert_eq!(strip("http://[::1"), None);
     }
 
-    /// Tool unit test 1621's table: a URL, and what is stored of it, or
-    /// `None` where C's `stripcredentials` gives NULL.
+    /// Tool unit test 1621's table, read from its source: a URL, and
+    /// what is stored of it, `(null)` where C's `stripcredentials` gives
+    /// NULL. Its rows are for a build with TLS, HTTP, POP3 and LDAP, as
+    /// this one is.
     #[test]
     fn tool1621_strips_credentials() {
-        for (url, want) in [
-            ("ninja://foo@example.com", None),
-            ("pop3s://foo@example.com", Some("pop3s://example.com/")),
-            ("ldap://foo@example.com", Some("ldap://example.com/")),
-            ("https://foo@example.com", Some("https://example.com/")),
-            ("https://localhost:45", Some("https://localhost:45/")),
-            ("https://foo@localhost:45", Some("https://localhost:45/")),
-            (
-                "https://user:pass@localhost:45",
-                Some("https://localhost:45/"),
-            ),
-            (
-                "http://daniel:password@localhost",
-                Some("http://localhost/"),
-            ),
-            ("http://daniel@localhost", Some("http://localhost/")),
-            ("http://localhost/", Some("http://localhost/")),
-            ("http://odd%40host/", None),
-            ("http://user@odd%40host/", None),
-            ("http://host/@path/", Some("http://host/@path/")),
-            ("http://emptypw:@host/", Some("http://host/")),
-            ("http://:emptyuser@host/", Some("http://host/")),
-            ("http://odd%40user@host/", Some("http://host/")),
-            ("http://only%40one%40host/", None),
-            ("http://odder%3auser@host/", Some("http://host/")),
-        ] {
-            let got = strip_credentials(url.as_bytes());
-            assert_eq!(got.as_deref(), want.map(str::as_bytes), "{url}");
+        let rows = curl_core::c_source::table("tests/tunit/tool1621.c", "tests[]", |c| match c {
+            "defined(USE_SSL) && !defined(CURL_DISABLE_POP3)"
+            | "!(defined(CURL_DISABLE_LDAP))"
+            | "defined(USE_SSL) && !defined(CURL_DISABLE_HTTP)"
+            | "!(defined(CURL_DISABLE_HTTP))" => true,
+            other => panic!("{other}"),
+        });
+        let mut checked = 0;
+        for row in &rows {
+            let [url, want] = row.group() else {
+                panic!("{row:?}")
+            };
+            let Some(url) = url.bytes() else {
+                continue;
+            };
+            let want = Some(want.str()).filter(|w| *w != b"(null)");
+            let got = strip_credentials(url);
+            assert_eq!(got.as_deref(), want, "{}", url.escape_ascii());
+            checked += 1;
         }
+        assert_eq!(checked, 18, "every row was read");
     }
 }

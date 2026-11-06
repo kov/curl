@@ -239,6 +239,10 @@ impl<F: Fn(&str) -> bool> Parser<'_, F> {
                 let start = self.at;
                 let mut depth = 0;
                 while depth > 0 || !matches!(self.peek(), b',' | b'}') {
+                    let rest = &self.s[self.at..];
+                    if rest.starts_with(b"/*") || rest.starts_with(b"//") {
+                        break;
+                    }
                     match self.peek() {
                         b'(' => depth += 1,
                         b')' => depth -= 1,
@@ -313,7 +317,7 @@ mod tests {
     /// group, words, a row under a condition that does not hold left out.
     #[test]
     fn reads_a_table_as_c_does() {
-        let src = "static const struct x t[] = {\n  { \"a\\x41\" \"\\101\\n\", 1, {2, 3} }, /* c */\n#ifdef NOPE\n  { \"gone\", 0 },\n#else\n  { NULL, -0x10L },\n#endif\n};";
+        let src = "static const struct x t[] = {\n  { \"a\\x41\" \"\\101\\n\", 1, {2, 3} }, /* c */\n#ifdef NOPE\n  { \"gone\", 0 },\n#else\n  { NULL, -0x10L /* c */ },\n#endif\n};";
         let rows = table_in(src, "t.c", "t[]", |c| match c {
             "defined(NOPE)" => false,
             "!(defined(NOPE))" => true,

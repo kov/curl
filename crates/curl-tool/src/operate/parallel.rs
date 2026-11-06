@@ -838,22 +838,50 @@ mod tests {
         format!("{d}")
     }
 
-    /// Counts in five columns, as `max5data`: tool unit test 1622's
-    /// cases, and the largest.
+    /// A table of tool unit test 1622's, read from its source: each
+    /// value and what it is shown as.
+    fn tool1622(name: &str) -> Vec<(u64, Vec<u8>)> {
+        let rows = curl_core::c_source::table("tests/tunit/tool1622.c", name, |c| panic!("{c}"));
+        let rows: Vec<_> = rows
+            .iter()
+            .filter_map(|row| {
+                let [n, out] = row.group() else {
+                    panic!("{row:?}")
+                };
+                let out = out.bytes()?;
+                Some((u64::try_from(n.int()).unwrap(), out.to_vec()))
+            })
+            .collect();
+        assert!(rows.len() >= 6, "{name} was read");
+        rows
+    }
+
+    /// Counts in five columns past what tool unit test 1622 asks:
+    /// rounding at each unit, and the largest.
     #[test]
-    fn tool1622_max5data() {
+    fn counts_fit_five_columns() {
         for (n, s) in [
-            (0, "    0"),
-            (99_999, "99999"),
-            (100_000, "97.6k"),
-            (131_072, " 128k"),
             (102_400, " 100k"),
             (10_240_000, " 9.7M"),
-            (12_645_826, "12.0M"),
-            (1_099_445_657_078_333, " 999T"),
             (OFF_MAX, "8191P"),
         ] {
             assert_eq!(shown(Max5(n)), s, "{n}");
+        }
+    }
+
+    /// A time of hours, minutes and seconds each, past tool unit test
+    /// 1622's.
+    #[test]
+    fn times_fit_eight_columns() {
+        assert_eq!(shown(time(3_661)), "01:01:01");
+    }
+
+    /// Counts in five columns, as `max5data`: tool unit test 1622's
+    /// cases.
+    #[test]
+    fn tool1622_max5data() {
+        for (n, want) in tool1622("datacases[]") {
+            assert_eq!(shown(Max5(n)).as_bytes(), want, "{n}");
         }
     }
 
@@ -861,16 +889,8 @@ mod tests {
     /// test 1622's cases.
     #[test]
     fn tool1622_timebuf() {
-        for (n, s) in [
-            (0, "        "),
-            (1, "00:00:01"),
-            (3_661, "01:01:01"),
-            (524_287, "  6d 01h"),
-            (134_217_727, " 51m 23d"),
-            (4_294_967_295, "    136y"),
-            (4_398_046_511_103, " >99999y"),
-        ] {
-            assert_eq!(shown(time(n)), s, "{n}");
+        for (n, want) in tool1622("timecases[]") {
+            assert_eq!(shown(time(n)).as_bytes(), want, "{n}");
         }
     }
 
@@ -885,13 +905,15 @@ mod tests {
             assert_eq!(shown(Max5(n)).len(), 5, "{n}");
             n = n * 2 + 1;
         }
-        for n in [
-            131_072,
-            12_645_826,
-            1_073_741_824,
-            12_938_588_979,
-            1_099_445_657_078_333,
-        ] {
+        let check =
+            curl_core::c_source::table("tests/tunit/tool1622.c", "check[]", |c| panic!("{c}"));
+        let check: Vec<u64> = check
+            .iter()
+            .map(|n| u64::try_from(n.int()).unwrap())
+            .take_while(|&n| n != 0)
+            .collect();
+        assert_eq!(check.len(), 5, "the byte counts were read");
+        for n in check {
             assert_eq!(shown(Max5(n)).len(), 5, "{n}");
         }
     }

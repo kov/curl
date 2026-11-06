@@ -4407,35 +4407,29 @@ mod tests {
 
     use super::*;
 
-    /// Tool unit test 1720's table: a file's name and the directories
-    /// made for it, each followed by `|`; `None` where none is.
+    /// Tool unit test 1720's table, read from its source: a file's
+    /// name and the directories made for it, each followed by `|`,
+    /// `(null)` where none is; its Windows rows on Windows.
     #[test]
     fn tool1720_dirs_of() {
-        let mut rows = vec![
-            ("", None),
-            ("filename", None),
-            ("foo/bar/", Some("foo|foo/bar|")),
-            ("foo/bar/filename", Some("foo|foo/bar|")),
-            ("/foo/bar/filename", Some("/foo|/foo/bar|")),
-        ];
-        if cfg!(windows) {
-            rows.extend([
-                ("C:/foo/bar/filename", Some("C:/foo|C:/foo/bar|")),
-                ("C:foo/bar/filename", Some("C:foo|C:foo/bar|")),
-                ("foo\\bar\\filename", Some("foo|foo\\bar|")),
-                ("\\foo\\bar\\filename", Some("\\foo|\\foo\\bar|")),
-                ("C:\\foo\\bar\\filename", Some("C:\\foo|C:\\foo\\bar|")),
-                ("C:foo\\bar\\filename", Some("C:foo|C:foo\\bar|")),
-            ]);
-        }
-        for (path, want) in rows {
+        let rows = curl_core::c_source::table("tests/tunit/tool1720.c", "check[]", |c| {
+            assert_eq!(c, "defined(_WIN32) || defined(MSDOS)");
+            cfg!(windows)
+        });
+        assert!(rows.len() >= 10, "the rows were read");
+        for pair in rows.chunks(2) {
+            let [path, want] = pair else {
+                panic!("{pair:?}")
+            };
             let mut got = Vec::new();
-            for dir in dirs_of(path.as_bytes()) {
+            for dir in dirs_of(path.str()) {
                 got.extend_from_slice(dir);
                 got.push(b'|');
             }
-            let got = (!got.is_empty()).then_some(got);
-            assert_eq!(got.as_deref(), want.map(str::as_bytes), "{path}");
+            if got.is_empty() {
+                got.extend_from_slice(b"(null)");
+            }
+            assert_eq!(got, want.str(), "{}", path.str().escape_ascii());
         }
     }
 

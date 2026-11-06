@@ -192,6 +192,83 @@ fn calls_in(src: &str, name: &str) -> Vec<Vec<Value>> {
     found
 }
 
+/// The arguments of each call of `name` in `file` that starts a line or
+/// whose result a line assigns (`res = name(`), as a table's values,
+/// where every preprocessor condition it sits under holds (`holds` is
+/// asked as [`table`] asks it).
+#[track_caller]
+pub fn every_call(file: &str, name: &str, holds: impl Fn(&str) -> bool) -> Vec<Vec<Value>> {
+    every_call_in(&source(file), name, holds)
+}
+
+#[track_caller]
+fn every_call_in(src: &str, name: &str, holds: impl Fn(&str) -> bool) -> Vec<Vec<Value>> {
+    let call = format!("{name}(");
+    let macros = defines(src);
+    let mut conditions: Vec<(String, bool)> = Vec::new();
+    let mut found = Vec::new();
+    let mut at = 0;
+    for line in src.split_inclusive('\n') {
+        let text = line.trim_start();
+        if let Some(directive) = text.strip_prefix('#') {
+            let directive = directive.trim();
+            let (word, rest) = directive
+                .split_once(char::is_whitespace)
+                .unwrap_or((directive, ""));
+            let rest = rest.trim();
+            let condition = match word {
+                "if" => Some(rest.to_owned()),
+                "ifdef" => Some(format!("defined({rest})")),
+                "ifndef" => Some(format!("!(defined({rest}))")),
+                "else" => {
+                    let (c, _) = conditions.pop().expect("an #else inside an #if");
+                    let c = format!("!({c})");
+                    let held = holds(&c);
+                    conditions.push((c, held));
+                    None
+                }
+                "endif" => {
+                    conditions.pop().expect("an #endif closes an #if");
+                    None
+                }
+                "elif" => panic!("an #elif around a call of {name}"),
+                _ => None,
+            };
+            if let Some(c) = condition {
+                let held = holds(&c);
+                conditions.push((c, held));
+            }
+        } else if conditions.iter().all(|(_, held)| *held) {
+            // A call, or an assignment of its result.
+            let start = if text.starts_with(&call) {
+                Some(0)
+            } else {
+                let len = text
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(0);
+                let after = text[len..].trim_start();
+                after
+                    .strip_prefix('=')
+                    .map(str::trim_start)
+                    .filter(|a| len > 0 && !a.starts_with('=') && a.starts_with(&call))
+                    .map(|a| text.len() - a.len())
+            };
+            if let Some(start) = start {
+                let mut p = Parser {
+                    s: src.as_bytes(),
+                    at: at + line.len() - text.len() + start + call.len(),
+                    conditions: Vec::new(),
+                    holds: &|c: &str| panic!("{c} inside a call"),
+                    macros: &macros,
+                };
+                found.push(p.items(b')'));
+            }
+        }
+        at += line.len();
+    }
+    found
+}
+
 /// The names `src` `#define`s, each with its text: the rest of its line,
 /// continued past a backslash, its comments left in. A macro with
 /// parameters is not one.
@@ -223,30 +300,39 @@ fn defines(src: &str) -> HashMap<String, String> {
     found
 }
 
-/// `text` without its C comments.
+/// `text` without its C comments; a literal's `//` or `/*` is no comment.
 fn strip_comments(text: &str) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    loop {
-        let block = rest.find("/*");
-        let line = rest.find("//");
-        match (block, line) {
-            (Some(b), l) if l.is_none_or(|l| b < l) => {
-                out.push_str(&rest[..b]);
-                out.push(' ');
-                let end = rest[b..].find("*/").expect("a comment ends");
-                rest = &rest[b + end + 2..];
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'') => {
+                // A literal, with what its backslashes escape.
+                let start = i;
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i = (i + 1).min(b.len());
+                out.extend_from_slice(&b[start..i]);
             }
-            (_, Some(l)) => {
-                out.push_str(&rest[..l]);
-                return out;
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let end = text[i + 2..].find("*/").expect("a comment ends");
+                out.push(b' ');
+                i += 2 + end + 2;
             }
-            _ => {
-                out.push_str(rest);
-                return out;
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                let end = text[i..].find('\n').map_or(b.len(), |e| i + e);
+                i = end;
+            }
+            c => {
+                out.push(c);
+                i += 1;
             }
         }
     }
+    String::from_utf8(out).expect("cut at ASCII bytes")
 }
 
 /// The number `name` stands for in `file`, a path from the top of the
@@ -743,14 +829,15 @@ mod tests {
 
     /// A name defined as a string stands for it, beside literals or
     /// alone, through other such names; a name defined otherwise is a
-    /// word.
+    /// word; what looks like a comment inside a string is the string's.
     #[test]
     fn reads_names_of_strings() {
-        let src = "#define A \"ab\" /* c */\n#define B A A \\\n  \"c\"\n#define N 4\nstatic const char *t[] = {\n  \"x\" B,\n  A,\n  N,\n};";
+        let src = "#define A \"ab\" /* c */\n#define B A A \\\n  \"c\"\n#define N 4\n#define U \"http://x/*y\" // c\nstatic const char *t[] = {\n  \"x\" B,\n  A,\n  N,\n  U,\n};";
         let rows = table_in(src, "t.c", "t[]", |c| panic!("{c}"));
         assert_eq!(rows[0].str(), b"xababc");
         assert_eq!(rows[1].str(), b"ab");
         assert_eq!(rows[2].word(), "N");
+        assert_eq!(rows[3].str(), b"http://x/*y");
     }
 
     /// A number defined or enumerated, through other names, sums and
@@ -762,6 +849,22 @@ mod tests {
         assert_eq!(constant_in(src, "TWICE"), 10740);
         assert_eq!(constant_in(src, "B"), 27);
         assert_eq!(constant_in(src, "C"), 52);
+    }
+
+    /// Every call of a function a line makes or assigns, where its
+    /// conditions hold; a comparison of a call is not one.
+    #[test]
+    fn reads_every_call() {
+        let src = "#ifndef OFF\n  f(\"a\");\n  res = f(\"b\",\n    2);\n#ifdef OFF\n  f(\"gone\");\n#else\n  x=f(\"c\");\n#endif\n  r == f(\"no\");\n#endif\n";
+        let calls = every_call_in(src, "f", |c| match c {
+            // `#ifndef OFF`, and the `#else` of `#ifdef OFF`.
+            "!(defined(OFF))" => true,
+            "defined(OFF)" => false,
+            other => panic!("{other}"),
+        });
+        let first: Vec<&[u8]> = calls.iter().map(|c| c[0].str()).collect();
+        assert_eq!(first, [&b"a"[..], b"b", b"c"]);
+        assert_eq!(calls[1][1].int(), 2);
     }
 
     /// The calls of a function that start a line, read as a table's rows;

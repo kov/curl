@@ -1,15 +1,15 @@
 {
- "c-commit": "e3fa43dc381fb322b66705c47262a22a99e0dee9",
+ "c-commit": "40fca8b99c2946407d871f2ea92ab28b6560f9ed",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
-   "crlf=headers": 1118,
+   "crlf=headers": 1119,
    "crlf=yes": 630,
    "delay=1": 3,
-   "mode=text": 209,
+   "mode=text": 212,
    "mode=warn": 2,
    "nocheck=yes": 536,
-   "nonewline=yes": 167,
+   "nonewline=yes": 168,
    "option=binary-trace": 30,
    "option=force-output": 1,
    "option=no-include": 42,
@@ -38,7 +38,7 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2180,
+   "default_run_candidates": 2183,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
@@ -46,7 +46,7 @@
    "perf_programs": 10,
    "pytest_functions": 358,
    "server_keywords_mapped": 36,
-   "test_files": 2194,
+   "test_files": 2197,
    "tunit_programs": 6,
    "unit_programs": 81
   },
@@ -359,7 +359,7 @@
    "0": 70,
    "1": 21,
    "10": 4,
-   "100": 4,
+   "100": 6,
    "101": 1,
    "11": 1,
    "12": 1,
@@ -436,11 +436,11 @@
   },
   "feature_required_counts": {
    "--libcurl": 14,
-   "Debug": 157,
+   "Debug": 158,
    "DoH": 6,
    "ECH": 3,
    "GSS-API": 12,
-   "HSTS": 20,
+   "HSTS": 22,
    "HTTPS-proxy": 1,
    "HTTPSRR": 1,
    "IDN": 15,
@@ -457,7 +457,7 @@
    "TrackMemory": 3,
    "Unicode": 2,
    "UnixSockets": 6,
-   "alt-svc": 13,
+   "alt-svc": 14,
    "asyn-rr": 1,
    "aws": 26,
    "blank-env": 1,
@@ -790,7 +790,7 @@
    "APPEND": 4,
    "ASN1tostr": 1,
    "AUTH OAUTHBEARER": 1,
-   "Alt-Svc": 12,
+   "Alt-Svc": 13,
    "Authorization": 1,
    "B.2.6": 1,
    "CCC": 1,
@@ -910,8 +910,8 @@
    "GTime2str": 1,
    "HELP": 1,
    "HMAC": 1,
-   "HSTS": 20,
-   "HTTP": 1127,
+   "HSTS": 22,
+   "HTTP": 1128,
    "HTTP 1xx response code": 1,
    "HTTP Basic": 3,
    "HTTP Basic auth": 39,
@@ -919,7 +919,7 @@
    "HTTP DELETE": 1,
    "HTTP Digest auth": 53,
    "HTTP FORMPOST": 17,
-   "HTTP GET": 689,
+   "HTTP GET": 690,
    "HTTP HEAD": 8,
    "HTTP MIME": 4,
    "HTTP MIME POST": 7,
@@ -1316,7 +1316,7 @@
    "hex": 106,
    "if": 20,
    "include": 26,
-   "repeat": 101
+   "repeat": 103
   },
   "makefile_am": {
    "extra_dist": [
@@ -1350,35 +1350,35 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2194
+   "testcases_listed": 2197
   },
   "part_counts": {
-   "client/command": 2084,
+   "client/command": 2087,
    "client/connectport": 1,
    "client/disable": 11,
-   "client/features": 1061,
-   "client/file": 376,
+   "client/features": 1064,
+   "client/file": 379,
    "client/file1": 13,
    "client/file2": 15,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 13,
-   "client/name": 2194,
+   "client/name": 2197,
    "client/precheck": 27,
-   "client/server": 1947,
-   "client/setenv": 201,
+   "client/server": 1948,
+   "client/setenv": 202,
    "client/stdin": 88,
    "client/stdout": 5,
    "client/tool": 114,
    "client/verify": 1,
-   "info/keywords": 2194,
+   "info/keywords": 2197,
    "reply/connect": 76,
    "reply/connect1": 2,
    "reply/connect1000": 3,
    "reply/connect1001": 6,
    "reply/connect1002": 5,
    "reply/connect2": 1,
-   "reply/data": 1535,
+   "reply/data": 1536,
    "reply/data1": 127,
    "reply/data10": 2,
    "reply/data100": 11,
@@ -1420,15 +1420,15 @@
    "reply/size": 18,
    "verify/data": 2,
    "verify/dns": 1,
-   "verify/errorcode": 530,
-   "verify/file": 176,
+   "verify/errorcode": 532,
+   "verify/file": 179,
    "verify/file1": 70,
    "verify/file2": 70,
    "verify/file3": 27,
    "verify/limits": 31,
    "verify/notexists": 44,
    "verify/postcheck": 27,
-   "verify/protocol": 1657,
+   "verify/protocol": 1658,
    "verify/proxy": 41,
    "verify/socks": 5,
    "verify/stderr": 67,
@@ -26649,7 +26649,7 @@
    }
   },
   "runner_counts": {
-   "curl": 1681,
+   "curl": 1684,
    "libtest": 397,
    "perl-script": 28,
    "tunit": 6,
@@ -26674,7 +26674,7 @@
    "gopher": 5,
    "gopher-ipv6": 1,
    "gophers": 1,
-   "http": 1215,
+   "http": 1216,
    "http-ipv6": 15,
    "http-proxy": 50,
    "http-unix": 2,
@@ -27236,7 +27236,7 @@
    "CURL_FAKE_XATTR": 3,
    "CURL_FTP_PWD_STOP": 1,
    "CURL_HOME": 2,
-   "CURL_HSTS_HTTP": 8,
+   "CURL_HSTS_HTTP": 9,
    "CURL_HTTPSIG_CREATED": 1,
    "CURL_ISATTY": 4,
    "CURL_MAX_CLOBBER": 1,
@@ -27245,7 +27245,7 @@
    "CURL_SMALLSENDS": 4,
    "CURL_SSL_BACKEND": 6,
    "CURL_STUB_GSS_CREDS": 9,
-   "CURL_TIME": 15,
+   "CURL_TIME": 16,
    "CURL_UPLOAD_SIZE": 1,
    "CURL_WS_FORCE_ZERO_MASK": 24,
    "FUNVALUE": 4,
@@ -102304,6 +102304,169 @@
    },
    {
     "attr_values": [
+     "mode=text"
+    ],
+    "bytes": 856,
+    "command": "http://invalid.invalid/%TESTNUMBER --hsts %LOGDIR/hsts%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "100",
+    "features": [
+     "HSTS"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HSTS"
+    ],
+    "killserver": [],
+    "macros": [
+     "repeat"
+    ],
+    "name": "HSTS cache file with a line one byte too long for the line buffer",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3241,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/file",
+     "client/name",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/file"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text",
+     "nonewline=yes"
+    ],
+    "bytes": 944,
+    "command": "http://invalid.invalid/%TESTNUMBER --alt-svc %LOGDIR/altsvc%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "100",
+    "features": [
+     "alt-svc"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "Alt-Svc"
+    ],
+    "killserver": [],
+    "macros": [
+     "repeat"
+    ],
+    "name": "alt-svc cache file ending in a line too long once its newline is added",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3242,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/file",
+     "client/name",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/file"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text"
+    ],
+    "bytes": 1157,
+    "command": "http://this.hsts.example:%HTTPPORT/%TESTNUMBER --resolve this.hsts.example:%HTTPPORT:%HOSTIP --hsts %LOGDIR/hsts%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "HSTS"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HSTS",
+     "HTTP",
+     "HTTP GET"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "HSTS max-age in quotes with an escaped quote inside",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3243,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/file",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data",
+     "verify/file",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_HSTS_HTTP",
+     "CURL_TIME"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
      "crlf=headers"
     ],
     "bytes": 1006,
@@ -149064,7 +149227,7 @@
     ]
    }
   ],
-  "tests_without_server_section": 248,
+  "tests_without_server_section": 250,
   "variable_counts": {
    "A1": 2,
    "A2": 3,
@@ -149126,12 +149289,12 @@
    "GTT": 1,
    "H2CVER": 2,
    "HOST6IP": 22,
-   "HOSTIP": 1886,
+   "HOSTIP": 1887,
    "HTTP2PORT": 5,
    "HTTP2TLSPORT": 6,
    "HTTP3PORT": 4,
    "HTTP6PORT": 14,
-   "HTTPPORT": 1196,
+   "HTTPPORT": 1197,
    "HTTPS": 3,
    "HTTPSPORT": 70,
    "HTTPSPROXYPORT": 6,
@@ -149139,7 +149302,7 @@
    "IMAPPORT": 72,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 663,
+   "LOGDIR": 666,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -149177,7 +149340,7 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1859,
+   "TESTNUMBER": 1862,
    "TESTNUMBER000": 1,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
@@ -149202,7 +149365,7 @@
    "TFTPPORT": 18,
    "USER": 59,
    "VALUE2": 2,
-   "VERSION": 909
+   "VERSION": 910
   }
  },
  "generated-by": "inventory/gen/tests.py",
@@ -150565,6 +150728,9 @@
   "tests/data/test3238",
   "tests/data/test3239",
   "tests/data/test3240",
+  "tests/data/test3241",
+  "tests/data/test3242",
+  "tests/data/test3243",
   "tests/data/test325",
   "tests/data/test326",
   "tests/data/test3260",

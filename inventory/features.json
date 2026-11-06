@@ -1,5 +1,5 @@
 {
- "c-commit": "e3fa43dc381fb322b66705c47262a22a99e0dee9",
+ "c-commit": "40fca8b99c2946407d871f2ea92ab28b6560f9ed",
  "data": {
   "backends": {
    "all": [
@@ -8159,7 +8159,7 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1068,
+   "test-feature-blocks": 1071,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8187,7 +8187,7 @@
       ],
       "regex": "\\bDebug"
      },
-     "tests": 157
+     "tests": 158
     },
     {
      "name": "DoH",
@@ -8241,7 +8241,7 @@
       ],
       "regex": "HSTS"
      },
-     "tests": 20
+     "tests": 22
     },
     {
      "name": "HTTPS-proxy",
@@ -8469,7 +8469,7 @@
       ],
       "regex": "alt-svc"
      },
-     "tests": 13
+     "tests": 14
     },
     {
      "name": "asyn-rr",
@@ -8991,7 +8991,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1062,
+   "test-files-with-features": 1065,
    "tool-added-features": [
     {
      "bit": null,

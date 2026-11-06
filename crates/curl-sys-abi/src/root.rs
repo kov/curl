@@ -8,6 +8,7 @@
 #![allow(unsafe_code)]
 
 use core::ffi::{c_char, c_long, c_void};
+use core::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use curl_core::components::{Components, Levels};
@@ -30,13 +31,8 @@ pub(crate) struct Allocator {
     malloc: Malloc,
     free: Free,
     realloc: Realloc,
-    #[cfg_attr(
-        feature = "debug-hooks",
-        expect(
-            dead_code,
-            reason = "a debug build copies strings with `malloc`, as C's does"
-        )
-    )]
+    /// Unused by a debug build, which copies strings with `malloc`, as
+    /// C's does.
     strdup: Strdup,
     calloc: Calloc,
 }
@@ -49,10 +45,77 @@ const SYSTEM: Allocator = Allocator {
     calloc: libc::calloc,
 };
 
+/// The allocator installed: part of the root, beside it because every
+/// block handed to the application or given back reads it, and the
+/// root's lock for each cost as much as the allocation. Written only with
+/// the root's lock held, by the inits; read without it, as C reads its
+/// `Curl_cmalloc` and the rest: an init racing other calls is the
+/// application's error (`curl_global_init_mem(3)`), and can mix the two
+/// allocators here as there.
+static ALLOCATOR: Installed = Installed {
+    malloc: AtomicPtr::new(core::ptr::null_mut()),
+    free: AtomicPtr::new(core::ptr::null_mut()),
+    realloc: AtomicPtr::new(core::ptr::null_mut()),
+    strdup: AtomicPtr::new(core::ptr::null_mut()),
+    calloc: AtomicPtr::new(core::ptr::null_mut()),
+};
+
+/// An `Allocator`'s functions, each NULL for the system's.
+struct Installed {
+    malloc: AtomicPtr<()>,
+    free: AtomicPtr<()>,
+    realloc: AtomicPtr<()>,
+    strdup: AtomicPtr<()>,
+    calloc: AtomicPtr<()>,
+}
+
+impl Installed {
+    /// Install `a`. The caller holds the root's lock.
+    fn store(&self, _root: &mut Root, a: Allocator) {
+        self.malloc.store(a.malloc as *mut (), Ordering::Release);
+        self.free.store(a.free as *mut (), Ordering::Release);
+        self.realloc.store(a.realloc as *mut (), Ordering::Release);
+        self.strdup.store(a.strdup as *mut (), Ordering::Release);
+        self.calloc.store(a.calloc as *mut (), Ordering::Release);
+    }
+
+    fn load(&self) -> Allocator {
+        /// The function `p` holds, or `system` if it is NULL.
+        ///
+        /// # Safety
+        ///
+        /// `p` is NULL or a function of type `F`, as `store` puts there.
+        unsafe fn get<F: Copy>(p: &AtomicPtr<()>, system: F) -> F {
+            const { assert!(size_of::<F>() == size_of::<*mut ()>()) };
+            let p = p.load(Ordering::Acquire);
+            if p.is_null() {
+                system
+            } else {
+                // SAFETY: a function pointer of type `F`, as the caller
+                // guarantees, of a pointer's size.
+                unsafe { core::mem::transmute_copy::<*mut (), F>(&p) }
+            }
+        }
+        // Each field holds NULL or the function `store` put there, of the
+        // type of the field it came from.
+        Allocator {
+            // SAFETY: as above.
+            malloc: unsafe { get(&self.malloc, SYSTEM.malloc) },
+            // SAFETY: as above.
+            free: unsafe { get(&self.free, SYSTEM.free) },
+            // SAFETY: as above.
+            realloc: unsafe { get(&self.realloc, SYSTEM.realloc) },
+            // SAFETY: as above.
+            strdup: unsafe { get(&self.strdup, SYSTEM.strdup) },
+            // SAFETY: as above.
+            calloc: unsafe { get(&self.calloc, SYSTEM.calloc) },
+        }
+    }
+}
+
 struct Root {
     /// `curl_global_init` calls not yet matched by `curl_global_cleanup`.
     initialized: u32,
-    allocator: Allocator,
     /// Winsock, started by the first init that asks for it
     /// (`CURL_GLOBAL_WIN32`) and held until the last cleanup; there is
     /// nothing to start on Unix.
@@ -64,7 +127,6 @@ struct Root {
 
 static ROOT: Mutex<Root> = Mutex::new(Root {
     initialized: 0,
-    allocator: SYSTEM,
     winsock: None,
     #[cfg(feature = "debug-hooks")]
     entropy: None,
@@ -246,7 +308,7 @@ pub(crate) fn make_locks() {
 
 /// The allocator currently installed.
 pub(crate) fn allocator() -> Allocator {
-    root().allocator
+    ALLOCATOR.load()
 }
 
 // What the application or the C library installed, called as is.
@@ -407,7 +469,7 @@ fn libraries_cleanup() {
 pub(crate) fn init_unless_done() -> Result<(), ()> {
     let mut root = root();
     if root.initialized == 0 {
-        root.allocator = SYSTEM;
+        ALLOCATOR.store(&mut root, SYSTEM);
         if first_init(&mut root, c_long::from(ffi::CURL_GLOBAL_DEFAULT)) != CURLE_OK {
             return Err(());
         }
@@ -436,7 +498,7 @@ fn global_init(flags: c_long) -> CURLcode {
     let mut root = root();
     if root.initialized == 0 {
         // The defaults are installed again, as in C.
-        root.allocator = SYSTEM;
+        ALLOCATOR.store(&mut root, SYSTEM);
         let code = first_init(&mut root, flags);
         if code != CURLE_OK {
             return code;
@@ -471,13 +533,14 @@ pub extern "C" fn curl_global_init_mem(
     if root.initialized == 0 {
         // Callbacks given to an already initialised library are ignored,
         // but the call still needs its own cleanup, as in C.
-        root.allocator = Allocator {
+        let installed = Allocator {
             malloc,
             free,
             realloc,
             strdup,
             calloc,
         };
+        ALLOCATOR.store(&mut root, installed);
         let code = first_init(&mut root, flags);
         if code != CURLE_OK {
             return code;
@@ -499,13 +562,14 @@ pub(crate) fn install_mem(
     strdup: Strdup,
     calloc: Calloc,
 ) {
-    root().allocator = Allocator {
+    let installed = Allocator {
         malloc,
         free,
         realloc,
         strdup,
         calloc,
     };
+    ALLOCATOR.store(&mut root(), installed);
 }
 
 #[unsafe(no_mangle)]

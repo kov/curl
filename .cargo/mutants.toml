@@ -1077,4 +1077,65 @@ exclude_re = [
     # Only conversions have no text before them (both text segments are
     # pushed only when not empty), and running no text writes nothing.
     'curl-sys-abi/src/printf/format\.rs:\d+:23: replace > with >= in render_into$',
+    # libssh2's SFTP state machine (proto/ssh/libssh2.rs):
+    # `SSH_SFTP_CREATE_DIRS_INIT` is entered only from the upload's open,
+    # which tries to make directories only for a path longer than `/`.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:38: replace > with >= in Request::state2$',
+    # `SSH_SFTP_CLOSE` never finds `SSH_SFTP_CLOSE` next: it is set next
+    # only as the commands after the transfer start, and the last of them
+    # takes it on the way out (`SSH_SFTP_NEXT_QUOTE`), as C's does.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:35: replace match guard next != State::SftpClose with true in Request::state2$',
+    # A download's resume point is always also its range (`setup_range`):
+    # with the file's size known, the range refuses a negative point and
+    # one at or past the end before the resume arithmetic; with it
+    # unknown the size read against is 0, which every point passes alike.
+    # And a size known is never 0 (`sized` filters it out).
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:25: replace < with <= in Request::download_stat$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:33: replace < with <= in Request::download_stat$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:29: replace < with <= in Request::download_stat$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:32: replace < with <= in Request::download_stat$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:34: replace \+= with (-=|\*=) in Request::download_stat$',
+    # A source of no bytes is refused by its own resume first ("Resume
+    # point beyond size"), so a size of 0 never reaches the subtraction.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:63: replace > with >= in Request::sftp_upload_init2$',
+    # Making the body's buffer anew when it is already the size asked for
+    # changes no byte.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:31: replace < with <= in Request::read_body2$',
+    # A read that waits falls to `session_failure`, which makes a wait a
+    # wait: the step is blocked either way.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:28: replace match guard rc\.again\(\) with false in Request::read_body2$',
+    # Under a proxy's TLS, the call made again at once after the pipes
+    # moved bytes, rather than after the next poll: the same bytes, in the
+    # same order, only sooner, and the step's count of reads unchanged by
+    # such a retry. Test 3992 drives this path end to end.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:42: replace && with \|\| in Request::read_body2$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:21: replace == with != in Request::read_body2$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:23: replace -= with (\+=|/=) in Request::read_body2$',
+    "curl-core/src/proto/ssh/libssh2\\.rs:\\d+:43: replace \\|\\| with && in <impl Outlet<H> for Ssh2Outlet<'_>>::put$",
+    "curl-core/src/proto/ssh/libssh2\\.rs:\\d+:22: replace != with == in <impl Outlet<H> for Ssh2Outlet<'_>>::put$",
+    "curl-core/src/proto/ssh/libssh2\\.rs:\\d+:46: delete ! in <impl Outlet<H> for Ssh2Outlet<'_>>::put$",
+    # What the session sent through its pipes and the connection has not
+    # taken yet adds write to its wait: the fake network takes every byte
+    # the pipes give it, so none is ever left over; this changes only which
+    # events a poll under a proxy's TLS wakes on.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:23: replace \|= with &= in Ssh2Conn::block2waitfor$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:26: delete ! in Ssh2Conn::block2waitfor$',
+    # The same for the goodbye's own poll, which its second bounds either
+    # way: only how long the goodbye waits, never what it says.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:43: replace \|= with &= in Ssh2Conn::goodbye$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:46: delete ! in Ssh2Conn::goodbye$',
+    # A date's 32-bit limit is checked only where a `long` is 32 bits
+    # (Windows): on a 64-bit `long` the first test is false, `<` keeps it
+    # false, and the date is never compared.
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:29: replace > with < in quote_stat$',
+    'curl-core/src/proto/ssh/libssh2\.rs:\d+:69: replace > with (==|<|>=) in quote_stat$',
+    # A transfer never enters `SSH_SFTP_SHUTDOWN` (C's only from its
+    # disconnect, `sftp_disconnect`), and that state's failure is the one
+    # plain line said through a transfer's `Says`: on a transfer's context
+    # the method is never called.
+    "curl-core/src/proto/ssh/libssh2\\.rs:.*: replace <impl Says for StepCx<'_, H>>::info with \\(\\)$",
+    # The live session alone asks for its input in the pollset when it
+    # waits for nothing: a pollset is asked only of a transfer whose
+    # connection holds a session, as with libssh's above.
+    'curl-core/src/proto/ssh/mod\.rs:.*: replace match guard libssh2::ssh2_on\(line\)\.is_some_and\(\|sc\| sc\.waits\(\)\.1\) with true in Request::pollset$',
 ]

@@ -1224,4 +1224,40 @@ mod tests {
         assert!(resolve.wait().is_ok(), "the third started");
         assert_eq!(r.retry(), None);
     }
+
+    /// unit3306: with the first five thread starts failing, none of three
+    /// queued queries starts one, and only the asking side trying again,
+    /// one failed start for each answer not ready, gets them answered.
+    /// The count is given as `CURL_DBG_THRDPOOL_FAIL_STARTS` gives it,
+    /// with C's limit of two threads; C's generic queue is this
+    /// resolver's.
+    #[test]
+    fn unit3306_failed_starts_retried_by_the_asker() {
+        let vars = DebugVars::from_given(GivenVars {
+            fail_starts: Some(b"5"),
+            max_threads: Some(b"2"),
+            ..GivenVars::default()
+        });
+        let mut r = ThreadedResolver::with_debug(Threads::MULTI, vars).unwrap();
+        let mut resolves: Vec<_> = (0..3)
+            .map(|_| start(&mut r, b"localhost", Family::V4))
+            .collect();
+        assert_eq!(r.shared.lock().threads, 0, "no send started a thread");
+        assert_eq!(r.shared.lock().fail_starts, 2, "one failure a send");
+        let mut answered = 0;
+        for _ in 0..10_000 {
+            if answered == resolves.len() {
+                break;
+            }
+            match resolves[answered].answer() {
+                Some(a) => {
+                    assert!(a.is_ok(), "{a:?}");
+                    answered += 1;
+                }
+                None => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        assert_eq!(answered, 3, "every query was answered");
+        assert_eq!(r.shared.lock().fail_starts, 0);
+    }
 }

@@ -1034,3 +1034,12 @@ features: test-util
         if found.is_none() && wildcard {
 --- new
         if wildcard && found.is_none_or(|(k, _)| k.answer.family != Family::Any && k.answer.family != family) {
+
+=== a resolve asked for its answer does not try again a thread that failed to start
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::unit3306_failed_starts_retried_by_the_asker
+--- old
+                // A query a thread could not be started for is tried again.
+                start_threads(&self.shared);
+--- new
+                // A query a thread could not be started for is tried again.

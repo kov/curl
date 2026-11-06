@@ -45,8 +45,6 @@ pub struct BadDate;
 /// (`Curl_getdate_capped`), negative before then. Reading stops at a zero
 /// byte, as C reads a string. A date without a time zone is in UTC.
 pub fn parse(date: &[u8]) -> Result<i64, BadDate> {
-    // Found with `memchr`, not byte by byte.
-    let date = std::ffi::CStr::from_bytes_until_nul(date).map_or(date, std::ffi::CStr::to_bytes);
     let mut w = When::default();
     let mut at = 0;
     for _ in 0..MAX_PARTS {
@@ -54,13 +52,16 @@ pub fn parse(date: &[u8]) -> Result<i64, BadDate> {
             .iter()
             .take_while(|&&b| CLASS[usize::from(b)] == Class::Other)
             .count();
+        // A part runs over letters or digits alone, so no part reaches
+        // past a NUL: the date ends at the first one met here.
         let Some(&first) = date.get(at) else {
             break;
         };
-        at = if CLASS[usize::from(first)] == Class::Letter {
-            name(date, at, &mut w)?
-        } else {
-            number(date, at, &mut w)?
+        at = match CLASS[usize::from(first)] {
+            Class::Letter => name(date, at, &mut w)?,
+            Class::Digit => number(date, at, &mut w)?,
+            Class::End => break,
+            Class::Other => unreachable!("the separators were skipped"),
         };
     }
     let (Some(mon), Some(mday), Some(year)) = (w.mon, w.mday, w.year) else {
@@ -81,17 +82,19 @@ pub fn parse(date: &[u8]) -> Result<i64, BadDate> {
 const MAX_PARTS: usize = 6;
 
 /// What a byte is to the parser: a part starts at a letter or a digit,
-/// and anything else separates parts.
+/// a NUL ends the date, and anything else separates parts.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Class {
     Letter,
     Digit,
+    End,
     Other,
 }
 
 /// Each byte's class, looked up rather than tested range by range.
 static CLASS: [Class; 256] = {
     let mut class = [Class::Other; 256];
+    class[0] = Class::End;
     let mut b = 0;
     while b < 256 {
         let c = b as u8;
@@ -600,6 +603,14 @@ mod tests {
     fn a_zero_byte_ends_the_date() {
         assert_eq!(parse(b"06 Nov 1994\0 08:49:37"), Ok(784_080_000));
         assert_eq!(parse(b"\x0006 Nov 1994"), Err(BadDate));
+        // Anywhere in a part or between parts, the date is what comes
+        // before the NUL.
+        let whole = b"Sun, 06 Nov 1994 08:49:37 +0130";
+        for cut in 0..=whole.len() {
+            let mut with_nul = whole[..cut].to_vec();
+            with_nul.extend_from_slice(b"\0 1 Jan 2000 01:02:03 GMT");
+            assert_eq!(parse(&with_nul), parse(&whole[..cut]), "cut at {cut}");
+        }
     }
 
     #[test]

@@ -64,9 +64,9 @@ witness: curl-core date::tests::a_compact_date_with_month_00_takes_a_later_month
 file: crates/curl-core/src/date.rs
 witness: curl-core date::tests::a_zero_byte_ends_the_date
 --- old
-    let date = std::ffi::CStr::from_bytes_until_nul(date).map_or(date, std::ffi::CStr::to_bytes);
+    class[0] = Class::End;
 --- new
-    let date = date;
+    class[0] = Class::Other;
 
 === every part of a date is read
 file: crates/curl-core/src/date.rs

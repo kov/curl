@@ -1,0 +1,11 @@
+# Schannel's pieces that run everywhere (crates/curl-schannel/src/close.rs).
+
+=== the goodbye's rest is sent from its start again after a short send
+file: crates/curl-schannel/src/close.rs
+witness: curl-schannel close::tests::unit4782_goodbye_resent_from_its_offset
+--- old
+            Ok(Some(n)) if n < left.len() => {
+                self.sent += n;
+--- new
+            Ok(Some(n)) if n < left.len() => {
+                let _ = n;

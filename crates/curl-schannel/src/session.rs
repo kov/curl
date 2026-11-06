@@ -24,6 +24,7 @@ use curl_core::tls::{
 use curl_os::error::ErrorText;
 
 use crate::client;
+use crate::close::{Flushed, Pending, Record};
 use crate::sspi::{
     self, Context, CredKind, CredSpec, Credentials, StreamSizes, cred, protocol, req, status,
 };
@@ -76,9 +77,12 @@ enum Res {
 }
 
 /// The goodbye's token and how much of it went.
-struct CloseNotify {
-    token: sspi::Token,
-    sent: usize,
+type CloseNotify = Pending<sspi::Token>;
+
+impl Record for sspi::Token {
+    fn bytes(&self) -> &[u8] {
+        sspi::Token::bytes(self)
+    }
 }
 
 pub(crate) struct Session {
@@ -1362,7 +1366,7 @@ impl Session {
                 Ok((st, token, attrs)) => {
                     self.ret = attrs;
                     if st == status::OK || st == status::CONTEXT_EXPIRED {
-                        self.goodbye = token.map(|token| CloseNotify { token, sent: 0 });
+                        self.goodbye = token.map(CloseNotify::new);
                         self.goodbye_made = true;
                     } else {
                         drop(token);
@@ -1379,26 +1383,18 @@ impl Session {
             }
         }
         if self.goodbye_made && !self.goodbye_sent {
-            let mut failed = false;
-            if let Some(g) = &mut self.goodbye {
-                let left = &g.token.bytes()[g.sent..];
-                if !left.is_empty() {
-                    match io.send(left) {
-                        Ok(Sent::Bytes(n)) if n.get() < left.len() => {
-                            g.sent += n.get();
-                            self.need = Need::Send;
-                            return Ok(false);
-                        }
-                        Ok(Sent::Bytes(n)) => g.sent += n.get(),
-                        Ok(Sent::WouldBlock) => {
-                            self.need = Need::Send;
-                            return Ok(false);
-                        }
-                        Err(_) => failed = true,
-                    }
-                }
+            let flushed = match &mut self.goodbye {
+                Some(g) => g.flush(|left| match io.send(left)? {
+                    Sent::Bytes(n) => Ok::<_, io::Error>(Some(n.get())),
+                    Sent::WouldBlock => Ok(None),
+                }),
+                None => Flushed::Done,
+            };
+            if flushed == Flushed::Waiting {
+                self.need = Need::Send;
+                return Ok(false);
             }
-            if failed {
+            if flushed == Flushed::Failed {
                 if self.closed {
                     return Ok(true);
                 }

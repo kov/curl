@@ -9,6 +9,9 @@
 mod algs;
 #[cfg(windows)]
 mod client;
+// Windows' alone, but tested everywhere.
+#[cfg(any(windows, test))]
+mod close;
 #[cfg(windows)]
 mod crypt;
 #[cfg(windows)]

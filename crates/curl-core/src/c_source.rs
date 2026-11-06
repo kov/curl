@@ -6,7 +6,8 @@
 //! (adjacent literals joined, escapes read as C reads them), a group in
 //! braces, or a word (a number, a name, `NULL`). Lines of the
 //! preprocessor inside it are weighed by the caller: a row is kept when
-//! every condition it sits under holds.
+//! every condition it sits under holds. A test driven by calls rather
+//! than a table has its calls' arguments read the same way.
 //!
 //! Only tests read it, so it allocates as tests do, and a source it
 //! cannot read is a failed test.
@@ -124,6 +125,41 @@ fn table_in(src: &str, file: &str, name: &str, holds: impl Fn(&str) -> bool) -> 
     }
 }
 
+/// The arguments of each call of `name` in `file` that starts a line,
+/// as a table's values. The definition, which starts with its type, is
+/// not one; a call under a preprocessor condition fails the read.
+#[track_caller]
+pub fn calls(file: &str, name: &str) -> Vec<Vec<Value>> {
+    calls_in(&source(file), name)
+}
+
+#[track_caller]
+fn calls_in(src: &str, name: &str) -> Vec<Vec<Value>> {
+    let call = format!("{name}(");
+    let mut depth = 0usize;
+    let mut found = Vec::new();
+    let mut at = 0;
+    for line in src.split_inclusive('\n') {
+        let text = line.trim_start();
+        if text.starts_with("#if") {
+            depth += 1;
+        } else if text.starts_with("#endif") {
+            depth -= 1;
+        } else if text.starts_with(&call) {
+            assert_eq!(depth, 0, "a call of {name} under a condition: {text}");
+            let mut p = Parser {
+                s: src.as_bytes(),
+                at: at + line.len() - text.len() + call.len(),
+                conditions: Vec::new(),
+                holds: &|c: &str| panic!("{c} inside a call"),
+            };
+            found.push(p.items(b')'));
+        }
+        at += line.len();
+    }
+    found
+}
+
 struct Parser<'a, F> {
     s: &'a [u8],
     at: usize,
@@ -203,12 +239,17 @@ impl<F: Fn(&str) -> bool> Parser<'_, F> {
     fn group(&mut self) -> Value {
         assert_eq!(self.peek(), b'{');
         self.at += 1;
+        Value::Group(self.items(b'}'))
+    }
+
+    /// The values up to `close`, and past it.
+    fn items(&mut self, close: u8) -> Vec<Value> {
         let mut values = Vec::new();
         loop {
             self.skip();
-            if self.peek() == b'}' {
+            if self.peek() == close {
                 self.at += 1;
-                return Value::Group(values);
+                return values;
             }
             let kept = self.kept();
             let v = self.value();
@@ -218,7 +259,7 @@ impl<F: Fn(&str) -> bool> Parser<'_, F> {
             self.skip();
             match self.peek() {
                 b',' => self.at += 1,
-                b'}' => {}
+                b if b == close => {}
                 b => panic!("{} after a value", b as char),
             }
         }
@@ -238,7 +279,7 @@ impl<F: Fn(&str) -> bool> Parser<'_, F> {
             _ => {
                 let start = self.at;
                 let mut depth = 0;
-                while depth > 0 || !matches!(self.peek(), b',' | b'}') {
+                while depth > 0 || !matches!(self.peek(), b',' | b'}' | b')') {
                     let rest = &self.s[self.at..];
                     if rest.starts_with(b"/*") || rest.starts_with(b"//") {
                         break;
@@ -331,5 +372,18 @@ mod tests {
         let r = rows[1].group();
         assert_eq!(r[0].bytes(), None);
         assert_eq!(r[1].int(), -16);
+    }
+
+    /// The calls of a function that start a line, read as a table's rows;
+    /// its definition and a call inside an expression are not.
+    #[test]
+    fn reads_calls_as_rows() {
+        let src = "static void f(const char *a,\n int b)\n{\n}\n  f(\"x\" \"y\", (long)2);\n  f(NULL,\n    -1); /* c */\n  r = f(\"z\", 3);\n";
+        let calls = calls_in(src, "f");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0][0].str(), b"xy");
+        assert_eq!(calls[0][1].word(), "(long)2");
+        assert_eq!(calls[1][0].bytes(), None);
+        assert_eq!(calls[1][1].int(), -1);
     }
 }

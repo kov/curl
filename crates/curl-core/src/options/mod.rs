@@ -3236,6 +3236,49 @@ pub enum Progress {
 mod tests {
     use super::*;
 
+    /// unit1663's calls, read from its source: an interface option, and
+    /// the device, interface and host C's `Curl_parse_interface` reads
+    /// from it, or its refusal. C's setopt takes an empty option as
+    /// none before it parses, and `Interface::parse` does both, so the
+    /// empty row, which C's parser alone refuses, is none here.
+    #[test]
+    fn unit1663_interfaces() {
+        let calls = crate::c_source::calls("tests/unit/unit1663.c", "t1663_parse");
+        assert_eq!(calls.len(), 12, "the calls were read");
+        for call in calls {
+            let [input, dev, iface, host, code] = &call[..] else {
+                panic!("{call:?}")
+            };
+            let input = input.str();
+            let got = Interface::parse(input);
+            if input.is_empty() {
+                assert_eq!(code.word(), "CURLE_BAD_FUNCTION_ARGUMENT");
+                assert!(matches!(got, Ok(None)));
+                continue;
+            }
+            match code.word() {
+                "CURLE_OK" => {}
+                "CURLE_BAD_FUNCTION_ARGUMENT" => {
+                    assert_eq!(got.err(), Some(InterfaceError::Malformed), "{input:?}");
+                    continue;
+                }
+                other => panic!("{other}"),
+            }
+            let parsed = got.unwrap().unwrap();
+            let read: [Option<&[u8]>; 3] = match &parsed {
+                Interface::Device(d) => [Some(d), None, None],
+                Interface::Interface(i) => [None, Some(i), None],
+                Interface::Host(h) => [None, None, Some(h)],
+                Interface::InterfaceHost { interface, host } => [None, Some(interface), Some(host)],
+            };
+            assert_eq!(
+                read,
+                [dev.bytes(), iface.bytes(), host.bytes()],
+                "{input:?}"
+            );
+        }
+    }
+
     /// An offset is what a `curl_off_t` can say, and no more: refused
     /// beyond it, not clamped.
     #[test]

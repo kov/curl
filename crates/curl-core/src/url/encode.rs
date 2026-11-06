@@ -286,15 +286,12 @@ pub(super) fn escape(s: &[u8]) -> Result<Bytes, UrlErrorKind> {
         }
         kept
     };
-    // The whole length first, so the buffer is allocated once: C's limit
-    // is passed exactly when the last byte would pass it.
+    // The whole length first, so the buffer is allocated once. No limit
+    // but memory: C's `curl_easy_escape` has none.
     let len: usize = s
         .iter()
         .map(|&b| if KEPT[usize::from(b)] { 1 } else { 3 })
         .sum();
-    if len >= MAX_INPUT {
-        return Err(UrlErrorKind::TooLarge);
-    }
     let mut out = Bytes::new();
     out.try_reserve_exact(len)
         .map_err(|_| UrlErrorKind::OutOfMemory)?;
@@ -456,9 +453,10 @@ mod tests {
     }
 
     /// Every byte is kept or written `%XX`, as `curl_easy_escape` writes
-    /// it, and a result reaching C's buffer limit is too large.
+    /// it, and a result past the URL parser's limit is still made: C's
+    /// escaping has no limit.
     #[test]
-    fn escapes_every_byte_up_to_the_limit() {
+    fn escapes_every_byte_without_a_limit() {
         let all: Vec<u8> = (0..=255).collect();
         let mut want = Vec::new();
         for &b in &all {
@@ -470,15 +468,12 @@ mod tests {
         }
         assert_eq!(escape(&all).unwrap(), want);
         assert_eq!(escape(b"").unwrap(), b"");
-        let kept = vec![b'a'; MAX_INPUT - 1];
-        assert_eq!(escape(&kept).unwrap().len(), MAX_INPUT - 1);
-        assert_eq!(escape(&vec![b'a'; MAX_INPUT]), Err(UrlErrorKind::TooLarge));
-        let mut escaped = vec![b'a'; MAX_INPUT - 3];
-        escaped.push(b' ');
-        assert_eq!(escape(&escaped), Err(UrlErrorKind::TooLarge));
-        escaped.truncate(MAX_INPUT - 4);
-        escaped.push(b' ');
-        assert_eq!(escape(&escaped).unwrap().len(), MAX_INPUT - 1);
+        let kept = vec![b'a'; MAX_INPUT + 1];
+        assert_eq!(escape(&kept).unwrap(), kept);
+        let spaces = vec![b' '; MAX_INPUT / 3 + 1];
+        let escaped = escape(&spaces).unwrap();
+        assert_eq!(escaped.len(), 3 * spaces.len());
+        assert!(escaped.chunks(3).all(|c| c == b"%20"));
     }
 
     #[test]

@@ -311,24 +311,60 @@ fn table_from(
 /// not one; a call under a preprocessor condition fails the read.
 #[track_caller]
 pub fn calls(file: &str, name: &str) -> Vec<Vec<Value>> {
-    calls_in(&source(file), name)
+    calls_in(&source(file), name, |c| {
+        panic!("a call of {name} under a condition: {c}")
+    })
+}
+
+/// The arguments of each call of `name` in `file` that starts a line, as
+/// [`calls`] reads them, a call under preprocessor conditions kept only
+/// if `holds` holds for each, as [`table`] weighs them; a condition
+/// continued past a backslash is read as one line.
+#[track_caller]
+pub fn calls_where(file: &str, name: &str, holds: impl Fn(&str) -> bool) -> Vec<Vec<Value>> {
+    calls_in(&source(file), name, holds)
 }
 
 #[track_caller]
-fn calls_in(src: &str, name: &str) -> Vec<Vec<Value>> {
+fn calls_in(src: &str, name: &str, holds: impl Fn(&str) -> bool) -> Vec<Vec<Value>> {
     let call = format!("{name}(");
     let macros = defines(src);
-    let mut depth = 0usize;
+    let mut conditions: Vec<String> = Vec::new();
     let mut found = Vec::new();
     let mut at = 0;
-    for line in src.split_inclusive('\n') {
+    let mut lines = src.split_inclusive('\n');
+    while let Some(line) = lines.next() {
         let text = line.trim_start();
-        if text.starts_with("#if") {
-            depth += 1;
-        } else if text.starts_with("#endif") {
-            depth -= 1;
-        } else if text.starts_with(&call) {
-            assert_eq!(depth, 0, "a call of {name} under a condition: {text}");
+        if let Some(directive) = text.strip_prefix('#') {
+            let mut directive = directive.trim().to_owned();
+            at += line.len();
+            while directive.ends_with('\\') {
+                directive.pop();
+                let next = lines.next().expect("a directive continues");
+                at += next.len();
+                directive = format!("{} {}", directive.trim_end(), next.trim());
+            }
+            let (word, rest) = directive
+                .split_once(char::is_whitespace)
+                .unwrap_or((&directive, ""));
+            let rest = rest.trim();
+            match word {
+                "if" => conditions.push(rest.to_owned()),
+                "ifdef" => conditions.push(format!("defined({rest})")),
+                "ifndef" => conditions.push(format!("!(defined({rest}))")),
+                "else" => {
+                    let c = conditions.pop().expect("an #else inside an #if");
+                    conditions.push(format!("!({c})"));
+                }
+                "elif" => panic!("an #elif around calls of {name}"),
+                "endif" => {
+                    conditions.pop().expect("an #endif closes an #if");
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if text.starts_with(&call) && conditions.iter().all(|c| holds(c)) {
             let mut p = Parser {
                 s: src.as_bytes(),
                 at: at + line.len() - text.len() + call.len(),
@@ -1023,11 +1059,28 @@ mod tests {
     #[test]
     fn reads_calls_as_rows() {
         let src = "static void f(const char *a,\n int b)\n{\n}\n  f(\"x\" \"y\", (long)2);\n  f(NULL,\n    -1); /* c */\n  r = f(\"z\", 3);\n";
-        let calls = calls_in(src, "f");
+        let calls = calls_in(src, "f", |c| panic!("{c}"));
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0][0].str(), b"xy");
         assert_eq!(calls[0][1].word(), "(long)2");
         assert_eq!(calls[1][0].bytes(), None);
         assert_eq!(calls[1][1].int(), -1);
+    }
+
+    /// A call under conditions is kept when each holds, a condition
+    /// continued past a backslash read whole, an `#else` as the
+    /// negation of its `#if`.
+    #[test]
+    fn weighs_the_conditions_of_calls() {
+        let src = "#if defined(A) && \\\n  defined(B)\n  f(1);\n#ifdef C\n  f(2);\n#else\n  f(3);\n#endif\n#endif\n  f(4);\n";
+        let holds = |c: &str| match c {
+            "defined(A) && defined(B)" => true,
+            "defined(C)" => false,
+            "!(defined(C))" => true,
+            other => panic!("{other}"),
+        };
+        let calls = calls_in(src, "f", holds);
+        let ns: Vec<i128> = calls.iter().map(|c| c[0].int()).collect();
+        assert_eq!(ns, [1, 3, 4]);
     }
 }

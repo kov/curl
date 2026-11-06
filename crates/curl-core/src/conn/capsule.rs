@@ -829,4 +829,173 @@ mod tests {
             });
         });
     }
+
+    /// unit3400's preprocessor conditions: the reference build has the
+    /// HTTP/3 proxy over ngtcp2.
+    fn unit3400_holds(c: &str) -> bool {
+        assert!(c.contains("USE_PROXY_HTTP3"), "{c}");
+        true
+    }
+
+    /// The bytes of the array `name` in unit3400.c.
+    fn unit3400_bytes(name: &str) -> Vec<u8> {
+        crate::c_source::table("tests/unit/unit3400.c", &format!("{name}[] ="), |c| {
+            panic!("{c}")
+        })
+        .iter()
+        .map(|b| u8::try_from(b.int()).unwrap())
+        .collect()
+    }
+
+    /// What C's `Curl_capsule_process_udp_raw` does with `q`, as the layer
+    /// reads: `None` for `CURLE_AGAIN`, `Some(Err(()))` for
+    /// `CURLE_RECV_ERROR`, else the datagram's length read into `out`;
+    /// what it passed over is taken from `q`, which is full at `full_at`.
+    fn unit3400_process(
+        q: &mut Vec<u8>,
+        out: &mut [u8],
+        full_at: usize,
+    ) -> Option<Result<usize, ()>> {
+        match next(q, out.len(), q.len() >= full_at) {
+            Next::More => None,
+            Next::Datagram { at, len } => {
+                out[..len].copy_from_slice(&q[at..at + len]);
+                q.drain(..at + len);
+                Some(Ok(len))
+            }
+            Next::Empty { skip } => {
+                q.drain(..skip);
+                Some(Ok(0))
+            }
+            Next::Bad { skip, .. } => {
+                q.drain(..skip);
+                Some(Err(()))
+            }
+        }
+    }
+
+    /// unit3400's `test_capsule_encap_udp_hdr_boundaries`: a datagram's
+    /// header at each length a varint's size changes at.
+    #[test]
+    fn unit3400_header_boundaries() {
+        let calls = crate::c_source::calls_where(
+            "tests/unit/unit3400.c",
+            "check_capsule_hdr",
+            unit3400_holds,
+        );
+        assert_eq!(calls.len(), 7);
+        for call in calls {
+            let len = usize::try_from(call[0].int()).unwrap();
+            let want = unit3400_bytes(call[1].word());
+            let (hdr, n) = header(len);
+            assert_eq!(&hdr[..n], want, "payload of {len}");
+        }
+    }
+
+    /// unit3400's `check_capsule_result` cases: each capsule's bytes alone
+    /// in a queue of four chunks of 32 bytes, read into `sizeof(out)`
+    /// bytes, waits (`CURLE_AGAIN`) or is refused (`CURLE_RECV_ERROR`),
+    /// reading nothing; and the cases after them, a datagram too large
+    /// for its room passed over whole, one of no bytes read as none, and
+    /// one that fits read, each leaving the queue empty. A read into no
+    /// room at all (`CURLE_BAD_FUNCTION_ARGUMENT`) has no counterpart: a
+    /// layer is never asked to read into an empty buffer.
+    #[test]
+    fn unit3400_decode_paths() {
+        const FILE: &str = "tests/unit/unit3400.c";
+        let src = crate::c_source::source(FILE);
+        let paths = &src[src.find("test_capsule_decode_paths(void)").unwrap()..];
+        let size = &paths[paths.find("unsigned char out[").unwrap() + 18..];
+        let out_len: usize = size[..size.find(']').unwrap()].parse().unwrap();
+        let calls = crate::c_source::calls_where(FILE, "check_capsule_result", unit3400_holds);
+        assert_eq!(calls.len(), 7);
+        let mut ported = 0;
+        for call in calls {
+            let [_, capsule, _, outlen, err, nread] = &call[..] else {
+                panic!("{call:?}");
+            };
+            assert_eq!(nread.int(), 0);
+            let room = match outlen {
+                crate::c_source::Value::Call(f, args) if f == "sizeof" => {
+                    assert_eq!(args[0].word(), "out");
+                    out_len
+                }
+                _ => {
+                    assert_eq!(outlen.int(), 0);
+                    assert_eq!(err.word(), "CURLE_BAD_FUNCTION_ARGUMENT");
+                    continue;
+                }
+            };
+            let mut q = match capsule.word() {
+                "NULL" => Vec::new(),
+                name => unit3400_bytes(name),
+            };
+            let mut out = vec![0; room];
+            let got = unit3400_process(&mut q, &mut out, 32 * 4);
+            let want = match err.word() {
+                "CURLE_AGAIN" => None,
+                "CURLE_RECV_ERROR" => Some(Err(())),
+                other => panic!("{other}"),
+            };
+            assert_eq!(got, want, "{capsule:?}");
+            ported += 1;
+        }
+        assert_eq!(ported, 6);
+
+        let mut q = unit3400_bytes("payload_3b");
+        assert_eq!(unit3400_process(&mut q, &mut [0; 2], 128), Some(Err(())));
+        assert!(q.is_empty(), "oversized capsule must be discarded");
+        let mut q = unit3400_bytes("payload_empty");
+        let mut out = vec![0; out_len];
+        assert_eq!(unit3400_process(&mut q, &mut out, 128), Some(Ok(0)));
+        assert!(q.is_empty(), "zero-length capsule must be consumed");
+        let mut q = unit3400_bytes("payload_3b");
+        assert_eq!(unit3400_process(&mut q, &mut out, 128), Some(Ok(3)));
+        assert_eq!(out[..3], [0x11, 0x22, 0x33]);
+        assert!(q.is_empty(), "payload capsule must be consumed");
+    }
+
+    /// unit3400's `test_capsule_encode_decode_roundtrip`: datagrams of 7
+    /// and 64 bytes encapsulated, then read back whole from a queue of
+    /// eight chunks of 32 bytes, which they leave empty.
+    #[test]
+    fn unit3400_roundtrip() {
+        let payload: Vec<u8> = (0..128u8).collect();
+        for len in [7, 64] {
+            let mut q = capsule(&payload[..len]);
+            let mut out = [0; 128];
+            assert_eq!(unit3400_process(&mut q, &mut out, 32 * 8), Some(Ok(len)));
+            assert_eq!(out[..len], payload[..len]);
+            assert!(q.is_empty(), "decoded capsule must be consumed");
+        }
+    }
+
+    /// unit3400's `test_capsule_sequential_decode`: two capsules back to
+    /// back are read in turn, then the empty queue waits.
+    #[test]
+    fn unit3400_sequential() {
+        let mut q = unit3400_bytes("two_caps");
+        let mut out = [0; 8];
+        assert_eq!(unit3400_process(&mut q, &mut out, 128), Some(Ok(3)));
+        assert_eq!(out[..3], [0x11, 0x22, 0x33]);
+        assert_eq!(unit3400_process(&mut q, &mut out, 128), Some(Ok(3)));
+        assert_eq!(out[..3], [0xaa, 0xbb, 0xcc]);
+        assert!(q.is_empty());
+        assert_eq!(unit3400_process(&mut q, &mut out, 128), None);
+    }
+
+    /// unit3400's `test_capsule_full_buffer_reject`: a capsule of 200
+    /// bytes in a queue of 128 waits while the queue can grow, and is
+    /// refused once it is full.
+    #[test]
+    fn unit3400_full_buffer_reject() {
+        let mut cap = [0x5a; 128];
+        let hdr = unit3400_bytes("hdr");
+        cap[..hdr.len()].copy_from_slice(&hdr);
+        let mut out = [0; 256];
+        let mut q = cap[..64].to_vec();
+        assert_eq!(unit3400_process(&mut q, &mut out, 128), None);
+        q.extend_from_slice(&cap[64..]);
+        assert_eq!(unit3400_process(&mut q, &mut out, 128), Some(Err(())));
+    }
 }

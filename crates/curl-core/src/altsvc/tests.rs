@@ -472,3 +472,146 @@ fn a_quoted_word_is_at_most_its_limit() {
     assert_eq!(Cursor::new(b"\"1234\\").quoted(9), None);
     assert_eq!(Cursor::new(b"\"12").quoted(9), None);
 }
+
+/// unit1664's input table `name`, after the program's text `after`,
+/// without the `NULL` that ends it.
+pub(crate) fn unit1664_inputs(after: &str, name: &str) -> Vec<Vec<u8>> {
+    let rows =
+        crate::c_source::table_after("tests/unit/unit1664.c", after, name, |c| panic!("{c}"));
+    let (end, rows) = rows.split_last().unwrap();
+    assert_eq!(end.bytes(), None);
+    rows.iter().map(|r| r.str().to_vec()).collect()
+}
+
+/// The arguments of unit1664's first call of `name` after `after`.
+pub(crate) fn unit1664_arguments(after: &str, name: &str) -> Vec<crate::c_source::Value> {
+    crate::c_source::call_after("tests/unit/unit1664.c", after, name)
+}
+
+/// A character constant's byte, `'d'`.
+fn char_constant(v: &crate::c_source::Value) -> u8 {
+    match v.word().as_bytes() {
+        [b'\'', b, b'\''] => *b,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// What unit1664 prints under its line `header`, as test 1664 says.
+pub(crate) fn unit1664_expected(header: &str) -> String {
+    let out = crate::c_source::expected_stdout(1664);
+    String::from_utf8(crate::c_source::section(&out, header, "curlx_str_").to_vec()).unwrap()
+}
+
+/// The line unit1664 prints for a word parser's result: the word and how
+/// far the line moved, or the empty word C leaves on a failure.
+pub(crate) fn unit1664_word_line(
+    i: usize,
+    input: &[u8],
+    got: Option<(&[u8], usize)>,
+) -> crate::c_source::Printed {
+    crate::c_source::Printed {
+        before: format!("{i}: (\"{}\") ", String::from_utf8_lossy(input)),
+        code: crate::c_source::Code::Ok(got.is_some()),
+        after: match got {
+            Some((w, moved)) => format!(
+                ", \"{}\" [{}], line {moved}\n",
+                String::from_utf8_lossy(w),
+                w.len()
+            ),
+            None => ", \"\" [0], line 0\n".to_owned(),
+        },
+    }
+}
+
+/// unit1664's sections of the parsers that read words and single bytes,
+/// as the alt-svc cache's [`Cursor`] reads its file's lines with them:
+/// `curlx_str_word`, `curlx_str_until`, `curlx_str_single`,
+/// `curlx_str_singlespace` (its `space`) and `curlx_str_newline`, each
+/// printed as the C program prints it and compared with what test 1664
+/// says it prints. The cursor tells a failure from success and no more,
+/// so a failure's code is taken as C's where C fails too.
+/// `curlx_str_quotedword`'s section is beside [`quoted_word`]; the
+/// numbers' are the tool's (`curl-tool`'s `options::number`), whose one
+/// reader reads all three bases.
+#[test]
+fn unit1664_words_and_bytes() {
+    use crate::c_source::{Code, Printed, print};
+    let moved = |input: &[u8], c: &Cursor<'_>| input.len() - c.rest().len();
+    // Each table is defined just before the line its section starts with.
+    let words = unit1664_inputs("UNITTEST_BEGIN", "wordparse[] =");
+
+    let args = unit1664_arguments("\"curlx_str_word\\n\"", "curlx_str_word");
+    let max = usize::try_from(args[2].int()).unwrap();
+    let rows: Vec<_> = words
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            let mut c = Cursor::new(input);
+            let got = c.word(max).map(|w| (w, moved(input, &c)));
+            unit1664_word_line(i, input, got)
+        })
+        .collect();
+    let want = unit1664_expected("curlx_str_word");
+    assert_eq!(
+        String::from_utf8_lossy(&print(want.as_bytes(), &rows)),
+        want
+    );
+
+    let args = unit1664_arguments("\"curlx_str_until\\n\"", "curlx_str_until");
+    let (max, delim) = (
+        usize::try_from(args[2].int()).unwrap(),
+        char_constant(&args[3]),
+    );
+    let rows: Vec<_> = words
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            let mut c = Cursor::new(input);
+            let got = c.until(delim, max).map(|w| (w, moved(input, &c)));
+            unit1664_word_line(i, input, got)
+        })
+        .collect();
+    let want = unit1664_expected("curlx_str_until");
+    assert_eq!(
+        String::from_utf8_lossy(&print(want.as_bytes(), &rows)),
+        want
+    );
+
+    // A byte alone: `single` and `space`, then `newline`.
+    let bytes = |header: &str,
+                 inputs: &[Vec<u8>],
+                 label: &dyn Fn(&[u8]) -> String,
+                 take: &dyn Fn(&mut Cursor<'_>) -> bool| {
+        let rows: Vec<_> = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, input)| {
+                let mut c = Cursor::new(input);
+                let ok = take(&mut c);
+                Printed {
+                    before: format!("{i}: ({}) ", label(input)),
+                    code: Code::Ok(ok),
+                    after: format!(", line {}\n", moved(input, &c)),
+                }
+            })
+            .collect();
+        let want = unit1664_expected(header);
+        assert_eq!(
+            String::from_utf8_lossy(&print(want.as_bytes(), &rows)),
+            want,
+            "{header}"
+        );
+    };
+    let quoted = |s: &[u8]| format!("\"{}\"", String::from_utf8_lossy(s));
+    let single = unit1664_inputs("\"curlx_str_quotedword\\n\"", "single[] =");
+    let args = unit1664_arguments("\"curlx_str_single\\n\"", "curlx_str_single");
+    let a = char_constant(&args[1]);
+    bytes("curlx_str_single", &single, &quoted, &|c| c.single(a));
+    let spaces = unit1664_inputs("\"curlx_str_single\\n\"", "single[] =");
+    bytes("curlx_str_singlespace", &spaces, &quoted, &|c| {
+        c.space().is_some()
+    });
+    let newlines = unit1664_inputs("\"curlx_str_singlespace\\n\"", "newl[] =");
+    let byte = |s: &[u8]| format!("%{:02x}", s.first().copied().unwrap_or(0));
+    bytes("curlx_str_newline", &newlines, &byte, &|c| c.newline());
+}

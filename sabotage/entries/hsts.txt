@@ -94,9 +94,9 @@ witness: curl-sys-abi handle_tests::a_copy_s_hsts_reader_is_handed_the_copy
 file: crates/curl-core/src/hsts.rs
 witness: curl-core hsts::tests::unit3200_hsts_line_fits_c_s_buffer
 --- old
-    line.len() + usize::from(!line.ends_with(b"\n")) < limit
+        if line.len() + usize::from(!line.ends_with(b"\n")) < limit {
 --- new
-    line.len() + usize::from(!line.ends_with(b"\n")) <= limit
+        if line.len() + usize::from(!line.ends_with(b"\n")) <= limit {
 
 === a backslash in a quoted directive value keeps no quote after it
 file: crates/curl-core/src/hsts.rs
@@ -105,3 +105,20 @@ witness: curl-core hsts::tests::a_quoted_value_keeps_an_escaped_quote
         if s[at] == b'\\' && at + 1 < s.len() {
 --- new
         if false && s[at] == b'\\' && at + 1 < s.len() {
+
+=== a cache file is read on past a line too long for C's line buffer
+file: crates/curl-core/src/hsts.rs
+witness: curl-core hsts::tests::unit3200_get_line
+--- old
+            failed = true;
+            Some(Err(LoadError::TooLarge))
+--- new
+            Some(Err(LoadError::TooLarge))
+
+=== a full cache drops its newest entry, not its oldest, for one more
+file: crates/curl-core/src/hsts.rs
+witness: curl-core hsts::tests::unit1674_most_entries_kept
+--- old
+            self.entries.remove(0);
+--- new
+            self.entries.pop();

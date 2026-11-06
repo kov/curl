@@ -180,11 +180,29 @@ pub(crate) fn read_file(path: &[u8]) -> Result<Option<Vec<u8>>, LoadError> {
     }
 }
 
-/// Whether a file's `line` is one `Curl_get_line` reads into a buffer
-/// limited to `limit` bytes: the line, the newline it adds to a last line
-/// without one, and the zero that ends the buffer's string.
-pub(crate) fn line_fits(line: &[u8], limit: usize) -> bool {
-    line.len() + usize::from(!line.ends_with(b"\n")) < limit
+/// The lines of a file's `text` as `Curl_get_line` reads them into a
+/// buffer limited to `limit` bytes, each with its newline but a last one
+/// without, where C adds it; a line that does not fit, with the newline
+/// C would add and the zero that ends the buffer's string, is
+/// `TooLarge` and the last.
+pub(crate) fn file_lines(
+    text: &[u8],
+    limit: usize,
+) -> impl Iterator<Item = Result<&[u8], LoadError>> {
+    let mut lines = text.split_inclusive(|&b| b == b'\n');
+    let mut failed = false;
+    std::iter::from_fn(move || {
+        if failed {
+            return None;
+        }
+        let line = lines.next()?;
+        if line.len() + usize::from(!line.ends_with(b"\n")) < limit {
+            Some(Ok(line))
+        } else {
+            failed = true;
+            Some(Err(LoadError::TooLarge))
+        }
+    })
 }
 
 /// An entry given by the application that could not be taken.
@@ -368,11 +386,8 @@ impl Hsts {
         let Some(text) = read_file(path)? else {
             return Ok(());
         };
-        for line in text.split_inclusive(|&b| b == b'\n') {
-            if !line_fits(line, MAX_LINE) {
-                return Err(LoadError::TooLarge);
-            }
-            let line = line.trim_ascii_start();
+        for line in file_lines(&text, MAX_LINE) {
+            let line = line?.trim_ascii_start();
             if line.first() == Some(&b'#') || line.len() <= 1 {
                 continue;
             }
@@ -762,34 +777,30 @@ mod tests {
         assert!(!h.applies(b"www.example.org", NOW));
     }
 
-    /// unit1664's `curlx_str_quotedword` table, at its limit of 7: the
-    /// word, and how far the line moved; `None` where C fails.
+    /// unit1664's `curlx_str_quotedword` section, printed as the C
+    /// program prints it and compared with what test 1664 says it
+    /// prints: the word, and how far the line moved. `quoted_word` tells
+    /// a failure from success and no more, so a failure's code is taken
+    /// as C's where C fails too.
     #[test]
     fn unit1664_quoted_word() {
-        type Row = (&'static [u8], Option<(&'static [u8], usize)>);
-        let rows: &[Row] = &[
-            (br#""word""#, Some((b"word", 6))),
-            (br#""word"#, None),
-            (br#"word""#, None),
-            (br#""word"""#, Some((b"word", 6))),
-            (br#""word" "#, Some((b"word", 6))),
-            (br#" "word""#, None),
-            (br#""perfect""#, Some((b"perfect", 9))),
-            (br#""p r e t""#, Some((b"p r e t", 9))),
-            (br#""perfec\""#, None),
-            (br#""trail\"""#, Some((br#"trail\""#, 9))),
-            (br#""trail2\"""#, None),
-            (br#""trail33\"""#, None),
-            (br#""0\\\\\\""#, Some((br"0\\\\\\", 9))),
-            (br#""1\\\\\\\""#, None),
-            (br#""""#, Some((b"", 2))),
-            (b"", None),
-            (br#""longerth""#, None),
-        ];
-        for &(line, want) in rows {
-            let got = quoted_word(line, 7).map(|(w, rest)| (w, line.len() - rest.len()));
-            assert_eq!(got, want, "{}", String::from_utf8_lossy(line));
-        }
+        use crate::altsvc::tests::{
+            unit1664_arguments, unit1664_expected, unit1664_inputs, unit1664_word_line,
+        };
+        let inputs = unit1664_inputs("UNITTEST_BEGIN", "qwords[] =");
+        let args = unit1664_arguments("\"curlx_str_quotedword\\n\"", "curlx_str_quotedword");
+        let max = usize::try_from(args[2].int()).unwrap();
+        let rows: Vec<_> = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let got = quoted_word(line, max).map(|(w, rest)| (w, line.len() - rest.len()));
+                unit1664_word_line(i, line, got)
+            })
+            .collect();
+        let want = unit1664_expected("curlx_str_quotedword");
+        let got = crate::c_source::print(want.as_bytes(), &rows);
+        assert_eq!(String::from_utf8_lossy(&got), want);
     }
 
     /// A header's quoted `max-age` runs to its closing quote, past a quote
@@ -841,6 +852,82 @@ mod tests {
             assert_eq!(hosts, kept, "{len} bytes, last {last}");
         }
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// unit3200: `Curl_get_line` over each of the program's files, read
+    /// into a buffer of 4096 bytes as the loaders of `--hsts` and
+    /// `--alt-svc` read theirs ([`file_lines`]; the loaders add the
+    /// newline to a last line without one). The lines each case reads
+    /// are what its branch of the program's `switch` checks: `None` where
+    /// the read fails, the buffer left empty.
+    #[test]
+    fn unit3200_get_line() {
+        let files = crate::c_source::table("tests/unit/unit3200.c", "filecontents[] =", |c| {
+            panic!("{c}")
+        });
+        let read: &[&[Option<&[u8]>]] = &[
+            &[Some(b"LINE1\n"), Some(b"LINE2 NEWLINE\n")],
+            &[Some(b"LINE1\n"), Some(b"LINE2 NONEWLINE\n")],
+            &[Some(b"LINE1\n"), None],
+            &[Some(b"LINE1\n"), None],
+            &[Some(b"LINE1\n"), None],
+            &[Some(b"LINE1\x1aTEST\n")],
+        ];
+        assert_eq!(files.len(), read.len());
+        for (i, (file, want)) in files.iter().zip(read).enumerate() {
+            let got: Vec<Option<Vec<u8>>> = file_lines(file.str(), 4096)
+                .map(|l| {
+                    l.ok().map(|l| {
+                        let mut l = l.to_vec();
+                        if !l.ends_with(b"\n") {
+                            l.push(b'\n');
+                        }
+                        l
+                    })
+                })
+                .collect();
+            let want: Vec<Option<Vec<u8>>> = want.iter().map(|l| l.map(<[u8]>::to_vec)).collect();
+            assert_eq!(got, want, "case {i}");
+        }
+    }
+
+    /// unit1674: a file of five hosts more than C keeps, all expiring at
+    /// one time after the case's `CURL_TIME`, keeps the most C keeps, the
+    /// first five read gone; the C program prints `OK` for that count, as
+    /// the case's stdout says, and saves the cache again.
+    #[test]
+    fn unit1674_most_entries_kept() {
+        use crate::proto::http1::fixture::section;
+        let max = crate::c_source::constant("lib/hsts.h", "MAX_HSTS_ENTRIES");
+        let max = usize::try_from(max).unwrap();
+        assert_eq!(max, MAX_ENTRIES);
+        let env = section(1674, "client", "setenv").unwrap().text;
+        let now: i64 = std::str::from_utf8(&env)
+            .unwrap()
+            .trim()
+            .strip_prefix("CURL_TIME=")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(section(1674, "verify", "stdout").unwrap().text, b"OK\n");
+        // The file `render_unit1674` writes.
+        let mut text = Vec::new();
+        for i in 0..max + 5 {
+            text.extend_from_slice(
+                format!("host{i}.readfrom.example \"20211001 04:47:41\"\n").as_bytes(),
+            );
+        }
+        let path = std::env::temp_dir().join(format!("curl-core-hsts1674-{}", std::process::id()));
+        std::fs::write(&path, &text).unwrap();
+        let mut h = Hsts::default();
+        h.load(path.as_os_str().as_encoded_bytes(), now).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(h.len(), max);
+        let kept = names(&h);
+        assert_eq!(kept[0].0, "host5.readfrom.example");
+        assert_eq!(kept[max - 1].0, format!("host{}.readfrom.example", max + 4));
+        let saved = h.text().unwrap();
+        assert_eq!(saved.iter().filter(|&&b| b == b'\n').count(), max + 2);
     }
 
     /// unit1660: a cache read from test 1660's file, then headers taken or

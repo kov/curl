@@ -363,6 +363,134 @@ mod tests {
         }
     }
 
+    /// unit1664's sections of `curlx_str_number`, `curlx_str_hex` and
+    /// `curlx_str_octal`, read with the one reader of all three bases,
+    /// printed as the C program prints them and compared with what test
+    /// 1664 says it prints: the code (`STRE_OVERFLOW` past `max`,
+    /// `STRE_NO_NUM` without a digit), the number, and how far the line
+    /// moved. The program's word and byte parsers are curl-core's
+    /// (`altsvc` and `hsts`).
+    #[test]
+    fn unit1664_numbers() {
+        use curl_core::c_source::{Code, Printed, call_after, expected_stdout, print, section};
+        const FILE: &str = "tests/unit/unit1664.c";
+        let output = expected_stdout(1664);
+        let max_of = |v: &curl_core::c_source::Value| match v {
+            curl_core::c_source::Value::Word(w) if w == "CURL_OFF_T_MAX" => i64::MAX.unsigned_abs(),
+            v => u64::try_from(v.int()).unwrap(),
+        };
+        // The code, the number and the digits read.
+        let read = |s: &[u8], base: u8, max: u64| match digits_up_to(s, base, max) {
+            Err(()) => (7, 0, 0),
+            Ok((_, 0)) => (8, 0, 0),
+            Ok((n, digits)) => (0, n, digits),
+        };
+        let base_of = |call: &str| match call {
+            "curlx_str_number" => 10,
+            "curlx_str_hex" => 16,
+            "curlx_str_octal" => 8,
+            other => panic!("{other}"),
+        };
+        // A section of one `max`: its header, the program's text before
+        // its table and the parser it calls.
+        for (header, after, call) in [
+            (
+                "curlx_str_number",
+                "\"curlx_str_singlespace\\n\"",
+                "curlx_str_number",
+            ),
+            (
+                "curlx_str_number / max",
+                "\"curlx_str_octal varying max\\n\"",
+                "curlx_str_number",
+            ),
+            ("curlx_str_hex", "\"curlx_str_newline\\n\"", "curlx_str_hex"),
+            ("curlx_str_octal", "\"curlx_str_hex\\n\"", "curlx_str_octal"),
+            (
+                "curlx_str_octal / max",
+                "\"curlx_str_octal\\n\"",
+                "curlx_str_octal",
+            ),
+            (
+                "curlx_str_hex / max",
+                "\"curlx_str_octal / max\\n\"",
+                "curlx_str_hex",
+            ),
+        ] {
+            let rows = curl_core::c_source::table_after(FILE, after, "nums[] =", |c| panic!("{c}"));
+            let (end, rows) = rows.split_last().unwrap();
+            assert_eq!(end.bytes(), None, "{header}");
+            let printed_header = format!("\"{header}\\n\"");
+            let max = max_of(&call_after(FILE, &printed_header, call)[2]);
+            let printed: Vec<_> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let s = s.str();
+                    let (code, n, digits) = read(s, base_of(call), max);
+                    Printed {
+                        before: format!("{i}: (\"{}\") ", String::from_utf8_lossy(s)),
+                        code: Code::Exact(code),
+                        after: format!(", [{n}] line {digits}\n"),
+                    }
+                })
+                .collect();
+            let want = section(&output, header, "curlx_str_");
+            assert_eq!(
+                String::from_utf8_lossy(&print(want, &printed)),
+                String::from_utf8_lossy(want),
+                "{header}"
+            );
+        }
+        // The sections whose rows each give their `max`.
+        for (header, after, call) in [
+            (
+                "curlx_str_number varying max",
+                "\"curlx_str_number\\n\"",
+                "curlx_str_number",
+            ),
+            (
+                "curlx_str_hex varying max",
+                "\"curlx_str_number varying max\\n\"",
+                "curlx_str_hex",
+            ),
+            (
+                "curlx_str_octal varying max",
+                "\"curlx_str_hex varying max\\n\"",
+                "curlx_str_octal",
+            ),
+        ] {
+            let rows = curl_core::c_source::table_after(FILE, after, "nums[] =", |c| panic!("{c}"));
+            let (end, rows) = rows.split_last().unwrap();
+            assert_eq!(end.group()[0].bytes(), None, "{header}");
+            let printed_header = format!("\"{header}\\n\"");
+            // The parser the section's loop calls.
+            assert_eq!(call_after(FILE, &printed_header, call).len(), 3, "{header}");
+            let printed: Vec<_> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let [s, max] = row.group() else {
+                        panic!("{row:?}")
+                    };
+                    let (s, max) = (s.str(), max_of(max));
+                    let (code, n, _) = read(s, base_of(call), max);
+                    Printed {
+                        before: format!("{i}: (\"{}\") max {max} == ", String::from_utf8_lossy(s)),
+                        code: Code::Exact(code),
+                        after: format!(", [{n}]\n"),
+                    }
+                })
+                .collect();
+            let want = section(&output, header, "curlx_str_");
+            assert_eq!(
+                String::from_utf8_lossy(&print(want, &printed)),
+                String::from_utf8_lossy(want),
+                "{header}"
+            );
+        }
+    }
+
     /// The one-pass reader takes the digits a base allows and refuses a
     /// value past `max` as `str_num_base` does: each digit checked before
     /// it is added, a `max` below the base included. Checked against the

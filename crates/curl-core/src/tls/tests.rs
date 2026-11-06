@@ -1,7 +1,7 @@
 use super::*;
 use crate::options::{CaSetting, ColdGroup as _, SslOptions, TlsMaxVersion, TlsMinVersion};
 
-fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TlsIdentity {
+pub(super) fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TlsIdentity {
     let mut id = TlsIdentity {
         verify_peer: true,
         verify_host: true,

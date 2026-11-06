@@ -203,6 +203,44 @@ pub fn parse(der: &[u8]) -> Option<Certificate<'_>> {
 mod tests {
     use super::*;
 
+    /// unit1657's tables, read from its source: elements nested `n`
+    /// deep, each of an unknown length, read whole to 16 deep and refused
+    /// deeper; and a certificate parsed, and refused with its validity's
+    /// length too long.
+    #[test]
+    fn unit1657_nesting_and_certificates() {
+        let specs = crate::c_source::table("tests/unit/unit1657.c", "test1657_specs[]", |c| {
+            panic!("{c}")
+        });
+        assert_eq!(specs.len(), 4, "the nestings were read");
+        for spec in specs {
+            let [make, n, code] = spec.group() else {
+                panic!("{spec:?}")
+            };
+            assert_eq!(make.word(), "make1657_nested");
+            let n = usize::try_from(n.int()).unwrap();
+            let der = [[0x32, 0x80].repeat(n), [0, 0].repeat(n)].concat();
+            let read = element(&der).map(|(_, rest)| rest.is_empty());
+            let want = match code.word() {
+                "CURLE_OK" => Some(true),
+                "CURLE_BAD_FUNCTION_ARGUMENT" => None,
+                other => panic!("{other}"),
+            };
+            assert_eq!(read, want, "{n} deep");
+        }
+        let certs = crate::c_source::table("tests/unit/unit1657.c", "test1657_certs[]", |c| {
+            panic!("{c}")
+        });
+        assert_eq!(certs.len(), 2, "the certificates were read");
+        for cert in certs {
+            let [pem, ok] = cert.group() else {
+                panic!("{cert:?}")
+            };
+            let der = crate::base64::decode(pem.str()).unwrap().unwrap();
+            assert_eq!(parse(&der).is_some(), ok.word() == "TRUE", "{}", ok.word());
+        }
+    }
+
     /// A certificate's public key info is found whole, its header with
     /// it, as pinning hashes it.
     #[test]

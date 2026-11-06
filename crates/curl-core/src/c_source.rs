@@ -25,6 +25,8 @@ pub enum Value {
     Word(String),
     /// Values in braces.
     Group(Vec<Value>),
+    /// A macro's name and its arguments, such as `OID("\x81")`.
+    Call(String, Vec<Value>),
 }
 
 impl Value {
@@ -36,6 +38,19 @@ impl Value {
             Value::Word(w) if w == "NULL" => None,
             other => panic!("not a string: {other:?}"),
         }
+    }
+
+    /// The first `len` bytes of a string as C's memory holds it, its
+    /// terminating zero byte among them, as a row that gives a string
+    /// and a length reads.
+    #[track_caller]
+    pub fn sized(&self, len: &Value) -> Vec<u8> {
+        let len = usize::try_from(len.int()).expect("a length");
+        let mut held = self.str().to_vec();
+        held.push(0);
+        assert!(len <= held.len(), "{len} bytes of {held:?}");
+        held.truncate(len);
+        held
     }
 
     /// The bytes of a string that is never `NULL`.
@@ -72,6 +87,15 @@ impl Value {
         };
         let n = n.unwrap_or_else(|_| panic!("not a number: {w}"));
         if neg { -n } else { n }
+    }
+
+    /// The arguments of a call of `name`.
+    #[track_caller]
+    pub fn call(&self, name: &str) -> &[Value] {
+        match self {
+            Value::Call(n, args) if n == name => args,
+            other => panic!("not a call of {name}: {other:?}"),
+        }
     }
 
     /// The values of a group.
@@ -276,25 +300,60 @@ impl<F: Fn(&str) -> bool> Parser<'_, F> {
                 }
                 Value::Str(bytes)
             }
-            _ => {
+            b'(' if self.cast_string() => self.value(),
+            b if b.is_ascii_alphabetic() || b == b'_' => {
                 let start = self.at;
-                let mut depth = 0;
-                while depth > 0 || !matches!(self.peek(), b',' | b'}' | b')') {
-                    let rest = &self.s[self.at..];
-                    if rest.starts_with(b"/*") || rest.starts_with(b"//") {
-                        break;
-                    }
-                    match self.peek() {
-                        b'(' => depth += 1,
-                        b')' => depth -= 1,
-                        _ => {}
-                    }
+                while self.peek().is_ascii_alphanumeric() || self.peek() == b'_' {
                     self.at += 1;
                 }
-                let word = std::str::from_utf8(&self.s[start..self.at]).expect("ASCII");
-                Value::Word(word.trim().to_owned())
+                let name = std::str::from_utf8(&self.s[start..self.at]).expect("ASCII");
+                if self.peek() == b'(' {
+                    self.at += 1;
+                    return Value::Call(name.to_owned(), self.items(b')'));
+                }
+                self.at = start;
+                self.word()
             }
+            _ => self.word(),
         }
+    }
+
+    /// Past a cast before a string literal, if one is here: a string is
+    /// read the same, cast or not.
+    fn cast_string(&mut self) -> bool {
+        let rest = &self.s[self.at..];
+        let Some(close) = rest.iter().position(|&b| b == b')') else {
+            return false;
+        };
+        let after = rest[close + 1..]
+            .iter()
+            .position(|b| !b.is_ascii_whitespace());
+        if after.is_some_and(|a| rest[close + 1 + a] == b'"') {
+            self.at += close + 1;
+            self.skip();
+            return true;
+        }
+        false
+    }
+
+    /// Anything else up to the next comma or close.
+    fn word(&mut self) -> Value {
+        let start = self.at;
+        let mut depth = 0;
+        while depth > 0 || !matches!(self.peek(), b',' | b'}' | b')') {
+            let rest = &self.s[self.at..];
+            if rest.starts_with(b"/*") || rest.starts_with(b"//") {
+                break;
+            }
+            match self.peek() {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            self.at += 1;
+        }
+        let word = std::str::from_utf8(&self.s[start..self.at]).expect("ASCII");
+        Value::Word(word.trim().to_owned())
     }
 
     /// One string literal, at its `"`, its bytes added to `out`.
@@ -355,16 +414,21 @@ mod tests {
     use super::*;
 
     /// The reader reads a table as C does: literals joined, escapes, a
-    /// group, words, a row under a condition that does not hold left out.
+    /// group, words, a macro's call, a cast string, a row under a
+    /// condition that does not hold left out.
     #[test]
     fn reads_a_table_as_c_does() {
-        let src = "static const struct x t[] = {\n  { \"a\\x41\" \"\\101\\n\", 1, {2, 3} }, /* c */\n#ifdef NOPE\n  { \"gone\", 0 },\n#else\n  { NULL, -0x10L /* c */ },\n#endif\n};";
+        let src = "static const struct x t[] = {\n  { \"a\\x41\" \"\\101\\n\", 1, {2, 3} }, /* c */\n#ifdef NOPE\n  { \"gone\", 0 },\n#else\n  { NULL, -0x10L /* c */ },\n#endif\n  { OID(\"\\x81\"), (const uint8_t *)\"\\x82\", (long)2 },\n};";
         let rows = table_in(src, "t.c", "t[]", |c| match c {
             "defined(NOPE)" => false,
             "!(defined(NOPE))" => true,
             other => panic!("{other}"),
         });
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
+        let r = rows[2].group();
+        assert_eq!(r[0].call("OID")[0].str(), b"\x81");
+        assert_eq!(r[1].str(), b"\x82");
+        assert_eq!(r[2].word(), "(long)2");
         let r = rows[0].group();
         assert_eq!(r[0].str(), b"aAA\n");
         assert_eq!(r[1].int(), 1);

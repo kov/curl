@@ -36,3 +36,21 @@ witness: curl-core tls::x509::tests::the_public_key_info_is_found_whole
             whole: &der[..header + len],
 --- new
             whole: &rest[..len],
+
+=== a Diffie-Hellman key's generator is read where its prime is
+file: crates/curl-core/src/tls/x509/info.rs
+witness: curl-core tls::x509::info::tests::unit1676_dh_key
+--- old
+            if let Some((g, _)) = element(r) {
+                self.field("dh(g)", &g).ok()?;
+--- new
+            if let Some((g, _)) = element(param) {
+                self.field("dh(g)", &g).ok()?;
+
+=== elements nest one deeper than C reads
+file: crates/curl-core/src/tls/x509.rs
+witness: curl-core tls::x509::tests::unit1657_nesting_and_certificates
+--- old
+const DEEPEST: usize = 16;
+--- new
+const DEEPEST: usize = 17;

@@ -87,12 +87,23 @@ const VISIBLE_STRING: u8 = 26;
 const UNIVERSAL_STRING: u8 = 28;
 const BMP_STRING: u8 = 30;
 
-/// Text grown no longer than `MOST` (C's `dynbuf` of that size).
-#[derive(Default)]
+/// Text grown no longer than `most`, `MOST` but in tests (C's `dynbuf`
+/// of that size).
 struct Out {
     text: Vec<u8>,
     /// Why a write failed, `fmt::Write` saying only that it did.
     failed: Option<ErrorKind>,
+    most: usize,
+}
+
+impl Default for Out {
+    fn default() -> Out {
+        Out {
+            text: Vec::new(),
+            failed: None,
+            most: MOST,
+        }
+    }
 }
 
 type Res = Result<(), ErrorKind>;
@@ -101,7 +112,7 @@ const BAD: ErrorKind = ErrorKind::BadFunctionArgument;
 
 impl Out {
     fn add(&mut self, bytes: &[u8]) -> Res {
-        if self.text.len() + bytes.len() + 1 > MOST {
+        if self.text.len() + bytes.len() + 1 > self.most {
             return Err(ErrorKind::TooLarge);
         }
         self.text
@@ -629,6 +640,142 @@ mod tests {
         let mut out = Out::default();
         f(&mut out)?;
         Ok(String::from_utf8(out.text).unwrap())
+    }
+
+    /// The result a C unit test's row expects, by its `CURLE_*` name.
+    fn expected(code: &crate::c_source::Value) -> Result<(), ErrorKind> {
+        match code.word() {
+            "CURLE_OK" => Ok(()),
+            "CURLE_BAD_FUNCTION_ARGUMENT" => Err(BAD),
+            "CURLE_WEIRD_SERVER_REPLY" => Err(ErrorKind::WeirdServerReply),
+            "CURLE_TOO_LARGE" => Err(ErrorKind::TooLarge),
+            other => panic!("{other}"),
+        }
+    }
+
+    /// What `f` writes into a buffer of `most` bytes, to its first zero
+    /// byte as C's test reads it, or why it failed.
+    fn written(most: usize, f: impl FnOnce(&mut Out) -> Res) -> Result<Vec<u8>, ErrorKind> {
+        let mut out = Out {
+            most,
+            ..Out::default()
+        };
+        f(&mut out)?;
+        let end = out
+            .text
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(out.text.len());
+        out.text.truncate(end);
+        Ok(out.text)
+    }
+
+    /// unit1656's table, read from its source: generalized times as
+    /// `GTime2str` writes them, or refused.
+    #[test]
+    fn unit1656_generalized_times() {
+        let rows =
+            crate::c_source::table("tests/unit/unit1656.c", "test_specs[]", |c| panic!("{c}"));
+        assert!(rows.len() > 20, "the rows were read");
+        for row in rows {
+            let [input, want, code] = row.group() else {
+                panic!("{row:?}")
+            };
+            let got = written(MOST, |o| gtime(o, input.str()));
+            let want = expected(code).map(|()| want.str().to_vec());
+            assert_eq!(got, want, "{}", input.str().escape_ascii());
+        }
+    }
+
+    /// unit1666's table, read from its source: identifiers dotted as
+    /// `encodeOID` writes them into C's buffer of 100 bytes, or refused.
+    #[test]
+    fn unit1666_identifiers() {
+        let rows =
+            crate::c_source::table("tests/unit/unit1666.c", "test_specs[]", |c| panic!("{c}"));
+        assert!(rows.len() > 60, "the rows were read");
+        for row in rows {
+            let (oid, dotted, code) = match row.group() {
+                // `OID(x)`: the string, its length.
+                [oid, dotted, code] => (oid.call("OID")[0].str().to_vec(), dotted, code),
+                [oid, size, dotted, code] => (oid.sized(size), dotted, code),
+                other => panic!("{other:?}"),
+            };
+            let oid = &oid[..];
+            let got = written(100, |o| encode_oid(o, oid));
+            let want = expected(code).map(|()| dotted.str().to_vec());
+            assert_eq!(got, want, "{}", oid.escape_ascii());
+        }
+    }
+
+    /// unit1667's table, read from its source: an element of each simple
+    /// type, by its tag, as `ASN1tostr` writes it into C's buffer of 40
+    /// bytes, or refused. The tags are lib/vtls/x509asn1.h's.
+    #[test]
+    fn unit1667_simple_types() {
+        let header = crate::c_source::source("lib/vtls/x509asn1.h");
+        let tag = |w: &crate::c_source::Value| -> u8 {
+            let w = w.word();
+            let Some(name) = w.strip_prefix("CURL_ASN1_") else {
+                return u8::try_from(w.parse::<u32>().unwrap()).unwrap();
+            };
+            let line = header
+                .lines()
+                .find_map(|l| {
+                    let rest = l.strip_prefix("#define CURL_ASN1_")?.strip_prefix(name)?;
+                    rest.starts_with(' ').then(|| rest.trim().to_owned())
+                })
+                .unwrap_or_else(|| panic!("no CURL_ASN1_{name}"));
+            line.parse().unwrap()
+        };
+        let rows =
+            crate::c_source::table("tests/unit/unit1667.c", "test_specs[]", |c| panic!("{c}"));
+        assert!(rows.len() > 90, "the rows were read");
+        for row in rows {
+            let [t, asn1, size, want, code] = row.group() else {
+                panic!("{row:?}")
+            };
+            let content = &asn1.sized(size)[..];
+            let e = Element {
+                whole: content,
+                content,
+                class: 0,
+                tag: tag(t),
+                constructed: false,
+            };
+            let got = written(40, |o| text(o, &e));
+            let want = expected(code).map(|()| want.str().to_vec());
+            assert_eq!(got, want, "tag {} {}", e.tag, content.escape_ascii());
+        }
+    }
+
+    /// unit1676: a certificate of a Diffie-Hellman key, read from its
+    /// source, gives its prime, its generator and its public value each
+    /// its own line: g read after p, not p again.
+    #[test]
+    fn unit1676_dh_key() {
+        let bytes = crate::c_source::table("tests/unit/unit1676.c", "cert[]", |c| panic!("{c}"));
+        let der: Vec<u8> = bytes
+            .iter()
+            .map(|b| u8::try_from(b.int()).unwrap())
+            .collect();
+        assert_eq!(der.len(), 136, "the certificate was read");
+        let identity = curl_alloc::TryArc::try_new(crate::tls::tests::identity(|_| {})).unwrap();
+        let mut notes = crate::tls::Notes::default();
+        let mut info = CertInfo::new(1).unwrap();
+        TlsCx::testing(&identity, b"localhost", &mut notes, |_, cx| {
+            certinfo(cx, &mut info, 0, &der)
+        })
+        .unwrap();
+        let value = |label: &str| {
+            let label = format!("{label}:");
+            let lines = &info.certs()[0];
+            let line = lines.iter().find(|l| l.starts_with(label.as_bytes()));
+            line.map(|l| String::from_utf8(l[label.len()..].to_vec()).unwrap())
+        };
+        assert_eq!(value("dh(p)").as_deref(), Some("17"));
+        assert_eq!(value("dh(g)").as_deref(), Some("34"));
+        assert_eq!(value("dh(pub_key)").as_deref(), Some("51"));
     }
 
     /// Identifiers are dotted, named where C names them; padding is

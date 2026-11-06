@@ -62,6 +62,9 @@ pub struct Options {
     /// Which of a name's addresses a connection may use
     /// (`CURLOPT_IPRESOLVE`).
     pub ip_version: IpVersion,
+    /// The addresses a name is found to have, or is given, are put in a
+    /// random order before they are kept (`CURLOPT_DNS_SHUFFLE_ADDRESSES`).
+    pub dns_shuffle: bool,
     /// The IPv6 scope connections are made in, in place of the URL's
     /// zone (`CURLOPT_ADDRESS_SCOPE`).
     pub address_scope: Option<NonZeroU32>,
@@ -794,6 +797,7 @@ impl Options {
             limits: self.limits,
             flow: self.flow.try_clone(|f| Ok(*f))?,
             ip_version: self.ip_version,
+            dns_shuffle: self.dns_shuffle,
             address_scope: self.address_scope,
             port: self.port,
             resolve: self.resolve.try_clone()?,

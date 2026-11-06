@@ -153,6 +153,20 @@ fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     read
 }
 
+/// Put `addrs` in a random order, with the handle's random bytes, if the
+/// transfer asks for it (`CURLOPT_DNS_SHUFFLE_ADDRESSES`,
+/// `dnsc_entry_assign_addr`); whether they were shuffled.
+pub(crate) fn shuffle<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    addrs: &mut [IpAddr],
+) -> Result<bool, OutOfMemory> {
+    if !cx.easy().options().dns_shuffle {
+        return Ok(false);
+    }
+    let libraries = cx.easy().libraries();
+    crate::conn::shuffle(addrs, &mut |bytes| libraries.random(bytes).is_ok())
+}
+
 fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(), ErrorKind> {
     if list.entries().next().is_none() {
         return Ok(());
@@ -184,6 +198,10 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
                 return Err(trace::fail_with(cx, kind, &why));
             }
         };
+        // Shuffled as the entry is made, which C does with the old one
+        // discarded: what a shuffle that fails leaves is nothing kept.
+        let mut addrs = addrs;
+        let shuffled = shuffle(cx, &mut addrs);
         let answer = Answer::new(name, addrs).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         let answer = TryArc::try_new(answer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         // One use of the names, the old answer discarded and the new kept
@@ -192,12 +210,20 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
         let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
         let (discarded, put) = names.section(|dns| {
             let discarded = dns.remove(name, port);
-            (discarded, dns.put(answer, port, permanent))
+            let put = match shuffled {
+                Ok(_) => dns.put(answer.clone(), port, permanent).map(drop),
+                Err(e) => Err(e),
+            };
+            (discarded, put)
         });
         let at = Text::<8>::clipped(format_args!(":{port}")).0;
         let at = at.bytes();
         if discarded {
             trace::info_with(cx, &[b"RESOLVE ", name, at, b" - old addresses discarded"]);
+        }
+        if matches!(shuffled, Ok(true)) {
+            let n = answer.addrs().len();
+            trace::of(cx, Component::Dns, format_args!("Shuffling {n} addresses"));
         }
         put.map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         let kept: &[u8] = if permanent { b"" } else { b" (non-permanent)" };

@@ -28,6 +28,9 @@ pub(crate) struct Answer {
     /// The addresses asked for (`dns_queries`): an answer for one family
     /// answers no lookup for both.
     family: Family,
+    /// Its addresses were shuffled as it was made, which the trace says
+    /// with the resolve's other lines, said after it is kept.
+    shuffled: bool,
 }
 
 impl Answer {
@@ -48,6 +51,7 @@ impl Answer {
             name: owned,
             addrs,
             family,
+            shuffled: false,
         })
     }
 
@@ -59,11 +63,54 @@ impl Answer {
         &self.addrs
     }
 
+    /// Its addresses are `addrs` shuffled ([`shuffle`]), which the trace
+    /// says later.
+    pub(crate) fn mark_shuffled(&mut self) {
+        self.shuffled = true;
+    }
+
+    /// Whether its addresses were shuffled as it was made, for a trace
+    /// said after it is kept.
+    pub(crate) fn shuffled(&self) -> bool {
+        self.shuffled
+    }
+
+    /// The addresses, to be put in another order.
+    pub(crate) fn addrs_mut(&mut self) -> &mut [IpAddr] {
+        &mut self.addrs
+    }
+
     /// Whether the name was resolved, rather than an address itself
     /// (`Curl_host_is_ipnum`).
     pub(crate) fn resolved(&self) -> bool {
         address(&self.name).is_none()
     }
+}
+
+/// Put `addrs` in a random order, as `CURLOPT_DNS_SHUFFLE_ADDRESSES`
+/// asks (`dns_shuffle_addr`): a Fisher-Yates shuffle, each place drawn
+/// with four of `random`'s bytes. Random bytes that cannot be had leave
+/// the order as it is, as C leaves it. Whether there were two addresses
+/// or more to shuffle.
+pub(crate) fn shuffle(
+    addrs: &mut [IpAddr],
+    random: &mut dyn FnMut(&mut [u8]) -> bool,
+) -> Result<bool, OutOfMemory> {
+    let n = addrs.len();
+    if n < 2 {
+        return Ok(false);
+    }
+    let mut drawn = curl_alloc::try_zeroed(n * 4)?;
+    if !random(&mut drawn) {
+        return Ok(true);
+    }
+    for i in (1..n).rev() {
+        let place = u32::from_ne_bytes(drawn[i * 4..i * 4 + 4].try_into().expect("four bytes"));
+        let places = u32::try_from(i + 1).expect("fewer addresses than a u32 counts");
+        let j = usize::try_from(place % places).expect("a place among them");
+        addrs.swap(i, j);
+    }
+    Ok(true)
 }
 
 /// The most entries kept (`MAX_DNS_CACHE_SIZE`).
@@ -414,6 +461,16 @@ impl DnsCache {
         Lookup::Found(answer.clone())
     }
 
+    /// The addresses kept for `name` and `port`, as they are kept, and
+    /// whether for good, without aging them; for the tests that look in
+    /// a multi's cache as C's look in its hash.
+    #[cfg(test)]
+    pub(crate) fn kept(&self, name: &[u8], port: u16) -> Option<(&[IpAddr], bool)> {
+        let probe = Probe(name, port, Keeps::Addresses);
+        let (key, entry) = self.entries.get_key_value(probe.key())?;
+        Some((&key.answer.addrs, entry.permanent))
+    }
+
     /// Keep `entry` under `key`, a key equal to it gone first.
     fn keep(&mut self, key: Key, entry: Entry) -> Result<(), OutOfMemory> {
         self.entries.try_reserve(1)?;
@@ -740,6 +797,47 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    /// unit1608: eight addresses shuffled with the system's random bytes
+    /// are put in another order within ten tries, as `dns_shuffle_addr`
+    /// relinks C's list.
+    #[test]
+    fn unit1608_shuffle_reorders() {
+        let given: Vec<IpAddr> = (1..=8).map(|n| ip(&format!("10.0.0.{n}"))).collect();
+        let mut addrs = given.clone();
+        let libraries = crate::libraries::Libraries::NONE;
+        for _ in 0..10 {
+            assert!(shuffle(&mut addrs, &mut |b| libraries.random(b).is_ok()).unwrap());
+            if addrs != given {
+                break;
+            }
+        }
+        assert_ne!(addrs, given, "the addresses are not reordered");
+        let mut sorted = addrs.clone();
+        sorted.sort();
+        assert_eq!(sorted, given, "the same addresses");
+    }
+
+    /// The shuffle is C's Fisher-Yates: from the last place down, place
+    /// `i` swapped with the one its own four random bytes pick among the
+    /// first `i + 1`. Random bytes that cannot be had leave the order; a
+    /// single address asks for none.
+    #[test]
+    fn a_shuffle_draws_each_place_as_c_does() {
+        let (a, b, c) = (ip("10.0.0.1"), ip("10.0.0.2"), ip("10.0.0.3"));
+        let mut addrs = [a, b, c];
+        let drawn: Vec<u8> = [7u32, 0, 4].iter().flat_map(|n| n.to_ne_bytes()).collect();
+        let mut fill = |out: &mut [u8]| {
+            out.copy_from_slice(&drawn);
+            true
+        };
+        assert!(shuffle(&mut addrs, &mut fill).unwrap());
+        // Place 2 with 4 % 3 = 1, then place 1 with 0 % 2 = 0.
+        assert_eq!(addrs, [c, a, b]);
+        assert!(shuffle(&mut addrs, &mut |_| false).unwrap());
+        assert_eq!(addrs, [c, a, b], "no random bytes, no change");
+        assert!(!shuffle(&mut [a], &mut |_| panic!("none drawn")).unwrap());
     }
 
     fn add<'a>(

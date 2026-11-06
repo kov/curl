@@ -1513,7 +1513,11 @@ fn networked() -> (Multi, ManualClock) {
             std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 4)),
             Peer::Silent,
         )
-        .with_name("v4.test", &[[127, 0, 0, 1].into()]);
+        .with_name("v4.test", &[[127, 0, 0, 1].into()])
+        .with_name(
+            "many.test",
+            &(1..=8).map(|n| [127, 0, 0, n].into()).collect::<Vec<_>>(),
+        );
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
@@ -3314,6 +3318,8 @@ struct FirstLookResolve {
     performed: bool,
     /// It runs out of memory where it would answer.
     oom: bool,
+    /// It answers 127.0.0.2 as well.
+    twice: bool,
 }
 
 impl crate::conn::io::DnsResolve for FirstLookResolve {
@@ -3352,6 +3358,8 @@ impl crate::conn::io::DnsResolve for FirstLookResolve {
             Some(Err(crate::conn::io::ResolveFailure::OutOfMemory))
         } else if self.asked.missing {
             Some(Err(crate::conn::io::ResolveFailure::NotFound))
+        } else if self.twice {
+            Some(Ok(vec![[127, 0, 0, 1].into(), [127, 0, 0, 2].into()]))
         } else {
             Some(Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]))
         }
@@ -3378,6 +3386,7 @@ impl crate::conn::io::DnsLibrary for FirstLook {
             asked: *self,
             performed: false,
             oom: false,
+            twice: false,
         }))
     }
 }
@@ -3401,8 +3410,56 @@ impl crate::conn::io::DnsLibrary for OomAtFirstLook {
             asked,
             performed: false,
             oom: true,
+            twice: false,
         }))
     }
+}
+
+/// A resolver library that answers two addresses as it is asked, as
+/// c-ares answers `localhost.localdomain` from the hosts file.
+#[derive(Debug)]
+struct TwoAsAsked;
+
+impl crate::conn::io::DnsLibrary for TwoAsAsked {
+    fn resolve(
+        &self,
+        _: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        let asked = FirstLook {
+            out: false,
+            missing: false,
+        };
+        Ok(Box::new(FirstLookResolve {
+            asked,
+            performed: false,
+            oom: false,
+            twice: true,
+        }))
+    }
+}
+
+/// A library's answer is shuffled as it is taken, before the take is
+/// said: the C build over c-ares traces `localhost.localdomain`, two
+/// addresses from the hosts file, with `Shuffling 2 addresses` just
+/// before `ares_take_result`.
+#[test]
+fn a_library_s_answer_is_shuffled_before_its_take_is_said() {
+    let (result, lines) = over_library(&TwoAsAsked, "tcp://now.test:1/", |o| o.dns_shuffle = true);
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        lines,
+        [
+            "[DNS] cache lookup now.test:1 queries=A -> 0 not found",
+            "[DNS] [A] hostip_resolv started -> 81",
+            "[DNS] cache lookup now.test:1 queries=A -> 0 not found",
+            "[DNS] Shuffling 2 addresses",
+            "[DNS] [A] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found",
+            "[DNS] [A] resolve complete for now.test:1",
+            "[DNS] cached entry for now.test:1 queries=A",
+            "[DNS] [1] destroy async",
+        ]
+    );
 }
 
 /// A resolver library that cannot start a resolve, as c-ares's channel
@@ -3985,6 +4042,143 @@ fn the_dns_cache_traces_what_it_keeps_and_lets_go() {
             "[DNS] cached entry for v4.test:1 queries=A+AAAA",
         ]
     );
+}
+
+/// What a multi's cache keeps for `host` and `port` once a transfer
+/// set with `entries` has started, read as C's tests read its hash.
+fn kept_by_resolve(
+    m: &mut Multi,
+    entries: &[&[u8]],
+    set: impl FnOnce(&mut Options),
+    host: &[u8],
+    port: u16,
+) -> Option<(Vec<std::net::IpAddr>, bool)> {
+    let mut e = easy("tcp://127.0.0.1:1/");
+    e.options_mut()
+        .resolve
+        .set(entries.iter().copied())
+        .unwrap();
+    set(e.options_mut());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    m.caches
+        .dns
+        .kept(host, port)
+        .map(|(addrs, permanent)| (addrs.to_vec(), permanent))
+}
+
+/// `CURLOPT_DNS_SHUFFLE_ADDRESSES` puts a resolve entry's addresses in a
+/// random order as it is kept, said in the DNS component's trace after
+/// the old entry is discarded and before the new is added, as
+/// `dnsc_entry_assign_addr` says it; a single address is not shuffled.
+#[test]
+fn shuffled_resolve_entries_are_kept_in_another_order() {
+    let (mut m, _clock) = networked();
+    let given: Vec<String> = (1..=8).map(|n| format!("10.0.0.{n}")).collect();
+    let entry = format!("a.test:1:{}", given.join(","));
+    let given: Vec<std::net::IpAddr> = given.iter().map(|a| a.parse().unwrap()).collect();
+    let mut changed = false;
+    for _ in 0..10 {
+        let (addrs, _) = kept_by_resolve(
+            &mut m,
+            &[entry.as_bytes()],
+            |o| o.dns_shuffle = true,
+            b"a.test",
+            1,
+        )
+        .unwrap();
+        let mut sorted = addrs.clone();
+        sorted.sort();
+        assert_eq!(sorted, given);
+        if addrs != given {
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed, "the addresses are not reordered");
+    // Not asked for: the order given.
+    let (addrs, _) = kept_by_resolve(&mut m, &[entry.as_bytes()], |_| {}, b"a.test", 1).unwrap();
+    assert_eq!(addrs, given);
+    // The trace, replacing that entry.
+    let (mut e, lines) = traced("tcp://127.0.0.1:1/");
+    e.options_mut()
+        .resolve
+        .set([entry.as_bytes(), b"b.test:1:10.0.0.1"])
+        .unwrap();
+    e.options_mut().dns_shuffle = true;
+    let e = tracing(e, b"dns");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&lines)[..4],
+        [
+            "RESOLVE a.test:1 - old addresses discarded\n".to_string(),
+            "[DNS] Shuffling 8 addresses\n".to_string(),
+            format!("[DNS] added {entry} to cache\n"),
+            "[DNS] added b.test:1:10.0.0.1 to cache\n".to_string(),
+        ]
+    );
+}
+
+/// A resolver's answer is shuffled as it is had, before it is said to
+/// be complete and kept, as C's resolver backends make the entry
+/// (`Curl_dnsc_mk_addr2`); in another order within ten tries.
+#[test]
+fn shuffled_resolver_answers_are_said_before_they_complete() {
+    let (mut m, clock) = networked();
+    let given: Vec<std::net::IpAddr> = (1..=8).map(|n| [127, 0, 0, n].into()).collect();
+    let mut changed = false;
+    for _ in 0..10 {
+        let lines = dns_lines(&mut m, "tcp://many.test:1/", |o| o.dns_shuffle = true);
+        let at = lines
+            .iter()
+            .position(|l| l == "[DNS] Shuffling 8 addresses")
+            .unwrap_or_else(|| panic!("{lines:?}"));
+        assert_eq!(
+            lines[at + 1],
+            "[DNS] [A+AAAA] resolve complete for many.test:1"
+        );
+        let (kept, _) = m.caches.dns.kept(b"many.test", 1).unwrap();
+        let mut sorted = kept.to_vec();
+        sorted.sort();
+        assert_eq!(sorted, given);
+        if kept != given {
+            changed = true;
+            break;
+        }
+        // Gone stale, so that the next transfer resolves it again.
+        clock.advance(Duration::from_secs(61));
+    }
+    assert!(changed, "the addresses are not reordered");
+}
+
+/// `localhost`'s two addresses, had without a resolver, are shuffled
+/// as the entry is made, before the resolve is said to have started, as
+/// the C build says it (`hostip_resolv_start`); kept in a random order.
+#[test]
+fn shuffled_shortcut_addresses_are_said_before_the_resolve_starts() {
+    let (mut m, _clock) = networked();
+    let (mut e, lines) = traced("tcp://localhost:1/");
+    e.options_mut().dns_shuffle = true;
+    e.options_mut().limits.reuse.fresh = true;
+    let e = tracing(e, b"dns");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    let said = trace_of(&lines);
+    let at = said
+        .iter()
+        .position(|l| l == "[DNS] Shuffling 2 addresses\n")
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert_eq!(
+        said[at - 1],
+        "[DNS] cache lookup localhost:1 queries=A+AAAA -> 0 not found\n"
+    );
+    assert_eq!(said[at + 1], "[DNS] [A+AAAA] hostip_resolv started -> 0\n");
+    let (kept, _) = m.caches.dns.kept(b"localhost", 1).unwrap();
+    assert_eq!(kept.len(), 2);
 }
 
 /// A resolve list is read into the multi's cache when the transfer

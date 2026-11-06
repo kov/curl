@@ -315,6 +315,12 @@ pub(crate) trait ConnCx: LayerCx {
     /// The transfer wants its names resolved over DoH (`set.doh`).
     fn wants_doh(&self) -> bool;
 
+    /// Put `addrs` in a random order, with the handle's random bytes, if
+    /// the transfer asks for it (`CURLOPT_DNS_SHUFFLE_ADDRESSES`), as the
+    /// entry they go in is made (`dnsc_entry_assign_addr`); whether they
+    /// were shuffled, which the caller says where C says it.
+    fn shuffle(&mut self, addrs: &mut [IpAddr]) -> Result<bool, OutOfMemory>;
+
     /// Whether the transfer has a resolver library.
     fn has_dns_library(&self) -> bool;
 
@@ -537,6 +543,10 @@ impl ConnCx for Plain<'_> {
 
     fn wants_doh(&self) -> bool {
         false
+    }
+
+    fn shuffle(&mut self, _: &mut [IpAddr]) -> Result<bool, OutOfMemory> {
+        Ok(false)
     }
 
     fn doh_start(&mut self, _: &[u8], _: Family) -> Result<DohLookup, ConnectError> {
@@ -3206,7 +3216,10 @@ fn await_library(
             cx.await_resolve_tick().ok()?;
         }
     }
-    if answer.as_ref().is_some_and(Result::is_ok) {
+    if let Some(Ok(addrs)) = &mut answer {
+        if shuffle_said(addrs, cx).is_err() {
+            return Some((Err(ResolveFailure::OutOfMemory), TakenAt::Waited));
+        }
         let status = resolve.status();
         say_taken(queries, status, cx);
     }
@@ -3223,6 +3236,22 @@ enum TakenAt {
 }
 
 /// The line of a library's resolve answered.
+/// Shuffle `addrs` if the transfer asks for it, and say so as C's debug
+/// build says it, as the entry is made (`dnsc_entry_assign_addr`): for a
+/// library's answer before its take is said, for an address or
+/// `localhost` before the resolve is said to have started.
+fn shuffle_said(addrs: &mut [IpAddr], cx: &mut dyn ConnCx) -> Result<(), OutOfMemory> {
+    if cx.shuffle(addrs)? {
+        say_shuffled(addrs.len(), cx);
+    }
+    Ok(())
+}
+
+/// C's debug line for `n` addresses shuffled (`dns_shuffle_addr`).
+pub(crate) fn say_shuffled(n: usize, cx: &mut dyn LayerCx) {
+    cx.of(Component::Dns, format_args!("Shuffling {n} addresses"));
+}
+
 fn say_taken(queries: &str, status: i32, cx: &mut dyn ConnCx) {
     cx.of(
         Component::Dns,
@@ -3578,7 +3607,7 @@ impl Pending {
                     return Some(Err(ResolveFailure::OutOfMemory));
                 }
                 let answer = resolve.answer();
-                let Some(answer) = answer else {
+                let Some(mut answer) = answer else {
                     let (ongoing, responses) = resolve.ongoing();
                     let name = curl_alloc::Lossy(name);
                     cx.of(
@@ -3591,7 +3620,10 @@ impl Pending {
                     return None;
                 };
                 // A failure's is said with the failure, after its words.
-                if answer.is_ok() {
+                if let Ok(addrs) = &mut answer {
+                    if shuffle_said(addrs, cx).is_err() {
+                        return Some(Err(ResolveFailure::OutOfMemory));
+                    }
                     say_taken(queries, resolve.status(), cx);
                 }
                 Some(answer)
@@ -3851,9 +3883,10 @@ fn start<V: Backend>(
     }
     say_not_cached(queries, (name, port), cx);
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
-    if let Some(answer) = shortcut(name).map_err(oom)? {
+    if let Some(mut answer) = shortcut(name).map_err(oom)? {
         // Told though no resolver is asked, as C tells it.
         cx.announce_resolve()?;
+        shuffle_said(answer.addrs_mut(), cx).map_err(oom)?;
         let answer = TryArc::try_new(answer).map_err(oom)?;
         // Started, then kept, each said where C says it: around the
         // cache's lock (`hostip_resolv`, `Curl_dnscache_add`).
@@ -4078,7 +4111,8 @@ fn take_in_start(
         return Ok(None);
     }
     match resolve.answer() {
-        Some(Ok(addrs)) => {
+        Some(Ok(mut addrs)) => {
+            shuffle_said(&mut addrs, cx).map_err(|OutOfMemory| ConnectError::OutOfMemory)?;
             say_taken(queries, resolve.status(), cx);
             let shown = curl_alloc::Lossy(name);
             cx.of(
@@ -4194,6 +4228,17 @@ pub(super) fn settle(
         })
     };
     let answer = match answer {
+        // A library's were shuffled as they were taken, which said so.
+        Ok(mut addrs) if !library => {
+            let shuffled = cx.shuffle(&mut addrs).map_err(oom)?;
+            let mut answer = Answer::of(name, addrs, family).map_err(oom)?;
+            match shuffled && says_its_own {
+                true => say_shuffled(answer.addrs().len(), cx),
+                false if shuffled => answer.mark_shuffled(),
+                false => {}
+            }
+            answer
+        }
         Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
         Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
         Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) if keep_negative => {

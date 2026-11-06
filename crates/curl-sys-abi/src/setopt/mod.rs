@@ -915,6 +915,7 @@ fn apply(
                 )),
             };
         }
+        (ffi::CURLOPT_DNS_SHUFFLE_ADDRESSES, Long(n)) => options.dns_shuffle = n != 0,
         (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n != 0,
         (ffi::CURLOPT_CONNECT_ONLY, Long(n)) => {
             options.connect_only = match n {

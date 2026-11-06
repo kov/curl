@@ -572,6 +572,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         self.step.easy().options().doh.url.is_some()
     }
 
+    fn shuffle(&mut self, addrs: &mut [std::net::IpAddr]) -> Result<bool, OutOfMemory> {
+        super::state::shuffle(self.step, addrs)
+    }
+
     fn await_resolve_left(&mut self, since: Instant) -> Option<Duration> {
         let now = self.step.rest.clock.now();
         match self.step.time_left_at(now) {

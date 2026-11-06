@@ -29,7 +29,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("netrc", true),
     ("parsedate", true),
     ("proxy", true),
-    ("shuffle-dns", false),
+    ("shuffle-dns", true),
     // Asked of the library: see `toggles`.
     ("resolv-threaded", false),
     // The type-checking macros of the C headers, which ship unchanged.

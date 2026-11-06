@@ -881,12 +881,10 @@ witness: curl-core multi::tests::an_answer_a_library_has_at_its_first_look_is_ta
 features: test-util
 --- old
     match resolve.answer() {
-        Some(Ok(addrs)) => {
-            say_taken(queries, resolve.status(), cx);
+        Some(Ok(mut addrs)) => {
 --- new
     match resolve.answer().filter(Result::is_err) {
-        Some(Ok(addrs)) => {
-            say_taken(queries, resolve.status(), cx);
+        Some(Ok(mut addrs)) => {
 
 === a library's answer had as it was asked is looked for inside the start
 file: crates/curl-core/src/conn/connect.rs
@@ -1043,3 +1041,49 @@ witness: curl-core conn::threaded::tests::unit3306_failed_starts_retried_by_the_
                 start_threads(&self.shared);
 --- new
                 // A query a thread could not be started for is tried again.
+
+=== a resolve entry's addresses are kept in the order given though shuffling is asked for
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core multi::tests::shuffled_resolve_entries_are_kept_in_another_order
+features: test-util
+--- old
+    if !cx.easy().options().dns_shuffle {
+--- new
+    if true {
+
+=== a resolver's answer is kept in the order found though shuffling is asked for
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::shuffled_resolver_answers_are_said_before_they_complete
+features: test-util
+--- old
+        Ok(mut addrs) if !library => {
+--- new
+        Ok(mut addrs) if false => {
+
+=== a library's answer is kept in the order found though shuffling is asked for
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_library_s_answer_is_shuffled_before_its_take_is_said
+features: test-util
+--- old
+    if cx.shuffle(addrs)? {
+--- new
+    if cx.shuffle(&mut [])? {
+
+=== localhost's addresses are kept in the order made though shuffling is asked for
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::shuffled_shortcut_addresses_are_said_before_the_resolve_starts
+features: test-util
+--- old
+    if cx.shuffle(addrs)? {
+--- new
+    if cx.shuffle(&mut [])? {
+
+=== the shuffle draws each place with another place's random bytes
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::a_shuffle_draws_each_place_as_c_does
+features: test-util
+--- old
+        let place = u32::from_ne_bytes(drawn[i * 4..i * 4 + 4].try_into().expect("four bytes"));
+--- new
+        let place = u32::from_ne_bytes(drawn[(n - 1 - i) * 4..(n - i) * 4].try_into().expect("four bytes"));
+

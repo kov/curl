@@ -7,7 +7,7 @@
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::date::HttpDate;
-use crate::hsts::{LoadError, read_file};
+use crate::hsts::{LoadError, line_fits, read_file};
 use crate::save::CacheFile;
 
 /// The most entries kept: past it, the oldest goes (`MAX_ALTSVC_ENTRIES`).
@@ -252,9 +252,7 @@ impl AltSvc {
             return Ok(());
         };
         for line in text.split_inclusive(|&b| b == b'\n') {
-            // `Curl_get_line`'s buffer, with the newline it adds to a
-            // last line without one.
-            if line.len() + usize::from(!line.ends_with(b"\n")) > MAX_LINE {
+            if !line_fits(line, MAX_LINE) {
                 return Err(LoadError::TooLarge);
             }
             let blanks = line

@@ -89,3 +89,11 @@ witness: curl-sys-abi handle_tests::a_copy_s_hsts_reader_is_handed_the_copy
         if let Some(alive) = self.read_hsts(|hsts| hsts.alive_copy(now)) {
             let hsts = copy.hsts_copy(alive?, now)?;
             prepare(&mut copy.options)?;
+
+=== a cache file's line one byte longer than C's line buffer holds is read
+file: crates/curl-core/src/hsts.rs
+witness: curl-core hsts::tests::unit3200_hsts_line_fits_c_s_buffer
+--- old
+    line.len() + usize::from(!line.ends_with(b"\n")) < limit
+--- new
+    line.len() + usize::from(!line.ends_with(b"\n")) <= limit

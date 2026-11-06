@@ -180,6 +180,13 @@ pub(crate) fn read_file(path: &[u8]) -> Result<Option<Vec<u8>>, LoadError> {
     }
 }
 
+/// Whether a file's `line` is one `Curl_get_line` reads into a buffer
+/// limited to `limit` bytes: the line, the newline it adds to a last line
+/// without one, and the zero that ends the buffer's string.
+pub(crate) fn line_fits(line: &[u8], limit: usize) -> bool {
+    line.len() + usize::from(!line.ends_with(b"\n")) < limit
+}
+
 /// An entry given by the application that could not be taken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BadEntry {
@@ -362,9 +369,7 @@ impl Hsts {
             return Ok(());
         };
         for line in text.split_inclusive(|&b| b == b'\n') {
-            // `Curl_get_line`'s buffer, with the newline it adds to a
-            // last line without one.
-            if line.len() + usize::from(!line.ends_with(b"\n")) > MAX_LINE {
+            if !line_fits(line, MAX_LINE) {
                 return Err(LoadError::TooLarge);
             }
             let line = line.trim_ascii_start();
@@ -742,6 +747,43 @@ mod tests {
         assert!(h.applies(b"www.example.org", NOW));
         h.parse(b"example.org", b"max-age=0", NOW).unwrap();
         assert!(!h.applies(b"www.example.org", NOW));
+    }
+
+    /// A line as long as C's buffer holds, its newline and the zero after
+    /// it counted, is read; a longer one fails the load there, the entries
+    /// before it kept, as does a last line without a newline that one
+    /// added would make too long (unit3200's `Curl_get_line`, with the C
+    /// build's limits for `--hsts`).
+    #[test]
+    fn unit3200_hsts_line_fits_c_s_buffer() {
+        let path = std::env::temp_dir().join(format!("curl-core-hsts3200-{}", std::process::id()));
+        for (len, last, ok) in [
+            (MAX_LINE - 1, false, true),
+            (MAX_LINE, false, false),
+            (MAX_LINE - 2, true, true),
+            (MAX_LINE - 1, true, false),
+        ] {
+            // A comment of `len` bytes, its newline counted unless last.
+            let mut text = b"one.example \"20991231 10:00:00\"\n#".to_vec();
+            text.resize(text.len() + len - 1 - usize::from(!last), b'x');
+            if !last {
+                text.extend_from_slice(b"\nthree.example \"20991231 10:00:00\"\n");
+            }
+            std::fs::write(&path, &text).unwrap();
+            let mut h = Hsts::default();
+            let loaded = h.load(path.as_os_str().as_encoded_bytes(), NOW);
+            assert_eq!(loaded.is_ok(), ok, "{len} bytes, last {last}");
+            if !ok {
+                assert_eq!(loaded, Err(LoadError::TooLarge));
+            }
+            let hosts: Vec<_> = names(&h).into_iter().map(|(n, _, _)| n).collect();
+            let kept: &[&str] = match (ok, last) {
+                (true, false) => &["one.example", "three.example"],
+                _ => &["one.example"],
+            };
+            assert_eq!(hosts, kept, "{len} bytes, last {last}");
+        }
+        std::fs::remove_file(&path).unwrap();
     }
 
     /// unit1660: a cache read from test 1660's file, then headers taken or

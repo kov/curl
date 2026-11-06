@@ -359,11 +359,12 @@ fn a_file_s_lines_are_read_to_c_s_limits() {
     );
 }
 
-/// A line as long as C's buffer holds, its newline counted, is read; one
-/// longer fails the load, as does a last line without a newline that
-/// one added would make too long.
+/// A line as long as C's buffer holds, its newline and the zero after it
+/// counted, is read; one longer fails the load, as does a last line
+/// without a newline that one added would make too long (unit3200's
+/// `Curl_get_line`, with the C build's limits for `--alt-svc`).
 #[test]
-fn a_file_s_line_may_be_as_long_as_c_s_buffer() {
+fn unit3200_alt_svc_line_fits_c_s_buffer() {
     let line = |len: usize, newline: bool| {
         let mut l = b"#".repeat(len - usize::from(newline));
         if newline {
@@ -372,10 +373,10 @@ fn a_file_s_line_may_be_as_long_as_c_s_buffer() {
         l
     };
     for (bytes, ok) in [
-        (line(MAX_LINE, true), true),
-        (line(MAX_LINE + 1, true), false),
-        (line(MAX_LINE - 1, false), true),
-        (line(MAX_LINE, false), false),
+        (line(MAX_LINE - 1, true), true),
+        (line(MAX_LINE, true), false),
+        (line(MAX_LINE - 2, false), true),
+        (line(MAX_LINE - 1, false), false),
     ] {
         let file = Temp::new("buffer", &bytes);
         let mut a = AltSvc::default();

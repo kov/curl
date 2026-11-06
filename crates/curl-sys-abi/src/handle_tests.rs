@@ -1225,6 +1225,28 @@ fn no_string_option_takes_an_over_long_string() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// unit1620's handle: one without a URL fails to connect as a
+/// malformed URL, twice alike, and a duplicate of one without a body
+/// keeps it, a HEAD. Its login strings are `url::tests::unit1620_login_details`.
+#[test]
+fn unit1620_handles() {
+    let c = curl_easy_init();
+    for _ in 0..2 {
+        // SAFETY: a live handle.
+        assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_URL_MALFORMAT);
+    }
+    assert_eq!(long(c, ffi::CURLOPT_NOBODY, 1), CURLE_OK);
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!d.is_null());
+    assert_eq!(options(d, |o| o.method), Method::Head);
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(d);
+    }
+}
+
 #[test]
 fn the_method_follows_nobody_and_upload_as_in_c() {
     let c = curl_easy_init();

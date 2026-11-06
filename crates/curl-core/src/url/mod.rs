@@ -1964,6 +1964,95 @@ mod tests {
         );
     }
 
+    /// unit1620's login strings, read from its source: each split into
+    /// user, password and options as `Curl_parse_login_details` splits
+    /// it, read here as a URL's login, of a scheme that takes options.
+    /// Its handle checks are the shim's `unit1620_handles`.
+    #[test]
+    fn unit1620_login_details() {
+        let calls = crate::c_source::calls("tests/unit/unit1620.c", "t1620_parse");
+        assert_eq!(calls.len(), 14, "the calls were read");
+        for call in calls {
+            let [login, user, password, options] = &call[..] else {
+                panic!("{call:?}")
+            };
+            let mut url = Url::parse(b"imap://host/", ParseOptions::NONE).unwrap();
+            let auth = [login.str(), b"@host"].concat();
+            assert_eq!(
+                url.parse_login(&auth, ParseOptions::NONE),
+                Ok(login.str().len() + 1)
+            );
+            let got = [&url.user, &url.password, &url.options].map(|p| p.as_deref());
+            let want = [user.bytes(), password.bytes(), options.bytes()];
+            assert_eq!(got, want, "{}", show(login.str()));
+        }
+    }
+
+    /// unit1627's schemes, read from its source: each it knows, in any
+    /// case, found and named in lowercase; each it does not, not found.
+    #[test]
+    fn unit1627_schemes() {
+        let okay = crate::c_source::table("tests/unit/unit1627.c", "okay[]", |c| panic!("{c}"));
+        assert!(okay.len() > 70, "okay was read");
+        for name in &okay {
+            let name = name.str();
+            let k = known(name).unwrap_or_else(|| panic!("{}", show(name)));
+            assert_eq!(
+                k.name.as_bytes(),
+                name.to_ascii_lowercase(),
+                "{}",
+                show(name)
+            );
+            assert!(is_known_scheme(&name.to_ascii_lowercase()));
+        }
+        let bad = crate::c_source::table("tests/unit/unit1627.c", "notokay[]", |c| panic!("{c}"));
+        assert!(bad.len() > 100, "notokay was read");
+        for name in &bad {
+            let name = name.str();
+            assert!(known(name).is_none(), "{}", show(name));
+            assert!(!is_known_scheme(&name.to_ascii_lowercase()));
+        }
+    }
+
+    /// unit1653: the port taken off a host, an IPv6 address's after its
+    /// `]` (what is inside it is not looked at here), none where there is
+    /// no port or only a `:` in a URL with a scheme, and an error for
+    /// anything else after it. C checks only that a port is refused, not
+    /// with what code, but for its last row.
+    #[test]
+    fn unit1653_ports() {
+        let ip = "fe80::250:56ff:fea7:da15";
+        let a64 = "a".repeat(64);
+        let rows: [(String, bool, Option<Option<u16>>); 12] = [
+            (format!("[{ip}]"), false, Some(None)),
+            (format!("[{ip}|"), false, None),
+            (
+                "[fe80::250:56ff;fea7:da15]:808".into(),
+                false,
+                Some(Some(808)),
+            ),
+            (format!("[{ip}%25eth3]:80"), false, Some(Some(80))),
+            (format!("[{ip}%25eth3]"), false, Some(None)),
+            (format!("[{ip}]:81"), false, Some(Some(81))),
+            (format!("[{ip}];81"), false, None),
+            (format!("[{ip}]80"), false, None),
+            (format!("[{ip}]:"), true, Some(None)),
+            (format!("[{ip}!25eth3]:180"), false, Some(Some(180))),
+            (format!("[{ip}%eth3]:80"), false, Some(Some(80))),
+            (format!("{a64}:"), false, None),
+        ];
+        for (host, has_scheme, want) in rows {
+            let mut h = host.clone().into_bytes();
+            let got = parse_port(&mut h, has_scheme);
+            assert_eq!(got.as_ref().ok().copied(), want, "{host}: {got:?}");
+            if let Some(Some(_)) = want {
+                assert_eq!(h, host.as_bytes()[..host.rfind(':').unwrap()], "{host}");
+            }
+        }
+        let mut h = format!("{a64}:").into_bytes();
+        assert_eq!(parse_port(&mut h, false), Err(UrlErrorKind::BadPortNumber));
+    }
+
     /// unit1395: dot segments removed as `dedotdotify` removes them.
     #[test]
     fn unit1395_dot_segments() {

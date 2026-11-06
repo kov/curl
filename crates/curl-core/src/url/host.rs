@@ -456,4 +456,44 @@ mod tests {
         assert_eq!(ntop("::1:2:3"), "::1:2:3");
         assert_eq!(ntop("::ffff:1:2"), "::ffff:0.1.0.2");
     }
+
+    /// unit1961: addresses to text and back, `curlx_inet_ntop` and
+    /// `curlx_inet_pton`, and its table of IPv6 texts, read from its
+    /// source, each read or refused. C's checks that the byte after an
+    /// address is left alone have no counterpart: an address is an array.
+    #[test]
+    fn unit1961_addresses() {
+        let v4 = [0xc0, 0xa8, 0x64, 0x01];
+        let mut out = Vec::new();
+        ipv4_text(&mut out, v4).unwrap();
+        assert_eq!(out, b"192.168.100.1");
+        assert_eq!(pton4(b"192.168.100.1"), Some(v4));
+        let v6 = [
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x14, 0x4f, 0xff, 0xfe, 0x0b, 0x76, 0xc8,
+        ];
+        let mut out = Vec::new();
+        ntop6(&mut out, v6).unwrap();
+        assert_eq!(out, b"fe80::214:4fff:fe0b:76c8");
+        assert_eq!(pton6(b"fe80::214:4fff:fe0b:76c8"), Some(v6));
+        let mut compatible = [0; 16];
+        compatible[12..].copy_from_slice(&[0x7f, 0, 0, 1]);
+        let mut out = Vec::new();
+        ntop6(&mut out, compatible).unwrap();
+        assert_eq!(out, b"::127.0.0.1");
+        let cases =
+            crate::c_source::table("tests/unit/unit1961.c", "pton6_cases[]", |c| panic!("{c}"));
+        assert!(cases.len() > 15, "the cases were read");
+        for case in cases {
+            let [text, valid] = case.group() else {
+                panic!("{case:?}")
+            };
+            let text = text.str();
+            assert_eq!(
+                pton6(text).is_some(),
+                valid.int() == 1,
+                "{}",
+                text.escape_ascii()
+            );
+        }
+    }
 }

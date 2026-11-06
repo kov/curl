@@ -19,6 +19,7 @@ use crate::ssh2::{DirEntry, Failed, Gave, KnownEntry, Pipes, Ssh2, Statvfs, Took
 use crate::time::ManualClock;
 use curl_alloc::OutOfMemory;
 use curl_os::socket::BorrowedSocket;
+use std::time::Duration;
 
 const PORT: u16 = 8022;
 const HOME: &[u8] = b"/home/u";
@@ -49,6 +50,10 @@ struct World {
     /// SFTP status some of them leave.
     fails: Vec<(&'static str, Code)>,
     leaves: Vec<(&'static str, Fx)>,
+    /// The calls, by name, that wait each time, the clock moved on a
+    /// quarter of a second by each.
+    stuck: Vec<&'static str>,
+    clock: Option<ManualClock>,
     /// The multi's internal trace, as C's debug build writes it under
     /// `CURL_DEBUG`: what is done for no transfer, a goodbye among it.
     internal: Internal,
@@ -108,6 +113,8 @@ impl Default for World {
             waited: Vec::new(),
             fails: Vec::new(),
             leaves: Vec::new(),
+            stuck: Vec::new(),
+            clock: None,
             internal: Internal::default(),
             last: Code(-31),
             error: b"fake failure".to_vec(),
@@ -148,6 +155,13 @@ impl World {
 
     /// Whether `name`'s call answers that it waits, this time.
     fn waits(&mut self, name: &'static str) -> bool {
+        if self.stuck.contains(&name) {
+            self.call("waits", &[name.as_bytes()]);
+            if let Some(clock) = &self.clock {
+                clock.advance(Duration::from_millis(250));
+            }
+            return true;
+        }
         let at = self.waiting.iter().position(|&n| n == name);
         if let Some(at) = at {
             self.waiting.remove(at);
@@ -255,6 +269,14 @@ struct FakeSession {
 }
 
 impl FakeSession {
+    /// A call that frees what it closes (`freed`): let go of unless it
+    /// would wait and `let_go` says to wait.
+    fn freeing(&self, name: &'static str, let_go: Let) -> (Result<(), Code>, bool) {
+        let rc = self.called(name, &[]);
+        let kept = rc == Err(Code::EAGAIN) && let_go == Let::Wait;
+        (rc, !kept)
+    }
+
     /// A call that never waits in libssh2 (a file's, or a setting's):
     /// failing as the world says, else written down.
     fn settled(&self, name: &'static str, args: &[&[u8]]) -> Result<(), Code> {
@@ -615,17 +637,21 @@ impl Session2 for FakeSession {
         file.1.extend_from_slice(bytes);
         Ok(bytes.len())
     }
-    fn sftp_close(&mut self, _: Let) -> Result<(), Code> {
-        self.called("sftp_close", &[])?;
-        self.file = None;
-        self.writing = None;
-        self.dir = None;
-        Ok(())
+    fn sftp_close(&mut self, let_go: Let) -> Result<(), Code> {
+        let (rc, freed) = self.freeing("sftp_close", let_go);
+        if freed {
+            self.file = None;
+            self.writing = None;
+            self.dir = None;
+        }
+        rc
     }
-    fn sftp_shutdown(&mut self, _: Let) -> Result<(), Code> {
-        self.called("sftp_shutdown", &[])?;
-        self.sftp = false;
-        Ok(())
+    fn sftp_shutdown(&mut self, let_go: Let) -> Result<(), Code> {
+        let (rc, freed) = self.freeing("sftp_shutdown", let_go);
+        if freed {
+            self.sftp = false;
+        }
+        rc
     }
     fn scp_recv(&mut self, path: &[u8]) -> Result<i64, Code> {
         self.called("scp_recv", &[path])?;
@@ -667,12 +693,14 @@ impl Session2 for FakeSession {
     fn channel_wait_closed(&mut self) -> Result<(), Code> {
         self.called("channel_wait_closed", &[])
     }
-    fn channel_free(&mut self, _: Let) -> Result<(), Code> {
-        self.called("channel_free", &[])?;
-        self.channel = false;
-        self.file = None;
-        self.writing = None;
-        Ok(())
+    fn channel_free(&mut self, let_go: Let) -> Result<(), Code> {
+        let (rc, freed) = self.freeing("channel_free", let_go);
+        if freed {
+            self.channel = false;
+            self.file = None;
+            self.writing = None;
+        }
+        rc
     }
     fn disconnect(&mut self) -> Result<(), Code> {
         self.called("disconnect", &[])
@@ -680,10 +708,12 @@ impl Session2 for FakeSession {
     fn has_session(&self) -> bool {
         self.session
     }
-    fn session_free(&mut self, _: Let) -> Result<(), Code> {
-        self.called("session_free", &[])?;
-        self.session = false;
-        Ok(())
+    fn session_free(&mut self, let_go: Let) -> Result<(), Code> {
+        let (rc, freed) = self.freeing("session_free", let_go);
+        if freed {
+            self.session = false;
+        }
+        rc
     }
 }
 
@@ -754,6 +784,7 @@ fn run_over(
     set: impl FnOnce(&mut Options),
 ) -> (Result<(), ErrorKind>, Vec<u8>, Text) {
     let clock = ManualClock::new().unwrap();
+    w.lock().unwrap().clock = Some(clock.clone());
     let at = SocketAddr::from(([127, 0, 0, 1], port));
     let net = FakeNet::new(clock.clone())
         .with_peer(at, Net::Accepts)
@@ -1177,6 +1208,7 @@ fn the_pipes_move_what_the_session_asks_for() {
     assert_eq!(p.wanted(), None, "a byte still waits for it");
     assert_eq!(p.take(&mut buf), Took::Bytes(1));
     assert_eq!(buf[0], b'c');
+    assert_eq!(p.wanted(), None, "all taken, nothing asked for again yet");
     assert_eq!(p.take(&mut buf), Took::Wait);
     assert_eq!(p.wanted(), Some(4));
     p.room(4).unwrap();
@@ -1384,10 +1416,35 @@ fn the_states_are_traced_by_c_s_names() {
 
 /// Each call that would wait is made again, the same, and the run comes
 /// to what it comes to without the waits: the waits are all that differ
-/// in what the library is asked.
+/// in what the library is asked, each way of logging in and the goodbye
+/// among it.
 #[test]
 fn every_call_that_waits_is_made_again() {
     type Set = fn(&mut Options);
+    type Tweak = fn(&mut World);
+    let key_refused: Tweak = |w| w.fails = vec![("auth_publickey_fromfile", Code(-18))];
+    let to_agent: Tweak = |w| {
+        w.fails = vec![
+            ("auth_publickey_fromfile", Code(-18)),
+            ("auth_password", Code(-18)),
+        ];
+        w.agent = Some(vec![(b"one".to_vec(), false), (b"two".to_vec(), true)]);
+    };
+    let to_keyboard: Tweak = |w| {
+        w.fails = vec![
+            ("auth_publickey_fromfile", Code(-18)),
+            ("auth_password", Code(-18)),
+        ];
+    };
+    let closes: Set = |o| o.limits.reuse.forbid = true;
+    let logins: [(&str, Set, Tweak); 6] = [
+        (URL, |_| {}, key_refused),
+        (URL, |_| {}, to_agent),
+        (URL, closes, to_agent),
+        (URL, |_| {}, to_keyboard),
+        (URL, closes, |_| {}),
+        ("scp://u@127.0.0.1:PORT/home/u/f", closes, |_| {}),
+    ];
     let flows: [(&str, Set); 8] = [
         (URL, |_| {}),
         (URL, |o| uploads(o, b"up")),
@@ -1425,7 +1482,10 @@ fn every_call_that_waits_is_made_again() {
         }),
         (URL, |o| o.filetime = true),
     ];
-    for (url, set) in flows {
+    let flows = flows
+        .into_iter()
+        .map(|(url, set)| (url, set, (|_| {}) as Tweak));
+    for (url, set, tweak) in flows.chain(logins) {
         let world = |w: &mut World| {
             w.dir = vec![
                 (b"a".to_vec(), b"-rw a".to_vec(), Attrs::default()),
@@ -1441,6 +1501,7 @@ fn every_call_that_waits_is_made_again() {
             ];
             w.links = vec![(b"/home/u/d/l".to_vec(), b"a".to_vec())];
             w.authlist = Some(b"publickey,password,keyboard-interactive".to_vec());
+            tweak(w);
         };
         let plain = world_with(&[("/home/u/f", "body")], world);
         let (r1, b1, s1, c1) = run_in(&plain, url, set);
@@ -1451,10 +1512,13 @@ fn every_call_that_waits_is_made_again() {
         let (r2, b2, s2, c2) = run_in(&waits, url, set);
         assert_eq!(r1, r2, "{url}: {s1}\n---\n{s2}");
         assert_eq!(b1, b2, "{url}");
-        let c2: Vec<_> = c2
+        let mut c2: Vec<_> = c2
             .into_iter()
             .filter(|c| !c.starts_with("waits "))
             .collect();
+        // An agent's login that waits asks for its identity again, the
+        // same one, as C's does (`SSH_AUTH_AGENT`).
+        c2.dedup_by(|a, b| a == b && a == "agent_get_identity");
         assert_eq!(c1, c2, "{url}");
         let (p, q) = (plain.lock().unwrap(), waits.lock().unwrap());
         assert_eq!(p.files, q.files, "{url}");

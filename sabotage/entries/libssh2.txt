@@ -48,3 +48,27 @@ witness: curl-core proto::ssh::libssh2::tests::the_pipes_move_what_the_session_a
             self.taken += n;
 --- new
             self.taken += n.saturating_sub(1);
+
+=== a quote command's wait is taken for its failure
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::every_call_that_waits_is_made_again
+--- old
+        let rc = sc.session().sftp_statvfs(&path);
+        sc.path1 = Some(path);
+        let fail = |cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, kind: ErrorKind| {
+            sc.to(cx, State::SftpClose);
+            sc.next = None;
+            Err(Halt::Fail(kind))
+        };
+        match rc {
+            Err(rc) if rc.again() => return Err(Halt::Again),
+--- new
+        let rc = sc.session().sftp_statvfs(&path);
+        sc.path1 = Some(path);
+        let fail = |cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, kind: ErrorKind| {
+            sc.to(cx, State::SftpClose);
+            sc.next = None;
+            Err(Halt::Fail(kind))
+        };
+        match rc {
+            Err(rc) if rc.again() && false => return Err(Halt::Again),

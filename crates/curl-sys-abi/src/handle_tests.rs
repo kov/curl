@@ -7015,8 +7015,18 @@ fn a_handle_costs_no_more_than_cs() {
     // resolves' records (C's `state.async`). `CURLOPT_CURLU`'s pointer is
     // kept on the shim as given, as C keeps `set.uh`. Which jar and which
     // HSTS cache the handle uses are one value each (`JarUse`, `HstsUse`),
-    // a tag beside the box of its own.
-    assert!(made_bytes <= 2_152, "a new handle holds {made_bytes} bytes");
+    // a tag beside the box of its own. A build with libssh2 has the SSH host
+    // key function and its data on the shim, made when first set, as C has
+    // them only in that build.
+    let tripwire = if cfg!(feature = "libssh2") {
+        2_160
+    } else {
+        2_152
+    };
+    assert!(
+        made_bytes <= tripwire,
+        "a new handle holds {made_bytes} bytes"
+    );
     assert!(held <= 3_081, "an added handle holds {held} bytes");
     // The `Easy`, the shim's handle, the write adapter and its count, the
     // URL; then the slot, and the multi's tables as they grow.

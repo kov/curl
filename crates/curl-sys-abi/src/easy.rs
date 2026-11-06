@@ -72,6 +72,10 @@ pub(crate) struct ShimEasy {
     /// The application's interleave function and data, made the first
     /// time either is set: few handles speak RTSP.
     interleave: OnceCell<Box<Cell<callbacks::CInterleave>>>,
+    /// The application's SSH host key function and data, made the first
+    /// time either is set: few handles set them.
+    #[cfg(feature = "libssh2")]
+    host_key: OnceCell<Box<Cell<callbacks::CHostKey>>>,
     /// The application's wildcard download functions and data, made the
     /// first time one is set: few handles set any.
     wildcard: OnceCell<Box<Cell<callbacks::CWildcard>>>,
@@ -161,6 +165,8 @@ struct CSide {
     tls: Option<CTls>,
     hsts: Option<callbacks::CHsts>,
     interleave: Option<callbacks::CInterleave>,
+    #[cfg(feature = "libssh2")]
+    host_key: Option<callbacks::CHostKey>,
     wildcard: Option<callbacks::CWildcard>,
 }
 
@@ -178,6 +184,8 @@ impl CSide {
             tls: None,
             hsts: None,
             interleave: None,
+            #[cfg(feature = "libssh2")]
+            host_key: None,
             wildcard: None,
         }
     }
@@ -233,6 +241,10 @@ impl ShimEasy {
         }
         if let Some(interleave) = c.interleave {
             shim.interleave_room()?.set(interleave);
+        }
+        #[cfg(feature = "libssh2")]
+        if let Some(host_key) = c.host_key {
+            shim.host_key_room()?.set(host_key);
         }
         if let Some(wildcard) = c.wildcard {
             shim.wildcard_room()?.set(wildcard);
@@ -388,6 +400,8 @@ impl ShimEasy {
         crate::sockets::sync(options, me, &shim.sockets())?;
         callbacks::sync_hsts(options, me, &shim.hsts())?;
         callbacks::sync_interleave(options, me, &shim.interleave())?;
+        #[cfg(feature = "libssh2")]
+        callbacks::sync_ssh_host_key(options, me, &shim.host_key())?;
         callbacks::sync_wildcard(options, me, &shim.wildcard())?;
         crate::tls::sync(options, me, &shim.tls())
     }
@@ -427,6 +441,24 @@ impl ShimEasy {
             assert!(self.interleave.set(made).is_ok(), "not made yet");
         }
         Ok(self.interleave.get().expect("made above"))
+    }
+
+    /// The application's SSH host key function and data.
+    #[cfg(feature = "libssh2")]
+    pub(crate) fn host_key(&self) -> callbacks::CHostKey {
+        self.host_key
+            .get()
+            .map_or(callbacks::CHostKey::NONE, |c| c.get())
+    }
+
+    /// Room for them, made now if not yet.
+    #[cfg(feature = "libssh2")]
+    pub(crate) fn host_key_room(&self) -> Result<&Cell<callbacks::CHostKey>, OutOfMemory> {
+        if self.host_key.get().is_none() {
+            let made = try_box(Cell::new(callbacks::CHostKey::NONE))?;
+            assert!(self.host_key.set(made).is_ok(), "not made yet");
+        }
+        Ok(self.host_key.get().expect("made above"))
     }
 
     /// Room for the HSTS functions, made now if not yet.
@@ -527,6 +559,8 @@ impl ShimEasy {
             sockets: OnceCell::new(),
             hsts: OnceCell::new(),
             interleave: OnceCell::new(),
+            #[cfg(feature = "libssh2")]
+            host_key: OnceCell::new(),
             wildcard: OnceCell::new(),
             tls: OnceCell::new(),
             tsi: UnsafeCell::new(ffi::curl_tlssessioninfo {
@@ -954,6 +988,8 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         tls: easy.tls.get().map(|c| c.get()),
         hsts: easy.hsts.get().map(|c| c.get()),
         interleave: easy.interleave.get().map(|c| c.get()),
+        #[cfg(feature = "libssh2")]
+        host_key: easy.host_key.get().map(|c| c.get()),
         wildcard: easy.wildcard.get().map(|c| c.get()),
     };
     let Ok(dup) = ShimEasy::homeless(c) else {
@@ -1086,6 +1122,10 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     }
     if let Some(interleave) = easy.interleave.get() {
         interleave.set(callbacks::CInterleave::NONE);
+    }
+    #[cfg(feature = "libssh2")]
+    if let Some(host_key) = easy.host_key.get() {
+        host_key.set(callbacks::CHostKey::NONE);
     }
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as

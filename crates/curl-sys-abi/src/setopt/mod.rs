@@ -1701,14 +1701,21 @@ fn apply(
             return Err(Refused::Unknown);
         }
         #[cfg(feature = "libssh2")]
-        (ffi::CURLOPT_SSH_HOSTKEYFUNCTION, Ptr(p)) => {
-            // SAFETY: the application passes a function of the option's
-            // type, or NULL, which leaves the key to the known-hosts file.
-            ccb.ssh_host_key = unsafe { function(p) };
-            callbacks::sync_ssh_host_key(options, me, ccb)?;
+        (ffi::CURLOPT_SSH_HOSTKEYFUNCTION | ffi::CURLOPT_SSH_HOSTKEYDATA, Ptr(p)) => {
+            // SAFETY: the handle outlives the call; its host key group is
+            // a cell of its own, apart from the options being set.
+            let room = unsafe { me.as_ref() }.host_key_room()?;
+            let mut c = room.get();
+            match option {
+                ffi::CURLOPT_SSH_HOSTKEYDATA => c.data = p,
+                // SAFETY: the application passes a function of the
+                // option's type, or NULL, which leaves the key to the
+                // known-hosts file.
+                _ => c.function = unsafe { function(p) },
+            }
+            callbacks::sync_ssh_host_key(options, me, &c)?;
+            room.set(c);
         }
-        #[cfg(feature = "libssh2")]
-        (ffi::CURLOPT_SSH_HOSTKEYDATA, Ptr(p)) => ccb.ssh_host_key_data = p,
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.

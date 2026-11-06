@@ -827,16 +827,17 @@ mod tests {
     fn a_shuffle_draws_each_place_as_c_does() {
         let (a, b, c) = (ip("10.0.0.1"), ip("10.0.0.2"), ip("10.0.0.3"));
         let mut addrs = [a, b, c];
-        let drawn: Vec<u8> = [7u32, 0, 4].iter().flat_map(|n| n.to_ne_bytes()).collect();
+        let drawn: Vec<u8> = [5u32, 1, 0].iter().flat_map(|n| n.to_ne_bytes()).collect();
         let mut fill = |out: &mut [u8]| {
             out.copy_from_slice(&drawn);
             true
         };
         assert!(shuffle(&mut addrs, &mut fill).unwrap());
-        // Place 2 with 4 % 3 = 1, then place 1 with 0 % 2 = 0.
-        assert_eq!(addrs, [c, a, b]);
+        // Place 2 with 0 % 3 = 0, then place 1 with 1 % 2 = 1; the first
+        // place's bytes, 5, are never drawn.
+        assert_eq!(addrs, [c, b, a]);
         assert!(shuffle(&mut addrs, &mut |_| false).unwrap());
-        assert_eq!(addrs, [c, a, b], "no random bytes, no change");
+        assert_eq!(addrs, [c, b, a], "no random bytes, no change");
         assert!(!shuffle(&mut [a], &mut |_| panic!("none drawn")).unwrap());
     }
 

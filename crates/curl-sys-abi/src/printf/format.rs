@@ -98,15 +98,35 @@ impl Segment {
     };
 }
 
-/// A parsed format: its segments and the types of the arguments it reads.
-pub(crate) struct Parsed {
-    segments: [Segment; MAX_SEGMENTS],
+/// A parsed format: its segments and the types of the arguments it reads,
+/// with room for `N` of each. A format needing more than `N < MAX` is
+/// parsed again into a `Parsed<MAX>`: most formats fit a small one, and
+/// its room is filled before parsing, every byte, on every call.
+pub(crate) struct Parsed<const N: usize> {
+    segments: [Segment; N],
     nsegments: usize,
-    inputs: [ArgType; MAX_PARAMETERS],
+    inputs: [ArgType; N],
     ninputs: usize,
 }
 
-impl Parsed {
+/// The room libcurl has: as many segments and arguments as its format
+/// engine takes.
+pub(crate) const MAX: usize = {
+    assert!(MAX_SEGMENTS == MAX_PARAMETERS);
+    MAX_PARAMETERS
+};
+
+/// Why `parse` did not parse a format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unparsed {
+    /// libcurl rejects it: it outputs nothing.
+    Rejected,
+    /// It needs more room than the `Parsed` given, which is smaller than
+    /// libcurl's.
+    Full,
+}
+
+impl<const N: usize> Parsed<N> {
     /// The arguments to read, in order.
     pub(crate) fn inputs(&self) -> &[ArgType] {
         &self.inputs[..self.ninputs]
@@ -154,6 +174,7 @@ struct Spec {
 }
 
 /// Parse the flags, width and precision of a conversion at `*pos`.
+#[inline(always)]
 fn parse_flags(fmt: &[u8], pos: &mut usize, dollar: Dollar) -> Option<Spec> {
     let mut p = *pos;
     let mut s = Spec {
@@ -250,6 +271,7 @@ fn parse_flags(fmt: &[u8], pos: &mut usize, dollar: Dollar) -> Option<Spec> {
 
 /// The argument type and extra flags of conversion `c`, or `None` for an
 /// unknown conversion, which is output as literal text.
+#[inline(always)]
 fn parse_conversion(c: u8, flags: u32) -> Option<(ArgType, u32)> {
     let int = |signed: [ArgType; 3]| {
         if flags & LONGLONG != 0 {
@@ -287,48 +309,58 @@ fn parse_conversion(c: u8, flags: u32) -> Option<(ArgType, u32)> {
     })
 }
 
-impl Parsed {
+impl<const N: usize> Parsed<N> {
     /// Room for a parsed format, which `parse` fills.
-    pub(crate) fn new() -> Parsed {
+    pub(crate) fn new() -> Parsed<N> {
+        const { assert!(N <= MAX) };
         Parsed {
-            segments: [Segment::EMPTY; MAX_SEGMENTS],
+            segments: [Segment::EMPTY; N],
             nsegments: 0,
-            inputs: [ArgType::Int; MAX_PARAMETERS],
+            inputs: [ArgType::Int; N],
             ninputs: 0,
         }
     }
 }
 
-/// Parse `fmt` into `parsed`, which is a few kilobytes: filled in place
-/// rather than returned, it is not copied on every call. `None` for a
-/// format libcurl rejects, which outputs nothing.
-pub(crate) fn parse(fmt: &[u8], parsed: &mut Parsed) -> Option<()> {
+/// Parse `fmt` into `parsed`, which is a few kilobytes at libcurl's size:
+/// filled in place rather than returned, it is not copied on every call.
+/// `Rejected` for a format libcurl rejects, which outputs nothing; `Full`
+/// for one that needs more room than `parsed`, if smaller than libcurl's.
+pub(crate) fn parse<const N: usize>(fmt: &[u8], parsed: &mut Parsed<N>) -> Result<(), Unparsed> {
+    // libcurl's own limits reject a format; a smaller `parsed` only asks
+    // for a larger one.
+    let full = if N == MAX {
+        Unparsed::Rejected
+    } else {
+        Unparsed::Full
+    };
     parsed.nsegments = 0;
     parsed.ninputs = 0;
-    let mut used = [false; MAX_PARAMETERS];
+    let mut used = [false; N];
     let mut param_num = 0usize;
     let mut max_param: Option<usize> = None;
     let mut dollar = Dollar::Unknown;
     let mut start = 0usize;
     let mut p = 0usize;
 
-    let push = |parsed: &mut Parsed, seg: Segment| -> Option<()> {
-        if parsed.nsegments == MAX_SEGMENTS {
-            return None;
+    let push = |parsed: &mut Parsed<N>, seg: Segment| -> Result<(), Unparsed> {
+        if parsed.nsegments == N {
+            return Err(full);
         }
         parsed.segments[parsed.nsegments] = seg;
         parsed.nsegments += 1;
-        Some(())
+        Ok(())
     };
-    let note = |idx: usize, max: &mut Option<usize>| -> Option<()> {
-        if idx >= MAX_PARAMETERS {
-            return None;
+    let note = |idx: usize, max: &mut Option<usize>| -> Result<(), Unparsed> {
+        if idx >= N {
+            return Err(full);
         }
         if max.is_none_or(|m| idx >= m) {
             *max = Some(idx);
         }
-        Some(())
+        Ok(())
     };
+    let rejected = Unparsed::Rejected;
 
     while at(fmt, p) != 0 {
         if at(fmt, p) != b'%' {
@@ -362,12 +394,12 @@ pub(crate) fn parse(fmt: &[u8], parsed: &mut Parsed) -> Option<()> {
                     param = Some(n);
                     dollar = Dollar::Use;
                 }
-                None if dollar == Dollar::Use => return None,
+                None if dollar == Dollar::Use => return Err(rejected),
                 None => dollar = Dollar::Nope,
             }
         }
 
-        let mut spec = parse_flags(fmt, &mut p, dollar)?;
+        let mut spec = parse_flags(fmt, &mut p, dollar).ok_or(rejected)?;
         let Some((ty, conv_flags)) = parse_conversion(at(fmt, p), spec.flags) else {
             continue;
         };
@@ -380,7 +412,7 @@ pub(crate) fn parse(fmt: &[u8], parsed: &mut Parsed) -> Option<()> {
             } else {
                 let w = spec.width as usize;
                 if used.get(w).copied().unwrap_or(false) {
-                    return None;
+                    return Err(rejected);
                 }
                 w
             };
@@ -396,7 +428,7 @@ pub(crate) fn parse(fmt: &[u8], parsed: &mut Parsed) -> Option<()> {
             } else {
                 let w = spec.precision as usize;
                 if used.get(w).copied().unwrap_or(false) {
-                    return None;
+                    return Err(rejected);
                 }
                 w
             };
@@ -441,10 +473,10 @@ pub(crate) fn parse(fmt: &[u8], parsed: &mut Parsed) -> Option<()> {
 
     let ninputs = max_param.map_or(0, |m| m + 1);
     if !used[..ninputs].iter().all(|&u| u) {
-        return None;
+        return Err(rejected);
     }
     parsed.ninputs = ninputs;
-    Some(())
+    Ok(())
 }
 
 /// Where `%n` stores the count, by its length modifier.
@@ -767,9 +799,9 @@ fn out_double<S: Sink, A: Args>(
 
 /// Render `parsed` (from `fmt`) with `args` into `sink`; returns the number
 /// of bytes written, as the C functions do.
-pub(crate) fn render<A: Args, S: Sink>(
+pub(crate) fn render<const N: usize, A: Args, S: Sink>(
     fmt: &[u8],
-    parsed: &Parsed,
+    parsed: &Parsed<N>,
     args: &mut A,
     sink: &mut S,
 ) -> i32 {
@@ -779,9 +811,9 @@ pub(crate) fn render<A: Args, S: Sink>(
     o.done
 }
 
-fn render_into<A: Args, S: Sink>(
+fn render_into<const N: usize, A: Args, S: Sink>(
     fmt: &[u8],
-    parsed: &Parsed,
+    parsed: &Parsed<N>,
     args: &mut A,
     o: &mut Out<'_, S>,
 ) -> Result<(), Stop> {

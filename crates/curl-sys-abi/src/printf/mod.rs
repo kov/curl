@@ -16,16 +16,16 @@ use curl_alloc::TryVec;
 
 use crate::ffi::{self, FILE};
 use crate::root;
-use format::{ArgType, Args, BUFFSIZE, CountSize, MAX_PARAMETERS, Parsed, Sink};
+use format::{ArgType, Args, BUFFSIZE, CountSize, MAX, Parsed, Sink, Unparsed};
 
 /// `curl_maprintf` results are capped, as libcurl's are, at this size
 /// including the NUL.
 const APRINTF_MAX: usize = 8_000_000;
 
 /// Arguments read from a `va_list`, each kept as the 64 bits libcurl's C
-/// union holds.
-struct Values {
-    bits: [u64; MAX_PARAMETERS],
+/// union holds: room for `N`, as the format's `Parsed<N>` has.
+struct Values<const N: usize> {
+    bits: [u64; N],
 }
 
 /// Type tags of `csrc/va_fetch.c`.
@@ -136,10 +136,10 @@ unsafe fn next(ap: &mut VaList<'_>, tag: Tag) -> u64 {
 ///
 /// `ap` holds at least the arguments the format names, of the types it
 /// names, as a C caller of a printf function must ensure.
-unsafe fn fetch(parsed: &Parsed, mut ap: VaList<'_>, v: &mut Values) {
+unsafe fn fetch<const N: usize>(parsed: &Parsed<N>, mut ap: VaList<'_>, v: &mut Values<N>) {
     let inputs = parsed.inputs();
     if !RUST_READS_LONG_DOUBLE && inputs.contains(&ArgType::LongDouble) {
-        let mut tags = [0u8; MAX_PARAMETERS];
+        let mut tags = [0u8; N];
         for (t, &ty) in tags.iter_mut().zip(inputs) {
             *t = tag(ty) as u8;
         }
@@ -156,7 +156,7 @@ unsafe fn fetch(parsed: &Parsed, mut ap: VaList<'_>, v: &mut Values) {
     }
 }
 
-impl Args for Values {
+impl<const N: usize> Args for Values<N> {
     fn bits(&self, i: usize) -> u64 {
         self.bits[i]
     }
@@ -232,16 +232,52 @@ unsafe fn formatf(sink: &mut impl Sink, format: *const c_char, ap: VaList<'_>) -
     }
     // SAFETY: the caller passes a C string.
     let fmt = unsafe { CStr::from_ptr(format) }.to_bytes();
-    let mut parsed = Parsed::new();
-    if format::parse(fmt, &mut parsed).is_none() {
-        return 0;
+    // Room for a common format first: the room is filled on every call.
+    let mut small = Parsed::<SMALL>::new();
+    match format::parse(fmt, &mut small) {
+        // SAFETY: the caller's arguments match the format.
+        Ok(()) => unsafe { fetch_and_render(sink, fmt, &small, ap) },
+        // SAFETY: as the caller guarantees.
+        Err(Unparsed::Full) => unsafe { formatf_large(sink, fmt, ap) },
+        Err(Unparsed::Rejected) => 0,
     }
-    let mut args = Values {
-        bits: [0; MAX_PARAMETERS],
-    };
+}
+
+/// `formatf` with libcurl's whole room: apart, so that the common call's
+/// stack frame does not hold it.
+///
+/// # Safety
+///
+/// As `formatf`'s.
+#[inline(never)]
+unsafe fn formatf_large(sink: &mut impl Sink, fmt: &[u8], ap: VaList<'_>) -> c_int {
+    let mut parsed = Parsed::<MAX>::new();
+    match format::parse(fmt, &mut parsed) {
+        // SAFETY: the caller's arguments match the format.
+        Ok(()) => unsafe { fetch_and_render(sink, fmt, &parsed, ap) },
+        Err(Unparsed::Rejected) => 0,
+        Err(Unparsed::Full) => unreachable!("libcurl's room is never too small"),
+    }
+}
+
+/// The room tried first, in segments and arguments.
+const SMALL: usize = 16;
+
+/// Read the arguments `parsed` names and render it into `sink`.
+///
+/// # Safety
+///
+/// `ap` matches the format `parsed` was parsed from.
+unsafe fn fetch_and_render<const N: usize>(
+    sink: &mut impl Sink,
+    fmt: &[u8],
+    parsed: &Parsed<N>,
+    ap: VaList<'_>,
+) -> c_int {
+    let mut args = Values { bits: [0; N] };
     // SAFETY: the caller's arguments match the format.
-    unsafe { fetch(&parsed, ap, &mut args) };
-    format::render(fmt, &parsed, &mut args, sink)
+    unsafe { fetch(parsed, ap, &mut args) };
+    format::render(fmt, parsed, &mut args, sink)
 }
 
 /// A buffer of known size, as for `snprintf`.
@@ -483,3 +519,135 @@ pub unsafe extern "C" fn curl_maprintf(format: *const c_char, args: ...) -> *mut
     unsafe { curl_mvaprintf(format, args) }
 }
 const _: ffi::proto::curl_maprintf = curl_maprintf;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `curl_msnprintf` into a buffer of 2048 bytes: the count it returns
+    /// and the text.
+    macro_rules! snprintf {
+        ($fmt:expr $(, $arg:expr)* $(,)?) => {{
+            let mut buf = [0u8; 2048];
+            // SAFETY: a C format whose conversions the arguments match,
+            // and a buffer of the size given.
+            let n = unsafe {
+                curl_msnprintf(buf.as_mut_ptr().cast(), buf.len(), $fmt.as_ptr() $(, $arg)*)
+            };
+            let len = buf.iter().position(|&b| b == 0).unwrap();
+            (n, String::from_utf8(buf[..len].to_vec()).unwrap())
+        }};
+    }
+
+    /// Precision zeros as many as C's buffer holds, and the conversions
+    /// around them, as C's `curl_msnprintf` writes them (each checked
+    /// against libcurl's output).
+    #[test]
+    fn numbers_are_written_as_c_writes_them() {
+        let zeros = |n: usize| "0".repeat(n);
+        assert_eq!(snprintf!(c"%.330d", 7 as c_int), (325, zeros(324) + "7"));
+        assert_eq!(snprintf!(c"%.400u", 7 as c_uint), (325, zeros(324) + "7"));
+        assert_eq!(snprintf!(c"%#.400o", 8 as c_uint), (325, zeros(323) + "10"));
+        assert_eq!(
+            snprintf!(c"%#.330x|", 255 as c_uint),
+            (328, format!("0x{}ff|", zeros(323)))
+        );
+        assert_eq!(
+            snprintf!(c"%-340.323d|", -12 as c_int),
+            (341, format!("-{}12{}|", zeros(321), " ".repeat(16)))
+        );
+        assert_eq!(
+            snprintf!(
+                c"[%#o][%#.0o][%.0d][%5.3d][%-+6d][% 05d][%#X]",
+                0 as c_uint,
+                0 as c_uint,
+                0 as c_int,
+                7 as c_int,
+                42 as c_int,
+                -3 as c_int,
+                0xabc as c_uint
+            ),
+            (37, "[0][0][][  007][+42   ][-0003][0XABC]".into())
+        );
+        assert_eq!(
+            snprintf!(
+                c"%llo %llu %lld %llx",
+                u64::MAX,
+                u64::MAX,
+                i64::MIN,
+                u64::MAX
+            ),
+            (
+                81,
+                "1777777777777777777777 18446744073709551615 -9223372036854775808 ffffffffffffffff"
+                    .into()
+            )
+        );
+    }
+
+    /// Formats with more segments or arguments than the room tried
+    /// first are written whole, as C writes them; libcurl's own limits
+    /// still refuse one.
+    #[test]
+    fn formats_past_the_first_room_are_written_as_c_writes_them() {
+        let (a, b, c, d, e, f) = (
+            1 as c_int, 2 as c_int, 3 as c_int, 4 as c_int, 5 as c_int, 6 as c_int,
+        );
+        assert_eq!(
+            snprintf!(
+                c"%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d",
+                a,
+                b,
+                c,
+                d,
+                e,
+                f,
+                a,
+                b,
+                c,
+                d,
+                e,
+                f,
+                a,
+                b,
+                c,
+                d,
+                e
+            ),
+            (17, "12345612345612345".into())
+        );
+        assert_eq!(
+            snprintf!(c"a%%b%%c%%d%%e%%f%%g%%h%%i%%j%%k%%l%%m%%n%%o%%p%%q%%r"),
+            (35, "a%b%c%d%e%f%g%h%i%j%k%l%m%n%o%p%q%r".into())
+        );
+        let s = |t: &CStr| t.as_ptr();
+        assert_eq!(
+            snprintf!(
+                c"%17$s %1$s %2$s %3$s %4$s %5$s %6$s %7$s %8$s %9$s %10$s %11$s %12$s %13$s %14$s %15$s %16$s",
+                s(c"a"), s(c"b"), s(c"c"), s(c"d"), s(c"e"), s(c"f"), s(c"g"), s(c"h"), s(c"i"),
+                s(c"j"), s(c"k"), s(c"l"), s(c"m"), s(c"n"), s(c"o"), s(c"p"), s(c"q")
+            ),
+            (33, "q a b c d e f g h i j k l m n o p".into())
+        );
+        // An argument left out is refused, past the first room too.
+        assert_eq!(snprintf!(c"%16$s|%1$d", 5 as c_int), (0, String::new()));
+        // 128 conversions are written, 129 refused.
+        let c128 = std::ffi::CString::new("%c".repeat(128)).unwrap();
+        let c129 = std::ffi::CString::new("%c".repeat(129)).unwrap();
+        let x = c_int::from(b'a');
+        macro_rules! with_128 {
+            ($f:expr $(, $extra:expr)*) => {
+                snprintf!(
+                    $f,
+                    x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x,
+                    x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x,
+                    x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x,
+                    x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x
+                    $(, $extra)*
+                )
+            };
+        }
+        assert_eq!(with_128!(c128), (128, "a".repeat(128)));
+        assert_eq!(with_128!(c129, x), (0, String::new()), "129 conversions");
+    }
+}

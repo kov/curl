@@ -1,0 +1,17 @@
+# The curl_m*printf family: what C writes, in the room C has.
+
+=== a format needing more room than the first is written as nothing
+file: crates/curl-sys-abi/src/printf/mod.rs
+witness: curl-sys-abi printf::tests::formats_past_the_first_room_are_written_as_c_writes_them
+--- old
+        Err(Unparsed::Full) => unsafe { formatf_large(sink, fmt, ap) },
+--- new
+        Err(Unparsed::Full) => 0,
+
+=== the first room's size is taken for libcurl's limit
+file: crates/curl-sys-abi/src/printf/format.rs
+witness: curl-sys-abi printf::tests::formats_past_the_first_room_are_written_as_c_writes_them
+--- old
+    let full = if N == MAX {
+--- new
+    let full = if true {

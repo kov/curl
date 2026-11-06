@@ -472,9 +472,18 @@ features: debug-hooks
 --- new
             let _ = &post.fields;
 
-=== a string handed to the application is allocated untracked
-file: crates/curl-sys-abi/src/root.rs
+=== an escape handed to the application is allocated untracked
+file: crates/curl-sys-abi/src/strings.rs
 witness: curl-sys-abi debug::tests::test558_libtest_memory_tracking_operational
+features: debug-hooks
+--- old
+    let out = alloc.malloc(size).cast::<core::mem::MaybeUninit<u8>>();
+--- new
+    let out = alloc.raw_malloc(size).cast::<core::mem::MaybeUninit<u8>>();
+
+=== a copy of bytes handed to the application is allocated untracked
+file: crates/curl-sys-abi/src/root.rs
+witness: curl-sys-abi debug::tests::logs_what_memanalyze_reads
 features: debug-hooks
 --- old
         let p = self.malloc(size).cast::<u8>();

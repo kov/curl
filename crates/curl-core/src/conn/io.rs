@@ -1047,6 +1047,16 @@ pub enum Peer {
 #[derive(Clone, Debug)]
 pub struct Conversation(curl_alloc::TryArc<std::sync::Mutex<Wire>>);
 
+/// What a scripted send does ([`Conversation::scripted_sends`]).
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptedSend {
+    /// It takes at most this many bytes; none is a send that would block.
+    Takes(usize),
+    /// It fails, as on a connection the peer closed.
+    Fails,
+}
+
 /// A fake connection's two directions, shared by its socket, its network
 /// and the test.
 #[cfg(any(test, feature = "test-util"))]
@@ -1102,6 +1112,12 @@ struct Wire {
     stalls_after: usize,
     /// The most a send takes; the rest is left to the sender.
     takes: Option<std::num::NonZeroUsize>,
+    /// What each send in turn does, as the test scripts it; past the
+    /// script, sends go as the rest of the peer says.
+    script: Vec<ScriptedSend>,
+    /// The bytes each scripted send was offered, one for each made: the
+    /// next is the script's step after them.
+    offered: Vec<usize>,
     /// The most a read gives; the rest waits for the next.
     gives: Option<std::num::NonZeroUsize>,
     /// Each reply arrives a poll after its request: its first read
@@ -1255,6 +1271,38 @@ impl Conversation {
             wire.stalls_after = taken;
         }
         self
+    }
+
+    /// The same peer, its sends doing what `script` says in turn: taking
+    /// at most so many bytes, none as would-block, or failing as on a
+    /// connection the peer closed (`EPIPE`).
+    pub fn scripted_sends(self, script: &[ScriptedSend]) -> Conversation {
+        {
+            let mut wire = self.0.lock().expect("no test panics holding the wire");
+            wire.script
+                .try_extend_from_slice(script)
+                .expect("a test's script fits");
+            // Room for what each send is offered, made now.
+            wire.offered
+                .try_reserve(script.len())
+                .expect("a test's script fits");
+        }
+        self
+    }
+
+    /// The scripted sends not yet made.
+    pub fn script_left(&self) -> usize {
+        let wire = self.0.lock().expect("no test panics holding the wire");
+        wire.script.len() - wire.offered.len()
+    }
+
+    /// How many bytes each scripted send made so far was offered.
+    pub fn offered(&self) -> Vec<usize> {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .offered
+            .clone()
     }
 
     /// The same peer, each send taking at most `n` bytes: a send buffer
@@ -2563,7 +2611,23 @@ impl Socket for FakeSocket {
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         let n = std::num::NonZeroUsize::new(buf.len()).expect("a send needs bytes");
-        let n = wire.takes.map_or(n, |most| n.min(most));
+        let mut n = wire.takes.map_or(n, |most| n.min(most));
+        if let Some(&step) = wire.script.get(wire.offered.len()) {
+            assert!(
+                wire.offered.len() < wire.offered.capacity(),
+                "room for each scripted send"
+            );
+            wire.offered
+                .try_push(buf.len())
+                .expect("room for each scripted send");
+            match step {
+                ScriptedSend::Fails => return Err(io::Error::from_raw_os_error(libc_errno::EPIPE)),
+                ScriptedSend::Takes(most) => match std::num::NonZeroUsize::new(most) {
+                    Some(most) => n = n.min(most),
+                    None => return Ok(Sent::WouldBlock),
+                },
+            }
+        }
         let buf = &buf[..n.get()];
         if wire.hung_up || wire.breaks_after.is_some_and(|n| wire.sends >= n) {
             return Err(io::Error::from_raw_os_error(libc_errno::EPIPE));

@@ -707,3 +707,106 @@ fn packets_read_a_byte_at_a_time_are_taken_whole() {
     assert_eq!(ran.body, DELIVERED);
     assert!(said.ends_with(b"\x82\x0a\x00\x01\x00\x05topic\x00"));
 }
+
+/// unit1693: a post's CONNECT, PUBLISH and DISCONNECT over a connection
+/// whose sends take what each of `t1693_run`'s scripts says. Each send is
+/// offered what is left of the packet going, never more of the next
+/// before it is gone; while some of it waits the transfer waits to write,
+/// else to read; the CONNACK is read only once the CONNECT is gone; the
+/// bytes go in order, all of them, and a send that fails fails the
+/// transfer (`CURLE_SEND_ERROR`) with what went before it sent. A send C
+/// says took none of it with no error is a send that would block here: a
+/// socket's send takes a byte or more, or none and blocks.
+#[test]
+fn unit1693_partial_sends() {
+    use crate::conn::io::{Events, ScriptedSend};
+    use crate::proto::raw::wire::{added, serving, waits};
+    const FILE: &str = "tests/unit/unit1693.c";
+    let constant = |w: &str| usize::try_from(crate::c_source::constant(FILE, w)).unwrap();
+    let ends = [
+        constant("T1693_CONNECT_LEN"),
+        constant("T1693_PUBLISH_END"),
+        constant("T1693_WIRE_LEN"),
+    ];
+    // What follows the CONNECT, whose client id is random.
+    let post: Vec<u8> = crate::c_source::table(FILE, "post[] =", |c| panic!("{c}"))
+        .iter()
+        .map(|b| match b.word().as_bytes() {
+            [b'\'', c, b'\''] => *c,
+            _ => u8::try_from(b.int()).unwrap(),
+        })
+        .collect();
+    assert_eq!(ends[0] + post.len(), ends[2]);
+    let holds = |c: &str| {
+        assert_eq!(c, "!(defined(CURL_DISABLE_MQTT))");
+        true
+    };
+    let runs = crate::c_source::calls_where(FILE, "t1693_run", holds);
+    assert_eq!(runs.len(), 4);
+    for run in runs {
+        let name = run[0].word();
+        let script: Vec<ScriptedSend> =
+            crate::c_source::table(FILE, &format!("{name}[] ="), |c| panic!("{c}"))
+                .iter()
+                .map(|step| {
+                    let step = step.group();
+                    match step[1].word() {
+                        "CURLE_OK" => ScriptedSend::Takes(constant(step[0].word())),
+                        "CURLE_AGAIN" => ScriptedSend::Takes(0),
+                        "CURLE_SEND_ERROR" => ScriptedSend::Fails,
+                        other => panic!("{other}"),
+                    }
+                })
+                .collect();
+        let ok = match run[2].word() {
+            "CURLE_OK" => true,
+            "CURLE_SEND_ERROR" => false,
+            other => panic!("{other}"),
+        };
+        let talk = Conversation::replies(&[CONNACK], false)
+            .per_send()
+            .scripted_sends(&script);
+        let mut m = serving(&[&talk]);
+        added(&mut m, "mqtt://127.0.0.1:PORT/test", posting(b"payload"));
+        let mut result = None;
+        for _ in 0..script.len() + 4 {
+            m.perform(&mut crate::multi::NoEvents).unwrap();
+            if let Some(done) = m.info_read() {
+                result = Some(done.result);
+                break;
+            }
+            // What the last send left of its packet; before the first,
+            // the connection is still being made.
+            let offered = talk.offered();
+            if offered.is_empty() {
+                continue;
+            }
+            let pending = match (offered.last(), script.get(offered.len().wrapping_sub(1))) {
+                (Some(&len), Some(&ScriptedSend::Takes(took))) => took < len,
+                _ => false,
+            };
+            let want = if pending { Events::OUT } else { Events::IN };
+            assert_eq!(waits(&mut m), [want], "{name}, after {offered:?}");
+        }
+        assert_eq!(talk.script_left(), 0, "{name}: not all scripted sends used");
+        // Each send was offered what was left of the packet going.
+        let mut sent = 0;
+        for (i, (&len, step)) in talk.offered().iter().zip(&script).enumerate() {
+            let end = ends.iter().find(|&&e| e > sent).unwrap();
+            assert_eq!(len, end - sent, "{name}: send {i} of {sent} bytes gone");
+            if let ScriptedSend::Takes(took) = *step {
+                sent += took.min(len);
+            }
+        }
+        let said = talk.received();
+        assert_eq!(said.len(), sent, "{name}");
+        assert_eq!(said[..2], [0x10, 0x18], "{name}: the CONNECT");
+        assert_eq!(said[ends[0]..], post[..sent - ends[0]], "{name}");
+        if ok {
+            assert_eq!(result, Some(Ok(())), "{name}");
+            assert_eq!(sent, ends[2], "{name}: missing packet bytes");
+        } else {
+            assert_eq!(result, Some(Err(ErrorKind::SendError)), "{name}");
+        }
+    }
+}

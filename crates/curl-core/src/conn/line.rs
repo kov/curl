@@ -62,11 +62,13 @@ impl LineConn {
     /// [`Goodbye::Awaited`] while it has not come, which
     /// [`goodbye_answer`](Self::goodbye_answer) reads on. A connection
     /// `dead`, whose state no one knows (a transfer on it aborted), is
-    /// told so and says nothing (`dead_connection`).
+    /// told so and says nothing (`dead_connection`). One that blocks
+    /// waits on `clock` (libssh2's), and with none does not block.
     pub(crate) fn goodbye(
         &mut self,
         cx: &mut dyn LayerCx,
         below: Carrier<'_>,
+        clock: Option<&crate::time::SharedClock>,
         dead: bool,
     ) -> Goodbye {
         match *self {
@@ -76,7 +78,7 @@ impl LineConn {
             LineConn::Smtp(ref mut p) => return p.goodbye(cx, below, dead),
             // Said dead or not, as C's SSH disconnect ignores it.
             LineConn::Ssh(ref mut p) => p.goodbye(cx),
-            LineConn::Ssh2(ref mut p) => p.goodbye(cx, below),
+            LineConn::Ssh2(ref mut p) => p.goodbye(cx, below, clock),
             // Unbound dead or not, as C's LDAP disconnect ignores it.
             LineConn::Ldap(ref mut p) => p.goodbye(cx, below),
             LineConn::Ws(_) | LineConn::Rtsp(_) => {}

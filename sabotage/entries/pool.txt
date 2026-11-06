@@ -472,10 +472,10 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 --- old
     if aborted {
-        shutting.abandon(now, net, trace.as_ref(), in_multi);
+        shutting.abandon(now, clock.as_ref(), net, trace.as_ref(), in_multi);
 --- new
     if false {
-        shutting.abandon(now, net, trace.as_ref(), in_multi);
+        shutting.abandon(now, clock.as_ref(), net, trace.as_ref(), in_multi);
 
 === an idle connection the pool closes is not drained
 file: crates/curl-core/src/conn/pool.rs

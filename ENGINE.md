@@ -4026,7 +4026,9 @@ range and resume point, and the body read or sent.
   range and body, is the one both machines share; `Request`'s steps go to the libssh2
   machine's when the connection holds it. SCP's channel ends with its EOF and close waited
   for, and its connection is kept. The goodbye runs the shutdown's states blocking, a second
-  at most ("Disconnect timed out"). Under an HTTPS proxy's TLS, or any layer of the
+  at most by the multi's clock, read each pass as C's reads the time ("Disconnect timed out",
+  said on the internal trace); the shutdown hands that clock down to the line's goodbye, and
+  with none (a pool's own tests) the goodbye runs one pass without blocking. Under an HTTPS proxy's TLS, or any layer of the
   connection's, the session reads and writes through its pipes (`ssh2::Pipes`), not the
   socket: its receive and send callbacks take from and give to them, and after each call that
   would wait the machine moves them to and from the connection's layers (`pump`), each piece

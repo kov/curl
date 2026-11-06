@@ -159,13 +159,20 @@ impl Shutting {
 
     /// Its protocol's goodbye, unless said already
     /// (`cshutdn_run_conn_handler`); `dead` if no one knows what state
-    /// the connection is in. Whether it was said now.
-    fn say_goodbye(&mut self, cx: &mut InternalCx<'_>, dead: bool) -> bool {
+    /// the connection is in. A goodbye that blocks waits on `clock`, as
+    /// C's reads the time each pass; with none it does not block. Whether
+    /// it was said now.
+    fn say_goodbye(
+        &mut self,
+        cx: &mut InternalCx<'_>,
+        clock: Option<&SharedClock>,
+        dead: bool,
+    ) -> bool {
         if std::mem::replace(&mut self.said, true) {
             return false;
         }
         let (trace, now) = (cx.trace, cx.now);
-        self.answer_due = match self.conn.protocol_goodbye(cx, trace, dead) {
+        self.answer_due = match self.conn.protocol_goodbye(cx, trace, clock, dead) {
             Goodbye::Done => None,
             Goodbye::Awaited { .. } => Some(now.after(BLOCKING_POLL)),
         };
@@ -217,14 +224,15 @@ impl Shutting {
     /// (`cf_socket_shutdown`). A layer that fails ends it. Said on
     /// `trace` as C's internal handle says it (`Curl_cshutdn_try_once`);
     /// a QUIC connection receives in `room`, the multi's, if the multi
-    /// runs it.
+    /// runs it. A protocol's goodbye that blocks waits on `clock`.
     pub(crate) fn try_once(
         &mut self,
         now: Instant,
+        clock: Option<&SharedClock>,
         trace: Option<&Internal>,
         room: Option<&mut RecvRoom>,
     ) -> Tried {
-        let tried = match self.run_once(now, trace, room) {
+        let tried = match self.run_once(now, clock, trace, room) {
             Tried::Done => {
                 self.finished = true;
                 Tried::Done
@@ -246,6 +254,7 @@ impl Shutting {
     fn run_once(
         &mut self,
         now: Instant,
+        clock: Option<&SharedClock>,
         trace: Option<&Internal>,
         room: Option<&mut RecvRoom>,
     ) -> Tried {
@@ -265,7 +274,7 @@ impl Shutting {
         }
         // Its protocol says goodbye first, once; then a session, each try
         // (`cshutdn_run_once`, `cf_h2_shutdown`).
-        let said_now = self.say_goodbye(&mut cx, false);
+        let said_now = self.say_goodbye(&mut cx, clock, false);
         // The answer goes before the layers shut down: closing a socket
         // with it unread, or before it comes, resets the connection, and
         // the peer may then lose what it had not read yet (Windows does).
@@ -319,6 +328,7 @@ impl Shutting {
     fn abandon(
         mut self,
         now: Instant,
+        clock: Option<&SharedClock>,
         net: &mut dyn Net,
         trace: Option<&Internal>,
         in_multi: bool,
@@ -328,7 +338,7 @@ impl Shutting {
             trace,
             room: None,
         };
-        let _said = self.say_goodbye(&mut cx, true);
+        let _said = self.say_goodbye(&mut cx, clock, true);
         // Told it is dead, its protocol awaits nothing.
         self.close(net, None, trace, in_multi);
     }
@@ -628,7 +638,7 @@ impl ShutdownSet {
             let trace = self.trace.as_ref();
             if self.conns[i]
                 .shutting
-                .try_once(now, trace, Some(&mut *room))
+                .try_once(now, Some(&self.clock), trace, Some(&mut *room))
                 == Tried::Done
             {
                 let entry = self.conns.remove(i);
@@ -903,10 +913,10 @@ pub(crate) fn discard(
     let in_multi = linger.is_some();
     let mut shutting = Shutting::start(conn, now);
     if aborted {
-        shutting.abandon(now, net, trace.as_ref(), in_multi);
+        shutting.abandon(now, clock.as_ref(), net, trace.as_ref(), in_multi);
     } else {
         let room = linger.as_mut().map(|l| &mut *l.room);
-        if shutting.try_once(now, trace.as_ref(), room) != Tried::Done
+        if shutting.try_once(now, clock.as_ref(), trace.as_ref(), room) != Tried::Done
             && let Some(l) = linger.as_mut()
             && (may_linger || shutting.awaits())
         {

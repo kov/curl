@@ -1684,6 +1684,7 @@ impl Conn {
         &mut self,
         cx: &mut dyn LayerCx,
         trace: Option<&crate::trace::Internal>,
+        clock: Option<&crate::time::SharedClock>,
         dead: bool,
     ) -> line::Goodbye {
         let n = self.number.get();
@@ -1699,7 +1700,7 @@ impl Conn {
                 u8::from(dead)
             ));
         }
-        line.goodbye(cx, carrier, dead)
+        line.goodbye(cx, carrier, clock, dead)
     }
 
     /// Read on the answer its protocol's goodbye awaits: `Done` once it

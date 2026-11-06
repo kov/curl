@@ -664,10 +664,16 @@ impl Ssh2Conn {
 
     /// Say goodbye to the server as the connection shuts down
     /// (`scp_disconnect`, `sftp_disconnect`): its run blocking, waiting on
-    /// the socket at most a second in all (`ssh_block_statemach`), then
-    /// all freed.
-    pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>) {
-        let start = cx.now();
+    /// the socket at most a second in all by `clock`, read each pass as
+    /// C's reads the time (`ssh_block_statemach`), then all freed. With
+    /// no clock to wait by, one pass, not blocking.
+    pub(crate) fn goodbye(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        mut below: Carrier<'_>,
+        clock: Option<&crate::time::SharedClock>,
+    ) {
+        let start = clock.map(crate::time::SharedClock::now);
         let says = &mut LayerSays(cx);
         if self.session.is_some() {
             let first = if self.sftp {
@@ -684,9 +690,17 @@ impl Ssh2Conn {
                 if result.is_err() {
                     break;
                 }
-                if says.0.now().since(start) > Duration::from_secs(1) {
-                    if let Some(f) = says.0.failures() {
-                        f.keep(ErrorKind::Ssh, format_args!("Disconnect timed out"));
+                let (Some(clock), Some(start)) = (clock, start) else {
+                    break;
+                };
+                if clock.now().since(start) > Duration::from_secs(1) {
+                    // C's failure, on its internal handle: said there.
+                    match says.0.failures() {
+                        Some(f) => {
+                            let _kept =
+                                f.keep(ErrorKind::Ssh, format_args!("Disconnect timed out"));
+                        }
+                        None => says.info(format_args!("Disconnect timed out")),
                     }
                     break;
                 }

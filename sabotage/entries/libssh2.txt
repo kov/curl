@@ -72,3 +72,11 @@ witness: curl-core proto::ssh::libssh2::tests::every_call_that_waits_is_made_aga
         };
         match rc {
             Err(rc) if rc.again() && false => return Err(Halt::Again),
+
+=== the goodbye's deadline reads a time that never moves
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::the_goodbye_waits_a_second_at_most
+--- old
+                if clock.now().since(start) > Duration::from_secs(1) {
+--- new
+                if start.since(start) > Duration::from_secs(1) {

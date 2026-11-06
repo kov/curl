@@ -3624,6 +3624,60 @@ fn host_based_login_is_visited_only_when_offered_and_allowed() {
     );
 }
 
+/// The goodbye waits on a session that keeps waiting a second at most,
+/// then frees it all, blocking, each failure said.
+#[test]
+fn the_goodbye_waits_a_second_at_most() {
+    let w = world_with(&[("/home/u/f", "x")], |w| w.stuck = vec!["disconnect"]);
+    let (r, _, said, calls) = run_in(&w, URL, |o| o.limits.reuse.forbid = true);
+    assert_eq!(r, Ok(()), "{said}");
+    // Each wait a quarter of a second: given up on past the second.
+    let disconnects: Vec<_> = calls.iter().filter(|c| c.ends_with("disconnect")).collect();
+    assert_eq!(disconnects, ["waits disconnect"; 5], "{calls:?}");
+    assert_eq!(
+        calls.last().map(String::as_str),
+        Some("session_free"),
+        "{calls:?}"
+    );
+    assert_eq!(
+        w.lock().unwrap().internal.said(),
+        format!("{}* Disconnect timed out\n", shutdown_said())
+    );
+}
+
+/// A broken SCP download's channel, still open as the connection closes,
+/// is freed by the goodbye, its wait waited on.
+#[test]
+fn a_channel_left_open_is_freed_by_the_goodbye() {
+    struct Fails;
+    impl WriteHandler for Fails {
+        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Wrote {
+            Wrote::Fail
+        }
+    }
+    let w = world_with(&[("/home/u/f", "x")], |w| w.waiting = vec!["channel_free"]);
+    let (r, _, said, calls) = run_in(&w, "scp://u@127.0.0.1:PORT/home/u/f", |o| {
+        o.callbacks.write = Some(Handler::write(Fails).unwrap());
+        o.limits.reuse.forbid = true;
+    });
+    assert_eq!(r, Err(ErrorKind::WriteError), "{said}");
+    let at = calls
+        .iter()
+        .position(|c| c == "waits channel_free")
+        .expect("waited");
+    assert_eq!(
+        calls[at..],
+        [
+            "waits channel_free",
+            "channel_free",
+            "disconnect",
+            "session_free"
+        ]
+    );
+    let internal = w.lock().unwrap().internal.said();
+    assert!(!internal.contains("scp subsystem"), "{internal}");
+}
+
 /// A body's read failing fails the download with the session's failure,
 /// as C's `sftp_recv` and `scp_recv` map it.
 #[test]

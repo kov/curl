@@ -215,3 +215,12 @@ witness: curl-core proto::http::tests::h3_trace::an_alternative_here_in_http1_le
         (neg.wanted.h3 && h3).then_some(Alpn::H3),
 --- new
         None,
+
+=== an alternative's IPv6 zone is looked up as part of its host
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::alt_svc::an_ipv6_alternative_is_reached_by_its_address
+--- old
+        for part in [&b"["[..], address, b"]"] {
+--- new
+        let address = if zone.is_some() { host } else { address };
+        for part in [&b"["[..], address, b"]"] {

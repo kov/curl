@@ -1443,17 +1443,12 @@ fn alt_svc<H: Host>(
         return Ok(Some(AltSvc::Here(found.alpn)));
     }
     let oom = |OutOfMemory| ErrorKind::OutOfMemory;
-    // An IPv6 address in brackets, as a peer holds one.
-    let mut host = Vec::new();
-    let parts: [&[u8]; 3] = match found.host.contains(&b':') {
-        true => [b"[", found.host, b"]"],
-        false => [b"", found.host, b""],
-    };
-    for part in parts {
-        host.try_extend_from_slice(part).map_err(oom)?;
-    }
     let (dst_alpn, port) = (found.alpn, found.port);
-    let via = Peer::new(origin.scheme(), host, port, None);
+    // An IPv6 address and its zone told apart from a name as C tells
+    // them (`Curl_peer_create`).
+    let via = Peer::create(origin.scheme(), found.host, port)
+        .map_err(oom)?
+        .ok_or(ErrorKind::UrlMalformat)?;
     // A name in Unicode is looked up by its ASCII form, as the origin's
     // (`Curl_peer_create`).
     let via = via.idn(cx.easy().libraries().idn);

@@ -1107,6 +1107,51 @@ impl Peer {
         }
     }
 
+    /// The peer `host` names at `port`, as `Curl_peer_create` makes one:
+    /// an IPv6 address in brackets, or one without that is no IPv4
+    /// address, with any zone after it, or else a name; `None` for
+    /// brackets around nothing that looks like an IPv6 address. C looks
+    /// at the bytes alone, so a name of hex digits and dots counts as an
+    /// IPv6 address.
+    pub(crate) fn create(
+        scheme: Scheme,
+        host: &[u8],
+        port: u16,
+    ) -> Result<Option<Peer>, OutOfMemory> {
+        let copy = |bytes: &[u8]| {
+            let mut v = Vec::new();
+            v.try_extend_from_slice(bytes).map(|()| v)
+        };
+        let (address, zone) = if let Some(inner) = host.strip_prefix(b"[") {
+            // Up to the bracket, or the end (`curlx_str_until`).
+            let inner = &inner[..inner.iter().position(|&b| b == b']').unwrap_or(inner.len())];
+            match looks_like_ipv6(inner).filter(|_| !inner.is_empty()) {
+                Some(found) => found,
+                None => return Ok(None),
+            }
+        } else {
+            match looks_like_ipv6(host) {
+                // `Curl_is_ipv4addr` of the whole text, zone and all.
+                Some(found) if crate::url::pton4(host).is_none() => found,
+                Some((address, zone)) => {
+                    let peer = Peer::new(scheme, copy(address)?, port, zone.map(copy).transpose()?);
+                    return Ok(Some(peer));
+                }
+                None => return Ok(Some(Peer::new(scheme, copy(host)?, port, None))),
+            }
+        };
+        let mut name = Vec::new();
+        for part in [&b"["[..], address, b"]"] {
+            name.try_extend_from_slice(part)?;
+        }
+        Ok(Some(Peer::new(
+            scheme,
+            name,
+            port,
+            zone.map(copy).transpose()?,
+        )))
+    }
+
     /// The same peer, its host looked up by its ASCII form where the URL
     /// names it in Unicode and `idn` converts it (`peer_parse_host`); a
     /// name that does not convert, or converts to nothing, is refused.
@@ -1251,6 +1296,25 @@ impl Peer {
     pub(crate) fn zone(&self) -> Option<&[u8]> {
         self.zone.as_deref()
     }
+}
+
+/// An IPv6 address and its zone, as `Curl_looks_like_ipv6` lets one
+/// through: hex digits, colons and dots, then perhaps `%` (or `%25`)
+/// and a zone of unreserved characters.
+pub(crate) fn looks_like_ipv6(text: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
+    let len = text
+        .iter()
+        .take_while(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.'))
+        .count();
+    let (address, rest) = text.split_at(len);
+    let Some(zone) = rest.strip_prefix(b"%") else {
+        return rest.is_empty().then_some((address, None));
+    };
+    let zone = zone.strip_prefix(b"25").unwrap_or(zone);
+    let unreserved = |b: &u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
+    zone.iter()
+        .all(unreserved)
+        .then_some((address, Some(zone).filter(|z| !z.is_empty())))
 }
 
 /// The same peer (`Curl_peer_equal`): the same scheme, port and IPv6
@@ -2644,5 +2708,65 @@ mod tests {
         assert!(!socks.serves(&behind(ProxyType::Socks5, b"other.example")));
         assert!(!socks.serves(&behind(ProxyType::Socks4, b"socks.example")));
         assert!(!socks.serves(&route) && !route.serves(&socks));
+    }
+
+    /// unit2413: peers made from a host as `Curl_peer_create` makes them,
+    /// read from its calls, and compared as `Curl_peer_equal` and
+    /// `Curl_peer_same_destination` compare them. C's check that the
+    /// peer keeps the host as given (`user_hostname`) has no counterpart:
+    /// a peer holds an IPv6 address in brackets, its zone apart.
+    #[test]
+    fn unit2413_peers() {
+        use crate::c_source::Value;
+        let scheme = |v: &Value| match v.word() {
+            "&Curl_scheme_https" => Scheme::named(b"https").unwrap(),
+            "&Curl_scheme_http" => Scheme::named(b"http").unwrap(),
+            other => panic!("{other}"),
+        };
+        let bool_of = |v: &Value| match v.word() {
+            "TRUE" => true,
+            "FALSE" => false,
+            other => panic!("{other}"),
+        };
+        let port = |v: &Value| u16::try_from(v.int()).unwrap();
+        let create = |s, host: &[u8], p| Peer::create(s, host, p).unwrap().unwrap();
+        let made = crate::c_source::calls("tests/unit/unit2413.c", "test_create2413");
+        assert_eq!(made.len(), 9, "the calls were read");
+        for call in &made {
+            let [name, _, s, host, p, want_host, ipv6, zone, scope] = &call[..] else {
+                panic!("{call:?}")
+            };
+            let name = name.str().escape_ascii().to_string();
+            let peer = create(scheme(s), host.str(), port(p));
+            assert_eq!(peer.scheme(), scheme(s), "{name}");
+            assert!(peer.name().eq_ignore_ascii_case(want_host.str()), "{name}");
+            assert_eq!(peer.port(), port(p), "{name}");
+            assert_eq!(peer.ipv6(), bool_of(ipv6), "{name}");
+            assert_eq!(peer.zone(), zone.bytes(), "{name}");
+            let scope_of = match scope {
+                Value::Call(..) => {
+                    let zone = scope.call("t2413_scopeid")[0].str();
+                    curl_os::net::interface_index(zone).map_or(0, NonZeroU32::get)
+                }
+                n => u32::try_from(n.int()).unwrap(),
+            };
+            assert_eq!(peer.scope, scope_of, "{name}");
+        }
+        let compared = crate::c_source::calls("tests/unit/unit2413.c", "t2413_cmp");
+        assert_eq!(compared.len(), 6, "the calls were read");
+        for call in &compared {
+            let [name, _, s1, h1, p1, s2, h2, p2, equal, same] = &call[..] else {
+                panic!("{call:?}")
+            };
+            let name = name.str().escape_ascii().to_string();
+            let one = create(scheme(s1), h1.str(), port(p1));
+            let two = create(scheme(s2), h2.str(), port(p2));
+            assert_eq!(one == two, bool_of(equal), "{name}");
+            assert_eq!(one.same_destination(&two), bool_of(same), "{name}");
+        }
+        // Brackets around nothing like an IPv6 address make no peer.
+        let https = Scheme::named(b"https").unwrap();
+        assert!(Peer::create(https, b"[]", 1).unwrap().is_none());
+        assert!(Peer::create(https, b"[x]", 1).unwrap().is_none());
     }
 }

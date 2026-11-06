@@ -4,7 +4,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use super::Peer;
+use super::{Peer, looks_like_ipv6};
 use crate::error::ErrorKind;
 
 /// An entry that matched but does not name a peer.
@@ -103,7 +103,7 @@ fn connect_to<'a>(origin: &Peer, to: &'a [u8]) -> Result<Peer, BadVia<'a>> {
     let mut name = Vec::new();
     let zone = if let Some(inner) = host.strip_prefix(b"[") {
         let inner = &inner[..inner.len() - 1];
-        let Some((address, zone)) = ipv6(inner) else {
+        let Some((address, zone)) = looks_like_ipv6(inner) else {
             let why = "Invalid IPv6 address format";
             return Err(syntax(ErrorKind::UrlMalformat, why, host));
         };
@@ -123,25 +123,6 @@ fn connect_to<'a>(origin: &Peer, to: &'a [u8]) -> Result<Peer, BadVia<'a>> {
         None
     };
     Ok(Peer::new(origin.scheme(), name, port, zone))
-}
-
-/// An IPv6 address and its zone, as `Curl_looks_like_ipv6` lets one
-/// through: hex digits, colons and dots, then perhaps `%` (or `%25`)
-/// and a zone of unreserved characters.
-fn ipv6(text: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
-    let len = text
-        .iter()
-        .take_while(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.'))
-        .count();
-    let (address, rest) = text.split_at(len);
-    let Some(zone) = rest.strip_prefix(b"%") else {
-        return rest.is_empty().then_some((address, None));
-    };
-    let zone = zone.strip_prefix(b"25").unwrap_or(zone);
-    let unreserved = |b: &u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
-    zone.iter()
-        .all(unreserved)
-        .then_some((address, Some(zone).filter(|z| !z.is_empty())))
 }
 
 /// The port the digits `text` starts with make, what follows them

@@ -302,10 +302,18 @@ fn a_reset_handle_writes_the_file_last_read() {
 }
 
 /// An alternative at an IPv6 address is connected to as one, and named
-/// without its brackets, as C names it.
+/// without its brackets, as C names it; a zone after the address, here
+/// one naming no interface, is the zone's and not the host's
+/// (`Curl_peer_create`).
 #[test]
 fn an_ipv6_alternative_is_reached_by_its_address() {
-    let line = format!("h1 origin.example {PORT} h1 [::1] {PORT} \"20991231 00:00:00\" 0 0\n");
+    for dst in ["[::1]", "[::1%25zz]"] {
+        ipv6_alternative(dst);
+    }
+}
+
+fn ipv6_alternative(dst: &str) {
+    let line = format!("h1 origin.example {PORT} h1 {dst} {PORT} \"20991231 00:00:00\" 0 0\n");
     let file = Temp::new("ipv6", &line);
     let (_backend, libraries) = super::tls::tls();
     let clock = ManualClock::new().unwrap();

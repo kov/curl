@@ -40,6 +40,18 @@ pub fn escape(bytes: &[u8]) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
     encode::escape(bytes).map_err(|_| curl_alloc::OutOfMemory)
 }
 
+/// [`escape`] into the start of `out`, as `curl_easy_escape` writes into
+/// the buffer of three times the input's size it allocates: how many
+/// bytes it wrote. Bytes of `out` past those may be written too.
+///
+/// # Panics
+///
+/// If `out` is shorter than the escaped string; three times `bytes` is
+/// always long enough.
+pub fn escape_into(bytes: &[u8], out: &mut [core::mem::MaybeUninit<u8>]) -> usize {
+    encode::escape_into(bytes, out)
+}
+
 /// `bytes` with its `%XX` escapes decoded, nothing refused
 /// (`curl_easy_unescape`, `Curl_urldecode` with `REJECT_NADA`).
 pub fn unescape(bytes: &[u8]) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {

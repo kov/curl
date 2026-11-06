@@ -392,9 +392,25 @@ witness: curl-core url::encode::tests::escapes_every_byte_without_a_limit
 file: crates/curl-core/src/url/encode.rs
 witness: curl-core url::encode::tests::escapes_every_byte_without_a_limit
 --- old
-            *low = UPPER_HEX[usize::from(b & 0xf)];
+            [b'%', UPPER_HEX[b >> 4], UPPER_HEX[b & 0xf], 3]
 --- new
-            *low = UPPER_HEX[usize::from(b >> 4)];
+            [b'%', UPPER_HEX[b >> 4], UPPER_HEX[b >> 4], 3]
+
+=== escaping eight bytes at a time drops the eighth
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::escapes_in_chunks_as_byte_by_byte
+--- old
+        for &b in chunk {
+--- new
+        for &b in &chunk[..7] {
+
+=== escaping eight bytes at a time stops short of the buffer's end
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::escapes_in_chunks_as_byte_by_byte
+--- old
+    for &b in &s[i..] {
+--- new
+    for &b in s.get(i + 1..).unwrap_or_default() {
 
 === a bare % decodes as itself, one byte
 file: crates/curl-core/src/url/encode.rs

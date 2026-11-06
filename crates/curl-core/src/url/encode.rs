@@ -275,47 +275,96 @@ pub(super) fn decode_into(s: &[u8], reject: impl Fn(u8) -> bool, out: &mut [u8])
 /// `s` with every byte but letters, digits and `-._~` escaped
 /// (`curl_easy_escape`).
 pub(super) fn escape(s: &[u8]) -> Result<Bytes, UrlErrorKind> {
-    // The bytes kept as they are: letters, digits and `-._~`.
-    const KEPT: [bool; 256] = {
-        let mut kept = [false; 256];
-        let mut b = 0;
-        while b < 256 {
-            let c = b as u8;
-            kept[b] = c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~');
-            b += 1;
-        }
-        kept
-    };
     // The whole length first, so the buffer is allocated once. No limit
     // but memory: C's `curl_easy_escape` has none.
     let len: usize = s
         .iter()
-        .map(|&b| if KEPT[usize::from(b)] { 1 } else { 3 })
+        .map(|&b| usize::from(ESCAPED[usize::from(b)][3]))
         .sum();
     let mut out = Bytes::new();
     out.try_reserve_exact(len)
         .map_err(|_| UrlErrorKind::OutOfMemory)?;
     out.try_resize(len, 0)
         .map_err(|_| UrlErrorKind::OutOfMemory)?;
-    let mut rest = &mut out[..];
-    for &b in s {
-        if KEPT[usize::from(b)] {
-            let [first, tail @ ..] = rest else {
-                unreachable!("the length counted holds every byte")
-            };
-            *first = b;
-            rest = tail;
-        } else {
-            let [percent, high, low, tail @ ..] = rest else {
-                unreachable!("the length counted holds every escape")
-            };
-            *percent = b'%';
-            *high = UPPER_HEX[usize::from(b >> 4)];
-            *low = UPPER_HEX[usize::from(b & 0xf)];
-            rest = tail;
-        }
-    }
+    let written = escape_into(s, &mut out[..]);
+    assert_eq!(written, len, "the length counted is the length written");
     Ok(out)
+}
+
+/// Each byte as [`escape`] writes it, in the first bytes, and how many
+/// those are, in the last: the byte itself and 1 for letters, digits and
+/// `-._~`, `%XX` and 3 for the rest.
+static ESCAPED: [[u8; 4]; 256] = {
+    let mut table = [[0; 4]; 256];
+    let mut b = 0;
+    while b < 256 {
+        let c = b as u8;
+        table[b] = if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~') {
+            [c, 0, 0, 1]
+        } else {
+            [b'%', UPPER_HEX[b >> 4], UPPER_HEX[b & 0xf], 3]
+        };
+        b += 1;
+    }
+    table
+};
+
+/// A byte of an output buffer, set or not before it is written.
+pub(super) trait Slot: Copy {
+    fn new(b: u8) -> Self;
+}
+
+impl Slot for u8 {
+    fn new(b: u8) -> Self {
+        b
+    }
+}
+
+impl Slot for core::mem::MaybeUninit<u8> {
+    fn new(b: u8) -> Self {
+        core::mem::MaybeUninit::new(b)
+    }
+}
+
+/// [`escape`] into the start of `out`: how many bytes it wrote. Bytes of
+/// `out` past those may be written too.
+///
+/// # Panics
+///
+/// If `out` is shorter than the escaped string.
+pub(super) fn escape_into<T: Slot>(s: &[u8], out: &mut [T]) -> usize {
+    let (mut i, mut o) = (0, 0);
+    // Eight bytes at a time while their escapes surely fit, into a window
+    // the compiler can see they stay within: no byte's entry is longer
+    // than three, and every store is four.
+    while let (Some(chunk), Some(window)) = (s.get(i..i + 8), out.get_mut(o..o + 28)) {
+        let window: &mut [T; 28] = window.try_into().expect("28 bytes");
+        let mut at = 0;
+        for &b in chunk {
+            let e = &ESCAPED[usize::from(b)];
+            let dst: &mut [T; 4] = (&mut window[at..at + 4]).try_into().expect("four bytes");
+            *dst = e.map(T::new);
+            at += usize::from(e[3] & 3);
+        }
+        i += 8;
+        o += at;
+    }
+    for &b in &s[i..] {
+        let e = &ESCAPED[usize::from(b)];
+        let n = usize::from(e[3]);
+        // All four bytes in one store while they fit, whatever the
+        // entry's length: the next byte's overwrites the rest.
+        if let Some(dst) = out.get_mut(o..o + 4) {
+            let dst: &mut [T; 4] = dst.try_into().expect("four bytes");
+            *dst = e.map(T::new);
+        } else {
+            for (d, &v) in out[o..o + n].iter_mut().zip(e) {
+                *d = T::new(v);
+            }
+        }
+        o += n;
+    }
+    o
 }
 
 #[cfg(test)]
@@ -448,6 +497,43 @@ mod tests {
             for reject in rejects {
                 let got = decode_rejecting(s, reject).unwrap();
                 assert_eq!(got.as_deref(), one_by_one(s, reject).as_deref(), "{s:?}");
+            }
+        }
+    }
+
+    /// Escaping eight bytes at a time writes what escaping one by one
+    /// does, at every length and mix of kept and escaped bytes around the
+    /// chunks' edges, into a buffer of the exact length or of three times
+    /// the input's.
+    #[test]
+    fn escapes_in_chunks_as_byte_by_byte() {
+        let one_by_one = |s: &[u8]| -> Vec<u8> {
+            s.iter()
+                .flat_map(|&b| {
+                    if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                        vec![b]
+                    } else {
+                        format!("%{b:02X}").into_bytes()
+                    }
+                })
+                .collect()
+        };
+        // Bytes in an order mixing runs of each kind.
+        let pool: Vec<u8> = (0..=255u8).map(|b| b.wrapping_mul(167)).collect();
+        for len in 0..48 {
+            for start in [0, 7, 48, 97, 200] {
+                let s: Vec<u8> = pool.iter().cycle().skip(start).take(len).copied().collect();
+                let want = one_by_one(&s);
+                assert_eq!(escape(&s).unwrap(), want, "{s:?}");
+                let mut wide = vec![0xaa; 3 * len];
+                let n = escape_into(&s, &mut wide[..]);
+                assert_eq!(wide[..n], want, "{s:?}");
+            }
+        }
+        for kind in *b"a " {
+            for len in 0..48 {
+                let s = vec![kind; len];
+                assert_eq!(escape(&s).unwrap(), one_by_one(&s));
             }
         }
     }

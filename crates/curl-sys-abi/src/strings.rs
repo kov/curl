@@ -208,10 +208,28 @@ pub unsafe extern "C" fn curl_easy_escape(
     let Some(bytes) = (unsafe { given(string, length) }) else {
         return ptr::null_mut();
     };
-    match curl_core::url::escape(bytes) {
-        Ok(escaped) => root::allocator().c_string(&escaped),
-        Err(_) => ptr::null_mut(),
+    let alloc = root::allocator();
+    if bytes.is_empty() {
+        return alloc.c_string(b"");
     }
+    // As C does: escaped straight into a buffer of three times the
+    // input's size and its terminator, refused past a sixteenth of the
+    // address space.
+    if bytes.len() > usize::MAX / 16 {
+        return ptr::null_mut();
+    }
+    let size = bytes.len() * 3 + 1;
+    let out = alloc.malloc(size).cast::<core::mem::MaybeUninit<u8>>();
+    if out.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `out` is a fresh allocation of `size` bytes, disjoint from
+    // `bytes` and reached through nothing else while the slice lives;
+    // `MaybeUninit` needs them set to nothing.
+    let room = unsafe { core::slice::from_raw_parts_mut(out, size) };
+    let len = curl_core::url::escape_into(bytes, &mut room[..size - 1]);
+    room[len].write(0);
+    out.cast()
 }
 const _: ffi::proto::curl_easy_escape = curl_easy_escape;
 

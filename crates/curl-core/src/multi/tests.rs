@@ -4044,6 +4044,21 @@ fn the_dns_cache_traces_what_it_keeps_and_lets_go() {
     );
 }
 
+/// The addresses of a `host:port:address[,address]...` table of C's
+/// resolve tests: each a string, or one only an IPv6 build has
+/// (`IPV6ONLY`, which ours is), up to the `NULL` that ends them.
+fn c_addresses(v: &crate::c_source::Value) -> Vec<std::net::IpAddr> {
+    use crate::c_source::Value;
+    v.group()
+        .iter()
+        .map_while(|a| match a {
+            Value::Call(..) => Some(a.call("IPV6ONLY")[0].str()),
+            other => other.bytes(),
+        })
+        .map(|a| std::str::from_utf8(a).unwrap().parse().unwrap())
+        .collect()
+}
+
 /// What a multi's cache keeps for `host` and `port` once a transfer
 /// set with `entries` has started, read as C's tests read its hash.
 fn kept_by_resolve(
@@ -4066,6 +4081,48 @@ fn kept_by_resolve(
         .dns
         .kept(host, port)
         .map(|(addrs, permanent)| (addrs.to_vec(), permanent))
+}
+
+/// unit1607: each entry of its table read into a new multi's cache
+/// (`Curl_loadhostpairs`) keeps its addresses in the order given, on
+/// its port, for good unless it starts with `+`; an entry with a space
+/// in it keeps nothing.
+#[test]
+fn unit1607_resolve_entries() {
+    let rows = crate::c_source::table("tests/unit/unit1607.c", "tests[] =", |c| panic!("{c}"));
+    assert_eq!(rows.len(), 11);
+    for row in &rows {
+        let r = row.group();
+        let (optval, host) = (r[0].str(), r[1].str());
+        let port = u16::try_from(r[2].int()).unwrap();
+        let permanent = r[3].word() == "TRUE";
+        let want = c_addresses(&r[4]);
+        let (mut m, _clock) = networked();
+        let got = kept_by_resolve(&mut m, &[optval], |_| {}, host, port);
+        let want = (!want.is_empty()).then_some((want, permanent));
+        assert_eq!(got, want, "{}", String::from_utf8_lossy(optval));
+    }
+}
+
+/// unit3271: an entry read for a name and port another entry was read
+/// for replaces its addresses, and is kept for good.
+#[test]
+fn unit3271_resolve_replaces() {
+    let rows = crate::c_source::table("tests/unit/unit3271.c", "tests[] =", |c| panic!("{c}"));
+    assert_eq!(rows.len(), 2);
+    let (mut m, _clock) = networked();
+    for row in &rows {
+        let r = row.group();
+        let (optval, host) = (r[0].str(), r[1].str());
+        let port = u16::try_from(r[2].int()).unwrap();
+        let got = kept_by_resolve(&mut m, &[optval], |_| {}, host, port);
+        assert_eq!(
+            got,
+            Some((c_addresses(&r[3]), true)),
+            "{}",
+            String::from_utf8_lossy(optval)
+        );
+    }
 }
 
 /// `CURLOPT_DNS_SHUFFLE_ADDRESSES` puts a resolve entry's addresses in a

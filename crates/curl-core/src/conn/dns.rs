@@ -840,6 +840,40 @@ mod tests {
         assert!(!shuffle(&mut [a], &mut |_| panic!("none drawn")).unwrap());
     }
 
+    /// unit3271's names past what C's key holds: a name is found under
+    /// the whole of it, in any case, never under a longer or shorter
+    /// one that begins the same.
+    #[test]
+    fn unit3271_long_names_match_whole() {
+        let now = ManualClock::new().unwrap().now();
+        let long = vec![b'a'; 257];
+        let mut cache = DnsCache::default();
+        let answer = |name: &[u8]| TryArc::try_new(Answer::new(name, vec![ip("1.2.3.4")]).unwrap());
+        cache
+            .put(answer(&long[..255]).unwrap(), 80, now, false)
+            .unwrap();
+        let found = |cache: &mut DnsCache, name: &[u8]| {
+            matches!(
+                cache.lookup((name, 80), Family::Any, false, None, now),
+                Lookup::Found(_)
+            )
+        };
+        assert!(
+            !found(&mut cache, &long),
+            "a longer name is not a shorter one's"
+        );
+        let mut cache = DnsCache::default();
+        cache.put(answer(&long).unwrap(), 80, now, false).unwrap();
+        assert!(found(&mut cache, &long), "the whole long name");
+        let mut upper = long.clone();
+        upper[0] = b'A';
+        assert!(found(&mut cache, &upper), "in any case");
+        assert!(
+            !found(&mut cache, &long[..255]),
+            "a shorter name is not a longer one's"
+        );
+    }
+
     fn add<'a>(
         name: &'a [u8],
         port: u16,

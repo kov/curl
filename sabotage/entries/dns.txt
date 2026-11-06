@@ -1087,3 +1087,11 @@ features: test-util
 --- new
         let place = u32::from_ne_bytes(drawn[(n - 1 - i) * 4..(n - i) * 4].try_into().expect("four bytes"));
 
+=== a resolve entry starting with + is kept for good
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::tests::unit1607_resolve_entries
+features: test-util
+--- old
+    let permanent = !s.single(b'+');
+--- new
+    let permanent = s.single(b'+') || true;

@@ -219,3 +219,14 @@ features: test-util
                     Flavour::Ngtcp2 if checked.is_ok() => cx.trace(format_args!(
 --- new
                     Flavour::Ngtcp2 if true => cx.trace(format_args!(
+
+=== a quiche connect whose read fails as the server closes is said as ngtcp2's
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_read_failing_as_the_server_closes_fails_the_connect_by_its_filter
+features: test-util
+--- old
+        if self.flavour == Flavour::Ngtcp2
+            && matches!(step, Err(ErrorKind::RecvError | ErrorKind::SendError))
+--- new
+        if self.flavour != Flavour::Ngtcp2
+            && matches!(step, Err(ErrorKind::RecvError | ErrorKind::SendError))

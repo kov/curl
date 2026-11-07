@@ -5623,3 +5623,40 @@ fn a_body_over_quiche_is_said_as_quiche_takes_it() {
         assert_eq!((&s.body.bytes[..], s.body.ended), (sent, room.is_none()));
     }
 }
+
+/// A read that fails as the server closes the connection fails a connect
+/// over ngtcp2 as a connection that could not be made, why said; over
+/// quiche, with the read's own failure, as quiche's filter has no such
+/// branch (`Curl_cf_ngtcp2_cmn_connect`, `cf_quiche_connect`).
+#[test]
+fn a_read_failing_as_the_server_closes_fails_the_connect_by_its_filter() {
+    use crate::http3::Flavour::{Ngtcp2, Quiche};
+    use crate::http3::Layer;
+    for flavour in [Ngtcp2, Quiche] {
+        let script = first_flight_only();
+        {
+            let mut s = script.lock().unwrap();
+            s.flavour = flavour;
+            s.on_read
+                .push_back(vec![Told::Drains, Told::PollFails(Layer::Quic)]);
+        }
+        let (_, got) = h3_lines(
+            &script,
+            &[b"server flight"],
+            &["connect to ::1", "QUIC connect to ::1"],
+            |o| o.limits.connect = crate::time::TimeLimit::from_millis(2000),
+        );
+        // The first address's attempt; the next one's ends as its own.
+        let want = match flavour {
+            Ngtcp2 => {
+                format!("QUIC connect to ::1 port {PORT} failed: Could not connect to server")
+            }
+            Quiche => {
+                format!(
+                    "connect to ::1 port {PORT} failed: Failure when receiving data from the peer"
+                )
+            }
+        };
+        assert_eq!(got.first(), Some(&want), "{flavour:?}");
+    }
+}

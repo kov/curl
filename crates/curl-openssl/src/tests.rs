@@ -491,6 +491,7 @@ fn the_library_declares_what_c_s_build_over_it_has() {
         signature_algorithms: !cfg!(libressl),
         tls13_ciphers: !cfg!(boringssl),
         cert_status: !cfg!(no_ocsp),
+        ech: cfg!(boringssl_like),
         ..all
     };
     assert_eq!(crate::OPENSSL.support(), want);

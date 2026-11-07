@@ -76,7 +76,10 @@ pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     crl_file: true,
     issuer_cert: true,
     issuer_cert_blob: true,
-    ech: false,
+    // Encrypted Client Hello where C has it here: over the forks
+    // (`HAVE_SSL_SET1_ECH_CONFIG_LIST`), not the OpenSSL or LibreSSL built
+    // against, which lack it.
+    ech: cfg!(boringssl_like),
     // BoringSSL has no OCSP (`OPENSSL_NO_OCSP`): no stapled status to ask
     // for (`ossl_cert_status_request`).
     cert_status: !cfg!(no_ocsp),
@@ -152,7 +155,8 @@ impl TlsBackend for OpenSsl {
     /// All C's OpenSSL build has (`Curl_ssl_openssl.supports`, with the
     /// OpenSSL 3 it is built on: TLS 1.3's suites and signature
     /// algorithms), the stapled status (`ossl_cert_status_request`) and
-    /// engines; not Encrypted Client Hello, which that OpenSSL lacks.
+    /// engines; not Encrypted Client Hello, which that OpenSSL lacks, and
+    /// the forks have.
     /// Over LibreSSL, C's `LIBRESSL_VERSION_NUMBER` build: the same but
     /// for the signature algorithms; the engine option is still taken
     /// (C checks the backend, which is OpenSSL's), and naming one fails
@@ -185,6 +189,15 @@ impl OpenSsl {
         let mut host = Vec::new();
         host.try_extend_from_slice(peer.name)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let ech_record = match peer.ech_configs {
+            Some(list) => {
+                let mut copy = Vec::new();
+                copy.try_extend_from_slice(list)
+                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                Some(copy)
+            }
+            None => None,
+        };
         Ok(Session {
             ssl: None,
             ctx: None,
@@ -211,6 +224,7 @@ impl OpenSsl {
             quic,
             resumed: None,
             quic_early: false,
+            ech_record,
         })
     }
 }
@@ -327,6 +341,12 @@ struct Session {
     /// The QUIC library may send early data under `resumed`, which it
     /// sends itself (`sess_reuse_cb` called).
     quic_early: bool,
+    /// The ECHConfigList of the origin's HTTPS record, if it has one.
+    #[cfg_attr(
+        not(boringssl_like),
+        allow(dead_code, reason = "no ECH but over the forks")
+    )]
+    ech_record: Option<Vec<u8>>,
 }
 
 /// The library's major error codes C tells apart.
@@ -710,6 +730,10 @@ impl Session {
                 return Err(io.fail(ErrorKind::SslConnectError, format_args!("Failed set SNI")));
             }
         }
+        #[cfg(boringssl_like)]
+        if options.ech.enabled() {
+            self.init_ech(ssl, io)?;
+        }
         // FTP's data connection resumes its control connection's session
         // first, as servers may insist it does; else a session the cache
         // kept for the peer is resumed, unless the peer's status is to be
@@ -751,6 +775,148 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// Encrypted Client Hello set up on the SSL as `ossl_init_ech` sets
+    /// it up over the forks: GREASE; else the transfer's list, from
+    /// base64, or the origin's HTTPS record's. What the fork refuses
+    /// fails the handshake only where ECH is hard; a list given is tried
+    /// though the fork refused it, as C tries it, and an outer name the
+    /// forks cannot set fails it once a list is tried. A list tried
+    /// holds the handshake to TLS 1.3.
+    #[cfg(boringssl_like)]
+    fn init_ech(&mut self, ssl: NonNull<SSL>, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+        use curl_core::options::EchMode;
+        let identity = self.identity.clone();
+        let ech = &identity.options.ech;
+        let hard = ech.mode == EchMode::Hard;
+        let set = |list: &[u8]| {
+            // SAFETY: the SSL, and the list, which the fork copies.
+            unsafe {
+                openssl_sys::SSL_set1_ech_config_list(ssl.as_ptr(), list.as_ptr(), list.len())
+            }
+        };
+        let mut trying = false;
+        if ech.mode == EchMode::Grease {
+            io.info(format_args!("ECH: will GREASE ClientHello"));
+            // SAFETY: the SSL.
+            unsafe { openssl_sys::SSL_set_enable_ech_grease(ssl.as_ptr(), 1) };
+        } else if let Some(b64) = &ech.config {
+            if b64.is_empty() {
+                io.info(format_args!("ECH: ECHConfig from command line empty"));
+                return Err(ErrorKind::SslConnectError);
+            }
+            let decoded = curl_core::tls::base64_decode(b64);
+            let list: &[u8] = match &decoded {
+                Ok(Some(list)) => list,
+                // What does not decode is tried as no list, as C hands the
+                // fork the nothing it decoded.
+                not => {
+                    io.info(format_args!(
+                        "ECH: cannot base64 decode ECHConfig from command line"
+                    ));
+                    if hard {
+                        return Err(match not {
+                            Err(OutOfMemory) => ErrorKind::OutOfMemory,
+                            _ => ErrorKind::BadContentEncoding,
+                        });
+                    }
+                    &[]
+                }
+            };
+            if set(list) != 1 {
+                io.info(format_args!("ECH: SSL_ECH_set1_ech_config_list failed"));
+                if hard {
+                    return Err(ErrorKind::SslConnectError);
+                }
+            }
+            trying = true;
+            io.info(format_args!("ECH: ECHConfig from command line"));
+        } else if let Some(list) = self.ech_record.take() {
+            io.info(format_args!("ECH: ECHConfig from HTTPS RR"));
+            if set(&list) == 1 {
+                trying = true;
+                io.info(format_args!(
+                    "ECH: imported ECHConfigList of length {}",
+                    list.len()
+                ));
+            } else {
+                io.info(format_args!("ECH: SSL_set1_ech_config_list failed"));
+                if hard {
+                    return Err(ErrorKind::SslConnectError);
+                }
+            }
+        } else {
+            io.info(format_args!("ECH: requested but no ECHConfig available"));
+            if hard {
+                return Err(ErrorKind::SslConnectError);
+            }
+        }
+        if trying && ech.public_name.is_some() {
+            io.info(format_args!(
+                "ECH: setting public_name not supported with BoringSSL"
+            ));
+            return Err(ErrorKind::SslConnectError);
+        }
+        // SAFETY: the SSL.
+        if trying && unsafe { openssl_sys::SSL_set_min_proto_version(ssl.as_ptr(), 0x0304) } != 1 {
+            io.info(format_args!("ECH: cannot force TLSv1.3 [ERROR]"));
+            return Err(ErrorKind::SslConnectError);
+        }
+        Ok(())
+    }
+
+    /// The peer's retry configurations traced, for a handshake it refused
+    /// ECH in, `reason` the error's (`ossl_trace_ech_retry_configs`):
+    /// the outer name by its length, which C reads to its first zero.
+    #[cfg(boringssl_like)]
+    fn trace_ech_retry(&self, ssl: NonNull<SSL>, io: &mut TlsCx<'_>, reason: c_int) {
+        if !self.identity.options.ech.enabled() {
+            return;
+        }
+        let (mut rcs, mut rcl) = (ptr::null(), 0);
+        // SAFETY: the SSL, and places for what it answers.
+        unsafe {
+            openssl_sys::SSL_get0_ech_retry_configs(ssl.as_ptr(), &raw mut rcs, &raw mut rcl)
+        };
+        let rv = c_int::try_from(rcl).unwrap_or(c_int::MAX);
+        if rv == 0 || rcs.is_null() {
+            io.info(format_args!("ECH: no retry_configs (rv = {rv})"));
+            return;
+        }
+        // SAFETY: the fork's `rcl` bytes, alive while the SSL is.
+        let configs = unsafe { core::slice::from_raw_parts(rcs, rcl) };
+        // Untraced out of memory, as C goes on past it.
+        let Ok(b64) = curl_core::tls::base64_encode(configs) else {
+            return;
+        };
+        io.info_with(&[b"ECH: retry_configs ", &b64]);
+        // SAFETY: the SSL.
+        let accepted = unsafe { openssl_sys::SSL_ech_accepted(ssl.as_ptr()) };
+        // SAFETY: the SSL.
+        let kind = unsafe { openssl_sys::SSL_get_servername_type(ssl.as_ptr()) };
+        // SAFETY: the SSL.
+        let inner = unsafe { openssl_sys::SSL_get_servername(ssl.as_ptr(), kind) };
+        // SAFETY: the fork's name, or null, alive while the SSL is.
+        let inner = unsafe { c_text(inner) };
+        let (mut outer, mut outer_len) = (ptr::null(), 0);
+        // SAFETY: the SSL, and places for what it answers.
+        unsafe {
+            openssl_sys::SSL_get0_ech_name_override(
+                ssl.as_ptr(),
+                &raw mut outer,
+                &raw mut outer_len,
+            );
+        };
+        let outer = (!outer.is_null()).then(|| {
+            // SAFETY: the fork's `outer_len` bytes, alive while the SSL is.
+            unsafe { core::slice::from_raw_parts(outer.cast::<u8>(), outer_len) }
+        });
+        io.info(format_args!(
+            "ECH: retry_configs for {} from {}, {reason} {accepted}",
+            curl_core::tls::Text(inner.unwrap_or(b"NULL")),
+            curl_core::tls::Text(outer.unwrap_or(b"NULL")),
+        ));
     }
 
     /// Move the handshake on (`ossl_connect_step2`).
@@ -854,6 +1020,11 @@ impl Session {
                 ErrorKind::SslClientcert,
                 format_args!("TLS cert problem: {e}"),
             )
+        } else if lib == ffi::ERR_LIB_SSL && Some(reason) == ffi::SSL_R_ECH_REJECTED {
+            #[cfg(boringssl_like)]
+            self.trace_ech_retry(ssl, io, reason);
+            let e = ErrText::of(errdetail);
+            io.fail(ErrorKind::EchRequired, format_args!("ECH: rejected, {e}"))
         } else {
             let e = ErrText::of(errdetail);
             io.fail(

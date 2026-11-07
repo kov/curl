@@ -50,6 +50,8 @@ mod chain;
 mod checks;
 #[path = "peer/client.rs"]
 mod client;
+#[path = "peer/ech.rs"]
+mod ech;
 #[path = "peer/engine.rs"]
 mod engine;
 #[path = "peer/failures.rs"]
@@ -168,6 +170,7 @@ fn main() {
     .chain(checks::TESTS.iter().copied())
     .chain(client::TESTS.iter().copied())
     .chain(chain::TESTS.iter().copied())
+    .chain(ech::TESTS.iter().copied())
     .chain(engine::TESTS.iter().copied())
     .chain(failures::TESTS.iter().copied())
     .chain(goodbye::TESTS.iter().copied())

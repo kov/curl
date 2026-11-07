@@ -118,3 +118,41 @@ witness: curl-rustls tests::real::a_server_without_ech_refuses_it
                 Some(mode) => config.with_ech(mode),
 --- new
                 Some(_) => config.with_protocol_versions(&builder.versions),
+
+=== BoringSSL lets a handshake whose ECH list is tried fall back below TLS 1.3
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_list_tried_holds_the_handshake_to_tls_1_3
+openssl-fork: boringssl
+--- old
+        if trying && unsafe { openssl_sys::SSL_set_min_proto_version(ssl.as_ptr(), 0x0304) } != 1 {
+--- new
+        if false && unsafe { openssl_sys::SSL_set_min_proto_version(ssl.as_ptr(), 0x0304) } != 1 {
+
+=== AWS-LC reports ECH refused as a TLS connect error, not ECH_REQUIRED
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_server_without_ech_refuses_the_list
+openssl-fork: awslc
+--- old
+            io.fail(ErrorKind::EchRequired, format_args!("ECH: rejected, {e}"))
+--- new
+            io.fail(ErrorKind::SslConnectError, format_args!("ECH: rejected, {e}"))
+
+=== BoringSSL goes on past a list it could not decode where ECH is hard
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_list_that_does_not_decode_is_tried_as_none
+openssl-fork: boringssl
+--- old
+                    if hard {
+                        return Err(match not {
+--- new
+                    if false {
+                        return Err(match not {
+
+=== BoringSSL sets an outer name it cannot send, without a word
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl an_outer_name_is_refused_once_a_list_is_tried
+openssl-fork: boringssl
+--- old
+        if trying && ech.public_name.is_some() {
+--- new
+        if trying && ech.public_name.is_some() && false {

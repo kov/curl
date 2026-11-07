@@ -382,6 +382,9 @@ mod reasons {
     pub(crate) const SSL_R_CERTIFICATE_VERIFY_FAILED: c_int = 134;
     pub(crate) const SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED: c_int = 1045;
     pub(crate) const SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED: Option<c_int> = Some(1116);
+    /// The forks' ECH refused, which no build here of OpenSSL or
+    /// LibreSSL has: C's `#ifdef` leaves its case out.
+    pub(crate) const SSL_R_ECH_REJECTED: Option<c_int> = None;
     /// The reason C clears after a chain's last certificate.
     pub(crate) const ERR_LIB_PEM: c_int = 9;
     pub(crate) const PEM_R_NO_START_LINE: c_int = 108;
@@ -399,6 +402,9 @@ mod reasons {
         openssl_sys::SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED as c_int;
     pub(crate) const ERR_LIB_PEM: c_int = openssl_sys::ERR_LIB_PEM as c_int;
     pub(crate) const PEM_R_NO_START_LINE: c_int = openssl_sys::PEM_R_NO_START_LINE as c_int;
+    /// The server refused ECH (`SSL_R_ECH_REJECTED`).
+    pub(crate) const SSL_R_ECH_REJECTED: Option<c_int> =
+        Some(openssl_sys::SSL_R_ECH_REJECTED as c_int);
 }
 /// The forks' older name for it, which C's `openssl.h` maps it to without
 /// OpenSSL 3: a reference of the caller's, as `SSL_get1_peer_certificate`'s.

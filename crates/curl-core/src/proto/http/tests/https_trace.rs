@@ -1319,7 +1319,7 @@ fn ech_get(
     let mut m = tls_server(1);
     let (configs, ran) = ech_run(&mut m, ares, mode, &url, b"ssl", |_| {});
     assert_eq!(ran.result, Ok(()));
-    (configs, lines(&ran, &["[SSL]"]))
+    (configs, lines(&ran, &["[SSL]", "HTTPS-RR "]))
 }
 
 /// A transfer of `url` over `m` and a TLS library with ECH, resolving
@@ -1423,6 +1423,16 @@ fn ech_takes_no_configurations_from_a_record_about_another_name() {
     assert_eq!(configs, None);
     assert!(
         lines.iter().any(|l| l.contains("need HTTPS-RR")),
+        "{lines:?}"
+    );
+    // The record is said to be of no use here (`cf_dns_report`).
+    let said: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with("HTTPS-RR "))
+        .collect();
+    assert_eq!(
+        said,
+        [&format!("HTTPS-RR localhost:{PORT}: not applicable")],
         "{lines:?}"
     );
 }

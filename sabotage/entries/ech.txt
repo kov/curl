@@ -234,3 +234,12 @@ features: test-util,debug-hooks
         (self.is_for_origin(port) && !self.ech.is_empty()).then_some(&self.ech[..])
 --- new
         (!self.ech.is_empty()).then_some(&self.ech[..])
+
+=== a record about another name is printed as the origin's
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::ech_takes_no_configurations_from_a_record_about_another_name
+features: test-util
+--- old
+        Some(r) if !r.is_for_origin(route.origin.port()) => {
+--- new
+        Some(r) if false => {

@@ -1305,4 +1305,7 @@ exclude_re = [
     # having gone back before; so `n > 0` and `n >= 0` agree there. (By
     # column: the `>` of `if n > 0 && step.flavour == Flavour::Ngtcp2`.)
     'curl-core/src/proto/http/h3\.rs:\d+:22: replace > with >= in Request::h3_send$',
+    # The fake library's code for a failed poll is any code: the core
+    # tells a failure by its layer, and no test names the code.
+    'curl-core/src/http3/fake\.rs:.*: delete - in <impl Connection for FakeConnection>::ingress_done$',
 ]

@@ -3,7 +3,7 @@
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
-   "CMAKE_BUILD_RPATH": "/home/kov/work-forks/curl/build/deps/ngtcp2-boringssl/lib;/home/kov/work-forks/curl/build/deps/boringssl/lib",
+   "CMAKE_BUILD_RPATH": "/home/kov/work/ech/curl/build/deps/ngtcp2-boringssl/lib;/home/kov/work/ech/curl/build/deps/boringssl/lib",
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "OFF",
@@ -16,9 +16,11 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
-   "OPENSSL_ROOT_DIR": "/home/kov/work-forks/curl/build/deps/boringssl",
+   "HTTPD_NGHTTPX": "/home/kov/work/ech/curl/build/deps/ech/bin/nghttpx",
+   "OPENSSL_ROOT_DIR": "/home/kov/work/ech/curl/build/deps/boringssl",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
-   "USE_ECH": "OFF",
+   "TEST_NGHTTPX": "/home/kov/work/ech/curl/build/deps/ech/bin/nghttpx",
+   "USE_ECH": "ON",
    "USE_HTTPSRR": "ON",
    "USE_LIBIDN2": "ON",
    "USE_NGHTTP2": "ON",
@@ -30,21 +32,22 @@
   "counts": {
    "considered": 2198,
    "failed": 59,
-   "ok": 2046,
-   "ran": 2105,
-   "skipped": 93
+   "ok": 2049,
+   "ran": 2108,
+   "skipped": 90
   },
   "curl-version": [
    "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV BoringSSL zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "Release-Date: [unreleased]",
    "Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
+   "Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
   ],
   "features": [
    "alt-svc",
    "AsynchDNS",
    "brotli",
    "Debug",
+   "ECH",
    "GSS-API",
    "HSTS",
    "HTTP2",
@@ -310,8 +313,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-07T11:06:11Z",
-   "started": "2026-11-07T10:50:12Z"
+   "finished": "2026-11-07T15:45:06Z",
+   "started": "2026-11-07T15:25:02Z"
   },
   "protocols": [
    "dict",
@@ -2723,7 +2726,7 @@
      "outcome": "skipped"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.0]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.089451 [0-x] * !!! WARNING !!!\n  07:52:31.089495 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:45.960351 [0-x] * !!! WARNING !!!\n  12:26:45.960416 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.1]": {
@@ -2743,43 +2746,43 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.0]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.182693 [0-x] * !!! WARNING !!!\n  07:52:31.182769 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.061934 [0-x] * !!! WARNING !!!\n  12:26:46.062001 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.1]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.206326 [0-x] * !!! WARNING !!!\n  07:52:31.206392 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.080001 [0-x] * !!! WARNING !!!\n  12:26:46.080064 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.2]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.229886 [0-x] * !!! WARNING !!!\n  07:52:31.229968 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.105639 [0-x] * !!! WARNING !!!\n  12:26:46.105702 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.3]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.253514 [0-x] * !!! WARNING !!!\n  07:52:31.253558 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.132424 [0-x] * !!! WARNING !!!\n  12:26:46.132498 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-none]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.156444 [0-x] * !!! WARNING !!!\n  07:52:31.156489 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.036719 [0-x] * !!! WARNING !!!\n  12:26:46.036774 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.0]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.215631 [0-x] * !!! WARNING !!!\n  07:52:31.215694 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.008495 [0-x] * !!! WARNING !!!\n  12:26:46.008564 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.1]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.240271 [0-x] * !!! WARNING !!!\n  07:52:31.240337 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.033459 [0-x] * !!! WARNING !!!\n  12:26:46.033528 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.2]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.266458 [0-x] * !!! WARNING !!!\n  07:52:31.266515 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.059008 [0-x] * !!! WARNING !!!\n  12:26:46.059070 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.3]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.290751 [0-x] * !!! WARNING !!!\n  07:52:31.290813 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.084909 [0-x] * !!! WARNING !!!\n  12:26:46.084976 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-none]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.184331 [0-x] * !!! WARNING !!!\n  07:52:31.184391 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:45.975013 [0-x] * !!! WARNING !!!\n  12:26:45.975083 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.1-1.0]": {
@@ -2847,7 +2850,7 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.430868 [0-x] * !!! WARNING !!!\n  07:52:31.430918 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.268210 [0-x] * !!! WARNING !!!\n  12:26:46.268273 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.2]": {
@@ -2867,19 +2870,19 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.395730 [0-x] * !!! WARNING !!!\n  07:52:31.395809 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.332090 [0-x] * !!! WARNING !!!\n  12:26:46.332154 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.2]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.421732 [0-x] * !!! WARNING !!!\n  07:52:31.421778 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.359866 [0-x] * !!! WARNING !!!\n  12:26:46.359946 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.3]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.440249 [0-x] * !!! WARNING !!!\n  07:52:31.440290 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.396964 [0-x] * !!! WARNING !!!\n  12:26:46.397013 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-none]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.470991 [0-x] * !!! WARNING !!!\n  07:52:31.471035 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.315753 [0-x] * !!! WARNING !!!\n  12:26:46.315815 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.0]": {
@@ -2887,19 +2890,19 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.489304 [0-x] * !!! WARNING !!!\n  07:52:31.489361 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.470972 [0-x] * !!! WARNING !!!\n  12:26:46.471036 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.2]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.505324 [0-x] * !!! WARNING !!!\n  07:52:31.505382 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.498945 [0-x] * !!! WARNING !!!\n  12:26:46.499004 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.3]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.522644 [0-x] * !!! WARNING !!!\n  07:52:31.522690 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.520252 [0-x] * !!! WARNING !!!\n  12:26:46.520299 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-none]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.462053 [0-x] * !!! WARNING !!!\n  07:52:31.462098 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.425167 [0-x] * !!! WARNING !!!\n  12:26:46.425236 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.0]": {
@@ -2907,19 +2910,19 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.505323 [0-x] * !!! WARNING !!!\n  07:52:31.505383 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.381492 [0-x] * !!! WARNING !!!\n  12:26:46.381548 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.2]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0303], allowed=[770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.524820 [0-x] * !!! WARNING !!!\n  07:52:31.524880 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0303], allowed=[770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.420279 [0-x] * !!! WARNING !!!\n  12:26:46.420347 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.3]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.552520 [0-x] * !!! WARNING !!!\n  07:52:31.552584 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.454774 [0-x] * !!! WARNING !!!\n  12:26:46.454864 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-none]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  07:52:31.550618 [0-x] * !!! WARNING !!!\n  07:52:31.550700 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  12:26:46.548340 [0-x] * !!! WARNING !!!\n  12:26:46.548413 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.2-1.0]": {
@@ -3391,8 +3394,8 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n']\nassert 0 != 0\n +  where 0 = len([])\n +    where [] = get_rsts(ports",
+     "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {
      "message": null,
@@ -3667,52 +3670,52 @@
      "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[hard-None-35]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[true-not configured-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[hard-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[true-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[hard-rejected-101]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[true-rejected-101]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_04_ech_outer[hard-succeeded-innocent.invalid]": {
      "message": "needs OpenSSL",
@@ -3723,12 +3726,12 @@
      "outcome": "skipped"
     },
     "test_23_ech::test_23_05_ech_conn_ech_reuse": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_06_ech_conn_ech_config_reuse": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_07_ech_conn_ech_pub_reuse": {
      "message": "needs OpenSSL",
@@ -4143,91 +4146,91 @@
      "outcome": "passed"
     },
     "test_50_scp::test_50_01_insecure": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 42027.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_02_unknown_hosts": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 46289.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_03_known_hosts": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_04_unauth_user": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 42027.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 46289.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_10_dl_single": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 57747.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 47877.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_11_dl_serial": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 34761.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 39853.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_12_dl_parallel": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 34761.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49817.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_20_ul_single": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 41837.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49319.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_21_ul_serial": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 48121.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50777.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_50_scp::test_50_22_ul_parallel": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 48121.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 33913.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_01_insecure": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 41449.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 52395.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_02_unknown_hosts": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49967.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 38643.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_03_known_hosts": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49967.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 54395.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_04_unauth_user": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50313.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_10_dl_single": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50313.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_11_dl_serial": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 35039.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_12_dl_parallel": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_13_dl_reuse": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_14_dl_no_reuse": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 52395.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_20_ul_single": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_21_ul_serial": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 49951.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_51_sftp::test_51_22_ul_parallel": {
-     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 41449.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
+     "message": "failed on setup with \"AssertionError: >>--sshd log ----------------------------------------------\n  Server listening on 127.0.0.1 port 50569.\n  WARNING: 'UsePAM no' is not supported in this build and may cause several problems.\n  main: SHA1 in signatures is disabled for RSA keys\n  Connection from 12",
      "outcome": "error"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h1_over_h3_proxytunnel]": {
@@ -4349,9 +4352,9 @@
    },
    "counts": {
     "error": 22,
-    "failed": 24,
-    "passed": 788,
-    "skipped": 165
+    "failed": 25,
+    "passed": 801,
+    "skipped": 151
    },
    "exit-status": 1,
    "functions-without-cases": []
@@ -7574,9 +7577,7 @@
     "result": "ok"
    },
    "2117": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "2118": {
     "result": "ok"
@@ -8995,14 +8996,10 @@
     "result": "ok"
    },
    "4000": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "4001": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "401": {
     "result": "ok"
@@ -11325,7 +11322,7 @@
    "* curl 8.23.1-DEV (Linux) ",
    "* libcurl/8.23.1-DEV BoringSSL zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "* Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "* Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
+   "* Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
    "* Disabled: resolv-threaded, win32-ca-searchpath, win32-ca-search-safe, cert-status",
    "* Host: banana",
    "* System: Linux banana 7.2.9-201.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Oct  9 15:04:46 UTC 2026 x86_64 GNU/Linux",

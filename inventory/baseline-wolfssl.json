@@ -3,7 +3,7 @@
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
-   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/.claude/worktrees/agent-a8b55713da1663096/build/deps/ngtcp2/lib;/home/kov/Projects/curl/.claude/worktrees/agent-a8b55713da1663096/build/deps/wolfssl/lib",
+   "CMAKE_BUILD_RPATH": "/home/kov/work/ech/curl/build/deps/ngtcp2/lib;/home/kov/work/ech/curl/build/deps/wolfssl/lib",
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "OFF",
@@ -17,8 +17,10 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
+   "HTTPD_NGHTTPX": "/home/kov/work/ech/curl/build/deps/ech/bin/nghttpx",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
-   "USE_ECH": "OFF",
+   "TEST_NGHTTPX": "/home/kov/work/ech/curl/build/deps/ech/bin/nghttpx",
+   "USE_ECH": "ON",
    "USE_HTTPSRR": "ON",
    "USE_LIBIDN2": "ON",
    "USE_NGHTTP2": "ON",
@@ -30,21 +32,22 @@
   "counts": {
    "considered": 2198,
    "failed": 2,
-   "ok": 2089,
-   "ran": 2091,
-   "skipped": 107
+   "ok": 2098,
+   "ran": 2100,
+   "skipped": 98
   },
   "curl-version": [
    "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV wolfSSL/5.9.4 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "Release-Date: [unreleased]",
    "Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
+   "Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
   ],
   "features": [
    "alt-svc",
    "AsynchDNS",
    "brotli",
    "Debug",
+   "ECH",
    "GSS-API",
    "HSTS",
    "HTTP2",
@@ -213,8 +216,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-07T08:50:52Z",
-   "started": "2026-11-07T08:48:38Z"
+   "finished": "2026-11-07T14:26:50Z",
+   "started": "2026-11-07T14:24:18Z"
   },
   "protocols": [
    "dict",
@@ -3570,52 +3573,52 @@
      "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[hard-None-35]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[true-not configured-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[hard-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[true-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[hard-rejected-101]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[true-rejected-101]": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_04_ech_outer[hard-succeeded-innocent.invalid]": {
      "message": "needs OpenSSL",
@@ -3626,12 +3629,12 @@
      "outcome": "skipped"
     },
     "test_23_ech::test_23_05_ech_conn_ech_reuse": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_06_ech_conn_ech_config_reuse": {
-     "message": "no openssl cmd ECH support",
-     "outcome": "skipped"
+     "message": "AssertionError: expected exit code 0, got 35\n  >>--stdout ----------------------------------------------\n  {\"certs\":\"\",\"conn_id\":0,\"content_type\":\"text/html; charset=iso-8859-1\",\"errormsg\":null,\"exitcode\":0,\"filename_effective\":\"download_#1.data\",\"ftp_entry_path\":null,\"http_code\":404,\"http_connect\":",
+     "outcome": "failed"
     },
     "test_23_ech::test_23_07_ech_conn_ech_pub_reuse": {
      "message": "needs OpenSSL",
@@ -4134,23 +4137,23 @@
      "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h1_over_h3_proxytunnel]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h2_over_h3_proxytunnel]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h1_proxytunnel]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h2_proxytunnel]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h3_proxytunnel]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h1_over_h3_proxytunnel]": {
@@ -4182,47 +4185,47 @@
      "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_05_graceful_shutdown": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_06_proxy_drop_mid_transfer": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_07_large_download": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_08_large_upload": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_09_parallel_downloads": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_10_proxy_basic_auth": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_11_connection_reuse": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_12_quic_session_resumption": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-10m-10485760]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1400-1400]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1m-1048576]": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_14_udp_tunnel_capsule_absent": {
@@ -4230,31 +4233,32 @@
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_16_h2_uses_connect_tcp_not_udp": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_17_happy_eyeballs_filter_present": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_18_happy_eyeballs_ipv4_all_proto": {
-     "message": "curl lacks experimental HTTP/3 proxy support",
+     "message": "no h2o available",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_19_http3_races_through_a_proxy[h2o]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "no h2o available",
+     "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_19_http3_races_through_a_proxy[nghttpx]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "no h2o available",
+     "outcome": "skipped"
     }
    },
    "counts": {
-    "passed": 906,
-    "skipped": 93
+    "failed": 1,
+    "passed": 917,
+    "skipped": 81
    },
-   "exit-status": 0,
+   "exit-status": 1,
    "functions-without-cases": []
   },
   "results": {
@@ -5739,14 +5743,10 @@
     "result": "ok"
    },
    "1435": {
-    "class": "environment",
-    "reason": "failed starting HTTP-unix server",
-    "result": "skipped"
+    "result": "ok"
    },
    "1436": {
-    "class": "environment",
-    "reason": "failed starting HTTP-unix server",
-    "result": "skipped"
+    "result": "ok"
    },
    "1437": {
     "result": "ok"
@@ -5852,14 +5852,10 @@
     "result": "ok"
    },
    "1467": {
-    "class": "environment",
-    "reason": "failed starting socks5unix server",
-    "result": "skipped"
+    "result": "ok"
    },
    "1468": {
-    "class": "environment",
-    "reason": "failed starting socks5unix server",
-    "result": "skipped"
+    "result": "ok"
    },
    "1469": {
     "result": "ok"
@@ -5868,9 +5864,7 @@
     "result": "ok"
    },
    "1470": {
-    "class": "environment",
-    "reason": "failed starting socks5unix server",
-    "result": "skipped"
+    "result": "ok"
    },
    "1471": {
     "result": "ok"
@@ -7471,9 +7465,7 @@
     "result": "ok"
    },
    "2117": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "2118": {
     "class": "test requires a feature to be absent",
@@ -8887,14 +8879,10 @@
     "result": "ok"
    },
    "4000": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "4001": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "401": {
     "result": "ok"
@@ -9467,9 +9455,7 @@
     "result": "ok"
    },
    "537": {
-    "class": "environment",
-    "reason": "test_rlimit problem:",
-    "result": "skipped"
+    "result": "ok"
    },
    "538": {
     "result": "ok"
@@ -11083,10 +11069,10 @@
    "* curl 8.23.1-DEV (Linux) ",
    "* libcurl/8.23.1-DEV wolfSSL/5.9.4 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "* Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "* Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
+   "* Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
    "* Disabled: resolv-threaded, win32-ca-searchpath, win32-ca-search-safe, cert-status",
-   "* Host: pera",
-   "* System: Linux pera 7.1.8-200.fc44.aarch64 #1 SMP PREEMPT_DYNAMIC Mon Aug 10 03:37:58 UTC 2026 aarch64 GNU/Linux",
+   "* Host: banana",
+   "* System: Linux banana 7.2.9-201.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Oct  9 15:04:46 UTC 2026 x86_64 GNU/Linux",
    "* OS: linux",
    "* Perl: v5.42.3 (/usr/bin/perl)",
    "* Args: -a -n -j8",

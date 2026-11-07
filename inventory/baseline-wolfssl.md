@@ -2,22 +2,22 @@
 
 # C wolfSSL baseline
 
-What the C build in `build/c-wolfssl` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-07T08:48:38Z to 2026-11-07T08:50:52Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
+What the C build in `build/c-wolfssl` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-07T14:24:18Z to 2026-11-07T14:26:50Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
 
 ```
 curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV wolfSSL/5.9.4 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
 Release-Date: [unreleased]
 Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss
-Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
+Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
 ```
 
 |  | tests |
 |---|---|
 | considered | 2198 |
-| ran | 2091 |
-| ok | 2089 |
+| ran | 2100 |
+| ok | 2098 |
 | failed | 2 |
-| skipped | 107 |
+| skipped | 98 |
 
 ## Built library
 
@@ -35,10 +35,6 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HT
 | reason | class | count | tests |
 |---|---|---|---|
 | configured as DISABLED | disabled | 14 | 594, 836, 882, 938, 1182, 1184, 1209, 1211, 1307, 1316, 1512, 1801, 2043, 4656 |
-| failed starting HTTP-unix server | environment | 2 | 1435, 1436 |
-| failed starting socks5unix server | environment | 3 | 1467, 1468, 1470 |
-| test_rlimit problem: | environment | 1 | 537 |
-| curl lacks ECH support | feature missing from build | 3 | 2117, 4000, 4001 |
 | curl lacks OpenSSL support | feature missing from build | 5 | 307, 308, 1582, 1587, 3207 |
 | curl lacks Schannel support | feature missing from build | 7 | 2033, 2070, 2079, 2087, 3023, 3024, 4782 |
 | curl lacks Unicode support | feature missing from build | 2 | 472, 1703 |
@@ -57,23 +53,25 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HT
 
 | outcome | cases |
 |---|---|
-| passed | 906 |
-| skipped | 93 |
+| failed | 1 |
+| passed | 917 |
+| skipped | 81 |
 
 ### Not passed
 
 | case | outcome | message |
 |---|---|---|
+| test_23_ech::test_23_06_ech_conn_ech_config_reuse | failed | AssertionError: expected exit code 0, got 35   >>--stdout ----------------------------------------------   {"certs":"","conn_id":0,"content_type":"text/html; charset=iso-8859-1","errormsg":null,"exitcode":0,"filename_effective":"download_#1.data","ftp_entry_path":null,"http_code":404,"http_connect": |
 
 ### Skip reasons
 
 | reason | cases |
 |---|---|
-| curl lacks experimental HTTP/3 proxy support | 26 |
+| no h2o available | 21 |
 | curl not build with GnuTLS | 17 |
-| no openssl cmd ECH support | 14 |
-| no cert-status in curl | 8 |
 | curl built without digest | 8 |
+| no cert-status in curl | 8 |
+| curl lacks experimental HTTP/3 proxy support | 7 |
 | tls13-ciphers not supported | 6 |
 | no threaded resolver | 5 |
 | TLS library does not support --cert-status | 3 |

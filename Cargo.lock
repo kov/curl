@@ -190,6 +190,7 @@ dependencies = [
  "curl-core",
  "curl-os",
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

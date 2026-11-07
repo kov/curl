@@ -1292,7 +1292,10 @@ libssh2, HTTP/2 and HTTP/3, WinIDN, WinLDAP, native CA store, no Unicode). The T
 chosen as the shim and the tool are built: `openssl` (the default) or `schannel`. Kerberos goes
 through SSPI; MIT krb5 stays Unix-only.
 
-94. **The C ABI per target, `curl-os` and `curl-core` on Windows.** **Done.**
+94. **The C ABI per target, `curl-os` and `curl-core` on Windows.** **Done.** c-ares builds
+    there too, as in C's Windows builds: its sockets are Winsock's `SOCKET`s, polled through
+    `curl_os::poll` as `Curl_ares_perform` polls them; curl-ares's, the tool's and the shim's
+    tests pass on the guest with the `c-ares` feature.
 95. **The shim DLL and curl.exe on Windows**: names in the ANSI code page, console writes, the
     DLL named as CMake names it. **Done.** Output names made fit for Windows as
     `sanitize_file_name` makes them (`-o`, `-O`, `-J`, a redirect's), `--create-dirs` through

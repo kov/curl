@@ -8,13 +8,12 @@ mod sys;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::BorrowedFd;
 use std::sync::Once;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec, try_box};
 use curl_core::conn::io::{
-    Connect, DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Events, Family, Partial,
+    Connect, DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Events, Family, Partial, PollFd,
     Readiness, Recv, Remote, ResolveFailure, Sent, Socket, SocketKey, SocketOption, SocketsClosed,
 };
 use curl_core::doh::{HttpsRecord, RecordAnswer, RecordError};
@@ -179,16 +178,10 @@ unsafe fn node_addresses(
             continue;
         }
         let ip = match n.ai_family {
-            libc::AF_INET if !v6 => {
-                // SAFETY: of family `AF_INET`, it is a `sockaddr_in`.
-                let sa = unsafe { &*n.ai_addr.cast::<libc::sockaddr_in>() };
-                IpAddr::V4(Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr)))
-            }
-            libc::AF_INET6 if v6 => {
-                // SAFETY: of family `AF_INET6`, it is a `sockaddr_in6`.
-                let sa = unsafe { &*n.ai_addr.cast::<libc::sockaddr_in6>() };
-                IpAddr::V6(Ipv6Addr::from(sa.sin6_addr.s6_addr))
-            }
+            // SAFETY: of family `AF_INET`, it is a `sockaddr_in`.
+            sys::AF_INET if !v6 => IpAddr::V4(unsafe { sys::v4(n.ai_addr) }),
+            // SAFETY: of family `AF_INET6`, it is a `sockaddr_in6`.
+            sys::AF_INET6 if v6 => IpAddr::V6(unsafe { sys::v6(n.ai_addr) }),
             _ => continue,
         };
         if !found.contains(&ip) {
@@ -285,7 +278,12 @@ unsafe fn https_record(record: *const sys::DnsRecord) -> Result<HttpsRecord, Rec
 /// `sock_state_cb`: a socket with nothing left to wait for is about to close,
 /// which the transfer's multi is told as soon as c-ares is done, or as the
 /// channel goes.
-unsafe extern "C" fn socket_state(arg: *mut c_void, fd: c_int, readable: c_int, writable: c_int) {
+unsafe extern "C" fn socket_state(
+    arg: *mut c_void,
+    fd: sys::AresSocket,
+    readable: c_int,
+    writable: c_int,
+) {
     if readable != 0 || writable != 0 {
         return;
     }
@@ -442,9 +440,9 @@ impl Resolving {
         };
         let service = c_text(Digits::of(ask.port).bytes(), "bad port")?;
         let socktype = if ask.stream {
-            libc::SOCK_STREAM
+            sys::SOCK_STREAM
         } else {
-            libc::SOCK_DGRAM
+            sys::SOCK_DGRAM
         };
         let query = |pf: c_int, callback: sys::AddrinfoCb, answers: &mut Answers| {
             let hints = sys::Hints {
@@ -470,12 +468,12 @@ impl Resolving {
         if matches!(family, Family::Any | Family::V6) {
             say(&[b"[AAAA] ares: query records for ", ask.name]);
             self.answers.asked_v6 = true;
-            query(libc::AF_INET6, v6_done, &mut self.answers);
+            query(sys::AF_INET6, v6_done, &mut self.answers);
         }
         if matches!(family, Family::Any | Family::V4) {
             say(&[b"[A] ares: query records for ", ask.name]);
             self.answers.asked_v4 = true;
-            query(libc::AF_INET, v4_done, &mut self.answers);
+            query(sys::AF_INET, v4_done, &mut self.answers);
         }
         Ok(())
     }
@@ -577,42 +575,50 @@ impl Drop for Resolving {
 
 impl DnsResolve for Resolving {
     fn perform(&mut self) -> Result<(), OutOfMemory> {
-        let mut polls = [libc::pollfd {
-            fd: -1,
-            events: 0,
-            revents: 0,
-        }; sys::GETSOCK_MAXNUM];
-        let mut count = 0;
-        for (socket, events) in &self.wants {
-            let (mut wanted, fd) = (0, socket.key().get());
+        // At most `GETSOCK_MAXNUM`, as `refresh` reads them; on the stack, as
+        // C's are. Past `count` the entries repeat the last and are not polled.
+        let count = self.wants.len();
+        let entry = |i: usize| {
+            let (socket, events) = &self.wants[i.min(count - 1)];
+            let mut asked = Events::NONE;
             if events.contains(Events::IN) {
-                wanted |= libc::POLLIN;
+                asked = asked | Events::IN | Events::RDNORM;
             }
             if events.contains(Events::OUT) {
-                wanted |= libc::POLLOUT;
+                asked = asked | Events::OUT;
             }
-            polls[count] = libc::pollfd {
-                fd,
-                events: wanted,
-                revents: 0,
+            let fd = match socket.readiness() {
+                Readiness::Poll(fd) => fd,
+                Readiness::Known { .. } => unreachable!("a channel's socket is polled"),
             };
-            count += 1;
-        }
-        // SAFETY: the array holds `count` entries, and this does not wait.
-        let ready = unsafe { libc::poll(polls.as_mut_ptr(), count as libc::nfds_t, 0) };
-        if ready <= 0 {
+            PollFd::new(fd, asked)
+        };
+        let mut polls: [PollFd<'_>; sys::GETSOCK_MAXNUM];
+        let polls = match count {
+            0 => &mut [][..],
+            _ => {
+                polls = core::array::from_fn(entry);
+                &mut polls[..count]
+            }
+        };
+        // Without waiting; a failed poll is nothing ready, as C's is.
+        let ready =
+            !polls.is_empty() && curl_os::poll::poll(polls, Duration::ZERO).unwrap_or(0) > 0;
+        if !ready {
             // Unconditionally, or it would never time out (`Curl_ares_perform`).
             // SAFETY: the channel is ours.
             unsafe { sys::ares_process_fd(self.channel, sys::SOCKET_BAD, sys::SOCKET_BAD) };
         } else {
-            for poll in &polls[..count] {
-                let read = if poll.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
-                    poll.fd
+            for (poll, (socket, _)) in polls.iter().zip(&self.wants) {
+                let (got, fd) = (poll.revents(), socket.key().get());
+                let readable = Events::IN | Events::RDNORM | Events::HUP | Events::ERR;
+                let read = if got.intersects(readable) {
+                    fd
                 } else {
                     sys::SOCKET_BAD
                 };
-                let write = if poll.revents & libc::POLLOUT != 0 {
-                    poll.fd
+                let write = if got.intersects(Events::OUT) {
+                    fd
                 } else {
                     sys::SOCKET_BAD
                 };
@@ -632,11 +638,15 @@ impl DnsResolve for Resolving {
     }
 
     fn due(&self, within: Duration) -> Duration {
-        let max = libc::timeval {
-            tv_sec: libc::time_t::try_from(within.as_secs()).unwrap_or(libc::time_t::MAX),
-            tv_usec: libc::suseconds_t::from(i32::try_from(within.subsec_micros()).unwrap_or(0)),
+        #[allow(
+            clippy::unnecessary_fallible_conversions,
+            reason = "the microseconds are an `i32` on Windows and macOS"
+        )]
+        let max = sys::Timeval {
+            tv_sec: sys::Seconds::try_from(within.as_secs()).unwrap_or(sys::Seconds::MAX),
+            tv_usec: sys::Micros::try_from(within.subsec_micros()).unwrap_or(0),
         };
-        let mut out = libc::timeval {
+        let mut out = sys::Timeval {
             tv_sec: 0,
             tv_usec: 0,
         };
@@ -732,7 +742,7 @@ impl DnsResolve for Resolving {
 /// A socket of the channel's, for the transfer's pollset only: c-ares owns it
 /// and does everything on it.
 #[derive(Debug)]
-struct FdSocket(c_int);
+struct FdSocket(sys::AresSocket);
 
 fn not_ours() -> io::Error {
     io::Error::from(io::ErrorKind::Unsupported)
@@ -746,7 +756,7 @@ impl Socket for FdSocket {
     fn readiness(&self) -> Readiness<'_> {
         // SAFETY: read from the channel, which closes it only as it processes
         // or goes, after which the wants holding this are read anew or gone.
-        Readiness::Poll(unsafe { BorrowedFd::borrow_raw(self.0) })
+        Readiness::Poll(unsafe { curl_os::socket::BorrowedSocket::borrow_raw(self.0) })
     }
 
     fn take_error(&self) -> io::Result<Option<io::Error>> {

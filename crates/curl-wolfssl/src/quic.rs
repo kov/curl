@@ -93,6 +93,7 @@ impl<W: Wolfssl> QuicTls for QuicSession<W> {
             io: Reach::Quic(cx),
             state: &mut s.state,
             store: None,
+            // A QUIC session's are kept for HTTP/3 (`"h3"`).
             alpn: Some(Chosen::H3),
             quic_params: Some(params),
         };

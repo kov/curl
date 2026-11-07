@@ -53,9 +53,9 @@ witness: curl-wolfssl tests::the_multi_keeps_the_store_while_it_may
 file: crates/curl-wolfssl/src/library.rs
 witness: curl-wolfssl tests::sessions_are_kept_and_resumed
 --- old
-                    None => TlsTicket::new(der, version, self.alpn, early, until),
+                let ticket = TlsTicket::new(der, version, self.alpn, early, until);
 --- new
-                    None => TlsTicket::new(der, version, None, early, until),
+                let ticket = TlsTicket::new(der, version, None, early, until);
 
 === early data offers every protocol, not the session's
 file: crates/curl-wolfssl/src/session.rs
@@ -97,20 +97,20 @@ witness: curl-wolfssl tests::a_tls_1_2_secret_is_logged_while_the_key_log_is_ope
         let Some(keys) = ssl.tls12_keys() else {
 
 === a QUIC session's ticket is kept without HTTP/3 named
-file: crates/curl-wolfssl/src/library.rs
+file: crates/curl-wolfssl/src/quic.rs
 witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
 --- old
-                        let ticket = TlsTicket::new(der, version, Some(Chosen::H3), early, until);
+            alpn: Some(Chosen::H3),
 --- new
-                        let ticket = TlsTicket::new(der, version, self.alpn, early, until);
+            alpn: None,
 
 === a QUIC session's ticket is kept without the transport parameters
 file: crates/curl-wolfssl/src/library.rs
 witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
 --- old
-                            Some(params) => ticket.with_quic_params(params),
+                    Some(params) => ticket.with_quic_params(params),
 --- new
-                            Some(_) => ticket,
+                    Some(_) => ticket,
 
 === a QUIC session sends its transport parameters at the legacy code point
 file: crates/curl-wolfssl/src/session.rs
@@ -225,7 +225,7 @@ witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverifie
 
 === a QUIC handshake is checked before it is reported
 file: crates/curl-wolfssl/src/quic.rs
-witness: curl-wolfssl tests::quic::the_peer_is_reported_and_checked_as_the_quic_library_says_the_handshake_is_done
+witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverified_host_not_at_all
 --- old
             session::report_handshake(ssl, cx);
             let checked = check_peer(ssl, identity, host, kind, cx);

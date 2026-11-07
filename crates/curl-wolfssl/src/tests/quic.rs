@@ -300,16 +300,24 @@ fn an_address_is_checked_as_one_and_an_unverified_host_not_at_all() {
         peer: PeerCert::None,
         ..World::default()
     });
+    let mut kept = Kept::new();
     let mut s = quic(lib, &lax, &mut kept, false, &|_| Ok(())).unwrap();
     assert_eq!(
         done(&mut s, &lax, &mut kept, HOST),
         Some(Err(ErrorKind::SslPinnedpubkeynotmatch))
     );
     assert!(lib.w().made("check_").is_empty());
-    assert!(has(
-        &kept.notes.0,
-        "fail: SslPinnedpubkeynotmatch: SSL: failed retrieving server certificate"
-    ));
+    // Reported first, then checked.
+    let notes = &kept.notes.0;
+    let using = at(
+        notes,
+        "info: SSL connection using TLSv1.3 / TLS13-AES128-GCM-SHA256",
+    );
+    let failed = at(
+        notes,
+        "fail: SslPinnedpubkeynotmatch: SSL: failed retrieving server certificate",
+    );
+    assert!(using < failed, "{notes:#?}");
 }
 
 #[test]

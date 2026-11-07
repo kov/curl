@@ -540,9 +540,9 @@ impl Call<'_, '_> {
 
     /// The library made a session (`wssl_vtls_new_session_cb`): kept in
     /// the cache, as `Curl_wssl_cache_session` keeps it, if it could be
-    /// written out. Over QUIC (`wssl_quic_new_session_cb`), it is kept
-    /// for HTTP/3, with the connection's transport parameters where they
-    /// encode.
+    /// written out. Over QUIC (`wssl_quic_new_session_cb`), what ALPN
+    /// agreed is HTTP/3, and it is kept with the connection's transport
+    /// parameters where they encode.
     pub(crate) fn new_session(&mut self, made: NewSession) {
         match made {
             NewSession::Unsized(n) => {
@@ -569,15 +569,10 @@ impl Call<'_, '_> {
             } => {
                 let until = self.io.cx().unix_time().saturating_add(timeout);
                 let early = usize::try_from(early_max).unwrap_or(usize::MAX);
-                let ticket = match self.quic_params.as_mut() {
-                    Some(params) => {
-                        let ticket = TlsTicket::new(der, version, Some(Chosen::H3), early, until);
-                        match params() {
-                            Some(params) => ticket.with_quic_params(params),
-                            None => ticket,
-                        }
-                    }
-                    None => TlsTicket::new(der, version, self.alpn, early, until),
+                let ticket = TlsTicket::new(der, version, self.alpn, early, until);
+                let ticket = match self.quic_params.as_mut().and_then(|params| params()) {
+                    Some(params) => ticket.with_quic_params(params),
+                    None => ticket,
                 };
                 self.io.cx().keep_session(ticket);
             }

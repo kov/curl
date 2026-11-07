@@ -52,9 +52,6 @@ NO_COUNTERPART = {
                 "rewrite holds bytes as Vec, Cow and slices",
     "unit2602": "dynhds, C's growable header list with its own limits; the "
                 "rewrite's header lists are Vecs of fields",
-    "unit3205": "the cipher suite table of mbedTLS and rustls; the "
-                "reference build uses OpenSSL, and the C test compiles to "
-                "nothing in it",
     "unit3213": "uint32_spbset, the sparse set of a host's connections; "
                 "the pool finds them by filtering its arena",
     "unit3300": "Curl_thrdpool, C's generic thread pool with take, process "

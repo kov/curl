@@ -169,6 +169,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-mbedtls"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "curl-alloc",
+ "curl-build",
+ "curl-core",
+]
+
+[[package]]
 name = "curl-nghttp2"
 version = "0.1.0"
 dependencies = [

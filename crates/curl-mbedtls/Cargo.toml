@@ -1,0 +1,23 @@
+[package]
+name = "curl-mbedtls"
+description = "mbedTLS for the curl rewrite: TLS, as lib/vtls/mbedtls.c drives it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "mbedtls"
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+cc = "1.10.0"
+
+[dev-dependencies]
+# The multi's clock, given as the tests give it.
+curl-core = { path = "../curl-core", features = ["test-util"] }
+
+[lints]
+workspace = true

@@ -107,6 +107,12 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   handshake, the records both ways, the callbacks that move them over the connection and log
   its keys, and the peer's chain and stapled status.
 - `crates/curl-gnutls/src/sign.rs`: nettle's Ed25519, signing HTTP message signatures.
+- `crates/curl-mbedtls/src/sys.rs`: the declarations of the mbedTLS functions the crate calls,
+  and of the tables of the headers' values and of the sizes and offsets of the library's objects.
+- `crates/curl-mbedtls/src/mbedtls.rs`: mbedTLS's random number generator and each connection's
+  objects, held in room of the sizes its build gives them: the configuration, the handshake,
+  the records both ways, the callbacks that move them over the connection and weigh the
+  peer's chain, and the sessions saved and resumed.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place (on macOS where `_NSGetArgv` says); on Windows the C library's `argv`, read (in the
   Unicode build its `wmain` arguments, `_configure_wide_argv`, converted to UTF-8), and the

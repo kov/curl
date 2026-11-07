@@ -27,8 +27,21 @@ library, and the rewrite's curl-gssapi with `gnu-gss`, which links the
 static archives, built position-independent. Only with `--gnugss` or
 through that baseline.
 
+AWS-LC and BoringSSL: the OpenSSL forks the rewrite's curl-openssl builds
+over besides OpenSSL and LibreSSL, built only when asked for (`--awslc`,
+`--boringssl`, or the oracle `baseline.py` builds with them). Each is built
+at the version http3-linux.yml pins, as that CI builds it (CMake, shared
+libraries, no tests), for the C build over it, which loads the shared
+library; and again static and position-independent into the same prefix
+for the rewrite's, which links it statically (`OPENSSL_STATIC`) so that its
+programs need no search path to find it. ngtcp2's crypto for both is
+`ngtcp2_crypto_boringssl`, of one name, so each fork has an ngtcp2 of its
+own, `build/deps/ngtcp2-<fork>`, built with that crypto alone, as CI's
+`ngtcp2-boringssl` is. AWS-LC's build needs Go.
+
 Everything goes under build/deps and is rebuilt only when a pinned version
 or the way it is built changes. Run directly, or through `baseline.py --run`.
+Builds run `DEPS_JOBS` jobs at once, the machine's processors by default.
 """
 
 import os
@@ -48,6 +61,7 @@ WORKFLOW = ".github/workflows/http3-linux.yml"
 OWN_NGTCP2 = "CURL_NGTCP2_DIR" not in os.environ
 NGTCP2 = DEPS / "ngtcp2" if OWN_NGTCP2 else pathlib.Path(
     os.environ["CURL_NGTCP2_DIR"])
+JOBS = os.environ.get("DEPS_JOBS", str(os.cpu_count()))
 # CURL_WOLFSSL_DIR likewise, for wolfSSL and curl-wolfssl's build.
 OWN_WOLFSSL = "CURL_WOLFSSL_DIR" not in os.environ
 WOLFSSL = DEPS / "wolfssl" if OWN_WOLFSSL else pathlib.Path(
@@ -122,7 +136,7 @@ def build_wolfssl():
         sh(["./configure", f"--prefix={WOLFSSL}", *WOLFSSL_CONFIGURE],
            cwd=src)
         sh(["make", "clean"], cwd=src)
-        sh(["make", f"-j{os.cpu_count()}", "install"], cwd=src)
+        sh(["make", f"-j{JOBS}", "install"], cwd=src)
         stamp.write_text(built + "\n")
     pc = subprocess.run(["pkg-config", "--modversion", "wolfssl"],
                         env={**os.environ,
@@ -206,7 +220,7 @@ def build():
         # Without dependency tracking, objects an earlier configure built
         # would be kept.
         sh(["make", "clean"], cwd=src)
-        sh(["make", f"-j{os.cpu_count()}", "install"], cwd=src)
+        sh(["make", f"-j{JOBS}", "install"], cwd=src)
         stamp.write_text(built + "\n")
     # A crypto library configure found no TLS library for is skipped, not
     # failed: each must be there.
@@ -220,6 +234,93 @@ def build():
     check(pc.stdout.strip() == version,
           f"pkg-config finds ngtcp2 {pc.stdout.strip()}, want {version}")
     return {"PKG_CONFIG_PATH": f"{NGTCP2}/lib/pkgconfig"}
+
+
+# The OpenSSL forks built on request: the variable http3-linux.yml pins
+# each one's version in, the tarball's URL and directory, and the CMake
+# flags of CI's build of it.
+FORKS = {
+    "awslc": ("AWSLC_VERSION",
+              "https://github.com/awslabs/aws-lc/archive/refs/tags/v{v}.tar.gz",
+              "aws-lc-{v}", ["-DBUILD_TESTING=OFF", "-DBUILD_TOOL=OFF"]),
+    "boringssl": ("BORINGSSL_VERSION",
+                  "https://github.com/google/boringssl/releases/download/{v}/boringssl-{v}.tar.gz",
+                  "boringssl-{v}", ["-DBUILD_TESTING=OFF"]),
+}
+
+
+def fork_dir(fork):
+    """Where the OpenSSL fork `fork` is installed."""
+    return DEPS / fork
+
+
+def fork_ngtcp2_dir(fork):
+    """Where the ngtcp2 with crypto for `fork` is installed."""
+    return DEPS / f"ngtcp2-{fork}"
+
+
+def build_fork(fork):
+    """
+    Build the OpenSSL fork `fork` and an ngtcp2 with crypto for it if
+    missing; return the environment CMake needs to find that ngtcp2.
+    """
+    var, url, tree, flags = FORKS[fork]
+    version = pinned(var)
+    prefix = fork_dir(fork)
+    built = f"{version} shared+static-pic"
+    stamp = prefix / ".version"
+    if not (stamp.exists() and stamp.read_text().strip() == built):
+        src = DEPS / "src" / tree.format(v=version)
+        if not src.exists():
+            src.parent.mkdir(parents=True, exist_ok=True)
+            tarball = src.parent / f"{fork}-{version}.tar.gz"
+            sh(["curl", "--fail", "--silent", "--show-error", "--location",
+                "--output", str(tarball), url.format(v=version)],
+               cwd=src.parent)
+            sh(["tar", "-xzf", str(tarball)], cwd=src.parent)
+            tarball.unlink()
+        # CI's shared build, then the static one beside it.
+        for kind, extra in [("shared", ["-DBUILD_SHARED_LIBS=ON"]),
+                            ("static", ["-DBUILD_SHARED_LIBS=OFF",
+                                        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"])]:
+            out = src / f"build-{kind}"
+            sh(["cmake", "-S", str(src), "-B", str(out), "-G", "Ninja",
+                "-DCMAKE_BUILD_TYPE=Release",
+                f"-DCMAKE_INSTALL_PREFIX={prefix}",
+                "-DCMAKE_INSTALL_LIBDIR=lib", *flags, *extra], cwd=src)
+            sh(["cmake", "--build", str(out), "-j", JOBS], cwd=src)
+            sh(["cmake", "--install", str(out)], cwd=src)
+        stamp.write_text(built + "\n")
+    for lib in ["libssl.so", "libcrypto.so", "libssl.a", "libcrypto.a"]:
+        check((prefix / "lib" / lib).exists(),
+              f"{prefix / 'lib' / lib} was not built")
+    ngtcp2 = fork_ngtcp2_dir(fork)
+    ngtcp2_version = pinned("NGTCP2_VERSION")
+    ngtcp2_built = f"{ngtcp2_version} fpic {fork}-{version}"
+    stamp = ngtcp2 / ".version"
+    if not (stamp.exists() and stamp.read_text().strip() == ngtcp2_built):
+        src = DEPS / "src" / f"ngtcp2-{ngtcp2_version}"
+        if not src.exists():
+            src.parent.mkdir(parents=True, exist_ok=True)
+            sh(["git", "clone", "--quiet", "--depth", "1", "--branch",
+                f"v{ngtcp2_version}", "https://github.com/ngtcp2/ngtcp2",
+                str(src)], cwd=src.parent)
+        sh(["autoreconf", "-fi"], cwd=src)
+        # As CI's `ngtcp2-boringssl`: that crypto, and no other.
+        sh(["./configure", f"--prefix={ngtcp2}",
+            "--disable-dependency-tracking", "--enable-lib-only",
+            "--with-openssl=no", "--with-boringssl", "--with-pic",
+            # The crypto library is an archive libtool does not build, which
+            # `--with-pic` leaves as it is: the shared libcurl links it in.
+            "CFLAGS=-g -O2 -fPIC", "CXXFLAGS=-g -O2 -fPIC",
+            f"BORINGSSL_LIBS=-L{prefix / 'lib'} -lssl -lcrypto",
+            f"BORINGSSL_CFLAGS=-I{prefix / 'include'}"], cwd=src)
+        sh(["make", "clean"], cwd=src)
+        sh(["make", f"-j{JOBS}", "install"], cwd=src)
+        stamp.write_text(ngtcp2_built + "\n")
+    lib = ngtcp2 / "lib" / "libngtcp2_crypto_boringssl.a"
+    check(lib.exists(), f"{lib} was not built")
+    return {"PKG_CONFIG_PATH": f"{ngtcp2}/lib/pkgconfig"}
 
 
 def describe():
@@ -238,7 +339,7 @@ def describe():
             "nghttp3": nghttp3.stdout.strip()}
 
 
-def check_linked(binary, crypto=None):
+def check_linked(binary, crypto=None, ngtcp2=NGTCP2):
     """
     Fail unless `binary` loads the ngtcp2 built here, and if `crypto`
     names one, its crypto library for that TLS library (`ossl`, `gnutls`,
@@ -250,7 +351,7 @@ def check_linked(binary, crypto=None):
                           text=True).stdout
     # libngtcp2.16.dylib on macOS, libngtcp2.so.16 on Linux.
     for name in ["ngtcp2", *([f"ngtcp2_crypto_{crypto}"] if crypto else [])]:
-        lib = f"{NGTCP2}/lib/lib{name}.{'' if macos else 'so'}"
+        lib = f"{ngtcp2}/lib/lib{name}.{'' if macos else 'so'}"
         check(lib in libs, f"{binary} does not load {lib}")
 
 
@@ -259,3 +360,6 @@ if __name__ == "__main__":
     print(build_wolfssl())
     if "--gnugss" in sys.argv[1:]:
         print(build_gnugss())
+    for fork in FORKS:
+        if f"--{fork}" in sys.argv[1:]:
+            print(build_fork(fork))

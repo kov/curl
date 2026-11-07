@@ -23,7 +23,7 @@ mod table;
 
 pub(crate) use apply::{
     Clobber, CommandLine, Fail, Global, HttpVersion, Httpsig, IpVersion, Method, Node, Operation,
-    Output, Request, Resume, Trace, Unimplemented, Upload,
+    Output, Request, Resume, Trace, Upload,
 };
 pub(crate) use errors::{ParamError, exit_code};
 pub(crate) use help::{CATEGORIES, HELP, HelpLine};

@@ -4733,7 +4733,7 @@ mod tests {
         let mut msgs = Messages::new();
         msgs.silent = true;
         let mut line = match tool::parse_args(&argv, &mut msgs, &mut |_, _| {}) {
-            Ok(tool::Parsed::Run(line)) if line.unimplemented.is_none() => line,
+            Ok(tool::Parsed::Run(line)) => line,
             _ => return None,
         };
         change(line.operations.last_mut()?);

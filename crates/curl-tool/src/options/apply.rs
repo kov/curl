@@ -2,11 +2,8 @@
 //! `src/tool_getparam.c` (`opt_none`, `opt_bool`, `opt_string` and the
 //! rest) do it.
 //!
-//! Options are implemented one by one. Every other option is named in the
-//! one arm that records it as not implemented, so the match stays
-//! exhaustive: a new option in the table does not compile until it is
-//! placed, and a command line using an unimplemented option is refused
-//! rather than run without it.
+//! The match over the options is exhaustive: a new option in the table
+//! does not compile until it is placed.
 
 use std::borrow::Cow;
 use std::num::NonZeroU16;
@@ -988,20 +985,11 @@ pub(crate) struct CommandLine<'a> {
     /// Never empty: the last is the one options apply to.
     pub(crate) operations: Vec<Operation<'a>>,
     pub(crate) global: Global<'a>,
-    /// The first thing asked for that is not implemented yet.
-    pub(crate) unimplemented: Option<Unimplemented>,
     /// The default configuration file was read without a failure.
     pub(crate) read_curlrc: bool,
     /// Options read so far in the current word, as C's `verbose_nopts`:
     /// `-vv` counts twice, `-v -v` once.
     pub(crate) options_in_word: usize,
-}
-
-/// Something the command line asks for that is not implemented yet.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Unimplemented {
-    /// An option, with the prefix it was used with.
-    Option(&'static Spec, &'static str),
 }
 
 impl<'a> CommandLine<'a> {
@@ -1011,7 +999,6 @@ impl<'a> CommandLine<'a> {
         Ok(CommandLine {
             operations,
             global: Global::default(),
-            unimplemented: None,
             read_curlrc: false,
             options_in_word: 0,
         })
@@ -1032,12 +1019,6 @@ impl<'a> CommandLine<'a> {
         }
         self.operations.try_push(Operation::default())?;
         Ok(())
-    }
-
-    /// Record that `spec` was used and is not implemented.
-    pub(crate) fn not_implemented(&mut self, spec: &'static Spec, prefix: &'static str) {
-        self.unimplemented
-            .get_or_insert(Unimplemented::Option(spec, prefix));
     }
 }
 
@@ -2073,7 +2054,9 @@ pub(crate) fn apply<'a>(
         Opt::Ntlm if value.toggle() => return Err(ParamError::LibcurlDoesntSupport),
         Opt::Ntlm => line.current().no_ntlm = true,
         Opt::Ech => ech(line.current(), value.text(), msgs)?,
-        Opt::FalseStart => line.not_implemented(spec, "--"),
+        // Kept a boolean, so `--no-false-start` is taken too, and warned
+        // of either way (`opt_depr` from `opt_bool`).
+        Opt::FalseStart => super::parse::deprecated(msgs, spec),
     }
     Ok(Flow::Continue)
 }

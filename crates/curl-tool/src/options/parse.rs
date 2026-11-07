@@ -740,7 +740,7 @@ fn getparameter<'a>(
     }
 }
 
-fn deprecated(msgs: &Messages, spec: &Spec) {
+pub(super) fn deprecated(msgs: &Messages, spec: &Spec) {
     msgs.warn(&[
         b"--",
         spec.long.as_bytes(),
@@ -760,7 +760,7 @@ fn unicode_warning(msgs: &Messages, spec: &Spec, arg: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::{Output, Trace, Unimplemented, Upload};
+    use crate::options::{Output, Trace, Upload};
 
     fn parsed(args: &[&str]) -> Result<Parsed<'static>, ParamError> {
         let argv: Vec<Vec<u8>> = std::iter::once("curl")
@@ -773,16 +773,10 @@ mod tests {
         parse_args(argv, &mut msgs, &mut |_, _| {})
     }
 
-    fn run(args: &[&str]) -> Result<(usize, Option<&'static str>, Option<String>), ParamError> {
+    fn run(args: &[&str]) -> Result<(usize, Option<String>), ParamError> {
         match parsed(args)? {
-            Parsed::Run(line) => Ok((
-                line.operations.len(),
-                line.unimplemented.map(|u| match u {
-                    Unimplemented::Option(s, _) => s.long,
-                }),
-                None,
-            )),
-            Parsed::Request(r) => Ok((0, None, Some(format!("{r:?}")))),
+            Parsed::Run(line) => Ok((line.operations.len(), None)),
+            Parsed::Request(r) => Ok((0, Some(format!("{r:?}")))),
         }
     }
 
@@ -952,7 +946,6 @@ mod tests {
         assert_eq!(op.service_name, Some(&b"s"[..]));
         assert_eq!(op.proxy_service_name, Some(&b"q"[..]), "the last of either");
         assert!(op.socks5_gssapi_nec);
-        assert!(l.unimplemented.is_none());
         for name in [
             "--service-name",
             "--proxy-service-name",
@@ -1123,15 +1116,15 @@ mod tests {
     #[test]
     fn stops_at_the_first_request() {
         assert_eq!(
-            run(&["-V", "--bogus"]).unwrap().2.as_deref(),
+            run(&["-V", "--bogus"]).unwrap().1.as_deref(),
             Some("Version")
         );
-        assert_eq!(run(&["-sV"]).unwrap().2.as_deref(), Some("Version"));
+        assert_eq!(run(&["-sV"]).unwrap().1.as_deref(), Some("Version"));
         assert_eq!(
-            run(&["-h", "all"]).unwrap().2.as_deref(),
+            run(&["-h", "all"]).unwrap().1.as_deref(),
             Some("Help(Some([97, 108, 108]))")
         );
-        assert_eq!(run(&["--no-version", "x"]).unwrap().2, None);
+        assert_eq!(run(&["--no-version", "x"]).unwrap().1, None);
         assert_eq!(
             run(&["--bogus", "-V"]).err(),
             Some(ParamError::OptionUnknown)
@@ -1191,17 +1184,15 @@ mod tests {
             let said = crate::msgs::captured(|mut msgs| {
                 ran = Some(parse_args(words, &mut msgs, &mut |_, _| {}));
             });
-            let Some(Ok(Parsed::Run(line))) = ran else {
+            let Some(Ok(Parsed::Run(_))) = ran else {
                 panic!("{args:?} did not parse");
             };
-            assert!(line.unimplemented.is_none(), "{args:?}");
             let warning = format!("Warning: {flag} is deprecated and has no function anymore\n");
             assert_eq!(said, warning, "{args:?}");
         }
         // A deprecated letter ends its word: `v` is not read.
         for word in ["-2v", "-3v"] {
             let line = line(&[word, "http://h/"]);
-            assert!(line.unimplemented.is_none());
             assert_eq!(line.global.trace, Trace::None, "{word}");
         }
         let file = TempFile::new("deprecated.cfg", b"krb = x\nsslv2\nmetalink\nnpn\n");
@@ -1209,10 +1200,9 @@ mod tests {
         let argv = argv(&args);
         let said = crate::msgs::captured(|mut msgs| {
             parse(&argv, None, &mut msgs, &mut |_, _| {}, |r, _| {
-                let Ok(Parsed::Run(line)) = r else {
+                let Ok(Parsed::Run(_)) = r else {
                     panic!("not parsed");
                 };
-                assert!(line.unimplemented.is_none());
             });
         });
         assert_eq!(
@@ -1233,60 +1223,42 @@ mod tests {
 
     #[test]
     fn reads_urls_and_operations() {
-        assert_eq!(
-            run(&["http://a/", "--next", "http://b/"]),
-            Ok((2, None, None))
-        );
-        assert_eq!(run(&["--", "--bogus"]), Ok((1, None, None)));
+        assert_eq!(run(&["http://a/", "--next", "http://b/"]), Ok((2, None)));
+        assert_eq!(run(&["--", "--bogus"]), Ok((1, None)));
         // Deprecated: warned of, and nothing more, their argument taken.
         assert_eq!(
             run(&["--random-file", "f", "--egd-file", "e", "x"]),
-            Ok((1, None, None))
+            Ok((1, None))
         );
-        assert_eq!(run(&["-hfoo", "http://a/"]), Ok((1, None, None)));
-        // A recognised option without its meaning is recorded, not run.
-        assert_eq!(
-            run(&["--false-start", "x"]),
-            Ok((1, Some("false-start"), None))
-        );
+        assert_eq!(run(&["-hfoo", "http://a/"]), Ok((1, None)));
         // What the library lacks is refused.
         assert_eq!(
             run(&["--dns-interface", "lo", "x"]),
             if cfg!(feature = "threaded-resolver") {
                 Err(ParamError::LibcurlDoesntSupport)
             } else {
-                Ok((1, None, None))
+                Ok((1, None))
             }
         );
         // Each operation has its own URLs and options.
-        assert_eq!(
-            run(&["x", "--next", "y", "z", "-C", "1"]),
-            Ok((2, None, None))
-        );
+        assert_eq!(run(&["x", "--next", "y", "z", "-C", "1"]), Ok((2, None)));
         assert_eq!(
             run(&["x", "-C", "1", "--clobber", "--no-remove-on-error"]),
-            Ok((1, None, None))
+            Ok((1, None))
         );
-        assert_eq!(run(&["x", "--no-clobber"]), Ok((1, None, None)));
+        assert_eq!(run(&["x", "--no-clobber"]), Ok((1, None)));
         // The last operation's name cannot come from both the response and
         // the file there.
         assert_eq!(
             run(&["-J", "-C", "-", "x"]),
             Err(ParamError::ContdispResumeFrom)
         );
-        assert_eq!(
-            run(&["-J", "-C", "-", "x", "--next", "y"]),
-            Ok((2, None, None))
-        );
-        assert_eq!(run(&["x", "--remove-on-error"]), Ok((1, None, None)));
-        assert_eq!(
-            run(&["x", "--false-start"]),
-            Ok((1, Some("false-start"), None))
-        );
-        assert_eq!(run(&["x", "--tftp-no-options"]), Ok((1, None, None)));
-        assert_eq!(run(&["-T", ".", "x"]), Ok((1, None, None)));
-        assert_eq!(run(&["-w", "%time{%Y}", "x"]), Ok((1, None, None)));
-        assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None, None)));
+        assert_eq!(run(&["-J", "-C", "-", "x", "--next", "y"]), Ok((2, None)));
+        assert_eq!(run(&["x", "--remove-on-error"]), Ok((1, None)));
+        assert_eq!(run(&["x", "--tftp-no-options"]), Ok((1, None)));
+        assert_eq!(run(&["-T", ".", "x"]), Ok((1, None)));
+        assert_eq!(run(&["-w", "%time{%Y}", "x"]), Ok((1, None)));
+        assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None)));
     }
 
     /// A URL, `--output` and `--upload-file` each fill the first node
@@ -1315,10 +1287,10 @@ mod tests {
         // `--next` needs a URL in the first node, not just in any.
         assert_eq!(run(&["-o", "a", "--next", "x"]), Err(ParamError::BadUse));
         // A pattern of files to upload.
-        assert_eq!(run(&["-T", "a[1-2]", "x"]), Ok((1, None, None)));
+        assert_eq!(run(&["-T", "a[1-2]", "x"]), Ok((1, None)));
         // One URL can save its ETag.
-        assert_eq!(run(&["--etag-save", "e", "x"]), Ok((1, None, None)));
-        assert_eq!(run(&["x", "--etag-save", "e"]), Ok((1, None, None)));
+        assert_eq!(run(&["--etag-save", "e", "x"]), Ok((1, None)));
+        assert_eq!(run(&["x", "--etag-save", "e"]), Ok((1, None)));
     }
 
     /// `--fail` and `--fail-with-body` are one choice, the last said; off,
@@ -1475,11 +1447,11 @@ mod tests {
             (l.global.trace, l.global.trace_dump, l.global.trace_time)
         };
         assert_eq!(g(&["x", "-v"]), (Trace::Plain, Some(&b"%"[..]), false));
-        assert_eq!(run(&["x", "-v", "-v"]), Ok((1, None, None)));
-        assert_eq!(run(&["x", "--verbose", "--verbose"]), Ok((1, None, None)));
-        assert_eq!(run(&["x", "-vv"]), Ok((1, None, None)));
-        assert_eq!(run(&["x", "-sv"]), Ok((1, None, None)));
-        assert_eq!(run(&["x", "-vsv"]), Ok((1, None, None)));
+        assert_eq!(run(&["x", "-v", "-v"]), Ok((1, None)));
+        assert_eq!(run(&["x", "--verbose", "--verbose"]), Ok((1, None)));
+        assert_eq!(run(&["x", "-vv"]), Ok((1, None)));
+        assert_eq!(run(&["x", "-sv"]), Ok((1, None)));
+        assert_eq!(run(&["x", "-vsv"]), Ok((1, None)));
         assert!(!g(&["x", "--trace-time", "-v"]).2);
         assert!(g(&["x", "-v", "--trace-time"]).2);
         assert_eq!(

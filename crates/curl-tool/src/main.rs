@@ -41,11 +41,7 @@ mod write_out;
 mod xattr;
 
 use msgs::Messages;
-use options::{CommandLine, Parsed, Request, Trace, Unimplemented, exit_code};
-
-/// Exit status for anything not implemented yet. No test expects it, so a
-/// missing feature cannot pass a test by accident.
-const NOT_IMPLEMENTED: u8 = 125;
+use options::{CommandLine, Parsed, Request, Trace, exit_code};
 
 /// The debug test build tracks the tool's allocations (`DESIGN.md`, "Debug
 /// hooks").
@@ -180,11 +176,6 @@ fn run(
     if argc < 2 && first_url.is_none() {
         msgs.help(&[]);
         return ExitCode::from(exit_code(ErrorKind::FailedInit));
-    }
-    if let Some(Unimplemented::Option(spec, prefix)) = line.unimplemented {
-        let name = [prefix.as_bytes(), spec.long.as_bytes()];
-        msgs.error(&[b"option ", name[0], name[1], b": not implemented yet"]);
-        return ExitCode::from(NOT_IMPLEMENTED);
     }
     msgs.tracing = line.global.trace != Trace::None;
     // The debug build's `CURL_DEBUG` has the last word on the library's

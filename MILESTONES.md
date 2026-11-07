@@ -1297,10 +1297,11 @@ through SSPI; MIT krb5 stays Unix-only.
     `curl_os::poll` as `Curl_ares_perform` polls them; curl-ares's, the tool's and the shim's
     tests pass on the guest with the `c-ares` feature. Measured 2026-11-07, the suite with CI's
     flags against C's build with OpenSSL, c-ares and libssh2 (`C:\work\c-openssl`), the Rust
-    built with the same three: 1950 of 1965 pass on the Rust leg and 1951 of 1965 on C's, the
-    DNS server's 2102 to 2104 and the 61 SCP and SFTP tests among them on both; the Rust leg
-    fails no test C's passes but the replaced 96 and 558. The 13 tests of the HTTP/2 and
-    HTTP/3 servers are skipped on both, the guest having no nghttpx.
+    built with the same three and libidn2, as C's (`C:\work\suite.sh`): 1966 of 1981 pass on
+    the Rust leg and 1967 of 1981 on C's, the DNS server's 2102 to 2104, the 61 SCP and SFTP
+    tests and the 15 of nghttpx's HTTP/2 and HTTP/3 servers among them on both (nghttp2
+    1.70.0's nghttpx, built under MSYS by `C:\work\nghttpx\build.sh`); the Rust leg fails no
+    test C's passes but the replaced 96 and 558.
 95. **The shim DLL and curl.exe on Windows**: names in the ANSI code page, console writes, the
     DLL named as CMake names it. **Done.** Output names made fit for Windows as
     `sanitize_file_name` makes them (`-o`, `-O`, `-J`, a redirect's), `--create-dirs` through
@@ -1322,9 +1323,11 @@ through SSPI; MIT krb5 stays Unix-only.
 97. **Schannel**, with its CA store and `CURLSSLOPT_*` options. **Done.** The `schannel` build has
     no HTTP/3 and no message signatures, as C's; what each library can do it declares
     (`TlsBackend::support`), and the shim and the tool refuse or pass over what it lacks as C's
-    do. Against C's Schannel build on the guest's suite
-    the Rust leg fails no test C passes but 96, 558, 1013 and 1014, as step 96 left them; twelve
-    hand cases (CA file, pinning, certinfo, revocation and client-certificate flags, a cipher
+    do. The guest's suite with CI's flags, measured 2026-11-07 against C's Schannel build with
+    c-ares, libssh2 and WinLDAP (`C:\work\c-schannel`), the Rust built with Schannel, c-ares
+    and libssh2: 1928 of 1943 pass on the Rust leg and 1929 of 1943 on C's, the 11 tests of
+    nghttpx's HTTP/2 server among them on both, and the Rust leg fails no test C's passes but
+    the replaced 96 and 558. Twelve hand cases (CA file, pinning, certinfo, revocation and client-certificate flags, a cipher
     list, an untrusted root, a name mismatch, credential and CA store reuse, the options Schannel
     lacks) give C's verbose output but for the debug lines of when the peer's data arrived.
 98. **SSPI**: Kerberos, SPNEGO and Digest as C routes them on Windows. **Done.** On Windows a

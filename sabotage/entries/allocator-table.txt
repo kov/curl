@@ -1,0 +1,21 @@
+# The allocator `curl_global_init_mem` installs, read without the root's
+# lock as one table.
+
+=== a read takes one function from the table installed later than the rest
+file: crates/curl-sys-abi/src/root.rs
+witness: curl-sys-abi root::tests::a_read_racing_an_install_sees_one_table_whole
+--- old
+        unsafe { *table }
+--- new
+        Allocator {
+            malloc: unsafe { (*self.0.load(Ordering::Acquire)).malloc },
+            ..unsafe { *table }
+        }
+
+=== an allocator installed again leaks another table
+file: crates/curl-sys-abi/src/root.rs
+witness: curl-sys-abi root::tests::an_allocator_installed_again_reuses_its_table
+--- old
+            if t.allocator.same(&a) {
+--- new
+            if false {

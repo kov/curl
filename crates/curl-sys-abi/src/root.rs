@@ -45,72 +45,64 @@ const SYSTEM: Allocator = Allocator {
     calloc: libc::calloc,
 };
 
+/// The system's allocator, where the installed one points when no
+/// callbacks are.
+static SYSTEM_TABLE: Allocator = SYSTEM;
+
+impl Allocator {
+    /// Whether `self` and `other` are the same five functions.
+    fn same(&self, other: &Allocator) -> bool {
+        use core::ptr::fn_addr_eq;
+        fn_addr_eq(self.malloc, other.malloc)
+            && fn_addr_eq(self.free, other.free)
+            && fn_addr_eq(self.realloc, other.realloc)
+            && fn_addr_eq(self.strdup, other.strdup)
+            && fn_addr_eq(self.calloc, other.calloc)
+    }
+}
+
 /// The allocator installed: part of the root, beside it because every
 /// block handed to the application or given back reads it, and the
 /// root's lock for each cost as much as the allocation. Written only with
 /// the root's lock held, by the inits; read without it, as C reads its
-/// `Curl_cmalloc` and the rest: an init racing other calls is the
-/// application's error (`curl_global_init_mem(3)`), and can mix the two
-/// allocators here as there.
-static ALLOCATOR: Installed = Installed {
-    malloc: AtomicPtr::new(core::ptr::null_mut()),
-    free: AtomicPtr::new(core::ptr::null_mut()),
-    realloc: AtomicPtr::new(core::ptr::null_mut()),
-    strdup: AtomicPtr::new(core::ptr::null_mut()),
-    calloc: AtomicPtr::new(core::ptr::null_mut()),
-};
+/// `Curl_cmalloc` and the rest. An init racing other calls is the
+/// application's error (`curl_global_init_mem(3)`): a call racing it may
+/// use either allocator, but each read sees one table whole, the old or
+/// the new, never some functions of each.
+static ALLOCATOR: Installed = Installed::new(&SYSTEM_TABLE);
 
-/// An `Allocator`'s functions, each NULL for the system's.
-struct Installed {
-    malloc: AtomicPtr<()>,
-    free: AtomicPtr<()>,
-    realloc: AtomicPtr<()>,
-    strdup: AtomicPtr<()>,
-    calloc: AtomicPtr<()>,
-}
+/// One allocator's table, published whole by swapping a single pointer.
+struct Installed(AtomicPtr<Allocator>);
 
 impl Installed {
-    /// Install `a`. The caller holds the root's lock.
-    fn store(&self, _root: &mut Root, a: Allocator) {
-        self.malloc.store(a.malloc as *mut (), Ordering::Release);
-        self.free.store(a.free as *mut (), Ordering::Release);
-        self.realloc.store(a.realloc as *mut (), Ordering::Release);
-        self.strdup.store(a.strdup as *mut (), Ordering::Release);
-        self.calloc.store(a.calloc as *mut (), Ordering::Release);
+    const fn new(table: &'static Allocator) -> Self {
+        Self(AtomicPtr::new(core::ptr::from_ref(table).cast_mut()))
+    }
+
+    /// Install `table`. The caller holds the root's lock.
+    fn store(&self, _root: &mut Root, table: &'static Allocator) {
+        self.0
+            .store(core::ptr::from_ref(table).cast_mut(), Ordering::Release);
     }
 
     fn load(&self) -> Allocator {
-        /// The function `p` holds, or `system` if it is NULL.
-        ///
-        /// # Safety
-        ///
-        /// `p` is NULL or a function of type `F`, as `store` puts there.
-        unsafe fn get<F: Copy>(p: &AtomicPtr<()>, system: F) -> F {
-            const { assert!(size_of::<F>() == size_of::<*mut ()>()) };
-            let p = p.load(Ordering::Acquire);
-            if p.is_null() {
-                system
-            } else {
-                // SAFETY: a function pointer of type `F`, as the caller
-                // guarantees, of a pointer's size.
-                unsafe { core::mem::transmute_copy::<*mut (), F>(&p) }
-            }
-        }
-        // Each field holds NULL or the function `store` put there, of the
-        // type of the field it came from.
-        Allocator {
-            // SAFETY: as above.
-            malloc: unsafe { get(&self.malloc, SYSTEM.malloc) },
-            // SAFETY: as above.
-            free: unsafe { get(&self.free, SYSTEM.free) },
-            // SAFETY: as above.
-            realloc: unsafe { get(&self.realloc, SYSTEM.realloc) },
-            // SAFETY: as above.
-            strdup: unsafe { get(&self.strdup, SYSTEM.strdup) },
-            // SAFETY: as above.
-            calloc: unsafe { get(&self.calloc, SYSTEM.calloc) },
-        }
+        let table = self.0.load(Ordering::Acquire);
+        // SAFETY: `table` came from a `&'static Allocator` (`new`,
+        // `store`), and nothing writes through it: `SYSTEM_TABLE` is
+        // immutable, and a table `Root::table` leaked is never written
+        // after it is published and never freed (leaked because a reader
+        // may still hold one an init replaced, and nothing says when the
+        // last is done: see `Root::table`). The Release store pairs
+        // with this Acquire load, so the table's contents, written before
+        // the store, are visible whole.
+        unsafe { *table }
     }
+}
+
+/// A table `Root::table` leaked, and the one leaked before it.
+struct Leaked {
+    allocator: Allocator,
+    older: Option<&'static Leaked>,
 }
 
 struct Root {
@@ -123,6 +115,46 @@ struct Root {
     /// The last number `CURL_ENTROPY`'s sequence gave, once it has.
     #[cfg(feature = "debug-hooks")]
     entropy: Option<u32>,
+    /// Every table `curl_global_init_mem` has installed, newest first,
+    /// kept so that one installed again is reused.
+    leaked: Option<&'static Leaked>,
+}
+
+impl Root {
+    /// A table holding `a`, to install, or `None` if there is no memory
+    /// for one: the system's, one installed before, or a new one.
+    ///
+    /// A table is leaked, never freed, because a reader may still be
+    /// using one an init has replaced, and with lock-free reads nothing
+    /// says when the last has finished: a table must outlive every
+    /// reader, so it lives as long as the process. One is leaked per
+    /// distinct allocator installed, not per init; the list keeps each
+    /// reachable, so a leak checker does not count it.
+    fn table(&mut self, a: Allocator) -> Option<&'static Allocator> {
+        if a.same(&SYSTEM) {
+            return Some(&SYSTEM_TABLE);
+        }
+        let mut next = self.leaked;
+        while let Some(t) = next {
+            if t.allocator.same(&a) {
+                return Some(&t.allocator);
+            }
+            next = t.older;
+        }
+        let leaked = Leaked {
+            allocator: a,
+            older: self.leaked,
+        };
+        // Made once for the process and never freed: not the library's
+        // to account for in a memdump, nor for a torture test to refuse.
+        #[cfg(feature = "debug-hooks")]
+        let boxed = curl_alloc::track::untracked(|| curl_alloc::try_box(leaked));
+        #[cfg(not(feature = "debug-hooks"))]
+        let boxed = curl_alloc::try_box(leaked);
+        let leaked: &'static Leaked = Box::leak(boxed.ok()?);
+        self.leaked = Some(leaked);
+        Some(&leaked.allocator)
+    }
 }
 
 static ROOT: Mutex<Root> = Mutex::new(Root {
@@ -130,6 +162,7 @@ static ROOT: Mutex<Root> = Mutex::new(Root {
     winsock: None,
     #[cfg(feature = "debug-hooks")]
     entropy: None,
+    leaked: None,
 });
 
 /// Whether `CURL_ENTROPY` is set, which makes the debug build's random
@@ -471,7 +504,7 @@ fn libraries_cleanup() {
 pub(crate) fn init_unless_done() -> Result<(), ()> {
     let mut root = root();
     if root.initialized == 0 {
-        ALLOCATOR.store(&mut root, SYSTEM);
+        ALLOCATOR.store(&mut root, &SYSTEM_TABLE);
         if first_init(&mut root, c_long::from(ffi::CURL_GLOBAL_DEFAULT)) != CURLE_OK {
             return Err(());
         }
@@ -502,7 +535,7 @@ fn global_init(flags: c_long) -> CURLcode {
     let mut root = root();
     if root.initialized == 0 {
         // The defaults are installed again, as in C.
-        ALLOCATOR.store(&mut root, SYSTEM);
+        ALLOCATOR.store(&mut root, &SYSTEM_TABLE);
         let code = first_init(&mut root, flags);
         if code != CURLE_OK {
             return code;
@@ -537,12 +570,14 @@ pub extern "C" fn curl_global_init_mem(
     if root.initialized == 0 {
         // Callbacks given to an already initialised library are ignored,
         // but the call still needs its own cleanup, as in C.
-        let installed = Allocator {
+        let Some(installed) = root.table(Allocator {
             malloc,
             free,
             realloc,
             strdup,
             calloc,
+        }) else {
+            return ffi::CURLE_OUT_OF_MEMORY;
         };
         ALLOCATOR.store(&mut root, installed);
         let code = first_init(&mut root, flags);
@@ -566,14 +601,17 @@ pub(crate) fn install_mem(
     strdup: Strdup,
     calloc: Calloc,
 ) {
-    let installed = Allocator {
-        malloc,
-        free,
-        realloc,
-        strdup,
-        calloc,
-    };
-    ALLOCATOR.store(&mut root(), installed);
+    let mut root = root();
+    let installed = root
+        .table(Allocator {
+            malloc,
+            free,
+            realloc,
+            strdup,
+            calloc,
+        })
+        .expect("a test has the memory for an allocator's table");
+    ALLOCATOR.store(&mut root, installed);
 }
 
 #[unsafe(no_mangle)]
@@ -601,3 +639,124 @@ pub unsafe extern "C" fn curl_free(p: *mut c_void) {
     unsafe { allocator().free(p) };
 }
 const _: ffi::proto::curl_free = curl_free;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::AtomicBool;
+
+    // A second allocator, each function at an address of its own.
+    unsafe extern "C" fn other_malloc(size: usize) -> *mut c_void {
+        // SAFETY: any size.
+        unsafe { libc::malloc(size) }
+    }
+    unsafe extern "C" fn other_free(p: *mut c_void) {
+        // SAFETY: as the caller guarantees.
+        unsafe { libc::free(p) }
+    }
+    unsafe extern "C" fn other_realloc(p: *mut c_void, size: usize) -> *mut c_void {
+        // SAFETY: as the caller guarantees.
+        unsafe { libc::realloc(p, size) }
+    }
+    unsafe extern "C" fn other_strdup(s: *const c_char) -> *mut c_char {
+        // SAFETY: as the caller guarantees, a C string.
+        unsafe { libc::strdup(s) }
+    }
+    unsafe extern "C" fn other_calloc(n: usize, size: usize) -> *mut c_void {
+        // SAFETY: any sizes.
+        unsafe { libc::calloc(n, size) }
+    }
+
+    static OTHER: Allocator = Allocator {
+        malloc: other_malloc,
+        free: other_free,
+        realloc: other_realloc,
+        strdup: other_strdup,
+        calloc: other_calloc,
+    };
+
+    fn local_root() -> Root {
+        Root {
+            initialized: 0,
+            winsock: None,
+            #[cfg(feature = "debug-hooks")]
+            entropy: None,
+            leaked: None,
+        }
+    }
+
+    /// Whether each of the five functions differs between `a` and `b`, so
+    /// that a table mixing them is neither.
+    fn apart(a: &Allocator, b: &Allocator) -> bool {
+        use core::ptr::fn_addr_eq;
+        !fn_addr_eq(a.malloc, b.malloc)
+            && !fn_addr_eq(a.free, b.free)
+            && !fn_addr_eq(a.realloc, b.realloc)
+            && !fn_addr_eq(a.strdup, b.strdup)
+            && !fn_addr_eq(a.calloc, b.calloc)
+    }
+
+    /// Readers racing an init that swaps the allocator back and forth each
+    /// see one table whole, never some of one's functions and some of the
+    /// other's. Raced on a table of its own: the process's is the other
+    /// tests'.
+    #[test]
+    fn a_read_racing_an_install_sees_one_table_whole() {
+        const SWAPS: u32 = if cfg!(miri) { 200 } else { 1_000_000 };
+        assert!(apart(&SYSTEM, &OTHER), "the two tables share a function");
+        let installed = Installed::new(&SYSTEM_TABLE);
+        let done = AtomicBool::new(false);
+        let mut root = local_root();
+        let seen = std::thread::scope(|s| {
+            let readers: [_; 3] = core::array::from_fn(|_| {
+                s.spawn(|| {
+                    let (mut system, mut other) = (0u64, 0u64);
+                    while !done.load(Ordering::Relaxed) {
+                        let t = installed.load();
+                        if t.same(&SYSTEM) {
+                            system += 1;
+                        } else if t.same(&OTHER) {
+                            other += 1;
+                        } else {
+                            panic!("a read mixed the two tables");
+                        }
+                    }
+                    (system, other)
+                })
+            });
+            for i in 0..SWAPS {
+                let next = if i % 2 == 0 { &OTHER } else { &SYSTEM_TABLE };
+                installed.store(&mut root, next);
+            }
+            done.store(true, Ordering::Relaxed);
+            readers.map(|r| r.join().expect("a reader saw one table whole"))
+        });
+        // The race happened: the readers saw both tables.
+        assert!(seen.iter().any(|&(system, _)| system > 0), "{seen:?}");
+        assert!(seen.iter().any(|&(_, other)| other > 0), "{seen:?}");
+    }
+
+    /// The system's allocator is the static table; another is leaked once
+    /// and the same table given for it again, whatever is installed
+    /// between. The process's root keeps the tables, which a local one
+    /// would drop unfreed, and none is installed.
+    #[test]
+    fn an_allocator_installed_again_reuses_its_table() {
+        let mut root = root();
+        let system = root.table(SYSTEM).expect("no allocation");
+        assert!(core::ptr::eq(system, &SYSTEM_TABLE));
+        let other = root.table(OTHER).expect("memory for a table");
+        assert!(other.same(&OTHER));
+        assert!(!core::ptr::eq(other, &OTHER), "a copy, not the original");
+        let third = Allocator {
+            malloc: other_malloc,
+            ..SYSTEM
+        };
+        let third = root.table(third).expect("memory for a table");
+        assert!(!core::ptr::eq(third, other));
+        let again = root.table(OTHER).expect("memory for a table");
+        assert!(core::ptr::eq(again, other), "leaked a second table");
+        let system = root.table(SYSTEM).expect("no allocation");
+        assert!(core::ptr::eq(system, &SYSTEM_TABLE));
+    }
+}

@@ -1,0 +1,95 @@
+# Rustls's sessions (crates/curl-rustls), witnessed by the tests over the
+# scripted library and against a rustls server.
+
+=== a read goes to the records though the library has plain text pending
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::reads_are_c_s
+--- old
+            if !self.data_in_pending && self.recv_more(io)?.is_none() {
+--- new
+            if self.recv_more(io)?.is_none() {
+
+=== records read leave the library's text not pending
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::reads_are_c_s
+--- old
+        self.data_in_pending = true;
+--- new
+        self.data_in_pending = false;
+
+=== the peer's close_notify is read as more text
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::reads_are_c_s
+--- old
+                Plain::Read(0) => {
+                    eof = true;
+                    break;
+                }
+--- new
+                Plain::Read(0) => break,
+
+=== a send that blocked hands its bytes to the library again
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::sends_are_c_s
+--- old
+            buf = buf.get(buffered..).unwrap_or_default();
+--- new
+            buf = buf.get(0..).unwrap_or_default();
+
+=== the goodbye sends a close_notify where only the peer's is waited for
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::the_goodbye_is_c_s
+--- old
+            if goodbye.sends() {
+--- new
+            if true {
+
+=== a certificate the library refuses fails as a receive error
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::real::a_server_not_vouched_for_fails_verification
+--- old
+    if code.is_cert_error() {
+        return ErrorKind::PeerFailedVerification;
+    }
+--- new
+
+=== a peer not to be verified is checked all the same
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::real::a_server_not_vouched_for_fails_verification
+--- old
+        if !identity.verify_peer {
+--- new
+        if false {
+
+=== a revocation list is dropped with the native store, not refused
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::the_verifier_is_c_s
+--- old
+            if identity.options.crl_file.is_some() {
+--- new
+            if false {
+
+=== a configuration with nothing to trust gets a verifier of nothing
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::the_verifier_is_c_s
+--- old
+        } else if blob.is_some() || file.is_some() {
+--- new
+        } else {
+
+=== a blob that fills its buffer, with no room for C's zero byte, is taken
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::the_client_s_certificate_and_key_are_c_s
+--- old
+    let (kind, why) = if blob.len() >= most {
+--- new
+    let (kind, why) = if blob.len() > most {
+
+=== a maximum of TLS 1.2 with a minimum of 1.3 is not refused
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::the_versions_are_c_s
+--- old
+            TlsMaxVersion::Tls1_2 if versions[0] == TLS1_2 => len = 1,
+--- new
+            TlsMaxVersion::Tls1_2 => len = 1,
+

@@ -86,7 +86,7 @@ These cannot be built here:
 
 - ECH over OpenSSL itself, because the system OpenSSL (3.5) lacks it: ECH is measured on the
   legs whose TLS library has it, below;
-- quiche and Apple fast UDP.
+- Apple fast UDP.
 
 These are not covered by this build:
 
@@ -137,6 +137,16 @@ builds libssh2 and krb5, linked against the system's OpenSSL, bind to the fork's
 `libcrypto.so` as well, and their SCP and SFTP tests fail; the rewrite links the fork into
 itself and exports none of it, so its SSH runs over the system's OpenSSL. LibreSSL is a variant
 of the same backend (102); quictls, which C still names apart, has no oracle.
+
+quiche has one: `build/c-quiche`, the reference configuration with `USE_QUICHE` in place of
+`USE_NGTCP2` and without the HTTP/3 proxy (C's CMake has it with ngtcp2 alone), over the quiche
+`inventory/measure/deps.py` builds at the version curl's CI pins (0.30.0, with the `ffi`
+feature) and the BoringSSL that build makes, which is also the OpenSSL backend's
+(`OPENSSL_ROOT_DIR`, static), built and measured by `baseline.py --quiche`. The rewrite's leg,
+the `quiche` feature with libssh2, is the OpenSSL backend over that BoringSSL (`OPENSSL_DIR`,
+static) with quiche's crate built without a TLS library of its own, so the program holds one
+BoringSSL that both use; it is scored against the oracle by `score.py --quiche`, which checks
+the library and the tool each define BoringSSL once and load no libquiche.
 
 Rustls has one too: `build/c-rustls`, the reference configuration with `CURL_USE_RUSTLS` in
 place of `CURL_USE_OPENSSL`, over the rustls-ffi release curl's CI pins (0.15.5, its released

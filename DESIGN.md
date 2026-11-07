@@ -25,6 +25,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-rustls` | Rustls: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, the rustls crate called as rustls-ffi calls it. | no: the rustls crate is Rust |
 | `curl-nghttp2` | nghttp2's HTTP/2 session, behind `curl_core::http2::Http2`. | yes: it is a binding |
 | `curl-ngtcp2` | ngtcp2 and nghttp3: QUIC and HTTP/3, behind `curl_core::http3::Http3`. | yes: it is a binding |
+| `curl-quiche` | quiche: QUIC and HTTP/3 behind `curl_core::http3::Http3`, a build's in ngtcp2's place over the OpenSSL backend's BoringSSL. | in `tls.rs`, the one call of quiche's C API that hands it the session's SSL; the rest is quiche's Rust API |
 | `curl-libssh` | libssh's SCP and SFTP, behind `curl_core::ssh`'s traits. | yes: it is a binding |
 | `curl-libssh2` | libssh2's SCP and SFTP, behind `curl_core::ssh2`'s traits: the SSH library a build with the `libssh2` feature takes in libssh's place. | yes: it is a binding |
 | `curl-ldap` | OpenLDAP's libldap, behind `curl_core::ldap`'s traits. | yes: it is a binding |
@@ -60,7 +61,9 @@ and the tool's Cargo features, which exclude each other: `openssl` (the default,
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never
 openssl-sys's `vendored` copy, checked at build and at init; or, as C builds the same backend
 over them, LibreSSL, or AWS-LC or BoringSSL as `deps.py` builds them, named by openssl-sys's
-`OPENSSL_DIR` and linked statically, each detected from its own headers and its branches C's), `gnutls` (GnuTLS 3.6.5 or later,
+`OPENSSL_DIR` and linked statically, each detected from its own headers and its branches C's;
+`quiche` in `openssl`'s place is the same backend over the BoringSSL quiche's build makes, with
+HTTP/3 from quiche instead of ngtcp2 and no HTTP/3 proxy, as C's CMake has it), `gnutls` (GnuTLS 3.6.5 or later,
 the system's, with HTTP/3 over ngtcp2's GnuTLS crypto but not the HTTP/3 proxy, C's OpenSSL's
 alone), `mbedtls` (mbedTLS 3.2 or later, before 4.0, the system's, with
 neither HTTP/3 nor message signatures), `wolfssl` (wolfSSL 5.0 or later, the copy

@@ -1491,7 +1491,7 @@ it there, Windows.
      1.0 and 1.1 cases of `test_17_09_ssl_min_max` fail on both. `curl -V` is C's
      (`AWS-LC/5.11.0`, `BoringSSL`). Left: quictls, which C still names apart
      (`OSSL_PACKAGE`, ngtcp2's quictls crypto) but curl's CI no longer builds.
-104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **In progress.**
+104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **Done.**
      The QUIC TLS setup is a seam, as `lib/vquic/vquic-tls.c`'s: each TLS backend makes its
      QUIC session, the QUIC library's setup called on its context or session where C calls it,
      and curl-ngtcp2, built for one TLS library, links that library's `ngtcp2_crypto_*`
@@ -1500,7 +1500,13 @@ it there, Windows.
      OpenSSL's alone, as in C's CMake. wolfSSL is **done** too: HTTP/3 over
      `ngtcp2_crypto_wolfssl`, scored as 103 says. AWS-LC and BoringSSL are **done**: HTTP/3
      and its proxy over `ngtcp2_crypto_boringssl`, from an ngtcp2 `deps.py` builds for each
-     fork, scored as 103 says. Left: quiche.
+     fork, scored as 103 says. quiche is **done**: `curl-quiche`, the `quiche` feature in
+     `openssl`'s place, HTTP/3 over quiche's Rust API with the OpenSSL backend's session handed
+     to it, over the one BoringSSL quiche's build makes, no HTTP/3 proxy, as C's CMake has it.
+     Scored with `score.py --quiche` against C's build with quiche (`baseline.py --quiche`):
+     measured 2026-11-07, runtests.pl passes all 1994 tests C's passes, and pytest all 796, the
+     h3 cases among them; 1275 and the 24 TLS 1.0 and 1.1 cases of `test_17_09_ssl_min_max`
+     fail on both. `curl -V` is C's (`BoringSSL`, `quiche/0.30.0`).
 105. **SSH**: libssh2. **Done**: `curl-libssh2` behind the
      core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,
      chosen by the `libssh2` feature in place of `libssh` (the default); scored with

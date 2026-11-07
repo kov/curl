@@ -1,5 +1,5 @@
 {
- "c-commit": "40fca8b99c2946407d871f2ea92ab28b6560f9ed",
+ "c-commit": "a15a72a571fcfa54a73ae7e14725aa84e642ecda",
  "data": {
   "backends": {
    "all": [
@@ -8159,7 +8159,7 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1071,
+   "test-feature-blocks": 1072,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8720,7 +8720,7 @@
       "kind": "runtests.pl-assignment",
       "line": 627
      },
-     "tests": 3
+     "tests": 4
     },
     {
      "name": "libz",
@@ -8807,7 +8807,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 274
+     "tests": 275
     },
     {
      "name": "python",
@@ -8991,7 +8991,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1065,
+   "test-files-with-features": 1066,
    "tool-added-features": [
     {
      "bit": null,

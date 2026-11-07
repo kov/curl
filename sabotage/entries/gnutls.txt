@@ -77,7 +77,7 @@ witness: curl-gnutls tests::the_name_sent_is_the_host_s_lower_case_without_its_d
 
 === a build without the HTTP/3 proxy takes CURLPROXY_HTTPS3
 file: crates/curl-sys-abi/src/setopt/mod.rs
-witness: curl-sys-abi handle_tests::proxy_options_are_checked_as_in_c
+witness: curl-sys-abi setopt::tests::an_http3_proxy_is_taken_only_by_the_openssl_build
 features: c-ares,gnutls,libssh2
 default-features: no
 --- old

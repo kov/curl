@@ -2456,6 +2456,39 @@ mod tests {
         unsafe { crate::easy::curl_easy_cleanup(c) };
     }
 
+    /// An HTTP/3 proxy is taken only by a build with one: OpenSSL's, as
+    /// C's CMake builds `USE_PROXY_HTTP3` over OpenSSL alone. Elsewhere it
+    /// is not built in, and the proxy's type is left as it was.
+    #[test]
+    fn an_http3_proxy_is_taken_only_by_the_openssl_build() {
+        let c = crate::easy::curl_easy_init();
+        let kind = |n: c_long| {
+            // SAFETY: a live handle, and a `long` option.
+            unsafe { curl_easy_setopt(c, ffi::CURLOPT_PROXYTYPE, n) }
+        };
+        assert_eq!(kind(ffi::CURLPROXY_HTTPS2), CURLE_OK);
+        let openssl = cfg!(feature = "openssl");
+        let want = if openssl {
+            CURLE_OK
+        } else {
+            CURLE_NOT_BUILT_IN
+        };
+        assert_eq!(kind(ffi::CURLPROXY_HTTPS3), want);
+        // SAFETY: a live handle.
+        let now = unsafe { crate::easy::handle(c) }
+            .expect("a live handle")
+            .with_options(|o| o.proxy.kind)
+            .expect("reachable");
+        let kept = if openssl {
+            curl_core::options::ProxyType::Https3
+        } else {
+            curl_core::options::ProxyType::Https2
+        };
+        assert_eq!(now, kept);
+        // SAFETY: the handle made above, not used again.
+        unsafe { crate::easy::curl_easy_cleanup(c) };
+    }
+
     /// The SSH options are taken as C's libssh build takes them: a
     /// directory's mode up to 0777, and the host key function and its
     /// data, libssh2's, unknown.

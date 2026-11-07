@@ -1,6 +1,6 @@
 === a connection made with one ECH setting serves a transfer that has another
 file: crates/curl-core/src/tls.rs
-witness: curl-core every_setting_tells_two_identities_apart
+witness: curl-core tls::tests::every_setting_tells_two_identities_apart
 --- old
             && *ech == o.ech
 --- new
@@ -8,7 +8,7 @@ witness: curl-core every_setting_tells_two_identities_apart
 
 === an HTTPS proxy's TLS tries the ECH its own options hold
 file: crates/curl-core/src/tls.rs
-witness: curl-core an_https_proxy_tries_no_ech
+witness: curl-core tls::tests::an_https_proxy_tries_no_ech
 --- old
         options.ech = crate::options::Ech::NONE;
 --- new
@@ -16,7 +16,7 @@ witness: curl-core an_https_proxy_tries_no_ech
 
 === an ECHConfigList given while ECH is off leaves it off
 file: crates/curl-core/src/options/mod.rs
-witness: curl-core ech_words_change_their_own_setting
+witness: curl-core tls::tests::ech_words_change_their_own_setting
 --- old
         if self.mode == EchMode::Off {
             self.mode = EchMode::Hard;
@@ -28,7 +28,7 @@ witness: curl-core ech_words_change_their_own_setting
 
 === turning ECH off forgets its ECHConfigList
 file: crates/curl-core/src/options/mod.rs
-witness: curl-core ech_words_change_their_own_setting
+witness: curl-core tls::tests::ech_words_change_their_own_setting
 --- old
             EchWord::Mode(mode) => {
                 self.mode = mode;
@@ -45,7 +45,7 @@ witness: curl-core ech_words_change_their_own_setting
 
 === the origin's TLS whose ECH needs the HTTPS record does not wait for it
 file: crates/curl-core/src/multi/state/tls.rs
-witness: curl-core ech_waits_for_the_origin_s_record
+witness: curl-core proto::http::tests::https_trace::ech_waits_for_the_origin_s_record
 --- old
         && identity.options.ech.needs_record()
 --- new
@@ -53,7 +53,7 @@ witness: curl-core ech_waits_for_the_origin_s_record
 
 === ECH GREASE waits for the origin's HTTPS record
 file: crates/curl-core/src/options/mod.rs
-witness: curl-core ech_without_configurations_waits_for_no_record
+witness: curl-core proto::http::tests::https_trace::ech_without_configurations_waits_for_no_record
 --- old
         matches!(self.mode, EchMode::Try | EchMode::Hard) && self.config.is_none()
 --- new
@@ -61,7 +61,7 @@ witness: curl-core ech_without_configurations_waits_for_no_record
 
 === ECH takes its configurations from a record about another name
 file: crates/curl-core/src/multi/state/https.rs
-witness: curl-core ech_takes_no_configurations_from_a_record_about_another_name
+witness: curl-core proto::http::tests::https_trace::ech_takes_no_configurations_from_a_record_about_another_name
 --- old
             RecordNow::Known(Some(r)) if applies(r, port) && !r.ech.is_empty() => Some(&r.ech),
 --- new
@@ -69,7 +69,7 @@ witness: curl-core ech_takes_no_configurations_from_a_record_about_another_name
 
 === wolfSSL fails a transfer whose ECH is only tried when the list is refused
 file: crates/curl-wolfssl/src/session.rs
-witness: curl-wolfssl a_refused_list_fails_only_hard_ech
+witness: curl-wolfssl tests::ech::a_refused_list_fails_only_hard_ech
 --- old
             if !b64.is_empty() && !self.ssl().ech_configs_base64(b64) {
                 if hard {
@@ -79,7 +79,7 @@ witness: curl-wolfssl a_refused_list_fails_only_hard_ech
 
 === wolfSSL lets a handshake with ECH fall back below TLS 1.3
 file: crates/curl-wolfssl/src/session.rs
-witness: curl-wolfssl ech_takes_the_record_s_list
+witness: curl-wolfssl tests::ech::ech_takes_the_record_s_list
 --- old
         if trying && !self.ssl().min_version(TLS1_3) {
 --- new
@@ -87,7 +87,7 @@ witness: curl-wolfssl ech_takes_the_record_s_list
 
 === wolfSSL takes the HTTPS record's list over the transfer's own
 file: crates/curl-wolfssl/src/session.rs
-witness: curl-wolfssl ech_takes_the_transfer_s_list_in_base64
+witness: curl-wolfssl tests::ech::ech_takes_the_transfer_s_list_in_base64
 --- old
         } else if let Some(b64) = &ech.config {
 --- new

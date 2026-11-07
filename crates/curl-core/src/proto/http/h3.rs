@@ -161,8 +161,9 @@ struct H3Step<'a, 'c, H: Host> {
     lease: &'a mut ConnLease,
     routes: &'a mut Routes<StreamId, ()>,
     /// The receive windows the library's reading opened, each by as much,
-    /// for the step to open on the connection once the call returns.
-    extends: Vec<(StreamId, u64)>,
+    /// for the step to open on the connection once the call returns: the
+    /// connection's, so that its room is not made again for each step.
+    extends: &'a mut Vec<(StreamId, u64)>,
     /// A window could not be kept for want of memory.
     oom: bool,
     /// Which of C's filters the connection is spoken as.
@@ -361,13 +362,17 @@ impl Request {
         f: impl FnOnce(&mut H3Step<'_, '_, H>, &mut Quic) -> R,
     ) -> R {
         let mut h3 = lease.get().take_h3().expect("an HTTP/3 connection");
-        let H3Conn { quic, routes } = &mut *h3;
+        let H3Conn {
+            quic,
+            routes,
+            extends,
+        } = &mut *h3;
         let mut step = H3Step {
             cx,
             req: self,
             lease: &mut *lease,
             routes,
-            extends: Vec::new(),
+            extends,
             oom: false,
             flavour: quic.flavour(),
         };
@@ -385,6 +390,8 @@ impl Request {
                 step.cx.wake(to);
             }
         }
+        // What a failed call opened is not opened later, by another step.
+        step.extends.clear();
         lease.get().give_back_h3(h3);
         r
     }

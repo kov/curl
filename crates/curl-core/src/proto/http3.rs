@@ -19,6 +19,10 @@ pub(crate) struct H3Conn {
     pub(crate) quic: Box<Quic>,
     /// Each open stream's transfer (`streams`).
     pub(crate) routes: Routes<StreamId, ()>,
+    /// The receive windows a call of the library's opened, each by as
+    /// much, for the step to open once the call returns: empty between
+    /// steps, its room kept for the next.
+    pub(crate) extends: Vec<(StreamId, u64)>,
 }
 
 impl H3Conn {
@@ -53,6 +57,7 @@ impl H3Conn {
         H3Conn {
             quic,
             routes: Routes::new(),
+            extends: Vec::new(),
         }
     }
 

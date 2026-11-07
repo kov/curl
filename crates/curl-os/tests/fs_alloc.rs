@@ -3,13 +3,12 @@
 //! std makes to copy a name of 384 bytes or more could not be refused, and
 //! would abort the tool. The tracker counts this binary's allocations.
 //!
-//! On Windows a name is turned to UTF-16 in memory that may be refused,
-//! as C turns it there, so this holds on Unix alone.
+//! On Windows a name is turned to UTF-16, and a long one made absolute, in
+//! memory the tracker does not count, as C's build converts it with the
+//! system's `malloc`, which its tracker does not see.
 
-#![cfg(unix)]
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 
 use curl_alloc::track::{Tracker, count_allocations};
@@ -29,7 +28,11 @@ impl Drop for Scratch {
 
 /// `name` in `dir`, by a name longer than std's 384-byte stack buffer.
 fn long(dir: &std::path::Path, name: &str) -> Vec<u8> {
-    let mut long = dir.as_os_str().as_bytes().to_vec();
+    let mut long = dir
+        .to_str()
+        .expect("a temporary directory named in UTF-8")
+        .as_bytes()
+        .to_vec();
     long.push(b'/');
     while long.len() < 400 {
         long.extend_from_slice(b"./");
@@ -46,7 +49,7 @@ fn takes_a_long_name_without_allocating() {
     let s = Scratch(dir);
     let (f, g, d) = (long(&s.0, "f"), long(&s.0, "g"), long(&s.0, "d"));
     // The positive control: std copies the name.
-    let path = std::ffi::OsStr::from_bytes(&f);
+    let path = std::str::from_utf8(&f).unwrap();
     let (_, n) = count_allocations(|| std::fs::metadata(path));
     assert!(n >= 1, "std allocated nothing for a long name");
 

@@ -43,7 +43,7 @@ libssh2 = ["dep:curl-libssh2"]
 gnu-gss = ["curl-gssapi/gnu-gss"]
 # The hooks of a C debug build: the curl_dbg_* exports, memory tracking
 # and the libcurl-d.so.4 soname.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-quiche?/debug-hooks", "curl-rustls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-os/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-quiche?/debug-hooks", "curl-rustls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
 # Read `long double` printf arguments in Rust (aarch64 only), with nightly's
 # `f128`; without it a C helper reads them.
 nightly = []

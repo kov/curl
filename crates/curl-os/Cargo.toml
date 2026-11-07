@@ -18,6 +18,9 @@ fs = []
 # program's path and the names of files taken as UTF-8, through the
 # system's UTF-16 calls, in place of the ANSI code page. Windows only.
 unicode = []
+# The debug build's memory tracker, which does not count a file name's
+# UTF-16 on Windows, as C's does not.
+debug-hooks = ["curl-alloc/debug-hooks"]
 
 [[test]]
 name = "wipe"
@@ -53,7 +56,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 # The tests cover every module without asking for it.
-curl-os = { path = ".", features = ["net", "fs"] }
+curl-os = { path = ".", features = ["net", "fs", "debug-hooks"] }
 # The memory tracker, to refuse the copy of a value read.
 curl-alloc = { path = "../curl-alloc", features = ["debug-hooks"] }
 

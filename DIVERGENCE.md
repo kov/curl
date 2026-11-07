@@ -780,16 +780,16 @@ not a difference: it is tracked in `MILESTONES.md`.
   as the fakes are. Linux and Windows locks allocate nothing. Measured on macOS 27 with the
   runtests suite and `torture`; no test pins it, as no test can fail an allocation the standard
   library makes.
-- **On Windows, a file's name is converted to UTF-16 on the heap, counted by the debug build.**
-  Every file call (`curl_os::fs`) reads the name in the ANSI code page, or as UTF-8 in the Unicode
-  build, into UTF-16 for the system's wide calls, with one allocation, and a second for a name
-  past `MAX_PATH` made absolute. Both can fail, and the call fails with them. C's ANSI build
-  converts in the C library (`_stati64`, `unlink`), whose allocations its memory tracker never
-  sees, and its `fix_excessive_path` uses the system's `malloc` in the debug build for the same
-  reason; so under `CURL_MEMLIMIT` the Rust build can fail a file call C's makes. Pinned by
-  `removes_a_partial_file_named_long_without_allocating` (`crates/curl-tool/src/operate.rs`): on
-  Windows a removal with its first allocation refused fails and leaves the file, and on Unix the
-  removal allocates nothing.
+- **In the Windows Unicode build, no file name's UTF-16 is counted by the debug build.** Every
+  file call (`curl_os::fs`) converts the name to UTF-16 for the system's wide calls, and makes a
+  name past `MAX_PATH` absolute, in memory the tracker does not count, as C's `win32-fopen.c`
+  does with the system's `malloc` for `fopen`, `open` and `stat`. C's Unicode build converts
+  the name of `curlx_CreateFile` (the tool's file times), `curlx_FindFirstFile` (a `file:`
+  directory's listing) and `curlx_win32_rename` with `curlx_convert_UTF8_to_wchar`, which its
+  tracker counts and `CURL_MEMLIMIT` can refuse; the Rust build makes those calls with one
+  allocation fewer each, none of which `CURL_MEMLIMIT` refuses. The ANSI build counts none on
+  either side. Pinned by `takes_a_long_name_without_allocating` (`crates/curl-os/tests/fs_alloc.rs`)
+  and `removes_a_partial_file_named_long_without_allocating` (`crates/curl-tool/src/operate.rs`).
 
 ## A TLS library C links and the rewrite does not
 

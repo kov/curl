@@ -5328,22 +5328,19 @@ mod tests {
         name.push(b'f');
         let mut msgs = Messages::new();
         msgs.silent = true;
-        // On Windows the name is converted to UTF-16 on the heap, where C's
-        // build converts it in the C library (DIVERGENCE.md, "Allocations
-        // the platform makes"): with the first allocation refused the
-        // removal fails, the file left, and nothing aborts.
+        // On Windows the name is converted to UTF-16, made absolute and
+        // marked long in memory the tracker does not count, as C's build
+        // converts it with the system's `malloc`: none is refused.
         let ((), refused) =
             curl_alloc::track::fail_once_after_here(0, || remove_partial(&name, msgs));
-        assert_eq!(refused, cfg!(windows));
-        assert_eq!(dir.join("f").exists(), cfg!(windows));
-        if !dir.join("f").exists() {
-            std::fs::write(dir.join("f"), b"partial").unwrap();
-        }
-        let ((), n) = curl_alloc::track::count_allocations(|| remove_partial(&name, msgs));
+        assert!(!refused, "removing the file was refused an allocation");
         let removed = !dir.join("f").exists();
+        std::fs::write(dir.join("f"), b"partial").unwrap();
+        let ((), n) = curl_alloc::track::count_allocations(|| remove_partial(&name, msgs));
+        let removed_again = !dir.join("f").exists();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(removed);
-        assert_eq!(n == 0, cfg!(unix), "removing the file allocated {n}");
+        assert!(removed && removed_again);
+        assert_eq!(n, 0, "removing the file allocated {n}");
     }
 
     /// `show_dir_errno`'s texts.

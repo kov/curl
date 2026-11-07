@@ -13,7 +13,8 @@
 //! Unicode takes it, or UTF-8 in the Unicode build ([`crate::UNICODE`],
 //! C's `ENABLE_UNICODE`), and is opened through the system's UTF-16
 //! calls, as the C library opens it, a long one marked long as C marks
-//! it; the UTF-16 is made in memory that may be refused, as C makes it. A
+//! it; the debug build's tracker does not count the UTF-16, as C's does not
+//! count the system's `malloc` its build converts a name with. A
 //! file's reads cannot be made not to wait there: C reads standard input
 //! in a thread of its own instead.
 
@@ -697,19 +698,38 @@ fn utf8(wide: &[u16]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Run `f`, which makes a name's UTF-16 for a file call, its allocations
+/// kept from the debug build's tracker: C's build converts the name in the
+/// C library, or in `win32-fopen.c` with the system's `malloc`
+/// (`CURLX_MALLOC` under `CURL_MEMDEBUG`), and its tracker sees neither.
+#[cfg(windows)]
+fn uncounted<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(feature = "debug-hooks")]
+    return curl_alloc::track::untracked(f);
+    #[cfg(not(feature = "debug-hooks"))]
+    f()
+}
+
 /// `text` in UTF-16 ended by a zero, read as [`wide_name`] reads a name
 /// (UTF-8 in the Unicode build, the ANSI code page otherwise) but left as
-/// it is: a mode C's debug build converts beside the name it opens.
+/// it is: a mode C's debug build converts beside the name it opens. Not
+/// counted by the debug build's tracker, as C's is not.
 #[cfg(windows)]
 pub fn wide_text(text: &CStr) -> io::Result<Vec<u16>> {
-    wide(text)
+    uncounted(|| wide(text))
 }
 
 /// `name` as [`wide`] reads it, made absolute and marked long (`\\?\`)
 /// when that is longer than `MAX_PATH`, as C's `fix_excessive_path`
-/// makes it, so that a long name opens too.
+/// makes it, so that a long name opens too. Not counted by the debug
+/// build's tracker, as C's is not.
 #[cfg(windows)]
 pub fn wide_name(name: &CStr) -> io::Result<Vec<u16>> {
+    uncounted(|| long_name(name))
+}
+
+#[cfg(windows)]
+fn long_name(name: &CStr) -> io::Result<Vec<u16>> {
     /// `MAX_PATH`, the longest name the system takes unmarked.
     const MAX_PATH: usize = 260;
     let wide = wide(name)?;

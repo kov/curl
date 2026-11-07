@@ -7166,9 +7166,10 @@ fn clearing_an_option_makes_no_group() {
 /// allocations it makes for one named short, as C copies no name: std's
 /// rename copied each name of 384 bytes or more, the jar's and the one it
 /// is written under first, with an allocation that cannot fail, which
-/// aborted a torture run. Unix only: on Windows every name is turned to
-/// UTF-16 in memory of its own to be opened, whatever its length.
-#[cfg(all(unix, feature = "debug-hooks"))]
+/// aborted a torture run. On Windows each name is turned to UTF-16 in
+/// memory the tracker does not count, as C's build turns it with the
+/// system's `malloc`.
+#[cfg(feature = "debug-hooks")]
 #[test]
 fn flushes_a_jar_named_long_without_copying_the_name() {
     use curl_alloc::track::measure;

@@ -25,7 +25,7 @@ Entry format, one or more per file:
   default-features: no                              (optional: built without
                                                      them, in its own target
                                                      directory)
-  openssl-fork: <awslc or boringssl>                (optional: the OpenSSL
+  openssl-fork: <awslc, boringssl or quiche>        (optional: the OpenSSL
                                                      backend built over that
                                                      fork, as deps.py builds
                                                      it, in its own target
@@ -70,7 +70,7 @@ class Entry:
         self.features = fields.get("features")
         self.default_features = fields.get("default-features", "yes") != "no"
         self.fork = fields.get("openssl-fork")
-        if self.fork not in (None, "awslc", "boringssl"):
+        if self.fork not in (None, "awslc", "boringssl", "quiche"):
             sys.exit(f"{source}: entry '{name}' names no fork deps.py builds: {self.fork}")
 
 
@@ -126,7 +126,9 @@ def run(e, timeout):
         # openssl-sys over the fork's own headers, linked statically, and
         # the ngtcp2 built for it, apart from the default build's artifacts.
         deps = ROOT / "build" / "deps"
-        env.update(OPENSSL_DIR=str(deps / e.fork), OPENSSL_STATIC="1",
+        # quiche's is the BoringSSL its own build makes.
+        ssl = deps / "quiche" / "boringssl" if e.fork == "quiche" else deps / e.fork
+        env.update(OPENSSL_DIR=str(ssl), OPENSSL_STATIC="1",
                    CURL_NGTCP2_DIR=str(deps / f"ngtcp2-{e.fork}"))
         features += ["--target-dir", str(ROOT / "build" / f"target-{e.fork}")]
     cmd = CAP + ["cargo", "test", "-p", e.package, *features, "--", "--exact", e.test]

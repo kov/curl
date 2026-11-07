@@ -5367,15 +5367,23 @@ fn proxy_options_are_checked_as_in_c() {
         long(c, ffi::CURLOPT_PROXYTYPE, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
-    // An HTTP/3 proxy is built in, as with C's `USE_PROXY_HTTP3`; the
-    // builds without one are tested in `setopt`.
-    assert_eq!(
-        long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
-        CURLE_OK
-    );
-    options(c, |o| {
-        assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Https3);
-    });
+    // An HTTP/3 proxy is built in over ngtcp2, as with C's
+    // `USE_PROXY_HTTP3`, and not over quiche, as C's CMake has it; the
+    // other builds without one are tested in `setopt`.
+    if cfg!(feature = "openssl") {
+        assert_eq!(
+            long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
+            CURLE_OK
+        );
+        options(c, |o| {
+            assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Https3);
+        });
+    } else {
+        assert_eq!(
+            long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
+            CURLE_NOT_BUILT_IN
+        );
+    }
     assert_eq!(
         long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_SOCKS5_HOSTNAME),
         CURLE_OK

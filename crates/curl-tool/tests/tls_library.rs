@@ -4,7 +4,9 @@
 //! and without writing them to `--libcurl`'s program; with GnuTLS, the
 //! same of the TLS 1.3 suites, the curves, the signature algorithms and
 //! the engine; with OpenSSL, which has them, it says nothing and writes
-//! them all, but for the signature algorithms where it is LibreSSL.
+//! them all, but for the signature algorithms where it is LibreSSL, and
+//! the TLS 1.3 suites, warned of, and the certificate status where it is
+//! BoringSSL.
 //!
 //! The expectations are the C tool's: `CURL_TOOL_UNDER_TEST` names
 //! another tool to run them on.
@@ -51,10 +53,17 @@ fn over_libressl() -> bool {
     run(&["-V"]).0.contains(" LibreSSL/")
 }
 
+/// The tool's library is BoringSSL, as its version names it, with no
+/// version of its own: a build over it is OpenSSL's but for what
+/// BoringSSL lacks.
+fn over_boringssl() -> bool {
+    run(&["-V"]).0.contains(" BoringSSL ")
+}
+
 /// `--capath` (which the proxy's takes too) and `--tls13-ciphers` are
 /// warned of as ignored, in C's words, where Schannel is the library;
-/// `--tls13-ciphers` alone where GnuTLS is, and `--capath` alone where
-/// Rustls is.
+/// `--tls13-ciphers` alone where GnuTLS or BoringSSL is, and `--capath`
+/// alone where Rustls is.
 #[test]
 fn options_the_library_lacks_are_warned_of() {
     let said = stderr(&[
@@ -76,10 +85,13 @@ fn options_the_library_lacks_are_warned_of() {
             .unwrap()
             .to_owned()
     };
+    let boringssl = over_boringssl();
     let library = if cfg!(feature = "gnutls") {
         named("GnuTLS/")
     } else if cfg!(feature = "rustls") {
         named("rustls-ffi/")
+    } else if boringssl {
+        "BoringSSL".to_owned()
     } else {
         "Schannel".to_owned()
     };
@@ -92,7 +104,7 @@ fn options_the_library_lacks_are_warned_of() {
         ),
         (
             format!("ignoring --tls13-ciphers, not supported by libcurl with {library}"),
-            cfg!(any(feature = "schannel", feature = "gnutls")),
+            cfg!(any(feature = "schannel", feature = "gnutls")) || boringssl,
         ),
     ];
     for (warning, warned) in warnings {
@@ -111,12 +123,14 @@ fn options_the_library_lacks_are_warned_of() {
 /// are set nowhere and left out of the program `--libcurl` writes, as
 /// libcurl refuses them; OpenSSL takes them all, and they are written.
 /// LibreSSL takes all but the signature algorithms
-/// (`HAVE_SSL_CTX_SET1_SIGALGS`).
+/// (`HAVE_SSL_CTX_SET1_SIGALGS`), BoringSSL all but the certificate
+/// status, as BoringSSL has no OCSP (`OPENSSL_NO_OCSP`).
 #[test]
 fn options_the_library_lacks_are_not_written() {
     // A file that is there, as the tool checks a revocation list is.
     let crl = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
     let libressl = over_libressl();
+    let boringssl = over_boringssl();
     let (program, said) = run(&[
         "--libcurl",
         "-",
@@ -151,7 +165,8 @@ fn options_the_library_lacks_are_not_written() {
             || (cfg!(feature = "gnutls") && gnutls_lacks)
             || (cfg!(any(feature = "mbedtls", feature = "rustls")) && mbedtls_lacks)
             || (cfg!(feature = "wolfssl") && wolfssl_lacks)
-            || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && libressl);
+            || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && libressl)
+            || (option == "CURLOPT_SSL_VERIFYSTATUS" && boringssl);
         assert_eq!(written, !lacks, "{option}: {program}");
     }
     // Neither is warned of.
@@ -162,7 +177,7 @@ fn options_the_library_lacks_are_not_written() {
 
 /// `--engine list` lists the library's engines: OpenSSL's built-in
 /// `dynamic` among them; none for Schannel, GnuTLS, mbedTLS, wolfSSL or Rustls, which have none,
-/// nor for LibreSSL, which has none either (`OPENSSL_NO_ENGINE`).
+/// nor for LibreSSL or BoringSSL, which have none either (`OPENSSL_NO_ENGINE`).
 #[test]
 fn the_engines_listed_are_the_library_s() {
     let (out, said) = run(&["--engine", "list"]);
@@ -175,6 +190,7 @@ fn the_engines_listed_are_the_library_s() {
         feature = "wolfssl",
         feature = "rustls"
     )) || over_libressl()
+        || over_boringssl()
     {
         assert_eq!(out, "Build-time engines:\n  <none>\n");
     } else {

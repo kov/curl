@@ -50,3 +50,49 @@ features: test-util
             Err(SubmitFailed::Blocked { .. }) => Ok(None),
 --- new
             Err(SubmitFailed::Blocked { .. }) => Err(ErrorKind::SendError),
+
+=== a stream's lists are given room for one stream, not each open
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche tests::open_streams_join_their_lists_in_the_room_made
+openssl-fork: quiche
+--- old
+            list.try_reserve(want - list.len())
+--- new
+            list.try_reserve(1)
+
+=== a body quiche read is handed on whole, not a chunk at a time
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche a_large_body_is_handed_on_a_chunk_at_a_time
+openssl-fork: quiche
+--- old
+            for piece in self.body.chunks(CHUNK) {
+--- new
+            for piece in self.body.chunks(BODY_ROOM) {
+
+=== the peer of a connection over quiche is taken as checked
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche an_untrusted_peer_fails_its_check_once_established
+openssl-fork: quiche
+--- old
+        let checked = call.check_peer();
+--- new
+        let checked = Ok(());
+
+=== a cancelled stream over quiche is read on
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche a_cancelled_get_is_heard_of_no_more
+openssl-fork: quiche
+--- old
+    fn cancel(&mut self, stream: StreamId, error: H3Error) {
+--- new
+    fn cancel(&mut self, stream: StreamId, error: H3Error) {
+        if true { return; }
+
+=== the streams quiche allows are told without those opened
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche two_gets_on_one_connection_are_answered_each_on_its_stream
+openssl-fork: quiche
+--- old
+                self.opened += 1;
+--- new
+                self.opened *= 1;

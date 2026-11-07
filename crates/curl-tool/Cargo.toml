@@ -15,13 +15,18 @@ path = "src/main.rs"
 # is chosen; one or the other is needed.
 default = ["c-ares", "libssh", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
-# over ngtcp2, the HTTP/3 proxy and Ed25519 for message signatures;
+# over ngtcp2, the HTTP/3 proxy and Ed25519 for message signatures, or
+# (`quiche`) with HTTP/3 over quiche and no HTTP/3 proxy, over the
+# BoringSSL quiche's build makes (C's CMake: "quiche requires BoringSSL");
 # GnuTLS, with HTTP/3 over ngtcp2's GnuTLS crypto, no HTTP/3 proxy (C's
 # is OpenSSL's alone) and Ed25519 from its nettle; wolfSSL, with HTTP/3
 # over ngtcp2's wolfSSL crypto, no HTTP/3 proxy and Ed25519 from its
 # wolfCrypt; or mbedTLS, Rustls or Schannel (Windows), with neither,
 # as C's builds with them.
-openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "curl-core/proxy-http3", "curl-core/httpsig"]
+openssl = ["openssl-tls", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "curl-core/proxy-http3"]
+quiche = ["openssl-tls", "dep:curl-quiche", "curl-core/quic"]
+# The OpenSSL library, which `openssl` and `quiche` both mean.
+openssl-tls = ["dep:curl-openssl", "curl-core/httpsig"]
 gnutls = ["dep:curl-gnutls", "dep:curl-ngtcp2", "curl-ngtcp2/gnutls", "curl-core/quic", "curl-core/httpsig"]
 mbedtls = ["dep:curl-mbedtls"]
 rustls = ["dep:curl-rustls"]
@@ -37,7 +42,7 @@ libssh2 = ["dep:curl-libssh2"]
 # `HAVE_GSSGNU`).
 gnu-gss = ["curl-gssapi/gnu-gss"]
 # The debug test build: track allocations as the C tool's debug build does.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-rustls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-quiche?/debug-hooks", "curl-rustls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`).
 threaded-resolver = ["curl-core/threaded-resolver"]
 # Host names converted by Apple's ICU in place of libidn2 (C's
@@ -87,6 +92,7 @@ curl-ldap = { path = "../curl-ldap" }
 curl-nghttp2 = { path = "../curl-nghttp2" }
 # Its crypto for the TLS library chosen, which that library's feature names.
 curl-ngtcp2 = { path = "../curl-ngtcp2", optional = true, default-features = false }
+curl-quiche = { path = "../curl-quiche", optional = true }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 # C's `errno` values, which the tool's messages are chosen by.

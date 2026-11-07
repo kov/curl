@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(
             on,
             Some(cfg!(any(
-                feature = "openssl",
+                feature = "openssl-tls",
                 feature = "gnutls",
                 feature = "wolfssl"
             )))

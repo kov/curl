@@ -32,7 +32,7 @@ mod formdata;
 mod gate;
 mod getinfo;
 // The handles' tests, against OpenSSL's servers and objects.
-#[cfg(all(test, feature = "openssl"))]
+#[cfg(all(test, feature = "openssl-tls"))]
 mod handle_tests;
 mod headers;
 mod mime;
@@ -49,7 +49,7 @@ mod ssls;
 mod strerror;
 mod strings;
 mod tls;
-#[cfg(all(test, feature = "openssl"))]
+#[cfg(all(test, feature = "openssl-tls"))]
 mod tls_tests;
 mod tlslib;
 mod url;

@@ -1,6 +1,7 @@
 //! The TLS library this build has, one of six chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
-//! for message signatures; GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
+//! for message signatures, or over quiche (`quiche`, both meaning
+//! `openssl-tls`); GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
 //! HTTP/3 over ngtcp2 and Ed25519; or mbedTLS (`mbedtls`), Rustls
 //! (`rustls`) or Schannel (`schannel`, Windows only), with neither, as
 //! C's builds with them have.
@@ -11,11 +12,12 @@ use curl_alloc::{OutOfMemory, try_box};
 use curl_core::tls::{CaDefaults, SharedKeyLog, TlsBackend, TlsSupport};
 
 #[cfg(any(
-    all(feature = "openssl", feature = "gnutls"),
-    all(feature = "openssl", feature = "mbedtls"),
-    all(feature = "openssl", feature = "wolfssl"),
-    all(feature = "openssl", feature = "schannel"),
-    all(feature = "openssl", feature = "rustls"),
+    all(feature = "openssl", feature = "quiche"),
+    all(feature = "openssl-tls", feature = "gnutls"),
+    all(feature = "openssl-tls", feature = "mbedtls"),
+    all(feature = "openssl-tls", feature = "wolfssl"),
+    all(feature = "openssl-tls", feature = "schannel"),
+    all(feature = "openssl-tls", feature = "rustls"),
     all(feature = "gnutls", feature = "mbedtls"),
     all(feature = "gnutls", feature = "wolfssl"),
     all(feature = "gnutls", feature = "schannel"),
@@ -28,11 +30,11 @@ use curl_core::tls::{CaDefaults, SharedKeyLog, TlsBackend, TlsSupport};
     all(feature = "schannel", feature = "rustls")
 ))]
 compile_error!(
-    "one TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl`, `rustls` and `schannel` \
-     features exclude each other"
+    "one TLS library: the `openssl` (or `quiche`), `gnutls`, `mbedtls`, `wolfssl`, `rustls` \
+     and `schannel` features exclude each other"
 );
 #[cfg(not(any(
-    feature = "openssl",
+    feature = "openssl-tls",
     feature = "gnutls",
     feature = "mbedtls",
     feature = "wolfssl",
@@ -44,7 +46,7 @@ compile_error!(
      feature"
 );
 
-#[cfg(feature = "openssl")]
+#[cfg(feature = "openssl-tls")]
 mod library {
     use super::*;
 
@@ -57,7 +59,11 @@ mod library {
 
     pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
         Some(&curl_openssl::ED25519);
+    /// HTTP/3 over ngtcp2, or over quiche.
+    #[cfg(feature = "openssl")]
     pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = Some(&curl_ngtcp2::NGTCP2);
+    #[cfg(feature = "quiche")]
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = Some(&curl_quiche::QUICHE);
 
     /// Read its configuration, as C's global init does (`ossl_init`):
     /// whether it could.
@@ -80,8 +86,15 @@ mod library {
     }
 
     /// The QUIC libraries, as the version string names them.
+    #[cfg(feature = "openssl")]
     pub(crate) fn quic() -> Option<impl fmt::Display> {
         Some(curl_ngtcp2::version())
+    }
+
+    /// quiche, as the version string names it.
+    #[cfg(feature = "quiche")]
+    pub(crate) fn quic() -> Option<impl fmt::Display> {
+        Some(curl_quiche::version())
     }
 
     /// What it can do past the handshake.

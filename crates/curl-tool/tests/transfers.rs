@@ -2772,7 +2772,7 @@ fn text_files_are_written_as_text() {
 /// ASCII, the ANSI code page's bytes, or in the Unicode build the UTF-8 of
 /// `SearchPathW`'s answer, as `--libcurl` shows them. Schannel, which
 /// trusts the system's store, has none looked for (`tls_library.rs`).
-#[cfg(all(windows, feature = "openssl"))]
+#[cfg(all(windows, feature = "openssl-tls"))]
 #[test]
 fn finds_a_ca_bundle_in_a_directory_named_as_the_build_does() {
     let s = Scratch::new(if cfg!(feature = "unicode") {
@@ -2817,7 +2817,7 @@ fn finds_a_ca_bundle_in_a_directory_named_as_the_build_does() {
 /// one named wins, and none is looked for when the peer goes unverified.
 /// Schannel, which trusts the system's store, has none looked for
 /// (`tls_library.rs`).
-#[cfg(all(windows, feature = "openssl"))]
+#[cfg(all(windows, feature = "openssl-tls"))]
 #[test]
 fn finds_a_ca_bundle_along_the_search_path() {
     let s = Scratch::new("ca-search");

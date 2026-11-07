@@ -1576,7 +1576,7 @@ mod tests {
         // Ed25519 is OpenSSL's, GnuTLS's or wolfSSL's: Schannel's build has
         // none.
         let signs = cfg!(any(
-            feature = "openssl",
+            feature = "openssl-tls",
             feature = "gnutls",
             feature = "wolfssl"
         ));

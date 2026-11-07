@@ -1254,4 +1254,26 @@ exclude_re = [
     # changes only how often each suite is drawn, and any suite drawn
     # sends GREASE the same, so no handshake tells them apart.
     'curl-rustls/src/rustls\.rs:.*: replace (- with /|% with /|< with <=) in <impl crate::library::Rustls for Real>::ech_grease$',
+    # quiche (curl-quiche), its run with `OPENSSL_DIR` naming
+    # `build/deps/quiche/boringssl` and `OPENSSL_STATIC=1`, or the crate
+    # builds empty and every mutant passes:
+    # A body read is cut into C's 16 KiB chunks as it is handed on, however
+    # much is read into each before: the pieces and the body are the same.
+    "curl-quiche/src/lib\\.rs:.*: replace (< with <=|- with \\+|% with /) in Parts<'_>::data$",
+    # More room made than a stream takes changes nothing but the room.
+    'curl-quiche/src/lib\.rs:.*: replace - with \+ in Streams::make_room$',
+    # The debug form of a connection, which nothing prints.
+    'curl-quiche/src/lib\.rs:.*: replace <impl fmt::Debug for Connection>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    # A timer due in no time rather than now: the core waits for neither.
+    'curl-quiche/src/lib\.rs:.*: replace match guard wait\.is_zero\(\) with false in .*::expiry$',
+    # Early data goes only under a session resumed, and over quiche none
+    # is kept (`SessionPeer::keeps`), so none resumes.
+    'curl-quiche/src/lib\.rs:.*: replace .*::(set_early_params|early_data_decided) -> .* with Ok\(\(\)\)$',
+    # A body handed to quiche, and its end, are seen only by the server:
+    # the h3 uploads of the pytest suite on the quiche leg (`score.py
+    # --quiche`) fail without them (`write_body` taking nothing: 33 of
+    # test_07's, `test_07_01_upload_1_small[h3]` among them; `end_body`
+    # doing nothing: 6, `test_07_14_upload_stdin[-h3]` among them).
+    'curl-quiche/src/lib\.rs:.*: replace .*::write_body -> Result<usize, OutOfMemory> with Ok\(0\)$',
+    'curl-quiche/src/lib\.rs:.*: replace .*::end_body with \(\)$',
 ]

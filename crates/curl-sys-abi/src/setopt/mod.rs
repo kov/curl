@@ -2401,7 +2401,7 @@ mod tests {
         };
         let schannel = cfg!(feature = "schannel");
         let gnutls = cfg!(feature = "gnutls");
-        let openssl = cfg!(feature = "openssl");
+        let openssl = cfg!(feature = "openssl-tls");
         let mbedtls = cfg!(feature = "mbedtls");
         let wolfssl = cfg!(feature = "wolfssl");
         let rustls = cfg!(feature = "rustls");

@@ -326,7 +326,7 @@ mod tests {
     /// The GSS-API library after a space: none on Windows, where Kerberos
     /// is SSPI's.
     #[cfg(any(
-        feature = "openssl",
+        feature = "openssl-tls",
         feature = "gnutls",
         feature = "mbedtls",
         feature = "wolfssl",
@@ -342,7 +342,7 @@ mod tests {
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
     #[cfg(any(
-        feature = "openssl",
+        feature = "openssl-tls",
         feature = "gnutls",
         feature = "mbedtls",
         feature = "wolfssl",
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[cfg(any(
-        feature = "openssl",
+        feature = "openssl-tls",
         feature = "gnutls",
         feature = "mbedtls",
         feature = "wolfssl",
@@ -368,13 +368,28 @@ mod tests {
         }
     }
 
+    /// The QUIC libraries as C's build over them names them: ngtcp2 and
+    /// nghttp3, or quiche.
     #[cfg(feature = "openssl")]
+    fn quic_shown() -> String {
+        format!(
+            "ngtcp2/{} nghttp3/{}",
+            curl_ngtcp2::ngtcp2_version(),
+            curl_ngtcp2::nghttp3_version()
+        )
+    }
+    #[cfg(feature = "quiche")]
+    fn quic_shown() -> String {
+        format!("quiche/{}", curl_quiche::quiche_version())
+    }
+
+    #[cfg(feature = "openssl-tls")]
     #[test]
     fn names_the_libraries_as_c() {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} {}{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -386,8 +401,7 @@ mod tests {
             crate::sshlib::NAME,
             crate::sshlib::version(),
             curl_nghttp2::version(),
-            curl_ngtcp2::ngtcp2_version(),
-            curl_ngtcp2::nghttp3_version(),
+            quic_shown(),
             gss_shown(),
             ldap_shown()
         );
@@ -497,6 +511,17 @@ mod tests {
         assert_eq!(quic, want);
     }
 
+    /// quiche is named alone in `quic_version`, as C names it.
+    #[cfg(feature = "quiche")]
+    #[test]
+    fn quic_version_names_quiche() {
+        // SAFETY: a static C string, never NULL.
+        let quic = unsafe { CStr::from_ptr(info().quic_version) }
+            .to_str()
+            .unwrap();
+        assert_eq!(quic, format!("quiche/{}", curl_quiche::quiche_version()));
+    }
+
     /// The features the core reports reach the C struct as bits and as
     /// names, the names NULL-terminated.
     #[test]
@@ -505,13 +530,13 @@ mod tests {
         // signatures, GnuTLS's and wolfSSL's HTTP/3 and message
         // signatures, Schannel's neither.
         let quic = cfg!(any(
-            feature = "openssl",
+            feature = "openssl-tls",
             feature = "gnutls",
             feature = "wolfssl"
         ));
         let proxy_h3 = cfg!(feature = "openssl");
         let signs = cfg!(any(
-            feature = "openssl",
+            feature = "openssl-tls",
             feature = "gnutls",
             feature = "wolfssl"
         ));

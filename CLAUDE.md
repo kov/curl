@@ -43,6 +43,10 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   LibreSSL, BoringSSL (for AWS-LC and BoringSSL), GnuTLS or wolfSSL crypto, and nghttp3's HTTP/3 session over it: their callbacks, the TLS
   library's pointer its crypto finds the connection by, and the declarations of the functions
   they call.
+- `crates/curl-quiche/src/tls.rs`: quiche's connection made over the OpenSSL backend's SSL,
+  whose ownership passes to quiche (`quiche_conn_new_with_tls`) and which comes back as
+  quiche's own Rust connection, and the library's version; the rest of the crate is quiche's
+  Rust API.
 - `crates/curl-libssh/src/lib.rs` and `src/sys.rs`: libssh's session over the connection's
   socket, its SCP channel and SFTP session, and the declarations of the functions they call.
 - `crates/curl-libssh2/src/lib.rs` and `src/sys.rs`: libssh2's session over the connection's
@@ -101,7 +105,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, its
   trace of the records, and the callbacks that keep its sessions and log its keys.
 - `crates/curl-openssl/src/ssl.rs`: OpenSSL's TLS session: the context, the handshake, the
-  records both ways.
+  records both ways, and a QUIC session's SSL given up to the QUIC library that frees it.
 - `crates/curl-openssl/src/x509.rs`: the certificates a session trusts, and the peer's checked.
 - `crates/curl-gnutls/src/sys.rs`: the declarations of the GnuTLS and nettle functions the crate
   calls, and of the table of the headers' values they are checked against.

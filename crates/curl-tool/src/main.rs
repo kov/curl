@@ -415,7 +415,7 @@ mod tests {
     /// The GSS-API library after a space: none on Windows, where Kerberos
     /// is SSPI's.
     #[cfg(any(
-        feature = "openssl",
+        feature = "openssl-tls",
         feature = "gnutls",
         feature = "mbedtls",
         feature = "wolfssl",
@@ -431,7 +431,7 @@ mod tests {
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
     #[cfg(any(
-        feature = "openssl",
+        feature = "openssl-tls",
         feature = "gnutls",
         feature = "mbedtls",
         feature = "wolfssl",
@@ -442,13 +442,28 @@ mod tests {
         ldap.map_or_else(String::new, |v| format!(" {v}"))
     }
 
+    /// The QUIC libraries as C's build over them names them: ngtcp2 and
+    /// nghttp3, or quiche.
+    #[cfg(feature = "openssl")]
+    fn quic_shown() -> String {
+        format!(
+            "ngtcp2/{} nghttp3/{}",
+            curl_ngtcp2::ngtcp2_version(),
+            curl_ngtcp2::nghttp3_version()
+        )
+    }
+    #[cfg(feature = "quiche")]
+    fn quic_shown() -> String {
+        format!("quiche/{}", curl_quiche::quiche_version())
+    }
+
     /// `curl -V` lists the libraries after libcurl as C's does: in its
     /// order, each named as it names it, without those not linked.
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "openssl-tls")]
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} ngtcp2/{} nghttp3/{}{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} {}{}{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -464,8 +479,7 @@ mod tests {
             sshlib::NAME,
             sshlib::version(),
             curl_nghttp2::version(),
-            curl_ngtcp2::ngtcp2_version(),
-            curl_ngtcp2::nghttp3_version(),
+            quic_shown(),
             gss_shown(),
             ldap_shown()
         );

@@ -123,11 +123,11 @@ impl Default for WolfSsl {
 
 /// What C's wolfSSL build has (`Curl_ssl_wolfssl.supports`): pinning
 /// (`KEEP_PEER_CERT`), HTTPS proxies (the BIO chain), a CA path and blob,
-/// the context callback, TLS 1.3's suites, the CA cache, a cipher list
-/// and curves. Not the chain reported, a revocation list, an issuer,
-/// signature algorithms, Encrypted Client Hello (C's build here has it
-/// off: `USE_ECH`), the stapled status (no `cert_status_request`) or
-/// engines.
+/// the context callback, TLS 1.3's suites, the CA cache, a cipher list,
+/// curves and Encrypted Client Hello (`HAVE_ECH`, which the build of the
+/// library is checked for). Not the chain reported, a revocation list, an
+/// issuer, signature algorithms, the stapled status (no
+/// `cert_status_request`) or engines.
 pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     ca_path: true,
     ca_blob: true,
@@ -143,7 +143,7 @@ pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     crl_file: false,
     issuer_cert: false,
     issuer_cert_blob: false,
-    ech: false,
+    ech: true,
     cert_status: false,
     engines: false,
 };

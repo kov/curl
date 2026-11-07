@@ -772,6 +772,52 @@ impl library::Ssl for Ssl {
         }
     }
 
+    fn ech_configs_base64(&mut self, b64: &[u8]) -> bool {
+        let Ok(len) = u32::try_from(b64.len()) else {
+            return false;
+        };
+        // The library takes the text as mutable, and reads it whole: a
+        // copy.
+        let mut copy = Vec::new();
+        if copy.try_extend_from_slice(b64).is_err() {
+            return false;
+        }
+        // SAFETY: the session object, and `len` bytes the library decodes
+        // into a list of its own.
+        let rc =
+            unsafe { sys::wolfSSL_SetEchConfigsBase64(self.p(), copy.as_mut_ptr().cast(), len) };
+        rc == sys::WOLFSSL_SUCCESS
+    }
+
+    fn set_ech_configs(&mut self, list: &[u8]) -> bool {
+        let Ok(len) = u32::try_from(list.len()) else {
+            return false;
+        };
+        // SAFETY: the session object, and `len` bytes the library parses
+        // into a list of its own.
+        unsafe { sys::wolfSSL_SetEchConfigs(self.p(), list.as_ptr(), len) == sys::WOLFSSL_SUCCESS }
+    }
+
+    fn ech_configs(&self) -> Option<Vec<u8>> {
+        let mut buf = [0u8; 1000];
+        let mut len = 1000;
+        // SAFETY: the session object, and room for `len` bytes, the most
+        // it writes, of which it says how many it wrote.
+        let rc = unsafe { sys::wolfSSL_GetEchConfigs(self.p(), buf.as_mut_ptr(), &raw mut len) };
+        if rc != sys::WOLFSSL_SUCCESS {
+            return None;
+        }
+        let written = buf.get(..usize::try_from(len).ok()?)?;
+        let mut v = Vec::new();
+        v.try_extend_from_slice(written).ok()?;
+        Some(v)
+    }
+
+    fn min_version(&mut self, version: u16) -> bool {
+        // SAFETY: the session object.
+        unsafe { sys::wolfSSL_set_min_proto_version(self.p(), version.into()) == 1 }
+    }
+
     fn keep_arrays(&mut self) {
         // SAFETY: the session object.
         unsafe { sys::wolfSSL_KeepArrays(self.p()) };

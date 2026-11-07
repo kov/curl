@@ -23,6 +23,7 @@ use crate::library::{
 use crate::session::Session;
 use crate::sys;
 
+mod ech;
 mod more;
 mod quic;
 mod real;

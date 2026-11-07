@@ -1716,6 +1716,21 @@ impl TlsIdentity {
     }
 }
 
+/// `text` decoded from base64 as curl decodes an ECHConfigList given
+/// with `ecl:` (`curlx_base64_decode`): whole groups of four, padding
+/// only at the end; none if it is not that.
+pub fn base64_decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    crate::base64::decode(text)
+}
+
+/// `bytes` in base64, padded, as curl writes the ECH retry
+/// configurations it traces (`curlx_base64_encode`).
+pub fn base64_encode(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    let mut out = Vec::new();
+    crate::base64::encode(bytes, &mut out)?;
+    Ok(out)
+}
+
 /// The SHA-256 of `bytes` (`Curl_sha256it`), by which a library tells
 /// two blobs of certificates apart.
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {

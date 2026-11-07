@@ -66,3 +66,29 @@ witness: curl-core ech_takes_no_configurations_from_a_record_about_another_name
             RecordNow::Known(Some(r)) if applies(r, port) && !r.ech.is_empty() => Some(&r.ech),
 --- new
             RecordNow::Known(Some(r)) if !r.ech.is_empty() => Some(&r.ech),
+
+=== wolfSSL fails a transfer whose ECH is only tried when the list is refused
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl a_refused_list_fails_only_hard_ech
+--- old
+            if !b64.is_empty() && !self.ssl().ech_configs_base64(b64) {
+                if hard {
+--- new
+            if !b64.is_empty() && !self.ssl().ech_configs_base64(b64) {
+                if true {
+
+=== wolfSSL lets a handshake with ECH fall back below TLS 1.3
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl ech_takes_the_record_s_list
+--- old
+        if trying && !self.ssl().min_version(TLS1_3) {
+--- new
+        if false && !self.ssl().min_version(TLS1_3) {
+
+=== wolfSSL takes the HTTPS record's list over the transfer's own
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl ech_takes_the_transfer_s_list_in_base64
+--- old
+        } else if let Some(b64) = &ech.config {
+--- new
+        } else if let Some(b64) = ech.config.as_ref().filter(|_| self.ech_record.is_none()) {

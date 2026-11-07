@@ -24,7 +24,9 @@
  * ALPN, SNI, TLS 1.3 and its early data, the peer's certificate kept, the
  * OpenSSL layer (the TLS 1.2 key log, the curve list as groups), the
  * system's CA store, wolfCrypt's Ed25519 for HTTP message signatures, and
- * QUIC, which ngtcp2's wolfSSL crypto drives.
+ * QUIC, which ngtcp2's wolfSSL crypto drives, and Encrypted Client Hello,
+ * which `--enable-all` builds (`HAVE_ECH`, C's
+ * `HAVE_WOLFSSL_CTX_GENERATEECHCONFIG`).
  * Not the TLS 1.3 secret callback nor secure renegotiation, which the
  * build has neither of. */
 #if !defined(OPENSSL_EXTRA) || !defined(HAVE_EX_DATA) || !defined(HAVE_ALPN) || \
@@ -32,7 +34,7 @@
   !defined(KEEP_PEER_CERT) || !defined(WOLFSSL_SYS_CA_CERTS) ||                  \
   !defined(WOLFSSL_BIO_CTRL_EOF) || !defined(HAVE_ED25519) ||                 \
   !defined(HAVE_ED25519_KEY_IMPORT) || !defined(HAVE_ED25519_SIGN) ||        \
-  !defined(WOLFSSL_QUIC)
+  !defined(WOLFSSL_QUIC) || !defined(HAVE_ECH)
 #error "wolfSSL built without what the binding follows (--enable-all)"
 #endif
 #if defined(HAVE_SECRET_CALLBACK) || defined(HAVE_SECURE_RENEGOTIATION) || \

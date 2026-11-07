@@ -14,7 +14,7 @@ use std::num::NonZeroUsize;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::options::{TlsMaxVersion, TlsMinVersion};
+use curl_core::options::{EchMode, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, QuicContextSetup, SharedKeyLog, Text,
     TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket,
@@ -97,6 +97,8 @@ pub(crate) struct Session<W: Wolfssl> {
     keylog: Option<SharedKeyLog>,
     /// The transfer may send early data.
     early_data: bool,
+    /// The ECHConfigList of the origin's HTTPS record, if it has one.
+    ech_record: Option<Vec<u8>>,
     /// The handshake is put off for early data (`ssl_connection_deferred`).
     deferred: Option<Deferred>,
     early: Early,
@@ -130,6 +132,15 @@ impl<W: Wolfssl> Session<W> {
         let mut host = Vec::new();
         host.try_extend_from_slice(peer.name)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let ech_record = match peer.ech_configs {
+            Some(list) => {
+                let mut copy = Vec::new();
+                copy.try_extend_from_slice(list)
+                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                Some(copy)
+            }
+            None => None,
+        };
         Ok(Session {
             lib,
             method,
@@ -147,6 +158,7 @@ impl<W: Wolfssl> Session<W> {
             shut: false,
             keylog,
             early_data: peer.early_data,
+            ech_record,
             deferred: None,
             early: Early::None,
             negotiated: None,
@@ -349,7 +361,66 @@ impl<W: Wolfssl> Session<W> {
             let native = TlsNative::new(self.ctx().native(), None);
             io.configure_context(native)?;
         }
-        self.init_ssl_handle(io)
+        self.init_ssl_handle(io)?;
+        if self.identity.options.ech.enabled() {
+            self.init_ech(io)?;
+        }
+        Ok(())
+    }
+
+    /// Encrypted Client Hello set up on the session's object
+    /// (`wssl_init_ech`): GREASE is the library's own; else the
+    /// transfer's list, in base64, or the origin's HTTPS record's, and the
+    /// handshake held to TLS 1.3 once one is taken. A list the library
+    /// refuses, or none, fails it only where ECH is hard; an outer name it
+    /// cannot set fails it whatever the mode.
+    fn init_ech(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+        let identity = self.identity.clone();
+        let ech = &identity.options.ech;
+        let hard = ech.mode == EchMode::Hard;
+        if ech.public_name.is_some() {
+            io.info(format_args!("ECH: outername not supported with wolfSSL"));
+            return Err(ErrorKind::SslConnectError);
+        }
+        let mut trying = false;
+        if ech.mode == EchMode::Grease {
+            io.info(format_args!(
+                "ECH: GREASE is done by default by wolfSSL: no need to ask"
+            ));
+        } else if let Some(b64) = &ech.config {
+            if !b64.is_empty() && !self.ssl().ech_configs_base64(b64) {
+                if hard {
+                    return Err(ErrorKind::SslConnectError);
+                }
+            } else {
+                trying = true;
+                io.info(format_args!("ECH: ECHConfig from command line"));
+            }
+        } else if let Some(list) = self.ech_record.take() {
+            io.info(format_args!("ECH: ECHConfig from HTTPS RR"));
+            if self.ssl().set_ech_configs(&list) {
+                trying = true;
+                io.info(format_args!(
+                    "ECH: imported ECHConfigList of length {}",
+                    list.len()
+                ));
+            } else {
+                io.info(format_args!("ECH: wolfSSL_SetEchConfigs failed"));
+                if hard {
+                    return Err(ErrorKind::SslConnectError);
+                }
+            }
+        } else {
+            io.info(format_args!("ECH: requested but no ECHConfig available"));
+            if hard {
+                return Err(ErrorKind::SslConnectError);
+            }
+        }
+        if trying && !self.ssl().min_version(TLS1_3) {
+            io.info(format_args!("ECH: cannot force TLSv1.3 [ERROR]"));
+            return Err(ErrorKind::SslConnectError);
+        }
+        Ok(())
     }
 
     /// The versions allowed, set on the context (`ssl_version`): the
@@ -838,6 +909,21 @@ impl<W: Wolfssl> Session<W> {
                 }
                 IoResult::Failed(kind) => Err(kind),
                 IoResult::Again => Ok(Handshake::Waiting),
+                // What ECH's failure comes to: the session's list traced,
+                // as C traces it in the hope of the retry configurations,
+                // which the library does not give.
+                IoResult::Ok if detail == -1 => {
+                    match self.ssl().ech_configs() {
+                        None => io.info(format_args!("Failed to get ECHConfigs")),
+                        // Untraced out of memory, as C goes on past it.
+                        Some(list) => {
+                            if let Ok(b64) = curl_core::tls::base64_encode(&list) {
+                                io.info_with(&[b"ECH: (not yet) retry_configs ", &b64]);
+                            }
+                        }
+                    }
+                    Err(ErrorKind::SslConnectError)
+                }
                 IoResult::Ok => {
                     let words = self.lib.strerror(detail.cast_unsigned());
                     Err(io.fail(

@@ -265,6 +265,17 @@ pub(crate) trait Ssl: Send {
     /// peer chooses none (`WOLFSSL_ALPN_CONTINUE_ON_MISMATCH`): whether
     /// it took them.
     fn alpn(&mut self, list: &[u8]) -> bool;
+    /// `wolfSSL_SetEchConfigsBase64` of `b64`, an ECHConfigList in
+    /// base64, which the library decodes: whether it took it.
+    fn ech_configs_base64(&mut self, b64: &[u8]) -> bool;
+    /// `wolfSSL_SetEchConfigs` of `list`, an ECHConfigList: whether it
+    /// took it.
+    fn set_ech_configs(&mut self, list: &[u8]) -> bool;
+    /// `wolfSSL_GetEchConfigs` into C's 1000 bytes: the ECHConfigList the
+    /// session holds, or none if it fails.
+    fn ech_configs(&self) -> Option<Vec<u8>>;
+    /// `wolfSSL_set_min_proto_version`: whether it is 1.
+    fn min_version(&mut self, version: u16) -> bool;
     /// `wolfSSL_KeepArrays`.
     fn keep_arrays(&mut self);
     /// `wolfSSL_FreeArrays`.

@@ -75,6 +75,9 @@ pub(crate) struct World {
     pub(crate) uncounted: bool,
     /// What the session's pulls read, in order.
     pub(crate) pulled: Vec<u8>,
+    /// The ECHConfigList `wolfSSL_GetEchConfigs` answers, none for a
+    /// failure.
+    pub(crate) ech_configs: Option<Vec<u8>>,
 }
 
 impl Default for World {
@@ -109,6 +112,7 @@ impl Default for World {
             stores: 0,
             uncounted: false,
             pulled: Vec::new(),
+            ech_configs: None,
         }
     }
 }
@@ -457,6 +461,31 @@ impl library::Ssl for FakeSsl {
 
     fn alpn(&mut self, list: &[u8]) -> bool {
         self.w().takes("alpn", format!("alpn({})", bytes(list)))
+    }
+
+    fn ech_configs_base64(&mut self, b64: &[u8]) -> bool {
+        self.w().takes(
+            "ech_configs_base64",
+            format!("ech_configs_base64({})", bytes(b64)),
+        )
+    }
+
+    fn set_ech_configs(&mut self, list: &[u8]) -> bool {
+        self.w().takes(
+            "set_ech_configs",
+            format!("set_ech_configs({} bytes)", list.len()),
+        )
+    }
+
+    fn ech_configs(&self) -> Option<Vec<u8>> {
+        let mut w = self.w();
+        w.calls.push("ech_configs".into());
+        w.ech_configs.clone()
+    }
+
+    fn min_version(&mut self, version: u16) -> bool {
+        self.w()
+            .takes("ssl_min_version", format!("ssl_min_version({version:#x})"))
     }
 
     fn keep_arrays(&mut self) {

@@ -195,6 +195,22 @@ unsafe extern "C" {
         name: *mut *mut c_char,
         size: *mut c_ushort,
     ) -> c_int;
+    pub(crate) fn wolfSSL_SetEchConfigsBase64(
+        ssl: *mut WOLFSSL,
+        configs: *mut c_char,
+        len: c_uint,
+    ) -> c_int;
+    pub(crate) fn wolfSSL_SetEchConfigs(
+        ssl: *mut WOLFSSL,
+        configs: *const u8,
+        len: c_uint,
+    ) -> c_int;
+    pub(crate) fn wolfSSL_GetEchConfigs(
+        ssl: *mut WOLFSSL,
+        configs: *mut u8,
+        len: *mut c_uint,
+    ) -> c_int;
+    pub(crate) fn wolfSSL_set_min_proto_version(ssl: *mut WOLFSSL, version: c_int) -> c_int;
     pub(crate) fn wolfSSL_KeepArrays(ssl: *mut WOLFSSL);
     pub(crate) fn wolfSSL_FreeArrays(ssl: *mut WOLFSSL);
     pub(crate) fn wolfSSL_get_keys(

@@ -64,6 +64,33 @@ fn the_library_makes_and_frees_what_the_binding_asks() {
     wolfssl::cleanup();
 }
 
+/// The library takes an ECHConfigList in base64 or as bytes, gives back
+/// what it took, refuses one it cannot parse, and holds a session to TLS
+/// 1.3. The list is test 4001's.
+#[test]
+// Calls into C, which Miri cannot run.
+#[cfg_attr(miri, ignore)]
+fn the_library_takes_ech_configurations() {
+    const B64: &[u8] = b"AEv+DQBHdAAgACCCU49qdxKOUXJPs3wlsM06v/t42sMH5xQOL37MAd3HaAAEAAEAAQAYb3RoZXJwdWJsaWMudGVzdC5kZWZvLmllAAA=";
+    assert!(wolfssl::init());
+    let list = curl_core::tls::base64_decode(B64).unwrap().unwrap();
+    let method = TryArc::try_new(Method::new().expect("a method")).unwrap();
+    let mut ctx = WOLFSSL.ctx(&method).expect("a context");
+    let mut ssl = ctx.ssl().expect("a session object");
+    assert!(!ssl.ech_configs_base64(b"not base64"));
+    assert!(!ssl.set_ech_configs(b"\x00\x01\x02"));
+    assert!(ssl.ech_configs_base64(B64));
+    assert_eq!(ssl.ech_configs().as_deref(), Some(&list[..]));
+    let mut other = ctx.ssl().expect("a session object");
+    assert_eq!(other.ech_configs(), None);
+    assert!(other.set_ech_configs(&list));
+    assert_eq!(other.ech_configs().as_deref(), Some(&list[..]));
+    assert!(other.min_version(0x0304));
+    assert!(!other.min_version(0x0399));
+    drop((ssl, other, ctx, method));
+    wolfssl::cleanup();
+}
+
 #[test]
 // Calls into C, which Miri cannot run.
 #[cfg_attr(miri, ignore)]

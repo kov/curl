@@ -3094,7 +3094,7 @@ carries one pointer for all of them; `Easy: Default` takes `Libraries::NONE`. Wi
 build leaves out (`Protocol "https" is disabled`, `UnsupportedProtocol`), as in C built
 without TLS; the shim and the tool give every handle OpenSSL. One library of the OpenSSL
 family is built, whichever openssl-sys finds (`OPENSSL_DIR`): OpenSSL 3.0 or later, LibreSSL
-3.4.1 or later, AWS-LC or BoringSSL. curl-openssl's build script reads which from what
+3.4.1 or later, AWS-LC or BoringSSL. The build script of curl-openssl reads which from what
 openssl-sys says of its headers (`DEP_OPENSSL_*`) and sets cfgs named for C's macros
 (`ossl3` for `HAVE_OPENSSL3`, `libressl`, `awslc`, `boringssl`, `boringssl_like` for
 `HAVE_BORINGSSL_LIKE`, `no_ocsp`), so that each branch is the branch of `lib/vtls/openssl.c`

@@ -49,3 +49,21 @@ pub(crate) fn version_len() -> usize {
 pub(crate) fn version_len() -> usize {
     #[cfg(boringssl)]
     return "BoringSSL/1".len();
+
+=== the tool over BoringSSL passes --tls13-ciphers on unwarned, as C's tool does not
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-tool options_the_library_lacks_are_warned_of
+openssl-fork: boringssl
+--- old
+    tls13_ciphers: !cfg!(boringssl),
+--- new
+    tls13_ciphers: true,
+
+=== the tool over BoringSSL writes the stapled status C's tool leaves out
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-tool options_the_library_lacks_are_not_written
+openssl-fork: boringssl
+--- old
+    cert_status: !cfg!(no_ocsp),
+--- new
+    cert_status: true,

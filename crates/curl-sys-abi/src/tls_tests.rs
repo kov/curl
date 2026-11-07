@@ -81,7 +81,7 @@ fn serve_n(n: usize) -> (u16, JoinHandle<()>) {
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
         for _ in 0..n {
-            let (tcp, _) = listener.accept().unwrap();
+            let (tcp, _) = curl_core::test_server::accept(&listener);
             tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
                 .unwrap();
             let Ok(mut tls) = acceptor.accept(tcp) else {

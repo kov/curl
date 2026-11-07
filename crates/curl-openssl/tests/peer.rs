@@ -350,7 +350,7 @@ fn serve_configured(
     configure(&mut acceptor);
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         tcp.set_nodelay(dribble).unwrap();
         let mut tls = match acceptor.accept(Dribble(tcp, dribble)) {
             Ok(tls) => tls,
@@ -1023,7 +1023,7 @@ fn serve_plain() -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut tcp, _) = listener.accept().unwrap();
+        let (mut tcp, _) = curl_core::test_server::accept(&listener);
         let mut got = Vec::new();
         let mut buf = [0u8; 4096];
         while !got.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -1196,7 +1196,7 @@ fn a_resumed_get_stays_within_its_allocation_budget() {
     let server = std::thread::spawn(move || {
         let mut reused = Vec::new();
         for _ in 0..2 {
-            let (tcp, _) = listener.accept().unwrap();
+            let (tcp, _) = curl_core::test_server::accept(&listener);
             let mut tls = acceptor.accept(tcp).unwrap();
             reused.push(tls.ssl().session_reused());
             let mut got = Vec::new();

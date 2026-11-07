@@ -1,0 +1,9 @@
+# The tests' servers on loopback, waiting for a client in bounded time.
+
+=== a server whose client never connects waits for it without end
+file: crates/curl-core/src/test_server.rs
+witness: curl-core test_server::tests::a_client_that_never_connects_fails_the_accept
+--- old
+        if poll(&mut fds, left).expect("polling the listener") > 0 {
+--- new
+        if poll(&mut fds, Duration::MAX).expect("polling the listener") > 0 {

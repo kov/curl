@@ -19,7 +19,7 @@ fn serve_ws(certs: &Certs) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     acceptor.set_certificate(&certs.cert).unwrap();
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         let mut tls = acceptor.accept(tcp).unwrap();
         let mut got = Vec::new();
         let mut buf = [0u8; 4096];

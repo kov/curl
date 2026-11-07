@@ -196,7 +196,7 @@ fn serve() -> (SocketAddr, JoinHandle<Vec<u8>>) {
     acceptor.set_certificate(&cert).unwrap();
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         // A handshake the client gives up is the client's failure to say.
         let Ok(mut tls) = acceptor.accept(tcp) else {
             return Vec::new();

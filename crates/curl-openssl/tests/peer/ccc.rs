@@ -37,7 +37,7 @@ fn serve_ccc(certs: &Certs) -> (SocketAddr, JoinHandle<Cleared>) {
     acceptor.set_certificate(&certs.cert).unwrap();
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
         let mut tls = acceptor.accept(tcp).unwrap();

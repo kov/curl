@@ -100,7 +100,7 @@ fn hello_reader() -> (SocketAddr, JoinHandle<Hello>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let reader = std::thread::spawn(move || {
-        let (mut tcp, _) = listener.accept().unwrap();
+        let (mut tcp, _) = curl_core::test_server::accept(&listener);
         let mut header = [0u8; 5];
         tcp.read_exact(&mut header).unwrap();
         assert_eq!(header[0], 22, "a handshake record");
@@ -294,7 +294,7 @@ fn a_list_the_library_refuses_fails_as_c_says() {
         assert_eq!(String::from_utf8(got.failure).unwrap(), failure);
         // Nothing was sent: the connection is there, unread.
         listener.set_nonblocking(true).unwrap();
-        let (mut tcp, _) = listener.accept().unwrap();
+        let (mut tcp, _) = curl_core::test_server::accept(&listener);
         tcp.set_nonblocking(false).unwrap();
         let mut buf = [0u8; 1];
         assert_eq!(tcp.read(&mut buf).unwrap(), 0, "{failure}");
@@ -354,7 +354,7 @@ fn relayed(to: SocketAddr) -> (SocketAddr, JoinHandle<Vec<(u8, usize)>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let relay = std::thread::spawn(move || {
-        let (mut client, _) = listener.accept().unwrap();
+        let (mut client, _) = curl_core::test_server::accept(&listener);
         let mut server = TcpStream::connect(to).unwrap();
         let mut back = (client.try_clone().unwrap(), server.try_clone().unwrap());
         let answers = std::thread::spawn(move || {

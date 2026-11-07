@@ -47,6 +47,8 @@ pub mod ssh2;
 pub mod sspi;
 #[cfg(test)]
 mod test_cell;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_server;
 /// The loopback interface's name, as the tests scope addresses by it:
 /// `lo` on Linux, `lo0` on macOS.
 #[cfg(all(test, unix))]

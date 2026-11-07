@@ -69,7 +69,7 @@ fn serve_each(acceptors: Vec<SslAcceptor>) -> (SocketAddr, JoinHandle<()>) {
     let at = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         for acceptor in acceptors {
-            let (tcp, _) = listener.accept().unwrap();
+            let (tcp, _) = curl_core::test_server::accept(&listener);
             let Ok(mut tls) = acceptor.accept(tcp) else {
                 continue;
             };
@@ -117,7 +117,7 @@ fn serve_early(acceptors: Vec<SslAcceptor>) -> (SocketAddr, EarlyServer) {
     let server = std::thread::spawn(move || {
         let mut seen = Vec::new();
         for acceptor in acceptors {
-            let (tcp, _) = listener.accept().unwrap();
+            let (tcp, _) = curl_core::test_server::accept(&listener);
             let ssl = openssl::ssl::Ssl::new(acceptor.context()).unwrap();
             let mut tls = openssl::ssl::SslStream::new(ssl, tcp).unwrap();
             let mut early = Vec::new();

@@ -371,7 +371,7 @@ fn serve_late(certs: &Certs, delay: Duration) -> (SocketAddr, JoinHandle<()>) {
     acceptor.set_certificate(&certs.cert).unwrap();
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         tcp.set_nodelay(true).unwrap();
         std::thread::sleep(delay);
         let mut tls = acceptor.accept(tcp).unwrap();

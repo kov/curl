@@ -50,7 +50,7 @@ fn serve_then(
     configure(&mut acceptor);
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         match acceptor.accept(tcp) {
             Ok(tls) => then(tls),
             // The alert sent, what the client sends after is read until
@@ -208,7 +208,7 @@ fn a_handshake_the_peer_ends_or_resets_fails_as_c_says() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let ends = std::thread::spawn(move || {
-        let (mut tcp, _) = listener.accept().unwrap();
+        let (mut tcp, _) = curl_core::test_server::accept(&listener);
         let mut header = [0u8; 5];
         tcp.read_exact(&mut header).unwrap();
         let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
@@ -262,7 +262,7 @@ fn a_handshake_the_peer_ends_or_resets_fails_as_c_says() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let resets = std::thread::spawn(move || {
-        let (mut tcp, _) = listener.accept().unwrap();
+        let (mut tcp, _) = curl_core::test_server::accept(&listener);
         // The hello's start read, the rest unread as the socket closes.
         let mut header = [0u8; 5];
         tcp.read_exact(&mut header).unwrap();

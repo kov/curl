@@ -782,6 +782,10 @@ exclude_re = [
     # against a live caddy, which a curl-core run does not reach.
     'curl-core/src/tls\.rs:.*: replace <impl crate::conn::layer::(Trace|Failures) for Notes>::(says_info -> bool with true|keep_errno with \(\))$',
     'curl-core/src/tls\.rs:.*: replace <impl LayerCx for Kept>::',
+    # `ContextHandler`, the transfer a library's test gives `Kept`: its
+    # answers are checked by curl-wolfssl's context callback test, which a
+    # curl-core run does not reach.
+    'curl-core/src/tls\.rs:.*: replace <impl crate::conn::layer::ForTransfer for ContextHandler>::',
     # A connection settles in the step that finds what it speaks, and its
     # transfer steps again in that same pass: a wake one step late still
     # lets its waiters go in the pass, before any of them runs, as

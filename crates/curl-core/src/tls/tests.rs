@@ -440,3 +440,14 @@ fn the_protocol_chosen_is_said_and_refused_as_c_does() {
         ]
     );
 }
+
+/// A C string is the bytes and one zero after them, read back up to the
+/// first zero, as C reads it.
+#[test]
+fn a_c_string_ends_in_one_zero() {
+    assert_eq!(c_string(b"name"), Ok(b"name\0".to_vec()));
+    assert_eq!(c_string(b""), Ok(b"\0".to_vec()));
+    let made = c_string(b"na\0me").unwrap();
+    assert_eq!(made, b"na\0me\0");
+    assert_eq!(as_c(&made).to_bytes(), b"na");
+}

@@ -160,6 +160,15 @@ pub enum GssNote {
     /// SPNEGO's mechanisms could not be narrowed to leave NTLM out
     /// (`gss_set_neg_mechs`).
     SetNegMechs(GssStatus),
+    /// Delegation by policy was asked for, which the library cannot do
+    /// (C built without `GSS_C_DELEG_POLICY_FLAG`): noted at every step.
+    NoDelegationPolicy,
+}
+
+impl GssNote {
+    /// What C says of `NoDelegationPolicy` (`Curl_gss_init_sec_context`).
+    pub const NO_DELEGATION_POLICY: &str =
+        "WARNING: support for CURLGSSAPI_DELEGATION_POLICY_FLAG not compiled in";
 }
 
 /// A library call that failed, and how.

@@ -664,6 +664,9 @@ impl<H: Host> StepSink for Sink<'_, '_, H> {
             GssNote::SetNegMechs(status) => {
                 logged(self.cx, self.gss, "gss_set_neg_mechs() failed: ", &status);
             }
+            GssNote::NoDelegationPolicy => {
+                trace::info(self.cx, format_args!("{}", GssNote::NO_DELEGATION_POLICY));
+            }
         }
     }
 }

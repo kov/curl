@@ -1,0 +1,23 @@
+=== HTTP Negotiate leaves unsaid that the library cannot delegate by policy
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::the_library_s_failures_are_said_as_c_says_them
+--- old
+                trace::info(self.cx, format_args!("{}", GssNote::NO_DELEGATION_POLICY));
+--- new
+                let _ = &self.cx;
+
+=== SASL's GSSAPI leaves unsaid that the library cannot delegate by policy
+file: crates/curl-core/src/auth/sasl/krb5.rs
+witness: curl-core auth::sasl::tests::gssapi_gss::refusals_are_c_s
+--- old
+            GssNote::NoDelegationPolicy => self.no_policy = true,
+--- new
+            GssNote::NoDelegationPolicy => {}
+
+=== SOCKS5's GSS-API leaves unsaid that the library cannot delegate by policy
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::delegation_the_library_cannot_do_is_said_at_each_step
+--- old
+            GssNote::NoDelegationPolicy => (self.say)(GssLine::NoDelegationPolicy),
+--- new
+            GssNote::NoDelegationPolicy => {}

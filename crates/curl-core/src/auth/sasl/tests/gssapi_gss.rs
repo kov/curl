@@ -342,6 +342,21 @@ fn refusals_are_c_s() {
         ["gss_init_sec_context() failed: status 851968.9. "]
     );
 
+    // Delegation by policy the library cannot do is said before the
+    // step's failure, as C says it before the call.
+    gss.then(Answer::Notes(crate::gss::GssNote::NoDelegationPolicy))
+        .then(Answer::Fails(expired));
+    let mut sasl = offering();
+    let (r, said) = start(&mut sasl);
+    assert_eq!(r, Err(SaslError::AuthError));
+    assert_eq!(
+        infos(said),
+        [
+            "WARNING: support for CURLGSSAPI_DELEGATION_POLICY_FLAG not compiled in",
+            "gss_init_sec_context() failed: status 851968.9. "
+        ]
+    );
+
     gss.then(Answer::Fails(GssFailure::out_of_memory(
         GssCall::InitSecContext,
     )));

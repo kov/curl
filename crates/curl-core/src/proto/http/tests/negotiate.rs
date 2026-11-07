@@ -655,6 +655,27 @@ fn the_library_s_failures_are_said_as_c_says_them() {
         String::from_utf8(ran.request.clone()).unwrap(),
         negotiated_get("/", b"t")
     );
+    // Delegation by policy the library cannot do, before the step that
+    // then fails.
+    let (gss, libraries) = scripted();
+    gss.then(Answer::Notes(crate::gss::GssNote::NoDelegationPolicy))
+        .then(Answer::Fails(GssFailure::status(
+            GssCall::InitSecContext,
+            GssStatus::new(1 << 16, 3),
+        )));
+    let (mut m, talk, _) = server(&[OK_200], false);
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
+    let text = ran.seen.text();
+    let warned = text.iter().position(|l| {
+        l == "WARNING: support for CURLGSSAPI_DELEGATION_POLICY_FLAG not compiled in\n"
+    });
+    let failed = text
+        .iter()
+        .position(|l| l == "gss_init_sec_context() failed: status 65536.3. \n");
+    assert!(
+        warned.is_some() && failed.is_some() && warned < failed,
+        "{text:?}"
+    );
     let (gss, libraries) = scripted();
     gss.then(Answer::Fails(GssFailure {
         call: GssCall::InquireContext,

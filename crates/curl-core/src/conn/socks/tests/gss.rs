@@ -211,6 +211,33 @@ fn gss_api_is_offered_where_built_in_and_allowed() {
     assert!(gss.asked().is_empty());
 }
 
+/// Delegation by policy the library cannot do is said before each step,
+/// as C says it in `Curl_gss_init_sec_context`.
+#[test]
+fn delegation_the_library_cannot_do_is_said_at_each_step() {
+    let warning = "WARNING: support for CURLGSSAPI_DELEGATION_POLICY_FLAG not compiled in";
+    let gss = Scripted::leaked();
+    gss.then(Answer::Notes(crate::gss::GssNote::NoDelegationPolicy))
+        .then_token(b"first")
+        .then(Answer::Notes(crate::gss::GssNote::NoDelegationPolicy))
+        .then(Answer::Stepped(complete(false, false), b"last".to_vec()))
+        .then(Answer::Initiator(Ok(b"alice".to_vec())))
+        .then(Answer::Wrapped(Ok(b"W".to_vec())));
+    let mut h = offered(gss, false);
+    assert_eq!(picked(&mut h), Ok(vec![warning.to_owned()]));
+    send(&mut h);
+    let (took, lines) = take_saying(&mut h, b"\x01\x01\x00\x02AB");
+    assert_eq!(took, Ok(Took::Read(6)));
+    assert_eq!(
+        lines,
+        [
+            warning,
+            "SOCKS5 server authenticated user alice with GSS-API.",
+            "SOCKS5 server supports GSS-API no data protection.",
+        ]
+    );
+}
+
 /// The whole exchange: the first token in a message of version 1, type
 /// 1 and its length; the proxy's token, read once all of it is in, for
 /// the next step; then who was authenticated, the level asked for wrapped

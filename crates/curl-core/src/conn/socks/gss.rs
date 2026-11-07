@@ -94,6 +94,8 @@ pub(crate) enum GssLine<'a> {
     Granted(u8),
     /// The protection the proxy granted, in SSPI's words.
     GrantedNotUsed(u8),
+    /// The library cannot delegate by policy, as asked.
+    NoDelegationPolicy,
 }
 
 impl fmt::Display for GssLine<'_> {
@@ -121,6 +123,7 @@ impl fmt::Display for GssLine<'_> {
                 "SOCKS5 access {} protection granted BUT NOT USED.",
                 granted(level)
             ),
+            GssLine::NoDelegationPolicy => f.write_str(GssNote::NO_DELEGATION_POLICY),
         }
     }
 }
@@ -350,11 +353,13 @@ fn framed_len(r: &[u8; 4]) -> usize {
     4 + usize::from(u16::from_be_bytes([r[2], r[3]]))
 }
 
-/// Where a step's token goes: framed after what is to be sent.
+/// Where a step's token goes: framed after what is to be sent; what the
+/// library notes is said.
 struct Framer<'a> {
     out: &'a mut Vec<u8>,
     /// The token does not fit its 16-bit length.
     too_long: bool,
+    say: &'a mut dyn FnMut(GssLine<'_>),
 }
 
 impl StepSink for Framer<'_> {
@@ -372,8 +377,13 @@ impl StepSink for Framer<'_> {
         Ok(())
     }
 
-    /// SPNEGO's alone.
-    fn note(&mut self, _: GssNote) {}
+    fn note(&mut self, note: GssNote) {
+        match note {
+            // SPNEGO's alone.
+            GssNote::SetNegMechs(_) => {}
+            GssNote::NoDelegationPolicy => (self.say)(GssLine::NoDelegationPolicy),
+        }
+    }
 }
 
 impl Handshake {
@@ -449,6 +459,7 @@ impl Handshake {
         let mut framer = Framer {
             out: &mut self.out,
             too_long: false,
+            say: &mut *say,
         };
         let (more, confidentiality, integrity) =
             match self.context.as_mut().expect("a context is made") {

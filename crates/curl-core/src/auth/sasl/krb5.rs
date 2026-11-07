@@ -85,13 +85,19 @@ pub(super) fn user_message(
             let gss = *gss;
             let mut sink = Sink {
                 token: Vec::new(),
-                notes: None,
+                neg_mechs: None,
+                no_policy: false,
             };
             // A context already made is stepped again with no token, as C
             // steps the one it keeps.
             let stepped = context.step(None, None, &mut sink);
-            if let Some(GssNote::SetNegMechs(status)) = sink.notes {
+            // In the order C says them: the credentials' narrowing, then
+            // the step's flags.
+            if let Some(status) = sink.neg_mechs {
                 logged(cx, gss, "gss_set_neg_mechs() failed: ", &status);
+            }
+            if sink.no_policy {
+                (cx.said)(Say::Info, format_args!("{}", GssNote::NO_DELEGATION_POLICY));
             }
             if let Err(failure) = stepped {
                 return Err(gss_failed(cx, gss, failure));
@@ -264,7 +270,8 @@ fn cancel(cx: &mut Ctx<'_>, why: &str) -> Result<Option<Vec<u8>>, SaslError> {
 /// What a step makes: its token, and what the library noted on the way.
 struct Sink {
     token: Vec<u8>,
-    notes: Option<GssNote>,
+    neg_mechs: Option<GssStatus>,
+    no_policy: bool,
 }
 
 impl StepSink for Sink {
@@ -273,7 +280,10 @@ impl StepSink for Sink {
     }
 
     fn note(&mut self, note: GssNote) {
-        self.notes = Some(note);
+        match note {
+            GssNote::SetNegMechs(status) => self.neg_mechs = Some(status),
+            GssNote::NoDelegationPolicy => self.no_policy = true,
+        }
     }
 }
 

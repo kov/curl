@@ -87,9 +87,17 @@ fn blocks_of_one_size_are_counted_made_or_grown() {
         let ((), inner) = track::count_sized(10, || drop(Vec::<u8>::with_capacity(10)));
         assert_eq!(inner, 1, "the inner count's own");
         track::untracked(|| drop(Vec::<u8>::with_capacity(SIZE)));
+        // Tracked again inside an exclusion, and excluded after it.
+        track::untracked(|| {
+            track::tracked(|| drop(Vec::<u8>::with_capacity(SIZE)));
+            drop(Vec::<u8>::with_capacity(SIZE));
+        });
         drop(v);
     });
-    assert_eq!(n, 3, "zeroed, unzeroed and grown, the others left out");
+    assert_eq!(
+        n, 4,
+        "zeroed, unzeroed, grown and tracked again, the others left out"
+    );
 }
 
 /// Blocks made before tracking or inside an exclusion are not logged;

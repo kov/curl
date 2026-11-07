@@ -202,6 +202,20 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Run `f` tracked again, inside [`untracked`]: for the calls a library
+/// whose own allocations go untracked makes back into ours, which C's
+/// tracker counts.
+pub fn tracked<R>(f: impl FnOnce() -> R) -> R {
+    struct Back(u32);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            EXCLUDED.with(|d| d.set(self.0));
+        }
+    }
+    let _back = Back(EXCLUDED.with(|d| d.replace(0)));
+    f()
+}
+
 /// Run `f` with `limit` more tracked allocations allowed and the rest
 /// refused, then lift the limit; whether any was refused. For the Rust
 /// torture tests, which run a scenario once for every allocation it makes;

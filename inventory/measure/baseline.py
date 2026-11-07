@@ -16,9 +16,9 @@ place of libssh2, the SSH library the rewrite binds (SCOPE.md):
 build/c-libssh, inventory/baseline-libssh.{json,md}.
 
 `--gnutls` does the same for the reference build with GnuTLS in place of
-OpenSSL, the TLS library the rewrite's `gnutls` feature binds: without
-HTTP/3, which C builds over GnuTLS only with ngtcp2's GnuTLS crypto
-(milestone 10's step 104): build/c-gnutls,
+OpenSSL, the TLS library the rewrite's `gnutls` feature binds, with
+HTTP/3 over ngtcp2's GnuTLS crypto and without the HTTP/3 proxy, which C
+builds over OpenSSL only: build/c-gnutls,
 inventory/baseline-gnutls.{json,md}.
 
 `--mbedtls` does the same with mbedTLS in place of OpenSSL, the library the
@@ -29,9 +29,9 @@ inventory/baseline-mbedtls.{json,md}.
 
 `--wolfssl` does the same with wolfSSL in place of OpenSSL, the library the
 rewrite's `wolfssl` feature binds, built by inventory/measure/deps.py as
-curl's CI builds it: without HTTP/3, which C builds over wolfSSL only with
-ngtcp2's wolfSSL crypto (milestone 10's step 104), and without Encrypted
-Client Hello, off in every oracle here: build/c-wolfssl,
+curl's CI builds it: with HTTP/3 over ngtcp2's wolfSSL crypto, without
+the HTTP/3 proxy, and without Encrypted Client Hello, off in every oracle
+here: build/c-wolfssl,
 inventory/baseline-wolfssl.{json,md}.
 
 This is a measurement, not a derivation from source, so inventory/gen/all.py
@@ -94,8 +94,10 @@ class Oracle:
     title: str
     flag: str
     cmake_args: dict
-    # Its programs load the ngtcp2 built here (`deps.check_linked`).
+    # Its programs load the ngtcp2 built here (`deps.check_linked`), and
+    # its crypto for the TLS library named.
     links_ngtcp2: bool = True
+    crypto: str | None = None
     # It is built with the wolfSSL built here (`deps.build_wolfssl`).
     wolfssl: bool = False
 
@@ -123,15 +125,14 @@ LIBSSH = Oracle(ROOT / "build" / "c-libssh", "baseline-libssh",
                 "C libssh baseline", "--libssh",
                 {**CMAKE_ARGS, "CURL_USE_LIBSSH2": "OFF",
                  "CURL_USE_LIBSSH": "ON"})
-# GnuTLS in place of OpenSSL, as the rewrite's `gnutls` feature has it.
-# ngtcp2 here has OpenSSL's crypto, not GnuTLS's: no HTTP/3, and no
-# HTTP/3 proxy with it.
+# GnuTLS in place of OpenSSL, as the rewrite's `gnutls` feature has it:
+# HTTP/3 over ngtcp2's GnuTLS crypto, and no HTTP/3 proxy, which CMake
+# builds over OpenSSL only.
 GNUTLS = Oracle(ROOT / "build" / "c-gnutls", "baseline-gnutls",
                 "C GnuTLS baseline", "--gnutls",
                 {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
-                 "CURL_USE_GNUTLS": "ON", "USE_NGTCP2": "OFF",
-                 "USE_PROXY_HTTP3": "OFF"},
-                links_ngtcp2=False)
+                 "CURL_USE_GNUTLS": "ON", "USE_PROXY_HTTP3": "OFF"},
+                crypto="gnutls")
 # mbedTLS in place of OpenSSL, as the rewrite's `mbedtls` feature has it:
 # no QUIC (ngtcp2 has no mbedTLS crypto), and no Ed25519 to sign HTTP
 # messages with (CMake turns HTTPSIG off without it).
@@ -142,16 +143,16 @@ MBEDTLS = Oracle(ROOT / "build" / "c-mbedtls", "baseline-mbedtls",
                   "USE_PROXY_HTTP3": "OFF", "CURL_DISABLE_HTTPSIG": "ON"},
                  links_ngtcp2=False)
 # wolfSSL in place of OpenSSL, as the rewrite's `wolfssl` feature has it:
-# no QUIC (ngtcp2 here has OpenSSL's crypto), and Ed25519 for HTTP message
-# signatures from wolfCrypt. Its programs find the library by their
-# RUNPATH, as they find ngtcp2's elsewhere.
+# HTTP/3 over ngtcp2's wolfSSL crypto, no HTTP/3 proxy (OpenSSL's only),
+# and Ed25519 for HTTP message signatures from wolfCrypt. Its programs
+# find the library by their RUNPATH, beside ngtcp2's.
 WOLFSSL = Oracle(ROOT / "build" / "c-wolfssl", "baseline-wolfssl",
                  "C wolfSSL baseline", "--wolfssl",
                  {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
-                  "CURL_USE_WOLFSSL": "ON", "USE_NGTCP2": "OFF",
-                  "USE_PROXY_HTTP3": "OFF",
-                  "CMAKE_BUILD_RPATH": str(deps.WOLFSSL / "lib")},
-                 links_ngtcp2=False, wolfssl=True)
+                  "CURL_USE_WOLFSSL": "ON", "USE_PROXY_HTTP3": "OFF",
+                  "CMAKE_BUILD_RPATH":
+                  f"{deps.NGTCP2 / 'lib'};{deps.WOLFSSL / 'lib'}"},
+                 wolfssl=True, crypto="wolfssl")
 
 
 def run(oracle):
@@ -175,7 +176,7 @@ def run(oracle):
     for binary in [next(oracle.build.glob("lib/libcurl*.so.*.*.*")),
                    oracle.build / "src/curl", *oracle.test_programs]:
         if oracle.links_ngtcp2:
-            deps.check_linked(binary)
+            deps.check_linked(binary, oracle.crypto)
     meta = suite.run(oracle.build, oracle.results, dict(os.environ))
     (oracle.results / "run.json").write_text(
         json.dumps({"c-commit": commit, **meta}, indent=1) + "\n")

@@ -25,7 +25,7 @@ minutes; pytest gets a venv in `build/c/pytest-venv`) and parses the results (li
 `--threaded`, `--libssh`, `--gnutls`, `--mbedtls` and `--wolfssl` do the same for the other five
 C oracles (`SCOPE.md`): the reference configuration with the threaded resolver in place of
 c-ares, in `build/c-threaded`, with libssh in place of libssh2, in `build/c-libssh`, with GnuTLS
-in place of OpenSSL and no HTTP/3, in `build/c-gnutls`, with mbedTLS in place of OpenSSL and
+in place of OpenSSL and no HTTP/3 proxy, in `build/c-gnutls`, with mbedTLS in place of OpenSSL and
 neither HTTP/3 nor message signatures, in `build/c-mbedtls`, and with wolfSSL (built by
 `deps.py`) in place of OpenSSL and no HTTP/3, in `build/c-wolfssl`, into `baseline-threaded`,
 `baseline-libssh`, `baseline-gnutls`, `baseline-mbedtls` and `baseline-wolfssl`.

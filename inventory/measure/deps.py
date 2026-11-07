@@ -5,8 +5,11 @@ Build the libraries the reference build needs newer than the distribution's.
 ngtcp2: HTTP/3 0-RTT early data is rejected with the distribution's ngtcp2
 1.22.1 and accepted with 1.25.0, both on the system OpenSSL 3.5, so the
 HTTP/3 early-data tests in tests/http only exercise early data with the
-newer one. ngtcp2 is built against the system OpenSSL at the version
-curl's CI pins in .github/workflows/http3-linux.yml.
+newer one. ngtcp2 is built at the version curl's CI pins in
+.github/workflows/http3-linux.yml, with the crypto libraries for each TLS
+library a build here does HTTP/3 over, as that CI builds it: the system
+OpenSSL's (LibreSSL's on macOS), and on Linux the system GnuTLS's and the
+wolfSSL's built here.
 
 Its static archives are built position-independent, as the rewrite's
 curl-ngtcp2 links them into its executables, which are.
@@ -44,10 +47,16 @@ WOLFSSL = DEPS / "wolfssl" if OWN_WOLFSSL else pathlib.Path(
     os.environ["CURL_WOLFSSL_DIR"])
 
 
+# The TLS libraries besides OpenSSL (or LibreSSL, on macOS) ngtcp2's
+# crypto is built for here, each a library `libngtcp2_crypto_<name>`: on
+# Linux, where the GnuTLS and wolfSSL legs are measured, the system's
+# GnuTLS and the wolfSSL built here.
+CRYPTO = ["gnutls", "wolfssl"] if sys.platform.startswith("linux") else []
 # How ngtcp2 is configured here, besides its prefix; a build's stamp names
-# its version and this recipe (`pic`).
+# its version and this recipe (`pic`, and the other crypto libraries).
 CONFIGURE = ["--disable-dependency-tracking", "--enable-lib-only",
-             "--with-openssl", "--with-pic"]
+             "--with-openssl", *(f"--with-{crypto}" for crypto in CRYPTO),
+             "--with-pic"]
 
 
 # How wolfSSL is configured here: the CI job's flags, and both libraries,
@@ -106,9 +115,16 @@ def build_wolfssl():
 
 
 def build():
-    """Build what is missing; return the environment CMake needs."""
+    """
+    Build what is missing, wolfSSL first where ngtcp2's crypto for it is
+    built against it; return the environment CMake needs to find ngtcp2.
+    """
+    wolfssl_env = build_wolfssl() if "wolfssl" in CRYPTO else {}
     version = pinned("NGTCP2_VERSION")
     built = f"{version} pic"
+    if CRYPTO:
+        wolfssl = pinned("WOLFSSL_VERSION", ".github/workflows/linux.yml")
+        built += f" {'+'.join(CRYPTO)} wolfssl-{wolfssl}"
     stamp = NGTCP2 / ".version"
     if OWN_NGTCP2 and not (stamp.exists()
                            and stamp.read_text().strip() == built):
@@ -119,12 +135,19 @@ def build():
                 f"v{version}", "https://github.com/ngtcp2/ngtcp2", str(src)],
                cwd=src.parent)
         sh(["autoreconf", "-fi"], cwd=src)
-        sh(["./configure", f"--prefix={NGTCP2}", *CONFIGURE], cwd=src)
+        subprocess.run(["./configure", f"--prefix={NGTCP2}", *CONFIGURE],
+                       cwd=src, check=True, stdout=subprocess.DEVNULL,
+                       env={**os.environ, **wolfssl_env})
         # Without dependency tracking, objects an earlier configure built
         # would be kept.
         sh(["make", "clean"], cwd=src)
         sh(["make", f"-j{os.cpu_count()}", "install"], cwd=src)
         stamp.write_text(built + "\n")
+    # A crypto library configure found no TLS library for is skipped, not
+    # failed: each must be there.
+    for crypto in CRYPTO if OWN_NGTCP2 else []:
+        lib = NGTCP2 / "lib" / f"libngtcp2_crypto_{crypto}.a"
+        check(lib.exists(), f"{lib} was not built")
     pc = subprocess.run(["pkg-config", "--modversion", "libngtcp2"],
                         env={**os.environ,
                              "PKG_CONFIG_PATH": f"{NGTCP2}/lib/pkgconfig"},
@@ -150,15 +173,20 @@ def describe():
             "nghttp3": nghttp3.stdout.strip()}
 
 
-def check_linked(binary):
-    """Fail unless `binary` loads the ngtcp2 built here."""
+def check_linked(binary, crypto=None):
+    """
+    Fail unless `binary` loads the ngtcp2 built here, and if `crypto`
+    names one, its crypto library for that TLS library (`ossl`, `gnutls`,
+    `wolfssl`).
+    """
     macos = sys.platform == "darwin"
     libs = subprocess.run([*(["otool", "-L"] if macos else ["ldd"]),
                            str(binary)], check=True, capture_output=True,
                           text=True).stdout
     # libngtcp2.16.dylib on macOS, libngtcp2.so.16 on Linux.
-    lib = f"{NGTCP2}/lib/libngtcp2.{'' if macos else 'so'}"
-    check(lib in libs, f"{binary} does not load {lib}")
+    for name in ["ngtcp2", *([f"ngtcp2_crypto_{crypto}"] if crypto else [])]:
+        lib = f"{NGTCP2}/lib/lib{name}.{'' if macos else 'so'}"
+        check(lib in libs, f"{binary} does not load {lib}")
 
 
 if __name__ == "__main__":

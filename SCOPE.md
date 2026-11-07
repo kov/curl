@@ -104,8 +104,9 @@ chooses one. libssh's SSH behaviour is checked against a C oracle of its own,
 --libssh2`.
 
 GnuTLS has one too: `build/c-gnutls`, the reference configuration with `CURL_USE_GNUTLS` in
-place of `CURL_USE_OPENSSL` and without HTTP/3 (ngtcp2 here has OpenSSL's crypto, not
-GnuTLS's), built and measured by `baseline.py --gnutls`. The rewrite's TLS library is a build
+place of `CURL_USE_OPENSSL`, with HTTP/3 over ngtcp2's GnuTLS crypto (which `deps.py` builds
+beside its OpenSSL crypto) and without the HTTP/3 proxy (C's CMake has it with OpenSSL alone),
+built and measured by `baseline.py --gnutls`. The rewrite's TLS library is a build
 choice, the shim's and the tool's `gnutls` feature in place of `openssl`, and its leg (with
 libssh2, as the oracle has it) is scored against that oracle by `score.py --gnutls`.
 

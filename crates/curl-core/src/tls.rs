@@ -46,6 +46,10 @@ pub mod x509;
 /// A test double: a TLS library of text lines and scrambled records.
 #[cfg(any(test, feature = "test-util"))]
 pub mod fake;
+#[cfg(any(test, feature = "test-util"))]
+mod wire;
+#[cfg(any(test, feature = "test-util"))]
+pub use wire::Wire;
 
 /// A TLS library (C's `struct Curl_ssl`). Whoever builds a handle names
 /// one in its `Libraries`; without one, no scheme that needs TLS is

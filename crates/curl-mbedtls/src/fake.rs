@@ -4,18 +4,12 @@
 //! inside it through the same `Call` the real library's callbacks reach.
 //! A scripted socket carries what it writes and reads.
 
-use std::collections::VecDeque;
 use std::ffi::{CStr, c_void};
-use std::io;
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use curl_alloc::{OutOfMemory, TryArc};
-use curl_core::conn::io::{
-    Connect, Events, Readiness, Recv, Remote, Sent, Socket, SocketKey, SocketOption,
-};
+pub(crate) use curl_core::tls::Wire;
 
 use crate::library::{self, Call, Chain, KeyCopy, Moved, Rc, Resume, Saved, Words};
 use crate::sys;
@@ -473,87 +467,5 @@ impl library::Conn for FakeConn {
 
     fn pending(&self) -> bool {
         self.w().pending
-    }
-}
-
-/// A connection's socket: what the peer sends waits in `incoming`, what
-/// is sent is kept in `sent`; with nothing waiting a read would block,
-/// or meets the end once `closed`.
-#[derive(Debug, Default)]
-pub(crate) struct Wire {
-    pub(crate) incoming: Mutex<VecDeque<u8>>,
-    pub(crate) sent: Mutex<Vec<u8>>,
-    pub(crate) closed: bool,
-    /// Sends take at most this many bytes, if set; 0 takes none.
-    pub(crate) room: Option<usize>,
-}
-
-impl Wire {
-    /// A wire the peer has sent `bytes` on.
-    pub(crate) fn with(bytes: &[u8]) -> Wire {
-        let wire = Wire::default();
-        wire.incoming.lock().unwrap().extend(bytes);
-        wire
-    }
-
-    pub(crate) fn sent(&self) -> Vec<u8> {
-        self.sent.lock().unwrap().clone()
-    }
-}
-
-impl Socket for Wire {
-    fn key(&self) -> SocketKey {
-        SocketKey::new(5)
-    }
-    fn readiness(&self) -> Readiness<'_> {
-        Readiness::Known {
-            now: Events::IN | Events::OUT,
-            later: None,
-        }
-    }
-    fn take_error(&self) -> io::Result<Option<io::Error>> {
-        Ok(None)
-    }
-    fn local_addr(&self) -> io::Result<SocketAddr> {
-        Err(io::ErrorKind::Unsupported.into())
-    }
-    fn set(&self, _: SocketOption) -> io::Result<()> {
-        Ok(())
-    }
-    fn set_nonblocking(&self) -> io::Result<()> {
-        Ok(())
-    }
-    fn bind(&self, _: SocketAddr) -> io::Result<()> {
-        Ok(())
-    }
-    #[cfg(target_os = "linux")]
-    fn bind_to_device(&self, _: &[u8]) -> io::Result<()> {
-        Ok(())
-    }
-    fn connect(&self, _: &Remote) -> io::Result<Connect> {
-        Ok(Connect::Done)
-    }
-    fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
-        let mut incoming = self.incoming.lock().unwrap();
-        let n = buf.len().min(incoming.len());
-        for (b, c) in buf.iter_mut().zip(incoming.drain(..n)) {
-            *b = c;
-        }
-        Ok(match NonZeroUsize::new(n) {
-            Some(n) => Recv::Data(n),
-            None if self.closed => Recv::Eof,
-            None => Recv::WouldBlock,
-        })
-    }
-    fn send(&self, buf: &[u8]) -> io::Result<Sent> {
-        let n = self.room.map_or(buf.len(), |r| r.min(buf.len()));
-        self.sent.lock().unwrap().extend_from_slice(&buf[..n]);
-        Ok(match NonZeroUsize::new(n) {
-            Some(n) => Sent::Bytes(n),
-            None => Sent::WouldBlock,
-        })
-    }
-    fn release(self: Box<Self>) -> SocketKey {
-        SocketKey::new(5)
     }
 }

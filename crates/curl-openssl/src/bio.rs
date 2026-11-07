@@ -181,18 +181,51 @@ pub(crate) fn call<R>(
     slot: &mut Slot<'_, '_>,
     op: impl FnOnce(*mut SSL) -> R,
 ) -> R {
+    call_lent(ssl, slot, |_| op(ssl.as_ptr()))
+}
+
+/// As `call`, with `op` given the slot, for what it runs to reach the
+/// transfer directly (`LentSlot::with_cx`), as the BIO's callbacks reach
+/// it: through the one pointer to it both are given.
+pub(crate) fn call_lent<R>(
+    ssl: NonNull<SSL>,
+    slot: &mut Slot<'_, '_>,
+    op: impl FnOnce(LentSlot) -> R,
+) -> R {
     // SAFETY: the session's SSL, alive while the session is; its read
     // BIO is its write BIO, one of a `Method`'s.
     let bio = unsafe { openssl_sys::SSL_get_rbio(ssl.as_ptr()) };
     assert!(!bio.is_null(), "a session's SSL has its BIO");
-    let p: *mut Slot<'_, '_> = slot;
+    let p = NonNull::from(slot);
     // SAFETY: the slot outlives the call; the callbacks read it only
     // during `op`, and nothing else uses it until `op` returns.
-    unsafe { openssl_sys::BIO_set_data(bio, p.cast()) };
-    let r = op(ssl.as_ptr());
+    unsafe { openssl_sys::BIO_set_data(bio, p.as_ptr().cast()) };
+    let r = op(LentSlot(p.cast()));
     // SAFETY: as above; no callback runs after `op` returns.
     unsafe { openssl_sys::BIO_set_data(bio, ptr::null_mut()) };
     r
+}
+
+/// The slot of a call under way, as `call_lent` lends it to its `op`:
+/// reached without asking the library for the BIO and its data, which a
+/// QUIC library's callbacks would ask for each event of each packet.
+#[derive(Clone, Copy)]
+pub(crate) struct LentSlot(NonNull<Slot<'static, 'static>>);
+
+impl LentSlot {
+    /// Run `f` with the transfer the call reaches.
+    ///
+    /// # Safety
+    /// Only during the `call_lent` that lent it, on its thread, and not
+    /// from inside one of this module's callbacks: the slot is then live
+    /// and unused.
+    pub(crate) unsafe fn with_cx<R>(self, f: impl FnOnce(&mut TlsCx<'_>) -> R) -> R {
+        // SAFETY: as the caller says: the slot `call_lent` set, used by
+        // `f` alone until it returns; its lifetimes, erased as it was
+        // lent, are longer than `f`'s use, which stores nothing of it.
+        let slot = unsafe { &mut *self.0.as_ptr().cast::<Slot<'_, '_>>() };
+        f(slot.io.cx())
+    }
 }
 
 /// The slot of the call under way, from its BIO's data.

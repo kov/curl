@@ -1860,8 +1860,12 @@ impl QuicTls for QuicSession {
             kind: s.kind,
             reused: s.reused,
             from_sectrust: s.from_sectrust,
+            slot: None,
         };
-        bio::call(ssl, &mut slot, |_| call(&mut check));
+        bio::call_lent(ssl, &mut slot, |lent| {
+            check.slot = Some(lent);
+            call(&mut check)
+        });
     }
 
     /// The SSL, never freed here from now on: quiche frees it, its BIO
@@ -1907,6 +1911,9 @@ struct Check<'s> {
     kind: TlsPeerKind,
     reused: bool,
     from_sectrust: bool,
+    /// The slot of the call, reached by the callbacks of each packet
+    /// without the BIO's data being asked for.
+    slot: Option<bio::LentSlot>,
 }
 
 impl DriveCall for Check<'_> {
@@ -1923,9 +1930,11 @@ impl DriveCall for Check<'_> {
     }
 
     fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
-        // SAFETY: as above: inside `drive`'s call, not inside one of
-        // this crate's callbacks, which the QUIC library's never are.
-        unsafe { bio::with_cx(self.ssl, f) }
+        let slot = self.slot.expect("lent as the call starts");
+        // SAFETY: as above: inside `drive`'s call, which lent the slot,
+        // not inside one of this crate's callbacks, which the QUIC
+        // library's never are.
+        unsafe { slot.with_cx(f) }
     }
 }
 
@@ -1940,6 +1949,7 @@ impl Check<'_> {
             kind,
             reused,
             from_sectrust,
+            slot: _,
         } = *self;
         // SAFETY: the session's SSL, alive while the check is.
         let finished = unsafe { ffi::SSL_is_init_finished(ssl.as_ptr()) };

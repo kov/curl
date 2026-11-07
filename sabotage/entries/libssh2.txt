@@ -88,3 +88,11 @@ witness: curl-core proto::ssh::libssh2::tests::the_goodbye_goes_out_through_an_h
             let moved = self.pump(cx, below);
 --- new
             let moved = false;
+
+=== a disconnect that waited only for its own first part to go out waits on the socket, not made again at once
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::the_goodbye_goes_out_through_an_https_proxy_s_tls
+--- old
+                Err(Halt::Again) if moved => {}
+--- new
+                Err(Halt::Again) if false => {}

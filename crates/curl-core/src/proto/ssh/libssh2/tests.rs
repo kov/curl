@@ -255,6 +255,7 @@ impl Ssh2 for FakeSsh2 {
             entry: (Vec::new(), Vec::new()),
             pipes: None,
             said_hello: false,
+            goodbye_parts: 0,
         }))
     }
 
@@ -286,6 +287,8 @@ struct FakeSession {
     /// them.
     pipes: Option<Pipes>,
     said_hello: bool,
+    /// How many of the disconnect's two parts went into the pipes.
+    goodbye_parts: usize,
 }
 
 impl FakeSession {
@@ -720,11 +723,17 @@ impl Session2 for FakeSession {
         rc
     }
     fn disconnect(&mut self) -> Result<(), Code> {
+        // Over pipes, in two writes, as libssh2's transport may write a
+        // packet: the second waits for the first to have gone out, and
+        // the call is made again for it.
         if let Some(pipes) = self.pipes.as_mut() {
-            match pipes.give(GOODBYE) {
-                Gave::All => {}
-                Gave::Wait => return Err(Code::EAGAIN),
-                Gave::Broken => return Err(Code::SOCKET_SEND),
+            let parts = GOODBYE.chunks(GOODBYE.len().div_ceil(2));
+            for part in parts.skip(self.goodbye_parts) {
+                match pipes.give(part) {
+                    Gave::All => self.goodbye_parts += 1,
+                    Gave::Wait => return Err(Code::EAGAIN),
+                    Gave::Broken => return Err(Code::SOCKET_SEND),
+                }
             }
         }
         self.called("disconnect", &[])
@@ -1238,6 +1247,9 @@ fn ssh_goes_through_an_https_proxy_s_tls() {
 /// proxy's TLS as the connection closes, before the session is freed
 /// with its pipes, as C's callbacks send it inside
 /// `libssh2_session_disconnect`: the server is told, and closes its end.
+/// A disconnect that waits only for its own first part to go out is made
+/// again at once, without waiting: C's sends it inside the call, which
+/// never waits for that.
 #[test]
 fn the_goodbye_goes_out_through_an_https_proxy_s_tls() {
     use crate::tls::fake::{self, FakeTls, WELCOME};
@@ -1247,7 +1259,7 @@ fn the_goodbye_goes_out_through_an_https_proxy_s_tls() {
     let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
     for url in [URL, "scp://u@127.0.0.1:PORT/home/u/f"] {
         let talk = Conversation::replies(&[WELCOME, &answer, &banner], false).per_send();
-        let w = world_with(&[("/home/u/f", "tunneled")], |_| {});
+        let w = world_with(&[("/home/u/f", "tunneled")], |w| w.trace_ssh = true);
         let (result, _, text) = run_over(
             &w,
             url,
@@ -1271,6 +1283,15 @@ fn the_goodbye_goes_out_through_an_https_proxy_s_tls() {
             1,
             "{url}: {}",
             String::from_utf8_lossy(&sent)
+        );
+        let said = format!("{said}{}", w.lock().unwrap().internal.said());
+        assert!(
+            said.contains("[SSH_STOP] statemachine() -> 0, block=0"),
+            "{url}: {said}"
+        );
+        assert!(
+            !said.contains("[SSH_SESSION_DISCONNECT] statemachine() -> 0, block=1"),
+            "{url}: {said}"
         );
     }
 }

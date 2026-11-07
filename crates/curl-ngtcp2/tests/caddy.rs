@@ -3,8 +3,6 @@
 //! be installed; a run without it fails rather than skips.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
-// Over the TLS libraries whose QUIC sessions are made.
-#![cfg(any(feature = "openssl", feature = "gnutls"))]
 
 use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -23,11 +21,6 @@ use curl_core::tls::{
     CaDefaults, Kept, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind,
 };
 use curl_ngtcp2::NGTCP2;
-// The TLS library the build has the QUIC crypto of.
-#[cfg(feature = "gnutls")]
-use curl_gnutls::GNUTLS as TLS;
-#[cfg(feature = "openssl")]
-use curl_openssl::OPENSSL as TLS;
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
 use openssl::ec::{EcGroup, EcKey};
@@ -38,6 +31,23 @@ use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
 use openssl::x509::{X509, X509Name};
 
 const BODY: &[u8] = b"hello h3\n";
+
+/// The TLS library the build has the QUIC crypto of, initialised.
+#[cfg(feature = "gnutls")]
+fn tls() -> &'static dyn TlsBackend {
+    &curl_gnutls::GNUTLS
+}
+#[cfg(feature = "openssl")]
+fn tls() -> &'static dyn TlsBackend {
+    &curl_openssl::OPENSSL
+}
+#[cfg(feature = "wolfssl")]
+fn tls() -> &'static dyn TlsBackend {
+    static WOLFSSL: curl_wolfssl::WolfSsl = curl_wolfssl::WolfSsl::new();
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| assert!(WOLFSSL.init()));
+    &WOLFSSL
+}
 
 /// What the library says of a peer it verified, and of one signed by a
 /// CA it does not trust.
@@ -50,6 +60,10 @@ const VERIFIED: &str = "SSL certificate verified via OpenSSL";
 #[cfg(feature = "openssl")]
 const UNTRUSTED: &str =
     "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)";
+// wolfSSL's check says nothing of a peer it verified, as C's
+// (`Curl_vquic_tls_verify_peer`): the handshake is reported alone.
+#[cfg(feature = "wolfssl")]
+const VERIFIED: &str = "SSL connection using TLSv1.3 / ";
 
 /// A directory of the test's own, removed as this goes.
 struct Dir(PathBuf);
@@ -379,7 +393,7 @@ fn with_conn<R>(
     let mut notes = Notes::default();
     let r = TlsCx::testing(&identity, b"localhost", &mut notes, |shared, cx| {
         let clock = SystemClock::new();
-        let tls = TLS
+        let tls = tls()
             .quic_session(
                 &identity,
                 &peer,
@@ -456,6 +470,7 @@ fn a_get_over_http3_is_answered() {
 /// handshake inside ngtcp2's callback: the check's verdict is told, then
 /// the packet's reading fails as the callback did, as C's
 /// `tls_vrfy_result` is set before `ngtcp2_conn_read_pkt` fails.
+#[cfg(not(feature = "wolfssl"))]
 #[test]
 fn an_untrusted_peer_fails_the_handshake_as_it_completes() {
     let ((told, failed), notes) = with_conn("untrusted", "other-ca.pem", |conn, cx, over, _| {
@@ -470,6 +485,32 @@ fn an_untrusted_peer_fails_the_handshake_as_it_completes() {
     );
     assert_eq!(failed.text, "ERR_CALLBACK_FAILURE");
     assert!(notes.iter().any(|n| n.contains(UNTRUSTED)), "{notes:?}");
+}
+
+/// Over wolfSSL, which verifies the peer's chain itself, an untrusted
+/// peer fails the handshake inside the library: the packet's reading
+/// fails as ngtcp2's crypto says, the handshake is never done, and the
+/// check never runs.
+#[cfg(feature = "wolfssl")]
+#[test]
+fn an_untrusted_peer_fails_the_handshake_inside_the_library() {
+    let ((told, failed), notes) = with_conn("untrusted", "other-ca.pem", |conn, cx, over, _| {
+        let mut told = Told::default();
+        let failed = run(conn, cx, over, &mut told, |_| false).unwrap_err();
+        assert!(!conn.handshake_done());
+        (told, failed)
+    });
+    assert_eq!(told.checked, None, "{notes:?}");
+    assert_eq!(
+        (failed.layer, failed.call, failed.text),
+        (Layer::Crypto, "ngtcp2_conn_read_pkt", "ERR_CRYPTO")
+    );
+    assert!(
+        !notes
+            .iter()
+            .any(|n| n.starts_with("info: SSL connection using")),
+        "{notes:?}"
+    );
 }
 
 /// The authority of a request to caddy at `addr`.
@@ -518,7 +559,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
     let told = TlsCx::testing_kept(&identity, b"localhost", &mut kept, |shared, cx| {
         let clock = SystemClock::new();
         let connect = |cx: &mut TlsCx<'_>, early: bool| {
-            let tls = TLS
+            let tls = tls()
                 .quic_session(
                     &identity,
                     &peer,

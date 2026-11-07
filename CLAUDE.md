@@ -40,7 +40,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-nghttp2/src/lib.rs` and `src/sys.rs`: nghttp2's HTTP/2 session, its callbacks and
   the declarations of the functions it calls.
 - `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection with its OpenSSL,
-  LibreSSL or GnuTLS crypto, and nghttp3's HTTP/3 session over it: their callbacks, the TLS
+  LibreSSL, GnuTLS or wolfSSL crypto, and nghttp3's HTTP/3 session over it: their callbacks, the TLS
   library's pointer its crypto finds the connection by, and the declarations of the functions
   they call.
 - `crates/curl-libssh/src/lib.rs` and `src/sys.rs`: libssh's session over the connection's
@@ -119,7 +119,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   crate calls, and of the table of the headers' values they are checked against.
 - `crates/curl-wolfssl/src/wolfssl.rs`: wolfSSL's context, session object and store of
   certificates: the handshake, the records both ways, the BIO and callbacks that move them over
-  the connection and keep its sessions, its early data, and the peer's certificate and keys.
+  the connection and keep its sessions, its early data, a QUIC session's calls driven by ngtcp2,
+  and the peer's certificate and keys.
 - `crates/curl-wolfssl/src/sign.rs`: wolfCrypt's Ed25519, signing HTTP message signatures.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place (on macOS where `_NSGetArgv` says); on Windows the C library's `argv`, read (in the

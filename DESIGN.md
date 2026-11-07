@@ -61,7 +61,8 @@ openssl-sys's `vendored` copy, checked at build and at init), `gnutls` (GnuTLS 3
 the system's, with HTTP/3 over ngtcp2's GnuTLS crypto but not the HTTP/3 proxy, C's OpenSSL's
 alone), `mbedtls` (mbedTLS 3.2 or later, before 4.0, the system's, with
 neither HTTP/3 nor message signatures), `wolfssl` (wolfSSL 5.0 or later, the copy
-`inventory/measure/deps.py` builds as curl's CI does, linked statically, with no HTTP/3) or
+`inventory/measure/deps.py` builds as curl's CI does, linked statically, with HTTP/3 over
+ngtcp2's wolfSSL crypto but not the HTTP/3 proxy) or
 `schannel` (Windows). The CA
 default is the one CMake detects at build time, kept as static strings. How a backend takes the
 system's store is declared beside it (`CaDefaults::system`): only where asked

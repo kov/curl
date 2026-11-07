@@ -2212,11 +2212,12 @@ asks it for one packet at a time; batching, GSO and the socket are the core's.
 QUIC session (`TlsBackend::quic_session`), in its C order: the transfer's settings, the QUIC
 library's setup of the library's object at the point C calls it (`QuicContextSetup`, given
 `Http3::setup_tls_context`: OpenSSL's context, GnuTLS's session,
-`ngtcp2_crypto_gnutls_configure_client_session`), then the ALPN `h3` and a resumed ticket.
-curl-ngtcp2 is built for one TLS library (its `openssl` or `gnutls` feature, which the shim's and
+`ngtcp2_crypto_gnutls_configure_client_session`, wolfSSL's context,
+`ngtcp2_crypto_wolfssl_configure_client_context`), then the ALPN `h3` and a resumed ticket.
+curl-ngtcp2 is built for one TLS library (its `openssl`, `gnutls` or `wolfssl` feature, which the shim's and
 the tool's TLS feature names) and links that library's
 `ngtcp2_crypto_*`, which finds the connection through the library's own pointer on the session
-(OpenSSL's application data, GnuTLS's session pointer): curl-ngtcp2 sets it, and
+(OpenSSL's and wolfSSL's application data, GnuTLS's session pointer): curl-ngtcp2 sets it, and
 the TLS crate never uses it for a QUIC session. The records are the QUIC library's: a QUIC
 session never reads or writes the connection. The session keeps the peer's tickets with the
 transport parameters, as C's per-library new-session callbacks do, only where the transfer keeps
@@ -3180,8 +3181,9 @@ requires. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` both hand out the `mbedtls_ss
 context callback gets the `mbedtls_ssl_config`.
 
 **wolfSSL** (curl-wolfssl, `lib/vtls/wolfssl.c`) is the backend the `wolfssl` feature takes in
-OpenSSL's place, with message signatures (wolfCrypt's Ed25519) and no HTTP/3, as C's wolfSSL
-build without ngtcp2. It is linked statically from the copy `inventory/measure/deps.py` builds
+OpenSSL's place, with message signatures (wolfCrypt's Ed25519) and HTTP/3 over ngtcp2's
+wolfSSL crypto, as C's wolfSSL build. It is linked statically, before it the crypto that needs
+it, from the copy `inventory/measure/deps.py` builds
 at the version and with the flags curl's CI uses (`--enable-all`), in `build/deps/wolfssl`
 unless `CURL_WOLFSSL_DIR` names another; `csrc/layout.c` refuses one configured otherwise than
 the binding follows (no TLS 1.3 secret callback, no secure renegotiation, as that build). Its
@@ -3190,8 +3192,8 @@ trait, one method per library call `wolfssl.c` makes, implemented by `wolfssl.rs
 by the tests (`fake.rs`). The BIO method the session objects read and write the connection
 through, a file-scope static in C made by the global init, is the `WolfSsl` value's, made by
 its `init` and held by each session object as long as it lives; its callbacks and the
-new-session callback reach the `Call` under way through a slot the object's app data points
-at, set for that call alone. The context is made at the first step in `Curl_wssl_ctx_init`'s
+new-session callback reach the `Call` under way through a slot the BIO's data points at, set
+for that call alone. The object's application data is left to ngtcp2's crypto. The context is made at the first step in `Curl_wssl_ctx_init`'s
 order: the version range, the cipher list (the transfer's TLS 1.3 suites, else the library's,
 then the others, else the library's, in 4096 bytes), curves as groups, the client's
 certificate and key, the verify mode, SNI, the new-session callback, the context callback (its
@@ -3206,7 +3208,19 @@ handshake. Sessions are kept as the library tells of each, with what ALPN had ag
 resumed TLS 1.3 session that allows early data puts the handshake off for it, the offer
 restricted to the session's protocol. The goodbye sends only what blocked when a blocked
 `close_notify` is retried (wolfSSL#7784). `CURLINFO_TLS_SSL_PTR` hands out the `WOLFSSL`,
-`TLS_SESSION` and the context callback the `WOLFSSL_CTX`.
+`TLS_SESSION` and the context callback the `WOLFSSL_CTX`. A QUIC session (`quic.rs`) is made
+at once as `Curl_wssl_ctx_init` makes one for `TRNSPRT_QUIC`: the stream's steps with the
+transfer's versions (ngtcp2's setup makes them TLS 1.3), ngtcp2's setup of the context after
+SNI, then the new-session callback where sessions are kept, the session object told
+`wolfSSL_set_quic_use_legacy_codepoint(0)`, and a BIO for the callbacks alone; no name check
+before the handshake, no "curl offers" line. A resumed TLS 1.3 ticket goes to the QUIC library
+to decide on early data; where it allows some, was made for `h3` and kept with the transport
+parameters, the offer is `h3` alone and the library is told the ticket's most. Tickets are
+kept for `h3` with the transport parameters. The trust loads before the peer's first packet is
+read; the handshake's end reports the session, then checks the peer as
+`Curl_vquic_tls_verify_peer`: where the host is verified, the name (`wolfSSL_X509_check_host`)
+or the address, failing only on `WOLFSSL_FAILURE` and with no words, no certificate read as no
+memory; then the pinned key. An untrusted chain fails inside the library, as ngtcp2's crypto.
 
 **Verification.** The CA default is decided at build time as CMake decides it
 (CMakeLists.txt:1475), by the library's build script through curl-build's `write_ca_defaults`,

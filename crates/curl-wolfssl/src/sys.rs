@@ -46,6 +46,7 @@ pub(crate) type new_session_cb =
 pub(crate) type verify_cb = unsafe extern "C" fn(ok: c_int, store: *mut c_void) -> c_int;
 
 pub(crate) const WOLFSSL_SUCCESS: c_int = 1;
+pub(crate) const WOLFSSL_FAILURE: c_int = 0;
 pub(crate) const WOLFSSL_ERROR_NONE: c_int = 0;
 pub(crate) const WOLFSSL_ERROR_WANT_READ: c_int = 2;
 pub(crate) const WOLFSSL_ERROR_WANT_WRITE: c_int = 3;
@@ -82,7 +83,7 @@ pub(crate) const ED25519_SIG_SIZE: usize = 64;
 
 unsafe extern "C" {
     // The headers' values, from `csrc/layout.c`.
-    pub(crate) static curl_wolfssl_values: [i64; 33];
+    pub(crate) static curl_wolfssl_values: [i64; 34];
 
     pub(crate) fn wolfSSL_Init() -> c_int;
     pub(crate) fn wolfSSL_Cleanup() -> c_int;
@@ -165,8 +166,8 @@ unsafe extern "C" {
 
     pub(crate) fn wolfSSL_new(ctx: *mut WOLFSSL_CTX) -> *mut WOLFSSL;
     pub(crate) fn wolfSSL_free(ssl: *mut WOLFSSL);
-    pub(crate) fn wolfSSL_set_app_data(ssl: *mut WOLFSSL, arg: *mut c_void) -> c_int;
-    pub(crate) fn wolfSSL_get_app_data(ssl: *const WOLFSSL) -> *mut c_void;
+    pub(crate) fn wolfSSL_SSL_get_rbio(ssl: *const WOLFSSL) -> *mut WOLFSSL_BIO;
+    pub(crate) fn wolfSSL_set_quic_use_legacy_codepoint(ssl: *mut WOLFSSL, use_legacy: c_int);
     pub(crate) fn wolfSSL_d2i_SSL_SESSION(
         session: *mut *mut WOLFSSL_SESSION,
         p: *mut *const u8,
@@ -226,6 +227,13 @@ unsafe extern "C" {
     pub(crate) fn wolfSSL_get_peer_certificate(ssl: *mut WOLFSSL) -> *mut WOLFSSL_X509;
     pub(crate) fn wolfSSL_X509_get_der(x509: *mut WOLFSSL_X509, len: *mut c_int) -> *const u8;
     pub(crate) fn wolfSSL_X509_free(x509: *mut WOLFSSL_X509);
+    pub(crate) fn wolfSSL_X509_check_host(
+        x509: *mut WOLFSSL_X509,
+        name: *const c_char,
+        len: usize,
+        flags: c_uint,
+        peername: *mut *mut c_char,
+    ) -> c_int;
     pub(crate) fn wolfSSL_X509_check_ip_asc(
         x509: *mut WOLFSSL_X509,
         ip: *const c_char,
@@ -296,7 +304,7 @@ mod tests {
     // Reads a table C defines, which Miri cannot.
     #[cfg_attr(miri, ignore)]
     fn the_declared_values_are_the_headers() {
-        let ours: [i64; 33] = [
+        let ours: [i64; 34] = [
             WOLFSSL_SUCCESS as i64,
             WOLFSSL_ERROR_NONE as i64,
             WOLFSSL_ERROR_WANT_READ as i64,
@@ -330,8 +338,9 @@ mod tests {
             INVALID_DEVID as i64,
             ED25519_KEY_SIZE as i64,
             ED25519_SIG_SIZE as i64,
+            WOLFSSL_FAILURE as i64,
         ];
-        // SAFETY: a table of 33 numbers C defines, read only.
+        // SAFETY: a table of 34 numbers C defines, read only.
         let theirs = unsafe { &curl_wolfssl_values };
         for (i, (o, t)) in ours.iter().zip(theirs.iter()).enumerate() {
             assert_eq!(o, t, "entry {i} of csrc/layout.c");

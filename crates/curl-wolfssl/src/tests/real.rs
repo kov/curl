@@ -31,9 +31,15 @@ fn the_library_makes_and_frees_what_the_binding_asks() {
     assert!(!ctx.ca_locations(Some(c"/no/such/file.pem"), None));
     let mut ssl = ctx.ssl().expect("a session object");
     assert!(ssl.alpn(b"h2,http/1.1"));
+    // A list past the room on the stack is copied all the same.
+    let long = [&b"h2,"[..]; 30].concat();
+    assert!(ssl.alpn(&long[..long.len() - 1]));
     assert!(ssl.check_domain(c"example.com"));
+    ssl.quic_codepoint();
     ssl.bio().expect("a BIO");
     assert_eq!(ssl.peer_cert(), crate::library::PeerCert::None);
+    assert_eq!(ssl.check_host(b"example.com"), None);
+    assert_eq!(ssl.check_ip(c"127.0.0.1"), None);
     assert!(!ssl.pending());
     assert_eq!(
         ssl.resume(b"not a session"),
@@ -87,9 +93,17 @@ fn the_backend_makes_sessions_while_initialised() {
     };
     let shared = TlsShared::testing();
     let made = |b: &dyn TlsBackend| b.session(&id, &peer, Alpn::None, &shared).err();
+    let mut kept = curl_core::tls::Kept::new();
+    let mut quic = |b: &dyn TlsBackend| {
+        curl_core::tls::TlsCx::testing_kept(&id, b"example.com", &mut kept, |shared, cx| {
+            b.quic_session(&id, &peer, shared, &|_| Ok(()), cx).err()
+        })
+    };
     assert_eq!(made(&lib), Some(ErrorKind::FailedInit));
+    assert_eq!(quic(&lib), Some(ErrorKind::FailedInit));
     assert!(lib.init());
     assert_eq!(made(&lib), None);
+    assert_eq!(quic(&lib), None);
     let keyed = lib.with_keylog(SharedKeyLog::new().unwrap());
     assert_eq!(made(&keyed), None);
     assert!(lib.id().to_string().starts_with("wolfSSL/5."));

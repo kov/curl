@@ -53,16 +53,20 @@ witness: curl-wolfssl tests::the_multi_keeps_the_store_while_it_may
 file: crates/curl-wolfssl/src/library.rs
 witness: curl-wolfssl tests::sessions_are_kept_and_resumed
 --- old
-                    .keep_session(TlsTicket::new(der, version, self.alpn, early, until));
+                    None => TlsTicket::new(der, version, self.alpn, early, until),
 --- new
-                    .keep_session(TlsTicket::new(der, version, None, early, until));
+                    None => TlsTicket::new(der, version, None, early, until),
 
 === early data offers every protocol, not the session's
 file: crates/curl-wolfssl/src/session.rs
 witness: curl-wolfssl tests::a_session_allowing_early_data_puts_the_handshake_off
 --- old
+            "ALPN: deferred handshake for early data using '{name}'."
+        ));
         self.restricted = Some(chosen);
 --- new
+            "ALPN: deferred handshake for early data using '{name}'."
+        ));
 
 === an address that does not match the certificate is not said to
 file: crates/curl-wolfssl/src/session.rs
@@ -91,3 +95,194 @@ witness: curl-wolfssl tests::a_tls_1_2_secret_is_logged_while_the_key_log_is_ope
         let Some(keys) = ssl.tls12_keys() else {
 --- new
         let Some(keys) = ssl.tls12_keys() else {
+
+=== a QUIC session's ticket is kept without HTTP/3 named
+file: crates/curl-wolfssl/src/library.rs
+witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
+--- old
+                        let ticket = TlsTicket::new(der, version, Some(Chosen::H3), early, until);
+--- new
+                        let ticket = TlsTicket::new(der, version, self.alpn, early, until);
+
+=== a QUIC session's ticket is kept without the transport parameters
+file: crates/curl-wolfssl/src/library.rs
+witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
+--- old
+                            Some(params) => ticket.with_quic_params(params),
+--- new
+                            Some(_) => ticket,
+
+=== a QUIC session sends its transport parameters at the legacy code point
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::a_quic_session_is_made_as_vquic_tls_c_makes_it
+--- old
+        if self.quic {
+            self.ssl().quic_codepoint();
+        }
+--- new
+
+=== a QUIC session's context is told of sessions as a stream's
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::a_quic_session_is_made_as_vquic_tls_c_makes_it
+--- old
+        if !self.quic && io.caches_sessions() {
+--- new
+        if io.caches_sessions() {
+
+=== the QUIC library's setup is not called on the context
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::the_quic_library_s_failed_setup_fails_the_session_as_c_says_it
+--- old
+            if let Err(why) = setup(native) {
+--- new
+            if let Err(why) = Ok::<(), &str>(()) {
+
+=== a QUIC session resumed for early data offers every protocol
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
+--- old
+        }
+        self.restricted = Some(chosen);
+        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
+--- new
+        }
+        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
+
+=== a QUIC session resumed for early data does not tell the library of it
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
+--- old
+        self.restricted = Some(chosen);
+        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
+        self.ssl().max_early_data(edmax);
+    }
+
+    /// Put the handshake off for early data, resuming `ticket`, whose
+--- new
+        self.restricted = Some(chosen);
+    }
+
+    /// Put the handshake off for early data, resuming `ticket`, whose
+
+=== a QUIC ticket kept without transport parameters still restricts the offer
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::a_quic_ticket_without_what_early_data_needs_resumes_without_it
+--- old
+        if ticket.earlydata_max == 0 || ticket.quic_params.is_empty() {
+--- new
+        if ticket.earlydata_max == 0 {
+
+=== a QUIC session resumed is not handed to the QUIC library to decide on
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
+--- old
+                    self.quic_early = Some(ticket);
+--- new
+                    io.return_session(Some(ticket));
+
+=== a QUIC peer fails its check on any answer but a match
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::a_peer_fails_its_check_only_where_the_library_says_it_does_not_match
+--- old
+            Some(sys::WOLFSSL_FAILURE) => return Err(ErrorKind::PeerFailedVerification),
+--- new
+            Some(rc) if rc != sys::WOLFSSL_SUCCESS => {
+                return Err(ErrorKind::PeerFailedVerification);
+            }
+
+=== a QUIC peer without a certificate passes its check
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::a_peer_fails_its_check_only_where_the_library_says_it_does_not_match
+--- old
+            None => return Err(ErrorKind::OutOfMemory),
+--- new
+            None => {}
+
+=== a QUIC peer that fails its check keeps its sessions
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::a_peer_fails_its_check_only_where_the_library_says_it_does_not_match
+--- old
+                cx.forget_sessions();
+--- new
+
+=== a QUIC peer's address is checked as a name
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverified_host_not_at_all
+--- old
+            Some(name) => ssl.check_host(name),
+--- new
+            Some(name) => ssl.check_host(name),
+            None if true => ssl.check_host(host),
+
+=== a QUIC peer's pinned key is not checked
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverified_host_not_at_all
+--- old
+    session::verify_pinned(ssl, identity, cx)
+--- new
+    let _ = (ssl, cx);
+    Ok(())
+
+=== a QUIC handshake is checked before it is reported
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::the_peer_is_reported_and_checked_as_the_quic_library_says_the_handshake_is_done
+--- old
+            session::report_handshake(ssl, cx);
+            let checked = check_peer(ssl, identity, host, kind, cx);
+--- new
+            let checked = check_peer(ssl, identity, host, kind, cx);
+            session::report_handshake(ssl, cx);
+
+=== a QUIC session's trust is not set up before the peer's first bytes
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::a_quic_session_s_trust_is_set_up_once_before_the_peer_s_first_bytes
+--- old
+        if !self.0.state.store_ready {
+            self.0.setup_store(cx)?;
+        }
+--- new
+        let _ = cx;
+
+=== the session-ticket callback finds no call through the BIO
+file: crates/curl-wolfssl/src/wolfssl.rs
+witness: curl-ngtcp2 a_resumed_session_sends_its_get_as_early_data
+features: wolfssl
+default-features: no
+--- old
+    let bio = unsafe { sys::wolfSSL_SSL_get_rbio(ssl) };
+--- new
+    let bio: *mut sys::WOLFSSL_BIO = ptr::null_mut();
+
+=== a QUIC session's BIO is never made
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-ngtcp2 a_resumed_session_sends_its_get_as_early_data
+features: wolfssl
+default-features: no
+--- old
+        let made = self.ctx_init(cx, Some(setup)).and_then(|()| {
+            self.ssl()
+                .bio()
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)
+        });
+--- new
+        let made = self.ctx_init(cx, Some(setup));
+
+=== ngtcp2's wolfSSL crypto is not told its connection
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 a_get_over_http3_is_answered
+features: wolfssl
+default-features: no
+--- old
+            sys::wolfSSL_set_app_data(ssl, conn_ref.cast());
+--- new
+
+=== a wolfSSL QUIC session's context is not set up for QUIC
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 a_get_over_http3_is_answered
+features: wolfssl
+default-features: no
+--- old
+        if unsafe { sys::ngtcp2_crypto_wolfssl_configure_client_context(ctx.context().as_ptr()) }
+            != 0
+--- new
+        if (|| 0)() != 0

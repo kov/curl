@@ -472,13 +472,16 @@ mod tests {
 
     /// With GnuTLS, mbedTLS or wolfSSL, `curl -V` names it after libcurl,
     /// and the QUIC libraries after nghttp2 where the build has them, as
-    /// C's GnuTLS build over ngtcp2's GnuTLS crypto, its mbedTLS build,
-    /// and its wolfSSL build without ngtcp2.
+    /// C's GnuTLS and wolfSSL builds over ngtcp2's crypto for them, and
+    /// its mbedTLS build.
     #[cfg(any(feature = "gnutls", feature = "mbedtls", feature = "wolfssl"))]
     #[test]
     fn names_the_libraries_as_c_s_gnutls_mbedtls_and_wolfssl_builds() {
         let quic = crate::tlslib::quic().map_or_else(String::new, |q| format!(" {q}"));
-        assert_eq!(quic.is_empty(), !cfg!(feature = "gnutls"));
+        assert_eq!(
+            quic.is_empty(),
+            !cfg!(any(feature = "gnutls", feature = "wolfssl"))
+        );
         let want = format!(
             "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{}{}{}{}",
             version().version,

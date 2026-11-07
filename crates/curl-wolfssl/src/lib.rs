@@ -1,12 +1,13 @@
 //! wolfSSL for the curl rewrite: the library built as curl's CI builds it
 //! (`inventory/measure/deps.py`), 5.0 or later.
 //!
-//! TLS (`lib/vtls/wolfssl.c`), behind `curl_core::tls::TlsBackend`, and
-//! Ed25519 for HTTP message signatures with wolfCrypt
-//! (`lib/curl_ed25519.c`), behind `curl_core::libraries::Ed25519`. What
-//! the session does is safe code (`session.rs`, `trust.rs`) over the
-//! library's calls (`library.rs`), which `wolfssl.rs` makes; the tests
-//! drive it through a scripted library of their own.
+//! TLS (`lib/vtls/wolfssl.c`), behind `curl_core::tls::TlsBackend`, for
+//! streams and for QUIC (`lib/vquic/vquic-tls.c`), and Ed25519 for HTTP
+//! message signatures with wolfCrypt (`lib/curl_ed25519.c`), behind
+//! `curl_core::libraries::Ed25519`. What the session does is safe code
+//! (`session.rs`, `quic.rs`, `trust.rs`) over the library's calls
+//! (`library.rs`), which `wolfssl.rs` makes; the tests drive it through a
+//! scripted library of their own.
 //!
 //! C keeps the BIO method its sessions read and write through in a
 //! file-scope static, made by the global init (`wssl_init`); here it is
@@ -16,6 +17,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 mod library;
+mod quic;
 mod session;
 mod sign;
 mod sys;
@@ -33,8 +35,8 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, SharedKeyLog, SystemStore, Text, TlsBackend, TlsIdentity, TlsPeer,
-    TlsSession, TlsShared, TlsSupport,
+    Alpn, CaDefaults, QuicContextSetup, QuicTls, SharedKeyLog, SystemStore, Text, TlsBackend,
+    TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
 };
 
 pub use sign::ED25519;
@@ -185,6 +187,33 @@ impl TlsBackend for WolfSsl {
         Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
     }
 
+    /// A QUIC connection's session, its context and session's object
+    /// made at once (`Curl_wssl_ctx_init` with QUIC's transport), the
+    /// context handed to `setup` where C calls it.
+    fn quic_session(
+        &self,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        shared: &TlsShared,
+        setup: QuicContextSetup<'_>,
+        cx: &mut TlsCx<'_>,
+    ) -> Result<Box<dyn QuicTls>, ErrorKind> {
+        let method = self.method.lock().expect("panics abort").clone();
+        let Some(method) = method else {
+            return Err(ErrorKind::FailedInit);
+        };
+        let session = session::Session::new_quic(
+            &wolfssl::WOLFSSL,
+            method,
+            identity,
+            peer,
+            shared,
+            self.keylog.clone(),
+        )?;
+        let session = quic::QuicSession::new(session, setup, cx)?;
+        Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
+    }
+
     /// The bundle and directory found at build; the system's store only
     /// where asked for (`native_ca_store`), as C's build without
     /// `CURL_CA_NATIVE`.
@@ -216,6 +245,17 @@ impl TlsBackend for &'static WolfSsl {
         shared: &TlsShared,
     ) -> Result<Box<dyn TlsSession>, ErrorKind> {
         (**self).session(identity, peer, alpn, shared)
+    }
+
+    fn quic_session(
+        &self,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        shared: &TlsShared,
+        setup: QuicContextSetup<'_>,
+        cx: &mut TlsCx<'_>,
+    ) -> Result<Box<dyn QuicTls>, ErrorKind> {
+        (**self).quic_session(identity, peer, shared, setup, cx)
     }
 
     fn ca_defaults(&self) -> CaDefaults {

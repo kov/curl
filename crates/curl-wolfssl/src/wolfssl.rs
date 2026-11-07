@@ -1,15 +1,18 @@
 //! The library's calls, as `library.rs`'s traits ask them: the context,
 //! the session's object, the BIO it reads and writes the connection
 //! through, the store of certificates, and the callbacks that reach the
-//! call under way.
+//! call under way through the BIO; and a QUIC session's calls driven by
+//! the QUIC library, whose crypto has the session's application data.
 
 #![allow(unsafe_code)]
 
 use core::cell::Cell;
-use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
 use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
+use curl_core::error::ErrorKind;
+use curl_core::tls::{DriveCall, TlsCx};
 
 use crate::library::{
     self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerCert, Rc, Resume, Tls12Keys, Words,
@@ -320,7 +323,7 @@ impl library::Ctx for Ctx {
 
     fn tell_sessions(&mut self) {
         // SAFETY: the context, and a callback of its type, which reaches
-        // only the call under way through the session's app data.
+        // only the call under way through the session's BIO.
         unsafe { sys::wolfSSL_CTX_sess_set_new_cb(self.p(), Some(new_session)) };
     }
 
@@ -384,14 +387,13 @@ impl library::Ctx for Ctx {
         let ssl = unsafe { sys::wolfSSL_new(self.p()) };
         let ssl = NonNull::new(ssl).ok_or(OutOfMemory)?;
         let slot = NonNull::from(Box::leak(slot));
-        let made = Ssl {
+        // The application data is left alone: over QUIC it is ngtcp2's
+        // crypto's, and the callbacks find the slot through the BIO.
+        Ok(Ssl {
             ssl,
             slot,
             method: self.method.clone(),
-        };
-        // SAFETY: the session object, and the slot, alive as long as it.
-        unsafe { sys::wolfSSL_set_app_data(ssl.as_ptr(), slot.as_ptr().cast()) };
-        Ok(made)
+        })
     }
 }
 
@@ -455,6 +457,38 @@ impl Ssl {
         // SAFETY: the certificate just had, freed once.
         unsafe { sys::wolfSSL_X509_free(x.as_ptr()) };
         Some(r)
+    }
+}
+
+/// What a call into the QUIC library is lent while it drives a session:
+/// the call its callbacks reach, and the session, each reached through
+/// its pointer for the length of one method, as the session's callbacks
+/// reach the call, never at the same time as they.
+struct Driving<'d, 's, 'a> {
+    call: *mut Call<'s, 'a>,
+    ssl: *mut Ssl,
+    check: &'d mut dyn FnMut(&mut Ssl, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+}
+
+impl DriveCall for Driving<'_, '_, '_> {
+    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+        // SAFETY: the call and the session outlive the QUIC library's
+        // call, inside which alone this runs; the QUIC library tells of
+        // the handshake's end outside any callback of wolfSSL's, so
+        // nothing else reaches either while this does, and `drive`, which
+        // the pointers came from, uses neither until the call returns.
+        let call = unsafe { &mut *self.call };
+        // SAFETY: as above.
+        let ssl = unsafe { &mut *self.ssl };
+        (self.check)(ssl, call.io.cx())
+    }
+
+    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
+        // SAFETY: as above: the QUIC library's callbacks, which alone
+        // call this, run one at a time, and none of wolfSSL's callbacks,
+        // which reach the call too, runs while one does.
+        let call = unsafe { &mut *self.call };
+        f(call.io.cx());
     }
 }
 
@@ -597,9 +631,15 @@ unsafe extern "C" fn new_session(
     ssl: *mut sys::WOLFSSL,
     session: *mut sys::WOLFSSL_SESSION,
 ) -> c_int {
-    // SAFETY: the library's session object, whose app data is the slot.
-    let data = unsafe { sys::wolfSSL_get_app_data(ssl) };
-    // SAFETY: called back during `with_call`.
+    // SAFETY: the library's session object; its BIO, or null before it
+    // has one.
+    let bio = unsafe { sys::wolfSSL_SSL_get_rbio(ssl) };
+    if bio.is_null() {
+        return 0;
+    }
+    // SAFETY: the session's BIO, whose data is the slot.
+    let data = unsafe { sys::wolfSSL_BIO_get_data(bio) };
+    // SAFETY: called back during `with_call` or `drive`.
     let Some(call) = (unsafe { call_of(data) }) else {
         return 0;
     };
@@ -707,12 +747,21 @@ impl library::Ssl for Ssl {
         let Ok(len) = u32::try_from(list.len()) else {
             return false;
         };
-        let mut copy = Vec::new();
-        if copy.try_extend_from_slice(list).is_err() || copy.try_push(0).is_err() {
-            return false;
-        }
-        // SAFETY: the session object, and `len` bytes the library copies
-        // (it takes them as mutable, and parses them in place: a copy).
+        // The library takes the list as mutable, and parses it in place: a
+        // copy, with a zero after it, on the stack for the offers this
+        // crate makes, which are short.
+        let mut stack = [0u8; 64];
+        let mut heap = Vec::new();
+        let copy: &mut [u8] = if list.len() < stack.len() {
+            stack[..list.len()].copy_from_slice(list);
+            &mut stack[..=list.len()]
+        } else {
+            if heap.try_extend_from_slice(list).is_err() || heap.try_push(0).is_err() {
+                return false;
+            }
+            &mut heap
+        };
+        // SAFETY: the session object, and `len` bytes the library copies.
         unsafe {
             sys::wolfSSL_UseALPN(
                 self.p(),
@@ -771,6 +820,11 @@ impl library::Ssl for Ssl {
         unsafe { sys::wolfSSL_check_domain_name(self.p(), name.as_ptr()) == sys::WOLFSSL_SUCCESS }
     }
 
+    fn quic_codepoint(&mut self) {
+        // SAFETY: the session object.
+        unsafe { sys::wolfSSL_set_quic_use_legacy_codepoint(self.p(), 0) };
+    }
+
     fn bio(&mut self) -> Result<(), OutOfMemory> {
         // SAFETY: the method, alive as long as this object.
         let bio = unsafe { sys::wolfSSL_BIO_new(self.method.0.as_ptr()) };
@@ -784,6 +838,28 @@ impl library::Ssl for Ssl {
         // ways.
         unsafe { sys::wolfSSL_set_bio(self.p(), bio, bio) };
         Ok(())
+    }
+
+    fn drive(
+        &mut self,
+        call: &mut Call<'_, '_>,
+        check: &mut dyn FnMut(&mut Ssl, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        op: &mut dyn FnMut(&mut dyn DriveCall),
+    ) {
+        let p: *mut Call<'_, '_> = call;
+        // SAFETY: the slot, alive as long as the object.
+        let slot = unsafe { self.slot.as_ref() };
+        // The callbacks and `Driving` reach the call only during `op`, one
+        // at a time, and nothing else uses it until `op` returns.
+        slot.0.set(p.cast());
+        let mut driving = Driving {
+            call: p,
+            ssl: self,
+            check,
+        };
+        op(&mut driving);
+        // SAFETY: as above.
+        unsafe { self.slot.as_ref() }.0.set(ptr::null_mut());
     }
 
     fn connect(&mut self, call: &mut Call<'_, '_>) -> Rc {
@@ -880,6 +956,22 @@ impl library::Ssl for Ssl {
             // SAFETY: the certificate, alive while this runs, and a C
             // string.
             unsafe { sys::wolfSSL_X509_check_ip_asc(x.as_ptr(), ip.as_ptr(), 0) }
+        })
+    }
+
+    fn check_host(&self, name: &[u8]) -> Option<Rc> {
+        self.with_peer(|x| {
+            // SAFETY: the certificate, alive while this runs, and `name`'s
+            // bytes, which the library reads; no peer name asked back.
+            unsafe {
+                sys::wolfSSL_X509_check_host(
+                    x.as_ptr(),
+                    name.as_ptr().cast(),
+                    name.len(),
+                    0 as c_uint,
+                    ptr::null_mut(),
+                )
+            }
         })
     }
 

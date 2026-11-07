@@ -735,6 +735,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   not trusted to be anything. Pinned by `a_blob_may_say_nothing`
   (`crates/curl-core/src/tls/cache/spack/tests.rs`).
 
+- **Over wolfSSL, a QUIC session resumed for early data is set up for it before ngtcp2 reads its
+  transport parameters.** C's wolfSSL build restricts the ALPN offer to `h3` and tells the
+  library the most early data the ticket allows (`wssl_apply_session`) only once ngtcp2 has
+  taken the transport parameters kept with it (`cf_ngtcp2_on_session_reuse`). Here the session
+  is made before the QUIC connection is, so it decides on what the ticket says: it allows early
+  data, was made for `h3` and has transport parameters. Only parameters ngtcp2 refuses to
+  decode tell the two apart, which a session this build keeps never has, but an imported one
+  (`curl_easy_ssls_import`, `--ssl-sessions`) may: C then offers `h3,h3-29` and sends no early
+  data extension, the rewrite offers `h3` with the extension, and both send the request after
+  the handshake.
+  Pinned by `a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed`
+  (`crates/curl-wolfssl/src/tests/quic.rs`).
+
 ## Names C reads two ways
 
 - **`--remove-on-error` removes a partial output with a name outside ASCII on Windows' Unicode

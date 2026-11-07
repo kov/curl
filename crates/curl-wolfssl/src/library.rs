@@ -11,7 +11,9 @@
 //! way, which the library's callbacks reach: the BIO's write, read and
 //! control (C's `wssl_bio_cf_out_write`, `wssl_bio_cf_in_read`,
 //! `wssl_bio_cf_ctrl`), and the callback told of each new session
-//! (`wssl_vtls_new_session_cb`).
+//! (`wssl_vtls_new_session_cb`; over QUIC, `wssl_quic_new_session_cb`).
+//! The callbacks find the call through the session's BIO, never its
+//! application data, which over QUIC is ngtcp2's crypto's.
 
 use core::ffi::{CStr, c_void};
 use core::fmt;
@@ -20,7 +22,7 @@ use core::ptr::NonNull;
 use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{Chosen, Text, TlsCx, TlsIo, TlsTicket};
+use curl_core::tls::{Chosen, DriveCall, Text, TlsCx, TlsIo, TlsTicket};
 
 /// `CURLE_AGAIN`, as the trace numbers a call that would block.
 pub(crate) const AGAIN: u16 = 81;
@@ -192,8 +194,9 @@ pub(crate) trait Ctx: Send {
     /// `CURLINFO_TLS_SESSION`).
     fn native(&self) -> NonNull<c_void>;
 
-    /// The session's object (`wolfSSL_new`), whose callbacks reach the
-    /// call under way (`wolfSSL_set_app_data`); none out of memory.
+    /// The session's object (`wolfSSL_new`); none out of memory. Its
+    /// callbacks reach the call under way once it has its BIO
+    /// (`Ssl::bio`).
     fn ssl(&mut self) -> Result<Self::Ssl, OutOfMemory>;
 }
 
@@ -270,10 +273,25 @@ pub(crate) trait Ssl: Send {
     fn tls12_keys(&self) -> Option<Tls12Keys>;
     /// `wolfSSL_check_domain_name`: whether it took it.
     fn check_domain(&mut self, name: &CStr) -> bool;
+    /// `wolfSSL_set_quic_use_legacy_codepoint` of 0: QUIC's transport
+    /// parameters sent at RFC 9000's code point.
+    fn quic_codepoint(&mut self);
     /// `wolfSSL_BIO_new` of the connection's method and `wolfSSL_set_bio`:
-    /// the session reads and writes through the call under way; none out
-    /// of memory.
+    /// the session reads and writes through the call under way, and its
+    /// callbacks find that call through the BIO; none out of memory. A
+    /// QUIC session never reads or writes through it.
     fn bio(&mut self) -> Result<(), OutOfMemory>;
+    /// Run `op`, a call into the QUIC library that drives the session,
+    /// with the session's callbacks reaching `call`, and lend `op` what
+    /// the QUIC library's own callbacks reach: `call`'s transfer, and
+    /// `check` run on the session and the transfer as the QUIC library
+    /// says the handshake is done.
+    fn drive(
+        &mut self,
+        call: &mut Call<'_, '_>,
+        check: &mut dyn FnMut(&mut Self, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        op: &mut dyn FnMut(&mut dyn DriveCall),
+    );
 
     /// `wolfSSL_connect`.
     fn connect(&mut self, call: &mut Call<'_, '_>) -> Rc;
@@ -302,6 +320,9 @@ pub(crate) trait Ssl: Send {
     /// `wolfSSL_X509_check_ip_asc` of the peer's certificate and `ip`;
     /// none if it has no certificate.
     fn check_ip(&self, ip: &CStr) -> Option<Rc>;
+    /// `wolfSSL_X509_check_host` of the peer's certificate and `name`,
+    /// with no flags; none if it has no certificate.
+    fn check_host(&self, name: &[u8]) -> Option<Rc>;
     /// `wolfSSL_ALPN_GetProtocol`.
     fn alpn_selected(&self) -> AlpnGot;
 
@@ -371,15 +392,48 @@ pub(crate) enum NewSession {
     NoRoom(u32),
 }
 
+/// What a call's callbacks reach of the connection: a stream session's
+/// layers below and its transfer, or a QUIC session's transfer alone.
+pub(crate) enum Reach<'s, 'a> {
+    Stream(&'s mut TlsIo<'a>),
+    Quic(&'s mut TlsCx<'a>),
+}
+
+impl<'a> Reach<'_, 'a> {
+    /// The transfer.
+    pub(crate) fn cx(&mut self) -> &mut TlsCx<'a> {
+        match self {
+            Reach::Stream(io) => io,
+            Reach::Quic(cx) => cx,
+        }
+    }
+
+    /// The layers below: a stream session's alone, as a QUIC session's
+    /// records are the QUIC library's to carry.
+    fn below(&mut self) -> &mut TlsIo<'a> {
+        match self {
+            Reach::Stream(io) => io,
+            Reach::Quic(_) => unreachable!("a QUIC session's records are the QUIC library's"),
+        }
+    }
+}
+
+/// Encodes the QUIC connection's transport parameters, which a session
+/// the peer gives is kept with (`ngtcp2_conn_encode_0rtt_transport_params`).
+pub(crate) type QuicParams<'s> = &'s mut dyn FnMut() -> Option<Vec<u8>>;
+
 /// What the callbacks of one call into the library reach.
 pub(crate) struct Call<'s, 'a> {
-    pub(crate) io: &'s mut TlsIo<'a>,
+    pub(crate) io: Reach<'s, 'a>,
     pub(crate) state: &'s mut IoState,
     /// Sets the trust store up at the handshake's first read, if not yet.
     pub(crate) store: Option<SetupStore<'s>>,
     /// What ALPN agreed, which a session kept is kept with
     /// (`connssl->negotiated.alpn`).
     pub(crate) alpn: Option<Chosen>,
+    /// A QUIC session's: its connection's transport parameters, which a
+    /// session the peer gives is kept with.
+    pub(crate) quic_params: Option<QuicParams<'s>>,
 }
 
 impl Call<'_, '_> {
@@ -394,7 +448,7 @@ impl Call<'_, '_> {
             // wolfSSL adds the close_notify again each time a blocked
             // send of it is retried (wolfSSL/wolfssl#7784): only what
             // blocked is sent, the rest counted as sent.
-            self.io.trace(format_args!(
+            self.io.cx().trace(format_args!(
                 "bio_write, shutdown restrict send of {len} to {} bytes",
                 s.blocked_len
             ));
@@ -404,14 +458,14 @@ impl Call<'_, '_> {
         let (result, n) = if len == 0 {
             (IoResult::Ok, 0)
         } else {
-            match self.io.send(&bytes[..len]) {
+            match self.io.below().send(&bytes[..len]) {
                 Ok(Sent::Bytes(n)) => (IoResult::Ok, n.get()),
                 Ok(Sent::WouldBlock) => (IoResult::Again, 0),
                 Err(_) => (IoResult::Failed(ErrorKind::SendError), 0),
             }
         };
         self.state.result = result;
-        self.io.trace(format_args!(
+        self.io.cx().trace(format_args!(
             "bio_write(len={len}) -> {}, {n}",
             result.number()
         ));
@@ -438,9 +492,9 @@ impl Call<'_, '_> {
             // ClientHello goes without waiting for it.
             self.state.store_ready = true;
             if let Some(setup) = self.store.as_mut()
-                && let Err(kind) = setup(self.io)
+                && let Err(kind) = setup(self.io.cx())
             {
-                self.io.trace(format_args!(
+                self.io.cx().trace(format_args!(
                     "Curl_wssl_setup_x509_store() -> {}",
                     kind.number()
                 ));
@@ -449,14 +503,14 @@ impl Call<'_, '_> {
             }
         }
         let len = buf.len();
-        let (result, n) = match self.io.recv(buf) {
+        let (result, n) = match self.io.below().recv(buf) {
             Ok(Recv::Data(n)) => (IoResult::Ok, n.get()),
             Ok(Recv::Eof) => (IoResult::Ok, 0),
             Ok(Recv::WouldBlock) => (IoResult::Again, 0),
             Err(_) => (IoResult::Failed(ErrorKind::RecvError), 0),
         };
         self.state.result = result;
-        self.io.trace(format_args!(
+        self.io.cx().trace(format_args!(
             "bio_read(len={len}) -> {}, {n}",
             result.number()
         ));
@@ -486,19 +540,23 @@ impl Call<'_, '_> {
 
     /// The library made a session (`wssl_vtls_new_session_cb`): kept in
     /// the cache, as `Curl_wssl_cache_session` keeps it, if it could be
-    /// written out.
+    /// written out. Over QUIC (`wssl_quic_new_session_cb`), it is kept
+    /// for HTTP/3, with the connection's transport parameters where they
+    /// encode.
     pub(crate) fn new_session(&mut self, made: NewSession) {
         match made {
             NewSession::Unsized(n) => {
                 self.io
+                    .cx()
                     .trace(format_args!("fail to assess session length: {n}"));
             }
             NewSession::Unwritten(n) => {
                 self.io
+                    .cx()
                     .trace(format_args!("fail to serialize session: {n}"));
             }
             NewSession::NoRoom(n) => {
-                self.io.fail(
+                self.io.cx().fail(
                     ErrorKind::OutOfMemory,
                     format_args!("unable to allocate session buffer of {n} bytes"),
                 );
@@ -509,10 +567,19 @@ impl Call<'_, '_> {
                 timeout,
                 early_max,
             } => {
-                let until = self.io.unix_time().saturating_add(timeout);
+                let until = self.io.cx().unix_time().saturating_add(timeout);
                 let early = usize::try_from(early_max).unwrap_or(usize::MAX);
-                self.io
-                    .keep_session(TlsTicket::new(der, version, self.alpn, early, until));
+                let ticket = match self.quic_params.as_mut() {
+                    Some(params) => {
+                        let ticket = TlsTicket::new(der, version, Some(Chosen::H3), early, until);
+                        match params() {
+                            Some(params) => ticket.with_quic_params(params),
+                            None => ticket,
+                        }
+                    }
+                    None => TlsTicket::new(der, version, self.alpn, early, until),
+                };
+                self.io.cx().keep_session(ticket);
             }
         }
     }

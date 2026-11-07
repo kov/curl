@@ -17,14 +17,14 @@ default = ["c-ares", "libssh", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
 # over ngtcp2, the HTTP/3 proxy and Ed25519 for message signatures;
 # GnuTLS, with HTTP/3 over ngtcp2's GnuTLS crypto, no HTTP/3 proxy (C's
-# is OpenSSL's alone) and Ed25519 from its nettle; wolfSSL, with Ed25519
-# from its wolfCrypt and no HTTP/3 (ngtcp2's wolfSSL crypto is not
-# bound); or mbedTLS or Schannel (Windows), with neither, as C's builds
-# with them.
+# is OpenSSL's alone) and Ed25519 from its nettle; wolfSSL, with HTTP/3
+# over ngtcp2's wolfSSL crypto, no HTTP/3 proxy and Ed25519 from its
+# wolfCrypt; or mbedTLS or Schannel (Windows), with neither, as C's
+# builds with them.
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "dep:openssl-sys", "curl-core/proxy-http3", "curl-core/httpsig"]
 gnutls = ["dep:curl-gnutls", "dep:curl-ngtcp2", "curl-ngtcp2/gnutls", "curl-core/quic", "curl-core/httpsig"]
 mbedtls = ["dep:curl-mbedtls"]
-wolfssl = ["dep:curl-wolfssl", "curl-core/httpsig"]
+wolfssl = ["dep:curl-wolfssl", "dep:curl-ngtcp2", "curl-ngtcp2/wolfssl", "curl-core/quic", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
 # One SSH library for SCP and SFTP, chosen as the library is built: libssh

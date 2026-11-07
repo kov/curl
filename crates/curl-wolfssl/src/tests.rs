@@ -17,12 +17,14 @@ use curl_core::tls::{
 
 use crate::fake::{Act, Fake, SOCKET_ERROR_E, Wire, World};
 use crate::library::{
-    AlpnGot, Call, IoResult, IoState, Moved, NewSession, NoCtx, PeerCert, Resume, Tls12Keys, Words,
+    AlpnGot, Call, IoResult, IoState, Moved, NewSession, NoCtx, PeerCert, Reach, Resume, Tls12Keys,
+    Words,
 };
 use crate::session::Session;
 use crate::sys;
 
 mod more;
+mod quic;
 mod real;
 
 const HOST: &[u8] = b"example.com";
@@ -1557,10 +1559,11 @@ fn a_blocked_goodbye_is_sent_as_it_blocked() {
     };
     TlsIo::testing(&id, HOST, &mut kept, &full, |io| {
         let mut call = Call {
-            io,
+            io: Reach::Stream(io),
             state: &mut state,
             store: None,
             alpn: None,
+            quic_params: None,
         };
         assert_eq!(call.send(b"notify"), Moved::Again);
     });
@@ -1568,10 +1571,11 @@ fn a_blocked_goodbye_is_sent_as_it_blocked() {
     let wire = Wire::default();
     TlsIo::testing(&id, HOST, &mut kept, &wire, |io| {
         let mut call = Call {
-            io,
+            io: Reach::Stream(io),
             state: &mut state,
             store: None,
             alpn: None,
+            quic_params: None,
         };
         assert_eq!(call.send(b"notifynotify"), Moved::Bytes(12));
     });

@@ -267,10 +267,11 @@ fn the_io_below_keeps_what_the_goodbye_and_the_bio_ask() {
     let mut state = IoState::default();
     TlsIo::testing(&id, HOST, &mut kept, &full, |io| {
         let mut call = Call {
-            io,
+            io: Reach::Stream(io),
             state: &mut state,
             store: None,
             alpn: None,
+            quic_params: None,
         };
         assert_eq!(call.send(b"data"), Moved::Again);
     });
@@ -281,10 +282,11 @@ fn the_io_below_keeps_what_the_goodbye_and_the_bio_ask() {
     };
     TlsIo::testing(&id, HOST, &mut kept, &closed, |io| {
         let mut call = Call {
-            io,
+            io: Reach::Stream(io),
             state: &mut state,
             store: None,
             alpn: None,
+            quic_params: None,
         };
         assert!(!call.at_eof());
         let mut buf = [0u8; 4];

@@ -5,7 +5,8 @@
 //! handshake (`wssl_handshake`), the pinned key and ALPN after it
 //! (`wssl_connect`), then the records both ways (`wssl_recv`,
 //! `wssl_send`) and the goodbye (`wssl_shutdown`); early data sent in a
-//! handshake put off for it (`wssl_send_earlydata`).
+//! handshake put off for it (`wssl_send_earlydata`). A QUIC connection's
+//! is made at once, by the same steps as for QUIC's transport (`quic.rs`).
 
 use std::io;
 use std::num::NonZeroUsize;
@@ -15,13 +16,14 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, SharedKeyLog, Text, TlsCx,
-    TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, QuicContextSetup, SharedKeyLog, Text,
+    TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket,
+    TlsWait,
 };
 
 use crate::library::{
-    AGAIN, AlpnGot, Call, Ctx as _, FileType, IoResult, IoState, NoCtx, PeerCert, Resume, Ssl as _,
-    Wolfssl, as_c, c_string,
+    AGAIN, AlpnGot, Call, Ctx as _, FileType, IoResult, IoState, NoCtx, PeerCert, Reach, Resume,
+    Ssl, Wolfssl, as_c, c_string,
 };
 use crate::sys;
 
@@ -66,30 +68,30 @@ enum Early {
 }
 
 /// The session's object of a library's context.
-type SslOf<W> = <<W as Wolfssl>::Ctx as crate::library::Ctx>::Ssl;
+pub(crate) type SslOf<W> = <<W as Wolfssl>::Ctx as crate::library::Ctx>::Ssl;
 
 /// One connection's wolfSSL, through the library `W`.
 pub(crate) struct Session<W: Wolfssl> {
-    lib: &'static W,
+    pub(crate) lib: &'static W,
     method: TryArc<W::Method>,
     // The session's object holds its context's reference too: either may
     // go first.
-    ssl: Option<SslOf<W>>,
+    pub(crate) ssl: Option<SslOf<W>>,
     ctx: Option<W::Ctx>,
-    identity: TryArc<TlsIdentity>,
+    pub(crate) identity: TryArc<TlsIdentity>,
     /// What the library keeps for the multi, until the trust store is set
     /// up.
     shared: Option<TlsShared>,
     /// The origin's name as the URL gives it, without brackets.
-    host: Vec<u8>,
-    kind: TlsPeerKind,
+    pub(crate) host: Vec<u8>,
+    pub(crate) kind: TlsPeerKind,
     /// The protocols offered, and the one the session resumed restricts
     /// the offer to (`Curl_alpn_restrict_to`).
     alpn: Alpn,
     restricted: Option<Chosen>,
     step: Step,
     waits: TlsWait,
-    state: IoState,
+    pub(crate) state: IoState,
     /// The goodbye is over or failed (the filter's `shutdown`).
     shut: bool,
     keylog: Option<SharedKeyLog>,
@@ -100,6 +102,13 @@ pub(crate) struct Session<W: Wolfssl> {
     early: Early,
     /// What ALPN agreed (`connssl->negotiated.alpn`).
     negotiated: Option<Chosen>,
+    /// A QUIC connection's: the QUIC library carries its records
+    /// (`TRNSPRT_QUIC`).
+    quic: bool,
+    /// A QUIC connection's session the cache kept, which it resumed over
+    /// TLS 1.3 for a transfer that may send early data: the QUIC library
+    /// decides on it (`cf_ngtcp2_on_session_reuse`).
+    pub(crate) quic_early: Option<TlsTicket>,
 }
 
 impl<W: Wolfssl> Session<W> {
@@ -137,7 +146,23 @@ impl<W: Wolfssl> Session<W> {
             deferred: None,
             early: Early::None,
             negotiated: None,
+            quic: false,
+            quic_early: None,
         })
+    }
+
+    /// The same, for a QUIC connection, offering HTTP/3.
+    pub(crate) fn new_quic(
+        lib: &'static W,
+        method: TryArc<W::Method>,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        shared: &TlsShared,
+        keylog: Option<SharedKeyLog>,
+    ) -> Result<Session<W>, ErrorKind> {
+        let mut s = Session::new(lib, method, identity, peer, Alpn::H3, shared, keylog)?;
+        s.quic = true;
+        Ok(s)
     }
 
     fn ctx(&mut self) -> &mut W::Ctx {
@@ -162,7 +187,7 @@ impl<W: Wolfssl> Session<W> {
 
     /// Set the trust store up outside a call into the library
     /// (`Curl_wssl_setup_x509_store`).
-    fn setup_store(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+    pub(crate) fn setup_store(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         self.state.store_ready = true;
         let ctx = self.ctx.as_mut().expect("made at the first step");
         let set_up = crate::trust::setup(self.lib, ctx, &self.identity, self.shared.as_ref(), io);
@@ -197,10 +222,11 @@ impl<W: Wolfssl> Session<W> {
         let mut setup =
             |cx: &mut TlsCx<'_>| crate::trust::setup(lib, &mut *ctx, identity, kept, cx);
         let mut call = Call {
-            io,
+            io: Reach::Stream(io),
             state,
             store: Some(&mut setup),
             alpn: *negotiated,
+            quic_params: None,
         };
         let r = op(ssl, &mut call);
         if self.state.store_ready {
@@ -212,7 +238,7 @@ impl<W: Wolfssl> Session<W> {
     /// Make the context and the session's object, and set them up
     /// (`wssl_connect_step1`).
     fn step1(&mut self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
-        let made = self.ctx_init(io);
+        let made = self.ctx_init(io, None);
         if made.is_err() {
             // C frees what it made of them.
             self.ssl = None;
@@ -239,8 +265,37 @@ impl<W: Wolfssl> Session<W> {
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)
     }
 
-    /// The context and the session's object made (`Curl_wssl_ctx_init`).
-    fn ctx_init(&mut self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+    /// Make a QUIC connection's context and session's object at once
+    /// (`Curl_wssl_ctx_init` for QUIC's transport), the context handed to
+    /// the QUIC library's `setup`; and the BIO its callbacks find the
+    /// call under way through, which it never reads or writes.
+    pub(crate) fn quic_init(
+        &mut self,
+        cx: &mut TlsCx<'_>,
+        setup: QuicContextSetup<'_>,
+    ) -> Result<(), ErrorKind> {
+        let made = self.ctx_init(cx, Some(setup)).and_then(|()| {
+            self.ssl()
+                .bio()
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)
+        });
+        if made.is_err() {
+            // C frees what it made of them.
+            self.ssl = None;
+            self.ctx = None;
+        }
+        made
+    }
+
+    /// The context and the session's object made (`Curl_wssl_ctx_init`):
+    /// for QUIC, the context handed to the QUIC library's `setup` where
+    /// C calls it (`cb_setup`, `cf_ngtcp2_tls_ctx_setup`), which tells
+    /// the context of new sessions in its place.
+    fn ctx_init(
+        &mut self,
+        io: &mut TlsCx<'_>,
+        setup: Option<QuicContextSetup<'_>>,
+    ) -> Result<(), ErrorKind> {
         let ctx = self.lib.ctx(&self.method).map_err(|no| {
             let what = match no {
                 NoCtx::Method => "could not create a client method",
@@ -266,8 +321,19 @@ impl<W: Wolfssl> Session<W> {
             }
             io.trace(format_args!("set SNI '{}'", Text(&sni)));
         }
-        if io.caches_sessions() {
+        if !self.quic && io.caches_sessions() {
             self.ctx().tell_sessions();
+        }
+        if let Some(setup) = setup {
+            let native = TlsNative::new(self.ctx().native(), None);
+            if let Err(why) = setup(native) {
+                return Err(io.fail(ErrorKind::FailedInit, format_args!("{why}")));
+            }
+            // Over QUIC, the sessions are kept with the connection's
+            // transport parameters (`wssl_quic_new_session_cb`).
+            if io.caches_sessions() {
+                self.ctx().tell_sessions();
+            }
         }
         // The application's turn at the context (`ssl_fsslctx`), its
         // trust store set up first.
@@ -451,8 +517,9 @@ impl<W: Wolfssl> Session<W> {
 
     /// The session's object made and set up (`wssl_init_ssl_handle`):
     /// FTP's control connection's session resumed, else one the cache
-    /// kept; the ALPN offer; the key log's arrays kept.
-    fn init_ssl_handle(&mut self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+    /// kept; the ALPN offer; the key log's arrays kept. A QUIC session's
+    /// sends its transport parameters at QUIC's own code point.
+    fn init_ssl_handle(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let ssl = self.ctx().ssl().map_err(|OutOfMemory| {
             io.fail(
                 ErrorKind::OutOfMemory,
@@ -460,6 +527,9 @@ impl<W: Wolfssl> Session<W> {
             )
         })?;
         self.ssl = Some(ssl);
+        if self.quic {
+            self.ssl().quic_codepoint();
+        }
         let mut applied = false;
         if let Some(given) = io.take_given_session() {
             applied = self.apply_session(io, &given);
@@ -472,7 +542,13 @@ impl<W: Wolfssl> Session<W> {
             if let Some(ticket) = io.take_session()
                 && self.apply_session(io, &ticket)
             {
-                io.return_session(Some(ticket));
+                if self.quic && self.reuses_early() {
+                    // A TLS 1.3 session, which the cache would not take
+                    // back: the QUIC library's to decide on.
+                    self.quic_early = Some(ticket);
+                } else {
+                    io.return_session(Some(ticket));
+                }
             }
         }
         if self.alpn != Alpn::None {
@@ -524,13 +600,46 @@ impl<W: Wolfssl> Session<W> {
             Resume::Done => {
                 let alpn = ticket.alpn_name().unwrap_or(b"-");
                 io.info_with(&[b"SSL reusing session with ALPN '", alpn, b"'"]);
-                if self.early_data && self.ssl().version_name() == b"TLSv1.3" {
-                    let most = self.ssl().session_max_early_data();
-                    self.defer(io, ticket, most);
+                if self.reuses_early() {
+                    if self.quic {
+                        self.quic_reuse(ticket);
+                    } else {
+                        let most = self.ssl().session_max_early_data();
+                        self.defer(io, ticket, most);
+                    }
                 }
                 true
             }
         }
+    }
+
+    /// The session resumed is one the transfer may send early data under:
+    /// it asks for it, and the session speaks TLS 1.3 (where C calls
+    /// `sess_reuse_cb`).
+    fn reuses_early(&self) -> bool {
+        self.early_data
+            && self
+                .ssl
+                .as_ref()
+                .is_some_and(|ssl| ssl.version_name() == b"TLSv1.3")
+    }
+
+    /// A QUIC session resumed under `ticket`, which early data may go
+    /// under: where it allows some, was made for the protocol offered and
+    /// kept with the transport parameters (`cf_ngtcp2_on_session_reuse`'s
+    /// conditions), the offer is restricted to that protocol and the
+    /// library told the most the ticket allows (`wssl_apply_session`).
+    /// The QUIC library says the rest of it, and sends the early data.
+    fn quic_reuse(&mut self, ticket: &TlsTicket) {
+        let Some(chosen) = ticket.chosen().filter(|&c| self.alpn.offers(c)) else {
+            return;
+        };
+        if ticket.earlydata_max == 0 || ticket.quic_params.is_empty() {
+            return;
+        }
+        self.restricted = Some(chosen);
+        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
+        self.ssl().max_early_data(edmax);
     }
 
     /// Put the handshake off for early data, resuming `ticket`, whose
@@ -740,42 +849,8 @@ impl<W: Wolfssl> Session<W> {
     /// The peer's public key is the pinned one, if one is
     /// (`Curl_wssl_verify_pinned`).
     fn verify_pinned(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
-        let identity = self.identity.clone();
-        let Some(pinned) = identity.options.pinned_key.as_deref() else {
-            return Ok(());
-        };
-        let der = match self.ssl().peer_cert() {
-            PeerCert::None => {
-                return Err(io.fail(
-                    ErrorKind::SslPinnedpubkeynotmatch,
-                    format_args!("SSL: failed retrieving server certificate"),
-                ));
-            }
-            PeerCert::NoDer => {
-                return Err(io.fail(
-                    ErrorKind::SslPinnedpubkeynotmatch,
-                    format_args!("SSL: failed retrieving ASN.1 server certificate"),
-                ));
-            }
-            PeerCert::Der(der) => der,
-            PeerCert::NoRoom => return Err(ErrorKind::OutOfMemory),
-        };
-        let Some(cert) = curl_core::tls::x509::parse(&der) else {
-            return Err(ErrorKind::SslPinnedpubkeynotmatch);
-        };
-        let spki = cert.public_key_info.whole;
-        if spki.is_empty() {
-            return Err(io.fail(
-                ErrorKind::SslPinnedpubkeynotmatch,
-                format_args!("SSL: failed retrieving public key from server certificate"),
-            ));
-        }
-        curl_core::tls::pin_peer_pubkey(io, pinned, spki).map_err(|kind| {
-            io.fail(
-                kind,
-                format_args!("SSL: public key does not match pinned public key"),
-            )
-        })
+        let ssl = self.ssl.as_ref().expect("made at the first step");
+        verify_pinned(ssl, &self.identity, io)
     }
 
     /// What the peer chose of the ALPN offer, if one was made
@@ -810,14 +885,7 @@ impl<W: Wolfssl> Session<W> {
 
     /// The handshake's outcome said (`Curl_wssl_report_handshake`).
     fn report_handshake(&mut self, io: &mut TlsCx<'_>) {
-        let ssl = self.ssl();
-        let version = ssl.version_name();
-        let cipher = ssl.cipher_name();
-        io.info(format_args!(
-            "SSL connection using {} / {}",
-            Text(version),
-            Text(cipher.unwrap_or(b"(nil)"))
-        ));
+        report_handshake(self.ssl(), io);
     }
 
     /// The steps of `wssl_connect`.
@@ -925,6 +993,61 @@ impl<W: Wolfssl> Session<W> {
             }
         }
     }
+}
+
+/// The peer's public key is the pinned one, if `identity` pins one
+/// (`Curl_wssl_verify_pinned`).
+pub(crate) fn verify_pinned<S: Ssl>(
+    ssl: &S,
+    identity: &TlsIdentity,
+    io: &mut TlsCx<'_>,
+) -> Result<(), ErrorKind> {
+    let Some(pinned) = identity.options.pinned_key.as_deref() else {
+        return Ok(());
+    };
+    let der = match ssl.peer_cert() {
+        PeerCert::None => {
+            return Err(io.fail(
+                ErrorKind::SslPinnedpubkeynotmatch,
+                format_args!("SSL: failed retrieving server certificate"),
+            ));
+        }
+        PeerCert::NoDer => {
+            return Err(io.fail(
+                ErrorKind::SslPinnedpubkeynotmatch,
+                format_args!("SSL: failed retrieving ASN.1 server certificate"),
+            ));
+        }
+        PeerCert::Der(der) => der,
+        PeerCert::NoRoom => return Err(ErrorKind::OutOfMemory),
+    };
+    let Some(cert) = curl_core::tls::x509::parse(&der) else {
+        return Err(ErrorKind::SslPinnedpubkeynotmatch);
+    };
+    let spki = cert.public_key_info.whole;
+    if spki.is_empty() {
+        return Err(io.fail(
+            ErrorKind::SslPinnedpubkeynotmatch,
+            format_args!("SSL: failed retrieving public key from server certificate"),
+        ));
+    }
+    curl_core::tls::pin_peer_pubkey(io, pinned, spki).map_err(|kind| {
+        io.fail(
+            kind,
+            format_args!("SSL: public key does not match pinned public key"),
+        )
+    })
+}
+
+/// The handshake's outcome said (`Curl_wssl_report_handshake`).
+pub(crate) fn report_handshake<S: Ssl>(ssl: &S, io: &mut TlsCx<'_>) {
+    let version = ssl.version_name();
+    let cipher = ssl.cipher_name();
+    io.info(format_args!(
+        "SSL connection using {} / {}",
+        Text(version),
+        Text(cipher.unwrap_or(b"(nil)"))
+    ));
 }
 
 /// The cipher list C builds, in a buffer of `CIPHER_LIST_MOST` bytes.

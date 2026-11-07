@@ -1,9 +1,9 @@
 //! The TLS library this build has, one of five chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
-//! for message signatures; GnuTLS (`gnutls`), with HTTP/3 over ngtcp2 and
-//! Ed25519; wolfSSL (`wolfssl`), with Ed25519 and no HTTP/3; or mbedTLS
-//! (`mbedtls`) or Schannel (`schannel`, Windows only), with neither, as
-//! C's builds with them have.
+//! for message signatures; GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
+//! HTTP/3 over ngtcp2 and Ed25519; or mbedTLS (`mbedtls`) or Schannel
+//! (`schannel`, Windows only), with neither, as C's builds with them
+//! have.
 
 use core::ffi::CStr;
 use core::fmt;
@@ -165,7 +165,8 @@ mod library {
 
     pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
         Some(&curl_wolfssl::ED25519);
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
+    /// HTTP/3 over ngtcp2's wolfSSL crypto.
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = Some(&curl_ngtcp2::NGTCP2);
 
     pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_WOLFSSL;
     pub(crate) const NAME: &CStr = c"wolfssl";
@@ -189,9 +190,9 @@ mod library {
         curl_wolfssl::version()
     }
 
-    /// None: no QUIC over wolfSSL here.
-    pub(crate) fn quic() -> Option<&'static str> {
-        None
+    /// The QUIC libraries, as `quic_version` names them.
+    pub(crate) fn quic() -> Option<impl fmt::Display> {
+        Some(curl_ngtcp2::version())
     }
 }
 

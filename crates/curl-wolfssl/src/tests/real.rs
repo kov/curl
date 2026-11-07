@@ -66,3 +66,33 @@ fn the_library_names_itself() {
     let text = std::str::from_utf8(v).unwrap();
     assert!(text.starts_with("5."), "{text}");
 }
+
+/// The backend makes sessions only while it is initialised, as C's
+/// global init that failed or was undone leaves no TLS; one given a key
+/// log after its `init` makes them over the same BIO method; it names
+/// the library as the version string does.
+#[test]
+// Calls into C, which Miri cannot run.
+#[cfg_attr(miri, ignore)]
+fn the_backend_makes_sessions_while_initialised() {
+    use curl_core::error::ErrorKind;
+    use curl_core::tls::{Alpn, SharedKeyLog, TlsBackend, TlsPeer, TlsPeerKind, TlsShared};
+    let lib = crate::WolfSsl::new();
+    let id = super::plain();
+    let peer = TlsPeer {
+        name: b"example.com",
+        port: 443,
+        kind: TlsPeerKind::Name,
+        early_data: false,
+    };
+    let shared = TlsShared::testing();
+    let made = |b: &dyn TlsBackend| b.session(&id, &peer, Alpn::None, &shared).err();
+    assert_eq!(made(&lib), Some(ErrorKind::FailedInit));
+    assert!(lib.init());
+    assert_eq!(made(&lib), None);
+    let keyed = lib.with_keylog(SharedKeyLog::new().unwrap());
+    assert_eq!(made(&keyed), None);
+    assert!(lib.id().to_string().starts_with("wolfSSL/5."));
+    lib.cleanup();
+    assert_eq!(made(&lib), Some(ErrorKind::FailedInit));
+}

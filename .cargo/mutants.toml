@@ -1183,4 +1183,29 @@ exclude_re = [
     # Past a last line with no line end, stepping one further ends the
     # walk all the same.
     'curl-mbedtls/src/verify\.rs:.*: replace < with <= in dump$',
+    # wolfSSL (curl-wolfssl):
+    # The debug forms of the library's words and of a call, which nothing
+    # prints.
+    "curl-wolfssl/src/library\\.rs:.*: replace <impl fmt::Debug for (Words|Call<'_, '_>)>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)$",
+    # A blocked goodbye retried at the length that blocked restricts
+    # nothing: the whole of it is sent either way.
+    "curl-wolfssl/src/library\\.rs:.*: replace < with <= in Call<'_, '_>::send$",
+    # The library answers early data with 0 only when given none, which
+    # the loop never gives it.
+    'curl-wolfssl/src/session\.rs:.*: replace < with <= in Session<W>::send_early$',
+    # Where the handshake was put off, the peer's choice passes only if it
+    # is the protocol already agreed; one chosen as none names none.
+    'curl-wolfssl/src/session\.rs:.*: replace (match guard asked\.is_none\(\) && !chosen\.is_empty\(\) with true|&& with \|\|) in Session<W>::negotiate$',
+    # The goodbye's last reads always run once, setting the count first.
+    'curl-wolfssl/src/session\.rs:.*: delete - in Session<W>::goodbye$',
+    # The system's last error, printed after C's words: no test sets it
+    # across the library's call.
+    'curl-wolfssl/src/session\.rs:.*: replace errno -> i32 with (0|1|-1)$',
+    # The key's memory given back, which nothing observes; wolfCrypt
+    # writes a whole signature whenever it signs.
+    'curl-wolfssl/src/sign\.rs:.*: replace <impl Drop for Key>::drop with \(\)$',
+    'curl-wolfssl/src/sign\.rs:.*: replace \|\| with && in <impl Ed25519 for WolfCryptEd25519>::sign$',
+    # A connection's context is new, so its store is never the one the
+    # multi keeps; were it, another reference to it set changes nothing.
+    'curl-wolfssl/src/trust\.rs:.*: replace match guard ctx\.uses_store\(store\) with false in setup$',
 ]

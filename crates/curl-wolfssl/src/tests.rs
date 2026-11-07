@@ -22,6 +22,7 @@ use crate::library::{
 use crate::session::Session;
 use crate::sys;
 
+mod more;
 mod real;
 
 const HOST: &[u8] = b"example.com";

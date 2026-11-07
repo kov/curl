@@ -929,12 +929,12 @@ impl<W: Wolfssl> Session<W> {
 
 /// The cipher list C builds, in a buffer of `CIPHER_LIST_MOST` bytes.
 #[derive(Default)]
-struct CipherList(Vec<u8>);
+pub(crate) struct CipherList(Vec<u8>);
 
 impl CipherList {
     /// Add `bytes` to it (`curlx_dyn_addn`): too large for the buffer, the
     /// list is dropped and the connection fails (`CURLE_TOO_LARGE`).
-    fn add(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
+    pub(crate) fn add(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
         if self.0.len() + bytes.len() + 1 > CIPHER_LIST_MOST {
             self.0 = Vec::new();
             return Err(ErrorKind::TooLarge);

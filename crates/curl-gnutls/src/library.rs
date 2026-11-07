@@ -148,8 +148,8 @@ pub(crate) trait Session: Send {
     /// `gnutls_session_get_flags` has `GNUTLS_SFLAGS_EARLY_DATA`.
     fn early_data_accepted(&mut self) -> bool;
     /// `gnutls_certificate_get_peers`: the peer's chain, DER, leaf
-    /// first; none if it sent none.
-    fn peers(&self) -> Option<Vec<&[u8]>>;
+    /// first; none if it sent none; `Err` if there is no room to list it.
+    fn peers(&self) -> Result<Option<Vec<&[u8]>>, curl_alloc::OutOfMemory>;
     /// `gnutls_certificate_verify_peers2`: the status bits, or the error.
     fn verify_peers(&self) -> Result<u32, Rc>;
     /// The stapled status checked for `cert` (`gtls_verify_ocsp_status`'s

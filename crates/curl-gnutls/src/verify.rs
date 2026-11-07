@@ -45,7 +45,9 @@ pub(crate) fn verify_server<G: Gnutls>(
     io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let o = &identity.options;
-    let chain = session.peers();
+    let chain = session
+        .peers()
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     let leaf = chain.as_ref().and_then(|c| c.first().copied());
     if chain.is_none() {
         if identity.verify_peer || identity.verify_host || o.issuer_cert.is_some() {

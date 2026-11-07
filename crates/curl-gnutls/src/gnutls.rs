@@ -14,7 +14,7 @@
 use core::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use core::ptr::{self, NonNull};
 
-use curl_alloc::TryVec as _;
+use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::error::ErrorKind;
 
 use crate::library::{self, Call, Format, Moved, Rc, Stapled};
@@ -677,18 +677,16 @@ impl library::Session for Session {
         unsafe { sys::gnutls_session_get_flags(self.s()) & sys::GNUTLS_SFLAGS_EARLY_DATA != 0 }
     }
 
-    fn peers(&self) -> Option<Vec<&[u8]>> {
+    fn peers(&self) -> Result<Option<Vec<&[u8]>>, OutOfMemory> {
         let mut n: c_uint = 0;
         // SAFETY: the session; the list is its own.
         let list = unsafe { sys::gnutls_certificate_get_peers(self.s(), &mut n) };
         if list.is_null() {
-            return None;
+            return Ok(None);
         }
         let n = usize::try_from(n).expect("a count");
         let mut out = Vec::new();
-        if out.try_reserve_exact(n).is_err() {
-            return Some(Vec::new());
-        }
+        out.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
         // SAFETY: `n` datums at `list`, the session's while it is
         // borrowed.
         let list = unsafe { core::slice::from_raw_parts(list, n) };
@@ -696,7 +694,7 @@ impl library::Session for Session {
             // SAFETY: a datum the session holds, as above.
             out.try_push(unsafe { datum(d) }).expect("room reserved");
         }
-        Some(out)
+        Ok(Some(out))
     }
 
     fn verify_peers(&self) -> Result<u32, Rc> {

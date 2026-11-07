@@ -48,6 +48,8 @@ mod tests {
 
     /// RFC 8032's first test vector, signed as it says.
     #[test]
+    // Calls into C, which Miri cannot run.
+    #[cfg_attr(miri, ignore)]
     fn signs_as_rfc_8032_says() {
         let hex = |s: &str| -> Vec<u8> {
             (0..s.len())

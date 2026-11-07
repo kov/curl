@@ -405,6 +405,8 @@ mod tests {
     /// `csrc/layout.c`'s order: one out of step asks the library for
     /// something else.
     #[test]
+    // Calls into C, which Miri cannot run.
+    #[cfg_attr(miri, ignore)]
     fn the_declared_values_are_the_headers() {
         let ours: [i64; LAYOUT_LEN] = [
             GNUTLS_E_SUCCESS.into(),

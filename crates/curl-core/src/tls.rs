@@ -1200,6 +1200,9 @@ impl crate::conn::layer::Failures for Notes {
 pub struct Kept {
     pub notes: Notes,
     sessions: SessionCache,
+    /// The transfer is verbose: a library asking is told so, where
+    /// `Notes` alone says it is not.
+    pub verbose: bool,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -1208,6 +1211,7 @@ impl Kept {
         Kept {
             notes: Notes::default(),
             sessions: SessionCache::new(SessionCache::PEERS),
+            verbose: false,
         }
     }
 }
@@ -1226,7 +1230,7 @@ impl LayerCx for Kept {
     }
 
     fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
-        Some(&mut self.notes)
+        Some(self)
     }
 
     fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
@@ -1255,6 +1259,30 @@ impl LayerCx for Kept {
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         None
+    }
+}
+
+/// The notes', but for whether the transfer is verbose.
+#[cfg(any(test, feature = "test-util"))]
+impl crate::conn::layer::Trace for Kept {
+    fn line(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        self.notes.line(component, line);
+    }
+
+    fn line_with(&mut self, component: Component, parts: &[&[u8]]) {
+        self.notes.line_with(component, parts);
+    }
+
+    fn info_line(&mut self, line: fmt::Arguments<'_>) {
+        self.notes.info_line(line);
+    }
+
+    fn info_line_with(&mut self, parts: &[&[u8]]) {
+        self.notes.info_line_with(parts);
+    }
+
+    fn says_info(&self) -> bool {
+        self.verbose
     }
 }
 
@@ -1308,6 +1336,41 @@ impl TlsCx<'_> {
         let shared = TlsShared::new().expect("memory for a test");
         let mut cx = TlsCx::new(notes, Component::Ssl, &peer);
         f(&shared, &mut cx)
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl TlsIo<'_> {
+    /// Run `f` with the I/O of a stream connection to `host`'s port 443
+    /// made with `identity`, straight over `socket`, its sessions kept in
+    /// `kept`, which notes what it is told: for the tests of a library's
+    /// sessions over a scripted wire.
+    pub fn testing<R>(
+        identity: &TryArc<TlsIdentity>,
+        host: &[u8],
+        kept: &mut Kept,
+        socket: &dyn crate::conn::io::Socket,
+        f: impl FnOnce(&mut TlsIo<'_>) -> R,
+    ) -> R {
+        let mut name = Vec::new();
+        name.try_extend_from_slice(host).expect("memory for a test");
+        let origin = Peer::new(crate::proto::http::HTTPS, name, 443, None);
+        let peer = SessionPeer::new(identity, &origin, None, &"test", crate::conn::Dial::Stream)
+            .expect("memory for a test");
+        let mut early = Vec::new();
+        let mut own = OwnSessions::default();
+        let below = Below::bare(socket, None);
+        let mut io = TlsIo::new(below, kept, &mut early, Component::Ssl, &peer, &mut own);
+        f(&mut io)
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl TlsShared {
+    /// What a multi keeps for its libraries, for a test to hand the
+    /// sessions it makes.
+    pub fn testing() -> TlsShared {
+        TlsShared::new().expect("memory for a test")
     }
 }
 

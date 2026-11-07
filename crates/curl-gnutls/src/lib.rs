@@ -20,6 +20,11 @@ mod text;
 mod trust;
 mod verify;
 
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod tests;
+
 use core::fmt;
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};

@@ -463,3 +463,11 @@ witness: curl-openssl tests::the_library_declares_what_c_s_build_over_it_has
     signature_algorithms: !cfg!(libressl),
 --- new
     signature_algorithms: cfg!(libressl),
+
+=== a provider's library context is never freed
+file: crates/curl-openssl/src/engine.rs
+witness: curl-openssl tests::a_transfer_frees_what_it_made_of_openssl_s
+--- old
+            unsafe { openssl_sys::OSSL_LIB_CTX_free(l.as_ptr()) };
+--- new
+            let _ = l;

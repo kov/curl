@@ -218,6 +218,25 @@ pub(crate) mod tests {
         fn free(p: *mut c_void);
     }
 
+    // SAFETY: the declaration is `crypto.h`'s.
+    #[cfg(ossl3)]
+    unsafe extern "C" {
+        fn OPENSSL_thread_stop();
+    }
+
+    /// Free the library's state for this thread (`OPENSSL_thread_stop`),
+    /// which it otherwise keeps until the thread exits, and makes again
+    /// when the thread next needs it. AWS-LC's is not stopped.
+    #[cfg(any(ossl3, awslc))]
+    pub(crate) fn stop_thread() {
+        // SAFETY: no argument; the library takes the thread's state up
+        // again as it is next used.
+        #[cfg(ossl3)]
+        unsafe {
+            OPENSSL_thread_stop()
+        };
+    }
+
     #[cfg(any(ossl3, awslc))]
     extern "C" fn counted_malloc(size: usize, _: *const c_char, _: c_int) -> *mut c_void {
         // SAFETY: the C library's own.

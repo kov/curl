@@ -112,13 +112,23 @@ fn counted_transfers() {
     // on macOS with OpenSSL 3.6). So each kind runs three transfers at a
     // time until three leave the count where they found it, which a
     // transfer leaving anything behind never does.
+    //
+    // OpenSSL 3.6 also keeps state of its own for each thread until the
+    // thread stops, among it a table indexed by the address of each
+    // library context the thread used (`threads_common.c`): a provider's
+    // context made at an address not used before grows it. On Windows
+    // that left the provider's count unsettled in about half the runs,
+    // the table's nodes all that was left (measured with OpenSSL 3.6.5).
+    // So the thread's state is ended before each count is read.
     for (name, set) in &kinds {
         let mut left = Vec::new();
         for _ in 0..10 {
+            crate::sys::tests::stop_thread();
             let at = crate::sys::tests::live_allocations();
             for _ in 0..3 {
                 leaks::transfer(server.port, set).unwrap();
             }
+            crate::sys::tests::stop_thread();
             left.push(crate::sys::tests::live_allocations() - at);
             if left.last() == Some(&0) {
                 break;

@@ -48,6 +48,13 @@ CI builds it, its shared library loaded: with HTTP/3 over ngtcp2's
 BoringSSL crypto from the ngtcp2 built for that fork: build/c-awslc,
 build/c-boringssl, inventory/baseline-{awslc,boringssl}.{json,md}.
 
+`--rustls` does the same with Rustls in place of OpenSSL, the library the
+rewrite's `rustls` feature binds, the release of rustls-ffi curl's CI
+installs, unpacked by inventory/measure/deps.py: without HTTP/3, which C
+does over Rustls with quiche alone, without HTTP message signatures,
+which C does not sign with Rustls, and without Encrypted Client Hello:
+build/c-rustls, inventory/baseline-rustls.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -125,6 +132,8 @@ class Oracle:
     def ngtcp2(self):
         """The ngtcp2 its programs load."""
         return deps.fork_ngtcp2_dir(self.fork) if self.fork else deps.NGTCP2
+    # It is built with the rustls-ffi unpacked here (`deps.build_rustls`).
+    rustls: bool = False
 
     @property
     def results(self):
@@ -230,6 +239,19 @@ AWSLC = fork_oracle("awslc", "AWS-LC")
 BORINGSSL = fork_oracle("boringssl", "BoringSSL")
 
 
+# Rustls in place of OpenSSL, as the rewrite's `rustls` feature has it: no
+# QUIC (C's HTTP/3 over Rustls is quiche's, not built here), and no
+# Ed25519 to sign HTTP messages with (CMake turns HTTPSIG off without it).
+# Its programs find rustls-ffi's library by their RUNPATH.
+RUSTLS = Oracle(ROOT / "build" / "c-rustls", "baseline-rustls",
+                "C Rustls baseline", "--rustls",
+                {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
+                 "CURL_USE_RUSTLS": "ON", "USE_NGTCP2": "OFF",
+                 "USE_PROXY_HTTP3": "OFF", "CURL_DISABLE_HTTPSIG": "ON",
+                 "CMAKE_BUILD_RPATH": str(deps.RUSTLS / "lib")},
+                links_ngtcp2=False, rustls=True)
+
+
 def run(oracle):
     commit = common.c_commit()
     check(not commit.endswith("-dirty"),
@@ -242,6 +264,9 @@ def run(oracle):
         dep_env = {"PKG_CONFIG_PATH": ":".join(
             e["PKG_CONFIG_PATH"] for e in (deps.build_gnugss(), dep_env)),
                    "PKG_CONFIG_LIBDIR": without_mit(oracle.build)}
+    if oracle.rustls:
+        dep_env = {"PKG_CONFIG_PATH": ":".join(
+            e["PKG_CONFIG_PATH"] for e in (deps.build_rustls(), dep_env))}
     # A fresh cache: nothing configured by hand earlier, such as another
     # library location, may carry into the measurement.
     (oracle.build / "CMakeCache.txt").unlink(missing_ok=True)
@@ -303,7 +328,7 @@ def exports(oracle):
 
 def main():
     oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS, WOLFSSL,
-                               GNUGSS, AWSLC, BORINGSSL)
+                               GNUGSS, AWSLC, BORINGSSL, RUSTLS)
                    if o.flag in sys.argv[1:]), REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)

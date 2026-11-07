@@ -39,6 +39,13 @@ programs need no search path to find it. ngtcp2's crypto for both is
 own, `build/deps/ngtcp2-<fork>`, built with that crypto alone, as CI's
 `ngtcp2-boringssl` is. AWS-LC's build needs Go.
 
+rustls-ffi: not packaged on Fedora. The release curl's CI pins, as its
+`rustls` jobs in .github/workflows/linux.yml install it: the project's
+prebuilt library for the machine, its pkg-config file pointed at where it
+is unpacked, for the C build with Rustls (`baseline.py --rustls`). The
+rewrite's curl-rustls uses the rustls crate itself, at the version this
+release is built with.
+
 Everything goes under build/deps and is rebuilt only when a pinned version
 or the way it is built changes. Run directly, or through `baseline.py --run`.
 Builds run `DEPS_JOBS` jobs at once, the machine's processors by default.
@@ -70,6 +77,7 @@ WOLFSSL = DEPS / "wolfssl" if OWN_WOLFSSL else pathlib.Path(
 OWN_GNUGSS = "CURL_GNUGSS_DIR" not in os.environ
 GNUGSS = DEPS / "gnugss" if OWN_GNUGSS else pathlib.Path(
     os.environ["CURL_GNUGSS_DIR"])
+RUSTLS = DEPS / "rustls-ffi"
 
 
 # The TLS libraries besides OpenSSL (or LibreSSL, on macOS) ngtcp2's
@@ -191,6 +199,37 @@ def build_gnugss():
           f"pkg-config finds GNU GSS {pc.stdout.strip()}, "
           f"want {GNUGSS_VERSION}")
     return {"PKG_CONFIG_PATH": f"{GNUGSS}/lib/pkgconfig"}
+
+
+def build_rustls():
+    """
+    Unpack rustls-ffi if it is missing; return the environment CMake needs
+    to find it.
+    """
+    version = pinned("RUSTLS_VERSION", ".github/workflows/linux.yml")
+    arch = {"x86_64": "x86_64", "aarch64": "arm64"}[os.uname().machine]
+    built = f"{version} {arch}-linux-gnu"
+    stamp = RUSTLS / ".version"
+    if not (stamp.exists() and stamp.read_text().strip() == built):
+        RUSTLS.mkdir(parents=True, exist_ok=True)
+        archive = RUSTLS / "rustls-ffi.zip"
+        sh(["curl", "--fail", "--silent", "--show-error", "--location",
+            "--output", str(archive),
+            f"https://github.com/rustls/rustls-ffi/releases/download/"
+            f"v{version}/rustls-ffi-{arch}-linux-gnu.zip"], cwd=RUSTLS)
+        sh(["unzip", "-o", "-q", str(archive)], cwd=RUSTLS)
+        archive.unlink()
+        pc = RUSTLS / "lib" / "pkgconfig" / "rustls.pc"
+        pc.write_text(pc.read_text().replace("prefix=dist",
+                                             f"prefix={RUSTLS}"))
+        stamp.write_text(built + "\n")
+    pc = subprocess.run(["pkg-config", "--modversion", "rustls"],
+                        env={**os.environ,
+                             "PKG_CONFIG_PATH": f"{RUSTLS}/lib/pkgconfig"},
+                        check=True, capture_output=True, text=True)
+    check(pc.stdout.strip() == version,
+          f"pkg-config finds rustls-ffi {pc.stdout.strip()}, want {version}")
+    return {"PKG_CONFIG_PATH": f"{RUSTLS}/lib/pkgconfig"}
 
 
 def build():

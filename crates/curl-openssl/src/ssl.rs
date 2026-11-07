@@ -1614,12 +1614,9 @@ impl QuicTls for QuicSession {
             .and_then(TlsTicket::chosen)
             .expect("early data goes under a ticket made for h3")
             .wire();
-        let len = u32::try_from(wire.len()).expect("a short list");
         // SAFETY: the session's SSL, and the list, which the library
         // copies.
-        if unsafe { openssl_sys::SSL_set_alpn_protos(self.0.ssl().as_ptr(), wire.as_ptr(), len) }
-            != 0
-        {
+        if unsafe { ffi::SSL_set_alpn_protos(self.0.ssl().as_ptr(), wire) } != 0 {
             return Err(cx.fail(
                 ErrorKind::SslConnectError,
                 format_args!("Error setting ALPN"),

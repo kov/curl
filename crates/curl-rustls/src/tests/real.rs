@@ -394,6 +394,31 @@ fn the_client_s_certificate_is_offered_to_a_server_asking() {
     assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
     let presented = server.peer_certificates().expect("the client's chain");
     assert_eq!(presented.len(), 1);
+    // Over TLS 1.2 too, whose handshake the library keeps for the
+    // client's signature only where it has a certificate to offer.
+    let (cert, key) = (pki.client.0.clone(), pki.client.1.clone());
+    let ca = pki.ca.clone().into_bytes();
+    let tls12 = identity(move |id| {
+        id.options.ca_blob = CaSetting::Given(ca);
+        id.options.cert_blob = Some(cert.into_bytes());
+        id.options.key_blob = Some(key.into_bytes());
+        id.options.max_version = curl_core::options::TlsMaxVersion::Tls1_2;
+    });
+    let mut server = serve_asking(&pki, &[], true);
+    let mut s = session(&tls12, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = shake(&mut s, &tls12, &mut kept, &wire, &mut server);
+    assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
+    assert!(
+        has(
+            &kept.notes.0,
+            "info: rustls: handshake complete, TLSv1.2, ciphersuite: TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, key exchange group: X25519"
+        ),
+        "{:#?}",
+        kept.notes.0
+    );
+    assert!(server.peer_certificates().is_some());
     // Without one, the server refuses, and its alert is said.
     let mut server = serve_asking(&pki, &[], true);
     let id = trusting(&pki);

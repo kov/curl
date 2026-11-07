@@ -1355,6 +1355,12 @@ fn a_send_blocked_part_way_counts_what_went() {
     lib.w().write_tls_fails.extend([None, Some(Errno::Again)]);
     let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"abcdef"));
     assert_eq!(sent.unwrap(), Sent::Bytes(3.try_into().unwrap()));
+    // Counted, the send is said to have succeeded.
+    assert!(
+        has(&kept.notes.0, "trace: rustls_send(len=6) -> 0, 3"),
+        "{:#?}",
+        kept.notes.0
+    );
     let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"def"));
     assert_eq!(sent.unwrap(), Sent::Bytes(3.try_into().unwrap()));
     assert_eq!(wire.sent(), b"hellofinishedfirstE:abcE:def");

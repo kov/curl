@@ -27,7 +27,7 @@ C oracles (`SCOPE.md`): the reference configuration with the threaded resolver i
 c-ares, in `build/c-threaded`, with libssh in place of libssh2, in `build/c-libssh`, with GnuTLS
 in place of OpenSSL and no HTTP/3 proxy, in `build/c-gnutls`, with mbedTLS in place of OpenSSL and
 neither HTTP/3 nor message signatures, in `build/c-mbedtls`, and with wolfSSL (built by
-`deps.py`) in place of OpenSSL and no HTTP/3, in `build/c-wolfssl`, into `baseline-threaded`,
+`deps.py`) in place of OpenSSL and no HTTP/3 proxy, in `build/c-wolfssl`, into `baseline-threaded`,
 `baseline-libssh`, `baseline-gnutls`, `baseline-mbedtls` and `baseline-wolfssl`.
 
 `inventory/measure/score.py` scores the Rust build the same way: it lays out `build/rust` with the

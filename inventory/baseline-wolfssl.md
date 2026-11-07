@@ -2,22 +2,22 @@
 
 # C wolfSSL baseline
 
-What the C build in `build/c-wolfssl` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-07T05:01:45Z to 2026-11-07T05:04:13Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
+What the C build in `build/c-wolfssl` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-07T08:48:38Z to 2026-11-07T08:50:52Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
 
 ```
-curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV wolfSSL/5.9.4 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
+curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV wolfSSL/5.9.4 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
 Release-Date: [unreleased]
 Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss
-Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
+Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
 ```
 
 |  | tests |
 |---|---|
 | considered | 2198 |
-| ran | 2093 |
-| ok | 2091 |
+| ran | 2091 |
+| ok | 2089 |
 | failed | 2 |
-| skipped | 105 |
+| skipped | 107 |
 
 ## Built library
 
@@ -35,12 +35,14 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSIG 
 | reason | class | count | tests |
 |---|---|---|---|
 | configured as DISABLED | disabled | 14 | 594, 836, 882, 938, 1182, 1184, 1209, 1211, 1307, 1316, 1512, 1801, 2043, 4656 |
+| failed starting HTTP-unix server | environment | 2 | 1435, 1436 |
+| failed starting socks5unix server | environment | 3 | 1467, 1468, 1470 |
+| test_rlimit problem: | environment | 1 | 537 |
 | curl lacks ECH support | feature missing from build | 3 | 2117, 4000, 4001 |
 | curl lacks OpenSSL support | feature missing from build | 5 | 307, 308, 1582, 1587, 3207 |
 | curl lacks Schannel support | feature missing from build | 7 | 2033, 2070, 2079, 2087, 3023, 3024, 4782 |
 | curl lacks Unicode support | feature missing from build | 2 | 472, 1703 |
 | curl lacks asyn-rr support | feature missing from build | 1 | 464 |
-| curl lacks http/3 support | feature missing from build | 4 | 2500, 2501, 2502, 2503 |
 | curl lacks libssh support | feature missing from build | 5 | 3612, 3631, 3650, 3651, 3652 |
 | curl lacks threaded-resolver support | feature missing from build | 1 | 3026 |
 | curl lacks win32 support | feature missing from build | 1 | 1451 |
@@ -55,40 +57,28 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSIG 
 
 | outcome | cases |
 |---|---|
-| failed | 7 |
-| passed | 756 |
-| skipped | 112 |
+| passed | 906 |
+| skipped | 93 |
 
 ### Not passed
 
 | case | outcome | message |
 |---|---|---|
-| test_02_download::test_02_32_earlydata[h2] | failed | KeyError: 'nghttpx_https' |
-| test_02_download::test_02_32_earlydata[http/1.1] | failed | KeyError: 'nghttpx_https' |
-| test_07_upload::test_07_70_put_earlydata[h1-limited-body] | failed | KeyError: 'nghttpx_https' |
-| test_07_upload::test_07_70_put_earlydata[h1-medium-body] | failed | KeyError: 'nghttpx_https' |
-| test_07_upload::test_07_70_put_earlydata[h1-small-body] | failed | KeyError: 'nghttpx_https' |
-| test_07_upload::test_07_70_put_earlydata[h2-limited-body] | failed | KeyError: 'nghttpx_https' |
-| test_07_upload::test_07_70_put_earlydata[h2-medium-body] | failed | KeyError: 'nghttpx_https' |
 
 ### Skip reasons
 
 | reason | cases |
 |---|---|
-| no h2o available | 21 |
+| curl lacks experimental HTTP/3 proxy support | 26 |
 | curl not build with GnuTLS | 17 |
 | no openssl cmd ECH support | 14 |
-| missing HTTP/3 support | 12 |
-| h3 not supported | 9 |
 | no cert-status in curl | 8 |
-| curl lacks experimental HTTP/3 proxy support | 7 |
+| curl built without digest | 8 |
 | tls13-ciphers not supported | 6 |
-| curl built without digest | 5 |
 | no threaded resolver | 5 |
+| TLS library does not support --cert-status | 3 |
 | needs OpenSSL | 3 |
-| TLS library does not support --cert-status | 2 |
-| requires ngtcp2 packet handling | 1 |
+| h3 wolfssl early data failing | 2 |
 | system does not blackhole 0100::/64 | 1 |
-| only supported with nghttp3 | 1 |
 
 Test functions with no case in the report (collected away): none.

@@ -117,7 +117,8 @@ measured by `baseline.py --mbedtls`. The rewrite's leg, the `mbedtls` feature wi
 scored against it by `score.py --mbedtls`.
 
 wolfSSL has one too: `build/c-wolfssl`, the reference configuration with `CURL_USE_WOLFSSL` in
-place of `CURL_USE_OPENSSL` and without HTTP/3, over the wolfSSL `inventory/measure/deps.py`
+place of `CURL_USE_OPENSSL`, with HTTP/3 over ngtcp2's wolfSSL crypto and without the HTTP/3
+proxy, over the wolfSSL `inventory/measure/deps.py`
 builds at the version and with the flags curl's CI uses (it is not packaged here), built and
 measured by `baseline.py --wolfssl`. Encrypted Client Hello is off there as in the reference
 build, so C's wolfSSL build has none of its code. The rewrite's leg, the `wolfssl` feature with

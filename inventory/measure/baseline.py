@@ -29,9 +29,9 @@ inventory/baseline-mbedtls.{json,md}.
 
 `--wolfssl` does the same with wolfSSL in place of OpenSSL, the library the
 rewrite's `wolfssl` feature binds, built by inventory/measure/deps.py as
-curl's CI builds it: without HTTP/3, which C builds over wolfSSL only with
-ngtcp2's wolfSSL crypto (milestone 10's step 104), and without Encrypted
-Client Hello, off in every oracle here: build/c-wolfssl,
+curl's CI builds it: with HTTP/3 over ngtcp2's wolfSSL crypto, without
+the HTTP/3 proxy, and without Encrypted Client Hello, off in every oracle
+here: build/c-wolfssl,
 inventory/baseline-wolfssl.{json,md}.
 
 This is a measurement, not a derivation from source, so inventory/gen/all.py
@@ -143,16 +143,16 @@ MBEDTLS = Oracle(ROOT / "build" / "c-mbedtls", "baseline-mbedtls",
                   "USE_PROXY_HTTP3": "OFF", "CURL_DISABLE_HTTPSIG": "ON"},
                  links_ngtcp2=False)
 # wolfSSL in place of OpenSSL, as the rewrite's `wolfssl` feature has it:
-# no QUIC (the rewrite's QUIC over wolfSSL is step 104's), and Ed25519 for
-# HTTP message signatures from wolfCrypt. Its programs find the library by
-# their RUNPATH, as they find ngtcp2's elsewhere.
+# HTTP/3 over ngtcp2's wolfSSL crypto, no HTTP/3 proxy (OpenSSL's only),
+# and Ed25519 for HTTP message signatures from wolfCrypt. Its programs
+# find the library by their RUNPATH, beside ngtcp2's.
 WOLFSSL = Oracle(ROOT / "build" / "c-wolfssl", "baseline-wolfssl",
                  "C wolfSSL baseline", "--wolfssl",
                  {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
-                  "CURL_USE_WOLFSSL": "ON", "USE_NGTCP2": "OFF",
-                  "USE_PROXY_HTTP3": "OFF",
-                  "CMAKE_BUILD_RPATH": str(deps.WOLFSSL / "lib")},
-                 links_ngtcp2=False, wolfssl=True)
+                  "CURL_USE_WOLFSSL": "ON", "USE_PROXY_HTTP3": "OFF",
+                  "CMAKE_BUILD_RPATH":
+                  f"{deps.NGTCP2 / 'lib'};{deps.WOLFSSL / 'lib'}"},
+                 wolfssl=True, crypto="wolfssl")
 
 
 def run(oracle):

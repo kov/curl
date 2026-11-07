@@ -352,8 +352,12 @@ impl Output {
         Ok(())
     }
 
-    /// The write handler.
+    /// The write handler: none of the stream's for output dropped, whose
+    /// target never changes.
     pub(crate) fn body_handler(&self) -> Result<Handler<dyn WriteHandler>, OutOfMemory> {
+        if matches!(self.stream().target, Target::Null) {
+            return Handler::write(NullBody);
+        }
         Handler::write(Body(self.clone()))
     }
 
@@ -1077,6 +1081,16 @@ struct Body(Output);
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
         self.0.stream().body(body)
+    }
+}
+
+/// The write handler of output dropped: the body goes before the stream
+/// is reached, as C's callback returns first for `outs->out_null`.
+struct NullBody;
+
+impl WriteHandler for NullBody {
+    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        Write::Accepted
     }
 }
 

@@ -118,9 +118,10 @@ impl Drop for DigestCx {
     }
 }
 
-// LibreSSL takes no allocator of ours (`CRYPTO_set_mem_functions`
-// refuses), so its allocations are not counted.
-#[cfg(all(test, not(libressl)))]
+// Counted over OpenSSL alone: LibreSSL takes no allocator of ours
+// (`CRYPTO_set_mem_functions` refuses), and the forks' allocations are
+// not counted here.
+#[cfg(all(test, ossl3))]
 mod tests {
     use super::*;
     use crate::sys::tests::{count_allocations, in_a_child, live_allocations};

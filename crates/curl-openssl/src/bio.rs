@@ -21,6 +21,21 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{KeyLog, TlsCx, TlsIo, TlsWay};
 use openssl_sys::{BIO, BIO_METHOD, SSL, SSL_SESSION};
+// The method's setters, under openssl-sys's names for OpenSSL's, and the
+// forks' own from their headers.
+#[cfg(boringssl_like)]
+use openssl_sys::{
+    BIO_meth_set_create, BIO_meth_set_ctrl, BIO_meth_set_destroy, BIO_meth_set_read,
+    BIO_meth_set_write,
+};
+#[cfg(not(boringssl_like))]
+use openssl_sys::{
+    BIO_meth_set_create__fixed_rust as BIO_meth_set_create,
+    BIO_meth_set_ctrl__fixed_rust as BIO_meth_set_ctrl,
+    BIO_meth_set_destroy__fixed_rust as BIO_meth_set_destroy,
+    BIO_meth_set_read__fixed_rust as BIO_meth_set_read,
+    BIO_meth_set_write__fixed_rust as BIO_meth_set_write,
+};
 
 use crate::ffi;
 use crate::text;
@@ -126,15 +141,15 @@ impl Method {
         let p = m.0.as_ptr();
         // SAFETY: `p` is a method just made, and each callback has
         // the signature the library calls it with.
-        unsafe { openssl_sys::BIO_meth_set_write__fixed_rust(p, Some(out_write)) };
+        unsafe { BIO_meth_set_write(p, Some(out_write)) };
         // SAFETY: as above.
-        unsafe { openssl_sys::BIO_meth_set_read__fixed_rust(p, Some(in_read)) };
+        unsafe { BIO_meth_set_read(p, Some(in_read)) };
         // SAFETY: as above.
-        unsafe { openssl_sys::BIO_meth_set_ctrl__fixed_rust(p, Some(ctrl)) };
+        unsafe { BIO_meth_set_ctrl(p, Some(ctrl)) };
         // SAFETY: as above.
-        unsafe { openssl_sys::BIO_meth_set_create__fixed_rust(p, Some(create)) };
+        unsafe { BIO_meth_set_create(p, Some(create)) };
         // SAFETY: as above.
-        unsafe { openssl_sys::BIO_meth_set_destroy__fixed_rust(p, Some(destroy)) };
+        unsafe { BIO_meth_set_destroy(p, Some(destroy)) };
         Some(m)
     }
 

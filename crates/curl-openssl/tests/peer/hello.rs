@@ -184,13 +184,26 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
     let (hello, got) = hello_to("localhost", |o| {
         let t = o.tls.options.make_mut().unwrap();
         t.ciphers = Some(b"ECDHE-ECDSA-AES128-GCM-SHA256".to_vec());
-        t.tls13_ciphers = Some(b"TLS_CHACHA20_POLY1305_SHA256".to_vec());
+        // BoringSSL takes no TLS 1.3 list (`HAVE_SSL_CTX_SET_CIPHERSUITES`).
+        if !cfg!(boringssl) {
+            t.tls13_ciphers = Some(b"TLS_CHACHA20_POLY1305_SHA256".to_vec());
+        }
         t.curves = Some(b"X25519:P-384".to_vec());
         t.signature_algorithms = Some(b"ECDSA+SHA384:ed25519".to_vec());
     });
     // TLS_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl)))]
     assert_eq!(hello.suites, [0x1303, 0xc02b], "{hello:?}");
+    // BoringSSL's own TLS 1.3 suites, then the one given.
+    #[cfg(boringssl)]
+    {
+        let (last, tls_1_3) = hello.suites.split_last().unwrap();
+        assert_eq!(*last, 0xc02b, "{hello:?}");
+        assert!(
+            !tls_1_3.is_empty() && tls_1_3.iter().all(|&s| tls13(s)),
+            "{hello:?}"
+        );
+    }
     // LibreSSL adds the renegotiation signal (TLS_EMPTY_RENEGOTIATION_INFO_SCSV).
     #[cfg(libressl)]
     assert_eq!(hello.suites, [0x1303, 0xc02b, 0x00ff], "{hello:?}");
@@ -206,11 +219,13 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
         hello.list(13).len() > 2 && !hello.list(13).contains(&0x0807),
         "{hello:?}"
     );
+    let tls13_said = "TLS 1.3 cipher selection: TLS_CHACHA20_POLY1305_SHA256";
     for line in [
         "Cipher selection: ECDHE-ECDSA-AES128-GCM-SHA256",
-        "TLS 1.3 cipher selection: TLS_CHACHA20_POLY1305_SHA256",
+        tls13_said,
     ] {
-        assert!(said(&got, line), "no {line:?} in {:#?}", got.seen.lines);
+        let want = !cfg!(boringssl) || line != tls13_said;
+        assert_eq!(said(&got, line), want, "{line:?} in {:#?}", got.seen.lines);
     }
     let (hello, got) = hello_to("localhost", |o| {
         let t = o.tls.options.make_mut().unwrap();
@@ -228,6 +243,9 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
     assert!(suites.len() > 1, "the library's own TLS 1.3 list");
     assert!(!starts(&got, "Cipher selection:"), "{:#?}", got.seen.lines);
     // With TLS 1.2 as the ceiling, the TLS 1.3 list is not set.
+    if cfg!(boringssl) {
+        return;
+    }
     let (hello, got) = hello_to("localhost", |o| {
         let t = o.tls.options.make_mut().unwrap();
         t.max_version = curl_core::options::TlsMaxVersion::Tls1_2;
@@ -246,6 +264,8 @@ fn a_list_the_library_refuses_fails_as_c_says() {
             Box::new(|t| t.ciphers = Some(b"NOSUCH".to_vec())),
             "failed setting cipher list: NOSUCH",
         ),
+        // BoringSSL takes no TLS 1.3 list at all (4, not built in).
+        #[cfg(not(boringssl))]
         (
             Box::new(|t| t.tls13_ciphers = Some(b"NOSUCH".to_vec())),
             "failed setting TLS 1.3 cipher suite: NOSUCH",
@@ -344,6 +364,14 @@ fn relayed(to: SocketAddr) -> (SocketAddr, JoinHandle<Vec<(u8, usize)>>) {
     (at, relay)
 }
 
+/// The CBC cipher TLS 1.0 is tried with, its security level lowered
+/// where the library has levels (the forks have none, and refuse the
+/// word).
+#[cfg(not(boringssl_like))]
+const BEAST_CIPHERS: &str = "AES128-SHA:@SECLEVEL=0";
+#[cfg(boringssl_like)]
+const BEAST_CIPHERS: &str = "AES128-SHA";
+
 /// With TLS 1.0 and a CBC cipher, each write is led by a record of no
 /// data, its padding and MAC alone (36 bytes: a block of AES, then
 /// SHA-1's 20, encrypt-then-MAC as the library agrees to it): the
@@ -381,7 +409,7 @@ fn tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed() {
             );
             a.set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1))
                 .unwrap();
-            a.set_cipher_list("AES128-SHA:@SECLEVEL=0").unwrap();
+            a.set_cipher_list(BEAST_CIPHERS).unwrap();
         });
         let (at, relay) = relayed(server_at);
         let got = get("localhost", at, |o| {
@@ -389,7 +417,7 @@ fn tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed() {
             let t = o.tls.options.make_mut().unwrap();
             t.min_version = TlsMinVersion::Tls1_0;
             t.max_version = TlsMaxVersion::Tls1_0;
-            t.ciphers = Some(b"AES128-SHA:@SECLEVEL=0".to_vec());
+            t.ciphers = Some(BEAST_CIPHERS.as_bytes().to_vec());
             if allow {
                 t.ssl_options = SslOptions::ALLOW_BEAST;
             }
@@ -429,7 +457,10 @@ fn sends_empty_fragment_first(got: &Got, records: &[(u8, usize)], allow: bool) {
         .filter(|(kind, _)| *kind == 23)
         .map(|&(_, len)| len)
         .collect();
-    if allow {
+    // The forks have no countermeasure to turn off (their
+    // `SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS` does nothing): the request goes
+    // whole either way, as from C's build over them.
+    if allow || cfg!(boringssl_like) {
         assert!(!data.contains(&36), "{records:?}");
         assert_eq!(data.len(), 1, "{records:?}");
     } else {

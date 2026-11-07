@@ -64,9 +64,10 @@ impl Http3 for Ngtcp2 {
         &Versions
     }
 
-    /// LibreSSL's and wolfSSL's crypto set the context up for QUIC before
-    /// the session is made from it, which copies its QUIC method
-    /// (`ngtcp2_crypto_quictls_configure_client_context`,
+    /// LibreSSL's, the forks' and wolfSSL's crypto set the context up for
+    /// QUIC before the session is made from it, which copies its QUIC
+    /// method (`ngtcp2_crypto_quictls_configure_client_context`,
+    /// `ngtcp2_crypto_boringssl_configure_client_context`,
     /// `ngtcp2_crypto_wolfssl_configure_client_context`); GnuTLS's sets
     /// the session up, handed as soon as it is made
     /// (`ngtcp2_crypto_gnutls_configure_client_session`); OpenSSL's needs
@@ -78,6 +79,13 @@ impl Http3 for Ngtcp2 {
             != 0
         {
             return Err("ngtcp2_crypto_quictls_configure_client_context failed");
+        }
+        #[cfg(crypto = "boringssl")]
+        // SAFETY: the session's context, just made, not yet shared.
+        if unsafe { sys::ngtcp2_crypto_boringssl_configure_client_context(ctx.context().as_ptr()) }
+            != 0
+        {
+            return Err("ngtcp2_crypto_boringssl_configure_client_context failed");
         }
         #[cfg(crypto = "wolfssl")]
         // SAFETY: the session's context, just made, not yet shared.
@@ -775,7 +783,7 @@ impl Connection {
         // GnuTLS's session pointer, none of which the TLS crates use for
         // a QUIC session.
         unsafe {
-            #[cfg(any(crypto = "ossl", crypto = "libressl"))]
+            #[cfg(any(crypto = "ossl", crypto = "libressl", crypto = "boringssl"))]
             sys::ssl_set_app_data(ssl, conn_ref.cast());
             #[cfg(crypto = "gnutls")]
             sys::gnutls_session_set_ptr(ssl, conn_ref.cast());
@@ -813,10 +821,10 @@ impl Connection {
         Ok(())
     }
 
-    /// From LibreSSL, the SSL itself, its context set up for QUIC when it
-    /// was made (`setup_tls_context`), told to use QUIC's code point for
-    /// its transport parameters.
-    #[cfg(crypto = "libressl")]
+    /// From LibreSSL, AWS-LC and BoringSSL, the SSL itself, its context
+    /// set up for QUIC when it was made (`setup_tls_context`), told to use
+    /// QUIC's code point for its transport parameters.
+    #[cfg(any(crypto = "libressl", crypto = "boringssl"))]
     fn set_native_handle(
         &mut self,
         conn: *mut sys::ngtcp2_conn,

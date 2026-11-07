@@ -1,0 +1,51 @@
+=== AWS-LC's errors are unpacked by OpenSSL's number for the SSL library
+file: crates/curl-openssl/src/ffi.rs
+witness: curl-openssl ffi::tests::the_forks_values_are_their_headers
+openssl-fork: awslc
+--- old
+    pub(crate) const ERR_LIB_SSL: c_int = openssl_sys::ERR_LIB_SSL as c_int;
+--- new
+    pub(crate) const ERR_LIB_SSL: c_int = 20;
+
+=== the QUIC context over AWS-LC is not set up by ngtcp2's BoringSSL crypto
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 a_resumed_session_sends_its_get_as_early_data
+openssl-fork: awslc
+--- old
+        if unsafe { sys::ngtcp2_crypto_boringssl_configure_client_context(ctx.context().as_ptr()) }
+            != 0
+--- new
+        if false
+            && unsafe { sys::ngtcp2_crypto_boringssl_configure_client_context(ctx.context().as_ptr()) }
+                != 0
+
+=== the chain is said by its levels over the forks, which C's build over them does not say
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl no_certificate_of_the_chain_is_said_by_its_level
+openssl-fork: awslc
+--- old
+fn info_chain(_: NonNull<SSL>, _: &mut TlsCx<'_>) {}
+--- new
+fn info_chain(_: NonNull<SSL>, io: &mut TlsCx<'_>) {
+    io.info(format_args!("  Certificate level 0: ?"));
+}
+
+=== BoringSSL claims a TLS 1.3 cipher list it cannot take
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl tests::the_library_declares_what_c_s_build_over_it_has
+openssl-fork: boringssl
+--- old
+    tls13_ciphers: !cfg!(boringssl),
+--- new
+    tls13_ciphers: true,
+
+=== BoringSSL's version line gives a version C's build gives none
+file: crates/curl-openssl/src/sys.rs
+witness: curl-openssl sys::tests::the_version_is_named_as_c_names_it
+openssl-fork: boringssl
+--- old
+pub(crate) fn version_len() -> usize {
+--- new
+pub(crate) fn version_len() -> usize {
+    #[cfg(boringssl)]
+    return "BoringSSL/1".len();

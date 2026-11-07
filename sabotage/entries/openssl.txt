@@ -12,9 +12,9 @@ witness: curl-openssl tests::signs_test_5001_s_base_with_the_test_key
 file: crates/curl-openssl/src/sys.rs
 witness: curl-openssl sys::tests::three_or_later_is_supported
 --- old
-    if number < OLDEST && !cfg!(libressl) {
+    if number < OLDEST && cfg!(ossl3) {
 --- new
-    if number <= OLDEST && !cfg!(libressl) {
+    if number <= OLDEST && cfg!(ossl3) {
 
 === a verified peer's certificate is taken whatever names it holds
 file: crates/curl-openssl/src/x509.rs
@@ -153,7 +153,7 @@ witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_load
 file: crates/curl-openssl/src/x509.rs
 witness: curl-openssl a_revoked_certificate_fails_the_verification
 --- old
-        flags = openssl_sys::X509_V_FLAG_CRL_CHECK | openssl_sys::X509_V_FLAG_CRL_CHECK_ALL;
+        flags = ffi::X509_V_FLAG_CRL_CHECK | ffi::X509_V_FLAG_CRL_CHECK_ALL;
 --- new
         flags = 0;
 

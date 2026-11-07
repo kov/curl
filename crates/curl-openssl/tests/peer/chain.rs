@@ -1,6 +1,7 @@
 //! The peer's chain as a transfer that asks reports it (`CURLOPT_CERTINFO`,
 //! `ossl_certchain`): each field worded as C words it.
 
+#[cfg(not(boringssl))]
 use openssl::dh::Dh;
 use openssl::dsa::Dsa;
 use openssl::rsa::Rsa;
@@ -164,8 +165,13 @@ fn a_chain_of_c_s_hundred_is_reported_and_a_longer_one_fails() {
     // PKCS#3 parameters of its own: a group the library knows (RFC 5114's,
     // RFC 7919's) makes the key X9.42's (`EVP_PKEY_DHX`), which C does not
     // name.
+    // BoringSSL has no DH keys in certificates: an EC key in its place.
+    #[cfg(not(boringssl))]
     let dh = Dh::generate_params(512, 2).unwrap();
+    #[cfg(not(boringssl))]
     let dh = PKey::from_dh(dh.generate_key().unwrap()).unwrap();
+    #[cfg(boringssl)]
+    let dh = key();
     let ec = key();
     let mut extras = vec![extra(&certs, "dsa", 10, &dsa), extra(&certs, "dh", 11, &dh)];
     for i in 0..97 {
@@ -174,6 +180,7 @@ fn a_chain_of_c_s_hundred_is_reported_and_a_longer_one_fails() {
     let with = |extras: Vec<X509>| {
         let (at, server) = serve_configured(&certs, false, move |a| {
             // The DH key's 512 bits pass the server's checks of its chain.
+            #[cfg(not(boringssl_like))]
             a.set_security_level(0);
             for x in extras {
                 a.add_extra_chain_cert(x).unwrap();
@@ -200,8 +207,11 @@ fn a_chain_of_c_s_hundred_is_reported_and_a_longer_one_fails() {
             format!("dsa(pub_key):{}", bn(dsa.pub_key())),
         ]
     );
+    #[cfg(not(boringssl))]
     let dh = dh.dh().unwrap();
+    #[cfg(not(boringssl))]
     let q = dh.prime_q().map(bn).unwrap_or_default();
+    #[cfg(not(boringssl))]
     assert_eq!(
         key_lines(&chain[2], "dh"),
         [

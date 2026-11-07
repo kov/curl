@@ -2,17 +2,22 @@
 //! `verifystatus`), and the issuer the peer's certificate must have
 //! (`CURLOPT_ISSUERCERT`, `ossl_check_issuer`).
 
+#[cfg(not(boringssl_like))]
 use std::process::Command;
 
+#[cfg(not(boringssl_like))]
 use openssl::ocsp::{OcspResponse, OcspResponseStatus};
 
 use super::*;
 
 pub(crate) const TESTS: &[(&str, fn())] = &[
+    // The forks' servers here staple nothing.
+    #[cfg(not(boringssl_like))]
     (
         "a_status_that_is_missing_or_unusable_fails_as_c_says",
         a_status_that_is_missing_or_unusable_fails_as_c_says,
     ),
+    #[cfg(not(boringssl_like))]
     (
         "a_good_status_passes_and_a_revoked_one_fails",
         a_good_status_passes_and_a_revoked_one_fails,
@@ -24,6 +29,7 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
 ];
 
 /// A server for `certs` that staples `status`, if any.
+#[cfg(not(boringssl_like))]
 fn serve_stapling(certs: &Certs, status: Option<Vec<u8>>) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     serve_configured(certs, false, move |a| {
         if let Some(status) = status {
@@ -37,6 +43,7 @@ fn serve_stapling(certs: &Certs, status: Option<Vec<u8>>) -> (SocketAddr, JoinHa
 }
 
 /// A GET checking the status the server staples.
+#[cfg(not(boringssl_like))]
 fn checking_status(certs: &Certs, status: Option<Vec<u8>>) -> Got {
     let (at, server) = serve_stapling(certs, status);
     let got = get("localhost", at, |o| {
@@ -49,6 +56,7 @@ fn checking_status(certs: &Certs, status: Option<Vec<u8>>) -> Got {
 
 /// No status, bytes that are none, and a responder that would not say:
 /// each 91, said as C says it.
+#[cfg(not(boringssl_like))]
 fn a_status_that_is_missing_or_unusable_fails_as_c_says() {
     let certs = certs("status-bad", "localhost", &["localhost"]);
     let later = OcspResponse::create(OcspResponseStatus::TRY_LATER, None)
@@ -84,6 +92,7 @@ fn a_status_that_is_missing_or_unusable_fails_as_c_says() {
 /// A response the `openssl ocsp` responder makes for `certs`' server
 /// certificate, signed by `signer` (its certificate and key), the
 /// certificate said `revoked` or valid.
+#[cfg(not(boringssl_like))]
 fn response(certs: &Certs, tag: &str, signer: (&X509, &PKey<Private>), revoked: bool) -> Vec<u8> {
     let dir = certs_dir();
     let file = |name: &str, bytes: &[u8]| {
@@ -142,6 +151,7 @@ fn response(certs: &Certs, tag: &str, signer: (&X509, &PKey<Private>), revoked: 
 /// A status the CA signed: good passes, saying so, whenever it was
 /// issued; revoked fails with its reason; one signed by a stranger fails
 /// its verification.
+#[cfg(not(boringssl_like))]
 fn a_good_status_passes_and_a_revoked_one_fails() {
     let certs = certs("status", "localhost", &["localhost"]);
     let good = response(&certs, "status-good", (&certs.ca, &certs.ca_key), false);

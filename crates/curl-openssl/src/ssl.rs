@@ -7,7 +7,7 @@
 
 #![allow(unsafe_code)]
 
-use core::ffi::{c_int, c_long, c_ulong, c_void};
+use core::ffi::{c_int, c_long};
 use core::ptr::{self, NonNull};
 use std::io;
 use std::num::NonZeroUsize;
@@ -67,7 +67,9 @@ pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     context_handler: true,
     https_proxy: true,
     ciphers: true,
-    tls13_ciphers: true,
+    // BoringSSL takes no TLS 1.3 suites (`HAVE_SSL_CTX_SET_CIPHERSUITES`
+    // unset).
+    tls13_ciphers: !cfg!(boringssl),
     curves: true,
     // LibreSSL takes no list (`HAVE_SSL_CTX_SET1_SIGALGS` unset).
     signature_algorithms: !cfg!(libressl),
@@ -75,7 +77,9 @@ pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     issuer_cert: true,
     issuer_cert_blob: true,
     ech: false,
-    cert_status: true,
+    // BoringSSL has no OCSP (`OPENSSL_NO_OCSP`): no stapled status to ask
+    // for (`ossl_cert_status_request`).
+    cert_status: !cfg!(no_ocsp),
     engines: true,
 };
 
@@ -248,6 +252,10 @@ enum Early {
     /// Writing it, this much written.
     Sending(usize),
     /// Written, the handshake going on.
+    #[cfg_attr(
+        boringssl_like,
+        allow(dead_code, reason = "no early data over the forks")
+    )]
     Sent,
     /// The handshake is done, the peer taking the early data or not.
     Over { accepted: bool },
@@ -322,8 +330,8 @@ struct Session {
 }
 
 /// The library's major error codes C tells apart.
-#[cfg(not(libressl))]
-pub(crate) fn error_lib(e: c_ulong) -> c_int {
+#[cfg(ossl3)]
+pub(crate) fn error_lib(e: ffi::ErrCode) -> c_int {
     // `ERR_GET_LIB`: the library is the 8 bits above the 23 of the
     // reason, unless the error is a system error.
     if e & (1 << 31) != 0 {
@@ -334,8 +342,8 @@ pub(crate) fn error_lib(e: c_ulong) -> c_int {
 }
 
 /// `ERR_GET_REASON`.
-#[cfg(not(libressl))]
-pub(crate) fn error_reason(e: c_ulong) -> c_int {
+#[cfg(ossl3)]
+pub(crate) fn error_reason(e: ffi::ErrCode) -> c_int {
     if e & (1 << 31) != 0 {
         (e & 0x7fff_ffff) as c_int
     } else {
@@ -343,16 +351,17 @@ pub(crate) fn error_reason(e: c_ulong) -> c_int {
     }
 }
 
-/// LibreSSL's `ERR_GET_LIB`: the 8 bits above the 24 of the function and
+/// LibreSSL's `ERR_GET_LIB`, and BoringSSL's and AWS-LC's, which pack an
+/// error as it does: the 8 bits above the 24 of the function and
 /// the reason, a system error's library among them (`ERR_LIB_SYS`).
-#[cfg(libressl)]
-pub(crate) fn error_lib(e: c_ulong) -> c_int {
+#[cfg(not(ossl3))]
+pub(crate) fn error_lib(e: ffi::ErrCode) -> c_int {
     ((e >> 24) & 0xff) as c_int
 }
 
-/// LibreSSL's `ERR_GET_REASON`: the low 12 bits.
-#[cfg(libressl)]
-pub(crate) fn error_reason(e: c_ulong) -> c_int {
+/// LibreSSL's and the forks' `ERR_GET_REASON`: the low 12 bits.
+#[cfg(not(ossl3))]
+pub(crate) fn error_reason(e: ffi::ErrCode) -> c_int {
     (e & 0xfff) as c_int
 }
 
@@ -541,15 +550,10 @@ impl Session {
             TlsMaxVersion::None | TlsMaxVersion::Default => 0,
         };
         let c = ctx.as_ptr();
-        // SAFETY: the context, and the command of the macro C calls
-        // (`SSL_CTX_set_min_proto_version`), which takes no pointer.
-        let set_min = unsafe {
-            openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_SET_MIN_PROTO_VERSION, min, ptr::null_mut())
-        };
-        // SAFETY: as above (`SSL_CTX_set_max_proto_version`).
-        let set_max = || unsafe {
-            openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_SET_MAX_PROTO_VERSION, max, ptr::null_mut())
-        };
+        // SAFETY: the context.
+        let set_min = unsafe { ffi::SSL_CTX_set_min_proto_version(c, min) };
+        // SAFETY: as above.
+        let set_max = || unsafe { ffi::SSL_CTX_set_max_proto_version(c, max) };
         if set_min == 0 || set_max() == 0 {
             return Err(ErrorKind::SslConnectError);
         }
@@ -557,18 +561,17 @@ impl Session {
         // writes retried from another address, as C sets them.
         // SAFETY: the context, and plain values.
         unsafe { openssl_sys::SSL_CTX_set_options(c, ctx_options as _) };
-        // SAFETY: as above (`SSL_CTX_set_read_ahead`).
-        unsafe { openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_SET_READ_AHEAD, 1, ptr::null_mut()) };
-        // LibreSSL has no read buffer to size
-        // (`HAVE_SSL_CTX_SET_DEFAULT_READ_BUFFER_LEN`).
-        #[cfg(not(libressl))]
+        // SAFETY: as above.
+        unsafe { ffi::SSL_CTX_set_read_ahead(c, true) };
+        // LibreSSL, BoringSSL and an AWS-LC before 1.61 have no read
+        // buffer to size (`HAVE_SSL_CTX_SET_DEFAULT_READ_BUFFER_LEN`).
+        #[cfg(read_buffer_len)]
         // SAFETY: as above.
         unsafe {
             ffi::SSL_CTX_set_default_read_buffer_len(c, 0x401e * 4)
         };
-        let mode = openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER;
-        // SAFETY: as above (`SSL_CTX_set_mode`).
-        unsafe { openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_MODE, mode, ptr::null_mut()) };
+        // SAFETY: as above.
+        unsafe { ffi::SSL_CTX_set_mode_moving_write_buffer(c) };
         if let Some(ciphers) = &options.ciphers
             && min_version != TlsMinVersion::Tls1_3
         {
@@ -583,6 +586,9 @@ impl Session {
             }
             io.info(format_args!("Cipher selection: {}", Text(ciphers)));
         }
+        // BoringSSL takes no TLS 1.3 suites (`HAVE_SSL_CTX_SET_CIPHERSUITES`),
+        // which its support says.
+        #[cfg(not(boringssl))]
         if let Some(ciphers) = &options.tls13_ciphers
             && matches!(
                 options.max_version,
@@ -611,42 +617,35 @@ impl Session {
             crate::cert::client_cert(ctx, options, self.password.as_ref(), &mut self.crypto, io)?;
         }
         // SAFETY: the context. OpenSSL 1.1.1 and later need the client
-        // to opt in to authenticating after the handshake.
-        unsafe { openssl_sys::SSL_CTX_set_post_handshake_auth(ctx.as_ptr(), 1) };
+        // to opt in to authenticating after the handshake; the forks have
+        // no such call (`HAVE_SSL_CTX_SET_POST_HANDSHAKE_AUTH`).
+        #[cfg(not(boringssl_like))]
+        unsafe {
+            openssl_sys::SSL_CTX_set_post_handshake_auth(ctx.as_ptr(), 1)
+        };
         // LibreSSL takes no list of signature algorithms, which C then
         // leaves unset (`HAVE_SSL_CTX_SET1_SIGALGS`).
-        let sigalgs = if cfg!(libressl) {
-            &None
-        } else {
-            &options.signature_algorithms
-        };
-        for (list, command, what) in [
-            (
-                &options.curves,
-                ffi::SSL_CTRL_SET_GROUPS_LIST,
-                "curves list",
-            ),
-            (
-                sigalgs,
-                ffi::SSL_CTRL_SET_SIGALGS_LIST,
-                "signature algorithms",
-            ),
-        ] {
-            let Some(list) = list else { continue };
+        let curves = &options.curves;
+        if let Some(list) = curves {
             let c = c_string(list)?;
             // SAFETY: the context, a C string alive for the call.
-            let set = unsafe {
-                openssl_sys::SSL_CTX_ctrl(
-                    ctx.as_ptr(),
-                    command,
-                    0,
-                    c.as_ptr().cast_mut().cast::<c_void>(),
-                )
-            };
-            if set == 0 {
+            if unsafe { ffi::SSL_CTX_set1_curves_list(ctx.as_ptr(), c.as_ptr().cast()) } == 0 {
                 return Err(io.fail(
                     ErrorKind::SslCipher,
-                    format_args!("failed setting {what}: '{}'", Text(list)),
+                    format_args!("failed setting curves list: '{}'", Text(list)),
+                ));
+            }
+        }
+        // LibreSSL takes no list of signature algorithms, which C then
+        // leaves unset (`HAVE_SSL_CTX_SET1_SIGALGS`).
+        #[cfg(not(libressl))]
+        if let Some(list) = &options.signature_algorithms {
+            let c = c_string(list)?;
+            // SAFETY: the context, a C string alive for the call.
+            if unsafe { ffi::SSL_CTX_set1_sigalgs_list(ctx.as_ptr(), c.as_ptr().cast()) } == 0 {
+                return Err(io.fail(
+                    ErrorKind::SslCipher,
+                    format_args!("failed setting signature algorithms: '{}'", Text(list)),
                 ));
             }
         }
@@ -691,6 +690,8 @@ impl Session {
             ));
         };
         self.ssl = Some(Ssl(ssl));
+        // The status cannot be asked for where C has no OCSP (`cert_status`).
+        #[cfg(not(no_ocsp))]
         if options.verify_status {
             crate::ocsp::request(ssl);
         }
@@ -704,14 +705,7 @@ impl Session {
                 .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
             // SAFETY: the SSL, a C string alive for the call, which the
             // library copies.
-            let set = unsafe {
-                openssl_sys::SSL_ctrl(
-                    ssl.as_ptr(),
-                    ffi::SSL_CTRL_SET_TLSEXT_HOSTNAME,
-                    ffi::TLSEXT_NAMETYPE_HOST_NAME,
-                    sni.as_mut_ptr().cast(),
-                )
-            };
+            let set = unsafe { ffi::SSL_set_tlsext_host_name(ssl.as_ptr(), sni.as_ptr().cast()) };
             if set == 0 {
                 return Err(io.fail(ErrorKind::SslConnectError, format_args!("Failed set SNI")));
             }
@@ -748,9 +742,8 @@ impl Session {
             None => self.alpn.wire(),
         };
         if !wire.is_empty() {
-            let len = u32::try_from(wire.len()).expect("a short list");
             // SAFETY: the SSL, and the list, which the library copies.
-            if unsafe { openssl_sys::SSL_set_alpn_protos(ssl.as_ptr(), wire.as_ptr(), len) } != 0 {
+            if unsafe { ffi::SSL_set_alpn_protos(ssl.as_ptr(), wire) } != 0 {
                 return Err(io.fail(
                     ErrorKind::SslConnectError,
                     format_args!("Error setting ALPN"),
@@ -808,14 +801,15 @@ impl Session {
                 self.waits = TlsWait::Send;
                 return Ok(Handshake::Waiting);
             }
+            #[cfg(not(boringssl_like))]
             SSL_ERROR_WANT_ASYNC => {
                 io.trace(format_args!("SSL_connect() -> want async"));
                 self.waits = TlsWait::Recv;
                 return Ok(Handshake::Waiting);
             }
-            // LibreSSL has no such answer, which C's build then does not
-            // know (`#ifdef SSL_ERROR_WANT_RETRY_VERIFY`).
-            #[cfg(not(libressl))]
+            // LibreSSL and the forks have no such answer, which C's build
+            // then does not know (`#ifdef SSL_ERROR_WANT_RETRY_VERIFY`).
+            #[cfg(ossl3)]
             SSL_ERROR_WANT_RETRY_VERIFY => {
                 // A verify callback the application installed waits for
                 // its verdict: the transfer's receiving pauses, and the
@@ -852,7 +846,8 @@ impl Session {
                     format_args!("SSL certificate verification failed"),
                 )
             }
-        } else if lib == ffi::ERR_LIB_SSL && reason == ffi::SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED
+        } else if lib == ffi::ERR_LIB_SSL
+            && Some(reason) == ffi::SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED
         {
             let e = ErrText::of(errdetail);
             io.fail(
@@ -988,8 +983,22 @@ impl Session {
         }
     }
 
+    /// Over the forks, no handshake is put off for early data, which C's
+    /// build of them sends none of (`HAVE_OPENSSL_EARLYDATA` unset): a
+    /// session allows none (`ffi::SSL_SESSION_get_max_early_data`).
+    #[cfg(boringssl_like)]
+    fn write_early(
+        &mut self,
+        _: &mut TlsIo<'_>,
+        _: &[u8],
+        _: usize,
+    ) -> Result<Handshake, ErrorKind> {
+        unreachable!("a handshake is put off for early data only where a session allows it")
+    }
+
     /// Write `early` as early data, from `sent` on
     /// (`ossl_send_earlydata`): done, or waiting with what went kept.
+    #[cfg(not(boringssl_like))]
     fn write_early(
         &mut self,
         io: &mut TlsIo<'_>,
@@ -1129,7 +1138,7 @@ impl Session {
                 self.from_sectrust = ticket.sectrust();
                 io.info(format_args!("SSL verify result: {verified:x}"));
                 // SAFETY: the session, alive until freed below.
-                let allows = unsafe { openssl_sys::SSL_SESSION_get_max_early_data(session) };
+                let allows = unsafe { ffi::SSL_SESSION_get_max_early_data(session) };
                 // SAFETY: the SSL.
                 let version = unsafe { openssl_sys::SSL_version(s) };
                 if ticket.alpn_name().is_some()
@@ -1184,7 +1193,7 @@ pub(crate) unsafe fn ticket_of(
     // SAFETY: as the caller says.
     let version = unsafe { openssl_sys::SSL_version(ssl) };
     // SAFETY: as the caller says.
-    let early = unsafe { openssl_sys::SSL_SESSION_get_max_early_data(session) };
+    let early = unsafe { ffi::SSL_SESSION_get_max_early_data(session) };
     // SAFETY: as the caller says.
     let timeout = unsafe { openssl_sys::SSL_SESSION_get_timeout(session) };
     let mut proto: *const u8 = ptr::null();
@@ -1214,9 +1223,10 @@ pub(crate) unsafe fn ticket_of(
 }
 
 /// `SSL_ERROR_WANT_ASYNC`.
+#[cfg(not(boringssl_like))]
 const SSL_ERROR_WANT_ASYNC: c_int = 9;
 /// `SSL_ERROR_WANT_RETRY_VERIFY`, OpenSSL 3.0's.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 const SSL_ERROR_WANT_RETRY_VERIFY: c_int = 12;
 
 /// The text of a C string the library returns, or none.
@@ -1244,7 +1254,7 @@ unsafe fn group_name<'a>(ssl: NonNull<SSL>) -> Option<&'a [u8]> {
 ///
 /// # Safety
 /// As above.
-#[cfg(not(any(ossl320, libressl)))]
+#[cfg(all(ossl3, not(ossl320)))]
 unsafe fn group_name<'a>(ssl: NonNull<SSL>) -> Option<&'a [u8]> {
     let command = ffi::SSL_CTRL_GET_NEGOTIATED_GROUP;
     // SAFETY: as the caller says (`SSL_get_negotiated_group`).
@@ -1260,7 +1270,7 @@ unsafe fn group_name<'a>(ssl: NonNull<SSL>) -> Option<&'a [u8]> {
 ///
 /// # Safety
 /// None needed: nothing is asked of `ssl`.
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 unsafe fn group_name<'a>(_ssl: NonNull<SSL>) -> Option<&'a [u8]> {
     None
 }
@@ -1272,14 +1282,14 @@ unsafe fn group_name<'a>(_ssl: NonNull<SSL>) -> Option<&'a [u8]> {
 /// # Safety
 /// `ssl`'s handshake is done.
 unsafe fn peer_signature_nid(ssl: NonNull<SSL>) -> c_int {
-    #[cfg(not(libressl))]
+    #[cfg(ossl3)]
     {
         let mut nid: c_int = 0;
         // SAFETY: as the caller says; it writes the id if it knows one.
         unsafe { ffi::SSL_get_peer_signature_type_nid(ssl.as_ptr(), &mut nid) };
         nid
     }
-    #[cfg(libressl)]
+    #[cfg(not(ossl3))]
     {
         let _ = ssl;
         openssl_sys::NID_undef
@@ -1348,6 +1358,8 @@ impl TlsSession for Session {
                 return Err(kind);
             }
         }
+        // None is sent over the forks (`write_early`).
+        #[cfg(not(boringssl_like))]
         if self.early == Early::Sent {
             // SAFETY: the SSL, its handshake done.
             let status = unsafe { ffi::SSL_get_early_data_status(self.ssl().as_ptr()) };
@@ -1966,6 +1978,7 @@ mod tests {
         let ssl = session.native().session().unwrap().cast::<SSL>();
         // SAFETY: the session's SSL, alive while it is; the command
         // (`SSL_get_min_proto_version`) takes no pointer.
+        #[cfg(not(boringssl_like))]
         let min = unsafe {
             openssl_sys::SSL_ctrl(
                 ssl.as_ptr(),
@@ -1974,6 +1987,9 @@ mod tests {
                 ptr::null_mut(),
             )
         };
+        // SAFETY: as above; the forks' is a function.
+        #[cfg(boringssl_like)]
+        let min = unsafe { openssl_sys::SSL_get_min_proto_version(ssl.as_ptr()) };
         assert_eq!(min, 0x304);
         assert!(session.early_data().is_none());
         drop(session);
@@ -2009,5 +2025,6 @@ mod tests {
     }
 
     /// `SSL_CTRL_GET_MIN_PROTO_VERSION` (`ssl.h`).
+    #[cfg(not(boringssl_like))]
     const SSL_CTRL_GET_MIN_PROTO_VERSION: c_int = 130;
 }

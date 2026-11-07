@@ -543,6 +543,26 @@ unsafe extern "C" {
     pub(crate) fn SSL_set_quic_use_legacy_codepoint(ssl: *mut c_void, use_legacy: c_int);
 }
 
+// AWS-LC's and BoringSSL's (`ngtcp2_crypto_boringssl`), over the QUIC API
+// they share with quictls under BoringSSL's names, and the fork's own call
+// C makes on the session, which openssl-sys declares from its headers.
+#[cfg(crypto = "boringssl")]
+unsafe extern "C" {
+    pub(crate) fn ngtcp2_crypto_boringssl_configure_client_context(ssl_ctx: *mut c_void) -> c_int;
+}
+
+/// `SSL_set_quic_use_legacy_codepoint`: the transport parameters under
+/// QUIC's code point, not the drafts'.
+///
+/// # Safety
+/// `ssl` is a live `SSL`.
+#[cfg(crypto = "boringssl")]
+#[allow(non_snake_case)]
+pub(crate) unsafe fn SSL_set_quic_use_legacy_codepoint(ssl: *mut c_void, use_legacy: c_int) {
+    // SAFETY: as the caller says.
+    unsafe { openssl_sys::SSL_set_quic_use_legacy_codepoint(ssl.cast(), use_legacy) };
+}
+
 // GnuTLS's (`ngtcp2_crypto_gnutls`), and GnuTLS's own call that hands its
 // callbacks the connection; a `gnutls_session_t` is a pointer.
 #[cfg(crypto = "gnutls")]
@@ -808,7 +828,7 @@ unsafe extern "C" {
 /// `ssl` is a live `SSL`. `data` stays valid for as long as anything
 /// reads the slot back, which is the caller's to arrange: OpenSSL only
 /// stores it.
-#[cfg(any(crypto = "ossl", crypto = "libressl"))]
+#[cfg(any(crypto = "ossl", crypto = "libressl", crypto = "boringssl"))]
 pub(crate) unsafe fn ssl_set_app_data(ssl: *mut c_void, data: *mut c_void) {
     unsafe extern "C" {
         fn SSL_set_ex_data(ssl: *mut c_void, idx: c_int, data: *mut c_void) -> c_int;

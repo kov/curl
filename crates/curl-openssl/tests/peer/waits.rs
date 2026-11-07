@@ -288,13 +288,13 @@ fn a_send_the_socket_fails_is_said_as_c_says() {
         String::from_utf8_lossy(&got.failure),
         format!("Send failure: {unconnected}")
     );
-    #[cfg(all(not(libressl), not(windows)))]
+    #[cfg(all(not(any(libressl, boringssl_like)), not(windows)))]
     let line = format!(
         "OpenSSL SSL_write: OpenSSL/{}: error:80000059:system library::Destination address \
          required, errno 89",
         openssl::version::version().split(' ').nth(1).unwrap()
     );
-    #[cfg(all(not(libressl), windows))]
+    #[cfg(all(not(any(libressl, boringssl_like)), windows))]
     let line = format!(
         "OpenSSL SSL_write: OpenSSL/{}: error:{:08X}:system library::Unknown error, errno \
          {_errno}",
@@ -303,6 +303,9 @@ fn a_send_the_socket_fails_is_said_as_c_says() {
     );
     #[cfg(libressl)]
     let line = format!("SSL_write() error: {}", super::LIBRESSL_FAILED_BELOW);
+    // The forks queue no error for the socket's: its text alone.
+    #[cfg(boringssl_like)]
+    let line = format!("{PACKAGE} SSL_write: {unconnected}, errno {_errno}");
     assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
 }
 
@@ -325,7 +328,7 @@ fn a_receive_failing_without_errno_is_said_as_c_says() {
     assert_eq!(got.failure, b"Recv failure: the layer below failed");
     #[cfg(not(libressl))]
     let line = format!(
-        "OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to localhost:{}",
+        "{PACKAGE} SSL_connect: SSL_ERROR_SYSCALL in connection to localhost:{}",
         at.port()
     );
     #[cfg(libressl)]
@@ -348,7 +351,7 @@ fn a_receive_failing_without_errno_is_said_as_c_says() {
     );
     assert_eq!(got.failure, b"Recv failure: the layer below failed");
     #[cfg(not(libressl))]
-    let line = "OpenSSL SSL_read: SSL_ERROR_SYSCALL, errno 0".to_owned();
+    let line = format!("{PACKAGE} SSL_read: SSL_ERROR_SYSCALL, errno 0");
     #[cfg(libressl)]
     let line = format!(
         "LibreSSL SSL_read: LibreSSL/{}: {}, errno 0",

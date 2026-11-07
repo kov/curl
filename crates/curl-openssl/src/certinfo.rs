@@ -253,10 +253,10 @@ fn extensions(info: &mut CertInfo, i: usize, x: *mut X509) -> Result<(), OutOfMe
 
 /// A number of a key's, or null: one OpenSSL 3 gave this crate, freed as
 /// it goes (`FREE_PKEY_PARAM_BIGNUM`).
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 struct Num(*mut openssl_sys::BIGNUM);
 
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 impl Num {
     /// The parameter `param`, a C string, of `key`
     /// (`EVP_PKEY_get_bn_param`).
@@ -272,7 +272,7 @@ impl Num {
     }
 }
 
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 impl Drop for Num {
     fn drop(&mut self) {
         // SAFETY: the number, or null, freed once.
@@ -280,9 +280,9 @@ impl Drop for Num {
     }
 }
 
-/// A number the key keeps, or null: LibreSSL's, read as C's build
+/// A number the key keeps, or null: LibreSSL's or a fork's, read as C's build
 /// without OpenSSL 3 reads them (`RSA_get0_key`, `DSA_get0_pqg`, ...).
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 #[derive(Clone, Copy)]
 struct Num(*mut openssl_sys::BIGNUM);
 
@@ -292,7 +292,7 @@ struct Num(*mut openssl_sys::BIGNUM);
 /// # Safety
 /// `key` is a key of the kind `kind` names; the numbers live while it
 /// does.
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 unsafe fn numbers(key: *mut EVP_PKEY, kind: &str) -> [Num; 4] {
     let mut n = [ptr::null::<openssl_sys::BIGNUM>(); 4];
     let [a, b, c, d] = &mut n;
@@ -362,15 +362,15 @@ fn public_key(
         ),
         _ => return Ok(()),
     };
-    #[cfg(libressl)]
+    #[cfg(not(ossl3))]
     // SAFETY: the key, of the kind matched.
     let mut numbers = unsafe { numbers(key, kind) }.into_iter();
     let mut first = true;
     for (_param, shown) in params {
-        #[cfg(not(libressl))]
+        #[cfg(ossl3)]
         // SAFETY: the key and a parameter's name as a C string.
         let bn = unsafe { Num::param(key, _param) };
-        #[cfg(libressl)]
+        #[cfg(not(ossl3))]
         let bn = numbers.next().expect("a number for each parameter");
         let bn = bn.0;
         if first && kind == "rsa" {

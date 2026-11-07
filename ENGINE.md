@@ -3092,11 +3092,19 @@ reaches its library through one `SharedLibraries` (the decoders, the Ed25519 sig
 TLS library, the GSS-API library), the shim's statics or the tool's shared value, so a handle
 carries one pointer for all of them; `Easy: Default` takes `Libraries::NONE`. Without a TLS library `https` is a scheme the
 build leaves out (`Protocol "https" is disabled`, `UnsupportedProtocol`), as in C built
-without TLS; the shim and the tool give every handle OpenSSL. One library
-is built, OpenSSL 3.0
-or later, checked at build (curl-openssl's build script reads the version openssl-sys found,
-`DEP_OPENSSL_VERSION_NUMBER`, and refuses LibreSSL) and at init (`OpenSSL_version_num`): an
-older library is a backend that is not there. `curl_global_sslset` answers OK for
+without TLS; the shim and the tool give every handle OpenSSL. One library of the OpenSSL
+family is built, whichever openssl-sys finds (`OPENSSL_DIR`): OpenSSL 3.0 or later, LibreSSL
+3.4.1 or later, AWS-LC or BoringSSL. curl-openssl's build script reads which from what
+openssl-sys says of its headers (`DEP_OPENSSL_*`) and sets cfgs named for C's macros
+(`ossl3` for `HAVE_OPENSSL3`, `libressl`, `awslc`, `boringssl`, `boringssl_like` for
+`HAVE_BORINGSSL_LIKE`, `no_ocsp`), so that each branch is the branch of `lib/vtls/openssl.c`
+it follows; it refuses an older OpenSSL or LibreSSL, and init refuses an OpenSSL older than
+3.0 (`OpenSSL_version_num`), a backend that is not there. A fork's differences from OpenSSL's
+C API stop in `ffi.rs`, where each is reconciled once. What a fork lacks is what C's build
+over it lacks: early data, post-handshake authentication, engines and providers, and the
+chain said by its levels, on both; on BoringSSL the TLS 1.3 cipher list and the stapled
+status as well (their options not built in). The version is `AWS-LC/5.11.0`, or `BoringSSL`
+alone, as C's CMake gives it no version. `curl_global_sslset` answers OK for
 `CURLSSLBACKEND_OPENSSL` or `"openssl"`, also after init, and `CURLSSLSET_UNKNOWN_BACKEND` for
 any other, with only OpenSSL available.
 

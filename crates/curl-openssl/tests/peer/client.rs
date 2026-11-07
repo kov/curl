@@ -201,7 +201,7 @@ fn a_pkcs12_file_is_opened_with_its_password() {
     });
     assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
     let failure = String::from_utf8(got.failure).unwrap();
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     assert!(
         failure.starts_with("could not parse PKCS12 file, check password, OpenSSL error error:")
             && failure.ends_with("mac verify failure"),
@@ -212,6 +212,20 @@ fn a_pkcs12_file_is_opened_with_its_password() {
         failure,
         "could not parse PKCS12 file, check password, LibreSSL error error:23FFF071:PKCS12 \
          routines:CRYPTO_internal:mac verify failure"
+    );
+    // AWS-LC names neither the library nor the reason
+    // (`PKCS8_R_INCORRECT_PASSWORD`), as C's build over it says.
+    #[cfg(awslc)]
+    assert_eq!(
+        failure,
+        "could not parse PKCS12 file, check password, AWS-LC error \
+         error:2300006c:lib(35):OPENSSL_internal:reason(108)"
+    );
+    #[cfg(boringssl)]
+    assert_eq!(
+        failure,
+        "could not parse PKCS12 file, check password, BoringSSL error \
+         error:1300006c:PKCS8 routines:OPENSSL_internal:INCORRECT_PASSWORD"
     );
 }
 
@@ -250,25 +264,25 @@ fn a_certificate_or_key_that_cannot_be_used_fails_as_c_says() {
     let client = client("mtls-bad");
     let other = self::client("mtls-bad-other");
     type Set<'a> = Box<dyn Fn(&mut curl_core::options::TlsOptions) + 'a>;
-    #[cfg(not(libressl))]
+    #[cfg(ossl3)]
     let (no_engine, no_provider) = (
         "crypto engine not set, cannot load certificate",
         "crypto provider not set, cannot load private key",
     );
     // LibreSSL has no engines or providers, nor C's code for them.
-    #[cfg(libressl)]
+    #[cfg(not(ossl3))]
     let (no_engine, no_provider) = (
         "SSL_FILETYPE_ENGINE not supported for certificate",
         "SSL_FILETYPE_PROVIDER not supported for private key",
     );
-    #[cfg(all(not(libressl), not(windows)))]
+    #[cfg(all(ossl3, not(windows)))]
     let missing = "could not load PEM client certificate from /nonexistent/cert.p12, OpenSSL \
                    error error:80000002:system library::No such file or directory, (no key \
                    found, wrong passphrase, or wrong file format?)";
     // OpenSSL queues the system's own number for a path not found
     // (`ERROR_PATH_NOT_FOUND`), which the C library's text then names as
     // the `errno` 3 it is not.
-    #[cfg(all(not(libressl), windows))]
+    #[cfg(all(ossl3, windows))]
     let missing = "could not load PEM client certificate from /nonexistent/cert.p12, OpenSSL \
                    error error:80000003:system library::No such process, (no key found, \
                    wrong passphrase, or wrong file format?)";
@@ -277,6 +291,14 @@ fn a_certificate_or_key_that_cannot_be_used_fails_as_c_says() {
     let missing = "could not load PEM client certificate from /nonexistent/cert.p12, LibreSSL \
                    error error:02FFF002:system library:func(4095):No such file or directory, \
                    (no key found, wrong passphrase, or wrong file format?)";
+    #[cfg(awslc)]
+    let missing = "could not load PEM client certificate from /nonexistent/cert.p12, AWS-LC \
+                   error error:02000002:system library:OPENSSL_internal:No such file or \
+                   directory, (no key found, wrong passphrase, or wrong file format?)";
+    #[cfg(boringssl)]
+    let missing = "could not load PEM client certificate from /nonexistent/cert.p12, BoringSSL \
+                   error error:02000002:system library:OPENSSL_internal:No such file or \
+                   directory, (no key found, wrong passphrase, or wrong file format?)";
     let cases: Vec<(Set<'_>, ErrorKind, String)> = vec![
         (
             Box::new(|t| {
@@ -361,22 +383,32 @@ fn no_client_certificate_fails_as_the_server_alerts() {
     let got = get("localhost", at, trusting(&certs));
     server.join().unwrap();
     let failure = String::from_utf8(got.failure).unwrap();
-    let version = openssl::version::version().split(' ').nth(1).unwrap();
     assert_eq!(got.result, Err(ErrorKind::RecvError), "{failure}");
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     assert_eq!(
         failure,
         format!(
-            "OpenSSL SSL_read: OpenSSL/{version}: error:0A00045C:SSL routines::tlsv13 alert \
-             certificate required, errno 0"
+            "OpenSSL SSL_read: {}: error:0A00045C:SSL routines::tlsv13 alert \
+             certificate required, errno 0",
+            library()
         )
     );
     #[cfg(libressl)]
     assert_eq!(
         failure,
         format!(
-            "LibreSSL SSL_read: LibreSSL/{version}: error:1404C45C:SSL routines:ST_OK:tlsv13 \
-             alert certificate required, errno 0"
+            "LibreSSL SSL_read: {}: error:1404C45C:SSL routines:ST_OK:tlsv13 \
+             alert certificate required, errno 0",
+            library()
+        )
+    );
+    #[cfg(boringssl_like)]
+    assert_eq!(
+        failure,
+        format!(
+            "{PACKAGE} SSL_read: {}: error:1000045c:SSL routines:OPENSSL_internal:\
+             TLSV1_ALERT_CERTIFICATE_REQUIRED, errno 0",
+            library()
         )
     );
 }
@@ -521,7 +553,7 @@ fn a_chain_blob_with_a_broken_certificate_fails() {
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
     let failure = String::from_utf8(got.failure).unwrap();
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     assert!(
         failure.starts_with(
             "could not load PEM client certificate from CURLOPT_SSLCERT_BLOB, OpenSSL error \
@@ -538,6 +570,15 @@ fn a_chain_blob_with_a_broken_certificate_fails() {
         "could not load PEM client certificate from CURLOPT_SSLCERT_BLOB, LibreSSL error \
          error:09FFF064:PEM routines:CRYPTO_internal:bad base64 decode, (no key found, wrong \
          passphrase, or wrong file format?)"
+    );
+    #[cfg(boringssl_like)]
+    assert_eq!(
+        failure,
+        format!(
+            "could not load PEM client certificate from CURLOPT_SSLCERT_BLOB, {PACKAGE} error \
+             error:09000064:PEM routines:OPENSSL_internal:BAD_BASE64_DECODE, (no key found, \
+             wrong passphrase, or wrong file format?)"
+        )
     );
 }
 
@@ -558,9 +599,25 @@ fn a_key_of_another_kind_than_the_certificate_fails_the_check() {
         t.key = Some(bytes(&rsa_file));
     });
     server.join().unwrap();
-    assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
+    #[cfg(not(boringssl))]
+    {
+        assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
+        assert_eq!(
+            got.failure,
+            b"Private key does not match the certificate public key"
+        );
+    }
+    // BoringSSL refuses the key as it is set, against the certificate
+    // set before it: C's `SSL_CTX_use_PrivateKey_file` fails (43).
+    #[cfg(boringssl)]
     assert_eq!(
-        got.failure,
-        b"Private key does not match the certificate public key"
+        (got.result, String::from_utf8(got.failure).unwrap()),
+        (
+            Err(ErrorKind::BadFunctionArgument),
+            format!(
+                "unable to set private key file: '{}' type PEM",
+                rsa_file.display()
+            )
+        )
     );
 }

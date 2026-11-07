@@ -423,6 +423,10 @@ struct Got {
     /// What OpenSSL made of the peer's certificate (`CURLINFO_SSL_VERIFYRESULT`).
     verify: i64,
     /// The bytes sent as early data (`CURLINFO_EARLYDATA_SENT_T`).
+    #[cfg_attr(
+        boringssl_like,
+        allow(dead_code, reason = "no early data over the forks")
+    )]
     early: i64,
 }
 
@@ -533,6 +537,28 @@ fn said(got: &Got, line: &str) -> bool {
 const RESET: (&str, i32) = ("Connection reset by peer", 104);
 #[cfg(windows)]
 const RESET: (&str, i32) = ("Connection was reset", 10054);
+
+/// The library's name, as C's messages over it start (`OSSL_PACKAGE`).
+#[cfg(not(any(libressl, boringssl_like)))]
+const PACKAGE: &str = "OpenSSL";
+#[cfg(libressl)]
+const PACKAGE: &str = "LibreSSL";
+#[cfg(awslc)]
+const PACKAGE: &str = "AWS-LC";
+#[cfg(boringssl)]
+const PACKAGE: &str = "BoringSSL";
+
+/// The library and its version, as `ossl_strerror` puts them before an
+/// error (`Curl_ossl_version`): BoringSSL's name alone, as C's build
+/// says it given no version.
+fn library() -> String {
+    if cfg!(boringssl) {
+        PACKAGE.to_owned()
+    } else {
+        let version = openssl::version::version().split(' ').nth(1).unwrap();
+        format!("{PACKAGE}/{version}")
+    }
+}
 
 /// What LibreSSL queues where its record layer's read or write failed
 /// below it, a reset or another failure: no system error of its own.
@@ -648,14 +674,14 @@ fn a_missing_ca_file_fails_as_a_bad_file_twice_said() {
     });
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslCacertBadfile));
-    #[cfg(not(libressl))]
+    #[cfg(ossl3)]
     assert_eq!(
         got.failure,
         b"error adding trust anchors from file: /nonexistent/ca.pem"
     );
     // LibreSSL loads the file and the directory in one call, and C says
     // both.
-    #[cfg(libressl)]
+    #[cfg(not(ossl3))]
     assert_eq!(
         got.failure,
         b"error adding trust anchors from locations:  CAfile: /nonexistent/ca.pem CApath: none"
@@ -738,7 +764,7 @@ fn the_library_reads_no_more_than_it_asks() {
     assert!(reads > 0, "no read traced in {:#?}", got.seen.lines);
     // After the handshake the library asks for what its read buffer
     // holds, C's `0x401e * 4` less its overhead: as C's trace says it.
-    #[cfg(not(libressl))]
+    #[cfg(read_buffer_len)]
     assert!(
         got.seen
             .lines
@@ -750,7 +776,7 @@ fn the_library_reads_no_more_than_it_asks() {
     // LibreSSL takes no read buffer's length (C sets none): it asks for
     // each record's header, then for its body, never beyond, as C's trace
     // over it says.
-    #[cfg(libressl)]
+    #[cfg(not(read_buffer_len))]
     {
         let asked = |len: &str| {
             got.seen
@@ -978,7 +1004,7 @@ fn an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own() {
     assert!(said(&native, "SSL Trust Anchors:"));
     // A store loaded in a provider's library context is not kept past it.
     // LibreSSL has no providers.
-    #[cfg(not(libressl))]
+    #[cfg(ossl3)]
     {
         let provider = verified_in(&mut m, &certs, |o| {
             o.tls.options.make_mut().unwrap().engine = Some(b"default".to_vec());

@@ -28,7 +28,7 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
     ),
     // The engine is built by the system's C compiler as a shared object;
     // LibreSSL has no engines.
-    #[cfg(all(unix, not(libressl)))]
+    #[cfg(all(unix, ossl3))]
     (
         "an_engine_s_certificate_and_key_serve_the_client",
         an_engine_s_certificate_and_key_serve_the_client,
@@ -38,14 +38,14 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
 /// Engines that start but load neither a certificate nor a key: on Linux
 /// `afalg` and `loader_attic`, which OpenSSL 3 builds; on Windows the
 /// built-in `rdrand`, as vcpkg's OpenSSL has no engine of its own to load.
-#[cfg(all(not(windows), not(libressl)))]
+#[cfg(all(not(windows), ossl3))]
 const ENGINES_THAT_LOAD_NOTHING: &[&[u8]] = &[b"afalg", b"loader_attic"];
-#[cfg(all(windows, not(libressl)))]
+#[cfg(all(windows, ossl3))]
 const ENGINES_THAT_LOAD_NOTHING: &[&[u8]] = &[b"rdrand"];
 
 /// What LibreSSL, which has no engines, says of any engine named, as C's
 /// build over it says it (53).
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 fn no_engine(got: &Got) {
     assert_eq!(got.result, Err(ErrorKind::SslEngineNotfound));
     assert_eq!(got.failure, b"OpenSSL engine not found");
@@ -54,7 +54,7 @@ fn no_engine(got: &Got) {
 /// Whether OpenSSL has a configuration file to load: the one
 /// `OPENSSL_CONF` names, or the default in its directory. vcpkg's build
 /// on Windows has none, and C's build there says so as a provider loads.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn a_configuration_loads() -> bool {
     if let Some(file) = std::env::var_os("OPENSSL_CONF") {
         return std::path::Path::new(&file).exists();
@@ -98,7 +98,7 @@ fn with_engine(certs: &Certs, client: &client::Client, engine: &[u8], set: Set<'
 fn an_engine_that_cannot_load_fails_as_c_says() {
     let certs = certs("engineless", "localhost", &["localhost"]);
     let client = client("engineless");
-    #[cfg(libressl)]
+    #[cfg(not(ossl3))]
     for engine in [&b"afalg"[..], b"loader_attic"] {
         let got = with_engine(
             &certs,
@@ -111,7 +111,7 @@ fn an_engine_that_cannot_load_fails_as_c_says() {
         );
         no_engine(&got);
     }
-    #[cfg(not(libressl))]
+    #[cfg(ossl3)]
     for &engine in ENGINES_THAT_LOAD_NOTHING {
         let got = with_engine(
             &certs,
@@ -148,7 +148,7 @@ fn an_engine_that_cannot_load_fails_as_c_says() {
 /// `curltest_engine.c`, an engine of the kind C's path is for (libp11's
 /// pkcs11 is one): built here, and found by OpenSSL by its name, in a
 /// child with `OPENSSL_ENGINES` naming where it is.
-#[cfg(all(unix, not(libressl)))]
+#[cfg(all(unix, ossl3))]
 fn an_engine_s_certificate_and_key_serve_the_client() {
     track::untracked(|| {
         let dir = certs_dir().join("engines");
@@ -273,7 +273,7 @@ fn with_named(certs: &Certs, engine: &[u8], default: bool) -> Got {
 
 /// LibreSSL has neither engines nor providers: every name fails, the
 /// empty and the long ones too, as C's build over it fails them.
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 fn an_engine_or_provider_that_cannot_be_had_fails_as_c_says() {
     let certs = certs("engines", "localhost", &["localhost"]);
     for (name, default) in [
@@ -293,7 +293,7 @@ fn an_engine_or_provider_that_cannot_be_had_fails_as_c_says() {
 /// nor a provider 53, OpenSSL's error said; a provider with no name, or a
 /// name too long, 43 and nothing said. A provider loaded serves the
 /// transfer, made the default engine of no engine, as C makes it.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn an_engine_or_provider_that_cannot_be_had_fails_as_c_says() {
     let certs = certs("engines", "localhost", &["localhost"]);
     let with = |engine: &[u8], default: bool| with_named(&certs, engine, default);
@@ -349,7 +349,7 @@ fn an_engine_or_provider_that_cannot_be_had_fails_as_c_says() {
 
 /// LibreSSL has no provider to read a store with: naming one fails, and a
 /// certificate from a store is refused, as C's build over it says.
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 fn a_provider_s_store_gives_the_client_certificate_and_key() {
     let certs = certs("store", "localhost", &["localhost"]);
     let client = client("store");
@@ -379,7 +379,7 @@ fn a_provider_s_store_gives_the_client_certificate_and_key() {
 /// `--cert-type PROV` and `--key-type PROV` with the default provider:
 /// both read from its store; a key that is not the certificate's fails,
 /// and a certificate from a store with none in it says so.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn a_provider_s_store_gives_the_client_certificate_and_key() {
     let certs = certs("store", "localhost", &["localhost"]);
     let client = client("store");
@@ -451,12 +451,12 @@ fn an_engine_made_the_default_is_said() {
     for default in [true, false] {
         let got = with_named(&certs, engine.as_bytes(), default);
         let line = format!("set default crypto engine '{engine}'");
-        #[cfg(not(libressl))]
+        #[cfg(ossl3)]
         {
             assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
             assert_eq!(said(&got, &line), default, "{:#?}", got.seen.lines);
         }
-        #[cfg(libressl)]
+        #[cfg(not(ossl3))]
         {
             no_engine(&got);
             assert!(!said(&got, &line), "{:#?}", got.seen.lines);
@@ -479,9 +479,9 @@ fn a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded() {
     let engine = b"loader_attic";
     #[cfg(windows)]
     let engine = b"rdrand";
-    #[cfg(all(not(windows), not(libressl)))]
+    #[cfg(all(not(windows), ossl3))]
     let failed = "Failed to open OpenSSL store: error:";
-    #[cfg(all(windows, not(libressl)))]
+    #[cfg(all(windows, ossl3))]
     let failed = "Failed to initialize provider: error:";
     for engine in [None, Some(engine.to_vec())] {
         let (at, server) = serve_asking(&certs, &client);
@@ -494,19 +494,19 @@ fn a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded() {
             t.key = Some(bytes(&client.key_pem));
         });
         server.join().unwrap();
-        #[cfg(libressl)]
+        #[cfg(not(ossl3))]
         if engine.is_some() {
             no_engine(&got);
             continue;
         }
         assert_eq!(got.result, Err(ErrorKind::SslCertproblem), "{engine:?}");
         let failure = String::from_utf8(got.failure).unwrap();
-        #[cfg(libressl)]
+        #[cfg(not(ossl3))]
         assert_eq!(
             failure,
             "SSL_FILETYPE_PROVIDER not supported for certificate"
         );
-        #[cfg(not(libressl))]
+        #[cfg(ossl3)]
         assert!(failure.starts_with(failed), "{engine:?}: {failure}");
     }
 }

@@ -1,7 +1,7 @@
 //! The crypto engine a transfer names, where the library has neither
-//! engines nor providers (LibreSSL: `OPENSSL_NO_ENGINE`, and no OpenSSL 3):
-//! none is found, as C's build without `USE_OPENSSL_ENGINE` and
-//! `OPENSSL_HAS_PROVIDERS` finds none, and none is listed.
+//! engines nor providers (LibreSSL, AWS-LC and BoringSSL: `OPENSSL_NO_ENGINE`,
+//! and no OpenSSL 3): none is found, as C's build without `USE_OPENSSL_ENGINE`
+//! and `OPENSSL_HAS_PROVIDERS` finds none, and none is listed.
 
 use curl_alloc::OutOfMemory;
 use curl_core::error::ErrorKind;

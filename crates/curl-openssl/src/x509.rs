@@ -269,20 +269,20 @@ fn populate_store(
                 format_args!("error loading CRL file: {}", Text(crl)),
             ));
         }
-        flags = openssl_sys::X509_V_FLAG_CRL_CHECK | openssl_sys::X509_V_FLAG_CRL_CHECK_ALL;
+        flags = ffi::X509_V_FLAG_CRL_CHECK | ffi::X509_V_FLAG_CRL_CHECK_ALL;
         io.info(format_args!(" CRLfile: {}", Text(crl)));
     }
     // Chains built from what the store trusts first, and a certificate
     // the store has trusted whatever issued it (C's comment: trusted
     // intermediates as anchors), unless asked not to.
-    flags |= openssl_sys::X509_V_FLAG_TRUSTED_FIRST;
+    flags |= ffi::X509_V_FLAG_TRUSTED_FIRST;
     if !identity
         .options
         .ssl_options
         .contains(SslOptions::NO_PARTIALCHAIN)
         && identity.options.crl_file.is_none()
     {
-        flags |= openssl_sys::X509_V_FLAG_PARTIAL_CHAIN;
+        flags |= ffi::X509_V_FLAG_PARTIAL_CHAIN;
     }
     // SAFETY: the context's store. C ignores the result.
     unsafe { openssl_sys::X509_STORE_set_flags(store.as_ptr(), flags) };
@@ -342,7 +342,7 @@ fn load_trust_anchors(
 /// as OpenSSL 3 loads it (`X509_STORE_load_file`, `_load_path`): one that
 /// does not load fails if nothing else could verify the peer
 /// (`insisting`), else is said and passed over.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn load_locations(
     store: NonNull<X509_STORE>,
     file: Option<&[u8]>,
@@ -386,9 +386,9 @@ fn load_locations(
     Ok(())
 }
 
-/// LibreSSL's: both in one call, as C's build without OpenSSL 3 loads
+/// LibreSSL's and the forks': both in one call, as C's build without OpenSSL 3 loads
 /// them (`X509_STORE_load_locations`), its failure said of both.
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 fn load_locations(
     store: NonNull<X509_STORE>,
     file: Option<&[u8]>,
@@ -441,27 +441,19 @@ pub(crate) fn sectrust(identity: &TlsIdentity) -> bool {
 /// the store (`load_cacert_from_memory`): none found, or one refused, is
 /// a bad file.
 fn load_from_memory(store: NonNull<X509_STORE>, blob: &[u8]) -> Result<(), ErrorKind> {
-    let len = c_int::try_from(blob.len()).map_err(|_| ErrorKind::SslCacertBadfile)?;
+    c_int::try_from(blob.len()).map_err(|_| ErrorKind::SslCacertBadfile)?;
     // SAFETY: a BIO that reads `blob`, alive for this call alone, which
     // outlives the BIO freed below.
-    let bio = unsafe { openssl_sys::BIO_new_mem_buf(blob.as_ptr().cast(), len) };
+    let bio = unsafe { ffi::BIO_new_mem_buf(blob) };
     let Some(bio) = NonNull::new(bio) else {
         return Err(ErrorKind::OutOfMemory);
     };
     let bio = MemBio(bio);
-    // SAFETY: the BIO; no stack to add to, no password callback.
-    let infos = unsafe {
-        ffi::PEM_X509_INFO_read_bio(
-            bio.as_ptr(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    };
-    if infos.is_null() {
+    // SAFETY: the BIO.
+    let stack = unsafe { ffi::PEM_X509_INFO_read_bio_new(bio.as_ptr()) };
+    if stack.is_null() {
         return Err(ErrorKind::SslCacertBadfile);
     }
-    let stack = infos.cast::<ffi::Stack>();
     let mut count = 0;
     // SAFETY: the stack the library made of `X509_INFO`s.
     let n = unsafe { ffi::sk_num(stack) };
@@ -499,7 +491,7 @@ fn load_from_memory(store: NonNull<X509_STORE>, blob: &[u8]) -> Result<(), Error
 
 unsafe extern "C" fn free_info(info: *mut c_void) {
     // SAFETY: an `X509_INFO` of the stack being freed.
-    unsafe { ffi::X509_INFO_free(info) };
+    unsafe { ffi::X509_INFO_free(info.cast()) };
 }
 
 /// The longest name C prints of a certificate (`MAX_CERT_NAME_LENGTH`),
@@ -572,8 +564,13 @@ pub(crate) unsafe fn c_text<'a>(p: *const c_char) -> Option<&'a [u8]> {
     (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_bytes())
 }
 
+/// None over the forks, whose build C leaves `infof_certstack` out of.
+#[cfg(boringssl_like)]
+fn info_chain(_: NonNull<SSL>, _: &mut TlsCx<'_>) {}
+
 /// A line for each certificate of the chain (`infof_certstack`): the
 /// verified one if it verified, else the one the peer sent.
+#[cfg(not(boringssl_like))]
 fn info_chain(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
     if !io.verbose() {
         return;
@@ -643,11 +640,12 @@ fn info_chain(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
 ///
 /// # Safety
 /// `key` is a key; the name lives while it does.
+#[cfg(not(boringssl_like))]
 unsafe fn key_group_and_type<'a>(
     key: *mut openssl_sys::EVP_PKEY,
     group: &mut [u8; 80],
 ) -> (c_int, Option<&'a [u8]>) {
-    #[cfg(not(libressl))]
+    #[cfg(ossl3)]
     {
         let room = group.as_mut_ptr().cast();
         // SAFETY: as the caller says; text is written within the buffer
@@ -658,7 +656,7 @@ unsafe fn key_group_and_type<'a>(
         // SAFETY: the key's text, or null.
         (has_group, unsafe { c_text(type_name) })
     }
-    #[cfg(libressl)]
+    #[cfg(not(ossl3))]
     {
         let _ = (key, group);
         (0, None)
@@ -742,7 +740,7 @@ fn verify_host(
             }
             // SAFETY: a DNS name or an address is an `ASN1_IA5STRING` or
             // an `ASN1_OCTET_STRING`, both `ASN1_STRING`s.
-            let alt = unsafe { asn1_bytes(name.d.cast()) };
+            let alt = unsafe { asn1_bytes(ffi::general_name_string(name)) };
             match target {
                 GEN_DNS => {
                     if !alt.contains(&0) && hostcheck::names(alt, host) {
@@ -766,7 +764,7 @@ fn verify_host(
             }
         }
         // SAFETY: the names the library gave, freed once.
-        unsafe { ffi::GENERAL_NAMES_free(names) };
+        unsafe { ffi::GENERAL_NAMES_free(names.cast()) };
     }
     if matched {
         return Ok(());
@@ -974,6 +972,7 @@ pub(crate) fn check_peer(
     }
     // C checks the status of a new session only: a resumed one carries
     // none. SecTrust checked it with the chain if it verified the peer.
+    #[cfg(not(no_ocsp))]
     if identity.options.verify_status && !by_sectrust && !reused {
         // SAFETY: the session's SSL; its context is its own.
         let ctx = NonNull::new(unsafe { openssl_sys::SSL_get_SSL_CTX(ssl.as_ptr()) });
@@ -1159,7 +1158,7 @@ pub(crate) struct ErrText {
 }
 
 impl ErrText {
-    pub(crate) fn of(error: c_ulong) -> ErrText {
+    pub(crate) fn of(error: ffi::ErrCode) -> ErrText {
         let mut t = ErrText {
             buf: [0; C_BUFFER],
             len: 0,
@@ -1206,7 +1205,7 @@ pub(crate) fn after_version(version: usize) -> Option<usize> {
 }
 
 /// What C says of an error the library gave no text for.
-pub(crate) fn no_text(error: c_ulong) -> &'static [u8] {
+pub(crate) fn no_text(error: ffi::ErrCode) -> &'static [u8] {
     if error == 0 {
         b"No error"
     } else {
@@ -1236,7 +1235,7 @@ impl fmt::Display for ErrText {
 /// Whether `key`, of its certificate's signer's kind, has none for its
 /// mandatory digest, as Ed25519's is: then nothing is bound. One naming
 /// a digest is said, though the binding then fails all the same.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn key_names_no_digest(
     key: *mut openssl_sys::EVP_PKEY,
     notes: &mut dyn curl_core::tls::BindingNotes,
@@ -1258,7 +1257,7 @@ fn key_names_no_digest(
 }
 
 /// That the key's digest `name` is not one to bind with.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn say_unavailable(mandatory: bool, name: &[u8], notes: &mut dyn curl_core::tls::BindingNotes) {
     let how = if mandatory {
         " [mandatory]"
@@ -1275,7 +1274,7 @@ fn say_unavailable(mandatory: bool, name: &[u8], notes: &mut dyn curl_core::tls:
 /// (`ossl_get_channel_binding`'s `HAVE_OPENSSL3` branch): the one its
 /// signature names, SHA-256 for MD5 or SHA-1; none, and whether that is
 /// accepted, for a signature that names none; and the digest's id.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn binding_digest(
     cert: &Cert,
     notes: &mut dyn curl_core::tls::BindingNotes,
@@ -1326,11 +1325,11 @@ fn binding_digest(
     Ok((digest, no_digest_acceptable, mdnid))
 }
 
-/// The digest as C's build without OpenSSL 3 finds it, LibreSSL's: the
+/// The digest as C's build without OpenSSL 3 finds it, LibreSSL's and the forks': the
 /// one the signature's algorithm pairs with, SHA-256 for MD5 or SHA-1;
 /// one the library does not have fails, as does a signature it does not
 /// know.
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 fn binding_digest(
     cert: &Cert,
     notes: &mut dyn curl_core::tls::BindingNotes,

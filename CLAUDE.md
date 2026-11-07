@@ -40,7 +40,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-nghttp2/src/lib.rs` and `src/sys.rs`: nghttp2's HTTP/2 session, its callbacks and
   the declarations of the functions it calls.
 - `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection with its OpenSSL,
-  LibreSSL, GnuTLS or wolfSSL crypto, and nghttp3's HTTP/3 session over it: their callbacks, the TLS
+  LibreSSL, BoringSSL (for AWS-LC and BoringSSL), GnuTLS or wolfSSL crypto, and nghttp3's HTTP/3 session over it: their callbacks, the TLS
   library's pointer its crypto finds the connection by, and the declarations of the functions
   they call.
 - `crates/curl-libssh/src/lib.rs` and `src/sys.rs`: libssh's session over the connection's
@@ -95,7 +95,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   store.
 - `crates/curl-openssl/src/ocsp.rs`: the peer's stapled certificate status.
 - `crates/curl-openssl/src/ffi.rs`: the OpenSSL functions openssl-sys does not declare, and
-  LibreSSL's under the names the rest of the crate calls.
+  LibreSSL's, AWS-LC's and BoringSSL's under the names and types the rest of the crate calls.
 - `crates/curl-openssl/src/winstore.rs`: Windows' ROOT and CA certificate stores, read into
   OpenSSL's trust store for the native CA store.
 - `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, its

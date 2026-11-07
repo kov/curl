@@ -13,14 +13,15 @@ mod bio;
 mod cache;
 mod cert;
 mod certinfo;
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 mod engine;
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 #[path = "engine_none.rs"]
 mod engine;
 mod ffi;
 #[cfg(any(windows, test))]
 mod native;
+#[cfg(not(no_ocsp))]
 mod ocsp;
 mod sign;
 mod ssl;

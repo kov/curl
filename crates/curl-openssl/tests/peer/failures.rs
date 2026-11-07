@@ -80,11 +80,6 @@ fn read_head(tls: &mut SslStream<TcpStream>) -> Vec<u8> {
     got
 }
 
-/// The library's version as `ossl_strerror` puts it before its errors.
-fn version() -> &'static str {
-    openssl::version::version().split(' ').nth(1).unwrap()
-}
-
 /// A body without a length is read until the peer's close_notify, which
 /// ends it (`SSL_ERROR_ZERO_RETURN`), traced.
 fn a_close_notify_ends_a_body_read_to_its_end() {
@@ -142,16 +137,27 @@ fn a_peer_gone_without_close_notify_fails_the_read() {
         "{:#?}",
         got.seen.lines
     );
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     assert_eq!(
         String::from_utf8(got.failure).unwrap(),
         format!(
-            "OpenSSL SSL_read: OpenSSL/{}: error:0A000126:SSL routines::unexpected eof while \
+            "OpenSSL SSL_read: {}: error:0A000126:SSL routines::unexpected eof while \
              reading, errno 0",
-            version()
+            library()
         )
     );
-    #[cfg(libressl)]
+    // AWS-LC's error for the end, in its words.
+    #[cfg(awslc)]
+    assert_eq!(
+        String::from_utf8(got.failure).unwrap(),
+        format!(
+            "{PACKAGE} SSL_read: {}: error:100001fd:SSL routines:OPENSSL_internal:\
+             UNEXPECTED_EOF_WHILE_READING, errno 0",
+            library()
+        )
+    );
+    // BoringSSL, as LibreSSL, has none (`SSL_ERROR_SYSCALL`).
+    #[cfg(any(libressl, boringssl))]
     assert_eq!(got.failure, b"Connection closed abruptly");
 }
 
@@ -185,11 +191,11 @@ fn a_reset_fails_the_read_as_the_socket_says() {
         format!("Recv failure: {reset}")
     );
     #[cfg(not(libressl))]
-    let line = format!("OpenSSL SSL_read: {reset}, errno {errno}");
+    let line = format!("{PACKAGE} SSL_read: {reset}, errno {errno}");
     #[cfg(libressl)]
     let line = format!(
-        "LibreSSL SSL_read: LibreSSL/{}: {LIBRESSL_FAILED_BELOW}, errno {errno}",
-        version()
+        "LibreSSL SSL_read: {}: {LIBRESSL_FAILED_BELOW}, errno {errno}",
+        library()
     );
     assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
 }
@@ -212,7 +218,7 @@ fn a_handshake_the_peer_ends_or_resets_fails_as_c_says() {
     let got = get("localhost", at, |_| {});
     ends.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     {
         assert_eq!(
             got.failure,
@@ -238,6 +244,20 @@ fn a_handshake_the_peer_ends_or_resets_fails_as_c_says() {
         );
         assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
     }
+    // Nor do the forks, which name no library for an empty error.
+    #[cfg(boringssl_like)]
+    {
+        assert_eq!(
+            got.failure,
+            b"TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid \
+              library (0)"
+        );
+        let line = format!(
+            "{PACKAGE} SSL_connect: SSL_ERROR_SYSCALL in connection to localhost:{}",
+            at.port()
+        );
+        assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
+    }
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
@@ -259,7 +279,7 @@ fn a_handshake_the_peer_ends_or_resets_fails_as_c_says() {
     #[cfg(not(libressl))]
     {
         let line = format!(
-            "OpenSSL SSL_connect: {reset} in connection to localhost:{}",
+            "{PACKAGE} SSL_connect: {reset} in connection to localhost:{}",
             at.port()
         );
         assert!(said(&got, &line), "{line:?} in {:#?}", got.seen.lines);
@@ -339,10 +359,16 @@ fn an_alert_in_the_handshake_fails_as_c_says() {
     });
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     assert_eq!(
         got.failure,
         b"TLS connect error: error:0A000410:SSL routines::ssl/tls alert handshake failure"
+    );
+    #[cfg(boringssl_like)]
+    assert_eq!(
+        got.failure,
+        b"TLS connect error: error:10000410:SSL routines:OPENSSL_internal:\
+          SSLV3_ALERT_HANDSHAKE_FAILURE"
     );
     #[cfg(libressl)]
     assert_eq!(

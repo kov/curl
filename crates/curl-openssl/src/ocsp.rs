@@ -57,14 +57,13 @@ pub(crate) fn check(
         io.fail(ErrorKind::SslInvalidcertstatus, why)
     };
     let s = ssl.as_ptr();
-    let mut status: *mut u8 = ptr::null_mut();
     // SAFETY: the session's SSL, its handshake done; the response is its
     // own, alive while it is.
-    let len = unsafe { openssl_sys::SSL_get_tlsext_status_ocsp_resp(s, &mut status) };
-    if status.is_null() {
+    let Some(status) = (unsafe { ffi::stapled_response(s) }) else {
         return Err(fail(io, format_args!("No OCSP response received")));
-    }
-    let mut p = status.cast_const();
+    };
+    let mut p = status.as_ptr();
+    let len = c_long::try_from(status.len()).unwrap_or(c_long::MAX);
     // SAFETY: `len` bytes at `p`, the SSL's; the response read is this
     // function's to free.
     let rsp = unsafe { openssl_sys::d2i_OCSP_RESPONSE(ptr::null_mut(), &mut p, len) };
@@ -119,8 +118,14 @@ fn basic(
     let fail = |io: &mut TlsCx<'_>, why: core::fmt::Arguments<'_>| {
         io.fail(ErrorKind::SslInvalidcertstatus, why)
     };
+    // The verified chain, or from the forks the one the peer sent, which
+    // C's build of them checks against (`SSL_get_peer_cert_chain`).
+    #[cfg(not(boringssl_like))]
     // SAFETY: the SSL; the chain is its own, alive while it is.
     let chain = unsafe { ffi::SSL_get0_verified_chain(s) };
+    #[cfg(boringssl_like)]
+    // SAFETY: as above.
+    let chain = unsafe { openssl_sys::SSL_get_peer_cert_chain(s) };
     if chain.is_null() {
         return Err(fail(
             io,

@@ -57,7 +57,9 @@ as an opaque `TlsNative`, the untyped context and session objects the backend ha
 the shim passes on as C's `SSL_CTX *` and `SSL *`. A build has one backend, chosen by the shim's
 and the tool's Cargo features, which exclude each other: `openssl` (the default, the reference
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never
-openssl-sys's `vendored` copy, checked at build and at init), `gnutls` (GnuTLS 3.6.5 or later,
+openssl-sys's `vendored` copy, checked at build and at init; or, as C builds the same backend
+over them, LibreSSL, or AWS-LC or BoringSSL as `deps.py` builds them, named by openssl-sys's
+`OPENSSL_DIR` and linked statically, each detected from its own headers and its branches C's), `gnutls` (GnuTLS 3.6.5 or later,
 the system's, with HTTP/3 over ngtcp2's GnuTLS crypto but not the HTTP/3 proxy, C's OpenSSL's
 alone), `mbedtls` (mbedTLS 3.2 or later, before 4.0, the system's, with
 neither HTTP/3 nor message signatures), `wolfssl` (wolfSSL 5.0 or later, the copy

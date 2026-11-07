@@ -25,6 +25,11 @@ Entry format, one or more per file:
   default-features: no                              (optional: built without
                                                      them, in its own target
                                                      directory)
+  openssl-fork: <awslc or boringssl>                (optional: the OpenSSL
+                                                     backend built over that
+                                                     fork, as deps.py builds
+                                                     it, in its own target
+                                                     directory)
   --- old
   <text, exactly as in the file, found exactly once>
   --- new
@@ -64,6 +69,9 @@ class Entry:
         self.package, self.test = witness
         self.features = fields.get("features")
         self.default_features = fields.get("default-features", "yes") != "no"
+        self.fork = fields.get("openssl-fork")
+        if self.fork not in (None, "awslc", "boringssl"):
+            sys.exit(f"{source}: entry '{name}' names no fork deps.py builds: {self.fork}")
 
 
 def parse(path):
@@ -113,9 +121,17 @@ def run(e, timeout):
         # Apart from the default build's artifacts, which it would replace.
         features += ["--no-default-features", "--target-dir",
                      str(ROOT / "build" / "target-nodefault")]
+    env = dict(os.environ)
+    if e.fork:
+        # openssl-sys over the fork's own headers, linked statically, and
+        # the ngtcp2 built for it, apart from the default build's artifacts.
+        deps = ROOT / "build" / "deps"
+        env.update(OPENSSL_DIR=str(deps / e.fork), OPENSSL_STATIC="1",
+                   CURL_NGTCP2_DIR=str(deps / f"ngtcp2-{e.fork}"))
+        features += ["--target-dir", str(ROOT / "build" / f"target-{e.fork}")]
     cmd = CAP + ["cargo", "test", "-p", e.package, *features, "--", "--exact", e.test]
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, start_new_session=True)
+                            text=True, start_new_session=True, env=env)
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -166,14 +182,14 @@ def main():
     # budget for a sabotaged one.
     budget = {}
     for e in chosen:
-        if (e.package, e.features, e.test) in budget:
+        if (e.package, e.features, e.fork, e.test) in budget:
             continue
         run(e, None)  # build
         t = time.monotonic()
         verdict, out = run(e, None)
         if verdict != "passed" or not ran_witness(out, e.test):
             sys.exit(f"witness {e.package} {e.test} does not pass on a clean tree:\n{out[-2000:]}")
-        budget[(e.package, e.features, e.test)] = max(180.0, 8 * (time.monotonic() - t))
+        budget[(e.package, e.features, e.fork, e.test)] = max(180.0, 8 * (time.monotonic() - t))
 
     holes = 0
     for e in chosen:
@@ -184,7 +200,7 @@ def main():
         end = start + e.new.count("\n")
         try:
             path.write_text(original.replace(e.old, e.new, 1))
-            verdict, out = run(e, budget[(e.package, e.features, e.test)])
+            verdict, out = run(e, budget[(e.package, e.features, e.fork, e.test)])
         finally:
             path.write_text(original)
         if verdict == "hung":

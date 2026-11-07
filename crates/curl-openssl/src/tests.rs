@@ -83,14 +83,15 @@ fn signs_test_5001_s_base_with_the_test_key() {
 /// allocations are counted, in a process of their own, against an
 /// `openssl s_server` of another, whose allocations are its own.
 /// LibreSSL takes no allocator of ours (`CRYPTO_set_mem_functions`
-/// refuses), so its allocations are not counted.
-#[cfg(not(libressl))]
+/// refuses), so its allocations are not counted, nor BoringSSL's, which
+/// has no such function; AWS-LC's are.
+#[cfg(any(ossl3, awslc))]
 #[test]
 fn a_transfer_frees_what_it_made_of_openssl_s() {
     crate::sys::tests::in_a_child("tests::counted_transfers", "/dev/null".as_ref());
 }
 
-#[cfg(not(libressl))]
+#[cfg(any(ossl3, awslc))]
 #[test]
 #[ignore = "run by a_transfer_frees_what_it_made_of_openssl_s"]
 fn counted_transfers() {
@@ -132,7 +133,7 @@ fn counted_transfers() {
 }
 
 /// The server and the transfers `counted_transfers` makes.
-#[cfg(not(libressl))]
+#[cfg(any(ossl3, awslc))]
 mod leaks {
     use std::io::BufRead as _;
     use std::path::PathBuf;
@@ -334,6 +335,8 @@ mod leaks {
                     }
                 }),
             ),
+            // Neither engines nor providers over AWS-LC.
+            #[cfg(ossl3)]
             (
                 "provider",
                 Box::new({
@@ -344,6 +347,7 @@ mod leaks {
                     }
                 }),
             ),
+            #[cfg(ossl3)]
             (
                 "engine",
                 Box::new({
@@ -392,7 +396,7 @@ mod leaks {
 /// `ERR_GET_LIB` and `ERR_GET_REASON` (`err.h`): a library's error packs
 /// its library in the 8 bits above the 23 of its reason; a system
 /// error, its top bit set, is the system library's, its reason the rest.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 #[test]
 fn an_error_s_library_and_reason_are_as_err_h_unpacks_them() {
     use crate::ssl::{error_lib, error_reason};
@@ -409,10 +413,10 @@ fn an_error_s_library_and_reason_are_as_err_h_unpacks_them() {
     assert_eq!(error_reason(0x8123_4567), 0x0123_4567);
 }
 
-/// LibreSSL's `ERR_GET_LIB` and `ERR_GET_REASON`: its library in the top 8
+/// LibreSSL's and the forks' `ERR_GET_LIB` and `ERR_GET_REASON`: its library in the top 8
 /// bits, its reason in the low 12, its function between them; no system
 /// flag.
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 #[test]
 fn an_error_s_library_and_reason_are_as_libressl_s_err_h_unpacks_them() {
     use crate::ssl::{error_lib, error_reason};
@@ -429,7 +433,7 @@ fn an_error_s_library_and_reason_are_as_libressl_s_err_h_unpacks_them() {
 
 /// The engines a transfer can name are the library's: `dynamic`, which
 /// loads the rest, among them.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 #[test]
 fn the_engines_are_the_library_s() {
     use curl_core::tls::TlsBackend as _;
@@ -467,6 +471,8 @@ fn the_library_declares_what_c_s_build_over_it_has() {
     };
     let want = curl_core::tls::TlsSupport {
         signature_algorithms: !cfg!(libressl),
+        tls13_ciphers: !cfg!(boringssl),
+        cert_status: !cfg!(no_ocsp),
         ..all
     };
     assert_eq!(crate::OPENSSL.support(), want);

@@ -603,10 +603,13 @@ fn a_resumed_session_sends_its_get_as_early_data() {
         };
         let first = connect(cx, false);
         assert_eq!(first.early, Some(None));
-        connect(cx, true)
+        // Over AWS-LC and BoringSSL the session resumed allows none, as
+        // C's build over them sends none (`HAVE_OPENSSL_EARLYDATA` unset).
+        connect(cx, !cfg!(crypto = "boringssl"))
     });
     assert_eq!(told.checked, Some(Ok(())));
-    assert_eq!(told.early, Some(Some(true)), "{:?}", kept.notes);
+    let early = (!cfg!(crypto = "boringssl")).then_some(true);
+    assert_eq!(told.early, Some(early), "{:?}", kept.notes);
     assert_eq!(told.status.as_deref(), Some(&b"200"[..]));
     assert_eq!(told.body, BODY);
 }

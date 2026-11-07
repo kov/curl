@@ -86,10 +86,10 @@ fn password_ptr(password: Option<&Vec<u8>>) -> *mut c_void {
 
 /// A BIO reading `blob`, which outlives it; none if it cannot be made.
 pub(crate) fn blob_bio(blob: &[u8]) -> Option<MemBio> {
-    let len = c_int::try_from(blob.len()).ok()?;
+    c_int::try_from(blob.len()).ok()?;
     // SAFETY: a BIO reading `blob`, freed before `blob` goes, as the
     // caller keeps it.
-    let bio = unsafe { openssl_sys::BIO_new_mem_buf(blob.as_ptr().cast(), len) };
+    let bio = unsafe { ffi::BIO_new_mem_buf(blob) };
     NonNull::new(bio).map(MemBio::adopt)
 }
 
@@ -209,7 +209,7 @@ fn use_certificate_chain_blob(ctx: NonNull<SSL_CTX>, blob: &[u8], password: *mut
 /// they were, and the read ended where the text did.
 fn chain_rest(c: *mut SSL_CTX, bio: &MemBio, password: *mut c_void) -> c_int {
     // SAFETY: the context (`SSL_CTX_clear_chain_certs`), no pointer.
-    if unsafe { openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_CHAIN, 0, ptr::null_mut()) } == 0 {
+    if unsafe { ffi::SSL_CTX_clear_chain_certs(c) } == 0 {
         return 0;
     }
     loop {
@@ -227,7 +227,7 @@ fn chain_rest(c: *mut SSL_CTX, bio: &MemBio, password: *mut c_void) -> c_int {
         }
         // SAFETY: the context, which takes `ca` over if it adds it
         // (`SSL_CTX_add0_chain_cert`).
-        if unsafe { openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_CHAIN_CERT, 0, ca.cast()) } == 0 {
+        if unsafe { ffi::SSL_CTX_add0_chain_cert(c, ca) } == 0 {
             // SAFETY: not taken: given back once.
             unsafe { openssl_sys::X509_free(ca) };
             return 0;
@@ -257,14 +257,7 @@ pub(crate) fn file_bio(name: &[u8]) -> Result<Option<MemBio>, ErrorKind> {
     // SAFETY: the BIO and a C string alive for the call
     // (`BIO_read_filename`), which opens the file to read and closes it
     // with the BIO.
-    let opened = unsafe {
-        openssl_sys::BIO_ctrl(
-            bio.as_ptr(),
-            ffi::BIO_C_SET_FILENAME,
-            ffi::BIO_CLOSE_FP_READ,
-            c.as_ptr().cast_mut().cast(),
-        )
-    };
+    let opened = unsafe { ffi::BIO_read_filename(bio.as_ptr(), c.as_ptr().cast()) };
     Ok((opened > 0).then_some(bio))
 }
 
@@ -423,7 +416,7 @@ fn pkcs12_use(
 /// none of that kind selected, a PKCS#11 URI selects `pkcs11` as C does,
 /// kept for the session if it had nothing selected. A provider's store
 /// is read; an engine is asked, a key with `password`, a C string.
-#[cfg(not(libressl))]
+#[cfg(ossl3)]
 fn from_crypto(
     ctx: NonNull<SSL_CTX>,
     kind: FileType,
@@ -485,11 +478,11 @@ fn from_crypto(
     }
 }
 
-/// LibreSSL's: no engine or provider can be asked, as C's build without
+/// LibreSSL's and the forks': no engine or provider can be asked, as C's build without
 /// `USE_OPENSSL_ENGINE` and `OPENSSL_HAS_PROVIDERS` cannot
 /// (`engineload`'s, `enginecheck`'s, `providerload`'s and
 /// `providercheck`'s `#else`).
-#[cfg(libressl)]
+#[cfg(not(ossl3))]
 fn from_crypto(
     _ctx: NonNull<SSL_CTX>,
     kind: FileType,

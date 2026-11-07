@@ -33,10 +33,14 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_session_keeps_its_key_log_past_its_owner",
         a_session_keeps_its_key_log_past_its_owner,
     ),
+    // The forks' servers here take no early data, and C's build over them
+    // sends none (`HAVE_OPENSSL_EARLYDATA` unset).
+    #[cfg(not(boringssl_like))]
     (
         "a_resumed_session_sends_the_request_as_early_data",
         a_resumed_session_sends_the_request_as_early_data,
     ),
+    #[cfg(not(boringssl_like))]
     (
         "early_data_a_server_refuses_is_sent_again",
         early_data_a_server_refuses_is_sent_again,
@@ -88,6 +92,7 @@ fn serve_each(acceptors: Vec<SslAcceptor>) -> (SocketAddr, JoinHandle<()>) {
 
 /// A server's TLS taking `most` bytes of early data and agreeing to
 /// HTTP/1.1 by ALPN, so that its tickets allow early data.
+#[cfg(not(boringssl_like))]
 fn early_acceptor(certs: &Certs, most: u32) -> SslAcceptor {
     acceptor(certs, |a| {
         a.set_max_early_data(most).unwrap();
@@ -100,9 +105,12 @@ fn early_acceptor(certs: &Certs, most: u32) -> SslAcceptor {
 
 /// As `serve_each`, each connection's early data read first: what each
 /// was sent early, and after its handshake.
+#[cfg(not(boringssl_like))]
 type EarlySeen = Vec<(Vec<u8>, Vec<u8>)>;
+#[cfg(not(boringssl_like))]
 type EarlyServer = JoinHandle<EarlySeen>;
 
+#[cfg(not(boringssl_like))]
 fn serve_early(acceptors: Vec<SslAcceptor>) -> (SocketAddr, EarlyServer) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
@@ -146,6 +154,7 @@ fn serve_early(acceptors: Vec<SslAcceptor>) -> (SocketAddr, EarlyServer) {
 
 /// Two GETs asking for early data, on connections of their own, the
 /// second to a server made by `second`: the server's, and the GETs'.
+#[cfg(not(boringssl_like))]
 fn early_pair(second: impl FnOnce(&SslAcceptor, &Certs) -> SslAcceptor) -> (EarlySeen, Got, Got) {
     let certs = certs("early", "localhost", &["localhost"]);
     let a = early_acceptor(&certs, 16384);
@@ -200,7 +209,7 @@ fn early_data_a_server_refuses_is_sent_again() {
 /// A session that allows early data, resumed, has the handshake put off
 /// until the request, which goes in it; the server taking it, it is not
 /// sent again (`ossl_send_earlydata`, `ssl_cf_connect_deferred`).
-#[cfg(not(libressl))]
+#[cfg(not(any(libressl, boringssl_like)))]
 fn a_resumed_session_sends_the_request_as_early_data() {
     let (seen, _, two) = early_pair(|a, _| a.clone());
     let (early, late) = &seen[1];
@@ -227,7 +236,7 @@ fn a_resumed_session_sends_the_request_as_early_data() {
 
 /// A server that cannot resume the session refuses the early data: the
 /// request goes again after the handshake.
-#[cfg(not(libressl))]
+#[cfg(not(any(libressl, boringssl_like)))]
 fn early_data_a_server_refuses_is_sent_again() {
     let (seen, _, two) = early_pair(|_, certs| early_acceptor(certs, 16384));
     let (early, late) = &seen[1];

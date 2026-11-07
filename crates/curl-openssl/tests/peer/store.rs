@@ -4,9 +4,9 @@
 //! that shows no certificate at all (`Curl_ossl_check_peer_cert`).
 
 use curl_core::options::SslOptions;
-#[cfg(not(libressl))]
+#[cfg(not(any(libressl, boringssl_like)))]
 use openssl::dh::Dh;
-#[cfg(not(libressl))]
+#[cfg(not(any(libressl, boringssl_like)))]
 use openssl::ssl::SslVersion;
 
 use super::*;
@@ -26,7 +26,7 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
     ),
     // The `openssl` crate has no RFC 5114 group over LibreSSL for the
     // server to exchange with.
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     (
         "a_peer_without_a_certificate_passes_only_unchecked",
         a_peer_without_a_certificate_passes_only_unchecked,
@@ -201,7 +201,7 @@ fn a_ca_blob_s_certificates_and_lists_are_all_taken() {
 /// An anonymous key exchange, the server showing no certificate: passes
 /// when nothing of the peer is checked, and fails, said, when its name
 /// is, or a key is pinned.
-#[cfg(not(libressl))]
+#[cfg(not(any(libressl, boringssl_like)))]
 fn a_peer_without_a_certificate_passes_only_unchecked() {
     let certs = certs("anonymous", "localhost", &["localhost"]);
     let suite = "ADH-AES128-GCM-SHA256:@SECLEVEL=0";

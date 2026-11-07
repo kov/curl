@@ -2,6 +2,7 @@
 //! `Curl_alpn_set_negotiated`, `infof_certstack`): the protocol the peer
 //! chose of the ALPN offer, and each certificate of the chain.
 
+#[cfg(not(boringssl_like))]
 use openssl::rsa::Rsa;
 use openssl::ssl::AlpnError;
 
@@ -12,9 +13,15 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "the_protocol_the_server_accepts_is_said",
         the_protocol_the_server_accepts_is_said,
     ),
+    #[cfg(not(boringssl_like))]
     (
         "each_certificate_of_the_chain_is_said_by_its_level",
         each_certificate_of_the_chain_is_said_by_its_level,
+    ),
+    #[cfg(boringssl_like)]
+    (
+        "no_certificate_of_the_chain_is_said_by_its_level",
+        no_certificate_of_the_chain_is_said_by_its_level,
     ),
 ];
 
@@ -66,6 +73,7 @@ fn level_lines(got: &Got) -> Vec<&str> {
 /// unverified one as the peer sent it. An EC key is said with its group,
 /// an RSA key without. Without OpenSSL 3, C names neither the key's type
 /// nor its group (LibreSSL's line).
+#[cfg(not(boringssl_like))]
 fn each_certificate_of_the_chain_is_said_by_its_level() {
     let certs = certs("levels", "localhost", &["localhost"]);
     #[cfg(not(libressl))]
@@ -126,6 +134,26 @@ fn each_certificate_of_the_chain_is_said_by_its_level() {
 
 /// A GET of `localhost` from a server showing `certs`, with the options
 /// `set` makes.
+/// Over AWS-LC and BoringSSL, C says no chain by its levels
+/// (`infof_certstack` is not built), verified or not.
+#[cfg(boringssl_like)]
+fn no_certificate_of_the_chain_is_said_by_its_level() {
+    let certs = certs("levels", "localhost", &["localhost"]);
+    for verify in [true, false] {
+        let got = verified_get(&certs, |o| {
+            trusting(&certs)(o);
+            o.tls.verify_peer = verify;
+        });
+        assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+        assert!(
+            starts(&got, "SSL connection using"),
+            "{:#?}",
+            got.seen.lines
+        );
+        assert!(level_lines(&got).is_empty(), "{:#?}", got.seen.lines);
+    }
+}
+
 fn verified_get(certs: &Certs, set: impl FnOnce(&mut Options)) -> Got {
     let (at, server) = serve(certs);
     let got = get("localhost", at, set);

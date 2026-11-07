@@ -10,7 +10,10 @@
 //! `openssl-sys` found, OpenSSL's (`ngtcp2_crypto_ossl`, `ossl`) or, for
 //! LibreSSL, the one over the QUIC API LibreSSL shares with quictls
 //! (`ngtcp2_crypto_libressl`, C's build without `OPENSSL_QUIC_API2`,
-//! `libressl`); with `gnutls`, GnuTLS's (`ngtcp2_crypto_gnutls`); with
+//! `libressl`), or for AWS-LC and BoringSSL theirs, of one name
+//! (`ngtcp2_crypto_boringssl`, `boringssl`), from the ngtcp2 built for
+//! the fork (`build/deps/ngtcp2-<fork>`, named in `CURL_NGTCP2_DIR`);
+//! with `gnutls`, GnuTLS's (`ngtcp2_crypto_gnutls`); with
 //! `wolfssl`, wolfSSL's (`ngtcp2_crypto_wolfssl`). Exactly one is named,
 //! as C builds over one TLS library.
 
@@ -23,8 +26,10 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo::rerun-if-env-changed=CURL_NGTCP2_DIR");
     println!("cargo::rerun-if-env-changed=DEP_OPENSSL_LIBRESSL_VERSION_NUMBER");
+    println!("cargo::rerun-if-env-changed=DEP_OPENSSL_AWSLC");
+    println!("cargo::rerun-if-env-changed=DEP_OPENSSL_BORINGSSL");
     println!(
-        "cargo::rustc-check-cfg=cfg(crypto, values(\"ossl\", \"libressl\", \"gnutls\", \"wolfssl\"))"
+        "cargo::rustc-check-cfg=cfg(crypto, values(\"ossl\", \"libressl\", \"boringssl\", \"gnutls\", \"wolfssl\"))"
     );
     let named: Vec<&str> = ["openssl", "gnutls", "wolfssl"]
         .into_iter()
@@ -32,7 +37,12 @@ fn main() {
         .collect();
     let crypto = match named.as_slice() {
         ["openssl"] => {
-            if std::env::var_os("DEP_OPENSSL_LIBRESSL_VERSION_NUMBER").is_some() {
+            let fork = |name: &str| {
+                std::env::var(format!("DEP_OPENSSL_{name}")).is_ok_and(|v| v == "true")
+            };
+            if fork("AWSLC") || fork("BORINGSSL") {
+                "boringssl"
+            } else if std::env::var_os("DEP_OPENSSL_LIBRESSL_VERSION_NUMBER").is_some() {
                 "libressl"
             } else {
                 "ossl"
@@ -84,6 +94,9 @@ fn main() {
             println!("cargo::rustc-link-lib=ssl");
             println!("cargo::rustc-link-lib=crypto");
         }
+        // Linked statically by openssl-sys, from the fork's own directory
+        // (`OPENSSL_DIR`), after the crypto as curl-openssl depends on it.
+        "boringssl" => {}
         // After the crypto library that needs it, so that it is kept.
         "gnutls" => curl_build::link("gnutls", "gnutls"),
         // Linked statically by curl-wolfssl, which this crate depends on

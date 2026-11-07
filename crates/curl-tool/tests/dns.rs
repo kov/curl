@@ -681,10 +681,21 @@ fn a_second_attempt_started_during_a_resolve_takes_what_it_finds() {
         "https://slowa-h3rec.test:1/",
     ]);
     let said = String::from_utf8_lossy(&run.stderr);
-    assert_eq!(run.status.code(), Some(7), "{said}");
+    // Winsock says a port nothing listens on as a reset (`WSAECONNRESET`),
+    // which C's QUIC filter takes as a failed receive, not a refusal
+    // (`vquic.c`): C's tool there fails the same way, 56.
+    let (code, quic) = if cfg!(windows) {
+        (
+            56,
+            "QUIC: recvfrom() unexpectedly returned -1 (errno=10054;",
+        )
+    } else {
+        (7, "QUIC: connection to 127.0.0.1")
+    };
+    assert_eq!(run.status.code(), Some(code), "{said}");
     assert_eq!(said.matches("Trying 127.0.0.1:1...").count(), 2, "{said}");
     // The QUIC one's refusal said, however far it got before the end.
-    assert!(said.contains("QUIC: connection to 127.0.0.1"), "{said}");
+    assert!(said.contains(quic), "{said}");
 }
 
 /// Two transfers at once to one name, run by `-Z`, its addresses answered
@@ -717,11 +728,9 @@ fn a_name_another_transfer_resolved_meanwhile_is_taken_from_the_cache() {
     ]);
     let said = String::from_utf8_lossy(&run.stderr);
     let count = |needle: &str| said.matches(needle).count();
-    assert_eq!(
-        count("* [DNS] [A] resolve complete for slowa.test:1\n"),
-        1,
-        "{said}"
-    );
+    // A whole line, whatever ends it (CRLF on Windows).
+    let complete = "* [DNS] [A] resolve complete for slowa.test:1";
+    assert_eq!(said.lines().filter(|l| *l == complete).count(), 1, "{said}");
     assert_eq!(count("[DNS] [HTTPS] ares_take_result"), 1, "{said}");
     // The addresses found meanwhile say so, and let their resolve go.
     let lines: Vec<&str> = said.lines().collect();

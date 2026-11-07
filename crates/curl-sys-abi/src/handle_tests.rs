@@ -3712,7 +3712,10 @@ fn cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go() {
 #[test]
 fn the_records_a_lone_handle_lets_go_of_are_told_with_the_handle_reachable() {
     let destroyed = "[DNS] [1] destroy async\n";
-    let refused = if cfg!(target_vendor = "apple") {
+    // `WSAECONNREFUSED` on Windows.
+    let refused = if cfg!(windows) {
+        10061
+    } else if cfg!(target_vendor = "apple") {
         61
     } else {
         111

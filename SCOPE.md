@@ -98,10 +98,10 @@ Each of these needs its own build configuration to be measured.
 
 The rewrite binds libssh for SCP and SFTP by default, as distributions build libcurl, and
 libssh2, the reference build's, with the `libssh2` feature in its place, as C's configure
-chooses one. libssh's SSH behaviour is checked against a C oracle of its own,
+chooses one. SSH behaviour under libssh is checked against a C oracle of its own,
 `build/c-libssh`: the reference configuration with `CURL_USE_LIBSSH` in place of
 `CURL_USE_LIBSSH2`, built and measured by `baseline.py --libssh` and scored against by
-`score.py --libssh`. libssh2's is checked against the reference build, by `score.py
+`score.py --libssh`. Under libssh2 it is checked against the reference build, by `score.py
 --libssh2`.
 
 GnuTLS has one too: `build/c-gnutls`, the reference configuration with `CURL_USE_GNUTLS` in

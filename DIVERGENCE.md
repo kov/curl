@@ -805,7 +805,7 @@ not a difference: it is tracked in `MILESTONES.md`.
 - **Over Rustls, the version string names rustls-ffi, which the build does not link.** C's says
   `rustls-ffi/0.15.5/rustls/0.23.46/aws-lc-rs`; the rewrite says the same, naming the rustls-ffi
   release whose behaviour it ports and the rustls that release pins, which is the one it is
-  built with. runtests.pl and the pytest suite know a Rustls build by the `rustls-ffi` in it,
+  built with. `runtests.pl` and the pytest suite know a Rustls build by the `rustls-ffi` in it,
   and an application matching on it finds what it would in C's. Pinned by
   `the_version_names_the_rustls_linked` (`crates/curl-rustls/src/tests/real.rs`), which also
   ties the rustls named to the one in `Cargo.lock`.

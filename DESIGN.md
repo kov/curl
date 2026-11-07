@@ -367,7 +367,7 @@ that. Allocation is therefore always explicit and always fallible:
   its getters' `String`s) and its stream owns the stream it wraps. OpenSSL's own allocations
   are libc's, as in C, which the debug tracker does not count. The rustls crate is the
   exception, taken because C's Rustls backend is rustls itself behind rustls-ffi: it allocates
-  infallibly and takes its objects in std's `Arc`. curl-rustls allows the infallible calls in
+  infallibly and takes its objects in std's `Arc`. `curl-rustls` allows the infallible calls in
   `rustls.rs` alone, where rustls takes them, and keeps every call into rustls out of the debug
   tracker (`curl_alloc::track::untracked`), as C's tracker never sees rustls-ffi's allocations,
   but for its calls back into the connection below, which are curl's (`track::tracked`); so

@@ -2222,7 +2222,7 @@ library's setup of the library's object at the point C calls it (`QuicContextSet
 `Http3::setup_tls_context`: OpenSSL's context, GnuTLS's session,
 `ngtcp2_crypto_gnutls_configure_client_session`, wolfSSL's context,
 `ngtcp2_crypto_wolfssl_configure_client_context`), then the ALPN `h3` and a resumed ticket.
-curl-ngtcp2 is built for one TLS library (its `openssl`, `gnutls` or `wolfssl` feature, which the shim's and
+`curl-ngtcp2` is built for one TLS library (its `openssl`, `gnutls` or `wolfssl` feature, which the shim's and
 the tool's TLS feature names) and links that library's
 `ngtcp2_crypto_*`, which finds the connection through the library's own pointer on the session
 (OpenSSL's and wolfSSL's application data, GnuTLS's session pointer): curl-ngtcp2 sets it, and
@@ -3510,8 +3510,8 @@ session sets the library's keylog callback while the log is open, whose lines ar
 whole, a line end added (NSS's format: five secrets for TLS 1.3, `CLIENT_RANDOM` before it);
 each handshake done says `SSLKEYLOGFILE set, all TLS secrets are logged to '<file>'`.
 GnuTLS's log is opened as each session is made instead (`Curl_gtls_ctx_init`), not by the
-global init: a run that makes no TLS session makes no file, as C's GnuTLS build. mbedTLS's
-never opens it, as C's mbedTLS build logs no keys. wolfSSL's is opened by the global init, as
+global init: a run that makes no TLS session makes no file, as C's GnuTLS build. The mbedTLS
+backend never opens it, as C's mbedTLS build logs no keys. The wolfSSL backend's is opened by the global init, as
 OpenSSL's; this build of it has no TLS 1.3 secret callback, so only a TLS 1.2 session's
 `CLIENT_RANDOM` is logged, from the arrays the session keeps until its handshake ends.
 

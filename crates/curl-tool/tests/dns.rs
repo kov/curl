@@ -107,7 +107,7 @@ fn http_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
-        let (mut c, _) = listener.accept().unwrap();
+        let (mut c, _) = curl_core::test_server::accept(&listener);
         c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut buf = [0u8; 1024];
         let _read = c.read(&mut buf).unwrap();

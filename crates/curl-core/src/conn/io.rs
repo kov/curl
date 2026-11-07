@@ -2858,7 +2858,7 @@ pub(crate) fn stream_pair() -> (PairEnd, PairEnd) {
     {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
         let a = PairEnd::connect(listener.local_addr().expect("bound")).expect("a connect");
-        let (b, _) = listener.accept().expect("the connection");
+        let (b, _) = crate::test_server::accept(&listener);
         (a, b)
     }
 }

@@ -2483,7 +2483,7 @@ fn the_key_log_is_opened_as_a_tls_session_is_made() {
     let dir = Scratch::new("keylog-session");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let peer = std::thread::spawn(move || drop(listener.accept().unwrap()));
+    let peer = std::thread::spawn(move || drop(curl_core::test_server::accept(&listener)));
     let log = dir.path("keys");
     let url = format!("https://127.0.0.1:{port}/");
     let run = curl_env(&dir, &["-s", "-k", &url], &[("SSLKEYLOGFILE", &log)]);

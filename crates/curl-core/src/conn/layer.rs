@@ -1410,7 +1410,7 @@ mod tests {
         let at = listener.local_addr().unwrap();
         let socket = curl_os::net::open(at, curl_os::net::Protocol::Tcp, true).unwrap();
         socket.connect(at).unwrap();
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = crate::test_server::accept(&listener);
         let below = || Below {
             layers: &mut [],
             socket: &socket,

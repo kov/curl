@@ -91,7 +91,7 @@ pub(crate) fn serve(answer: fn(u8, u8) -> Vec<Vec<u8>>) -> (u16, thread::JoinHan
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
-        let (mut s, _) = listener.accept().unwrap();
+        let (mut s, _) = curl_core::test_server::accept(&listener);
         let mut got = Vec::new();
         while let Some((op, content)) = read_message(&mut s) {
             for m in answer(op, id_of(&content)) {

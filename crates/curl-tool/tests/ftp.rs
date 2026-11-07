@@ -178,7 +178,7 @@ fn commands_server(pasv: &'static str) -> (u16, JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
         let mut out = tcp.try_clone().unwrap();
@@ -310,7 +310,7 @@ fn upload_server() -> (u16, JoinHandle<Stored>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
+        let (tcp, _) = curl_core::test_server::accept(&listener);
         tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
         let mut out = tcp.try_clone().unwrap();
@@ -337,7 +337,7 @@ fn upload_server() -> (u16, JoinHandle<Stored>) {
                 }
                 "STOR" | "APPE" => {
                     out.write_all(b"150 go\r\n").unwrap();
-                    let (mut d, _) = data.take().unwrap().accept().unwrap();
+                    let (mut d, _) = curl_core::test_server::accept(&data.take().unwrap());
                     let mut got = Vec::new();
                     std::io::Read::read_to_end(&mut d, &mut got).unwrap();
                     stored = Some((command, got));

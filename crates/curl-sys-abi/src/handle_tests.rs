@@ -4920,7 +4920,7 @@ fn performs_by_events() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         let mut got = Vec::new();
         let mut buf = [0; 1024];
         while !got.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -4964,7 +4964,7 @@ fn headers_are_looked_up_and_walked_as_in_c() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         let mut got = Vec::new();
         let mut buf = [0; 1024];
         while !got.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -6199,7 +6199,7 @@ fn proxy_header_lines_appended_after_the_option_are_sent() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let first = read_request(&mut peer);
@@ -6620,7 +6620,7 @@ fn the_os_errno_is_the_last_socket_failure_s() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (peer, _) = listener.accept().unwrap();
+        let (peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let mut some = [0; 1];
@@ -6658,7 +6658,7 @@ fn proxy_failures_are_reported_as_in_c() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         let mut greeting = [0; 3];
         peer.read_exact(&mut greeting).unwrap();
         // A SOCKS4 version where SOCKS5's belongs.
@@ -7680,7 +7680,7 @@ fn an_opener_may_change_the_port() {
     let port = v6.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
         use std::io::Write as _;
-        let (mut peer, _) = v6.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&v6);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let request = read_request(&mut peer);
@@ -8569,7 +8569,7 @@ fn a_websocket_only_connected_talks_through_the_c_calls() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let _request = read_request(&mut peer);
@@ -8715,7 +8715,7 @@ fn a_websocket_closed_under_a_receive_says_so() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let _request = read_request(&mut peer);
@@ -8857,7 +8857,7 @@ fn a_ws_send_of_no_frame_says_c_s_lines() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let _request = read_request(&mut peer);
@@ -9111,7 +9111,7 @@ fn a_ws_send_of_no_frame_says_why_if_the_flush_before_it_fails() {
     let port = listener.local_addr().unwrap().port();
     let (hang_up, hung_up) = std::sync::mpsc::channel::<()>();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let _request = read_request(&mut peer);
@@ -9281,7 +9281,7 @@ fn a_debug_function_turning_verbose_off_hears_no_more_of_the_call() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let mut head = Vec::new();
@@ -9353,7 +9353,7 @@ fn a_detached_connection_shows_its_ssl_pointer_once_taken_up() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let mut hello = vec![0u8; HELLO.len()];
@@ -9462,7 +9462,7 @@ fn a_write_callback_echoes_frames_on_its_own_websocket() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let _request = read_request(&mut peer);
@@ -9552,7 +9552,7 @@ fn the_websocket_s_frame_is_zero_before_the_first() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let _request = read_request(&mut peer);
@@ -9638,7 +9638,7 @@ fn a_frame_started_in_the_read_function_is_the_one_sent() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         peer.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let _request = read_request(&mut peer);

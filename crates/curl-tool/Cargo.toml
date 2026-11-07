@@ -103,7 +103,7 @@ curl-gssapi = { path = "../curl-gssapi" }
 curl-sspi = { path = "../curl-sspi" }
 
 [dev-dependencies]
-# The tests build what the core reports.
+# The tests build what the core reports, and their servers' bounded accept.
 curl-core = { path = "../curl-core", features = ["test-util"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 

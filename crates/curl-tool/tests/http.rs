@@ -2089,7 +2089,7 @@ fn sends_standard_input_again_as_it_stood() {
     let port = listener.local_addr().unwrap().port();
     let grown = file.clone();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
         let mut requests = Vec::new();
         for reply in [
             &b"HTTP/1.1 307 Again\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n"[..],

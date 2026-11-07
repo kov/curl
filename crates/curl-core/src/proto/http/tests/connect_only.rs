@@ -328,7 +328,7 @@ fn a_perform_that_only_connects_leaves_the_handle_its_socket() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let (mut peer, _) = crate::test_server::accept(&listener);
         let mut got = [0u8; 4];
         peer.read_exact(&mut got).unwrap();
         peer.write_all(b"pong").unwrap();

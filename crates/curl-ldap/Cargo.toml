@@ -22,6 +22,8 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+# The fake servers' accept, bounded in time.
+curl-core = { path = "../curl-core", features = ["test-util"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [build-dependencies]

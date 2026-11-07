@@ -2304,7 +2304,7 @@ mod tests {
         let port = listening.local_addr().unwrap().port();
         let (result, text, why) = traced(&format!("tcp://127.0.0.1:{port}/"));
         assert_eq!((result, why), (Ok(()), None));
-        let (accepted, from) = listening.accept().unwrap();
+        let (accepted, from) = crate::test_server::accept(&listening);
         drop(accepted);
         let established = format!(
             "Established connection to 127.0.0.1 (127.0.0.1 port {port}) from 127.0.0.1 port {} \n",

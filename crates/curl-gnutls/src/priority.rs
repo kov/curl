@@ -67,8 +67,6 @@ pub(crate) fn string(base: &str, ciphers: Option<&[u8]>) -> Result<Vec<u8>, Erro
     let mut out = Vec::new();
     match ciphers {
         Some(c) if matches!(c.first(), Some(b'+' | b'-' | b'!')) => {
-            out.try_reserve_exact(base.len() + 1 + c.len() + 1)
-                .map_err(|_| ErrorKind::OutOfMemory)?;
             out.try_extend_from_slice(base.as_bytes()).map_err(oom)?;
             out.try_push(b':').map_err(oom)?;
             out.try_extend_from_slice(c).map_err(oom)?;

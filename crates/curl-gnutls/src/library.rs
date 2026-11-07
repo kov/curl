@@ -424,8 +424,6 @@ pub(crate) fn keep_ticket(
 /// A C string of `bytes`, for a call that takes one; `Err` out of memory.
 pub(crate) fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     let mut c = Vec::new();
-    c.try_reserve_exact(bytes.len() + 1)
-        .map_err(|_| ErrorKind::OutOfMemory)?;
     c.try_extend_from_slice(bytes)
         .map_err(|_| ErrorKind::OutOfMemory)?;
     c.try_push(0).map_err(|_| ErrorKind::OutOfMemory)?;

@@ -25,6 +25,8 @@ use crate::sys;
 pub(crate) enum Act {
     /// It writes these bytes: a wait or a failure below ends the call.
     Push(&'static [u8]),
+    /// It writes these bytes, and goes on whatever came of it.
+    TryPush(&'static [u8]),
     /// It reads up to this many bytes: none come, the call waits.
     Pull(usize),
     /// It hands the caller of a receive these bytes, decrypted.
@@ -210,13 +212,14 @@ impl library::Gnutls for Fake {
     }
 
     fn is_fatal(&self, rc: Rc) -> bool {
-        !matches!(
-            rc,
-            sys::GNUTLS_E_AGAIN
-                | sys::GNUTLS_E_INTERRUPTED
-                | sys::GNUTLS_E_WARNING_ALERT_RECEIVED
-                | sys::GNUTLS_E_REHANDSHAKE
-        )
+        rc < 0
+            && !matches!(
+                rc,
+                sys::GNUTLS_E_AGAIN
+                    | sys::GNUTLS_E_INTERRUPTED
+                    | sys::GNUTLS_E_WARNING_ALERT_RECEIVED
+                    | sys::GNUTLS_E_REHANDSHAKE
+            )
     }
 }
 
@@ -295,6 +298,9 @@ impl FakeSession {
                     Moved::Again => return sys::GNUTLS_E_AGAIN as isize,
                     Moved::Failed => return -53,
                 },
+                Act::TryPush(bytes) => {
+                    call.push(bytes);
+                }
                 Act::Pull(n) => {
                     let mut room = vec![0u8; n];
                     let world = self.0.clone();

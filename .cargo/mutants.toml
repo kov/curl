@@ -60,6 +60,11 @@ exclude_globs = [
     "crates/curl-tool/src/options/table.rs",
     "**/c_tests.rs",
     "**/c_order.rs",
+    # GnuTLS's binding: each method one call of the library's, which only
+    # the library answers. The session's logic over it is tested against
+    # a scripted library; the binding itself by the suites on the GnuTLS
+    # leg (`score.py --gnutls`), against C's GnuTLS build.
+    "crates/curl-gnutls/src/gnutls.rs",
 ]
 
 
@@ -1138,4 +1143,21 @@ exclude_re = [
     # waits for nothing: a pollset is asked only of a transfer whose
     # connection holds a session, as with libssh's above.
     'curl-core/src/proto/ssh/mod\.rs:.*: replace match guard libssh2::ssh2_on\(line\)\.is_some_and\(\|sc\| sc\.waits\(\)\.1\) with true in Request::pollset$',
+    # GnuTLS (curl-gnutls):
+    # `gnutls_global_init` does not fail but out of memory, which no test
+    # can make it, and its cleanup leaves nothing a later init sees.
+    'curl-gnutls/src/lib\.rs:.*: replace init -> bool with true$',
+    'curl-gnutls/src/lib\.rs:.*: replace cleanup with \(\)$',
+    # A call's debug form, which nothing prints.
+    "curl-gnutls/src/library\\.rs:.*: replace <impl fmt::Debug for Call<'_, '_, C>>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)$",
+    # `GNUTLS_CLIENT` and `GNUTLS_FORCE_CLIENT_CERT` share no bit.
+    'curl-gnutls/src/session\.rs:.*: replace \| with \^ in Session<G>::client_init$',
+    # C's limit on the chain reported (`MAX_ALLOWED_CERT_AMOUNT`) is
+    # checked only for a transfer that asked for the chain, of which a
+    # session's test context has none, and no peer of the suites sends
+    # more than 100 certificates.
+    'curl-gnutls/src/verify\.rs:.*: replace > with (==|>=|<) in verify_server$',
+    # A file shorter than its status said, read whole otherwise: only a
+    # file cut between the two reads differs.
+    'curl-gnutls/src/verify\.rs:.*: replace (\|\| with &&|< with >) in load_file$',
 ]

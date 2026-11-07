@@ -1659,3 +1659,250 @@ fn secrets_are_logged_while_the_key_log_is_open() {
     assert!(!calls.contains(&"log_keys".to_owned()));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+// Calls into C, which Miri cannot run.
+#[cfg_attr(miri, ignore)]
+fn the_library_is_named_and_initialised_as_c_names_and_initialises_it() {
+    use curl_core::tls::TlsBackend as _;
+    let named = crate::version().to_string();
+    assert!(named.starts_with("GnuTLS/3."), "{named}");
+    assert_eq!(crate::GNUTLS.id().to_string(), named);
+    assert!(crate::init());
+    crate::cleanup();
+}
+
+#[test]
+fn a_session_s_version_is_kept_as_the_wire_numbers_it() {
+    use crate::library::ietf_version;
+    assert_eq!(ietf_version(sys::GNUTLS_SSL3), 0x300);
+    assert_eq!(ietf_version(sys::GNUTLS_TLS1_0), 0x301);
+    assert_eq!(ietf_version(sys::GNUTLS_TLS1_1), 0x302);
+    assert_eq!(ietf_version(sys::GNUTLS_TLS1_2), 0x303);
+    assert_eq!(ietf_version(sys::GNUTLS_TLS1_3), 0x304);
+    assert_eq!(ietf_version(99), 0);
+}
+
+#[test]
+fn early_data_is_held_to_c_s_most() {
+    let world = World {
+        alpn: b"h2",
+        data: b"ticket-13",
+        max_early: 100_000,
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let shared = TlsShared::testing();
+    let id = identity(|i| i.options.session_cache = true);
+    let mut kept = Kept::new();
+    ticket_13(lib, &id, &mut kept, &shared);
+    let mut s = Session::new(
+        lib,
+        &id,
+        &peer(HOST, TlsPeerKind::Name, true),
+        Alpn::H2Http11,
+        &shared,
+        None,
+    )
+    .unwrap();
+    let wire = Wire::default();
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    assert_eq!(r, Ok(Handshake::Done));
+    assert_eq!(s.deferred().unwrap().most, 64 * 1024);
+    assert!(has(
+        &kept.notes.0,
+        "info: SSL session allows 100000 bytes of early data, reusing ALPN 'h2'"
+    ));
+    // GnuTLS answers 0 for all it took.
+    lib.w().scripts = vec![("send_early", vec![Act::Return(0)])];
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake_early(io, b"GET /")
+    });
+    assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
+    assert_eq!(lib.w().made("send_early").len(), 1);
+    assert!(has(
+        &kept.notes.0,
+        "info: SSL sending 5 bytes of early data"
+    ));
+}
+
+#[test]
+fn a_certificate_of_another_type_is_read_as_pem() {
+    let id = identity(|i| {
+        i.options.cert = Some(b"/client.pem".to_vec());
+        i.options.cert_type = Some(b"PEM".to_vec());
+    });
+    let (_, _, calls) = shake(World::default(), &id);
+    assert!(
+        calls.contains(&"key_file(/client.pem, /client.pem, Pem, None)".to_owned()),
+        "{calls:#?}"
+    );
+}
+
+#[test]
+fn a_handshake_done_is_done_whatever_its_writes_came_to() {
+    let world = World {
+        scripts: vec![("handshake", vec![Act::TryPush(b"x"), Act::Return(0)])],
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let shared = TlsShared::testing();
+    let id = plain();
+    let mut s = session(lib, &id, Alpn::Http11, &shared);
+    let mut kept = Kept::new();
+    let wire = Wire {
+        refuses: true,
+        ..Wire::default()
+    };
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
+}
+
+#[test]
+fn a_goodbye_waits_for_what_the_library_waits_for_and_reads_what_comes() {
+    let (mut s, lib, id) = connected(World::default());
+    let wire = Wire::default();
+    let mut kept = Kept::new();
+    lib.w().scripts = vec![("bye", vec![Act::WantsWrite(true), Act::Return(-28)])];
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.shutdown(io, Goodbye::Mutual)
+    });
+    assert_eq!(r, Ok(Handshake::Waiting));
+    assert_eq!(s.waits(), TlsWait::Send);
+    lib.w().wants_write = false;
+    lib.w().scripts = vec![("recv", vec![Act::Return(-28)])];
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.shutdown(io, Goodbye::Mutual)
+    });
+    assert_eq!(r, Ok(Handshake::Waiting));
+    assert_eq!(s.waits(), TlsWait::Recv);
+    // Data still coming after ten reads: it waits for more.
+    lib.w().scripts = (0..10)
+        .map(|_| ("recv", vec![Act::Deliver(b"x")]))
+        .collect();
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.shutdown(io, Goodbye::Mutual)
+    });
+    assert_eq!(r, Ok(Handshake::Waiting));
+    assert!(lib.w().scripts.is_empty());
+    lib.w().scripts = vec![("recv", vec![Act::Return(-9)])];
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.shutdown(io, Goodbye::Mutual)
+    });
+    assert_eq!(r, Err(ErrorKind::RecvError));
+    assert!(
+        has(&kept.notes.0, "trace: SSL shutdown, error: 'an error'(-9)"),
+        "{:#?}",
+        kept.notes.0
+    );
+}
+
+#[test]
+fn the_session_hands_out_what_the_library_has() {
+    let (s, lib, _) = connected(World::default());
+    assert!(!s.pending());
+    lib.w().pending = true;
+    assert!(s.pending());
+    assert!(s.native().is_some());
+    // C's GnuTLS build makes no channel binding.
+    struct NoNotes;
+    impl curl_core::tls::BindingNotes for NoNotes {
+        fn info(&mut self, _: std::fmt::Arguments<'_>) {}
+        fn fail(&mut self, kind: ErrorKind, _: std::fmt::Arguments<'_>) -> ErrorKind {
+            kind
+        }
+    }
+    assert_eq!(s.channel_binding(&mut NoNotes), Ok(None));
+}
+
+#[test]
+fn each_trust_source_says_what_it_gave() {
+    let shake_with = |answers: Vec<(&'static str, i32)>, change: fn(&mut TlsIdentity)| {
+        let world = World {
+            answers,
+            ..World::default()
+        };
+        let (r, notes, _) = shake(world, &identity(change));
+        assert_eq!(r, Ok(Handshake::Done), "{notes:#?}");
+        notes
+    };
+    let native =
+        |i: &mut TlsIdentity| i.options.ssl_options = curl_core::options::SslOptions::NATIVE_CA;
+    let notes = shake_with(vec![("system_trust", 0)], native);
+    assert!(
+        has(&notes, "info:   Native: 0 certificates from system trust"),
+        "{notes:#?}"
+    );
+    assert!(has(&notes, "info:   no trust anchors configured"));
+    let blob = |i: &mut TlsIdentity| i.options.ca_blob = CaSetting::Given(b"PEM".to_vec());
+    let notes = shake_with(vec![("trust_mem", 2)], blob);
+    assert!(has(&notes, "info:   CA Blob: 2 certificates"), "{notes:#?}");
+    assert!(!has(&notes, "info:   no trust anchors configured"));
+    let notes = shake_with(vec![("trust_mem", 0)], blob);
+    assert!(has(&notes, "info:   CA Blob: 0 certificates"), "{notes:#?}");
+    assert!(has(&notes, "info:   no trust anchors configured"));
+    let dir = |i: &mut TlsIdentity| i.options.ca_path = CaSetting::Given(b"/certs".to_vec());
+    let notes = shake_with(vec![("trust_dir", 3)], dir);
+    assert!(
+        has(&notes, "info:   CApath: 3 certificates in /certs"),
+        "{notes:#?}"
+    );
+    assert!(!has(&notes, "info:   no trust anchors configured"));
+    let notes = shake_with(vec![("trust_dir", 0)], dir);
+    assert!(
+        has(&notes, "info:   CApath: 0 certificates in /certs"),
+        "{notes:#?}"
+    );
+    assert!(has(&notes, "info:   no trust anchors configured"));
+}
+
+#[test]
+fn a_peer_without_a_certificate_fails_whichever_check_wants_one() {
+    let world = || World {
+        chain: None,
+        ..World::default()
+    };
+    for (peer, host, issuer) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let id = identity(|i| {
+            i.verify_peer = peer;
+            i.verify_host = host;
+            if issuer {
+                i.options.issuer_cert = Some(b"/issuer.pem".to_vec());
+            }
+        });
+        let (got, notes) = fails(world(), &id);
+        assert_eq!(
+            got,
+            ErrorKind::PeerFailedVerification,
+            "{peer} {host} {issuer}"
+        );
+        assert!(has(
+            &notes,
+            "fail: PeerFailedVerification: failed to get server cert"
+        ));
+    }
+}
+
+#[test]
+// Makes a file, which Miri's isolation refuses.
+#[cfg_attr(miri, ignore)]
+fn an_issuer_file_larger_than_c_reads_is_read_as_nothing() {
+    let dir = std::env::temp_dir().join(format!("curl-gnutls-issuer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("issuer.pem");
+    let name = file.to_str().unwrap().as_bytes().to_vec();
+    let issued = |len: u64| {
+        std::fs::File::create(&file).unwrap().set_len(len).unwrap();
+        let id = identity(|i| i.options.issuer_cert = Some(name.clone()));
+        let (_, _, calls) = shake(World::default(), &id);
+        calls.contains(&"import(, Pem)".to_owned())
+    };
+    assert!(issued(8_000_001), "read as nothing");
+    // At C's most, it is read.
+    assert!(!issued(8_000_000));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

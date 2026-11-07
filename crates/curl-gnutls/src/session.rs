@@ -890,12 +890,10 @@ where
     }
 
     /// What the peer chose, which is none before the handshake chose it,
-    /// but for one put off: what the session resumed chose.
+    /// but for one put off: what the session resumed chose, which `defer`
+    /// takes as agreed.
     fn chosen(&self) -> Option<Chosen> {
-        match self.deferred {
-            Some(d) if self.step != Step::Done => Some(d.alpn),
-            _ => self.negotiated,
-        }
+        self.negotiated
     }
 
     fn deferred(&self) -> Option<Deferred> {

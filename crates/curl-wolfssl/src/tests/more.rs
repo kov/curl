@@ -18,7 +18,10 @@ fn the_context_callback_gets_the_store_set_up() {
         let shared = TlsShared::testing();
         let mut s = session(lib, &id, Alpn::None, &shared);
         let mut kept = Kept::new();
-        kept.context = Some(ContextHandler { refuses, handed: 0 });
+        kept.context = Some(ContextHandler {
+            refuses,
+            ..ContextHandler::default()
+        });
         let wire = Wire::default();
         let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
         let calls = lib.w().calls.clone();

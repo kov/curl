@@ -1374,6 +1374,9 @@ pub struct ContextHandler {
     /// The error it answers with, if any.
     pub refuses: Option<ErrorKind>,
     pub handed: usize,
+    /// The transfer's report, where the chain is asked for
+    /// (`CURLOPT_CERTINFO`).
+    pub report: Option<crate::report::TransferReport>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -1385,7 +1388,7 @@ impl crate::conn::layer::ForTransfer for ContextHandler {
     }
 
     fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
-        None
+        self.report.as_mut()
     }
 
     fn peer_verified(&mut self, _: Component, _: i64) {}

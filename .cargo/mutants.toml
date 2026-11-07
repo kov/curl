@@ -1276,4 +1276,20 @@ exclude_re = [
     # doing nothing: 6, `test_07_14_upload_stdin[-h3]` among them).
     'curl-quiche/src/lib\.rs:.*: replace .*::write_body -> Result<usize, OutOfMemory> with Ok\(0\)$',
     'curl-quiche/src/lib\.rs:.*: replace .*::end_body with \(\)$',
+    # The connection's window ceiling (C's ten windows of each of its 100
+    # streams) bounds only how far quiche grows the window it advertises
+    # once a stream's own has grown to its ceiling: 14.4 MB in its place
+    # holds back only more than eleven streams at full window at once,
+    # and 132 KB only how fast a body comes, its bytes and their order
+    # the same (`the_windows_grow_as_a_large_body_comes` sees the stream's
+    # ceiling, and a ceiling of nothing, which stalls a body). (By column:
+    # the two `*`s of `10 * MAX_STREAMS * STREAM_WINDOW`.)
+    'curl-quiche/src/lib\.rs:\d+:(45|59): replace \* with \+ in Connection::client$',
+    # quiche's `recv` takes a datagram whole or fails it, so it never says
+    # it read more than it was given.
+    'curl-quiche/src/lib\.rs:.*: replace < with > in .*::read_packets$',
+    # A datagram quiche read none of was dropped whole or failed the
+    # call: resuming its held streams then tells them to try again, and
+    # quiche, its window no wider, takes nothing and holds them again.
+    'curl-quiche/src/lib\.rs:.*: replace > with >= in .*::read_packets$',
 ]

@@ -28,6 +28,23 @@ static LIBRARIES: Libraries = Libraries {
 
 const PORT: u16 = 8990;
 
+/// What is said of SPNEGO with the stub's NTLM credentials alone: where
+/// the library narrows SPNEGO's mechanisms, nothing is left and the
+/// stub's failure has no words; elsewhere (GNU GSS) SPNEGO settles on
+/// NTLM, which is refused.
+#[cfg(gss_set_neg_mechs)]
+const NTLM_REFUSED: &str = "* gss_init_sec_context() failed:";
+#[cfg(not(gss_set_neg_mechs))]
+const NTLM_REFUSED: &str = "* SPNEGO chose NTLM, but NTLM is not allowed";
+
+/// The stub's refusal of an answer, said with the library's words for
+/// its minor code: MIT krb5 has none, GNU GSS reads it as one of its
+/// own.
+#[cfg(not(gss_gnu))]
+const STUB_REFUSED: &str = "* gss_init_sec_context() failed:";
+#[cfg(gss_gnu)]
+const STUB_REFUSED: &str = "* gss_init_sec_context() failed: Couldn't allocate gss_buffer_t data.";
+
 /// The stub's first token for `creds`, from `HTTP@127.0.0.1`, in base64:
 /// what test 2056 expects for `KRB5_Alice`.
 fn token(creds: &str) -> String {
@@ -241,7 +258,7 @@ fn ntlm_alone_in_a_child() {
         seen.lines()[..3],
         [
             "* using HTTP/1.x",
-            "* gss_init_sec_context() failed:",
+            NTLM_REFUSED,
             "* Server auth using Negotiate with user ''",
         ]
     );
@@ -333,7 +350,7 @@ fn refused_in_a_child() {
             "<= HTTP/1.1 401 Who".to_owned(),
         ];
         if said {
-            want.push("* gss_init_sec_context() failed:".to_owned());
+            want.push(STUB_REFUSED.to_owned());
         }
         want.extend([
             format!("<= WWW-Authenticate: Negotiate {challenge}"),
@@ -547,7 +564,7 @@ fn tunnel_without_in_a_child() {
         seen.lines()[..5],
         [
             "* CONNECT: no ALPN negotiated",
-            "* gss_init_sec_context() failed:",
+            NTLM_REFUSED,
             "* Proxy auth using Negotiate with user ''",
             "* Establishing HTTP proxy tunnel to origin.example:80",
             "=> CONNECT origin.example:80 HTTP/1.1",

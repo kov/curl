@@ -1,0 +1,33 @@
+=== MIT krb5 is not asked to delegate by policy
+file: crates/curl-gssapi/src/lib.rs
+witness: curl-gssapi tests::delegation_by_policy_is_asked_where_the_library_can
+--- old
+        req |= sys::GSS_C_DELEG_POLICY_FLAG;
+--- new
+        req |= 0;
+
+=== GNU GSS's contexts do not note the delegation by policy they cannot do
+file: crates/curl-gssapi/src/lib.rs
+witness: curl-gssapi tests::gnu_without_tickets
+features: gnu-gss
+--- old
+    (req, cfg!(gss_gnu) && flags.delegate_by_policy)
+--- new
+    (req, false)
+
+=== the binding's delegation-by-policy flag is not the header's
+file: crates/curl-gssapi/src/sys.rs
+witness: curl-gssapi tests::the_declarations_are_the_header_s
+--- old
+pub(crate) const GSS_C_DELEG_POLICY_FLAG: u32 = 32768;
+--- new
+pub(crate) const GSS_C_DELEG_POLICY_FLAG: u32 = 16384;
+
+=== `curl -V` names GNU GSS as MIT krb5
+file: crates/curl-gssapi/src/lib.rs
+witness: curl-gssapi tests::the_version_is_the_header_s
+features: gnu-gss
+--- old
+pub const NAME: &str = "libgss";
+--- new
+pub const NAME: &str = "mit-krb5";

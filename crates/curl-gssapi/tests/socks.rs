@@ -6,6 +6,8 @@
 //! failure on the proxy's answer said as C lays it out. Each case runs
 //! in a child process of this binary, its environment set.
 
+// GNU GSS reads no MIT credentials cache: there only the stub's cases.
+#![cfg(any(feature = "debug-hooks", not(gss_gnu)))]
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::net::SocketAddr;
@@ -21,6 +23,7 @@ use curl_core::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use curl_core::options::Options;
 use curl_core::time::{ManualClock, TimeLimit};
 
+#[cfg(not(gss_gnu))]
 #[path = "../src/tests/ccache.rs"]
 #[allow(dead_code)]
 mod ccache;
@@ -33,6 +36,7 @@ static LIBRARIES: Libraries = Libraries {
 const PORT: u16 = 8991;
 
 /// The Kerberos OID, as a token's framing holds it.
+#[cfg(not(gss_gnu))]
 const KRB5_OID: &[u8] = b"\x06\x09\x2a\x86\x48\x86\xf7\x12\x01\x02\x02";
 
 /// The text lines a transfer traced.
@@ -259,8 +263,9 @@ fn no_user_in_a_child() {
 }
 
 /// The stub refuses a `C` answer to its Kerberos context with a minor
-/// code the library has no words for: said with none. C asks the library
-/// for them for ever (`DIVERGENCE.md`).
+/// code MIT krb5 has no words for: said with none. C asks the library
+/// for them for ever (`DIVERGENCE.md`). GNU GSS has words for it, as
+/// one of its own codes.
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn a_status_without_words_is_said_without_them() {
@@ -276,10 +281,17 @@ fn wordless_in_a_child() {
     let ran = through_proxy(&[b"\x05\x01", b"\x01\x01\x00\x01C"], |_| {});
     assert_eq!(ran.result, Err(ErrorKind::Proxy));
     let lines = ran.seen.gss_lines();
+    #[cfg(not(gss_gnu))]
     assert!(
         lines[0].starts_with("GSS-API error: gss_init_sec_context failed: ")
             && lines[0].ends_with(".\n"),
         "{lines:?}"
+    );
+    #[cfg(gss_gnu)]
+    assert_eq!(
+        lines[0],
+        "GSS-API error: gss_init_sec_context failed: Unspecified error in underlying \
+         mechanism.\nCouldn't allocate gss_buffer_t data"
     );
     assert_eq!(
         lines[1..],
@@ -294,12 +306,14 @@ fn wordless_in_a_child() {
 /// its first token, Kerberos's in the mechanism's framing, goes framed;
 /// mutual authentication then wants the proxy's, and fails on one that
 /// is no token, said as C lays the library's words out.
+#[cfg(not(gss_gnu))]
 #[test]
 fn the_library_s_token_is_framed() {
     let kdcless = ccache::Kdcless::new("socks", ccache::Key::Aes256);
     in_child("library_in_a_child", &kdcless.env());
 }
 
+#[cfg(not(gss_gnu))]
 #[test]
 fn library_in_a_child() {
     if !is_child("library_in_a_child") {

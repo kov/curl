@@ -32,6 +32,9 @@ c-ares = ["dep:curl-ares"]
 # `CURL_USE_LIBSSH2`), as the reference build has it.
 libssh = ["dep:curl-libssh"]
 libssh2 = ["dep:curl-libssh2"]
+# GNU GSS in place of MIT krb5 for Kerberos and SPNEGO (C's
+# `HAVE_GSSGNU`).
+gnu-gss = ["curl-gssapi/gnu-gss"]
 # The debug test build: track allocations as the C tool's debug build does.
 debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`).
@@ -90,8 +93,8 @@ curl-zstd = { path = "../curl-zstd" }
 # `#[mutants::skip]`, for cargo-mutants: an attribute and nothing else.
 mutants = "0.0.4"
 
-# Kerberos and SPNEGO: MIT krb5's GSS-API, or on Windows SSPI, as C's
-# builds have them.
+# Kerberos and SPNEGO: MIT krb5's or GNU GSS's GSS-API, or on Windows
+# SSPI, as C's builds have them.
 [target.'cfg(not(windows))'.dependencies]
 curl-gssapi = { path = "../curl-gssapi" }
 [target.'cfg(windows)'.dependencies]

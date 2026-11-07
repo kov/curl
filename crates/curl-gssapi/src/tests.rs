@@ -1,13 +1,20 @@
+#[cfg(not(gss_gnu))]
 mod ccache;
+#[cfg(not(gss_gnu))]
 mod peek;
 
 use curl_alloc::OutOfMemory;
 use curl_core::gss::{
     Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssNote, GssStatus, Mech,
-    Progress, Step, StepSink, Style, Target,
+    StepSink, Style, Target,
 };
+#[cfg(not(gss_gnu))]
+use curl_core::gss::{Progress, Step};
 
-use crate::{GSSAPI, KRB5_OID, NTLMSSP_OID, SPNEGO_OID, sys};
+use crate::{GSSAPI, sys};
+#[cfg(not(gss_gnu))]
+use crate::{KRB5_OID, NTLMSSP_OID, SPNEGO_OID};
+#[cfg(not(gss_gnu))]
 use ccache::{Kdcless, Key};
 
 /// `GSS_S_FAILURE` and `GSS_S_NO_CONTEXT`, as `<gssapi/gssapi.h>` has
@@ -79,11 +86,13 @@ fn child_output(name: &str, env: &[(&str, &str)]) -> String {
     stdout
 }
 
+#[cfg(not(gss_gnu))]
 /// `env` as `in_child` takes it.
 fn pairs(env: &[(String, String)]) -> Vec<(&str, &str)> {
     env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
 }
 
+#[cfg(not(gss_gnu))]
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
@@ -123,6 +132,7 @@ fn is_child(name: &str) -> bool {
 
 /// Without credentials, SPNEGO fails at acquiring them, and the library
 /// says why in both of C's layouts.
+#[cfg(not(gss_gnu))]
 #[test]
 fn without_credentials_spnego_fails_to_acquire_them() {
     let dir = std::env::temp_dir().join(format!("curl-gssapi-{}", std::process::id()));
@@ -138,6 +148,7 @@ fn without_credentials_spnego_fails_to_acquire_them() {
     );
 }
 
+#[cfg(not(gss_gnu))]
 #[test]
 fn without_credentials_in_a_child() {
     if !is_child("tests::without_credentials_in_a_child") {
@@ -197,17 +208,143 @@ fn without_credentials_in_a_child() {
     );
 }
 
-/// The stub's own minor codes mean nothing to the library: a failed
-/// stub step says nothing after its prefix, as test 2057's C trace has
-/// it ("gss_init_sec_context() failed: ").
+/// The stub's own minor codes mean nothing to MIT krb5: a failed stub
+/// step says nothing after its prefix, as test 2057's C trace has it
+/// ("gss_init_sec_context() failed: "). GNU GSS, asked of a mechanism's
+/// code with no mechanism named, says so.
 #[test]
 fn a_stub_status_has_no_text() {
     let status = GssStatus::new(FAILURE, 6);
+    #[cfg(not(gss_gnu))]
     assert_eq!(described(&status, Style::Log), b"");
+    #[cfg(gss_gnu)]
+    assert_eq!(
+        String::from_utf8_lossy(&described(&status, Style::Log)),
+        "Message context invalid. "
+    );
+}
+
+/// The binding's declarations are the header's: its codes, flags and
+/// the layout of what it passes, as `csrc/layout.c` reads them from the
+/// header C includes.
+#[cfg(gss_layout)]
+#[test]
+fn the_declarations_are_the_header_s() {
+    assert_eq!(sys::header_values(), sys::declared_values());
+}
+
+/// Delegation by policy is asked of the library where it has the flag;
+/// GNU GSS has none, and the context says so instead.
+#[test]
+fn delegation_by_policy_is_asked_where_the_library_can() {
+    let policy = Flags {
+        delegate_by_policy: true,
+        ..Flags::default()
+    };
+    let (flags, unsupported) = crate::req_flags(policy);
+    #[cfg(not(gss_gnu))]
+    assert_eq!(
+        (flags, unsupported),
+        (sys::GSS_C_REPLAY_FLAG | sys::GSS_C_DELEG_POLICY_FLAG, false)
+    );
+    #[cfg(gss_gnu)]
+    assert_eq!((flags, unsupported), (sys::GSS_C_REPLAY_FLAG, true));
+    let all = Flags {
+        mutual: true,
+        delegate_by_policy: false,
+        delegate: true,
+    };
+    assert_eq!(
+        crate::req_flags(all),
+        (
+            sys::GSS_C_REPLAY_FLAG | sys::GSS_C_MUTUAL_FLAG | sys::GSS_C_DELEG_FLAG,
+            false
+        )
+    );
+}
+
+/// `curl -V` names GNU GSS as C does: `libgss/` and the header's
+/// `GSS_VERSION`.
+#[cfg(gss_gnu)]
+#[test]
+fn the_version_is_the_header_s() {
+    assert_eq!(crate::NAME, "libgss");
+    assert_eq!(Some(crate::version()), sys::header_version().to_str().ok());
+}
+
+/// GNU GSS without tickets: each mechanism's first step fails for want
+/// of credentials, SPNEGO's too, as the library takes a mechanism it
+/// does not have for Kerberos; what the library says of it, in both of
+/// C's layouts; and delegation by policy noted at each step, before it.
+#[cfg(gss_gnu)]
+#[test]
+fn gnu_without_tickets() {
+    // Shishi's home of its own, its configuration empty.
+    let home = std::env::temp_dir().join(format!("curl-gssapi-gnu-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("shishi.conf"), "").unwrap();
+    let home_text = home.display().to_string();
+    in_child(
+        "tests::gnu_without_tickets_in_a_child",
+        &[
+            ("HOME", &home_text),
+            ("SHISHI_HOME", &home_text),
+            ("SHISHI_CONFIG", "/dev/null"),
+            ("LC_ALL", "C"),
+        ],
+    );
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[cfg(gss_gnu)]
+#[test]
+fn gnu_without_tickets_in_a_child() {
+    if !is_child("tests::gnu_without_tickets_in_a_child") {
+        return;
+    }
+    let policy = Flags {
+        delegate_by_policy: true,
+        ..MUTUAL
+    };
+    /// `GSS_S_NO_CRED`.
+    const NO_CRED: u32 = 7 << 16;
+    const MAJOR: &str = "No credentials were supplied, or the credentials were \
+        unavailable or inaccessible";
+    const MINOR: &str = "Principal in credential cache does not match desired name";
+    for mech in [Mech::Spnego, Mech::Kerberos] {
+        for flags in [MUTUAL, policy] {
+            let mut context = GSSAPI.context(HTTP_AT_LOCALHOST, mech, flags).unwrap();
+            assert_eq!(later_calls(&mut *context), no_context());
+            let mut sink = Collected::default();
+            let failure = context.step(None, None, &mut sink).unwrap_err();
+            assert_eq!(failure.call, GssCall::InitSecContext, "{mech:?}");
+            let GssFailureKind::Status(status) = failure.kind else {
+                panic!("{failure:?}");
+            };
+            assert_eq!(status.codes().0, NO_CRED);
+            assert!(sink.token.is_none());
+            let noted: &[GssNote] = if flags.delegate_by_policy {
+                &[GssNote::NoDelegationPolicy]
+            } else {
+                &[]
+            };
+            assert_eq!(sink.notes, noted, "{flags:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&described(&status, Style::Log)),
+                format!("{MAJOR}. {MINOR}. ")
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&described(&status, Style::Socks)),
+                format!("{MAJOR}.\n{MINOR}")
+            );
+            assert_eq!(later_calls(&mut *context), no_context());
+        }
+    }
 }
 
 /// The version `curl -V` names is the library's as pkg-config has it, or
 /// else `krb5-config` (macOS), as C's CMake build finds it.
+#[cfg(not(gss_gnu))]
 #[test]
 fn the_version_is_pkg_config_s() {
     let out = std::process::Command::new("pkg-config")
@@ -248,6 +385,7 @@ fn a_set_of_mechanisms_leaves_one_out() {
 /// With a cached ticket and a KDC that answers nothing, the library's
 /// own contexts: what each step gives back, and what is done with a
 /// context the step made.
+#[cfg(not(gss_gnu))]
 #[test]
 fn the_library_s_contexts_from_a_cached_ticket() {
     let kdcless = Kdcless::new("contexts", Key::Aes256);
@@ -259,6 +397,7 @@ fn the_library_s_contexts_from_a_cached_ticket() {
     in_child("tests::cached_ticket_in_a_child", &pairs(&env));
 }
 
+#[cfg(not(gss_gnu))]
 #[test]
 fn cached_ticket_in_a_child() {
     if !is_child("tests::cached_ticket_in_a_child") {
@@ -347,12 +486,14 @@ fn cached_ticket_in_a_child() {
 
 /// The TLS channel's binding goes in the authenticator, where C puts
 /// it, unless it is empty, which C passes as no binding at all.
+#[cfg(not(gss_gnu))]
 #[test]
 fn the_binding_goes_in_the_authenticator() {
     let kdcless = Kdcless::new("binding", Key::Rc4);
     in_child("tests::binding_in_a_child", &pairs(&kdcless.env()));
 }
 
+#[cfg(not(gss_gnu))]
 #[test]
 fn binding_in_a_child() {
     if !is_child("tests::binding_in_a_child") {
@@ -381,6 +522,7 @@ fn binding_in_a_child() {
 
 /// The longest text each of C's layouts holds: the minor code's message
 /// names the cache, whose name sets its length.
+#[cfg(not(gss_gnu))]
 #[test]
 fn a_long_status_text_is_cut_where_c_cuts_it() {
     let base = std::env::temp_dir().join(format!("curl-gssapi-long-{}", std::process::id()));
@@ -454,6 +596,7 @@ fn a_long_status_text_is_cut_where_c_cuts_it() {
     assert_eq!(socks, None);
 }
 
+#[cfg(not(gss_gnu))]
 #[test]
 fn long_status_in_a_child() {
     if !is_child("tests::long_status_in_a_child") {
@@ -478,10 +621,12 @@ fn long_status_in_a_child() {
     }
 }
 
+#[cfg(not(gss_gnu))]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg(not(gss_gnu))]
 fn unhex(text: &str) -> Vec<u8> {
     (0..text.len())
         .step_by(2)
@@ -577,8 +722,20 @@ mod stub {
             .context(HTTP_AT_LOCALHOST, Mech::Spnego, MUTUAL)
             .unwrap();
         let failure = step(&mut *context, None).unwrap_err();
-        assert_eq!(failure.call, GssCall::InitSecContext);
-        assert_eq!(failure.kind, stub_failure(crate::stub::NO_MECH));
+        #[cfg(gss_set_neg_mechs)]
+        {
+            assert_eq!(failure.call, GssCall::InitSecContext);
+            assert_eq!(failure.kind, stub_failure(crate::stub::NO_MECH));
+        }
+        // Without narrowing, SPNEGO settles on NTLM, which is refused.
+        #[cfg(not(gss_set_neg_mechs))]
+        assert_eq!(
+            failure,
+            GssFailure {
+                call: GssCall::InquireContext,
+                kind: GssFailureKind::NtlmChosen,
+            }
+        );
         // By Kerberos, with no credentials narrowing it, NTLM goes, and
         // continues to its third message, then is done.
         let mut context = GSSAPI
@@ -620,13 +777,18 @@ mod stub {
         // Done after NTLM's first message is an error.
         let failure = step(&mut *context, Some(b"D")).unwrap_err();
         assert_eq!(failure.kind, stub_failure(crate::stub::SERVER_ERR));
-        // Under SPNEGO, NTLM is left out: Kerberos refused ends it.
+        // Under SPNEGO, NTLM is left out where the library can leave it
+        // out: Kerberos refused ends it. Elsewhere SPNEGO goes on to
+        // NTLM, which is refused.
         let mut context = GSSAPI
             .context(HTTP_AT_LOCALHOST, Mech::Spnego, MUTUAL)
             .unwrap();
         step(&mut *context, None).unwrap();
         let failure = step(&mut *context, Some(b"C")).unwrap_err();
+        #[cfg(gss_set_neg_mechs)]
         assert_eq!(failure.kind, stub_failure(crate::stub::SERVER_ERR));
+        #[cfg(not(gss_set_neg_mechs))]
+        assert_eq!(failure.kind, GssFailureKind::NtlmChosen);
     }
 
     /// Credentials of C's whole room, or naming a target too long for

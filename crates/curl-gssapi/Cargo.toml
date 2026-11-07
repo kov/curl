@@ -1,6 +1,6 @@
 [package]
 name = "curl-gssapi"
-description = "GSS-API (MIT krb5) for the curl rewrite: Negotiate and SOCKS5's GSS-API method"
+description = "GSS-API (MIT krb5 or GNU GSS) for the curl rewrite: Negotiate, Kerberos and SOCKS5's GSS-API method"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,9 @@ links = "gssapi_krb5"
 # The debug test build's stand-in for a KDC: with `CURL_STUB_GSS_CREDS`
 # set, contexts are the stub's, as in C's debug build.
 debug-hooks = []
+# GNU GSS in place of MIT krb5 (C's `HAVE_GSSGNU`): built by
+# inventory/measure/deps.py, or found in `CURL_GNUGSS_DIR`.
+gnu-gss = []
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
@@ -22,6 +25,7 @@ curl-os = { path = "../curl-os" }
 curl-core = { path = "../curl-core", features = ["test-util"] }
 
 [build-dependencies]
+cc = "1.10.0"
 curl-build = { path = "../curl-build" }
 
 [lints]

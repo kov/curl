@@ -115,6 +115,7 @@ dependencies = [
 name = "curl-gssapi"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "curl-alloc",
  "curl-build",
  "curl-core",

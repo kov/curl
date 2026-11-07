@@ -1,4 +1,5 @@
-//! MIT krb5's GSS-API (`<gssapi/gssapi.h>`): the declarations the
+//! The GSS-API of MIT krb5 (`<gssapi/gssapi.h>`) or of GNU GSS
+//! (`<gss.h>`), whose declarations are the same, RFC 2744's: the ones the
 //! binding uses, and owners for the library's names, credentials,
 //! contexts, OID sets and buffers that release them on drop. Every
 //! unsafe call of the crate is here; the rest is safe.
@@ -34,7 +35,13 @@ struct GssOidDesc {
 }
 
 /// `gss_OID_set_desc`.
-#[cfg(gss_set_neg_mechs)]
+#[cfg_attr(
+    not(gss_set_neg_mechs),
+    allow(
+        dead_code,
+        reason = "used only where SPNEGO's mechanisms can be narrowed"
+    )
+)]
 #[repr(C)]
 struct GssOidSetDesc {
     count: usize,
@@ -66,6 +73,7 @@ const EMPTY: GssBufferDesc = GssBufferDesc {
 pub(crate) const GSS_S_COMPLETE: u32 = 0;
 pub(crate) const GSS_S_CONTINUE_NEEDED: u32 = 1;
 pub(crate) const GSS_S_FAILURE: u32 = 13 << 16;
+pub(crate) const GSS_S_NO_CONTEXT: u32 = 8 << 16;
 
 /// Whether `major` is an error: a calling or a routine error
 /// (`GSS_ERROR`).
@@ -78,15 +86,103 @@ pub(crate) const GSS_C_MUTUAL_FLAG: u32 = 2;
 pub(crate) const GSS_C_REPLAY_FLAG: u32 = 4;
 pub(crate) const GSS_C_CONF_FLAG: u32 = 16;
 pub(crate) const GSS_C_INTEG_FLAG: u32 = 32;
+/// MIT krb5's and Apple's; GNU GSS has none.
+#[cfg(not(gss_gnu))]
 pub(crate) const GSS_C_DELEG_POLICY_FLAG: u32 = 32768;
 
-#[cfg(gss_set_neg_mechs)]
+#[cfg_attr(
+    not(gss_set_neg_mechs),
+    allow(
+        dead_code,
+        reason = "used only where SPNEGO's mechanisms can be narrowed"
+    )
+)]
 const GSS_C_INITIATE: c_int = 1;
-#[cfg(gss_set_neg_mechs)]
+#[cfg_attr(
+    not(gss_set_neg_mechs),
+    allow(
+        dead_code,
+        reason = "used only where SPNEGO's mechanisms can be narrowed"
+    )
+)]
 const GSS_C_INDEFINITE: OmUint32 = 0xffff_ffff;
 const GSS_C_GSS_CODE: c_int = 1;
 const GSS_C_MECH_CODE: c_int = 2;
 const GSS_C_QOP_DEFAULT: OmUint32 = 0;
+
+/// The entries of `csrc/layout.c`'s table.
+#[cfg(all(test, gss_layout))]
+pub(crate) const LAYOUT_LEN: usize = 31;
+
+#[cfg(all(test, gss_layout))]
+unsafe extern "C" {
+    static curl_gssapi_values: [i64; LAYOUT_LEN];
+}
+
+/// The header's values, as `csrc/layout.c` has them.
+#[cfg(all(test, gss_layout))]
+pub(crate) fn header_values() -> [i64; LAYOUT_LEN] {
+    // SAFETY: a constant array of the C table's length, never written.
+    unsafe { curl_gssapi_values }
+}
+
+#[cfg(all(test, gss_gnu))]
+unsafe extern "C" {
+    static curl_gssapi_gnu_version: [core::ffi::c_char; 0];
+}
+
+/// GNU GSS's `GSS_VERSION`, as the header has it.
+#[cfg(all(test, gss_gnu))]
+pub(crate) fn header_version() -> &'static core::ffi::CStr {
+    // SAFETY: the C table's string, NUL-terminated and never written.
+    unsafe { core::ffi::CStr::from_ptr((&raw const curl_gssapi_gnu_version).cast()) }
+}
+
+/// The same values as this module declares them, in the table's order:
+/// a macro the binding leaves out is -1, as the table has one the
+/// header lacks.
+#[cfg(all(test, gss_layout))]
+pub(crate) fn declared_values() -> [i64; LAYOUT_LEN] {
+    use core::mem::{offset_of, size_of};
+    #[cfg(not(gss_gnu))]
+    let deleg_policy = i64::from(GSS_C_DELEG_POLICY_FLAG);
+    #[cfg(gss_gnu)]
+    let deleg_policy = -1;
+    let err = |major| i64::from(is_error(major));
+    [
+        i64::from(GSS_S_COMPLETE),
+        i64::from(GSS_S_CONTINUE_NEEDED),
+        i64::from(GSS_S_FAILURE),
+        i64::from(GSS_S_NO_CONTEXT),
+        err(GSS_S_FAILURE),
+        err(GSS_S_CONTINUE_NEEDED),
+        err(0x0000_ffff),
+        err(0x0100_0000),
+        i64::from(GSS_C_DELEG_FLAG),
+        i64::from(GSS_C_MUTUAL_FLAG),
+        i64::from(GSS_C_REPLAY_FLAG),
+        i64::from(GSS_C_CONF_FLAG),
+        i64::from(GSS_C_INTEG_FLAG),
+        deleg_policy,
+        i64::from(GSS_C_INITIATE),
+        i64::from(GSS_C_INDEFINITE),
+        i64::from(GSS_C_GSS_CODE),
+        i64::from(GSS_C_MECH_CODE),
+        i64::from(GSS_C_QOP_DEFAULT),
+        size_of::<OmUint32>() as i64,
+        size_of::<GssOidDesc>() as i64,
+        offset_of!(GssOidDesc, elements) as i64,
+        size_of::<GssOidSetDesc>() as i64,
+        offset_of!(GssOidSetDesc, elements) as i64,
+        size_of::<GssBufferDesc>() as i64,
+        offset_of!(GssBufferDesc, value) as i64,
+        size_of::<GssChannelBindings>() as i64,
+        offset_of!(GssChannelBindings, initiator_address) as i64,
+        offset_of!(GssChannelBindings, acceptor_addrtype) as i64,
+        offset_of!(GssChannelBindings, acceptor_address) as i64,
+        offset_of!(GssChannelBindings, application_data) as i64,
+    ]
+}
 
 // Named on Windows, where a static is reached through the DLL's import
 // table (`__imp_`), which only a block linked to its library knows to do.

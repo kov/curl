@@ -1,7 +1,10 @@
-//! GSS-API by MIT krb5 (`lib/curl_gssapi.c`, `lib/vauth/spnego_gssapi.c`
-//! and the library calls of `lib/socks_gssapi.c`): security contexts by
-//! SPNEGO, which never settles on NTLM, or by Kerberos, behind
-//! `curl_core::gss::Gss`.
+//! GSS-API by MIT krb5, or with the `gnu-gss` feature by GNU GSS
+//! (`lib/curl_gssapi.c`, `lib/vauth/spnego_gssapi.c` and the library
+//! calls of `lib/socks_gssapi.c`): security contexts by SPNEGO, which
+//! never settles on NTLM, or by Kerberos, behind `curl_core::gss::Gss`.
+//! GNU GSS has no SPNEGO mechanism of its own, and neither narrows
+//! SPNEGO's mechanisms nor delegates by policy, as C built with it
+//! (`HAVE_GSSGNU`) does neither.
 //!
 //! With the `debug-hooks` feature, the debug test build's stub stands in
 //! for the credentials and the steps whenever `CURL_STUB_GSS_CREDS` is
@@ -17,11 +20,9 @@ mod sys;
 mod tests;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
-#[cfg(gss_set_neg_mechs)]
-use curl_core::gss::GssNote;
 use curl_core::gss::{
-    Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssStatus, Mech, Progress, Step,
-    StepSink, Style, Target, TooLong,
+    Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssNote, GssStatus, Mech,
+    Progress, Step, StepSink, Style, Target, TooLong,
 };
 
 use sys::{Name, NameKind};
@@ -36,13 +37,21 @@ const NTLMSSP_OID: &[u8] = b"\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a";
 /// The library, for a handle's `Libraries`.
 pub static GSSAPI: GssApi = GssApi;
 
-/// The library's version, as `curl -V` names it after `mit-krb5/`
-/// (`CURL_KRB5_VERSION`, found as the crate was built).
+/// The library's name, as `curl -V` has it before the version.
+#[cfg(not(gss_gnu))]
+pub const NAME: &str = "mit-krb5";
+/// The library's name, as `curl -V` has it before the version.
+#[cfg(gss_gnu)]
+pub const NAME: &str = "libgss";
+
+/// The library's version, as `curl -V` names it after [`NAME`] and a
+/// `/` (`CURL_KRB5_VERSION`, or GNU GSS's `GSS_VERSION`, found as the
+/// crate was built).
 pub fn version() -> &'static str {
-    env!("CURL_KRB5_VERSION")
+    env!("CURL_GSS_VERSION")
 }
 
-/// MIT krb5's GSS-API.
+/// The library's GSS-API.
 pub struct GssApi;
 
 impl Gss for GssApi {
@@ -71,20 +80,12 @@ impl Gss for GssApi {
         let name = Name::import(&text, kind)
             .map_err(|s| GssFailure::status(GssCall::ImportName, status(s)))?;
         drop(text);
-        let mut req = sys::GSS_C_REPLAY_FLAG;
-        if flags.mutual {
-            req |= sys::GSS_C_MUTUAL_FLAG;
-        }
-        if flags.delegate_by_policy {
-            req |= sys::GSS_C_DELEG_POLICY_FLAG;
-        }
-        if flags.delegate {
-            req |= sys::GSS_C_DELEG_FLAG;
-        }
+        let (flags, no_policy) = req_flags(flags);
         let context = Context {
             name,
             mech,
-            flags: req,
+            flags,
+            no_policy,
             backend: None,
         };
         Ok(try_box(context).map_err(oom)?)
@@ -100,6 +101,24 @@ impl Gss for GssApi {
     }
 }
 
+/// The flags a context asks of the peer (`req_flags`), and whether
+/// delegation by policy was asked of a library that cannot do it, which
+/// C's build without `GSS_C_DELEG_POLICY_FLAG` leaves out and warns of.
+fn req_flags(flags: Flags) -> (u32, bool) {
+    let mut req = sys::GSS_C_REPLAY_FLAG;
+    if flags.mutual {
+        req |= sys::GSS_C_MUTUAL_FLAG;
+    }
+    #[cfg(not(gss_gnu))]
+    if flags.delegate_by_policy {
+        req |= sys::GSS_C_DELEG_POLICY_FLAG;
+    }
+    if flags.delegate {
+        req |= sys::GSS_C_DELEG_FLAG;
+    }
+    (req, cfg!(gss_gnu) && flags.delegate_by_policy)
+}
+
 fn status((major, minor): sys::Status) -> GssStatus {
     GssStatus::new(major, minor)
 }
@@ -110,6 +129,8 @@ struct Context {
     mech: Mech,
     /// The flags asked of the peer (`req_flags`).
     flags: u32,
+    /// Delegation by policy was asked for, which the library cannot do.
+    no_policy: bool,
     backend: Option<Backend>,
 }
 
@@ -201,6 +222,11 @@ impl GssContext for Context {
         #[cfg(gss_set_neg_mechs)]
         if self.mech == Mech::Spnego && !backend.has_cred() {
             backend.spnego_cred(sink)?;
+        }
+        // Said before each step, the stub's too, as C says it in
+        // `Curl_gss_init_sec_context`.
+        if self.no_policy {
+            sink.note(GssNote::NoDelegationPolicy);
         }
         let init = |s| GssFailure::status(GssCall::InitSecContext, status(s));
         let mech = match self.mech {
@@ -307,13 +333,13 @@ impl Context {
             )),
             // No context yet: the library's answer to one it was never
             // given (`GSS_S_NO_CONTEXT`).
-            _ => Err(GssFailure::status(call, GssStatus::new(NO_CONTEXT, 0))),
+            _ => Err(GssFailure::status(
+                call,
+                GssStatus::new(sys::GSS_S_NO_CONTEXT, 0),
+            )),
         }
     }
 }
-
-/// `GSS_S_NO_CONTEXT`.
-const NO_CONTEXT: u32 = 8 << 16;
 
 /// A step's token: the library's buffer, released after it is handed
 /// on, or the stub's.

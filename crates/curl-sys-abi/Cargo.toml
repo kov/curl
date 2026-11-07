@@ -32,6 +32,9 @@ c-ares = ["dep:curl-ares"]
 # `CURL_USE_LIBSSH2`), as the reference build has it.
 libssh = ["dep:curl-libssh"]
 libssh2 = ["dep:curl-libssh2"]
+# GNU GSS in place of MIT krb5 for Kerberos and SPNEGO (C's
+# `HAVE_GSSGNU`).
+gnu-gss = ["curl-gssapi/gnu-gss"]
 # The hooks of a C debug build: the curl_dbg_* exports, memory tracking
 # and the libcurl-d.so.4 soname.
 debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
@@ -85,8 +88,8 @@ libc = "0.2"
 # from it whether the library is LibreSSL (`cfg(libressl)`).
 openssl-sys = { version = "0.9.118", optional = true }
 
-# Kerberos and SPNEGO: MIT krb5's GSS-API, or on Windows SSPI, as C's
-# builds have them.
+# Kerberos and SPNEGO: MIT krb5's or GNU GSS's GSS-API, or on Windows
+# SSPI, as C's builds have them.
 [target.'cfg(not(windows))'.dependencies]
 curl-gssapi = { path = "../curl-gssapi" }
 

@@ -78,8 +78,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-schannel/src/crypt.rs`: CryptoAPI's certificate stores and contexts: a CA
   file's certificates, a client's from a PKCS #12 file or a system store, the peer's chain
   built and checked by a chain engine, and its names.
-- `crates/curl-gssapi/src/sys.rs`: MIT krb5's GSS-API: names, credentials, security contexts
-  and the library's buffers.
+- `crates/curl-gssapi/src/sys.rs`: MIT krb5's or GNU GSS's GSS-API: names, credentials,
+  security contexts and the library's buffers, and the table of the header's values they are
+  checked against.
 - `crates/curl-sspi/src/sys.rs`: Windows' SSPI for authentication: the identities and
   credentials of the Negotiate, Kerberos and WDigest packages, their security contexts, and
   the buffers passed to and from them.

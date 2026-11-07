@@ -291,7 +291,7 @@ impl std::fmt::Display for CurlVersion {
         let h3 = tlslib::quic();
         // Kerberos is SSPI's on Windows, which names no library.
         #[cfg(not(windows))]
-        let gss = Some(Library("mit-krb5", curl_gssapi::version()));
+        let gss = Some(Library(curl_gssapi::NAME, curl_gssapi::version()));
         #[cfg(windows)]
         let gss: Option<Library<&str>> = None;
         // Named by the library itself (`Curl_ldap_version`).
@@ -422,7 +422,7 @@ mod tests {
     ))]
     fn gss_shown() -> String {
         #[cfg(not(windows))]
-        return format!(" mit-krb5/{}", curl_gssapi::version());
+        return format!(" {}/{}", curl_gssapi::NAME, curl_gssapi::version());
         #[cfg(windows)]
         return String::new();
     }

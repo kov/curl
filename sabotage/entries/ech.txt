@@ -63,9 +63,9 @@ witness: curl-core proto::http::tests::https_trace::ech_without_configurations_w
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::ech_takes_no_configurations_from_a_record_about_another_name
 --- old
-            RecordNow::Known(Some(r)) if applies(r, port) && !r.ech.is_empty() => Some(&r.ech),
+            RecordNow::Known(Some(r)) => r.ech_for(port),
 --- new
-            RecordNow::Known(Some(r)) if !r.ech.is_empty() => Some(&r.ech),
+            RecordNow::Known(Some(r)) => (!r.ech.is_empty()).then_some(&r.ech[..]),
 
 === wolfSSL fails a transfer whose ECH is only tried when the list is refused
 file: crates/curl-wolfssl/src/session.rs

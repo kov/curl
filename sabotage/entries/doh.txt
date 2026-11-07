@@ -194,12 +194,12 @@ witness: curl-core multi::doh_tests::a_socks_destination_goes_over_doh
                 return Ok(true);
 
 === a record for another port is followed
-file: crates/curl-core/src/multi/state/https.rs
+file: crates/curl-core/src/doh.rs
 witness: curl-core multi::state::https::tests::an_origins_record_chooses_first
 --- old
-    matches!(record.target.as_slice(), b"" | b".") && record.port.is_none_or(|p| p == port)
+        matches!(self.target.as_slice(), b"" | b".") && self.port.is_none_or(|p| p == port)
 --- new
-    matches!(record.target.as_slice(), b"" | b".") && (port > 0 || record.port.is_none())
+        matches!(self.target.as_slice(), b"" | b".") && (port > 0 || self.port.is_none())
 
 === a record's versions come after what was wanted
 file: crates/curl-core/src/multi/state/https.rs

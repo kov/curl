@@ -1709,6 +1709,9 @@ fn draws_the_bar_of_an_upload_resumed_at_its_end() {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut child = Command::new(tool)
         .args(["-q", "-#", "-T", "-", "-C", "-", &s.url("dst")])
+        // No CA path from cargo's environment: a library without CA
+        // paths warns of it.
+        .env_remove("SSL_CERT_DIR")
         .env("COLUMNS", "30")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

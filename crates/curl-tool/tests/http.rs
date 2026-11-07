@@ -124,9 +124,13 @@ fn curl(args: &[&str]) -> Run {
 /// a message naming a file under the temporary directory is as long as
 /// that directory's name.
 fn curl_columns(args: &[&str], columns: Option<&str>) -> Run {
+    // Every run here leaves out the CA path cargo hands its children
+    // (`SSL_CERT_DIR`): a library without CA paths warns of it, as C's
+    // tool does.
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut command = Command::new(tool);
+    command.env_remove("SSL_CERT_DIR");
     if let Some(columns) = columns {
         command.env("COLUMNS", columns);
     }
@@ -213,6 +217,7 @@ fn reads_headers_from_a_file() {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let out = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .args([
             "-q",
             "-sS",
@@ -574,6 +579,7 @@ fn uploads_standard_input() {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut child = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-sS", "-T", "-", "-H", "Expect:", &s.url()])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -622,6 +628,7 @@ fn a_second_upload_of_standard_input_reads_what_the_first_left() {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let out = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-s", "-T", ".", &missing, "-T", ".", "-H", "Expect:"])
         .arg(s.url())
         .stdin(std::fs::File::open(dir.join("input")).unwrap())
@@ -650,6 +657,7 @@ fn cannot_send_piped_standard_input_again() {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut child = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-sSv", "-L", "-T", "-", "-H", "Expect:", &s.url()])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1409,6 +1417,7 @@ fn waits_for_a_continue_as_long_as_told() {
         args.push(&url);
         let started = std::time::Instant::now();
         let mut child = Command::new(&tool)
+            .env_remove("SSL_CERT_DIR")
             .args(&args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -2109,6 +2118,7 @@ fn sends_standard_input_again_as_it_stood() {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let out = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-sS", "-L", "-F", "a=@-"])
         .arg(format!("http://127.0.0.1:{port}/"))
         .stdin(input)
@@ -2149,6 +2159,7 @@ fn fails_on_standard_input_it_cannot_read() {
         std::fs::File::open(std::env::temp_dir()).unwrap()
     };
     let out = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .args([
             "-q",
             "--no-progress-meter",
@@ -2189,6 +2200,7 @@ fn curl_ipfs_env(args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut command = Command::new(tool);
+    command.env_remove("SSL_CERT_DIR");
     command
         .env_remove("IPFS_GATEWAY")
         .env_remove("IPFS_PATH")
@@ -2267,6 +2279,7 @@ fn writes_out_the_debug_build_s_times_and_sizes() {
     let run = |env: &[(&str, &str)], format: &str| {
         let s = Server::new(OK);
         let out = Command::new(&tool)
+            .env_remove("SSL_CERT_DIR")
             .args(["-q", "-s", "-o", NULL, "-w", format, &s.url()])
             .envs(env.iter().copied())
             .output()
@@ -2318,6 +2331,7 @@ fn signs_the_request_as_told() {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let run = |args: &[&str], url: &str| {
         let out = Command::new(&tool)
+            .env_remove("SSL_CERT_DIR")
             .arg("-q")
             .args(["-sS", "--httpsig-keyid", "k"])
             .args(args)
@@ -2411,6 +2425,7 @@ fn proxies_and_cookie_files_reach_the_request() {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let s = Server::new(b"HTTP/1.1 200 Connection established\r\n\r\n");
     Command::new(&tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-s", "-p", "http://example.test/x"])
         .env("http_proxy", s.url())
         .output()
@@ -2422,6 +2437,7 @@ fn proxies_and_cookie_files_reach_the_request() {
     );
     let s = Server::new(ok);
     let out = Command::new(&tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-sS", "--noproxy", "127.0.0.1", &s.url()])
         .env("http_proxy", "http://127.0.0.1:1/")
         .output()
@@ -2432,6 +2448,7 @@ fn proxies_and_cookie_files_reach_the_request() {
     // nothing before it is asked, as Basic would.
     let s = Server::new(ok);
     let out = Command::new(&tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-sS", "--proxy-digest", "--proxy-user", "u:p"])
         .arg("http://example.test/d")
         .env("http_proxy", s.url())
@@ -2782,6 +2799,7 @@ fn upload_dot(parts: &[&'static [u8]], pause: u64, args: &[&str]) -> (Run, Strin
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut child = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .args(["-q", "-H", "Expect:", "-T", "."])
         .args(args)
         .arg(s.url())
@@ -2879,6 +2897,7 @@ fn curl_input(args: &[&str], input: &[u8]) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let mut child = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .arg("-q")
         .args(args)
         .stdin(std::process::Stdio::piped())

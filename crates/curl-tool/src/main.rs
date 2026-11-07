@@ -516,6 +516,8 @@ mod tests {
             " GnuTLS/3."
         } else if cfg!(feature = "wolfssl") {
             " wolfSSL/5."
+        } else if cfg!(feature = "rustls") {
+            " rustls-ffi/0.15.5/rustls/0.23."
         } else {
             " mbedTLS/3."
         };

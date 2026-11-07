@@ -53,7 +53,8 @@ fn over_libressl() -> bool {
 
 /// `--capath` (which the proxy's takes too) and `--tls13-ciphers` are
 /// warned of as ignored, in C's words, where Schannel is the library;
-/// `--tls13-ciphers` alone where GnuTLS is.
+/// `--tls13-ciphers` alone where GnuTLS is, and `--capath` alone where
+/// Rustls is.
 #[test]
 fn options_the_library_lacks_are_warned_of() {
     let said = stderr(&[
@@ -67,13 +68,18 @@ fn options_the_library_lacks_are_warned_of() {
     // first a `Warning: ` of its own: joined again here.
     let said = said.replace("\r\n", "\n").replace("\nWarning: ", " ");
     let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
-    let library = if cfg!(feature = "gnutls") {
+    let named = |prefix: &str| {
         run(&["-V"])
             .0
             .split_whitespace()
-            .find(|w| w.starts_with("GnuTLS/"))
+            .find(|w| w.starts_with(prefix))
             .unwrap()
             .to_owned()
+    };
+    let library = if cfg!(feature = "gnutls") {
+        named("GnuTLS/")
+    } else if cfg!(feature = "rustls") {
+        named("rustls-ffi/")
     } else {
         "Schannel".to_owned()
     };
@@ -82,7 +88,7 @@ fn options_the_library_lacks_are_warned_of() {
             format!(
                 "ignoring setting the CA path for the proxy, not supported by libcurl with {library}"
             ),
-            cfg!(feature = "schannel"),
+            cfg!(any(feature = "schannel", feature = "rustls")),
         ),
         (
             format!("ignoring --tls13-ciphers, not supported by libcurl with {library}"),

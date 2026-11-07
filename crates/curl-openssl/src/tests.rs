@@ -352,9 +352,17 @@ mod leaks {
                 "engine",
                 Box::new({
                     let trusting = trusting.clone();
+                    // `loader_attic`, which OpenSSL 3 builds where it can
+                    // load engines; on Windows the built-in `rdrand`, as
+                    // vcpkg's OpenSSL has no engine of its own to load.
+                    let engine = if cfg!(windows) {
+                        &b"rdrand"[..]
+                    } else {
+                        b"loader_attic"
+                    };
                     move |o| {
                         trusting(o);
-                        o.tls.options.make_mut().unwrap().engine = Some(b"loader_attic".to_vec());
+                        o.tls.options.make_mut().unwrap().engine = Some(engine.to_vec());
                     }
                 }),
             ),

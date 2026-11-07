@@ -1297,9 +1297,10 @@ through SSPI; MIT krb5 stays Unix-only.
     `curl_os::poll` as `Curl_ares_perform` polls them; curl-ares's, the tool's and the shim's
     tests pass on the guest with the `c-ares` feature. Measured 2026-11-07, the suite with CI's
     flags against C's build with OpenSSL, c-ares and libssh2 (`C:\work\c-openssl`), the Rust
-    built with the same three: 1951 of 1967 pass on the Rust leg and 1951 of 1966 on C's, the
-    DNS server's 2102 to 2104 among them on both; the Rust leg fails no test C's passes but the
-    replaced 96 and 558.
+    built with the same three: 1950 of 1965 pass on the Rust leg and 1951 of 1965 on C's, the
+    DNS server's 2102 to 2104 and the 61 SCP and SFTP tests among them on both; the Rust leg
+    fails no test C's passes but the replaced 96 and 558. The 13 tests of the HTTP/2 and
+    HTTP/3 servers are skipped on both, the guest having no nghttpx.
 95. **The shim DLL and curl.exe on Windows**: names in the ANSI code page, console writes, the
     DLL named as CMake names it. **Done.** Output names made fit for Windows as
     `sanitize_file_name` makes them (`-o`, `-O`, `-J`, a redirect's), `--create-dirs` through
@@ -1509,11 +1510,16 @@ it there, Windows.
      `Applied default protocol` and 2004's progress meter after its TFTP transfer differ on the
      libssh leg too: the URL's and the tool's, not SSH's). SSH through an HTTPS proxy reads
      and writes the proxy's TLS, as C's does through libssh2's callbacks: 3992 on both legs,
-     its disconnect sent through the TLS before the session is freed. On Windows, measured
-     2026-11-07 on the guest against C's build with OpenSSL, c-ares and libssh2
-     (`C:\work\c-openssl`), with the Rust built with the same three: runtests.pl's 61 SCP and
-     SFTP tests pass on both legs. The state machine is tested through a scripted fake of the library: every mutant of it
-     is caught, or excluded in `.cargo/mutants.toml` with why it changes nothing observable.
+     its disconnect sent through the TLS before the session is freed. Measured 2026-11-07 on
+     x86_64 Linux: runtests.pl passes all 1988 tests the reference passes
+     (`inventory/baseline.json`), and pytest all 917 cases that ran; the 25 HTTP/3 proxy cases
+     (`test_60`) were skipped on both legs there, for want of h2o. On Windows, measured
+     2026-11-07 on the guest: runtests.pl's 61 SCP and SFTP tests pass on both legs against C's
+     build with OpenSSL, c-ares and libssh2 (`C:\work\c-openssl`), the Rust built with the same
+     three, and against C's Schannel build (`C:\work\c-schannel`), the Rust built with
+     Schannel, c-ares and libssh2. The state machine is tested through a scripted fake of the
+     library: every mutant of it is caught, or excluded in `.cargo/mutants.toml` with why it
+     changes nothing observable.
 106. **GSS-API**: GNU GSS beside MIT krb5, as C's build can choose. **Done.** `curl-gssapi`'s
      `gnu-gss` feature (C's `HAVE_GSSGNU`) links GNU GSS over Shishi from `build/deps/gnugss`
      (`deps.py --gnugss`): `curl -V` names `libgss/` and `gss.h`'s version, SPNEGO's mechanisms

@@ -1912,7 +1912,26 @@ pub(super) fn up<H: Host>(
     https::call_ended(c.https, cx, Ok(true));
     let route = c.lease.conn().dialing().expect("set up over the network");
     let target = crate::conn::chain::resolves_target(route.route);
-    names::connected(cx, ConnRank::First, target, head.record, head.tls_record);
+    // The record's resolve over DoH, still going, goes with its filter's,
+    // its probe with it (`Curl_resolv_destroy`'s `doh_close`). The probe
+    // is taken out of the multi after the step, not here as C's is
+    // (DIVERGENCE.md, "Probes C removes inside their master's step").
+    let lookup = &mut c.record_lookup;
+    names::connected(
+        cx,
+        ConnRank::First,
+        target,
+        head.record,
+        head.tls_record,
+        |cx, holder| {
+            if holder == crate::conn::asyncs::Holder::Record
+                && matches!(lookup, Some(RecordLookup::Doh(_)))
+            {
+                *lookup = None;
+                trace::of(cx, Component::Dns, format_args!("[DoH] probe done"));
+            }
+        },
+    );
     chain_connect_ended(cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects),

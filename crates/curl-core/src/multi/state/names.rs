@@ -160,13 +160,14 @@ pub(super) fn filters(
 /// The chain below each of the DNS filters of the chain set up for
 /// `rank` is connected, the lowest first, as `filters` names them. Each
 /// lets go of its resolve's record (`cf_dns_connect`'s
-/// `Curl_resolv_destroy`).
+/// `Curl_resolv_destroy`), then `gone` is told the resolve has gone.
 pub(super) fn connected<H: Host>(
     cx: &mut StepCx<'_, H>,
     rank: ConnRank,
     target: bool,
     record: bool,
     tls_record: bool,
+    mut gone: impl FnMut(&mut StepCx<'_, H>, Holder),
 ) {
     for holder in filters(rank, target, record, tls_record).rev() {
         trace::of(
@@ -174,10 +175,11 @@ pub(super) fn connected<H: Host>(
             Component::DnsFilter,
             format_args!("connected filter chain below"),
         );
-        let gone = cx.easy_mut().asyncs.take(holder);
-        if let Some(id) = gone {
+        let kept = cx.easy_mut().asyncs.take(holder);
+        if let Some(id) = kept {
             said(cx, id, "destroy");
         }
+        gone(cx, holder);
     }
 }
 

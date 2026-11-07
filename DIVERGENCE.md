@@ -687,6 +687,21 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_push_that_cannot_start_leaves_nothing_running` (`crates/curl-core/tests/torture.rs`),
   which checks that the parent's body is written by the time the handle is given back.
 
+## Probes C removes inside their master's step
+
+- **A DoH probe still running as its master's connection is set up goes when the step ends.**
+  When the chain of an `https` transfer resolving over DoH connects with its HTTPS record's
+  probe unanswered, both let go of the record's resolve there and trace `[DoH] probe done`
+  right after its `destroy async` line. C removes the probe at that point, inside the master's
+  step (`doh_close`, through `Curl_multi_remove_handle`): with the multi's and DoH's traces on,
+  the probe's `multi_done … premature=1`, `closing connection` and `removed from multi` lines
+  come before `[DoH] probe done`, and the connection it closes makes the master's next state
+  trace `multi changed, check CONNECT_PEND queue`. Here the probe is taken out of the multi
+  when the step ends (`Multi::reap`): the same lines come after `[DoH] probe done`, and the
+  change is seen at the end of the call, so the master traces no `CONNECT_PEND` line. Measured
+  against the C build. Pinned by `a_probe_removed_as_its_master_connects_ends_after_the_step`
+  (`crates/curl-core/src/multi/doh_tests.rs`).
+
 ## Sessions C reads again
 
 - **An HTTP/2 session whose read failed is not read again.** When nghttp2 fails a read of the

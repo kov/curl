@@ -340,3 +340,12 @@ features: debug-hooks
     }
 --- new
     fn internal_gone(&mut self, _: Box<Easy>, _: NonNull<ShimEasy>) {}
+
+=== a record's probe still running goes unsaid as the chain connects
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::doh_tests::a_record_still_asked_for_goes_as_the_chain_connects
+--- old
+                *lookup = None;
+                trace::of(cx, Component::Dns, format_args!("[DoH] probe done"));
+--- new
+                *lookup = None;

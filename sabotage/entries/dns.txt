@@ -549,9 +549,13 @@ file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses
 features: test-util
 --- old
-    names::connected(cx, ConnRank::First, target, head.record, head.tls_record);
+        head.record,
+        head.tls_record,
+        |cx, holder| {
 --- new
-    names::connected(cx, ConnRank::First, target, false, head.tls_record);
+        false,
+        head.tls_record,
+        |cx, holder| {
 
 === the addresses' DNS filter after the HTTPS record's is traced as added
 file: crates/curl-core/src/multi/state/names.rs
@@ -713,9 +717,9 @@ witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it
 file: crates/curl-core/src/multi/state/names.rs
 witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
 --- old
-        let gone = cx.easy_mut().asyncs.take(holder);
+        let kept = cx.easy_mut().asyncs.take(holder);
 --- new
-        let gone: Option<ResolveNumber> = None;
+        let kept: Option<ResolveNumber> = None;
 
 === the records still kept are walked oldest first
 file: crates/curl-core/src/conn/asyncs.rs

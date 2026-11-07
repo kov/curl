@@ -79,7 +79,7 @@ pub(crate) fn call_connected<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain) 
     // hop's; never the record's. An accepted connection has none.
     if connected.dns_filters() > 0 {
         let target = connected.dns_filters() > 1;
-        names::connected(cx, ConnRank::Second, target, false, false);
+        names::connected(cx, ConnRank::Second, target, false, false, |_, _| {});
     }
     let top = connected.top().unwrap_or(Component::DnsFilter);
     connect_ended_at(cx, top, Ok(true));

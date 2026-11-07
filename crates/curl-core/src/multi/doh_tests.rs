@@ -915,6 +915,112 @@ fn the_resolves_lines_are_c_s() {
     }
 }
 
+/// The lines of an `https` transfer's setup connecting with its record's
+/// probe unanswered, on the components `config` turns on: the origin's
+/// TLS made at once, the record's server silent.
+fn record_unanswered(config: &[u8]) -> Vec<String> {
+    use crate::tls::fake;
+    let clock = ManualClock::new().unwrap();
+    let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+    let origin = Conversation::replies(&[fake::WELCOME, &response], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(443), Peer::Accepts)
+        .with_conversation(SERVER.into(), Conversation::replies(&[], false))
+        .with_conversation(
+            SERVER.into(),
+            Conversation::new(&http(&no_records()), false),
+        )
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false))
+        .with_conversation(at(443), origin.clone());
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking("https://foo.test/x");
+    let tls = Box::leak(Box::new(fake::FakeTls::new().unwrap()));
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(tls)),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(config);
+    easy.set_components(Some(c));
+    m.add(easy, (), &mut NoEvents).unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), Some(Ok(())));
+    assert!(
+        origin.received().starts_with(fake::HELLO),
+        "the setup connected"
+    );
+    assert_eq!(m.census().counts.current, 1, "the probe went with it");
+    lines.0.lock().unwrap().clone()
+}
+
+/// The record's probe still running as the chain connects goes with its
+/// filter's resolve, said right after the resolve's record goes, as C's
+/// `Curl_resolv_destroy` removes the probe and says so (`doh_close`).
+#[test]
+fn a_record_still_asked_for_goes_as_the_chain_connects() {
+    let said = record_unanswered(b"dns");
+    let at = said
+        .iter()
+        .position(|l| l.trim_end() == "[DNS] [1] destroy async")
+        .expect("the record's resolve goes");
+    let near: Vec<&str> = said[at - 3..at + 2].iter().map(|l| l.trim_end()).collect();
+    assert_eq!(
+        near,
+        [
+            "[DNS] connected filter chain below",
+            "[DNS] [2] destroy async",
+            "[DNS] connected filter chain below",
+            "[DNS] [1] destroy async",
+            "[DNS] [DoH] probe done",
+        ],
+        "{said:?}"
+    );
+    let done = said
+        .iter()
+        .filter(|l| l.trim_end() == "[DNS] [DoH] probe done")
+        .count();
+    assert_eq!(
+        done, 3,
+        "two for the addresses, one for the record: {said:?}"
+    );
+}
+
+/// The probe so removed is taken out of the multi after the step it went
+/// in, not inside it as C's is: its own lines of its end come after
+/// `[DoH] probe done`, not before, and the master's next step does not
+/// say the multi changed (DIVERGENCE.md, "Probes C removes inside their
+/// master's step").
+#[test]
+fn a_probe_removed_as_its_master_connects_ends_after_the_step() {
+    let said = record_unanswered(b"all");
+    let at = |want: &str| {
+        said.iter()
+            .position(|l| l.trim_end().ends_with(want))
+            .unwrap_or_else(|| panic!("{want}: {said:?}"))
+    };
+    let done = at("[DNS] [1] destroy async") + 1;
+    assert_eq!(
+        said[done].trim_end(),
+        "[0-0] [DNS] [DoH] probe done",
+        "{said:?}"
+    );
+    let premature = at("premature=1, conn_multiplex=0");
+    let removed = at("removed from multi, mid=2, running=1, total=2");
+    assert!(done < premature && premature < removed, "{said:?}");
+    assert!(
+        !said.iter().any(|l| l.contains("check CONNECT_PEND queue")),
+        "{said:?}"
+    );
+}
+
 /// What a probe's own handlers, the socket callback and the multi answer
 /// for a probe: nothing but its owner, as C's API refuses an internal
 /// handle (`Curl_eapi_enter`); nor is the host told its id as it is added.

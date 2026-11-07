@@ -40,9 +40,7 @@ impl Server {
         let request = std::thread::spawn(move || {
             let mut all = Vec::new();
             for replies in conns {
-                let Ok((mut peer, _)) = listener.accept() else {
-                    break;
-                };
+                let (mut peer, _) = curl_core::test_server::accept(&listener);
                 for reply in replies {
                     let mut got = Vec::new();
                     let mut buf = [0; 4096];

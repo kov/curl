@@ -46,6 +46,15 @@ is unpacked, for the C build with Rustls (`baseline.py --rustls`). The
 rewrite's curl-rustls uses the rustls crate itself, at the version this
 release is built with.
 
+The ECH test servers: tests/http's Encrypted Client Hello cases need an
+`openssl` command that makes ECH configurations (OpenSSL 4) and an nghttpx
+that serves them (nghttp2 1.70 over that OpenSSL), which Fedora's are not.
+Both are built at the versions http3-linux.yml pins, into build/deps/ech,
+OpenSSL's libraries found through its run path, for the oracles built with
+ECH and the rewrite's legs against them (`--ech`, or the oracle
+`baseline.py` builds with it). They are servers and tools only: no curl
+links them.
+
 Everything goes under build/deps and is rebuilt only when a pinned version
 or the way it is built changes. Run directly, or through `baseline.py --run`.
 Builds run `DEPS_JOBS` jobs at once, the machine's processors by default.
@@ -362,6 +371,83 @@ def build_fork(fork):
     return {"PKG_CONFIG_PATH": f"{ngtcp2}/lib/pkgconfig"}
 
 
+ECH = DEPS / "ech"
+
+
+def ech_openssl():
+    """The `openssl` command that makes the ECH test servers' keys."""
+    return ECH / "bin" / "openssl"
+
+
+def ech_nghttpx():
+    """The nghttpx that serves ECH."""
+    return ECH / "bin" / "nghttpx"
+
+
+def build_ech_servers():
+    """
+    Build what C's ECH pytest cases (`test_23_ech.py`) need and the system
+    lacks, if missing: an `openssl` command that makes ECH configurations
+    (`openssl ech`, OpenSSL 4), and an nghttpx that serves them
+    (`--ech-config-file`, nghttp2 over OpenSSL 4), with HTTP/3 over an
+    ngtcp2 built for that OpenSSL, as http3-linux.yml builds its nghttpx,
+    so the legs that run their pytest over it keep its h3 cases. OpenSSL
+    is built with its command-line tool, which CI's build leaves out; the
+    nghttp3 is the system's. All of it goes into one prefix, found by
+    nghttpx's RUNPATH. Return the `openssl` command and nghttpx.
+    """
+    openssl = pinned("OPENSSL_VERSION")
+    ngtcp2 = pinned("NGTCP2_VERSION")
+    nghttp2 = pinned("NGHTTP2_VERSION")
+    built = f"openssl-{openssl} ngtcp2-{ngtcp2} nghttp2-{nghttp2}"
+    stamp = ECH / ".version"
+    if not (stamp.exists() and stamp.read_text().strip() == built):
+        src = DEPS / "src" / "ech"
+        if src.exists():
+            sh(["rm", "-rf", str(src)], cwd=DEPS)
+        src.mkdir(parents=True)
+        for repo, tag in (("openssl/openssl", f"openssl-{openssl}"),
+                          ("ngtcp2/ngtcp2", f"v{ngtcp2}"),
+                          ("nghttp2/nghttp2", f"v{nghttp2}")):
+            sh(["git", "clone", "--quiet", "--depth", "1", "--branch", tag,
+                f"https://github.com/{repo}", repo.split("/")[1]], cwd=src)
+        sh(["./config", f"--prefix={ECH}", "--libdir=lib", "no-docs",
+            "no-tests", f"-Wl,-rpath,{ECH}/lib"], cwd=src / "openssl")
+        sh(["make", f"-j{JOBS}"], cwd=src / "openssl")
+        sh(["make", "install_sw"], cwd=src / "openssl")
+        env = {**os.environ, "PKG_CONFIG_PATH": f"{ECH}/lib/pkgconfig",
+               "LDFLAGS": f"-Wl,-rpath,{ECH}/lib"}
+        for name, flags in (
+                ("ngtcp2", ["--enable-lib-only", "--with-openssl"]),
+                ("nghttp2", ["--enable-app", "--enable-http3",
+                             "--with-libbrotlienc", "--with-libbrotlidec"])):
+            tree = src / name
+            if name == "nghttp2":
+                sh(["git", "submodule", "update", "--init", "--depth", "1"],
+                   cwd=tree)
+            sh(["autoreconf", "-fi"], cwd=tree)
+            subprocess.run(["./configure", "--disable-dependency-tracking",
+                            f"--prefix={ECH}", *flags], cwd=tree, check=True,
+                           stdout=subprocess.DEVNULL, env=env)
+            sh(["make", f"-j{JOBS}", "install"], cwd=tree)
+        stamp.write_text(built + "\n")
+    # The positive controls: the command is OpenSSL 4's, and the server
+    # takes ECH configurations and speaks HTTP/3, as the pytest harness
+    # asks of them.
+    version = subprocess.run([str(ech_openssl()), "version"], check=True,
+                             capture_output=True, text=True).stdout
+    check(version.startswith(f"OpenSSL {openssl} "),
+          f"{ech_openssl()} is {version.strip()}")
+    usage = subprocess.run([str(ech_nghttpx()), "--help"], check=True,
+                           capture_output=True, text=True).stdout
+    check("--ech-config-file" in usage, f"{ech_nghttpx()} serves no ECH")
+    said = subprocess.run([str(ech_nghttpx()), "--version"], check=True,
+                          capture_output=True, text=True).stdout
+    check(f"nghttp2/{nghttp2}" in said and "ngtcp2/" in said,
+          f"{ech_nghttpx()} says {said.strip()}")
+    return ech_openssl(), ech_nghttpx()
+
+
 def describe():
     """
     Which ngtcp2 and nghttp3 a build here links, for a measurement to
@@ -402,3 +488,5 @@ if __name__ == "__main__":
     for fork in FORKS:
         if f"--{fork}" in sys.argv[1:]:
             print(build_fork(fork))
+    if "--ech" in sys.argv[1:]:
+        print(build_ech_servers())

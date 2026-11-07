@@ -30,8 +30,7 @@ inventory/baseline-mbedtls.{json,md}.
 `--wolfssl` does the same with wolfSSL in place of OpenSSL, the library the
 rewrite's `wolfssl` feature binds, built by inventory/measure/deps.py as
 curl's CI builds it: with HTTP/3 over ngtcp2's wolfSSL crypto, without
-the HTTP/3 proxy, and without Encrypted Client Hello, off in every oracle
-here: build/c-wolfssl,
+the HTTP/3 proxy, and with Encrypted Client Hello: build/c-wolfssl,
 inventory/baseline-wolfssl.{json,md}.
 
 `--gnugss` does the same with GNU GSS in place of MIT krb5, the library
@@ -45,15 +44,24 @@ library: build/c-gnugss, inventory/baseline-gnugss.{json,md}.
 of OpenSSL, the forks the rewrite's curl-openssl builds over as C's
 OpenSSL backend does, each built by inventory/measure/deps.py as curl's
 CI builds it, its shared library loaded: with HTTP/3 over ngtcp2's
-BoringSSL crypto from the ngtcp2 built for that fork: build/c-awslc,
+BoringSSL crypto from the ngtcp2 built for that fork, and with Encrypted
+Client Hello: build/c-awslc,
 build/c-boringssl, inventory/baseline-{awslc,boringssl}.{json,md}.
 
 `--rustls` does the same with Rustls in place of OpenSSL, the library the
 rewrite's `rustls` feature binds, the release of rustls-ffi curl's CI
 installs, unpacked by inventory/measure/deps.py: without HTTP/3, which C
 does over Rustls with quiche alone, without HTTP message signatures,
-which C does not sign with Rustls, and without Encrypted Client Hello:
+which C does not sign with Rustls, and with Encrypted Client Hello:
 build/c-rustls, inventory/baseline-rustls.{json,md}.
+
+The oracles with Encrypted Client Hello build it as curl's CI does
+(`USE_ECH`), and run their suites over the test servers its pytest cases
+need, which deps.py builds (`build_ech_servers`): the nghttpx that serves
+ECH in place of the system's, for runtests.pl's tests and pytest's alike,
+and the `openssl` command that makes its configurations (`OPENSSL`, which
+the pytest harness reads). The rewrite's leg against one runs over the
+same (score.py).
 
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
@@ -134,6 +142,14 @@ class Oracle:
         return deps.fork_ngtcp2_dir(self.fork) if self.fork else deps.NGTCP2
     # It is built with the rustls-ffi unpacked here (`deps.build_rustls`).
     rustls: bool = False
+    # It is built with Encrypted Client Hello, its suites run over the
+    # test servers for it (`deps.build_ech_servers`).
+    ech: bool = False
+
+    @property
+    def suite_env(self):
+        """What the suites' environment has besides the process's."""
+        return {"OPENSSL": str(deps.ech_openssl())} if self.ech else {}
 
     @property
     def results(self):
@@ -147,6 +163,10 @@ class Oracle:
                 self.build / "tests/tunit/tunits"]
 
 
+# What an oracle with Encrypted Client Hello builds besides: ECH, and the
+# nghttpx that serves it as the suites' (`deps.build_ech_servers`).
+ECH_ARGS = {"USE_ECH": "ON", "HTTPD_NGHTTPX": str(deps.ech_nghttpx()),
+            "TEST_NGHTTPX": str(deps.ech_nghttpx())}
 REFERENCE = Oracle(ROOT / "build" / "c", "baseline", "C reference baseline",
                    "", CMAKE_ARGS)
 # The resolver distributions build libcurl with, in place of c-ares.
@@ -185,8 +205,9 @@ WOLFSSL = Oracle(ROOT / "build" / "c-wolfssl", "baseline-wolfssl",
                  {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
                   "CURL_USE_WOLFSSL": "ON", "USE_PROXY_HTTP3": "OFF",
                   "CMAKE_BUILD_RPATH":
-                  f"{deps.NGTCP2 / 'lib'};{deps.WOLFSSL / 'lib'}"},
-                 wolfssl=True, crypto="wolfssl")
+                  f"{deps.NGTCP2 / 'lib'};{deps.WOLFSSL / 'lib'}",
+                  **ECH_ARGS},
+                 wolfssl=True, crypto="wolfssl", ech=True)
 # GNU GSS in place of MIT krb5, as the rewrite's `gnu-gss` feature has it,
 # otherwise the reference build. Its programs find the library by their
 # RUNPATH, beside ngtcp2's.
@@ -231,8 +252,9 @@ def fork_oracle(fork, name):
                   {**CMAKE_ARGS, "OPENSSL_ROOT_DIR": str(deps.fork_dir(fork)),
                    "CMAKE_BUILD_RPATH":
                    f"{deps.fork_ngtcp2_dir(fork) / 'lib'};"
-                   f"{deps.fork_dir(fork) / 'lib'}"},
-                  fork=fork)
+                   f"{deps.fork_dir(fork) / 'lib'}",
+                   **ECH_ARGS},
+                  fork=fork, ech=True)
 
 
 AWSLC = fork_oracle("awslc", "AWS-LC")
@@ -248,8 +270,8 @@ RUSTLS = Oracle(ROOT / "build" / "c-rustls", "baseline-rustls",
                 {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
                  "CURL_USE_RUSTLS": "ON", "USE_NGTCP2": "OFF",
                  "USE_PROXY_HTTP3": "OFF", "CURL_DISABLE_HTTPSIG": "ON",
-                 "CMAKE_BUILD_RPATH": str(deps.RUSTLS / "lib")},
-                links_ngtcp2=False, rustls=True)
+                 "CMAKE_BUILD_RPATH": str(deps.RUSTLS / "lib"), **ECH_ARGS},
+                links_ngtcp2=False, rustls=True, ech=True)
 
 
 def run(oracle):
@@ -267,6 +289,8 @@ def run(oracle):
     if oracle.rustls:
         dep_env = {"PKG_CONFIG_PATH": ":".join(
             e["PKG_CONFIG_PATH"] for e in (deps.build_rustls(), dep_env))}
+    if oracle.ech:
+        deps.build_ech_servers()
     # A fresh cache: nothing configured by hand earlier, such as another
     # library location, may carry into the measurement.
     (oracle.build / "CMakeCache.txt").unlink(missing_ok=True)
@@ -295,7 +319,17 @@ def run(oracle):
         check(f"{deps.GNUGSS}/lib/libgss.so" in ldd
               and "libgssapi_krb5" not in ldd,
               f"{libcurl} loads {ldd}")
-    meta = suite.run(oracle.build, oracle.results, dict(os.environ))
+    if oracle.ech:
+        # The positive control: CMake found the library's ECH, which a
+        # failed check of its symbols turns off without a word.
+        version = subprocess.run([str(oracle.build / "src/curl"), "-V"],
+                                 check=True, capture_output=True,
+                                 text=True).stdout
+        features = re.search(r"^Features: (.*)$", version, re.MULTILINE)
+        check(features is not None and "ECH" in features.group(1).split(),
+              f"{oracle.build} has no ECH: {version}")
+    meta = suite.run(oracle.build, oracle.results,
+                     {**os.environ, **oracle.suite_env})
     (oracle.results / "run.json").write_text(
         json.dumps({"c-commit": commit, **meta}, indent=1) + "\n")
 

@@ -321,7 +321,8 @@ def own_runpath(binary, c_lib, ours):
 
 def environment(leg):
     """Return the environment the suites run with in the leg's tree."""
-    return {**os.environ, "LD_LIBRARY_PATH": str(leg.build / "lib")}
+    return {**os.environ, **leg.oracle.suite_env,
+            "LD_LIBRARY_PATH": str(leg.build / "lib")}
 
 
 def needs_libcurl(binary):

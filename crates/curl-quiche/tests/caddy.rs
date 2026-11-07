@@ -371,6 +371,7 @@ fn with_conn<R>(
         port: addr.port(),
         kind: TlsPeerKind::Name,
         early_data: false,
+        ech_configs: None,
     };
     let mut notes = Notes::default();
     let r = TlsCx::testing(&identity, b"localhost", &mut notes, |shared, cx| {

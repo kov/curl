@@ -22,11 +22,14 @@ use std::sync::Arc;
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::tls::SharedKeyLog;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::client::{ResolvesClientCert, WebPkiServerVerifier};
+use rustls::client::{
+    EchConfig, EchGreaseConfig, EchMode, ResolvesClientCert, WebPkiServerVerifier,
+};
 use rustls::crypto::{CryptoProvider, aws_lc_rs, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{
-    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, ServerName, UnixTime,
+    CertificateDer, CertificateRevocationListDer, EchConfigListBytes, PrivateKeyDer, ServerName,
+    UnixTime,
 };
 use rustls::sign::CertifiedKey;
 use rustls::{
@@ -85,6 +88,14 @@ pub(crate) struct Builder {
     alpn: Vec<Vec<u8>>,
     key: Option<Arc<CertifiedKey>>,
     key_log: Option<Arc<dyn KeyLog>>,
+    /// Encrypted Client Hello, in place of the versions.
+    ech: Option<EchMode>,
+}
+
+/// The builder's versions are other than TLS 1.3 alone, which ECH needs
+/// (rustls-ffi's check, none being the default's).
+fn not_tls13_only(builder: &Builder) -> bool {
+    !builder.versions.is_empty() && builder.versions[..] != [&rustls::version::TLS13]
 }
 
 /// A configuration built.
@@ -255,6 +266,7 @@ impl crate::library::Rustls for Real {
                 alpn: Vec::new(),
                 key: None,
                 key_log: None,
+                ech: None,
             }
         }))
     }
@@ -345,13 +357,62 @@ impl crate::library::Rustls for Real {
         builder.key_log = Some(quiet(|| Arc::new(Keys(log))));
     }
 
+    fn ech_grease(&self, builder: &mut Builder) -> Result<(), Code> {
+        quiet(|| {
+            // A suite at random, without bias, and a key made for it
+            // (rustls-ffi's `Hpke::grease_public_key`).
+            let suites = aws_lc_rs::hpke::ALL_SUPPORTED_SUITES;
+            let n = u32::try_from(suites.len()).expect("a handful of suites");
+            let threshold = u32::MAX - (u32::MAX % n);
+            let suite = loop {
+                let mut buf = [0u8; 4];
+                builder
+                    .provider
+                    .secure_random
+                    .fill(&mut buf)
+                    .map_err(|_| Code::HpkeError)?;
+                let value = u32::from_ne_bytes(buf);
+                if value < threshold {
+                    let at = usize::try_from(value / (threshold / n)).expect("below the count");
+                    break suites[at];
+                }
+            };
+            let (key, _) = suite.generate_key_pair().map_err(|_| Code::HpkeError)?;
+            if not_tls13_only(builder) {
+                return Err(Code::BuilderIncompatibleTlsVersions);
+            }
+            builder.ech = Some(EchMode::Grease(EchGreaseConfig::new(suite, key)));
+            Ok(())
+        })
+    }
+
+    fn ech(&self, builder: &mut Builder, list: &[u8]) -> Result<(), Code> {
+        quiet(|| {
+            if not_tls13_only(builder) {
+                return Err(Code::BuilderIncompatibleTlsVersions);
+            }
+            let config = EchConfig::new(
+                EchConfigListBytes::from(list),
+                aws_lc_rs::hpke::ALL_SUPPORTED_SUITES,
+            )
+            .map_err(map_error)?;
+            builder.ech = Some(config.into());
+            Ok(())
+        })
+    }
+
     fn build(&self, builder: Builder) -> Result<Config, Code> {
         quiet(|| {
             let Some(verifier) = builder.verifier else {
                 return Err(Code::NoServerCertVerifier);
             };
-            let config = ClientConfig::builder_with_provider(builder.provider)
-                .with_protocol_versions(&builder.versions)
+            let config = ClientConfig::builder_with_provider(builder.provider);
+            // ECH picks the versions itself: TLS 1.3 alone.
+            let config = match builder.ech {
+                Some(mode) => config.with_ech(mode),
+                None => config.with_protocol_versions(&builder.versions),
+            };
+            let config = config
                 .map_err(map_error)?
                 .dangerous()
                 .with_custom_certificate_verifier(verifier);

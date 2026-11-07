@@ -358,6 +358,110 @@ fn the_library_parses_as_rustls_ffi_does() {
     );
 }
 
+/// Test 4001's ECHConfigList: one configuration, X25519 with HKDF-SHA256
+/// and AES-128-GCM, whose outer name is `otherpublic.test.defo.ie`.
+const ECH_4001: &[u8] = b"AEv+DQBHdAAgACCCU49qdxKOUXJPs3wlsM06v/t42sMH5xQOL37MAd3HaAAEAAEAAQAYb3RoZXJwdWJsaWMudGVzdC5kZWZvLmllAAA=";
+
+/// ECH asks for TLS 1.3 alone, takes a list one of whose configurations
+/// its suites can use, and refuses one that does not parse, as
+/// rustls-ffi's calls do.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn the_library_takes_ech_as_rustls_ffi_does() {
+    let suites = RUSTLS.suites().unwrap();
+    let list = curl_core::tls::base64_decode(ECH_4001).unwrap().unwrap();
+    let mut both = RUSTLS.builder(&suites, &[0x0303, 0x0304]).unwrap();
+    assert_eq!(
+        RUSTLS.ech(&mut both, &list).err(),
+        Some(Code::BuilderIncompatibleTlsVersions)
+    );
+    assert_eq!(
+        RUSTLS.ech_grease(&mut both).err(),
+        Some(Code::BuilderIncompatibleTlsVersions)
+    );
+    let mut builder = RUSTLS.builder(&suites, &[0x0304]).unwrap();
+    assert_eq!(
+        RUSTLS.ech(&mut builder, b"\x00\x01\x02").err(),
+        Some(Code::InvalidEncryptedClientHelloInvalidConfigList)
+    );
+    assert_eq!(RUSTLS.ech(&mut builder, &list), Ok(()));
+    RUSTLS.verify_none(&mut builder);
+    let config = RUSTLS.build(builder).unwrap();
+    assert!(RUSTLS.connect(config, b"localhost").is_ok());
+    let mut builder = RUSTLS.builder(&suites, &[0x0304]).unwrap();
+    assert_eq!(RUSTLS.ech_grease(&mut builder), Ok(()));
+    RUSTLS.verify_none(&mut builder);
+    assert!(RUSTLS.build(builder).is_ok());
+}
+
+/// GREASE goes to a server that has no ECH, which takes no notice of it,
+/// over TLS 1.3.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn ech_grease_talks_to_a_server_without_ech() {
+    use curl_core::options::{Ech, EchMode};
+    let pki = pki(&["localhost"]);
+    let mut server = serve(&pki, &[]);
+    let ca = pki.ca.clone().into_bytes();
+    let id = identity(move |id| {
+        id.options.ca_blob = CaSetting::Given(ca);
+        id.options.ech = Ech {
+            mode: EchMode::Grease,
+            ..Ech::NONE
+        };
+    });
+    let mut s = session(&id, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = shake(&mut s, &id, &mut kept, &wire, &mut server);
+    assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
+    assert!(has(
+        &kept.notes.0,
+        "info: rustls: ECH enabled, forcing TLSv1.3"
+    ));
+    assert_eq!(
+        server.protocol_version(),
+        Some(rustls::ProtocolVersion::TLSv1_3)
+    );
+}
+
+/// A server without ECH answers the outer hello, as its public name; the
+/// client checks that name's certificate, which a certificate not for it
+/// fails (test_23_03), then fails the handshake as a TLS connect for the
+/// ECH refused, in rustls-ffi's words.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn a_server_without_ech_refuses_it() {
+    use curl_core::options::{Ech, EchMode};
+    let pki = pki(&["localhost", "otherpublic.test.defo.ie"]);
+    let mut server = serve(&pki, &[]);
+    let ca = pki.ca.clone().into_bytes();
+    let id = identity(move |id| {
+        id.options.ca_blob = CaSetting::Given(ca);
+        id.options.ech = Ech {
+            mode: EchMode::Hard,
+            config: Some(ECH_4001.to_vec()),
+            public_name: None,
+        };
+    });
+    let mut s = session(&id, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = shake(&mut s, &id, &mut kept, &wire, &mut server);
+    assert_eq!(r, Err(ErrorKind::SslConnectError), "{:#?}", kept.notes.0);
+    assert_eq!(
+        server.server_name(),
+        Some("otherpublic.test.defo.ie"),
+        "the outer hello names the public name"
+    );
+    assert_eq!(
+        lines(&kept.notes.0, "fail: "),
+        ["fail: RecvError: rustls_connection_process_new_packets: peer is incompatible"],
+        "{:#?}",
+        kept.notes.0
+    );
+}
+
 /// The version string names the rustls the build links, which is the one
 /// the rustls-ffi release it names pins.
 #[test]

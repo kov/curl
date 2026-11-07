@@ -103,6 +103,17 @@ pub(crate) trait Rustls: Sync + 'static {
     /// `cr_keylog_log_cb`: each secret written to `log`.
     fn key_log(&self, builder: &mut Self::Builder, log: SharedKeyLog);
 
+    /// `rustls_client_config_builder_enable_ech_grease` with the suites
+    /// of `rustls_supported_hpke`, which the provider here always has
+    /// (aws-lc-rs's): GREASE for one of them at random, which needs the
+    /// configuration's versions to be TLS 1.3 alone.
+    fn ech_grease(&self, builder: &mut Self::Builder) -> Result<(), Code>;
+
+    /// `rustls_client_config_builder_enable_ech` of `list`, an
+    /// ECHConfigList, with the same suites: one of its configurations
+    /// they can use, over TLS 1.3 alone.
+    fn ech(&self, builder: &mut Self::Builder, list: &[u8]) -> Result<(), Code>;
+
     /// `rustls_client_config_builder_build`.
     fn build(&self, builder: Self::Builder) -> Result<Self::Config, Code>;
 

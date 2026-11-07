@@ -71,8 +71,8 @@ impl Rustls {
 
 /// What C's Rustls build has (`Curl_ssl_rustls.supports`): a CA blob,
 /// HTTPS proxies, a cipher list and TLS 1.3's suites, the chain reported
-/// and a revocation list. Encrypted Client Hello is C's too, but off in
-/// the build here (`USE_ECH`). Not a CA path, the CA cache, pinning, the
+/// a revocation list and Encrypted Client Hello, whose HPKE the provider
+/// here, aws-lc-rs's, always has. Not a CA path, the CA cache, pinning, the
 /// context callback, curves, signature algorithms, an issuer, the
 /// stapled status (no `cert_status_request`) or engines.
 pub(crate) const SUPPORT: TlsSupport = TlsSupport {
@@ -90,7 +90,7 @@ pub(crate) const SUPPORT: TlsSupport = TlsSupport {
     crl_file: true,
     issuer_cert: false,
     issuer_cert_blob: false,
-    ech: false,
+    ech: true,
     cert_status: false,
     engines: false,
 };

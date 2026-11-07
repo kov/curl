@@ -257,6 +257,14 @@ impl library::Rustls for Fake {
         w.key_log = Some(log);
     }
 
+    fn ech_grease(&self, _: &mut bool) -> Result<(), Code> {
+        self.w().answer("ech_grease", "ech_grease".into())
+    }
+
+    fn ech(&self, _: &mut bool, list: &[u8]) -> Result<(), Code> {
+        self.w().answer("ech", format!("ech({} bytes)", list.len()))
+    }
+
     fn build(&self, set: bool) -> Result<(), Code> {
         self.w().answer("build", "build".into())?;
         if set {

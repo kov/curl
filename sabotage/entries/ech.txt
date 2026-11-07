@@ -92,3 +92,29 @@ witness: curl-wolfssl tests::ech::ech_takes_the_transfer_s_list_in_base64
         } else if let Some(b64) = &ech.config {
 --- new
         } else if let Some(b64) = ech.config.as_ref().filter(|_| self.ech_record.is_none()) {
+
+=== Rustls lets a transfer whose ECH did not set up fall back below TLS 1.3
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::ech::what_cannot_be_set_up_fails_only_hard_ech
+--- old
+        if o.ech.enabled() {
+            versions[0] = TLS1_3;
+--- new
+        if o.ech.mode == EchMode::Grease {
+            versions[0] = TLS1_3;
+
+=== Rustls fails a transfer whose ECH is only tried when it cannot be set up
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::ech::what_cannot_be_set_up_fails_only_hard_ech
+--- old
+            && o.ech.mode == EchMode::Hard
+--- new
+            && o.ech.mode != EchMode::Off
+
+=== Rustls builds the configuration over the versions, leaving its ECH out
+file: crates/curl-rustls/src/rustls.rs
+witness: curl-rustls tests::real::a_server_without_ech_refuses_it
+--- old
+                Some(mode) => config.with_ech(mode),
+--- new
+                Some(_) => config.with_protocol_versions(&builder.versions),

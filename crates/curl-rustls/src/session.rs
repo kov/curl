@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::options::{TlsMaxVersion, TlsMinVersion};
+use curl_core::options::{EchMode, TlsMaxVersion, TlsMinVersion};
 use curl_core::report::CertInfo;
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Goodbye, Handshake, SharedKeyLog, Text, TlsIdentity, TlsIo,
@@ -80,6 +80,8 @@ pub(crate) struct Session<G: Rustls> {
     shut: bool,
     /// What ALPN agreed (`connssl->negotiated.alpn`).
     negotiated: Option<Chosen>,
+    /// The ECHConfigList of the origin's HTTPS record, if it has one.
+    ech_record: Option<Vec<u8>>,
 }
 
 /// An error the session said why it failed for: what the core reads as
@@ -118,6 +120,15 @@ impl<G: Rustls> Session<G> {
         let mut host = Vec::new();
         host.try_extend_from_slice(peer.name)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let ech_record = match peer.ech_configs {
+            Some(list) => {
+                let mut copy = Vec::new();
+                copy.try_extend_from_slice(list)
+                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                Some(copy)
+            }
+            None => None,
+        };
         Ok(Session {
             lib,
             conn: None,
@@ -132,6 +143,7 @@ impl<G: Rustls> Session<G> {
             sent_shutdown: false,
             shut: false,
             negotiated: None,
+            ech_record,
         })
     }
 
@@ -165,6 +177,13 @@ impl<G: Rustls> Session<G> {
                     format_args!("rustls: unsupported maximum TLS version value"),
                 ));
             }
+        }
+        // ECH, GREASE too, holds the handshake to TLS 1.3 whether or not
+        // it is set up.
+        if o.ech.enabled() {
+            versions[0] = TLS1_3;
+            len = 1;
+            io.info(format_args!("rustls: ECH enabled, forcing TLSv1.3"));
         }
         let suites = self
             .lib
@@ -391,6 +410,14 @@ impl<G: Rustls> Session<G> {
         if o.cert.is_some() || o.cert_blob.is_some() || o.key.is_some() || o.key_blob.is_some() {
             self.client_auth(io, &mut builder)?;
         }
+        // ECH that cannot be set up fails the handshake only where it is
+        // hard; else the handshake goes on without it, said.
+        if o.ech.enabled()
+            && let Err(kind) = self.init_ech(io, &mut builder)
+            && o.ech.mode == EchMode::Hard
+        {
+            return Err(kind);
+        }
         // The key log is opened as a connection's configuration is built
         // (`init_config_builder_keylog`), and its secrets go to it while
         // it is open.
@@ -414,6 +441,62 @@ impl<G: Rustls> Session<G> {
         })?;
         self.conn = Some(conn);
         Ok(())
+    }
+
+    /// Encrypted Client Hello set up on the configuration
+    /// (`init_config_builder_ech`): GREASE; else the transfer's list,
+    /// from base64, or the origin's HTTPS record's. An outer name cannot
+    /// be set. What fails is said, and fails the handshake as the caller
+    /// decides.
+    fn init_ech(&self, io: &mut TlsIo<'_>, builder: &mut G::Builder) -> Result<(), ErrorKind> {
+        let ech = &self.identity.options.ech;
+        if ech.public_name.is_some() {
+            return Err(io.fail(
+                ErrorKind::SslConnectError,
+                format_args!("rustls: ECH outername not supported"),
+            ));
+        }
+        if ech.mode == EchMode::Grease {
+            return self.lib.ech_grease(builder).map_err(|code| {
+                io.fail(
+                    ErrorKind::SslConnectError,
+                    format_args!("rustls: failed to configure ECH GREASE: {}", code.words()),
+                )
+            });
+        }
+        let decoded;
+        let list: &[u8] = match &ech.config {
+            Some(b64) => {
+                if b64.is_empty() {
+                    io.info(format_args!("rustls: ECHConfig from command line empty"));
+                    return Err(ErrorKind::SslConnectError);
+                }
+                // Out of memory is a failure to decode, as C's is.
+                let Ok(Some(list)) = curl_core::tls::base64_decode(b64) else {
+                    io.info(format_args!(
+                        "rustls: cannot base64 decode ECHConfig from command line"
+                    ));
+                    return Err(ErrorKind::SslConnectError);
+                };
+                decoded = list;
+                &decoded
+            }
+            None => match &self.ech_record {
+                Some(list) => list,
+                None => {
+                    return Err(io.fail(
+                        ErrorKind::SslConnectError,
+                        format_args!("rustls: ECH requested but no ECHConfig available"),
+                    ));
+                }
+            },
+        };
+        self.lib.ech(builder, list).map_err(|code| {
+            io.fail(
+                ErrorKind::SslConnectError,
+                format_args!("rustls: failed to configure ECH: {}", code.words()),
+            )
+        })
     }
 
     /// Read the peer's records and make what the library can of them

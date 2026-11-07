@@ -1,0 +1,38 @@
+[package]
+name = "curl-rustls"
+description = "Rustls for the curl rewrite: TLS, as lib/vtls/rustls.c drives rustls-ffi, over the rustls crate itself"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The debug build's memory tracker, which the library's own allocations
+# are kept out of, as C's memory debugging never sees rustls-ffi's.
+debug-hooks = ["curl-alloc/debug-hooks"]
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+curl-os = { path = "../curl-os" }
+libc = "0.2"
+# As the rustls-ffi release C is measured with builds it (0.15.5): this
+# version exactly, its features and its crypto provider, which decide the
+# suites and groups offered and what each failure is called. `version()`
+# names it too.
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "tls12", "aws-lc-rs", "prefer-post-quantum"] }
+# The system's trust store, as rustls-ffi's
+# `rustls_platform_server_cert_verifier` takes it.
+rustls-platform-verifier = "0.7.1"
+
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+
+[dev-dependencies]
+# The multi's clock, given as the tests give it.
+curl-core = { path = "../curl-core", features = ["test-util"] }
+# A CA and a server's certificate, for the tests against a rustls server.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
+
+[lints]
+workspace = true

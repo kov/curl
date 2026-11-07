@@ -21,6 +21,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-schannel` | Schannel (Windows): the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, through SSPI and CryptoAPI. | yes: it is a binding |
 | `curl-gnutls` | GnuTLS: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, and Ed25519 for HTTP signatures from its nettle. | in `sys.rs`, `gnutls.rs` and `sign.rs`; the session's logic is safe code over the `Gnutls` trait `gnutls.rs` implements |
 | `curl-mbedtls` | mbedTLS: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place. | in `sys.rs` and `mbedtls.rs`; the session's logic is safe code over the `Mbedtls` trait `mbedtls.rs` implements |
+| `curl-wolfssl` | wolfSSL: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, and Ed25519 for HTTP signatures from its wolfCrypt. | in `sys.rs`, `wolfssl.rs` and `sign.rs`; the session's logic is safe code over the `Wolfssl` trait `wolfssl.rs` implements |
 | `curl-nghttp2` | nghttp2's HTTP/2 session, behind `curl_core::http2::Http2`. | yes: it is a binding |
 | `curl-ngtcp2` | ngtcp2 and nghttp3: QUIC and HTTP/3, behind `curl_core::http3::Http3`. | yes: it is a binding |
 | `curl-libssh` | libssh's SCP and SFTP, behind `curl_core::ssh`'s traits. | yes: it is a binding |
@@ -58,7 +59,9 @@ and the tool's Cargo features, which exclude each other: `openssl` (the default,
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never
 openssl-sys's `vendored` copy, checked at build and at init), `gnutls` (GnuTLS 3.6.5 or later,
 the system's, with no HTTP/3), `mbedtls` (mbedTLS 3.2 or later, before 4.0, the system's, with
-neither HTTP/3 nor message signatures) or `schannel` (Windows). The CA
+neither HTTP/3 nor message signatures), `wolfssl` (wolfSSL 5.0 or later, the copy
+`inventory/measure/deps.py` builds as curl's CI does, linked statically, with no HTTP/3) or
+`schannel` (Windows). The CA
 default is the one CMake detects at build time, kept as static strings. How a backend takes the
 system's store is declared beside it (`CaDefaults::system`): only where asked
 (`CURLSSLOPT_NATIVE_CA`), also where a transfer names no CA (the `native-ca` feature, C's

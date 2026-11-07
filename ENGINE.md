@@ -151,6 +151,11 @@ curl-mbedtls  mbedTLS 3.2 or later, before 4.0: the TLS backend a build takes in
               place (the `mbedtls` feature), its random number generator the backend
               value's; the session's logic safe code over an `Mbedtls` trait, which
               `mbedtls.rs` implements and the tests script
+curl-wolfssl  wolfSSL 5.0 or later, the copy deps.py builds: the TLS backend a build takes
+              in OpenSSL's place (the `wolfssl` feature), its BIO method the backend
+              value's, its trust store kept per multi by CA file, and Ed25519 from its
+              wolfCrypt; the session's logic safe code over a `Wolfssl` trait, which
+              `wolfssl.rs` implements and the tests script
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```
@@ -3151,6 +3156,35 @@ read or write. A write that would block is made again with as many bytes, as the
 requires. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` both hand out the `mbedtls_ssl_context`; the
 context callback gets the `mbedtls_ssl_config`.
 
+**wolfSSL** (curl-wolfssl, `lib/vtls/wolfssl.c`) is the backend the `wolfssl` feature takes in
+OpenSSL's place, with message signatures (wolfCrypt's Ed25519) and no HTTP/3, as C's wolfSSL
+build without ngtcp2. It is linked statically from the copy `inventory/measure/deps.py` builds
+at the version and with the flags curl's CI uses (`--enable-all`), in `build/deps/wolfssl`
+unless `CURL_WOLFSSL_DIR` names another; `csrc/layout.c` refuses one configured otherwise than
+the binding follows (no TLS 1.3 secret callback, no secure renegotiation, as that build). Its
+shape is GnuTLS's: the session's logic (`session.rs`, `trust.rs`) is safe code over a `Wolfssl`
+trait, one method per library call `wolfssl.c` makes, implemented by `wolfssl.rs` and scripted
+by the tests (`fake.rs`). The BIO method the session objects read and write the connection
+through, a file-scope static in C made by the global init, is the `WolfSsl` value's, made by
+its `init` and held by each session object as long as it lives; its callbacks and the
+new-session callback reach the `Call` under way through a slot the object's app data points
+at, set for that call alone. The context is made at the first step in `Curl_wssl_ctx_init`'s
+order: the version range, the cipher list (the transfer's TLS 1.3 suites, else the library's,
+then the others, else the library's, in 4096 bytes), curves as groups, the client's
+certificate and key, the verify mode, SNI, the new-session callback, the context callback (its
+trust store set up first), then the session object, FTP's or the cache's session resumed and
+the ALPN offer. The trust store is loaded as the handshake's first read is about to be made,
+after the ClientHello is written, or after the first `wolfSSL_connect` if that read none; it is
+kept in the multi's `TlsShared` (`StoreCache`, as OpenSSL's) by CA file while the taking
+transfer's `CURLOPT_CA_CACHE_TIMEOUT` allows, a store of its own made for it (the context's
+first is not shareable), for a verified peer with no CA path, blob, CRL or native store. The
+library checks the name (`wolfSSL_check_domain_name`); an address is checked after the
+handshake. Sessions are kept as the library tells of each, with what ALPN had agreed by then; a
+resumed TLS 1.3 session that allows early data puts the handshake off for it, the offer
+restricted to the session's protocol. The goodbye sends only what blocked when a blocked
+`close_notify` is retried (wolfSSL#7784). `CURLINFO_TLS_SSL_PTR` hands out the `WOLFSSL`,
+`TLS_SESSION` and the context callback the `WOLFSSL_CTX`.
+
 **Verification.** The CA default is decided at build time as CMake decides it
 (CMakeLists.txt:1475), by the library's build script through curl-build's `write_ca_defaults`,
 the same for each library that takes a bundle: `CURL_CA_BUNDLE` and `CURL_CA_PATH`
@@ -3166,7 +3200,8 @@ reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c doe
 reader does, for the libraries that hand the peer's over whole (Schannel): its parts for
 pinning, and its fields as text for `CURLINFO_CERTINFO` and the leaf's verbose lines
 (`Curl_extract_certinfo`); a certificate that does not read is refused.
-**The CA store cache** (`Curl_ssl_setup_x509_store`, curl-openssl's `cache.rs`): a store a
+**The CA store cache** (`Curl_ssl_setup_x509_store`, the core's `tls/store.rs`, which
+wolfSSL's backend shares): a store a
 connection loads is kept for the multi's next ones, which take it at their first read instead of
 loading (nothing traced: no `configuring OpenSSL's x509 trust store`, `SSL Trust Anchors:` or
 `CAfile:`), while it is younger than the taking transfer's `CURLOPT_CA_CACHE_TIMEOUT`
@@ -3366,7 +3401,9 @@ whole, a line end added (NSS's format: five secrets for TLS 1.3, `CLIENT_RANDOM`
 each handshake done says `SSLKEYLOGFILE set, all TLS secrets are logged to '<file>'`.
 GnuTLS's log is opened as each session is made instead (`Curl_gtls_ctx_init`), not by the
 global init: a run that makes no TLS session makes no file, as C's GnuTLS build. mbedTLS's
-never opens it, as C's mbedTLS build logs no keys.
+never opens it, as C's mbedTLS build logs no keys. wolfSSL's is opened by the global init, as
+OpenSSL's; this build of it has no TLS 1.3 secret callback, so only a TLS 1.2 session's
+`CLIENT_RANDOM` is logged, from the arrays the session keeps until its handshake ends.
 
 **The application's hands on the library.** A library's objects reach the application as a
 `TlsNative`: two pointers the core never looks through, the context and, once made, the

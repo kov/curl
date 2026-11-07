@@ -1451,8 +1451,18 @@ it there, Windows.
      `build/c-mbedtls`): measured 2026-11-07, runtests.pl passes all 1955 tests C's passes
      and pytest all 749; 2120 fails on both, with the same message. Its session's logic is
      tested through a scripted fake of the library, and `lib/vtls/cipher_suite.c`'s table by
-     unit3205. LibreSSL is a variant of the OpenSSL backend already (102). Left: wolfSSL,
-     Rustls, and BoringSSL, AWS-LC and quictls as OpenSSL variants.
+     unit3205. wolfSSL is **done** too: `curl-wolfssl` as `lib/vtls/wolfssl.c` drives it,
+     chosen by the `wolfssl` feature, with Ed25519 from its wolfCrypt and no HTTP/3 (QUIC over
+     it is 104's), over the wolfSSL `inventory/measure/deps.py` builds at the version and with
+     the flags curl's CI uses (5.9.4, `--enable-all`). Scored with `score.py --wolfssl` against
+     C's wolfSSL build (`baseline.py --wolfssl`, `build/c-wolfssl`): measured 2026-11-07,
+     runtests.pl passes all 1981 tests C's passes and pytest 755 of 756; 2120 and 7 early-data
+     cases (the harness's `KeyError: 'nghttpx_https'`) fail on both, with the same messages,
+     and the other, `test_04_03_1000_10_1[h2]`, passed in two more full runs. `curl -V` is
+     C's. Encrypted Client Hello is off in that build, as in the reference, so C's has none of
+     it. Its session's logic is tested through a scripted fake of the library. LibreSSL is a
+     variant of the OpenSSL backend already (102). Left: Rustls, and BoringSSL, AWS-LC and
+     quictls as OpenSSL variants.
 104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **To do.**
 105. **SSH**: libssh2. **Done**: `curl-libssh2` behind the
      core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,

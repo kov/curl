@@ -89,7 +89,7 @@ These cannot be built here:
 
 These are not covered by this build:
 
-- the other TLS backends (GnuTLS and mbedTLS, which have their own below, wolfSSL, Rustls);
+- the other TLS backends (GnuTLS, mbedTLS and wolfSSL, which have their own below, Rustls);
 - libssh;
 - the threaded resolver, which c-ares replaces.
 
@@ -114,6 +114,13 @@ place of `CURL_USE_OPENSSL`, without HTTP/3 (ngtcp2 has no mbedTLS crypto) and w
 message signatures (C's CMake turns them off with mbedTLS, which has no Ed25519), built and
 measured by `baseline.py --mbedtls`. The rewrite's leg, the `mbedtls` feature with libssh2, is
 scored against it by `score.py --mbedtls`.
+
+wolfSSL has one too: `build/c-wolfssl`, the reference configuration with `CURL_USE_WOLFSSL` in
+place of `CURL_USE_OPENSSL` and without HTTP/3, over the wolfSSL `inventory/measure/deps.py`
+builds at the version and with the flags curl's CI uses (it is not packaged here), built and
+measured by `baseline.py --wolfssl`. Encrypted Client Hello is off there as in the reference
+build, so C's wolfSSL build has none of its code. The rewrite's leg, the `wolfssl` feature with
+libssh2, is scored against it by `score.py --wolfssl`.
 
 The threaded resolver has one: a second C oracle in `build/c-threaded`, the reference build's
 configuration with `ENABLE_ARES` off and `ENABLE_THREADED_RESOLVER` on, as distributions build

@@ -70,6 +70,10 @@ exclude_globs = [
     # suites on the mbedTLS leg (`score.py --mbedtls`).
     "crates/curl-mbedtls/src/mbedtls.rs",
     "crates/curl-mbedtls/src/sys.rs",
+    # wolfSSL's binding, likewise: the session's logic over it against a
+    # scripted library, the binding by the suites on the wolfSSL leg
+    # (`score.py --wolfssl`).
+    "crates/curl-wolfssl/src/wolfssl.rs",
 ]
 
 

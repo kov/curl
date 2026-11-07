@@ -89,7 +89,7 @@ These cannot be built here:
 
 These are not covered by this build:
 
-- the other TLS backends (GnuTLS, mbedTLS, wolfSSL, Rustls);
+- the other TLS backends (GnuTLS, which has its own below, mbedTLS, wolfSSL, Rustls);
 - libssh;
 - the threaded resolver, which c-ares replaces.
 
@@ -102,6 +102,12 @@ chooses one. libssh's SSH behaviour is checked against a C oracle of its own,
 `CURL_USE_LIBSSH2`, built and measured by `baseline.py --libssh` and scored against by
 `score.py --libssh`. libssh2's is checked against the reference build, by `score.py
 --libssh2`.
+
+GnuTLS has one too: `build/c-gnutls`, the reference configuration with `CURL_USE_GNUTLS` in
+place of `CURL_USE_OPENSSL` and without HTTP/3 (ngtcp2 here has OpenSSL's crypto, not
+GnuTLS's), built and measured by `baseline.py --gnutls`. The rewrite's TLS library is a build
+choice, the shim's and the tool's `gnutls` feature in place of `openssl`, and its leg (with
+libssh2, as the oracle has it) is scored against that oracle by `score.py --gnutls`.
 
 The threaded resolver has one: a second C oracle in `build/c-threaded`, the reference build's
 configuration with `ENABLE_ARES` off and `ENABLE_THREADED_RESOLVER` on, as distributions build

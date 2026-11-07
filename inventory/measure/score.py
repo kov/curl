@@ -37,6 +37,11 @@ inventory/baseline.json), laid out in build/rust-libssh2. Its SCP and SFTP
 results are the ones libssh2's binding is held to; the rest is the
 default leg's.
 
+`--gnutls` scores the build with GnuTLS in place of OpenSSL, and libssh2
+as the oracle has it, against the C build with GnuTLS (baseline.py
+--gnutls): build/c-gnutls's programs, compared with
+inventory/baseline-gnutls.json, laid out in build/rust-gnutls.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -107,6 +112,15 @@ LIBSSH2 = Leg(baseline.REFERENCE, ROOT / "build" / "rust-libssh2",
                                   for feature in ("c-ares", "openssl",
                                                   "libssh2")),
               no_default=True)
+# GnuTLS in place of OpenSSL, and libssh2 and c-ares as the C build with
+# GnuTLS has them, against that build.
+GNUTLS = Leg(baseline.GNUTLS, ROOT / "build" / "rust-gnutls",
+             ROOT / "build" / "target-gnutls",
+             DEBUG_HOOKS + tuple(f"{crate}/{feature}"
+                                 for crate in ("curl-sys-abi", "curl-tool")
+                                 for feature in ("c-ares", "gnutls",
+                                                 "libssh2")),
+             no_default=True)
 
 
 def git(*args):
@@ -373,10 +387,12 @@ def main():
     ap.add_argument("--threaded", action="store_true")
     ap.add_argument("--libssh", action="store_true")
     ap.add_argument("--libssh2", action="store_true")
+    ap.add_argument("--gnutls", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
     leg = (THREADED if args.threaded else LIBSSH if args.libssh
-           else LIBSSH2 if args.libssh2 else RUST)
+           else LIBSSH2 if args.libssh2 else GNUTLS if args.gnutls
+           else RUST)
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

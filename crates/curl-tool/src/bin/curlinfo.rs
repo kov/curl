@@ -112,11 +112,11 @@ mod tests {
     }
 
     /// Message signatures are reported as the build has them: with
-    /// OpenSSL's Ed25519, not with Schannel, which has none, as C's
-    /// builds with each.
+    /// OpenSSL's Ed25519 or GnuTLS's nettle, not with Schannel, which has
+    /// none, as C's builds with each.
     #[test]
     fn message_signatures_are_reported_as_the_tls_library_has_them() {
         let on = toggles().find(|&(n, _)| n == "httpsig").map(|(_, on)| on);
-        assert_eq!(on, Some(cfg!(feature = "openssl")));
+        assert_eq!(on, Some(cfg!(any(feature = "openssl", feature = "gnutls"))));
     }
 }

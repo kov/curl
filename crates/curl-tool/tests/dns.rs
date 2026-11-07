@@ -660,6 +660,8 @@ fn a_record_never_answered_says_its_socket_closed() {
     assert_eq!(closes, 5, "{said}");
 }
 
+// HTTP/3 is ngtcp2's over OpenSSL: no other build has it.
+#[cfg(feature = "openssl")]
 #[test]
 fn a_second_attempt_started_during_a_resolve_takes_what_it_finds() {
     let (dns, _heard) = dns_server();
@@ -911,6 +913,8 @@ fn an_answer_of_two_records_is_taken_as_one() {
     }
 }
 
+// HTTP/3 is ngtcp2's over OpenSSL: no other build has it.
+#[cfg(feature = "openssl")]
 #[test]
 fn an_attempt_dials_as_the_record_awaited_chooses() {
     let (dns, _heard) = dns_server();

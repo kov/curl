@@ -452,14 +452,16 @@ pub(crate) static KEYLOG: curl_core::tls::KeyLog = curl_core::tls::KeyLog::new()
 
 /// Initialise the libraries linked in, as C's global init does
 /// (`Curl_ssl_init`): OpenSSL's configuration is read now, and the key
-/// log opened (`ossl_init`); Schannel has nothing to do.
-fn libraries_init() {
-    crate::tlslib::init();
+/// log opened (`ossl_init`); GnuTLS is initialised (`gtls_init`);
+/// Schannel has nothing to do. Whether the TLS library could be.
+fn libraries_init() -> bool {
+    crate::tlslib::init()
 }
 
 /// What the libraries linked in let go of at the last cleanup
-/// (`ossl_cleanup`).
+/// (`ossl_cleanup`, `gtls_cleanup`).
 fn libraries_cleanup() {
+    crate::tlslib::cleanup();
     KEYLOG.close();
 }
 
@@ -490,7 +492,9 @@ fn first_init(root: &mut Root, flags: c_long) -> CURLcode {
             Err(_) => return CURLE_FAILED_INIT,
         }
     }
-    libraries_init();
+    if !libraries_init() {
+        return CURLE_FAILED_INIT;
+    }
     CURLE_OK
 }
 

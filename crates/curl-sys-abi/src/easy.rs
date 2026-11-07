@@ -1573,8 +1573,8 @@ mod tests {
         assert!(libraries(false).security.is_none());
         let (with, without) = (libraries(true), libraries(false));
         assert!(with.tls.is_some() && without.tls.is_some());
-        // Ed25519 is OpenSSL's: Schannel's build has none.
-        let signs = cfg!(feature = "openssl");
+        // Ed25519 is OpenSSL's or GnuTLS's: Schannel's build has none.
+        let signs = cfg!(any(feature = "openssl", feature = "gnutls"));
         assert_eq!(
             (with.ed25519.is_some(), without.ed25519.is_some()),
             (signs, signs)

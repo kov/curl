@@ -423,9 +423,10 @@ mod tests {
     /// names, the names NULL-terminated.
     #[test]
     fn features_reach_the_c_struct() {
-        // OpenSSL's build has HTTP/3 and message signatures, Schannel's
-        // neither.
+        // OpenSSL's build has HTTP/3 and message signatures, GnuTLS's
+        // only message signatures, Schannel's neither.
         let quic = cfg!(feature = "openssl");
+        let signs = cfg!(any(feature = "openssl", feature = "gnutls"));
         let info = info();
         let names = names(info.feature_names);
         let want: Vec<_> = version().features.iter().map(|f| f.name()).collect();
@@ -453,7 +454,7 @@ mod tests {
             (true, "HTTP2", ffi::CURL_VERSION_HTTP2),
             (quic, "HTTP3", ffi::CURL_VERSION_HTTP3),
             (true, "HTTPS-proxy", ffi::CURL_VERSION_HTTPS_PROXY),
-            (quic, "HTTPSIG", 0),
+            (signs, "HTTPSIG", 0),
             (true, "HTTPSRR", 0),
             (true, "IDN", ffi::CURL_VERSION_IDN),
             (true, "IPv6", ffi::CURL_VERSION_IPV6),

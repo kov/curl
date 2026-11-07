@@ -1,17 +1,24 @@
-//! The TLS library this build has, one of two chosen as it is built:
+//! The TLS library this build has, one of three chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
-//! for message signatures, or Schannel (`schannel`, Windows only), with
-//! neither, as C's build with it has neither.
+//! for message signatures; GnuTLS (`gnutls`), with Ed25519 and no
+//! HTTP/3; or Schannel (`schannel`, Windows only), with neither, as C's
+//! builds with them have.
 
 use core::ffi::CStr;
 use core::fmt;
 
 use crate::ffi;
 
-#[cfg(all(feature = "openssl", feature = "schannel"))]
-compile_error!("one TLS library: the `openssl` and `schannel` features exclude each other");
-#[cfg(not(any(feature = "openssl", feature = "schannel")))]
-compile_error!("a TLS library: the `openssl` feature or the `schannel` one");
+#[cfg(any(
+    all(feature = "openssl", feature = "schannel"),
+    all(feature = "openssl", feature = "gnutls"),
+    all(feature = "gnutls", feature = "schannel")
+))]
+compile_error!(
+    "one TLS library: the `openssl`, `gnutls` and `schannel` features exclude each other"
+);
+#[cfg(not(any(feature = "openssl", feature = "gnutls", feature = "schannel")))]
+compile_error!("a TLS library: the `openssl` feature, the `gnutls` one or the `schannel` one");
 
 #[cfg(feature = "openssl")]
 mod library {
@@ -32,11 +39,15 @@ mod library {
     pub(crate) const NAME: &CStr = c"openssl";
 
     /// Read its configuration and open the key log, as C's global init
-    /// does (`ossl_init`).
-    pub(crate) fn init() {
+    /// does (`ossl_init`): whether it could.
+    pub(crate) fn init() -> bool {
         curl_openssl::init();
         crate::root::KEYLOG.open();
+        true
     }
+
+    /// Nothing to let go of but the key log, which the root closes.
+    pub(crate) fn cleanup() {}
 
     /// Its version as the version string names it: `OpenSSL/3.5.9`.
     pub(crate) fn version() -> impl fmt::Display {
@@ -46,6 +57,45 @@ mod library {
     /// The QUIC libraries, as `quic_version` names them.
     pub(crate) fn quic() -> Option<impl fmt::Display> {
         Some(curl_ngtcp2::version())
+    }
+}
+
+#[cfg(feature = "gnutls")]
+mod library {
+    use super::*;
+
+    /// GnuTLS, logging secrets to the root's key log, which its sessions
+    /// open as they are made (`Curl_gtls_ctx_init`).
+    pub(crate) static TLS: curl_gnutls::GnuTls = curl_gnutls::GnuTls::logging_keys_to(
+        curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
+    );
+
+    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
+        Some(&curl_gnutls::ED25519);
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
+
+    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_GNUTLS;
+    pub(crate) const NAME: &CStr = c"gnutls";
+
+    /// The library initialised, as C's global init does (`gtls_init`):
+    /// whether it could.
+    pub(crate) fn init() -> bool {
+        curl_gnutls::init()
+    }
+
+    /// The library let go, as C's last cleanup does (`gtls_cleanup`).
+    pub(crate) fn cleanup() {
+        curl_gnutls::cleanup();
+    }
+
+    /// Its version as the version string names it: `GnuTLS/3.8.13`.
+    pub(crate) fn version() -> impl fmt::Display {
+        curl_gnutls::version()
+    }
+
+    /// None: no QUIC over GnuTLS.
+    pub(crate) fn quic() -> Option<&'static str> {
+        None
     }
 }
 
@@ -62,7 +112,12 @@ mod library {
     pub(crate) const NAME: &CStr = c"schannel";
 
     /// Nothing: Schannel is the system's, and logs no keys.
-    pub(crate) fn init() {}
+    pub(crate) fn init() -> bool {
+        true
+    }
+
+    /// Nothing.
+    pub(crate) fn cleanup() {}
 
     /// `Schannel`, as C's `schannel_version` says it.
     pub(crate) fn version() -> impl fmt::Display {

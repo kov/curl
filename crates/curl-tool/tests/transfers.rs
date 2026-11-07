@@ -2426,16 +2426,22 @@ fn sets_the_tls_options_as_c_does() {
 }
 
 /// `SSLKEYLOGFILE` is opened as the tool starts, as C's global init opens
-/// it: the file is made though no transfer uses TLS.
+/// it with OpenSSL (`ossl_init`): the file is made though no transfer
+/// uses TLS. GnuTLS opens it as a session is made (`Curl_gtls_ctx_init`):
+/// a transfer without TLS makes none.
 #[test]
-fn the_key_log_is_opened_at_start() {
+fn the_key_log_is_opened_at_start_as_the_library_opens_it() {
     let dir = Scratch::new("keylog");
     std::fs::write(dir.path("in"), b"x").unwrap();
     let log = dir.path("keys");
     let run = curl_env(&dir, &["-s", &dir.url("in")], &[("SSLKEYLOGFILE", &log)]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(run.stdout, b"x");
-    assert_eq!(std::fs::read(&log).unwrap(), b"", "made, and empty");
+    if cfg!(feature = "gnutls") {
+        assert!(!std::path::Path::new(&log).exists(), "not made");
+    } else {
+        assert_eq!(std::fs::read(&log).unwrap(), b"", "made, and empty");
+    }
 }
 
 /// `--hsts` reads the cache's file, an http URL to a host it keeps going

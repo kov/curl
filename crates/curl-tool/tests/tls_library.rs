@@ -1,9 +1,10 @@
 //! What the tool says of the options its TLS library lacks: with
 //! Schannel, C's tool warns that the proxy's CA path and the TLS 1.3
 //! suites are ignored, and passes over the rest it lacks without a word
-//! and without writing them to `--libcurl`'s program; with OpenSSL,
-//! which has them, it says nothing and writes them all, but for the
-//! signature algorithms where it is LibreSSL.
+//! and without writing them to `--libcurl`'s program; with GnuTLS, the
+//! same of the TLS 1.3 suites, the curves, the signature algorithms and
+//! the engine; with OpenSSL, which has them, it says nothing and writes
+//! them all, but for the signature algorithms where it is LibreSSL.
 //!
 //! The expectations are the C tool's: `CURL_TOOL_UNDER_TEST` names
 //! another tool to run them on.
@@ -51,7 +52,8 @@ fn over_libressl() -> bool {
 }
 
 /// `--capath` (which the proxy's takes too) and `--tls13-ciphers` are
-/// warned of as ignored, in C's words, where Schannel is the library.
+/// warned of as ignored, in C's words, where Schannel is the library;
+/// `--tls13-ciphers` alone where GnuTLS is.
 #[test]
 fn options_the_library_lacks_are_warned_of() {
     let said = stderr(&[
@@ -65,13 +67,31 @@ fn options_the_library_lacks_are_warned_of() {
     // first a `Warning: ` of its own: joined again here.
     let said = said.replace("\r\n", "\n").replace("\nWarning: ", " ");
     let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    let library = if cfg!(feature = "gnutls") {
+        run(&["-V"])
+            .0
+            .split_whitespace()
+            .find(|w| w.starts_with("GnuTLS/"))
+            .unwrap()
+            .to_owned()
+    } else {
+        "Schannel".to_owned()
+    };
     let warnings = [
-        "ignoring setting the CA path for the proxy, not supported by libcurl with Schannel",
-        "ignoring --tls13-ciphers, not supported by libcurl with Schannel",
+        (
+            format!(
+                "ignoring setting the CA path for the proxy, not supported by libcurl with {library}"
+            ),
+            cfg!(feature = "schannel"),
+        ),
+        (
+            format!("ignoring --tls13-ciphers, not supported by libcurl with {library}"),
+            cfg!(any(feature = "schannel", feature = "gnutls")),
+        ),
     ];
-    for warning in warnings {
-        if cfg!(feature = "schannel") {
-            assert!(said.contains(warning), "{warning}: {said}");
+    for (warning, warned) in warnings {
+        if warned {
+            assert!(said.contains(&warning), "{warning}: {said}");
         } else {
             let (what, _) = warning.split_once(", not supported").unwrap();
             assert!(!said.contains(what), "{what}: {said}");
@@ -81,10 +101,10 @@ fn options_the_library_lacks_are_warned_of() {
     assert!(said.contains("curl: (37)"), "{said}");
 }
 
-/// The options Schannel lacks that C's tool says nothing of are set
-/// nowhere and left out of the program `--libcurl` writes, as libcurl
-/// refuses them; OpenSSL takes them all, and they are written. LibreSSL
-/// takes all but the signature algorithms
+/// The options Schannel or GnuTLS lacks that C's tool says nothing of
+/// are set nowhere and left out of the program `--libcurl` writes, as
+/// libcurl refuses them; OpenSSL takes them all, and they are written.
+/// LibreSSL takes all but the signature algorithms
 /// (`HAVE_SSL_CTX_SET1_SIGALGS`).
 #[test]
 fn options_the_library_lacks_are_not_written() {
@@ -114,7 +134,12 @@ fn options_the_library_lacks_are_not_written() {
         "CURLOPT_SSLENGINE",
     ] {
         let written = program.contains(&format!("curl_easy_setopt(curl, {option},"));
+        let gnutls_lacks = matches!(
+            option,
+            "CURLOPT_SSL_EC_CURVES" | "CURLOPT_SSL_SIGNATURE_ALGORITHMS" | "CURLOPT_SSLENGINE"
+        );
         let lacks = cfg!(feature = "schannel")
+            || (cfg!(feature = "gnutls") && gnutls_lacks)
             || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && libressl);
         assert_eq!(written, !lacks, "{option}: {program}");
     }
@@ -125,14 +150,14 @@ fn options_the_library_lacks_are_not_written() {
 }
 
 /// `--engine list` lists the library's engines: OpenSSL's built-in
-/// `dynamic` among them; none for Schannel, which has none, nor for
-/// LibreSSL, which has none either (`OPENSSL_NO_ENGINE`).
+/// `dynamic` among them; none for Schannel or GnuTLS, which have none,
+/// nor for LibreSSL, which has none either (`OPENSSL_NO_ENGINE`).
 #[test]
 fn the_engines_listed_are_the_library_s() {
     let (out, said) = run(&["--engine", "list"]);
     let out = out.replace("\r\n", "\n");
     assert!(out.starts_with("Build-time engines:\n"), "{out}{said}");
-    if cfg!(feature = "schannel") || over_libressl() {
+    if cfg!(any(feature = "schannel", feature = "gnutls")) || over_libressl() {
         assert_eq!(out, "Build-time engines:\n  <none>\n");
     } else {
         assert!(out.lines().any(|l| l == "  dynamic"), "{out}");

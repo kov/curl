@@ -96,9 +96,13 @@ fn main() -> ExitCode {
     #[cfg(feature = "debug-hooks")]
     memory_tracking_init();
     // C's `curl_global_init`: OpenSSL's configuration is read now, and
-    // the key log opened.
-    tlslib::init();
+    // the key log opened; GnuTLS is initialised.
+    let tls_ready = tlslib::init();
     let mut msgs = Messages::new();
+    if !tls_ready {
+        msgs.error(&[b"error initializing curl library"]);
+        return ExitCode::from(exit_code(ErrorKind::FailedInit));
+    }
     // And Winsock, held for the process (`CURL_GLOBAL_WIN32`); nothing
     // to start on Unix.
     let Ok(_winsock) = curl_os::net::Winsock::start() else {
@@ -109,7 +113,9 @@ fn main() -> ExitCode {
         msgs.error(&[b"out of memory"]);
         return ExitCode::from(exit_code(ErrorKind::OutOfMemory));
     };
-    linked.open_key_log();
+    if tlslib::KEYLOG_AT_INIT {
+        linked.open_key_log();
+    }
     // C takes the environment's locale but for numbers (`operate`).
     curl_os::locale::from_environment_but_numbers();
     let curlrc = if config::reads_curlrc(&argv) {

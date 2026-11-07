@@ -15,9 +15,11 @@ path = "src/main.rs"
 # is chosen; one or the other is needed.
 default = ["c-ares", "libssh", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
-# over ngtcp2 and Ed25519 for message signatures, or Schannel (Windows),
-# with neither, as C's build with it.
+# over ngtcp2 and Ed25519 for message signatures; GnuTLS, with Ed25519
+# from its nettle and no HTTP/3 (ngtcp2's GnuTLS crypto is not bound); or
+# Schannel (Windows), with neither, as C's builds with them.
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
+gnutls = ["dep:curl-gnutls", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
 # One SSH library for SCP and SFTP, chosen as the library is built: libssh
@@ -64,6 +66,7 @@ curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os", features = ["args", "fs", "net"] }
 curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
+curl-gnutls = { path = "../curl-gnutls", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-idn2 = { path = "../curl-idn2" }
 curl-libssh = { path = "../curl-libssh", optional = true }

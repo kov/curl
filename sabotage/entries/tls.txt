@@ -307,7 +307,7 @@ witness: curl-openssl a_resumed_get_stays_within_its_allocation_budget
 
 === the tool opens SSLKEYLOGFILE as it starts, as C's global init does
 file: crates/curl-tool/src/operate.rs
-witness: curl-tool the_key_log_is_opened_at_start
+witness: curl-tool the_key_log_is_opened_at_start_as_the_library_opens_it
 --- old
         self.keylog.open();
 --- new

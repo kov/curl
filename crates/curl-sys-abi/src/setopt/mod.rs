@@ -2362,9 +2362,10 @@ mod tests {
     /// The build's TLS library refuses what C's build with it refuses:
     /// Schannel the CA path, the revocation list, the issuer, TLS 1.3's
     /// suites, the context callback, the curves, the signature
-    /// algorithms, the stapled status and the engine; OpenSSL none of
-    /// them, and LibreSSL the signature algorithms alone. None has
-    /// Encrypted Client Hello.
+    /// algorithms, the stapled status and the engine; GnuTLS TLS 1.3's
+    /// suites, the context callback, the curves, the signature
+    /// algorithms and the engine; OpenSSL none of them, and LibreSSL the
+    /// signature algorithms alone. None has Encrypted Client Hello.
     #[test]
     fn the_tls_library_s_lacking_options_are_not_built_in() {
         let c = crate::easy::curl_easy_init();
@@ -2377,30 +2378,32 @@ mod tests {
             unsafe { curl_easy_setopt(c, option, 1 as c_long) }
         };
         let schannel = cfg!(feature = "schannel");
+        let gnutls = cfg!(feature = "gnutls");
+        let openssl = cfg!(feature = "openssl");
         let want = |lacks: bool| if lacks { CURLE_NOT_BUILT_IN } else { CURLE_OK };
-        for option in [
-            ffi::CURLOPT_CAPATH,
-            ffi::CURLOPT_PROXY_CAPATH,
-            ffi::CURLOPT_CRLFILE,
-            ffi::CURLOPT_PROXY_CRLFILE,
-            ffi::CURLOPT_ISSUERCERT,
-            ffi::CURLOPT_PROXY_ISSUERCERT,
-            ffi::CURLOPT_TLS13_CIPHERS,
-            ffi::CURLOPT_PROXY_TLS13_CIPHERS,
-            ffi::CURLOPT_SSL_EC_CURVES,
-            ffi::CURLOPT_SSLENGINE,
+        for (option, lacks) in [
+            (ffi::CURLOPT_CAPATH, schannel),
+            (ffi::CURLOPT_PROXY_CAPATH, schannel),
+            (ffi::CURLOPT_CRLFILE, schannel),
+            (ffi::CURLOPT_PROXY_CRLFILE, schannel),
+            (ffi::CURLOPT_ISSUERCERT, schannel),
+            (ffi::CURLOPT_PROXY_ISSUERCERT, schannel),
+            (ffi::CURLOPT_TLS13_CIPHERS, !openssl),
+            (ffi::CURLOPT_PROXY_TLS13_CIPHERS, !openssl),
+            (ffi::CURLOPT_SSL_EC_CURVES, !openssl),
+            (ffi::CURLOPT_SSLENGINE, !openssl),
         ] {
-            assert_eq!(text(option), want(schannel), "{option:?}");
+            assert_eq!(text(option), want(lacks), "{option:?}");
         }
         // LibreSSL's lack of them is pinned by curl-openssl's own test.
         let sigalgs = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS).signature_algorithms;
         assert_eq!(text(ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS), want(!sigalgs));
-        for option in [
-            ffi::CURLOPT_SSL_VERIFYSTATUS,
-            ffi::CURLOPT_DOH_SSL_VERIFYSTATUS,
-            ffi::CURLOPT_SSLENGINE_DEFAULT,
+        for (option, lacks) in [
+            (ffi::CURLOPT_SSL_VERIFYSTATUS, schannel),
+            (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, schannel),
+            (ffi::CURLOPT_SSLENGINE_DEFAULT, !openssl),
         ] {
-            assert_eq!(long(option), want(schannel), "{option:?}");
+            assert_eq!(long(option), want(lacks), "{option:?}");
         }
         // SAFETY: a live handle, and a pointer option given NULL.
         let ctx_data = unsafe {
@@ -2410,8 +2413,8 @@ mod tests {
                 core::ptr::null_mut::<c_void>(),
             )
         };
-        assert_eq!(ctx_data, want(schannel));
-        // What both have.
+        assert_eq!(ctx_data, want(schannel || gnutls));
+        // What all have.
         for option in [
             ffi::CURLOPT_CAINFO,
             ffi::CURLOPT_SSL_CIPHER_LIST,
@@ -2421,7 +2424,7 @@ mod tests {
         }
         assert_eq!(long(ffi::CURLOPT_CERTINFO), CURLE_OK);
         assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), CURLE_OK);
-        // What neither has.
+        // What none has.
         assert_eq!(text(ffi::CURLOPT_ECH), CURLE_NOT_BUILT_IN);
         // SAFETY: the handle made above, not used again.
         unsafe { crate::easy::curl_easy_cleanup(c) };

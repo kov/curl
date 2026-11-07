@@ -1168,3 +1168,12 @@ features: test-util
     let permanent = !s.single(b'+');
 --- new
     let permanent = s.single(b'+') || true;
+
+=== a handshake beside a resolve still going on times out as a connection
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::a_handshake_timed_out_beside_the_resolve_times_out_as_resolving
+features: test-util
+--- old
+            Stage::Dialed(d) => d.late.0.is_some(),
+--- new
+            Stage::Dialed(_) => false,

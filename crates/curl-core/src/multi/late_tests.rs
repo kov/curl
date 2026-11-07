@@ -207,6 +207,18 @@ fn transfer(
     held: impl FnOnce(&Multi, &FakeNetCheck),
     done: impl FnOnce(&Multi, &FakeNetCheck),
 ) -> Vec<String> {
+    transfer_ending(backend, aaaa_meanwhile, None, held, done)
+}
+
+/// The same, the handshake held for good if `limit`, the connect limit
+/// in milliseconds, is given, for the transfer to time out.
+fn transfer_ending(
+    backend: &Backend,
+    aaaa_meanwhile: bool,
+    limit: Option<u64>,
+    held: impl FnOnce(&Multi, &FakeNetCheck),
+    done: impl FnOnce(&Multi, &FakeNetCheck),
+) -> Vec<String> {
     let clock = ManualClock::new().unwrap();
     let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
     let origin = Conversation::replies(&[fake::WELCOME, &response], false).held();
@@ -219,6 +231,9 @@ fn transfer(
     let mut easy = Easy::new();
     let o = easy.options_mut();
     o.set_url(Some(ORIGIN.as_bytes())).unwrap();
+    if let Some(ms) = limit {
+        o.limits.connect = crate::time::TimeLimit::from_millis(ms);
+    }
     let mut library = None;
     match backend {
         Backend::Doh => {
@@ -314,9 +329,16 @@ fn transfer(
     }
     let check = FakeNetCheck(shared);
     held(&m, &check);
-    origin.allow(2);
-    run(&mut m);
-    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+    if limit.is_some() {
+        run(&mut m);
+        run(&mut m);
+        let ended = m.info_read().map(|msg| msg.result);
+        assert_eq!(ended, Some(Err(ErrorKind::OperationTimedout)));
+    } else {
+        origin.allow(2);
+        run(&mut m);
+        assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+    }
     done(&m, &check);
     lines.0.lock().unwrap().clone()
 }
@@ -547,4 +569,33 @@ fn through_the_resolver_a_resolve_still_going_on_goes_as_the_chain_connects() {
         |_, net| assert_eq!(net.resolving(), 0, "let go of"),
     );
     looked_at_through_the_handshake(&said);
+}
+
+/// A connect that runs out during the handshake with the name's resolve
+/// still going on times out as "Resolving", as C names it while the DNS
+/// filter has not announced the name resolved (`bits.dns_resolved`); once
+/// the answer has come, as "Connection". C's tool says the same against
+/// an `https` origin holding its first flight, AAAA answered after the
+/// limit and before it.
+#[test]
+fn a_handshake_timed_out_beside_the_resolve_times_out_as_resolving() {
+    let said = |aaaa_meanwhile| {
+        let lines = transfer_ending(
+            &Backend::Resolver,
+            aaaa_meanwhile,
+            Some(150),
+            |_, _| {},
+            |_, _| {},
+        );
+        at(&lines, 0, "[HAPPY-EYEBALLS] connect attempt #0 successful");
+        let failed: Vec<String> = lines
+            .iter()
+            .filter(|l| l.contains(" timed out after "))
+            .cloned()
+            .collect();
+        assert_eq!(failed.len(), 1, "{lines:#?}");
+        failed[0].split(" after ").next().unwrap().to_owned()
+    };
+    assert_eq!(said(false), "Resolving timed out");
+    assert_eq!(said(true), "Connection timed out");
 }

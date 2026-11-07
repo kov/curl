@@ -459,6 +459,13 @@ def build_ech_servers():
 
 
 QUICHE = DEPS / "quiche"
+# The `boring` crates quiche's build takes its BoringSSL from. The tag
+# locks none, so CI's build takes the latest release; this is the latest
+# at the C tree's commit (2026-10-20). The next, 5.4.0, has a BoringSSL
+# that declares `ASN1_STRING_get_length`, which the C tree's
+# lib/vtls/openssl.c defines for itself below OpenSSL 4.1, and so does not
+# build.
+BORING_SYS_VERSION = "5.3.0"
 
 
 def build_quiche():
@@ -468,7 +475,7 @@ def build_quiche():
     quiche.
     """
     version = pinned("QUICHE_VERSION")
-    built = f"{version} ffi,pkg-config-meta,qlog"
+    built = f"{version} ffi,pkg-config-meta,qlog boring-{BORING_SYS_VERSION}"
     release = QUICHE / "target" / "release"
     stamp = QUICHE / ".version"
     if not (stamp.exists() and stamp.read_text().strip() == built):
@@ -478,6 +485,9 @@ def build_quiche():
         sh(["git", "clone", "--quiet", "--depth", "1", "--branch", version,
             "--recursive", "https://github.com/cloudflare/quiche",
             str(QUICHE)], cwd=DEPS)
+        for crate in ["boring", "boring-sys"]:
+            sh(["cargo", "update", "--quiet", "--package", crate,
+                "--precise", BORING_SYS_VERSION], cwd=QUICHE)
         # Its own target directory, whatever the environment or the
         # tree's .cargo/config.toml, which cargo finds above it, says.
         sh(["cargo", "build", "--package", "quiche", "--release",
@@ -502,6 +512,10 @@ def build_quiche():
                  QUICHE / "boringssl" / "lib" / "libcrypto.a",
                  QUICHE / "boringssl" / "include" / "openssl" / "ssl.h"]:
         check(path.exists(), f"{path} was not built")
+    for crate in ["boring", "boring-sys"]:
+        check(re.search(rf'^name = "{crate}"\nversion = "{BORING_SYS_VERSION}"$',
+                        (QUICHE / "Cargo.lock").read_text(), re.MULTILINE)
+              is not None, f"quiche's build took another {crate}")
     return {"PKG_CONFIG_PATH": str(release)}
 
 

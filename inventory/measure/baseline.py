@@ -48,6 +48,13 @@ BoringSSL crypto from the ngtcp2 built for that fork, and with Encrypted
 Client Hello: build/c-awslc,
 build/c-boringssl, inventory/baseline-{awslc,boringssl}.{json,md}.
 
+`--quiche` does the same with HTTP/3 over quiche in place of ngtcp2, and
+the OpenSSL backend over the BoringSSL quiche's build makes in place of
+OpenSSL, both built by inventory/measure/deps.py as curl's CI builds them,
+quiche's shared library loaded and that BoringSSL linked in statically:
+without the HTTP/3 proxy, which CMake builds over ngtcp2 only:
+build/c-quiche, inventory/baseline-quiche.{json,md}.
+
 `--rustls` does the same with Rustls in place of OpenSSL, the library the
 rewrite's `rustls` feature binds, the release of rustls-ffi curl's CI
 installs, unpacked by inventory/measure/deps.py: without HTTP/3, which C
@@ -145,6 +152,9 @@ class Oracle:
     # It is built with Encrypted Client Hello, its suites run over the
     # test servers for it (`deps.build_ech_servers`).
     ech: bool = False
+    # It is built with the quiche built here and the BoringSSL its build
+    # makes (`deps.build_quiche`).
+    quiche: bool = False
 
     @property
     def suite_env(self):
@@ -261,6 +271,21 @@ AWSLC = fork_oracle("awslc", "AWS-LC")
 BORINGSSL = fork_oracle("boringssl", "BoringSSL")
 
 
+# HTTP/3 over quiche, as the rewrite's `quiche` feature has it: the OpenSSL
+# backend over the BoringSSL quiche's build makes, static, as CI links it
+# (CMake's "quiche requires BoringSSL"), and no HTTP/3 proxy, which CMake
+# builds over ngtcp2 only. Its programs find quiche's library by their
+# RUNPATH.
+QUICHE = Oracle(ROOT / "build" / "c-quiche", "baseline-quiche",
+                "C quiche baseline", "--quiche",
+                {**CMAKE_ARGS, "USE_NGTCP2": "OFF", "USE_QUICHE": "ON",
+                 "USE_PROXY_HTTP3": "OFF",
+                 "OPENSSL_ROOT_DIR": str(deps.quiche_boringssl()),
+                 "OPENSSL_USE_STATIC_LIBS": "ON",
+                 "CMAKE_BUILD_RPATH": str(deps.QUICHE / "target" / "release")},
+                links_ngtcp2=False, quiche=True)
+
+
 # Rustls in place of OpenSSL, as the rewrite's `rustls` feature has it: no
 # QUIC (C's HTTP/3 over Rustls is quiche's, not built here), and no
 # Ed25519 to sign HTTP messages with (CMake turns HTTPSIG off without it).
@@ -291,6 +316,9 @@ def run(oracle):
             e["PKG_CONFIG_PATH"] for e in (deps.build_rustls(), dep_env))}
     if oracle.ech:
         deps.build_ech_servers()
+    if oracle.quiche:
+        dep_env = {"PKG_CONFIG_PATH": ":".join(
+            e["PKG_CONFIG_PATH"] for e in (deps.build_quiche(), dep_env))}
     # A fresh cache: nothing configured by hand earlier, such as another
     # library location, may carry into the measurement.
     (oracle.build / "CMakeCache.txt").unlink(missing_ok=True)
@@ -305,6 +333,31 @@ def run(oracle):
                    oracle.build / "src/curl", *oracle.test_programs]:
         if oracle.links_ngtcp2:
             deps.check_linked(binary, oracle.crypto, oracle.ngtcp2)
+    if oracle.quiche:
+        # The positive control: quiche and BoringSSL are the ones named,
+        # quiche's library the one built here, and BoringSSL linked in,
+        # its headers the staged ones, not the system OpenSSL's.
+        version = subprocess.run([str(oracle.build / "src/curl"), "-V"],
+                                 check=True, capture_output=True,
+                                 text=True).stdout.splitlines()[0]
+        check(" BoringSSL" in version and " quiche/" in version
+              and " ngtcp2/" not in version,
+              f"the quiche build says {version}")
+        libcurl = next(oracle.build.glob("lib/libcurl*.so.*.*.*"))
+        ldd = subprocess.run(["ldd", str(libcurl)], check=True,
+                             capture_output=True, text=True).stdout
+        check(f"{deps.QUICHE}/target/release/libquiche.so" in ldd,
+              f"{libcurl} loads {ldd}")
+        # The system's OpenSSL is loaded too, for libssh2 and libldap,
+        # but libcurl takes no TLS symbol from it.
+        undefined = subprocess.run(["nm", "-D", "--undefined-only",
+                                    str(libcurl)], check=True,
+                                   capture_output=True, text=True).stdout
+        check(re.search(r" SSL_new\b", undefined) is None,
+              f"{libcurl} takes SSL_new from another library")
+        cache = (oracle.build / "CMakeCache.txt").read_text()
+        check(f"OPENSSL_INCLUDE_DIR:PATH={deps.quiche_boringssl()}/include"
+              in cache, "CMake found another OpenSSL's headers")
     if oracle.gnu_gss:
         # The positive control: GNU GSS is the one named and loaded, and
         # no MIT library is there for its symbols to resolve to.
@@ -362,7 +415,7 @@ def exports(oracle):
 
 def main():
     oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS, WOLFSSL,
-                               GNUGSS, AWSLC, BORINGSSL, RUSTLS)
+                               GNUGSS, AWSLC, BORINGSSL, RUSTLS, QUICHE)
                    if o.flag in sys.argv[1:]), REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)

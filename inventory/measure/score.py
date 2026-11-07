@@ -66,6 +66,13 @@ build/rust-awslc and build/rust-boringssl.
 rustls-ffi (baseline.py --rustls): build/c-rustls and
 inventory/baseline-rustls.json, laid out in build/rust-rustls.
 
+`--quiche` scores the OpenSSL backend over the BoringSSL quiche's build
+makes, with HTTP/3 from quiche in place of ngtcp2, and libssh2 as the
+oracle has it, against the C build with quiche (baseline.py --quiche):
+build/c-quiche and inventory/baseline-quiche.json, laid out in
+build/rust-quiche. The library and the tool must link that BoringSSL
+once, statically, and load no libquiche.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -200,6 +207,19 @@ def fork_leg(oracle):
                     ("OPENSSL_STATIC", "1"),
                     ("CURL_NGTCP2_DIR",
                      str(baseline.deps.fork_ngtcp2_dir(fork)))))
+
+
+# quiche over the OpenSSL backend's BoringSSL, the one quiche's build
+# makes, linked statically.
+QUICHE = Leg(baseline.QUICHE, ROOT / "build" / "rust-quiche",
+             ROOT / "build" / "target-quiche",
+             DEBUG_HOOKS + tuple(f"{crate}/{feature}"
+                                 for crate in ("curl-sys-abi", "curl-tool")
+                                 for feature in ("c-ares", "quiche",
+                                                 "libssh2")),
+             no_default=True,
+             env=(("OPENSSL_DIR", str(baseline.deps.quiche_boringssl())),
+                  ("OPENSSL_STATIC", "1")))
 
 
 AWSLC = fork_leg(baseline.AWSLC)
@@ -372,6 +392,31 @@ def check_loading(leg, tool):
               f"{curl}, not {ours}")
     else:
         check(curl is None, f"the Rust tool loads {curl}")
+    if leg is QUICHE:
+        check_one_boringssl(leg)
+
+
+def check_one_boringssl(leg):
+    """
+    Fail unless the library and the tool each hold one BoringSSL, linked
+    in, and do not load quiche's library. (The system's OpenSSL is loaded
+    for libssh2 and libldap, as in the C build; neither is asked for TLS.)
+
+    A second copy (the `boring` crate's) would leave quiche and the
+    OpenSSL backend each calling its own; as a positive control, the
+    library must define BoringSSL's own `SSL_CTX_new` and `CRYPTO_BUFFER_new`.
+    """
+    for binary in (leg.build / "lib" / SONAME, leg.build / "src/curl"):
+        binary = binary.resolve()
+        syms = subprocess.run(["nm", "--defined-only", str(binary)],
+                              check=True, capture_output=True,
+                              text=True).stdout.split()
+        for sym in ("SSL_CTX_new", "CRYPTO_BUFFER_new", "quiche_version"):
+            n = syms.count(sym)
+            check(n == 1, f"{binary} defines {sym} {n} times, not once")
+        ldd = subprocess.run(["ldd", str(binary)], check=True,
+                             capture_output=True, text=True).stdout
+        check("libquiche" not in ldd, f"{binary} loads libquiche")
 
 
 def tree_check(test):
@@ -476,6 +521,7 @@ def main():
     ap.add_argument("--awslc", action="store_true")
     ap.add_argument("--boringssl", action="store_true")
     ap.add_argument("--rustls", action="store_true")
+    ap.add_argument("--quiche", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
     leg = (THREADED if args.threaded else LIBSSH if args.libssh
@@ -484,7 +530,8 @@ def main():
            else WOLFSSL if args.wolfssl else GNUGSS if args.gnugss
            else AWSLC if args.awslc
            else BORINGSSL if args.boringssl
-           else RUSTLS if args.rustls else RUST)
+           else RUSTLS if args.rustls
+           else QUICHE if args.quiche else RUST)
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

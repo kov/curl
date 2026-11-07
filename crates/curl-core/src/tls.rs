@@ -43,6 +43,7 @@ pub mod hostcheck;
 mod keylog;
 mod pin;
 mod store;
+pub mod suites;
 pub mod x509;
 
 /// A test double: a TLS library of text lines and scrambled records.

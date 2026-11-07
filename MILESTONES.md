@@ -1461,7 +1461,18 @@ it there, Windows.
      HTTP/3 and without the HTTP/3 proxy): measured 2026-11-07, runtests.pl passes all 1979
      tests C's passes and pytest all 906, the h3 cases and the h3 early-data cases among them;
      2120 fails on both. `curl -V` is C's. Encrypted Client Hello is off in that build, as in the reference, so C's has none of
-     it. Its session's logic is tested through a scripted fake of the library. LibreSSL is a
+     it. Its session's logic is tested through a scripted fake of the library. Rustls is
+     **done** too: `curl-rustls` as `lib/vtls/rustls.c` drives rustls-ffi, made of the rustls
+     crate itself at the version rustls-ffi 0.15.5 pins (no rustls-ffi, no unsafe code), chosen
+     by the `rustls` feature, with neither HTTP/3 nor message signatures, as C's Rustls build.
+     Scored with `score.py --rustls` against C's build over rustls-ffi (`baseline.py --rustls`,
+     `build/c-rustls`): measured 2026-11-07, runtests.pl passes all 1949 tests C's passes;
+     pytest passes 645 of the 701 C's passes, the other 56 the libtest clients that call
+     rustls-ffi on `CURLINFO_TLS_SSL_PTR`'s `internals`, NULL here (`DIVERGENCE.md`), which
+     abort at that call, so what they go on to check (parallel and serial downloads, resumes,
+     aborts, connection limits, shutdown, session reuse) is unchecked on this leg; 2120
+     fails on both, with the same message. `curl -V` is C's. Its session's logic is tested
+     through a scripted fake of the library and against a rustls server. LibreSSL is a
      variant of the OpenSSL backend already (102). AWS-LC and BoringSSL are **done** as
      variants of it: curl-openssl over the fork openssl-sys finds (`OPENSSL_DIR`, linked
      statically), detected from the fork's headers, each branch of `lib/vtls/openssl.c` and
@@ -1471,7 +1482,7 @@ it there, Windows.
      measured 2026-11-07, runtests.pl passes all 1936 tests C's passes on both, and pytest all
      851 over AWS-LC and all 788 over BoringSSL, the h3 cases among them; 582 and the 24 TLS
      1.0 and 1.1 cases of `test_17_09_ssl_min_max` fail on both. `curl -V` is C's
-     (`AWS-LC/5.11.0`, `BoringSSL`). Left: Rustls, and quictls, which C still names apart
+     (`AWS-LC/5.11.0`, `BoringSSL`). Left: quictls, which C still names apart
      (`OSSL_PACKAGE`, ngtcp2's quictls crypto) but curl's CI no longer builds.
 104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **In progress.**
      The QUIC TLS setup is a seam, as `lib/vquic/vquic-tls.c`'s: each TLS backend makes its

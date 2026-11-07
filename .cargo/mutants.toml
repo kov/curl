@@ -1176,4 +1176,7 @@ exclude_re = [
     # push after grows a vector reserved short.
     'curl-mbedtls/src/library\.rs:.*: replace \+ with [-*] in c_string$',
     'curl-mbedtls/src/suites\.rs:.*: replace \+ with [-*] in select$',
+    # Past a last line with no line end, stepping one further ends the
+    # walk all the same.
+    'curl-mbedtls/src/verify\.rs:.*: replace < with <= in dump$',
 ]

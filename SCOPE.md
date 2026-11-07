@@ -84,7 +84,8 @@ uses every backend and feature this machine can provide:
 
 These cannot be built here:
 
-- ECH, because the system OpenSSL lacks it;
+- ECH over OpenSSL itself, because the system OpenSSL (3.5) lacks it: ECH is measured on the
+  legs whose TLS library has it, below;
 - quiche and Apple fast UDP.
 
 These are not covered by this build:
@@ -120,15 +121,16 @@ wolfSSL has one too: `build/c-wolfssl`, the reference configuration with `CURL_U
 place of `CURL_USE_OPENSSL`, with HTTP/3 over ngtcp2's wolfSSL crypto and without the HTTP/3
 proxy, over the wolfSSL `inventory/measure/deps.py`
 builds at the version and with the flags curl's CI uses (it is not packaged here), built and
-measured by `baseline.py --wolfssl`. Encrypted Client Hello is off there as in the reference
-build, so C's wolfSSL build has none of its code. The rewrite's leg, the `wolfssl` feature with
-libssh2, is scored against it by `score.py --wolfssl`.
+measured by `baseline.py --wolfssl`, with Encrypted Client Hello (`USE_ECH`), as curl's CI
+builds it. The rewrite's leg, the `wolfssl` feature with libssh2, is scored against it by
+`score.py --wolfssl`.
 
 AWS-LC and BoringSSL, the OpenSSL forks C builds its OpenSSL backend over, have one each:
 `build/c-awslc` and `build/c-boringssl`, the reference configuration with `OPENSSL_ROOT_DIR`
 naming the fork, with HTTP/3 and its proxy over ngtcp2's BoringSSL crypto, over the fork and the
 ngtcp2 `deps.py` builds at the versions curl's CI uses (`http3-linux.yml`), built and
-measured by `baseline.py --awslc` and `--boringssl`. The rewrite's fork is a build choice as
+measured by `baseline.py --awslc` and `--boringssl`, with Encrypted Client Hello as curl's CI
+builds them. The rewrite's fork is a build choice as
 C's is: curl-openssl over the fork openssl-sys finds (`OPENSSL_DIR`, linked statically), its
 leg with libssh2 scored against the oracle by `score.py --awslc` and `--boringssl`. In those C
 builds libssh2 and krb5, linked against the system's OpenSSL, bind to the fork's unversioned
@@ -139,8 +141,8 @@ of the same backend (102); quictls, which C still names apart, has no oracle.
 Rustls has one too: `build/c-rustls`, the reference configuration with `CURL_USE_RUSTLS` in
 place of `CURL_USE_OPENSSL`, over the rustls-ffi release curl's CI pins (0.15.5, its released
 library, which `inventory/measure/deps.py` downloads), without HTTP/3 (C has no QUIC over
-Rustls) and without HTTP message signatures, built and measured by `baseline.py --rustls`.
-Encrypted Client Hello is off there as in the reference build. The rewrite's leg, the
+Rustls) and without HTTP message signatures, with Encrypted Client Hello, built and measured
+by `baseline.py --rustls`. The rewrite's leg, the
 `rustls` feature with libssh2, calls the rustls crate itself at the version that release pins,
 not rustls-ffi, and is scored against it by `score.py --rustls`.
 
@@ -161,6 +163,13 @@ The machine also needs the following for the test servers, which the build does 
 - `::1 ip6-localhost` in `/etc/hosts`, which tests 241 and 1083 resolve.
 
 A missing server makes its tests skip or error. It does not make them fail.
+
+Encrypted Client Hello (ECH) is in scope on the backends where C has it and the rewrite binds the
+library: wolfSSL, Rustls, AWS-LC and BoringSSL, each measured on its leg above. Its pytest cases
+(`test_23_ech.py`) need an `openssl` command that makes ECH configurations (OpenSSL 4) and an
+nghttpx that serves ECH; neither is packaged here, so `inventory/measure/deps.py` builds both at
+the versions curl's CI pins (OpenSSL with its command-line tool, which CI's build leaves out), and
+the legs with ECH run their pytest over them, C's and the rewrite's alike.
 
 ## Performance
 

@@ -1468,8 +1468,7 @@ it there, Windows.
      --wolfssl` against C's wolfSSL build (`baseline.py --wolfssl`, `build/c-wolfssl`, with
      HTTP/3 and without the HTTP/3 proxy): measured 2026-11-07, runtests.pl passes all 1979
      tests C's passes and pytest all 906, the h3 cases and the h3 early-data cases among them;
-     2120 fails on both. `curl -V` is C's. Encrypted Client Hello is off in that build, as in the reference, so C's has none of
-     it. Its session's logic is tested through a scripted fake of the library. Rustls is
+     2120 fails on both. `curl -V` is C's. Encrypted Client Hello is step 112. Its session's logic is tested through a scripted fake of the library. Rustls is
      **done** too: `curl-rustls` as `lib/vtls/rustls.c` drives rustls-ffi, made of the rustls
      crate itself at the version rustls-ffi 0.15.5 pins (no rustls-ffi, no unsafe code), chosen
      by the `rustls` feature, with neither HTTP/3 nor message signatures, as C's Rustls build.
@@ -1530,6 +1529,18 @@ it there, Windows.
      all 1994 tests C's passes and pytest all 917, as the MIT krb5 build with libssh2 does against
      the reference (`score.py --libssh2`). Heimdal is not C's: this tree's FindGSS
      refuses it ("MIT, GNU or Apple GSS is required"), and so does the build script.
+
+112. **Encrypted Client Hello**, on the backends C has it on that the rewrite binds: wolfSSL,
+     Rustls, and AWS-LC and BoringSSL as variants of the OpenSSL backend (`lib/vtls/vtls.c`'s
+     ECH, `setopt_ech`, and each backend's: `wssl_init_ech`, `init_config_builder_ech`,
+     `ossl_init_ech`). `CURLOPT_ECH` and the tool's `--ech` (`false`, `grease`, `true`, `hard`,
+     `ecl:`, `pn:`), refused where the library has no ECH; `curl -V`'s `ECH`; the three settings
+     in connection reuse; an origin's ECH configurations from its HTTPS record, the handshake
+     waiting for the record where ECH needs it; what each backend offers, its GREASE, the
+     fallback of `true` against `hard`, its retry configurations, its `ECH:` lines and its
+     errors. Scored on the wolfSSL, Rustls, AWS-LC and BoringSSL legs (103) with C's built with
+     `USE_ECH`, as curl's CI builds them, and its pytest cases over an nghttpx serving ECH.
+     **To do.**
 
 macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the
 experimental Apple fast UDP. They go with the macOS port.

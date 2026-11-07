@@ -1,6 +1,7 @@
 //! HTTP/3 over QUIC from ngtcp2 and nghttp3, as C's `lib/vquic` uses
 //! them (`cf-ngtcp2.c`, `cf-ngtcp2-cmn.c`): a client connection with C's
-//! settings, over a TLS session ngtcp2's OpenSSL crypto drives, its
+//! settings, over a TLS session ngtcp2's crypto for the build's TLS
+//! library drives (OpenSSL's or LibreSSL's, GnuTLS's or wolfSSL's), its
 //! HTTP/3 set up as the 1-RTT keys arrive.
 //!
 //! The two libraries' callbacks find the connection's state through their
@@ -63,17 +64,38 @@ impl Http3 for Ngtcp2 {
         &Versions
     }
 
-    /// LibreSSL's crypto sets the context up for QUIC before the session
-    /// is made from it, which copies its QUIC method
-    /// (`ngtcp2_crypto_quictls_configure_client_context`); OpenSSL's needs
+    /// LibreSSL's and wolfSSL's crypto set the context up for QUIC before
+    /// the session is made from it, which copies its QUIC method
+    /// (`ngtcp2_crypto_quictls_configure_client_context`,
+    /// `ngtcp2_crypto_wolfssl_configure_client_context`); GnuTLS's sets
+    /// the session up, handed as soon as it is made
+    /// (`ngtcp2_crypto_gnutls_configure_client_session`); OpenSSL's needs
     /// nothing (`OPENSSL_QUIC_API2`).
     fn setup_tls_context(&self, ctx: TlsNative) -> Result<(), &'static str> {
-        #[cfg(libressl)]
+        #[cfg(crypto = "libressl")]
         // SAFETY: the session's context, just made, not yet shared.
         if unsafe { sys::ngtcp2_crypto_quictls_configure_client_context(ctx.context().as_ptr()) }
             != 0
         {
             return Err("ngtcp2_crypto_quictls_configure_client_context failed");
+        }
+        #[cfg(crypto = "wolfssl")]
+        // SAFETY: the session's context, just made, not yet shared.
+        if unsafe { sys::ngtcp2_crypto_wolfssl_configure_client_context(ctx.context().as_ptr()) }
+            != 0
+        {
+            return Err("ngtcp2_crypto_wolfssl_configure_client_context failed");
+        }
+        #[cfg(crypto = "gnutls")]
+        {
+            let session = ctx
+                .session()
+                .expect("a GnuTLS QUIC session is set up once it is made");
+            // SAFETY: the session, just made, which no call is using.
+            if unsafe { sys::ngtcp2_crypto_gnutls_configure_client_session(session.as_ptr()) } != 0
+            {
+                return Err("ngtcp2_crypto_gnutls_configure_client_session failed");
+            }
         }
         let _ = ctx;
         Ok(())
@@ -198,7 +220,7 @@ fn nanos(d: Duration) -> u64 {
 fn crypto_init() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
-        #[cfg(not(libressl))]
+        #[cfg(crypto = "ossl")]
         // SAFETY: no arguments; what it fails to fetch it leaves unset,
         // which the library handles.
         unsafe {
@@ -516,7 +538,7 @@ pub struct Connection {
     inner: UserData,
     /// OpenSSL's crypto's state for the session; LibreSSL's keeps it in
     /// the session itself.
-    #[cfg(not(libressl))]
+    #[cfg(crypto = "ossl")]
     ossl_ctx: *mut sys::ngtcp2_crypto_ossl_ctx,
     /// The session ngtcp2's crypto drives, freed first as C frees it.
     tls: ManuallyDrop<Box<dyn QuicTls>>,
@@ -547,7 +569,7 @@ impl Drop for Connection {
         }
         // SAFETY: made by `ngtcp2_conn_client_new`, freed once.
         unsafe { sys::ngtcp2_conn_del(conn) };
-        #[cfg(not(libressl))]
+        #[cfg(crypto = "ossl")]
         // SAFETY: made by `ngtcp2_crypto_ossl_ctx_new`, freed once, after
         // the connection that used it.
         unsafe {
@@ -736,7 +758,7 @@ impl Connection {
         let conn_ref = ptr::from_mut(&mut state.conn_ref);
         let mut made = Connection {
             inner,
-            #[cfg(not(libressl))]
+            #[cfg(crypto = "ossl")]
             ossl_ctx: ptr::null_mut(),
             tls: ManuallyDrop::new(tls),
         };
@@ -746,10 +768,20 @@ impl Connection {
             .session()
             .expect("a QUIC session is made with its SSL")
             .as_ptr();
-        // SAFETY: the session's SSL, alive while `made` is; its
-        // application data is ngtcp2's crypto's, which finds the
-        // connection through it, until the SSL goes.
-        unsafe { sys::ssl_set_app_data(ssl, conn_ref.cast()) };
+        // SAFETY: the session's object, alive while `made` is; the
+        // pointer its library hands back to the crypto's callbacks is
+        // ngtcp2's crypto's, which finds the connection through it, until
+        // the object goes: OpenSSL's and wolfSSL's application data, and
+        // GnuTLS's session pointer, none of which the TLS crates use for
+        // a QUIC session.
+        unsafe {
+            #[cfg(any(crypto = "ossl", crypto = "libressl"))]
+            sys::ssl_set_app_data(ssl, conn_ref.cast());
+            #[cfg(crypto = "gnutls")]
+            sys::gnutls_session_set_ptr(ssl, conn_ref.cast());
+            #[cfg(crypto = "wolfssl")]
+            sys::wolfSSL_set_app_data(ssl, conn_ref.cast());
+        }
         made.set_native_handle(conn, ssl)?;
         Ok(made)
     }
@@ -757,7 +789,7 @@ impl Connection {
     /// Hand the connection its crypto's handle on the session's SSL: from
     /// OpenSSL, a crypto context made for it, and the SSL set up for QUIC
     /// by ngtcp2.
-    #[cfg(not(libressl))]
+    #[cfg(crypto = "ossl")]
     fn set_native_handle(
         &mut self,
         conn: *mut sys::ngtcp2_conn,
@@ -784,7 +816,7 @@ impl Connection {
     /// From LibreSSL, the SSL itself, its context set up for QUIC when it
     /// was made (`setup_tls_context`), told to use QUIC's code point for
     /// its transport parameters.
-    #[cfg(libressl)]
+    #[cfg(crypto = "libressl")]
     fn set_native_handle(
         &mut self,
         conn: *mut sys::ngtcp2_conn,
@@ -795,6 +827,21 @@ impl Connection {
         // SAFETY: the connection, and the SSL, which outlives it (the
         // session is freed after the connection).
         unsafe { sys::ngtcp2_conn_set_tls_native_handle(conn, ssl) };
+        Ok(())
+    }
+
+    /// From GnuTLS and wolfSSL, the session's object itself, set up for
+    /// QUIC as it or its context was made (`setup_tls_context`); wolfSSL's
+    /// session takes QUIC's code point as its crate makes it.
+    #[cfg(any(crypto = "gnutls", crypto = "wolfssl"))]
+    fn set_native_handle(
+        &mut self,
+        conn: *mut sys::ngtcp2_conn,
+        session: *mut c_void,
+    ) -> Result<(), ConnectFailed> {
+        // SAFETY: the connection, and the session's object, which lives
+        // as long as the connection uses it.
+        unsafe { sys::ngtcp2_conn_set_tls_native_handle(conn, session) };
         Ok(())
     }
 
@@ -1011,14 +1058,15 @@ impl curl_core::http3::Connection for Connection {
             .as_ptr();
         // From OpenSSL, the session is told to send early data, which it
         // may refuse; LibreSSL's, over the quictls API, is not asked
-        // (`OPENSSL_QUIC_API2` unset).
-        #[cfg(not(libressl))]
+        // (`OPENSSL_QUIC_API2` unset), nor GnuTLS's or wolfSSL's, which
+        // send it as the ticket allows.
+        #[cfg(crypto = "ossl")]
         // SAFETY: the session's SSL, set up for QUIC by ngtcp2's crypto,
         // after which OpenSSL takes the setting.
         if unsafe { sys::SSL_set_quic_tls_early_data_enabled(ssl, 1) } == 0 {
             return Ok(EarlyStart::Refused);
         }
-        #[cfg(libressl)]
+        #[cfg(not(crypto = "ossl"))]
         let _ = ssl;
         // SAFETY: as above.
         unsafe { (*p).early = true };

@@ -1,10 +1,12 @@
 //! GnuTLS for the curl rewrite: the system's library, as the C build
 //! links it, 3.6.5 or later.
 //!
-//! TLS (`lib/vtls/gtls.c`), behind `curl_core::tls::TlsBackend`, and
-//! Ed25519 for HTTP message signatures with its nettle
+//! TLS (`lib/vtls/gtls.c`), behind `curl_core::tls::TlsBackend`, over
+//! streams and for QUIC (`lib/vquic/vquic-tls.c`), and Ed25519 for HTTP
+//! message signatures with its nettle
 //! (`lib/curl_ed25519.c`), behind `curl_core::libraries::Ed25519`. What
-//! the session does is safe code (`session.rs`, `trust.rs`, `verify.rs`)
+//! the session does is safe code (`session.rs`, `quic.rs`, `trust.rs`,
+//! `verify.rs`)
 //! over the library's calls (`library.rs`), which `gnutls.rs` makes; the
 //! tests drive it through a scripted library of their own.
 
@@ -13,6 +15,7 @@
 mod gnutls;
 mod library;
 mod priority;
+mod quic;
 mod session;
 mod sign;
 mod sys;
@@ -29,8 +32,8 @@ use core::fmt;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, SharedKeyLog, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession,
-    TlsShared, TlsSupport,
+    Alpn, CaDefaults, QuicContextSetup, QuicTls, SharedKeyLog, SystemStore, TlsBackend, TlsCx,
+    TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
 };
 
 pub use sign::ED25519;
@@ -115,6 +118,29 @@ impl TlsBackend for GnuTls {
             alpn,
             shared,
             self.keylog.clone(),
+        )?;
+        Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
+    }
+
+    /// A QUIC connection's session, made at once (`Curl_gtls_ctx_init`
+    /// with QUIC's transport), the session handed to `setup` as soon as
+    /// it is made, before its key log and ALPN offer.
+    fn quic_session(
+        &self,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        shared: &TlsShared,
+        setup: QuicContextSetup<'_>,
+        cx: &mut TlsCx<'_>,
+    ) -> Result<Box<dyn QuicTls>, ErrorKind> {
+        let session = quic::QuicSession::new(
+            &gnutls::GNUTLS,
+            identity,
+            peer,
+            shared,
+            self.keylog.clone(),
+            setup,
+            cx,
         )?;
         Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
     }

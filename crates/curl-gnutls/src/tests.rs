@@ -11,12 +11,14 @@ use curl_core::options::{
     CaCache, CaSetting, ColdGroup as _, TlsMaxVersion, TlsMinVersion, TlsOptions,
 };
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Goodbye, Handshake, Kept, SharedKeyLog, TlsIdentity, TlsIo, TlsPeer,
-    TlsPeerKind, TlsSession as _, TlsShared, TlsWait,
+    Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, Kept, QuicContextSetup, QuicTls as _,
+    SharedKeyLog, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession as _,
+    TlsShared, TlsWait,
 };
 
 use crate::fake::{Act, Fake, Wire, World};
 use crate::library::Stapled;
+use crate::quic::QuicSession;
 use crate::session::Session;
 use crate::sys;
 
@@ -715,12 +717,6 @@ fn a_peer_without_a_certificate_fails_unless_nothing_is_checked() {
     let (r, notes, _) = shake(world(), &id);
     assert_eq!(r, Ok(Handshake::Done), "{notes:#?}");
     assert!(has(&notes, "info:  common name: WARNING could not obtain"));
-    // No room to list the chain is no room, not no chain.
-    let world = World {
-        chain_oom: true,
-        ..World::default()
-    };
-    assert_eq!(fails(world, &id).0, ErrorKind::OutOfMemory);
 }
 
 #[test]
@@ -1924,4 +1920,272 @@ fn the_system_store_is_the_default_only_in_the_native_ca_build() {
         // No bundle looked for, as CMake looks for none.
         assert_eq!((defaults.file, defaults.path), (None, None));
     }
+}
+
+/// A QUIC session of `lib` for `id` to `HOST`, the transfer sending early
+/// data if `early`, its objects handed to `setup`, the sessions kept in
+/// `kept`.
+fn quic(
+    lib: &'static Fake,
+    id: &TryArc<TlsIdentity>,
+    kept: &mut Kept,
+    early: bool,
+    setup: QuicContextSetup<'_>,
+) -> Result<QuicSession<Fake>, ErrorKind> {
+    TlsCx::testing_kept(id, HOST, kept, |shared, cx| {
+        QuicSession::new(
+            lib,
+            id,
+            &peer(HOST, TlsPeerKind::Name, early),
+            shared,
+            None,
+            setup,
+            cx,
+        )
+    })
+}
+
+/// Drive `s` through one call of the QUIC library, which runs `op`, its
+/// transport parameters `params`.
+fn drive(
+    s: &mut QuicSession<Fake>,
+    id: &TryArc<TlsIdentity>,
+    kept: &mut Kept,
+    params: Option<&'static [u8]>,
+    op: &mut dyn FnMut(&mut dyn DriveCall),
+) {
+    TlsCx::testing_kept(id, HOST, kept, |_, cx| {
+        let mut params = || params.map(<[u8]>::to_vec);
+        s.drive(cx, &mut params, op);
+    });
+}
+
+#[test]
+fn a_quic_session_is_made_as_vquic_tls_c_makes_it() {
+    let lib = Fake::new(World::default());
+    let id = identity(|i| i.options.session_cache = false);
+    let mut kept = Kept::new();
+    let seen = std::cell::Cell::new(None);
+    let setup = |native: TlsNative| {
+        // The session itself, as soon as it is made, before its hook and
+        // its ALPN offer.
+        seen.set(Some((native.session(), lib.w().calls.len())));
+        Ok(())
+    };
+    let s = quic(lib, &id, &mut kept, false, &setup).expect("made");
+    let calls = lib.w().calls.clone();
+    assert_eq!(
+        &calls[..5],
+        [
+            "creds",
+            "session(flags=202)",
+            "server_name(example.com)",
+            "default_priority",
+            "priority(NORMAL:%PROFILE_MEDIUM:-VERS-ALL:+VERS-TLS1.3:-CIPHER-ALL:+AES-128-GCM:\
+             +AES-256-GCM:+CHACHA20-POLY1305:+AES-128-CCM:-GROUP-ALL:+GROUP-SECP256R1:\
+             +GROUP-X25519:+GROUP-SECP384R1:+GROUP-SECP521R1:%DISABLE_TLS13_COMPAT_MODE)",
+        ],
+        "{calls:#?}"
+    );
+    let (session, at_setup) = seen.get().expect("set up");
+    assert_eq!(session, Some(s.native().context()));
+    assert_eq!(at_setup, at(&calls, "credentials") + 1, "{calls:#?}");
+    // No sessions kept, no hook; push and pull, never called.
+    assert!(at_setup <= at(&calls, "quic_hook(tickets=false)"));
+    let alpn = calls.iter().position(|c| c.starts_with("alpn(h3")).unwrap();
+    assert!(at(&calls, "quic_hook(tickets=false)") < alpn, "{calls:#?}");
+    // The trust is not loaded until the peer's first bytes are due.
+    assert!(lib.w().made("trust_").is_empty());
+    assert!(s.early_data().is_none());
+}
+
+#[test]
+fn a_quic_session_s_versions_must_reach_tls_1_3_whatever_the_least() {
+    let lib = Fake::new(World::default());
+    let mut kept = Kept::new();
+    let capped = identity(|i| i.options.max_version = TlsMaxVersion::Tls1_2);
+    let r = quic(lib, &capped, &mut kept, false, &|_| Ok(()));
+    assert_eq!(r.err(), Some(ErrorKind::SslConnectError));
+    assert!(
+        has(
+            &kept.notes.0,
+            "fail: SslConnectError: QUIC needs at least TLS version 1.3"
+        ),
+        "{:#?}",
+        kept.notes.0
+    );
+    // A least version above the most a stream session allows is QUIC's
+    // own priorities all the same.
+    let odd = identity(|i| {
+        i.options.min_version = TlsMinVersion::Tls1_3;
+        i.options.max_version = TlsMaxVersion::Tls1_3;
+    });
+    assert!(quic(lib, &odd, &mut kept, false, &|_| Ok(())).is_ok());
+}
+
+#[test]
+fn the_quic_library_s_failed_setup_fails_the_session_as_c_says_it() {
+    let lib = Fake::new(World::default());
+    let mut kept = Kept::new();
+    let r = quic(lib, &plain(), &mut kept, false, &|_| Err("setup failed"));
+    assert_eq!(r.err(), Some(ErrorKind::FailedInit));
+    assert!(has(&kept.notes.0, "fail: FailedInit: setup failed"));
+    assert!(lib.w().made("alpn").is_empty());
+}
+
+#[test]
+fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
+    let world = World {
+        data: b"ticket-q",
+        max_early: 0xFFFF_FFFF,
+        scripts: vec![(
+            "drive",
+            vec![
+                Act::Hook(2, true),
+                Act::Hook(sys::GNUTLS_HANDSHAKE_NEW_SESSION_TICKET, true),
+            ],
+        )],
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let id = identity(|i| i.options.session_cache = true);
+    let mut kept = Kept::new();
+    let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    assert!(
+        lib.w()
+            .calls
+            .contains(&"quic_hook(tickets=true)".to_owned())
+    );
+    drive(&mut s, &id, &mut kept, Some(b"tp"), &mut |_| {});
+    for line in [
+        "trace: SSL message: <- ServerHello [2]",
+        "trace: SSL message: <- SessionTicket [4]",
+        "trace: get session id (len=8, alpn=h3, earlymax=4294967295) and store in cache",
+    ] {
+        assert!(has(&kept.notes.0, line), "{line}: {:#?}", kept.notes.0);
+    }
+    // Resumed, the library's word on early data is what the QUIC library
+    // is told, with the parameters kept: over QUIC, early data is ended
+    // by QUIC itself.
+    lib.w().max_early = 1000;
+    let s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
+    let calls = lib.w().calls.clone();
+    assert!(
+        calls.contains(&"session(flags=500202)".to_owned()),
+        "{calls:#?}"
+    );
+    assert!(calls.contains(&"set_data(ticket-q)".to_owned()));
+    assert!(has(
+        &kept.notes.0,
+        "info: SSL reusing session with ALPN 'h3'"
+    ));
+    let early = s.early_data().expect("early data may go");
+    assert_eq!(early.earlydata_max, 1000);
+    assert_eq!(early.chosen(), Some(Chosen::H3));
+    assert_eq!(early.quic_params, b"tp");
+    // Where the transfer sends none, the QUIC library is told of none.
+    let s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    assert!(s.early_data().is_none());
+}
+
+#[test]
+fn without_kept_sessions_a_quic_session_resumes_nothing_and_keeps_nothing() {
+    let world = World {
+        data: b"ticket-q",
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let id = identity(|i| i.options.session_cache = false);
+    let mut kept = Kept::new();
+    let _ = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
+    assert!(
+        lib.w()
+            .calls
+            .contains(&"quic_hook(tickets=false)".to_owned())
+    );
+    assert!(lib.w().made("set_data").is_empty());
+}
+
+#[test]
+fn the_peer_is_reported_and_checked_as_the_quic_library_says_the_handshake_is_done() {
+    let lib = Fake::new(World::default());
+    let id = identity(|i| i.options.session_cache = true);
+    let mut kept = Kept::new();
+    kept.verbose = true;
+    let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    let before = lib.w().calls.len();
+    let mut done = None;
+    drive(&mut s, &id, &mut kept, None, &mut |dc| {
+        dc.with_cx(&mut |cx| cx.trace(format_args!("the QUIC library's call")));
+        done = Some(dc.handshake_done());
+    });
+    assert_eq!(done, Some(Ok(())));
+    let calls = lib.w().calls[before..].to_vec();
+    assert_eq!(calls[0], "drive");
+    assert!(calls.contains(&"verify_peers".to_owned()), "{calls:#?}");
+    let notes = &kept.notes.0;
+    let said = |line: &str| notes.iter().position(|n| n == line);
+    let traced = said("trace: the QUIC library's call").expect("the transfer reached");
+    let using = notes
+        .iter()
+        .position(|n| n.starts_with("info: SSL connection using "))
+        .expect("reported");
+    // Reported, then checked.
+    let checked = notes
+        .iter()
+        .position(|n| n.contains("SSL certificate verified by GnuTLS"))
+        .expect("checked");
+    assert!(traced < using && using < checked, "{notes:#?}");
+    // A peer that fails its check fails the call's callback, and its
+    // sessions are forgotten.
+    lib.w().leaf.host_ok = false;
+    let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    let mut done = None;
+    drive(&mut s, &id, &mut kept, None, &mut |dc| {
+        done = Some(dc.handshake_done());
+    });
+    assert_eq!(done, Some(Err(ErrorKind::PeerFailedVerification)));
+    // The cache is looked into, after the failure, for the peer's
+    // sessions to remove.
+    let notes = &kept.notes.0;
+    let failed = notes
+        .iter()
+        .rposition(|n| n.starts_with("fail: PeerFailedVerification"))
+        .expect("failed");
+    assert!(
+        notes[failed..]
+            .iter()
+            .any(|n| n.starts_with("trace: find peer slot")),
+        "{notes:#?}"
+    );
+}
+
+#[test]
+fn a_quic_session_s_trust_is_set_up_once_before_the_peer_s_first_bytes() {
+    let world = World {
+        answers: vec![("trust_file", 3)],
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let id = identity(|i| i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec()));
+    let mut kept = Kept::new();
+    let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    for _ in 0..2 {
+        TlsCx::testing_kept(&id, HOST, &mut kept, |_, cx| s.before_recv(cx)).unwrap();
+    }
+    assert_eq!(lib.w().made("trust_file"), ["trust_file(/ca.pem)"]);
+}
+
+#[test]
+#[should_panic(expected = "a QUIC session's records are the QUIC library's")]
+fn a_quic_session_never_writes_through_the_transport() {
+    let world = World {
+        scripts: vec![("drive", vec![Act::Push(b"hello")])],
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let id = plain();
+    let mut kept = Kept::new();
+    let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    drive(&mut s, &id, &mut kept, None, &mut |_| {});
 }

@@ -1003,9 +1003,10 @@ fail; 25 errors are vsftpd's (milestone 6).
       transport parameters sends the request as early data, the connection counted as
       connected before its first packet, and the peer's verdict reported as the handshake ends.
       Against caddy, C's count (102 bytes) and lines; pytest 02_32, 07_70 and 08_08 pass.
-64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Always built, with no
-    switch: C's is experimental and off unless built with `USE_PROXY_HTTP3`, but for its code's
-    youth, not its standards (RFC 9297, 9298), and the reference build has it on. With it, HTTP/3
+64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Built with OpenSSL,
+    with no switch: C's is experimental and off unless built with `USE_PROXY_HTTP3`, but for its
+    code's youth, not its standards (RFC 9297, 9298), and the reference build has it on; C's
+    CMake allows it with OpenSSL alone, so the other TLS builds have none, as C's. With it, HTTP/3
     through an HTTP proxy goes over its CONNECT-UDP.
     - (a) **Done.** The tunnel over QUIC to the proxy (CONNECT on a stream of it), the race's
       attempt as C's H3-PROXY filter is, its chain and trace C's, a refusal the attempt's
@@ -1438,11 +1439,12 @@ it there, Windows.
      AWS-LC, LibreSSL, quictls) as variants of the OpenSSL backend. **In progress.**
      GnuTLS is **done**: `curl-gnutls` behind the core's TLS seam as `lib/vtls/gtls.c` drives
      it, chosen by the `gnutls` feature in place of `openssl`, with Ed25519 from its nettle and
-     no HTTP/3 (that is 104's). Scored with `score.py --gnutls` against C's GnuTLS build
-     (`baseline.py --gnutls`, `build/c-gnutls`): measured 2026-11-06, runtests.pl passes all
-     1978 tests C's passes and pytest all 649; 2120 and 58 pytest cases (51 of
-     `test_17_09_ssl_min_max`, refused by the system's crypto policy, and 7 of early data) fail
-     on both. `curl -V` is C's, and what the tool says of the options GnuTLS lacks is C's
+     HTTP/3 over ngtcp2's GnuTLS crypto (104). Scored with `score.py --gnutls` against C's
+     GnuTLS build (`baseline.py --gnutls`, `build/c-gnutls`, with HTTP/3 and without the HTTP/3
+     proxy): measured 2026-11-07, runtests.pl passes all 1982 tests C's passes and pytest all
+     799, the h3 cases and the 7 of early data among them; 2120 and the 51 cases of
+     `test_17_09_ssl_min_max`, refused by the system's crypto policy, fail on both. `curl -V` is
+     C's, and what the tool says of the options GnuTLS lacks is C's
      tool's. The session's logic is tested through a scripted fake of the library; every
      mutant of it is caught, or excluded in `.cargo/mutants.toml` with why. mbedTLS is
      **done** too: `curl-mbedtls` as `lib/vtls/mbedtls.c` drives it, chosen by the `mbedtls`
@@ -1463,7 +1465,14 @@ it there, Windows.
      it. Its session's logic is tested through a scripted fake of the library. LibreSSL is a
      variant of the OpenSSL backend already (102). Left: Rustls, and BoringSSL, AWS-LC and
      quictls as OpenSSL variants.
-104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **To do.**
+104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **In progress.**
+     The QUIC TLS setup is a seam, as `lib/vquic/vquic-tls.c`'s: each TLS backend makes its
+     QUIC session, the QUIC library's setup called on its context or session where C calls it,
+     and curl-ngtcp2, built for one TLS library, links that library's `ngtcp2_crypto_*`
+     (`deps.py` builds ngtcp2 with the OpenSSL, GnuTLS and wolfSSL crypto). GnuTLS is
+     **done**: HTTP/3 over `ngtcp2_crypto_gnutls`, scored as 103 says; the HTTP/3 proxy is
+     OpenSSL's alone, as in C's CMake. Left: wolfSSL over `ngtcp2_crypto_wolfssl`, and
+     quiche.
 105. **SSH**: libssh2. **Done**: `curl-libssh2` behind the
      core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,
      chosen by the `libssh2` feature in place of `libssh` (the default); scored with

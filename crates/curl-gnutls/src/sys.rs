@@ -218,8 +218,6 @@ unsafe extern "C" {
         session_data_size: *mut usize,
     ) -> c_int;
     pub(crate) fn gnutls_record_get_max_early_data_size(session: gnutls_session_t) -> usize;
-    pub(crate) fn gnutls_session_set_ptr(session: gnutls_session_t, ptr: *mut c_void);
-    pub(crate) fn gnutls_session_get_ptr(session: gnutls_session_t) -> *mut c_void;
     pub(crate) fn gnutls_session_set_keylog_function(
         session: gnutls_session_t,
         func: Option<gnutls_keylog_func>,
@@ -246,6 +244,7 @@ unsafe extern "C" {
         func: Option<gnutls_handshake_hook_func>,
     );
     pub(crate) fn gnutls_transport_set_ptr(session: gnutls_session_t, ptr: *mut c_void);
+    pub(crate) fn gnutls_transport_get_ptr(session: gnutls_session_t) -> *mut c_void;
     pub(crate) fn gnutls_transport_set_push_function(
         session: gnutls_session_t,
         push_func: Option<gnutls_push_func>,

@@ -167,7 +167,7 @@ const FEATURES: &[Feature] = &[
     Feature::Libz,
     #[cfg(all(feature = "native-ca", not(feature = "apple-sectrust")))]
     Feature::NativeCa,
-    #[cfg(feature = "quic")]
+    #[cfg(feature = "proxy-http3")]
     Feature::ProxyHttp3,
     Feature::Psl,
     Feature::Spnego,

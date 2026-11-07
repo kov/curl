@@ -15,13 +15,14 @@ path = "src/main.rs"
 # is chosen; one or the other is needed.
 default = ["c-ares", "libssh", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
-# over ngtcp2 and Ed25519 for message signatures; GnuTLS, with Ed25519
-# from its nettle and no HTTP/3 (ngtcp2's GnuTLS crypto is not bound);
-# wolfSSL, with Ed25519 from its wolfCrypt and no HTTP/3 (ngtcp2's wolfSSL
-# crypto is not bound); or mbedTLS or Schannel (Windows), with neither, as
-# C's builds with them.
-openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
-gnutls = ["dep:curl-gnutls", "curl-core/httpsig"]
+# over ngtcp2, the HTTP/3 proxy and Ed25519 for message signatures;
+# GnuTLS, with HTTP/3 over ngtcp2's GnuTLS crypto, no HTTP/3 proxy (C's
+# is OpenSSL's alone) and Ed25519 from its nettle; wolfSSL, with Ed25519
+# from its wolfCrypt and no HTTP/3 (ngtcp2's wolfSSL crypto is not
+# bound); or mbedTLS or Schannel (Windows), with neither, as C's builds
+# with them.
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "curl-core/proxy-http3", "curl-core/httpsig"]
+gnutls = ["dep:curl-gnutls", "dep:curl-ngtcp2", "curl-ngtcp2/gnutls", "curl-core/quic", "curl-core/httpsig"]
 mbedtls = ["dep:curl-mbedtls"]
 wolfssl = ["dep:curl-wolfssl", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
@@ -79,7 +80,8 @@ curl-libssh = { path = "../curl-libssh", optional = true }
 curl-libssh2 = { path = "../curl-libssh2", optional = true }
 curl-ldap = { path = "../curl-ldap" }
 curl-nghttp2 = { path = "../curl-nghttp2" }
-curl-ngtcp2 = { path = "../curl-ngtcp2", optional = true }
+# Its crypto for the TLS library chosen, which that library's feature names.
+curl-ngtcp2 = { path = "../curl-ngtcp2", optional = true, default-features = false }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 # C's `errno` values, which the tool's messages are chosen by.

@@ -3,6 +3,8 @@
 //! be installed; a run without it fails rather than skips.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+// Over the TLS libraries whose QUIC sessions are made.
+#![cfg(any(feature = "openssl", feature = "gnutls"))]
 
 use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -21,7 +23,11 @@ use curl_core::tls::{
     CaDefaults, Kept, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind,
 };
 use curl_ngtcp2::NGTCP2;
-use curl_openssl::OPENSSL;
+// The TLS library the build has the QUIC crypto of.
+#[cfg(feature = "gnutls")]
+use curl_gnutls::GNUTLS as TLS;
+#[cfg(feature = "openssl")]
+use curl_openssl::OPENSSL as TLS;
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
 use openssl::ec::{EcGroup, EcKey};
@@ -32,6 +38,18 @@ use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
 use openssl::x509::{X509, X509Name};
 
 const BODY: &[u8] = b"hello h3\n";
+
+/// What the library says of a peer it verified, and of one signed by a
+/// CA it does not trust.
+#[cfg(feature = "gnutls")]
+const VERIFIED: &str = "SSL certificate verified by GnuTLS";
+#[cfg(feature = "gnutls")]
+const UNTRUSTED: &str = "SSL certificate verification failed: certificate signer not trusted.";
+#[cfg(feature = "openssl")]
+const VERIFIED: &str = "SSL certificate verified via OpenSSL";
+#[cfg(feature = "openssl")]
+const UNTRUSTED: &str =
+    "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)";
 
 /// A directory of the test's own, removed as this goes.
 struct Dir(PathBuf);
@@ -65,6 +83,13 @@ fn name(cn: &str) -> X509Name {
 
 /// A CA, and a certificate for `localhost` it signed, written to `dir`;
 /// and a CA that signed nothing, `other-ca.pem`.
+/// When the certificates are valid from: 1970, the time of day of the
+/// tests' transfer, by which a library that checks the dates itself
+/// (GnuTLS's) checks them.
+fn since() -> Asn1Time {
+    Asn1Time::from_unix(0).unwrap()
+}
+
 fn certs(dir: &Path) {
     let ca_key = key();
     let mut ca = X509::builder().unwrap();
@@ -74,8 +99,7 @@ fn certs(dir: &Path) {
     ca.set_subject_name(&name("curl-ngtcp2 test CA")).unwrap();
     ca.set_issuer_name(&name("curl-ngtcp2 test CA")).unwrap();
     ca.set_pubkey(&ca_key).unwrap();
-    ca.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
+    ca.set_not_before(&since()).unwrap();
     ca.set_not_after(&Asn1Time::days_from_now(2).unwrap())
         .unwrap();
     ca.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
@@ -90,8 +114,7 @@ fn certs(dir: &Path) {
     cert.set_subject_name(&name("localhost")).unwrap();
     cert.set_issuer_name(ca.subject_name()).unwrap();
     cert.set_pubkey(&key).unwrap();
-    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
+    cert.set_not_before(&since()).unwrap();
     cert.set_not_after(&Asn1Time::days_from_now(2).unwrap())
         .unwrap();
     let san = SubjectAlternativeName::new()
@@ -114,9 +137,7 @@ fn certs(dir: &Path) {
         .set_issuer_name(&name("curl-ngtcp2 other CA"))
         .unwrap();
     other.set_pubkey(&other_key).unwrap();
-    other
-        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
+    other.set_not_before(&since()).unwrap();
     other
         .set_not_after(&Asn1Time::days_from_now(2).unwrap())
         .unwrap();
@@ -358,7 +379,7 @@ fn with_conn<R>(
     let mut notes = Notes::default();
     let r = TlsCx::testing(&identity, b"localhost", &mut notes, |shared, cx| {
         let clock = SystemClock::new();
-        let tls = OPENSSL
+        let tls = TLS
             .quic_session(
                 &identity,
                 &peer,
@@ -383,9 +404,18 @@ fn with_conn<R>(
             sock: &sock,
             clock: &clock,
         };
-        f(&mut *conn, cx, &over, addr)
+        // A failed check is shown with the notes that explain it.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f(&mut *conn, cx, &over, addr)
+        }))
     });
-    (r, notes.0)
+    match r {
+        Ok(r) => (r, notes.0),
+        Err(panic) => {
+            eprintln!("notes: {:#?}", notes.0);
+            std::panic::resume_unwind(panic)
+        }
+    }
 }
 
 /// A connection's handshake with caddy completes with its certificate
@@ -419,12 +449,7 @@ fn a_get_over_http3_is_answered() {
         told.headers
     );
     assert_eq!(told.body, BODY);
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.contains("SSL certificate verified via OpenSSL")),
-        "{notes:?}"
-    );
+    assert!(notes.iter().any(|n| n.contains(VERIFIED)), "{notes:?}");
 }
 
 /// A peer whose certificate the CA trusted did not sign fails the
@@ -444,12 +469,7 @@ fn an_untrusted_peer_fails_the_handshake_as_it_completes() {
         (Layer::Quic, "ngtcp2_conn_read_pkt")
     );
     assert_eq!(failed.text, "ERR_CALLBACK_FAILURE");
-    assert!(
-        notes.iter().any(|n| n.contains(
-            "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)"
-        )),
-        "{notes:?}"
-    );
+    assert!(notes.iter().any(|n| n.contains(UNTRUSTED)), "{notes:?}");
 }
 
 /// The authority of a request to caddy at `addr`.
@@ -460,9 +480,9 @@ fn authority(addr: SocketAddr) -> String {
 /// A second connection to caddy resumes the session the first was given
 /// and sends its GET as early data, which caddy takes: the session
 /// allows early data for a transfer asking for it, the transport
-/// parameters kept with it are set, HTTP/3 is set up at once and OpenSSL
-/// sends early data (`cf_ngtcp2_on_session_reuse`); the handshake's end
-/// says the early data was not rejected. Parameters the library cannot
+/// parameters kept with it are set, HTTP/3 is set up at once and the
+/// TLS library sends early data (`cf_ngtcp2_on_session_reuse`); the
+/// handshake's end says the early data was not rejected. Parameters the library cannot
 /// read are refused.
 #[test]
 fn a_resumed_session_sends_its_get_as_early_data() {
@@ -498,7 +518,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
     let told = TlsCx::testing_kept(&identity, b"localhost", &mut kept, |shared, cx| {
         let clock = SystemClock::new();
         let connect = |cx: &mut TlsCx<'_>, early: bool| {
-            let tls = OPENSSL
+            let tls = TLS
                 .quic_session(
                     &identity,
                     &peer,

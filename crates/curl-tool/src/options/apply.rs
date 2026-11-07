@@ -1283,6 +1283,14 @@ pub(crate) fn apply<'a>(
                 ProxyType::Https
             };
         }
+        // A build without the HTTP/3 proxy (`USE_PROXY_HTTP3`) refuses it,
+        // and takes its negation as HTTPS.
+        Opt::ProxyHttp3 if !super::parse::claims("proxy-HTTP3") => {
+            if value.toggle() {
+                return Err(ParamError::LibcurlDoesntSupport);
+            }
+            line.current().proxy_kind = ProxyType::Https;
+        }
         Opt::ProxyHttp3 => {
             // Refused even to turn off, as C's check has no toggle.
             if !super::parse::claims_proxy_http("HTTP3") {

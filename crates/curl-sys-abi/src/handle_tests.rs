@@ -5353,14 +5353,25 @@ fn proxy_options_are_checked_as_in_c() {
         long(c, ffi::CURLOPT_PROXYTYPE, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
-    // An HTTP/3 proxy is built in, as with C's `USE_PROXY_HTTP3`.
-    assert_eq!(
-        long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
-        CURLE_OK
-    );
-    options(c, |o| {
-        assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Https3);
-    });
+    // An HTTP/3 proxy is built in with OpenSSL, as with C's
+    // `USE_PROXY_HTTP3`, which CMake builds over OpenSSL alone; elsewhere
+    // it is refused, the type left as it was.
+    if cfg!(feature = "openssl") {
+        assert_eq!(
+            long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
+            CURLE_OK
+        );
+        options(c, |o| {
+            assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Https3);
+        });
+    } else {
+        let was = options(c, |o| o.proxy.kind);
+        assert_eq!(
+            long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
+            CURLE_NOT_BUILT_IN
+        );
+        options(c, |o| assert_eq!(o.proxy.kind, was));
+    }
     assert_eq!(
         long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_SOCKS5_HOSTNAME),
         CURLE_OK

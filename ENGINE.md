@@ -2194,8 +2194,8 @@ next send as on any connection in use (DIVERGENCE.md).
 
 ### 4.4.1 HTTP/3
 
-**The libraries.** QUIC and HTTP/3 are spoken by a binding crate (ngtcp2, its OpenSSL crypto and
-nghttp3, `crates/curl-ngtcp2`) behind the core's `http3::Http3` and `http3::Connection`, shaped
+**The libraries.** QUIC and HTTP/3 are spoken by a binding crate (ngtcp2, its crypto for the
+build's TLS library and nghttp3, `crates/curl-ngtcp2`) behind the core's `http3::Http3` and `http3::Connection`, shaped
 as `http2`'s seam is: library-shaped, the libraries' failures crossing only inside `QuicError`
 (which library, a TLS failure of the QUIC library's apart, which call, its code and text) for
 C's messages. No other number of the libraries' crosses: a callback's call into the other library
@@ -2205,9 +2205,26 @@ is told as a `Result<(), QuicError>`, printed as C prints its return; a close's 
 `SubmitFailed::Closing`. The ngtcp2 library is linked statically
 from the copy `inventory/measure/deps.py` builds, the version the C oracle uses. The connection
 is made over a TLS session already made (`TlsBackend::quic_session`, a `QuicTls`), which it owns
-and frees first, as C frees its TLS before ngtcp2; ngtcp2's crypto finds the connection through
-the `SSL`'s application data. The core feeds it one datagram at a time and asks it for one packet
-at a time; batching, GSO and the socket are the core's.
+and frees first, as C frees its TLS before ngtcp2. The core feeds it one datagram at a time and
+asks it for one packet at a time; batching, GSO and the socket are the core's.
+
+**The TLS library's part** (`lib/vquic/vquic-tls.c`). Each TLS backend with QUIC makes its own
+QUIC session (`TlsBackend::quic_session`), in its C order: the transfer's settings, the QUIC
+library's setup of the library's object at the point C calls it (`QuicContextSetup`, given
+`Http3::setup_tls_context`: OpenSSL's context, GnuTLS's session,
+`ngtcp2_crypto_gnutls_configure_client_session`), then the ALPN `h3` and a resumed ticket.
+curl-ngtcp2 is built for one TLS library (its `openssl` or `gnutls` feature, which the shim's and
+the tool's TLS feature names) and links that library's
+`ngtcp2_crypto_*`, which finds the connection through the library's own pointer on the session
+(OpenSSL's application data, GnuTLS's session pointer): curl-ngtcp2 sets it, and
+the TLS crate never uses it for a QUIC session. The records are the QUIC library's: a QUIC
+session never reads or writes the connection. The session keeps the peer's tickets with the
+transport parameters, as C's per-library new-session callbacks do, only where the transfer keeps
+sessions; the peer is checked, by the backend's own check, inside the handshake's end, and a
+failed check forgets the peer's kept sessions. The HTTP/3 proxy is OpenSSL's alone, as C's
+CMake has `USE_PROXY_HTTP3` only with OpenSSL: the `proxy-http3` feature, which only the
+`openssl` features take, claims it, and without it `CURLPROXY_HTTPS3` is `CURLE_NOT_BUILT_IN`
+and `--proxy-http3` the tool's unsupported option.
 
 **Callbacks.** Each call that may move the handshake on (reading a packet, writing one, its
 timers) runs inside the session's `QuicTls::drive`, which lends the libraries' callbacks a
@@ -3112,12 +3129,11 @@ debug tracker, as in C: `CRYPTO_set_mem_functions` is process-wide and fails onc
 application has used OpenSSL, so it is not called.
 
 **GnuTLS** (curl-gnutls, `lib/vtls/gtls.c`) is the backend the `gnutls` feature takes in
-OpenSSL's place, with Ed25519 from GnuTLS's nettle and no HTTP/3, as C's build without ngtcp2's
-GnuTLS crypto. The session's logic (`session.rs`, `trust.rs`, `verify.rs`) is safe code over a
+OpenSSL's place, with Ed25519 from GnuTLS's nettle and HTTP/3 over ngtcp2's GnuTLS crypto. The session's logic (`session.rs`, `trust.rs`, `verify.rs`) is safe code over a
 `Gnutls` trait, one method per library call `gtls.c` makes; `gnutls.rs` implements it over the
 library, and the tests over a scripted fake (`fake.rs`). The library's callbacks (push, pull,
 the handshake hook, the key log) reach the `Call` of the session's call under way, through the
-transport and session pointers set for that call alone. The session is made at the first step,
+transport pointer set for that call alone; the session pointer is ngtcp2's. The session is made at the first step,
 `gnutls_init` with `GNUTLS_CLIENT | GNUTLS_FORCE_CLIENT_CERT` (and early data for a resumed
 ticket that allows a known amount), its priority string `NORMAL:%PROFILE_MEDIUM:-ARCFOUR-128:-CTYPE-ALL:+CTYPE-X509`
 plus the version range, the cipher list added to it (`+`, `-`, `!`) or replacing it. The trust
@@ -3131,7 +3147,14 @@ verdict, the certificate's dates, the stapled status under `VERIFYSTATUS`, the i
 `gnutls_x509_crt_check_hostname` and the pinned key, in `gtls_verifyserver`'s order and words.
 A TLS 1.2 session is kept as the peer is checked, before ALPN is agreed (`alpn=-`); a TLS 1.3
 ticket as the handshake hook sees it. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` both hand out
-the `gnutls_session_t`, as `gtls_get_internals` does.
+the `gnutls_session_t`, as `gtls_get_internals` does. A QUIC session (`quic.rs`) is made as
+`Curl_gtls_ctx_init` makes one for `TRNSPRT_QUIC`: `gnutls_init` with early data and
+`GNUTLS_NO_END_OF_EARLY_DATA` for a resumed ticket that allows any, ngtcp2's setup of the session
+right after, the priority `QUIC_PRIORITY` (TLS 1.3 alone, refused if the transfer's maximum is
+below it), and the handshake hook only where sessions are kept, which traces each message
+(`SSL message: <- Name [n]`) and keeps a ticket with `h3` and the transport parameters. The
+trust loads before the peer's first packet is read; the handshake's end reports the session, then
+checks the peer by `Curl_gtls_verifyserver`.
 
 **mbedTLS** (curl-mbedtls, `lib/vtls/mbedtls.c`) is the backend the `mbedtls` feature takes in
 OpenSSL's place, with no HTTP/3 and no message signatures, as C's mbedTLS build. Its shape is

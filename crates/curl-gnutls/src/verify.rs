@@ -3,6 +3,7 @@
 //! against the trust set up, its dates, its stapled status, its issuer,
 //! its name and its pinned key, then described.
 
+use std::ffi::CStr;
 use std::io::Read as _;
 
 use curl_alloc::OutOfMemory;
@@ -31,7 +32,7 @@ pub(crate) struct Peer<'a> {
     pub(crate) name: &'a [u8],
     /// The name sent by SNI, if any: the certificate is matched against
     /// it, else against `name` (`peer->sni ? peer->sni : hostname`).
-    pub(crate) sni: Option<&'a [u8]>,
+    pub(crate) sni: Option<&'a CStr>,
 }
 
 /// Check the peer of `session`, its handshake done, as `identity` asks
@@ -45,10 +46,8 @@ pub(crate) fn verify_server<G: Gnutls>(
     io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let o = &identity.options;
-    let chain = session
-        .peers()
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-    let leaf = chain.as_ref().and_then(|c| c.first().copied());
+    let chain = session.peers();
+    let leaf = chain.clone().and_then(|mut c| c.next());
     if chain.is_none() {
         if identity.verify_peer || identity.verify_host || o.issuer_cert.is_some() {
             io.verified(NO_CERTIFICATE);
@@ -59,7 +58,7 @@ pub(crate) fn verify_server<G: Gnutls>(
         }
         io.info(format_args!(" common name: WARNING could not obtain"));
     }
-    if let Some(chain) = chain.as_ref().filter(|_| io.wants_certinfo()) {
+    if let Some(chain) = chain.filter(|_| io.wants_certinfo()) {
         if chain.len() > MOST_CERTS {
             return Err(io.fail(
                 ErrorKind::SslConnectError,
@@ -70,7 +69,7 @@ pub(crate) fn verify_server<G: Gnutls>(
             ));
         }
         let mut info = CertInfo::new(chain.len()).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        for (i, der) in chain.iter().enumerate() {
+        for (i, der) in chain.enumerate() {
             x509::certinfo(io, &mut info, i, der)?;
         }
         io.set_certinfo(Some(info))?;
@@ -108,8 +107,15 @@ pub(crate) fn verify_server<G: Gnutls>(
         check_issuer(lib, &cert, issuer, io)?;
     }
     // The name sent, which has no trailing dot, else the host's.
-    let name = c_string(peer.sni.unwrap_or(peer.name))?;
-    let matched = cert.matches_host(as_c(&name));
+    let made;
+    let name = match peer.sni {
+        Some(sni) => sni,
+        None => {
+            made = c_string(peer.name)?;
+            as_c(&made)
+        }
+    };
+    let matched = cert.matches_host(name);
     verify_result(&cert, peer, matched, identity.verify_host, lib, io);
     if !matched && identity.verify_host {
         return Err(ErrorKind::PeerFailedVerification);
@@ -340,14 +346,15 @@ fn verify_result<G: Gnutls>(
     lib: &G,
     io: &mut TlsCx<'_>,
 ) {
-    let cn = match cert.common_name() {
+    let mut buf = [0; 65];
+    let cn = match cert.common_name(&mut buf) {
         Ok(cn) => cn,
         Err(rc) => {
             io.info(format_args!(
                 "error fetching CN from cert:{}",
                 strerror(lib, rc)
             ));
-            Vec::new()
+            &[]
         }
     };
     let host = Text(peer.name);
@@ -357,17 +364,17 @@ fn verify_result<G: Gnutls>(
                 ErrorKind::PeerFailedVerification,
                 format_args!(
                     "SSL: certificate subject name ({}) does not match target hostname '{host}'",
-                    Text(&cn)
+                    Text(cn)
                 ),
             );
         } else {
             io.info(format_args!(
                 "  common name: {} (does not match '{host}')",
-                Text(&cn)
+                Text(cn)
             ));
         }
     } else {
-        io.info(format_args!("  common name: {} (matched)", Text(&cn)));
+        io.info(format_args!("  common name: {} (matched)", Text(cn)));
     }
 }
 

@@ -39,9 +39,10 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-zstd/src/lib.rs`: zstd's decoder, undoing the `zstd` coding.
 - `crates/curl-nghttp2/src/lib.rs` and `src/sys.rs`: nghttp2's HTTP/2 session, its callbacks and
   the declarations of the functions it calls.
-- `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection with its OpenSSL
-  or LibreSSL crypto, and nghttp3's HTTP/3 session over it: their callbacks and the declarations
-  of the functions they call.
+- `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection with its OpenSSL,
+  LibreSSL or GnuTLS crypto, and nghttp3's HTTP/3 session over it: their callbacks, the TLS
+  library's pointer its crypto finds the connection by, and the declarations of the functions
+  they call.
 - `crates/curl-libssh/src/lib.rs` and `src/sys.rs`: libssh's session over the connection's
   socket, its SCP channel and SFTP session, and the declarations of the functions they call.
 - `crates/curl-libssh2/src/lib.rs` and `src/sys.rs`: libssh2's session over the connection's
@@ -105,7 +106,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   calls, and of the table of the headers' values they are checked against.
 - `crates/curl-gnutls/src/gnutls.rs`: GnuTLS's credentials, session and certificates: the
   handshake, the records both ways, the callbacks that move them over the connection and log
-  its keys, and the peer's chain and stapled status.
+  its keys, a QUIC session's handshake hook and its calls driven by ngtcp2, and the peer's chain
+  and stapled status.
 - `crates/curl-gnutls/src/sign.rs`: nettle's Ed25519, signing HTTP message signatures.
 - `crates/curl-mbedtls/src/sys.rs`: the declarations of the mbedTLS functions the crate calls,
   and of the tables of the headers' values and of the sizes and offsets of the library's objects.

@@ -8,14 +8,17 @@
 //! the session's call under way, which its callbacks reach: GnuTLS's
 //! push and pull functions, its handshake hook and its key log function
 //! (C's `gtls_push`, `gtls_pull`, `gtls_handshake_cb` and
-//! `keylog_callback`).
+//! `keylog_callback`). A QUIC session's calls are the QUIC library's,
+//! which this crate's `drive` runs with the `Call` reaching only the
+//! transfer: its records are the QUIC library's to carry, and its hook is
+//! C's `quic_gtls_handshake_cb`.
 
 use std::ffi::CStr;
 use std::fmt;
 
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{Chosen, KeyLog, TlsCx, TlsIo, TlsTicket};
+use curl_core::tls::{Chosen, DriveCall, KeyLog, TlsCx, TlsIo, TlsTicket};
 
 use curl_core::tls::Text;
 
@@ -116,6 +119,22 @@ pub(crate) trait Session: Send {
     /// is handled (`Call::handshake_message`), and the transport's push
     /// and pull functions (`Call::push`, `Call::pull`).
     fn hook(&mut self);
+    /// For a QUIC session: the hook, if `tickets` (`cf_ngtcp2_tls_ctx_setup`
+    /// sets it only where sessions are kept), and push and pull functions
+    /// that a QUIC session's library never calls, its records being the
+    /// QUIC library's.
+    fn quic_hook(&mut self, tickets: bool);
+    /// Run `op`, a call into the QUIC library that drives the session,
+    /// with the session's callbacks reaching `call`, and lend `op` what
+    /// the QUIC library's own callbacks reach: `call`'s transfer, and
+    /// `check` run on the session and the transfer as the QUIC library
+    /// says the handshake is done.
+    fn drive(
+        &mut self,
+        call: &mut Call<'_, '_, Self::Creds>,
+        check: &mut dyn FnMut(&mut Self, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        op: &mut dyn FnMut(&mut dyn DriveCall),
+    );
 
     /// `gnutls_handshake`.
     fn handshake(&mut self, call: &mut Call<'_, '_, Self::Creds>) -> Rc;
@@ -147,8 +166,8 @@ pub(crate) trait Session: Send {
     /// `gnutls_session_get_flags` has `GNUTLS_SFLAGS_EARLY_DATA`.
     fn early_data_accepted(&mut self) -> bool;
     /// `gnutls_certificate_get_peers`: the peer's chain, DER, leaf
-    /// first; none if it sent none; `Err` if there is no room to list it.
-    fn peers(&self) -> Result<Option<Vec<&[u8]>>, curl_alloc::OutOfMemory>;
+    /// first; none if it sent none.
+    fn peers(&self) -> Option<impl ExactSizeIterator<Item = &[u8]> + Clone>;
     /// `gnutls_certificate_verify_peers2`: the status bits, or the error.
     fn verify_peers(&self) -> Result<u32, Rc>;
     /// The stapled status checked for `cert` (`gtls_verify_ocsp_status`'s
@@ -186,8 +205,9 @@ pub(crate) trait Cert {
     /// `gnutls_x509_crt_import`.
     fn import(&mut self, data: &[u8], format: Format) -> Rc;
     /// The first common name of the subject, as C reads it into 65
-    /// bytes (`gnutls_x509_crt_get_dn_by_oid`): the text, or the error.
-    fn common_name(&self) -> Result<Vec<u8>, Rc>;
+    /// bytes (`gnutls_x509_crt_get_dn_by_oid`): the text, in `buf`, or
+    /// the error.
+    fn common_name<'b>(&self, buf: &'b mut [u8; 65]) -> Result<&'b [u8], Rc>;
     /// `gnutls_x509_crt_get_expiration_time`, -1 if it has none.
     fn expiration(&self) -> i64;
     /// `gnutls_x509_crt_get_activation_time`, -1 if it has none.
@@ -260,10 +280,40 @@ pub(crate) type SetCreds<'f, C> = &'f mut dyn FnMut(&C) -> Rc;
 pub(crate) type TrustSetup<'s, C> =
     &'s mut dyn FnMut(&mut TlsCx<'_>, SetCreds<'_, C>) -> Result<(), ErrorKind>;
 
+/// What a call's callbacks reach of the connection: a stream session's
+/// layers below and its transfer, or a QUIC session's transfer alone.
+pub(crate) enum Reach<'s, 'a> {
+    Stream(&'s mut TlsIo<'a>),
+    Quic(&'s mut TlsCx<'a>),
+}
+
+impl<'a> Reach<'_, 'a> {
+    /// The transfer.
+    pub(crate) fn cx(&mut self) -> &mut TlsCx<'a> {
+        match self {
+            Reach::Stream(io) => io,
+            Reach::Quic(cx) => cx,
+        }
+    }
+
+    /// The layers below: a stream session's alone, as a QUIC session's
+    /// records are the QUIC library's to carry.
+    fn below(&mut self) -> &mut TlsIo<'a> {
+        match self {
+            Reach::Stream(io) => io,
+            Reach::Quic(_) => unreachable!("a QUIC session's records are the QUIC library's"),
+        }
+    }
+}
+
+/// Encodes the QUIC connection's transport parameters, which a session
+/// the peer gives is kept with (`ngtcp2_conn_encode_0rtt_transport_params`).
+pub(crate) type QuicParams<'s> = &'s mut dyn FnMut() -> Option<Vec<u8>>;
+
 /// What the callbacks of one call into the library reach, for a session
 /// of credentials `C`.
 pub(crate) struct Call<'s, 'a, C> {
-    pub(crate) io: &'s mut TlsIo<'a>,
+    pub(crate) io: Reach<'s, 'a>,
     pub(crate) io_result: IoResult,
     /// Sets the trust anchors up, until they are.
     pub(crate) trust: Option<TrustSetup<'s, C>>,
@@ -274,6 +324,8 @@ pub(crate) struct Call<'s, 'a, C> {
     /// What ALPN agreed, which a session the peer gives is kept with
     /// (`connssl->negotiated.alpn`).
     pub(crate) alpn: Option<Chosen>,
+    /// A QUIC session's transport parameters, for the sessions it keeps.
+    pub(crate) quic_params: Option<QuicParams<'s>>,
 }
 
 impl<C> Call<'_, '_, C> {
@@ -282,7 +334,7 @@ impl<C> Call<'_, '_, C> {
         let got = if bytes.is_empty() {
             Ok(Sent::WouldBlock)
         } else {
-            self.io.send(bytes)
+            self.io.below().send(bytes)
         };
         let (moved, n) = match got {
             Ok(Sent::Bytes(n)) => {
@@ -300,6 +352,7 @@ impl<C> Call<'_, '_, C> {
         };
         let (len, code) = (bytes.len(), self.io_result.number());
         self.io
+            .cx()
             .trace(format_args!("gtls_push(len={len}) -> {code}, {n}"));
         moved
     }
@@ -311,7 +364,7 @@ impl<C> Call<'_, '_, C> {
         if !self.trust_ready
             && let Some(setup) = self.trust.as_mut()
         {
-            match setup(self.io, set) {
+            match setup(self.io.cx(), set) {
                 Ok(()) => self.trust_ready = true,
                 Err(kind) => {
                     self.io_result = IoResult::Failed(kind);
@@ -322,7 +375,7 @@ impl<C> Call<'_, '_, C> {
         let got = if buf.is_empty() {
             Ok(Recv::WouldBlock)
         } else {
-            self.io.recv(buf)
+            self.io.below().recv(buf)
         };
         let (moved, n) = match got {
             Ok(Recv::Data(n)) => {
@@ -344,24 +397,41 @@ impl<C> Call<'_, '_, C> {
         };
         let (len, code) = (buf.len(), self.io_result.number());
         self.io
+            .cx()
             .trace(format_args!("gtls_pull(len={len}) -> {code}, {n}"));
         moved
     }
 
     /// The library handled a handshake message of type `kind`, the
-    /// peer's if `incoming` (`gtls_handshake_cb`): whether it is a session
-    /// ticket the connection would keep, which the caller then hands to
+    /// peer's if `incoming` (`gtls_handshake_cb`; over QUIC,
+    /// `quic_gtls_handshake_cb`): whether it is a session ticket the
+    /// connection would keep, which the caller then hands to
     /// `keep_ticket`.
     pub(crate) fn handshake_message(&mut self, kind: u32, incoming: bool) -> bool {
-        let way = if incoming { "incoming" } else { "outgoing" };
-        self.io
-            .trace(format_args!("handshake: {way} message type {kind}"));
-        kind == crate::sys::GNUTLS_HANDSHAKE_NEW_SESSION_TICKET && self.io.caches_sessions()
+        let cx = self.io.cx();
+        if self.quic_params.is_some() {
+            let way = if incoming { "<-" } else { "->" };
+            let name = message_name(kind);
+            cx.trace(format_args!("SSL message: {way} {name} [{kind}]"));
+        } else {
+            let way = if incoming { "incoming" } else { "outgoing" };
+            cx.trace(format_args!("handshake: {way} message type {kind}"));
+        }
+        kind == crate::sys::GNUTLS_HANDSHAKE_NEW_SESSION_TICKET && cx.caches_sessions()
     }
 
-    /// Keep the session the library has (`cf_gtls_update_session_id`).
+    /// Keep the session the library has (`cf_gtls_update_session_id`);
+    /// over QUIC, made for HTTP/3 and with the connection's transport
+    /// parameters, where they encode (`quic_gtls_handshake_cb`).
     pub(crate) fn keep_ticket(&mut self, data: Vec<u8>, version: i32, early_max: usize) {
-        keep_ticket(self.io, data, version, early_max, self.alpn);
+        match self.quic_params.as_mut() {
+            Some(params) => {
+                let params = params();
+                let cx = self.io.cx();
+                keep_ticket_with(cx, data, version, early_max, Some(Chosen::H3), params);
+            }
+            None => keep_ticket(self.io.cx(), data, version, early_max, self.alpn),
+        }
     }
 
     /// The library tells of a secret (`keylog_callback`): written with
@@ -375,6 +445,24 @@ impl<C> Call<'_, '_, C> {
             log.write_secret(label, random, secret);
         }
         true
+    }
+}
+
+/// The name of a handshake message of type `kind`, as C's QUIC trace
+/// says it (`gtls_hs_msg_name`).
+fn message_name(kind: u32) -> &'static str {
+    match kind {
+        1 => "ClientHello",
+        2 => "ServerHello",
+        4 => "SessionTicket",
+        8 => "EncryptedExtensions",
+        11 => "Certificate",
+        13 => "CertificateRequest",
+        15 => "CertificateVerify",
+        20 => "Finished",
+        24 => "KeyUpdate",
+        254 => "MessageHash",
+        _ => "Unknown",
     }
 }
 
@@ -403,6 +491,19 @@ pub(crate) fn keep_ticket(
     early_max: usize,
     alpn: Option<Chosen>,
 ) {
+    keep_ticket_with(io, data, version, early_max, alpn, None);
+}
+
+/// `keep_ticket`, the session kept with the QUIC transport parameters
+/// `params`, if any.
+fn keep_ticket_with(
+    io: &mut TlsCx<'_>,
+    data: Vec<u8>,
+    version: i32,
+    early_max: usize,
+    alpn: Option<Chosen>,
+    params: Option<Vec<u8>>,
+) {
     if data.is_empty() {
         return;
     }
@@ -411,13 +512,11 @@ pub(crate) fn keep_ticket(
         "get session id (len={}, alpn={name}, earlymax={early_max}) and store in cache",
         data.len()
     ));
-    io.keep_session(TlsTicket::new(
-        data,
-        ietf_version(version),
-        alpn,
-        early_max,
-        0,
-    ));
+    let ticket = TlsTicket::new(data, ietf_version(version), alpn, early_max, 0);
+    io.keep_session(match params {
+        Some(params) => ticket.with_quic_params(params),
+        None => ticket,
+    });
 }
 
 pub(crate) use curl_core::tls::{as_c, c_string};

@@ -4,23 +4,27 @@
 //! kept, the handshake (`cf_gtls_handshake`), the peer checked
 //! (`gtls_verifyserver`), then the records both ways (`gtls_recv`,
 //! `gtls_send`) and the goodbye (`gtls_shutdown`); early data sent in a
-//! handshake put off for it (`gtls_send_earlydata`).
+//! handshake put off for it (`gtls_send_earlydata`). A QUIC connection's
+//! session is made here too, as `Curl_gtls_ctx_init` makes it for QUIC's
+//! transport, and driven by the QUIC library (`quic.rs`).
 
+use std::ffi::CStr;
 use std::io;
 use std::num::NonZeroUsize;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
+use curl_core::options::TlsMaxVersion;
 use curl_core::time::Instant;
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, SharedKeyLog, TlsCx, TlsIdentity,
-    TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    TlsIo, TlsNative, TlsPeer, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 
 use crate::library::{
-    self, AGAIN, Call, Creds as _, Format, Gnutls, IoResult, Rc, Session as _, as_c, c_string,
-    strerror,
+    self, AGAIN, Call, Creds as _, Format, Gnutls, IoResult, Rc, Reach, Session as _, as_c,
+    c_string, strerror,
 };
 use crate::sys;
 use crate::trust;
@@ -61,21 +65,19 @@ enum Early {
 
 /// One connection's GnuTLS, through the library `G`.
 pub(crate) struct Session<G: Gnutls> {
-    lib: &'static G,
+    pub(crate) lib: &'static G,
     // Dropped in this order: the library's session, which points at its
     // credentials, before them.
-    gs: Option<G::Session>,
+    pub(crate) gs: Option<G::Session>,
     creds: Option<TryArc<G::Creds>>,
     /// When the credentials were made (`shared_creds->time`).
     made: Option<Instant>,
     /// The credentials' anchors are set up (`trust_setup`).
-    trust_ready: bool,
-    identity: TryArc<TlsIdentity>,
+    pub(crate) trust_ready: bool,
+    pub(crate) identity: TryArc<TlsIdentity>,
     /// What the library keeps for the multi, until the trust is set up.
     shared: Option<TlsShared>,
-    /// The origin's name as the URL gives it, without brackets.
-    host: Vec<u8>,
-    kind: TlsPeerKind,
+    pub(crate) names: Names,
     /// The protocols offered, and the one the session resumed restricts
     /// the offer to (`Curl_alpn_restrict_to`).
     alpn: Alpn,
@@ -86,9 +88,15 @@ pub(crate) struct Session<G: Gnutls> {
     /// (the filter's `shutdown`).
     sent_shutdown: bool,
     shut: bool,
-    keylog: Option<SharedKeyLog>,
+    pub(crate) keylog: Option<SharedKeyLog>,
     /// The transfer may send early data.
     early_data: bool,
+    /// The session is a QUIC connection's.
+    quic: bool,
+    /// The session the cache kept that a QUIC session resumes, allowing
+    /// the early data the library says, if the transfer may send it
+    /// (`cf_ngtcp2_on_session_reuse`'s `earlydata_max`).
+    pub(crate) quic_early: Option<TlsTicket>,
     /// The handshake is put off for early data (`ssl_connection_deferred`).
     deferred: Option<Deferred>,
     early: Early,
@@ -107,9 +115,7 @@ impl<G: Gnutls> Session<G> {
         shared: &TlsShared,
         keylog: Option<SharedKeyLog>,
     ) -> Result<Session<G>, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(peer.name)
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let names = Names::of(peer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         Ok(Session {
             lib,
             gs: None,
@@ -118,8 +124,7 @@ impl<G: Gnutls> Session<G> {
             trust_ready: false,
             identity: identity.clone(),
             shared: Some(shared.clone()),
-            host,
-            kind: peer.kind,
+            names,
             alpn,
             restricted: None,
             step: Step::Init,
@@ -128,20 +133,31 @@ impl<G: Gnutls> Session<G> {
             shut: false,
             keylog,
             early_data: peer.early_data,
+            quic: false,
+            quic_early: None,
             deferred: None,
             early: Early::None,
             negotiated: None,
         })
     }
 
-    /// The name sent by SNI (`Curl_ssl_peer_init`).
-    fn sni(&self) -> Result<Option<Vec<u8>>, ErrorKind> {
-        curl_core::tls::sni(&self.host, self.kind).map_err(|OutOfMemory| ErrorKind::OutOfMemory)
+    /// A session for one QUIC connection to `peer`, offering HTTP/3,
+    /// nothing of the library's made yet.
+    pub(crate) fn new_quic(
+        lib: &'static G,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        shared: &TlsShared,
+        keylog: Option<SharedKeyLog>,
+    ) -> Result<Session<G>, ErrorKind> {
+        let mut s = Session::new(lib, identity, peer, Alpn::H3, shared, keylog)?;
+        s.quic = true;
+        Ok(s)
     }
 
     /// Set the trust up outside a call into the library
     /// (`Curl_gtls_client_trust_setup`).
-    fn trust_setup(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+    pub(crate) fn trust_setup(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let gs = self.gs.as_mut().expect("made at the first step");
         let creds = self.creds.as_mut().expect("made with the session");
         let made = self.made.expect("made with the credentials");
@@ -194,12 +210,13 @@ impl<G: Gnutls> Session<G> {
             .as_deref()
             .filter(|l| curl_core::tls::KeyLog::enabled(l));
         let mut call = Call {
-            io,
+            io: Reach::Stream(io),
             io_result: IoResult::Ok,
             trust: Some(&mut setup),
             trust_ready: *trust_ready,
             keylog,
             alpn: *negotiated,
+            quic_params: None,
         };
         let r = op(gs, &mut call);
         let (ready, result) = (call.trust_ready, call.io_result);
@@ -253,7 +270,7 @@ impl<G: Gnutls> Session<G> {
 
     /// What follows the session's making in `Curl_gtls_ctx_init`: the key
     /// log, and the ALPN offer.
-    fn finish_init(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+    pub(crate) fn finish_init(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let gs = self.gs.as_mut().expect("made by the client's init");
         // Opened unless it is, by whichever library asks first
         // (`Curl_tls_keylog_open`).
@@ -263,26 +280,23 @@ impl<G: Gnutls> Session<G> {
                 gs.log_keys();
             }
         }
-        let restricted;
-        let protocols: Vec<&[u8]> = match self.restricted {
+        // At most the offer's names, the most any offer has.
+        let mut names: [&[u8]; 4] = [b""; 4];
+        let protocols = match self.restricted {
             Some(c) => {
-                restricted = [c.name().as_bytes()];
-                let mut v = Vec::new();
-                v.try_extend_from_slice(&restricted)
-                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-                v
+                names[0] = c.name().as_bytes();
+                &names[..1]
             }
             None => {
-                let mut names = Vec::new();
+                let mut n = 0;
                 for name in self.alpn.names() {
-                    names
-                        .try_push(name)
-                        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                    *names.get_mut(n).expect("an offer has few names") = name;
+                    n += 1;
                 }
-                names
+                &names[..n]
             }
         };
-        if !protocols.is_empty() && gs.alpn(&protocols) != 0 {
+        if !protocols.is_empty() && gs.alpn(protocols) != 0 {
             return Err(io.fail(
                 ErrorKind::SslConnectError,
                 format_args!("failed setting ALPN"),
@@ -293,7 +307,11 @@ impl<G: Gnutls> Session<G> {
 
     /// Make the session resuming `ticket`, if the transfer offers what it
     /// agreed (`gtls_apply_session`): whether it was made.
-    fn apply_session(&mut self, io: &mut TlsCx<'_>, ticket: &TlsTicket) -> Result<bool, ErrorKind> {
+    pub(crate) fn apply_session(
+        &mut self,
+        io: &mut TlsCx<'_>,
+        ticket: &TlsTicket,
+    ) -> Result<bool, ErrorKind> {
         let offered = match ticket.alpn_name() {
             None => true,
             Some(_) => ticket.chosen().is_some_and(|c| self.alpn.offers(c)),
@@ -311,6 +329,26 @@ impl<G: Gnutls> Session<G> {
         }
         let alpn = ticket.alpn_name().unwrap_or(b"-");
         io.info_with(&[b"SSL reusing session with ALPN '", alpn, b"'"]);
+        if self.quic {
+            // Over QUIC the QUIC library decides on early data, from what
+            // the library says the session allows (`cf_ngtcp2_on_session_reuse`).
+            if self.early_data && ticket.alpn_name().is_some() {
+                let mut kept = TlsTicket::new(
+                    Vec::new(),
+                    ticket.version,
+                    ticket.chosen(),
+                    gs.max_early_data(),
+                    0,
+                );
+                let mut params = Vec::new();
+                params
+                    .try_extend_from_slice(&ticket.quic_params)
+                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                kept = kept.with_quic_params(params);
+                self.quic_early = Some(kept);
+            }
+            return Ok(true);
+        }
         if self.early_data
             && let Some(chosen) = ticket.chosen()
         {
@@ -353,7 +391,11 @@ impl<G: Gnutls> Session<G> {
     /// Make the library's credentials and session (`gtls_client_init`),
     /// for a session the cache kept allowing `early_max` bytes of early
     /// data, if any.
-    fn client_init(&mut self, io: &mut TlsCx<'_>, early_max: usize) -> Result<(), ErrorKind> {
+    pub(crate) fn client_init(
+        &mut self,
+        io: &mut TlsCx<'_>,
+        early_max: usize,
+    ) -> Result<(), ErrorKind> {
         let lib = self.lib;
         let creds = lib.creds().map_err(|rc| {
             io.fail(
@@ -369,7 +411,10 @@ impl<G: Gnutls> Session<G> {
         self.made = Some(io.now());
         io.verified(0);
         let mut flags = sys::GNUTLS_CLIENT | sys::GNUTLS_FORCE_CLIENT_CERT;
-        if early_max > 0 && early_max != EARLY_UNKNOWN {
+        if self.quic && early_max > 0 {
+            // Over QUIC, which ends early data itself.
+            flags |= sys::GNUTLS_ENABLE_EARLY_DATA | sys::GNUTLS_NO_END_OF_EARLY_DATA;
+        } else if early_max > 0 && early_max != EARLY_UNKNOWN {
             flags |= sys::GNUTLS_ENABLE_EARLY_DATA;
         }
         io.trace(format_args!(
@@ -382,10 +427,9 @@ impl<G: Gnutls> Session<G> {
             )
         })?;
         self.gs = Some(gs);
-        let sni = self.sni()?;
         let gs = self.gs.as_mut().expect("made above");
-        if let Some(sni) = sni
-            && gs.server_name(&sni) < 0
+        if let Some(sni) = self.names.sni()
+            && gs.server_name(sni.to_bytes()) < 0
         {
             return Err(io.fail(
                 ErrorKind::SslConnectError,
@@ -396,14 +440,37 @@ impl<G: Gnutls> Session<G> {
             return Err(ErrorKind::SslConnectError);
         }
         let o = &self.identity.options;
-        let Some(base) = crate::priority::versions(o.min_version, o.max_version) else {
-            return Err(io.fail(
-                ErrorKind::SslConnectError,
-                format_args!("GnuTLS: cannot set TLS protocol"),
-            ));
+        let base = if self.quic {
+            // QUIC's own, whatever the least version asked
+            // (`gnutls_set_ssl_version_min_max`).
+            if !matches!(
+                o.max_version,
+                TlsMaxVersion::None | TlsMaxVersion::Default | TlsMaxVersion::Tls1_3
+            ) {
+                return Err(io.fail(
+                    ErrorKind::SslConnectError,
+                    format_args!("QUIC needs at least TLS version 1.3"),
+                ));
+            }
+            crate::priority::QUIC
+        } else {
+            let Some(base) = crate::priority::versions(o.min_version, o.max_version) else {
+                return Err(io.fail(
+                    ErrorKind::SslConnectError,
+                    format_args!("GnuTLS: cannot set TLS protocol"),
+                ));
+            };
+            base
         };
-        let priority = crate::priority::string(base, o.ciphers.as_deref())?;
-        let priority = as_c(&priority);
+        // The versions' own, unless the transfer names ciphers.
+        let made;
+        let priority = match o.ciphers.as_deref() {
+            Some(ciphers) => {
+                made = crate::priority::string(base, ciphers)?;
+                as_c(&made)
+            }
+            None => base,
+        };
         io.info(format_args!(
             "GnuTLS priority: {}",
             Text(priority.to_bytes())
@@ -551,30 +618,14 @@ impl<G: Gnutls> Session<G> {
 
     /// The handshake's outcome said (`Curl_gtls_report_handshake`).
     fn report_handshake(&mut self, io: &mut TlsCx<'_>) {
-        if !io.verbose() {
-            return;
-        }
-        let gs = self.gs.as_mut().expect("made at the first step");
-        let suite = gs.suite_name();
-        let version = gs.version_name();
-        io.info(format_args!(
-            "SSL connection using {} / {}",
-            Text(version.unwrap_or(b"(nil)")),
-            Text(suite.unwrap_or(b"(nil)"))
-        ));
+        report_handshake(self.gs.as_mut().expect("made at the first step"), io);
     }
 
     /// The peer checked, and before TLS 1.3 its session kept, which TLS
     /// 1.3 gives later (`gtls_verifyserver`).
     fn verify_server(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
-        let sni = self.sni()?;
-        let peer = verify::Peer {
-            name: &self.host,
-            sni: sni.as_deref(),
-        };
         let gs = self.gs.as_mut().expect("made at the first step");
-        let now = io.unix_time();
-        verify::verify_server(self.lib, gs, &self.identity, &peer, now, io)?;
+        check_peer(self.lib, gs, &self.identity, &self.names, io)?;
         if gs.version() < sys::GNUTLS_TLS1_3 && io.caches_sessions() {
             let data = gs.data()?;
             let (version, early) = (gs.version(), gs.max_early_data());
@@ -691,6 +742,83 @@ impl<G: Gnutls> Session<G> {
             ));
             Err(ErrorKind::RecvError)
         }
+    }
+}
+
+/// The handshake's outcome said, of the library's session `gs`
+/// (`Curl_gtls_report_handshake`).
+pub(crate) fn report_handshake<S: library::Session>(gs: &mut S, io: &mut TlsCx<'_>) {
+    if !io.verbose() {
+        return;
+    }
+    let suite = gs.suite_name();
+    let version = gs.version_name();
+    io.info(format_args!(
+        "SSL connection using {} / {}",
+        Text(version.unwrap_or(b"(nil)")),
+        Text(suite.unwrap_or(b"(nil)"))
+    ));
+}
+
+/// The peer of the library's session `gs`, called `names`, checked with
+/// `identity`'s settings (`Curl_gtls_verifyserver`).
+pub(crate) fn check_peer<G: Gnutls>(
+    lib: &G,
+    gs: &mut G::Session,
+    identity: &TlsIdentity,
+    names: &Names,
+    io: &mut TlsCx<'_>,
+) -> Result<(), ErrorKind> {
+    let peer = verify::Peer {
+        name: names.host(),
+        sni: names.sni(),
+    };
+    let now = io.unix_time();
+    verify::verify_server(lib, gs, identity, &peer, now, io)
+}
+
+/// The names of a session's peer (`struct ssl_peer`), kept together:
+/// the origin's as the URL gives it, without brackets, and the name sent
+/// by SNI (`Curl_ssl_peer_init`), if any, each with a zero byte after it.
+pub(crate) struct Names {
+    /// The host's name, its zero byte, then the SNI's and its zero.
+    bytes: Vec<u8>,
+    /// Where the host's name ends, which may have a zero byte in it.
+    host_len: usize,
+    /// The host's name is followed by the SNI's.
+    sends_sni: bool,
+}
+
+impl Names {
+    fn of(peer: &TlsPeer<'_>) -> Result<Names, OutOfMemory> {
+        let sni = curl_core::tls::sni_unlowered(peer.name, peer.kind);
+        let len = peer.name.len() + 1 + sni.map_or(0, |s| s.len() + 1);
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| OutOfMemory)?;
+        bytes.try_extend_from_slice(peer.name)?;
+        bytes.try_push(0)?;
+        if let Some(sni) = sni {
+            let at = bytes.len();
+            bytes.try_extend_from_slice(sni)?;
+            bytes[at..].make_ascii_lowercase();
+            bytes.try_push(0)?;
+        }
+        Ok(Names {
+            bytes,
+            host_len: peer.name.len(),
+            sends_sni: sni.is_some(),
+        })
+    }
+
+    /// The origin's name, as the URL gives it.
+    pub(crate) fn host(&self) -> &[u8] {
+        &self.bytes[..self.host_len]
+    }
+
+    /// The name sent by SNI, if any.
+    pub(crate) fn sni(&self) -> Option<&CStr> {
+        self.sends_sni
+            .then(|| as_c(&self.bytes[self.host_len + 1..]))
     }
 }
 
@@ -877,8 +1005,7 @@ where
     /// The `gnutls_session_t`, as C hands it out for both the session
     /// and the context (`gtls_get_internals`).
     fn native(&self) -> Option<TlsNative> {
-        let s = self.gs.as_ref()?.native();
-        Some(TlsNative::new(s, Some(s)))
+        self.native_objects()
     }
 
     /// None: C's GnuTLS build makes no channel binding
@@ -889,6 +1016,13 @@ where
 }
 
 impl<G: Gnutls> Session<G> {
+    /// The `gnutls_session_t`, once made, as both the session and the
+    /// context.
+    pub(crate) fn native_objects(&self) -> Option<TlsNative> {
+        let s = self.gs.as_ref()?.native();
+        Some(TlsNative::new(s, Some(s)))
+    }
+
     /// The steps of `gtls_connect_common`.
     fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
         if self.step == Step::Init {

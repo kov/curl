@@ -395,16 +395,19 @@ mod tests {
     }
 
     /// With GnuTLS, mbedTLS or wolfSSL, the version string names it after
-    /// libcurl, and no QUIC library, which `quic_version` has none of
-    /// either, as C's GnuTLS build without ngtcp2's GnuTLS crypto, its
-    /// mbedTLS build, and its wolfSSL build without ngtcp2.
+    /// libcurl, and the QUIC libraries after nghttp2 where the build has
+    /// them, as `quic_version` does, as C's GnuTLS build over ngtcp2's
+    /// GnuTLS crypto, its mbedTLS build, and its wolfSSL build without
+    /// ngtcp2.
     #[cfg(any(feature = "gnutls", feature = "mbedtls", feature = "wolfssl"))]
     #[test]
     fn names_the_libraries_as_c_s_gnutls_mbedtls_and_wolfssl_builds() {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
+        let quic = crate::tlslib::quic().map(|q| q.to_string());
+        assert_eq!(quic.is_some(), cfg!(feature = "gnutls"));
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{}{}{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{}{}{}{}",
             version().version,
             crate::tlslib::version(),
             curl_zlib::version(),
@@ -416,6 +419,7 @@ mod tests {
             crate::sshlib::NAME,
             crate::sshlib::version(),
             curl_nghttp2::version(),
+            quic.as_ref().map_or_else(String::new, |q| format!(" {q}")),
             gss_shown(),
             ldap_shown()
         );
@@ -428,7 +432,15 @@ mod tests {
             " mbedTLS/3."
         };
         assert!(said.contains(named), "{said}");
-        assert!(info().quic_version.is_null());
+        match quic {
+            Some(q) => {
+                // SAFETY: a static C string, not NULL where the build has
+                // QUIC.
+                let said = unsafe { CStr::from_ptr(info().quic_version) };
+                assert_eq!(said.to_str(), Ok(q.as_str()));
+            }
+            None => assert!(info().quic_version.is_null()),
+        }
     }
 
     /// Whether the build has an LDAP library.
@@ -456,7 +468,7 @@ mod tests {
 
     /// HTTP/3's two libraries are named together in `quic_version`, as
     /// C names them.
-    #[cfg(feature = "openssl")]
+    #[cfg(any(feature = "openssl", feature = "gnutls"))]
     #[test]
     fn quic_version_names_both_libraries() {
         // SAFETY: a static C string, never NULL.
@@ -475,9 +487,11 @@ mod tests {
     /// names, the names NULL-terminated.
     #[test]
     fn features_reach_the_c_struct() {
-        // OpenSSL's build has HTTP/3 and message signatures, GnuTLS's and
-        // wolfSSL's only message signatures, Schannel's neither.
-        let quic = cfg!(feature = "openssl");
+        // OpenSSL's build has HTTP/3, the HTTP/3 proxy and message
+        // signatures, GnuTLS's HTTP/3 and message signatures, wolfSSL's
+        // only message signatures, Schannel's neither.
+        let quic = cfg!(any(feature = "openssl", feature = "gnutls"));
+        let proxy_h3 = cfg!(feature = "openssl");
         let signs = cfg!(any(
             feature = "openssl",
             feature = "gnutls",
@@ -524,7 +538,7 @@ mod tests {
                 "NativeCA",
                 0,
             ),
-            (quic, "proxy-HTTP3", 0),
+            (proxy_h3, "proxy-HTTP3", 0),
             (true, "PSL", ffi::CURL_VERSION_PSL),
             (true, "SPNEGO", ffi::CURL_VERSION_SPNEGO),
             (true, "SSL", ffi::CURL_VERSION_SSL),

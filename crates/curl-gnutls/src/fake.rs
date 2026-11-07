@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use curl_core::error::ErrorKind;
 pub(crate) use curl_core::tls::Wire;
+use curl_core::tls::{DriveCall, TlsCx};
 
 use crate::library::{self, Call, Format, Moved, Rc, Stapled};
 use crate::sys;
@@ -64,7 +65,6 @@ pub(crate) struct World {
     pub(crate) max_early: usize,
     pub(crate) data: &'static [u8],
     pub(crate) chain: Option<Vec<&'static [u8]>>,
-    pub(crate) chain_oom: bool,
     pub(crate) status: Result<u32, Rc>,
     pub(crate) stapled: Stapled,
     pub(crate) leaf: Leaf,
@@ -86,7 +86,6 @@ impl Default for World {
             max_early: 0,
             data: b"",
             chain: Some(vec![b"leaf-der"]),
-            chain_oom: false,
             status: Ok(0),
             stapled: Stapled::Status(sys::GNUTLS_OCSP_CERT_GOOD as u32),
             leaf: Leaf {
@@ -333,6 +332,24 @@ impl FakeSession {
     }
 }
 
+/// What the QUIC library's call is lent: the session, its call, and the
+/// check, each reached for the length of one method.
+struct Driving<'d, 's, 'a> {
+    session: &'d mut FakeSession,
+    call: &'d mut Call<'s, 'a, FakeCreds>,
+    check: &'d mut dyn FnMut(&mut FakeSession, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+}
+
+impl DriveCall for Driving<'_, '_, '_> {
+    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+        (self.check)(self.session, self.call.io.cx())
+    }
+
+    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
+        f(self.call.io.cx());
+    }
+}
+
 impl library::Session for FakeSession {
     type Creds = FakeCreds;
     type Cert = FakeCert;
@@ -388,6 +405,26 @@ impl library::Session for FakeSession {
     fn hook(&mut self) {
         self.w().call("hook".into());
     }
+    fn quic_hook(&mut self, tickets: bool) {
+        self.w().call(format!("quic_hook(tickets={tickets})"));
+    }
+    /// The script of `drive` runs first, as GnuTLS's callbacks would
+    /// inside the QUIC library's call, then the call itself.
+    fn drive(
+        &mut self,
+        call: &mut Call<'_, '_, FakeCreds>,
+        check: &mut dyn FnMut(&mut FakeSession, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        op: &mut dyn FnMut(&mut dyn DriveCall),
+    ) {
+        self.w().call("drive".into());
+        self.run("drive", call, None, Vec::new());
+        let mut driving = Driving {
+            session: self,
+            call,
+            check,
+        };
+        op(&mut driving);
+    }
 
     fn handshake(&mut self, call: &mut Call<'_, '_, FakeCreds>) -> Rc {
         self.w().call("handshake".into());
@@ -440,12 +477,8 @@ impl library::Session for FakeSession {
     fn early_data_accepted(&mut self) -> bool {
         self.w().early_accepted
     }
-    fn peers(&self) -> Result<Option<Vec<&[u8]>>, curl_alloc::OutOfMemory> {
-        let w = self.w();
-        if w.chain_oom {
-            return Err(curl_alloc::OutOfMemory);
-        }
-        Ok(w.chain.clone())
+    fn peers(&self) -> Option<impl ExactSizeIterator<Item = &[u8]> + Clone> {
+        self.w().chain.clone().map(Vec::into_iter)
     }
     fn verify_peers(&self) -> Result<u32, Rc> {
         let mut w = self.w();
@@ -477,8 +510,11 @@ impl library::Cert for FakeCert {
         let line = format!("import({}, {format:?})", String::from_utf8_lossy(data));
         lock(&self.0).answer("import", line, 0)
     }
-    fn common_name(&self) -> Result<Vec<u8>, Rc> {
-        self.leaf().cn.map(<[u8]>::to_vec)
+    fn common_name<'b>(&self, buf: &'b mut [u8; 65]) -> Result<&'b [u8], Rc> {
+        let cn = self.leaf().cn?;
+        let out = &mut buf[..cn.len()];
+        out.copy_from_slice(cn);
+        Ok(out)
     }
     fn expiration(&self) -> i64 {
         self.leaf().expiration

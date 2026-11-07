@@ -7,6 +7,13 @@ license.workspace = true
 publish.workspace = true
 links = "ngtcp2"
 
+[features]
+# The TLS library ngtcp2's crypto is for, the build's: exactly one.
+default = ["openssl"]
+openssl = ["dep:openssl-sys"]
+gnutls = ["dep:curl-gnutls"]
+wolfssl = ["dep:curl-wolfssl"]
+
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
@@ -15,14 +22,19 @@ libc = "0.2"
 # The OpenSSL-family library found, which says whether it is LibreSSL
 # (`DEP_OPENSSL_LIBRESSL_VERSION_NUMBER`), for the crypto linked; the
 # library itself, as `curl-openssl` links it.
-openssl-sys = "0.9.118"
+openssl-sys = { version = "0.9.118", optional = true }
+# GnuTLS and wolfSSL, as their crates link them, after the crypto that
+# needs them; and their sessions for the tests.
+curl-gnutls = { path = "../curl-gnutls", optional = true }
+curl-wolfssl = { path = "../curl-wolfssl", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]
 curl-core = { path = "../curl-core", features = ["test-util"] }
-# The TLS session a connection is handed, and its library linked.
+# The TLS session a connection is handed in the OpenSSL build (the
+# others' are their features' dependencies), and its library linked.
 curl-openssl = { path = "../curl-openssl" }
 # The certificates the server the tests start shows.
 openssl = "0.10.82"

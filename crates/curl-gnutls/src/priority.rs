@@ -3,28 +3,49 @@
 //! names them after C's own defaults, and the transfer's cipher list,
 //! which adds to that or replaces it.
 
+use std::ffi::CStr;
+
 use curl_alloc::TryVec as _;
 use curl_core::error::ErrorKind;
 use curl_core::options::{TlsMaxVersion, TlsMinVersion};
 
-/// C's defaults (`GNUTLS_CIPHERS`), then `$rest`.
+/// `text`, which ends in its only zero byte, as a C string.
+const fn c(text: &'static str) -> &'static CStr {
+    match CStr::from_bytes_with_nul(text.as_bytes()) {
+        Ok(c) => c,
+        Err(_) => panic!("one zero byte, at the end"),
+    }
+}
+
+/// C's defaults (`GNUTLS_CIPHERS`), then `$rest`, as a C string.
 macro_rules! concat_ciphers {
     ($rest:literal) => {
-        concat!(
+        c(concat!(
             "NORMAL:%PROFILE_MEDIUM:-ARCFOUR-128:-CTYPE-ALL:+CTYPE-X509",
-            $rest
-        )
+            $rest,
+            "\0"
+        ))
     };
 }
 
 /// C's defaults alone.
 #[cfg(test)]
-const CIPHERS: &str = concat_ciphers!("");
+const CIPHERS: &str = "NORMAL:%PROFILE_MEDIUM:-ARCFOUR-128:-CTYPE-ALL:+CTYPE-X509";
+
+/// The priorities of a QUIC session, whatever the transfer's versions
+/// (`QUIC_PRIORITY`): TLS 1.3 alone, QUIC's ciphers and groups, and no
+/// TLS 1.3 compatibility mode.
+pub(crate) const QUIC: &CStr = c(concat!(
+    "NORMAL:%PROFILE_MEDIUM:-VERS-ALL:+VERS-TLS1.3:-CIPHER-ALL:+AES-128-GCM:",
+    "+AES-256-GCM:+CHACHA20-POLY1305:+AES-128-CCM:-GROUP-ALL:",
+    "+GROUP-SECP256R1:+GROUP-X25519:+GROUP-SECP384R1:+GROUP-SECP521R1:",
+    "%DISABLE_TLS13_COMPAT_MODE\0"
+));
 
 /// The priorities of the versions from `min` to `max`, as C names them,
 /// TLS 1.3 the newest when none is set; none for a range C has none for
 /// (`GnuTLS: cannot set TLS protocol`).
-pub(crate) fn versions(min: TlsMinVersion, max: TlsMaxVersion) -> Option<&'static str> {
+pub(crate) fn versions(min: TlsMinVersion, max: TlsMaxVersion) -> Option<&'static CStr> {
     use TlsMaxVersion as Max;
     use TlsMinVersion as Min;
     let min = match min {
@@ -58,22 +79,23 @@ pub(crate) fn versions(min: TlsMinVersion, max: TlsMaxVersion) -> Option<&'stati
     })
 }
 
-/// The priority string of `base`, the versions', and `ciphers`, the
-/// transfer's list (`CURLOPT_SSL_CIPHER_LIST`), as a C string: a list
-/// that starts with `+`, `-` or `!` is added to `base`, any other
-/// replaces it.
-pub(crate) fn string(base: &str, ciphers: Option<&[u8]>) -> Result<Vec<u8>, ErrorKind> {
+/// The priority string of `base`, the versions' or QUIC's, and
+/// `ciphers`, the transfer's list (`CURLOPT_SSL_CIPHER_LIST`), as a C
+/// string: a list that starts with `+`, `-` or `!` is added to `base`,
+/// any other replaces it. Made in one allocation.
+pub(crate) fn string(base: &CStr, ciphers: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     let oom = |_: curl_alloc::OutOfMemory| ErrorKind::OutOfMemory;
+    let base = base.to_bytes();
+    let adds = matches!(ciphers.first(), Some(b'+' | b'-' | b'!'));
+    let len = if adds { base.len() + 1 } else { 0 } + ciphers.len() + 1;
     let mut out = Vec::new();
-    match ciphers {
-        Some(c) if matches!(c.first(), Some(b'+' | b'-' | b'!')) => {
-            out.try_extend_from_slice(base.as_bytes()).map_err(oom)?;
-            out.try_push(b':').map_err(oom)?;
-            out.try_extend_from_slice(c).map_err(oom)?;
-        }
-        Some(c) => out.try_extend_from_slice(c).map_err(oom)?,
-        None => out.try_extend_from_slice(base.as_bytes()).map_err(oom)?,
+    out.try_reserve_exact(len)
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    if adds {
+        out.try_extend_from_slice(base).map_err(oom)?;
+        out.try_push(b':').map_err(oom)?;
     }
+    out.try_extend_from_slice(ciphers).map_err(oom)?;
     out.try_push(0).map_err(oom)?;
     Ok(out)
 }
@@ -87,7 +109,9 @@ mod tests {
     /// Each range C names, as it names it.
     #[test]
     fn each_range_is_named_as_c_names_it() {
-        let v = |min, max| versions(min, max).map(|p| p.strip_prefix(CIPHERS).expect("C's"));
+        let v = |min, max| {
+            versions(min, max).map(|p| p.to_str().unwrap().strip_prefix(CIPHERS).expect("C's"))
+        };
         assert_eq!(
             v(Min::Tls1_2, Max::None),
             Some(":-VERS-SSL3.0:-VERS-TLS-ALL:+VERS-TLS1.3:+VERS-TLS1.2")
@@ -135,10 +159,15 @@ mod tests {
     /// any other replaces it.
     #[test]
     fn a_cipher_list_adds_or_replaces() {
-        assert_eq!(string("BASE", None).unwrap(), b"BASE\0");
-        assert_eq!(string("BASE", Some(b"+A")).unwrap(), b"BASE:+A\0");
-        assert_eq!(string("BASE", Some(b"-B")).unwrap(), b"BASE:-B\0");
-        assert_eq!(string("BASE", Some(b"!C")).unwrap(), b"BASE:!C\0");
-        assert_eq!(string("BASE", Some(b"NONE:+D")).unwrap(), b"NONE:+D\0");
+        // Made to its length, so never grown.
+        let made = |ciphers: &[u8]| {
+            let s = string(c"BASE", ciphers).unwrap();
+            assert_eq!(s.capacity(), s.len(), "one allocation");
+            s
+        };
+        assert_eq!(made(b"+A"), b"BASE:+A\0");
+        assert_eq!(made(b"-B"), b"BASE:-B\0");
+        assert_eq!(made(b"!C"), b"BASE:!C\0");
+        assert_eq!(made(b"NONE:+D"), b"NONE:+D\0");
     }
 }

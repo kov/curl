@@ -74,9 +74,12 @@ pub trait TlsBackend: Send + Sync {
     /// A session for one QUIC connection to `peer`, offering HTTP/3 by
     /// ALPN (C's `Curl_vquic_tls_init`): made at once, its context and
     /// its library's session object, which `QuicTls::native` hands the
-    /// QUIC library; the context handed to `setup` first, as soon as it
-    /// is made; a session the cache kept for the peer is resumed. A
-    /// library that cannot carry QUIC has none.
+    /// QUIC library; its objects handed to `setup` where the library's
+    /// QUIC setup comes (see `QuicContextSetup`); a session the cache
+    /// kept for the peer is resumed. The pointer the library hands its
+    /// QUIC callbacks (OpenSSL's and wolfSSL's application data, GnuTLS's
+    /// session pointer) is the QUIC library's to set, never the session's
+    /// own. A library that cannot carry QUIC has none.
     fn quic_session(
         &self,
         identity: &TryArc<TlsIdentity>,
@@ -532,10 +535,12 @@ impl TlsNative {
     }
 }
 
-/// What the QUIC library does to a QUIC session's context once it is
-/// made, before the session's own object is made from it (C's
-/// `cb_setup`, `cf_ngtcp2_tls_ctx_setup`): why it could not, as C says
-/// it, if it could not.
+/// What the QUIC library does to a QUIC session's objects (C's
+/// `cb_setup`, `cf_ngtcp2_tls_ctx_setup`): handed the context once it is
+/// made, before the session's own object is made from it, by a library
+/// whose QUIC setup is the context's (OpenSSL, wolfSSL); the session's
+/// object too, once it is made, by one whose setup is the session's
+/// (GnuTLS). Why it could not, as C says it, if it could not.
 pub type QuicContextSetup<'a> = &'a dyn Fn(TlsNative) -> Result<(), &'static str>;
 
 /// Whose close_notify a session's goodbye is made of (C's
@@ -712,19 +717,25 @@ pub struct TlsPeer<'a> {
 /// an address. It has room for a zero byte after it, for a library that
 /// takes a C string.
 pub fn sni(name: &[u8], kind: TlsPeerKind) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    if kind != TlsPeerKind::Name {
+    let Some(name) = sni_unlowered(name, kind) else {
         return Ok(None);
-    }
-    let name = name.strip_suffix(b".").unwrap_or(name);
-    if name.len() >= usize::from(u16::MAX) {
-        return Ok(None);
-    }
+    };
     let mut sni = Vec::new();
     sni.try_reserve_exact(name.len() + 1)
         .map_err(|_| OutOfMemory)?;
     sni.try_extend_from_slice(name)?;
     sni.make_ascii_lowercase();
     Ok(Some(sni))
+}
+
+/// The name [`sni`] sends, before it is made lower case: for a library
+/// that keeps it with other names, lowering it in place.
+pub fn sni_unlowered(name: &[u8], kind: TlsPeerKind) -> Option<&[u8]> {
+    if kind != TlsPeerKind::Name {
+        return None;
+    }
+    let name = name.strip_suffix(b".").unwrap_or(name);
+    (name.len() < usize::from(u16::MAX)).then_some(name)
 }
 
 /// What the peer chose of the ALPN offer, `chosen`, empty if nothing,

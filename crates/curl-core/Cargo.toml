@@ -7,10 +7,14 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# The build has a QUIC library (ngtcp2, over OpenSSL): HTTP3 and
-# proxy-HTTP3 claimed. Off unless the build turns it on, as the shim's
-# and the tool's `openssl` feature does; Schannel's build has none.
+# The build has a QUIC library (ngtcp2, over OpenSSL or GnuTLS): HTTP3
+# claimed. Off unless the build turns it on, as the shim's and the tool's
+# `openssl` and `gnutls` features do; Schannel's build has none.
 quic = []
+# The build tunnels through HTTP/3 proxies (C's `USE_PROXY_HTTP3`, which
+# CMake builds over OpenSSL only): proxy-HTTP3 claimed, and
+# `CURLPROXY_HTTPS3` taken. On with the `openssl` feature alone.
+proxy-http3 = ["quic"]
 # The build signs HTTP messages (an Ed25519 library, OpenSSL's): HTTPSIG
 # claimed. On as `quic` is.
 httpsig = []

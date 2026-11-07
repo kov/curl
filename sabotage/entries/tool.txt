@@ -1597,9 +1597,9 @@ witness: curl-tool options_the_library_lacks_are_not_written
 file: crates/curl-tool/Cargo.toml
 witness: curl-tool tests::message_signatures_are_reported_as_the_tls_library_has_them
 --- old
-openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "curl-core/proxy-http3", "curl-core/httpsig"]
 --- new
-openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic"]
+openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "curl-core/proxy-http3"]
 
 === OpenSSL's build reads no CA bundle from the environment
 file: crates/curl-tool/src/operate.rs

@@ -1187,6 +1187,9 @@ fn apply(
                 ffi::CURLPROXY_HTTP_1_0 => ProxyType::Http10,
                 ffi::CURLPROXY_HTTPS => ProxyType::Https,
                 ffi::CURLPROXY_HTTPS2 => ProxyType::Https2,
+                // Only where the build tunnels through HTTP/3 proxies
+                // (`USE_PROXY_HTTP3`, OpenSSL's alone).
+                ffi::CURLPROXY_HTTPS3 if !proxies_over_h3() => return Err(Refused::NotBuiltIn),
                 ffi::CURLPROXY_HTTPS3 => ProxyType::Https3,
                 ffi::CURLPROXY_SOCKS4 => ProxyType::Socks4,
                 ffi::CURLPROXY_SOCKS5 => ProxyType::Socks5,
@@ -2279,6 +2282,13 @@ const _: ffi::proto::curl_easy_setopt = curl_easy_setopt;
 /// setopt.c keeps it (`(unsigned char)arg`).
 fn upload_flags(n: c_long) -> UploadFlags {
     UploadFlags::from_bits(n.to_le_bytes()[0])
+}
+
+/// The build tunnels through HTTP/3 proxies: it claims proxy-HTTP3.
+fn proxies_over_h3() -> bool {
+    curl_core::version::version()
+        .features
+        .contains(&curl_core::version::Feature::ProxyHttp3)
 }
 
 #[cfg(test)]

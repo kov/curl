@@ -2,20 +2,24 @@
 //! certificates the library makes, each freed as it goes, and the
 //! callbacks it makes during a call.
 //!
-//! For the length of each call that may read or write (`with_call`), the
-//! session's transport pointer and its user pointer both point at a
-//! `Slot` on the caller's stack, holding the call's `Call`. The pointers
-//! are set before the call and cleared after, the callbacks run only
-//! inside that call, on its thread, and nothing else holds the slot while
-//! they do.
+//! For the length of each call that may read or write (`with_call`), and
+//! of each call into the QUIC library that drives a QUIC session
+//! (`drive`), the session's transport pointer points at a `Slot` on the
+//! caller's stack, holding the call's `Call`. The pointer is set before
+//! the call and cleared after, the callbacks run only inside that call,
+//! on its thread, one at a time, and nothing else holds the slot while
+//! they do. The session's user pointer is never this crate's: for a
+//! QUIC session it is the QUIC library's crypto's, which finds its
+//! connection through it.
 
 #![allow(unsafe_code)]
 
 use core::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use core::ptr::{self, NonNull};
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::TryVec as _;
 use curl_core::error::ErrorKind;
+use curl_core::tls::{DriveCall, TlsCx};
 
 use crate::library::{self, Call, Format, Moved, Rc, Stapled};
 use crate::sys;
@@ -278,14 +282,43 @@ impl Session {
         // read it only during `op`, and nothing else uses it until `op`
         // returns.
         unsafe { sys::gnutls_transport_set_ptr(s, p.cast()) };
-        // SAFETY: as above, for the hook and the key log function.
-        unsafe { sys::gnutls_session_set_ptr(s, p.cast()) };
         let r = op(s);
         // SAFETY: the session; no callback runs after `op` returns.
         unsafe { sys::gnutls_transport_set_ptr(s, ptr::null_mut()) };
-        // SAFETY: as above.
-        unsafe { sys::gnutls_session_set_ptr(s, ptr::null_mut()) };
         r
+    }
+}
+
+/// What a call into the QUIC library is lent while it drives a session:
+/// the slot of the call, and the session, each reached through its
+/// pointer for the length of one method, as the session's callbacks
+/// reach the slot, never at the same time as they.
+struct Driving<'d, 'c, 's, 'a> {
+    slot: *mut Slot<'c, 's, 'a>,
+    session: *mut Session,
+    check: &'d mut dyn FnMut(&mut Session, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+}
+
+impl DriveCall for Driving<'_, '_, '_, '_> {
+    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+        // SAFETY: the slot and the session outlive the QUIC library's
+        // call, inside which alone this runs; the QUIC library tells of
+        // the handshake's end outside any callback of GnuTLS's, so
+        // nothing else reaches either while this does, and `drive`, which
+        // the session's pointer came from, uses neither until the call
+        // returns.
+        let slot = unsafe { &mut *self.slot };
+        // SAFETY: as above.
+        let session = unsafe { &mut *self.session };
+        (self.check)(session, slot.call.io.cx())
+    }
+
+    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
+        // SAFETY: as above: the QUIC library's callbacks, which alone
+        // call this, run one at a time, and none of GnuTLS's callbacks,
+        // which reach the slot too, runs while one does.
+        let slot = unsafe { &mut *self.slot };
+        f(slot.call.io.cx());
     }
 }
 
@@ -369,8 +402,9 @@ unsafe extern "C" fn hook(
         return 0;
     }
     // SAFETY: the session the library calls back for.
-    let p = unsafe { sys::gnutls_session_get_ptr(session) };
-    // SAFETY: called back during `with_call`, or with no call: null.
+    let p = unsafe { sys::gnutls_transport_get_ptr(session) };
+    // SAFETY: called back during `with_call` or `drive`, or with no call:
+    // null.
     let Some(slot) = (unsafe { slot_of(p) }) else {
         return 0;
     };
@@ -395,8 +429,9 @@ unsafe extern "C" fn keylog(
     secret: *const sys::gnutls_datum_t,
 ) -> c_int {
     // SAFETY: the session the library calls back for.
-    let p = unsafe { sys::gnutls_session_get_ptr(session) };
-    // SAFETY: called back during `with_call`, or with no call: null.
+    let p = unsafe { sys::gnutls_transport_get_ptr(session) };
+    // SAFETY: called back during `with_call` or `drive`, or with no call:
+    // null.
     let Some(slot) = (unsafe { slot_of(p) }) else {
         return 0;
     };
@@ -576,6 +611,52 @@ impl library::Session for Session {
         unsafe { sys::gnutls_transport_set_pull_function(s, Some(pull)) };
     }
 
+    fn quic_hook(&mut self, tickets: bool) {
+        let s = self.s();
+        if tickets {
+            // SAFETY: the session, and a callback of the type it calls.
+            unsafe {
+                sys::gnutls_handshake_set_hook_function(
+                    s,
+                    sys::GNUTLS_HANDSHAKE_ANY,
+                    sys::GNUTLS_HOOK_POST,
+                    Some(hook),
+                );
+            }
+        }
+        // Never called, a QUIC session's records being the QUIC
+        // library's: set so that a call would stop the process, not write
+        // to a descriptor the transport pointer is not.
+        // SAFETY: as above.
+        unsafe { sys::gnutls_transport_set_push_function(s, Some(push)) };
+        // SAFETY: as above.
+        unsafe { sys::gnutls_transport_set_pull_function(s, Some(pull)) };
+    }
+
+    fn drive(
+        &mut self,
+        call: &mut Call<'_, '_, Creds>,
+        check: &mut dyn FnMut(&mut Session, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        op: &mut dyn FnMut(&mut dyn DriveCall),
+    ) {
+        let s = self.s();
+        let session: *mut Session = self;
+        let mut slot = Slot { call, session: s };
+        let p: *mut Slot<'_, '_, '_> = &mut slot;
+        // SAFETY: the session; the slot outlives the call, the callbacks
+        // and `Driving` reach it only during `op`, one at a time, and
+        // nothing else uses it until `op` returns.
+        unsafe { sys::gnutls_transport_set_ptr(s, p.cast()) };
+        let mut driving = Driving {
+            slot: p,
+            session,
+            check,
+        };
+        op(&mut driving);
+        // SAFETY: the session; no callback runs after `op` returns.
+        unsafe { sys::gnutls_transport_set_ptr(s, ptr::null_mut()) };
+    }
+
     fn handshake(&mut self, call: &mut Call<'_, '_, Creds>) -> Rc {
         // SAFETY: the session, its callbacks reaching `call`.
         self.with_call(call, |s| unsafe { sys::gnutls_handshake(s) })
@@ -677,24 +758,19 @@ impl library::Session for Session {
         unsafe { sys::gnutls_session_get_flags(self.s()) & sys::GNUTLS_SFLAGS_EARLY_DATA != 0 }
     }
 
-    fn peers(&self) -> Result<Option<Vec<&[u8]>>, OutOfMemory> {
+    fn peers(&self) -> Option<impl ExactSizeIterator<Item = &[u8]> + Clone> {
         let mut n: c_uint = 0;
         // SAFETY: the session; the list is its own.
         let list = unsafe { sys::gnutls_certificate_get_peers(self.s(), &mut n) };
         if list.is_null() {
-            return Ok(None);
+            return None;
         }
         let n = usize::try_from(n).expect("a count");
-        let mut out = Vec::new();
-        out.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
         // SAFETY: `n` datums at `list`, the session's while it is
         // borrowed.
         let list = unsafe { core::slice::from_raw_parts(list, n) };
-        for d in list {
-            // SAFETY: a datum the session holds, as above.
-            out.try_push(unsafe { datum(d) }).expect("room reserved");
-        }
-        Ok(Some(out))
+        // SAFETY: each a datum the session holds, as above.
+        Some(list.iter().map(|d| unsafe { datum(d) }))
     }
 
     fn verify_peers(&self) -> Result<u32, Rc> {
@@ -839,8 +915,7 @@ impl library::Cert for Cert {
         unsafe { sys::gnutls_x509_crt_import(self.0.as_ptr(), &d, format(f)) }
     }
 
-    fn common_name(&self) -> Result<Vec<u8>, Rc> {
-        let mut buf = [0u8; 65];
+    fn common_name<'b>(&self, buf: &'b mut [u8; 65]) -> Result<&'b [u8], Rc> {
         let mut size = buf.len();
         // SAFETY: the certificate, a C string, and `size` bytes of room.
         let rc = unsafe {
@@ -856,11 +931,7 @@ impl library::Cert for Cert {
         if rc != 0 {
             return Err(rc);
         }
-        let text = CStr::from_bytes_until_nul(&buf).map_or(&buf[..], CStr::to_bytes);
-        let mut v = Vec::new();
-        v.try_extend_from_slice(text)
-            .map_err(|_| sys::GNUTLS_E_SHORT_MEMORY_BUFFER)?;
-        Ok(v)
+        Ok(CStr::from_bytes_until_nul(buf).map_or(&buf[..], CStr::to_bytes))
     }
 
     fn expiration(&self) -> i64 {

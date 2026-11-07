@@ -610,6 +610,16 @@ fn a_resumed_session_sends_its_get_as_early_data() {
     assert_eq!(told.checked, Some(Ok(())));
     let early = (!cfg!(crypto = "boringssl")).then_some(true);
     assert_eq!(told.early, Some(early), "{:?}", kept.notes);
+    // The second resumed the first's session, early data or not.
+    #[cfg(feature = "openssl")]
+    assert!(
+        kept.notes
+            .0
+            .iter()
+            .any(|n| n.contains("SSL reusing session")),
+        "{:?}",
+        kept.notes
+    );
     assert_eq!(told.status.as_deref(), Some(&b"200"[..]));
     assert_eq!(told.body, BODY);
 }

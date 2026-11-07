@@ -21,6 +21,11 @@ mod suites;
 mod sys;
 mod verify;
 
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod tests;
+
 use core::fmt;
 use std::sync::Mutex;
 

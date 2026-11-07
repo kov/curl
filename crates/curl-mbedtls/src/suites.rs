@@ -1153,6 +1153,8 @@ mod tests {
     /// The table is C's: each `CS_ENTRY` of `lib/vtls/cipher_suite.c`, in
     /// its order, the parts its empty arguments leave out.
     #[test]
+    // Reads C's source, which Miri's isolation keeps out.
+    #[cfg_attr(miri, ignore)]
     fn the_table_is_c_s() {
         let theirs = c_source::calls_where("lib/vtls/cipher_suite.c", "CS_ENTRY", mbedtls);
         // The macro's definition, which reads like a call, is no row.
@@ -1176,6 +1178,8 @@ mod tests {
     /// its name is written as either, and a list is walked name by name,
     /// those C does not know answering 0.
     #[test]
+    // Reads C's source, which Miri's isolation keeps out.
+    #[cfg_attr(miri, ignore)]
     fn unit3205() {
         let rows = c_source::table("tests/unit/unit3205.c", "test_cs_list[] =", mbedtls);
         assert!(rows.len() > 100, "{}", rows.len());

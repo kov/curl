@@ -5294,10 +5294,18 @@ fn a_server_closing_as_quiche_connects_is_a_weird_reply() {
         );
         if flavour == Quiche && drains {
             assert_eq!(result, Err(ErrorKind::WeirdServerReply));
+            // How long the resolve took is the resolver's, not the
+            // connection's.
+            let mut got = got;
+            let last = got.pop().unwrap_or_default();
+            assert!(
+                last.starts_with(&format!("Failed to connect to localhost:{PORT} after "))
+                    && last.ends_with(" ms: Weird server reply"),
+                "{last}"
+            );
             let want = expect(&format!(
                 "connect to ::1 port {PORT} failed: Weird server reply
-                connect to 127.0.0.1 port {PORT} failed: Weird server reply
-                Failed to connect to localhost:{PORT} after 100 ms: Weird server reply"
+                connect to 127.0.0.1 port {PORT} failed: Weird server reply"
             ));
             assert_eq!(got, want);
         } else {

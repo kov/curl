@@ -56,6 +56,12 @@ as the oracle has it, against the C build with GNU GSS (baseline.py
 build/rust-gnugss. Its Negotiate and Kerberos results are the ones GNU
 GSS's binding is held to.
 
+`--awslc` and `--boringssl` score the OpenSSL backend built over AWS-LC
+and over BoringSSL, with libssh2 as the oracle has it, against the C build
+over the same fork (baseline.py --awslc, --boringssl): build/c-awslc and
+build/c-boringssl, inventory/baseline-{awslc,boringssl}.json, laid out in
+build/rust-awslc and build/rust-boringssl.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -98,6 +104,8 @@ class Leg:
     features: tuple
     # Built without the crates' default features, `features` naming all.
     no_default: bool = False
+    # The environment its cargo build runs with, besides the process's.
+    env: tuple = ()
 
     @property
     def results(self):
@@ -162,6 +170,28 @@ GNUGSS = Leg(baseline.GNUGSS, ROOT / "build" / "rust-gnugss",
              no_default=True)
 
 
+def fork_leg(oracle):
+    """
+    Return the OpenSSL backend over the oracle's OpenSSL fork, linked statically
+    from where deps.py built it (openssl-sys's `OPENSSL_DIR`), with the
+    ngtcp2 built for it, and libssh2 and c-ares as that C build has them.
+    """
+    fork = oracle.fork
+    return Leg(oracle, ROOT / "build" / f"rust-{fork}",
+               ROOT / "build" / f"target-{fork}",
+               DEBUG_HOOKS + tuple(f"{crate}/{feature}"
+                                   for crate in ("curl-sys-abi", "curl-tool")
+                                   for feature in ("c-ares", "openssl",
+                                                   "libssh2")),
+               no_default=True,
+               env=(("OPENSSL_DIR", str(baseline.deps.fork_dir(fork))),
+                    ("OPENSSL_STATIC", "1"),
+                    ("CURL_NGTCP2_DIR",
+                     str(baseline.deps.fork_ngtcp2_dir(fork)))))
+
+
+AWSLC = fork_leg(baseline.AWSLC)
+BORINGSSL = fork_leg(baseline.BORINGSSL)
 def git(*args):
     return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
                           capture_output=True, text=True).stdout.strip()
@@ -205,7 +235,7 @@ def assemble(leg, lib, tool):
          "--target-dir", str(leg.target), "--features",
          ",".join(leg.features),
          *(["--no-default-features"] if leg.no_default else [])],
-        cwd=ROOT, check=False)
+        cwd=ROOT, check=False, env={**os.environ, **dict(leg.env)})
     check(cargo.returncode == 0, "cargo build failed")
     c_build = leg.oracle.build
     if leg.build.exists():
@@ -430,13 +460,16 @@ def main():
     ap.add_argument("--mbedtls", action="store_true")
     ap.add_argument("--wolfssl", action="store_true")
     ap.add_argument("--gnugss", action="store_true")
+    ap.add_argument("--awslc", action="store_true")
+    ap.add_argument("--boringssl", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
     leg = (THREADED if args.threaded else LIBSSH if args.libssh
            else LIBSSH2 if args.libssh2 else GNUTLS if args.gnutls
            else MBEDTLS if args.mbedtls
-           else WOLFSSL if args.wolfssl
-           else GNUGSS if args.gnugss else RUST)
+           else WOLFSSL if args.wolfssl else GNUGSS if args.gnugss
+           else AWSLC if args.awslc
+           else BORINGSSL if args.boringssl else RUST)
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

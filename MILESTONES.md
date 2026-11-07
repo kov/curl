@@ -1462,8 +1462,17 @@ it there, Windows.
      tests C's passes and pytest all 906, the h3 cases and the h3 early-data cases among them;
      2120 fails on both. `curl -V` is C's. Encrypted Client Hello is off in that build, as in the reference, so C's has none of
      it. Its session's logic is tested through a scripted fake of the library. LibreSSL is a
-     variant of the OpenSSL backend already (102). Left: Rustls, and BoringSSL, AWS-LC and
-     quictls as OpenSSL variants.
+     variant of the OpenSSL backend already (102). AWS-LC and BoringSSL are **done** as
+     variants of it: curl-openssl over the fork openssl-sys finds (`OPENSSL_DIR`, linked
+     statically), detected from the fork's headers, each branch of `lib/vtls/openssl.c` and
+     `lib/vquic` C's, with HTTP/3 and its proxy over ngtcp2's BoringSSL crypto (104), at the
+     versions curl's CI pins (5.11.0, 0.20260929.0). Scored with `score.py --awslc` and
+     `--boringssl` against C's builds over them (`baseline.py --awslc`, `--boringssl`):
+     measured 2026-11-07, runtests.pl passes all 1936 tests C's passes on both, and pytest all
+     851 over AWS-LC and all 788 over BoringSSL, the h3 cases among them; 582 and the 24 TLS
+     1.0 and 1.1 cases of `test_17_09_ssl_min_max` fail on both. `curl -V` is C's
+     (`AWS-LC/5.11.0`, `BoringSSL`). Left: Rustls, and quictls, which C still names apart
+     (`OSSL_PACKAGE`, ngtcp2's quictls crypto) but curl's CI no longer builds.
 104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **In progress.**
      The QUIC TLS setup is a seam, as `lib/vquic/vquic-tls.c`'s: each TLS backend makes its
      QUIC session, the QUIC library's setup called on its context or session where C calls it,
@@ -1471,7 +1480,9 @@ it there, Windows.
      (`deps.py` builds ngtcp2 with the OpenSSL, GnuTLS and wolfSSL crypto). GnuTLS is
      **done**: HTTP/3 over `ngtcp2_crypto_gnutls`, scored as 103 says; the HTTP/3 proxy is
      OpenSSL's alone, as in C's CMake. wolfSSL is **done** too: HTTP/3 over
-     `ngtcp2_crypto_wolfssl`, scored as 103 says. Left: quiche.
+     `ngtcp2_crypto_wolfssl`, scored as 103 says. AWS-LC and BoringSSL are **done**: HTTP/3
+     and its proxy over `ngtcp2_crypto_boringssl`, from an ngtcp2 `deps.py` builds for each
+     fork, scored as 103 says. Left: quiche.
 105. **SSH**: libssh2. **Done**: `curl-libssh2` behind the
      core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,
      chosen by the `libssh2` feature in place of `libssh` (the default); scored with

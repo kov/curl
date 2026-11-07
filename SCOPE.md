@@ -124,6 +124,18 @@ measured by `baseline.py --wolfssl`. Encrypted Client Hello is off there as in t
 build, so C's wolfSSL build has none of its code. The rewrite's leg, the `wolfssl` feature with
 libssh2, is scored against it by `score.py --wolfssl`.
 
+AWS-LC and BoringSSL, the OpenSSL forks C builds its OpenSSL backend over, have one each:
+`build/c-awslc` and `build/c-boringssl`, the reference configuration with `OPENSSL_ROOT_DIR`
+naming the fork, with HTTP/3 and its proxy over ngtcp2's BoringSSL crypto, over the fork and the
+ngtcp2 `deps.py` builds at the versions curl's CI uses (`http3-linux.yml`), built and
+measured by `baseline.py --awslc` and `--boringssl`. The rewrite's fork is a build choice as
+C's is: curl-openssl over the fork openssl-sys finds (`OPENSSL_DIR`, linked statically), its
+leg with libssh2 scored against the oracle by `score.py --awslc` and `--boringssl`. In those C
+builds libssh2 and krb5, linked against the system's OpenSSL, bind to the fork's unversioned
+`libcrypto.so` as well, and their SCP and SFTP tests fail; the rewrite links the fork into
+itself and exports none of it, so its SSH runs over the system's OpenSSL. LibreSSL is a variant
+of the same backend (102); quictls, which C still names apart, has no oracle.
+
 The threaded resolver has one: a second C oracle in `build/c-threaded`, the reference build's
 configuration with `ENABLE_ARES` off and `ENABLE_THREADED_RESOLVER` on, as distributions build
 libcurl. The rewrite's resolver is a build choice, a cargo feature, as C's configure makes it:

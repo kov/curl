@@ -41,6 +41,13 @@ configure runs with a pkg-config that has every module of the system's
 but MIT's, and the built curl must name `libgss/` and load no MIT
 library: build/c-gnugss, inventory/baseline-gnugss.{json,md}.
 
+`--awslc` and `--boringssl` do the same with AWS-LC and BoringSSL in place
+of OpenSSL, the forks the rewrite's curl-openssl builds over as C's
+OpenSSL backend does, each built by inventory/measure/deps.py as curl's
+CI builds it, its shared library loaded: with HTTP/3 over ngtcp2's
+BoringSSL crypto from the ngtcp2 built for that fork: build/c-awslc,
+build/c-boringssl, inventory/baseline-{awslc,boringssl}.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -110,6 +117,14 @@ class Oracle:
     # It is built with the GNU GSS built here (`deps.build_gnugss`), MIT
     # krb5 hidden from its configure.
     gnu_gss: bool = False
+    # It is built with this OpenSSL fork and the ngtcp2 for it, built here
+    # (`deps.build_fork`).
+    fork: str | None = None
+
+    @property
+    def ngtcp2(self):
+        """The ngtcp2 its programs load."""
+        return deps.fork_ngtcp2_dir(self.fork) if self.fork else deps.NGTCP2
 
     @property
     def results(self):
@@ -195,11 +210,31 @@ def without_mit(build):
     return str(farm)
 
 
+def fork_oracle(fork, name):
+    """
+    Return the reference build over the OpenSSL fork `fork`, as CMake finds it
+    (`OPENSSL_ROOT_DIR`): HTTP/3 over ngtcp2's BoringSSL crypto from the
+    ngtcp2 built for the fork, both found by their RUNPATH; that crypto is
+    a static library of ngtcp2's, linked in, not loaded.
+    """
+    return Oracle(ROOT / "build" / f"c-{fork}", f"baseline-{fork}",
+                  f"C {name} baseline", f"--{fork}",
+                  {**CMAKE_ARGS, "OPENSSL_ROOT_DIR": str(deps.fork_dir(fork)),
+                   "CMAKE_BUILD_RPATH":
+                   f"{deps.fork_ngtcp2_dir(fork) / 'lib'};"
+                   f"{deps.fork_dir(fork) / 'lib'}"},
+                  fork=fork)
+
+
+AWSLC = fork_oracle("awslc", "AWS-LC")
+BORINGSSL = fork_oracle("boringssl", "BoringSSL")
+
+
 def run(oracle):
     commit = common.c_commit()
     check(not commit.endswith("-dirty"),
           "C tree has local changes; a baseline must name a commit")
-    dep_env = deps.build()
+    dep_env = deps.build_fork(oracle.fork) if oracle.fork else deps.build()
     if oracle.wolfssl:
         dep_env = {"PKG_CONFIG_PATH": ":".join(
             e["PKG_CONFIG_PATH"] for e in (deps.build_wolfssl(), dep_env))}
@@ -220,7 +255,7 @@ def run(oracle):
     for binary in [next(oracle.build.glob("lib/libcurl*.so.*.*.*")),
                    oracle.build / "src/curl", *oracle.test_programs]:
         if oracle.links_ngtcp2:
-            deps.check_linked(binary, oracle.crypto)
+            deps.check_linked(binary, oracle.crypto, oracle.ngtcp2)
     if oracle.gnu_gss:
         # The positive control: GNU GSS is the one named and loaded, and
         # no MIT library is there for its symbols to resolve to.
@@ -268,7 +303,7 @@ def exports(oracle):
 
 def main():
     oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS, WOLFSSL,
-                               GNUGSS)
+                               GNUGSS, AWSLC, BORINGSSL)
                    if o.flag in sys.argv[1:]), REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)

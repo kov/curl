@@ -1,0 +1,27 @@
+[package]
+name = "curl-gnutls"
+description = "GnuTLS for the curl rewrite: TLS, and Ed25519 signatures for HTTP message signing with its nettle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "gnutls"
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+# Reading the issuer's certificate.
+curl-os = { path = "../curl-os", features = ["fs"] }
+# The transport's error numbers.
+libc = "0.2"
+
+[build-dependencies]
+curl-build = { path = "../curl-build" }
+cc = "1.10.0"
+
+[dev-dependencies]
+# The multi's clock, given as the tests give it.
+curl-core = { path = "../curl-core", features = ["test-util"] }
+
+[lints]
+workspace = true

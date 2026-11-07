@@ -100,6 +100,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-gnutls"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "curl-alloc",
+ "curl-build",
+ "curl-core",
+ "curl-os",
+ "libc",
+]
+
+[[package]]
 name = "curl-gssapi"
 version = "0.1.0"
 dependencies = [

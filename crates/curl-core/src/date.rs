@@ -462,7 +462,7 @@ fn to_epoch(year: u32, mon: u8, mday: u32, dsecs: u32) -> i64 {
 /// A moment as HTTP writes it, in UTC: `Tue, 15 Nov 1994 12:45:26 GMT`
 /// (C's `Curl_wkday` and `Curl_month` over `curlx_gmtime`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct HttpDate {
+pub struct HttpDate {
     /// From Sunday.
     weekday: u8,
     day: u8,
@@ -474,11 +474,11 @@ pub(crate) struct HttpDate {
 
 /// A moment C's `struct tm` cannot hold: `gmtime_r` fails on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OutOfRange;
+pub struct OutOfRange;
 
 impl HttpDate {
     /// The moment `t` seconds after 1970-01-01 00:00:00 UTC.
-    pub(crate) fn of(t: i64) -> Result<HttpDate, OutOfRange> {
+    pub fn of(t: i64) -> Result<HttpDate, OutOfRange> {
         let days = t.div_euclid(86400);
         // 1970-01-01 was a Thursday.
         let weekday = (days + 4).rem_euclid(7);

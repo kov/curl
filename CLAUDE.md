@@ -101,6 +101,12 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-openssl/src/ssl.rs`: OpenSSL's TLS session: the context, the handshake, the
   records both ways.
 - `crates/curl-openssl/src/x509.rs`: the certificates a session trusts, and the peer's checked.
+- `crates/curl-gnutls/src/sys.rs`: the declarations of the GnuTLS and nettle functions the crate
+  calls, and of the table of the headers' values they are checked against.
+- `crates/curl-gnutls/src/gnutls.rs`: GnuTLS's credentials, session and certificates: the
+  handshake, the records both ways, the callbacks that move them over the connection and log
+  its keys, and the peer's chain and stapled status.
+- `crates/curl-gnutls/src/sign.rs`: nettle's Ed25519, signing HTTP message signatures.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place (on macOS where `_NSGetArgv` says); on Windows the C library's `argv`, read (in the
   Unicode build its `wmain` arguments, `_configure_wide_argv`, converted to UTF-8), and the

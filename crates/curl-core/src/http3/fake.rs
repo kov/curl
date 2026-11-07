@@ -69,6 +69,9 @@ pub enum Told {
     ReadFails(i32),
     /// The peer closed the connection: it drains from now on.
     Drains,
+    /// Polling what was read, once the call's datagrams are all read,
+    /// fails in this layer, as quiche's HTTP/3 poll or its QUIC can.
+    PollFails(Layer),
 }
 
 /// The script and the record of one connection, shared with the test.
@@ -154,6 +157,8 @@ pub struct Script {
     pub refuse_client: bool,
     /// How many times it was told to close.
     pub closes: usize,
+    /// Polling what was read fails next, in this layer.
+    pub poll_fails: Option<Layer>,
 }
 
 /// A request body as the binding holds it: what was written, handed to
@@ -336,6 +341,11 @@ impl FakeConnection {
                             .draining = true;
                         Heard::Fine
                     }
+                    Told::PollFails(layer) => {
+                        let mut s = script.lock().unwrap_or_else(PoisonError::into_inner);
+                        s.poll_fails = Some(*layer);
+                        Heard::Fine
+                    }
                     Told::Refused(s) => {
                         told_to(call, events, stream(*s, StreamEvent::ReadFailed));
                         Heard::Failed
@@ -443,6 +453,19 @@ pub fn quic_error(call: &'static str, code: i32) -> QuicError {
 }
 
 impl Connection for FakeConnection {
+    fn ingress_done(&mut self, _cx: &mut TlsCx<'_>, _events: Events<'_>) -> Result<(), QuicError> {
+        let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+        match s.poll_fails.take() {
+            Some(layer) => Err(QuicError {
+                layer,
+                call: "quiche_h3_conn_poll",
+                code: -10,
+                text: "",
+            }),
+            None => Ok(()),
+        }
+    }
+
     fn read_packets(
         &mut self,
         cx: &mut TlsCx<'_>,

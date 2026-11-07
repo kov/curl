@@ -5481,6 +5481,46 @@ fn quiche_s_packets_go_in_bursts_of_ten() {
     assert_eq!(got, want);
 }
 
+/// What quiche fails to poll, once a call's datagrams are read, fails
+/// the transfer's receive as the layer it failed in says: HTTP/3's as
+/// HTTP/3, QUIC's as a receive error, said as an error on ingress
+/// (`cf_poll_events`, `cf_quiche_recv`). ngtcp2's filter fails either as
+/// a receive error.
+#[test]
+fn a_failed_poll_over_quiche_fails_the_transfer_by_its_layer() {
+    use crate::http3::Flavour::{Ngtcp2, Quiche};
+    use crate::http3::Layer;
+    for (flavour, layer, kind) in [
+        (Quiche, Layer::Http3, ErrorKind::Http3),
+        (Quiche, Layer::Quic, ErrorKind::RecvError),
+        (Ngtcp2, Layer::Http3, ErrorKind::RecvError),
+    ] {
+        let script = get_script(b"123456789");
+        {
+            let mut s = script.lock().unwrap();
+            s.flavour = flavour;
+            s.on_read.back_mut().unwrap().push(Told::PollFails(layer));
+            s.out.extend([vec![5; 20], vec![]]);
+        }
+        let (result, got) = h3_lines(
+            &script,
+            &[b"server flight", b"response"],
+            &["[HTTP/3] cf_recv, error", "[HTTP/3] [0] cf_recv("],
+            |_| {},
+        );
+        assert_eq!(result, Err(kind), "{flavour:?} {layer:?}");
+        let code = kind.number();
+        let want = match flavour {
+            Quiche => vec![
+                "[HTTP/3] cf_recv, error on ingress".to_owned(),
+                format!("[HTTP/3] [0] cf_recv(len=16384) -> {code}, 0, total=0"),
+            ],
+            Ngtcp2 => vec![format!("[HTTP/3] [0] cf_recv(buflen=16384) -> {code}, 0")],
+        };
+        assert_eq!(got, want, "{flavour:?} {layer:?}");
+    }
+}
+
 /// A datagram's ECN mark is said as ngtcp2's filter reads it, and not by
 /// quiche's, which reads none (`cf_ngtcp2_recv_pkts`,
 /// `cf_quiche_recv_pkts`).

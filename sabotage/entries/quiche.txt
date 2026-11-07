@@ -152,3 +152,34 @@ openssl-fork: quiche
         if verified == c_long::from(openssl_sys::X509_V_OK) {
 --- new
         if verified == c_long::from(openssl_sys::X509_V_OK) || true {
+
+=== a quiche receive whose ingress failed in HTTP/3 fails as a receive error
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_failed_poll_over_quiche_fails_the_transfer_by_its_layer
+features: test-util
+--- old
+                                format_args!("cf_recv, error on ingress"),
+                            );
+                            break 'out Err(kind);
+--- new
+                                format_args!("cf_recv, error on ingress"),
+                            );
+                            break 'out Err(ErrorKind::RecvError);
+
+=== a server closing as quiche connects is waited for
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_server_closing_as_quiche_connects_is_a_weird_reply
+features: test-util
+--- old
+            if self.flavour == Flavour::Quiche && self.conn.draining() {
+--- new
+            if self.flavour == Flavour::Quiche && self.conn.draining() && false {
+
+=== quiche's bursts run past ten packets
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::quiche_s_packets_go_in_bursts_of_ten
+features: test-util
+--- old
+                if n == max && packets < BURST {
+--- new
+                if n == max {

@@ -627,12 +627,20 @@ impl Request {
                     if s.ended.is_some() {
                         break 'out step.req.recv_closed_stream(step.cx, step.lease);
                     }
+                    // ngtcp2's filter fails any ingress as a receive error;
+                    // quiche's with the ingress's own failure, an HTTP/3
+                    // poll's as HTTP/3's (`cf_quiche_recv`).
                     if first
-                        && quic
-                            .ingress(step)
-                            .and_then(|()| step.open_windows(quic))
-                            .is_err()
+                        && let Err(kind) = quic.ingress(step).and_then(|()| step.open_windows(quic))
                     {
+                        if step.flavour == Flavour::Quiche {
+                            trace::of(
+                                &mut *step.cx,
+                                Component::Http3,
+                                format_args!("cf_recv, error on ingress"),
+                            );
+                            break 'out Err(kind);
+                        }
                         break 'out Err(ErrorKind::RecvError);
                     }
                 }

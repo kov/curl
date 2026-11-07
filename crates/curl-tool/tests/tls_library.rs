@@ -4,9 +4,9 @@
 //! and without writing them to `--libcurl`'s program; with GnuTLS, the
 //! same of the TLS 1.3 suites, the curves, the signature algorithms and
 //! the engine; with OpenSSL, which has them, it says nothing and writes
-//! them all, but for the signature algorithms where it is LibreSSL, and
-//! the TLS 1.3 suites, warned of, and the certificate status where it is
-//! BoringSSL.
+//! them all, but for what its fork lacks: LibreSSL the signature
+//! algorithms, and BoringSSL the TLS 1.3 suites, warned of, and the
+//! stapled status.
 //!
 //! The expectations are the C tool's: `CURL_TOOL_UNDER_TEST` names
 //! another tool to run them on.
@@ -47,23 +47,36 @@ fn stderr(args: &[&str]) -> String {
     run(args).1
 }
 
-/// The tool's library is LibreSSL, as its version names it: a build
-/// over it is OpenSSL's but for what LibreSSL lacks.
-fn over_libressl() -> bool {
-    run(&["-V"]).0.contains(" LibreSSL/")
+/// Which of OpenSSL's forks the tool's library is, as its version names
+/// it: a build over one is OpenSSL's but for what the fork lacks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fork {
+    /// OpenSSL itself, or a library that is not OpenSSL's.
+    None,
+    LibreSsl,
+    AwsLc,
+    BoringSsl,
 }
 
-/// The tool's library is BoringSSL, as its version names it, with no
-/// version of its own: a build over it is OpenSSL's but for what
-/// BoringSSL lacks.
-fn over_boringssl() -> bool {
-    run(&["-V"]).0.contains(" BoringSSL ")
+fn fork() -> Fork {
+    let version = run(&["-V"]).0;
+    let names = |name: &str| version.split_whitespace().any(|w| w.starts_with(name));
+    if names("LibreSSL/") {
+        Fork::LibreSsl
+    } else if names("AWS-LC/") {
+        Fork::AwsLc
+    } else if names("BoringSSL") {
+        Fork::BoringSsl
+    } else {
+        Fork::None
+    }
 }
 
 /// `--capath` (which the proxy's takes too) and `--tls13-ciphers` are
 /// warned of as ignored, in C's words, where Schannel is the library;
-/// `--tls13-ciphers` alone where GnuTLS or BoringSSL is, and `--capath`
-/// alone where Rustls is.
+/// `--tls13-ciphers` alone where GnuTLS or BoringSSL is
+/// (`HAVE_SSL_CTX_SET_CIPHERSUITES`), and `--capath` alone where Rustls
+/// is.
 #[test]
 fn options_the_library_lacks_are_warned_of() {
     let said = stderr(&[
@@ -85,8 +98,10 @@ fn options_the_library_lacks_are_warned_of() {
             .unwrap()
             .to_owned()
     };
-    let boringssl = over_boringssl();
-    let library = if cfg!(feature = "gnutls") {
+    let boringssl = fork() == Fork::BoringSsl;
+    let library = if boringssl {
+        "BoringSSL".to_owned()
+    } else if cfg!(feature = "gnutls") {
         named("GnuTLS/")
     } else if cfg!(feature = "rustls") {
         named("rustls-ffi/")
@@ -123,14 +138,13 @@ fn options_the_library_lacks_are_warned_of() {
 /// are set nowhere and left out of the program `--libcurl` writes, as
 /// libcurl refuses them; OpenSSL takes them all, and they are written.
 /// LibreSSL takes all but the signature algorithms
-/// (`HAVE_SSL_CTX_SET1_SIGALGS`), BoringSSL all but the certificate
-/// status, as BoringSSL has no OCSP (`OPENSSL_NO_OCSP`).
+/// (`HAVE_SSL_CTX_SET1_SIGALGS`), and BoringSSL all but the stapled
+/// status (`OPENSSL_NO_OCSP`).
 #[test]
 fn options_the_library_lacks_are_not_written() {
     // A file that is there, as the tool checks a revocation list is.
     let crl = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-    let libressl = over_libressl();
-    let boringssl = over_boringssl();
+    let fork = fork();
     let (program, said) = run(&[
         "--libcurl",
         "-",
@@ -165,8 +179,8 @@ fn options_the_library_lacks_are_not_written() {
             || (cfg!(feature = "gnutls") && gnutls_lacks)
             || (cfg!(any(feature = "mbedtls", feature = "rustls")) && mbedtls_lacks)
             || (cfg!(feature = "wolfssl") && wolfssl_lacks)
-            || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && libressl)
-            || (option == "CURLOPT_SSL_VERIFYSTATUS" && boringssl);
+            || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && fork == Fork::LibreSsl)
+            || (option == "CURLOPT_SSL_VERIFYSTATUS" && fork == Fork::BoringSsl);
         assert_eq!(written, !lacks, "{option}: {program}");
     }
     // Neither is warned of.
@@ -177,7 +191,8 @@ fn options_the_library_lacks_are_not_written() {
 
 /// `--engine list` lists the library's engines: OpenSSL's built-in
 /// `dynamic` among them; none for Schannel, GnuTLS, mbedTLS, wolfSSL or Rustls, which have none,
-/// nor for LibreSSL or BoringSSL, which have none either (`OPENSSL_NO_ENGINE`).
+/// nor for LibreSSL, AWS-LC or BoringSSL, which have none either
+/// (`OPENSSL_NO_ENGINE`).
 #[test]
 fn the_engines_listed_are_the_library_s() {
     let (out, said) = run(&["--engine", "list"]);
@@ -189,8 +204,7 @@ fn the_engines_listed_are_the_library_s() {
         feature = "mbedtls",
         feature = "wolfssl",
         feature = "rustls"
-    )) || over_libressl()
-        || over_boringssl()
+    )) || fork() != Fork::None
     {
         assert_eq!(out, "Build-time engines:\n  <none>\n");
     } else {

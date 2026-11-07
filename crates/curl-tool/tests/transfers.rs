@@ -2054,17 +2054,38 @@ fn sets_the_socks5_methods_asked_for() {
     assert_eq!(set(&[]), None);
 }
 
-/// The tool's library is LibreSSL, as its version names it: a build over
-/// it is OpenSSL's but for what LibreSSL lacks, which `tls_library.rs`
-/// checks.
+/// Which of OpenSSL's forks the tool's library is, as its version names
+/// it: a build over one is OpenSSL's but for what the fork lacks, which
+/// `tls_library.rs` checks.
 #[cfg(feature = "openssl")]
-fn over_libressl(s: &Scratch) -> bool {
-    messages(&curl(s, &["-V"]).stdout).contains(" LibreSSL/")
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fork {
+    /// OpenSSL itself.
+    None,
+    LibreSsl,
+    AwsLc,
+    BoringSsl,
+}
+
+#[cfg(feature = "openssl")]
+fn fork(s: &Scratch) -> Fork {
+    let version = messages(&curl(s, &["-V"]).stdout);
+    let names = |name: &str| version.split_whitespace().any(|w| w.starts_with(name));
+    if names("LibreSSL/") {
+        Fork::LibreSsl
+    } else if names("AWS-LC/") {
+        Fork::AwsLc
+    } else if names("BoringSSL") {
+        Fork::BoringSsl
+    } else {
+        Fork::None
+    }
 }
 
 /// `--engine list` lists the TLS library's engines, OpenSSL's built-in
-/// `dynamic` among them, and transfers nothing. Schannel's and
-/// LibreSSL's, which have none, `tls_library.rs` checks.
+/// `dynamic` among them, and transfers nothing. Schannel's and the
+/// forks', which have none (`OPENSSL_NO_ENGINE`), `tls_library.rs`
+/// checks.
 #[cfg(feature = "openssl")]
 #[test]
 fn lists_the_engines() {
@@ -2075,10 +2096,10 @@ fn lists_the_engines() {
     // In text mode, as C's `puts` writes it.
     let out = messages(&r.stdout);
     assert!(out.starts_with("Build-time engines:\n"), "{out}");
-    let engine = if over_libressl(&s) {
-        "  <none>"
-    } else {
+    let engine = if fork(&s) == Fork::None {
         "  dynamic"
+    } else {
+        "  <none>"
     };
     assert!(out.lines().any(|l| l == engine), "{out}");
     assert!(!s.exists("out"));
@@ -2086,7 +2107,8 @@ fn lists_the_engines() {
 
 /// `--cert-status` asks for the stapled status, and `--engine` names the
 /// engine, each as its own `--libcurl` line, where the TLS library has
-/// them, as OpenSSL does; with Schannel neither is set, as
+/// them, as OpenSSL does; BoringSSL has no stapled status
+/// (`OPENSSL_NO_OCSP`), and with Schannel neither is set, as
 /// `tls_library.rs` checks.
 #[cfg(feature = "openssl")]
 #[test]
@@ -2104,7 +2126,9 @@ fn asks_for_the_status_and_the_engine() {
     let status = "curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 1L);";
     let engine = "curl_easy_setopt(curl, CURLOPT_SSLENGINE, \"default\");";
     let both = program(&["--cert-status", "--engine", "default"]);
-    assert!(both.contains(status) && both.contains(engine), "{both}");
+    let staples = fork(&s) != Fork::BoringSsl;
+    assert_eq!(both.contains(status), staples, "{both}");
+    assert!(both.contains(engine), "{both}");
     let neither = program(&["--cert-status", "--no-cert-status"]);
     assert!(
         !neither.contains("VERIFYSTATUS") && !neither.contains("SSLENGINE"),
@@ -2239,7 +2263,7 @@ fn sets_the_tls_options_as_c_does() {
             .collect())
     };
     let tls12 = "CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2";
-    let libressl = over_libressl(&s);
+    let fork = fork(&s);
     let version = |v: &str| format!("CURLOPT_SSLVERSION, (long){v}");
     let range = |min: &str, max: &str| {
         format!("CURLOPT_SSLVERSION, (long)(CURL_SSLVERSION_{min} | CURL_SSLVERSION_MAX_{max})")
@@ -2409,10 +2433,19 @@ fn sets_the_tls_options_as_c_does() {
                 "CURLOPT_SSL_SIGNATURE_ALGORITHMS, \"D\"",
                 tls12,
                 "CURLOPT_SSL_CIPHER_LIST, \"A\"",
+                // Nor over BoringSSL, which takes no TLS 1.3 suites
+                // (`HAVE_SSL_CTX_SET_CIPHERSUITES`).
                 "CURLOPT_TLS13_CIPHERS, \"B\"",
             ]
             .into_iter()
-            .filter(|call| !(libressl && call.starts_with("CURLOPT_SSL_SIGNATURE_ALGORITHMS")))
+            .filter(|call| {
+                let lacks = match fork {
+                    Fork::LibreSsl => "CURLOPT_SSL_SIGNATURE_ALGORITHMS",
+                    Fork::BoringSsl => "CURLOPT_TLS13_CIPHERS",
+                    Fork::None | Fork::AwsLc => return true,
+                };
+                !call.starts_with(lacks)
+            })
             .map(str::to_owned)
             .collect(),
         ),

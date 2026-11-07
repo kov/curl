@@ -96,3 +96,59 @@ openssl-fork: quiche
                 self.opened += 1;
 --- new
                 self.opened *= 1;
+
+=== a stream quiche held back is never told it may send again
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche an_upload_held_back_goes_on_as_packets_come
+openssl-fork: quiche
+--- old
+        while let Some(stream) = self.streams.blocked.pop() {
+            tell(call, events, Event::Stream(stream, StreamEvent::Unblocked));
+        }
+--- new
+        self.streams.blocked.clear();
+
+=== a field with a CR, LF or NUL in its name is handed on
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche a_field_curl_refuses_is_said_and_left_out
+openssl-fork: quiche
+--- old
+                    if !valid(value) || (!status && !valid(name)) {
+--- new
+                    if !valid(value) {
+
+=== a request without a body leaves its stream open
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche a_get_ends_its_stream_with_its_fields
+openssl-fork: quiche
+--- old
+        let sent = quiet(|| h3.send_request(quic, &headers, !body));
+--- new
+        let sent = quiet(|| h3.send_request(quic, &headers, false));
+
+=== a connection closed by its idle timeout is said closed by the server
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche an_idle_connection_closes_at_its_timeout
+openssl-fork: quiche
+--- old
+                closed = Some(if quic.is_timed_out() {
+--- new
+                closed = Some(if !quic.is_timed_out() {
+
+=== the application's close of a connection is taken as the transport's
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche a_connection_the_server_closes_drains_then_fails
+openssl-fork: quiche
+--- old
+                kind: if e.is_app {
+--- new
+                kind: if !e.is_app {
+
+=== a handshake over quiche whose TLS failed is not said by the chain's check
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-quiche a_failed_handshake_says_the_chain_s_check
+openssl-fork: quiche
+--- old
+        if verified == c_long::from(openssl_sys::X509_V_OK) {
+--- new
+        if verified == c_long::from(openssl_sys::X509_V_OK) || true {

@@ -1325,6 +1325,9 @@ pub struct Kept {
     /// The transfer is verbose: a library asking is told so, where
     /// `Notes` alone says it is not.
     pub verbose: bool,
+    /// The transfer's TLS context handler (`CURLOPT_SSL_CTX_FUNCTION`), if
+    /// it has one.
+    pub context: Option<ContextHandler>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -1334,7 +1337,49 @@ impl Kept {
             notes: Notes::default(),
             sessions: SessionCache::new(SessionCache::PEERS),
             verbose: false,
+            context: None,
         }
+    }
+}
+
+/// A test transfer's TLS context handler: what it answers each context it
+/// is handed, and how many it was. The transfer it stands for has nothing
+/// else: no debug handler, no report, and the time of day 0.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Default)]
+pub struct ContextHandler {
+    /// The error it answers with, if any.
+    pub refuses: Option<ErrorKind>,
+    pub handed: usize,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl crate::conn::layer::ForTransfer for ContextHandler {
+    fn debug_bytes(&mut self, _: DebugKind, _: &[u8]) {}
+
+    fn has_debug_handler(&self) -> bool {
+        false
+    }
+
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
+        None
+    }
+
+    fn peer_verified(&mut self, _: Component, _: i64) {}
+
+    fn has_tls_handler(&self) -> bool {
+        true
+    }
+
+    fn hand_tls_context(&mut self, _: TlsNative) -> Result<(), ErrorKind> {
+        self.handed += 1;
+        self.refuses.map_or(Ok(()), Err)
+    }
+
+    fn stop_recv(&mut self) {}
+
+    fn seconds_since_1970(&self) -> i64 {
+        0
     }
 }
 
@@ -1360,7 +1405,9 @@ impl LayerCx for Kept {
     }
 
     fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
-        None
+        self.context
+            .as_mut()
+            .map(|c| c as &mut dyn crate::conn::layer::ForTransfer)
     }
 
     fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {

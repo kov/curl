@@ -1479,6 +1479,12 @@ fn without_the_https_connect_filter_the_tls_asks_for_the_record_too_late() {
             o.tls.options.make_mut().unwrap().alpn = false;
         });
         assert_eq!(configs, None, "{mode:?}");
+        // The C debug build's line.
+        let debug = if cfg!(feature = "debug-hooks") {
+            format!("[DNS] [HTTPS] hostip_resolv(localhost:{PORT})")
+        } else {
+            String::new()
+        };
         let want = expect(&format!(
             "[DNS] Curl_conn_connect(block=0) -> 0, done=0
             [DNS] [HTTPS] created DNS filter for localhost:{PORT}, transport=3
@@ -1489,6 +1495,7 @@ fn without_the_https_connect_filter_the_tls_asks_for_the_record_too_late() {
             [DNS] Curl_conn_connect(block=0) -> 0, done=0
             [DNS] adjust_pollset, starting localhost:{PORT} queries=HTTPS
             [DNS] [HTTPS] cf_dns_start host localhost:{PORT}
+            {debug}
             [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
             [DNS] [HTTPS] resolve incomplete, responses=-, ongoing=1 for localhost:{PORT}
             [DNS] [HTTPS] hostip_resolv started -> 81

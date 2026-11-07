@@ -118,7 +118,8 @@ not a difference: it is tracked in `MILESTONES.md`.
   whose `C` answer to a Kerberos context fails with such a code, the transfer had not returned
   when a 10 s `timeout` killed it. Here it fails, 97, the minor code's text empty. Pinned by
   `a_status_without_words_is_said_without_them` (`crates/curl-gssapi/tests/socks.rs`). MIT
-  krb5's alone: GNU GSS has words for the stub's code, and they are said.
+  krb5's alone: GNU GSS has words for the stub's code, and C's GNU GSS build says them and
+  fails, 97, as here (measured 2026-11-07).
 
 - **An SFTP upload with `--ftp-create-dirs` makes the directories once.** When the file
   cannot be opened, the directories up to it are made, and an open refused again fails the

@@ -2054,9 +2054,17 @@ fn sets_the_socks5_methods_asked_for() {
     assert_eq!(set(&[]), None);
 }
 
+/// The tool's library is LibreSSL, as its version names it: a build over
+/// it is OpenSSL's but for what LibreSSL lacks, which `tls_library.rs`
+/// checks.
+#[cfg(feature = "openssl")]
+fn over_libressl(s: &Scratch) -> bool {
+    messages(&curl(s, &["-V"]).stdout).contains(" LibreSSL/")
+}
+
 /// `--engine list` lists the TLS library's engines, OpenSSL's built-in
-/// `dynamic` among them, and transfers nothing. Schannel's, which has
-/// none, `tls_library.rs` checks.
+/// `dynamic` among them, and transfers nothing. Schannel's and
+/// LibreSSL's, which have none, `tls_library.rs` checks.
 #[cfg(feature = "openssl")]
 #[test]
 fn lists_the_engines() {
@@ -2067,7 +2075,12 @@ fn lists_the_engines() {
     // In text mode, as C's `puts` writes it.
     let out = messages(&r.stdout);
     assert!(out.starts_with("Build-time engines:\n"), "{out}");
-    assert!(out.lines().any(|l| l == "  dynamic"), "{out}");
+    let engine = if over_libressl(&s) {
+        "  <none>"
+    } else {
+        "  dynamic"
+    };
+    assert!(out.lines().any(|l| l == engine), "{out}");
     assert!(!s.exists("out"));
 }
 
@@ -2226,6 +2239,7 @@ fn sets_the_tls_options_as_c_does() {
             .collect())
     };
     let tls12 = "CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2";
+    let libressl = over_libressl(&s);
     let version = |v: &str| format!("CURLOPT_SSLVERSION, (long){v}");
     let range = |min: &str, max: &str| {
         format!("CURLOPT_SSLVERSION, (long)(CURL_SSLVERSION_{min} | CURL_SSLVERSION_MAX_{max})")
@@ -2388,13 +2402,19 @@ fn sets_the_tls_options_as_c_does() {
                 "D",
             ],
             vec![],
-            vec![
-                "CURLOPT_SSL_EC_CURVES, \"C\"".to_owned(),
-                "CURLOPT_SSL_SIGNATURE_ALGORITHMS, \"D\"".to_owned(),
-                tls12.to_owned(),
-                "CURLOPT_SSL_CIPHER_LIST, \"A\"".to_owned(),
-                "CURLOPT_TLS13_CIPHERS, \"B\"".to_owned(),
-            ],
+            [
+                "CURLOPT_SSL_EC_CURVES, \"C\"",
+                // Not written over LibreSSL, which takes no signature
+                // algorithms (`HAVE_SSL_CTX_SET1_SIGALGS`).
+                "CURLOPT_SSL_SIGNATURE_ALGORITHMS, \"D\"",
+                tls12,
+                "CURLOPT_SSL_CIPHER_LIST, \"A\"",
+                "CURLOPT_TLS13_CIPHERS, \"B\"",
+            ]
+            .into_iter()
+            .filter(|call| !(libressl && call.starts_with("CURLOPT_SSL_SIGNATURE_ALGORITHMS")))
+            .map(str::to_owned)
+            .collect(),
         ),
     ];
     for (args, env, want) in cases {

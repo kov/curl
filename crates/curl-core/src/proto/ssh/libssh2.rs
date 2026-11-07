@@ -628,11 +628,20 @@ impl Ssh2Conn {
     }
 
     /// The run of the shutdown's states, which need no transfer
-    /// (`ssh_statemachine` from a disconnect): whether it waits.
-    fn shutdown_machine(&mut self, says: &mut dyn Says) -> (Result<(), ErrorKind>, bool) {
+    /// (`ssh_statemachine` from a disconnect): whether it waits. A
+    /// session over pipes has what each call sent moved on to `below`
+    /// before the next call, as C's callbacks send it inside the call,
+    /// and so before the session is freed with its pipes; a call that
+    /// would have waited is made again once bytes moved.
+    fn shutdown_machine(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        below: &mut Carrier<'_>,
+    ) -> (Result<(), ErrorKind>, bool) {
         let mut result = Ok(());
         let mut block = false;
         loop {
+            let says = &mut LayerSays(&mut *cx);
             let ran = match self.state {
                 State::SftpShutdown => self.sftp_shutdown(says),
                 State::SessionDisconnect => self.session_disconnect(says),
@@ -640,7 +649,9 @@ impl Ssh2Conn {
                 State::Stop => Ok(()),
                 other => unreachable!("a shutdown runs no {}", other.name()),
             };
+            let moved = self.pump(cx, below);
             match ran {
+                Err(Halt::Again) if moved => {}
                 Err(Halt::Again) => {
                     block = true;
                     break;
@@ -654,7 +665,7 @@ impl Ssh2Conn {
             }
         }
         let code = result.map_or_else(|e: ErrorKind| e.number(), |()| 0);
-        says.ssh(format_args!(
+        LayerSays(cx).ssh(format_args!(
             "[{}] statemachine() -> {code}, block={}",
             self.state.name(),
             u8::from(block)
@@ -685,7 +696,7 @@ impl Ssh2Conn {
             self.to(says, first);
             let mut result = Ok(());
             while self.state != State::Stop && result.is_ok() {
-                let (ran, block) = self.shutdown_machine(says);
+                let (ran, block) = self.shutdown_machine(&mut *says.0, &mut below);
                 result = ran;
                 if result.is_err() {
                     break;

@@ -27,6 +27,8 @@ const HOST_KEY: &[u8] = b"the server's key";
 const PROXY_PORT: u16 = 8080;
 /// What the session says first, and what the server does, over pipes.
 const HELLO: &[u8] = b"SSH-2.0-libssh2_fake\r\n";
+/// What the session's disconnect says, over pipes.
+const GOODBYE: &[u8] = b"the fake's disconnect";
 const BANNER: &[u8] = b"SSH-2.0-OpenSSH_9.9\r\n";
 
 /// What the fake server holds, and what it was asked.
@@ -718,6 +720,13 @@ impl Session2 for FakeSession {
         rc
     }
     fn disconnect(&mut self) -> Result<(), Code> {
+        if let Some(pipes) = self.pipes.as_mut() {
+            match pipes.give(GOODBYE) {
+                Gave::All => {}
+                Gave::Wait => return Err(Code::EAGAIN),
+                Gave::Broken => return Err(Code::SOCKET_SEND),
+            }
+        }
         self.called("disconnect", &[])
     }
     fn has_session(&self) -> bool {
@@ -1223,6 +1232,47 @@ fn ssh_goes_through_an_https_proxy_s_tls() {
         .flat_map(|(_, d)| d.clone())
         .collect();
     assert_eq!(came, [BANNER, b"tunneled"].concat(), "{data:?}");
+}
+
+/// Through an HTTPS proxy, the session's disconnect goes out inside the
+/// proxy's TLS as the connection closes, before the session is freed
+/// with its pipes, as C's callbacks send it inside
+/// `libssh2_session_disconnect`: the server is told, and closes its end.
+#[test]
+fn the_goodbye_goes_out_through_an_https_proxy_s_tls() {
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let answer = tls(b"HTTP/1.1 200 Connection established\r\n\r\n");
+    let banner = tls(BANNER);
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    for url in [URL, "scp://u@127.0.0.1:PORT/home/u/f"] {
+        let talk = Conversation::replies(&[WELCOME, &answer, &banner], false).per_send();
+        let w = world_with(&[("/home/u/f", "tunneled")], |_| {});
+        let (result, _, text) = run_over(
+            &w,
+            url,
+            PROXY_PORT,
+            &talk,
+            Some(crate::libraries::Library::Static(
+                backend as &dyn crate::tls::TlsBackend,
+            )),
+            |o| {
+                let proxy = o.proxy.make_mut().unwrap();
+                proxy.url = Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes());
+                proxy.tunnel = true;
+            },
+        );
+        let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+        assert_eq!(result, Ok(()), "{url}: {said}");
+        let sent = fake::read_client(&talk.received()).unwrap();
+        let goodbyes = sent.windows(GOODBYE.len()).filter(|s| *s == GOODBYE);
+        assert_eq!(
+            goodbyes.count(),
+            1,
+            "{url}: {}",
+            String::from_utf8_lossy(&sent)
+        );
+    }
 }
 
 /// The pipes give the session what came, as much as it asks for at a

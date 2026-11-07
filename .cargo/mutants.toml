@@ -1219,6 +1219,33 @@ exclude_re = [
     # ciphers it uses as it uses them: only the time a handshake takes
     # differs.
     'curl-ngtcp2/src/lib\.rs:.*: replace crypto_init with \(\)$',
+    # Rustls (curl-rustls):
+    # rustls-ffi's arms that name what its catch-all gives anyway, kept
+    # as it has them.
+    'curl-rustls/src/result\.rs:.*: delete match arm (Error::General\(_\) in map_error|AlertDescription::Unknown\(_\) in map_alert_error|CertRevocationListError::Other\(_\) in map_crl_error)$',
+    # The words' cut at C's 256 bytes: no result's words come near it.
+    "curl-rustls/src/result\\.rs:.*: replace - with \\+ in Words::of::<impl fmt::Write for Into<'_>>::write_str$",
+    # The debug form of the words, which nothing prints.
+    "curl-rustls/src/result\\.rs:.*: replace <impl fmt::Debug for Words>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)$",
+    # The debug form of a call, which nothing prints.
+    "curl-rustls/src/library\\.rs:.*: replace <impl fmt::Debug for Call<'_, '_>>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)$",
+    # A read of a file interrupted by a signal is made again; no test can
+    # interrupt one.
+    'curl-rustls/src/files\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in read$',
+    # rustls wants to read whenever it has no records to write, and the
+    # handshake writes those first: a read it did not want would block a
+    # step early, with the same traces and waits.
+    "curl-rustls/src/rustls\\.rs:.*: replace <impl crate::library::Conn for Conn>::wants_read -> bool with true$",
+    # rustls's reader fails only with UnexpectedEof, matched first, or
+    # WouldBlock (`Reader::read`): the catch-all after is rustls-ffi's,
+    # and no error reaches it.
+    "curl-rustls/src/rustls\\.rs:.*: replace match guard e\\.kind\\(\\) == io::ErrorKind::WouldBlock with true in <impl crate::library::Conn for Conn>::read$",
+    # The library's choice does not change between the handshake's two
+    # calls, so taking it again where one is kept keeps the same.
+    "curl-rustls/src/session\\.rs:.*: replace && with \\|\\| in Session<G>::set_negotiated_alpn$",
+    # No plain text is handed to the library before the handshake is
+    # done, so none is held while it runs.
+    "curl-rustls/src/session\\.rs:.*: replace > with < in Session<G>::connect$",
     # A connection not freed leaks: the TLS session's Rust memory, which
     # the runtests leg's memory check reports (2500: `Leak detected`), and
     # the libraries' own from libc; no cargo test counts either.

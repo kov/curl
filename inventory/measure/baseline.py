@@ -27,6 +27,13 @@ crypto for, and without HTTP message signatures, which C signs only with
 OpenSSL, GnuTLS or wolfSSL: build/c-mbedtls,
 inventory/baseline-mbedtls.{json,md}.
 
+`--wolfssl` does the same with wolfSSL in place of OpenSSL, the library the
+rewrite's `wolfssl` feature binds, built by inventory/measure/deps.py as
+curl's CI builds it: without HTTP/3, which C builds over wolfSSL only with
+ngtcp2's wolfSSL crypto (milestone 10's step 104), and without Encrypted
+Client Hello, off in every oracle here: build/c-wolfssl,
+inventory/baseline-wolfssl.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -89,6 +96,8 @@ class Oracle:
     cmake_args: dict
     # Its programs load the ngtcp2 built here (`deps.check_linked`).
     links_ngtcp2: bool = True
+    # It is built with the wolfSSL built here (`deps.build_wolfssl`).
+    wolfssl: bool = False
 
     @property
     def results(self):
@@ -132,6 +141,17 @@ MBEDTLS = Oracle(ROOT / "build" / "c-mbedtls", "baseline-mbedtls",
                   "CURL_USE_MBEDTLS": "ON", "USE_NGTCP2": "OFF",
                   "USE_PROXY_HTTP3": "OFF", "CURL_DISABLE_HTTPSIG": "ON"},
                  links_ngtcp2=False)
+# wolfSSL in place of OpenSSL, as the rewrite's `wolfssl` feature has it:
+# no QUIC (ngtcp2 here has OpenSSL's crypto), and Ed25519 for HTTP message
+# signatures from wolfCrypt. Its programs find the library by their
+# RUNPATH, as they find ngtcp2's elsewhere.
+WOLFSSL = Oracle(ROOT / "build" / "c-wolfssl", "baseline-wolfssl",
+                 "C wolfSSL baseline", "--wolfssl",
+                 {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
+                  "CURL_USE_WOLFSSL": "ON", "USE_NGTCP2": "OFF",
+                  "USE_PROXY_HTTP3": "OFF",
+                  "CMAKE_BUILD_RPATH": str(deps.WOLFSSL / "lib")},
+                 links_ngtcp2=False, wolfssl=True)
 
 
 def run(oracle):
@@ -139,6 +159,9 @@ def run(oracle):
     check(not commit.endswith("-dirty"),
           "C tree has local changes; a baseline must name a commit")
     dep_env = deps.build()
+    if oracle.wolfssl:
+        dep_env = {"PKG_CONFIG_PATH": ":".join(
+            e["PKG_CONFIG_PATH"] for e in (deps.build_wolfssl(), dep_env))}
     # A fresh cache: nothing configured by hand earlier, such as another
     # library location, may carry into the measurement.
     (oracle.build / "CMakeCache.txt").unlink(missing_ok=True)
@@ -185,7 +208,7 @@ def exports(oracle):
 
 
 def main():
-    oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS)
+    oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS, WOLFSSL)
                    if o.flag in sys.argv[1:]), REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)

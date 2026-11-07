@@ -11,6 +11,12 @@ curl's CI pins in .github/workflows/http3-linux.yml.
 Its static archives are built position-independent, as the rewrite's
 curl-ngtcp2 links them into its executables, which are.
 
+wolfSSL: not packaged on Fedora. Built at the version curl's CI pins, as
+its `wolfssl-all` job in .github/workflows/linux.yml configures it, for
+the C build with wolfSSL (`baseline.py --wolfssl`), which loads its
+shared library, and the rewrite's curl-wolfssl, which links its static
+archive, built position-independent for the same reason as ngtcp2's.
+
 Everything goes under build/deps and is rebuilt only when a pinned version
 or the way it is built changes. Run directly, or through `baseline.py --run`.
 """
@@ -32,6 +38,10 @@ WORKFLOW = ".github/workflows/http3-linux.yml"
 OWN_NGTCP2 = "CURL_NGTCP2_DIR" not in os.environ
 NGTCP2 = DEPS / "ngtcp2" if OWN_NGTCP2 else pathlib.Path(
     os.environ["CURL_NGTCP2_DIR"])
+# CURL_WOLFSSL_DIR likewise, for wolfSSL and curl-wolfssl's build.
+OWN_WOLFSSL = "CURL_WOLFSSL_DIR" not in os.environ
+WOLFSSL = DEPS / "wolfssl" if OWN_WOLFSSL else pathlib.Path(
+    os.environ["CURL_WOLFSSL_DIR"])
 
 
 # How ngtcp2 is configured here, besides its prefix; a build's stamp names
@@ -40,15 +50,59 @@ CONFIGURE = ["--disable-dependency-tracking", "--enable-lib-only",
              "--with-openssl", "--with-pic"]
 
 
-def pinned(name):
-    """Return the version curl's HTTP/3 CI pins for `name`."""
-    m = re.search(rf"^  {name}: (\S+)$", common.read(WORKFLOW), re.MULTILINE)
-    check(m is not None, f"{WORKFLOW} does not pin {name}")
+# How wolfSSL is configured here: the CI job's flags, and both libraries,
+# the static one position-independent (`pic`).
+WOLFSSL_CONFIGURE = ["--disable-dependency-tracking", "--enable-tls13",
+                     "--enable-harden", "--enable-all",
+                     "--disable-benchmark", "--disable-crypttests",
+                     "--disable-examples", "--enable-static",
+                     "--with-pic"]
+
+
+def pinned(name, workflow=WORKFLOW):
+    """Return the version curl's CI pins for `name` in `workflow`."""
+    m = re.search(rf"^  {name}: (\S+)$", common.read(workflow), re.MULTILINE)
+    check(m is not None, f"{workflow} does not pin {name}")
     return m.group(1)
 
 
 def sh(args, cwd):
     subprocess.run(args, cwd=cwd, check=True, stdout=subprocess.DEVNULL)
+
+
+def build_wolfssl():
+    """
+    Build wolfSSL if it is missing; return the environment CMake needs to
+    find it.
+    """
+    version = pinned("WOLFSSL_VERSION", ".github/workflows/linux.yml")
+    built = f"{version} pic"
+    stamp = WOLFSSL / ".version"
+    if OWN_WOLFSSL and not (stamp.exists()
+                            and stamp.read_text().strip() == built):
+        src = DEPS / "src" / f"wolfssl-{version}-stable"
+        if not src.exists():
+            src.parent.mkdir(parents=True, exist_ok=True)
+            tarball = src.parent / f"wolfssl-{version}.tar.gz"
+            sh(["curl", "--fail", "--silent", "--show-error", "--location",
+                "--output", str(tarball),
+                f"https://github.com/wolfSSL/wolfssl/archive/v{version}-stable.tar.gz"],
+               cwd=src.parent)
+            sh(["tar", "-xzf", str(tarball)], cwd=src.parent)
+            tarball.unlink()
+        sh(["./autogen.sh"], cwd=src)
+        sh(["./configure", f"--prefix={WOLFSSL}", *WOLFSSL_CONFIGURE],
+           cwd=src)
+        sh(["make", "clean"], cwd=src)
+        sh(["make", f"-j{os.cpu_count()}", "install"], cwd=src)
+        stamp.write_text(built + "\n")
+    pc = subprocess.run(["pkg-config", "--modversion", "wolfssl"],
+                        env={**os.environ,
+                             "PKG_CONFIG_PATH": f"{WOLFSSL}/lib/pkgconfig"},
+                        check=True, capture_output=True, text=True)
+    check(pc.stdout.strip() == version,
+          f"pkg-config finds wolfSSL {pc.stdout.strip()}, want {version}")
+    return {"PKG_CONFIG_PATH": f"{WOLFSSL}/lib/pkgconfig"}
 
 
 def build():
@@ -109,3 +163,4 @@ def check_linked(binary):
 
 if __name__ == "__main__":
     print(build())
+    print(build_wolfssl())

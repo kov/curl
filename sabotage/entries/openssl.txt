@@ -341,7 +341,7 @@ witness: curl-openssl the_context_handler_s_error_fails_the_handshake_before_it_
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_set_up
 --- old
-        let ssl = self.ssl.as_ref().map(|s| s.0.cast());
+        let ssl = self.ssl.as_ref().map(|s| s.ptr().cast());
 --- new
         let ssl = self.ssl.as_ref().map(|_| self.ctx.as_ref().expect("made").0.cast());
 

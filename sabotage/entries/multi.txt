@@ -2,24 +2,45 @@
 # multi.c semantics: 3105 for removal, 530 for timer aborts.
 
 === completions are read highest id first
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/sched.rs
 witness: curl-core multi::tests::completions_are_read_in_id_order
 --- old
-            if found.is_none() {
-                found = Some(id);
+        let row = self.unread.first_from(0)?;
 --- new
-            if true {
-                found = Some(id);
+        let row = self.unread_rows().last()?;
 
 === a completion in a low row is read after a later one in a higher row
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/sched.rs
 witness: curl-core multi::tests::a_later_completion_in_a_lower_row_is_read_first
 --- old
-            if found.is_none() {
-                found = Some(id);
+        let row = self.unread.first_from(0)?;
 --- new
-            if true {
-                found = Some(id);
+        let row = self.unread_rows().last()?;
+
+=== a message read still counts as unread
+file: crates/curl-core/src/multi/sched.rs
+witness: curl-core multi::tests::callbacks_read_reports_and_the_multi_counts_messages
+--- old
+            self.unread.remove(row);
+            self.unread_len -= 1;
+--- new
+            self.unread.remove(row);
+
+=== a removed transfer's message stays to be read
+file: crates/curl-core/src/multi/sched.rs
+witness: curl-core multi::tests::callbacks_read_reports_and_the_multi_counts_messages
+--- old
+        self.counts.current -= 1;
+        self.read(row);
+--- new
+        self.counts.current -= 1;
+
+=== a transfer driven to its end leaves its message unread
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
+--- old
+        self.counts.read(id.index());
+--- new
 
 === removing a running transfer keeps its connection in the pool
 file: crates/curl-core/src/multi/mod.rs
@@ -160,11 +181,11 @@ file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
 --- old
                 self.notify.push(Notification::EasyDone(id));
-                if !self.unread_besides(id) {
+                if first_unread {
                     self.notify.push(Notification::InfoRead);
                 }
 --- new
-                if !self.unread_besides(id) {
+                if first_unread {
                     self.notify.push(Notification::InfoRead);
                 }
                 self.notify.push(Notification::EasyDone(id));
@@ -173,9 +194,9 @@ witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::info_read_is_notified_again_once_every_message_is_read
 --- old
-            if !self.unread_besides(id) {
+                first_unread = self.counts.unread() == 0;
 --- new
-            if true {
+                first_unread = true;
 
 === notifications are on before the application asks for them
 file: crates/curl-core/src/multi/notify.rs
@@ -239,7 +260,7 @@ file: crates/curl-core/src/multi/cx.rs
 witness: curl-core multi::tests::the_timer_callback_can_read_messages
 --- old
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
-        read_message(self.slots)
+        read_message(self.slots, self.counts)
     }
 --- new
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
@@ -250,26 +271,26 @@ witness: curl-core multi::tests::the_timer_callback_can_read_messages
 file: crates/curl-core/src/multi/sched.rs
 witness: curl-core multi::props::random_calls_keep_the_multi_consistent
 --- old
-    pub(crate) fn removed(&mut self, completed: bool) {
+    pub(crate) fn removed(&mut self, row: u32, completed: bool) {
         if !completed {
-            self.0.running -= 1;
+            self.counts.running -= 1;
         }
 --- new
-    pub(crate) fn removed(&mut self, completed: bool) {
-        if !completed || self.0.running > 0 {
-            self.0.running -= 1;
+    pub(crate) fn removed(&mut self, row: u32, completed: bool) {
+        if !completed || self.counts.running > 0 {
+            self.counts.running -= 1;
         }
 
 === a completed transfer stays in the timer queue
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::props::random_calls_keep_the_multi_consistent
 --- old
-            self.counts.completed();
             run.deadlines.clear_all();
             self.timers.remove(id);
+        } else {
 --- new
-            self.counts.completed();
             run.deadlines.clear_all();
+        } else {
 
 === a removed transfer stays dirty
 file: crates/curl-core/src/multi/mod.rs
@@ -683,9 +704,9 @@ witness: curl-core multi::tests::a_connection_closed_as_it_comes_back_is_no_one_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
 --- old
-            TransferState::Pending => pending += 1,
+            pending += 1;
 --- new
-            TransferState::Pending => {}
+            pending += 0;
 
 === a transfer out of time reads once more before it fails
 file: crates/curl-core/src/multi/state.rs

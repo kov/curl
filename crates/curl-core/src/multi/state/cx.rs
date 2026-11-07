@@ -438,7 +438,7 @@ impl<H: Host> StepCx<'_, H> {
             slots: &mut *t.slots,
             limits: &mut *t.limits,
             notify: &mut *t.notify,
-            counts: t.counts.get(),
+            counts: &mut *t.counts,
             sockets: &mut *t.sockets,
             // The pool is the step's, apart from the multi meanwhile.
             pool: None,
@@ -824,7 +824,7 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
 
     fn census(&self) -> Census {
         let tell = &self.rest.tell;
-        super::super::census_of(tell.slots, tell.counts.get())
+        super::super::census_of(tell.slots, tell.counts)
     }
 
     fn easy(&self, id: TransferId) -> Option<&Easy> {

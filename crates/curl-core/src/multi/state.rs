@@ -388,15 +388,9 @@ impl Done {
 }
 
 #[derive(Debug)]
+/// Whether its message is read is the multi's to know (`Tally`).
 pub(crate) struct Completed {
     pub(crate) outcome: Result<(), ErrorKind>,
-    pub(crate) message: Message,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Message {
-    Unread,
-    Read,
 }
 
 /// Whether to step a transfer again in the same pass.
@@ -645,10 +639,7 @@ impl TransferState {
     pub(crate) fn fail(self, err: ErrorKind) -> TransferState {
         match self {
             TransferState::Init | TransferState::Pending | TransferState::Setup(_) => {
-                TransferState::Completed(Completed {
-                    outcome: Err(err),
-                    message: Message::Unread,
-                })
+                TransferState::Completed(Completed { outcome: Err(err) })
             }
             TransferState::Connecting(mut c) => TransferState::Done(Done {
                 unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
@@ -2046,10 +2037,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     now,
                     matches!(d.reached, Reached::Unmade | Reached::Making),
                 );
-                let completed = TransferState::Completed(Completed {
-                    outcome: d.result,
-                    message: Message::Unread,
-                });
+                let completed = TransferState::Completed(Completed { outcome: d.result });
                 (completed, Wake::Again)
             }
         }

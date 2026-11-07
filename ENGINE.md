@@ -974,8 +974,7 @@ enum Reached { Unmade, Making, Made, Exchanged }  // past DO; DID's times taken;
 pub(crate) enum AfterRequest { Complete, Nothing, // Nothing: a wildcard download with no more to get
                                Retry, Follow { location: Vec<u8>, code: u16, reload: bool } }
                                                   // the protocol's `exchanged` decides it
-pub(crate) struct Completed { outcome: Result<(), ErrorKind>, message: Message }
-pub(crate) enum Message { Unread, Read }
+pub(crate) struct Completed { outcome: Result<(), ErrorKind> }  // its message: the Tally's
 ```
 
 The pending queue (`multi/pending.rs`, C's `multi->pending`) holds, by row, the `Plan` of each
@@ -1161,7 +1160,7 @@ before DID and none from Done on (§3.6).
 | connected | Done(Err) | progress callback abort |
 | any live | fail | an error, a timeout, `remove`, or a dead multi (AbortedByCallback) |
 | Done | (leg) / Completed / Done | `multi_done`'s order; Retry (and Follow) start the next leg; rests while the protocol's `done` awaits its answer |
-| Completed{Unread} | Completed{Read} | `info_read` |
+| Completed, message unread | Completed, message read | `info_read`, the drive to its end, `remove` |
 
 "Setup" is not a resting state: C's SETUP and CONNECT always run in the same pass, so they are
 one step that produces `Connecting`, or `ProtoConnect` for a protocol without a network, or
@@ -1520,16 +1519,23 @@ sibling's unpause, say) is the application's to allow: its state is in cells.
 
 ### 3.7 Counts and messages
 
-`Counts { running, pending, done_unread, current, added_ever }` lives in a `Tally` whose only
-writers are its methods for a transfer added, refused after adding, completed and removed. After
+`Counts { running, current, added_ever }` lives in a `Tally` whose only writers are its methods
+for a transfer added, refused after adding, completed, its message posted or read, and removed.
+The `Tally` is also the one record of the unread messages: a `RowSet` of the rows of the
+application's completed transfers whose message is unread, and its count (C's `msgsent`).
+A completion posts the message as its run is put back, the multi's own transfers' excepted;
+`info_read`, the drive of one transfer to its end and `remove` read it. After
 every `add`, `remove`, `perform` and `socket_action`, the debug build recounts from the states
 and checks the counts, that no `Run` is out of its slot or resting in `Done`, that the timer
 queue holds exactly each transfer's next wake-up, that the pool holds exactly the leased
-connections, that every dirty row names a transfer, and, outside delivery, that no notification
-is left queued (`multi/check.rs`). `running_handles` is "added and not `Completed`" (Init and
+connections, that every dirty row names a transfer, that every unread row names a completed
+transfer of the application's and the count is theirs, and, outside delivery, that no
+notification is left queued (`multi/check.rs`). `running_handles` is "added and not `Completed`" (Init and
 Pending count).
-`info_read` returns the lowest-slot `Completed { message: Unread }`, sets it `Read`, and reports
-the number still unread.
+`info_read` takes the lowest unread row, as C's `Curl_uint32_bset_first` does, and reports the
+count still unread: a word of the set at a time, never a walk of the transfers. The census's
+`unread` (`CURLMINFO_XFERS_DONE`) is the count, and the first message posted while none is
+unread queues `InfoRead`.
 
 ---
 

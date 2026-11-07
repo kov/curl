@@ -66,7 +66,7 @@ use notify::NotifyQueue;
 use pending::PendingQueue;
 use sched::{RowSet, Tally};
 use sockets::{SocketOwner, SocketTable, Wants};
-use state::{Message as MessageState, PollsetTrace, Run, StepCx, TransferState, Wake};
+use state::{PollsetTrace, Run, StepCx, TransferState, Wake};
 use timers::{Due, TimerAnnounce, TimerKind, TimerQueue};
 
 /// The application's types a multi carries: a value per transfer, handed
@@ -820,7 +820,7 @@ impl<H: Host> Multi<H> {
             .run
             .take()
             .expect("no transfer is out while the multi is called");
-        self.counts.removed(run.state.is_completed());
+        self.counts.removed(id.index(), run.state.is_completed());
         // Gone while alive (`multi_done`'s count, `curl_multi_remove_handle`).
         if run.alive {
             let mut tell = Telling {
@@ -1007,12 +1007,12 @@ impl<H: Host> Multi<H> {
     /// The unread completion in the lowest row, marked read, whenever it
     /// completed (`curl_multi_info_read`).
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
-        read_message(&mut self.slots)
+        read_message(&self.slots, &mut self.counts)
     }
 
     /// What the transfers are doing now (`curl_multi_get_offt`).
     pub fn census(&self) -> Census {
-        census_of(&self.slots, self.counts.get())
+        census_of(&self.slots, &self.counts)
     }
 
     /// Turn a kind of notification on or off
@@ -1529,8 +1529,22 @@ impl<H: Host> Multi<H> {
             run.deadlines.arm_in(TimerKind::Quic, now, at.since(now));
         }
         let completed = run.state.is_completed();
+        // The application's completion posts a message, the first unread
+        // one asking for a read (`multi_addmsg`); the multi's own leaves
+        // none, its result told to its master.
+        let mut first_unread = false;
         if completed {
             self.counts.completed();
+            if !self
+                .slots
+                .get(id)
+                .expect("a transfer in the multi")
+                .owner
+                .is_internal()
+            {
+                first_unread = self.counts.unread() == 0;
+                self.counts.posted(id.index());
+            }
             run.deadlines.clear_all();
             self.timers.remove(id);
         } else {
@@ -1555,7 +1569,7 @@ impl<H: Host> Multi<H> {
                 // done, then its message posted (`mstate_enter_done`,
                 // `multi_addmsg`).
                 self.notify.push(Notification::EasyDone(id));
-                if !self.unread_besides(id) {
+                if first_unread {
                     self.notify.push(Notification::InfoRead);
                 }
                 self.reap(ev, false);
@@ -1594,32 +1608,11 @@ impl<H: Host> Multi<H> {
 
     /// The result of the internal transfer `id`, which just completed, and
     /// which leaves no message.
-    fn read_internal(&mut self, id: TransferId) -> Result<(), ErrorKind> {
-        let run = self
-            .slots
-            .get_mut(id)
-            .and_then(|s| s.run.as_mut())
-            .expect("just put back");
-        let TransferState::Completed(c) = &mut run.state else {
+    fn read_internal(&self, id: TransferId) -> Result<(), ErrorKind> {
+        let TransferState::Completed(c) = &self.run_of(id).state else {
             unreachable!("just completed");
         };
-        c.message = MessageState::Read;
         c.outcome
-    }
-
-    /// Whether a transfer other than `id` has an unread message.
-    fn unread_besides(&self, id: TransferId) -> bool {
-        let mut cursor = None;
-        while let Some(other) = self.slots.next_after(cursor) {
-            cursor = Some(other);
-            if other != id
-                && let TransferState::Completed(c) = &self.run_of(other).state
-                && c.message == MessageState::Unread
-            {
-                return true;
-            }
-        }
-        false
     }
 
     /// Deliver the pass's notifications (`Curl_mntfy_dispatch_all`). A
@@ -1754,7 +1747,7 @@ impl<H: Host> Multi<H> {
             slots: &mut self.slots,
             limits: &mut self.limits,
             notify: &mut self.notify,
-            counts: self.counts.get(),
+            counts: &mut self.counts,
             sockets: &mut self.sockets,
             pool: Some(&self.caches.pool),
         };
@@ -1792,63 +1785,46 @@ fn pollsets<'a, H: Host>(
     Ok(())
 }
 
-/// The lowest-id unread completion, marked read (`curl_multi_info_read`).
 /// What the transfers in `slots` are doing, `counts` being the multi's.
 /// A transfer whose run is out of its slot is being stepped or replayed:
 /// it neither waits for a connection nor has completed, and is skipped.
-fn census_of<H: Host>(slots: &Slots<H>, counts: Counts) -> Census {
-    let (mut pending, mut unread) = (0, 0);
+fn census_of<H: Host>(slots: &Slots<H>, counts: &Tally) -> Census {
+    let mut pending = 0;
     let mut cursor = None;
     while let Some(id) = slots.next_after(cursor) {
         cursor = Some(id);
         let Some(run) = &slots.get(id).expect("just found").run else {
             continue;
         };
-        match &run.state {
-            TransferState::Pending => pending += 1,
-            TransferState::Completed(c) if c.message == MessageState::Unread => unread += 1,
-            _ => {}
+        if let TransferState::Pending = run.state {
+            pending += 1;
         }
     }
     Census {
-        counts,
+        counts: counts.get(),
         pending,
-        unread,
+        unread: counts.unread(),
     }
 }
 
-fn read_message<H: Host>(slots: &mut Slots<H>) -> Option<Message<'_, H>> {
-    let mut found = None;
-    let mut remaining = 0;
-    let mut cursor = None;
-    while let Some(id) = slots.next_after(cursor) {
-        cursor = Some(id);
-        if let TransferState::Completed(c) = &run_in(slots, id).state
-            && c.message == MessageState::Unread
-        {
-            if found.is_none() {
-                found = Some(id);
-            } else {
-                remaining += 1;
-            }
-        }
-    }
-    let id = found?;
-    let slot = slots.get_mut(id).expect("just found");
-    let run = slot
-        .run
-        .as_mut()
-        .expect("no transfer is out while the multi is called");
-    let TransferState::Completed(c) = &mut run.state else {
-        unreachable!("just found completed");
+/// The unread message in the lowest row, read (`curl_multi_info_read`).
+fn read_message<'s, H: Host>(slots: &'s Slots<H>, counts: &mut Tally) -> Option<Message<'s, H>> {
+    let (row, remaining) = counts.read_first()?;
+    let id = slots
+        .key_at(row)
+        .expect("an unread message's transfer is in the multi");
+    let TransferState::Completed(c) = &run_in(slots, id).state else {
+        unreachable!("an unread message's transfer completed");
     };
-    c.message = MessageState::Read;
+    let owner = slots
+        .get(id)
+        .expect("just found")
+        .owner
+        .host()
+        .expect("an internal transfer leaves no message");
     Some(Message {
         id,
-        owner: slot
-            .owner
-            .host()
-            .expect("an internal transfer leaves no message"),
+        owner,
         result: c.outcome,
         remaining,
     })
@@ -1903,6 +1879,7 @@ fn insert<H: Host>(
     };
     let n = vacancy.rows();
     if rows.timers.reserve(n).is_err()
+        || counts.reserve(n).is_err()
         || rows.dirty.reserve(n).is_err()
         || rows.pending.reserve(n).is_err()
         || rows.notify.reserve(n).is_err()

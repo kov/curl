@@ -407,7 +407,7 @@ fn run_probe<H: Host>(
         slots: &mut *t.slots,
         limits: &mut *t.limits,
         notify: &mut *t.notify,
-        counts: t.counts.get(),
+        counts: &mut *t.counts,
         sockets: &mut *t.sockets,
         // The pool is the step's, apart from the multi meanwhile.
         pool: None,

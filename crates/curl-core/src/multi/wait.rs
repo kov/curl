@@ -8,7 +8,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use super::state::StepCx;
-use super::state::{Message as MessageState, TransferState};
+use super::state::TransferState;
 use super::{
     Abort, EventCx, Host, Multi, MultiEvents, SocketEvent, SocketWhat, TimerChange, TransferId,
     mstate, pollsets,
@@ -314,11 +314,11 @@ impl<H: Host> Multi<H> {
     /// A completed transfer's result, its message marked read; `None`
     /// while it runs. Other transfers' messages stay unread.
     fn take_outcome(&mut self, id: TransferId) -> Option<Result<(), ErrorKind>> {
-        let run = self.slots.get_mut(id)?.run.as_mut()?;
-        let TransferState::Completed(c) = &mut run.state else {
+        let run = self.slots.get(id)?.run.as_ref()?;
+        let TransferState::Completed(c) = &run.state else {
             return None;
         };
-        c.message = MessageState::Read;
+        self.counts.read(id.index());
         Some(c.outcome)
     }
 }

@@ -58,7 +58,6 @@ impl RowSet {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn contains(&self, row: u32) -> bool {
         let (w, bit) = place(row);
         self.word(w).is_some_and(|word| word & bit != 0)
@@ -120,52 +119,114 @@ impl Census {
     }
 }
 
-/// The multi's counts, changed only as transfers come, complete and go.
-/// The debug build checks them against a recount after every call.
+/// The multi's counts, changed only as transfers come, complete and go,
+/// and its unread messages. The debug build checks them against a recount
+/// after every call.
 #[derive(Debug, Default)]
-pub(crate) struct Tally(Counts, u32);
+pub(crate) struct Tally {
+    counts: Counts,
+    /// How many transfers are the multi's own.
+    internals: u32,
+    /// The rows of the application's completed transfers whose message is
+    /// not read yet (C's `msgsent`): the one record of it, read lowest row
+    /// first. Room is reserved as a transfer is added.
+    unread: RowSet,
+    /// How many rows `unread` holds.
+    unread_len: u32,
+}
 
 impl Tally {
     pub(crate) fn get(&self) -> Counts {
-        self.0
+        self.counts
+    }
+
+    /// Make room for the messages of the transfers in rows below `rows`.
+    pub(crate) fn reserve(&mut self, rows: u32) -> Result<(), OutOfMemory> {
+        self.unread.reserve(rows)
     }
 
     pub(crate) fn added(&mut self) {
-        self.0.running += 1;
-        self.0.current += 1;
-        self.0.added_ever += 1;
+        self.counts.running += 1;
+        self.counts.current += 1;
+        self.counts.added_ever += 1;
     }
 
     /// How many transfers are the multi's own, `Counts` holding them too,
     /// as C's do.
     pub(crate) fn internals(&self) -> u32 {
-        self.1
+        self.internals
     }
 
     pub(crate) fn internal_added(&mut self) {
-        self.1 += 1;
+        self.internals += 1;
     }
 
     pub(crate) fn internal_removed(&mut self) {
-        self.1 -= 1;
+        self.internals -= 1;
     }
 
     /// An add the timer callback refused: the transfer is gone again, but
     /// it was added.
     pub(crate) fn add_undone(&mut self) {
-        self.0.running -= 1;
-        self.0.current -= 1;
+        self.counts.running -= 1;
+        self.counts.current -= 1;
     }
 
     pub(crate) fn completed(&mut self) {
-        self.0.running -= 1;
+        self.counts.running -= 1;
     }
 
-    pub(crate) fn removed(&mut self, completed: bool) {
-        if !completed {
-            self.0.running -= 1;
+    /// The transfer in `row`, of the application's, completed: its message
+    /// is posted, unread (`multi_addmsg`).
+    pub(crate) fn posted(&mut self, row: u32) {
+        assert!(
+            !self.unread.contains(row),
+            "row {row}'s message is posted twice"
+        );
+        self.unread.insert(row);
+        self.unread_len += 1;
+    }
+
+    /// How many messages are unread (`CURLMINFO_XFERS_DONE`).
+    pub(crate) fn unread(&self) -> u32 {
+        self.unread_len
+    }
+
+    /// The unread message in the lowest row, read: its row, and how many
+    /// stay unread (`curl_multi_info_read`).
+    pub(crate) fn read_first(&mut self) -> Option<(u32, u32)> {
+        let row = self.unread.first_from(0)?;
+        self.read(row);
+        Some((row, self.unread_len))
+    }
+
+    /// The message of the transfer in `row` is read, if it was unread.
+    pub(crate) fn read(&mut self, row: u32) {
+        if self.unread.contains(row) {
+            self.unread.remove(row);
+            self.unread_len -= 1;
         }
-        self.0.current -= 1;
+    }
+
+    /// The transfer in `row` left the multi, its message with it.
+    pub(crate) fn removed(&mut self, row: u32, completed: bool) {
+        if !completed {
+            self.counts.running -= 1;
+        }
+        self.counts.current -= 1;
+        self.read(row);
+    }
+
+    /// Each row with an unread message, lowest first, for the debug
+    /// build's recount.
+    #[cfg(debug_assertions)]
+    pub(crate) fn unread_rows(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut from = 0;
+        std::iter::from_fn(move || {
+            let row = self.unread.first_from(from)?;
+            from = row + 1;
+            Some(row)
+        })
     }
 }
 

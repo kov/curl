@@ -157,6 +157,26 @@ impl<H: Host> Multi<H> {
             );
             row = r + 1;
         }
+        // An unread message is a completed transfer's of the application,
+        // and still in the multi: its row was not handed to another.
+        let mut unread = 0;
+        for r in self.counts.unread_rows() {
+            let id = self
+                .slots
+                .key_at(r)
+                .unwrap_or_else(|| panic!("unread row {r} holds no transfer"));
+            let slot = self.slots.get(id).expect("just found");
+            assert!(
+                !slot.owner.is_internal(),
+                "{id:?}, the multi's own, has an unread message"
+            );
+            assert!(
+                slot.run.as_ref().is_some_and(|r| r.state.is_completed()),
+                "{id:?} has an unread message and has not completed"
+            );
+            unread += 1;
+        }
+        assert_eq!(unread, self.counts.unread(), "the unread messages' count");
         if at == At::Rest {
             assert!(
                 self.notify.get(0).is_none(),

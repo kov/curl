@@ -1027,7 +1027,7 @@ pub(super) fn tell<H: Host>(
             slots: &mut *t.slots,
             limits: &mut *t.limits,
             notify: &mut *t.notify,
-            counts: t.counts.get(),
+            counts: &mut *t.counts,
             sockets: &mut *t.sockets,
             pool: None,
         };
@@ -1357,7 +1357,7 @@ pub struct EventCx<'a, H: Host> {
     pub(super) slots: &'a mut Slots<H>,
     pub(super) limits: &'a mut ConnLimits,
     pub(super) notify: &'a mut NotifyQueue,
-    pub(super) counts: Counts,
+    pub(super) counts: &'a mut Tally,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
     pub(super) alive: &'a Alive,
     /// The multi's pool, where a connection that multiplexes is; none
@@ -1377,11 +1377,11 @@ impl<H: Host> EventCx<'_, H> {
     }
 
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
-        read_message(self.slots)
+        read_message(self.slots, self.counts)
     }
 
     pub fn counts(&self) -> Counts {
-        self.counts
+        self.counts.get()
     }
 
     /// As `Multi::census`.

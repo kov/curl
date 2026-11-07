@@ -438,7 +438,7 @@ witness: curl-tool takes_one_method
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool sends_the_method_asked_for
 --- old
-    if matches!(method, tool::Method::Post | tool::Method::Mime) && resumed {
+    if matches!(config.method, tool::Method::Post | tool::Method::Mime) && resumed {
 --- new
     if false && resumed {
 
@@ -1668,3 +1668,24 @@ witness: curl-tool an_unreadable_time_condition_keeps_its_time
         Some(tool::TimeCond::Unreadable) => (None, 0, -1),
 --- new
         Some(tool::TimeCond::Unreadable) => (None, 0, 0),
+
+=== a form's tree is made before any option is set, so none is written when it fails
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_setup_stops_at_the_option_that_fails
+--- old
+    use easysrc::Pointer::{Function, Object};
+    s.unwritten("`config2setopts` sets it itself", |o| {
+--- new
+    use easysrc::Pointer::{Function, Object};
+    if let (Some(form), tool::Method::Mime) = (&op.form, config.method) {
+        form.mime(&run.msgs)?;
+    }
+    s.unwritten("`config2setopts` sets it itself", |o| {
+
+=== a refused resume of data to send is said again as the transfer ends
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_setup_stops_at_the_option_that_fails
+--- old
+        return Err(SetFailed::Said(ErrorKind::BadFunctionArgument));
+--- new
+        return Err(SetFailed::Failed(ErrorKind::BadFunctionArgument));

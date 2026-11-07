@@ -1068,16 +1068,6 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     if upload.is_some() && method.choose(tool::Method::Put, &msgs).is_err() {
         return Made::Failed(ErrorKind::FailedInit);
     }
-    // `check_post_resume`: data is not resumed, and C says so itself.
-    let resumed = match op.resume {
-        Some(Resume::FromOutput) => true,
-        Some(Resume::At(n)) => n > 0,
-        None => false,
-    };
-    if matches!(method, tool::Method::Post | tool::Method::Mime) && resumed {
-        msgs.error(&[b"(43) HTTP upload cannot be resumed"]);
-        return Made::Failed(ErrorKind::BadFunctionArgument);
-    }
     // Where the output goes (`setup_outfile`): a file the URL names, for
     // `--remote-name`, is never standard output.
     let output = match node.output {
@@ -1342,17 +1332,6 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     } else {
         None
     };
-    // The tree `--form` gives, made for this transfer (`setopt_post`).
-    let form = match (&op.form, method) {
-        (Some(form), tool::Method::Mime) => match form.mime(&msgs) {
-            Ok(mime) => match curl_alloc::TryArc::try_new(mime) {
-                Ok(mime) => Some(mime),
-                Err(OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
-            },
-            Err(e) => return failed(easy, e),
-        },
-        _ => None,
-    };
     let config = Config {
         url,
         proto,
@@ -1360,35 +1339,21 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         resume,
         upload: upload.is_some(),
         post,
-        form,
         method,
         terminal,
         bar: bar.as_ref(),
         stdin: stdin.as_ref(),
         urlnum: given.num,
     };
-    // An interface the library refuses for its syntax fails the transfer
-    // as it is set, in the library's words (`setstropt_interface`, and
-    // `curl_easy_setopt`'s failf).
-    let refused = op
-        .interface
-        .map(curl_core::options::Interface::parse)
-        .is_some_and(|parsed| parsed == Err(curl_core::options::InterfaceError::Malformed));
-    if refused {
-        let e = ErrorKind::BadFunctionArgument;
-        if let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e))) {
-            run.msgs
-                .error_line(&[code.as_bytes(), b"setopt 0x274e got bad argument\n"]);
-        }
-        return said(easy, e);
-    }
     let set = {
         let mut source = run.libcurl.map(RefCell::borrow_mut);
         let mut set = Setopt::new(&mut easy, source.as_deref_mut());
         setopts(&mut set, op, run, &out, &config)
     };
-    if let Err(e) = set {
-        return failed(easy, e);
+    match set {
+        Ok(()) => {}
+        Err(SetFailed::Failed(e)) => return failed(easy, e),
+        Err(SetFailed::Said(e)) => return said(easy, e),
     }
     let url = match copy(given.text) {
         Ok(url) => url,
@@ -1796,8 +1761,6 @@ struct Config<'a> {
     upload: bool,
     /// What `--data` gives, unless `--get` put it in the query.
     post: Option<&'a [u8]>,
-    /// The tree `--form` gives.
-    form: Option<TryArc<curl_core::mime::Mime>>,
     /// The HTTP method the options chose for it.
     method: tool::Method,
     /// Standard output is a terminal, and the output goes there.
@@ -1847,16 +1810,31 @@ fn long(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
+/// Why a transfer could not be set up.
+#[derive(Debug)]
+enum SetFailed {
+    /// With this result, said as the transfer ends.
+    Failed(ErrorKind),
+    /// With this result, said already.
+    Said(ErrorKind),
+}
+
+impl From<ErrorKind> for SetFailed {
+    fn from(e: ErrorKind) -> Self {
+        SetFailed::Failed(e)
+    }
+}
+
 /// Set up the transfer of `config.url` as `config2setopts` sets it, in
 /// its order: each option through `s`, which writes the call for
-/// `--libcurl`.
+/// `--libcurl`. A failure stops it there, the calls before it written.
 fn setopts(
     s: &mut Setopt<'_>,
     op: &Operation<'_>,
     run: &Shared<'_, '_>,
     out: &output::Output,
     config: &Config<'_>,
-) -> Result<(), ErrorKind> {
+) -> Result<(), SetFailed> {
     use easysrc::Pointer::{Function, Object};
     s.unwritten("`config2setopts` sets it itself", |o| {
         o.quick_exit = quick_exit();
@@ -1968,16 +1946,25 @@ fn setopts(
             })?;
         }
     }
-    // `dns_and_network_setopts`.
-    s.str("CURLOPT_INTERFACE", op.interface, |o| {
-        let interface = match op.interface.map(options::Interface::parse) {
-            None => None,
-            Some(Ok(parsed)) => parsed,
-            Some(Err(options::InterfaceError::OutOfMemory)) => return Err(ErrorKind::OutOfMemory),
-            Some(Err(options::InterfaceError::Malformed)) => {
-                unreachable!("refused before it is set")
+    // `dns_and_network_setopts`. An interface the library refuses for its
+    // syntax fails the transfer as it is set, in the library's words
+    // (`setstropt_interface`, and `curl_easy_setopt`'s failf).
+    let interface = match op.interface.map(options::Interface::parse) {
+        None => None,
+        Some(Ok(parsed)) => parsed,
+        Some(Err(options::InterfaceError::OutOfMemory)) => {
+            return Err(SetFailed::Failed(ErrorKind::OutOfMemory));
+        }
+        Some(Err(options::InterfaceError::Malformed)) => {
+            let e = ErrorKind::BadFunctionArgument;
+            if let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e))) {
+                run.msgs
+                    .error_line(&[code.as_bytes(), b"setopt 0x274e got bad argument\n"]);
             }
-        };
+            return Err(SetFailed::Said(e));
+        }
+    };
+    s.str("CURLOPT_INTERFACE", op.interface, |o| {
         // Nothing set makes nothing: the group stays cold.
         if interface.is_some() {
             o.sockets.make_mut().map_err(oom)?.local.interface = interface;
@@ -2984,7 +2971,7 @@ fn transfer_setopts(
     op: &Operation<'_>,
     run: &Shared<'_, '_>,
     config: &Config<'_>,
-) -> Result<(), ErrorKind> {
+) -> Result<(), SetFailed> {
     s.long("CURLOPT_NOBODY", i64::from(op.no_body), |o| {
         if op.no_body {
             o.method = Method::Head;
@@ -3034,7 +3021,17 @@ fn transfer_setopts(
         o.limits.total = TimeLimit::from_millis(op.timeout_ms);
         Ok(())
     })?;
-    // `setopt_post`.
+    // `setopt_post`, after `check_post_resume`: data is not resumed, and
+    // C says so itself.
+    let resumed = match op.resume {
+        Some(Resume::FromOutput) => true,
+        Some(Resume::At(n)) => n > 0,
+        None => false,
+    };
+    if matches!(config.method, tool::Method::Post | tool::Method::Mime) && resumed {
+        run.msgs.error(&[b"(43) HTTP upload cannot be resumed"]);
+        return Err(SetFailed::Said(ErrorKind::BadFunctionArgument));
+    }
     if let Some(post) = config.post {
         s.postfields(post, |o| {
             o.method = Method::Post;
@@ -3047,10 +3044,14 @@ fn transfer_setopts(
             long(post.len() as u64),
             nothing,
         )?;
-    } else if let (Some(tree), Some(form)) = (&config.form, &op.form) {
+    } else if let (Some(form), tool::Method::Mime) = (&op.form, config.method) {
+        // The tree is made for this transfer as it is set, so a file it
+        // cannot read fails it after the options before it are written
+        // (`tool2curlmime`).
+        let tree = TryArc::try_new(form.mime(&run.msgs)?).map_err(oom)?;
         s.mimepost(form, |o| {
             o.method = Method::Post;
-            let tree = curl_core::mime::Fixed::new(tree.clone());
+            let tree = curl_core::mime::Fixed::new(tree);
             o.upload = options::UploadSource::Mime(Handler::mime(tree).map_err(oom)?);
             Ok(())
         })?;
@@ -4762,12 +4763,6 @@ mod tests {
         };
         let out = output::Output::null(msgs).unwrap();
         let post = op.post.as_deref().filter(|_| !op.get);
-        let form = match (&op.form, op.method) {
-            (Some(form), tool::Method::Mime) => {
-                Some(TryArc::try_new(form.mime(&msgs).ok()?).unwrap())
-            }
-            _ => None,
-        };
         let upload = op.nodes.first().and_then(|n| match n.upload {
             Upload::File(file) => Some(file),
             _ => None,
@@ -4783,7 +4778,6 @@ mod tests {
             },
             upload: upload.is_some(),
             post,
-            form,
             method: op.method,
             terminal: false,
             bar: None,

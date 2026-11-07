@@ -33,6 +33,7 @@ impl Drop for Scratch {
 
 struct Run {
     code: i32,
+    stdout: String,
     stderr: String,
     /// What `--libcurl` wrote.
     source: String,
@@ -54,6 +55,7 @@ fn curl(dir: &Scratch, args: &[&str]) -> Run {
         .unwrap();
     Run {
         code: out.status.code().unwrap(),
+        stdout: String::from_utf8(out.stdout).unwrap().replace("\r\n", "\n"),
         stderr: String::from_utf8(out.stderr).unwrap().replace("\r\n", "\n"),
         source: std::fs::read_to_string(&source).unwrap(),
     }
@@ -146,4 +148,40 @@ fn an_unreadable_time_condition_keeps_its_time() {
         "{}",
         run.source
     );
+}
+
+/// A transfer whose setup fails stops at the option that fails, the
+/// calls before it written and none after, and is a transfer still,
+/// whose `--write-out` is written: data to send with a resume refused
+/// where it is set, a form's file that cannot be read failing it at
+/// `CURLOPT_MIMEPOST`, before `CURLOPT_INTERFACE`'s refusal of a
+/// malformed interface would.
+#[test]
+fn a_setup_stops_at_the_option_that_fails() {
+    let dir = Scratch::new("setup-fails");
+    let unresumed = "curl: (43) HTTP upload cannot be resumed\n";
+    for data in [["-d", "a=b"], ["-F", "a=b"]] {
+        let run = curl(&dir, &["-C", "10", data[0], data[1], "-w", "%{exitcode}"]);
+        assert_eq!((run.code, run.stderr.as_str()), (43, unresumed), "{data:?}");
+        assert_eq!(run.stdout, "43", "{data:?}");
+        assert!(run.source.contains("CURLOPT_USERAGENT"), "{}", run.source);
+        assert!(!run.source.contains("CURLOPT_POST"), "{}", run.source);
+        assert!(!run.source.contains("CURLOPT_MIMEPOST"), "{}", run.source);
+    }
+    let unreadable = "curl: (26) Failed to open/read local data from file/application\n";
+    let run = curl(&dir, &["-F", "a=@missing"]);
+    assert_eq!((run.code, run.stderr.as_str()), (26, unreadable));
+    assert!(run.source.contains("CURLOPT_URL"), "{}", run.source);
+    assert!(run.source.contains("CURLOPT_USERAGENT"), "{}", run.source);
+    assert!(!run.source.contains("CURLOPT_MIMEPOST"), "{}", run.source);
+    assert!(!run.source.contains("CURLOPT_MAXREDIRS"), "{}", run.source);
+    let run = curl(&dir, &["--interface", "if!", "-F", "a=@missing"]);
+    assert_eq!((run.code, run.stderr.as_str()), (26, unreadable));
+    let run = curl(&dir, &["--interface", "if!"]);
+    assert_eq!(
+        (run.code, run.stderr.as_str()),
+        (43, "curl: (43) setopt 0x274e got bad argument\n")
+    );
+    assert!(run.source.contains("CURLOPT_MAXREDIRS"), "{}", run.source);
+    assert!(!run.source.contains("CURLOPT_INTERFACE"), "{}", run.source);
 }

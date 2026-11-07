@@ -119,3 +119,31 @@ fn remote_header_name_suppresses_connect_headers() {
         );
     }
 }
+
+/// A `--time-cond` that is neither a date nor a file leaves no condition,
+/// but the time beside it is the -1 the date failed to read as.
+#[test]
+fn an_unreadable_time_condition_keeps_its_time() {
+    let dir = Scratch::new("time-cond");
+    let run = curl(&dir, &["-z", "dec 12 12:00:00 1999 GMT", "-z", "bogus"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stderr.ends_with(REFUSED), "{}", run.stderr);
+    assert!(
+        run.source
+            .contains("curl_easy_setopt(curl, CURLOPT_TIMEVALUE_LARGE, (curl_off_t)-1);"),
+        "{}",
+        run.source
+    );
+    assert!(
+        !run.source.contains("CURLOPT_TIMECONDITION"),
+        "{}",
+        run.source
+    );
+    let run = curl(&dir, &["-z", "dec 12 12:00:00 1999 GMT"]);
+    assert!(
+        run.source
+            .contains("curl_easy_setopt(curl, CURLOPT_TIMEVALUE_LARGE, (curl_off_t)945000000);"),
+        "{}",
+        run.source
+    );
+}

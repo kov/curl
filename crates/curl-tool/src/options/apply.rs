@@ -463,8 +463,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) compressed: bool,
     /// `--tr-encoding`.
     pub(crate) tr_encoding: bool,
-    /// `--time-cond`, unless its time could not be read.
-    pub(crate) time_cond: Option<TimeCondition>,
+    /// `--time-cond`, if given.
+    pub(crate) time_cond: Option<TimeCond>,
     /// `--happy-eyeballs-timeout-ms`, if given.
     pub(crate) happy_eyeballs_ms: Option<u64>,
     /// `--no-tcp-nodelay`: Nagle's algorithm left on.
@@ -1029,12 +1029,22 @@ impl From<curl_alloc::OutOfMemory> for ParamError {
     }
 }
 
-/// Apply option `spec` with `value` to `line`.
+/// `--time-cond` as given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimeCond {
+    /// The condition, on the time of the date or of the file.
+    Set(TimeCondition),
+    /// Neither a date nor a file: no condition, but the time C's tool
+    /// sets beside none is the -1 `curl_getdate` failed with, which
+    /// `--libcurl` writes.
+    Unreadable,
+}
+
 /// `--time-cond`'s argument: `+` or nothing for modified since, `-` for
 /// not modified since, `=` for the `Last-Modified` header, then a date or
 /// a file whose modification time to take (`parse_time_cond`). Neither
 /// is a warning, and no condition.
-fn time_cond(arg: &[u8], msgs: &Messages) -> Option<TimeCondition> {
+fn time_cond(arg: &[u8], msgs: &Messages) -> TimeCond {
     let (when, rest) = match arg.first() {
         Some(b'-') => (Condition::UnmodifiedSince, &arg[1..]),
         Some(b'=') => (Condition::LastModified, &arg[1..]),
@@ -1059,11 +1069,12 @@ fn time_cond(arg: &[u8], msgs: &Messages) -> Option<TimeCondition> {
             b"Illegal date format for -z, --time-cond (and not a filename). Disabling time \
               condition. See curl_getdate(3) for valid date syntax.",
         ]);
-        return None;
+        return TimeCond::Unreadable;
     };
-    Some(TimeCondition { when, time })
+    TimeCond::Set(TimeCondition { when, time })
 }
 
+/// Apply option `spec` with `value` to `line`.
 pub(crate) fn apply<'a>(
     line: &mut CommandLine<'a>,
     msgs: &mut Messages,
@@ -1685,7 +1696,7 @@ pub(crate) fn apply<'a>(
         Opt::Raw => line.current().raw = value.toggle(),
         Opt::Compressed => line.current().compressed = value.toggle(),
         Opt::TrEncoding => line.current().tr_encoding = value.toggle(),
-        Opt::TimeCond => line.current().time_cond = time_cond(value.text(), msgs),
+        Opt::TimeCond => line.current().time_cond = Some(time_cond(value.text(), msgs)),
         Opt::HappyEyeballsTimeoutMs => line.current().happy_eyeballs_ms = Some(value.number()),
         Opt::TcpNodelay => line.current().nagle = !value.toggle(),
         Opt::TcpFastopen => line.current().tcp_fastopen = value.toggle(),

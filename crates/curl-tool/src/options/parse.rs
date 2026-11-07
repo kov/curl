@@ -760,7 +760,7 @@ fn unicode_warning(msgs: &Messages, spec: &Spec, arg: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::{Output, Trace, Upload};
+    use crate::options::{Output, TimeCond, Trace, Upload};
 
     fn parsed(args: &[&str]) -> Result<Parsed<'static>, ParamError> {
         let argv: Vec<Vec<u8>> = std::iter::once("curl")
@@ -1371,7 +1371,7 @@ mod tests {
     fn reads_time_conditions_as_c() {
         use curl_core::options::{Condition, TimeCondition};
         let cond = |arg: &'static str| line(&["x", "-z", arg]).operations[0].time_cond;
-        let at = |when, time| Some(TimeCondition { when, time });
+        let at = |when, time| Some(TimeCond::Set(TimeCondition { when, time }));
         let dec = "dec 12 12:00:00 1999 GMT";
         let dec_1999 = 945_000_000;
         assert_eq!(cond(dec), at(Condition::ModifiedSince, dec_1999));
@@ -1397,7 +1397,7 @@ mod tests {
         let mtime = i64::try_from(since.as_secs()).unwrap();
         assert_eq!(cond("-Cargo.toml"), at(Condition::UnmodifiedSince, mtime));
         assert_eq!(cond("+Cargo.toml"), at(Condition::ModifiedSince, mtime));
-        assert_eq!(cond("no such date nor file"), None);
+        assert_eq!(cond("no such date nor file"), Some(TimeCond::Unreadable));
     }
 
     #[test]

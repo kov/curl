@@ -3125,9 +3125,11 @@ fn transfer_setopts(
             to(line).set(list.iter().copied()).map_err(oom)
         })?;
     }
-    let (condition, time) = match op.time_cond {
-        None => (0, 0),
-        Some(c) => (
+    let (set, condition, time) = match op.time_cond {
+        None => (None, 0, 0),
+        Some(tool::TimeCond::Unreadable) => (None, 0, -1),
+        Some(tool::TimeCond::Set(c)) => (
+            Some(c),
             match c.when {
                 options::Condition::ModifiedSince => 1,
                 options::Condition::UnmodifiedSince => 2,
@@ -3141,7 +3143,7 @@ fn transfer_setopts(
         easysrc::TIME_CONDITIONS,
         condition,
         |o| {
-            o.time_condition = op.time_cond;
+            o.time_condition = set;
             Ok(())
         },
     )?;

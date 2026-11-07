@@ -1660,3 +1660,11 @@ witness: curl-tool remote_header_name_suppresses_connect_headers
 --- new
             op.suppress_connect_headers |= on;
         }
+
+=== an unreadable `--time-cond` sets no time beside no condition
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool an_unreadable_time_condition_keeps_its_time
+--- old
+        Some(tool::TimeCond::Unreadable) => (None, 0, -1),
+--- new
+        Some(tool::TimeCond::Unreadable) => (None, 0, 0),

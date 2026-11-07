@@ -1052,3 +1052,31 @@ impl<G: Gnutls> Session<G> {
         Ok(Handshake::Done)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use curl_core::tls::TlsPeerKind;
+
+    /// The names are made in one allocation, of their size: the host's
+    /// as given, then the SNI's lowered, each a C string; an address
+    /// sends none.
+    #[test]
+    fn a_peer_s_names_are_kept_together_in_one_allocation() {
+        let peer = |name, kind| TlsPeer {
+            name,
+            port: 443,
+            kind,
+            early_data: false,
+        };
+        let names = Names::of(&peer(b"Example.COM.", TlsPeerKind::Name)).unwrap();
+        assert_eq!(names.host(), b"Example.COM.");
+        assert_eq!(names.sni(), Some(c"example.com"));
+        assert_eq!(names.bytes, b"Example.COM.\0example.com\0");
+        assert_eq!(names.bytes.capacity(), names.bytes.len());
+        let names = Names::of(&peer(b"10.0.0.1", TlsPeerKind::Ipv4)).unwrap();
+        assert_eq!(names.host(), b"10.0.0.1");
+        assert_eq!(names.sni(), None);
+        assert_eq!(names.bytes.capacity(), names.bytes.len());
+    }
+}

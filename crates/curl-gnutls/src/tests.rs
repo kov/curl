@@ -2033,6 +2033,28 @@ fn the_quic_library_s_failed_setup_fails_the_session_as_c_says_it() {
     assert!(lib.w().made("alpn").is_empty());
 }
 
+/// Each handshake message is named as C's QUIC trace names it
+/// (`gtls_hs_msg_name`), any other `Unknown`.
+#[test]
+fn a_handshake_message_is_named_as_c_names_it() {
+    for (kind, name) in [
+        (1, "ClientHello"),
+        (2, "ServerHello"),
+        (4, "SessionTicket"),
+        (8, "EncryptedExtensions"),
+        (11, "Certificate"),
+        (13, "CertificateRequest"),
+        (15, "CertificateVerify"),
+        (20, "Finished"),
+        (24, "KeyUpdate"),
+        (254, "MessageHash"),
+        (3, "Unknown"),
+        (255, "Unknown"),
+    ] {
+        assert_eq!(crate::library::message_name(kind), name, "{kind}");
+    }
+}
+
 #[test]
 fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
     let world = World {
@@ -2042,6 +2064,8 @@ fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
             "drive",
             vec![
                 Act::Hook(2, true),
+                Act::Hook(sys::GNUTLS_HANDSHAKE_NEW_SESSION_TICKET, true),
+                // A second, for the second session resumed below.
                 Act::Hook(sys::GNUTLS_HANDSHAKE_NEW_SESSION_TICKET, true),
             ],
         )],
@@ -2083,8 +2107,11 @@ fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
     assert_eq!(early.earlydata_max, 1000);
     assert_eq!(early.chosen(), Some(Chosen::H3));
     assert_eq!(early.quic_params, b"tp");
-    // Where the transfer sends none, the QUIC library is told of none.
+    // Where the transfer sends none, the QUIC library is told of none,
+    // the session resumed all the same.
+    let before = lib.w().calls.len();
     let s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    assert!(lib.w().calls[before..].contains(&"set_data(ticket-q)".to_owned()));
     assert!(s.early_data().is_none());
 }
 

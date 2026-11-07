@@ -450,7 +450,7 @@ impl<C> Call<'_, '_, C> {
 
 /// The name of a handshake message of type `kind`, as C's QUIC trace
 /// says it (`gtls_hs_msg_name`).
-fn message_name(kind: u32) -> &'static str {
+pub(crate) fn message_name(kind: u32) -> &'static str {
     match kind {
         1 => "ClientHello",
         2 => "ServerHello",

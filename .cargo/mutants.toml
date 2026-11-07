@@ -1215,4 +1215,13 @@ exclude_re = [
     # A connection's context is new, so its store is never the one the
     # multi keeps; were it, another reference to it set changes nothing.
     'curl-wolfssl/src/trust\.rs:.*: replace match guard ctx\.uses_store\(store\) with false in setup$',
+    # ngtcp2 (curl-ngtcp2):
+    # Without `ngtcp2_crypto_ossl_init` ngtcp2's OpenSSL crypto fetches the
+    # ciphers it uses as it uses them: only the time a handshake takes
+    # differs.
+    'curl-ngtcp2/src/lib\.rs:.*: replace crypto_init with \(\)$',
+    # A connection not freed leaks: the TLS session's Rust memory, which
+    # the runtests leg's memory check reports (2500: `Leak detected`), and
+    # the libraries' own from libc; no cargo test counts either.
+    'curl-ngtcp2/src/lib\.rs:.*: replace <impl Drop for Connection>::drop with \(\)$',
 ]

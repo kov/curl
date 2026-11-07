@@ -77,3 +77,45 @@ fn false_start_is_warned_of_and_does_nothing() {
         assert!(run.source.contains("CURLOPT_URL"), "{flag}: {}", run.source);
     }
 }
+
+/// `--remote-header-name` keeps the proxy's CONNECT response from the
+/// headers it reads the name from, and `--no-remote-header-name` lets it
+/// through again, whichever of it and `--suppress-connect-headers` came
+/// last deciding.
+#[test]
+fn remote_header_name_suppresses_connect_headers() {
+    let dir = Scratch::new("remote-header-name");
+    let line = "curl_easy_setopt(curl, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);";
+    for (args, suppressed) in [
+        (&["-J", "-O"][..], true),
+        (
+            &[
+                "--suppress-connect-headers",
+                "-J",
+                "-O",
+                "--no-remote-header-name",
+            ][..],
+            false,
+        ),
+        (
+            &[
+                "-J",
+                "-O",
+                "--no-remote-header-name",
+                "--suppress-connect-headers",
+            ][..],
+            true,
+        ),
+        (&["-O"][..], false),
+    ] {
+        let run = curl(&dir, args);
+        assert_eq!(run.code, 1, "{args:?}");
+        assert_eq!(run.stderr, REFUSED, "{args:?}");
+        assert_eq!(
+            run.source.contains(line),
+            suppressed,
+            "{args:?}: {}",
+            run.source
+        );
+    }
+}

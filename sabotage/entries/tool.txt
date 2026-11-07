@@ -1641,3 +1641,22 @@ witness: curl-tool refuses_ntlm_but_takes_it_away
             op.no_ntlm = false;
 --- new
             op.auth = AuthMethods::ANY;
+
+=== `--remote-header-name` lets the proxy's CONNECT response into the headers it reads
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool remote_header_name_suppresses_connect_headers
+--- old
+            op.remote_header_name = on;
+            op.suppress_connect_headers = on;
+--- new
+            op.remote_header_name = on;
+
+=== `--no-remote-header-name` leaves `--suppress-connect-headers` on
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool remote_header_name_suppresses_connect_headers
+--- old
+            op.suppress_connect_headers = on;
+        }
+--- new
+            op.suppress_connect_headers |= on;
+        }

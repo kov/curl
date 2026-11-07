@@ -421,7 +421,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) haproxy_protocol: bool,
     /// `--haproxy-clientip`.
     pub(crate) haproxy_clientip: Option<&'a [u8]>,
-    /// `--suppress-connect-headers`.
+    /// `--suppress-connect-headers`, or `--remote-header-name`, whichever
+    /// came last.
     pub(crate) suppress_connect_headers: bool,
     /// `--path-as-is`.
     pub(crate) path_as_is: bool,
@@ -1901,7 +1902,15 @@ pub(crate) fn apply<'a>(
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::CreateDirs => line.current().create_dirs = value.toggle(),
         Opt::Config => return Ok(Flow::Config(value.text())),
-        Opt::RemoteHeaderName => line.current().remote_header_name = value.toggle(),
+        // The name comes from the origin's headers, not a proxy's: the
+        // tunnel's response is kept from the header callback, and
+        // `--no-remote-header-name` lets it through again.
+        Opt::RemoteHeaderName => {
+            let on = value.toggle();
+            let op = line.current();
+            op.remote_header_name = on;
+            op.suppress_connect_headers = on;
+        }
         Opt::WriteOut => {
             let format = match value.text().strip_prefix(b"@") {
                 // A file's text, or standard input's, with no line ends

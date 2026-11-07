@@ -786,6 +786,9 @@ exclude_re = [
     # answers are checked by curl-wolfssl's context callback test, which a
     # curl-core run does not reach.
     'curl-core/src/tls\.rs:.*: replace <impl crate::conn::layer::ForTransfer for ContextHandler>::',
+    # A C string's room reserved one byte short: the zero's push grows it,
+    # and what is made is the same.
+    'curl-core/src/tls\.rs:.*: replace \+ with \* in c_string$',
     # A connection settles in the step that finds what it speaks, and its
     # transfer steps again in that same pass: a wake one step late still
     # lets its waiters go in the pass, before any of them runs, as

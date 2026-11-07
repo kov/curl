@@ -80,3 +80,11 @@ witness: curl-core proto::ssh::libssh2::tests::the_goodbye_waits_a_second_at_mos
                 if clock.now().since(start) > Duration::from_secs(1) {
 --- new
                 if start.since(start) > Duration::from_secs(1) {
+
+=== what the goodbye sends through the pipes is freed with the session, unsent
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::the_goodbye_goes_out_through_an_https_proxy_s_tls
+--- old
+            let moved = self.pump(cx, below);
+--- new
+            let moved = false;

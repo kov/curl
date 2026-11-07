@@ -1,7 +1,7 @@
 //! Reading the command line, as `parse_args` and `getparameter` in
 //! `src/tool_getparam.c` read it.
 
-use curl_core::version::version;
+use crate::tlslib::version_info as version;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_format};
 

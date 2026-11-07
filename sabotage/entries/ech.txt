@@ -1,0 +1,44 @@
+=== a connection made with one ECH setting serves a transfer that has another
+file: crates/curl-core/src/tls.rs
+witness: curl-core every_setting_tells_two_identities_apart
+--- old
+            && *ech == o.ech
+--- new
+            && *ech == *ech
+
+=== an HTTPS proxy's TLS tries the ECH its own options hold
+file: crates/curl-core/src/tls.rs
+witness: curl-core an_https_proxy_tries_no_ech
+--- old
+        options.ech = crate::options::Ech::NONE;
+--- new
+        options.ech.mode = options.ech.mode;
+
+=== an ECHConfigList given while ECH is off leaves it off
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core ech_words_change_their_own_setting
+--- old
+        if self.mode == EchMode::Off {
+            self.mode = EchMode::Hard;
+        }
+--- new
+        if self.mode == EchMode::Grease {
+            self.mode = EchMode::Hard;
+        }
+
+=== turning ECH off forgets its ECHConfigList
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core ech_words_change_their_own_setting
+--- old
+            EchWord::Mode(mode) => {
+                self.mode = mode;
+                return Ok(());
+            }
+--- new
+            EchWord::Mode(mode) => {
+                self.mode = mode;
+                if mode == EchMode::Off {
+                    self.config = None;
+                }
+                return Ok(());
+            }

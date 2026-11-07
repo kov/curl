@@ -178,11 +178,11 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
 file: crates/curl-core/src/version.rs
 witness: curl-sys-abi version::tests::features_reach_the_c_struct
 --- old
-    #[cfg(feature = "quic")]
-    Feature::Http3,
+            #[cfg(feature = "quic")]
+            Feature::Http3,
 --- new
-    #[cfg(not(feature = "quic"))]
-    Feature::Http3,
+            #[cfg(not(feature = "quic"))]
+            Feature::Http3,
 
 === the multi's running count takes in the transfers waiting for a connection
 file: crates/curl-sys-abi/src/multi.rs

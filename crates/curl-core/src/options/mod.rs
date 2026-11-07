@@ -2956,6 +2956,114 @@ pub struct TlsOptions {
     /// Told of each context a connection's TLS is made with
     /// (`CURLOPT_SSL_CTX_FUNCTION`). The handle's, as `alpn`.
     pub context: Option<Handler<dyn TlsContextHandler>>,
+    /// Encrypted Client Hello (`CURLOPT_ECH`). The origin's alone: an
+    /// HTTPS proxy's TLS never tries it.
+    pub ech: Ech,
+}
+
+/// Encrypted Client Hello as a transfer asks for it (`CURLOPT_ECH`):
+/// whether it is tried, and, kept apart from that, the configurations to
+/// try it with and the outer name, each as it was last given until given
+/// again (C's `ech`, `ech_config` and `ech_public`): turning ECH off keeps
+/// both, and a connection made with them serves only a transfer that
+/// has the same.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Ech {
+    pub mode: EchMode,
+    /// The ECHConfigList to offer, in base64 as given (`ecl:`), in place
+    /// of the origin's HTTPS record's.
+    pub config: Option<Vec<u8>>,
+    /// The name the outer ClientHello sends in place of the
+    /// configuration's public name (`pn:`).
+    pub public_name: Option<Vec<u8>>,
+}
+
+/// Whether Encrypted Client Hello is tried (`CURLECH_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EchMode {
+    /// Not (`false`).
+    #[default]
+    Off,
+    /// A GREASE extension is sent, of no configuration (`grease`).
+    Grease,
+    /// Tried where a configuration is had, the handshake going on without
+    /// it where none is; one tried and refused fails it (`true`).
+    Try,
+    /// Tried, and the handshake fails where it cannot be (`hard`).
+    Hard,
+}
+
+/// One of the words `CURLOPT_ECH` takes, read as `setopt_ech` reads it:
+/// a mode by its name, `ecl:` and an ECHConfigList, or `pn:` and a name,
+/// each prefix as written, in lower case, with something after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EchWord<'a> {
+    Mode(EchMode),
+    Config(&'a [u8]),
+    PublicName(&'a [u8]),
+}
+
+impl<'a> EchWord<'a> {
+    /// The word `word` is, if it is one.
+    pub fn parse(word: &'a [u8]) -> Option<EchWord<'a>> {
+        Some(match word {
+            b"false" => EchWord::Mode(EchMode::Off),
+            b"grease" => EchWord::Mode(EchMode::Grease),
+            b"true" => EchWord::Mode(EchMode::Try),
+            b"hard" => EchWord::Mode(EchMode::Hard),
+            [b'e', b'c', b'l', b':', rest @ ..] if !rest.is_empty() => EchWord::Config(rest),
+            [b'p', b'n', b':', rest @ ..] if !rest.is_empty() => EchWord::PublicName(rest),
+            _ => return None,
+        })
+    }
+}
+
+impl Ech {
+    /// Nothing asked: ECH off, with neither a configuration nor a name.
+    pub const NONE: Ech = Ech {
+        mode: EchMode::Off,
+        config: None,
+        public_name: None,
+    };
+
+    /// Take `word`: a mode replaces the mode alone; a configuration or a
+    /// name replaces its own, and makes ECH hard where it was off
+    /// (`setopt_ech`).
+    pub fn apply(&mut self, word: EchWord<'_>) -> Result<(), OutOfMemory> {
+        let kept = match word {
+            EchWord::Mode(mode) => {
+                self.mode = mode;
+                return Ok(());
+            }
+            EchWord::Config(text) => (&mut self.config, text),
+            EchWord::PublicName(text) => (&mut self.public_name, text),
+        };
+        *kept.0 = Some(copy(kept.1)?);
+        if self.mode == EchMode::Off {
+            self.mode = EchMode::Hard;
+        }
+        Ok(())
+    }
+
+    /// ECH is tried in some way: any mode but off (`Curl_ssl_ech_enabled`).
+    pub fn enabled(&self) -> bool {
+        self.mode != EchMode::Off
+    }
+
+    /// Its configurations are to come from the origin's HTTPS record:
+    /// ECH is tried for real with none given (`Curl_ssl_need_httpsrr`).
+    pub fn needs_record(&self) -> bool {
+        matches!(self.mode, EchMode::Try | EchMode::Hard) && self.config.is_none()
+    }
+
+    fn try_clone(&self) -> Result<Ech, OutOfMemory> {
+        let text = |t: &Option<Vec<u8>>| t.as_deref().map(copy).transpose();
+        Ok(Ech {
+            mode: self.mode,
+            config: text(&self.config)?,
+            public_name: text(&self.public_name)?,
+        })
+    }
 }
 
 /// How long the certificates loaded to trust are kept for the next
@@ -3007,6 +3115,7 @@ impl ColdGroup for TlsOptions {
         engine_default: false,
         session_cache: true,
         context: None,
+        ech: Ech::NONE,
     };
 }
 
@@ -3043,6 +3152,7 @@ impl TlsOptions {
             engine_default,
             session_cache,
             context,
+            ech,
         } = self;
         Ok(TlsOptions {
             min_version: *min_version,
@@ -3073,6 +3183,7 @@ impl TlsOptions {
             engine_default: *engine_default,
             session_cache: *session_cache,
             context: context.clone(),
+            ech: ech.try_clone()?,
         })
     }
 }

@@ -45,11 +45,11 @@ file: crates/curl-core/src/version.rs
 witness: curl-core version::tests::the_native_ca_store_is_claimed_as_native_ca
 features: native-ca
 --- old
-    #[cfg(all(feature = "native-ca", not(feature = "apple-sectrust")))]
-    Feature::NativeCa,
+            #[cfg(all(feature = "native-ca", not(feature = "apple-sectrust")))]
+            Feature::NativeCa,
 --- new
-    #[cfg(any())]
-    Feature::NativeCa,
+            #[cfg(any())]
+            Feature::NativeCa,
 
 === a library whose own the system's store is makes it the default as well
 file: crates/curl-core/src/tls.rs

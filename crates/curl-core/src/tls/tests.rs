@@ -1,5 +1,7 @@
 use super::*;
-use crate::options::{CaSetting, ColdGroup as _, SslOptions, TlsMaxVersion, TlsMinVersion};
+use crate::options::{
+    CaSetting, ColdGroup as _, Ech, EchMode, EchWord, SslOptions, TlsMaxVersion, TlsMinVersion,
+};
 
 pub(super) fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TlsIdentity {
     let mut id = TlsIdentity {
@@ -98,6 +100,11 @@ fn every_setting_tells_two_identities_apart() {
         }),
         ("pinned_key", |i| {
             i.options.pinned_key = text("sha256//AAAA")
+        }),
+        ("ech mode", |i| i.options.ech.mode = EchMode::Grease),
+        ("ech config", |i| i.options.ech.config = text("AEv+DQ==")),
+        ("ech public name", |i| {
+            i.options.ech.public_name = text("public.example")
         }),
     ];
     let plain = identity(|_| {});
@@ -450,4 +457,94 @@ fn a_c_string_ends_in_one_zero() {
     let made = c_string(b"na\0me").unwrap();
     assert_eq!(made, b"na\0me\0");
     assert_eq!(as_c(&made).to_bytes(), b"na");
+}
+
+/// ECH's configuration and outer name are kept apart from its mode, as
+/// `setopt_ech` keeps them: each replaces its own; one given while ECH
+/// is off makes it hard, and a mode given after says what it is; `false`
+/// turns it off and keeps both, so a connection made with them still
+/// serves only a transfer that has them.
+#[test]
+fn ech_words_change_their_own_setting() {
+    let words = |said: &[&str]| {
+        let mut ech = Ech::NONE;
+        for word in said {
+            let word = EchWord::parse(word.as_bytes()).expect("a word");
+            ech.apply(word).expect("memory");
+        }
+        ech
+    };
+    let ech = |mode, config: Option<&str>, public_name: Option<&str>| Ech {
+        mode,
+        config: config.and_then(text),
+        public_name: public_name.and_then(text),
+    };
+    assert_eq!(words(&["grease"]), ech(EchMode::Grease, None, None));
+    assert_eq!(words(&["true"]), ech(EchMode::Try, None, None));
+    assert_eq!(words(&["hard"]), ech(EchMode::Hard, None, None));
+    assert_eq!(words(&["ecl:QUJD"]), ech(EchMode::Hard, Some("QUJD"), None));
+    assert_eq!(
+        words(&["pn:p.example"]),
+        ech(EchMode::Hard, None, Some("p.example"))
+    );
+    // The tool's order: the name, the list, then the mode.
+    assert_eq!(
+        words(&["pn:p.example", "ecl:QUJD", "true"]),
+        ech(EchMode::Try, Some("QUJD"), Some("p.example"))
+    );
+    // A list after a mode leaves the mode.
+    assert_eq!(
+        words(&["grease", "ecl:QUJD"]),
+        ech(EchMode::Grease, Some("QUJD"), None)
+    );
+    assert_eq!(
+        words(&["ecl:QUJD", "false"]),
+        ech(EchMode::Off, Some("QUJD"), None)
+    );
+    assert_eq!(
+        words(&["ecl:QUJD", "ecl:REVG"]),
+        ech(EchMode::Hard, Some("REVG"), None)
+    );
+    assert_eq!(words(&["true", "false"]), Ech::NONE);
+}
+
+/// The words are C's, in lower case, a prefix with something after it.
+#[test]
+fn ech_words_are_c_s() {
+    for word in [
+        "", "TRUE", "True", "yes", "ecl:", "pn:", "ECL:QUJD", "PN:x", "grease ",
+    ] {
+        assert_eq!(EchWord::parse(word.as_bytes()), None, "{word:?}");
+    }
+    assert_eq!(EchWord::parse(b"false"), Some(EchWord::Mode(EchMode::Off)));
+    assert_eq!(EchWord::parse(b"ecl:A"), Some(EchWord::Config(b"A")));
+    assert_eq!(EchWord::parse(b"pn:a"), Some(EchWord::PublicName(b"a")));
+}
+
+/// ECH is the origin's alone: an HTTPS proxy's TLS never tries it,
+/// whatever its own options hold (`Curl_ssl_conn_config_init`).
+#[test]
+fn an_https_proxy_tries_no_ech() {
+    let mut proxy = crate::options::Tls::NONE;
+    proxy.options.make_mut().expect("memory").ech = Ech {
+        mode: EchMode::Hard,
+        config: text("QUJD"),
+        public_name: text("p.example"),
+    };
+    let origin = TlsOptions::NONE;
+    let id = TlsIdentity::of_proxy(&proxy, &origin, CaDefaults::NONE).expect("memory");
+    assert_eq!(id.options.ech, Ech::NONE);
+}
+
+/// ECH asks for the library's support once anything of it is set, as C
+/// refuses `CURLOPT_ECH` whatever its value where it is not built in.
+#[test]
+fn ech_asks_for_the_library_s_support() {
+    let mut origin = crate::options::Tls::NONE;
+    let proxy = crate::options::Tls::NONE;
+    assert!(!TlsSupport::asked_by(&origin, &proxy, false).ech);
+    origin.options.make_mut().expect("memory").ech.config = text("QUJD");
+    let asked = TlsSupport::asked_by(&origin, &proxy, false);
+    assert!(asked.ech);
+    assert_eq!(TlsSupport::NONE.lacking(&asked), Some("ECH"));
 }

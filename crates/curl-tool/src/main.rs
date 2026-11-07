@@ -6,9 +6,9 @@
 
 use std::process::ExitCode;
 
+use crate::tlslib::version_info as version;
 use curl_alloc::OutOfMemory;
 use curl_core::error::ErrorKind;
-use curl_core::version::version;
 
 mod ares;
 mod bar;

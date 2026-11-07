@@ -195,3 +195,82 @@ fn a_ca_bundle_from_the_environment_is_read_unless_the_library_trusts_the_system
     let named = program.contains("curl_easy_setopt(curl, CURLOPT_CAINFO, \"/bundle\");");
     assert_eq!(named, !cfg!(feature = "schannel"), "{program}");
 }
+
+/// The tool's exit code and standard error for `args`.
+fn exit(args: &[&str]) -> (Option<i32>, String) {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let out = Command::new(tool).arg("-q").args(args).output().unwrap();
+    (out.status.code(), String::from_utf8(out.stderr).unwrap())
+}
+
+/// The library claims Encrypted Client Hello, as `curl -V` lists it.
+fn has_ech() -> bool {
+    run(&["-V"])
+        .0
+        .lines()
+        .any(|l| l.starts_with("Features:") && l.split_whitespace().any(|w| w == "ECH"))
+}
+
+/// `--ech` is refused where the library has no ECH, whatever its word, as
+/// C's tool refuses it (`feature_ech`); where it has, its words reach the
+/// library as `CURLOPT_ECH`, the name, then the list, then the mode, each
+/// as given, its prefix found in any case: a word the library does not
+/// take fails the transfer, and a list in a file that cannot be read is
+/// a bad use of the option, said so.
+#[test]
+fn ech_reaches_the_library_that_has_it() {
+    let url = "file:///this/file/is/not/there";
+    if !has_ech() {
+        for word in ["true", "false", "ecl:QUJD", "nonsense"] {
+            let (code, said) = exit(&["--ech", word, url]);
+            assert_eq!(code, Some(2), "{word}: {said}");
+            assert!(
+                said.starts_with(
+                    "curl: option --ech: the installed libcurl version does not support this\n"
+                ),
+                "{said}"
+            );
+        }
+        return;
+    }
+    let (program, said) = run(&[
+        "--libcurl",
+        "-",
+        "--ech",
+        "true",
+        "--ech",
+        "ecl:QUJD",
+        "--ech",
+        "pn:public.example",
+        url,
+    ]);
+    let set: Vec<_> = program
+        .lines()
+        .filter(|l| l.contains("CURLOPT_ECH"))
+        .map(str::trim)
+        .collect();
+    assert_eq!(
+        set,
+        [
+            "curl_easy_setopt(curl, CURLOPT_ECH, \"pn:public.example\");",
+            "curl_easy_setopt(curl, CURLOPT_ECH, \"ecl:QUJD\");",
+            "curl_easy_setopt(curl, CURLOPT_ECH, \"true\");",
+        ],
+        "{program}{said}"
+    );
+    // The library reads the prefixes in lower case only.
+    for word in ["nonsense", "TRUE", "PN:public.example"] {
+        let (code, said) = exit(&["--ech", word, url]);
+        assert_eq!(code, Some(43), "{word}: {said}");
+    }
+    let (code, said) = exit(&["--ech", "ecl:@/this/file/is/not/there", url]);
+    assert_eq!(code, Some(2), "{said}");
+    let said = said.replace("\nWarning: ", " ");
+    assert!(
+        said.contains(
+            "Could not read file \"/this/file/is/not/there\" specified for \"--ech ecl:\" option"
+        ),
+        "{said}"
+    );
+}

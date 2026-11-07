@@ -884,6 +884,17 @@ fn apply(
                 .options
                 .set(|t| &mut t.signature_algorithms, value)?;
         }
+        // NULL turns ECH off as `false` does; a word C does not know is
+        // refused (`setopt_ech`).
+        (ffi::CURLOPT_ECH, Ptr(p)) => {
+            use curl_core::options::{EchMode, EchWord};
+            // SAFETY: the application passes a C string or NULL.
+            let word = match unsafe { string(p) }? {
+                None => EchWord::Mode(EchMode::Off),
+                Some(text) => EchWord::parse(text).ok_or(Refused::Bad)?,
+            };
+            options.tls.options.make_mut()?.ech.apply(word)?;
+        }
         // Nothing here raises or catches a signal: it is kept to.
         (ffi::CURLOPT_NOSIGNAL, Long(_)) => {}
         (ffi::CURLOPT_HTTP09_ALLOWED, Long(n)) => options.http.allow_09 = n != 0,
@@ -2375,7 +2386,8 @@ mod tests {
     /// algorithms, the stapled status and the engine; GnuTLS TLS 1.3's
     /// suites, the context callback, the curves, the signature
     /// algorithms and the engine; OpenSSL none of them, and LibreSSL the
-    /// signature algorithms alone. None has Encrypted Client Hello.
+    /// signature algorithms alone. Encrypted Client Hello is wolfSSL's,
+    /// Rustls's and the OpenSSL forks' that have it, as the library says.
     #[test]
     fn the_tls_library_s_lacking_options_are_not_built_in() {
         let c = crate::easy::curl_easy_init();
@@ -2448,8 +2460,19 @@ mod tests {
         assert_eq!(long(ffi::CURLOPT_CERTINFO), want(wolfssl));
         // mbedTLS and Rustls keep no CA cache.
         assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), want(mbedtls || rustls));
-        // What none has.
-        assert_eq!(text(ffi::CURLOPT_ECH), CURLE_NOT_BUILT_IN);
+        // Encrypted Client Hello where the library has it; `x` is no word
+        // it takes.
+        let ech = support.ech;
+        let want_ech = if ech {
+            CURLE_BAD_FUNCTION_ARGUMENT
+        } else {
+            CURLE_NOT_BUILT_IN
+        };
+        assert_eq!(text(ffi::CURLOPT_ECH), want_ech);
+        // Rustls always has it; GnuTLS, mbedTLS and Schannel never do in
+        // C; wolfSSL and the OpenSSL family as their build says.
+        assert!(ech || !rustls);
+        assert!(!ech || !(gnutls || mbedtls || schannel));
         // SAFETY: the handle made above, not used again.
         unsafe { crate::easy::curl_easy_cleanup(c) };
     }

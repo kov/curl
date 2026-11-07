@@ -246,10 +246,10 @@ witness: curl-core version::tests::version_matches_its_parts
 file: crates/curl-core/src/version.rs
 witness: curl-core version::tests::the_debug_hooks_are_claimed_as_debug
 --- old
-    #[cfg(feature = "debug-hooks")]
-    Feature::Debug,
+            #[cfg(feature = "debug-hooks")]
+            Feature::Debug,
 --- new
-    Feature::Debug,
+            Feature::Debug,
 
 === a chain's line as long as C's buffer is kept
 file: crates/curl-core/src/report/certinfo.rs

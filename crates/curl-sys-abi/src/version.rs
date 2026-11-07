@@ -12,7 +12,7 @@ use core::ptr;
 use std::sync::OnceLock;
 
 use curl_core::tls::TlsBackend as _;
-use curl_core::version::{Feature, Library, Protocol, version};
+use curl_core::version::{Feature, Library, Protocol, version, version_with_tls};
 
 use crate::ffi::{self, CURLVERSION_NOW, CURLversion, curl_version_info_data};
 
@@ -82,6 +82,8 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::AsynchDns => (c"AsynchDNS", crate::ffi::CURL_VERSION_ASYNCHDNS),
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
+        // A name alone, without a bit, as in C.
+        Feature::Ech => (c"ECH", 0),
         Feature::GssApi => (c"GSS-API", crate::ffi::CURL_VERSION_GSSAPI),
         Feature::Hsts => (c"HSTS", crate::ffi::CURL_VERSION_HSTS),
         Feature::HttpsRr => (c"HTTPSRR", 0),
@@ -145,7 +147,7 @@ pub(crate) fn ca_defaults() -> (*const c_char, *const c_char) {
 }
 
 fn info() -> &'static curl_version_info_data {
-    let v = version();
+    let v = version_with_tls(&crate::tlslib::TLS.support());
     let protocol_names = PROTOCOL_NAMES.get_or_init(|| {
         let mut names = CList([ptr::null(); MAX_PROTOCOLS + 1]);
         assert!(
@@ -515,12 +517,10 @@ mod tests {
         ));
         let info = info();
         let names = names(info.feature_names);
-        let want: Vec<_> = version().features.iter().map(|f| f.name()).collect();
+        let v = version_with_tls(&crate::tlslib::TLS.support());
+        let want: Vec<_> = v.features.iter().map(|f| f.name()).collect();
         assert_eq!(names, want);
-        let bits = version()
-            .features
-            .iter()
-            .fold(0, |b, &f| b | c_feature(f).1);
+        let bits = v.features.iter().fold(0, |b, &f| b | c_feature(f).1);
         assert_eq!(info.features, bits);
         // The resolver and the debug hooks are the core's choice; the
         // core's tests pin them.
@@ -534,6 +534,9 @@ mod tests {
             (asynch, "AsynchDNS", ffi::CURL_VERSION_ASYNCHDNS),
             (true, "brotli", ffi::CURL_VERSION_BROTLI),
             (debug, "Debug", ffi::CURL_VERSION_DEBUG),
+            // Where the TLS library has it, with no bit of its own
+            // (`ech_present`).
+            (crate::tlslib::TLS.support().ech, "ECH", 0),
             // SSPI in its place on Windows.
             (!cfg!(windows), "GSS-API", ffi::CURL_VERSION_GSSAPI),
             (true, "HSTS", ffi::CURL_VERSION_HSTS),

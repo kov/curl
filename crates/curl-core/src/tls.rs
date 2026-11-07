@@ -257,8 +257,8 @@ impl TlsSupport {
             crl_file: either(|t| t.crl_file.is_some()),
             issuer_cert: either(|t| t.issuer_cert.is_some()),
             issuer_cert_blob: either(|t| t.issuer_cert_blob.is_some()),
-            // No option asks for it.
-            ech: false,
+            // The origin's alone, as C sets it (`CURLOPT_ECH`).
+            ech: o.ech != crate::options::Ech::NONE,
             cert_status: o.verify_status || doh_status,
             engines: o.engine.is_some() || o.engine_default,
         }
@@ -1661,6 +1661,8 @@ impl TlsIdentity {
         };
         options.engine_default = origin.engine_default;
         options.session_cache = origin.session_cache;
+        // A proxy's TLS never tries ECH (`Curl_ssl_conn_config_init`).
+        options.ech = crate::options::Ech::NONE;
         TryArc::try_new(TlsIdentity {
             verify_peer: proxy.verify_peer,
             verify_host: proxy.verify_host,
@@ -1780,6 +1782,7 @@ impl PartialEq for TlsIdentity {
             // The handle's, called as the context is made; the identity
             // holds none.
             context: _,
+            ech,
         } = options;
         let o = &other.options;
         *verify_peer == other.verify_peer
@@ -1807,6 +1810,9 @@ impl PartialEq for TlsIdentity {
             && same_name(curves, &o.curves)
             && same_name(signature_algorithms, &o.signature_algorithms)
             && *pinned_key == o.pinned_key
+            // The mode, and the configuration and name exactly, kept or
+            // not (`Curl_safecmp`).
+            && *ech == o.ech
     }
 }
 

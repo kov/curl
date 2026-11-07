@@ -350,3 +350,9 @@ mod library {
 }
 
 pub(crate) use library::*;
+
+/// What the library claims with this TLS library (`curl_version_info`):
+/// the core's, with what the TLS library decides, Encrypted Client Hello.
+pub(crate) fn version_info() -> &'static curl_core::version::VersionInfo {
+    curl_core::version::version_with_tls(&support())
+}

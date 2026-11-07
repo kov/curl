@@ -2621,6 +2621,25 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Resul
             Ok(())
         })?;
     }
+    // `pn:`, then `ecl:`, then the mode, each only if given and only
+    // where the library has ECH (`feature_ech`): `ecl:` alone makes ECH
+    // hard, and a mode after it says what it is.
+    if s.tls_has(|t| t.ech) {
+        let ech_config = tls.ech_config.as_deref();
+        for word in [tls.ech_public, ech_config, tls.ech].into_iter().flatten() {
+            s.str("CURLOPT_ECH", Some(word), |o| {
+                let word = options::EchWord::parse(easysrc::c_string(word))
+                    .ok_or(ErrorKind::BadFunctionArgument)?;
+                o.tls
+                    .options
+                    .make_mut()
+                    .map_err(oom)?
+                    .ech
+                    .apply(word)
+                    .map_err(oom)
+            })?;
+        }
+    }
     if s.tls_has(|t| t.engines) {
         string_setopt(s, "CURLOPT_SSLENGINE", tls.engine, |t| &mut t.engine)?;
     }

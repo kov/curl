@@ -36,6 +36,9 @@ pub enum Feature {
     /// A debug build, for the test suite: never for production. Listed
     /// only by a build with the `debug-hooks` feature.
     Debug,
+    /// Encrypted Client Hello: listed where the TLS library has it
+    /// (`ech_present`), as `version_with_tls` says.
+    Ech,
     /// The system's own store of certificates is the default trust store
     /// where a transfer names none (C's `CURL_CA_NATIVE`): claimed by a
     /// build with the `native-ca` feature, unless it claims
@@ -114,6 +117,7 @@ impl Feature {
             Feature::AsynchDns => "AsynchDNS",
             Feature::Brotli => "brotli",
             Feature::Debug => "Debug",
+            Feature::Ech => "ECH",
             Feature::GssApi => "GSS-API",
             Feature::Hsts => "HSTS",
             Feature::HttpsRr => "HTTPSRR",
@@ -141,46 +145,57 @@ impl Feature {
     }
 }
 
-/// Sorted by name, case-insensitively, as C lists them.
-const FEATURES: &[Feature] = &[
-    Feature::AltSvc,
-    #[cfg(feature = "apple-sectrust")]
-    Feature::AppleSecTrust,
-    Feature::AsynchDns,
-    Feature::Brotli,
-    #[cfg(feature = "debug-hooks")]
-    Feature::Debug,
-    #[cfg(not(windows))]
-    Feature::GssApi,
-    Feature::Hsts,
-    Feature::Http2,
-    #[cfg(feature = "quic")]
-    Feature::Http3,
-    Feature::HttpsProxy,
-    #[cfg(feature = "httpsig")]
-    Feature::Httpsig,
-    Feature::HttpsRr,
-    Feature::Idn,
-    Feature::Ipv6,
-    Feature::Kerberos,
-    Feature::Largefile,
-    Feature::Libz,
-    #[cfg(all(feature = "native-ca", not(feature = "apple-sectrust")))]
-    Feature::NativeCa,
-    #[cfg(feature = "proxy-http3")]
-    Feature::ProxyHttp3,
-    Feature::Psl,
-    Feature::Spnego,
-    Feature::Ssl,
-    Feature::SslsExport,
-    #[cfg(windows)]
-    Feature::Sspi,
-    Feature::Threadsafe,
-    #[cfg(feature = "unicode")]
-    Feature::Unicode,
-    Feature::UnixSockets,
-    Feature::Zstd,
-];
+/// The features, sorted by name, case-insensitively, as C lists them:
+/// `ECH` among them if `$ech` names it.
+macro_rules! features {
+    ($($ech:expr)?) => {
+        &[
+            Feature::AltSvc,
+            #[cfg(feature = "apple-sectrust")]
+            Feature::AppleSecTrust,
+            Feature::AsynchDns,
+            Feature::Brotli,
+            #[cfg(feature = "debug-hooks")]
+            Feature::Debug,
+            $($ech,)?
+            #[cfg(not(windows))]
+            Feature::GssApi,
+            Feature::Hsts,
+            Feature::Http2,
+            #[cfg(feature = "quic")]
+            Feature::Http3,
+            Feature::HttpsProxy,
+            #[cfg(feature = "httpsig")]
+            Feature::Httpsig,
+            Feature::HttpsRr,
+            Feature::Idn,
+            Feature::Ipv6,
+            Feature::Kerberos,
+            Feature::Largefile,
+            Feature::Libz,
+            #[cfg(all(feature = "native-ca", not(feature = "apple-sectrust")))]
+            Feature::NativeCa,
+            #[cfg(feature = "proxy-http3")]
+            Feature::ProxyHttp3,
+            Feature::Psl,
+            Feature::Spnego,
+            Feature::Ssl,
+            Feature::SslsExport,
+            #[cfg(windows)]
+            Feature::Sspi,
+            Feature::Threadsafe,
+            #[cfg(feature = "unicode")]
+            Feature::Unicode,
+            Feature::UnixSockets,
+            Feature::Zstd,
+        ]
+    };
+}
+
+/// What the build claims with a TLS library that has no ECH.
+const FEATURES: &[Feature] = features!();
+/// And with one that has it.
+const FEATURES_ECH: &[Feature] = features!(Feature::Ech);
 
 // The feature is `curl-os`'s, where names are converted; this one only
 // claims it, and is on exactly when that one is.
@@ -265,18 +280,24 @@ impl fmt::Display for Components<'_> {
     }
 }
 
-static VERSION: VersionInfo = VersionInfo {
-    version: curlver::VERSION,
-    release: Release {
-        major: curlver::MAJOR,
-        minor: curlver::MINOR,
-        patch: curlver::PATCH,
-    },
-    timestamp: curlver::TIMESTAMP,
-    host: HOST,
-    features: FEATURES,
-    protocols: PROTOCOLS,
-};
+/// The version information with `features`.
+const fn info(features: &'static [Feature]) -> VersionInfo {
+    VersionInfo {
+        version: curlver::VERSION,
+        release: Release {
+            major: curlver::MAJOR,
+            minor: curlver::MINOR,
+            patch: curlver::PATCH,
+        },
+        timestamp: curlver::TIMESTAMP,
+        host: HOST,
+        features,
+        protocols: PROTOCOLS,
+    }
+}
+
+static VERSION: VersionInfo = info(FEATURES);
+static VERSION_ECH: VersionInfo = info(FEATURES_ECH);
 
 /// The protocols built, in C's order. LDAP's two only where the LDAP
 /// crate links an LDAP library (`curl_build::ldap`), or on Windows,
@@ -347,9 +368,17 @@ const HOST: &str = "Darwin";
 #[cfg(windows)]
 const HOST: &str = "Windows";
 
-/// This build's version information.
+/// This build's version information, as the core alone has it: with
+/// none of what the TLS library decides.
 pub fn version() -> &'static VersionInfo {
     &VERSION
+}
+
+/// This build's version information with a TLS library that can do what
+/// `tls` says: `ECH` claimed where it has Encrypted Client Hello
+/// (`ech_present`).
+pub fn version_with_tls(tls: &crate::tls::TlsSupport) -> &'static VersionInfo {
+    if tls.ech { &VERSION_ECH } else { &VERSION }
 }
 
 #[cfg(test)]
@@ -384,13 +413,35 @@ mod tests {
         assert!(names.contains(&"UnixSockets"), "{names:?}");
     }
 
-    /// Listed in C's order, by name whatever the case.
+    /// Listed in C's order, by name whatever the case, with ECH too.
     #[test]
     fn features_are_sorted_as_c_sorts_them() {
-        let names: Vec<_> = version().features.iter().map(|f| f.name()).collect();
-        let mut sorted = names.clone();
-        sorted.sort_by_key(|n| n.to_ascii_lowercase());
-        assert_eq!(names, sorted);
+        for v in [version(), &VERSION_ECH] {
+            let names: Vec<_> = v.features.iter().map(|f| f.name()).collect();
+            let mut sorted = names.clone();
+            sorted.sort_by_key(|n| n.to_ascii_lowercase());
+            assert_eq!(names, sorted);
+        }
+    }
+
+    /// `ECH` is claimed with a TLS library that has it and with no other;
+    /// the rest is the same either way.
+    #[test]
+    fn ech_is_claimed_where_the_tls_library_has_it() {
+        let none = crate::tls::TlsSupport::NONE;
+        let ech = crate::tls::TlsSupport { ech: true, ..none };
+        assert!(!version_with_tls(&none).claims("ECH"));
+        assert!(version_with_tls(&ech).claims("ECH"));
+        assert!(!version().claims("ECH"));
+        let without: Vec<_> = version_with_tls(&ech)
+            .features
+            .iter()
+            .filter(|&&f| f != Feature::Ech)
+            .collect();
+        assert_eq!(
+            without,
+            version_with_tls(&none).features.iter().collect::<Vec<_>>()
+        );
     }
 
     /// The threaded resolver is claimed as C claims its own, as

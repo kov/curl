@@ -191,6 +191,12 @@ pub(crate) struct Tls<'a> {
     pub(crate) cert_status: bool,
     /// `--no-sessionid`.
     pub(crate) no_sessionid: bool,
+    /// `--ech`'s last mode, `ecl:` and `pn:`, each as given, prefix and
+    /// all, a file's `ecl:` with its text in the name's place (C's `ech`,
+    /// `ech_config`, `ech_public`).
+    pub(crate) ech: Option<&'a [u8]>,
+    pub(crate) ech_config: Option<Cow<'a, [u8]>>,
+    pub(crate) ech_public: Option<&'a [u8]>,
 }
 
 /// The TLS options of an HTTPS proxy, as given (C's `proxy_cacert`,
@@ -2046,7 +2052,8 @@ pub(crate) fn apply<'a>(
         // it, `--proxy-ntlm` even to turn off, as C's check has no toggle.
         Opt::ProxyNtlm => return Err(ParamError::LibcurlDoesntSupport),
         Opt::Ntlm if value.toggle() => return Err(ParamError::LibcurlDoesntSupport),
-        Opt::Ech | Opt::FalseStart | Opt::Ntlm => line.not_implemented(spec, "--"),
+        Opt::Ech => ech(line.current(), value.text(), msgs)?,
+        Opt::FalseStart | Opt::Ntlm => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
 }
@@ -2120,6 +2127,49 @@ fn existing_file(file: &[u8], name: &[u8], msgs: &Messages) -> Result<(), ParamE
 }
 
 /// `text`, which a blank does not give (`getstr`'s `DENY_BLANK`).
+/// `--ech`'s argument `arg` kept as the word it is (`parse_ech`): `pn:`
+/// and a name, `ecl:` and an ECHConfigList or `@` and the file it is in
+/// (`-` for standard input), its text read with no line ends, or else a
+/// mode. The prefixes are found in any case, and the library reads the
+/// word as it reads `CURLOPT_ECH`'s. Refused where the library has no
+/// ECH.
+fn ech<'a>(op: &mut Operation<'a>, arg: &'a [u8], msgs: &Messages) -> Result<(), ParamError> {
+    if !super::parse::claims("ECH") {
+        return Err(ParamError::LibcurlDoesntSupport);
+    }
+    let prefixed = |prefix: &[u8]| {
+        arg.len() > prefix.len() + 1 && arg[..prefix.len()].eq_ignore_ascii_case(prefix)
+    };
+    if prefixed(b"pn:") {
+        op.tls.ech_public = Some(non_blank(arg)?);
+    } else if prefixed(b"ecl:") {
+        let Some(name) = arg[4..].strip_prefix(b"@") else {
+            op.tls.ech_config = Some(Cow::Borrowed(non_blank(arg)?));
+            return Ok(());
+        };
+        let text = match crate::slurp::read(name, As::Text, curl_os::text::Mode::TEXT) {
+            Ok(text) => text,
+            Err(crate::slurp::ReadFailed::Open) => {
+                msgs.warn(&[
+                    b"Could not read file \"",
+                    name,
+                    b"\" specified for \"--ech ecl:\" option",
+                ]);
+                return Err(ParamError::BadUse);
+            }
+            Err(crate::slurp::ReadFailed::Read) => return Err(ParamError::ReadError),
+            Err(crate::slurp::ReadFailed::OutOfMemory) => return Err(ParamError::NoMem),
+        };
+        let mut word = Vec::new();
+        word.try_extend_from_slice(b"ecl:")?;
+        word.try_extend_from_slice(&text)?;
+        op.tls.ech_config = Some(Cow::Owned(word));
+    } else {
+        op.tls.ech = Some(non_blank(arg)?);
+    }
+    Ok(())
+}
+
 fn non_blank(text: &[u8]) -> Result<&[u8], ParamError> {
     if text.is_empty() {
         Err(ParamError::BlankString)

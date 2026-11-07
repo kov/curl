@@ -468,9 +468,10 @@ impl H3Proxy {
             // The connection's first stream keeps it alive
             // (`Curl_cf_ngtcp2_h3_stream_setup`).
             quic.keep_alive(over, 1);
-            quic.submit(over, fields, true)
+            quic.submit(over, fields, true, url)
         });
-        let stream = stream?;
+        // Only quiche holds a request back, and it tunnels nothing.
+        let stream = stream?.expect("ngtcp2 holds no request back");
         self.tunnel.life = Life::Open {
             stream,
             flow_blocked: false,

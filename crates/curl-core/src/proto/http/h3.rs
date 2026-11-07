@@ -1,4 +1,5 @@
-//! A request over HTTP/3: its stream (`cf-ngtcp2.c`'s `h3_stream_ctx`).
+//! A request over HTTP/3: its stream (`cf-ngtcp2.c`'s `h3_stream_ctx`,
+//! and `cf-quiche.c`'s, whose traces its flavour's are).
 //!
 //! The request is made as for HTTP/1 and its head turned into the
 //! stream's fields as it is sent, as for HTTP/2. Each call the request
@@ -13,7 +14,7 @@ use crate::conn::layer::LayerCx;
 use crate::conn::mux::Routes;
 use crate::conn::quic::{LayersIo, Quic, QuicIo, RecvRoom, STREAM_WINDOW_INITIAL, SocketIo, Via};
 use crate::error::AGAIN_NUMBER;
-use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
+use crate::http3::{Flavour, H3Error, Heard, StreamEvent, StreamId};
 use crate::proto::http2::fields_of;
 use crate::proto::http3::H3Conn;
 use crate::text::Text;
@@ -164,6 +165,8 @@ struct H3Step<'a, 'c, H: Host> {
     extends: Vec<(StreamId, u64)>,
     /// A window could not be kept for want of memory.
     oom: bool,
+    /// Which of C's filters the connection is spoken as.
+    flavour: Flavour,
 }
 
 impl<H: Host> LayerCx for H3Step<'_, '_, H> {
@@ -212,7 +215,9 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
     fn heard(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
         // The packet's writer says so, whichever transfer the stream is
         // (`read_pkt_to_send`).
-        if let StreamEvent::Blocked = event {
+        if let StreamEvent::Blocked = event
+            && self.flavour == Flavour::Ngtcp2
+        {
             let id = stream.0;
             trace::of(
                 &mut *self.cx,
@@ -223,16 +228,17 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
         let me = self.cx.me;
         let own = self.req.wire.h3().and_then(|s| s.id);
         let mut extend = None;
+        let flavour = self.flavour;
         let heard = if own == Some(stream) {
             self.req
-                .h3_event(&mut *self.cx, &mut *self.lease, event, &mut extend)
+                .h3_event(&mut *self.cx, &mut *self.lease, flavour, event, &mut extend)
         } else {
             let to = self.routes.route_of(stream).filter(|&to| to != me);
             let lease = &mut *self.lease;
             let told = to.and_then(|to| {
                 let told = self.cx.lend_sibling(to, |scx, sib| {
                     let blocked = sib.h3_stream().flow_blocked;
-                    let heard = sib.h3_event(scx, lease, event.clone(), &mut extend);
+                    let heard = sib.h3_event(scx, lease, flavour, event.clone(), &mut extend);
                     (heard, wakes_sibling(&event, blocked))
                 });
                 if let Some((_, true)) = told {
@@ -363,6 +369,7 @@ impl Request {
             routes,
             extends: Vec::new(),
             oom: false,
+            flavour: quic.flavour(),
         };
         let failures = quic.failures();
         if matches!(step.req.outgoing, Sending::Done | Sending::Aborted) {
@@ -422,7 +429,8 @@ impl Request {
                         break 'out Err(ErrorKind::SendError);
                     }
                     match open(step, quic, start..end) {
-                        Ok(taken) => n = taken,
+                        Ok(Some(taken)) => n = taken,
+                        Ok(None) => break 'out Ok(Called::Again),
                         Err(kind) => {
                             let code = kind.number();
                             trace::of(
@@ -479,12 +487,39 @@ impl Request {
                         Ok(took) => took,
                         Err(kind) => break 'out Err(kind),
                     };
-                    let code = if took == 0 { AGAIN_NUMBER } else { 0 };
-                    trace::of(
-                        &mut *step.cx,
-                        Component::Http3,
-                        format_args!("[{id}] cf_send, add to sendbuf(len={len}) -> {code}, {took}"),
-                    );
+                    match step.flavour {
+                        Flavour::Ngtcp2 => {
+                            let code = if took == 0 { AGAIN_NUMBER } else { 0 };
+                            trace::of(
+                                &mut *step.cx,
+                                Component::Http3,
+                                format_args!(
+                                    "[{id}] cf_send, add to sendbuf(len={len}) -> {code}, {took}"
+                                ),
+                            );
+                        }
+                        // quiche holds what it takes: handed at once, and
+                        // none taken is its flow control's
+                        // (`cf_quiche_send_body`).
+                        Flavour::Quiche if took == 0 => {
+                            trace::of(
+                                &mut *step.cx,
+                                Component::Http3,
+                                format_args!("[{id}] send_body(len={len}) -> window exhausted"),
+                            );
+                            step.stream().flow_blocked = true;
+                        }
+                        Flavour::Quiche => {
+                            let s = step.stream();
+                            s.handed += took as u64;
+                            let eos = u8::from(s.body_size == Some(s.handed));
+                            trace::of(
+                                &mut *step.cx,
+                                Component::Http3,
+                                format_args!("[{id}] send body(len={len}, eos={eos}) -> {took}"),
+                            );
+                        }
+                    }
                     if took == 0 {
                         break 'out Ok(Called::Again);
                     }
@@ -499,7 +534,7 @@ impl Request {
                 // What went before the handshake is early data.
                 quic.sent(n);
                 let sent = quic.egress(step).map(|()| Called::Done);
-                if n > 0 {
+                if n > 0 && step.flavour == Flavour::Ngtcp2 {
                     adjust_ideal(step, quic, len, n);
                 }
                 sent
@@ -601,6 +636,13 @@ impl Request {
                         break 'out Err(ErrorKind::RecvError);
                     }
                 }
+                if step.flavour == Flavour::Quiche && quic.draining() {
+                    break 'out Err(trace::fail(
+                        &mut *step.cx,
+                        ErrorKind::Http3,
+                        format_args!("QUIC connection is draining"),
+                    ));
+                }
                 Ok(Called::Again)
             };
             let r = first_fatal(r, quic.egress(step));
@@ -611,11 +653,20 @@ impl Request {
             };
             let id = step.stream().shown_id();
             let code = code(r);
-            trace::of(
-                &mut *step.cx,
-                Component::Http3,
-                format_args!("[{id}] cf_recv(buflen={buflen}) -> {code}, 0"),
-            );
+            match step.flavour {
+                Flavour::Ngtcp2 => trace::of(
+                    &mut *step.cx,
+                    Component::Http3,
+                    format_args!("[{id}] cf_recv(buflen={buflen}) -> {code}, 0"),
+                ),
+                // What the call read, none: the body went to the transfer
+                // as it was read (`cf_quiche_recv`).
+                Flavour::Quiche => trace::of(
+                    &mut *step.cx,
+                    Component::Http3,
+                    format_args!("[{id}] cf_recv(len={buflen}) -> {code}, 0, total=0"),
+                ),
+            }
             r
         })
     }
@@ -691,9 +742,11 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
+        flavour: Flavour,
         event: StreamEvent<'_>,
         extend: &mut Option<u64>,
     ) -> Heard {
+        let ngtcp2 = flavour == Flavour::Ngtcp2;
         let s = self.h3_stream();
         let id = s.shown_id();
         let h3 = Component::Http3;
@@ -742,10 +795,16 @@ impl Request {
                 }
             }
             StreamEvent::HeadersDone => {
+                // quiche's filter says the head came before it ends it.
+                if !ngtcp2 {
+                    trace::of(cx, h3, format_args!("[{id}] <- [HEADERS]"));
+                }
                 self.h3_head_line(cx, lease, b"\r\n");
                 let s = self.h3_stream();
                 let status = s.status;
-                trace::of(cx, h3, format_args!("[{id}] end_headers, status={status}"));
+                if ngtcp2 {
+                    trace::of(cx, h3, format_args!("[{id}] end_headers, status={status}"));
+                }
                 if status / 100 != 1 {
                     s.head_done = true;
                 }
@@ -769,8 +828,15 @@ impl Request {
                 s.rx_offset += bytes.len() as u64;
                 s.rx_offset_max = s.rx_offset_max.max(s.rx_offset);
                 let (len, win) = (bytes.len(), s.rx_offset_max - s.rx_offset);
-                trace::of(cx, h3, format_args!("[{id}] DATA len={len}, rx win={win}"));
-                *extend = self.rx_extend(cx);
+                if ngtcp2 {
+                    trace::of(cx, h3, format_args!("[{id}] DATA len={len}, rx win={win}"));
+                } else {
+                    trace::of(cx, h3, format_args!("[{id}] <- [DATA]"));
+                }
+                // quiche opens its windows itself.
+                if ngtcp2 {
+                    *extend = self.rx_extend(cx);
+                }
                 Heard::Fine
             }
             StreamEvent::Consumed(n) => {
@@ -796,7 +862,11 @@ impl Request {
                 } else {
                     s.ended = Some(Ended::Reset(error));
                     let code = error.0;
-                    trace::of(cx, h3, format_args!("[{id}] RESET: error {code}"));
+                    if ngtcp2 {
+                        trace::of(cx, h3, format_args!("[{id}] RESET: error {code}"));
+                    } else {
+                        trace::of(cx, h3, format_args!("[{id}] RESET"));
+                    }
                 }
                 Heard::Fine
             }
@@ -821,7 +891,11 @@ impl Request {
             }
             StreamEvent::Unblocked => {
                 if s.flow_blocked {
-                    trace::of(cx, h3, format_args!("[{id}] unblock quic flow"));
+                    if ngtcp2 {
+                        trace::of(cx, h3, format_args!("[{id}] unblock quic flow"));
+                    } else {
+                        trace::of(cx, h3, format_args!("[{id}] unblock"));
+                    }
                     s.flow_blocked = false;
                 }
                 Heard::Fine
@@ -949,7 +1023,8 @@ impl Request {
 /// The stream's receive window opened as the transfer can take more, on
 /// the connection at once: no call of the library's is under way.
 fn rx_window<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
-    if let Some(n) = step.req.rx_extend(step.cx)
+    if step.flavour == Flavour::Ngtcp2
+        && let Some(n) = step.req.rx_extend(step.cx)
         && let Some(stream) = step.stream().id
     {
         quic.extend_stream_window(stream, n);
@@ -994,12 +1069,13 @@ fn close<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
 /// Open the request's stream with the head in `out[range]`, its fields
 /// as HTTP/2's are (`h3_stream_open`): the first stream open on the
 /// connection keeps it alive; the stream's receive window opens to its
-/// most. How much of the request it took: its head.
+/// most. How much of the request it took: its head; none if the peer's
+/// flow control holds it back for now.
 fn open<H: Host>(
     step: &mut H3Step<'_, '_, H>,
     quic: &mut Quic,
     range: std::ops::Range<usize>,
-) -> Result<usize, ErrorKind> {
+) -> Result<Option<usize>, ErrorKind> {
     let head = match step.req.outgoing {
         Sending::Head { left, .. } => left.get(),
         _ => 0,
@@ -1028,7 +1104,21 @@ fn open<H: Host>(
         }
     };
     let body = size != Some(0);
-    let stream = quic.submit(step, &pairs, body)?;
+    let url = step.cx.easy().report().url().map(copied).transpose()?;
+    let url = url.as_deref().unwrap_or_default();
+    let Some(stream) = quic.submit(step, &pairs, body, url)? else {
+        // C's stream id before the stream opened, unsigned
+        // (`h3_open_stream`). The request is made again as the transfer
+        // next sends; no stream of it waits on the peer's flow control
+        // to be told when it may.
+        let id = u64::MAX;
+        trace::of(
+            &mut *step.cx,
+            Component::Http3,
+            format_args!("[{id}] blocked"),
+        );
+        return Ok(None);
+    };
     let me = step.cx.me;
     step.routes
         .route(stream, me, ())
@@ -1039,8 +1129,6 @@ fn open<H: Host>(
     s.body_size = size;
     rx_window(step, quic);
     if step.cx.easy().options().output.verbose {
-        let url = step.cx.easy().report().url().map(copied).transpose()?;
-        let url = url.as_deref().unwrap_or_default();
         let id = curl_alloc::try_format(format_args!("{}", stream.0))
             .map_err(|_| ErrorKind::OutOfMemory)?;
         trace::info_with(
@@ -1060,7 +1148,7 @@ fn open<H: Host>(
             trace::info_with(step.cx, &parts);
         }
     }
-    Ok(head)
+    Ok(Some(head))
 }
 
 /// The library keeps more or less of the body in flight than it is given

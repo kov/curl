@@ -92,8 +92,8 @@ use super::layer::{
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{
-    CloseKind, ConnEvent, Connection, Event, Expiry, H3Error, Heard, Layer, QuicError, StreamEvent,
-    StreamId, SubmitFailed,
+    CloseKind, ConnEvent, Connection, Event, Expiry, Flavour, H3Error, Heard, Layer, QuicError,
+    StreamEvent, StreamId, SubmitFailed,
 };
 use crate::time::{Instant, SharedClock};
 use crate::tls::{SessionPeer, TlsCx};
@@ -102,6 +102,9 @@ use crate::trace::{Code, Ip};
 /// The room the packets to send are collected in (`NW_CHUNK_SIZE`, one
 /// chunk).
 const SEND_ROOM: usize = 64 * 1024;
+
+/// The most packets quiche's filter sends in one go (`MAX_PKT_BURST`).
+const BURST: usize = 10;
 
 /// The room the datagrams a connection on a socket receives are read
 /// into, lent by the multi (`Curl_multi_xfer_sockbuf_borrow`).
@@ -479,6 +482,8 @@ pub(crate) struct EarlyTicket {
 /// A QUIC connection over its UDP socket.
 pub(crate) struct Quic {
     conn: Box<dyn Connection>,
+    /// Which of C's filters it is spoken as, its library's.
+    flavour: Flavour,
     /// Who its TLS sessions are kept for, the context of its TLS's.
     peer: SessionPeer,
     remote: SocketAddr,
@@ -508,13 +513,15 @@ impl std::fmt::Debug for Quic {
 impl Quic {
     /// The connection `conn`, to `remote`, whose TLS's sessions are kept
     /// for `peer`, its connect started now on `clock`, traced as
-    /// `component`'s. Where its datagrams go each call's context says.
+    /// `component`'s and as `flavour`, its library's, says. Where its
+    /// datagrams go each call's context says.
     pub(crate) fn new(
         conn: Box<dyn Connection>,
         peer: SessionPeer,
         remote: SocketAddr,
         clock: SharedClock,
         component: Component,
+        flavour: Flavour,
     ) -> Result<Quic, curl_alloc::OutOfMemory> {
         let now = clock.now();
         let mut bytes = Vec::new();
@@ -523,6 +530,7 @@ impl Quic {
             .map_err(|_| curl_alloc::OutOfMemory)?;
         Ok(Quic {
             conn,
+            flavour,
             peer,
             remote,
             out: Out {
@@ -556,6 +564,11 @@ impl Quic {
 
     /// When the first datagram came, the time a QUIC connection is
     /// connected at (`cf_socket_cntrl`'s for QUIC).
+    /// Which of C's filters it is spoken as.
+    pub(crate) fn flavour(&self) -> Flavour {
+        self.flavour
+    }
+
     /// The filter C's chain traces it as.
     pub(crate) fn component(&self) -> Component {
         self.state.component
@@ -616,6 +629,12 @@ impl Quic {
             return self.connect_ended(cx, Ok(true));
         }
         let sent = self.egress(cx);
+        if self.flavour == Flavour::Quiche && sent.is_ok() {
+            cx.of(
+                self.state.component,
+                format_args!("Sent QUIC client Initial, ALPN: h3"),
+            );
+        }
         self.connect_ended(cx, sent.map(|()| false))
     }
 
@@ -714,6 +733,12 @@ impl Quic {
                 self.state.connected = true;
                 return Ok(true);
             }
+            // A server shutting down may close at once: quiche's filter
+            // says so as a weird reply, the next address tried
+            // (`cf_quiche_connect`).
+            if self.flavour == Flavour::Quiche && self.conn.draining() {
+                return Err(ErrorKind::WeirdServerReply);
+            }
             Ok(false)
         })();
         self.connect_ended(cx, step)
@@ -731,7 +756,9 @@ impl Quic {
         if let Err(kind) = self.state.verified {
             step = Err(kind);
         }
-        if matches!(step, Err(ErrorKind::RecvError | ErrorKind::SendError)) && self.conn.draining()
+        if self.flavour == Flavour::Ngtcp2
+            && matches!(step, Err(ErrorKind::RecvError | ErrorKind::SendError))
+            && self.conn.draining()
         {
             step = Err(ErrorKind::CouldntConnect);
             if let Some(closed) = self.conn.closed_with() {
@@ -753,8 +780,12 @@ impl Quic {
         if let Err(kind) = step {
             let (ip, port) = (self.remote.ip(), self.remote.port());
             let why = kind.message();
+            let quic = match self.flavour {
+                Flavour::Ngtcp2 => "QUIC ",
+                Flavour::Quiche => "",
+            };
             cx.info(format_args!(
-                "QUIC connect to {ip} port {port} failed: {why}"
+                "{quic}connect to {ip} port {port} failed: {why}"
             ));
         }
         if step.is_ok()
@@ -763,7 +794,7 @@ impl Quic {
             step = Err(kind);
         }
         let done = matches!(step, Ok(true));
-        if step.is_err() || done {
+        if self.flavour == Flavour::Ngtcp2 && (step.is_err() || done) {
             let code = Code(step.map(|_| ()));
             let done = u8::from(done);
             cx.of(
@@ -782,18 +813,24 @@ impl Quic {
             let now = self.clock.now();
             self.state.now = now;
             let ran = {
+                let flavour = self.flavour;
                 let Quic {
                     conn, peer, state, ..
                 } = self;
                 let mut tcx = TlsCx::new(cx, state.component, peer);
-                conn.handle_expiry(&mut tcx, now, &mut |tcx, e| state.heard(tcx, e))
+                conn.handle_expiry(&mut tcx, now, &mut |tcx, e| state.heard(tcx, flavour, e))
             };
             if let Err(error) = ran {
                 let why = error.text;
-                cx.fails(
-                    ErrorKind::SendError,
-                    format_args!("ngtcp2_conn_handle_expiry returned error: {why}"),
-                );
+                match self.flavour {
+                    Flavour::Ngtcp2 => cx.fails(
+                        ErrorKind::SendError,
+                        format_args!("ngtcp2_conn_handle_expiry returned error: {why}"),
+                    ),
+                    // Closed by its timer: by the idle timeout or the
+                    // server (`cf_flush_egress`).
+                    Flavour::Quiche => cx.fails(ErrorKind::SendError, format_args!("{why}")),
+                };
                 self.failed(cx, error);
                 return Err(ErrorKind::SendError);
             }
@@ -824,6 +861,10 @@ impl Quic {
     pub(crate) fn usable(&self) -> bool {
         if self.state.shutdown_started {
             return false;
+        }
+        // Closed, by its idle timeout or otherwise (`cf_quiche_conn_is_alive`).
+        if self.flavour == Flavour::Quiche {
+            return self.conn.closed_with().is_none();
         }
         match self.conn.peer_idle_timeout() {
             Some(max) if max > Duration::ZERO => {
@@ -859,19 +900,53 @@ impl Quic {
         self.state.shutdown_started
     }
 
-    /// Open a stream for a request of `fields`, with a body if `body`,
-    /// counted among those the peer allows (`h3_stream_open`). A request
-    /// the library refused cancels its stream.
+    /// The peer closed it (`quiche_conn_is_draining`).
+    pub(crate) fn draining(&self) -> bool {
+        self.conn.draining()
+    }
+
+    /// Open a stream for a request of `fields` for `url`, with a body if
+    /// `body`, counted among those the peer allows (`h3_stream_open`):
+    /// its id, or none if the peer's flow control holds it back for now.
+    /// A request the library refused cancels its stream; quiche's opens
+    /// none, and its filter names the request by its URL.
     pub(crate) fn submit(
         &mut self,
         cx: &mut dyn QuicIo,
         fields: &[(&[u8], &[u8])],
         body: bool,
-    ) -> Result<StreamId, ErrorKind> {
-        match self.conn.submit_request(fields, body) {
+        url: &[u8],
+    ) -> Result<Option<StreamId>, ErrorKind> {
+        let submitted = self.conn.submit_request(fields, body);
+        if self.flavour == Flavour::Quiche {
+            let rv = match &submitted {
+                Ok(stream) => stream.0,
+                Err(SubmitFailed::Blocked { error } | SubmitFailed::Refused { error, .. }) => {
+                    i64::from(error.code)
+                }
+                Err(_) => -1,
+            };
+            cx.of(
+                self.state.component,
+                format_args!("quiche_send_request() -> {rv}"),
+            );
+        }
+        match submitted {
             Ok(stream) => {
                 self.state.used_bidi += 1;
-                Ok(stream)
+                Ok(Some(stream))
+            }
+            // quiche says this as the connection's window runs out, which
+            // happens often and passes (`h3_open_stream`).
+            Err(SubmitFailed::Blocked { .. }) => Ok(None),
+            // quiche opens no stream for a request it refuses.
+            Err(SubmitFailed::Refused { error, .. }) if self.flavour == Flavour::Quiche => {
+                let (url, rv) = (curl_alloc::Lossy(url), error.code);
+                cx.of(
+                    self.state.component,
+                    format_args!("send_request({url}) -> {rv}"),
+                );
+                Err(ErrorKind::SendError)
             }
             Err(SubmitFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
             Err(SubmitFailed::NoStream) => Err(cx.fails(
@@ -909,12 +984,18 @@ impl Quic {
     /// Stop `stream` both ways as cancelled, nothing more heard of it,
     /// and send what that says (`Curl_cf_ngtcp2_h3_stream_close`).
     pub(crate) fn cancel(&mut self, cx: &mut dyn QuicIo, stream: StreamId) {
-        self.conn.cancel(stream, H3Error::REQUEST_CANCELLED);
+        // quiche's filter shuts a stream with no error
+        // (`cf_quiche_stream_close`).
+        let (error, said) = match self.flavour {
+            Flavour::Ngtcp2 => (H3Error::REQUEST_CANCELLED, "cancel stream"),
+            Flavour::Quiche => (H3Error::NO_ERROR, "stream close, flush egress"),
+        };
+        self.conn.cancel(stream, error);
         if let Err(kind) = self.egress(cx) {
             let (id, code) = (stream.0, kind.number());
             cx.of(
                 self.state.component,
-                format_args!("[{id}] cancel stream -> {code}"),
+                format_args!("[{id}] {said} -> {code}"),
             );
         }
     }
@@ -969,6 +1050,10 @@ impl Quic {
     /// half the peer's idle timeout, lest it close one waiting for a
     /// response (`cf_ngtcp2_setup_keep_alive`).
     pub(crate) fn keep_alive(&mut self, cx: &mut dyn LayerCx, streams: usize) {
+        // quiche's filter keeps none alive.
+        if self.flavour == Flavour::Quiche {
+            return;
+        }
         let h3 = self.state.component;
         match self.conn.peer_idle_timeout() {
             None => {
@@ -1019,6 +1104,9 @@ impl Quic {
     }
 
     fn close_step(&mut self, cx: &mut dyn QuicIo) -> bool {
+        if self.flavour == Flavour::Quiche {
+            return self.close_quiche(cx);
+        }
         let h3 = self.state.component;
         if !self.state.shutdown_started {
             if !self.out.is_empty() {
@@ -1094,6 +1182,37 @@ impl Quic {
         false
     }
 
+    /// quiche's close (`cf_quiche_shutdown`): the library told to close,
+    /// the packets that wait sent, and done once none does. What it sends
+    /// for the close goes as its connection next sends, which nothing
+    /// asks of a connection already sent off: C's filter frees it so.
+    fn close_quiche(&mut self, cx: &mut dyn QuicIo) -> bool {
+        let h3 = self.state.component;
+        if !self.state.shutdown_started {
+            self.state.shutdown_started = true;
+            if let Err(e) = self.conn.write_close(self.clock.now(), &mut []) {
+                let rv = e.code;
+                cx.of(
+                    h3,
+                    format_args!("error {rv} adding shutdown packet, aborting shutdown"),
+                );
+                return true;
+            }
+        }
+        if !self.out.is_empty() {
+            cx.of(h3, format_args!("shutdown, flushing sendbuf"));
+            if self.egress(cx).is_err() {
+                return true;
+            }
+        }
+        if self.out.is_empty() {
+            cx.of(h3, format_args!("shutdown completely sent off, done"));
+            return true;
+        }
+        cx.of(h3, format_args!("shutdown sending blocked"));
+        false
+    }
+
     /// Send what waits, then collect what the library has to send and
     /// send it, in runs of packets of one size (`progress_egress`).
     pub(crate) fn egress(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
@@ -1110,17 +1229,43 @@ impl Quic {
             }
             Err(Stop::Failed(kind)) => return Err(kind),
         }
-        // A packet larger than those before may be the library finding
-        // the path's MTU, which the network may refuse: what is collected
-        // before it goes first, so that what follows is not refused with
-        // it.
+        match self.flavour {
+            Flavour::Ngtcp2 => self.egress_run(cx)?,
+            Flavour::Quiche => self.egress_bursts(cx)?,
+        }
+        let now = self.clock.now();
+        self.state.now = now;
+        let done = {
+            let flavour = self.flavour;
+            let Quic {
+                conn, peer, state, ..
+            } = self;
+            let mut tcx = TlsCx::new(cx, state.component, peer);
+            conn.egress_done(&mut tcx, now, &mut |tcx, e| state.heard(tcx, flavour, e))
+        };
+        done.map_err(|error| {
+            self.failed(cx, error);
+            ErrorKind::SendError
+        })
+    }
+
+    /// Collect a run of packets and send it, a quantum's worth at most
+    /// (`cf_progress_egress`).
+    ///
+    /// A packet larger than those before may be the library finding the
+    /// path's MTU, which the network may refuse: what is collected before
+    /// it goes first, so that what follows is not refused with it.
+    fn egress_run(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+        let ngtcp2 = self.flavour == Flavour::Ngtcp2;
         let max = self.conn.max_payload();
         let path_max = self.conn.path_max_payload();
         let quantum = self.conn.send_quantum();
-        cx.of(
-            self.state.component,
-            format_args!("egress, collect and send packets, quantum={quantum}"),
-        );
+        if ngtcp2 {
+            cx.of(
+                self.state.component,
+                format_args!("egress, collect and send packets, quantum={quantum}"),
+            );
+        }
         let (mut packets, mut gso) = (0usize, 0usize);
         while let Some(n) = self.collect(cx, max)? {
             let len = self.out.unsent().len();
@@ -1150,10 +1295,12 @@ impl Quic {
         }
         if !self.out.is_empty() {
             let len = self.out.unsent().len();
-            cx.of(
-                self.state.component,
-                format_args!("egress, send collected {packets} packets in {len} bytes"),
-            );
+            if ngtcp2 {
+                cx.of(
+                    self.state.component,
+                    format_args!("egress, send collected {packets} packets in {len} bytes"),
+                );
+            }
             self.out.gso = gso;
             match self.flush(cx) {
                 Ok(()) => {}
@@ -1168,6 +1315,39 @@ impl Quic {
         Ok(())
     }
 
+    /// Send what the library has, until it has no more: in bursts of up
+    /// to ten packets, each burst ended early by a packet shorter than
+    /// the largest the library sends, which is every burst's segment size
+    /// (quiche's `cf_flush_egress`).
+    fn egress_bursts(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+        let max = self.conn.max_payload();
+        let mut packets = 0;
+        loop {
+            let collected = self.collect(cx, max)?;
+            if let Some(n) = collected {
+                packets += 1;
+                if n == max && packets < BURST {
+                    continue;
+                }
+            }
+            if !self.out.is_empty() {
+                self.out.gso = max;
+                match self.flush(cx) {
+                    Ok(()) => {}
+                    Err(Stop::Again) => {
+                        cx.quic_due(Duration::from_millis(1));
+                        return Ok(());
+                    }
+                    Err(Stop::Failed(kind)) => return Err(kind),
+                }
+            }
+            if collected.is_none() {
+                return Ok(());
+            }
+            packets = 0;
+        }
+    }
+
     /// The library's next packet, of at most `max` bytes, added to those
     /// collected: its length, or none if it has none
     /// (`read_pkt_to_send`).
@@ -1179,6 +1359,7 @@ impl Quic {
         let now = self.clock.now();
         self.state.now = now;
         let wrote = {
+            let flavour = self.flavour;
             let Quic {
                 conn,
                 peer,
@@ -1188,7 +1369,7 @@ impl Quic {
             } = self;
             let mut tcx = TlsCx::new(cx, state.component, peer);
             conn.write_packet(&mut tcx, now, &mut out.bytes[at..], &mut |tcx, e| {
-                state.heard(tcx, e)
+                state.heard(tcx, flavour, e)
             })
         };
         match wrote {
@@ -1202,11 +1383,16 @@ impl Quic {
             }
             Err(error) => {
                 self.out.bytes.truncate(at);
-                let (call, why) = (error.call, error.text);
-                cx.fails(
-                    ErrorKind::SendError,
-                    format_args!("{call} returned error: {why}"),
-                );
+                let (call, why, code) = (error.call, error.text, error.code);
+                match self.flavour {
+                    Flavour::Ngtcp2 => cx.fails(
+                        ErrorKind::SendError,
+                        format_args!("{call} returned error: {why}"),
+                    ),
+                    Flavour::Quiche => {
+                        cx.fails(ErrorKind::SendError, format_args!("{call} returned {code}"))
+                    }
+                };
                 self.failed(cx, error);
                 Err(ErrorKind::SendError)
             }
@@ -1414,14 +1600,37 @@ impl Quic {
             let Quic { conn, peer, .. } = self;
             conn.before_recv(&mut TlsCx::new(cx, component, peer))?;
         }
-        let read = match cx.via() {
+        let mut read = match cx.via() {
             Via::Layers(below) => self.ingress_through(below),
             Via::Socket(on) => self.ingress_socket(on),
         };
+        if read.is_ok() {
+            read = self.ingress_done(cx);
+        }
         if read.is_err() {
             self.state.failures = self.state.failures.wrapping_add(1);
         }
         read
+    }
+
+    /// What the library read told, once the call's datagrams were all
+    /// read; its failure the connection's, as a packet's would be.
+    fn ingress_done(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+        let done = {
+            let flavour = self.flavour;
+            let Quic {
+                conn, peer, state, ..
+            } = self;
+            let mut tcx = TlsCx::new(cx, state.component, peer);
+            conn.ingress_done(&mut tcx, &mut |tcx, e| state.heard(tcx, flavour, e))
+        };
+        done.map_err(|error| {
+            self.failed(cx, error);
+            match error.layer {
+                Layer::Http3 => ErrorKind::Http3,
+                _ => ErrorKind::RecvError,
+            }
+        })
     }
 
     /// The count of its failures so far, which a call compares before and
@@ -1433,10 +1642,12 @@ impl Quic {
     /// What the layers below have, read into the connection's own room
     /// (`Curl_cf_ngtcp2_progress_ingress`'s tunnelled branch).
     fn ingress_through(&mut self, cx: &mut dyn LayersIo) -> Result<(), ErrorKind> {
-        cx.of(
-            self.state.component,
-            format_args!("progress_ingress(sub-filters)"),
-        );
+        if self.flavour == Flavour::Ngtcp2 {
+            cx.of(
+                self.state.component,
+                format_args!("progress_ingress(sub-filters)"),
+            );
+        }
         // At least C's 64 KiB, and as large as the path's largest
         // datagram, grown as that is (`QUIC_TUNNEL_INBUF_SIZE`).
         let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
@@ -1453,10 +1664,12 @@ impl Quic {
     /// What the socket has, read into the room the call lends or one
     /// made for it.
     fn ingress_socket(&mut self, cx: &mut dyn SocketIo) -> Result<(), ErrorKind> {
-        cx.of(
-            self.state.component,
-            format_args!("progress_ingress(socket)"),
-        );
+        if self.flavour == Flavour::Ngtcp2 {
+            cx.of(
+                self.state.component,
+                format_args!("progress_ingress(socket)"),
+            );
+        }
         // The multi's room if the call has one to lend, else one made for
         // the call, as C's `Curl_multi_xfer_sockbuf_borrow` mallocs one
         // for a call with no multi.
@@ -1599,7 +1812,7 @@ impl Quic {
         d: &Datagram,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
-        if d.ecn != 0 {
+        if d.ecn != 0 && self.flavour == Flavour::Ngtcp2 {
             let (len, gso, ecn) = (d.len, d.segment, d.ecn);
             cx.of(
                 self.state.component,
@@ -1612,21 +1825,24 @@ impl Quic {
         // Its packets in one call: what the libraries' callbacks reach is
         // set up once for them all.
         let read = {
+            let flavour = self.flavour;
             let Quic {
                 conn, peer, state, ..
             } = self;
             let mut tcx = TlsCx::new(cx, state.component, peer);
             let packets = bytes.chunks(d.segment);
             conn.read_packets(&mut tcx, now, from, d.ecn, packets, &mut |tcx, e| {
-                state.heard(tcx, e)
+                state.heard(tcx, flavour, e)
             })
         };
         if let Err(error) = read {
             let (text, code) = (error.text, error.code);
-            cx.of(
-                self.state.component,
-                format_args!("ingress, read_pkt -> {text} ({code})"),
-            );
+            if self.flavour == Flavour::Ngtcp2 {
+                cx.of(
+                    self.state.component,
+                    format_args!("ingress, read_pkt -> {text} ({code})"),
+                );
+            }
             self.failed(cx, error);
             // A failed TLS, which an unverified peer often is.
             return Err(if error.layer == Layer::Crypto {
@@ -1642,7 +1858,7 @@ impl Quic {
 impl State {
     /// The library told `event`: the connection's own heard here, a
     /// stream's handed to the transfer the call is made for.
-    fn heard(&mut self, cx: &mut TlsCx<'_>, event: Event<'_>) -> Heard {
+    fn heard(&mut self, cx: &mut TlsCx<'_>, flavour: Flavour, event: Event<'_>) -> Heard {
         let event = match event {
             Event::Connection(event) => event,
             Event::Stream(stream, event) => return cx.h3_event(stream, event),
@@ -1657,11 +1873,14 @@ impl State {
                 let now = self.now;
                 self.handshake_at = Some(now);
                 self.verified = checked;
-                if checked.is_ok() {
-                    let ms = now.ms_since(self.started);
-                    cx.trace(format_args!(
+                let ms = now.ms_since(self.started);
+                match flavour {
+                    Flavour::Ngtcp2 if checked.is_ok() => cx.trace(format_args!(
                         "handshake complete after {ms}ms, remote transport[max_udp_payload={max_udp_payload}, initial_max_data={initial_max_data}]"
-                    ));
+                    )),
+                    // quiche's says it before the peer is checked
+                    // (`cf_quiche_connect`).
+                    Flavour::Ngtcp2 | Flavour::Quiche => {}
                 }
                 // What of the early data the peer took is reported, the
                 // handshake's time the connection's as it truly connected;
@@ -1690,7 +1909,9 @@ impl State {
             ConnEvent::MaxBidiStreams(n) => {
                 self.max_bidi = n;
                 let used = self.used_bidi;
-                cx.trace(format_args!("max bidi streams now {n}, used {used}"));
+                if flavour == Flavour::Ngtcp2 {
+                    cx.trace(format_args!("max bidi streams now {n}, used {used}"));
+                }
                 Heard::Fine
             }
         }
@@ -2036,7 +2257,15 @@ pub(crate) mod tests {
         };
         let shared = SharedClock::new(Box::new(clock)).unwrap();
         (
-            Quic::new(conn, peer, remote, shared, Component::Http3).unwrap(),
+            Quic::new(
+                conn,
+                peer,
+                remote,
+                shared,
+                Component::Http3,
+                Flavour::Ngtcp2,
+            )
+            .unwrap(),
             cx,
         )
     }
@@ -2453,6 +2682,7 @@ pub(crate) mod tests {
             &mut cx,
             &[(b":method".as_slice(), b"GET".as_slice())],
             false,
+            b"https://localhost/",
         )
         .unwrap();
         assert_eq!(q.max_concurrent(1, 7), 3);

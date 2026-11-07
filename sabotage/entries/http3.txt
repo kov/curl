@@ -208,9 +208,9 @@ witness: curl-core conn::quic::tests::idle_past_the_peer_s_timeout_or_shut_down_
         if self.state.shutdown_started {
             return false;
         }
-        match self.conn.peer_idle_timeout() {
+        // Closed, by its idle timeout or otherwise (`cf_quiche_conn_is_alive`).
 --- new
-        match self.conn.peer_idle_timeout() {
+        // Closed, by its idle timeout or otherwise (`cf_quiche_conn_is_alive`).
 
 === a datagram read does not count as the connection's last I/O
 file: crates/curl-core/src/conn/quic.rs

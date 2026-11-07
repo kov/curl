@@ -2,7 +2,7 @@ use super::*;
 use crate::conn::layer::Silent;
 use crate::conn::quic::tests::{Act, Scripted};
 use crate::http3::fake::{FakeHttp3, Script};
-use crate::http3::{ClientSetup, Http3};
+use crate::http3::{ClientSetup, Flavour, Http3};
 use crate::time::{Clock, ManualClock, SharedClock};
 use crate::tls::Notes;
 use std::sync::{Arc, Mutex};
@@ -457,7 +457,7 @@ fn proxy(script: &Arc<Mutex<Script>>) -> (H3Proxy, ManualClock) {
         crate::tls::SessionPeer::new(&identity, &origin, None, &"test", crate::conn::Dial::Quic)
             .unwrap();
     let shared = SharedClock::new(Box::new(clock.clone())).unwrap();
-    let quic = Quic::new(conn, peer, remote, shared, H3P).unwrap();
+    let quic = Quic::new(conn, peer, remote, shared, H3P, Flavour::Ngtcp2).unwrap();
     (H3Proxy::new(Box::new(quic), false), clock)
 }
 

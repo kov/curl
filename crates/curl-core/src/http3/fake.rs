@@ -14,8 +14,8 @@ use curl_alloc::OutOfMemory;
 
 use super::{
     ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, Connection, EarlyStart, Event,
-    Events, Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId,
-    SubmitFailed,
+    Events, Expiry, Flavour, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent,
+    StreamId, SubmitFailed,
 };
 use crate::error::ErrorKind;
 use crate::time::Instant;
@@ -139,6 +139,13 @@ pub struct Script {
     /// The connection may send nothing more now: its congestion window
     /// or the peer's limit on its data is used up.
     pub no_send_room: bool,
+    /// Which of C's filters the library is spoken as.
+    pub flavour: Flavour,
+    /// A request submitted is held back this many times first, as
+    /// quiche's flow control holds a stream back.
+    pub submit_blocked: usize,
+    /// A request submitted is refused with this code, quiche's.
+    pub submit_refused: Option<i32>,
 }
 
 /// A request body as the binding holds it: what was written, handed to
@@ -229,6 +236,13 @@ impl Http3 for FakeHttp3 {
 
     fn version(&self) -> &dyn fmt::Display {
         &"fake-http3/1.0"
+    }
+
+    fn flavour(&self) -> Flavour {
+        self.script
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .flavour
     }
 }
 
@@ -660,6 +674,11 @@ impl Connection for FakeConnection {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .at(now);
+        // Told to close with no room for the packet that says so, as
+        // quiche's filter closes it, it writes none.
+        if buf.is_empty() {
+            return Ok(0);
+        }
         buf[..5].copy_from_slice(b"CLOSE");
         Ok(5)
     }
@@ -669,6 +688,21 @@ impl Connection for FakeConnection {
         fields: &[(&[u8], &[u8])],
         body: bool,
     ) -> Result<StreamId, SubmitFailed> {
+        {
+            let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(code) = s.submit_refused {
+                return Err(SubmitFailed::Refused {
+                    stream: StreamId(-1),
+                    error: quic_error("quiche_h3_send_request", code),
+                });
+            }
+            if s.submit_blocked > 0 {
+                s.submit_blocked -= 1;
+                return Err(SubmitFailed::Blocked {
+                    error: quic_error("quiche_h3_send_request", -13),
+                });
+            }
+        }
         own(|| {
             let lines = fields
                 .iter()

@@ -185,6 +185,10 @@ impl fmt::Display for Alpn<'_> {
 pub struct SessionPeer {
     key: Vec<u8>,
     identity: TryArc<TlsIdentity>,
+    /// The connection's TLS keeps the sessions the peer gives; not over a
+    /// QUIC library that takes none (`Flavour::keeps_sessions`), which
+    /// still resumes one kept already.
+    keeps: bool,
 }
 
 impl SessionPeer {
@@ -203,7 +207,18 @@ impl SessionPeer {
         Ok(SessionPeer {
             key,
             identity: identity.clone(),
+            keeps: true,
         })
+    }
+
+    /// The same peer, for a connection whose TLS keeps none of the
+    /// sessions the peer gives, as C's quiche filter sets no callback for
+    /// them: one kept already is still looked up and resumed.
+    pub(crate) fn keeping_none(self) -> SessionPeer {
+        SessionPeer {
+            keeps: false,
+            ..self
+        }
     }
 
     /// One for `https://localhost/` with the default settings, for the
@@ -224,6 +239,11 @@ impl SessionPeer {
     /// The connection's sessions are kept (`CURLOPT_SSL_SESSIONID_CACHE`).
     pub(crate) fn caches(&self) -> bool {
         self.identity.options.session_cache
+    }
+
+    /// The sessions the peer gives are kept, where its TLS keeps them.
+    pub(crate) fn keeps(&self) -> bool {
+        self.keeps && self.caches()
     }
 
     fn auth(&self) -> Auth<'_> {

@@ -1,0 +1,52 @@
+=== quiche's filter says the head came only after it ends it
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_get_over_quiche_is_traced_as_its_filter_traces_it
+features: test-util
+--- old
+                if !ngtcp2 {
+                    trace::of(cx, h3, format_args!("[{id}] <- [HEADERS]"));
+                }
+                self.h3_head_line(cx, lease, b"\r\n");
+--- new
+                self.h3_head_line(cx, lease, b"\r\n");
+                if !ngtcp2 {
+                    trace::of(cx, h3, format_args!("[{id}] <- [HEADERS]"));
+                }
+
+=== a quiche burst's segment size is its first packet's, not the largest quiche sends
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_get_over_quiche_is_traced_as_its_filter_traces_it
+features: test-util
+--- old
+                self.out.gso = max;
+--- new
+                self.out.gso = self.out.unsent().len().min(max);
+
+=== a connection over quiche keeps the sessions the peer gives
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core proto::http::tests::h3_trace::quiche_keeps_no_session_but_resumes_one_kept
+features: test-util
+--- old
+        self.keeps && self.caches()
+--- new
+        self.caches()
+
+=== a connection over quiche resumes no session kept already
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core proto::http::tests::h3_trace::quiche_keeps_no_session_but_resumes_one_kept
+features: test-util
+--- old
+    pub(crate) fn caches(&self) -> bool {
+        self.identity.options.session_cache
+--- new
+    pub(crate) fn caches(&self) -> bool {
+        self.keeps && self.identity.options.session_cache
+
+=== a request quiche holds back fails the transfer
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_request_quiche_holds_back_is_made_again
+features: test-util
+--- old
+            Err(SubmitFailed::Blocked { .. }) => Ok(None),
+--- new
+            Err(SubmitFailed::Blocked { .. }) => Err(ErrorKind::SendError),

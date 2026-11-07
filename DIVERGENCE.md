@@ -526,6 +526,23 @@ not a difference: it is tracked in `MILESTONES.md`.
   after the ids are the bytes traced, zeros and all. Pinned by
   `traced_bytes_with_the_ids_keep_a_zero_byte` (`crates/curl-core/src/proto/http/tests.rs`).
 
+## What C's quiche filter drops
+
+- **A stream reset over quiche keeps the peer's code.** quiche gives the code a stream was reset
+  with (`QUICHE_H3_EVENT_RESET`); C's filter marks the stream reset and never sets its
+  `error3`, so every reset says `reset by server (error 0x0 NO_ERROR)`, and one refused with
+  `H3_REQUEST_REJECTED` is not made again on a new connection, as C's ngtcp2 filter makes it,
+  but fails. Here the code is the peer's, said and acted on as over ngtcp2. Read from
+  `lib/vquic/cf-quiche.c`; no test server here resets a stream to show it. Pinned by
+  `a_request_quiche_s_peer_refuses_is_made_again`
+  (`crates/curl-core/src/proto/http/tests/h3_trace.rs`).
+- **An interim response over quiche ends its head.** C's filter writes a head's end only at
+  the first body bytes or the stream's end, once (`resp_hds_complete`), so a 1xx head runs into
+  the final one's status line. Here each head ends as its fields do, as over ngtcp2. Read from
+  `lib/vquic/cf-quiche.c`; neither suite has a server that sends a 1xx over HTTP/3. Pinned by
+  `an_interim_head_over_quiche_ends_before_the_final_one`
+  (`crates/curl-core/src/proto/http/tests/h3_trace.rs`).
+
 ## Error numbers C leaves stale
 
 - **A server that closes before its greeting is said with `errno: 0`**, in `response reading

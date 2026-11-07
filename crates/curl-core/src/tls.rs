@@ -492,6 +492,27 @@ pub trait QuicTls: Send {
         params: &mut dyn FnMut() -> Option<Vec<u8>>,
         call: &mut dyn FnMut(&mut dyn DriveCall),
     );
+
+    /// Give the QUIC library the session's own object
+    /// (`native().session()`), which the library frees with its
+    /// connection (quiche's `quiche_conn_new_with_tls`): from then on the
+    /// session never frees it. The context and the callbacks the object
+    /// uses stay the session's, which is dropped after the library's
+    /// connection. Asked once, of a library quiche runs over (OpenSSL's
+    /// family); any other is never asked.
+    fn give_up_session(&mut self) -> NonNull<c_void> {
+        unreachable!("only quiche takes a session's object, and only OpenSSL's")
+    }
+
+    /// The QUIC library says the handshake's TLS failed: whether the TLS
+    /// library's own check of the peer's chain failed, said to `cx` as C
+    /// says it ("SSL certificate problem: ...", `SSL_get_verify_result`
+    /// in `cf_quiche_recv_pkts`), its kind if so. Asked by quiche's
+    /// binding alone.
+    fn unverified(&mut self, cx: &mut TlsCx<'_>) -> Option<ErrorKind> {
+        let _ = cx;
+        None
+    }
 }
 
 /// What a QUIC library's callbacks reach during a call `QuicTls::drive`
@@ -502,6 +523,15 @@ pub trait DriveCall {
     /// peer's certificate checked as a stream session's is, the peer's
     /// sessions forgotten if it fails (`Curl_vquic_tls_verify_peer`).
     fn handshake_done(&mut self) -> Result<(), ErrorKind>;
+
+    /// The QUIC library says the connection is established, the peer
+    /// checked as by `handshake_done` but the handshake not reported, as
+    /// quiche's filter checks it (`Curl_vquic_tls_verify_peer` once
+    /// `quiche_conn_is_established`, and no `Curl_vquic_report_handshake`).
+    /// Asked by quiche's binding alone, over OpenSSL's family.
+    fn check_peer(&mut self) -> Result<(), ErrorKind> {
+        unreachable!("only quiche checks the peer apart, and only over OpenSSL's")
+    }
 
     /// Run `f` with the transfer the call reaches.
     fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>));
@@ -1151,7 +1181,7 @@ impl TlsCx<'_> {
     /// sessions (`Curl_ssl_scache_put`). Out of memory, it is said, and
     /// the transfer goes on without it.
     pub fn keep_session(&mut self, ticket: TlsTicket) {
-        if !self.peer.caches() {
+        if !self.peer.keeps() {
             return;
         }
         // Out of memory, the copy is not kept and the cache's is

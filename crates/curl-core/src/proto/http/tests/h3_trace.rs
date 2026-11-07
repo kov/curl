@@ -4880,3 +4880,275 @@ fn a_failed_read_run_by_a_timer_fails_the_other_transfer_at_once() {
         ]
     );
 }
+
+/// `get_script`, spoken as quiche's filter speaks it: its stream ends
+/// with no word from the QUIC library of its own, which quiche has none
+/// of.
+fn quiche_script(body: &[u8]) -> Arc<Mutex<Script>> {
+    let script = get_script(body);
+    {
+        let mut s = script.lock().unwrap();
+        s.flavour = crate::http3::Flavour::Quiche;
+        let response = s.on_read.back_mut().unwrap();
+        assert!(matches!(response.pop(), Some(Told::QuicClosed(..))));
+    }
+    script
+}
+
+/// A GET over quiche is traced as C's quiche filter traces it: its
+/// Initial said, its handshake said complete before the peer is checked,
+/// its request said sent with the stream it opened, each packet sent as
+/// it is short of the largest with that as its segment size, and the
+/// head, body and end of its stream said as they come; no window opened
+/// and no ngtcp2 egress said (`cf-quiche.c`).
+#[test]
+fn a_get_over_quiche_is_traced_as_its_filter_traces_it() {
+    let script = quiche_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    let got = lines(
+        &ran,
+        &[
+            "[HTTP/3]",
+            "using",
+            "Request completely sent off",
+            "[WRITE] xfer_write_resp",
+            "Connection #0",
+        ],
+    );
+    let want = expect(&format!(
+        "[HTTP/3] fake QUIC session 1
+        [HTTP/3] vquic_sendmsg(len=2400, gso=1200, calls=1) -> 0, sent=2400
+        [HTTP/3] Sent QUIC client Initial, ALPN: h3
+        [HTTP/3] fake QUIC session 1 trusts
+        [HTTP/3] ingress, recvmmsg -> EAGAIN
+        [HTTP/3] vquic_recvmmsg(len=13, packets=1, calls=1) -> 0
+        [HTTP/3] peer verified
+        [HTTP/3] query ALPN
+        using HTTP/3
+        [HTTP/3] ingress, recvmmsg -> EAGAIN
+        [HTTP/3] quiche_send_request() -> 0
+        [HTTP/3] [0] OPENED stream for https://localhost:{PORT}/
+        [HTTP/3] [0] [:method: GET]
+        [HTTP/3] [0] [:scheme: https]
+        [HTTP/3] [0] [:authority: localhost:{PORT}]
+        [HTTP/3] [0] [:path: /]
+        [HTTP/3] [0] [user-agent: curl/test]
+        [HTTP/3] [0] [accept: */*]
+        [HTTP/3] vquic_sendmsg(len=75, gso=1200, calls=1) -> 0, sent=75
+        [HTTP/3] [0] cf_send(len=74) -> 0, 74
+        Request completely sent off
+        [HTTP/3] [0] status: HTTP/3 200
+        [HTTP/3] [0] header: content-length: 9
+        [HTTP/3] [0] <- [HEADERS]
+        [WRITE] xfer_write_resp(len=9, eos=0) -> 0
+        [HTTP/3] [0] <- [DATA]
+        [HTTP/3] [0] CLOSED
+        [HTTP/3] ingress, recvmmsg -> EAGAIN
+        [HTTP/3] vquic_recvmmsg(len=8, packets=1, calls=1) -> 0
+        [HTTP/3] [0] cf_recv(len=16384) -> 0, 0, total=0
+        [WRITE] xfer_write_resp(len=0, eos=1) -> 0
+        [HTTP/3] [0] easy handle is done
+        [HTTP/3] query conn[0]: MAX_CONCURRENT -> 99 (0 in use)
+        Connection #0 to host localhost:{PORT} left intact"
+    ));
+    assert_eq!(got, want);
+    // The end of the head is written after the head is said to have
+    // come, its fields before.
+    assert_eq!(
+        ran.seen.of("header"),
+        [
+            b"HTTP/3 200 \r\n".to_vec(),
+            b"content-length: 9\r\n".to_vec(),
+            b"\r\n".to_vec()
+        ]
+    );
+    {
+        // A header as it was written; a line of text past its ids.
+        let saw = ran.seen.0.lock().unwrap();
+        let at = |what: &str, bytes: &[u8]| {
+            saw.iter()
+                .position(|(w, b)| {
+                    *w == what && (b == bytes || (what == "text" && b.ends_with(bytes)))
+                })
+                .unwrap_or_else(|| panic!("no {what} {:?}", String::from_utf8_lossy(bytes)))
+        };
+        let field = at("header", b"content-length: 9\r\n");
+        let said = at("text", b"[HTTP/3] [0] <- [HEADERS]\n");
+        let ended = at("header", b"\r\n");
+        assert!(field < said && said < ended, "{field} {said} {ended}");
+    }
+    assert_eq!(ran.seen.body(), b"123456789");
+    let s = script.lock().unwrap();
+    assert!(s.windows.is_empty(), "quiche opens its windows itself");
+    assert_eq!(s.cancelled, [], "the stream ended of itself");
+}
+
+/// A request quiche's flow control holds back is said blocked, by C's
+/// id for a stream not yet open, and made again as the transfer next
+/// sends (`h3_open_stream`).
+#[test]
+fn a_request_quiche_holds_back_is_made_again() {
+    let script = quiche_script(b"123456789");
+    script.lock().unwrap().submit_blocked = 1;
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    let got = lines(
+        &ran,
+        &["[HTTP/3] quiche_send", "[HTTP/3] [18446744073709551615]"],
+    );
+    assert_eq!(
+        got,
+        expect(
+            "[HTTP/3] quiche_send_request() -> -13
+            [HTTP/3] [18446744073709551615] blocked
+            [HTTP/3] quiche_send_request() -> 0"
+        )
+    );
+    assert_eq!(script.lock().unwrap().requests.len(), 1);
+    assert_eq!(ran.seen.body(), b"123456789");
+}
+
+/// Two GETs on new connections, the first spoken as `first` and the
+/// second as `second`, by a TLS backend whose QUIC sessions give their
+/// ticket as the handshake ends: how many the second resumed.
+fn second_resumes_over(first: crate::http3::Flavour, second: crate::http3::Flavour) -> usize {
+    let tls = FakeTls::quic_ticketing(crate::tls::fake::QuicTickets::AtHandshake).unwrap();
+    let tls: &'static FakeTls = Box::leak(Box::new(tls));
+    let conn: &[&[u8]] = &[b"server flight", b"response"];
+    let clock = ManualClock::new().unwrap();
+    clock.set_unix_time(1_700_000_000);
+    let (mut m, _) = quic_peer(clock, &[conn, conn]);
+    for flavour in [first, second] {
+        let script = get_script(b"123456789");
+        script.lock().unwrap().flavour = flavour;
+        let e = tracing_by(tls, &script);
+        let url = format!("https://localhost:{PORT}/");
+        let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.version = crate::options::HttpVersion::Http3Only;
+            o.ip_version = IpVersion::V6;
+            o.limits.reuse.fresh = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    }
+    tls.log().resumed
+}
+
+/// quiche's filter keeps no session the peer gives, as it sets its TLS
+/// no callback for them, but looks one up and resumes one kept already
+/// (`Curl_vquic_tls_init`, `Curl_ossl_ctx_init`).
+#[test]
+fn quiche_keeps_no_session_but_resumes_one_kept() {
+    use crate::http3::Flavour::{Ngtcp2, Quiche};
+    assert_eq!(second_resumes_over(Quiche, Quiche), 0);
+    assert_eq!(second_resumes_over(Ngtcp2, Quiche), 1);
+    assert_eq!(second_resumes_over(Quiche, Ngtcp2), 0);
+}
+
+/// A request quiche refuses opens no stream: the transfer fails to send,
+/// the request named by its URL, as quiche's filter names it
+/// (`h3_open_stream`).
+#[test]
+fn a_request_quiche_refuses_fails_naming_its_url() {
+    let script = quiche_script(b"123456789");
+    script.lock().unwrap().submit_refused = Some(-6);
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Err(ErrorKind::SendError));
+    let got = lines(&ran, &["[HTTP/3] quiche_send", "[HTTP/3] send_request"]);
+    assert_eq!(
+        got,
+        expect(&format!(
+            "[HTTP/3] quiche_send_request() -> -6
+            [HTTP/3] send_request(https://localhost:{PORT}/) -> -6"
+        ))
+    );
+    assert!(
+        script.lock().unwrap().cancelled.is_empty(),
+        "no stream to cancel"
+    );
+}
+
+/// A request quiche's peer refuses, its stream reset with
+/// `H3_REQUEST_REJECTED`, is made again on a new connection: the reset's
+/// code is the peer's, as quiche gives it, where C's quiche filter keeps
+/// none and fails the transfer (`DIVERGENCE.md`).
+#[test]
+fn a_request_quiche_s_peer_refuses_is_made_again() {
+    let script = quiche_script(b"");
+    {
+        let mut s = script.lock().unwrap();
+        *s.on_read.back_mut().unwrap() = vec![Told::Closed(0, 0x10b)];
+        s.out.push_back(vec![]);
+    }
+    twice(&script, b"again");
+    script.lock().unwrap().on_read.back_mut().unwrap().pop();
+    let (mut m, _) = quic_peer(
+        ManualClock::new().unwrap(),
+        &[
+            &[b"server flight", b"refused"],
+            &[b"server flight", b"response"],
+        ],
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"again");
+    assert_eq!(
+        lines(&ran, &["HTTP/3 stream", "[HTTP/3] [0] RESET"]),
+        [
+            "[HTTP/3] [0] RESET",
+            "HTTP/3 stream 0 refused by server, try again on a new connection",
+        ]
+    );
+}
+
+/// An interim response's head ends before the final one's starts, each
+/// at its end over quiche as over ngtcp2, where C's quiche filter ends
+/// only the last, at the body (`DIVERGENCE.md`).
+#[test]
+fn an_interim_head_over_quiche_ends_before_the_final_one() {
+    let script = quiche_script(b"ok");
+    {
+        let mut s = script.lock().unwrap();
+        let header = |name: &[u8], value: &[u8]| Told::Header {
+            stream: 0,
+            name: name.to_vec(),
+            value: value.to_vec(),
+        };
+        let response = s.on_read.back_mut().unwrap();
+        let interim = [
+            header(b":status", b"103"),
+            header(b"link", b"</style.css>; rel=preload"),
+            Told::HeadersDone(0),
+        ];
+        response.splice(0..0, interim);
+    }
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(
+        ran.seen.of("interim"),
+        [
+            b"HTTP/3 103 \r\n".to_vec(),
+            b"link: </style.css>; rel=preload\r\n".to_vec(),
+            b"\r\n".to_vec(),
+        ]
+    );
+    assert_eq!(
+        ran.seen.of("header"),
+        [
+            b"HTTP/3 200 \r\n".to_vec(),
+            b"content-length: 2\r\n".to_vec(),
+            b"\r\n".to_vec(),
+        ]
+    );
+    assert_eq!(ran.seen.body(), b"ok");
+}

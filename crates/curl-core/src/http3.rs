@@ -335,7 +335,28 @@ pub enum Expiry {
     In(Duration),
 }
 
-/// An HTTP/3 library, as ngtcp2 and nghttp3 serve C.
+/// Which of C's two QUIC filters a library is spoken through: ngtcp2's
+/// (`cf-ngtcp2.c`) or quiche's (`cf-quiche.c`), which differ in what they
+/// trace and in some of what they do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Flavour {
+    #[default]
+    Ngtcp2,
+    Quiche,
+}
+
+impl Flavour {
+    /// The sessions the peer gives are kept, and early data sent under
+    /// one resumed: not by quiche's filter, which passes its TLS neither
+    /// a new-session callback nor a session-reuse one
+    /// (`Curl_vquic_tls_init`); a session already kept, which it never
+    /// keeps itself, still resumes.
+    pub fn keeps_sessions(self) -> bool {
+        self == Flavour::Ngtcp2
+    }
+}
+
+/// An HTTP/3 library, as ngtcp2 and nghttp3, or quiche, serve C.
 pub trait Http3: fmt::Debug + Send + Sync {
     /// A client connection with C's settings, over `tls`, which it keeps
     /// and drives (`cf_connect_start`). Its first packets are not yet
@@ -358,6 +379,11 @@ pub trait Http3: fmt::Debug + Send + Sync {
     fn setup_tls_context(&self, ctx: crate::tls::TlsNative) -> Result<(), &'static str> {
         let _ = ctx;
         Ok(())
+    }
+
+    /// The filter of C's it is spoken through.
+    fn flavour(&self) -> Flavour {
+        Flavour::Ngtcp2
     }
 }
 
@@ -393,6 +419,27 @@ pub trait Connection: fmt::Debug + Send {
         packets: std::slice::Chunks<'_, u8>,
         events: Events<'_>,
     ) -> Result<(), QuicError>;
+
+    /// What came in was all read, every datagram the socket had for this
+    /// call: what the library holds of it is told to `events` now, for a
+    /// library that has no callbacks to tell it as it reads (quiche's
+    /// `cf_poll_events`, after `Curl_vquic_recv_packets`).
+    fn ingress_done(&mut self, _cx: &mut TlsCx<'_>, _events: Events<'_>) -> Result<(), QuicError> {
+        Ok(())
+    }
+
+    /// What it had to send went, at `now`: what that came to is told to
+    /// `events`, for a library that has no callbacks to tell it (quiche's
+    /// connection found established after a connect call's flush,
+    /// `cf_quiche_connect`).
+    fn egress_done(
+        &mut self,
+        _cx: &mut TlsCx<'_>,
+        _now: Instant,
+        _events: Events<'_>,
+    ) -> Result<(), QuicError> {
+        Ok(())
+    }
 
     /// Write the next packet it wants sent into `buf`, as many frames of
     /// as many streams as fit (`read_pkt_to_send`): its length, or none
@@ -524,6 +571,12 @@ pub trait Connection: fmt::Debug + Send {
 pub enum SubmitFailed {
     /// No stream could be opened.
     NoStream,
+    /// The peer's flow control holds the request back for now: it is
+    /// submitted again later (quiche's `QUICHE_H3_ERR_STREAM_BLOCKED`,
+    /// `error`).
+    Blocked {
+        error: QuicError,
+    },
     /// The HTTP/3 library refused it on `stream`, as the connection is
     /// closing (`NGHTTP3_ERR_CONN_CLOSING`).
     Closing {

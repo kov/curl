@@ -38,6 +38,7 @@ use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::Configured;
+use crate::http3::Flavour;
 use crate::multi::doh::{Lookup as DohLookup, Polled as DohPolled};
 use crate::multi::state::ConnRank;
 use crate::options::{IpVersion, KeepAlive, Sockets};
@@ -1959,9 +1960,15 @@ impl ConnectMachine {
         } else {
             self.quic_component()
         };
-        let failed = |cx: &mut dyn ConnCx, kind: ErrorKind| {
+        // As the library's filter says it: quiche's names no QUIC and
+        // traces no connect call.
+        let said = |cx: &mut dyn ConnCx, kind: ErrorKind, flavour: Flavour| {
             let (ip, port) = (remote.ip(), remote.port());
             let why = kind.message();
+            if flavour == Flavour::Quiche {
+                cx.info(format_args!("connect to {ip} port {port} failed: {why}"));
+                return kind;
+            }
             cx.info(format_args!(
                 "QUIC connect to {ip} port {port} failed: {why}"
             ));
@@ -1970,12 +1977,14 @@ impl ConnectMachine {
             kind
         };
         let Some(making) = cx.quic_making().map_err(oom)? else {
-            return Err(failed(cx, ErrorKind::QuicConnectError));
+            return Err(said(cx, ErrorKind::QuicConnectError, Flavour::Ngtcp2));
         };
         let libraries = &*making.libraries;
         let (Some(backend), Some(h3)) = (libraries.tls.as_deref(), libraries.h3) else {
-            return Err(failed(cx, ErrorKind::QuicConnectError));
+            return Err(said(cx, ErrorKind::QuicConnectError, Flavour::Ngtcp2));
         };
+        let flavour = h3.flavour();
+        let failed = |cx: &mut dyn ConnCx, kind: ErrorKind| said(cx, kind, flavour);
         // To an HTTP/3 proxy, its TLS is the proxy's.
         let proxied = !tunnelled && self.route.proxy_over_quic();
         let (identity, origin, via) = if proxied {
@@ -1992,6 +2001,12 @@ impl ConnectMachine {
         let kept_for =
             crate::tls::SessionPeer::new(identity, origin, via, backend.id(), super::Dial::Quic)
                 .map_err(oom)?;
+        let keeps = flavour.keeps_sessions();
+        let kept_for = if keeps {
+            kept_for
+        } else {
+            kept_for.keeping_none()
+        };
         // Early data, where the transfer asks for it of this peer and
         // makes requests (`conn_cfg->earlydata`, `bits.connect_only`): to
         // an HTTP/3 proxy, the tunnel's `CONNECT` goes as early data.
@@ -1999,7 +2014,8 @@ impl ConnectMachine {
             .options
             .ssl_options
             .contains(crate::options::SslOptions::EARLYDATA)
-            && making.requests;
+            && making.requests
+            && keeps;
         let peer = crate::tls::TlsPeer::of(origin, early_data, None);
         let tls = {
             let mut tcx = crate::tls::TlsCx::new(cx, component, &kept_for);
@@ -2047,8 +2063,15 @@ impl ConnectMachine {
                 return Err(failed(cx, kind));
             }
         };
-        let mut quic =
-            Quic::new(conn, kept_for, remote, making.clock.clone(), component).map_err(oom)?;
+        let mut quic = Quic::new(
+            conn,
+            kept_for,
+            remote,
+            making.clock.clone(),
+            component,
+            flavour,
+        )
+        .map_err(oom)?;
         if let Some(ticket) = early {
             match quic.early_data(cx, &ticket) {
                 Ok(()) => {}

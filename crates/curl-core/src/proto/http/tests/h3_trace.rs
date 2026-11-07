@@ -350,6 +350,13 @@ fn an_unverified_peer_fails_each_attempt_and_the_setup() {
         attempt(4, "127.0.0.1"),
     ));
     assert_eq!(got, want);
+    // ngtcp2's filter says the handshake complete only for a peer that
+    // checked out (`cf_ngtcp2_handshake_completed`).
+    let text = ran.seen.text();
+    assert!(
+        !text.iter().any(|l| l.contains("handshake complete")),
+        "{text:#?}"
+    );
 }
 
 /// HTTP/3 alone is refused where it cannot be had, before anything is
@@ -5206,5 +5213,313 @@ fn a_quic_attempt_tries_ech_with_the_known_record() {
     for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
         assert_eq!(ech_h3_get(&ARES, mode), Some((0xfe, 4)), "{mode:?}");
         assert_eq!(ech_h3_get(&ELSEWHERE, mode), None, "{mode:?}");
+    }
+}
+
+/// What a GET of `script`'s, spoken by HTTP/3 alone over the fake
+/// libraries, said in lines starting with one of `starts`, and how it
+/// ended; `set` changes its options first.
+fn h3_lines(
+    script: &Arc<Mutex<Script>>,
+    replies: &[&[u8]],
+    starts: &[&str],
+    set: impl FnOnce(&mut Options),
+) -> (Result<(), ErrorKind>, Vec<String>) {
+    let mut m = quic_server(replies);
+    let e = tracing(FakeTls::new().unwrap(), script);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.ip_version = IpVersion::Any;
+        set(o);
+    });
+    (ran.result, lines(&ran, starts))
+}
+
+/// A connection the HTTP/3 library will not make fails its attempt, said
+/// as each library's filter says it: ngtcp2's names QUIC and traces its
+/// connect call, quiche's does neither (`cf_connect_start`,
+/// `cf_quiche_ctx_open`).
+#[test]
+fn a_connection_the_library_will_not_make_is_said_as_its_filter_says_it() {
+    use crate::http3::Flavour::{Ngtcp2, Quiche};
+    for flavour in [Ngtcp2, Quiche] {
+        let script = get_script(b"123456789");
+        {
+            let mut s = script.lock().unwrap();
+            s.flavour = flavour;
+            s.refuse_client = true;
+        }
+        let (result, got) = h3_lines(
+            &script,
+            &[b"server flight"],
+            &["QUIC connect", "connect to", "[HTTP/3] connect ->"],
+            |_| {},
+        );
+        assert_eq!(result, Err(ErrorKind::QuicConnectError));
+        let attempt = |ip: &str| match flavour {
+            Ngtcp2 => format!(
+                "QUIC connect to {ip} port {PORT} failed: QUIC connection error
+                [HTTP/3] connect -> 96, done=0"
+            ),
+            Quiche => format!("connect to {ip} port {PORT} failed: QUIC connection error"),
+        };
+        let want = expect(&format!("{}\n{}", attempt("::1"), attempt("127.0.0.1")));
+        assert_eq!(got, want, "{flavour:?}");
+    }
+}
+
+/// A server that closes as quiche's handshake goes on fails the attempt
+/// as a weird reply, the next address tried (`cf_quiche_connect`); one
+/// that is merely silent is waited for, and ngtcp2's filter waits on a
+/// draining connection as on a silent one.
+#[test]
+fn a_server_closing_as_quiche_connects_is_a_weird_reply() {
+    use crate::http3::Flavour::{Ngtcp2, Quiche};
+    for (flavour, drains) in [(Quiche, true), (Quiche, false), (Ngtcp2, true)] {
+        let script = first_flight_only();
+        {
+            let mut s = script.lock().unwrap();
+            s.flavour = flavour;
+            if drains {
+                s.on_read.push_back(vec![Told::Drains]);
+            }
+        }
+        let (result, got) = h3_lines(
+            &script,
+            &[b"server flight"],
+            &["QUIC connect", "connect to", "Failed to connect"],
+            |o| o.limits.connect = crate::time::TimeLimit::from_millis(2000),
+        );
+        if flavour == Quiche && drains {
+            assert_eq!(result, Err(ErrorKind::WeirdServerReply));
+            let want = expect(&format!(
+                "connect to ::1 port {PORT} failed: Weird server reply
+                connect to 127.0.0.1 port {PORT} failed: Weird server reply
+                Failed to connect to localhost:{PORT} after 100 ms: Weird server reply"
+            ));
+            assert_eq!(got, want);
+        } else {
+            assert_eq!(result, Err(ErrorKind::OperationTimedout), "{flavour:?}");
+            assert_eq!(got, [] as [String; 0], "{flavour:?}");
+        }
+    }
+}
+
+/// A body over quiche that comes in two reads is waited for between
+/// them; a connection that drains between them fails the transfer, as
+/// quiche's filter says it (`cf_quiche_recv`).
+#[test]
+fn a_quiche_connection_draining_mid_body_fails_the_transfer() {
+    for drains in [false, true] {
+        let script = quiche_script(b"123456789");
+        {
+            let mut s = script.lock().unwrap();
+            let header = |name: &[u8], value: &[u8]| Told::Header {
+                stream: 0,
+                name: name.to_vec(),
+                value: value.to_vec(),
+            };
+            // The head and its body's first half, then the rest.
+            *s.on_read.back_mut().unwrap() = vec![
+                header(b":status", b"200"),
+                header(b"content-length", b"9"),
+                Told::HeadersDone(0),
+                Told::Data(0, b"1234".to_vec()),
+            ];
+            s.on_read.push_back(if drains {
+                vec![Told::Drains]
+            } else {
+                vec![Told::Data(0, b"56789".to_vec()), Told::Closed(0, 0x100)]
+            });
+            // What the client sends as the first half comes, which the
+            // server answers with the rest.
+            s.out.extend([vec![5; 20], vec![]]);
+        }
+        let (result, got) = h3_lines(
+            &script,
+            &[b"server flight", b"response", b"rest"],
+            &["QUIC connection", "[HTTP/3] [0] cf_recv"],
+            |_| {},
+        );
+        let waited = "[HTTP/3] [0] cf_recv(len=16384) -> 81, 0, total=0";
+        if drains {
+            assert_eq!(result, Err(ErrorKind::Http3));
+            let want = [
+                waited,
+                "QUIC connection is draining",
+                "[HTTP/3] [0] cf_recv(len=16384) -> 95, 0, total=0",
+            ];
+            assert_eq!(got, want);
+        } else {
+            assert_eq!(result, Ok(()));
+            assert_eq!(
+                got,
+                [waited, "[HTTP/3] [0] cf_recv(len=16384) -> 0, 0, total=0"]
+            );
+        }
+    }
+}
+
+/// A request quiche finds no memory for fails the transfer, its call said
+/// as quiche's filter says a failure that is not quiche's own
+/// (`h3_open_stream`).
+#[test]
+fn a_request_quiche_finds_no_memory_for_fails_the_transfer() {
+    let script = quiche_script(b"123456789");
+    script.lock().unwrap().submit_oom = true;
+    let (result, got) = h3_lines(
+        &script,
+        &[b"server flight", b"response"],
+        &["[HTTP/3] quiche_send", "[HTTP/3] send_request"],
+        |_| {},
+    );
+    assert_eq!(result, Err(ErrorKind::OutOfMemory));
+    assert_eq!(got, ["[HTTP/3] quiche_send_request() -> -1"]);
+}
+
+/// A request ngtcp2 refuses has its stream cancelled, said by its id, as
+/// ngtcp2's filter says it; it is not named by its URL, as quiche's
+/// filter names one (`h3_stream_open`).
+#[test]
+fn a_request_ngtcp2_refuses_is_said_by_its_stream() {
+    let script = get_script(b"123456789");
+    script.lock().unwrap().submit_refused = Some(-6);
+    let (result, got) = h3_lines(
+        &script,
+        &[b"server flight", b"response"],
+        &[
+            "[HTTP/3] h3sid",
+            "[HTTP/3] send_request",
+            "[HTTP/3] quiche_send",
+        ],
+        |_| {},
+    );
+    assert_eq!(result, Err(ErrorKind::SendError));
+    assert_eq!(got, ["[HTTP/3] h3sid[-1] failed to send -> -6 (ERR_FAKE)"]);
+    assert_eq!(script.lock().unwrap().cancelled, [(-1, 0x10c)]);
+}
+
+/// A connection over quiche that may not be reused is closed as its
+/// transfer is done: quiche told to close, with no room for the packet
+/// that says so, and the close done at once, said on the multi's own
+/// trace (`cf_quiche_shutdown`).
+#[test]
+fn a_quiche_connection_not_to_be_reused_closes_as_its_transfer_ends() {
+    #[derive(Clone, Default)]
+    struct Written(Arc<Mutex<Vec<u8>>>);
+    impl crate::handler::TextSink for Written {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+    let script = quiche_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Http3,
+        crate::components::Level::Info,
+    );
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.limits.reuse.forbid = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(script.lock().unwrap().closes, 1);
+    let text = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
+    let shut: Vec<&str> = text.lines().filter(|l| l.contains("shutdown")).collect();
+    assert_eq!(
+        shut,
+        ["* [HTTP/3] shutdown completely sent off, done"],
+        "{text}"
+    );
+}
+
+/// quiche's packets go in bursts of up to ten, each ended early by one
+/// shorter than the largest quiche sends, every burst's segment size the
+/// largest (`cf_flush_egress`).
+#[test]
+fn quiche_s_packets_go_in_bursts_of_ten() {
+    let script = quiche_script(b"123456789");
+    {
+        let mut s = script.lock().unwrap();
+        // The request goes as twenty-five full packets, a short one, and
+        // two full ones more.
+        let request: Vec<Vec<u8>> = (0..25)
+            .map(|_| vec![3; 1200])
+            .chain([vec![3; 500], vec![3; 1200], vec![3; 1200]])
+            .collect();
+        let at = s.out.iter().position(|p| p.len() == 75).unwrap();
+        s.out.remove(at);
+        for p in request.into_iter().rev() {
+            s.out.insert(at, p);
+        }
+    }
+    let (result, got) = h3_lines(
+        &script,
+        &[b"server flight", b"response"],
+        &["[HTTP/3] vquic_sendmsg"],
+        |_| {},
+    );
+    assert_eq!(result, Ok(()));
+    let want = expect(
+        "[HTTP/3] vquic_sendmsg(len=2400, gso=1200, calls=1) -> 0, sent=2400
+        [HTTP/3] vquic_sendmsg(len=12000, gso=1200, calls=1) -> 0, sent=12000
+        [HTTP/3] vquic_sendmsg(len=12000, gso=1200, calls=1) -> 0, sent=12000
+        [HTTP/3] vquic_sendmsg(len=6500, gso=1200, calls=1) -> 0, sent=6500
+        [HTTP/3] vquic_sendmsg(len=2400, gso=1200, calls=1) -> 0, sent=2400",
+    );
+    assert_eq!(got, want);
+}
+
+/// A datagram's ECN mark is said as ngtcp2's filter reads it, and not by
+/// quiche's, which reads none (`cf_ngtcp2_recv_pkts`,
+/// `cf_quiche_recv_pkts`).
+#[test]
+fn a_datagram_s_ecn_mark_is_said_by_ngtcp2_s_filter_alone() {
+    use crate::http3::Flavour::{Ngtcp2, Quiche};
+    for flavour in [Ngtcp2, Quiche] {
+        let script = get_script(b"123456789");
+        script.lock().unwrap().flavour = flavour;
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let talk = Conversation::replies(&[b"server flight", b"response"], false)
+            .per_send()
+            .with_ecn(2);
+        let net = records_as_built(FakeNet::new(clock.clone()))
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk);
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let e = tracing(FakeTls::new().unwrap(), &script);
+        let url = format!("https://127.0.0.1:{PORT}/");
+        let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.version = crate::options::HttpVersion::Http3Only;
+        });
+        assert_eq!(ran.result, Ok(()), "{flavour:?} {:#?}", ran.seen.text());
+        let said = lines(&ran, &["[HTTP/3] vquic_recv("]);
+        let want: &[&str] = match flavour {
+            Ngtcp2 => &[
+                "[HTTP/3] vquic_recv(len=13, gso=13, ecn=2)",
+                "[HTTP/3] vquic_recv(len=8, gso=8, ecn=2)",
+            ],
+            Quiche => &[],
+        };
+        assert_eq!(said, want, "{flavour:?}");
     }
 }

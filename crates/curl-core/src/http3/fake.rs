@@ -67,6 +67,8 @@ pub enum Told {
     /// what was told before it: the peer closed the connection, or the
     /// library gave it up.
     ReadFails(i32),
+    /// The peer closed the connection: it drains from now on.
+    Drains,
 }
 
 /// The script and the record of one connection, shared with the test.
@@ -146,6 +148,12 @@ pub struct Script {
     pub submit_blocked: usize,
     /// A request submitted is refused with this code, quiche's.
     pub submit_refused: Option<i32>,
+    /// A request submitted finds no memory for its stream.
+    pub submit_oom: bool,
+    /// The library refuses to make the connection at all.
+    pub refuse_client: bool,
+    /// How many times it was told to close.
+    pub closes: usize,
 }
 
 /// A request body as the binding holds it: what was written, handed to
@@ -263,10 +271,13 @@ impl FakeHttp3 {
         }
         .unwrap_or_else(|| self.script.clone());
         setups.push(*setup);
-        script
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .at(setup.now);
+        {
+            let mut s = script.lock().unwrap_or_else(PoisonError::into_inner);
+            s.at(setup.now);
+            if s.refuse_client {
+                return Err(ConnectFailed::Refused);
+            }
+        }
         Ok(Box::new(FakeConnection {
             script,
             tls,
@@ -318,6 +329,13 @@ impl FakeConnection {
                         if checked.is_err() { Heard::Failed } else { h }
                     }
                     Told::ReadFails(_) => unreachable!("the read stops before it"),
+                    Told::Drains => {
+                        script
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .draining = true;
+                        Heard::Fine
+                    }
                     Told::Refused(s) => {
                         told_to(call, events, stream(*s, StreamEvent::ReadFailed));
                         Heard::Failed
@@ -670,10 +688,11 @@ impl Connection for FakeConnection {
     }
 
     fn write_close(&mut self, now: Instant, buf: &mut [u8]) -> Result<usize, QuicError> {
-        self.script
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .at(now);
+        {
+            let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+            s.at(now);
+            s.closes += 1;
+        }
         // Told to close with no room for the packet that says so, as
         // quiche's filter closes it, it writes none.
         if buf.is_empty() {
@@ -690,6 +709,9 @@ impl Connection for FakeConnection {
     ) -> Result<StreamId, SubmitFailed> {
         {
             let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+            if s.submit_oom {
+                return Err(SubmitFailed::OutOfMemory);
+            }
             if let Some(code) = s.submit_refused {
                 return Err(SubmitFailed::Refused {
                     stream: StreamId(-1),

@@ -1063,6 +1063,8 @@ pub enum ScriptedSend {
 #[derive(Debug, Default)]
 struct Wire {
     received: Vec<u8>,
+    /// The ECN mark each datagram of its replies arrives with.
+    ecn: u8,
     /// One reply for each request, in turn.
     replies: Vec<Vec<u8>>,
     /// Replies read whole.
@@ -1234,6 +1236,13 @@ impl Conversation {
     }
 
     /// The same peer, answering each send with its next reply.
+    /// The same peer, each datagram of its replies arriving with the ECN
+    /// mark `ecn`.
+    pub fn with_ecn(self, ecn: u8) -> Conversation {
+        self.0.lock().expect("no test panics holding the wire").ecn = ecn;
+        self
+    }
+
     pub fn per_send(self) -> Conversation {
         self.0
             .lock()
@@ -2591,10 +2600,16 @@ impl Socket for FakeSocket {
             match self.recv(&mut buf[n * slot..(n + 1) * slot])? {
                 Recv::Data(got) => {
                     let len = got.get();
+                    let ecn = self
+                        .wire
+                        .0
+                        .lock()
+                        .expect("no test panics holding the wire")
+                        .ecn;
                     out[n] = Datagram {
                         len,
                         segment: len,
-                        ecn: 0,
+                        ecn,
                         from: None,
                     };
                     n += 1;

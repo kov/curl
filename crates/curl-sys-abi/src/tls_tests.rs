@@ -49,12 +49,23 @@ unsafe extern "C" {
 /// # Safety
 ///
 /// `ssl` is an `SSL` under verification.
+#[cfg(not(boringssl_like))]
 unsafe fn set_retry_verify(ssl: *mut SSL) -> c_int {
     const SSL_CTRL_SET_RETRY_VERIFY: c_int = 136;
     // SAFETY: as the caller guarantees; the command takes no pointer.
     c_int::from(
         unsafe { openssl_sys::SSL_ctrl(ssl, SSL_CTRL_SET_RETRY_VERIFY, 0, ptr::null_mut()) } > 0,
     )
+}
+
+/// The forks have no retried verify, as LibreSSL has none: the ask fails.
+///
+/// # Safety
+///
+/// As above.
+#[cfg(boringssl_like)]
+unsafe fn set_retry_verify(_: *mut SSL) -> c_int {
+    0
 }
 
 /// A server for one connection on loopback, with a certificate of its
@@ -689,14 +700,14 @@ fn a_retried_verify_waits_for_the_application_to_unpause() {
             );
         }
         assert_eq!((*seen).verifies, 1, "the handshake went on while paused");
-        #[cfg(not(libressl))]
+        #[cfg(not(any(libressl, boringssl_like)))]
         assert_eq!(running, 1);
-        #[cfg(not(libressl))]
+        #[cfg(not(any(libressl, boringssl_like)))]
         assert_eq!(curl_easy_pause(c, ffi::CURLPAUSE_CONT), CURLE_OK);
         // A transfer that ended has no connection to unpause.
-        #[cfg(libressl)]
+        #[cfg(any(libressl, boringssl_like))]
         assert_eq!(running, 0);
-        #[cfg(libressl)]
+        #[cfg(any(libressl, boringssl_like))]
         assert_eq!(
             curl_easy_pause(c, ffi::CURLPAUSE_CONT),
             ffi::CURLE_BAD_FUNCTION_ARGUMENT
@@ -719,9 +730,9 @@ fn a_retried_verify_waits_for_the_application_to_unpause() {
         curl_easy_cleanup(c);
         assert_eq!(curl_multi_cleanup(m), CURLM_OK);
         server.join().unwrap();
-        #[cfg(not(libressl))]
+        #[cfg(not(any(libressl, boringssl_like)))]
         assert_eq!((*seen).verifies, 2);
-        #[cfg(libressl)]
+        #[cfg(any(libressl, boringssl_like))]
         assert_eq!((*seen).verifies, 1);
         assert!(!(*seen).in_write.is_empty());
     }
@@ -894,10 +905,18 @@ fn doh_probes_verify_the_server_as_the_doh_options_say() {
         for o in [
             ffi::CURLOPT_DOH_SSL_VERIFYPEER,
             ffi::CURLOPT_DOH_SSL_VERIFYHOST,
-            ffi::CURLOPT_DOH_SSL_VERIFYSTATUS,
         ] {
             assert_eq!(curl_easy_setopt(c, o, 0 as c_long), CURLE_OK);
         }
+        // Not built in where the library has no stapled status (BoringSSL).
+        let status = curl_easy_setopt(c, ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, 0 as c_long);
+        let cert_status = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS).cert_status;
+        let want = if cert_status {
+            CURLE_OK
+        } else {
+            ffi::CURLE_NOT_BUILT_IN
+        };
+        assert_eq!(status, want);
         assert_eq!(
             curl_easy_setopt(c, ffi::CURLOPT_VERBOSE, 1 as c_long),
             CURLE_OK

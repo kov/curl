@@ -1,7 +1,7 @@
 //! Give the library the soname of the C build it replaces, build the C
 //! helper that reads `long double` arguments on stable Rust, and say
-//! whether the OpenSSL linked is LibreSSL (`cfg(libressl)`), as
-//! openssl-sys reports it.
+//! whether the OpenSSL linked is LibreSSL (`cfg(libressl)`) or AWS-LC or
+//! BoringSSL (`cfg(boringssl_like)`), as openssl-sys reports it.
 
 // A build script is no library: aborting on a failed allocation is fine.
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
@@ -11,6 +11,16 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(libressl)");
     if std::env::var_os("DEP_OPENSSL_LIBRESSL_VERSION_NUMBER").is_some() {
         println!("cargo::rustc-cfg=libressl");
+    }
+    // AWS-LC or BoringSSL (`HAVE_BORINGSSL_LIKE`).
+    println!("cargo::rerun-if-env-changed=DEP_OPENSSL_AWSLC");
+    println!("cargo::rerun-if-env-changed=DEP_OPENSSL_BORINGSSL");
+    println!("cargo::rustc-check-cfg=cfg(boringssl_like)");
+    if ["DEP_OPENSSL_AWSLC", "DEP_OPENSSL_BORINGSSL"]
+        .iter()
+        .any(|v| std::env::var(v).as_deref() == Ok("true"))
+    {
+        println!("cargo::rustc-cfg=boringssl_like");
     }
     let debug = std::env::var_os("CARGO_FEATURE_DEBUG_HOOKS").is_some();
     // Windows has no soname: a program names the DLL's file, which the

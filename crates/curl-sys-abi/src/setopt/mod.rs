@@ -2393,6 +2393,11 @@ mod tests {
         let mbedtls = cfg!(feature = "mbedtls");
         let wolfssl = cfg!(feature = "wolfssl");
         let want = |lacks: bool| if lacks { CURLE_NOT_BUILT_IN } else { CURLE_OK };
+        // Of OpenSSL's family, BoringSSL has neither a TLS 1.3 cipher list
+        // nor a stapled status, which C's build over it does not build in.
+        let support = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS);
+        let tls13_ciphers = (openssl || mbedtls || wolfssl) && support.tls13_ciphers;
+        let cert_status = !(schannel || mbedtls || wolfssl) && support.cert_status;
         for (option, lacks) in [
             (ffi::CURLOPT_CAPATH, schannel),
             (ffi::CURLOPT_PROXY_CAPATH, schannel),
@@ -2403,11 +2408,8 @@ mod tests {
                 ffi::CURLOPT_PROXY_ISSUERCERT,
                 schannel || mbedtls || wolfssl,
             ),
-            (ffi::CURLOPT_TLS13_CIPHERS, !openssl && !mbedtls && !wolfssl),
-            (
-                ffi::CURLOPT_PROXY_TLS13_CIPHERS,
-                !openssl && !mbedtls && !wolfssl,
-            ),
+            (ffi::CURLOPT_TLS13_CIPHERS, !tls13_ciphers),
+            (ffi::CURLOPT_PROXY_TLS13_CIPHERS, !tls13_ciphers),
             (ffi::CURLOPT_SSL_EC_CURVES, !openssl && !wolfssl),
             (ffi::CURLOPT_SSLENGINE, !openssl),
         ] {
@@ -2417,14 +2419,8 @@ mod tests {
         let sigalgs = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS).signature_algorithms;
         assert_eq!(text(ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS), want(!sigalgs));
         for (option, lacks) in [
-            (
-                ffi::CURLOPT_SSL_VERIFYSTATUS,
-                schannel || mbedtls || wolfssl,
-            ),
-            (
-                ffi::CURLOPT_DOH_SSL_VERIFYSTATUS,
-                schannel || mbedtls || wolfssl,
-            ),
+            (ffi::CURLOPT_SSL_VERIFYSTATUS, !cert_status),
+            (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, !cert_status),
             (ffi::CURLOPT_SSLENGINE_DEFAULT, !openssl),
         ] {
             assert_eq!(long(option), want(lacks), "{option:?}");

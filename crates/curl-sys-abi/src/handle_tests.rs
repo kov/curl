@@ -421,8 +421,11 @@ fn tls_options_are_kept_as_c_keeps_them() {
     let support = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS);
     for (option, list, field) in lists {
         let mut list = list.to_vec();
-        // LibreSSL takes no signature algorithms.
-        if option == ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS && !support.signature_algorithms {
+        // LibreSSL takes no signature algorithms, BoringSSL no TLS 1.3
+        // cipher list.
+        if (option == ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS && !support.signature_algorithms)
+            || (option == ffi::CURLOPT_TLS13_CIPHERS && !support.tls13_ciphers)
+        {
             assert_eq!(
                 pointer(c, option, list.as_mut_ptr()),
                 ffi::CURLE_NOT_BUILT_IN
@@ -547,9 +550,17 @@ fn the_session_cache_is_off_only_with_0() {
 fn the_engines_are_listed_and_one_made_the_default_with_1() {
     let c = curl_easy_init();
     let status = |c| options(c, |o| o.tls.options.verify_status);
-    assert_eq!(long(c, ffi::CURLOPT_SSL_VERIFYSTATUS, 2), CURLE_OK);
-    assert!(status(c));
-    assert_eq!(long(c, ffi::CURLOPT_SSL_VERIFYSTATUS, 0), CURLE_OK);
+    // BoringSSL has no stapled status (`OPENSSL_NO_OCSP`): not built in.
+    if curl_core::tls::TlsBackend::support(&crate::tlslib::TLS).cert_status {
+        assert_eq!(long(c, ffi::CURLOPT_SSL_VERIFYSTATUS, 2), CURLE_OK);
+        assert!(status(c));
+        assert_eq!(long(c, ffi::CURLOPT_SSL_VERIFYSTATUS, 0), CURLE_OK);
+    } else {
+        assert_eq!(
+            long(c, ffi::CURLOPT_SSL_VERIFYSTATUS, 2),
+            ffi::CURLE_NOT_BUILT_IN
+        );
+    }
     assert!(!status(c));
     let default = |c| options(c, |o| o.tls.options.engine_default);
     assert_eq!(long(c, ffi::CURLOPT_SSLENGINE_DEFAULT, 2), CURLE_OK);
@@ -574,9 +585,9 @@ fn the_engines_are_listed_and_one_made_the_default_with_1() {
     }
     // SAFETY: the list the call made, freed once.
     unsafe { crate::strings::curl_slist_free_all(list) };
-    #[cfg(not(libressl))]
+    #[cfg(not(any(libressl, boringssl_like)))]
     assert!(ids.iter().any(|id| id == b"dynamic"), "{ids:?}");
-    #[cfg(libressl)]
+    #[cfg(any(libressl, boringssl_like))]
     assert!(list.is_null(), "{ids:?}");
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
@@ -7253,7 +7264,7 @@ fn the_global_init_reads_openssl_s_configuration() {
     assert!(stdout.contains("1 passed"), "the test ran: {stdout}");
 }
 
-#[cfg(not(libressl))]
+#[cfg(not(any(libressl, boringssl_like)))]
 #[test]
 #[ignore = "run by the_global_init_reads_openssl_s_configuration, OPENSSL_CONF set"]
 fn openssl_configured() {
@@ -7265,6 +7276,19 @@ fn openssl_configured() {
         curl_openssl::ED25519.sign(&[1; 32], b"message"),
         Err(Ed25519Error::Failed)
     );
+    crate::root::curl_global_cleanup();
+}
+
+/// AWS-LC and BoringSSL read no configuration file, and C's build over
+/// them asks for none (`OPENSSL_INIT_LOAD_CONFIG` is 0): the file that
+/// leaves OpenSSL no provider changes nothing, signing still works.
+#[cfg(boringssl_like)]
+#[test]
+#[ignore = "run by the_global_init_reads_openssl_s_configuration, OPENSSL_CONF set"]
+fn openssl_configured() {
+    use curl_core::libraries::Ed25519;
+    assert_eq!(crate::root::curl_global_init(0), CURLE_OK);
+    assert!(curl_openssl::ED25519.sign(&[1; 32], b"message").is_ok());
     crate::root::curl_global_cleanup();
 }
 

@@ -21,6 +21,12 @@ HTTP/3, which C builds over GnuTLS only with ngtcp2's GnuTLS crypto
 (milestone 10's step 104): build/c-gnutls,
 inventory/baseline-gnutls.{json,md}.
 
+`--mbedtls` does the same with mbedTLS in place of OpenSSL, the library the
+rewrite's `mbedtls` feature binds: without HTTP/3, which C has no mbedTLS
+crypto for, and without HTTP message signatures, which C signs only with
+OpenSSL, GnuTLS or wolfSSL: build/c-mbedtls,
+inventory/baseline-mbedtls.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -117,6 +123,15 @@ GNUTLS = Oracle(ROOT / "build" / "c-gnutls", "baseline-gnutls",
                  "CURL_USE_GNUTLS": "ON", "USE_NGTCP2": "OFF",
                  "USE_PROXY_HTTP3": "OFF"},
                 links_ngtcp2=False)
+# mbedTLS in place of OpenSSL, as the rewrite's `mbedtls` feature has it:
+# no QUIC (ngtcp2 has no mbedTLS crypto), and no Ed25519 to sign HTTP
+# messages with (CMake turns HTTPSIG off without it).
+MBEDTLS = Oracle(ROOT / "build" / "c-mbedtls", "baseline-mbedtls",
+                 "C mbedTLS baseline", "--mbedtls",
+                 {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
+                  "CURL_USE_MBEDTLS": "ON", "USE_NGTCP2": "OFF",
+                  "USE_PROXY_HTTP3": "OFF", "CURL_DISABLE_HTTPSIG": "ON"},
+                 links_ngtcp2=False)
 
 
 def run(oracle):
@@ -170,7 +185,7 @@ def exports(oracle):
 
 
 def main():
-    oracle = next((o for o in (THREADED, LIBSSH, GNUTLS)
+    oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS)
                    if o.flag in sys.argv[1:]), REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)

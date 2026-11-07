@@ -2444,6 +2444,24 @@ fn the_key_log_is_opened_at_start_as_the_library_opens_it() {
     }
 }
 
+/// GnuTLS opens `SSLKEYLOGFILE` as each session is made
+/// (`Curl_gtls_ctx_init`): a transfer whose handshake starts makes the
+/// file, though the peer goes away before it answers.
+#[cfg(feature = "gnutls")]
+#[test]
+fn the_key_log_is_opened_as_a_tls_session_is_made() {
+    let dir = Scratch::new("keylog-session");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || drop(listener.accept().unwrap()));
+    let log = dir.path("keys");
+    let url = format!("https://127.0.0.1:{port}/");
+    let run = curl_env(&dir, &["-s", "-k", &url], &[("SSLKEYLOGFILE", &log)]);
+    peer.join().unwrap();
+    assert_ne!(run.code, 0, "the peer went away");
+    assert!(std::path::Path::new(&log).exists(), "made");
+}
+
 /// `--hsts` reads the cache's file, an http URL to a host it keeps going
 /// as https, and the tool writes it back as it ends; `--alt-svc` reads
 /// and writes its file too.

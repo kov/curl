@@ -22,6 +22,9 @@ Entry format, one or more per file:
   file: <path from the repository root>
   witness: <package> <exact test name>
   features: <cargo features the witness needs>      (optional)
+  default-features: no                              (optional: built without
+                                                     them, in its own target
+                                                     directory)
   --- old
   <text, exactly as in the file, found exactly once>
   --- new
@@ -60,6 +63,7 @@ class Entry:
             sys.exit(f"{source}: entry '{name}' needs file: and witness: <package> <test>")
         self.package, self.test = witness
         self.features = fields.get("features")
+        self.default_features = fields.get("default-features", "yes") != "no"
 
 
 def parse(path):
@@ -76,7 +80,7 @@ def parse(path):
             block["into"], block["new"] = "new", []
         elif block["into"]:
             block[block["into"]].append(line)
-        elif m := re.fullmatch(r"(\w+): (.*)", line):
+        elif m := re.fullmatch(r"([\w-]+): (.*)", line):
             block["fields"][m[1]] = m[2]
         elif line.strip():
             sys.exit(f"{path}: unexpected line in '{block['name']}': {line}")
@@ -105,6 +109,10 @@ def stale(entries):
 def run(e, timeout):
     """Run the witness; (verdict, detail)."""
     features = ["--features", e.features] if e.features else []
+    if not e.default_features:
+        # Apart from the default build's artifacts, which it would replace.
+        features += ["--no-default-features", "--target-dir",
+                     str(ROOT / "build" / "target-nodefault")]
     cmd = CAP + ["cargo", "test", "-p", e.package, *features, "--", "--exact", e.test]
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, start_new_session=True)

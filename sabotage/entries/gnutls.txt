@@ -1,0 +1,63 @@
+# GnuTLS's sessions (crates/curl-gnutls), witnessed by the tests over the
+# scripted library, and by the tool built with the gnutls feature.
+
+=== the multi's credentials are taken by a transfer with a client certificate
+file: crates/curl-gnutls/src/trust.rs
+witness: curl-gnutls tests::credentials_are_kept_for_the_multi_only_where_they_may_be
+--- old
+        && o.cert.is_none()
+--- new
+
+
+=== a session whose early data the library cannot tell enables early data
+file: crates/curl-gnutls/src/session.rs
+witness: curl-gnutls tests::a_session_that_allows_no_early_data_resumes_without_it
+--- old
+        if early_max > 0 && early_max != EARLY_UNKNOWN {
+--- new
+        if early_max > 0 {
+
+=== a certificate at its last second is taken for expired
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::a_certificate_out_of_its_dates_fails_a_verified_peer
+--- old
+    } else if expires < now {
+--- new
+    } else if expires <= now {
+
+=== no room to list the peer's chain is taken for a peer that sent none
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::a_peer_without_a_certificate_fails_unless_nothing_is_checked
+--- old
+    let chain = session
+        .peers()
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+--- new
+    let chain = session.peers().unwrap_or(None);
+
+=== the trust is loaded before the ClientHello without a client certificate
+file: crates/curl-gnutls/src/session.rs
+witness: curl-gnutls tests::the_trust_is_loaded_at_the_first_read_after_the_client_hello
+--- old
+        let identity = self.identity.clone();
+        if let Some(cert) = identity.options.cert.as_deref() {
+            if !self.trust_ready {
+                self.trust_setup(io)?;
+            }
+--- new
+        let identity = self.identity.clone();
+        if !self.trust_ready {
+            self.trust_setup(io)?;
+        }
+        if let Some(cert) = identity.options.cert.as_deref() {
+
+=== a session made does not open the key log, which GnuTLS opens there
+file: crates/curl-gnutls/src/session.rs
+witness: curl-tool the_key_log_is_opened_as_a_tls_session_is_made
+features: c-ares,gnutls,libssh2
+default-features: no
+--- old
+            log.open();
+            if log.enabled() {
+--- new
+            if log.enabled() {

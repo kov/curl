@@ -23,9 +23,9 @@ use crate::library::{
     strerror,
 };
 use crate::sys;
-use crate::text::Text;
 use crate::trust;
 use crate::verify;
+use curl_core::tls::Text;
 
 /// The most early data a handshake holds to send (`CURL_SSL_EARLY_MAX`).
 const EARLY_MOST: usize = 64 * 1024;
@@ -134,21 +134,9 @@ impl<G: Gnutls> Session<G> {
         })
     }
 
-    /// The name sent by SNI: the host's, lower case, without a trailing
-    /// dot, for a name and not an address (`Curl_ssl_peer_init`).
+    /// The name sent by SNI (`Curl_ssl_peer_init`).
     fn sni(&self) -> Result<Option<Vec<u8>>, ErrorKind> {
-        if self.kind != TlsPeerKind::Name {
-            return Ok(None);
-        }
-        let name = self.host.strip_suffix(b".").unwrap_or(&self.host);
-        if name.len() >= usize::from(u16::MAX) {
-            return Ok(None);
-        }
-        let mut sni = Vec::new();
-        sni.try_extend_from_slice(name)
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        sni.make_ascii_lowercase();
-        Ok(Some(sni))
+        curl_core::tls::sni(&self.host, self.kind).map_err(|OutOfMemory| ErrorKind::OutOfMemory)
     }
 
     /// Set the trust up outside a call into the library
@@ -284,7 +272,15 @@ impl<G: Gnutls> Session<G> {
                     .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
                 v
             }
-            None => offer_names(self.alpn)?,
+            None => {
+                let mut names = Vec::new();
+                for name in self.alpn.names() {
+                    names
+                        .try_push(name)
+                        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                }
+                names
+            }
         };
         if !protocols.is_empty() && gs.alpn(&protocols) != 0 {
             return Err(io.fail(
@@ -591,40 +587,10 @@ impl<G: Gnutls> Session<G> {
     fn negotiate(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let gs = self.gs.as_mut().expect("made at the first step");
         let chosen = gs.alpn_selected();
-        if let Some(d) = self.deferred {
-            let asked = d.alpn.name();
-            if chosen.is_empty() {
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!(
-                        "ALPN: asked for '{asked}' from previous session, but server did not confirm it. Refusing to continue."
-                    ),
-                ));
-            }
-            if chosen != asked.as_bytes() {
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!(
-                        "ALPN: asked for '{asked}' from previous session, but server selected '{}'. Refusing to continue.",
-                        Text(chosen)
-                    ),
-                ));
-            }
-            io.info(format_args!("ALPN: server confirmed to use '{asked}'"));
-            return Ok(());
-        }
-        if chosen.is_empty() {
-            io.info(format_args!(
-                "ALPN: server did not agree on a protocol. Uses default."
-            ));
-        } else if chosen.contains(&0) {
-            return Err(io.fail(
-                ErrorKind::SslConnectError,
-                format_args!("ALPN: server selected protocol contains NUL. Refusing to continue."),
-            ));
-        } else {
+        let asked = self.deferred.map(|d| d.alpn.name().as_bytes());
+        curl_core::tls::alpn_negotiated(io, asked, chosen)?;
+        if asked.is_none() && !chosen.is_empty() {
             self.negotiated = Chosen::named(chosen);
-            io.info(format_args!("ALPN: server accepted {}", Text(chosen)));
         }
         Ok(())
     }
@@ -726,20 +692,6 @@ impl<G: Gnutls> Session<G> {
             Err(ErrorKind::RecvError)
         }
     }
-}
-
-/// The names `alpn` offers, in its order.
-fn offer_names(alpn: Alpn) -> Result<Vec<&'static [u8]>, ErrorKind> {
-    let mut names = Vec::new();
-    let mut wire = alpn.wire();
-    while let Some((&len, rest)) = wire.split_first() {
-        let (name, next) = rest.split_at(usize::from(len));
-        names
-            .try_push(name)
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        wire = next;
-    }
-    Ok(names)
 }
 
 /// An error the session said why it failed for: what the core reads as

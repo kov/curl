@@ -29,7 +29,7 @@ use crate::engine::Crypto;
 use crate::ffi;
 use crate::sys::PACKAGE;
 use crate::text;
-use crate::x509::{self, ErrText};
+use crate::x509::{self, ErrText, Text};
 
 /// The CA bundle and path the build found (`build.rs`).
 mod ca {
@@ -368,21 +368,6 @@ fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     Ok(c)
 }
 
-/// Bytes as C's `%s` shows them.
-struct Text<'a>(&'a [u8]);
-
-impl core::fmt::Display for Text<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for chunk in self.0.utf8_chunks() {
-            f.write_str(chunk.valid())?;
-            for &b in chunk.invalid() {
-                write!(f, "{}", char::from(b))?;
-            }
-        }
-        Ok(())
-    }
-}
-
 /// An error the session said why it failed for: what the core reads as
 /// the read's or the send's failure, its reason given already.
 fn said(errno: i32) -> io::Error {
@@ -711,26 +696,24 @@ impl Session {
         }
         // SAFETY: the SSL.
         unsafe { openssl_sys::SSL_set_connect_state(ssl.as_ptr()) };
-        if self.kind == TlsPeerKind::Name {
-            // RFC 6066 3: the name without a trailing dot, in lower case,
-            // shorter than 64 KiB.
-            let name = self.host.strip_suffix(b".").unwrap_or(&self.host);
-            if name.len() < usize::from(u16::MAX) {
-                let mut sni = c_string(name)?;
-                sni.make_ascii_lowercase();
-                // SAFETY: the SSL, a C string alive for the call, which
-                // the library copies.
-                let set = unsafe {
-                    openssl_sys::SSL_ctrl(
-                        ssl.as_ptr(),
-                        ffi::SSL_CTRL_SET_TLSEXT_HOSTNAME,
-                        ffi::TLSEXT_NAMETYPE_HOST_NAME,
-                        sni.as_mut_ptr().cast(),
-                    )
-                };
-                if set == 0 {
-                    return Err(io.fail(ErrorKind::SslConnectError, format_args!("Failed set SNI")));
-                }
+        let sni = curl_core::tls::sni(&self.host, self.kind)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        if let Some(mut sni) = sni {
+            // Ended where C would see its end; the room is there.
+            sni.try_push(0)
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+            // SAFETY: the SSL, a C string alive for the call, which the
+            // library copies.
+            let set = unsafe {
+                openssl_sys::SSL_ctrl(
+                    ssl.as_ptr(),
+                    ffi::SSL_CTRL_SET_TLSEXT_HOSTNAME,
+                    ffi::TLSEXT_NAMETYPE_HOST_NAME,
+                    sni.as_mut_ptr().cast(),
+                )
+            };
+            if set == 0 {
+                return Err(io.fail(ErrorKind::SslConnectError, format_args!("Failed set SNI")));
             }
         }
         // FTP's data connection resumes its control connection's session
@@ -932,45 +915,11 @@ impl Session {
         }
     }
 
-    /// What the peer chose of the ALPN offer (`Curl_alpn_set_negotiated`).
+    /// What the peer chose of the ALPN offer (`Curl_alpn_set_negotiated`):
+    /// for a handshake put off, it must agree to it again.
     fn negotiated(&self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
-        let chosen = self.selected();
-        // Asked of the peer again, put off, it must agree to it again.
-        if let Some(d) = self.deferred {
-            let asked = d.alpn.name();
-            if chosen.is_empty() {
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!(
-                        "ALPN: asked for '{asked}' from previous session, but server did not confirm it. Refusing to continue."
-                    ),
-                ));
-            }
-            if chosen != asked.as_bytes() {
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!(
-                        "ALPN: asked for '{asked}' from previous session, but server selected '{}'. Refusing to continue.",
-                        Text(chosen)
-                    ),
-                ));
-            }
-            io.info(format_args!("ALPN: server confirmed to use '{asked}'"));
-            return Ok(());
-        }
-        if chosen.is_empty() {
-            io.info(format_args!(
-                "ALPN: server did not agree on a protocol. Uses default."
-            ));
-        } else if chosen.contains(&0) {
-            return Err(io.fail(
-                ErrorKind::SslConnectError,
-                format_args!("ALPN: server selected protocol contains NUL. Refusing to continue."),
-            ));
-        } else {
-            io.info(format_args!("ALPN: server accepted {}", Text(chosen)));
-        }
-        Ok(())
+        let asked = self.deferred.map(|d| d.alpn.name().as_bytes());
+        curl_core::tls::alpn_negotiated(io, asked, self.selected())
     }
 }
 

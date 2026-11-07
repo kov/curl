@@ -356,3 +356,87 @@ fn a_session_is_a_proxy_s_as_its_layer_is() {
         assert_eq!(cx.for_proxy(), proxy, "{component:?}");
     }
 }
+
+/// The names an offer holds come out one by one, in its order, for the
+/// libraries that take them so.
+#[test]
+fn an_offer_s_names_come_in_its_order() {
+    let names = |a: Alpn| a.names().map(<[u8]>::to_vec).collect::<Vec<_>>();
+    assert!(names(Alpn::None).is_empty());
+    assert_eq!(
+        names(Alpn::H2Http11),
+        [b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
+    assert_eq!(
+        names(Alpn::Http10),
+        [b"http/1.0".to_vec(), b"http/1.1".to_vec()]
+    );
+    assert_eq!(names(Alpn::H3), [b"h3".to_vec(), b"h3-29".to_vec()]);
+}
+
+/// SNI names a host in lower case without its trailing dot, and no
+/// address, nor a name of 64 KiB or more (`Curl_ssl_peer_init`).
+#[test]
+fn sni_names_a_host_in_lower_case_without_its_dot() {
+    assert_eq!(
+        sni(b"WWW.Example.COM.", TlsPeerKind::Name).unwrap(),
+        Some(b"www.example.com".to_vec())
+    );
+    assert_eq!(sni(b"127.0.0.1", TlsPeerKind::Ipv4).unwrap(), None);
+    assert_eq!(sni(b"::1", TlsPeerKind::Ipv6).unwrap(), None);
+    let long = vec![b'a'; usize::from(u16::MAX)];
+    assert_eq!(sni(&long, TlsPeerKind::Name).unwrap(), None);
+    let fits = vec![b'a'; usize::from(u16::MAX) - 1];
+    assert_eq!(sni(&fits, TlsPeerKind::Name).unwrap(), Some(fits.clone()));
+}
+
+/// What the peer chose is said as C says it, and refused where it may
+/// not be: a protocol asked for alone must be chosen again, and a name
+/// with a zero byte is none.
+#[test]
+fn the_protocol_chosen_is_said_and_refused_as_c_does() {
+    let id = TryArc::try_new(identity(|_| {})).unwrap();
+    let run = |asked: Option<&[u8]>, chosen: &[u8]| {
+        let mut notes = Notes::default();
+        let r = TlsCx::testing(&id, b"example.com", &mut notes, |_, cx| {
+            alpn_negotiated(cx, asked, chosen)
+        });
+        (r, notes.0)
+    };
+    let (r, notes) = run(None, b"h2");
+    assert_eq!(r, Ok(()));
+    assert_eq!(notes, ["info: ALPN: server accepted h2"]);
+    let (r, notes) = run(None, b"");
+    assert_eq!(r, Ok(()));
+    assert_eq!(
+        notes,
+        ["info: ALPN: server did not agree on a protocol. Uses default."]
+    );
+    let (r, notes) = run(None, b"h\0");
+    assert_eq!(r, Err(ErrorKind::SslConnectError));
+    assert_eq!(
+        notes,
+        [
+            "fail: SslConnectError: ALPN: server selected protocol contains NUL. Refusing to continue."
+        ]
+    );
+    let (r, notes) = run(Some(b"h2"), b"h2");
+    assert_eq!(r, Ok(()));
+    assert_eq!(notes, ["info: ALPN: server confirmed to use 'h2'"]);
+    let (r, notes) = run(Some(b"h2"), b"http/1.1");
+    assert_eq!(r, Err(ErrorKind::SslConnectError));
+    assert_eq!(
+        notes,
+        [
+            "fail: SslConnectError: ALPN: asked for 'h2' from previous session, but server selected 'http/1.1'. Refusing to continue."
+        ]
+    );
+    let (r, notes) = run(Some(b"h2"), b"");
+    assert_eq!(r, Err(ErrorKind::SslConnectError));
+    assert_eq!(
+        notes,
+        [
+            "fail: SslConnectError: ALPN: asked for 'h2' from previous session, but server did not confirm it. Refusing to continue."
+        ]
+    );
+}

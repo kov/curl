@@ -4,12 +4,11 @@
 //! base64 of its SHA-256 (`sha256//`, `;` between several) or as a file
 //! of it, in DER or PEM. The library finds the key; this compares it.
 
-use std::fmt;
 use std::io::Read as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use super::TlsCx;
+use super::{Text, TlsCx};
 use crate::error::ErrorKind;
 use crate::hash::{Hash as _, Sha256};
 
@@ -44,21 +43,6 @@ pub fn pin_peer_pubkey(io: &mut TlsCx<'_>, pinned: &[u8], spki: &[u8]) -> Result
         Ok(())
     } else {
         Err(ErrorKind::SslPinnedpubkeynotmatch)
-    }
-}
-
-/// Bytes as text in a line, as C's `%s` prints them.
-struct Text<'a>(&'a [u8]);
-
-impl fmt::Display for Text<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for chunk in self.0.utf8_chunks() {
-            f.write_str(chunk.valid())?;
-            for &b in chunk.invalid() {
-                write!(f, "{}", char::from(b))?;
-            }
-        }
-        Ok(())
     }
 }
 

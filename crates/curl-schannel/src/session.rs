@@ -864,48 +864,14 @@ impl Session {
         Ok(())
     }
 
-    /// `Curl_alpn_set_negotiated`: what the peer chose, said.
+    /// `Curl_alpn_set_negotiated`: what the peer chose, said, and kept
+    /// unless the session asked for one alone.
     fn set_negotiated(&mut self, io: &mut TlsCx<'_>, proto: &[u8]) -> Result<(), ErrorKind> {
-        if let Some(asked) = &self.negotiated {
-            let asked = Text(asked);
-            if proto.is_empty() {
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!(
-                        "ALPN: asked for '{asked}' from previous session, but server did not confirm it. Refusing to continue."
-                    ),
-                ));
-            }
-            if self.negotiated.as_deref() != Some(proto) {
-                let asked = Text(self.negotiated.as_deref().expect("set"));
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!(
-                        "ALPN: asked for '{asked}' from previous session, but server selected '{}'. Refusing to continue.",
-                        Text(proto)
-                    ),
-                ));
-            }
-            io.info(format_args!("ALPN: server confirmed to use '{asked}'"));
-            return Ok(());
-        }
-        if !proto.is_empty() {
-            if proto.contains(&0) {
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!(
-                        "ALPN: server selected protocol contains NUL. Refusing to continue."
-                    ),
-                ));
-            }
+        curl_core::tls::alpn_negotiated(io, self.negotiated.as_deref(), proto)?;
+        if self.negotiated.is_none() && !proto.is_empty() {
             let mut copy = Vec::new();
             copy.try_extend_from_slice(proto).map_err(oom)?;
             self.negotiated = Some(copy);
-            io.info(format_args!("ALPN: server accepted {}", Text(proto)));
-        } else {
-            io.info(format_args!(
-                "ALPN: server did not agree on a protocol. Uses default."
-            ));
         }
         Ok(())
     }

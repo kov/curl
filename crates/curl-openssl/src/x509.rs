@@ -88,22 +88,7 @@ impl Drop for MemBio {
     }
 }
 
-/// Bytes as text in a line, as C's `%s` prints them.
-pub(crate) struct Text<'a>(pub(crate) &'a [u8]);
-
-impl fmt::Display for Text<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for chunk in self.0.utf8_chunks() {
-            f.write_str(chunk.valid())?;
-            for &b in chunk.invalid() {
-                // The byte as it is would be the terminal's to show; text
-                // here is Rust's, so the byte is written as Latin-1.
-                write!(f, "{}", char::from(b))?;
-            }
-        }
-        Ok(())
-    }
-}
+pub(crate) use curl_core::tls::Text;
 
 /// The host as the URL names it, which C's messages about the
 /// certificate's names say (`user_hostname`): an IPv6 address in

@@ -605,6 +605,18 @@ impl Alpn {
         }
     }
 
+    /// The names offered, in the offer's order, as a library that takes
+    /// them one by one is given them.
+    pub fn names(self) -> impl Iterator<Item = &'static [u8]> {
+        let mut wire = self.wire();
+        core::iter::from_fn(move || {
+            let (&len, rest) = wire.split_first()?;
+            let (name, next) = rest.split_at(usize::from(len));
+            wire = next;
+            Some(name)
+        })
+    }
+
     /// The offer as C traces it (`ALPN: curl offers ...`), if any.
     pub fn offer(self) -> Option<&'static str> {
         match self {
@@ -686,6 +698,91 @@ pub struct TlsPeer<'a> {
     /// (`CURLSSLOPT_EARLYDATA`) and makes its requests on the connection
     /// (not `bits.connect_only`).
     pub early_data: bool,
+}
+
+/// The name a session to the peer `name` of kind `kind` sends by SNI
+/// (`Curl_ssl_peer_init`'s `peer->sni`): a host name's, lower case,
+/// without a trailing dot, if shorter than 64 KiB (RFC 6066 3); none for
+/// an address. It has room for a zero byte after it, for a library that
+/// takes a C string.
+pub fn sni(name: &[u8], kind: TlsPeerKind) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    if kind != TlsPeerKind::Name {
+        return Ok(None);
+    }
+    let name = name.strip_suffix(b".").unwrap_or(name);
+    if name.len() >= usize::from(u16::MAX) {
+        return Ok(None);
+    }
+    let mut sni = Vec::new();
+    sni.try_reserve_exact(name.len() + 1)
+        .map_err(|_| OutOfMemory)?;
+    sni.try_extend_from_slice(name)?;
+    sni.make_ascii_lowercase();
+    Ok(Some(sni))
+}
+
+/// What the peer chose of the ALPN offer, `chosen`, empty if nothing,
+/// said, and refused where it may not be (`Curl_alpn_set_negotiated`):
+/// a session that asked for `asked` alone, as the session it resumed
+/// agreed, needs the peer to choose it again; a name with a zero byte in
+/// it is no name. The library keeps what was chosen.
+pub fn alpn_negotiated(
+    cx: &mut TlsCx<'_>,
+    asked: Option<&[u8]>,
+    chosen: &[u8],
+) -> Result<(), ErrorKind> {
+    if let Some(asked) = asked {
+        let asked = Text(asked);
+        if chosen.is_empty() {
+            return Err(cx.fail(
+                ErrorKind::SslConnectError,
+                format_args!(
+                    "ALPN: asked for '{asked}' from previous session, but server did not confirm it. Refusing to continue."
+                ),
+            ));
+        }
+        if chosen != asked.0 {
+            return Err(cx.fail(
+                ErrorKind::SslConnectError,
+                format_args!(
+                    "ALPN: asked for '{asked}' from previous session, but server selected '{}'. Refusing to continue.",
+                    Text(chosen)
+                ),
+            ));
+        }
+        cx.info(format_args!("ALPN: server confirmed to use '{asked}'"));
+        return Ok(());
+    }
+    if chosen.is_empty() {
+        cx.info(format_args!(
+            "ALPN: server did not agree on a protocol. Uses default."
+        ));
+    } else if chosen.contains(&0) {
+        return Err(cx.fail(
+            ErrorKind::SslConnectError,
+            format_args!("ALPN: server selected protocol contains NUL. Refusing to continue."),
+        ));
+    } else {
+        cx.info(format_args!("ALPN: server accepted {}", Text(chosen)));
+    }
+    Ok(())
+}
+
+/// Bytes as C's `%s` shows them in a library's line: text as it is, any
+/// other byte as the character of its number.
+#[derive(Clone, Copy, Debug)]
+pub struct Text<'a>(pub &'a [u8]);
+
+impl fmt::Display for Text<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for chunk in self.0.utf8_chunks() {
+            f.write_str(chunk.valid())?;
+            for &b in chunk.invalid() {
+                fmt::Write::write_char(f, char::from(b))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A handshake a session put off to send early data in it (TLS 1.3's

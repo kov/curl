@@ -18,7 +18,7 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{Chosen, KeyLog, TlsCx, TlsIo, TlsTicket};
 
-use crate::text::Text;
+use curl_core::tls::Text;
 
 /// `CURLE_AGAIN`, as the trace numbers a call that would block.
 pub(crate) const AGAIN: u16 = 81;

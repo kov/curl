@@ -16,7 +16,6 @@ mod priority;
 mod session;
 mod sign;
 mod sys;
-mod text;
 mod trust;
 mod verify;
 
@@ -146,7 +145,7 @@ pub fn version() -> impl fmt::Display {
     struct Version;
     impl fmt::Display for Version {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "GnuTLS/{}", text::Text(gnutls::version()))
+            write!(f, "GnuTLS/{}", curl_core::tls::Text(gnutls::version()))
         }
     }
     Version

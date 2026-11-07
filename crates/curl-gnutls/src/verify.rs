@@ -13,7 +13,7 @@ use curl_core::tls::{TlsCx, TlsIdentity, x509};
 
 use crate::library::{Cert as _, Format, Gnutls, Session as _, Stapled, as_c, c_string, strerror};
 use crate::sys;
-use crate::text::Text;
+use curl_core::tls::Text;
 
 /// The most certificates a chain reported may have
 /// (`MAX_ALLOWED_CERT_AMOUNT`).

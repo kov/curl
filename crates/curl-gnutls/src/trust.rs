@@ -12,7 +12,7 @@ use curl_core::time::Instant;
 use curl_core::tls::{TlsCx, TlsIdentity, TlsShared};
 
 use crate::library::{Creds as _, Gnutls, Rc, as_c, c_string, strerror};
-use crate::text::Text;
+use curl_core::tls::Text;
 
 /// The credentials a multi keeps for its next connections: loaded for
 /// `ca_file`, as they were made at `made` (`gtls_shared_creds`).

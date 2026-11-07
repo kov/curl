@@ -2,22 +2,22 @@
 
 # C Rustls baseline
 
-What the C build in `build/c-rustls` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-07T11:01:54Z to 2026-11-07T11:03:55Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
+What the C build in `build/c-rustls` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-07T14:32:29Z to 2026-11-07T14:35:05Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
 
 ```
 curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV rustls-ffi/0.15.5/rustls/0.23.46/aws-lc-rs zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
 Release-Date: [unreleased]
 Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss
-Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
+Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTPS-proxy HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
 ```
 
 |  | tests |
 |---|---|
 | considered | 2198 |
-| ran | 2061 |
-| ok | 2059 |
+| ran | 2064 |
+| ok | 2062 |
 | failed | 2 |
-| skipped | 137 |
+| skipped | 134 |
 
 ## Built library
 
@@ -35,7 +35,6 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSRR 
 | reason | class | count | tests |
 |---|---|---|---|
 | configured as DISABLED | disabled | 14 | 594, 836, 882, 938, 1182, 1184, 1209, 1211, 1307, 1316, 1512, 1801, 2043, 4656 |
-| curl lacks ECH support | feature missing from build | 3 | 2117, 4000, 4001 |
 | curl lacks OpenSSL support | feature missing from build | 5 | 307, 308, 1582, 1587, 3207 |
 | curl lacks SSLpinning support | feature missing from build | 10 | 2033, 2034, 2035, 2037, 2038, 2041, 2042, 2048, 2079, 2087 |
 | curl lacks Schannel support | feature missing from build | 4 | 2070, 3023, 3024, 4782 |
@@ -57,13 +56,16 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSRR 
 
 | outcome | cases |
 |---|---|
-| passed | 701 |
-| skipped | 174 |
+| failed | 2 |
+| passed | 713 |
+| skipped | 160 |
 
 ### Not passed
 
 | case | outcome | message |
 |---|---|---|
+| test_23_ech::test_23_03_ech_bad_config[hard-rejected-101] | failed | AssertionError: expected exit code 35, got 60   >>--stdout ----------------------------------------------   {"certs":"","conn_id":0,"content_type":null,"errormsg":"rustls_connection_process_new_packets: invalid peer certificate: NotValidForName","exitcode":60,"filename_effective":"download_#1.data", |
+| test_23_ech::test_23_03_ech_bad_config[true-rejected-101] | failed | AssertionError: expected exit code 35, got 60   >>--stdout ----------------------------------------------   {"certs":"","conn_id":0,"content_type":null,"errormsg":"rustls_connection_process_new_packets: invalid peer certificate: NotValidForName","exitcode":60,"filename_effective":"download_#1.data", |
 
 ### Skip reasons
 
@@ -72,7 +74,6 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSRR 
 | rustls does not support TLS session reuse | 49 |
 | no h2o available | 21 |
 | curl not build with GnuTLS | 17 |
-| no openssl cmd ECH support | 14 |
 | missing HTTP/3 support | 12 |
 | TLS earlydata not implemented | 11 |
 | no cert-status in curl | 8 |

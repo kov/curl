@@ -1482,7 +1482,16 @@ it there, Windows.
      and writes the proxy's TLS, as C's does through libssh2's callbacks: 3992 on both legs.
      The state machine is tested through a scripted fake of the library: every mutant of it
      is caught, or excluded in `.cargo/mutants.toml` with why it changes nothing observable.
-106. **GSS-API**: Heimdal and GNU GSS beside MIT krb5, as C's build can choose. **To do.**
+106. **GSS-API**: GNU GSS beside MIT krb5, as C's build can choose. **Done.** `curl-gssapi`'s
+     `gnu-gss` feature (C's `HAVE_GSSGNU`) links GNU GSS over Shishi from `build/deps/gnugss`
+     (`deps.py --gnugss`): `curl -V` names `libgss/` and `gss.h`'s version, SPNEGO's mechanisms
+     are not narrowed (no `gss_set_neg_mechs`), and delegation by policy is left out and warned of
+     at each step (no `GSS_C_DELEG_POLICY_FLAG`), as in C. The binding is checked against the
+     header C includes (`csrc/layout.c`). Scored with `score.py --gnugss` against C's GNU GSS
+     build (`baseline.py --gnugss`, `build/c-gnugss`): measured 2026-11-07, runtests.pl passes
+     all 1994 tests C's passes and pytest all 917, as the MIT krb5 build with libssh2 does against
+     the reference (`score.py --libssh2`). Heimdal is not C's: this tree's FindGSS
+     refuses it ("MIT, GNU or Apple GSS is required"), and so does the build script.
 
 macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the
 experimental Apple fast UDP. They go with the macOS port.

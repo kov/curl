@@ -383,6 +383,10 @@ pub(crate) struct Operation<'a> {
     /// The methods to authenticate with; none for the library's default
     /// (C's `authtype`).
     pub(crate) auth: AuthMethods,
+    /// `--no-ntlm` since the last `--anyauth`: NTLM's bit taken out of
+    /// the methods it asked for, which the library lacks but the mask
+    /// passes (`togglebit`).
+    pub(crate) no_ntlm: bool,
     /// `--aws-sigv4`: what AWS SigV4 signs with, as given.
     pub(crate) aws_sigv4: Option<&'a [u8]>,
     /// `--httpsig-algo`, `--httpsig-key`, `--httpsig-keyid` and
@@ -652,6 +656,16 @@ impl Global<'_> {
 }
 
 impl<'a> Operation<'a> {
+    /// The `CURLAUTH_*` mask C's tool passes for the methods asked for.
+    pub(crate) fn auth_mask(&self) -> u64 {
+        let mask = crate::easysrc::auth_mask(self.auth);
+        if self.no_ntlm {
+            mask & !crate::easysrc::CURLAUTH_NTLM
+        } else {
+            mask
+        }
+    }
+
     /// The URLs given.
     pub(crate) fn url_count(&self) -> usize {
         self.nodes.iter().filter(|n| n.url.is_some()).count()
@@ -1348,7 +1362,11 @@ pub(crate) fn apply<'a>(
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
         Opt::User => line.current().user = Some(Cow::Borrowed(value.text())),
-        Opt::Anyauth => line.current().auth = AuthMethods::ANY,
+        Opt::Anyauth => {
+            let op = line.current();
+            op.auth = AuthMethods::ANY;
+            op.no_ntlm = false;
+        }
         Opt::Insecure => line.current().tls.insecure = value.toggle(),
         Opt::ProxyInsecure => line.current().tls.proxy_insecure = value.toggle(),
         Opt::ProxyCaNative => line.current().tls.proxy.native_ca = value.toggle(),
@@ -2049,11 +2067,13 @@ pub(crate) fn apply<'a>(
             line.current().tls.doh_url = (!url.is_empty()).then_some(url);
         }
         // NTLM is never built (SCOPE.md): refused as by a C build without
-        // it, `--proxy-ntlm` even to turn off, as C's check has no toggle.
+        // it, `--proxy-ntlm` even to turn off, as C's check has no toggle;
+        // `--no-ntlm` takes it out of what `--anyauth` asked for.
         Opt::ProxyNtlm => return Err(ParamError::LibcurlDoesntSupport),
         Opt::Ntlm if value.toggle() => return Err(ParamError::LibcurlDoesntSupport),
+        Opt::Ntlm => line.current().no_ntlm = true,
         Opt::Ech => ech(line.current(), value.text(), msgs)?,
-        Opt::FalseStart | Opt::Ntlm => line.not_implemented(spec, "--"),
+        Opt::FalseStart => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
 }

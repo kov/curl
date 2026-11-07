@@ -1207,7 +1207,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     // An upload of standard input is warned of with more than one way to
     // authenticate, which may need it sent again (`check_stdin_upload`).
     if upload.is_some_and(|file| file == b"-" || file == b".")
-        && (op.proxy_anyauth || easysrc::auth_mask(op.auth).count_ones() > 1)
+        && (op.proxy_anyauth || op.auth_mask().count_ones() > 1)
     {
         msgs.warn(&[
             b"Using --anyauth or --proxy-anyauth with upload from stdin involves a big risk \
@@ -2928,15 +2928,10 @@ fn credentials_and_headers(
         Ok(())
     })?;
     if !op.auth.is_empty() {
-        s.bitmask(
-            "CURLOPT_HTTPAUTH",
-            easysrc::AUTH,
-            easysrc::auth_mask(op.auth),
-            |o| {
-                o.http.auth = options::HttpAuth(claims.auth(op.auth));
-                Ok(())
-            },
-        )?;
+        s.bitmask("CURLOPT_HTTPAUTH", easysrc::AUTH, op.auth_mask(), |o| {
+            o.http.auth = options::HttpAuth(claims.auth(op.auth));
+            Ok(())
+        })?;
     }
     // `--json` types the request and accepts JSON, unless the headers
     // say otherwise (`get_args`).

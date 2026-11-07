@@ -2219,6 +2219,54 @@ fn warns_of_more_than_one_auth_with_standard_input() {
     assert!(!warned(&["--anyauth", "-T", "f"]));
 }
 
+/// `--ntlm` is refused, as by a C build without NTLM; `--no-ntlm` is not:
+/// it takes NTLM's bit out of the methods `--anyauth` asked for, as
+/// `--libcurl` writes them, until the next `--anyauth` (`togglebit`).
+#[test]
+fn refuses_ntlm_but_takes_it_away() {
+    let s = Scratch::new("ntlm");
+    s.write("f", b"x");
+    let r = curl(&s, &["-o", "out", "--ntlm", &s.url("f")]);
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(
+        r.stderr.starts_with(
+            "curl: option --ntlm: the installed libcurl version does not support this\n"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(!s.exists("out"));
+    let auth = |args: &[&str]| {
+        let r = curl(
+            &s,
+            &[&["-s", "-o", "out", "--libcurl", "-"], args, &[&s.url("f")]].concat(),
+        );
+        assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+        let program = messages(&r.stdout);
+        program.split(";\n").find_map(|call| {
+            let call = call.split_whitespace().collect::<Vec<_>>().join(" ");
+            call.strip_prefix("curl_easy_setopt(curl, CURLOPT_HTTPAUTH, ")
+                .map(|m| m.strip_suffix(')').unwrap().to_owned())
+        })
+    };
+    let any = Some("(long)CURLAUTH_ANY".to_owned());
+    assert_eq!(auth(&["--no-ntlm"]), None);
+    assert_eq!(
+        auth(&["--basic", "--no-ntlm"]),
+        Some("(long)CURLAUTH_BASIC".to_owned())
+    );
+    assert_eq!(
+        auth(&["--anyauth", "--no-ntlm"]),
+        Some(
+            "(long)CURLAUTH_BASIC | (long)CURLAUTH_DIGEST | (long)CURLAUTH_GSSNEGOTIATE | \
+             (long)CURLAUTH_ONLY | (long)CURLAUTH_NONE | 2147483360UL"
+                .to_owned()
+        )
+    );
+    assert_eq!(auth(&["--no-ntlm", "--anyauth"]), any);
+    assert_eq!(auth(&["--anyauth", "--no-ntlm", "--anyauth"]), any);
+}
+
 /// The TLS options as C's tool sets them, seen in what `--libcurl`
 /// writes (`ssl_ca_setopts`, `ssl_setopts`, `tlsversion`): the CA
 /// locations as given, else from the environment unless the peer goes

@@ -450,6 +450,10 @@ pub trait Connection: fmt::Debug + Send {
     /// would; or why HTTP/3 could not be set up.
     fn start_early(&mut self) -> Result<EarlyStart, H3Failed>;
 
+    /// Tell its TLS session whether early data goes under the ticket it
+    /// resumed (`QuicTls::early_data_decided`).
+    fn early_data_decided(&mut self, cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind>;
+
     /// It is draining: the peer closed it (`ngtcp2_conn_in_draining_period`).
     fn draining(&self) -> bool;
 

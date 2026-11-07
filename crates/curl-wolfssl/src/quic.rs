@@ -75,6 +75,10 @@ impl<W: Wolfssl> QuicTls for QuicSession<W> {
         self.0.quic_early.as_ref()
     }
 
+    fn early_data_decided(&mut self, cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind> {
+        self.0.quic_early_decided(cx, early)
+    }
+
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         if !self.0.state.store_ready {
             self.0.setup_store(cx)?;
@@ -89,6 +93,10 @@ impl<W: Wolfssl> QuicTls for QuicSession<W> {
         call: &mut dyn FnMut(&mut dyn DriveCall),
     ) {
         let s = &mut self.0;
+        assert!(
+            s.quic_early.is_none() || s.quic_decided,
+            "the ALPN offer is made before the handshake's first bytes"
+        );
         let mut wcall = Call {
             io: Reach::Quic(cx),
             state: &mut s.state,

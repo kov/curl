@@ -137,40 +137,46 @@ witness: curl-wolfssl tests::quic::the_quic_library_s_failed_setup_fails_the_ses
 --- new
             if let Err(why) = Ok::<(), &str>(()) {
 
-=== a QUIC session resumed for early data offers every protocol
+=== a QUIC session early data goes under offers every protocol
 file: crates/curl-wolfssl/src/session.rs
 witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
 --- old
-        }
-        self.restricted = Some(chosen);
-        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
+            self.restricted = Some(chosen);
+            self.ssl().max_early_data(edmax);
 --- new
-        }
-        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
+            self.ssl().max_early_data(edmax);
 
-=== a QUIC session resumed for early data does not tell the library of it
+=== a QUIC session early data goes under does not tell the library of it
 file: crates/curl-wolfssl/src/session.rs
 witness: curl-wolfssl tests::quic::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
 --- old
-        self.restricted = Some(chosen);
-        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
-        self.ssl().max_early_data(edmax);
-    }
-
-    /// Put the handshake off for early data, resuming `ticket`, whose
+            self.restricted = Some(chosen);
+            self.ssl().max_early_data(edmax);
+        }
 --- new
-        self.restricted = Some(chosen);
-    }
+            self.restricted = Some(chosen);
+            let _ = edmax;
+        }
 
-    /// Put the handshake off for early data, resuming `ticket`, whose
-
-=== a QUIC ticket kept without transport parameters still restricts the offer
+=== a QUIC session restricts its offer for early data the QUIC library sends none of
 file: crates/curl-wolfssl/src/session.rs
-witness: curl-wolfssl tests::quic::a_quic_ticket_without_what_early_data_needs_resumes_without_it
+witness: curl-wolfssl tests::quic::a_quic_ticket_no_early_data_goes_under_offers_every_protocol
 --- old
-        if ticket.earlydata_max == 0 || ticket.quic_params.is_empty() {
+        self.quic_decided = true;
+        if early {
 --- new
-        if ticket.earlydata_max == 0 {
+        self.quic_decided = true;
+        if early || ticket.earlydata_max != 0 && !ticket.quic_params.is_empty() {
+
+=== a QUIC session resumed for early data makes its offer before the QUIC library's word
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::quic::a_quic_ticket_no_early_data_goes_under_offers_every_protocol
+--- old
+        if self.quic_early.is_none() {
+            self.offer_alpn(io)?;
+        }
+--- new
+        self.offer_alpn(io)?;
 
 === a QUIC session resumed is not handed to the QUIC library to decide on
 file: crates/curl-wolfssl/src/session.rs

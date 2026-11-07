@@ -1590,6 +1590,10 @@ impl QuicTls for QuicSession {
         self.0.resumed.as_ref().filter(|_| self.0.quic_early)
     }
 
+    fn early_data_decided(&mut self, _cx: &mut TlsCx<'_>, _early: bool) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let s = &mut self.0;
         if !s.flags.store_ready {

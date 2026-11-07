@@ -3214,8 +3214,9 @@ transfer's versions (ngtcp2's setup makes them TLS 1.3), ngtcp2's setup of the c
 SNI, then the new-session callback where sessions are kept, the session object told
 `wolfSSL_set_quic_use_legacy_codepoint(0)`, and a BIO for the callbacks alone; no name check
 before the handshake, no "curl offers" line. A resumed TLS 1.3 ticket goes to the QUIC library
-to decide on early data; where it allows some, was made for `h3` and kept with the transport
-parameters, the offer is `h3` alone and the library is told the ticket's most. Tickets are
+to decide on early data, and the ALPN offer waits for its word (`QuicTls::early_data_decided`):
+where early data goes, the library is told the ticket's most and the offer is `h3` alone; where it
+does not, the offer is whole. Tickets are
 kept for `h3` with the transport parameters. The trust loads before the peer's first packet is
 read; the handshake's end reports the session, then checks the peer as
 `Curl_vquic_tls_verify_peer`: where the host is verified, the name (`wolfSSL_X509_check_host`)
@@ -3417,7 +3418,10 @@ under the same conditions only says so (`QuicTls::early_data`, the ticket). The 
 it is made, takes the ticket's transport parameters as the peer's, sets HTTP/3 up and tells
 OpenSSL to send early data (`Quic::early_data`, `Connection::set_early_params` and
 `start_early`; `cf_ngtcp2_on_session_reuse`), each refusal traced as C's and the connection then
-made as any other. Sending early data it counts as connected at once, its attempt winning as it
+made as any other. Its TLS session is then told whether early data goes
+(`QuicTls::early_data_decided`, C's `do_early_data`): it does once the parameters are taken and
+HTTP/3 set up, even where OpenSSL then refuses to send it, as C's callback says so before
+OpenSSL is asked. Sending early data it counts as connected at once, its attempt winning as it
 starts, and the request's bytes taken before the handshake ends are counted; the handshake's
 end tells the transfer whether the peer took them (`Event::HandshakeDone::early_data`,
 `ngtcp2_conn_get_tls_early_data_rejected2`), through the same `early_done`. A connection to an

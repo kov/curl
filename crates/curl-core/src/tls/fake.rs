@@ -165,6 +165,11 @@ pub struct FakeLog {
     pub resumed_given: usize,
     /// What the last session offered by ALPN.
     pub alpn: Option<Alpn>,
+    /// What the last QUIC session told of early data under the ticket it
+    /// resumed was told (`QuicTls::early_data_decided`), and how many
+    /// times sessions were told.
+    pub early_decided: Option<bool>,
+    pub early_decisions: usize,
 }
 
 /// What the fake keeps for a multi: its number, and the log it notes
@@ -226,6 +231,8 @@ impl FakeTls {
             resumed: 0,
             resumed_given: 0,
             alpn: None,
+            early_decided: None,
+            early_decisions: 0,
         };
         Ok(FakeTls {
             log: TryArc::try_new(Mutex::new(log))?,
@@ -1160,6 +1167,14 @@ impl QuicTls for FakeQuicSession {
 
     fn early_data(&self) -> Option<&TlsTicket> {
         self.early.as_ref()
+    }
+
+    fn early_data_decided(&mut self, _cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind> {
+        assert!(self.early.is_some(), "told only under a ticket resumed");
+        let mut log = self.log.lock().expect("no test panics holding the log");
+        log.early_decided = Some(early);
+        log.early_decisions += 1;
+        Ok(())
     }
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {

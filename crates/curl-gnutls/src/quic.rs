@@ -83,6 +83,10 @@ where
         self.0.quic_early.as_ref()
     }
 
+    fn early_data_decided(&mut self, _cx: &mut TlsCx<'_>, _early: bool) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         if !self.0.trust_ready {
             self.0.trust_setup(cx)?;

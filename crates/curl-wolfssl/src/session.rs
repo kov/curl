@@ -107,8 +107,12 @@ pub(crate) struct Session<W: Wolfssl> {
     quic: bool,
     /// A QUIC connection's session the cache kept, which it resumed over
     /// TLS 1.3 for a transfer that may send early data: the QUIC library
-    /// decides on it (`cf_ngtcp2_on_session_reuse`).
+    /// decides on it (`cf_ngtcp2_on_session_reuse`), and the ALPN offer
+    /// waits for its word.
     pub(crate) quic_early: Option<TlsTicket>,
+    /// The QUIC library said whether early data goes under `quic_early`,
+    /// and the offer is made.
+    pub(crate) quic_decided: bool,
 }
 
 impl<W: Wolfssl> Session<W> {
@@ -148,6 +152,7 @@ impl<W: Wolfssl> Session<W> {
             negotiated: None,
             quic: false,
             quic_early: None,
+            quic_decided: false,
         })
     }
 
@@ -551,24 +556,65 @@ impl<W: Wolfssl> Session<W> {
                 }
             }
         }
-        if self.alpn != Alpn::None {
-            let list = match self.restricted {
-                Some(c) => c.name(),
-                None => self.alpn.offer().unwrap_or_default(),
-            };
-            if !self.ssl().alpn(list.as_bytes()) {
-                return Err(io.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!("SSL: failed setting ALPN protocols"),
-                ));
-            }
-            io.trace(format_args!("set ALPN: {list}"));
+        // Under a QUIC ticket for early data, the offer waits for the QUIC
+        // library's word on it (`quic_early_decided`).
+        if self.quic_early.is_none() {
+            self.offer_alpn(io)?;
         }
         if self.keylog().is_some() {
             // The client's random kept for the log.
             self.ssl().keep_arrays();
         }
         Ok(())
+    }
+
+    /// The ALPN offer: what the transfer offers, or the protocol the
+    /// session resumed restricts it to (`wolfSSL_UseALPN`, which adds to
+    /// an offer made before: made once).
+    fn offer_alpn(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+        if self.alpn == Alpn::None {
+            return Ok(());
+        }
+        let list = match self.restricted {
+            Some(c) => c.name(),
+            None => self.alpn.offer().unwrap_or_default(),
+        };
+        if !self.ssl().alpn(list.as_bytes()) {
+            return Err(io.fail(
+                ErrorKind::SslConnectError,
+                format_args!("SSL: failed setting ALPN protocols"),
+            ));
+        }
+        io.trace(format_args!("set ALPN: {list}"));
+        Ok(())
+    }
+
+    /// The QUIC library said whether early data goes under the ticket it
+    /// was handed (`quic_early`), once it took the ticket's transport
+    /// parameters: where it does, the offer is restricted to the
+    /// ticket's protocol and the library told the most the ticket allows
+    /// (`wssl_apply_session` after `sess_reuse_cb`); then the offer is
+    /// made, as `Curl_wssl_ctx_init` makes it after the session applied.
+    pub(crate) fn quic_early_decided(
+        &mut self,
+        io: &mut TlsCx<'_>,
+        early: bool,
+    ) -> Result<(), ErrorKind> {
+        assert!(!self.quic_decided, "told once");
+        let ticket = self
+            .quic_early
+            .as_ref()
+            .expect("told only under a ticket resumed for early data");
+        self.quic_decided = true;
+        if early {
+            let chosen = ticket
+                .chosen()
+                .expect("early data goes under a ticket made for h3");
+            let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
+            self.restricted = Some(chosen);
+            self.ssl().max_early_data(edmax);
+        }
+        self.offer_alpn(io)
     }
 
     /// Resume `ticket`, if it has a session and the transfer offers what
@@ -600,13 +646,10 @@ impl<W: Wolfssl> Session<W> {
             Resume::Done => {
                 let alpn = ticket.alpn_name().unwrap_or(b"-");
                 io.info_with(&[b"SSL reusing session with ALPN '", alpn, b"'"]);
-                if self.reuses_early() {
-                    if self.quic {
-                        self.quic_reuse(ticket);
-                    } else {
-                        let most = self.ssl().session_max_early_data();
-                        self.defer(io, ticket, most);
-                    }
+                // A QUIC session's is the QUIC library's to decide on.
+                if self.reuses_early() && !self.quic {
+                    let most = self.ssl().session_max_early_data();
+                    self.defer(io, ticket, most);
                 }
                 true
             }
@@ -622,24 +665,6 @@ impl<W: Wolfssl> Session<W> {
                 .ssl
                 .as_ref()
                 .is_some_and(|ssl| ssl.version_name() == b"TLSv1.3")
-    }
-
-    /// A QUIC session resumed under `ticket`, which early data may go
-    /// under: where it allows some, was made for the protocol offered and
-    /// kept with the transport parameters (`cf_ngtcp2_on_session_reuse`'s
-    /// conditions), the offer is restricted to that protocol and the
-    /// library told the most the ticket allows (`wssl_apply_session`).
-    /// The QUIC library says the rest of it, and sends the early data.
-    fn quic_reuse(&mut self, ticket: &TlsTicket) {
-        let Some(chosen) = ticket.chosen().filter(|&c| self.alpn.offers(c)) else {
-            return;
-        };
-        if ticket.earlydata_max == 0 || ticket.quic_params.is_empty() {
-            return;
-        }
-        self.restricted = Some(chosen);
-        let edmax = u32::try_from(ticket.earlydata_max).unwrap_or(u32::MAX);
-        self.ssl().max_early_data(edmax);
     }
 
     /// Put the handshake off for early data, resuming `ticket`, whose

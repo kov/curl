@@ -591,6 +591,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
                 assert!(conn.set_early_params(b"\xff\xff").is_err());
                 conn.set_early_params(&params).unwrap();
                 assert!(matches!(conn.start_early(), Ok(EarlyStart::Started)));
+                conn.early_data_decided(cx, true).unwrap();
                 conn.submit_request(&fields, false).unwrap();
             } else {
                 assert!(params.is_none(), "nothing to resume yet");

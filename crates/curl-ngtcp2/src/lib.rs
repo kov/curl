@@ -971,6 +971,10 @@ impl curl_core::http3::Connection for Connection {
         self.tls.native()
     }
 
+    fn early_data_decided(&mut self, cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind> {
+        self.tls.early_data_decided(cx, early)
+    }
+
     fn sent_at(&mut self, now: Instant) {
         // SAFETY: the connection.
         unsafe { sys::ngtcp2_conn_update_pkt_tx_time(self.conn(), ts(now)) };

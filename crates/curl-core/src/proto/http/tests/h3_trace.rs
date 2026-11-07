@@ -2614,11 +2614,15 @@ fn a_request_goes_as_early_data_under_a_session_resumed() {
         script.lock().unwrap().early_rejected = rejected;
         let mut m = quic_server(&[b"server flight", b"response"]);
         let tls = FakeTls::quic_resuming(16384, Some(crate::tls::Chosen::H3), b"params").unwrap();
-        let e = tracing(tls, &script);
+        let tls: &'static FakeTls = Box::leak(Box::new(tls));
+        let e = tracing_by(tls, &script);
         let ran = h3_early_get(&mut m, e);
         assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
         assert_eq!(ran.seen.body(), b"123456789");
         assert_eq!(script.lock().unwrap().early_params, b"params");
+        // The session told it goes, once, as the parameters were taken.
+        assert_eq!(tls.log().early_decided, Some(true));
+        assert_eq!(tls.log().early_decisions, 1);
         let got = lines(
             &ran,
             &[
@@ -2651,7 +2655,9 @@ fn a_request_goes_as_early_data_under_a_session_resumed() {
 /// connection is made as any other: one that allows none, one made for
 /// another protocol, one kept without transport parameters, one whose
 /// parameters the library refuses, and one the TLS library will not send
-/// early data under (`cf_ngtcp2_on_session_reuse`).
+/// early data under (`cf_ngtcp2_on_session_reuse`). The session is told
+/// none goes, its offer whole, but for the last: C's says early data
+/// goes before the TLS library refuses it, the offer restricted.
 #[test]
 fn a_session_resumed_without_early_data_says_why() {
     use crate::tls::Chosen;
@@ -2662,6 +2668,7 @@ fn a_session_resumed_without_early_data_says_why() {
         Option<&'static str>,
         bool,
         &'static str,
+        bool,
     );
     let cases: [Case; 5] = [
         (
@@ -2671,6 +2678,7 @@ fn a_session_resumed_without_early_data_says_why() {
             None,
             false,
             "[HTTP/3] SSL session does not allow earlydata",
+            false,
         ),
         (
             16384,
@@ -2679,6 +2687,7 @@ fn a_session_resumed_without_early_data_says_why() {
             None,
             false,
             "[HTTP/3] SSL session from different ALPN, no early data",
+            false,
         ),
         (
             16384,
@@ -2687,6 +2696,7 @@ fn a_session_resumed_without_early_data_says_why() {
             None,
             false,
             "[HTTP/3] no 0RTT transport parameters, no early data",
+            false,
         ),
         (
             16384,
@@ -2695,6 +2705,7 @@ fn a_session_resumed_without_early_data_says_why() {
             Some("ERR_MALFORMED_TRANSPORT_PARAM"),
             false,
             "[HTTP/3] no early data, failed to set 0RTT transport parameters: ERR_MALFORMED_TRANSPORT_PARAM",
+            false,
         ),
         (
             16384,
@@ -2703,9 +2714,10 @@ fn a_session_resumed_without_early_data_says_why() {
             None,
             true,
             "[HTTP/3] OpenSSL refused to use early data",
+            true,
         ),
     ];
-    for (most, alpn, params, refused, tls_refuses, why) in cases {
+    for (most, alpn, params, refused, tls_refuses, why, decided) in cases {
         let script = get_script(b"123456789");
         {
             let mut s = script.lock().unwrap();
@@ -2713,9 +2725,13 @@ fn a_session_resumed_without_early_data_says_why() {
             s.early_tls_refuses = tls_refuses;
         }
         let mut m = quic_server(&[b"server flight", b"response"]);
-        let e = tracing(FakeTls::quic_resuming(most, alpn, params).unwrap(), &script);
+        let tls = FakeTls::quic_resuming(most, alpn, params).unwrap();
+        let tls: &'static FakeTls = Box::leak(Box::new(tls));
+        let e = tracing_by(tls, &script);
         let ran = h3_early_get(&mut m, e);
         assert_eq!(ran.result, Ok(()), "{why}: {:#?}", ran.seen.text());
+        assert_eq!(tls.log().early_decided, Some(decided), "{why}");
+        assert_eq!(tls.log().early_decisions, 1, "{why}");
         assert_eq!(lines(&ran, &[why]).len(), 1, "{why}");
         assert!(lines(&ran, &["[HTTP/3] server did"]).is_empty(), "{why}");
         assert_eq!(ran.easy.report().earlydata_sent(), 0, "{why}");

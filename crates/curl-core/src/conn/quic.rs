@@ -620,39 +620,55 @@ impl Quic {
     }
 
     /// The session resumed allows early data under `ticket`, which is
-    /// sent if it was made for HTTP/3 and kept with its transport
-    /// parameters (`cf_ngtcp2_on_session_reuse`): said as C says it. A
-    /// failure to set up HTTP/3 for it fails the connect.
+    /// sent if it was made for HTTP/3 and kept with transport parameters
+    /// the connection takes (`cf_ngtcp2_on_session_reuse`): said as C
+    /// says it, and the session told whether it goes, once that is
+    /// known, as C's TLS backends are by `do_early_data`. A failure to
+    /// set up HTTP/3 for it fails the connect.
     pub(crate) fn early_data(
         &mut self,
         cx: &mut dyn LayerCx,
         ticket: &EarlyTicket,
     ) -> Result<(), ErrorKind> {
+        let early = self.decide_early(cx, ticket)?;
+        let component = self.state.component;
+        let Quic { conn, peer, .. } = self;
+        conn.early_data_decided(&mut TlsCx::new(cx, component, peer), early)
+    }
+
+    /// Whether early data goes under `ticket`: the connection set up for
+    /// it if so. It goes too where the TLS library then refuses to send
+    /// it, which C's session is told after `do_early_data`.
+    fn decide_early(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        ticket: &EarlyTicket,
+    ) -> Result<bool, ErrorKind> {
         let h3 = self.state.component;
         if ticket.most == 0 {
             cx.of(h3, format_args!("SSL session does not allow earlydata"));
-            return Ok(());
+            return Ok(false);
         }
         if ticket.alpn != Some(crate::tls::Chosen::H3) {
             cx.of(
                 h3,
                 format_args!("SSL session from different ALPN, no early data"),
             );
-            return Ok(());
+            return Ok(false);
         }
         if ticket.params.is_empty() {
             cx.of(
                 h3,
                 format_args!("no 0RTT transport parameters, no early data"),
             );
-            return Ok(());
+            return Ok(false);
         }
         if let Err(why) = self.conn.set_early_params(&ticket.params) {
             cx.of(
                 h3,
                 format_args!("no early data, failed to set 0RTT transport parameters: {why}"),
             );
-            return Ok(());
+            return Ok(false);
         }
         let most = ticket.most;
         cx.info(format_args!(
@@ -661,11 +677,11 @@ impl Quic {
         match self.conn.start_early() {
             Ok(crate::http3::EarlyStart::Started) => {
                 self.state.early = Some(0);
-                Ok(())
+                Ok(true)
             }
             Ok(crate::http3::EarlyStart::Refused) => {
                 cx.of(h3, format_args!("OpenSSL refused to use early data"));
-                Ok(())
+                Ok(true)
             }
             Err(failed) => Err(cx.fails(failed.kind(), format_args!("{failed}"))),
         }

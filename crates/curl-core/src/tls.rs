@@ -462,6 +462,17 @@ pub trait QuicTls: Send {
     /// conditions on which C calls `sess_reuse_cb`).
     fn early_data(&self) -> Option<&TlsTicket>;
 
+    /// The QUIC connection decided on early data under the ticket
+    /// `early_data` gave, once it has read the ticket's transport
+    /// parameters and set HTTP/3 up for it: where it goes (`early`), the
+    /// ALPN offer is only the ticket's protocol, and a library that is
+    /// told the most early data the ticket allows is told it; where it
+    /// does not, the offer stays whole (what `sess_reuse_cb`'s caller
+    /// does with `do_early_data`). Called once, before the handshake's
+    /// first bytes, for a session whose `early_data` gave a ticket, and
+    /// never for one whose did not.
+    fn early_data_decided(&mut self, cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind>;
+
     /// Get ready for the peer's first bytes: the trust store set up, if
     /// it is not (`Curl_vquic_tls_before_recv`).
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind>;

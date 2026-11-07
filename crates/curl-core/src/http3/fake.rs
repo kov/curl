@@ -504,6 +504,10 @@ impl Connection for FakeConnection {
         self.tls.native()
     }
 
+    fn early_data_decided(&mut self, cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind> {
+        self.tls.early_data_decided(cx, early)
+    }
+
     fn sent_at(&mut self, now: Instant) {
         let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.at(now);

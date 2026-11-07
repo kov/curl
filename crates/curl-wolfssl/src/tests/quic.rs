@@ -146,6 +146,29 @@ fn without_kept_sessions_a_quic_session_is_told_of_none() {
     assert!(lib.w().made("resume").is_empty());
 }
 
+/// Tell `s` whether early data goes under the ticket it resumed: the
+/// library's calls that makes.
+fn decided(
+    lib: &'static Fake,
+    s: &mut QuicSession<Fake>,
+    id: &TryArc<TlsIdentity>,
+    kept: &mut Kept,
+    early: bool,
+) -> Vec<String> {
+    let before = lib.w().calls.len();
+    TlsCx::testing_kept(id, HOST, kept, |_, cx| s.early_data_decided(cx, early)).unwrap();
+    lib.w().calls[before..].to_vec()
+}
+
+/// The ALPN offers among `calls`.
+fn offers(calls: &[String]) -> Vec<&str> {
+    calls
+        .iter()
+        .map(String::as_str)
+        .filter(|c| c.starts_with("alpn("))
+        .collect()
+}
+
 #[test]
 fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
     let world = World {
@@ -157,22 +180,16 @@ fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
     let mut kept = Kept::new();
     let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
     drive(&mut s, &id, &mut kept, HOST, Some(b"tp"), &mut |_| {});
-    // Resumed for a transfer sending early data: the offer is h3 alone,
-    // the library told the most the ticket allows, and the ticket is the
-    // QUIC library's to decide on, with its parameters.
+    // Resumed for a transfer sending early data: the ticket is the QUIC
+    // library's to decide on, with its parameters, and the offer waits
+    // for its word.
     let before = lib.w().calls.len();
-    let s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
+    let mut s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
     let calls = lib.w().calls[before..].to_vec();
     let resume = at(&calls, "resume(ticket-q)");
     assert_eq!(
-        &calls[resume - 2..resume + 3],
-        [
-            "ssl",
-            "quic_codepoint",
-            "resume(ticket-q)",
-            "max_early_data(4294967295)",
-            "alpn(h3)",
-        ],
+        &calls[resume - 2..],
+        ["ssl", "quic_codepoint", "resume(ticket-q)", "bio"],
         "{calls:#?}"
     );
     assert!(has(
@@ -183,34 +200,52 @@ fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
     assert_eq!(early.earlydata_max, 0xFFFF_FFFF);
     assert_eq!(early.chosen(), Some(Chosen::H3));
     assert_eq!(early.quic_params, b"tp");
+    // Early data goes: the library is told the most the ticket allows,
+    // then the offer is h3 alone, as `wssl_apply_session` makes it.
+    let calls = decided(lib, &mut s, &id, &mut kept, true);
+    assert_eq!(calls, ["max_early_data(4294967295)", "alpn(h3)"]);
+    assert!(has(&kept.notes.0, "trace: set ALPN: h3"));
 }
 
 #[test]
-fn a_quic_ticket_without_what_early_data_needs_resumes_without_it() {
+fn a_quic_ticket_no_early_data_goes_under_offers_every_protocol() {
     let lib = Fake::new(World::default());
     let id = plain();
-    for (early_max, params) in [(0, Some(&b"tp"[..])), (0xFFFF_FFFF, None)] {
+    // One allowing none, one kept without parameters, and one whose
+    // parameters the QUIC library refuses, which only it can tell: C
+    // restricts nothing and tells the library of no early data, the
+    // offer whole and made once.
+    for (early_max, params) in [
+        (0, Some(&b"tp"[..])),
+        (0xFFFF_FFFF, None),
+        (0xFFFF_FFFF, Some(&b"\xff\xff"[..])),
+    ] {
         let mut kept = Kept::new();
         lib.w().scripts = vec![("drive", vec![ticket(b"ticket-q", early_max)])];
         let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
         drive(&mut s, &id, &mut kept, HOST, params, &mut |_| {});
         let before = lib.w().calls.len();
-        let s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
+        let mut s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
         let calls = lib.w().calls[before..].to_vec();
-        // Resumed, the offer whole and no early data asked of the
-        // library; the QUIC library is handed the ticket all the same,
-        // and says why none goes.
         assert!(calls.contains(&"resume(ticket-q)".to_owned()));
-        assert!(calls.contains(&"alpn(h3,h3-29)".to_owned()), "{calls:#?}");
-        assert!(!calls.iter().any(|c| c.starts_with("max_early_data")));
+        assert!(offers(&calls).is_empty(), "{calls:#?}");
         assert!(s.early_data().is_some());
+        let calls = decided(lib, &mut s, &id, &mut kept, false);
+        assert_eq!(calls, ["alpn(h3,h3-29)"]);
+        assert!(has(&kept.notes.0, "trace: set ALPN: h3,h3-29"));
     }
-    // A transfer sending none hands the QUIC library no ticket.
+    // A transfer sending none hands the QUIC library no ticket, and
+    // makes its offer at once.
     let mut kept = Kept::new();
     lib.w().scripts = vec![("drive", vec![ticket(b"ticket-q", 0xFFFF_FFFF)])];
     let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
     drive(&mut s, &id, &mut kept, HOST, Some(b"tp"), &mut |_| {});
+    let before = lib.w().calls.len();
     let s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+    let calls = lib.w().calls[before..].to_vec();
+    assert!(calls.contains(&"resume(ticket-q)".to_owned()));
+    assert_eq!(offers(&calls), ["alpn(h3,h3-29)"]);
+    assert!(!calls.iter().any(|c| c.starts_with("max_early_data")));
     assert!(s.early_data().is_none());
 }
 

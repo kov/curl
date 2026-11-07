@@ -497,12 +497,12 @@ witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early
 --- old
             Ok(crate::http3::EarlyStart::Refused) => {
                 cx.of(h3, format_args!("OpenSSL refused to use early data"));
-                Ok(())
+                Ok(true)
             }
 --- new
             Ok(crate::http3::EarlyStart::Refused) => {
                 self.state.early = Some(0);
-                Ok(())
+                Ok(true)
             }
 
 === an HTTP/3 proxy's filter is not traced as the race's attempt makes it
@@ -1326,3 +1326,34 @@ witness: curl-core proto::http::tests::h3_trace::a_connection_dropped_mid_body_f
                     break 'out Err(ErrorKind::RecvError);
                 }
                 rx_window(step, quic);
+
+=== a session whose transport parameters the connection refuses is told early data goes
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early_data_says_why
+--- old
+                format_args!("no early data, failed to set 0RTT transport parameters: {why}"),
+            );
+            return Ok(false);
+--- new
+                format_args!("no early data, failed to set 0RTT transport parameters: {why}"),
+            );
+            return Ok(true);
+
+=== a session the TLS library will not send early data under is told none goes
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early_data_says_why
+--- old
+                cx.of(h3, format_args!("OpenSSL refused to use early data"));
+                Ok(true)
+--- new
+                cx.of(h3, format_args!("OpenSSL refused to use early data"));
+                Ok(false)
+
+=== a QUIC connection's TLS session is never told of early data
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_request_goes_as_early_data_under_a_session_resumed
+--- old
+        conn.early_data_decided(&mut TlsCx::new(cx, component, peer), early)
+--- new
+        let _ = (conn, peer, component, early);
+        Ok(())

@@ -101,6 +101,10 @@ pub(crate) struct Receive {
     size: Option<u64>,
     /// It is being read (`KEEP_RECV`).
     receiving: bool,
+    /// The source's end was met and its end is under way, waiting:
+    /// nothing more is read from it, only the end moved on
+    /// (`xfer_recv_shutdown_started`).
+    ending: bool,
 }
 
 impl Receive {
@@ -121,12 +125,14 @@ impl Receive {
     /// Start reading it.
     pub(crate) fn start(&mut self) {
         self.receiving = true;
+        self.ending = false;
     }
 
     /// Start reading a body of `size` (`Curl_xfer_setup_recv`).
     pub(crate) fn start_sized(&mut self, size: u64) {
         self.size = Some(size);
         self.receiving = true;
+        self.ending = false;
     }
 
     /// Start reading a body of no size said, to its end, said as C says it
@@ -140,6 +146,7 @@ impl Receive {
             },
         );
         self.receiving = true;
+        self.ending = false;
     }
 
     /// Read no more.
@@ -202,7 +209,9 @@ impl Receive {
                 }
                 None => max,
             };
-            if max == 0 {
+            // All is here, or the end is under way: the end is moved on,
+            // and nothing more read (`xfer_recv_resp`).
+            if max == 0 || self.ending {
                 if let Some(step) = self.end(cx, source, sink)? {
                     return Ok(step);
                 }
@@ -216,6 +225,7 @@ impl Receive {
                 }
                 Ok(Recv::WouldBlock) => return Ok(ProtoStep::Blocked),
                 Ok(Recv::Eof) => {
+                    self.ending = true;
                     if let Some(step) = self.end(cx, source, sink)? {
                         return Ok(step);
                     }

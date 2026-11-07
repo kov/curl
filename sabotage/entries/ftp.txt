@@ -571,3 +571,11 @@ witness: curl-core proto::ftp::data::tests::unit2606_second_chain
 --- old
                     None if transfer.is_empty() => Events::NONE,
 --- new
+
+=== a source whose end waits is read again
+file: crates/curl-core/src/proto/xfer.rs
+witness: curl-core proto::ftp::tests::a_data_connection_whose_goodbye_waits_is_not_read_again
+--- old
+            if max == 0 || self.ending {
+--- new
+            if max == 0 {

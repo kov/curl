@@ -655,6 +655,55 @@ fn a_protected_data_connection_resumes_its_control_connection_s_session() {
     );
 }
 
+/// A protected data connection whose goodbye waits once its peer has
+/// ended is not read again: the goodbye is moved on until done
+/// (`xfer_recv_resp`), as a TLS library that fails a read past the end
+/// (mbedTLS) needs.
+#[test]
+fn a_data_connection_whose_goodbye_waits_is_not_read_again() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let control = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        // No size: the file is read to its end.
+        tls(b"502 no SIZE\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    // The peer ends the file without a goodbye; ours, its third send
+    // after the handshake's two, waits once.
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true)
+        .per_send()
+        .stalling_sends_after(2, 1);
+    let mut m = serving(&[&control], &[&file]);
+    let url = "ftps://127.0.0.1:PORT/f";
+    let mut e = Easy::new();
+    e.set_libraries(with_tls());
+    let (id, body, text) = added_tracing(&mut m, url, e, b"all", |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    said_in_order(
+        &text.text(),
+        &[
+            "shutdown start on secondary connection\n",
+            "shut down not done yet\n",
+            "[SSL-1] shut down successfully\n",
+        ],
+    );
+}
+
 /// The lines of a trace that say how the data connection's chain is set
 /// up, each call of its connect and what it reached, as C's build says
 /// them, without the transfer's ids.

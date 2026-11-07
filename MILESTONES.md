@@ -1540,7 +1540,15 @@ it there, Windows.
      fallback of `true` against `hard`, its retry configurations, its `ECH:` lines and its
      errors. Scored on the wolfSSL, Rustls, AWS-LC and BoringSSL legs (103) with C's built with
      `USE_ECH`, as curl's CI builds them, and its pytest cases over an nghttpx serving ECH.
-     **To do.**
+     **Done** over TCP. Scored on banana 2026-11-07: the Rust leg fails no runtests or pytest
+     case the C leg passes on any of the four but those listed elsewhere (96 and 558 replaced;
+     Rustls's 56 libtest cases, DIVERGENCE.md); 2117, 4000 and 4001 pass on all four legs, and
+     test_23_ech's 14 cases that need no OpenSSL of its own run on both legs of each, failing on
+     both where C's do (wolfSSL's 23_06, refused by the library with -425; Rustls's 23_03, the
+     outer hello's certificate not for the public name). **Left:** a QUIC attempt is handed no
+     HTTPS record's list, where C's reads the record if it is known (`make_quic` passes none);
+     and a setup no HTTPS connect filter heads (`--no-alpn`, `wss`) asks for no record, where
+     C's `Curl_cf_ssl_insert_after` adds its resolve.
 
 macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the
 experimental Apple fast UDP. They go with the macOS port.

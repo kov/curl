@@ -67,10 +67,14 @@ impl MbedTls {
         }
         // The generator is the library's, a static C's memory debugging
         // never sees: the debug build's tracker does not count it either.
-        let made = curl_alloc::track::untracked(|| {
+        let make = || {
             let rng = library::Mbedtls::rng(&mbedtls::MBEDTLS).ok()?;
             TryArc::try_new(rng).ok()
-        });
+        };
+        #[cfg(feature = "debug-hooks")]
+        let made = curl_alloc::track::untracked(make);
+        #[cfg(not(feature = "debug-hooks"))]
+        let made = make();
         let Some(rng) = made else {
             return false;
         };

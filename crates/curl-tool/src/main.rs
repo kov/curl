@@ -414,7 +414,7 @@ mod tests {
 
     /// The GSS-API library after a space: none on Windows, where Kerberos
     /// is SSPI's.
-    #[cfg(any(feature = "openssl", feature = "gnutls"))]
+    #[cfg(any(feature = "openssl", feature = "gnutls", feature = "mbedtls"))]
     fn gss_shown() -> String {
         #[cfg(not(windows))]
         return format!(" mit-krb5/{}", curl_gssapi::version());
@@ -424,7 +424,7 @@ mod tests {
 
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
-    #[cfg(any(feature = "openssl", feature = "gnutls"))]
+    #[cfg(any(feature = "openssl", feature = "gnutls", feature = "mbedtls"))]
     fn ldap_shown() -> String {
         let ldap = curl_ldap::version();
         ldap.map_or_else(String::new, |v| format!(" {v}"))
@@ -460,15 +460,16 @@ mod tests {
         assert_eq!(CurlVersion.to_string(), want);
     }
 
-    /// With GnuTLS, `curl -V` names it after libcurl, and no QUIC
-    /// library, as C's GnuTLS build without ngtcp2's GnuTLS crypto.
-    #[cfg(feature = "gnutls")]
+    /// With GnuTLS or mbedTLS, `curl -V` names it after libcurl, and no
+    /// QUIC library, as C's GnuTLS build without ngtcp2's GnuTLS crypto,
+    /// and its mbedTLS build.
+    #[cfg(any(feature = "gnutls", feature = "mbedtls"))]
     #[test]
-    fn names_the_libraries_as_c_s_gnutls_build() {
+    fn names_the_libraries_as_c_s_gnutls_and_mbedtls_builds() {
         let want = format!(
             "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{}{}{}",
             version().version,
-            curl_gnutls::version(),
+            crate::tlslib::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
@@ -487,6 +488,11 @@ mod tests {
         );
         let said = CurlVersion.to_string();
         assert_eq!(said, want);
-        assert!(said.contains(" GnuTLS/3."), "{said}");
+        let named = if cfg!(feature = "gnutls") {
+            " GnuTLS/3."
+        } else {
+            " mbedTLS/3."
+        };
+        assert!(said.contains(named), "{said}");
     }
 }

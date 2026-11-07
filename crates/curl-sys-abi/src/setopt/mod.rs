@@ -2380,16 +2380,17 @@ mod tests {
         let schannel = cfg!(feature = "schannel");
         let gnutls = cfg!(feature = "gnutls");
         let openssl = cfg!(feature = "openssl");
+        let mbedtls = cfg!(feature = "mbedtls");
         let want = |lacks: bool| if lacks { CURLE_NOT_BUILT_IN } else { CURLE_OK };
         for (option, lacks) in [
             (ffi::CURLOPT_CAPATH, schannel),
             (ffi::CURLOPT_PROXY_CAPATH, schannel),
             (ffi::CURLOPT_CRLFILE, schannel),
             (ffi::CURLOPT_PROXY_CRLFILE, schannel),
-            (ffi::CURLOPT_ISSUERCERT, schannel),
-            (ffi::CURLOPT_PROXY_ISSUERCERT, schannel),
-            (ffi::CURLOPT_TLS13_CIPHERS, !openssl),
-            (ffi::CURLOPT_PROXY_TLS13_CIPHERS, !openssl),
+            (ffi::CURLOPT_ISSUERCERT, schannel || mbedtls),
+            (ffi::CURLOPT_PROXY_ISSUERCERT, schannel || mbedtls),
+            (ffi::CURLOPT_TLS13_CIPHERS, !openssl && !mbedtls),
+            (ffi::CURLOPT_PROXY_TLS13_CIPHERS, !openssl && !mbedtls),
             (ffi::CURLOPT_SSL_EC_CURVES, !openssl),
             (ffi::CURLOPT_SSLENGINE, !openssl),
         ] {
@@ -2399,8 +2400,8 @@ mod tests {
         let sigalgs = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS).signature_algorithms;
         assert_eq!(text(ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS), want(!sigalgs));
         for (option, lacks) in [
-            (ffi::CURLOPT_SSL_VERIFYSTATUS, schannel),
-            (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, schannel),
+            (ffi::CURLOPT_SSL_VERIFYSTATUS, schannel || mbedtls),
+            (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, schannel || mbedtls),
             (ffi::CURLOPT_SSLENGINE_DEFAULT, !openssl),
         ] {
             assert_eq!(long(option), want(lacks), "{option:?}");
@@ -2423,7 +2424,8 @@ mod tests {
             assert_eq!(text(option), CURLE_OK, "{option:?}");
         }
         assert_eq!(long(ffi::CURLOPT_CERTINFO), CURLE_OK);
-        assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), CURLE_OK);
+        // mbedTLS keeps no CA cache.
+        assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), want(mbedtls));
         // What none has.
         assert_eq!(text(ffi::CURLOPT_ECH), CURLE_NOT_BUILT_IN);
         // SAFETY: the handle made above, not used again.

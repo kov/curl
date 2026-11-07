@@ -1,8 +1,8 @@
-//! The TLS library this build has, one of three chosen as it is built:
+//! The TLS library this build has, one of four chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
 //! for message signatures; GnuTLS (`gnutls`), with Ed25519 and no
-//! HTTP/3; or Schannel (`schannel`, Windows only), with neither, as C's
-//! builds with them have.
+//! HTTP/3; or mbedTLS (`mbedtls`) or Schannel (`schannel`, Windows only),
+//! with neither, as C's builds with them have.
 
 use core::ffi::CStr;
 use core::fmt;
@@ -12,13 +12,21 @@ use crate::ffi;
 #[cfg(any(
     all(feature = "openssl", feature = "schannel"),
     all(feature = "openssl", feature = "gnutls"),
-    all(feature = "gnutls", feature = "schannel")
+    all(feature = "openssl", feature = "mbedtls"),
+    all(feature = "gnutls", feature = "schannel"),
+    all(feature = "gnutls", feature = "mbedtls"),
+    all(feature = "mbedtls", feature = "schannel")
 ))]
 compile_error!(
-    "one TLS library: the `openssl`, `gnutls` and `schannel` features exclude each other"
+    "one TLS library: the `openssl`, `gnutls`, `mbedtls` and `schannel` features exclude each other"
 );
-#[cfg(not(any(feature = "openssl", feature = "gnutls", feature = "schannel")))]
-compile_error!("a TLS library: the `openssl` feature, the `gnutls` one or the `schannel` one");
+#[cfg(not(any(
+    feature = "openssl",
+    feature = "gnutls",
+    feature = "mbedtls",
+    feature = "schannel"
+)))]
+compile_error!("a TLS library: the `openssl`, `gnutls`, `mbedtls` or `schannel` feature");
 
 #[cfg(feature = "openssl")]
 mod library {
@@ -94,6 +102,42 @@ mod library {
     }
 
     /// None: no QUIC over GnuTLS.
+    pub(crate) fn quic() -> Option<&'static str> {
+        None
+    }
+}
+
+#[cfg(feature = "mbedtls")]
+mod library {
+    use super::*;
+
+    /// mbedTLS, which logs no secrets (C's build never opens the log).
+    pub(crate) static TLS: &curl_mbedtls::MbedTls = &MBEDTLS;
+    static MBEDTLS: curl_mbedtls::MbedTls = curl_mbedtls::MbedTls::new();
+
+    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> = None;
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
+
+    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_MBEDTLS;
+    pub(crate) const NAME: &CStr = c"mbedtls";
+
+    /// The library and its random number generator initialised, as C's
+    /// global init does (`mbedtls_init`): whether it could.
+    pub(crate) fn init() -> bool {
+        MBEDTLS.init()
+    }
+
+    /// The library let go, as C's last cleanup does (`mbedtls_cleanup`).
+    pub(crate) fn cleanup() {
+        MBEDTLS.cleanup();
+    }
+
+    /// Its version as the version string names it: `mbedTLS/3.6.7`.
+    pub(crate) fn version() -> impl fmt::Display {
+        curl_mbedtls::version()
+    }
+
+    /// None: no QUIC over mbedTLS.
     pub(crate) fn quic() -> Option<&'static str> {
         None
     }

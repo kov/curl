@@ -60,10 +60,13 @@ impl MbedTls {
         if !mbedtls::init() {
             return false;
         }
-        let Ok(rng) = library::Mbedtls::rng(&mbedtls::MBEDTLS) else {
-            return false;
-        };
-        let Ok(rng) = TryArc::try_new(rng) else {
+        // The generator is the library's, a static C's memory debugging
+        // never sees: the debug build's tracker does not count it either.
+        let made = curl_alloc::track::untracked(|| {
+            let rng = library::Mbedtls::rng(&mbedtls::MBEDTLS).ok()?;
+            TryArc::try_new(rng).ok()
+        });
+        let Some(rng) = made else {
             return false;
         };
         *self.rng.lock().expect("panics abort") = Some(rng);

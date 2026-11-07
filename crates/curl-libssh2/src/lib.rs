@@ -190,6 +190,15 @@ fn uint_len(bytes: &[u8]) -> c_uint {
     c_uint::try_from(bytes.len()).unwrap_or(c_uint::MAX)
 }
 
+/// Permissions as libssh2 takes them, a `long`: on Windows 32 bits, C's
+/// cast wrapping them.
+fn long_mode(mode: u32) -> c_long {
+    #[cfg(unix)]
+    return c_long::from(mode);
+    #[cfg(windows)]
+    return mode.cast_signed();
+}
+
 /// The bytes of a C string libssh2 keeps, up to its NUL; none for NULL.
 ///
 /// # Safety
@@ -957,7 +966,7 @@ impl Session2 for Libsession {
             }
             OpenMode::Write => sys::LIBSSH2_FXF_WRITE,
         };
-        self.open(path, flags, c_long::from(perms), sys::LIBSSH2_SFTP_OPENFILE)
+        self.open(path, flags, long_mode(perms), sys::LIBSSH2_SFTP_OPENFILE)
     }
 
     fn sftp_opendir(&mut self, path: &[u8]) -> Result<(), Code> {
@@ -1063,7 +1072,7 @@ impl Session2 for Libsession {
                 self.sftp(),
                 path.as_ptr().cast(),
                 uint_len(path),
-                c_long::from(mode),
+                long_mode(mode),
             )
         })
     }

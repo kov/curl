@@ -102,8 +102,9 @@ pub(crate) struct LIBSSH2_USERAUTH_KBDINT_RESPONSE {
     pub(crate) length: c_uint,
 }
 
-/// `libssh2_struct_stat`: the system's `struct stat` off Windows.
-#[cfg(unix)]
+/// `libssh2_struct_stat`: the system's `struct stat`; on Windows
+/// `struct _stati64`, which with 64-bit times is the `_stat64` that is
+/// libc's `stat` there.
 pub(crate) type libssh2_struct_stat = libc::stat;
 
 /// `libssh2_socket_t`: a descriptor, on Windows a Winsock `SOCKET`.
@@ -229,7 +230,7 @@ pub(crate) const LIBSSH2_FXF_APPEND: c_ulong = 0x4;
 pub(crate) const LIBSSH2_FXF_CREAT: c_ulong = 0x8;
 pub(crate) const LIBSSH2_FXF_TRUNC: c_ulong = 0x10;
 
-#[link(name = "ssh2")]
+// Linked by the build script, under the name each platform gives it.
 unsafe extern "C" {
     pub(crate) fn libssh2_init(flags: c_int) -> c_int;
     pub(crate) fn libssh2_version(req_version_num: c_int) -> *const c_char;
@@ -375,7 +376,6 @@ unsafe extern "C" {
     pub(crate) fn libssh2_agent_disconnect(agent: *mut LIBSSH2_AGENT) -> c_int;
     pub(crate) fn libssh2_agent_free(agent: *mut LIBSSH2_AGENT);
 
-    #[cfg(unix)]
     pub(crate) fn libssh2_scp_recv2(
         session: *mut LIBSSH2_SESSION,
         path: *const c_char,

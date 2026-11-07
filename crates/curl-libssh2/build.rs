@@ -7,8 +7,10 @@
 fn main() {
     // Where libssh2 is not in the compiler's own paths (Homebrew's on
     // macOS), from pkg-config, as CMake's FindLibssh2 takes it. MSVC
-    // finds vcpkg's through its own environment.
-    curl_build::link("ssh2", "libssh2");
+    // finds vcpkg's through its own environment, under the name its
+    // CMake build gives it, which FindLibssh2 also looks for.
+    let msvc = std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc");
+    curl_build::link(if msvc { "libssh2" } else { "ssh2" }, "libssh2");
     println!("cargo::rerun-if-changed=csrc/layout.c");
     let mut build = cc::Build::new();
     for dir in curl_build::include_dirs("libssh2") {
@@ -16,7 +18,7 @@ fn main() {
     }
     // MSVC's C knows `_Static_assert` from C11 on, which it is not in
     // unless asked.
-    if std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
+    if msvc {
         build.std("c11");
     }
     build

@@ -19,11 +19,12 @@ default = ["c-ares", "libssh", "openssl"]
 # GnuTLS, with HTTP/3 over ngtcp2's GnuTLS crypto, no HTTP/3 proxy (C's
 # is OpenSSL's alone) and Ed25519 from its nettle; wolfSSL, with HTTP/3
 # over ngtcp2's wolfSSL crypto, no HTTP/3 proxy and Ed25519 from its
-# wolfCrypt; or mbedTLS or Schannel (Windows), with neither, as C's
-# builds with them.
+# wolfCrypt; or mbedTLS, Rustls or Schannel (Windows), with neither,
+# as C's builds with them.
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "dep:openssl-sys", "curl-core/proxy-http3", "curl-core/httpsig"]
 gnutls = ["dep:curl-gnutls", "dep:curl-ngtcp2", "curl-ngtcp2/gnutls", "curl-core/quic", "curl-core/httpsig"]
 mbedtls = ["dep:curl-mbedtls"]
+rustls = ["dep:curl-rustls"]
 wolfssl = ["dep:curl-wolfssl", "dep:curl-ngtcp2", "curl-ngtcp2/wolfssl", "curl-core/quic", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
@@ -37,7 +38,7 @@ libssh2 = ["dep:curl-libssh2"]
 gnu-gss = ["curl-gssapi/gnu-gss"]
 # The hooks of a C debug build: the curl_dbg_* exports, memory tracking
 # and the libcurl-d.so.4 soname.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-rustls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
 # Read `long double` printf arguments in Rust (aarch64 only), with nightly's
 # `f128`; without it a C helper reads them.
 nightly = []
@@ -70,6 +71,7 @@ curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
 curl-gnutls = { path = "../curl-gnutls", optional = true }
 curl-mbedtls = { path = "../curl-mbedtls", optional = true }
+curl-rustls = { path = "../curl-rustls", optional = true }
 curl-wolfssl = { path = "../curl-wolfssl", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-ares = { path = "../curl-ares", optional = true }

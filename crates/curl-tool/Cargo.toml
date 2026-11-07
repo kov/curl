@@ -19,11 +19,12 @@ default = ["c-ares", "libssh", "openssl"]
 # GnuTLS, with HTTP/3 over ngtcp2's GnuTLS crypto, no HTTP/3 proxy (C's
 # is OpenSSL's alone) and Ed25519 from its nettle; wolfSSL, with HTTP/3
 # over ngtcp2's wolfSSL crypto, no HTTP/3 proxy and Ed25519 from its
-# wolfCrypt; or mbedTLS or Schannel (Windows), with neither, as C's
-# builds with them.
+# wolfCrypt; or mbedTLS, Rustls or Schannel (Windows), with neither,
+# as C's builds with them.
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "curl-core/proxy-http3", "curl-core/httpsig"]
 gnutls = ["dep:curl-gnutls", "dep:curl-ngtcp2", "curl-ngtcp2/gnutls", "curl-core/quic", "curl-core/httpsig"]
 mbedtls = ["dep:curl-mbedtls"]
+rustls = ["dep:curl-rustls"]
 wolfssl = ["dep:curl-wolfssl", "dep:curl-ngtcp2", "curl-ngtcp2/wolfssl", "curl-core/quic", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
@@ -36,7 +37,7 @@ libssh2 = ["dep:curl-libssh2"]
 # `HAVE_GSSGNU`).
 gnu-gss = ["curl-gssapi/gnu-gss"]
 # The debug test build: track allocations as the C tool's debug build does.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-rustls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`).
 threaded-resolver = ["curl-core/threaded-resolver"]
 # Host names converted by Apple's ICU in place of libidn2 (C's
@@ -76,6 +77,7 @@ curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
 curl-gnutls = { path = "../curl-gnutls", optional = true }
 curl-mbedtls = { path = "../curl-mbedtls", optional = true }
+curl-rustls = { path = "../curl-rustls", optional = true }
 curl-wolfssl = { path = "../curl-wolfssl", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-idn2 = { path = "../curl-idn2" }

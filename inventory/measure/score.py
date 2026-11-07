@@ -62,6 +62,10 @@ over the same fork (baseline.py --awslc, --boringssl): build/c-awslc and
 build/c-boringssl, inventory/baseline-{awslc,boringssl}.json, laid out in
 build/rust-awslc and build/rust-boringssl.
 
+`--rustls` does the same with Rustls, against the C build with it over
+rustls-ffi (baseline.py --rustls): build/c-rustls and
+inventory/baseline-rustls.json, laid out in build/rust-rustls.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -167,6 +171,14 @@ GNUGSS = Leg(baseline.GNUGSS, ROOT / "build" / "rust-gnugss",
                                  for crate in ("curl-sys-abi", "curl-tool")
                                  for feature in ("c-ares", "openssl",
                                                  "libssh2", "gnu-gss")),
+             no_default=True)
+# Rustls in place of OpenSSL, likewise.
+RUSTLS = Leg(baseline.RUSTLS, ROOT / "build" / "rust-rustls",
+             ROOT / "build" / "target-rustls",
+             DEBUG_HOOKS + tuple(f"{crate}/{feature}"
+                                 for crate in ("curl-sys-abi", "curl-tool")
+                                 for feature in ("c-ares", "rustls",
+                                                 "libssh2")),
              no_default=True)
 
 
@@ -462,6 +474,7 @@ def main():
     ap.add_argument("--gnugss", action="store_true")
     ap.add_argument("--awslc", action="store_true")
     ap.add_argument("--boringssl", action="store_true")
+    ap.add_argument("--rustls", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
     leg = (THREADED if args.threaded else LIBSSH if args.libssh
@@ -469,7 +482,8 @@ def main():
            else MBEDTLS if args.mbedtls
            else WOLFSSL if args.wolfssl else GNUGSS if args.gnugss
            else AWSLC if args.awslc
-           else BORINGSSL if args.boringssl else RUST)
+           else BORINGSSL if args.boringssl
+           else RUSTLS if args.rustls else RUST)
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

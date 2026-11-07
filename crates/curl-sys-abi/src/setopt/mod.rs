@@ -2392,21 +2392,25 @@ mod tests {
         let openssl = cfg!(feature = "openssl");
         let mbedtls = cfg!(feature = "mbedtls");
         let wolfssl = cfg!(feature = "wolfssl");
+        let rustls = cfg!(feature = "rustls");
         let want = |lacks: bool| if lacks { CURLE_NOT_BUILT_IN } else { CURLE_OK };
         // Of OpenSSL's family, BoringSSL has neither a TLS 1.3 cipher list
         // nor a stapled status, which C's build over it does not build in.
         let support = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS);
-        let tls13_ciphers = (openssl || mbedtls || wolfssl) && support.tls13_ciphers;
-        let cert_status = !(schannel || mbedtls || wolfssl) && support.cert_status;
+        let tls13_ciphers = (openssl || mbedtls || wolfssl || rustls) && support.tls13_ciphers;
+        let cert_status = !(schannel || mbedtls || wolfssl || rustls) && support.cert_status;
         for (option, lacks) in [
-            (ffi::CURLOPT_CAPATH, schannel),
-            (ffi::CURLOPT_PROXY_CAPATH, schannel),
+            (ffi::CURLOPT_CAPATH, schannel || rustls),
+            (ffi::CURLOPT_PROXY_CAPATH, schannel || rustls),
             (ffi::CURLOPT_CRLFILE, schannel || wolfssl),
             (ffi::CURLOPT_PROXY_CRLFILE, schannel || wolfssl),
-            (ffi::CURLOPT_ISSUERCERT, schannel || mbedtls || wolfssl),
+            (
+                ffi::CURLOPT_ISSUERCERT,
+                schannel || mbedtls || wolfssl || rustls,
+            ),
             (
                 ffi::CURLOPT_PROXY_ISSUERCERT,
-                schannel || mbedtls || wolfssl,
+                schannel || mbedtls || wolfssl || rustls,
             ),
             (ffi::CURLOPT_TLS13_CIPHERS, !tls13_ciphers),
             (ffi::CURLOPT_PROXY_TLS13_CIPHERS, !tls13_ciphers),
@@ -2433,19 +2437,17 @@ mod tests {
                 core::ptr::null_mut::<c_void>(),
             )
         };
-        assert_eq!(ctx_data, want(schannel || gnutls));
+        assert_eq!(ctx_data, want(schannel || gnutls || rustls));
         // What all have.
-        for option in [
-            ffi::CURLOPT_CAINFO,
-            ffi::CURLOPT_SSL_CIPHER_LIST,
-            ffi::CURLOPT_PINNEDPUBLICKEY,
-        ] {
+        for option in [ffi::CURLOPT_CAINFO, ffi::CURLOPT_SSL_CIPHER_LIST] {
             assert_eq!(text(option), CURLE_OK, "{option:?}");
         }
+        // Rustls pins no key.
+        assert_eq!(text(ffi::CURLOPT_PINNEDPUBLICKEY), want(rustls));
         // wolfSSL reports no chain.
         assert_eq!(long(ffi::CURLOPT_CERTINFO), want(wolfssl));
-        // mbedTLS keeps no CA cache.
-        assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), want(mbedtls));
+        // mbedTLS and Rustls keep no CA cache.
+        assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), want(mbedtls || rustls));
         // What none has.
         assert_eq!(text(ffi::CURLOPT_ECH), CURLE_NOT_BUILT_IN);
         // SAFETY: the handle made above, not used again.

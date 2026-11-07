@@ -1,9 +1,9 @@
-//! The TLS library this build has, one of five chosen as it is built:
+//! The TLS library this build has, one of six chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
 //! for message signatures; GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
-//! HTTP/3 over ngtcp2 and Ed25519; or mbedTLS (`mbedtls`) or Schannel
-//! (`schannel`, Windows only), with neither, as C's builds with them
-//! have.
+//! HTTP/3 over ngtcp2 and Ed25519; or mbedTLS (`mbedtls`), Rustls
+//! (`rustls`) or Schannel (`schannel`, Windows only), with neither, as
+//! C's builds with them have.
 
 use core::fmt;
 
@@ -15,26 +15,33 @@ use curl_core::tls::{CaDefaults, SharedKeyLog, TlsBackend, TlsSupport};
     all(feature = "openssl", feature = "mbedtls"),
     all(feature = "openssl", feature = "wolfssl"),
     all(feature = "openssl", feature = "schannel"),
+    all(feature = "openssl", feature = "rustls"),
     all(feature = "gnutls", feature = "mbedtls"),
     all(feature = "gnutls", feature = "wolfssl"),
     all(feature = "gnutls", feature = "schannel"),
+    all(feature = "gnutls", feature = "rustls"),
     all(feature = "mbedtls", feature = "wolfssl"),
     all(feature = "mbedtls", feature = "schannel"),
-    all(feature = "wolfssl", feature = "schannel")
+    all(feature = "mbedtls", feature = "rustls"),
+    all(feature = "wolfssl", feature = "schannel"),
+    all(feature = "wolfssl", feature = "rustls"),
+    all(feature = "schannel", feature = "rustls")
 ))]
 compile_error!(
-    "one TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` and `schannel` features \
-     exclude each other"
+    "one TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl`, `rustls` and `schannel` \
+     features exclude each other"
 );
 #[cfg(not(any(
     feature = "openssl",
     feature = "gnutls",
     feature = "mbedtls",
     feature = "wolfssl",
-    feature = "schannel"
+    feature = "schannel",
+    feature = "rustls"
 )))]
 compile_error!(
-    "a TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` or `schannel` feature"
+    "a TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl`, `rustls` or `schannel` \
+     feature"
 );
 
 #[cfg(feature = "openssl")]
@@ -242,6 +249,56 @@ mod library {
     /// What it trusts where a transfer names nothing.
     pub(crate) fn ca_defaults() -> CaDefaults {
         WOLFSSL.ca_defaults()
+    }
+}
+
+#[cfg(feature = "rustls")]
+mod library {
+    use super::*;
+
+    /// The library, logging the secrets of its connections to `keylog`.
+    pub(crate) fn tls(keylog: &SharedKeyLog) -> Result<Box<dyn TlsBackend>, OutOfMemory> {
+        Ok(try_box(curl_rustls::Rustls::logging_keys_to(
+            keylog.clone(),
+        ))?)
+    }
+
+    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> = None;
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
+
+    /// Nothing to set up: C's has no init.
+    pub(crate) fn init() -> bool {
+        true
+    }
+
+    /// The key log is opened as each connection's configuration is built
+    /// (`init_config_builder_keylog`), not as the library is initialised.
+    pub(crate) const KEYLOG_AT_INIT: bool = false;
+
+    /// None: Rustls has no engines.
+    pub(crate) fn engines() -> Result<Vec<Vec<u8>>, OutOfMemory> {
+        curl_rustls::Rustls::new().engines()
+    }
+
+    /// Its version as the version string names it:
+    /// `rustls-ffi/0.15.5/rustls/0.23.46/aws-lc-rs`.
+    pub(crate) fn version() -> impl fmt::Display {
+        curl_rustls::version()
+    }
+
+    /// None: no QUIC over Rustls.
+    pub(crate) fn quic() -> Option<&'static str> {
+        None
+    }
+
+    /// What it can do past the handshake.
+    pub(crate) fn support() -> TlsSupport {
+        curl_rustls::Rustls::new().support()
+    }
+
+    /// What it trusts where a transfer names nothing.
+    pub(crate) fn ca_defaults() -> CaDefaults {
+        curl_rustls::Rustls::new().ca_defaults()
     }
 }
 

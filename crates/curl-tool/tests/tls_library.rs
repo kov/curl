@@ -143,7 +143,7 @@ fn options_the_library_lacks_are_not_written() {
             || matches!(option, "CURLOPT_CRLFILE" | "CURLOPT_PROXY_CRLFILE");
         let lacks = cfg!(feature = "schannel")
             || (cfg!(feature = "gnutls") && gnutls_lacks)
-            || (cfg!(feature = "mbedtls") && mbedtls_lacks)
+            || (cfg!(any(feature = "mbedtls", feature = "rustls")) && mbedtls_lacks)
             || (cfg!(feature = "wolfssl") && wolfssl_lacks)
             || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && libressl);
         assert_eq!(written, !lacks, "{option}: {program}");
@@ -155,7 +155,7 @@ fn options_the_library_lacks_are_not_written() {
 }
 
 /// `--engine list` lists the library's engines: OpenSSL's built-in
-/// `dynamic` among them; none for Schannel, GnuTLS, mbedTLS or wolfSSL, which have none,
+/// `dynamic` among them; none for Schannel, GnuTLS, mbedTLS, wolfSSL or Rustls, which have none,
 /// nor for LibreSSL, which has none either (`OPENSSL_NO_ENGINE`).
 #[test]
 fn the_engines_listed_are_the_library_s() {
@@ -166,7 +166,8 @@ fn the_engines_listed_are_the_library_s() {
         feature = "schannel",
         feature = "gnutls",
         feature = "mbedtls",
-        feature = "wolfssl"
+        feature = "wolfssl",
+        feature = "rustls"
     )) || over_libressl()
     {
         assert_eq!(out, "Build-time engines:\n  <none>\n");

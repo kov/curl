@@ -327,7 +327,8 @@ mod tests {
         feature = "openssl",
         feature = "gnutls",
         feature = "mbedtls",
-        feature = "wolfssl"
+        feature = "wolfssl",
+        feature = "rustls"
     ))]
     fn gss_shown() -> String {
         #[cfg(not(windows))]
@@ -342,7 +343,8 @@ mod tests {
         feature = "openssl",
         feature = "gnutls",
         feature = "mbedtls",
-        feature = "wolfssl"
+        feature = "wolfssl",
+        feature = "rustls"
     ))]
     fn ldap_shown() -> String {
         let ldap = curl_ldap::version();
@@ -353,7 +355,8 @@ mod tests {
         feature = "openssl",
         feature = "gnutls",
         feature = "mbedtls",
-        feature = "wolfssl"
+        feature = "wolfssl",
+        feature = "rustls"
     ))]
     fn ares_shown() -> String {
         if cfg!(feature = "threaded-resolver") {
@@ -398,7 +401,12 @@ mod tests {
     /// libcurl, and the QUIC libraries after nghttp2 where the build has
     /// them, as `quic_version` does, as C's GnuTLS and wolfSSL builds over
     /// ngtcp2's crypto for them, and its mbedTLS build.
-    #[cfg(any(feature = "gnutls", feature = "mbedtls", feature = "wolfssl"))]
+    #[cfg(any(
+        feature = "gnutls",
+        feature = "mbedtls",
+        feature = "wolfssl",
+        feature = "rustls"
+    ))]
     #[test]
     fn names_the_libraries_as_c_s_gnutls_mbedtls_and_wolfssl_builds() {
         // SAFETY: a static C string.
@@ -430,6 +438,8 @@ mod tests {
             " GnuTLS/3."
         } else if cfg!(feature = "wolfssl") {
             " wolfSSL/5."
+        } else if cfg!(feature = "rustls") {
+            " rustls-ffi/0.15.5/rustls/0.23."
         } else {
             " mbedTLS/3."
         };

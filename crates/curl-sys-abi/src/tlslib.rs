@@ -1,9 +1,9 @@
-//! The TLS library this build has, one of five chosen as it is built:
+//! The TLS library this build has, one of six chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
 //! for message signatures; GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
-//! HTTP/3 over ngtcp2 and Ed25519; or mbedTLS (`mbedtls`) or Schannel
-//! (`schannel`, Windows only), with neither, as C's builds with them
-//! have.
+//! HTTP/3 over ngtcp2 and Ed25519; or mbedTLS (`mbedtls`), Rustls
+//! (`rustls`) or Schannel (`schannel`, Windows only), with neither, as
+//! C's builds with them have.
 
 use core::ffi::CStr;
 use core::fmt;
@@ -15,26 +15,33 @@ use crate::ffi;
     all(feature = "openssl", feature = "mbedtls"),
     all(feature = "openssl", feature = "wolfssl"),
     all(feature = "openssl", feature = "schannel"),
+    all(feature = "openssl", feature = "rustls"),
     all(feature = "gnutls", feature = "mbedtls"),
     all(feature = "gnutls", feature = "wolfssl"),
     all(feature = "gnutls", feature = "schannel"),
+    all(feature = "gnutls", feature = "rustls"),
     all(feature = "mbedtls", feature = "wolfssl"),
     all(feature = "mbedtls", feature = "schannel"),
-    all(feature = "wolfssl", feature = "schannel")
+    all(feature = "mbedtls", feature = "rustls"),
+    all(feature = "wolfssl", feature = "schannel"),
+    all(feature = "wolfssl", feature = "rustls"),
+    all(feature = "schannel", feature = "rustls")
 ))]
 compile_error!(
-    "one TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` and `schannel` features \
-     exclude each other"
+    "one TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl`, `rustls` and `schannel` \
+     features exclude each other"
 );
 #[cfg(not(any(
     feature = "openssl",
     feature = "gnutls",
     feature = "mbedtls",
     feature = "wolfssl",
-    feature = "schannel"
+    feature = "schannel",
+    feature = "rustls"
 )))]
 compile_error!(
-    "a TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` or `schannel` feature"
+    "a TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl`, `rustls` or `schannel` \
+     feature"
 );
 
 #[cfg(feature = "openssl")]
@@ -193,6 +200,44 @@ mod library {
     /// The QUIC libraries, as `quic_version` names them.
     pub(crate) fn quic() -> Option<impl fmt::Display> {
         Some(curl_ngtcp2::version())
+    }
+}
+
+#[cfg(feature = "rustls")]
+mod library {
+    use super::*;
+
+    /// Rustls, logging secrets to the root's key log, which each
+    /// connection opens as its configuration is built
+    /// (`init_config_builder_keylog`).
+    pub(crate) static TLS: curl_rustls::Rustls = curl_rustls::Rustls::logging_keys_to(
+        curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
+    );
+
+    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> = None;
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
+
+    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_RUSTLS;
+    pub(crate) const NAME: &CStr = c"rustls";
+
+    /// Nothing to set up: C's has no init.
+    pub(crate) fn init() -> bool {
+        true
+    }
+
+    /// Nothing to let go of but the key log, which the root closes
+    /// (`cr_cleanup`).
+    pub(crate) fn cleanup() {}
+
+    /// Its version as the version string names it:
+    /// `rustls-ffi/0.15.5/rustls/0.23.46/aws-lc-rs`.
+    pub(crate) fn version() -> impl fmt::Display {
+        curl_rustls::version()
+    }
+
+    /// None: no QUIC over Rustls.
+    pub(crate) fn quic() -> Option<&'static str> {
+        None
     }
 }
 

@@ -5058,9 +5058,69 @@ fn a_waiting_transfer_reads_its_ip_version_as_it_looks_again() {
     assert_eq!(m.easy(b).unwrap().report().connects(), 1);
 }
 
+/// A waiting transfer that finds room by reusing an idle connection
+/// lets the next one waiting look too, while it still holds the
+/// connection: no connection closed for the room, nothing else wakes
+/// the next (`multistate_connect`'s `multi_schedule_pending`).
+#[test]
+fn a_transfer_reusing_a_connection_lets_the_next_look() {
+    use crate::conn::io::{Conversation, Peer};
+    let clock = ManualClock::new().unwrap();
+    let at = |port| std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    // The first request is answered whole, the second only its head.
+    let whole: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let head: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n";
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at(1), Peer::Accepts)
+        .with_peer(at(3), Peer::Silent)
+        .with_peer(at(7), Peer::Accepts)
+        .with_conversation(at(7), Conversation::replies(&[whole, head], false));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    m.conn_limits_mut().max_total = NonZeroU32::new(2);
+    let mut add = |url: &str| {
+        let (e, lines) = traced(url);
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        (id, lines)
+    };
+    // One never connects, one is answered whole; two wait for room.
+    let (stuck, _) = add("tcp://127.0.0.1:3/");
+    let (first, _) = add("http://127.0.0.1:7/");
+    let (reuser, reuser_lines) = add("http://127.0.0.1:7/");
+    let (next, next_lines) = add("tcp://127.0.0.1:1/");
+    for _ in 0..4 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
+    let reuser_lines = trace_of(&reuser_lines);
+    assert!(
+        reuser_lines
+            .iter()
+            .any(|l| l.starts_with("Reusing existing")),
+        "{reuser_lines:?}"
+    );
+    // The reuser holds the connection, its body still to come, as the
+    // next looks, and waits again.
+    let total = "No connections available, total of 2 reached.\n";
+    assert_eq!(trace_of(&next_lines), [total, total]);
+    assert_eq!(m.census().pending, 1);
+    for id in [stuck, reuser, next] {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
 /// A waiting transfer that finds room lets the next one waiting look
 /// too, while it is still connecting, and one that finds none lets no
-/// one (`multistate_connect`'s `multi_schedule_pending`).
+/// one (`multistate_connect`'s `multi_schedule_pending`). The idle
+/// connection closed for the room also says the multi changed, which
+/// lets the next look on its own (`multi_ischanged`); the look a
+/// transfer finding room makes is pinned apart, with nothing closed, by
+/// `a_transfer_reusing_a_connection_lets_the_next_look`.
 #[test]
 fn a_transfer_finding_room_lets_the_next_look() {
     let (mut m, clock) = networked();

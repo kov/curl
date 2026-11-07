@@ -266,7 +266,8 @@ fn ech_reaches_the_library_that_has_it() {
     }
     let (code, said) = exit(&["--ech", "ecl:@/this/file/is/not/there", url]);
     assert_eq!(code, Some(2), "{said}");
-    let said = said.replace("\nWarning: ", " ");
+    // The warning wraps at a space, which ends its line.
+    let said = said.replace("\nWarning: ", "");
     assert!(
         said.contains(
             "Could not read file \"/this/file/is/not/there\" specified for \"--ech ecl:\" option"

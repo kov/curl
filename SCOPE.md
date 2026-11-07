@@ -85,11 +85,11 @@ uses every backend and feature this machine can provide:
 These cannot be built here:
 
 - ECH, because the system OpenSSL lacks it;
-- quiche, Rustls and Apple fast UDP.
+- quiche and Apple fast UDP.
 
 These are not covered by this build:
 
-- the other TLS backends (GnuTLS, mbedTLS and wolfSSL, which have their own below, Rustls);
+- the other TLS backends (GnuTLS, mbedTLS, wolfSSL and Rustls, which have their own below);
 - libssh;
 - the threaded resolver, which c-ares replaces.
 
@@ -135,6 +135,14 @@ builds libssh2 and krb5, linked against the system's OpenSSL, bind to the fork's
 `libcrypto.so` as well, and their SCP and SFTP tests fail; the rewrite links the fork into
 itself and exports none of it, so its SSH runs over the system's OpenSSL. LibreSSL is a variant
 of the same backend (102); quictls, which C still names apart, has no oracle.
+
+Rustls has one too: `build/c-rustls`, the reference configuration with `CURL_USE_RUSTLS` in
+place of `CURL_USE_OPENSSL`, over the rustls-ffi release curl's CI pins (0.15.5, its released
+library, which `inventory/measure/deps.py` downloads), without HTTP/3 (C has no QUIC over
+Rustls) and without HTTP message signatures, built and measured by `baseline.py --rustls`.
+Encrypted Client Hello is off there as in the reference build. The rewrite's leg, the
+`rustls` feature with libssh2, calls the rustls crate itself at the version that release pins,
+not rustls-ffi, and is scored against it by `score.py --rustls`.
 
 The threaded resolver has one: a second C oracle in `build/c-threaded`, the reference build's
 configuration with `ENABLE_ARES` off and `ENABLE_THREADED_RESOLVER` on, as distributions build

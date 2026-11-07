@@ -156,6 +156,10 @@ curl-wolfssl  wolfSSL 5.0 or later, the copy deps.py builds: the TLS backend a b
               value's, its trust store kept per multi by CA file, and Ed25519 from its
               wolfCrypt; the session's logic safe code over a `Wolfssl` trait, which
               `wolfssl.rs` implements and the tests script
+curl-rustls   the rustls crate, at the version rustls-ffi 0.15.5 pins: the TLS backend a
+              build takes in OpenSSL's place (the `rustls` feature); the session's logic
+              safe code over a `Rustls` trait, which `rustls.rs` implements as rustls-ffi
+              calls rustls and the tests script
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```
@@ -3233,6 +3237,25 @@ read; the handshake's end reports the session, then checks the peer as
 `Curl_vquic_tls_verify_peer`: where the host is verified, the name (`wolfSSL_X509_check_host`)
 or the address, failing only on `WOLFSSL_FAILURE` and with no words, no certificate read as no
 memory; then the pinned key. An untrusted chain fails inside the library, as ngtcp2's crypto.
+
+**Rustls** (curl-rustls, `lib/vtls/rustls.c`) is the backend the `rustls` feature takes in
+OpenSSL's place, with neither HTTP/3 nor message signatures, as C's Rustls build. C drives
+rustls through rustls-ffi; the rewrite calls the rustls crate itself, pinned to the version the
+rustls-ffi release C is measured with builds (0.15.5: rustls 0.23.46, aws-lc-rs's provider,
+TLS 1.2 and post-quantum key exchange preferred), and is safe Rust throughout. The session's
+logic (`session.rs`) is safe code over a `Rustls` trait, one method per rustls-ffi call
+`rustls.c` makes, implemented by `rustls.rs` as rustls-ffi implements it and scripted by the
+tests (`fake.rs`); failures are said in rustls-ffi's words for its result codes (`result.rs`,
+ported from its `error.rs`), which also decide whether a failure is the peer's verification.
+Each connection builds its configuration in `cr_init_backend`'s order: the versions and the
+suites (the core's `tls::suites::select`, as `cr_get_selected_ciphers`), the ALPN offer, the
+verifier (none where the peer is not verified, else the platform's for the native store, else
+webpki's over the CA blob or file with the revocation list), the client's certificate and key
+(PEM, from blobs or files), the key log (opened as the configuration is built), then the
+connection to the name. Nothing is kept between connections: C's backend resumes no session.
+The process-wide crypto provider rustls-ffi installs is a value made where each call needs it.
+`CURLINFO_TLS_SSL_PTR` gives a NULL `internals`, as there is no rustls-ffi object to give
+(`DIVERGENCE.md`).
 
 **Verification.** The CA default is decided at build time as CMake decides it
 (CMakeLists.txt:1475), by the library's build script through curl-build's `write_ca_defaults`,

@@ -22,6 +22,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-gnutls` | GnuTLS: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, and Ed25519 for HTTP signatures from its nettle. | in `sys.rs`, `gnutls.rs` and `sign.rs`; the session's logic is safe code over the `Gnutls` trait `gnutls.rs` implements |
 | `curl-mbedtls` | mbedTLS: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place. | in `sys.rs` and `mbedtls.rs`; the session's logic is safe code over the `Mbedtls` trait `mbedtls.rs` implements |
 | `curl-wolfssl` | wolfSSL: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, and Ed25519 for HTTP signatures from its wolfCrypt. | in `sys.rs`, `wolfssl.rs` and `sign.rs`; the session's logic is safe code over the `Wolfssl` trait `wolfssl.rs` implements |
+| `curl-rustls` | Rustls: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, the rustls crate called as rustls-ffi calls it. | no: the rustls crate is Rust |
 | `curl-nghttp2` | nghttp2's HTTP/2 session, behind `curl_core::http2::Http2`. | yes: it is a binding |
 | `curl-ngtcp2` | ngtcp2 and nghttp3: QUIC and HTTP/3, behind `curl_core::http3::Http3`. | yes: it is a binding |
 | `curl-libssh` | libssh's SCP and SFTP, behind `curl_core::ssh`'s traits. | yes: it is a binding |
@@ -64,8 +65,9 @@ the system's, with HTTP/3 over ngtcp2's GnuTLS crypto but not the HTTP/3 proxy, 
 alone), `mbedtls` (mbedTLS 3.2 or later, before 4.0, the system's, with
 neither HTTP/3 nor message signatures), `wolfssl` (wolfSSL 5.0 or later, the copy
 `inventory/measure/deps.py` builds as curl's CI does, linked statically, with HTTP/3 over
-ngtcp2's wolfSSL crypto but not the HTTP/3 proxy) or
-`schannel` (Windows). The CA
+ngtcp2's wolfSSL crypto but not the HTTP/3 proxy), `rustls` (the rustls crate at the version
+the rustls-ffi release C is measured with pins, over aws-lc-rs, with neither HTTP/3 nor message
+signatures) or `schannel` (Windows). The CA
 default is the one CMake detects at build time, kept as static strings. How a backend takes the
 system's store is declared beside it (`CaDefaults::system`): only where asked
 (`CURLSSLOPT_NATIVE_CA`), also where a transfer names no CA (the `native-ca` feature, C's
@@ -357,7 +359,13 @@ that. Allocation is therefore always explicit and always fallible:
   functions and the macros' equivalents and allocates nothing; the `openssl` crate is not used,
   as it allocates infallibly on paths we would call (its error stack, its stream BIO's state,
   its getters' `String`s) and its stream owns the stream it wraps. OpenSSL's own allocations
-  are libc's, as in C, which the debug tracker does not count.
+  are libc's, as in C, which the debug tracker does not count. The rustls crate is the
+  exception, taken because C's Rustls backend is rustls itself behind rustls-ffi: it allocates
+  infallibly and takes its objects in std's `Arc`. curl-rustls allows the infallible calls in
+  `rustls.rs` alone, where rustls takes them, and keeps every call into rustls out of the debug
+  tracker (`curl_alloc::track::untracked`), as C's tracker never sees rustls-ffi's allocations;
+  so under `CURL_MEMLIMIT` an allocation of rustls's is never the one failed, as in C, and one
+  failing for real ends the process.
 - **Peer-chosen sizes are bounded first.** Lengths, chunk sizes and header counts are checked
   against limits at the trust boundary before anything is reserved for them, so a hostile peer
   gets a protocol error, not an out-of-memory one.

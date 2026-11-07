@@ -22,22 +22,24 @@ the C tree in `build/c`, runs `runtests.pl` and the `tests/http` pytest suite (a
 minutes; pytest gets a venv in `build/c/pytest-venv`) and parses the results (libraries newer than the distribution's come from
 `inventory/measure/deps.py`, under `build/deps`); without
 `--run` it only re-parses the stored results, and refuses if they were measured at another C commit.
-`--threaded`, `--libssh`, `--gnutls`, `--mbedtls`, `--wolfssl`, `--awslc` and `--boringssl` do the
-same for the other seven C oracles (`SCOPE.md`): the reference configuration with the threaded resolver in place of
-c-ares, in `build/c-threaded`, with libssh in place of libssh2, in `build/c-libssh`, with GnuTLS
-in place of OpenSSL and no HTTP/3 proxy, in `build/c-gnutls`, with mbedTLS in place of OpenSSL and
-neither HTTP/3 nor message signatures, in `build/c-mbedtls`, and with wolfSSL (built by
-`deps.py`) in place of OpenSSL and no HTTP/3 proxy, in `build/c-wolfssl`, and over AWS-LC and
-BoringSSL (built by `deps.py`, with the ngtcp2 for each), in `build/c-awslc` and `build/c-boringssl`,
-into `baseline-threaded`, `baseline-libssh`, `baseline-gnutls`, `baseline-mbedtls`,
-`baseline-wolfssl`, `baseline-awslc` and `baseline-boringssl`.
+`--threaded`, `--libssh`, `--gnutls`, `--mbedtls`, `--wolfssl`, `--awslc`, `--boringssl` and
+`--rustls` do the same for the other eight C oracles (`SCOPE.md`): the reference configuration with
+the threaded resolver in place of c-ares, in `build/c-threaded`, with libssh in place of libssh2,
+in `build/c-libssh`, with GnuTLS in place of OpenSSL and no HTTP/3 proxy, in `build/c-gnutls`,
+with mbedTLS in place of OpenSSL and neither HTTP/3 nor message signatures, in `build/c-mbedtls`,
+with wolfSSL (built by `deps.py`) in place of OpenSSL and no HTTP/3 proxy, in `build/c-wolfssl`,
+over AWS-LC and BoringSSL (built by `deps.py`, with the ngtcp2 for each), in `build/c-awslc` and
+`build/c-boringssl`, and with Rustls (the rustls-ffi release `deps.py` downloads) in place of
+OpenSSL and neither HTTP/3 nor message signatures, in `build/c-rustls`, into
+`baseline-threaded`, `baseline-libssh`, `baseline-gnutls`, `baseline-mbedtls`,
+`baseline-wolfssl`, `baseline-awslc`, `baseline-boringssl` and `baseline-rustls`.
 
 `inventory/measure/score.py` scores the Rust build the same way: it lays out `build/rust` with the
 C build's test servers and programs and the Rust library and tool, checks with `ldd` that the
 Rust library is the one loaded, runs both suites and compares each result with `baseline`. Its
 results stay in `build/rust/score`. `--lib c` and `--lib stub` arm it (see the script);
-`--threaded`, `--libssh`, `--gnutls`, `--mbedtls`, `--wolfssl`, `--awslc` and `--boringssl`
-score against the other oracles. Tests
+`--threaded`, `--libssh`, `--gnutls`, `--mbedtls`, `--wolfssl`, `--awslc`, `--boringssl` and
+`--rustls` score against the other oracles. Tests
 replaced by Rust tests (`REPLACED` in `suite.py`, see `SCOPE.md`) are counted apart. Both
 scripts run and parse the suites through `inventory/measure/suite.py`.
 Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.

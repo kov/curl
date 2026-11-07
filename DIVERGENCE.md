@@ -773,3 +773,22 @@ not a difference: it is tracked in `MILESTONES.md`.
   `removes_a_partial_file_named_long_without_allocating` (`crates/curl-tool/src/operate.rs`): on
   Windows a removal with its first allocation refused fails and leaves the file, and on Unix the
   removal allocates nothing.
+
+## A TLS library C links and the rewrite does not
+
+- **Over Rustls, `CURLINFO_TLS_SSL_PTR` gives `CURLSSLBACKEND_RUSTLS` and a NULL `internals`.**
+  C's gives rustls-ffi's `rustls_connection *`, which an application may pass back to
+  rustls-ffi's own functions. The rewrite calls the rustls crate itself and links no rustls-ffi,
+  so it has no such object to give, and an object of rustls-ffi's layout cannot be made in safe
+  Rust. An application calling rustls-ffi on what it got passes it NULL: the pytest suite's
+  libtest clients do (`cli_hx_download`'s `rustls_connection_get_protocol_version`, asserting
+  the version is not 0, and `cli_tls_session_reuse`, asserting `internals` is not NULL), and
+  those 56 cases fail on the Rustls build alone (`score.py --rustls`, 2026-11-07). Pinned by
+  `the_library_s_objects_are_not_handed_out` (`crates/curl-rustls/src/tests.rs`).
+- **Over Rustls, the version string names rustls-ffi, which the build does not link.** C's says
+  `rustls-ffi/0.15.5/rustls/0.23.46/aws-lc-rs`; the rewrite says the same, naming the rustls-ffi
+  release whose behaviour it ports and the rustls that release pins, which is the one it is
+  built with. runtests.pl and the pytest suite know a Rustls build by the `rustls-ffi` in it,
+  and an application matching on it finds what it would in C's. Pinned by
+  `the_version_names_the_rustls_linked` (`crates/curl-rustls/src/tests/real.rs`), which also
+  ties the rustls named to the one in `Cargo.lock`.

@@ -512,12 +512,17 @@ impl Connection for FakeConnection {
         buf: &mut [u8],
         events: Events<'_>,
     ) -> Result<Option<usize>, QuicError> {
-        let read = self
-            .script
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .body
-            .hand();
+        let read = {
+            let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+            // quiche holds what it was given as it is given it: it reads
+            // no body as it writes a packet.
+            if s.flavour == Flavour::Quiche {
+                s.body.handed = s.body.bytes.len();
+                None
+            } else {
+                s.body.hand()
+            }
+        };
         if let Some(told) = read {
             let Told::BodyRead { n, eof, .. } = told else {
                 unreachable!("a read")

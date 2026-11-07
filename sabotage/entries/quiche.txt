@@ -183,3 +183,39 @@ features: test-util
                 if n == max && packets < BURST {
 --- new
                 if n == max {
+
+=== a stream quiche says blocked is said blocked
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_over_quiche_is_said_as_quiche_takes_it
+features: test-util
+--- old
+            && self.flavour == Flavour::Ngtcp2
+--- new
+            && self.flavour != Flavour::Ngtcp2
+
+=== a body quiche takes none of is said as taken
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_over_quiche_is_said_as_quiche_takes_it
+features: test-util
+--- old
+                        Flavour::Quiche if took == 0 => {
+--- new
+                        Flavour::Quiche if false => {
+
+=== a datagram's ECN mark is said over quiche
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_datagram_s_ecn_mark_is_said_by_ngtcp2_s_filter_alone
+features: test-util
+--- old
+        if d.ecn != 0 && self.flavour == Flavour::Ngtcp2 {
+--- new
+        if d.ecn != 0 && self.flavour != Flavour::Ngtcp2 {
+
+=== ngtcp2's filter says the handshake complete for a peer that failed its check
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::an_unverified_peer_fails_each_attempt_and_the_setup
+features: test-util
+--- old
+                    Flavour::Ngtcp2 if checked.is_ok() => cx.trace(format_args!(
+--- new
+                    Flavour::Ngtcp2 if true => cx.trace(format_args!(

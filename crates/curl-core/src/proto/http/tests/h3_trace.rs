@@ -5309,13 +5309,16 @@ fn a_server_closing_as_quiche_connects_is_a_weird_reply() {
 
 /// A body over quiche that comes in two reads is waited for between
 /// them; a connection that drains between them fails the transfer, as
-/// quiche's filter says it (`cf_quiche_recv`).
+/// quiche's filter says it (`cf_quiche_recv`). ngtcp2's filter asks no
+/// such thing of its connection, and waits on.
 #[test]
 fn a_quiche_connection_draining_mid_body_fails_the_transfer() {
-    for drains in [false, true] {
+    use crate::http3::Flavour::{Ngtcp2, Quiche};
+    for (flavour, drains) in [(Quiche, false), (Quiche, true), (Ngtcp2, true)] {
         let script = quiche_script(b"123456789");
         {
             let mut s = script.lock().unwrap();
+            s.flavour = flavour;
             let header = |name: &[u8], value: &[u8]| Told::Header {
                 stream: 0,
                 name: name.to_vec(),
@@ -5344,7 +5347,10 @@ fn a_quiche_connection_draining_mid_body_fails_the_transfer() {
             |_| {},
         );
         let waited = "[HTTP/3] [0] cf_recv(len=16384) -> 81, 0, total=0";
-        if drains {
+        if flavour == Ngtcp2 {
+            assert_eq!(result, Err(ErrorKind::OperationTimedout));
+            assert!(!got.iter().any(|l| l.contains("draining")), "{got:#?}");
+        } else if drains {
             assert_eq!(result, Err(ErrorKind::Http3));
             let want = [
                 waited,
@@ -5561,5 +5567,51 @@ fn a_datagram_s_ecn_mark_is_said_by_ngtcp2_s_filter_alone() {
             Quiche => &[],
         };
         assert_eq!(said, want, "{flavour:?}");
+    }
+}
+
+/// A POST's body over quiche is said as quiche's filter says it: what
+/// quiche took, the end with the last of it, a body quiche has no room
+/// for said as its window exhausted each time it is tried, and
+/// a stream quiche says blocked not said blocked, as ngtcp2's filter
+/// alone says it (`cf_quiche_send_body`, `cb_h3_read_req_body`).
+#[test]
+fn a_body_over_quiche_is_said_as_quiche_takes_it() {
+    for room in [None, Some(0)] {
+        let script = post_script(b"5\n", 4);
+        {
+            let mut s = script.lock().unwrap();
+            s.flavour = crate::http3::Flavour::Quiche;
+            s.body.held_max = room;
+            let response = s.on_read.back_mut().unwrap();
+            assert!(matches!(response.pop(), Some(Told::QuicClosed(..))));
+            s.on_read[2].push(Told::Blocked(0));
+            // The packets the body goes in, each answered.
+            s.out.extend([
+                vec![5; 20],
+                vec![],
+                vec![6; 20],
+                vec![],
+                vec![7; 20],
+                vec![],
+            ]);
+        }
+        let ran = h3_with(&script, 4, |o| {
+            o.method = Method::Post;
+            o.upload = bytes(b"hello");
+        });
+        assert_eq!(ran.result, Ok(()), "{room:?} {:#?}", ran.seen.text());
+        let said = lines(&ran, &["[HTTP/3] [0] send", "[HTTP/3] [0] block"]);
+        let want: &[&str] = match room {
+            None => &["[HTTP/3] [0] send body(len=5, eos=1) -> 5"],
+            Some(_) => &[
+                "[HTTP/3] [0] send_body(len=5) -> window exhausted",
+                "[HTTP/3] [0] send_body(len=5) -> window exhausted",
+            ],
+        };
+        assert_eq!(said, want, "{room:?}");
+        let s = script.lock().unwrap();
+        let sent: &[u8] = if room.is_none() { b"hello" } else { b"" };
+        assert_eq!((&s.body.bytes[..], s.body.ended), (sent, room.is_none()));
     }
 }

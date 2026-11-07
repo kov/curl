@@ -1292,4 +1292,17 @@ exclude_re = [
     # call: resuming its held streams then tells them to try again, and
     # quiche, its window no wider, takes nothing and holds them again.
     'curl-quiche/src/lib\.rs:.*: replace > with >= in .*::read_packets$',
+    # Defaults of the HTTP/3 traits that every binding but quiche's leaves
+    # as they are: ngtcp2's flavour is the default flavour, a library with
+    # no check of its own has no failed check to say (`unverified`'s
+    # None), and `check_peer`'s default is an `unreachable!` no binding
+    # but quiche's over OpenSSL calls, and quiche's overrides it.
+    'curl-core/src/http3\.rs:.*: replace Http3::flavour -> Flavour with Default::default\(\)$',
+    'curl-core/src/tls\.rs:.*: replace QuicTls::unverified -> Option<ErrorKind> with None$',
+    'curl-core/src/tls\.rs:.*: replace DriveCall::check_peer -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
+    # A send that reaches the egress has sent something: the fields'
+    # bytes, or a body's that the library took, a write that took none
+    # having gone back before; so `n > 0` and `n >= 0` agree there. (By
+    # column: the `>` of `if n > 0 && step.flavour == Flavour::Ngtcp2`.)
+    'curl-core/src/proto/http/h3\.rs:\d+:22: replace > with >= in Request::h3_send$',
 ]

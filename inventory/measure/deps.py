@@ -20,6 +20,13 @@ the C build with wolfSSL (`baseline.py --wolfssl`), which loads its
 shared library, and the rewrite's curl-wolfssl, which links its static
 archive, built position-independent for the same reason as ngtcp2's.
 
+GNU GSS: not packaged on Fedora, nor Shishi, which gives it Kerberos.
+Built at their latest releases, as curl's CI builds neither, for the C
+build with GNU GSS (`baseline.py --gnugss`), which loads its shared
+library, and the rewrite's curl-gssapi with `gnu-gss`, which links the
+static archives, built position-independent. Only with `--gnugss` or
+through that baseline.
+
 Everything goes under build/deps and is rebuilt only when a pinned version
 or the way it is built changes. Run directly, or through `baseline.py --run`.
 """
@@ -45,6 +52,10 @@ NGTCP2 = DEPS / "ngtcp2" if OWN_NGTCP2 else pathlib.Path(
 OWN_WOLFSSL = "CURL_WOLFSSL_DIR" not in os.environ
 WOLFSSL = DEPS / "wolfssl" if OWN_WOLFSSL else pathlib.Path(
     os.environ["CURL_WOLFSSL_DIR"])
+# CURL_GNUGSS_DIR likewise, for GNU GSS and curl-gssapi's `gnu-gss` build.
+OWN_GNUGSS = "CURL_GNUGSS_DIR" not in os.environ
+GNUGSS = DEPS / "gnugss" if OWN_GNUGSS else pathlib.Path(
+    os.environ["CURL_GNUGSS_DIR"])
 
 
 # The TLS libraries besides OpenSSL (or LibreSSL, on macOS) ngtcp2's
@@ -66,6 +77,14 @@ WOLFSSL_CONFIGURE = ["--disable-dependency-tracking", "--enable-tls13",
                      "--disable-benchmark", "--disable-crypttests",
                      "--disable-examples", "--enable-static",
                      "--with-pic"]
+
+
+# GNU GSS and Shishi, which gives it Kerberos: curl's CI builds neither,
+# so their latest releases.
+GNUGSS_VERSION = "1.0.4"
+SHISHI_VERSION = "1.0.3"
+GNUGSS_CONFIGURE = ["--disable-dependency-tracking", "--enable-static",
+                    "--with-pic"]
 
 
 def pinned(name, workflow=WORKFLOW):
@@ -112,6 +131,52 @@ def build_wolfssl():
     check(pc.stdout.strip() == version,
           f"pkg-config finds wolfSSL {pc.stdout.strip()}, want {version}")
     return {"PKG_CONFIG_PATH": f"{WOLFSSL}/lib/pkgconfig"}
+
+
+def build_gnugss():
+    """
+    Build GNU GSS over Shishi, its Kerberos, if missing; return the
+    environment CMake needs to find it.
+    """
+    built = f"gss-{GNUGSS_VERSION} shishi-{SHISHI_VERSION} pic"
+    stamp = GNUGSS / ".version"
+    if OWN_GNUGSS and not (stamp.exists()
+                           and stamp.read_text().strip() == built):
+        # Shishi first, then GNU GSS finding it in the same prefix. Each
+        # from a fresh tarball: a distclean drops the shipped manuals,
+        # which would then need makeinfo.
+        flags = [f"CPPFLAGS=-I{GNUGSS}/include",
+                 f"LDFLAGS=-L{GNUGSS}/lib -Wl,-rpath,{GNUGSS}/lib"]
+        for name, version, extra in (
+                ("shishi", SHISHI_VERSION, ["--disable-pam",
+                                            "--without-libidn"]),
+                ("gss", GNUGSS_VERSION, [])):
+            src = DEPS / "src" / f"{name}-{version}"
+            src.parent.mkdir(parents=True, exist_ok=True)
+            tarball = src.parent / f"{name}-{version}.tar.gz"
+            if not tarball.exists():
+                sh(["curl", "--fail", "--silent", "--show-error",
+                    "--location", "--output", str(tarball),
+                    f"https://ftp.gnu.org/gnu/{name}/{name}-{version}.tar.gz"],
+                   cwd=src.parent)
+            if src.exists():
+                sh(["rm", "-rf", str(src)], cwd=src.parent)
+            sh(["tar", "-xzf", str(tarball)], cwd=src.parent)
+            sh(["./configure", f"--prefix={GNUGSS}", *GNUGSS_CONFIGURE,
+                *extra, *flags], cwd=src)
+            sh(["make", f"-j{os.cpu_count()}", "install"], cwd=src)
+        stamp.write_text(built + "\n")
+    # Without Shishi found, GNU GSS builds with no mechanism at all.
+    check("shishi" in (GNUGSS / "lib" / "libgss.la").read_text(),
+          f"{GNUGSS}/lib/libgss.a was built without Shishi")
+    pc = subprocess.run(["pkg-config", "--modversion", "gss"],
+                        env={**os.environ,
+                             "PKG_CONFIG_PATH": f"{GNUGSS}/lib/pkgconfig"},
+                        check=True, capture_output=True, text=True)
+    check(pc.stdout.strip() == GNUGSS_VERSION,
+          f"pkg-config finds GNU GSS {pc.stdout.strip()}, "
+          f"want {GNUGSS_VERSION}")
+    return {"PKG_CONFIG_PATH": f"{GNUGSS}/lib/pkgconfig"}
 
 
 def build():
@@ -192,3 +257,5 @@ def check_linked(binary, crypto=None):
 if __name__ == "__main__":
     print(build())
     print(build_wolfssl())
+    if "--gnugss" in sys.argv[1:]:
+        print(build_gnugss())

@@ -34,6 +34,13 @@ the HTTP/3 proxy, and without Encrypted Client Hello, off in every oracle
 here: build/c-wolfssl,
 inventory/baseline-wolfssl.{json,md}.
 
+`--gnugss` does the same with GNU GSS in place of MIT krb5, the library
+the rewrite's `gnu-gss` feature binds, built by inventory/measure/deps.py
+over Shishi: CMake's FindGSS takes MIT's pkg-config module first, so the
+configure runs with a pkg-config that has every module of the system's
+but MIT's, and the built curl must name `libgss/` and load no MIT
+library: build/c-gnugss, inventory/baseline-gnugss.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -100,6 +107,9 @@ class Oracle:
     crypto: str | None = None
     # It is built with the wolfSSL built here (`deps.build_wolfssl`).
     wolfssl: bool = False
+    # It is built with the GNU GSS built here (`deps.build_gnugss`), MIT
+    # krb5 hidden from its configure.
+    gnu_gss: bool = False
 
     @property
     def results(self):
@@ -153,6 +163,36 @@ WOLFSSL = Oracle(ROOT / "build" / "c-wolfssl", "baseline-wolfssl",
                   "CMAKE_BUILD_RPATH":
                   f"{deps.NGTCP2 / 'lib'};{deps.WOLFSSL / 'lib'}"},
                  wolfssl=True, crypto="wolfssl")
+# GNU GSS in place of MIT krb5, as the rewrite's `gnu-gss` feature has it,
+# otherwise the reference build. Its programs find the library by their
+# RUNPATH, beside ngtcp2's.
+GNUGSS = Oracle(ROOT / "build" / "c-gnugss", "baseline-gnugss",
+                "C GNU GSS baseline", "--gnugss",
+                {**CMAKE_ARGS, "CMAKE_BUILD_RPATH":
+                 f"{deps.NGTCP2 / 'lib'};{deps.GNUGSS / 'lib'}"},
+                gnu_gss=True)
+
+
+def without_mit(build):
+    """
+    Return a pkg-config directory holding every module the system's
+    pkg-config knows but MIT krb5's, for PKG_CONFIG_LIBDIR: FindGSS asks
+    for `mit-krb5-gssapi` before `gss`.
+    """
+    farm = build / "pkgconfig-without-mit"
+    if farm.exists():
+        subprocess.run(["rm", "-rf", str(farm)], check=True)
+    farm.mkdir(parents=True)
+    pc_path = subprocess.run(["pkg-config", "--variable", "pc_path",
+                              "pkg-config"], check=True, capture_output=True,
+                             text=True).stdout.strip()
+    for d in pc_path.split(":"):
+        for pc in sorted(pathlib.Path(d).glob("*.pc")):
+            if not pc.name.startswith("mit-krb5") and not (
+                    farm / pc.name).exists():
+                (farm / pc.name).symlink_to(pc)
+    check((farm / "openssl.pc").exists(), f"{farm} has no openssl.pc")
+    return str(farm)
 
 
 def run(oracle):
@@ -163,6 +203,10 @@ def run(oracle):
     if oracle.wolfssl:
         dep_env = {"PKG_CONFIG_PATH": ":".join(
             e["PKG_CONFIG_PATH"] for e in (deps.build_wolfssl(), dep_env))}
+    if oracle.gnu_gss:
+        dep_env = {"PKG_CONFIG_PATH": ":".join(
+            e["PKG_CONFIG_PATH"] for e in (deps.build_gnugss(), dep_env)),
+                   "PKG_CONFIG_LIBDIR": without_mit(oracle.build)}
     # A fresh cache: nothing configured by hand earlier, such as another
     # library location, may carry into the measurement.
     (oracle.build / "CMakeCache.txt").unlink(missing_ok=True)
@@ -177,6 +221,20 @@ def run(oracle):
                    oracle.build / "src/curl", *oracle.test_programs]:
         if oracle.links_ngtcp2:
             deps.check_linked(binary, oracle.crypto)
+    if oracle.gnu_gss:
+        # The positive control: GNU GSS is the one named and loaded, and
+        # no MIT library is there for its symbols to resolve to.
+        version = subprocess.run([str(oracle.build / "src/curl"), "-V"],
+                                 check=True, capture_output=True,
+                                 text=True).stdout
+        check(" libgss/" in version and "mit-krb5" not in version,
+              f"the GNU GSS build says {version.splitlines()[0]}")
+        libcurl = next(oracle.build.glob("lib/libcurl*.so.*.*.*"))
+        ldd = subprocess.run(["ldd", str(libcurl)], check=True,
+                             capture_output=True, text=True).stdout
+        check(f"{deps.GNUGSS}/lib/libgss.so" in ldd
+              and "libgssapi_krb5" not in ldd,
+              f"{libcurl} loads {ldd}")
     meta = suite.run(oracle.build, oracle.results, dict(os.environ))
     (oracle.results / "run.json").write_text(
         json.dumps({"c-commit": commit, **meta}, indent=1) + "\n")
@@ -209,7 +267,8 @@ def exports(oracle):
 
 
 def main():
-    oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS, WOLFSSL)
+    oracle = next((o for o in (THREADED, LIBSSH, GNUTLS, MBEDTLS, WOLFSSL,
+                               GNUGSS)
                    if o.flag in sys.argv[1:]), REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)

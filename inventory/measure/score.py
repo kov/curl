@@ -50,6 +50,12 @@ inventory/baseline-mbedtls.json, laid out in build/rust-mbedtls.
 (baseline.py --wolfssl): build/c-wolfssl and
 inventory/baseline-wolfssl.json, laid out in build/rust-wolfssl.
 
+`--gnugss` scores the build with GNU GSS in place of MIT krb5, and libssh2
+as the oracle has it, against the C build with GNU GSS (baseline.py
+--gnugss): build/c-gnugss and inventory/baseline-gnugss.json, laid out in
+build/rust-gnugss. Its Negotiate and Kerberos results are the ones GNU
+GSS's binding is held to.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -145,6 +151,15 @@ WOLFSSL = Leg(baseline.WOLFSSL, ROOT / "build" / "rust-wolfssl",
                                   for feature in ("c-ares", "wolfssl",
                                                   "libssh2")),
               no_default=True)
+# GNU GSS in place of MIT krb5, the rest as the reference build, against
+# the C build with it.
+GNUGSS = Leg(baseline.GNUGSS, ROOT / "build" / "rust-gnugss",
+             ROOT / "build" / "target-gnugss",
+             DEBUG_HOOKS + tuple(f"{crate}/{feature}"
+                                 for crate in ("curl-sys-abi", "curl-tool")
+                                 for feature in ("c-ares", "openssl",
+                                                 "libssh2", "gnu-gss")),
+             no_default=True)
 
 
 def git(*args):
@@ -414,12 +429,14 @@ def main():
     ap.add_argument("--gnutls", action="store_true")
     ap.add_argument("--mbedtls", action="store_true")
     ap.add_argument("--wolfssl", action="store_true")
+    ap.add_argument("--gnugss", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
     leg = (THREADED if args.threaded else LIBSSH if args.libssh
            else LIBSSH2 if args.libssh2 else GNUTLS if args.gnutls
            else MBEDTLS if args.mbedtls
-           else WOLFSSL if args.wolfssl else RUST)
+           else WOLFSSL if args.wolfssl
+           else GNUGSS if args.gnugss else RUST)
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

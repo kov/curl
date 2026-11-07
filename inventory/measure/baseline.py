@@ -15,6 +15,12 @@ inventory/baseline-threaded.{json,md}.
 place of libssh2, the SSH library the rewrite binds (SCOPE.md):
 build/c-libssh, inventory/baseline-libssh.{json,md}.
 
+`--gnutls` does the same for the reference build with GnuTLS in place of
+OpenSSL, the TLS library the rewrite's `gnutls` feature binds: without
+HTTP/3, which C builds over GnuTLS only with ngtcp2's GnuTLS crypto
+(milestone 10's step 104): build/c-gnutls,
+inventory/baseline-gnutls.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -75,6 +81,8 @@ class Oracle:
     title: str
     flag: str
     cmake_args: dict
+    # Its programs load the ngtcp2 built here (`deps.check_linked`).
+    links_ngtcp2: bool = True
 
     @property
     def results(self):
@@ -100,6 +108,15 @@ LIBSSH = Oracle(ROOT / "build" / "c-libssh", "baseline-libssh",
                 "C libssh baseline", "--libssh",
                 {**CMAKE_ARGS, "CURL_USE_LIBSSH2": "OFF",
                  "CURL_USE_LIBSSH": "ON"})
+# GnuTLS in place of OpenSSL, as the rewrite's `gnutls` feature has it.
+# ngtcp2 here has OpenSSL's crypto, not GnuTLS's: no HTTP/3, and no
+# HTTP/3 proxy with it.
+GNUTLS = Oracle(ROOT / "build" / "c-gnutls", "baseline-gnutls",
+                "C GnuTLS baseline", "--gnutls",
+                {**CMAKE_ARGS, "CURL_USE_OPENSSL": "OFF",
+                 "CURL_USE_GNUTLS": "ON", "USE_NGTCP2": "OFF",
+                 "USE_PROXY_HTTP3": "OFF"},
+                links_ngtcp2=False)
 
 
 def run(oracle):
@@ -119,7 +136,8 @@ def run(oracle):
                    check=True, stdout=subprocess.DEVNULL)
     for binary in [next(oracle.build.glob("lib/libcurl*.so.*.*.*")),
                    oracle.build / "src/curl", *oracle.test_programs]:
-        deps.check_linked(binary)
+        if oracle.links_ngtcp2:
+            deps.check_linked(binary)
     meta = suite.run(oracle.build, oracle.results, dict(os.environ))
     (oracle.results / "run.json").write_text(
         json.dumps({"c-commit": commit, **meta}, indent=1) + "\n")
@@ -152,8 +170,8 @@ def exports(oracle):
 
 
 def main():
-    oracle = (THREADED if "--threaded" in sys.argv[1:]
-              else LIBSSH if "--libssh" in sys.argv[1:] else REFERENCE)
+    oracle = next((o for o in (THREADED, LIBSSH, GNUTLS)
+                   if o.flag in sys.argv[1:]), REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)
     meta = json.loads((oracle.results / "run.json").read_text())

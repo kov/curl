@@ -198,10 +198,11 @@ impl library::Mbedtls for Fake {
 #[derive(Debug)]
 pub(crate) struct FakeConn(Arc<Mutex<World>>);
 
-/// A chain of the world's, from some depth on.
-struct FakeChain {
-    ders: Vec<&'static [u8]>,
-    info: Option<&'static [u8]>,
+/// A chain of the world's, from some depth on: its certificates' DER,
+/// and the leaf's text as the library writes it.
+pub(crate) struct FakeChain {
+    pub(crate) ders: Vec<&'static [u8]>,
+    pub(crate) info: Option<&'static [u8]>,
 }
 
 impl Chain for FakeChain {

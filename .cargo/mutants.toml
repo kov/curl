@@ -1165,4 +1165,12 @@ exclude_re = [
     # A file shorter than its status said, read whole otherwise: only a
     # file cut between the two reads differs.
     'curl-gnutls/src/verify\.rs:.*: replace (\|\| with &&|< with >) in load_file$',
+    # mbedTLS (curl-mbedtls):
+    # The debug forms of the library's words and of a call, which nothing
+    # prints.
+    "curl-mbedtls/src/library\\.rs:.*: replace <impl fmt::Debug for (Words|Call<'_, '_>)>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)$",
+    # Room reserved for the zero byte or the list's 0 ahead of time: the
+    # push after grows a vector reserved short.
+    'curl-mbedtls/src/library\.rs:.*: replace \+ with [-*] in c_string$',
+    'curl-mbedtls/src/suites\.rs:.*: replace \+ with [-*] in select$',
 ]

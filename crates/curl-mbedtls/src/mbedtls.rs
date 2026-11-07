@@ -967,5 +967,40 @@ mod tests {
             b"The certificate Common Name (CN) does not match with the expected CN\n"
         );
         assert_eq!(version() >> 24, 3);
+        backend_over_the_library();
+    }
+
+    /// The backend makes sessions only between its `init` and its
+    /// `cleanup`, and names the library as C does. Run from the test
+    /// above, as the library's initialisation is the process's.
+    fn backend_over_the_library() {
+        use curl_core::options::{ColdGroup as _, TlsOptions};
+        use curl_core::tls::{
+            Alpn, CaDefaults, TlsBackend as _, TlsIdentity, TlsPeer, TlsPeerKind, TlsShared,
+        };
+        let id = TryArc::try_new(TlsIdentity {
+            verify_peer: true,
+            verify_host: true,
+            options: TlsOptions::NONE,
+            ca_defaults: CaDefaults::NONE,
+        })
+        .unwrap();
+        let peer = TlsPeer {
+            name: b"example.com",
+            port: 443,
+            kind: TlsPeerKind::Name,
+            early_data: false,
+        };
+        let shared = TlsShared::testing();
+        let tls = crate::MbedTls::new();
+        let made = |tls: &crate::MbedTls| tls.session(&id, &peer, Alpn::None, &shared).err();
+        assert_eq!(made(&tls), Some(curl_core::error::ErrorKind::FailedInit));
+        assert!(tls.init());
+        assert_eq!(made(&tls), None);
+        let named = format!("mbedTLS/{}.{}.", version() >> 24, (version() >> 16) & 0xff);
+        assert!(crate::version().to_string().starts_with(&named), "{named}");
+        assert_eq!(tls.id().to_string(), crate::version().to_string());
+        tls.cleanup();
+        assert_eq!(made(&tls), Some(curl_core::error::ErrorKind::FailedInit));
     }
 }

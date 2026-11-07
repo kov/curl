@@ -1449,13 +1449,27 @@ impl TlsIo<'_> {
         socket: &dyn crate::conn::io::Socket,
         f: impl FnOnce(&mut TlsIo<'_>) -> R,
     ) -> R {
+        TlsIo::testing_given(identity, host, kept, socket, None, f)
+    }
+
+    /// `testing`, the connection given `given` to resume before any of
+    /// the cache's, as FTP's data connection is given its control
+    /// connection's.
+    pub fn testing_given<R>(
+        identity: &TryArc<TlsIdentity>,
+        host: &[u8],
+        kept: &mut Kept,
+        socket: &dyn crate::conn::io::Socket,
+        given: Option<TlsTicket>,
+        f: impl FnOnce(&mut TlsIo<'_>) -> R,
+    ) -> R {
         let mut name = Vec::new();
         name.try_extend_from_slice(host).expect("memory for a test");
         let origin = Peer::new(crate::proto::http::HTTPS, name, 443, None);
         let peer = SessionPeer::new(identity, &origin, None, &"test", crate::conn::Dial::Stream)
             .expect("memory for a test");
         let mut early = Vec::new();
-        let mut own = OwnSessions::default();
+        let mut own = OwnSessions::new(false, given);
         let below = Below::bare(socket, None);
         let mut io = TlsIo::new(below, kept, &mut early, Component::Ssl, &peer, &mut own);
         f(&mut io)

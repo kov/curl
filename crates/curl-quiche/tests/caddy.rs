@@ -6,29 +6,17 @@
 #![cfg(boringssl)]
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+mod common;
+
 use std::net::{SocketAddr, UdpSocket};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant as StdInstant};
 
-use curl_alloc::TryArc;
+use common::{Dir, Over, Told, UNTRUSTED, VERIFIED, certs, run, with_client};
 use curl_core::error::ErrorKind;
-use curl_core::http3::{
-    ClientSetup, ConnEvent, Connection, Event, Expiry, H3Error, Heard, Http3, QuicError,
-    StreamEvent, StreamId,
-};
-use curl_core::options::{CaSetting, ColdGroup as _, TlsOptions};
-use curl_core::time::SystemClock;
-use curl_core::tls::{CaDefaults, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind};
-use curl_quiche::QUICHE;
-use openssl::asn1::Asn1Time;
-use openssl::bn::BigNum;
-use openssl::ec::{EcGroup, EcKey};
-use openssl::hash::MessageDigest;
-use openssl::nid::Nid;
-use openssl::pkey::{PKey, Private};
-use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
-use openssl::x509::{X509, X509Name};
+use curl_core::http3::{Connection, H3Error, StreamId};
+use curl_core::tls::TlsCx;
 
 const BODY: &[u8] = b"hello h3\n";
 
@@ -43,21 +31,6 @@ fn big() -> Vec<u8> {
     (0..300_000u32).map(|i| (i % 251) as u8).collect()
 }
 
-/// What the OpenSSL backend says of a peer it verified, and of one signed
-/// by a CA it does not trust.
-const VERIFIED: &str = "SSL certificate verified via OpenSSL";
-const UNTRUSTED: &str =
-    "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)";
-
-/// A directory of the test's own, removed as this goes.
-struct Dir(PathBuf);
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// The server, killed as this goes.
 struct Server(Child);
 
@@ -66,66 +39,6 @@ impl Drop for Server {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn key() -> PKey<Private> {
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-    PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap()
-}
-
-fn name(cn: &str) -> X509Name {
-    let mut n = X509Name::builder().unwrap();
-    n.append_entry_by_nid(Nid::COMMONNAME, cn).unwrap();
-    n.build()
-}
-
-/// A CA of `cn`, self-signed with `key`.
-fn ca(cn: &str, serial: u32, key: &PKey<Private>) -> X509 {
-    let mut ca = X509::builder().unwrap();
-    ca.set_version(2).unwrap();
-    ca.set_serial_number(&BigNum::from_u32(serial).unwrap().to_asn1_integer().unwrap())
-        .unwrap();
-    ca.set_subject_name(&name(cn)).unwrap();
-    ca.set_issuer_name(&name(cn)).unwrap();
-    ca.set_pubkey(key).unwrap();
-    ca.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
-    ca.set_not_after(&Asn1Time::days_from_now(2).unwrap())
-        .unwrap();
-    ca.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
-        .unwrap();
-    ca.sign(key, MessageDigest::sha256()).unwrap();
-    ca.build()
-}
-
-/// A CA, and a certificate for `localhost` it signed, written to `dir`;
-/// and a CA that signed nothing, `other-ca.pem`.
-fn certs(dir: &Path) {
-    let ca_key = key();
-    let ca = ca("curl-quiche test CA", 1, &ca_key);
-    let key = key();
-    let mut cert = X509::builder().unwrap();
-    cert.set_version(2).unwrap();
-    cert.set_serial_number(&BigNum::from_u32(2).unwrap().to_asn1_integer().unwrap())
-        .unwrap();
-    cert.set_subject_name(&name("localhost")).unwrap();
-    cert.set_issuer_name(ca.subject_name()).unwrap();
-    cert.set_pubkey(&key).unwrap();
-    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
-    cert.set_not_after(&Asn1Time::days_from_now(2).unwrap())
-        .unwrap();
-    let san = SubjectAlternativeName::new()
-        .dns("localhost")
-        .build(&cert.x509v3_context(Some(&ca), None))
-        .unwrap();
-    cert.append_extension(san).unwrap();
-    cert.sign(&ca_key, MessageDigest::sha256()).unwrap();
-    std::fs::write(dir.join("ca.pem"), ca.to_pem().unwrap()).unwrap();
-    let other = crate::ca("curl-quiche other CA", 3, &crate::key());
-    std::fs::write(dir.join("other-ca.pem"), other.to_pem().unwrap()).unwrap();
-    std::fs::write(dir.join("cert.pem"), cert.build().to_pem().unwrap()).unwrap();
-    std::fs::write(dir.join("key.pem"), key.private_key_to_pem_pkcs8().unwrap()).unwrap();
 }
 
 /// caddy serving `BODY` as `/data.txt` and `big()` as `/big.bin` over
@@ -217,132 +130,6 @@ fn wait_bound(server: &mut Server, port: u16) -> bool {
     false
 }
 
-/// What a connection told.
-#[derive(Default)]
-struct Told {
-    checked: Option<Result<(), ErrorKind>>,
-    status: Option<Vec<u8>>,
-    headers: Vec<(Vec<u8>, Vec<u8>)>,
-    head_done: bool,
-    body: Vec<u8>,
-    /// The size of each piece of the body, as it was handed on.
-    pieces: Vec<usize>,
-    closed: bool,
-    /// The streams the peer allows, opened ones counted, as each was told.
-    max_streams: Vec<u64>,
-    /// Each stream's body, and the streams closed, in order.
-    bodies: Vec<(StreamId, Vec<u8>)>,
-    closed_streams: Vec<StreamId>,
-}
-
-impl Told {
-    fn hear(&mut self, event: Event<'_>) -> Heard {
-        match event {
-            Event::Connection(ConnEvent::HandshakeDone { checked, .. }) => {
-                self.checked = Some(checked);
-            }
-            Event::Stream(
-                _,
-                StreamEvent::Header {
-                    name,
-                    value,
-                    status,
-                },
-            ) => {
-                if status {
-                    self.status = Some(value.to_vec());
-                } else {
-                    self.headers.push((name.to_vec(), value.to_vec()));
-                }
-            }
-            Event::Stream(_, StreamEvent::HeadersDone) => self.head_done = true,
-            Event::Stream(stream, StreamEvent::Data(bytes)) => {
-                assert!(self.head_done, "the body comes after the head");
-                self.body.extend_from_slice(bytes);
-                self.pieces.push(bytes.len());
-                match self.bodies.iter_mut().find(|(s, _)| *s == stream) {
-                    Some((_, body)) => body.extend_from_slice(bytes),
-                    None => self.bodies.push((stream, bytes.to_vec())),
-                }
-            }
-            Event::Stream(stream, StreamEvent::Closed(_)) => {
-                self.closed = true;
-                self.closed_streams.push(stream);
-            }
-            Event::Connection(ConnEvent::MaxBidiStreams(n)) => self.max_streams.push(n),
-            Event::Connection(ConnEvent::H3Failed(failed)) => panic!("{failed}"),
-            _ => {}
-        }
-        Heard::Fine
-    }
-}
-
-/// What a test drives a connection with.
-struct Over<'s> {
-    sock: &'s UdpSocket,
-    clock: &'s SystemClock,
-}
-
-/// Send every packet the connection wants sent, then let it see what
-/// that came to, as the core's egress does.
-fn flush(
-    conn: &mut dyn Connection,
-    cx: &mut TlsCx<'_>,
-    over: &Over<'_>,
-    told: &mut Told,
-) -> Result<(), QuicError> {
-    let mut buf = [0u8; 1500];
-    loop {
-        let n = conn.write_packet(cx, over.clock.now(), &mut buf, &mut |_, e| told.hear(e))?;
-        let Some(n) = n else { break };
-        over.sock.send(&buf[..n]).unwrap();
-    }
-    conn.egress_done(cx, over.clock.now(), &mut |_, e| told.hear(e))
-}
-
-/// Run the connection until `done`, its timers kept and what arrives fed
-/// to it, each datagram's events polled once it is read, or until it
-/// fails.
-fn run(
-    conn: &mut dyn Connection,
-    cx: &mut TlsCx<'_>,
-    over: &Over<'_>,
-    told: &mut Told,
-    done: impl Fn(&Told) -> bool,
-) -> Result<(), QuicError> {
-    let deadline = StdInstant::now() + Duration::from_secs(10);
-    let mut buf = [0u8; 65536];
-    while !done(told) {
-        assert!(StdInstant::now() < deadline, "the exchange takes too long");
-        flush(conn, cx, over, told)?;
-        let wait = match conn.expiry(over.clock.now()) {
-            Expiry::Never => Duration::from_millis(100),
-            Expiry::Due => Duration::from_millis(1),
-            Expiry::In(d) => d.clamp(Duration::from_millis(1), Duration::from_millis(100)),
-        };
-        over.sock.set_read_timeout(Some(wait)).unwrap();
-        conn.before_recv(cx).unwrap();
-        match over.sock.recv_from(&mut buf) {
-            Ok((n, from)) => {
-                let now = over.clock.now();
-                let packets = buf[..n].chunks(n.max(1));
-                conn.read_packets(cx, now, from, 0, packets, &mut |_, e| told.hear(e))?;
-                conn.ingress_done(cx, &mut |_, e| told.hear(e))?;
-            }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(e) => panic!("recv: {e}"),
-        }
-        if conn.expiry(over.clock.now()) == Expiry::Due {
-            conn.handle_expiry(cx, over.clock.now(), &mut |_, e| told.hear(e))?;
-        }
-    }
-    Ok(())
-}
-
 /// Start caddy in a directory of `test`'s own, and run `f` with a
 /// connection to it that trusts the CA file `ca` names there: what `f`
 /// returns, and the notes the transfer was given.
@@ -351,69 +138,10 @@ fn with_conn<R>(
     ca: &str,
     f: impl FnOnce(&mut dyn Connection, &mut TlsCx<'_>, &Over<'_>, SocketAddr) -> R,
 ) -> (R, Vec<String>) {
-    let dir = Dir(std::env::temp_dir().join(format!("curl-quiche-{test}-{}", std::process::id())));
-    std::fs::create_dir_all(&dir.0).unwrap();
+    let dir = Dir::new(test);
     certs(&dir.0);
     let (_server, addr) = caddy(&dir.0);
-    let ca = dir.0.join(ca).into_os_string().into_encoded_bytes();
-    let identity = TryArc::try_new(TlsIdentity {
-        verify_peer: true,
-        verify_host: true,
-        options: TlsOptions {
-            ca_file: CaSetting::Given(ca),
-            ..TlsOptions::NONE
-        },
-        ca_defaults: CaDefaults::NONE,
-    })
-    .unwrap();
-    let peer = TlsPeer {
-        name: b"localhost",
-        port: addr.port(),
-        kind: TlsPeerKind::Name,
-        early_data: false,
-        ech_configs: None,
-    };
-    let mut notes = Notes::default();
-    let r = TlsCx::testing(&identity, b"localhost", &mut notes, |shared, cx| {
-        let clock = SystemClock::new();
-        let backend: &dyn TlsBackend = &curl_openssl::OPENSSL;
-        let tls = backend
-            .quic_session(
-                &identity,
-                &peer,
-                shared,
-                &|ctx| QUICHE.setup_tls_context(ctx),
-                cx,
-            )
-            .unwrap();
-        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
-        sock.connect(addr).unwrap();
-        let setup = ClientSetup {
-            local: sock.local_addr().unwrap(),
-            remote: addr,
-            now: clock.now(),
-            handshake_timeout: Duration::from_secs(10),
-            max_window: 100 * 10 * 1024 * 1024,
-            stream_window: 32 * 1024,
-            max_streams: 256 * 1024,
-        };
-        let mut conn = QUICHE.client(&setup, tls).unwrap();
-        let over = Over {
-            sock: &sock,
-            clock: &clock,
-        };
-        // A failed check is shown with the notes that explain it.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            f(&mut *conn, cx, &over, addr)
-        }))
-    });
-    match r {
-        Ok(r) => (r, notes.0),
-        Err(panic) => {
-            eprintln!("notes: {:#?}", notes.0);
-            std::panic::resume_unwind(panic)
-        }
-    }
+    with_client(&dir.0, ca, addr, f)
 }
 
 /// A GET of `path` on a connection whose handshake completed, its peer

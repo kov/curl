@@ -27,6 +27,10 @@ openssl-sys = "0.9.118"
 # The system's certificate stores, read for the native CA store.
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_SystemInformation"] }
 
+[build-dependencies]
+# The CA bundle and path, found as CMake finds them.
+curl-build = { path = "../curl-build" }
+
 [dev-dependencies]
 curl-alloc = { path = "../curl-alloc", features = ["debug-hooks"] }
 # The manual clock, to age the multi's CA store.

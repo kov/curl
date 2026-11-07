@@ -185,6 +185,7 @@ name = "curl-openssl"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-build",
  "curl-core",
  "curl-os",
  "openssl",

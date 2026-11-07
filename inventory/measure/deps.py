@@ -39,6 +39,16 @@ programs need no search path to find it. ngtcp2's crypto for both is
 own, `build/deps/ngtcp2-<fork>`, built with that crypto alone, as CI's
 `ngtcp2-boringssl` is. AWS-LC's build needs Go.
 
+quiche: built only when asked for (`--quiche`, or the oracle `baseline.py`
+builds with it), at the version http3-linux.yml pins, as that CI builds it:
+its git tree with `cargo build --package quiche --release --features
+ffi,pkg-config-meta,qlog`, which builds the BoringSSL of the `boring-sys`
+crate besides; then that BoringSSL's static libraries and headers staged
+in `boringssl/` beside it, as CI stages them, for the OpenSSL backend of
+both builds over quiche (C's CMake `OPENSSL_ROOT_DIR`, the rewrite's
+`OPENSSL_DIR`). The C build loads quiche's shared library; the rewrite
+builds the quiche crate itself, at the same version, over that BoringSSL.
+
 rustls-ffi: not packaged on Fedora. The release curl's CI pins, as its
 `rustls` jobs in .github/workflows/linux.yml install it: the project's
 prebuilt library for the machine, its pkg-config file pointed at where it
@@ -448,6 +458,58 @@ def build_ech_servers():
     return ech_openssl(), ech_nghttpx()
 
 
+QUICHE = DEPS / "quiche"
+
+
+def build_quiche():
+    """
+    Build quiche and the BoringSSL its build makes if missing, staged as
+    curl's CI stages them; return the environment CMake needs to find
+    quiche.
+    """
+    version = pinned("QUICHE_VERSION")
+    built = f"{version} ffi,pkg-config-meta,qlog"
+    release = QUICHE / "target" / "release"
+    stamp = QUICHE / ".version"
+    if not (stamp.exists() and stamp.read_text().strip() == built):
+        if QUICHE.exists():
+            sh(["rm", "-rf", str(QUICHE)], cwd=DEPS)
+        DEPS.mkdir(parents=True, exist_ok=True)
+        sh(["git", "clone", "--quiet", "--depth", "1", "--branch", version,
+            "--recursive", "https://github.com/cloudflare/quiche",
+            str(QUICHE)], cwd=DEPS)
+        # Its own target directory, whatever the environment or the
+        # tree's .cargo/config.toml, which cargo finds above it, says.
+        sh(["cargo", "build", "--package", "quiche", "--release",
+            "--features", "ffi,pkg-config-meta,qlog",
+            "--target-dir", str(QUICHE / "target"), "-j", JOBS], cwd=QUICHE)
+        (release / "libquiche.so.0").symlink_to("libquiche.so")
+        # As CI: the static libraries in boringssl/lib, the headers
+        # boring-sys built against in boringssl/include.
+        staged = QUICHE / "boringssl"
+        (staged / "lib").mkdir(parents=True)
+        for name in ["libcrypto.a", "libssl.a"]:
+            found = sorted(release.rglob(name))
+            check(len(found) == 1, f"quiche's build made {found} for {name}")
+            os.link(found[0], staged / "lib" / name)
+        include = sorted(release.glob(
+            "build/boring-sys-*/out/boringssl/include"))
+        check(len(include) == 1, f"quiche's build made {include} for include")
+        (staged / "include").symlink_to(include[0])
+        stamp.write_text(built + "\n")
+    for path in [release / "libquiche.so", release / "quiche.pc",
+                 QUICHE / "boringssl" / "lib" / "libssl.a",
+                 QUICHE / "boringssl" / "lib" / "libcrypto.a",
+                 QUICHE / "boringssl" / "include" / "openssl" / "ssl.h"]:
+        check(path.exists(), f"{path} was not built")
+    return {"PKG_CONFIG_PATH": str(release)}
+
+
+def quiche_boringssl():
+    """Where the BoringSSL quiche's build made is staged."""
+    return QUICHE / "boringssl"
+
+
 def describe():
     """
     Which ngtcp2 and nghttp3 a build here links, for a measurement to
@@ -490,3 +552,5 @@ if __name__ == "__main__":
             print(build_fork(fork))
     if "--ech" in sys.argv[1:]:
         print(build_ech_servers())
+    if "--quiche" in sys.argv[1:]:
+        print(build_quiche())

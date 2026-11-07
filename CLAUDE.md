@@ -113,6 +113,12 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   objects, held in room of the sizes its build gives them: the configuration, the handshake,
   the records both ways, the callbacks that move them over the connection and weigh the
   peer's chain, and the sessions saved and resumed.
+- `crates/curl-wolfssl/src/sys.rs`: the declarations of the wolfSSL and wolfCrypt functions the
+  crate calls, and of the table of the headers' values they are checked against.
+- `crates/curl-wolfssl/src/wolfssl.rs`: wolfSSL's context, session object and store of
+  certificates: the handshake, the records both ways, the BIO and callbacks that move them over
+  the connection and keep its sessions, its early data, and the peer's certificate and keys.
+- `crates/curl-wolfssl/src/sign.rs`: wolfCrypt's Ed25519, signing HTTP message signatures.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place (on macOS where `_NSGetArgv` says); on Windows the C library's `argv`, read (in the
   Unicode build its `wmain` arguments, `_configure_wide_argv`, converted to UTF-8), and the

@@ -1,0 +1,93 @@
+# wolfSSL's sessions (crates/curl-wolfssl), witnessed by the tests over the
+# scripted library.
+
+=== a maximum of TLS 1.2 lets TLS 1.3 through
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_versions_are_c_s
+--- old
+            TlsMaxVersion::Tls1_2 => TLS1_2,
+--- new
+            TlsMaxVersion::Tls1_2 => TLS1_3,
+
+=== the library's default suites are taken for the other version's
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_cipher_list_is_built_as_c_builds_it
+--- old
+            if name.starts_with(b"TLS13") != tls13 {
+--- new
+            if name.starts_with(b"TLS13") == tls13 {
+
+=== CA locations that fail fail a peer the system's store verifies
+file: crates/curl-wolfssl/src/trust.rs
+witness: curl-wolfssl tests::the_trust_is_loaded_as_c_loads_it
+--- old
+    } else if identity.verify_peer && !native && blob.is_none() {
+--- new
+    } else if identity.verify_peer && blob.is_none() {
+
+=== the trust store is not set up before the handshake's first read
+file: crates/curl-wolfssl/src/library.rs
+witness: curl-wolfssl tests::the_store_is_set_up_at_the_handshake_s_first_read
+--- old
+        if self.state.handshaking && !self.state.store_ready {
+--- new
+        if false {
+
+=== a retried close_notify is sent whole again (wolfSSL#7784)
+file: crates/curl-wolfssl/src/library.rs
+witness: curl-wolfssl tests::a_blocked_goodbye_is_sent_as_it_blocked
+--- old
+        if s.shutting_down && s.blocked_len != 0 && s.blocked_len < len {
+--- new
+        if false {
+
+=== the multi's kept store is never taken
+file: crates/curl-wolfssl/src/trust.rs
+witness: curl-wolfssl tests::the_multi_keeps_the_store_while_it_may
+--- old
+                    Some(store) => store.another().map_or(Found::None, Found::Take),
+--- new
+                    Some(_) => Found::None,
+
+=== a session is kept without what ALPN agreed
+file: crates/curl-wolfssl/src/library.rs
+witness: curl-wolfssl tests::sessions_are_kept_and_resumed
+--- old
+                    .keep_session(TlsTicket::new(der, version, self.alpn, early, until));
+--- new
+                    .keep_session(TlsTicket::new(der, version, None, early, until));
+
+=== early data offers every protocol, not the session's
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::a_session_allowing_early_data_puts_the_handshake_off
+--- old
+        self.restricted = Some(chosen);
+--- new
+
+=== an address that does not match the certificate is not said to
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::an_address_gets_no_sni_and_is_checked_after_the_handshake
+--- old
+                detail = sys::DOMAIN_NAME_MISMATCH;
+--- new
+
+=== a missing signer fails a peer that is not verified
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_handshake_waits_and_fails_as_c_s
+--- old
+            sys::ASN_NO_SIGNER_E => {
+                if self.identity.verify_peer {
+--- new
+            sys::ASN_NO_SIGNER_E => {
+                if true {
+
+=== TLS 1.3's master secret is logged as TLS 1.2's
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::a_tls_1_2_secret_is_logged_while_the_key_log_is_open
+--- old
+        if !ssl.before_tls13() {
+            return;
+        }
+        let Some(keys) = ssl.tls12_keys() else {
+--- new
+        let Some(keys) = ssl.tls12_keys() else {

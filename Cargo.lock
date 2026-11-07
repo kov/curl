@@ -317,6 +317,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-wolfssl"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "curl-alloc",
+ "curl-build",
+ "curl-core",
+]
+
+[[package]]
 name = "curl-zlib"
 version = "0.1.0"
 dependencies = [

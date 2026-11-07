@@ -1590,7 +1590,29 @@ impl QuicTls for QuicSession {
         self.0.resumed.as_ref().filter(|_| self.0.quic_early)
     }
 
-    fn early_data_decided(&mut self, _cx: &mut TlsCx<'_>, _early: bool) -> Result<(), ErrorKind> {
+    /// Where early data goes, only the ticket's protocol is offered, the
+    /// offer made with the session replaced (`Curl_alpn_restrict_to` after
+    /// `sess_reuse_cb`, before `SSL_set_alpn_protos`).
+    fn early_data_decided(&mut self, cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind> {
+        if !early {
+            return Ok(());
+        }
+        let wire = self
+            .early_data()
+            .and_then(TlsTicket::chosen)
+            .expect("early data goes under a ticket made for h3")
+            .wire();
+        let len = u32::try_from(wire.len()).expect("a short list");
+        // SAFETY: the session's SSL, and the list, which the library
+        // copies.
+        if unsafe { openssl_sys::SSL_set_alpn_protos(self.0.ssl().as_ptr(), wire.as_ptr(), len) }
+            != 0
+        {
+            return Err(cx.fail(
+                ErrorKind::SslConnectError,
+                format_args!("Error setting ALPN"),
+            ));
+        }
         Ok(())
     }
 

@@ -83,8 +83,8 @@ where
         self.0.quic_early.as_ref()
     }
 
-    fn early_data_decided(&mut self, _cx: &mut TlsCx<'_>, _early: bool) -> Result<(), ErrorKind> {
-        Ok(())
+    fn early_data_decided(&mut self, cx: &mut TlsCx<'_>, early: bool) -> Result<(), ErrorKind> {
+        self.0.quic_early_decided(cx, early)
     }
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
@@ -101,6 +101,10 @@ where
         call: &mut dyn FnMut(&mut dyn DriveCall),
     ) {
         let s = &mut self.0;
+        assert!(
+            s.quic_early.is_none() || s.quic_decided,
+            "the ALPN offer is made before the handshake's first bytes"
+        );
         let lib = s.lib;
         let keylog = s.keylog.as_deref().filter(|l| KeyLog::enabled(l));
         let mut gcall = Call {

@@ -3153,7 +3153,10 @@ the `gnutls_session_t`, as `gtls_get_internals` does. A QUIC session (`quic.rs`)
 `GNUTLS_NO_END_OF_EARLY_DATA` for a resumed ticket that allows any, ngtcp2's setup of the session
 right after, the priority `QUIC_PRIORITY` (TLS 1.3 alone, refused if the transfer's maximum is
 below it), and the handshake hook only where sessions are kept, which traces each message
-(`SSL message: <- Name [n]`) and keeps a ticket with `h3` and the transport parameters. The
+(`SSL message: <- Name [n]`) and keeps a ticket with `h3` and the transport parameters. Under a
+resumed ticket the QUIC library decides on early data, and the ALPN offer waits for its word, as
+`gnutls_alpn_set_protocols` adds to an offer made before: `h3` alone where early data goes,
+whole where it does not. The
 trust loads before the peer's first packet is read; the handshake's end reports the session, then
 checks the peer by `Curl_gtls_verifyserver`.
 
@@ -3421,7 +3424,8 @@ OpenSSL to send early data (`Quic::early_data`, `Connection::set_early_params` a
 made as any other. Its TLS session is then told whether early data goes
 (`QuicTls::early_data_decided`, C's `do_early_data`): it does once the parameters are taken and
 HTTP/3 set up, even where OpenSSL then refuses to send it, as C's callback says so before
-OpenSSL is asked. Sending early data it counts as connected at once, its attempt winning as it
+OpenSSL is asked. Where it goes the ALPN offer is `h3` alone, OpenSSL's replaced, as C restricts
+it then. Sending early data it counts as connected at once, its attempt winning as it
 starts, and the request's bytes taken before the handshake ends are counted; the handshake's
 end tells the transfer whether the peer took them (`Event::HandshakeDone::early_data`,
 `ngtcp2_conn_get_tls_early_data_rejected2`), through the same `early_done`. A connection to an

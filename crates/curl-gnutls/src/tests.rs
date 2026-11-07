@@ -2092,8 +2092,14 @@ fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
     // is told, with the parameters kept: over QUIC, early data is ended
     // by QUIC itself.
     lib.w().max_early = 1000;
-    let s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
+    let before = lib.w().calls.len();
+    let mut s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
     let calls = lib.w().calls.clone();
+    // The offer waits for the QUIC library's word on early data.
+    assert!(
+        !calls[before..].iter().any(|c| c.starts_with("alpn(")),
+        "{calls:#?}"
+    );
     assert!(
         calls.contains(&"session(flags=500202)".to_owned()),
         "{calls:#?}"
@@ -2107,6 +2113,26 @@ fn a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed() {
     assert_eq!(early.earlydata_max, 1000);
     assert_eq!(early.chosen(), Some(Chosen::H3));
     assert_eq!(early.quic_params, b"tp");
+    // Told early data goes, the offer is the ticket's protocol alone, as
+    // C restricts it after `sess_reuse_cb`; told none goes, as where the
+    // QUIC library refuses the parameters, it is whole. Made once.
+    for (early, offer) in [(true, "alpn(h3)"), (false, "alpn(h3,h3-29)")] {
+        if !early {
+            s = quic(lib, &id, &mut kept, true, &|_| Ok(())).unwrap();
+        }
+        let before = lib.w().calls.len();
+        TlsCx::testing_kept(&id, HOST, &mut kept, |_, cx| {
+            s.early_data_decided(cx, early)
+        })
+        .unwrap();
+        assert_eq!(lib.w().calls[before..], [offer], "{early}");
+    }
+    // A ticket for the session below, from the last one's handshake.
+    lib.w().scripts = vec![(
+        "drive",
+        vec![Act::Hook(sys::GNUTLS_HANDSHAKE_NEW_SESSION_TICKET, true)],
+    )];
+    drive(&mut s, &id, &mut kept, Some(b"tp"), &mut |_| {});
     // Where the transfer sends none, the QUIC library is told of none,
     // the session resumed all the same.
     let before = lib.w().calls.len();

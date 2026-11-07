@@ -104,3 +104,26 @@ default-features: no
             sys::gnutls_session_set_ptr(ssl, conn_ref.cast());
 --- new
 
+
+=== a QUIC session early data goes under offers every protocol
+file: crates/curl-gnutls/src/session.rs
+witness: curl-gnutls tests::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
+--- old
+            self.restricted = Some(chosen);
+        }
+        self.offer_alpn(io)
+--- new
+            let _ = chosen;
+        }
+        self.offer_alpn(io)
+
+=== a QUIC session resumed for early data makes its offer before the QUIC library's word
+file: crates/curl-gnutls/src/session.rs
+witness: curl-gnutls tests::a_quic_ticket_is_kept_for_h3_with_its_transport_parameters_and_resumed
+--- old
+        if self.quic_early.is_some() {
+            return Ok(());
+        }
+        self.offer_alpn(io)
+--- new
+        self.offer_alpn(io)

@@ -97,6 +97,9 @@ pub(crate) struct Session<G: Gnutls> {
     /// the early data the library says, if the transfer may send it
     /// (`cf_ngtcp2_on_session_reuse`'s `earlydata_max`).
     pub(crate) quic_early: Option<TlsTicket>,
+    /// The QUIC library said whether early data goes under `quic_early`,
+    /// and the offer is made.
+    pub(crate) quic_decided: bool,
     /// The handshake is put off for early data (`ssl_connection_deferred`).
     deferred: Option<Deferred>,
     early: Early,
@@ -135,6 +138,7 @@ impl<G: Gnutls> Session<G> {
             early_data: peer.early_data,
             quic: false,
             quic_early: None,
+            quic_decided: false,
             deferred: None,
             early: Early::None,
             negotiated: None,
@@ -269,7 +273,8 @@ impl<G: Gnutls> Session<G> {
     }
 
     /// What follows the session's making in `Curl_gtls_ctx_init`: the key
-    /// log, and the ALPN offer.
+    /// log, and the ALPN offer, which under a QUIC ticket for early data
+    /// waits for the QUIC library's word (`quic_early_decided`).
     pub(crate) fn finish_init(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let gs = self.gs.as_mut().expect("made by the client's init");
         // Opened unless it is, by whichever library asks first
@@ -280,6 +285,42 @@ impl<G: Gnutls> Session<G> {
                 gs.log_keys();
             }
         }
+        if self.quic_early.is_some() {
+            return Ok(());
+        }
+        self.offer_alpn(io)
+    }
+
+    /// The QUIC library said whether early data goes under the ticket it
+    /// was handed (`quic_early`), once it took the ticket's transport
+    /// parameters: where it does, only the ticket's protocol is offered
+    /// (`Curl_alpn_restrict_to` after `sess_reuse_cb`); then the offer is
+    /// made.
+    pub(crate) fn quic_early_decided(
+        &mut self,
+        io: &mut TlsCx<'_>,
+        early: bool,
+    ) -> Result<(), ErrorKind> {
+        assert!(!self.quic_decided, "told once");
+        let ticket = self
+            .quic_early
+            .as_ref()
+            .expect("told only under a ticket resumed for early data");
+        self.quic_decided = true;
+        if early {
+            let chosen = ticket
+                .chosen()
+                .expect("early data goes under a ticket made for h3");
+            self.restricted = Some(chosen);
+        }
+        self.offer_alpn(io)
+    }
+
+    /// The ALPN offer: what the transfer offers, or the protocol the
+    /// session resumed restricts it to (`gnutls_alpn_set_protocols`,
+    /// which adds to an offer made before: made once).
+    fn offer_alpn(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+        let gs = self.gs.as_mut().expect("made by the client's init");
         // At most the offer's names, the most any offer has.
         let mut names: [&[u8]; 4] = [b""; 4];
         let protocols = match self.restricted {

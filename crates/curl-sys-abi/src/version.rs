@@ -323,7 +323,7 @@ mod tests {
     /// C's order and words, each version as the library says it.
     /// The GSS-API library after a space: none on Windows, where Kerberos
     /// is SSPI's.
-    #[cfg(feature = "openssl")]
+    #[cfg(any(feature = "openssl", feature = "gnutls"))]
     fn gss_shown() -> String {
         #[cfg(not(windows))]
         return format!(" mit-krb5/{}", curl_gssapi::version());
@@ -333,13 +333,13 @@ mod tests {
 
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
-    #[cfg(feature = "openssl")]
+    #[cfg(any(feature = "openssl", feature = "gnutls"))]
     fn ldap_shown() -> String {
         let ldap = curl_ldap::version();
         ldap.map_or_else(String::new, |v| format!(" {v}"))
     }
 
-    #[cfg(feature = "openssl")]
+    #[cfg(any(feature = "openssl", feature = "gnutls"))]
     fn ares_shown() -> String {
         if cfg!(feature = "threaded-resolver") {
             String::new()
@@ -377,6 +377,35 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(said.contains(&format!(" zlib/{info} ")), "{said}");
+    }
+
+    /// With GnuTLS, the version string names it after libcurl, and no QUIC
+    /// library, which `quic_version` has none of either, as C's GnuTLS
+    /// build without ngtcp2's GnuTLS crypto.
+    #[cfg(feature = "gnutls")]
+    #[test]
+    fn names_the_libraries_as_c_s_gnutls_build() {
+        // SAFETY: a static C string.
+        let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
+        let want = format!(
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{}{}{}",
+            version().version,
+            curl_gnutls::version(),
+            curl_zlib::version(),
+            curl_brotli::version(),
+            curl_zstd::version(),
+            ares_shown(),
+            curl_idn2::Shown,
+            curl_psl::version(),
+            crate::sshlib::NAME,
+            crate::sshlib::version(),
+            curl_nghttp2::version(),
+            gss_shown(),
+            ldap_shown()
+        );
+        assert_eq!(said, want);
+        assert!(said.contains(" GnuTLS/3."), "{said}");
+        assert!(info().quic_version.is_null());
     }
 
     /// Whether the build has an LDAP library.

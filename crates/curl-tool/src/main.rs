@@ -414,7 +414,7 @@ mod tests {
 
     /// The GSS-API library after a space: none on Windows, where Kerberos
     /// is SSPI's.
-    #[cfg(feature = "openssl")]
+    #[cfg(any(feature = "openssl", feature = "gnutls"))]
     fn gss_shown() -> String {
         #[cfg(not(windows))]
         return format!(" mit-krb5/{}", curl_gssapi::version());
@@ -424,7 +424,7 @@ mod tests {
 
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
-    #[cfg(feature = "openssl")]
+    #[cfg(any(feature = "openssl", feature = "gnutls"))]
     fn ldap_shown() -> String {
         let ldap = curl_ldap::version();
         ldap.map_or_else(String::new, |v| format!(" {v}"))
@@ -458,5 +458,35 @@ mod tests {
             ldap_shown()
         );
         assert_eq!(CurlVersion.to_string(), want);
+    }
+
+    /// With GnuTLS, `curl -V` names it after libcurl, and no QUIC
+    /// library, as C's GnuTLS build without ngtcp2's GnuTLS crypto.
+    #[cfg(feature = "gnutls")]
+    #[test]
+    fn names_the_libraries_as_c_s_gnutls_build() {
+        let want = format!(
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{}{}{}",
+            version().version,
+            curl_gnutls::version(),
+            curl_zlib::version(),
+            curl_brotli::version(),
+            curl_zstd::version(),
+            if cfg!(feature = "threaded-resolver") {
+                String::new()
+            } else {
+                format!(" c-ares/{}", ares::version())
+            },
+            curl_idn2::Shown,
+            curl_psl::version(),
+            sshlib::NAME,
+            sshlib::version(),
+            curl_nghttp2::version(),
+            gss_shown(),
+            ldap_shown()
+        );
+        let said = CurlVersion.to_string();
+        assert_eq!(said, want);
+        assert!(said.contains(" GnuTLS/3."), "{said}");
     }
 }

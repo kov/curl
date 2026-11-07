@@ -30,17 +30,22 @@ pub(crate) enum SetupPoint {
 /// (`Curl_cf_https_setup`), and above the name's DNS filter the one that
 /// asks for the origin's HTTPS record, unless the origin is an address.
 /// Below the HTTPS connect filter, once its winner agreed on HTTP/2, the
-/// HTTP/2 filter it inserts (`baller_connected`).
+/// HTTP/2 filter it inserts (`baller_connected`). Without the HTTPS
+/// connect filter, the origin's TLS, added, may ask for the record
+/// itself, its DNS filter put after the others (`tls_record`,
+/// `Curl_cf_ssl_insert_after`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Head {
     pub(crate) https: bool,
     pub(crate) record: bool,
+    pub(crate) tls_record: bool,
     pub(crate) h2: bool,
 }
 
 /// The most filters a chain holds: three DNS, HTTPS-CONNECT, HTTP/2,
 /// SETUP, SSL, HAPROXY, HTTP-PROXY, H1-PROXY, SSL-PROXY, SOCKS,
-/// HAPPY-EYEBALLS and TCP.
+/// HAPPY-EYEBALLS and TCP; or, with no HTTPS connect filter, a fourth DNS
+/// in its place.
 const MOST: usize = 14;
 
 /// A chain of filters, top first, each connected or not.
@@ -204,6 +209,10 @@ impl Chain {
         // The SOCKS proxy's goes after the last DNS filter there is
         // (`cf_dns_add_resolve`), above the HTTPS connect filter.
         if added.socks && resolves_target(route.route) {
+            push(Component::DnsFilter);
+        }
+        // The origin's TLS's is put in with it, after the last.
+        if head.tls_record && added.tls {
             push(Component::DnsFilter);
         }
         if head.https {

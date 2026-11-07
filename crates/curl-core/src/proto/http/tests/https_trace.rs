@@ -433,7 +433,7 @@ fn a_record_s_lines_fall_about_the_share_s_locks_as_c_s() {
     };
     let starts = [
         "LOCK",
-        "[DNS] cache lookup localhost:8990 queries=HTTPS",
+        "[DNS] cache lookup ",
         "[DNS] cached entry for localhost:8990 queries=HTTPS",
         "[DNS] cache negative",
         "[DNS] [HTTPS] ares_take_result",
@@ -1315,6 +1315,25 @@ fn ech_get(
     ares: &'static EchAres,
     mode: crate::options::EchMode,
 ) -> (Option<(u8, usize)>, Vec<String>) {
+    let url = format!("https://localhost:{PORT}/");
+    let mut m = tls_server(1);
+    let (configs, ran) = ech_run(&mut m, ares, mode, &url, b"ssl", |_| {});
+    assert_eq!(ran.result, Ok(()));
+    (configs, lines(&ran, &["[SSL]"]))
+}
+
+/// A transfer of `url` over `m` and a TLS library with ECH, resolving
+/// through `ares`, with ECH as `mode` asks and the options as `set` sets
+/// them, tracing `components`: what the session was handed of the record,
+/// and the run.
+fn ech_run(
+    m: &mut Multi,
+    ares: &'static EchAres,
+    mode: crate::options::EchMode,
+    url: &str,
+    components: &[u8],
+    set: impl FnOnce(&mut Options),
+) -> (Option<(u8, usize)>, Ran) {
     let support = crate::tls::TlsSupport {
         ech: true,
         ..fake::SUPPORT
@@ -1329,16 +1348,14 @@ fn ech_get(
     let mut e = Easy::new();
     e.set_libraries(libraries);
     let c = Components::new().unwrap();
-    c.configure(b"ssl");
+    c.configure(components);
     e.set_components(Some(c));
-    let mut m = tls_server(1);
-    let url = format!("https://localhost:{PORT}/");
-    let ran = https_get(&mut m, e, &url, |o| {
+    let ran = https_get(m, e, url, |o| {
         o.tls.options.make_mut().unwrap().ech.mode = mode;
+        set(o);
     });
-    assert_eq!(ran.result, Ok(()));
     let log = tls.log();
-    (log.ech_configs, lines(&ran, &["[SSL]"]))
+    (log.ech_configs, ran)
 }
 
 /// ECH that takes its configurations from the origin's HTTPS record waits
@@ -1408,4 +1425,157 @@ fn ech_takes_no_configurations_from_a_record_about_another_name() {
         lines.iter().any(|l| l.contains("need HTTPS-RR")),
         "{lines:?}"
     );
+}
+
+/// A transfer of `url` without the HTTPS connect filter, its server's
+/// replies each a connect call later than asked for, with ECH as `mode`
+/// asks and the options as `set` sets them: what the session was handed
+/// of the record, and the record's filter's lines and the TLS's around
+/// them.
+fn ech_without_https_connect(
+    ares: &'static EchAres,
+    mode: crate::options::EchMode,
+    url: &str,
+    set: impl FnOnce(&mut Options),
+) -> (Option<(u8, usize)>, Vec<String>) {
+    let response = fake::records(OK).unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response], true).late_replies();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let (configs, ran) = ech_run(&mut m, ares, mode, url, b"dns,ssl,setup,multi", set);
+    let starts = [
+        "[DNS] [HTTPS]",
+        "[DNS] cache lookup ",
+        "[DNS] adjust_pollset",
+        "[DNS] Curl_conn_connect",
+        "[DNS] connected filter",
+        "[DNS] [1] destroy",
+        "[SETUP] added SSL",
+        "[SSL] cf_connect",
+        "[SSL] adjust_pollset",
+        "[SSL] need",
+        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS]",
+        "[MULTI] [CONNECTING] connected",
+    ];
+    (configs, lines(&ran, &starts))
+}
+
+/// Without the HTTPS connect filter, ALPN off, the origin's TLS asks for
+/// the record itself as it is added, for ECH that takes its
+/// configurations from it (`Curl_cf_ssl_insert_after`): its DNS filter
+/// goes in after the name's, without the line of one added at the
+/// chain's end, and starts only as the pollset is made after the
+/// session is, so the session waits for nothing and is handed no
+/// configuration, as C's is (`ECH: requested but no ECHConfig
+/// available`). The record is taken as it comes all the same.
+#[test]
+fn without_the_https_connect_filter_the_tls_asks_for_the_record_too_late() {
+    static ARES: EchAres = EchAres {
+        record_at: 2,
+        elsewhere: false,
+    };
+    let url = format!("https://localhost:{PORT}/");
+    for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
+        let (configs, got) = ech_without_https_connect(&ARES, mode, &url, |o| {
+            o.tls.options.make_mut().unwrap().alpn = false;
+        });
+        assert_eq!(configs, None, "{mode:?}");
+        let want = expect(&format!(
+            "[DNS] Curl_conn_connect(block=0) -> 0, done=0
+            [DNS] [HTTPS] created DNS filter for localhost:{PORT}, transport=3
+            [SETUP] added SSL filter for origin
+            [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+            [SSL] cf_connect()
+            [SSL] cf_connect() -> 0, done=0
+            [DNS] Curl_conn_connect(block=0) -> 0, done=0
+            [DNS] adjust_pollset, starting localhost:{PORT} queries=HTTPS
+            [DNS] [HTTPS] cf_dns_start host localhost:{PORT}
+            [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+            [DNS] [HTTPS] resolve incomplete, responses=-, ongoing=1 for localhost:{PORT}
+            [DNS] [HTTPS] hostip_resolv started -> 81
+            [SSL] adjust_pollset, POLLIN fd=1000
+            [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+            [DNS] [HTTPS] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found
+            [DNS] [HTTPS] resolve complete for localhost:{PORT}
+            [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]"
+        ));
+        let at = got
+            .iter()
+            .position(|l| l.contains("created DNS filter"))
+            .expect("the record's filter is made");
+        assert_eq!(got[at - 1..at - 1 + want.len()], want, "{mode:?} {got:#?}");
+        // The record is asked for and taken, its filter, below the
+        // name's, connected first, letting go of its resolve: the only
+        // one, the name's answered at once.
+        let taken = format!("[DNS] [HTTPS] resolve complete for localhost:{PORT}");
+        assert!(got.contains(&taken), "{mode:?} {got:#?}");
+        let tail = expect(
+            "[DNS] connected filter chain below
+            [DNS] [1] destroy async
+            [DNS] connected filter chain below
+            [DNS] Curl_conn_connect(block=0) -> 0, done=1
+            [MULTI] [CONNECTING] connected [0][DNS][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]",
+        );
+        let end = got
+            .iter()
+            .position(|l| l.starts_with("[MULTI] [CONNECTING] connected"))
+            .expect("the chain connects")
+            + 1;
+        assert_eq!(got[end - tail.len()..end], tail, "{mode:?} {got:#?}");
+        assert!(
+            !got.iter().any(|l| l.contains("need HTTPS-RR")),
+            "{mode:?} {got:#?}"
+        );
+    }
+}
+
+/// A `wss` origin has no HTTPS connect filter, ALPN on or not, and its
+/// TLS asks for the record as an `https` origin's does without ALPN.
+#[test]
+fn a_wss_origin_s_tls_asks_for_the_record() {
+    static ARES: EchAres = EchAres {
+        record_at: 2,
+        elsewhere: false,
+    };
+    let url = format!("wss://localhost:{PORT}/");
+    let (configs, got) =
+        ech_without_https_connect(&ARES, crate::options::EchMode::Try, &url, |_| {});
+    assert_eq!(configs, None);
+    let created = format!("[DNS] [HTTPS] created DNS filter for localhost:{PORT}, transport=3");
+    assert!(got.contains(&created), "{got:#?}");
+    let started = format!("[DNS] adjust_pollset, starting localhost:{PORT} queries=HTTPS");
+    assert!(got.contains(&started), "{got:#?}");
+}
+
+/// No record is asked for by the TLS where its ECH takes no configuration
+/// from it, GREASE or off, nor for an origin that is an address: the
+/// chain has the name's DNS filter alone.
+#[test]
+fn the_tls_asks_for_no_record_it_would_not_take() {
+    static ARES: EchAres = EchAres {
+        record_at: 2,
+        elsewhere: false,
+    };
+    use crate::options::EchMode;
+    let https = format!("https://localhost:{PORT}/");
+    let address = format!("https://127.0.0.1:{PORT}/");
+    for (mode, url) in [
+        (EchMode::Off, &https),
+        (EchMode::Grease, &https),
+        (EchMode::Try, &address),
+    ] {
+        let (configs, got) = ech_without_https_connect(&ARES, mode, url, |o| {
+            o.tls.options.make_mut().unwrap().alpn = false;
+        });
+        assert_eq!(configs, None, "{mode:?} {url}");
+        assert!(
+            !got.iter()
+                .any(|l| l.contains("[HTTPS]") || l.contains("adjust_pollset, starting")),
+            "{mode:?} {url} {got:#?}"
+        );
+        let connected = "[MULTI] [CONNECTING] connected [0][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]";
+        assert!(
+            got.iter().any(|l| l == connected),
+            "{mode:?} {url} {got:#?}"
+        );
+    }
 }

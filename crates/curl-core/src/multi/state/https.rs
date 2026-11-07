@@ -37,7 +37,6 @@ use curl_alloc::TryArc;
 /// The HTTPS connect filter heading a setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HttpsConnect {
-    record: Record,
     /// Its first attempt's version, once started (`connect, init`).
     first: Option<Alpn>,
     /// What is known of the record came before the first was chosen: from
@@ -229,15 +228,20 @@ pub(super) enum RecordNow<'a> {
 }
 
 impl<'a> RecordNow<'a> {
-    /// What the setup headed by `https`, which knows `record`, knows: a
-    /// setup no HTTPS connect filter heads asks for none.
+    /// What the setup whose record is asked for as `ask` says, which knows
+    /// `record`, knows. A filter put in with the origin's TLS has not
+    /// started as the session is made, and is known to bring nothing
+    /// (`Curl_resolv_knows_https` of no resolve); a setup with no such
+    /// filter asks for none.
     pub(super) fn of(
-        https: Option<&HttpsConnect>,
+        ask: Option<&RecordAsk>,
         record: Option<&'a TryArc<HttpsRecord>>,
     ) -> RecordNow<'a> {
-        match https.map(|h| h.record) {
-            Some(Record::Unasked | Record::Pending) => RecordNow::Coming,
-            Some(Record::NotAsked | Record::Known) | None => RecordNow::Known(record.map(|r| &**r)),
+        match ask.map(|a| (a.by, a.at)) {
+            Some((Asker::Head, Record::Unasked) | (_, Record::Pending)) => RecordNow::Coming,
+            Some((Asker::Tls, Record::Unasked) | (_, Record::Known)) | None => {
+                RecordNow::Known(record.map(|r| &**r))
+            }
         }
     }
 
@@ -272,13 +276,69 @@ enum Second {
     Started(Alpn),
 }
 
+/// The DNS filter that asks for the origin's HTTPS record, and where its
+/// asking is. There is none for an origin that is an address
+/// (`cf_dns_add_resolve`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecordAsk {
+    by: Asker,
+    at: Record,
+}
+
+/// Why the filter is there, which says where in the chain it is and when
+/// it starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asker {
+    /// The HTTPS connect filter's, above the name's DNS filter, made with
+    /// the chain (`cf_hc_add`) and started by its first connect.
+    Head,
+    /// The origin's TLS's, put in with it after the chain's DNS filters
+    /// for ECH that takes its configurations from the record
+    /// (`Curl_cf_ssl_insert_after`), where no HTTPS connect filter heads
+    /// the setup, and started as the pollset after is made
+    /// (`cf_dns_adjust_pollset`): the session is made before.
+    Tls,
+}
+
+impl RecordAsk {
+    /// The HTTPS connect filter's, unless the origin of `route` is an
+    /// address.
+    pub(super) fn heading(route: &NetRoute) -> Option<RecordAsk> {
+        asked_for(route).then_some(RecordAsk {
+            by: Asker::Head,
+            at: Record::Unasked,
+        })
+    }
+
+    /// The one the origin's TLS puts in as it is added to a setup no
+    /// HTTPS connect filter heads, made with `ech`: for an HTTP origin,
+    /// `https` or `wss`, whose ECH takes its configurations from the
+    /// record (`Curl_ssl_need_httpsrr`), unless the origin is an address.
+    pub(super) fn with_tls(route: &NetRoute, ech: &crate::options::Ech) -> Option<RecordAsk> {
+        let http = matches!(route.origin.scheme().name(), "https" | "wss");
+        (http && ech.needs_record() && asked_for(route)).then_some(RecordAsk {
+            by: Asker::Tls,
+            at: Record::Unasked,
+        })
+    }
+
+    /// Whether the HTTPS connect filter asks: its filter is above the
+    /// name's in the chain, where the TLS's is below the others.
+    pub(crate) fn heads(&self) -> bool {
+        self.by == Asker::Head
+    }
+}
+
+/// Whether a record is asked for the origin of `route`: not for an
+/// address.
+fn asked_for(route: &NetRoute) -> bool {
+    address(route.target().name()).is_none()
+}
+
 /// Where the origin's HTTPS record is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Record {
-    /// None is asked for: the origin is an address
-    /// (`cf_dns_add_resolve`).
-    NotAsked,
-    /// To be looked for as the setup's first connect starts.
+    /// To be looked for as its filter starts.
     Unasked,
     /// Asked for, the answer still to come.
     Pending,
@@ -296,47 +356,39 @@ impl HttpsConnect {
         if !https || forwarded || !alpn {
             return None;
         }
-        let record = if address(route.target().name()).is_some() {
-            Record::NotAsked
-        } else {
-            Record::Unasked
-        };
         Some(HttpsConnect {
-            record,
             first: None,
             first_by_record: false,
             second: Second::Unchosen,
         })
     }
-
-    /// Whether a filter asks for the origin's record, which the chain
-    /// shows as a DNS filter of its own above the addresses'.
-    pub(crate) fn asks(&self) -> bool {
-        self.record != Record::NotAsked
-    }
 }
 
 /// A connect call of the setup begins (`Curl_conn_connect` from the top
-/// of the chain): its first looks for the origin's record, as the
-/// filter that asks for it starts (`cf_dns_start`); one after the
-/// attempt started has the answer.
+/// of the chain): the HTTPS connect filter's first looks for the origin's
+/// record, as the filter that asks for it starts (`cf_dns_start`); one
+/// after the record's filter started has the answer.
 pub(super) fn connect_call<H: Host>(
     c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    let Some(h) = c.https.as_mut() else {
+    let Some(ask) = c.record_ask.as_mut() else {
         return Ok(());
     };
-    match h.record {
-        Record::Unasked => {
-            let (record, kept, lookup) = look_up(&c.route, cx)?;
-            h.record = record;
-            h.first_by_record = kept.is_some();
+    match (ask.by, ask.at) {
+        (Asker::Head, Record::Unasked) => {
+            let (record, kept, lookup) = look_up(&c.route, true, cx)?;
+            ask.at = record;
+            if let Some(h) = c.https.as_mut() {
+                h.first_by_record = kept.is_some();
+            }
             c.record = kept;
             c.record_lookup = lookup;
             Ok(())
         }
-        Record::Pending if c.record_lookup.is_some() => {
+        // It starts as the pollset is made.
+        (Asker::Tls, Record::Unasked) => Ok(()),
+        (_, Record::Pending) if c.record_lookup.is_some() => {
             // Looked for in the cache first, where another transfer may
             // have kept it meanwhile, which ends this one's resolve
             // (`Curl_resolv_take_result`).
@@ -346,10 +398,7 @@ pub(super) fn connect_call<H: Host>(
                 c.record_lookup = None;
                 cx.libraries_closed();
                 c.record = kept;
-                h.record = Record::Known;
-                if h.first.is_none() {
-                    h.first_by_record = true;
-                }
+                known(c);
                 return Ok(());
             }
             let lookup = c.record_lookup.as_mut().expect("looked at above");
@@ -400,8 +449,56 @@ pub(super) fn connect_call<H: Host>(
             // (`Curl_resolv_take_result`).
             answer_came(c, cx, came, doh, false)
         }
-        Record::Pending if h.first.is_some() => answer_came(c, cx, Came::Negative, false, true),
-        Record::NotAsked | Record::Pending | Record::Known => Ok(()),
+        // Asked for where nothing answers, the first attempt started, it
+        // is known to be none; the TLS's filter, the session made, too.
+        (_, Record::Pending) if c.https.is_none_or(|h| h.first.is_some()) => {
+            answer_came(c, cx, Came::Negative, false, true)
+        }
+        (_, Record::Pending | Record::Known) => Ok(()),
+    }
+}
+
+/// The filter the origin's TLS put in starts as the pollset is made after
+/// the call it was put in (`cf_dns_adjust_pollset`): the record is looked
+/// for as the HTTPS connect filter's is as it starts.
+pub(super) fn tls_ask_starts<H: Host>(
+    c: &mut Connecting,
+    cx: &mut StepCx<'_, H>,
+) -> Result<(), ErrorKind> {
+    let Some(ask) = c.record_ask else {
+        return Ok(());
+    };
+    if (ask.by, ask.at) != (Asker::Tls, Record::Unasked) {
+        return Ok(());
+    }
+    let peer = c.route.target();
+    let at = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
+    trace::of_with(
+        cx,
+        Component::DnsFilter,
+        &[
+            b"adjust_pollset, starting ",
+            peer.name(),
+            at.bytes(),
+            b" queries=HTTPS",
+        ],
+    );
+    let (record, kept, lookup) = look_up(&c.route, false, cx)?;
+    c.record_ask = Some(RecordAsk { at: record, ..ask });
+    c.record = kept;
+    c.record_lookup = lookup;
+    Ok(())
+}
+
+/// The record is known: come before the HTTPS connect filter's first
+/// attempt is chosen, it chooses it.
+fn known(c: &mut Connecting) {
+    let ask = c.record_ask.as_mut().expect("the record was asked for");
+    ask.at = Record::Known;
+    if let Some(h) = c.https.as_mut()
+        && h.first.is_none()
+    {
+        h.first_by_record = true;
     }
 }
 
@@ -446,15 +543,11 @@ fn answer_came<H: Host>(
             c.record = Some(record);
         }
     }
-    let h = c.https.as_mut().expect("the filter heads the setup");
-    h.record = Record::Known;
     // Come before the first attempt is chosen, it chooses it, as C's
     // `connect, init` asks the DNS filter for what it has taken. Come
     // after, it chooses the second as the filter's own connect runs, below
     // the DNS filters (`second_chosen`).
-    if h.first.is_none() {
-        h.first_by_record = true;
-    }
+    known(c);
     Ok(())
 }
 
@@ -463,10 +556,10 @@ fn answer_came<H: Host>(
 /// known since the first attempt started, the second is chosen by it
 /// (`cf_hc_connect`'s `cf_hc_set_baller2`).
 pub(super) fn second_chosen<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) {
-    let Some(h) = c.https else {
+    let (Some(h), Some(ask)) = (c.https, c.record_ask) else {
         return;
     };
-    let (Record::Known, Some(first), Second::Unchosen) = (h.record, h.first, h.second) else {
+    let (Record::Known, Some(first), Second::Unchosen) = (ask.at, h.first, h.second) else {
         return;
     };
     // Whether the first's choice weighed HTTP/3, as it does again.
@@ -566,7 +659,14 @@ type LookedUp = (Record, Option<TryArc<HttpsRecord>>, Option<RecordLookup>);
 
 /// The origin's record looked for in the cache, as C traces it
 /// (`hostip_resolv`, `Curl_dnscache_get`): what the setup knows of it.
-fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp, ErrorKind> {
+/// A filter started by its connect takes the answer at once if it can
+/// (`cf_dns_connect`'s `Curl_resolv_take_result`); one started as the
+/// pollset is made does not (`cf_dns_adjust_pollset`), unless `take`.
+fn look_up<H: Host>(
+    route: &NetRoute,
+    take: bool,
+    cx: &mut StepCx<'_, H>,
+) -> Result<LookedUp, ErrorKind> {
     let peer = route.target();
     let (name, port) = (peer.name(), peer.port());
     let at = Text::<8>::clipped(format_args!(":{port}")).0;
@@ -654,6 +754,16 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
             dns,
             format_args!("[HTTPS] hostip_resolv started -> {again}"),
         );
+        // A resolver that never answers a record says nothing of it, and
+        // the setup goes on without one, as below.
+        if !take {
+            let record = if unanswered {
+                Record::Known
+            } else {
+                Record::Pending
+            };
+            return Ok((record, None, lookup));
+        }
         // The answer is asked for at once, the cache looked in first
         // (`Curl_resolv_take_result`).
         if let HttpsLookup::Found(kept) = cached(route, cx) {
@@ -959,7 +1069,12 @@ pub(super) fn may_race<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> bool {
     let Some(first) = h.first else {
         return false;
     };
-    h.record == Record::Pending || choosing(c, cx).second(first).is_some()
+    pending(c) || choosing(c, cx).second(first).is_some()
+}
+
+/// Whether the record is asked for, its answer still to come.
+fn pending(c: &Connecting) -> bool {
+    c.record_ask.is_some_and(|a| a.at == Record::Pending)
 }
 
 /// The setup's first attempt starts (`cf_hc_connect`'s INIT): its
@@ -1004,12 +1119,12 @@ pub(super) fn start<H: Host>(
     );
     let h = c.https.as_mut().expect("the filter heads the setup");
     h.first = Some(first);
-    if h.record != Record::Pending {
+    if !pending(c) {
         let second = choose_second(c, cx, first, said);
         c.https.as_mut().expect("the filter heads the setup").second = second;
     }
-    let h = c.https.as_mut().expect("the filter heads the setup");
-    if h.record == Record::Pending || matches!(h.second, Second::Due(_)) {
+    let h = c.https.expect("the filter heads the setup");
+    if pending(c) || matches!(h.second, Second::Due(_)) {
         let wait = cx.easy().options().limits.eyeballs.0 / 2;
         super::arm(deadlines, cx, TimerKind::AlpnEyeballs, wait);
     }

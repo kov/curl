@@ -79,7 +79,7 @@ pub(crate) fn call_connected<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain) 
     // hop's; never the record's. An accepted connection has none.
     if connected.dns_filters() > 0 {
         let target = connected.dns_filters() > 1;
-        names::connected(cx, ConnRank::Second, target, false);
+        names::connected(cx, ConnRank::Second, target, false, false);
     }
     let top = connected.top().unwrap_or(Component::DnsFilter);
     connect_ended_at(cx, top, Ok(true));
@@ -113,7 +113,7 @@ pub(crate) fn setup_filters_go<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain
     // hop's; never the record's; none for a connection accepted from the
     // server.
     let filters = connected.dns_filters();
-    let dns = names::filters(ConnRank::Second, filters > 1, false).take(filters);
+    let dns = names::filters(ConnRank::Second, filters > 1, false, false).take(filters);
     names::setup_filters_go(cx, &connected, ConnRank::Second, dns, |_, _| {});
     let reduced = connected.reduced();
     mstate::trace(cx, format_args!("reduced to {reduced}"));
@@ -130,7 +130,15 @@ impl SideSetup {
     ) -> Chain {
         let under_way = machine.handshake.as_deref().map(super::Handshake::filter);
         let plan = machine.route().clone();
-        enter_chain(machine, &plan, Head::default(), under_way, cx, entered)
+        enter_chain(
+            machine,
+            &plan,
+            Head::default(),
+            under_way,
+            cx,
+            entered,
+            None,
+        )
     }
 
     /// Move the handshakes over `machine`, dialed, on as far as they go

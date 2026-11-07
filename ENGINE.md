@@ -3031,7 +3031,13 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   the record is about the origin and its port (`RecordNow::ech_configs`,
   `Curl_httpsrr_is_for_peer`), handed to the library as `TlsPeer::ech_configs`; GREASE and a
   list of the transfer's wait for nothing, and a proxy's TLS tries no ECH. A QUIC attempt is
-  handed no record's list.
+  handed no record's list. Where no HTTPS connect filter heads the setup (`wss`, `https`
+  without ALPN), the origin's TLS asks for the record itself as it is added, as
+  `Curl_cf_ssl_insert_after` does: one `RecordAsk` per setup, the filter's or the TLS's, holds
+  where the asking is, its DNS filter rendered below the others (`Head::tls_record`) and
+  started as the pollset after its call is made (`tls_ask_starts`, `cf_dns_adjust_pollset`).
+  The session is made before that, so, as in C, it waits for nothing and is handed no list
+  (`ECH: requested but no ECHConfig available`); the answer is only kept in the cache.
 - **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
   name themselves (`state.feat`). A probe is verbose only with DoH's trace on.
 

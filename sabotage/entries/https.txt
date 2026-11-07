@@ -3,9 +3,9 @@ file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_an_address_asks_for_no_record
 features: test-util
 --- old
-        let record = if address(route.target().name()).is_some() {
+    address(route.target().name()).is_none()
 --- new
-        let record = if address(route.target().name()).is_none() {
+    address(route.target().name()).is_some()
 
 === a record found in the cache still arms the timer for a second attempt
 file: crates/curl-core/src/multi/state/https.rs
@@ -333,13 +333,14 @@ fn say_lookup<H: Host>(route: &NetRoute, found: bool, cx: &mut StepCx<'_, H>) {
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-tool a_record_come_before_the_first_attempt_chooses_it
 --- old
-    if h.first.is_none() {
-        h.first_by_record = true;
-    }
+    if let Some(h) = c.https.as_mut()
+        && h.first.is_none()
+    {
 --- new
-    if h.first.is_none() && awaits_record() {
-        h.first_by_record = true;
-    }
+    if let Some(h) = c.https.as_mut()
+        && h.first.is_none()
+        && awaits_record()
+    {
 
 === a record answered empty is said to be available
 file: crates/curl-core/src/multi/state/https.rs
@@ -394,16 +395,14 @@ witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_wai
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::a_record_and_addresses_come_together_are_taken_before_the_second_is_chosen
 --- old
-    if h.first.is_none() {
-        h.first_by_record = true;
-    }
+    known(c);
     Ok(())
+}
 --- new
-    if h.first.is_none() {
-        h.first_by_record = true;
-    }
+    known(c);
     second_chosen(c, cx);
     Ok(())
+}
 
 === an HTTPS record kept by another transfer is not looked for before the resolve
 file: crates/curl-core/src/multi/state/https.rs
@@ -419,7 +418,7 @@ witness: curl-tool a_name_another_transfer_resolved_meanwhile_is_taken_from_the_
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-tool an_https_setup_whose_attempt_fails_waits_for_the_record
 --- old
-    h.record == Record::Pending || choosing(c, cx).second(first).is_some()
+    pending(c) || choosing(c, cx).second(first).is_some()
 --- new
     choosing(c, cx).second(first).is_some()
 

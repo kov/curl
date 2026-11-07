@@ -21,6 +21,9 @@ pub(crate) struct Connecting {
     pub(super) route: NetRoute,
     /// The HTTPS connect filter heading the setup, if it has one.
     pub(super) https: Option<https::HttpsConnect>,
+    /// The DNS filter asking for the origin's HTTPS record, if one does:
+    /// the HTTPS connect filter's, or the origin's TLS's.
+    pub(super) record_ask: Option<https::RecordAsk>,
     /// The origin's HTTPS record, once known that it has one.
     pub(super) record: Option<curl_alloc::TryArc<crate::doh::HttpsRecord>>,
     /// Its resolve over DoH, while it goes on: gone with the setup.
@@ -141,11 +144,11 @@ impl Connecting {
             route,
             race,
             negotiate,
-            https,
+            record_ask,
             record,
             ..
         } = self;
-        let record = https::RecordNow::of(https.as_ref(), record.as_ref());
+        let record = https::RecordNow::of(record_ask.as_ref(), record.as_ref());
         let machine = match (a, race.as_deref_mut()) {
             (Attempt::Second, Some(race)) => race.second.running_mut().expect("the second runs"),
             (Attempt::Second, None) => panic!("a second runs in a race"),
@@ -525,6 +528,7 @@ impl Connecting {
             proto,
             route,
             https: _,
+            record_ask: _,
             record: _,
             record_lookup: _,
             race,
@@ -551,7 +555,15 @@ pub(super) fn connecting<H: Host>(
     c: Connecting,
     cx: &mut StepCx<'_, H>,
 ) -> (TransferState, Wake) {
-    let (state, wake) = connecting_step(run, c, cx);
+    let (mut state, wake) = connecting_step(run, c, cx);
+    // The setup waits: the record's filter its TLS put in starts as the
+    // pollset is made.
+    if wake == Wake::Idle
+        && let TransferState::Connecting(c) = &mut state
+        && let Err(kind) = https::tls_ask_starts(c, cx)
+    {
+        return (state.fail(kind), Wake::Again);
+    }
     // A resolver library's resolve held beside the setup times out only if
     // run again (`Curl_async_pollset`'s `EXPIRE_ASYNC_NAME`).
     if let TransferState::Connecting(c) = &state {
@@ -723,7 +735,7 @@ fn connecting_step<H: Host>(
             }
         }
         let lead = c.leader();
-        let chain = enter_setup(&c, cx, &mut entered, lead);
+        let chain = enter_setup(&mut c, cx, &mut entered, lead);
         let partly = c.lead().and_then(ConnectMachine::partly_made);
         let https = c.https;
         let (next, wake) = connect_once(run, c, cx, lead);
@@ -805,7 +817,8 @@ pub(super) fn connect_ended_at<H: Host>(
 fn head_of(c: &Connecting) -> Head {
     Head {
         https: c.https.is_some(),
-        record: c.https.is_some_and(|h| h.asks()),
+        record: c.record_ask.is_some_and(|a| a.heads()),
+        tls_record: c.record_ask.is_some_and(|a| !a.heads()),
         h2: false,
     }
 }
@@ -836,21 +849,26 @@ fn resolved<H: Host>(
 /// call, again as it adds a filter, and as it starts over. Returns the
 /// chain as the connect goes on to, for its failure to name.
 fn enter_setup<H: Host>(
-    c: &Connecting,
+    c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
     entered: &mut bool,
     a: Attempt,
 ) -> Option<Chain> {
+    let head = head_of(c);
+    let mut ask = c.record_ask;
     let setup = c.attempt(a)?;
     let under_way = c.handshake(a).map(Handshake::filter);
-    Some(enter_chain(
+    let chain = enter_chain(
         setup,
         &c.route,
-        head_of(c),
+        head,
         under_way,
         cx,
         entered,
-    ))
+        Some(&mut ask),
+    );
+    c.record_ask = ask;
+    Some(chain)
 }
 
 /// SETUP's connect entered over `chain`: its line, then, while the
@@ -866,30 +884,34 @@ fn setup_entered<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain, udp: bool) {
 }
 
 /// `enter_setup` of the chain `setup` makes over `plan`, under `head`,
-/// with the handshake `under_way` started.
+/// with the handshake `under_way` started. The origin's TLS, added, puts
+/// in the filter asking for the origin's record in `ask` where it asks
+/// for one there: the transfer's own setup, which a second connection's
+/// is not.
 pub(super) fn enter_chain<H: Host>(
     setup: &ConnectMachine,
     plan: &NetRoute,
-    head: Head,
+    mut head: Head,
     under_way: Option<Component>,
     cx: &mut StepCx<'_, H>,
     entered: &mut bool,
+    ask: Option<&mut Option<https::RecordAsk>>,
 ) -> Chain {
     let reached = setup.reached();
     let rank = cx.rank();
     // The route as the attempt dials it, which a race's second dials
     // otherwise than the first.
     let route = setup.dialing();
-    let chain = |reached, under_way, installed| {
+    let chain = |head, reached, under_way, installed| {
         Chain::of(route, head, reached, under_way, installed).on(rank)
     };
     let udp = route.asks_udp();
     let entry = |cx: &mut StepCx<'_, H>, chain: Chain| setup_entered(cx, chain, udp);
     match reached {
-        SetupPoint::Resolving => return chain(reached, None, true),
+        SetupPoint::Resolving => return chain(head, reached, None, true),
         SetupPoint::Racing { started: false } => {
             // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
-            entry(cx, chain(reached, None, true));
+            entry(cx, chain(head, reached, None, true));
             let peer = plan.destination();
             let to = if plan.proxy_over_quic() {
                 "HTTP/3 proxy"
@@ -910,7 +932,7 @@ pub(super) fn enter_chain<H: Host>(
                     at.bytes(),
                 ],
             );
-            let racing = chain(SetupPoint::Racing { started: true }, None, true);
+            let racing = chain(head, SetupPoint::Racing { started: true }, None, true);
             entry(cx, racing);
             *entered = true;
             return racing;
@@ -918,21 +940,21 @@ pub(super) fn enter_chain<H: Host>(
         SetupPoint::Racing { started: true } | SetupPoint::Dialed(_) => {}
     }
     if !*entered {
-        entry(cx, chain(reached, under_way, true));
+        entry(cx, chain(head, reached, under_way, true));
         *entered = true;
     }
     let (SetupPoint::Dialed(made), None) = (reached, under_way) else {
-        return chain(reached, under_way, true);
+        return chain(head, reached, under_way, true);
     };
     let Some(due) = handshake_due(plan, setup, made) else {
-        return chain(reached, None, true);
+        return chain(head, reached, None, true);
     };
     // The tunnel's filter was added with the HTTPS proxy's TLS below it,
     // and goes on connecting in the same call.
     if let Due::Tunnel = due
         && made.proxy_tls
     {
-        return chain(reached, Some(Component::HttpProxy), false);
+        return chain(head, reached, Some(Component::HttpProxy), false);
     }
     let filter = match due {
         Due::Socks(_) => {
@@ -978,6 +1000,21 @@ pub(super) fn enter_chain<H: Host>(
             Component::SslProxy
         }
         Due::Tls(side) => {
+            // The origin's, where no HTTPS connect filter asked for the
+            // record, asks for it itself, its filter put in first
+            // (`Curl_cf_ssl_insert_after`).
+            let tls = plan
+                .tls
+                .as_ref()
+                .filter(|_| side == TlsSide::Origin && !head.https);
+            if let (Some(tls), Some(ask)) = (tls, ask)
+                && ask.is_none()
+                && let Some(asked) = https::RecordAsk::with_tls(plan, &tls.options.ech)
+            {
+                names::tls_record_created(cx, plan);
+                *ask = Some(asked);
+                head.tls_record = true;
+            }
             trace::of(
                 cx,
                 Component::Setup,
@@ -996,8 +1033,8 @@ pub(super) fn enter_chain<H: Host>(
         }
     };
     // The tunnel's filter installs its HTTP/1.1 one as it first connects.
-    entry(cx, chain(reached, Some(filter), false));
-    chain(reached, Some(filter), true)
+    entry(cx, chain(head, reached, Some(filter), false));
+    chain(head, reached, Some(filter), true)
 }
 
 /// One step of attempt `a`'s setup within a call: a handshake's, the
@@ -1331,7 +1368,7 @@ fn drive_other<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
         // races, its own; dialed, with the handshake it adds.
         let mut entered = false;
         if let SetupPoint::Dialed(_) = other.reached() {
-            enter_setup(&c, cx, &mut entered, a);
+            enter_setup(&mut c, cx, &mut entered, a);
         } else {
             let chain = Chain::of(other.dialing(), head_of(&c), other.reached(), None, true);
             setup_entered(cx, chain, other.dialing().asks_udp());
@@ -1873,7 +1910,7 @@ pub(super) fn up<H: Host>(
     https::call_ended(c.https, cx, Ok(true));
     let route = c.lease.conn().dialing().expect("set up over the network");
     let target = crate::conn::chain::resolves_target(route.route);
-    names::connected(cx, ConnRank::First, target, head.record);
+    names::connected(cx, ConnRank::First, target, head.record, head.tls_record);
     chain_connect_ended(cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects),
@@ -1940,7 +1977,7 @@ pub(super) fn up<H: Host>(
     let mut lost = lost;
     // Each DNS filter lets go of the entry it holds as it goes, the race's
     // above both its attempts.
-    let dns = names::filters(ConnRank::First, target, head.record);
+    let dns = names::filters(ConnRank::First, target, head.record, head.tls_record);
     names::setup_filters_go(cx, &connected, ConnRank::First, dns, |cx, filter| {
         if filter != Component::HttpsConnect {
             return;

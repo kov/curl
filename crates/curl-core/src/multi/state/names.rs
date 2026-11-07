@@ -81,6 +81,15 @@ pub(super) fn chain_set_up<H: Host>(
     created(cx, queries, first, transport, !record);
 }
 
+/// The origin's TLS, added where no HTTPS connect filter heads the setup,
+/// puts in a filter asking for the origin's HTTPS record after the
+/// chain's other DNS filters (`Curl_cf_ssl_insert_after`'s
+/// `cf_dns_insert_after`).
+pub(super) fn tls_record_created<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
+    let transport = if route.destination().is_unix() { 6 } else { 3 };
+    created(cx, "HTTPS", route.target(), transport, false);
+}
+
 /// The HTTPS record's filter starts, for the origin (`cf_dns_start`).
 /// Over a Unix socket it asks for no record: the socket's path is made its
 /// address at once, as the addresses' filter makes it (`resolv_unix`).
@@ -129,34 +138,37 @@ fn resolved_unix<H: Host>(cx: &mut StepCx<'_, H>, peer: &Peer) {
 }
 
 /// The DNS filters of the chain set up for `rank`, top first: the origin's
-/// HTTPS record's if one is asked for, the first hop's, and the SOCKS
-/// proxy's target's if it is resolved here (`cf_dns_add_resolve`).
+/// HTTPS record's if the HTTPS connect filter asks for it, the first
+/// hop's, the SOCKS proxy's target's if it is resolved here, and the
+/// record's if the origin's TLS asks for it (`cf_dns_add_resolve`).
 pub(super) fn filters(
     rank: ConnRank,
     target: bool,
     record: bool,
+    tls_record: bool,
 ) -> impl DoubleEndedIterator<Item = Holder> + Clone {
     [
         record.then_some(Holder::Record),
         Some(Holder::Addresses(rank)),
         target.then_some(Holder::Target),
+        tls_record.then_some(Holder::Record),
     ]
     .into_iter()
     .flatten()
 }
 
 /// The chain below each of the DNS filters of the chain set up for
-/// `rank` is connected, the lowest first: the SOCKS proxy's target's if it
-/// is resolved here, the first hop's, and the origin's HTTPS record's if
-/// one is asked for. Each lets go of its resolve's record
-/// (`cf_dns_connect`'s `Curl_resolv_destroy`).
+/// `rank` is connected, the lowest first, as `filters` names them. Each
+/// lets go of its resolve's record (`cf_dns_connect`'s
+/// `Curl_resolv_destroy`).
 pub(super) fn connected<H: Host>(
     cx: &mut StepCx<'_, H>,
     rank: ConnRank,
     target: bool,
     record: bool,
+    tls_record: bool,
 ) {
-    for holder in filters(rank, target, record).rev() {
+    for holder in filters(rank, target, record, tls_record).rev() {
         trace::of(
             cx,
             Component::DnsFilter,

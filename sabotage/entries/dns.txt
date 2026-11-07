@@ -549,9 +549,9 @@ file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses
 features: test-util
 --- old
-    names::connected(cx, ConnRank::First, target, head.record);
+    names::connected(cx, ConnRank::First, target, head.record, head.tls_record);
 --- new
-    names::connected(cx, ConnRank::First, target, false);
+    names::connected(cx, ConnRank::First, target, false, head.tls_record);
 
 === the addresses' DNS filter after the HTTPS record's is traced as added
 file: crates/curl-core/src/multi/state/names.rs

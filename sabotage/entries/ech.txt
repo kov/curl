@@ -156,3 +156,54 @@ openssl-fork: boringssl
         if trying && ech.public_name.is_some() {
 --- new
         if trying && ech.public_name.is_some() && false {
+
+=== the origin's TLS asks for no record where no HTTPS connect filter heads the setup
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::without_the_https_connect_filter_the_tls_asks_for_the_record_too_late
+features: test-util
+--- old
+        (http && ech.needs_record() && asked_for(route)).then_some(RecordAsk {
+--- new
+        (false && http && ech.needs_record() && asked_for(route)).then_some(RecordAsk {
+
+=== the record the origin's TLS asks for is waited for and handed to its session, as C's is not
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::without_the_https_connect_filter_the_tls_asks_for_the_record_too_late
+features: test-util
+--- old
+            Some((Asker::Head, Record::Unasked) | (_, Record::Pending)) => RecordNow::Coming,
+--- new
+            Some((_, Record::Unasked) | (_, Record::Pending)) => RecordNow::Coming,
+
+=== a wss origin's TLS asks for no record
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_wss_origin_s_tls_asks_for_the_record
+features: test-util
+--- old
+        let http = matches!(route.origin.scheme().name(), "https" | "wss");
+--- new
+        let http = matches!(route.origin.scheme().name(), "https");
+
+=== the record's filter the origin's TLS puts in connects above the name's
+file: crates/curl-core/src/multi/state/names.rs
+witness: curl-core proto::http::tests::https_trace::without_the_https_connect_filter_the_tls_asks_for_the_record_too_late
+features: test-util
+--- old
+        record.then_some(Holder::Record),
+        Some(Holder::Addresses(rank)),
+        target.then_some(Holder::Target),
+        tls_record.then_some(Holder::Record),
+--- new
+        record.then_some(Holder::Record),
+        tls_record.then_some(Holder::Record),
+        Some(Holder::Addresses(rank)),
+        target.then_some(Holder::Target),
+
+=== the record's filter the origin's TLS starts as the pollset is made takes the answer at once
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::without_the_https_connect_filter_the_tls_asks_for_the_record_too_late
+features: test-util
+--- old
+    let (record, kept, lookup) = look_up(&c.route, false, cx)?;
+--- new
+    let (record, kept, lookup) = look_up(&c.route, true, cx)?;

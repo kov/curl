@@ -3,17 +3,17 @@ file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_c
 --- old
     if !*entered {
-        entry(cx, chain(reached, under_way, true));
+        entry(cx, chain(head, reached, under_way, true));
 --- new
     if false {
-        entry(cx, chain(reached, under_way, true));
+        entry(cx, chain(head, reached, under_way, true));
 
 === the race's start traces no chain before its happy eyeballs filter
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_redial_starts_the_chain_over
 --- old
             // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
-            entry(cx, chain(reached, None, true));
+            entry(cx, chain(head, reached, None, true));
 --- new
             // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
 
@@ -21,18 +21,18 @@ witness: curl-core proto::http::tests::setup_trace::a_redial_starts_the_chain_ov
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_as_c
 --- old
-    entry(cx, chain(reached, Some(filter), false));
+    entry(cx, chain(head, reached, Some(filter), false));
 --- new
-    entry(cx, chain(reached, Some(filter), true));
+    entry(cx, chain(head, reached, Some(filter), true));
 
 === a handshake failing as it starts names the chain without its filter
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_socks_handshake_refused_as_it_starts_names_its_filter
 --- old
-    chain(reached, Some(filter), true)
+    chain(head, reached, Some(filter), true)
 }
 --- new
-    chain(reached, under_way, true)
+    chain(head, reached, under_way, true)
 }
 
 === a SOCKS proxy given an address has no DNS filter of its own in the chain

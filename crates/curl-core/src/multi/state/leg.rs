@@ -1284,6 +1284,7 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
         });
     }
     let mut https = None;
+    let mut record_ask = None;
     if !lease.is_up() {
         // The HTTPS connect filter starts the chain, which puts the setup
         // filter below it as its attempt starts; or the setup filter does
@@ -1294,9 +1295,10 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
             None => Component::Setup,
         };
         trace::of(cx, first, format_args!("added"));
-        let record = https.is_some_and(|h| h.asks());
+        // It asks for the origin's record (`cf_hc_add`).
+        record_ask = https.and_then(|_| https::RecordAsk::heading(&route));
         let wants_quic = proto.negotiation().is_some_and(|n| n.wants_quic());
-        names::chain_set_up(cx, &route, record, wants_quic);
+        names::chain_set_up(cx, &route, record_ask.is_some(), wants_quic);
         mstate::trace(cx, format_args!("Curl_conn_setup() -> 0"));
     }
     TransferState::Connecting(Connecting {
@@ -1304,6 +1306,7 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
         proto,
         route,
         https,
+        record_ask,
         record: None,
         record_lookup: None,
         race: None,

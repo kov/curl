@@ -1428,9 +1428,14 @@ impl ConnectMachine {
                             }
                             Some(p) => (Looked::Pending(p), false),
                         };
-                        // A library's is looked at again as soon as it started.
+                        // One that says its own lines, a library's or DoH's,
+                        // is looked at again as soon as it started, as the
+                        // filter takes the answer right after its start
+                        // (`cf_dns_connect`'s `Curl_resolv_take_result`).
                         let looked = match looked {
-                            Looked::Pending(p) if !fresh || p.is_library() || p.live.is_some() => {
+                            Looked::Pending(p)
+                                if !fresh || p.says_its_own() || p.live.is_some() =>
+                            {
                                 match p.take((name, port), cx) {
                                     Taken::Done(done) => {
                                         let (a, f) = done?;
@@ -3555,10 +3560,6 @@ impl Pending {
 
     fn over_doh(&self) -> bool {
         matches!(self.via, Via::Doh(_))
-    }
-
-    fn is_library(&self) -> bool {
-        matches!(self.via, Via::Library(_))
     }
 
     /// Whether it says its own lines as it goes, not the network's resolver.

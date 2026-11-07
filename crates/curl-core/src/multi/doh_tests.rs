@@ -894,16 +894,30 @@ fn the_resolves_lines_are_c_s() {
         assert!(has(want) >= 1, "{want}: {said:?}");
     }
     assert_eq!(has("[DNS] [DoH] probe done"), 4, "{said:?}");
-    // Its probes started, the resolve is not looked at again at once, as
-    // C looks at a resolver's but not at DoH's (`hostip_resolv_start`).
-    let started = said
-        .iter()
-        .position(|l| l.trim_end() == "[DNS] [A+AAAA] hostip_resolv started -> 81")
-        .expect("started");
-    assert!(
-        !said[started + 1].starts_with("[DNS] cache lookup foo.test:443 queries=A+AAAA"),
-        "{said:?}"
-    );
+    // Its probes started, each filter's resolve is looked at again at
+    // once, as `cf_dns_connect` takes the answer right after its start.
+    for (queries, ongoing) in [("HTTPS", 1), ("A+AAAA", 2)] {
+        let started = format!("[DNS] [{queries}] hostip_resolv started -> 81");
+        let started = said
+            .iter()
+            .position(|l| l.trim_end() == started)
+            .expect("started");
+        let next: Vec<&str> = said[started + 1..started + 3]
+            .iter()
+            .map(|l| l.trim_end())
+            .collect();
+        assert_eq!(
+            next,
+            [
+                format!("[DNS] cache lookup foo.test:443 queries={queries} -> 0 not found"),
+                format!(
+                    "[DNS] [{queries}] resolve incomplete, responses=-, \
+                     ongoing={ongoing} for foo.test:443"
+                ),
+            ],
+            "{said:?}"
+        );
+    }
     // The answer's entry is said between the two lines of its probe's end,
     // as `Curl_dnscache_add` says it inside C's.
     let at = said

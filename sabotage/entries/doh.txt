@@ -349,3 +349,23 @@ witness: curl-core multi::doh_tests::a_record_still_asked_for_goes_as_the_chain_
                 trace::of(cx, Component::Dns, format_args!("[DoH] probe done"));
 --- new
                 *lookup = None;
+
+=== a name's resolve over DoH is not looked at right after its start
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::doh_tests::the_resolves_lines_are_c_s
+--- old
+                                if !fresh || p.says_its_own() || p.live.is_some() =>
+--- new
+                                if !fresh || (p.says_its_own() && !p.over_doh()) || p.live.is_some() =>
+
+=== a record's resolve over DoH is not looked at right after its start
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core multi::doh_tests::the_resolves_lines_are_c_s
+--- old
+        if let Some(RecordLookup::Doh(doh)) = &lookup {
+            say_lookup(route, false, cx);
+--- new
+        if let Some(RecordLookup::Doh(doh)) = &lookup
+            && false
+        {
+            say_lookup(route, false, cx);

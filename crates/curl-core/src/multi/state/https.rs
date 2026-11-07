@@ -772,6 +772,13 @@ fn look_up<H: Host>(
                 return taken_by_library(route, found, Taken::Later, lookup, cx);
             }
         }
+        // DoH's is looked at as well, its probe only just added: not
+        // answered (`Curl_doh_take_result`).
+        if let Some(RecordLookup::Doh(doh)) = &lookup {
+            say_lookup(route, false, cx);
+            assert!(doh.https().is_none(), "a probe just added has not ended");
+            say_incomplete(route, cx);
+        }
         // It is looked at as a library is, and says nothing of the record,
         // then or after: the setup goes on without one and keeps nothing of
         // it, as C's threaded build does.

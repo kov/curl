@@ -1435,7 +1435,18 @@ its category's interface and scored on a C leg built with it, on Linux and, wher
 it there, Windows.
 
 103. **TLS**: GnuTLS, wolfSSL, mbedTLS, Rustls; the OpenSSL forks C supports (BoringSSL,
-     AWS-LC, LibreSSL, quictls) as variants of the OpenSSL backend. **To do.**
+     AWS-LC, LibreSSL, quictls) as variants of the OpenSSL backend. **In progress.**
+     GnuTLS is **done**: `curl-gnutls` behind the core's TLS seam as `lib/vtls/gtls.c` drives
+     it, chosen by the `gnutls` feature in place of `openssl`, with Ed25519 from its nettle and
+     no HTTP/3 (that is 104's). Scored with `score.py --gnutls` against C's GnuTLS build
+     (`baseline.py --gnutls`, `build/c-gnutls`): measured 2026-11-06, runtests.pl passes all
+     1978 tests C's passes and pytest all 649; 2120 and 58 pytest cases (51 of
+     `test_17_09_ssl_min_max`, refused by the system's crypto policy, and 7 of early data) fail
+     on both. `curl -V` is C's, and what the tool says of the options GnuTLS lacks is C's
+     tool's. The session's logic is tested through a scripted fake of the library; every
+     mutant of it is caught, or excluded in `.cargo/mutants.toml` with why. LibreSSL is a
+     variant of the OpenSSL backend already (102). Left: wolfSSL, mbedTLS, Rustls, and
+     BoringSSL, AWS-LC and quictls as OpenSSL variants.
 104. **QUIC**: quiche, and ngtcp2 over the TLS backends it has crypto for. **To do.**
 105. **SSH**: libssh2. **Done**: `curl-libssh2` behind the
      core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,

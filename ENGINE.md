@@ -143,6 +143,10 @@ curl-openssl  OpenSSL 3.0 or later through openssl-sys's declarations: Ed25519 f
 curl-schannel Schannel through SSPI and CryptoAPI (Windows): the TLS backend a build takes
               in OpenSSL's place (the `schannel` feature of the shim and the tool), its
               credential kept per peer in the session cache, its CA file's store per multi
+curl-gnutls   GnuTLS 3.6.5 or later: the TLS backend a build takes in OpenSSL's place (the
+              `gnutls` feature), its credentials kept per multi by CA file, and Ed25519
+              from its nettle; the session's logic safe code over a `Gnutls` trait, which
+              `gnutls.rs` implements and the tests script
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```
@@ -3098,8 +3102,31 @@ error; a NULL from a constructor is `OutOfMemory`. OpenSSL allocates from libc, 
 debug tracker, as in C: `CRYPTO_set_mem_functions` is process-wide and fails once the
 application has used OpenSSL, so it is not called.
 
+**GnuTLS** (curl-gnutls, `lib/vtls/gtls.c`) is the backend the `gnutls` feature takes in
+OpenSSL's place, with Ed25519 from GnuTLS's nettle and no HTTP/3, as C's build without ngtcp2's
+GnuTLS crypto. The session's logic (`session.rs`, `trust.rs`, `verify.rs`) is safe code over a
+`Gnutls` trait, one method per library call `gtls.c` makes; `gnutls.rs` implements it over the
+library, and the tests over a scripted fake (`fake.rs`). The library's callbacks (push, pull,
+the handshake hook, the key log) reach the `Call` of the session's call under way, through the
+transport and session pointers set for that call alone. The session is made at the first step,
+`gnutls_init` with `GNUTLS_CLIENT | GNUTLS_FORCE_CLIENT_CERT` (and early data for a resumed
+ticket that allows a known amount), its priority string `NORMAL:%PROFILE_MEDIUM:-ARCFOUR-128:-CTYPE-ALL:+CTYPE-X509`
+plus the version range, the cipher list added to it (`+`, `-`, `!`) or replacing it. The trust
+anchors and revocation lists load into the credentials at the first pull, after the ClientHello
+is written (before it with a client certificate, which goes into the same credentials), and are
+kept in the multi's `TlsShared` by CA file for its next connections while the taking transfer's
+`CURLOPT_CA_CACHE_TIMEOUT` allows; only credentials with no CA path, blob, CRL, native store or
+client certificate, for a verified peer, are taken or kept. The credentials are a `TryArc` from
+their making, changed only while one session holds them. The peer is checked by GnuTLS's chain
+verdict, the certificate's dates, the stapled status under `VERIFYSTATUS`, the issuer file,
+`gnutls_x509_crt_check_hostname` and the pinned key, in `gtls_verifyserver`'s order and words.
+A TLS 1.2 session is kept as the peer is checked, before ALPN is agreed (`alpn=-`); a TLS 1.3
+ticket as the handshake hook sees it. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` both hand out
+the `gnutls_session_t`, as `gtls_get_internals` does.
+
 **Verification.** The CA default is decided at build time as CMake decides it
-(CMakeLists.txt:1475), by curl-openssl's build script: `CURL_CA_BUNDLE` and `CURL_CA_PATH`
+(CMakeLists.txt:1475), by the library's build script through curl-build's `write_ca_defaults`,
+the same for each library that takes a bundle: `CURL_CA_BUNDLE` and `CURL_CA_PATH`
 from the environment (`none`, `auto` or a path), else found on the building machine unless it
 builds for another: the first of CMake's five bundles that exists
 (`/etc/ssl/certs/ca-certificates.crt` here), and `/etc/ssl/certs` as the path if it holds
@@ -3310,6 +3337,8 @@ session does. OpenSSL here is built without its own (`OPENSSL_NO_SSLKEYLOG`), so
 session sets the library's keylog callback while the log is open, whose lines are written
 whole, a line end added (NSS's format: five secrets for TLS 1.3, `CLIENT_RANDOM` before it);
 each handshake done says `SSLKEYLOGFILE set, all TLS secrets are logged to '<file>'`.
+GnuTLS's log is opened as each session is made instead (`Curl_gtls_ctx_init`), not by the
+global init: a run that makes no TLS session makes no file, as C's GnuTLS build.
 
 **The application's hands on the library.** A library's objects reach the application as a
 `TlsNative`: two pointers the core never looks through, the context and, once made, the

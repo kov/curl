@@ -19,6 +19,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-zstd` | zstd's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-openssl` | OpenSSL: the TLS library behind `curl_core::tls`, and Ed25519 for HTTP signatures, behind `curl_core::libraries::Ed25519`. | yes: it is a binding |
 | `curl-schannel` | Schannel (Windows): the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, through SSPI and CryptoAPI. | yes: it is a binding |
+| `curl-gnutls` | GnuTLS: the TLS library behind `curl_core::tls` a build takes in OpenSSL's place, and Ed25519 for HTTP signatures from its nettle. | in `sys.rs`, `gnutls.rs` and `sign.rs`; the session's logic is safe code over the `Gnutls` trait `gnutls.rs` implements |
 | `curl-nghttp2` | nghttp2's HTTP/2 session, behind `curl_core::http2::Http2`. | yes: it is a binding |
 | `curl-ngtcp2` | ngtcp2 and nghttp3: QUIC and HTTP/3, behind `curl_core::http3::Http3`. | yes: it is a binding |
 | `curl-libssh` | libssh's SCP and SFTP, behind `curl_core::ssh`'s traits. | yes: it is a binding |
@@ -54,7 +55,8 @@ as an opaque `TlsNative`, the untyped context and session objects the backend ha
 the shim passes on as C's `SSL_CTX *` and `SSL *`. A build has one backend, chosen by the shim's
 and the tool's Cargo features, which exclude each other: `openssl` (the default, the reference
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never
-openssl-sys's `vendored` copy, checked at build and at init) or `schannel` (Windows). The CA
+openssl-sys's `vendored` copy, checked at build and at init), `gnutls` (GnuTLS 3.6.5 or later,
+the system's, with no HTTP/3) or `schannel` (Windows). The CA
 default is the one CMake detects at build time, kept as static strings. How a backend takes the
 system's store is declared beside it (`CaDefaults::system`): only where asked
 (`CURLSSLOPT_NATIVE_CA`), also where a transfer names no CA (the `native-ca` feature, C's

@@ -2999,6 +2999,15 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   (`ballers_complete`): a server that never answers holds the failed transfer until the
   resolver gives up. A server's no such name is kept as a negative entry and an answer
   without a record as an empty one; any other failure keeps nothing.
+- **Encrypted Client Hello's record.** The origin's TLS stage whose ECH is tried or hard with no
+  list of the transfer's (`Ech::needs_record`, C's `Curl_ssl_need_httpsrr`) waits for the record
+  in a handshake of its own, `Handshake::EchRecord`, tracing C's "need HTTPS-RR for ECH,
+  delaying connect" at each step, as C's filter delays its connect until
+  `Curl_conn_dns_resolved_https`. The session is then made with the record's ECHConfigList if
+  the record is about the origin and its port (`RecordNow::ech_configs`,
+  `Curl_httpsrr_is_for_peer`), handed to the library as `TlsPeer::ech_configs`; GREASE and a
+  list of the transfer's wait for nothing, and a proxy's TLS tries no ECH. A QUIC attempt is
+  handed no record's list.
 - **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
   name themselves (`state.feat`). A probe is verbose only with DoH's trace on.
 
@@ -3076,7 +3085,8 @@ impl TlsIo<'_> {                                   // what a library's BIO and c
 }
 pub struct TlsTicket { pub data: Vec<u8>, pub version: u16, pub alpn: Option<Chosen>,
                        pub earlydata_max: usize, /* valid_until */ }
-pub struct TlsPeer<'a> { pub name: &'a [u8], pub port: u16, pub kind: TlsPeerKind }
+pub struct TlsPeer<'a> { pub name: &'a [u8], pub port: u16, pub kind: TlsPeerKind,
+                         pub early_data: bool, pub ech_configs: Option<&'a [u8]> }
 pub struct TlsIdentity { pub verify_peer: bool, pub verify_host: bool, pub options: TlsOptions,
                          pub ca_defaults: CaDefaults }
 ```

@@ -92,7 +92,10 @@ that sets a field the library lacks, to anything but its default, has the transf
 transfer never gets the option: one check (`TlsSupport::asked_by` against the handle's
 library, or `TlsSupport::NONE` without one) covers every connection the transfer makes or
 reuses, STARTTLS and QUIC included. An HTTPS proxy is refused, as C's `parse_proxy` refuses it,
-where the library cannot speak to one or there is none (both libraries built here can).
+where the library cannot speak to one or there is none (both libraries built here can). The
+features `curl_version_info` and `curl -V` list follow the same declaration where C's depend on
+the TLS library: ECH is listed where the library has it (`version_with_tls`, C's
+`ech_present`).
 
 ## Execution model
 

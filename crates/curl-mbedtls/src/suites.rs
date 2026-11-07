@@ -1180,7 +1180,7 @@ mod tests {
     #[test]
     // Reads C's source, which Miri's isolation keeps out.
     #[cfg_attr(miri, ignore)]
-    fn unit3205() {
+    fn unit3205_names_and_walks() {
         let rows = c_source::table("tests/unit/unit3205.c", "test_cs_list[] =", mbedtls);
         assert!(rows.len() > 100, "{}", rows.len());
         for row in &rows {

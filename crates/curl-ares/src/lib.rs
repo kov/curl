@@ -300,7 +300,10 @@ fn c_text(text: &[u8], why: &'static str) -> Result<Vec<u8>, DnsRefused> {
     if text.contains(&0) {
         return Err(DnsRefused::BadOption(why));
     }
+    // One allocation, the zero byte's room with the text's.
     let mut c = Vec::new();
+    c.try_reserve_exact(text.len() + 1)
+        .map_err(|_| DnsRefused::OutOfMemory)?;
     c.try_extend_from_slice(text)
         .map_err(|OutOfMemory| DnsRefused::OutOfMemory)?;
     c.try_push(0)
@@ -806,6 +809,20 @@ impl Socket for FdSocket {
 mod tests {
     use super::*;
     use curl_core::doh::RecordAlpn;
+
+    /// A name's C copy is made with one allocation, its zero byte's room
+    /// with it: grown for the zero after the text, it took two, counted
+    /// against the limits of the tests that resolve by c-ares (2500).
+    #[test]
+    fn a_c_copy_is_one_allocation_of_its_size() {
+        for text in [&b"localhost"[..], b"", b"a.b.c.example"] {
+            let c = c_text(text, "bad name").unwrap();
+            assert_eq!(&c[..text.len()], text);
+            assert_eq!(c.last(), Some(&0));
+            assert_eq!(c.capacity(), text.len() + 1, "{text:?} grown");
+        }
+        assert!(c_text(b"a\0b", "bad name").is_err());
+    }
 
     #[test]
     fn a_socket_with_nothing_to_wait_for_is_told_to_close() {

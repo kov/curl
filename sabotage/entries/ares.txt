@@ -184,3 +184,11 @@ witness: curl-tool the_servers_named_find_the_address
                 let read = if got.intersects(readable) {
 --- new
                 let read = if got.intersects(Events::NONE) {
+
+=== a name's C copy is grown for its zero byte, two allocations where one does
+file: crates/curl-ares/src/lib.rs
+witness: curl-ares tests::a_c_copy_is_one_allocation_of_its_size
+--- old
+    c.try_reserve_exact(text.len() + 1)
+--- new
+    c.try_reserve_exact(text.len())

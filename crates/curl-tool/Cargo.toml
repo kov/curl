@@ -46,7 +46,7 @@ libidn2 = ["curl-idn2/libidn2"]
 apple-sectrust = ["curl-openssl?/apple-sectrust"]
 # The system's own store of certificates is the default trust store where
 # a transfer names none (C's `CURL_CA_NATIVE`).
-native-ca = ["curl-core/native-ca", "curl-openssl?/native-ca"]
+native-ca = ["curl-core/native-ca", "curl-openssl?/native-ca", "curl-gnutls?/native-ca"]
 # Windows' Unicode build (C's `ENABLE_UNICODE`): the command line and the
 # names of files in UTF-8, through the system's UTF-16 calls.
 unicode = ["curl-core/unicode"]

@@ -1906,3 +1906,22 @@ fn an_issuer_file_larger_than_c_reads_is_read_as_nothing() {
     assert!(!issued(8_000_000));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn the_system_store_is_the_default_only_in_the_native_ca_build() {
+    use curl_core::tls::TlsBackend as _;
+    let defaults = crate::GNUTLS.ca_defaults();
+    let id = identity(|i| i.ca_defaults = defaults);
+    let (r, notes, calls) = shake(World::default(), &id);
+    assert_eq!(r, Ok(Handshake::Done), "{notes:#?}");
+    let native = cfg!(feature = "native-ca");
+    assert_eq!(
+        calls.contains(&"system_trust".to_owned()),
+        native,
+        "{calls:#?}"
+    );
+    if native {
+        // No bundle looked for, as CMake looks for none.
+        assert_eq!((defaults.file, defaults.path), (None, None));
+    }
+}

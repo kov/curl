@@ -7,6 +7,12 @@ license.workspace = true
 publish.workspace = true
 links = "gnutls"
 
+[features]
+# The system's own store of certificates is the default trust store where
+# a transfer names none (C's `CURL_CA_NATIVE`), and no CA bundle or
+# directory is looked for at build.
+native-ca = ["curl-core/native-ca"]
+
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }

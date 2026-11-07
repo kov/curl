@@ -121,12 +121,17 @@ impl TlsBackend for GnuTls {
     }
 
     /// The bundle and directory found at build; the system's store only
-    /// where asked (`CURLSSLOPT_NATIVE_CA`).
+    /// where asked (`CURLSSLOPT_NATIVE_CA`), but as the build's default
+    /// where it is C's `CURL_CA_NATIVE` (the `native-ca` feature).
     fn ca_defaults(&self) -> CaDefaults {
         CaDefaults {
             file: ca::CA_BUNDLE,
             path: ca::CA_PATH,
-            system: SystemStore::Asked,
+            system: if cfg!(feature = "native-ca") {
+                SystemStore::Default
+            } else {
+                SystemStore::Asked
+            },
         }
     }
 

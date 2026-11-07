@@ -5152,3 +5152,59 @@ fn an_interim_head_over_quiche_ends_before_the_final_one() {
     );
     assert_eq!(ran.seen.body(), b"ok");
 }
+
+/// A GET in HTTP/3 alone over a TLS library with ECH, resolving through
+/// `ares`, with ECH as `mode` asks: what the QUIC session was handed of
+/// the origin's HTTPS record.
+fn ech_h3_get(
+    ares: &'static super::https_trace::EchAres,
+    mode: crate::options::EchMode,
+) -> Option<(u8, usize)> {
+    let support = crate::tls::TlsSupport {
+        ech: true,
+        ..crate::tls::fake::SUPPORT
+    };
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::supporting(support).unwrap()));
+    let h3: &'static FakeHttp3 = Box::leak(Box::new(FakeHttp3::new(get_script(b"hello"))));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(tls)),
+        h3: Some(h3),
+        dns: Some(ares),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.tls.options.make_mut().unwrap().ech.mode = mode;
+    });
+    assert_eq!(ran.result, Ok(()), "{mode:?} {:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    tls.log().ech_configs
+}
+
+/// An HTTP/3 attempt made once the origin's HTTPS record is known has its
+/// QUIC session made with the record's ECHConfigList, as C's QUIC filter
+/// makes its TLS with what `Curl_conn_dns_get_https` has
+/// (`ossl_init_ech`, `wssl_init_ech`); a record about another name holds
+/// none for the origin (`Curl_httpsrr_is_for_peer`).
+#[test]
+fn a_quic_attempt_tries_ech_with_the_known_record() {
+    use super::https_trace::EchAres;
+    static ARES: EchAres = EchAres {
+        record_at: 0,
+        elsewhere: false,
+    };
+    static ELSEWHERE: EchAres = EchAres {
+        record_at: 0,
+        elsewhere: true,
+    };
+    for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
+        assert_eq!(ech_h3_get(&ARES, mode), Some((0xfe, 4)), "{mode:?}");
+        assert_eq!(ech_h3_get(&ELSEWHERE, mode), None, "{mode:?}");
+    }
+}

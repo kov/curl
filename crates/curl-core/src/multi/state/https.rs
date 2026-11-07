@@ -135,7 +135,7 @@ impl Choosing {
     /// `no-default-alpn`, not if it has that.
     pub(super) fn by_record(mut self, record: Option<&TryArc<HttpsRecord>>, port: u16) -> Choosing {
         self.record = record
-            .filter(|r| applies(r, port) && !r.no_default_alpn)
+            .filter(|r| r.is_for_origin(port) && !r.no_default_alpn)
             .cloned();
         self
     }
@@ -249,16 +249,10 @@ impl<'a> RecordNow<'a> {
     /// itself, at `port` (`Curl_httpsrr_is_for_peer`), and it has one.
     pub(super) fn ech_configs(self, port: u16) -> Option<&'a [u8]> {
         match self {
-            RecordNow::Known(Some(r)) if applies(r, port) && !r.ech.is_empty() => Some(&r.ech),
-            RecordNow::Known(_) | RecordNow::Coming => None,
+            RecordNow::Known(Some(r)) => r.ech_for(port),
+            RecordNow::Known(None) | RecordNow::Coming => None,
         }
     }
-}
-
-/// Whether `record` is about the origin itself: no other name, and no
-/// other port (`Curl_httpsrr_is_for_peer`).
-fn applies(record: &HttpsRecord, port: u16) -> bool {
-    matches!(record.target.as_slice(), b"" | b".") && record.port.is_none_or(|p| p == port)
 }
 
 /// The second attempt.
@@ -644,7 +638,7 @@ fn say_record<H: Host>(
     let (name, at) = (peer.name(), at.bytes());
     match record {
         None => trace::info_with(cx, &[b"HTTPS-RR ", name, at, b": -"]),
-        Some(r) if !applies(r, route.origin.port()) => {
+        Some(r) if !r.is_for_origin(route.origin.port()) => {
             trace::info_with(cx, &[b"HTTPS-RR ", name, at, b": not applicable"]);
         }
         Some(r) => match r.print() {

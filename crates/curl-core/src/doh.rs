@@ -440,6 +440,18 @@ fn decode_alpns(record: &mut HttpsRecord, mut value: &[u8]) -> Result<(), Record
 }
 
 impl HttpsRecord {
+    /// Whether it is about the origin itself, at `port`: no other name,
+    /// and no other port (`Curl_httpsrr_is_for_peer`).
+    pub(crate) fn is_for_origin(&self, port: u16) -> bool {
+        matches!(self.target.as_slice(), b"" | b".") && self.port.is_none_or(|p| p == port)
+    }
+
+    /// Its ECHConfigList, if it is about the origin itself at `port` and
+    /// has one: what the origin's TLS tries ECH with.
+    pub(crate) fn ech_for(&self, port: u16) -> Option<&[u8]> {
+        (self.is_for_origin(port) && !self.ech.is_empty()).then_some(&self.ech[..])
+    }
+
     /// One parameter taken, its key's earlier value replaced
     /// (`Curl_httpsrr_set`).
     pub fn set_parameter(&mut self, key: u16, value: &[u8]) -> Result<(), RecordError> {

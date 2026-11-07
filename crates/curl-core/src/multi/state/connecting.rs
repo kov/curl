@@ -1059,11 +1059,13 @@ fn connect_once<H: Host>(
     }
     let setup = drive_options(cx);
     let mut displaced = None;
+    // The record, set only once known, for a QUIC attempt the drive makes.
+    let record = c.record.clone();
     // An HTTP/3 proxy's tunnels are the race's attempts, checked first.
     let mut connected = match tunnels_drive(&mut c, cx, a) {
         Ok(Tunnels::Idle) => c.connect_attempt(
             a,
-            &mut DriveCx::new(cx, Some(&mut run.deadlines)),
+            &mut DriveCx::new(cx, Some(&mut run.deadlines)).knowing(record),
             setup,
             &mut displaced,
             ConnectMachine::drive,

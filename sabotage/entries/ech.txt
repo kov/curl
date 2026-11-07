@@ -207,3 +207,30 @@ features: test-util
     let (record, kept, lookup) = look_up(&c.route, false, cx)?;
 --- new
     let (record, kept, lookup) = look_up(&c.route, true, cx)?;
+
+=== A QUIC attempt's session is made with no ECH configurations from the known record
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_tries_ech_with_the_known_record
+features: test-util,debug-hooks
+--- old
+        let ech = record.as_deref().and_then(|r| r.ech_for(origin.port()));
+--- new
+        let ech = record.as_deref().and_then(|r| r.ech_for(origin.port())).and(None);
+
+=== The transfer drives its attempts without the record it knows
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_tries_ech_with_the_known_record
+features: test-util,debug-hooks
+--- old
+            &mut DriveCx::new(cx, Some(&mut run.deadlines)).knowing(record),
+--- new
+            &mut DriveCx::new(cx, Some(&mut run.deadlines)).knowing(record.and(None)),
+
+=== A QUIC attempt takes the ECH configurations of a record about another name
+file: crates/curl-core/src/doh.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_tries_ech_with_the_known_record
+features: test-util,debug-hooks
+--- old
+        (self.is_for_origin(port) && !self.ech.is_empty()).then_some(&self.ech[..])
+--- new
+        (!self.ech.is_empty()).then_some(&self.ech[..])

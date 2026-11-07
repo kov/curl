@@ -3030,9 +3030,14 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   `Curl_conn_dns_resolved_https`. The session is then made with the record's ECHConfigList if
   the record is about the origin and its port (`RecordNow::ech_configs`,
   `Curl_httpsrr_is_for_peer`), handed to the library as `TlsPeer::ech_configs`; GREASE and a
-  list of the transfer's wait for nothing, and a proxy's TLS tries no ECH. A QUIC attempt is
-  handed no record's list. Where no HTTPS connect filter heads the setup (`wss`, `https`
-  without ALPN), the origin's TLS asks for the record itself as it is added, as
+  list of the transfer's wait for nothing, and a proxy's TLS tries no ECH. A QUIC attempt's
+  session is made with the record's list if the setup knows the record as the attempt is made:
+  the transfer's drive carries a counted reference to it (`DriveCx::knowing`,
+  `ConnCx::https_record`), as C's QUIC filter reads `Curl_conn_dns_get_https` making its TLS.
+  The attempt does not wait for a record still to come, where C's QUIC filters put their
+  connect off until it is resolved ("need HTTPS-RR, delaying connect"): an attempt made before
+  the record came tries ECH with no list. Where no HTTPS connect filter heads the setup (`wss`,
+  `https` without ALPN), the origin's TLS asks for the record itself as it is added, as
   `Curl_cf_ssl_insert_after` does: one `RecordAsk` per setup, the filter's or the TLS's, holds
   where the asking is, its DNS filter rendered below the others (`Head::tls_record`) and
   started as the pollset after its call is made (`tls_ask_starts`, `cf_dns_adjust_pollset`).

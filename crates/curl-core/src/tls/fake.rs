@@ -417,6 +417,9 @@ impl TlsBackend for FakeTls {
             log.kind = Some(peer.kind);
             log.verify_peer = identity.verify_peer;
             log.alpn = Some(Alpn::H3);
+            log.ech_configs = peer
+                .ech_configs
+                .map(|c| (c.first().copied().unwrap_or_default(), c.len()));
             log.sessions
         };
         cx.trace(format_args!("fake QUIC session {number}"));

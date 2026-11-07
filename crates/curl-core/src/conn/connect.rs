@@ -276,6 +276,12 @@ pub(crate) trait ConnCx: LayerCx {
     /// library.
     fn quic_making(&mut self) -> Result<Option<QuicMaking>, OutOfMemory>;
 
+    /// The origin's HTTPS record, if the setup knows it as its QUIC
+    /// attempt is made, which the origin's TLS takes its ECH
+    /// configurations from (`Curl_conn_dns_get_https`): none while it is
+    /// still to come, or where the setup asks for none.
+    fn https_record(&self) -> Option<TryArc<crate::doh::HttpsRecord>>;
+
     /// The answers kept from the setups before: the multi's, or its
     /// share's.
     fn names(&mut self) -> Names<'_>;
@@ -484,6 +490,10 @@ impl ConnCx for Plain<'_> {
     /// It has no HTTP/3 library.
     fn quic_making(&mut self) -> Result<Option<QuicMaking>, OutOfMemory> {
         Ok(None)
+    }
+
+    fn https_record(&self) -> Option<TryArc<crate::doh::HttpsRecord>> {
+        None
     }
 
     fn names(&mut self) -> Names<'_> {
@@ -2016,7 +2026,12 @@ impl ConnectMachine {
             .contains(crate::options::SslOptions::EARLYDATA)
             && making.requests
             && keeps;
-        let peer = crate::tls::TlsPeer::of(origin, early_data, None);
+        // The origin's TLS tries ECH with its HTTPS record's
+        // configurations, if the record is known as the session is made
+        // (`ossl_init_ech`, `wssl_init_ech`); a proxy's tries none.
+        let record = if proxied { None } else { cx.https_record() };
+        let ech = record.as_deref().and_then(|r| r.ech_for(origin.port()));
+        let peer = crate::tls::TlsPeer::of(origin, early_data, ech);
         let tls = {
             let mut tcx = crate::tls::TlsCx::new(cx, component, &kept_for);
             let setup = |ctx| h3.setup_tls_context(ctx);

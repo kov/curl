@@ -1288,9 +1288,9 @@ impl crate::conn::io::DnsResolve for EchResolve {
 
 /// A resolver library whose record comes as [`EchResolve`]'s does.
 #[derive(Debug)]
-struct EchAres {
-    record_at: u32,
-    elsewhere: bool,
+pub(super) struct EchAres {
+    pub(super) record_at: u32,
+    pub(super) elsewhere: bool,
 }
 
 impl crate::conn::io::DnsLibrary for EchAres {

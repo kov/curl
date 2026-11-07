@@ -105,8 +105,6 @@ fn options_the_library_lacks_are_warned_of() {
         named("GnuTLS/")
     } else if cfg!(feature = "rustls") {
         named("rustls-ffi/")
-    } else if boringssl {
-        "BoringSSL".to_owned()
     } else {
         "Schannel".to_owned()
     };

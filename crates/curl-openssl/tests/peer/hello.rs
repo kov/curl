@@ -189,7 +189,12 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
             t.tls13_ciphers = Some(b"TLS_CHACHA20_POLY1305_SHA256".to_vec());
         }
         t.curves = Some(b"X25519:P-384".to_vec());
-        t.signature_algorithms = Some(b"ECDSA+SHA384:ed25519".to_vec());
+        // LibreSSL takes no list of signature algorithms: one given
+        // refuses the transfer (`HAVE_SSL_CTX_SET1_SIGALGS` unset, so no
+        // `SSLSUPP_SIGNATURE_ALGORITHMS`).
+        if !cfg!(libressl) {
+            t.signature_algorithms = Some(b"ECDSA+SHA384:ed25519".to_vec());
+        }
     });
     // TLS_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256.
     #[cfg(not(any(libressl, boringssl)))]
@@ -212,8 +217,7 @@ fn the_cipher_and_group_lists_are_the_ones_given() {
     // ecdsa_secp384r1_sha384, ed25519.
     #[cfg(not(libressl))]
     assert_eq!(hello.list(13), [0x0503, 0x0807]);
-    // LibreSSL takes no list of signature algorithms, which C then does
-    // not give it (`HAVE_SSL_CTX_SET1_SIGALGS`): its own are offered.
+    // With no list given, LibreSSL offers its own.
     #[cfg(libressl)]
     assert!(
         hello.list(13).len() > 2 && !hello.list(13).contains(&0x0807),
@@ -274,9 +278,8 @@ fn a_list_the_library_refuses_fails_as_c_says() {
             Box::new(|t| t.curves = Some(b"NOSUCH".to_vec())),
             "failed setting curves list: 'NOSUCH'",
         ),
-        // LibreSSL takes no list of signature algorithms, which C then
-        // does not give it (`HAVE_SSL_CTX_SET1_SIGALGS`): the handshake
-        // goes on.
+        // LibreSSL takes no list of signature algorithms: refused before
+        // anything connects, below.
         #[cfg(not(libressl))]
         (
             Box::new(|t| t.signature_algorithms = Some(b"NOSUCH".to_vec())),
@@ -295,6 +298,21 @@ fn a_list_the_library_refuses_fails_as_c_says() {
         tcp.set_nonblocking(false).unwrap();
         let mut buf = [0u8; 1];
         assert_eq!(tcp.read(&mut buf).unwrap(), 0, "{failure}");
+    }
+    // Over LibreSSL a list of signature algorithms is not built in, as
+    // C's option is not (`HAVE_SSL_CTX_SET1_SIGALGS` unset): the transfer
+    // fails before it connects.
+    #[cfg(libressl)]
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let got = get("localhost", at, |o| {
+            o.tls.options.make_mut().unwrap().signature_algorithms = Some(b"NOSUCH".to_vec());
+        });
+        assert_eq!(got.result, Err(ErrorKind::NotBuiltIn));
+        listener.set_nonblocking(true).unwrap();
+        let none = listener.accept().map(|_| ()).unwrap_err();
+        assert_eq!(none.kind(), std::io::ErrorKind::WouldBlock, "no connection");
     }
 }
 

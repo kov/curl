@@ -393,6 +393,7 @@ fn with_conn<R>(
         port: addr.port(),
         kind: TlsPeerKind::Name,
         early_data: false,
+        ech_configs: None,
     };
     let mut notes = Notes::default();
     let r = TlsCx::testing(&identity, b"localhost", &mut notes, |shared, cx| {
@@ -731,6 +732,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
         port: addr.port(),
         kind: TlsPeerKind::Name,
         early_data: true,
+        ech_configs: None,
     };
     let authority = authority(addr);
     let fields: [(&[u8], &[u8]); 4] = [

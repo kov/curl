@@ -7,6 +7,7 @@
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
+use super::https::RecordNow;
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::components::Component;
 use crate::conn::chain::Chain;
@@ -104,12 +105,28 @@ pub(super) fn start<H: Host>(
         (true, TlsSide::Origin) if h2 => Alpn::H2Http11,
         (true, TlsSide::Origin) => Alpn::Http11,
     };
+    // The origin's TLS whose ECH takes its configurations from the
+    // origin's HTTPS record waits for it, its session made once it is
+    // known (`Curl_ssl_need_httpsrr`, `Curl_conn_dns_resolved_https`).
+    if side == TlsSide::Origin
+        && identity.options.ech.needs_record()
+        && matches!(lent.record, RecordNow::Coming)
+    {
+        return match try_box(Handshake::EchRecord(alpn)) {
+            Ok(h) => {
+                s.handshake = Some(h);
+                record_step(s, lent, cx, alpn)
+            }
+            Err(OutOfMemory) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
+        };
+    }
     let to = TlsFor {
         side,
         identity,
         peer,
         via,
         alpn,
+        ech_configs: origin_ech(lent, side),
     };
     put_on(s.machine.dialed().stream(), &to, None, cx)?;
     match try_box(Handshake::Tls(side)) {
@@ -121,14 +138,82 @@ pub(super) fn start<H: Host>(
     }
 }
 
+/// The ECHConfigList of the origin's HTTPS record, for the origin's
+/// TLS, if the record is known and has one for it: a proxy's TLS takes
+/// none.
+fn origin_ech<'a>(lent: &Lent<'a>, side: TlsSide) -> Option<&'a [u8]> {
+    match side {
+        TlsSide::Origin => lent.record.ech_configs(lent.route.origin.port()),
+        TlsSide::Proxy => None,
+    }
+}
+
+/// The origin's TLS waits for its HTTPS record (`Handshake::EchRecord`),
+/// as C's filter puts its connect off (`need HTTPS-RR for ECH, delaying
+/// connect`), the versions checked first as each of its connects checks
+/// them. Once the record is known, the session is made with its ECH
+/// configurations, offering `alpn`, and its handshake starts in the same
+/// call.
+pub(super) fn record_step<H: Host>(
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+    alpn: Alpn,
+) -> Result<Wake, Failure> {
+    let ssl = Component::Ssl;
+    let identity = lent.route.tls.as_ref().expect("a TLS route");
+    let stream = s.machine.dialed().stream();
+    trace::of(cx, ssl, format_args!("cf_connect()"));
+    if let Err(kind) = prefs_check(cx, &identity.options) {
+        return said(stream, ssl, Err(kind), cx)
+            .map(|_| Wake::Idle)
+            .map_err(Failure::of);
+    }
+    if let RecordNow::Coming = lent.record {
+        trace::of(
+            cx,
+            ssl,
+            format_args!("need HTTPS-RR for ECH, delaying connect"),
+        );
+        return said(stream, ssl, Ok(Shake::Waiting), cx)
+            .map(|_| Wake::Idle)
+            .map_err(Failure::of);
+    }
+    let to = TlsFor {
+        side: TlsSide::Origin,
+        identity,
+        peer: &lent.route.origin,
+        via: lent.route.via.as_deref(),
+        alpn,
+        ech_configs: origin_ech(lent, TlsSide::Origin),
+    };
+    if let Err(failure) = put_on(stream, &to, None, cx) {
+        let (Failure::Attempt(kind) | Failure::Transfer(kind)) = failure;
+        return said(stream, ssl, Err(kind), cx)
+            .map(|_| Wake::Idle)
+            .map_err(|_| failure);
+    }
+    match try_box(Handshake::Tls(TlsSide::Origin)) {
+        Ok(h) => s.handshake = Some(h),
+        Err(OutOfMemory) => return Err(Failure::Transfer(ErrorKind::OutOfMemory)),
+    }
+    let traced = Some(s.machine.dialing().socket_component());
+    let stream = s.machine.dialed().stream();
+    let shaken = stream.connect(cx, traced);
+    let shaken = said(stream, ssl, shaken, cx);
+    shook(s, TlsSide::Origin, shaken)
+}
+
 /// Whom a TLS session is made for: its side, the settings it is made
-/// with, its peer (through a connect-to's, `via`) and what ALPN offers.
+/// with, its peer (through a connect-to's, `via`), what ALPN offers, and
+/// the ECH configurations of the origin's HTTPS record, for the origin's.
 pub(super) struct TlsFor<'a> {
     pub(super) side: TlsSide,
     pub(super) identity: &'a TryArc<TlsIdentity>,
     pub(super) peer: &'a Peer,
     pub(super) via: Option<&'a Peer>,
     pub(super) alpn: Alpn,
+    pub(super) ech_configs: Option<&'a [u8]>,
 }
 
 /// A session for `to` is made and its layer put on `stream`, taking the
@@ -156,7 +241,7 @@ pub(super) fn put_on<H: Host>(
         .ssl_options
         .contains(SslOptions::EARLYDATA)
         && !options.connect_only.reserves();
-    let peer_of = |early| TlsPeer::of(to.peer, early);
+    let peer_of = |early| TlsPeer::of(to.peer, early, to.ech_configs);
     // What the library keeps across the multi's connections, made with
     // its first session.
     let shared = match &mut *cx.rest.tls {
@@ -310,6 +395,8 @@ pub(crate) fn upgrade_resuming<H: Host>(
             peer,
             via,
             alpn: Alpn::None,
+            // Not HTTP: no record is asked for.
+            ech_configs: None,
         };
         put_on(carrier.stream_mut(), &to, given, cx).map_err(|f| match f {
             Failure::Attempt(kind) | Failure::Transfer(kind) => kind,
@@ -337,7 +424,18 @@ pub(super) fn step<H: Host>(
         TlsSide::Proxy => lent.route.proxy_tls(),
     };
     let options = &identity.expect("a TLS stage's settings").options;
-    match shake(s.machine.dialed().stream(), side, options, traced, cx) {
+    let shaken = shake(s.machine.dialed().stream(), side, options, traced, cx);
+    shook(s, side, shaken)
+}
+
+/// The setup goes on as the handshake of `side` says: made, waiting, or
+/// failed.
+fn shook(
+    s: &mut SetupMut<'_>,
+    side: TlsSide,
+    shaken: Result<Shake, ErrorKind>,
+) -> Result<Wake, Failure> {
+    match shaken {
         Ok(Shake::Done) => {
             s.machine.dialed().mark_made(side.made());
             s.handshake = None;
@@ -366,6 +464,18 @@ pub(super) fn shake<H: Host>(
         Ok(()) => stream.connect(cx, traced),
         Err(kind) => Err(kind),
     };
+    said(stream, ssl, shaken, cx)
+}
+
+/// A connect of the TLS filter `ssl` over `stream` ended as `shaken`,
+/// traced as it says it, and the session's objects lent to the transfer
+/// if it made them.
+fn said<H: Host>(
+    stream: &mut Stream,
+    ssl: Component,
+    shaken: Result<Shake, ErrorKind>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Shake, ErrorKind> {
     let (code, done) = match shaken {
         Ok(Shake::Done) => (trace::Code(Ok(())), 1),
         Ok(Shake::Waiting) => (trace::Code(Ok(())), 0),

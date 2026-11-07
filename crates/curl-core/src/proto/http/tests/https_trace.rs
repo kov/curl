@@ -1225,3 +1225,187 @@ fn a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket() {
     ));
     assert_eq!(got, want, "{:#?}", ran.seen.text());
 }
+
+/// A resolve as c-ares's of `localhost`: its addresses at once, its
+/// record at the run `record_at` says, an ECHConfigList of four bytes for
+/// the origin itself, or for another name if `elsewhere`.
+#[derive(Debug)]
+struct EchResolve {
+    record: bool,
+    record_at: u32,
+    elsewhere: bool,
+    performed: u32,
+}
+
+impl crate::conn::io::DnsResolve for EchResolve {
+    fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+        self.performed += 1;
+        Ok(())
+    }
+    fn wants(&self) -> &[(Box<dyn crate::conn::io::Socket>, crate::conn::io::Events)] {
+        &[]
+    }
+    fn due(&self, within: std::time::Duration) -> std::time::Duration {
+        within
+    }
+    fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+        Ok(crate::conn::io::Partial {
+            addrs: Vec::new(),
+            v6_answered: true,
+            v4_answered: false,
+        })
+    }
+    fn ongoing(&self) -> (u32, &'static str) {
+        if self.record && self.performed < self.record_at {
+            (1, "-")
+        } else {
+            (0, "A")
+        }
+    }
+    fn answer(&mut self) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+        (!self.record).then(|| Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]))
+    }
+    fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+        if self.performed < self.record_at {
+            return None;
+        }
+        // Priority 1, the origin itself or `other.`, and `ech` (key 5).
+        let rdata: &[u8] = if self.elsewhere {
+            b"\x00\x01\x05other\x00\x00\x05\x00\x04\xfe\x0d\x00\x00"
+        } else {
+            b"\x00\x01\x00\x00\x05\x00\x04\xfe\x0d\x00\x00"
+        };
+        let record = crate::doh::decode_https_record(rdata).unwrap();
+        Some(crate::doh::RecordAnswer::Record(record))
+    }
+    fn explain(&self) -> Option<&'static str> {
+        None
+    }
+    fn status(&self) -> i32 {
+        0
+    }
+}
+
+/// A resolver library whose record comes as [`EchResolve`]'s does.
+#[derive(Debug)]
+struct EchAres {
+    record_at: u32,
+    elsewhere: bool,
+}
+
+impl crate::conn::io::DnsLibrary for EchAres {
+    fn resolve(
+        &self,
+        ask: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        Ok(Box::new(EchResolve {
+            record: ask.family.is_none(),
+            record_at: self.record_at,
+            elsewhere: self.elsewhere,
+            performed: 0,
+        }))
+    }
+}
+
+/// A GET of `https://localhost:PORT/` over a TLS library with ECH,
+/// resolving through `ares`, with ECH as `mode` asks: what the session
+/// was handed of the record, and the TLS filter's lines.
+fn ech_get(
+    ares: &'static EchAres,
+    mode: crate::options::EchMode,
+) -> (Option<(u8, usize)>, Vec<String>) {
+    let support = crate::tls::TlsSupport {
+        ech: true,
+        ..fake::SUPPORT
+    };
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::supporting(support).unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(tls)),
+        dns: Some(ares),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let c = Components::new().unwrap();
+    c.configure(b"ssl");
+    e.set_components(Some(c));
+    let mut m = tls_server(1);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = https_get(&mut m, e, &url, |o| {
+        o.tls.options.make_mut().unwrap().ech.mode = mode;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let log = tls.log();
+    (log.ech_configs, lines(&ran, &["[SSL]"]))
+}
+
+/// ECH that takes its configurations from the origin's HTTPS record waits
+/// for the record before its session is made, saying so at each connect
+/// as C's filter puts its own off (`Curl_ssl_need_httpsrr`), and the
+/// session is handed the record's ECHConfigList.
+#[test]
+fn ech_waits_for_the_origin_s_record() {
+    static ARES: EchAres = EchAres {
+        record_at: 6,
+        elsewhere: false,
+    };
+    for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
+        let (configs, lines) = ech_get(&ARES, mode);
+        assert_eq!(configs, Some((0xfe, 4)), "{mode:?}");
+        let waits = lines
+            .iter()
+            .filter(|l| *l == "[SSL] need HTTPS-RR for ECH, delaying connect")
+            .count();
+        assert!(waits > 0, "{mode:?} {lines:?}");
+        // Each wait is a connect of its own, checked first.
+        let first = lines
+            .iter()
+            .position(|l| l.contains("need HTTPS-RR"))
+            .unwrap();
+        assert_eq!(lines[first - 1], "[SSL] cf_connect()", "{lines:?}");
+        assert_eq!(
+            lines[first + 1],
+            "[SSL] cf_connect() -> 0, done=0",
+            "{lines:?}"
+        );
+    }
+}
+
+/// ECH off, or GREASE, which takes no configuration, waits for nothing:
+/// the session is made as the connection is, before the record comes.
+#[test]
+fn ech_without_configurations_waits_for_no_record() {
+    static ARES: EchAres = EchAres {
+        record_at: 6,
+        elsewhere: false,
+    };
+    for mode in [
+        crate::options::EchMode::Off,
+        crate::options::EchMode::Grease,
+    ] {
+        let (configs, lines) = ech_get(&ARES, mode);
+        assert_eq!(configs, None, "{mode:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("need HTTPS-RR")),
+            "{mode:?} {lines:?}"
+        );
+    }
+}
+
+/// A record about another name holds no configuration for the origin
+/// (`Curl_httpsrr_is_for_peer`): the session is handed none.
+#[test]
+fn ech_takes_no_configurations_from_a_record_about_another_name() {
+    static ARES: EchAres = EchAres {
+        record_at: 6,
+        elsewhere: true,
+    };
+    let (configs, lines) = ech_get(&ARES, crate::options::EchMode::Try);
+    assert_eq!(configs, None);
+    assert!(
+        lines.iter().any(|l| l.contains("need HTTPS-RR")),
+        "{lines:?}"
+    );
+}

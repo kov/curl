@@ -153,6 +153,9 @@ impl SideSetup {
                 request: &mut *request,
                 negotiate: &mut self.negotiate,
                 rank: ConnRank::Second,
+                // A second connection's protocol is not HTTP's, and asks
+                // for no record.
+                record: super::https::RecordNow::Known(None),
             };
             let shook = if s.handshake.is_some() {
                 step_handshake(&mut s, &mut t, cx)

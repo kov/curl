@@ -45,6 +45,7 @@ fn peer(name: &[u8], kind: TlsPeerKind, early_data: bool) -> TlsPeer<'_> {
         port: 443,
         kind,
         early_data,
+        ech_configs: None,
     }
 }
 

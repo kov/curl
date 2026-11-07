@@ -990,6 +990,7 @@ mod tests {
             port: 443,
             kind: TlsPeerKind::Name,
             early_data: false,
+            ech_configs: None,
         };
         let shared = TlsShared::testing();
         let tls = crate::MbedTls::new();

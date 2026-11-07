@@ -170,6 +170,9 @@ pub struct FakeLog {
     /// times sessions were told.
     pub early_decided: Option<bool>,
     pub early_decisions: usize,
+    /// The ECH configurations the last session was handed from the
+    /// origin's HTTPS record, if any: their first byte and their length.
+    pub ech_configs: Option<(u8, usize)>,
 }
 
 /// What the fake keeps for a multi: its number, and the log it notes
@@ -233,6 +236,7 @@ impl FakeTls {
             alpn: None,
             early_decided: None,
             early_decisions: 0,
+            ech_configs: None,
         };
         Ok(FakeTls {
             log: TryArc::try_new(Mutex::new(log))?,
@@ -481,6 +485,9 @@ impl TlsBackend for FakeTls {
             log.kind = Some(peer.kind);
             log.verify_peer = identity.verify_peer;
             log.alpn = Some(alpn);
+            log.ech_configs = peer
+                .ech_configs
+                .map(|c| (c.first().copied().unwrap_or_default(), c.len()));
             log.sessions
         };
         let session = FakeSession {

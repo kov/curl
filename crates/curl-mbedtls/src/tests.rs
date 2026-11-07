@@ -48,6 +48,7 @@ fn session_to(
         port: 443,
         kind,
         early_data: false,
+        ech_configs: None,
     };
     Session::new(lib, TryArc::try_new(()).unwrap(), id, &peer, alpn).unwrap()
 }

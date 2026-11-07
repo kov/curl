@@ -218,6 +218,39 @@ impl Choosing {
     }
 }
 
+/// What a setup's handshake knows of the origin's HTTPS record
+/// (`Curl_conn_dns_resolved_https`, `Curl_conn_dns_get_https`).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum RecordNow<'a> {
+    /// Asked for, its answer still to come.
+    Coming,
+    /// Known, or not asked for: the record, if the origin has one.
+    Known(Option<&'a HttpsRecord>),
+}
+
+impl<'a> RecordNow<'a> {
+    /// What the setup headed by `https`, which knows `record`, knows: a
+    /// setup no HTTPS connect filter heads asks for none.
+    pub(super) fn of(
+        https: Option<&HttpsConnect>,
+        record: Option<&'a TryArc<HttpsRecord>>,
+    ) -> RecordNow<'a> {
+        match https.map(|h| h.record) {
+            Some(Record::Unasked | Record::Pending) => RecordNow::Coming,
+            Some(Record::NotAsked | Record::Known) | None => RecordNow::Known(record.map(|r| &**r)),
+        }
+    }
+
+    /// The ECHConfigList of the record, if known and about the origin
+    /// itself, at `port` (`Curl_httpsrr_is_for_peer`), and it has one.
+    pub(super) fn ech_configs(self, port: u16) -> Option<&'a [u8]> {
+        match self {
+            RecordNow::Known(Some(r)) if applies(r, port) && !r.ech.is_empty() => Some(&r.ech),
+            RecordNow::Known(_) | RecordNow::Coming => None,
+        }
+    }
+}
+
 /// Whether `record` is about the origin itself: no other name, and no
 /// other port (`Curl_httpsrr_is_for_peer`).
 fn applies(record: &HttpsRecord, port: u16) -> bool {

@@ -1109,6 +1109,7 @@ mod tests {
             port: 443,
             kind,
             early_data: false,
+            ech_configs: None,
         };
         let names = Names::of(&peer(b"Example.COM.", TlsPeerKind::Name)).unwrap();
         assert_eq!(names.host(), b"Example.COM.");

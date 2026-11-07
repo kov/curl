@@ -42,3 +42,27 @@ witness: curl-core ech_words_change_their_own_setting
                 }
                 return Ok(());
             }
+
+=== the origin's TLS whose ECH needs the HTTPS record does not wait for it
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core ech_waits_for_the_origin_s_record
+--- old
+        && identity.options.ech.needs_record()
+--- new
+        && false
+
+=== ECH GREASE waits for the origin's HTTPS record
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core ech_without_configurations_waits_for_no_record
+--- old
+        matches!(self.mode, EchMode::Try | EchMode::Hard) && self.config.is_none()
+--- new
+        self.mode != EchMode::Off && self.config.is_none()
+
+=== ECH takes its configurations from a record about another name
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core ech_takes_no_configurations_from_a_record_about_another_name
+--- old
+            RecordNow::Known(Some(r)) if applies(r, port) && !r.ech.is_empty() => Some(&r.ech),
+--- new
+            RecordNow::Known(Some(r)) if !r.ech.is_empty() => Some(&r.ech),

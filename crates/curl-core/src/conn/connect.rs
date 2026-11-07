@@ -2000,7 +2000,7 @@ impl ConnectMachine {
             .ssl_options
             .contains(crate::options::SslOptions::EARLYDATA)
             && making.requests;
-        let peer = crate::tls::TlsPeer::of(origin, early_data);
+        let peer = crate::tls::TlsPeer::of(origin, early_data, None);
         let tls = {
             let mut tcx = crate::tls::TlsCx::new(cx, component, &kept_for);
             let setup = |ctx| h3.setup_tls_context(ctx);

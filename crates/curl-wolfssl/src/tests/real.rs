@@ -90,6 +90,7 @@ fn the_backend_makes_sessions_while_initialised() {
         port: 443,
         kind: TlsPeerKind::Name,
         early_data: false,
+        ech_configs: None,
     };
     let shared = TlsShared::testing();
     let made = |b: &dyn TlsBackend| b.session(&id, &peer, Alpn::None, &shared).err();

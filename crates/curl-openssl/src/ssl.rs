@@ -1959,6 +1959,7 @@ mod tests {
         port: 443,
         kind: TlsPeerKind::Name,
         early_data: false,
+        ech_configs: None,
     };
 
     /// QUIC's session, made at once from the identity: TLS 1.3 the least

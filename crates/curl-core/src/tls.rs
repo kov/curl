@@ -721,6 +721,12 @@ pub struct TlsPeer<'a> {
     /// (`CURLSSLOPT_EARLYDATA`) and makes its requests on the connection
     /// (not `bits.connect_only`).
     pub early_data: bool,
+    /// The ECHConfigList of the origin's HTTPS record, as the record holds
+    /// it, if the record is about this origin and has one
+    /// (`Curl_conn_dns_get_https`, `Curl_httpsrr_is_for_peer`): what ECH
+    /// is tried with where the transfer gives no list of its own. None
+    /// for a proxy, and for a protocol that asks for no record.
+    pub ech_configs: Option<&'a [u8]>,
 }
 
 /// The name a session to the peer `name` of kind `kind` sends by SNI
@@ -853,7 +859,11 @@ pub enum TlsPeerKind {
 }
 
 impl<'a> TlsPeer<'a> {
-    pub(crate) fn of(peer: &'a Peer, early_data: bool) -> TlsPeer<'a> {
+    pub(crate) fn of(
+        peer: &'a Peer,
+        early_data: bool,
+        ech_configs: Option<&'a [u8]>,
+    ) -> TlsPeer<'a> {
         let name = peer.name();
         let kind = if peer.ipv6() {
             TlsPeerKind::Ipv6
@@ -867,6 +877,7 @@ impl<'a> TlsPeer<'a> {
             port: peer.port(),
             kind,
             early_data,
+            ech_configs,
         }
     }
 }

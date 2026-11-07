@@ -55,6 +55,7 @@ fn session_to(
         port: 443,
         kind,
         early_data: false,
+        ech_configs: None,
     };
     Session::new(lib, id, &peer, alpn, keylog).unwrap()
 }

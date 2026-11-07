@@ -65,6 +65,9 @@ pub(super) struct Lent<'a> {
     pub(super) request: &'a mut dyn SetupLend,
     pub(super) negotiate: &'a mut Option<Box<crate::proto::http::negotiate::Negotiate>>,
     pub(super) rank: ConnRank,
+    /// What the setup knows of the origin's HTTPS record, which the
+    /// origin's TLS takes its ECH configurations from.
+    pub(super) record: https::RecordNow<'a>,
 }
 
 /// Which of a transfer's connections a setup makes: the one it is made
@@ -138,8 +141,11 @@ impl Connecting {
             route,
             race,
             negotiate,
+            https,
+            record,
             ..
         } = self;
+        let record = https::RecordNow::of(https.as_ref(), record.as_ref());
         let machine = match (a, race.as_deref_mut()) {
             (Attempt::Second, Some(race)) => race.second.running_mut().expect("the second runs"),
             (Attempt::Second, None) => panic!("a second runs in a race"),
@@ -152,6 +158,7 @@ impl Connecting {
                 request: proto,
                 negotiate,
                 rank: ConnRank::First,
+                record,
             },
         )
     }
@@ -303,6 +310,10 @@ pub(crate) enum Handshake {
     /// The origin's or an HTTPS proxy's TLS, whose state is the layer on
     /// the connection's stream.
     Tls(TlsSide),
+    /// The origin's TLS before its session is made, which waits for the
+    /// origin's HTTPS record to take its ECH configurations from
+    /// (`Curl_ssl_need_httpsrr`).
+    EchRecord(crate::tls::Alpn),
 }
 
 impl Handshake {
@@ -315,6 +326,7 @@ impl Handshake {
             Handshake::Quic(_) => Component::Http3,
             Handshake::Haproxy(_) => Component::Haproxy,
             Handshake::Tls(side) => side.filter(),
+            Handshake::EchRecord(_) => Component::Ssl,
         }
     }
 
@@ -330,7 +342,7 @@ impl Handshake {
             Handshake::H2Connect(p) => setup.handshake_pollset(p.connect_interest()),
             Handshake::Quic(q) => setup.handshake_pollset(q.wants()),
             Handshake::Haproxy(p) => setup.handshake_pollset(p.interest()),
-            Handshake::Tls(_) => setup.handshake_pollset(Events::NONE),
+            Handshake::Tls(_) | Handshake::EchRecord(_) => setup.handshake_pollset(Events::NONE),
         }
     }
 }
@@ -584,6 +596,7 @@ fn connecting_step<H: Host>(
                 | Handshake::SocksTarget(_)
                 | Handshake::Haproxy(_)
                 | Handshake::Tls(_)
+                | Handshake::EchRecord(_)
                 | Handshake::Quic(_),
             )
             | None => {
@@ -1455,6 +1468,7 @@ pub(super) fn step_handshake<H: Host>(
         Handshake::Quic(_) => quictunnel::step,
         Handshake::Haproxy(_) => haproxy::step,
         &Handshake::Tls(side) => return tls::step(s, t, cx, side),
+        &Handshake::EchRecord(alpn) => return tls::record_step(s, t, cx, alpn),
     };
     under_way(s, t, cx)
 }

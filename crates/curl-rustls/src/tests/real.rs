@@ -135,6 +135,7 @@ fn logging(
         port: 443,
         kind: TlsPeerKind::Name,
         early_data: false,
+        ech_configs: None,
     };
     Session::new(&RUSTLS, id, &peer, alpn, keylog).unwrap()
 }

@@ -197,7 +197,7 @@ fn setup_store_marked(
     let now = io.now();
     if let Some(shared) = shared {
         let kept = shared.with(Kept::default, |c| {
-            c.get(identity, now).and_then(Store::another)
+            c.get(identity, now, cache::same).and_then(Store::another)
         });
         match kept {
             Ok(Some(Some(store))) => {

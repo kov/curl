@@ -468,3 +468,19 @@ witness: curl-core tls::cache::tests::unit3304_client_settings_in_the_key
                 out.bytes(&[b.to_ascii_uppercase()]);
 --- new
                 out.bytes(&[*b]);
+
+=== a store kept exactly as long as the cache's age still serves
+file: crates/curl-core/src/tls/store.rs
+witness: curl-core tls::store::tests::a_kept_store_serves_until_it_is_a_day_old
+--- old
+        CaCache::For(age) => now.ms_since(made) >= crate::time::millis(age),
+--- new
+        CaCache::For(age) => now.ms_since(made) > crate::time::millis(age),
+
+=== a store kept for other settings serves a transfer the library finds different
+file: crates/curl-core/src/tls/store.rs
+witness: curl-core tls::store::tests::the_library_says_which_settings_are_the_same
+--- old
+        (!expired(kept.made, now, identity.options.ca_cache) && same(&kept.identity, identity))
+--- new
+        (!expired(kept.made, now, identity.options.ca_cache) && (same(&kept.identity, identity) || true))

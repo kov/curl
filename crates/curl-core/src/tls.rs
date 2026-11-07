@@ -36,11 +36,13 @@ pub(crate) use cache::unpack as unpack_session;
 pub use cache::{SessionExport, SessionFor, SessionPeer, TLS1_3, TlsTicket};
 pub use keylog::{KeyLog, SharedKeyLog};
 pub use pin::pin_peer_pubkey;
+pub use store::StoreCache;
 
 pub(crate) mod cache;
 pub mod hostcheck;
 mod keylog;
 mod pin;
+mod store;
 pub mod x509;
 
 /// A test double: a TLS library of text lines and scrambled records.
@@ -787,6 +789,25 @@ impl fmt::Display for Text<'_> {
         }
         Ok(())
     }
+}
+
+/// `bytes` and a zero byte after them, for a library's call that takes a
+/// C string, or a buffer counted with it; `Err` out of memory.
+pub fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
+    let mut c = Vec::new();
+    c.try_reserve_exact(bytes.len() + 1)
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    c.try_extend_from_slice(bytes)
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    c.try_push(0)
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    Ok(c)
+}
+
+/// What `c_string` made, as a `CStr`: a name with a zero in it ends
+/// there, as C reads it.
+pub fn as_c(bytes: &[u8]) -> &std::ffi::CStr {
+    std::ffi::CStr::from_bytes_until_nul(bytes).expect("made by `c_string`")
 }
 
 /// A handshake a session put off to send early data in it (TLS 1.3's

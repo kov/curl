@@ -5,22 +5,19 @@
 //! `gtls_get_cached_creds`, `gtls_set_cached_creds`), which take them in
 //! place of loading their own.
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::error::ErrorKind;
 use curl_core::options::CaCache;
 use curl_core::time::Instant;
-use curl_core::tls::{TlsCx, TlsIdentity, TlsShared};
+use curl_core::tls::{StoreCache, TlsCx, TlsIdentity, TlsShared};
 
 use crate::library::{Creds as _, Gnutls, Rc, as_c, c_string, strerror};
 use curl_core::tls::Text;
 
-/// The credentials a multi keeps for its next connections: loaded for
-/// `ca_file`, as they were made at `made` (`gtls_shared_creds`).
-pub(crate) struct Kept<C> {
-    creds: TryArc<C>,
-    ca_file: Option<Vec<u8>>,
-    made: Instant,
-}
+/// The credentials a multi keeps for its next connections, with the
+/// settings they were loaded for and when they were made
+/// (`gtls_shared_creds`).
+type Kept<C> = StoreCache<TryArc<C>>;
 
 /// A session's credentials may be taken from the multi, and kept there
 /// (`cache_criteria_met`): the anchors come from a file alone, or from
@@ -37,15 +34,10 @@ pub(crate) fn cacheable(identity: &TlsIdentity) -> bool {
         && o.cert.is_none()
 }
 
-/// Credentials made at `made` are too old to take at `now` by the taking
-/// transfer's `cache` (`gtls_shared_creds_expired`).
-fn expired(made: Instant, now: Instant, cache: CaCache) -> bool {
-    match cache {
-        CaCache::Forever => false,
-        CaCache::For(age) => now.ms_since(made) >= curl_core::time::millis(age),
-        // Not taken at all: `cacheable` says so first.
-        CaCache::Off => true,
-    }
+/// Credentials loaded for `kept` serve `wanted`: they name the same CA
+/// file (`gtls_shared_creds_different`).
+fn same(kept: &TlsIdentity, wanted: &TlsIdentity) -> bool {
+    kept.ca_file() == wanted.ca_file()
 }
 
 /// Set the trust up for a session holding `creds`, made at `made`
@@ -55,7 +47,7 @@ fn expired(made: Instant, now: Instant, cache: CaCache) -> bool {
 /// they may be.
 pub(crate) fn setup<G: Gnutls>(
     lib: &G,
-    identity: &TlsIdentity,
+    identity: &TryArc<TlsIdentity>,
     shared: Option<&TlsShared>,
     creds: &mut TryArc<G::Creds>,
     made: Instant,
@@ -97,49 +89,25 @@ fn taken<C: 'static + Send + Sync>(
     identity: &TlsIdentity,
     now: Instant,
 ) -> Option<TryArc<C>> {
-    let cache = identity.options.ca_cache;
-    let ca_file = identity.ca_file();
     shared
-        .with(
-            || None::<Kept<C>>,
-            |state| {
-                let kept = state.as_ref()?;
-                if expired(kept.made, now, cache) || kept.ca_file.as_deref() != ca_file {
-                    return None;
-                }
-                Some(kept.creds.clone())
-            },
-        )
+        .with(Kept::<C>::default, |kept| {
+            kept.get(identity, now, same).cloned()
+        })
         .ok()
         .flatten()
         .flatten()
 }
 
-/// Keep `creds`, the session's own just loaded, for the multi, in place
-/// of any it kept (`gtls_set_cached_creds`).
+/// Keep `creds`, the session's own just loaded at `made`, for the multi,
+/// in place of any it kept (`gtls_set_cached_creds`).
 fn keep<C: 'static + Send + Sync>(
     shared: &TlsShared,
-    identity: &TlsIdentity,
+    identity: &TryArc<TlsIdentity>,
     creds: &TryArc<C>,
     made: Instant,
 ) -> Result<(), OutOfMemory> {
-    let mut ca_file = None;
-    if let Some(f) = identity.ca_file() {
-        let mut copy = Vec::new();
-        copy.try_extend_from_slice(f)?;
-        ca_file = Some(copy);
-    }
     let creds = creds.clone();
-    shared.with(
-        || None::<Kept<C>>,
-        |state| {
-            *state = Some(Kept {
-                creds,
-                ca_file,
-                made,
-            });
-        },
-    )?;
+    shared.with(Kept::<C>::default, |kept| kept.set(identity, made, creds))?;
     Ok(())
 }
 

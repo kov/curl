@@ -13,7 +13,6 @@
 use std::ffi::CStr;
 use std::fmt;
 
-use curl_alloc::TryVec as _;
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{Chosen, KeyLog, TlsCx, TlsIo, TlsTicket};
@@ -421,20 +420,7 @@ pub(crate) fn keep_ticket(
     ));
 }
 
-/// A C string of `bytes`, for a call that takes one; `Err` out of memory.
-pub(crate) fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
-    let mut c = Vec::new();
-    c.try_extend_from_slice(bytes)
-        .map_err(|_| ErrorKind::OutOfMemory)?;
-    c.try_push(0).map_err(|_| ErrorKind::OutOfMemory)?;
-    Ok(c)
-}
-
-/// `bytes` and the zero after them, as a `CStr`: what `c_string` makes.
-/// A name with a zero in it ends there, as C reads it.
-pub(crate) fn as_c(bytes: &[u8]) -> &CStr {
-    CStr::from_bytes_until_nul(bytes).expect("made by `c_string`")
-}
+pub(crate) use curl_core::tls::{as_c, c_string};
 
 impl<C> fmt::Debug for Call<'_, '_, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

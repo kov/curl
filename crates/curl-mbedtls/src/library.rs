@@ -13,7 +13,7 @@ use core::ffi::{CStr, c_void};
 use core::fmt;
 use core::ptr::NonNull;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{Text, TlsIo};
@@ -374,21 +374,4 @@ impl fmt::Debug for Call<'_, '_> {
     }
 }
 
-/// `bytes` and a zero byte after them, for a call that takes a C string,
-/// or a buffer counted with it; `Err` out of memory.
-pub(crate) fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
-    let mut c = Vec::new();
-    c.try_reserve_exact(bytes.len() + 1)
-        .map_err(|_| ErrorKind::OutOfMemory)?;
-    c.try_extend_from_slice(bytes)
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-    c.try_push(0)
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-    Ok(c)
-}
-
-/// What `c_string` made, as a `CStr`: a name with a zero in it ends
-/// there, as C reads it.
-pub(crate) fn as_c(bytes: &[u8]) -> &CStr {
-    CStr::from_bytes_until_nul(bytes).expect("made by `c_string`")
-}
+pub(crate) use curl_core::tls::{as_c, c_string};

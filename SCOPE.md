@@ -89,7 +89,7 @@ These cannot be built here:
 
 These are not covered by this build:
 
-- the other TLS backends (GnuTLS, which has its own below, mbedTLS, wolfSSL, Rustls);
+- the other TLS backends (GnuTLS and mbedTLS, which have their own below, wolfSSL, Rustls);
 - libssh;
 - the threaded resolver, which c-ares replaces.
 
@@ -108,6 +108,12 @@ place of `CURL_USE_OPENSSL` and without HTTP/3 (ngtcp2 here has OpenSSL's crypto
 GnuTLS's), built and measured by `baseline.py --gnutls`. The rewrite's TLS library is a build
 choice, the shim's and the tool's `gnutls` feature in place of `openssl`, and its leg (with
 libssh2, as the oracle has it) is scored against that oracle by `score.py --gnutls`.
+
+mbedTLS has one too: `build/c-mbedtls`, the reference configuration with `CURL_USE_MBEDTLS` in
+place of `CURL_USE_OPENSSL`, without HTTP/3 (ngtcp2 has no mbedTLS crypto) and without HTTP
+message signatures (C's CMake turns them off with mbedTLS, which has no Ed25519), built and
+measured by `baseline.py --mbedtls`. The rewrite's leg, the `mbedtls` feature with libssh2, is
+scored against it by `score.py --mbedtls`.
 
 The threaded resolver has one: a second C oracle in `build/c-threaded`, the reference build's
 configuration with `ENABLE_ARES` off and `ENABLE_THREADED_RESOLVER` on, as distributions build

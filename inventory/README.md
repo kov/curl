@@ -22,16 +22,18 @@ the C tree in `build/c`, runs `runtests.pl` and the `tests/http` pytest suite (a
 minutes; pytest gets a venv in `build/c/pytest-venv`) and parses the results (libraries newer than the distribution's come from
 `inventory/measure/deps.py`, under `build/deps`); without
 `--run` it only re-parses the stored results, and refuses if they were measured at another C commit.
-`--threaded`, `--libssh` and `--gnutls` do the same for the other three C oracles (`SCOPE.md`): the
-reference configuration with the threaded resolver in place of c-ares, in `build/c-threaded`, with
-libssh in place of libssh2, in `build/c-libssh`, and with GnuTLS in place of OpenSSL and no HTTP/3,
-in `build/c-gnutls`, into `baseline-threaded`, `baseline-libssh` and `baseline-gnutls`.
+`--threaded`, `--libssh`, `--gnutls` and `--mbedtls` do the same for the other four C oracles
+(`SCOPE.md`): the reference configuration with the threaded resolver in place of c-ares, in
+`build/c-threaded`, with libssh in place of libssh2, in `build/c-libssh`, with GnuTLS in place of
+OpenSSL and no HTTP/3, in `build/c-gnutls`, and with mbedTLS in place of OpenSSL and neither
+HTTP/3 nor message signatures, in `build/c-mbedtls`, into `baseline-threaded`, `baseline-libssh`,
+`baseline-gnutls` and `baseline-mbedtls`.
 
 `inventory/measure/score.py` scores the Rust build the same way: it lays out `build/rust` with the
 C build's test servers and programs and the Rust library and tool, checks with `ldd` that the
 Rust library is the one loaded, runs both suites and compares each result with `baseline`. Its
 results stay in `build/rust/score`. `--lib c` and `--lib stub` arm it (see the script);
-`--threaded`, `--libssh` and `--gnutls` score against the other oracles. Tests
+`--threaded`, `--libssh`, `--gnutls` and `--mbedtls` score against the other oracles. Tests
 replaced by Rust tests (`REPLACED` in `suite.py`, see `SCOPE.md`) are counted apart. Both
 scripts run and parse the suites through `inventory/measure/suite.py`.
 Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.

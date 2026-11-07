@@ -147,6 +147,10 @@ curl-gnutls   GnuTLS 3.6.5 or later: the TLS backend a build takes in OpenSSL's 
               `gnutls` feature), its credentials kept per multi by CA file, and Ed25519
               from its nettle; the session's logic safe code over a `Gnutls` trait, which
               `gnutls.rs` implements and the tests script
+curl-mbedtls  mbedTLS 3.2 or later, before 4.0: the TLS backend a build takes in OpenSSL's
+              place (the `mbedtls` feature), its random number generator the backend
+              value's; the session's logic safe code over an `Mbedtls` trait, which
+              `mbedtls.rs` implements and the tests script
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```
@@ -3124,6 +3128,29 @@ A TLS 1.2 session is kept as the peer is checked, before ALPN is agreed (`alpn=-
 ticket as the handshake hook sees it. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` both hand out
 the `gnutls_session_t`, as `gtls_get_internals` does.
 
+**mbedTLS** (curl-mbedtls, `lib/vtls/mbedtls.c`) is the backend the `mbedtls` feature takes in
+OpenSSL's place, with no HTTP/3 and no message signatures, as C's mbedTLS build. Its shape is
+GnuTLS's: the session's logic (`session.rs`, `verify.rs`, `suites.rs`) is safe code over an
+`Mbedtls` trait, one method per library call `mbedtls.c` makes, implemented over the library by
+`mbedtls.rs` and scripted by the tests (`fake.rs`). The library's objects are the caller's to
+allocate at sizes its build's configuration decides: `csrc/layout.c` compiles them, and the
+offsets of the fields the headers reach only through inline functions (the versions), into a
+table the binding reads, and refuses a library configured without what `mbedtls.c` needs. The
+BIO and verify callbacks reach the `Call` under way through the connection's slot, set for
+that call alone. The random number generator (CTR-DRBG with prediction resistance over the
+entropy source), a file-scope static in C, is the `MbedTls` value's, made by its `init` (C's
+global init) and held by each session as long as it lives; the debug tracker does not count it,
+as curl's memory debugging never sees C's. The objects are set up at the first step in
+`mbed_configure_ssl`'s order: the CA blob (verified peers only), else the file, and the
+directory; the client's certificate and key; the revocation list; TLS 1.2 to 1.3; the cipher
+lists walked into the library's numbers by `lib/vtls/cipher_suite.c`'s table; FTP's or the
+cache's session resumed; SNI and ALPN. The library verifies always; its callback clears the
+flags of the checks that are off and says what is left, and dumps and reports the leaf. A TLS
+1.2 session is kept after the handshake, TLS 1.3's as the library tells of each ticket during a
+read or write. A write that would block is made again with as many bytes, as the library
+requires. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` both hand out the `mbedtls_ssl_context`; the
+context callback gets the `mbedtls_ssl_config`.
+
 **Verification.** The CA default is decided at build time as CMake decides it
 (CMakeLists.txt:1475), by the library's build script through curl-build's `write_ca_defaults`,
 the same for each library that takes a bundle: `CURL_CA_BUNDLE` and `CURL_CA_PATH`
@@ -3338,7 +3365,8 @@ session sets the library's keylog callback while the log is open, whose lines ar
 whole, a line end added (NSS's format: five secrets for TLS 1.3, `CLIENT_RANDOM` before it);
 each handshake done says `SSLKEYLOGFILE set, all TLS secrets are logged to '<file>'`.
 GnuTLS's log is opened as each session is made instead (`Curl_gtls_ctx_init`), not by the
-global init: a run that makes no TLS session makes no file, as C's GnuTLS build.
+global init: a run that makes no TLS session makes no file, as C's GnuTLS build. mbedTLS's
+never opens it, as C's mbedTLS build logs no keys.
 
 **The application's hands on the library.** A library's objects reach the application as a
 `TlsNative`: two pointers the core never looks through, the context and, once made, the

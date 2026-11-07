@@ -2,8 +2,9 @@
 //! C's build takes it.
 //!
 //! MIT krb5 by default, as CMake's FindGSS prefers it: from pkg-config's
-//! `mit-krb5-gssapi`, else from `krb5-config` (macOS's Kerberos); its
-//! version as pkg-config or `krb5-config` says it.
+//! `mit-krb5-gssapi`, else from `krb5-config` (macOS's Kerberos), whose
+//! vendor must not be Heimdal, which FindGSS refuses ("MIT, GNU or Apple
+//! GSS is required"); its version as pkg-config or `krb5-config` says it.
 //!
 //! GNU GSS with the `gnu-gss` feature (C's `HAVE_GSSGNU`): the copy built
 //! by `inventory/measure/deps.py` in `build/deps/gnugss`, unless
@@ -109,7 +110,9 @@ fn pkg_config_version() -> Option<String> {
 
 /// The libraries `krb5-config --libs gssapi` names, linked, its words
 /// for the checks, its headers, and its version with "Kerberos 5 release
-/// " taken off, as FindGSS takes them.
+/// " taken off, as FindGSS takes them. A vendor `krb5-config` does not
+/// name, or Heimdal, is refused, as FindGSS leaves the flavor unset and
+/// fails.
 fn krb5_config() -> Found {
     let run = |args: &[&str]| {
         let out = Command::new("krb5-config")
@@ -119,6 +122,11 @@ fn krb5_config() -> Found {
         assert!(out.status.success(), "krb5-config {args:?} fails");
         String::from_utf8(out.stdout).expect("krb5-config's output is text")
     };
+    let vendor = run(&["--vendor"]);
+    let vendor = vendor.trim();
+    if vendor.contains("Heimdal") || vendor.contains("heimdal") {
+        panic!("krb5-config's vendor is {vendor:?}: MIT, GNU or Apple GSS is required");
+    }
     let libs: Vec<String> = run(&["--libs", "gssapi"])
         .split_whitespace()
         .map(str::to_owned)

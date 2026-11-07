@@ -2,6 +2,8 @@
 //! race and handshakes, and how the setup ends.
 
 use super::*;
+use crate::conn::Late;
+use crate::conn::asyncs::Holder;
 
 /// Who is asked for an origin's HTTPS record.
 #[derive(Debug)]
@@ -265,6 +267,14 @@ impl RaceSecond {
         }
     }
 
+    /// Its machine, if it failed once dialed, to change.
+    fn kept_mut(&mut self) -> Option<&mut ConnectMachine> {
+        match self {
+            RaceSecond::Kept(m) => Some(m),
+            RaceSecond::Unstarted | RaceSecond::Running(_) | RaceSecond::Gone => None,
+        }
+    }
+
     /// Its machine, if it failed once dialed.
     pub(super) fn kept(&self) -> Option<&ConnectMachine> {
         match self {
@@ -496,8 +506,8 @@ impl Connecting {
                 race.second = RaceSecond::Running(m);
                 Ok(Connected::Connecting(progress))
             }
-            Drove::Established(conn) => {
-                let (up, lost) = self.lease.adopt(conn);
+            Drove::Established(conn, late) => {
+                let (up, lost) = self.lease.adopt(conn, late);
                 *displaced = lost;
                 Ok(up)
             }
@@ -511,12 +521,12 @@ impl Connecting {
         let Some(race) = self.race.as_deref_mut().filter(|_| a == Attempt::Second) else {
             return self.lease.handshaken();
         };
-        let conn = race
+        let (conn, late) = race
             .second
             .take_running()
             .expect("the second runs")
             .handshaken();
-        let (up, lost) = self.lease.adopt(conn);
+        let (up, lost) = self.lease.adopt(conn, late);
         *displaced = lost;
         up
     }
@@ -572,7 +582,10 @@ pub(super) fn connecting<H: Host>(
             Some(RecordLookup::Library(r)) => Some(now.after(r.due(Duration::from_secs(1)))),
             _ => None,
         };
-        let held = c.lead().and_then(|setup| setup.resolve_due(now));
+        // The first attempt holds the name's resolve, whichever leads.
+        let held = c
+            .attempt(Attempt::First)
+            .and_then(|setup| setup.resolve_due(now));
         if let Some(at) = [record, held].into_iter().flatten().min() {
             arm(&mut run.deadlines, cx, TimerKind::AsyncName, at.since(now));
         }
@@ -643,8 +656,9 @@ fn connecting_step<H: Host>(
         names::started(cx, &c.route);
     }
     // The name's filter, below the record's, heads SETUP and the HTTPS
-    // connect filter: what more came of the resolve the race goes on
-    // beside is taken next. The first attempt holds it, whichever leads.
+    // connect filter: what more came of the resolve the race, or the
+    // connection it dialed, goes on beside is taken next, until the chain
+    // below connects. The first attempt holds it, whichever leads.
     if c.attempt(Attempt::First)
         .is_some_and(ConnectMachine::resolving)
     {
@@ -653,11 +667,15 @@ fn connecting_step<H: Host>(
         match polled {
             Ok(Some(found)) => resolved(&c, run, cx, Attempt::First, found),
             Ok(None) => {}
-            Err(OutOfMemory) => {
+            Err(ConnectError::OutOfMemory) => {
                 return (
                     TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
                     Wake::Again,
                 );
+            }
+            Err(e) => {
+                let kind = connect_failed(cx, &c.route, e);
+                return (TransferState::Connecting(c).fail(kind), Wake::Again);
             }
         }
     }
@@ -841,7 +859,7 @@ fn resolved<H: Host>(
         }
     }
     cx.mark(Timer::NameLookup);
-    report_answer(cx, c);
+    report_answer(cx, c, a);
 }
 
 /// SETUP's connect is entered (`cf_setup_connect`), and traces the chain
@@ -1143,10 +1161,15 @@ fn connect_once<H: Host>(
             }
             (TransferState::Connecting(c), Wake::Idle)
         }
-        Ok(Connected::Established { remote, local, at }) => {
+        Ok(Connected::Established {
+            remote,
+            local,
+            at,
+            late,
+        }) => {
             eyeballs_won(cx, &c.route, &remote);
             let lost = c.loser(displaced);
-            up(c, cx, remote, local, at, false, lost)
+            up(c, cx, Ends { remote, local }, at, false, lost, late)
         }
         // A reused connection is up: nothing to trace or time
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
@@ -1425,8 +1448,11 @@ fn handshake_next<H: Host>(
     let lost = c.loser(displaced);
     match up_at {
         Connected::Established {
-            remote, local, at, ..
-        } => up(c, cx, remote, local, at, preface, lost),
+            remote,
+            local,
+            at,
+            late,
+        } => up(c, cx, Ends { remote, local }, at, preface, lost, late),
         _ => unreachable!("the handshakes make the connection"),
     }
 }
@@ -1880,16 +1906,17 @@ fn report_failed<H: Host>(
     mstate::marked(cx, Timer::Connect, marked);
 }
 
-/// The connection is set up (`conn_connect_trace`): timed and traced;
-/// `preface` if the PROXY protocol's line was sent over it.
+/// The connection is set up (`conn_connect_trace`) between `ends`: timed
+/// and traced; `preface` if the PROXY protocol's line was sent over it.
+/// `late` is the resolve the winner went on beside, still going on.
 pub(super) fn up<H: Host>(
     mut c: Connecting,
     cx: &mut StepCx<'_, H>,
-    remote: Remote,
-    local: Option<SocketAddr>,
+    ends: Ends,
     at: Instant,
     preface: bool,
-    lost: Option<ConnectMachine>,
+    mut lost: Option<ConnectMachine>,
+    late: Late,
 ) -> (TransferState, Wake) {
     // What its tunnel negotiated is the connection's from now on.
     *c.lease.get().negotiate_mut() = c.negotiate.take();
@@ -1912,10 +1939,14 @@ pub(super) fn up<H: Host>(
     https::call_ended(c.https, cx, Ok(true));
     let route = c.lease.conn().dialing().expect("set up over the network");
     let target = crate::conn::chain::resolves_target(route.route);
+    // The name's resolve still going on is the first attempt's, wherever
+    // its machine is now; it goes with the chain's DNS filter above both.
+    let mut late = Some(first_late(&mut c, &mut lost, late));
     // The record's resolve over DoH, still going, goes with its filter's,
-    // its probe with it (`Curl_resolv_destroy`'s `doh_close`). The probe
-    // is taken out of the multi after the step, not here as C's is
-    // (DIVERGENCE.md, "Probes C removes inside their master's step").
+    // its probe with it (`Curl_resolv_destroy`'s `doh_close`), and so does
+    // the name's. The probe is taken out of the multi after the step, not
+    // here as C's is (DIVERGENCE.md, "Probes C removes inside their
+    // master's step").
     let lookup = &mut c.record_lookup;
     names::connected(
         cx,
@@ -1923,14 +1954,23 @@ pub(super) fn up<H: Host>(
         target,
         head.record,
         head.tls_record,
-        |cx, holder| {
-            if holder == crate::conn::asyncs::Holder::Record
-                && matches!(lookup, Some(RecordLookup::Doh(_)))
-            {
+        |cx, holder| match holder {
+            Holder::Record if matches!(lookup, Some(RecordLookup::Doh(_))) => {
                 *lookup = None;
                 trace::of(cx, Component::Dns, format_args!("[DoH] probe done"));
             }
+            Holder::Addresses(ConnRank::First) => {
+                let late = late.take().expect("one filter for the name");
+                late.chain_connected(&mut DriveCx::new(cx, None));
+            }
+            _ => {}
         },
+    );
+    // A chain without the name's filter, to a Unix socket or an address,
+    // has no resolve beside it.
+    assert!(
+        late.is_none_or(|l| !l.going()),
+        "the name's resolve goes with its filter"
     );
     chain_connect_ended(cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
@@ -1967,8 +2007,8 @@ pub(super) fn up<H: Host>(
         }
     }
     // `CURL_CONN_HOST_DISPNAME`.
-    say_established(cx, c.route.destination().shown(), &remote, local);
-    cx.report_mut().set_primary(Ends { remote, local });
+    say_established(cx, c.route.destination().shown(), &ends.remote, ends.local);
+    cx.report_mut().set_primary(ends);
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
     let tunnel = c
@@ -2023,6 +2063,27 @@ pub(super) fn up<H: Host>(
         schedule_pending(&mut cx.rest);
     }
     (c.attached(), Wake::Again)
+}
+
+/// The resolve of the name still going on beside the setup that won,
+/// `won`, or, if it was not the first attempt, beside the first's machine:
+/// lost to the second, or kept as it failed once dialed. Only the first
+/// holds one.
+fn first_late(c: &mut Connecting, lost: &mut Option<ConnectMachine>, won: Late) -> Late {
+    let race = c.race.as_deref_mut();
+    let (failed, kept) = match race {
+        Some(r) => (r.failed.as_mut(), r.second.kept_mut()),
+        None => (None, None),
+    };
+    let mut found = won;
+    for m in [lost.as_mut(), failed, kept].into_iter().flatten() {
+        let late = m.take_late();
+        if late.going() {
+            assert!(!found.going(), "one attempt holds the name's resolve");
+            found = late;
+        }
+    }
+    found
 }
 
 /// The connection to `host` is connected all the way, from `local` to
@@ -2285,8 +2346,8 @@ pub(crate) fn connect_failed<H: Host>(
 /// The addresses a name resolved to, each family on a line of its own
 /// (`cf_dns_report`), under the name it was found for; nothing for an
 /// address the URL names.
-fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
-    let Some(answer) = c.lead().and_then(|m| m.answer().cloned()) else {
+fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting, a: Attempt) {
+    let Some(answer) = c.attempt(a).and_then(|m| m.answer().cloned()) else {
         return;
     };
     report_resolved(cx, &answer, c.route.destination().port());

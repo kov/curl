@@ -2354,6 +2354,8 @@ impl<H: Host> Drop for Multi<H> {
 #[cfg(test)]
 mod doh_tests;
 #[cfg(test)]
+mod late_tests;
+#[cfg(test)]
 mod props;
 #[cfg(test)]
 mod shutdown_tests;

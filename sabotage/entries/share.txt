@@ -85,11 +85,11 @@ witness: curl-core proto::ftp::tests::a_share_s_names_are_let_go_as_each_connect
 features: test-util debug-hooks
 --- old
     // `CURL_CONN_HOST_DISPNAME`.
-    say_established(cx, c.route.destination().shown(), &remote, local);
+    say_established(cx, c.route.destination().shown(), &ends.remote, ends.local);
 --- new
     names::filters_done(cx, Some(ConnRank::First));
     // `CURL_CONN_HOST_DISPNAME`.
-    say_established(cx, c.route.destination().shown(), &remote, local);
+    say_established(cx, c.route.destination().shown(), &ends.remote, ends.local);
 
 === a SOCKS proxy's target, resolved here, holds no entry of the names
 file: crates/curl-core/src/conn/connect.rs

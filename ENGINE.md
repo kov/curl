@@ -645,7 +645,8 @@ otherwise being the HTTPS connect filter's choice over a TCP connection. A START
 done the `APPCONNECT` time, `Established connection` and the chain `connected`/`reduced to`; a
 failure says `filter returned R` and `failed to connect` with the chain. Each resolve's record
 is said as C's are: `[DNS] [N] shutdown async` as the transfer is done, `[DNS] [N] destroy
-async` as its filter's chain connects or the handle lets go of it. Not traced: a SOCKS proxy's
+async` as its filter's chain connects or the handle lets go of it. The pollset's lines say a
+resolve's sockets in the set, not as a socket filter's. Not traced: a SOCKS proxy's
 lookup of the destination. How many times `resolve incomplete` and its cache lookup are
 said depends on when answers arrive, in C as here.
 
@@ -2834,11 +2835,17 @@ DoH variant, as C cannot wait for DoH: the lookup is started generic over its ba
 does (C's second DNS filter): its resolve is held by the dialed setup, the handshake,
 `Handshake::SocksTarget`, starting once it has answered. What a resolve has found while it goes
 on (`Resolver::partial`, DoH's and the threaded resolver's) is connected to once AAAA has answered
-or 25 ms have passed (`cf_dns_ready_to_connect`): the race holds the resolve as `Racing::late`,
-its addresses growing as the queries answer, until the resolve answers, or the race is won,
-closed or discarded, each of which lets go of it where C destroys it (`Late::end`); a race
-dropped otherwise lets go of it all the same. A race
-out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
+or 25 ms have passed (`cf_dns_ready_to_connect`): the race holds the resolve (`Late`), its
+addresses growing as the queries answer. A race won keeps it until the setup's chain connects,
+as C's DNS filter keeps it until the chain below it does (`cf_dns_connect`'s
+`Curl_resolv_destroy`): the connection dialed for its handshakes holds it (`Dialed::late`), and
+one made at once hands it out with the connection (`Drove::Established`). Meanwhile it is looked
+at in each pass, its sockets in the pollset, and an answer that comes is kept and said, starting
+no attempt. As the chain connects it is taken from the first attempt's machine, wherever that
+is (the winner, the second's loser, or kept as it failed), and let go of after its record's
+`destroy async`: a library's sockets said closed, DoH's `[DoH] probe done`. A setup closed or
+discarded first lets go of it at once (`Late::end`), and one dropped otherwise all the same. A
+race out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
 synchronous resolver does; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
 

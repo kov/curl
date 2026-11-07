@@ -1257,6 +1257,17 @@ pub(crate) struct SetupTrace {
     eyeballs: bool,
     /// An HTTPS connect filter heads the setup.
     https: bool,
+    /// The sockets its resolves wait on, which the DNS filters above put
+    /// in the pollset first (`Curl_resolv_pollset`), not a socket filter:
+    /// counted with the others, but not said as theirs.
+    resolver: Vec<SocketKey>,
+}
+
+impl SetupTrace {
+    /// Whether `key` is a socket of the setup's own, not a resolve's.
+    fn own(&self, key: SocketKey) -> bool {
+        !self.resolver.contains(&key)
+    }
 }
 
 impl Run {
@@ -1271,7 +1282,9 @@ impl Run {
         let setup = match &self.state {
             // A QUIC socket is connected as its attempt starts.
             TransferState::Connecting(c) => Some(SetupTrace {
-                other: c.other().map_or(0, |m| m.racing_wants().count()),
+                other: c
+                    .other()
+                    .map_or(0, |m| m.racing_wants().count() + m.resolve_wants().count()),
                 other_leads: https::other_leads(c),
                 dialed: matches!(
                     c.lead().map(ConnectMachine::reached),
@@ -1283,6 +1296,7 @@ impl Run {
                     Some(SetupPoint::Racing { started: true })
                 ),
                 https: c.https.is_some(),
+                resolver: resolver_sockets(c)?,
             }),
             _ => None,
         };
@@ -1307,6 +1321,27 @@ impl Run {
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         })
     }
+}
+
+/// The sockets the resolves of setup `c` wait on: the record's library's,
+/// and each attempt's.
+fn resolver_sockets(c: &Connecting) -> Result<Vec<SocketKey>, OutOfMemory> {
+    let mut keys = Vec::new();
+    if let Some(connecting::RecordLookup::Library(r)) = &c.record_lookup {
+        for (s, _) in r.wants() {
+            keys.try_push(s.key())?;
+        }
+    }
+    for a in [Attempt::First, Attempt::Second] {
+        for (s, _) in c
+            .attempt(a)
+            .into_iter()
+            .flat_map(ConnectMachine::resolve_wants)
+        {
+            keys.try_push(s.key())?;
+        }
+    }
+    Ok(keys)
 }
 
 impl PollsetTrace<std::iter::Empty<(Instant, TimerKind)>> {
@@ -1359,8 +1394,9 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
         };
         // The QUIC attempt beside the lead, its eyeballs racing while its
         // handshake is made.
+        let own = |key: SocketKey| self.setup.as_ref().is_none_or(|s| s.own(key));
         let udp = |cx: &mut StepCx<'_, H>, sockets: &[(SocketKey, Events)], n: usize| {
-            for &(key, _) in sockets {
+            for &(key, _) in sockets.iter().filter(|(k, _)| own(*k)) {
                 let fd = key.get();
                 let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
                 trace::of(cx, Component::Udp, line);
@@ -1369,10 +1405,12 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
                 eyeballs(cx, n);
             }
         };
+        // The connection's own socket, under its TLS, past the resolves'.
+        let socket = wants.iter().find(|(k, _)| own(*k));
         udp(cx, first, first.len());
         // The TLS filter puts its socket in for what its session waits
         // for (`Curl_ssl_adjust_pollset`).
-        if let (Some(waits), Some(&(key, _))) = (self.tls, wants.first()) {
+        if let (Some(waits), Some(&(key, _))) = (self.tls, socket) {
             let fd = key.get();
             let line = match waits {
                 TlsWait::Send => format_args!("adjust_pollset, POLLOUT fd={fd}"),
@@ -1383,7 +1421,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
         // The session with an HTTP/2 proxy says what it asks of the
         // socket, the layers above's wants with its own
         // (`cf_h2_proxy_adjust_pollset`).
-        if let (true, Some(&(_, events))) = (self.h2_proxy, wants.first()) {
+        if let (true, Some(&(_, events))) = (self.h2_proxy, socket) {
             let (recv, send) = (events.contains(Events::IN), events.contains(Events::OUT));
             if recv || send {
                 let (recv, send) = (u8::from(recv), u8::from(send));
@@ -1393,7 +1431,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
         }
         // An HTTPS proxy's, below it, asked twice once an HTTP/1 tunnel
         // through it is made: by the tunnel's filter and on its own.
-        if let (Some((waits, tunneled)), Some(&(key, _))) = (self.proxy_tls, wants.first()) {
+        if let (Some((waits, tunneled)), Some(&(key, _))) = (self.proxy_tls, socket) {
             let fd = key.get();
             for _ in 0..1 + u8::from(tunneled && !self.h2_proxy) {
                 let line = match waits {
@@ -1413,7 +1451,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
             ..
         }) = self.setup
         {
-            for &(key, _) in wants {
+            for &(key, _) in wants.iter().filter(|(k, _)| own(*k)) {
                 let fd = key.get();
                 if dialed {
                     let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");

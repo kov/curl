@@ -213,7 +213,10 @@ impl DataConn {
                                 continue;
                             }
                             Ok(Shaken::Up) => {
-                                let conn = machine.handshaken();
+                                // What was still to come of its name goes
+                                // as it is up.
+                                let (conn, late) = machine.handshaken();
+                                drop(late);
                                 *chain = None;
                                 self.up(cx, host, conn)?;
                                 continue;
@@ -247,7 +250,10 @@ impl DataConn {
                                 }
                             }
                         }
-                        Ok(Drove::Established(conn)) => {
+                        Ok(Drove::Established(conn, late)) => {
+                            // What was still to come of its name goes
+                            // as it is up.
+                            drop(late);
                             if let Some(remote) = conn.remote() {
                                 crate::multi::state::side_won(cx, &route, remote);
                             }

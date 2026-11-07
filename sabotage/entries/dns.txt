@@ -551,11 +551,11 @@ features: test-util
 --- old
         head.record,
         head.tls_record,
-        |cx, holder| {
+        |cx, holder| match holder {
 --- new
         false,
         head.tls_record,
-        |cx, holder| {
+        |cx, holder| match holder {
 
 === the addresses' DNS filter after the HTTPS record's is traced as added
 file: crates/curl-core/src/multi/state/names.rs
@@ -687,15 +687,84 @@ witness: curl-core multi::socket_tests::a_name_found_not_to_exist_after_the_race
         let kept = step.rest.kept(step.me, Kind::Names).filter(|_| false);
         DriveCx {
 
-=== a race that connects keeps the resolve still going on alive in the resolver
+=== a race that connects keeps the resolve still going on alive in the resolver, out of anyone's reach
 file: crates/curl-core/src/conn/connect.rs
-witness: curl-core conn::connect::tests::a_race_connected_cancels_the_resolve_still_going_on
+witness: curl-core conn::connect::tests::a_race_connected_hands_out_the_resolve_still_going_on
 --- old
-        r.eyeballs.late.end();
-        cx.of(
+        let late = std::mem::take(&mut r.eyeballs.late);
 --- new
         std::mem::forget(std::mem::take(&mut r.eyeballs.late));
-        cx.of(
+        let late = Late::default();
+
+=== a race that connects lets go of the resolve still going on before its chain connects
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::over_doh_a_probe_still_out_goes_as_the_chain_connects
+features: test-util
+--- old
+        let late = std::mem::take(&mut r.eyeballs.late);
+--- new
+        let late = Late::default();
+        r.eyeballs.late.end();
+
+=== an answer that comes during the handshake is not taken
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::through_the_resolver_an_answer_during_the_handshake_is_kept
+features: test-util
+--- old
+            Stage::Dialed(d) => (&mut d.late, &mut d.answer, None),
+--- new
+            Stage::Dialed(_) => return Ok(None),
+
+=== a library's resolve beside a dialed connection is not polled
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::through_a_library_an_answer_during_the_handshake_is_kept
+features: test-util
+--- old
+            Stage::Dialed(d) => (d.late.0.as_ref(), d.target_late.0.as_ref()),
+--- new
+            Stage::Dialed(d) => (None, d.target_late.0.as_ref()),
+
+=== a DoH resolve let go of as the chain connects does not say its probe is done
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::over_doh_a_probe_still_out_goes_as_the_chain_connects
+features: test-util
+--- old
+        if doh {
+            cx.of(Component::Dns, format_args!("[DoH] probe done"));
+        }
+--- new
+        let _ = doh;
+
+=== a library's sockets closed as the chain connects are not said
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::through_a_library_a_resolve_still_going_on_goes_as_the_chain_connects
+features: test-util
+--- old
+        drop(p);
+        cx.libraries_closed();
+--- new
+        drop(p);
+
+=== the name's resolve still going on is let go of after the chain connects
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::late_tests::over_doh_a_probe_still_out_goes_as_the_chain_connects
+features: test-util
+--- old
+            Holder::Addresses(ConnRank::First) => {
+                let late = late.take().expect("one filter for the name");
+                late.chain_connected(&mut DriveCx::new(cx, None));
+            }
+--- new
+            Holder::Addresses(ConnRank::First) => {}
+
+=== a resolver's socket is said as the connection's
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::late_tests::through_a_library_an_answer_during_the_handshake_is_kept
+features: test-util
+--- old
+        !self.resolver.contains(&key)
+--- new
+        !self.resolver.contains(&key) || true
 
 === a library's resolve beside a race is not run again when it says
 file: crates/curl-core/src/conn/connect.rs

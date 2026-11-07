@@ -1357,3 +1357,15 @@ witness: curl-core proto::http::tests::h3_trace::a_request_goes_as_early_data_un
 --- new
         let _ = (conn, peer, component, early);
         Ok(())
+
+=== an OpenSSL QUIC session sending early data offers every protocol
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-ngtcp2 a_resumed_session_sends_its_get_as_early_data
+--- old
+        if !early {
+            return Ok(());
+        }
+--- new
+        if early {
+            return Ok(());
+        }

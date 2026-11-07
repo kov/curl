@@ -4,6 +4,7 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+use std::cell::RefCell;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -27,6 +28,7 @@ use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::{PKey, Private};
+use openssl::symm::{Cipher, Crypter, Mode as CipherMode, decrypt_aead};
 use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
 use openssl::x509::{X509, X509Name};
 
@@ -298,10 +300,11 @@ impl Told {
     }
 }
 
-/// What a test drives a connection with.
+/// What a test drives a connection with, and the datagrams it sent.
 struct Over<'s> {
     sock: &'s UdpSocket,
     clock: &'s SystemClock,
+    sent: RefCell<Vec<Vec<u8>>>,
 }
 
 /// Send every packet the connection wants sent.
@@ -316,6 +319,7 @@ fn flush(
         let n = conn.write_packet(cx, over.clock.now(), &mut buf, &mut |_, e| told.hear(e))?;
         let Some(n) = n else { return Ok(()) };
         over.sock.send(&buf[..n]).unwrap();
+        over.sent.borrow_mut().push(buf[..n].to_vec());
         conn.sent_at(over.clock.now());
     }
 }
@@ -417,6 +421,7 @@ fn with_conn<R>(
         let over = Over {
             sock: &sock,
             clock: &clock,
+            sent: RefCell::default(),
         };
         // A failed check is shown with the notes that explain it.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -518,13 +523,192 @@ fn authority(addr: SocketAddr) -> String {
     format!("localhost:{}", addr.port())
 }
 
+/// QUIC version 1's salt for its Initial secrets (RFC 9001, 5.2).
+const INITIAL_SALT: [u8; 20] = [
+    0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad,
+    0xcc, 0xbb, 0x7f, 0x0a,
+];
+
+/// The TLS extensions the tests look for (RFC 7301, RFC 8446).
+const ALPN: u16 = 16;
+const EARLY_DATA: u16 = 42;
+
+fn hmac(key: &[u8], data: &[&[u8]]) -> Vec<u8> {
+    let key = PKey::hmac(key).unwrap();
+    let mut signer = openssl::sign::Signer::new(MessageDigest::sha256(), &key).unwrap();
+    for d in data {
+        signer.update(d).unwrap();
+    }
+    signer.sign_to_vec().unwrap()
+}
+
+/// TLS 1.3's `HKDF-Expand-Label` with no context, for at most one hash's
+/// length.
+fn expand_label(secret: &[u8], label: &str, len: u8) -> Vec<u8> {
+    let label = format!("tls13 {label}");
+    let info = [&[0, len, label.len() as u8][..], label.as_bytes(), &[0]].concat();
+    let mut out = hmac(secret, &[&info, &[1]]);
+    out.truncate(len.into());
+    out
+}
+
+/// A QUIC variable-length integer at the start of `b`, and what follows.
+fn varint(b: &[u8]) -> (u64, &[u8]) {
+    let len = 1 << (b[0] >> 6);
+    let v = b[1..len]
+        .iter()
+        .fold(u64::from(b[0] & 0x3f), |v, &x| v << 8 | u64::from(x));
+    (v, &b[len..])
+}
+
+/// The first `n` bytes of `b`, and what follows.
+fn take(b: &[u8], n: impl TryInto<usize>) -> (&[u8], &[u8]) {
+    let n = n.try_into().ok().unwrap();
+    (&b[..n], &b[n..])
+}
+
+/// The ClientHello the client sent in the Initial packets among `sent`,
+/// the datagrams of a connection, decrypted with the keys of the
+/// Destination Connection ID it first chose (RFC 9001, 5).
+fn client_hello(sent: &[Vec<u8>]) -> Vec<u8> {
+    let dcid = &sent[0][6..6 + usize::from(sent[0][5])];
+    let initial = hmac(&INITIAL_SALT, &[dcid]);
+    let secret = expand_label(&initial, "client in", 32);
+    let key = expand_label(&secret, "quic key", 16);
+    let iv = expand_label(&secret, "quic iv", 12);
+    let hp = expand_label(&secret, "quic hp", 16);
+    let mut crypto = Vec::new();
+    for datagram in sent {
+        let mut rest = &datagram[..];
+        // Long-header packets, each its length long; a short header ends
+        // the datagram.
+        while rest.first().is_some_and(|b| b & 0x80 != 0) {
+            let initial = rest[0] & 0x30 == 0;
+            let (_, after) = take(rest, 5);
+            let (_, after) = take(after, after[0] + 1);
+            let (_, after) = take(after, after[0] + 1);
+            let after = if initial {
+                let (token, after) = varint(after);
+                take(after, token).1
+            } else {
+                after
+            };
+            let (length, after) = varint(after);
+            let pn_at = rest.len() - after.len();
+            let (packet, next) = take(rest, pn_at + usize::try_from(length).unwrap());
+            rest = next;
+            // The client's Initial packets are all sealed with the keys
+            // of the first Destination Connection ID.
+            if !initial {
+                continue;
+            }
+            let mut packet = packet.to_vec();
+            let mut ecb =
+                Crypter::new(Cipher::aes_128_ecb(), CipherMode::Encrypt, &hp, None).unwrap();
+            ecb.pad(false);
+            let mut mask = [0u8; 32];
+            ecb.update(&packet[pn_at + 4..pn_at + 20], &mut mask)
+                .unwrap();
+            packet[0] ^= mask[0] & 0x0f;
+            let pn_len = usize::from(packet[0] & 3) + 1;
+            let mut nonce = iv.clone();
+            for i in 0..pn_len {
+                packet[pn_at + i] ^= mask[1 + i];
+                nonce[12 - pn_len + i] ^= packet[pn_at + i];
+            }
+            let (header, body) = packet.split_at(pn_at + pn_len);
+            let (sealed, tag) = body.split_at(body.len() - 16);
+            let plain = decrypt_aead(
+                Cipher::aes_128_gcm(),
+                &key,
+                Some(&nonce),
+                header,
+                sealed,
+                tag,
+            )
+            .unwrap();
+            let mut frames = &plain[..];
+            while let Some(&kind) = frames.first() {
+                frames = &frames[1..];
+                match kind {
+                    // PADDING, PING.
+                    0 | 1 => {}
+                    // ACK, with ECN counts or without.
+                    2 | 3 => {
+                        let (_, f) = varint(frames);
+                        let (_, f) = varint(f);
+                        let (ranges, f) = varint(f);
+                        let (_, mut f) = varint(f);
+                        for _ in 0..2 * ranges + if kind == 3 { 3 } else { 0 } {
+                            f = varint(f).1;
+                        }
+                        frames = f;
+                    }
+                    // CRYPTO.
+                    6 => {
+                        let (offset, f) = varint(frames);
+                        let (len, f) = varint(f);
+                        let (data, f) = take(f, len);
+                        let offset = usize::try_from(offset).unwrap();
+                        if crypto.len() < offset + data.len() {
+                            crypto.resize(offset + data.len(), 0);
+                        }
+                        crypto[offset..offset + data.len()].copy_from_slice(data);
+                        frames = f;
+                    }
+                    _ => panic!("frame {kind} in a client's Initial"),
+                }
+            }
+        }
+    }
+    assert_eq!(crypto[0], 1, "a ClientHello");
+    let len = crypto[1..4].iter().fold(0, |v, &x| v << 8 | usize::from(x));
+    crypto.truncate(4 + len);
+    crypto
+}
+
+/// The data of the extension `kind` in the ClientHello `hello`.
+fn extension(hello: &[u8], kind: u16) -> Option<&[u8]> {
+    // The version and the random.
+    let (_, b) = take(&hello[4..], 34);
+    let (_, b) = take(&b[1..], b[0]);
+    let (_, b) = take(&b[2..], u16::from_be_bytes([b[0], b[1]]));
+    let (_, b) = take(&b[1..], b[0]);
+    let (mut exts, _) = take(&b[2..], u16::from_be_bytes([b[0], b[1]]));
+    while !exts.is_empty() {
+        let at = u16::from_be_bytes([exts[0], exts[1]]);
+        let (data, rest) = take(&exts[4..], u16::from_be_bytes([exts[2], exts[3]]));
+        if at == kind {
+            return Some(data);
+        }
+        exts = rest;
+    }
+    None
+}
+
+/// The protocols the ClientHello `hello` offers by ALPN.
+fn alpn_offer(hello: &[u8]) -> Vec<&[u8]> {
+    let list = extension(hello, ALPN).expect("an ALPN offer");
+    let mut names = &list[2..];
+    let mut out = Vec::new();
+    while !names.is_empty() {
+        let (name, rest) = take(&names[1..], names[0]);
+        out.push(name);
+        names = rest;
+    }
+    out
+}
+
 /// A second connection to caddy resumes the session the first was given
 /// and sends its GET as early data, which caddy takes: the session
 /// allows early data for a transfer asking for it, the transport
 /// parameters kept with it are set, HTTP/3 is set up at once and the
 /// TLS library sends early data (`cf_ngtcp2_on_session_reuse`); the
 /// handshake's end says the early data was not rejected. Parameters the library cannot
-/// read are refused.
+/// read are refused. Read from the ClientHello in each connection's
+/// Initial packets, the first offers `h3,h3-29` by ALPN and the second,
+/// sending early data, `h3` alone with the early data extension, as C's
+/// connections do.
 #[test]
 fn a_resumed_session_sends_its_get_as_early_data() {
     let dir = Dir(std::env::temp_dir().join(format!("curl-ngtcp2-early-{}", std::process::id())));
@@ -584,6 +768,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
             let over = Over {
                 sock: &sock,
                 clock: &clock,
+                sent: RefCell::default(),
             };
             let mut told = Told::default();
             if early {
@@ -599,13 +784,24 @@ fn a_resumed_session_sends_its_get_as_early_data() {
                 conn.submit_request(&fields, false).unwrap();
             }
             run(&mut *conn, cx, &over, &mut told, |t| t.closed).unwrap();
-            told
+            (told, client_hello(&over.sent.into_inner()))
         };
-        let first = connect(cx, false);
+        // The first offers every protocol, and no early data.
+        let (first, hello) = connect(cx, false);
         assert_eq!(first.early, Some(None));
+        assert_eq!(alpn_offer(&hello), [&b"h3"[..], b"h3-29"]);
+        assert!(extension(&hello, EARLY_DATA).is_none());
         // Over AWS-LC and BoringSSL the session resumed allows none, as
         // C's build over them sends none (`HAVE_OPENSSL_EARLYDATA` unset).
-        connect(cx, !cfg!(crypto = "boringssl"))
+        let early = !cfg!(crypto = "boringssl");
+        let (second, hello) = connect(cx, early);
+        // Sending early data, the second offers the ticket's protocol
+        // alone (`Curl_alpn_restrict_to` after `sess_reuse_cb`).
+        if early {
+            assert_eq!(alpn_offer(&hello), [&b"h3"[..]]);
+            assert!(extension(&hello, EARLY_DATA).is_some());
+        }
+        second
     });
     assert_eq!(told.checked, Some(Ok(())));
     let early = (!cfg!(crypto = "boringssl")).then_some(true);

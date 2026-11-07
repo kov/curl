@@ -19,6 +19,7 @@ use crate::result::Code;
 use crate::session::Session;
 
 mod real;
+mod result;
 
 const HOST: &[u8] = b"example.com";
 
@@ -1207,4 +1208,224 @@ fn a_version_unknown_is_said_so() {
         &notes,
         "info: rustls: handshake complete, TLS version unknown, ciphersuite: , key exchange group: "
     ));
+}
+
+/// The failures of a handshake's configuration, as `shake` makes them.
+fn failures(
+    change: impl FnOnce(&mut TlsIdentity),
+    world: World,
+) -> (Result<Handshake, ErrorKind>, Vec<String>) {
+    let (r, notes, _) = shake(world, &identity(change));
+    let failed = lines(&notes, "fail: ")
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    (r, failed)
+}
+
+/// Each half of the client's pair alone is refused, whichever way given;
+/// what fits a buffer with C's zero byte after it is read.
+#[test]
+// Writes a file, which Miri's isolation keeps out.
+#[cfg_attr(miri, ignore)]
+fn each_half_of_the_pair_alone_is_refused_and_what_fits_is_read() {
+    let (_, notes) = failures(
+        |id| id.options.cert_blob = Some(b"C".to_vec()),
+        World::one_round(),
+    );
+    assert_eq!(
+        notes,
+        ["fail: SslCertproblem: rustls: must provide key with certificate"]
+    );
+    let (_, notes) = failures(
+        |id| id.options.key = Some(b"key.pem".to_vec()),
+        World::one_round(),
+    );
+    assert_eq!(
+        notes,
+        ["fail: SslCertproblem: rustls: must provide certificate with key"]
+    );
+    // A certificate blob one byte short of the buffer.
+    let (r, _) = failures(
+        |id| {
+            id.options.cert_blob = Some(vec![b'C'; 100 * 1024 - 1]);
+            id.options.key_blob = Some(b"K".to_vec());
+        },
+        World::one_round(),
+    );
+    assert_eq!(r, Ok(Handshake::Done));
+    // A key file one byte short, read whole.
+    let key = Temp::new("short.pem", &vec![b'K'; 100 * 1024 - 1]);
+    let kn = key.name();
+    let (r, notes, calls) = shake(
+        World::one_round(),
+        &identity(|id| {
+            id.options.cert_blob = Some(b"C".to_vec());
+            id.options.key = Some(kn.clone());
+        }),
+    );
+    assert_eq!(r, Ok(Handshake::Done), "{notes:#?}");
+    let made = calls
+        .iter()
+        .find(|c| c.starts_with("certified_key("))
+        .unwrap();
+    assert_eq!(made.len(), "certified_key(C, )".len() + 100 * 1024 - 1);
+    // A revocation list past the key's limit, read whole.
+    let crl = Temp::new("big-crl.pem", &vec![b'R'; 2 * 1024 * 1024]);
+    let cn = crl.name();
+    let (r, _, calls) = shake(
+        World::one_round(),
+        &identity(|id| id.options.crl_file = Some(cn.clone())),
+    );
+    assert_eq!(r, Ok(Handshake::Done));
+    let made = calls.iter().find(|c| c.starts_with("crls(")).unwrap();
+    assert_eq!(made.len(), "crls()".len() + 2 * 1024 * 1024);
+}
+
+/// A CA file whose name is not UTF-8 is not read: rustls-ffi takes the
+/// name as a string, and fails it as I/O.
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore)]
+fn a_ca_file_named_outside_utf8_fails_as_i_o() {
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    let mut name = std::env::temp_dir()
+        .join(format!("curl-rustls-{}-", std::process::id()))
+        .into_os_string()
+        .into_vec();
+    name.extend_from_slice(b"\xff.pem");
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&name));
+    std::fs::write(path, b"CA").unwrap();
+    let id = identity(|id| {
+        id.options.ca_blob = CaSetting::Default;
+        id.options.ca_file = CaSetting::Given(name.clone());
+    });
+    let (r, notes, calls) = shake(World::one_round(), &id);
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(r, Err(ErrorKind::SslCacertBadfile));
+    assert!(has(
+        &notes,
+        "fail: SslCacertBadfile: failed to load trusted certificates: I/O error"
+    ));
+    assert!(lines(&calls, "roots").is_empty());
+}
+
+/// A read that fills the buffer leaves the library's text pending.
+#[test]
+fn a_full_read_leaves_the_text_pending() {
+    let lib = Fake::new(World::one_round());
+    let id = plain();
+    let mut s = session(lib, &id, Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::with(b"x");
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    lib.w().plain = b"abcd".to_vec();
+    let mut buf = [0u8; 4];
+    let got = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.recv(io, &mut buf));
+    assert_eq!(got.unwrap(), Recv::Data(4.try_into().unwrap()));
+    assert!(s.pending());
+    assert_eq!(lib.w().made("read("), ["read(4)"]);
+}
+
+/// Records written before one blocks are counted in what is said, and a
+/// send whose earlier bytes went out before its own blocked counts those.
+#[test]
+fn a_send_blocked_part_way_counts_what_went() {
+    let lib = Fake::new(World::one_round());
+    let id = plain();
+    let mut s = session(lib, &id, Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::with(b"x");
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    // Two records waiting, the second blocked.
+    {
+        let mut w = lib.w();
+        w.out.push_back(b"first".to_vec());
+        w.write_tls_fails.extend([None, Some(Errno::Again)]);
+    }
+    let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"abc"));
+    assert_eq!(sent.unwrap(), Sent::WouldBlock);
+    assert!(
+        has(&kept.notes.0, "trace: cf_send: EAGAIN after 5 bytes"),
+        "{:#?}",
+        kept.notes.0
+    );
+    // Its bytes go out with the next send, whose own then block: the
+    // earlier are counted.
+    lib.w().write_tls_fails.extend([None, Some(Errno::Again)]);
+    let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"abcdef"));
+    assert_eq!(sent.unwrap(), Sent::Bytes(3.try_into().unwrap()));
+    let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"def"));
+    assert_eq!(sent.unwrap(), Sent::Bytes(3.try_into().unwrap()));
+    assert_eq!(wire.sent(), b"hellofinishedfirstE:abcE:def");
+    assert_eq!(lib.w().made("write("), ["write(3)", "write(3)"]);
+}
+
+/// A result rustls-ffi gives for a NULL argument is a bad argument.
+#[test]
+fn a_null_parameter_is_a_bad_argument() {
+    let mut world = World::one_round();
+    world.processes[0] = vec![Ev::Fail(Code::NullParameter)];
+    let (r, notes, _) = shake(world, &plain());
+    assert_eq!(r, Err(ErrorKind::BadFunctionArgument));
+    assert!(has(
+        &notes,
+        "fail: BadFunctionArgument: rustls_connection_process_new_packets: a parameter was NULL"
+    ));
+}
+
+/// Rustls has no channel binding.
+#[test]
+fn there_is_no_channel_binding() {
+    struct NoNotes;
+    impl curl_core::tls::BindingNotes for NoNotes {
+        fn info(&mut self, _: core::fmt::Arguments<'_>) {}
+        fn fail(&mut self, kind: ErrorKind, _: core::fmt::Arguments<'_>) -> ErrorKind {
+            kind
+        }
+    }
+    let lib = Fake::new(World::one_round());
+    let id = plain();
+    let s = session(lib, &id, Alpn::None);
+    assert_eq!(s.channel_binding(&mut NoNotes), Ok(None));
+}
+
+/// A chain longer than C reports fails the handshake, counted before
+/// any of it is read.
+#[test]
+fn a_chain_past_c_s_most_fails() {
+    use curl_core::tls::ContextHandler;
+    let run = |n: usize| {
+        let lib = Fake::new(World {
+            certs: vec![b"not a certificate"; n],
+            ..World::one_round()
+        });
+        let id = plain();
+        let mut s = session(lib, &id, Alpn::None);
+        let mut kept = Kept::new();
+        kept.context = Some(ContextHandler {
+            report: Some(Default::default()),
+            ..ContextHandler::default()
+        });
+        let wire = Wire::with(b"x");
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let failed: Vec<String> = lines(&kept.notes.0, "fail: ")
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        (r, failed)
+    };
+    let (r, notes) = run(101);
+    assert_eq!(r, Err(ErrorKind::SslConnectError));
+    assert_eq!(
+        notes,
+        ["fail: SslConnectError: 101 certificates is more than allowed (100)"]
+    );
+    // A hundred are read, and the first, not a certificate, fails.
+    let (r, notes) = run(100);
+    assert!(r.is_err());
+    assert!(
+        !notes.iter().any(|n| n.contains("more than allowed")),
+        "{notes:#?}"
+    );
 }

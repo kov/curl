@@ -51,9 +51,11 @@ pub(crate) struct World {
     pub(crate) processes: VecDeque<Vec<Ev>>,
     /// How much a read of the records asks for.
     pub(crate) room: usize,
-    /// A read or write of the records fails so, the next time.
+    /// A read of the records fails so, the next time.
     pub(crate) read_tls_fails: Option<Errno>,
-    pub(crate) write_tls_fails: Option<Errno>,
+    /// Each write of the records in turn fails so, or is made where
+    /// `None`; past the script's end, each is made.
+    pub(crate) write_tls_fails: VecDeque<Option<Errno>>,
     /// A write of plain text takes at most this many bytes.
     pub(crate) write_room: Option<usize>,
     /// A read of plain text fails so, the next time.
@@ -101,7 +103,7 @@ impl Default for World {
             processes: VecDeque::new(),
             room: 4096,
             read_tls_fails: None,
-            write_tls_fails: None,
+            write_tls_fails: VecDeque::new(),
             write_room: None,
             read_fails: None,
             alpn: None,
@@ -311,7 +313,10 @@ impl library::Conn for FakeConn {
         let (record, fails) = {
             let mut w = self.w();
             w.calls.push("write_tls".into());
-            (w.out.front().cloned(), w.write_tls_fails.take())
+            (
+                w.out.front().cloned(),
+                w.write_tls_fails.pop_front().flatten(),
+            )
         };
         if let Some(e) = fails {
             return Err(e);

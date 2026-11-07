@@ -11,8 +11,8 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::CaSetting;
 use curl_core::tls::{
-    Alpn, Chosen, Goodbye, Handshake, Kept, TlsIdentity, TlsIo, TlsPeer, TlsPeerKind,
-    TlsSession as _,
+    Alpn, Chosen, ContextHandler, Goodbye, Handshake, Kept, SharedKeyLog, TlsBackend as _,
+    TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession as _,
 };
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
 use rustls::pki_types::pem::PemObject as _;
@@ -33,6 +33,8 @@ struct Pki {
     /// The server's certificate, as PEM.
     cert: String,
     key: String,
+    /// A client's certificate and key the CA signed, as PEM.
+    client: (String, String),
 }
 
 fn pki(names: &[&str]) -> Pki {
@@ -54,23 +56,46 @@ fn pki(names: &[&str]) -> Pki {
         .unwrap()
         .signed_by(&key, &issuer)
         .unwrap();
+    let client_key = KeyPair::generate().unwrap();
+    let client = CertificateParams::new(vec!["client".to_owned()])
+        .unwrap()
+        .signed_by(&client_key, &issuer)
+        .unwrap();
     Pki {
         ca: ca.pem(),
         chain: vec![cert.der().clone()],
         cert: cert.pem(),
         key: key.serialize_pem(),
+        client: (client.pem(), client_key.serialize_pem()),
     }
 }
 
 fn serve(pki: &Pki, alpn: &[&[u8]]) -> ServerConnection {
+    serve_asking(pki, alpn, false)
+}
+
+/// A server of `pki`'s certificate offering `alpn`, requiring a client's
+/// certificate the CA signed if `asks`.
+fn serve_asking(pki: &Pki, alpn: &[&[u8]], asks: bool) -> ServerConnection {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let key = PrivateKeyDer::from_pem_slice(pki.key.as_bytes()).unwrap();
-    let mut config = ServerConfig::builder_with_provider(provider)
+    let config = ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(pki.chain.clone(), key)
         .unwrap();
+    let config = if asks {
+        let mut roots = rustls::RootCertStore::empty();
+        for ca in CertificateDer::pem_slice_iter(pki.ca.as_bytes()) {
+            roots.add(ca.unwrap()).unwrap();
+        }
+        let verifier =
+            rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
+                .build()
+                .unwrap();
+        config.with_client_cert_verifier(verifier)
+    } else {
+        config.with_no_client_auth()
+    };
+    let mut config = config.with_single_cert(pki.chain.clone(), key).unwrap();
     config.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
     ServerConnection::new(Arc::new(config)).unwrap()
 }
@@ -95,13 +120,23 @@ fn carry(wire: &Wire, server: &mut ServerConnection) {
 }
 
 fn session(id: &TryArc<TlsIdentity>, name: &[u8], alpn: Alpn) -> Session<Real> {
+    logging(id, name, alpn, None)
+}
+
+/// A session logging its secrets to `keylog`, if given.
+fn logging(
+    id: &TryArc<TlsIdentity>,
+    name: &[u8],
+    alpn: Alpn,
+    keylog: Option<SharedKeyLog>,
+) -> Session<Real> {
     let peer = TlsPeer {
         name,
         port: 443,
         kind: TlsPeerKind::Name,
         early_data: false,
     };
-    Session::new(&RUSTLS, id, &peer, alpn, None).unwrap()
+    Session::new(&RUSTLS, id, &peer, alpn, keylog).unwrap()
 }
 
 /// Shake hands with `server` until done or failed.
@@ -136,12 +171,36 @@ fn a_session_talks_to_a_rustls_server() {
     let pki = pki(&["localhost"]);
     let mut server = serve(&pki, &[b"h2"]);
     let id = trusting(&pki);
-    let mut s = session(&id, b"localhost", Alpn::H2Http11);
+    // The secrets logged, and the chain asked for.
+    let path = std::env::temp_dir().join(format!("curl-rustls-real-keys-{}", std::process::id()));
+    let log = SharedKeyLog::new().unwrap();
+    log.open_named(path.to_str().unwrap().as_bytes());
+    let mut s = logging(&id, b"localhost", Alpn::H2Http11, Some(log.clone()));
     let mut kept = Kept::new();
+    kept.context = Some(ContextHandler {
+        report: Some(Default::default()),
+        ..ContextHandler::default()
+    });
     let wire = Wire::default();
     let r = shake(&mut s, &id, &mut kept, &wire, &mut server);
     assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
     assert_eq!(s.chosen(), Some(Chosen::H2));
+    log.close();
+    let keys = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        keys.lines()
+            .any(|l| l.starts_with("CLIENT_HANDSHAKE_TRAFFIC_SECRET ")),
+        "{keys}"
+    );
+    let report = kept.context.as_ref().unwrap().report.as_ref().unwrap();
+    let chain = report.certinfo().expect("the chain reported");
+    assert_eq!(chain.certs().len(), 1);
+    assert!(
+        chain.certs()[0].iter().any(|f| f.starts_with(b"Subject:")),
+        "{:?}",
+        chain.certs()[0]
+    );
     let done = lines(&kept.notes.0, "info: rustls: handshake complete");
     assert_eq!(
         done,
@@ -180,6 +239,8 @@ fn a_session_talks_to_a_rustls_server() {
     });
     assert_eq!(r, Ok(Handshake::Waiting));
     carry(&wire, &mut server);
+    // The server has the client's close_notify: its text has ended.
+    assert_eq!(server.reader().read(&mut got).unwrap(), 0);
     server.send_close_notify();
     carry(&wire, &mut server);
     let mut r = Ok(Handshake::Waiting);
@@ -310,4 +371,159 @@ fn the_version_names_the_rustls_linked() {
         crate::version().to_string(),
         format!("rustls-ffi/0.15.5/rustls/{version}/aws-lc-rs")
     );
+}
+
+/// A server asking for the client's certificate gets the one given, and
+/// refuses the handshake without one.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn the_client_s_certificate_is_offered_to_a_server_asking() {
+    let pki = pki(&["localhost"]);
+    let (cert, key) = (pki.client.0.clone(), pki.client.1.clone());
+    let ca = pki.ca.clone().into_bytes();
+    let id = identity(move |id| {
+        id.options.ca_blob = CaSetting::Given(ca);
+        id.options.cert_blob = Some(cert.into_bytes());
+        id.options.key_blob = Some(key.into_bytes());
+    });
+    let mut server = serve_asking(&pki, &[], true);
+    let mut s = session(&id, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = shake(&mut s, &id, &mut kept, &wire, &mut server);
+    assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
+    let presented = server.peer_certificates().expect("the client's chain");
+    assert_eq!(presented.len(), 1);
+    // Without one, the server refuses, and its alert is said.
+    let mut server = serve_asking(&pki, &[], true);
+    let id = trusting(&pki);
+    let mut s = session(&id, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    for _ in 0..4 {
+        let r = TlsIo::testing(&id, b"localhost", &mut kept, &wire, |io| s.handshake(io));
+        carry(&wire, &mut server);
+        if r.is_err() {
+            break;
+        }
+        // The client's last flight is read by the server, which then says
+        // it refuses; the client reads that with its first text.
+        let mut buf = [0u8; 16];
+        let r = TlsIo::testing(&id, b"localhost", &mut kept, &wire, |io| {
+            s.recv(io, &mut buf)
+        });
+        if r.is_err() {
+            break;
+        }
+    }
+    assert!(
+        lines(&kept.notes.0, "fail: ")
+            .iter()
+            .any(|f| f.contains("received fatal alert: CertificateRequired")),
+        "{:#?}",
+        kept.notes.0
+    );
+}
+
+/// The suites chosen are the ones the library offers.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn the_suites_chosen_are_offered() {
+    let pki = pki(&["localhost"]);
+    let mut server = serve(&pki, &[]);
+    let ca = pki.ca.clone().into_bytes();
+    let id = identity(move |id| {
+        id.options.ca_blob = CaSetting::Given(ca);
+        id.options.tls13_ciphers = Some(b"TLS_AES_128_GCM_SHA256".to_vec());
+    });
+    let mut s = session(&id, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = shake(&mut s, &id, &mut kept, &wire, &mut server);
+    assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
+    assert!(
+        has(
+            &kept.notes.0,
+            "info: rustls: handshake complete, TLSv1.3, ciphersuite: TLS13_AES_128_GCM_SHA256, key exchange group: X25519MLKEM768"
+        ),
+        "{:#?}",
+        kept.notes.0
+    );
+}
+
+/// A socket that fails reaches rustls as `EINVAL`, said as the system
+/// says it; the connection's end with no close_notify is an error.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn the_socket_s_failures_and_end_are_said() {
+    let pki = pki(&["localhost"]);
+    let id = trusting(&pki);
+    let mut s = session(&id, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let refusing = Wire {
+        refuses: true,
+        ..Wire::default()
+    };
+    let r = TlsIo::testing(&id, b"localhost", &mut kept, &refusing, |io| {
+        s.handshake(io)
+    });
+    assert_eq!(r, Err(ErrorKind::SendError));
+    assert_eq!(
+        lines(&kept.notes.0, "fail: "),
+        ["fail: SendError: writing to socket: Invalid argument"]
+    );
+    // Shaken hands, then the end of the connection.
+    let mut server = serve(&pki, &[]);
+    let mut s = session(&id, b"localhost", Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = shake(&mut s, &id, &mut kept, &wire, &mut server);
+    assert_eq!(r, Ok(Handshake::Done));
+    let closed = Wire {
+        closed: true,
+        ..Wire::default()
+    };
+    let mut buf = [0u8; 16];
+    let mut r = Ok(Recv::WouldBlock);
+    for _ in 0..3 {
+        r = TlsIo::testing(&id, b"localhost", &mut kept, &closed, |io| {
+            s.recv(io, &mut buf)
+        });
+        if r.is_err() {
+            break;
+        }
+    }
+    assert!(r.is_err());
+    assert!(
+        has(
+            &kept.notes.0,
+            "fail: RecvError: rustls: peer closed TCP connection without first closing TLS connection"
+        ),
+        "{:#?}",
+        kept.notes.0
+    );
+}
+
+/// PEM with a block that is no certificate is refused whole, as
+/// rustls-ffi's strict loading refuses it.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn a_bundle_with_a_bad_certificate_is_refused() {
+    let pki = pki(&["localhost"]);
+    // "hello", in base64: PEM, but no certificate.
+    let bundle = format!(
+        "{}-----BEGIN CERTIFICATE-----\naGVsbG8=\n-----END CERTIFICATE-----\n",
+        pki.ca
+    );
+    assert_eq!(
+        RUSTLS.roots(bundle.as_bytes()).err(),
+        Some(Code::CertificateParseError)
+    );
+}
+
+/// The backend names itself as the version string names it.
+#[test]
+fn the_backend_names_itself_as_the_version_string() {
+    let tls = crate::Rustls::new();
+    assert_eq!(tls.id().to_string(), crate::version().to_string());
 }

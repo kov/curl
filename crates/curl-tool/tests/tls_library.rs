@@ -259,6 +259,36 @@ fn ech_reaches_the_library_that_has_it() {
         ],
         "{program}{said}"
     );
+    // A prefix counts only with more than one byte after
+    // it (`parse_ech`'s lengths): a word too short for its prefix is a
+    // mode's, the last given of each kind is set, and the outer name
+    // goes first.
+    let (program, said) = run(&[
+        "--libcurl",
+        "-",
+        "--ech",
+        "pn:x",
+        "--ech",
+        "ecl:y",
+        "--ech",
+        "pn:ab",
+        "--ech",
+        "grease",
+        url,
+    ]);
+    let set: Vec<_> = program
+        .lines()
+        .filter(|l| l.contains("CURLOPT_ECH"))
+        .map(str::trim)
+        .collect();
+    assert_eq!(
+        set,
+        [
+            "curl_easy_setopt(curl, CURLOPT_ECH, \"pn:ab\");",
+            "curl_easy_setopt(curl, CURLOPT_ECH, \"grease\");",
+        ],
+        "{program}{said}"
+    );
     // The library reads the prefixes in lower case only.
     for word in ["nonsense", "TRUE", "PN:public.example"] {
         let (code, said) = exit(&["--ech", word, url]);

@@ -1250,4 +1250,8 @@ exclude_re = [
     # the runtests leg's memory check reports (2500: `Leak detected`), and
     # the libraries' own from libc; no cargo test counts either.
     'curl-ngtcp2/src/lib\.rs:.*: replace <impl Drop for Connection>::drop with \(\)$',
+    # GREASE's suite is drawn at random without bias: a changed threshold
+    # changes only how often each suite is drawn, and any suite drawn
+    # sends GREASE the same, so no handshake tells them apart.
+    'curl-rustls/src/rustls\.rs:.*: replace (- with /|% with /|< with <=) in <impl crate::library::Rustls for Real>::ech_grease$',
 ]

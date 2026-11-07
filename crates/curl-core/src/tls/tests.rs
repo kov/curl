@@ -508,6 +508,33 @@ fn ech_words_change_their_own_setting() {
     assert_eq!(words(&["true", "false"]), Ech::NONE);
 }
 
+/// ECH is on in any mode but off, whatever its strings; a list given in
+/// base64 decodes as curl decodes it, and a retry list encodes back.
+#[test]
+fn ech_is_on_but_off_and_its_lists_are_base64() {
+    use crate::options::{Ech, EchMode};
+    for (mode, on) in [
+        (EchMode::Off, false),
+        (EchMode::Grease, true),
+        (EchMode::Try, true),
+        (EchMode::Hard, true),
+    ] {
+        let ech = Ech {
+            mode,
+            config: Some(b"QUJD".to_vec()),
+            ..Ech::NONE
+        };
+        assert_eq!(ech.enabled(), on, "{mode:?}");
+    }
+    assert_eq!(
+        base64_decode(b"QUJDRA==").unwrap().as_deref(),
+        Some(&b"ABCD"[..])
+    );
+    assert_eq!(base64_decode(b"QUJ").unwrap(), None);
+    assert_eq!(base64_encode(b"ABCD").unwrap(), b"QUJDRA==");
+    assert_eq!(base64_encode(b"").unwrap(), b"");
+}
+
 /// The words are C's, in lower case, a prefix with something after it.
 #[test]
 fn ech_words_are_c_s() {

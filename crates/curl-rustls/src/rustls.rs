@@ -53,6 +53,15 @@ fn quiet<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Run `f`, a call rustls makes back into the connection below, tracked
+/// again: those allocations are curl's, which C's tracker counts.
+fn loud<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(feature = "debug-hooks")]
+    return curl_alloc::track::tracked(f);
+    #[cfg(not(feature = "debug-hooks"))]
+    f()
+}
+
 /// A suite of the library's, as the session takes it.
 fn suite(s: SupportedCipherSuite) -> Suite {
     Suite {
@@ -394,7 +403,7 @@ struct Reader<'c, 's, 'a>(&'c mut Call<'s, 'a>);
 
 impl io::Read for Reader<'_, '_, '_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.0.recv(buf) {
+        match loud(|| self.0.recv(buf)) {
             Moved::Bytes(n) => Ok(n),
             Moved::Again => Err(io::Error::from_raw_os_error(libc::EAGAIN)),
             Moved::Failed => Err(io::Error::from_raw_os_error(libc::EINVAL)),
@@ -408,7 +417,7 @@ struct Writer<'c, 's, 'a>(&'c mut Call<'s, 'a>);
 
 impl io::Write for Writer<'_, '_, '_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self.0.send(buf) {
+        match loud(|| self.0.send(buf)) {
             Moved::Bytes(n) => Ok(n),
             Moved::Again => Err(io::Error::from_raw_os_error(libc::EAGAIN)),
             Moved::Failed => Err(io::Error::from_raw_os_error(libc::EINVAL)),

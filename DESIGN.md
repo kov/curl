@@ -363,8 +363,9 @@ that. Allocation is therefore always explicit and always fallible:
   exception, taken because C's Rustls backend is rustls itself behind rustls-ffi: it allocates
   infallibly and takes its objects in std's `Arc`. curl-rustls allows the infallible calls in
   `rustls.rs` alone, where rustls takes them, and keeps every call into rustls out of the debug
-  tracker (`curl_alloc::track::untracked`), as C's tracker never sees rustls-ffi's allocations;
-  so under `CURL_MEMLIMIT` an allocation of rustls's is never the one failed, as in C, and one
+  tracker (`curl_alloc::track::untracked`), as C's tracker never sees rustls-ffi's allocations,
+  but for its calls back into the connection below, which are curl's (`track::tracked`); so
+  under `CURL_MEMLIMIT` an allocation of rustls's is never the one failed, as in C, and one
   failing for real ends the process.
 - **Peer-chosen sizes are bounded first.** Lengths, chunk sizes and header counts are checked
   against limits at the trust boundary before anything is reserved for them, so a hostile peer

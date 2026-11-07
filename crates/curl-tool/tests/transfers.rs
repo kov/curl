@@ -2426,7 +2426,8 @@ fn sets_the_tls_options_as_c_does() {
 }
 
 /// `SSLKEYLOGFILE` is opened as the tool starts, as C's global init opens
-/// it with OpenSSL (`ossl_init`): the file is made though no transfer
+/// it with OpenSSL (`ossl_init`) and wolfSSL (`wssl_init`): the file is
+/// made though no transfer
 /// uses TLS. GnuTLS opens it as a session is made (`Curl_gtls_ctx_init`):
 /// a transfer without TLS makes none. mbedTLS never opens it.
 #[test]

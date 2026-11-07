@@ -323,7 +323,12 @@ mod tests {
     /// C's order and words, each version as the library says it.
     /// The GSS-API library after a space: none on Windows, where Kerberos
     /// is SSPI's.
-    #[cfg(any(feature = "openssl", feature = "gnutls", feature = "mbedtls"))]
+    #[cfg(any(
+        feature = "openssl",
+        feature = "gnutls",
+        feature = "mbedtls",
+        feature = "wolfssl"
+    ))]
     fn gss_shown() -> String {
         #[cfg(not(windows))]
         return format!(" mit-krb5/{}", curl_gssapi::version());
@@ -333,13 +338,23 @@ mod tests {
 
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
-    #[cfg(any(feature = "openssl", feature = "gnutls", feature = "mbedtls"))]
+    #[cfg(any(
+        feature = "openssl",
+        feature = "gnutls",
+        feature = "mbedtls",
+        feature = "wolfssl"
+    ))]
     fn ldap_shown() -> String {
         let ldap = curl_ldap::version();
         ldap.map_or_else(String::new, |v| format!(" {v}"))
     }
 
-    #[cfg(any(feature = "openssl", feature = "gnutls", feature = "mbedtls"))]
+    #[cfg(any(
+        feature = "openssl",
+        feature = "gnutls",
+        feature = "mbedtls",
+        feature = "wolfssl"
+    ))]
     fn ares_shown() -> String {
         if cfg!(feature = "threaded-resolver") {
             String::new()
@@ -379,13 +394,13 @@ mod tests {
         assert!(said.contains(&format!(" zlib/{info} ")), "{said}");
     }
 
-    /// With GnuTLS or mbedTLS, the version string names it after libcurl,
-    /// and no QUIC library, which `quic_version` has none of either, as
-    /// C's GnuTLS build without ngtcp2's GnuTLS crypto, and its mbedTLS
-    /// build.
-    #[cfg(any(feature = "gnutls", feature = "mbedtls"))]
+    /// With GnuTLS, mbedTLS or wolfSSL, the version string names it after
+    /// libcurl, and no QUIC library, which `quic_version` has none of
+    /// either, as C's GnuTLS build without ngtcp2's GnuTLS crypto, its
+    /// mbedTLS build, and its wolfSSL build without ngtcp2.
+    #[cfg(any(feature = "gnutls", feature = "mbedtls", feature = "wolfssl"))]
     #[test]
-    fn names_the_libraries_as_c_s_gnutls_and_mbedtls_builds() {
+    fn names_the_libraries_as_c_s_gnutls_mbedtls_and_wolfssl_builds() {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
@@ -407,6 +422,8 @@ mod tests {
         assert_eq!(said, want);
         let named = if cfg!(feature = "gnutls") {
             " GnuTLS/3."
+        } else if cfg!(feature = "wolfssl") {
+            " wolfSSL/5."
         } else {
             " mbedTLS/3."
         };
@@ -458,10 +475,14 @@ mod tests {
     /// names, the names NULL-terminated.
     #[test]
     fn features_reach_the_c_struct() {
-        // OpenSSL's build has HTTP/3 and message signatures, GnuTLS's
-        // only message signatures, Schannel's neither.
+        // OpenSSL's build has HTTP/3 and message signatures, GnuTLS's and
+        // wolfSSL's only message signatures, Schannel's neither.
         let quic = cfg!(feature = "openssl");
-        let signs = cfg!(any(feature = "openssl", feature = "gnutls"));
+        let signs = cfg!(any(
+            feature = "openssl",
+            feature = "gnutls",
+            feature = "wolfssl"
+        ));
         let info = info();
         let names = names(info.feature_names);
         let want: Vec<_> = version().features.iter().map(|f| f.name()).collect();

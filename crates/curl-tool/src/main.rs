@@ -414,7 +414,12 @@ mod tests {
 
     /// The GSS-API library after a space: none on Windows, where Kerberos
     /// is SSPI's.
-    #[cfg(any(feature = "openssl", feature = "gnutls", feature = "mbedtls"))]
+    #[cfg(any(
+        feature = "openssl",
+        feature = "gnutls",
+        feature = "mbedtls",
+        feature = "wolfssl"
+    ))]
     fn gss_shown() -> String {
         #[cfg(not(windows))]
         return format!(" mit-krb5/{}", curl_gssapi::version());
@@ -424,7 +429,12 @@ mod tests {
 
     /// The LDAP library after a space, as the version string has it:
     /// none where the build has none.
-    #[cfg(any(feature = "openssl", feature = "gnutls", feature = "mbedtls"))]
+    #[cfg(any(
+        feature = "openssl",
+        feature = "gnutls",
+        feature = "mbedtls",
+        feature = "wolfssl"
+    ))]
     fn ldap_shown() -> String {
         let ldap = curl_ldap::version();
         ldap.map_or_else(String::new, |v| format!(" {v}"))
@@ -460,12 +470,12 @@ mod tests {
         assert_eq!(CurlVersion.to_string(), want);
     }
 
-    /// With GnuTLS or mbedTLS, `curl -V` names it after libcurl, and no
-    /// QUIC library, as C's GnuTLS build without ngtcp2's GnuTLS crypto,
-    /// and its mbedTLS build.
-    #[cfg(any(feature = "gnutls", feature = "mbedtls"))]
+    /// With GnuTLS, mbedTLS or wolfSSL, `curl -V` names it after libcurl,
+    /// and no QUIC library, as C's GnuTLS build without ngtcp2's GnuTLS
+    /// crypto, its mbedTLS build, and its wolfSSL build without ngtcp2.
+    #[cfg(any(feature = "gnutls", feature = "mbedtls", feature = "wolfssl"))]
     #[test]
-    fn names_the_libraries_as_c_s_gnutls_and_mbedtls_builds() {
+    fn names_the_libraries_as_c_s_gnutls_mbedtls_and_wolfssl_builds() {
         let want = format!(
             "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{}{}{}",
             version().version,
@@ -490,6 +500,8 @@ mod tests {
         assert_eq!(said, want);
         let named = if cfg!(feature = "gnutls") {
             " GnuTLS/3."
+        } else if cfg!(feature = "wolfssl") {
+            " wolfSSL/5."
         } else {
             " mbedTLS/3."
         };

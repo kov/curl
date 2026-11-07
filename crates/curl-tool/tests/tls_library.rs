@@ -101,7 +101,7 @@ fn options_the_library_lacks_are_warned_of() {
     assert!(said.contains("curl: (37)"), "{said}");
 }
 
-/// The options Schannel, GnuTLS or mbedTLS lacks that C's tool says nothing of
+/// The options Schannel, GnuTLS, mbedTLS or wolfSSL lacks that C's tool says nothing of
 /// are set nowhere and left out of the program `--libcurl` writes, as
 /// libcurl refuses them; OpenSSL takes them all, and they are written.
 /// LibreSSL takes all but the signature algorithms
@@ -139,9 +139,12 @@ fn options_the_library_lacks_are_not_written() {
             "CURLOPT_SSL_EC_CURVES" | "CURLOPT_SSL_SIGNATURE_ALGORITHMS" | "CURLOPT_SSLENGINE"
         );
         let mbedtls_lacks = gnutls_lacks || option == "CURLOPT_SSL_VERIFYSTATUS";
+        let wolfssl_lacks = (mbedtls_lacks && option != "CURLOPT_SSL_EC_CURVES")
+            || matches!(option, "CURLOPT_CRLFILE" | "CURLOPT_PROXY_CRLFILE");
         let lacks = cfg!(feature = "schannel")
             || (cfg!(feature = "gnutls") && gnutls_lacks)
             || (cfg!(feature = "mbedtls") && mbedtls_lacks)
+            || (cfg!(feature = "wolfssl") && wolfssl_lacks)
             || (option == "CURLOPT_SSL_SIGNATURE_ALGORITHMS" && libressl);
         assert_eq!(written, !lacks, "{option}: {program}");
     }
@@ -152,7 +155,7 @@ fn options_the_library_lacks_are_not_written() {
 }
 
 /// `--engine list` lists the library's engines: OpenSSL's built-in
-/// `dynamic` among them; none for Schannel, GnuTLS or mbedTLS, which have none,
+/// `dynamic` among them; none for Schannel, GnuTLS, mbedTLS or wolfSSL, which have none,
 /// nor for LibreSSL, which has none either (`OPENSSL_NO_ENGINE`).
 #[test]
 fn the_engines_listed_are_the_library_s() {
@@ -162,7 +165,8 @@ fn the_engines_listed_are_the_library_s() {
     if cfg!(any(
         feature = "schannel",
         feature = "gnutls",
-        feature = "mbedtls"
+        feature = "mbedtls",
+        feature = "wolfssl"
     )) || over_libressl()
     {
         assert_eq!(out, "Build-time engines:\n  <none>\n");

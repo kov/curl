@@ -1,8 +1,8 @@
-//! The TLS library this build has, one of four chosen as it is built:
+//! The TLS library this build has, one of five chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
-//! for message signatures; GnuTLS (`gnutls`), with Ed25519 and no
-//! HTTP/3; or mbedTLS (`mbedtls`) or Schannel (`schannel`, Windows only),
-//! with neither, as C's builds with them have.
+//! for message signatures; GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
+//! Ed25519 and no HTTP/3; or mbedTLS (`mbedtls`) or Schannel (`schannel`,
+//! Windows only), with neither, as C's builds with them have.
 
 use core::ffi::CStr;
 use core::fmt;
@@ -10,23 +10,31 @@ use core::fmt;
 use crate::ffi;
 
 #[cfg(any(
-    all(feature = "openssl", feature = "schannel"),
     all(feature = "openssl", feature = "gnutls"),
     all(feature = "openssl", feature = "mbedtls"),
-    all(feature = "gnutls", feature = "schannel"),
+    all(feature = "openssl", feature = "wolfssl"),
+    all(feature = "openssl", feature = "schannel"),
     all(feature = "gnutls", feature = "mbedtls"),
-    all(feature = "mbedtls", feature = "schannel")
+    all(feature = "gnutls", feature = "wolfssl"),
+    all(feature = "gnutls", feature = "schannel"),
+    all(feature = "mbedtls", feature = "wolfssl"),
+    all(feature = "mbedtls", feature = "schannel"),
+    all(feature = "wolfssl", feature = "schannel")
 ))]
 compile_error!(
-    "one TLS library: the `openssl`, `gnutls`, `mbedtls` and `schannel` features exclude each other"
+    "one TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` and `schannel` features \
+     exclude each other"
 );
 #[cfg(not(any(
     feature = "openssl",
     feature = "gnutls",
     feature = "mbedtls",
+    feature = "wolfssl",
     feature = "schannel"
 )))]
-compile_error!("a TLS library: the `openssl`, `gnutls`, `mbedtls` or `schannel` feature");
+compile_error!(
+    "a TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` or `schannel` feature"
+);
 
 #[cfg(feature = "openssl")]
 mod library {
@@ -138,6 +146,48 @@ mod library {
     }
 
     /// None: no QUIC over mbedTLS.
+    pub(crate) fn quic() -> Option<&'static str> {
+        None
+    }
+}
+
+#[cfg(feature = "wolfssl")]
+mod library {
+    use super::*;
+
+    /// wolfSSL, logging secrets to the root's key log, which its global
+    /// init opens (`wssl_init`).
+    pub(crate) static TLS: curl_wolfssl::WolfSsl = curl_wolfssl::WolfSsl::logging_keys_to(
+        curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
+    );
+
+    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
+        Some(&curl_wolfssl::ED25519);
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
+
+    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_WOLFSSL;
+    pub(crate) const NAME: &CStr = c"wolfssl";
+
+    /// The key log opened, then the library and its BIO method
+    /// initialised, as C's global init does (`wssl_init`): whether it
+    /// could.
+    pub(crate) fn init() -> bool {
+        crate::root::KEYLOG.open();
+        TLS.init()
+    }
+
+    /// The library let go, as C's last cleanup does (`wssl_cleanup`); the
+    /// root closes the key log.
+    pub(crate) fn cleanup() {
+        TLS.cleanup();
+    }
+
+    /// Its version as the version string names it: `wolfSSL/5.9.4`.
+    pub(crate) fn version() -> impl fmt::Display {
+        curl_wolfssl::version()
+    }
+
+    /// None: no QUIC over wolfSSL here.
     pub(crate) fn quic() -> Option<&'static str> {
         None
     }

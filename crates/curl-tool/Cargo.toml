@@ -16,11 +16,14 @@ path = "src/main.rs"
 default = ["c-ares", "libssh", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
 # over ngtcp2 and Ed25519 for message signatures; GnuTLS, with Ed25519
-# from its nettle and no HTTP/3 (ngtcp2's GnuTLS crypto is not bound); or
-# mbedTLS or Schannel (Windows), with neither, as C's builds with them.
+# from its nettle and no HTTP/3 (ngtcp2's GnuTLS crypto is not bound);
+# wolfSSL, with Ed25519 from its wolfCrypt and no HTTP/3 (ngtcp2's wolfSSL
+# crypto is not bound); or mbedTLS or Schannel (Windows), with neither, as
+# C's builds with them.
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "curl-core/quic", "curl-core/httpsig"]
 gnutls = ["dep:curl-gnutls", "curl-core/httpsig"]
 mbedtls = ["dep:curl-mbedtls"]
+wolfssl = ["dep:curl-wolfssl", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
 # One SSH library for SCP and SFTP, chosen as the library is built: libssh
@@ -29,7 +32,7 @@ c-ares = ["dep:curl-ares"]
 libssh = ["dep:curl-libssh"]
 libssh2 = ["dep:curl-libssh2"]
 # The debug test build: track allocations as the C tool's debug build does.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-wolfssl?/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`).
 threaded-resolver = ["curl-core/threaded-resolver"]
 # Host names converted by Apple's ICU in place of libidn2 (C's
@@ -69,6 +72,7 @@ curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
 curl-gnutls = { path = "../curl-gnutls", optional = true }
 curl-mbedtls = { path = "../curl-mbedtls", optional = true }
+curl-wolfssl = { path = "../curl-wolfssl", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-idn2 = { path = "../curl-idn2" }
 curl-libssh = { path = "../curl-libssh", optional = true }

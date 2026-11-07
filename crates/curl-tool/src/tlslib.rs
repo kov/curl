@@ -1,8 +1,8 @@
-//! The TLS library this build has, one of four chosen as it is built:
+//! The TLS library this build has, one of five chosen as it is built:
 //! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
-//! for message signatures; GnuTLS (`gnutls`), with Ed25519 and no
-//! HTTP/3; or mbedTLS (`mbedtls`) or Schannel (`schannel`, Windows only),
-//! with neither, as C's builds with them have.
+//! for message signatures; GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
+//! Ed25519 and no HTTP/3; or mbedTLS (`mbedtls`) or Schannel (`schannel`,
+//! Windows only), with neither, as C's builds with them have.
 
 use core::fmt;
 
@@ -10,23 +10,31 @@ use curl_alloc::{OutOfMemory, try_box};
 use curl_core::tls::{CaDefaults, SharedKeyLog, TlsBackend, TlsSupport};
 
 #[cfg(any(
-    all(feature = "openssl", feature = "schannel"),
     all(feature = "openssl", feature = "gnutls"),
     all(feature = "openssl", feature = "mbedtls"),
-    all(feature = "gnutls", feature = "schannel"),
+    all(feature = "openssl", feature = "wolfssl"),
+    all(feature = "openssl", feature = "schannel"),
     all(feature = "gnutls", feature = "mbedtls"),
-    all(feature = "mbedtls", feature = "schannel")
+    all(feature = "gnutls", feature = "wolfssl"),
+    all(feature = "gnutls", feature = "schannel"),
+    all(feature = "mbedtls", feature = "wolfssl"),
+    all(feature = "mbedtls", feature = "schannel"),
+    all(feature = "wolfssl", feature = "schannel")
 ))]
 compile_error!(
-    "one TLS library: the `openssl`, `gnutls`, `mbedtls` and `schannel` features exclude each other"
+    "one TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` and `schannel` features \
+     exclude each other"
 );
 #[cfg(not(any(
     feature = "openssl",
     feature = "gnutls",
     feature = "mbedtls",
+    feature = "wolfssl",
     feature = "schannel"
 )))]
-compile_error!("a TLS library: the `openssl`, `gnutls`, `mbedtls` or `schannel` feature");
+compile_error!(
+    "a TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl` or `schannel` feature"
+);
 
 #[cfg(feature = "openssl")]
 mod library {
@@ -180,6 +188,57 @@ mod library {
     /// What it trusts where a transfer names nothing.
     pub(crate) fn ca_defaults() -> CaDefaults {
         MBEDTLS.ca_defaults()
+    }
+}
+
+#[cfg(feature = "wolfssl")]
+mod library {
+    use super::*;
+
+    /// The tool's library, whose BIO method `init` makes.
+    static WOLFSSL: curl_wolfssl::WolfSsl = curl_wolfssl::WolfSsl::new();
+
+    /// The library, logging the secrets of its connections to `keylog`.
+    pub(crate) fn tls(keylog: &SharedKeyLog) -> Result<Box<dyn TlsBackend>, OutOfMemory> {
+        Ok(try_box(WOLFSSL.with_keylog(keylog.clone()))?)
+    }
+
+    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
+        Some(&curl_wolfssl::ED25519);
+    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
+
+    /// The library and its BIO method initialised, as C's global init
+    /// does (`wssl_init`): whether it could.
+    pub(crate) fn init() -> bool {
+        WOLFSSL.init()
+    }
+
+    /// The key log is opened as the library is initialised (`wssl_init`).
+    pub(crate) const KEYLOG_AT_INIT: bool = true;
+
+    /// None: wolfSSL has no engines.
+    pub(crate) fn engines() -> Result<Vec<Vec<u8>>, OutOfMemory> {
+        WOLFSSL.engines()
+    }
+
+    /// Its version as the version string names it: `wolfSSL/5.9.4`.
+    pub(crate) fn version() -> impl fmt::Display {
+        curl_wolfssl::version()
+    }
+
+    /// None: no QUIC over wolfSSL here.
+    pub(crate) fn quic() -> Option<&'static str> {
+        None
+    }
+
+    /// What it can do past the handshake.
+    pub(crate) fn support() -> TlsSupport {
+        WOLFSSL.support()
+    }
+
+    /// What it trusts where a transfer names nothing.
+    pub(crate) fn ca_defaults() -> CaDefaults {
+        WOLFSSL.ca_defaults()
     }
 }
 

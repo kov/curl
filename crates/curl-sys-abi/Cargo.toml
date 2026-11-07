@@ -16,11 +16,14 @@ crate-type = ["cdylib"]
 default = ["c-ares", "libssh", "openssl"]
 # One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
 # over ngtcp2 and Ed25519 for message signatures; GnuTLS, with Ed25519
-# from its nettle and no HTTP/3 (ngtcp2's GnuTLS crypto is not bound); or
-# mbedTLS or Schannel (Windows), with neither, as C's builds with them.
+# from its nettle and no HTTP/3 (ngtcp2's GnuTLS crypto is not bound);
+# wolfSSL, with Ed25519 from its wolfCrypt and no HTTP/3 (ngtcp2's wolfSSL
+# crypto is not bound); or mbedTLS or Schannel (Windows), with neither, as
+# C's builds with them.
 openssl = ["dep:curl-openssl", "dep:curl-ngtcp2", "dep:openssl-sys", "curl-core/quic", "curl-core/httpsig"]
 gnutls = ["dep:curl-gnutls", "curl-core/httpsig"]
 mbedtls = ["dep:curl-mbedtls"]
+wolfssl = ["dep:curl-wolfssl", "curl-core/httpsig"]
 schannel = ["dep:curl-schannel"]
 c-ares = ["dep:curl-ares"]
 # One SSH library for SCP and SFTP, chosen as the library is built: libssh
@@ -30,7 +33,7 @@ libssh = ["dep:curl-libssh"]
 libssh2 = ["dep:curl-libssh2"]
 # The hooks of a C debug build: the curl_dbg_* exports, memory tracking
 # and the libcurl-d.so.4 soname.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-wolfssl?/debug-hooks"]
 # Read `long double` printf arguments in Rust (aarch64 only), with nightly's
 # `f128`; without it a C helper reads them.
 nightly = []
@@ -63,6 +66,7 @@ curl-openssl = { path = "../curl-openssl", optional = true }
 curl-schannel = { path = "../curl-schannel", optional = true }
 curl-gnutls = { path = "../curl-gnutls", optional = true }
 curl-mbedtls = { path = "../curl-mbedtls", optional = true }
+curl-wolfssl = { path = "../curl-wolfssl", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-ares = { path = "../curl-ares", optional = true }
 curl-idn2 = { path = "../curl-idn2" }

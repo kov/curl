@@ -73,6 +73,16 @@ impl WolfSsl {
         }
     }
 
+    /// The library as `self` initialised it, logging the secrets of its
+    /// connections to `keylog`: for the tool, whose key log is made after
+    /// the library is initialised.
+    pub fn with_keylog(&self, keylog: SharedKeyLog) -> WolfSsl {
+        WolfSsl {
+            method: Mutex::new(self.method.lock().expect("panics abort").clone()),
+            keylog: Some(keylog),
+        }
+    }
+
     /// Initialise the library, as C's global init does (`wssl_init`): the
     /// library, then the BIO method. Whether it could. Each successful
     /// call is matched by `cleanup`'s.

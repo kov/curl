@@ -46,6 +46,10 @@ inventory/baseline-gnutls.json, laid out in build/rust-gnutls.
 (baseline.py --mbedtls): build/c-mbedtls and
 inventory/baseline-mbedtls.json, laid out in build/rust-mbedtls.
 
+`--wolfssl` does the same with wolfSSL, against the C build with it
+(baseline.py --wolfssl): build/c-wolfssl and
+inventory/baseline-wolfssl.json, laid out in build/rust-wolfssl.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -131,6 +135,14 @@ MBEDTLS = Leg(baseline.MBEDTLS, ROOT / "build" / "rust-mbedtls",
               DEBUG_HOOKS + tuple(f"{crate}/{feature}"
                                   for crate in ("curl-sys-abi", "curl-tool")
                                   for feature in ("c-ares", "mbedtls",
+                                                  "libssh2")),
+              no_default=True)
+# wolfSSL in place of OpenSSL, likewise.
+WOLFSSL = Leg(baseline.WOLFSSL, ROOT / "build" / "rust-wolfssl",
+              ROOT / "build" / "target-wolfssl",
+              DEBUG_HOOKS + tuple(f"{crate}/{feature}"
+                                  for crate in ("curl-sys-abi", "curl-tool")
+                                  for feature in ("c-ares", "wolfssl",
                                                   "libssh2")),
               no_default=True)
 
@@ -401,11 +413,13 @@ def main():
     ap.add_argument("--libssh2", action="store_true")
     ap.add_argument("--gnutls", action="store_true")
     ap.add_argument("--mbedtls", action="store_true")
+    ap.add_argument("--wolfssl", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
     leg = (THREADED if args.threaded else LIBSSH if args.libssh
            else LIBSSH2 if args.libssh2 else GNUTLS if args.gnutls
-           else MBEDTLS if args.mbedtls else RUST)
+           else MBEDTLS if args.mbedtls
+           else WOLFSSL if args.wolfssl else RUST)
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

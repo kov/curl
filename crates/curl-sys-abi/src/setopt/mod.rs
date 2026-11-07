@@ -2381,17 +2381,24 @@ mod tests {
         let gnutls = cfg!(feature = "gnutls");
         let openssl = cfg!(feature = "openssl");
         let mbedtls = cfg!(feature = "mbedtls");
+        let wolfssl = cfg!(feature = "wolfssl");
         let want = |lacks: bool| if lacks { CURLE_NOT_BUILT_IN } else { CURLE_OK };
         for (option, lacks) in [
             (ffi::CURLOPT_CAPATH, schannel),
             (ffi::CURLOPT_PROXY_CAPATH, schannel),
-            (ffi::CURLOPT_CRLFILE, schannel),
-            (ffi::CURLOPT_PROXY_CRLFILE, schannel),
-            (ffi::CURLOPT_ISSUERCERT, schannel || mbedtls),
-            (ffi::CURLOPT_PROXY_ISSUERCERT, schannel || mbedtls),
-            (ffi::CURLOPT_TLS13_CIPHERS, !openssl && !mbedtls),
-            (ffi::CURLOPT_PROXY_TLS13_CIPHERS, !openssl && !mbedtls),
-            (ffi::CURLOPT_SSL_EC_CURVES, !openssl),
+            (ffi::CURLOPT_CRLFILE, schannel || wolfssl),
+            (ffi::CURLOPT_PROXY_CRLFILE, schannel || wolfssl),
+            (ffi::CURLOPT_ISSUERCERT, schannel || mbedtls || wolfssl),
+            (
+                ffi::CURLOPT_PROXY_ISSUERCERT,
+                schannel || mbedtls || wolfssl,
+            ),
+            (ffi::CURLOPT_TLS13_CIPHERS, !openssl && !mbedtls && !wolfssl),
+            (
+                ffi::CURLOPT_PROXY_TLS13_CIPHERS,
+                !openssl && !mbedtls && !wolfssl,
+            ),
+            (ffi::CURLOPT_SSL_EC_CURVES, !openssl && !wolfssl),
             (ffi::CURLOPT_SSLENGINE, !openssl),
         ] {
             assert_eq!(text(option), want(lacks), "{option:?}");
@@ -2400,8 +2407,14 @@ mod tests {
         let sigalgs = curl_core::tls::TlsBackend::support(&crate::tlslib::TLS).signature_algorithms;
         assert_eq!(text(ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS), want(!sigalgs));
         for (option, lacks) in [
-            (ffi::CURLOPT_SSL_VERIFYSTATUS, schannel || mbedtls),
-            (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, schannel || mbedtls),
+            (
+                ffi::CURLOPT_SSL_VERIFYSTATUS,
+                schannel || mbedtls || wolfssl,
+            ),
+            (
+                ffi::CURLOPT_DOH_SSL_VERIFYSTATUS,
+                schannel || mbedtls || wolfssl,
+            ),
             (ffi::CURLOPT_SSLENGINE_DEFAULT, !openssl),
         ] {
             assert_eq!(long(option), want(lacks), "{option:?}");
@@ -2423,7 +2436,8 @@ mod tests {
         ] {
             assert_eq!(text(option), CURLE_OK, "{option:?}");
         }
-        assert_eq!(long(ffi::CURLOPT_CERTINFO), CURLE_OK);
+        // wolfSSL reports no chain.
+        assert_eq!(long(ffi::CURLOPT_CERTINFO), want(wolfssl));
         // mbedTLS keeps no CA cache.
         assert_eq!(long(ffi::CURLOPT_CA_CACHE_TIMEOUT), want(mbedtls));
         // What none has.

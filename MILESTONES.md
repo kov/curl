@@ -1509,7 +1509,11 @@ it there, Windows.
      Scored with `score.py --quiche` against C's build with quiche (`baseline.py --quiche`):
      measured 2026-11-07, runtests.pl passes all 1994 tests C's passes, and pytest all 796, the
      h3 cases among them; 1275 and the 24 TLS 1.0 and 1.1 cases of `test_17_09_ssl_min_max`
-     fail on both. `curl -V` is C's (`BoringSSL`, `quiche/0.30.0`).
+     fail on both. `curl -V` is C's (`BoringSSL`, `quiche/0.30.0`). The binding is tested
+     against a quiche server of the test's own (`crates/curl-quiche/tests/peer.rs`), and the
+     core's quiche branches through the fake library: every mutant of `curl-quiche`, and of the
+     core's QUIC connection, is caught, or excluded in `.cargo/mutants.toml` with why it changes
+     nothing observable.
 105. **SSH**: libssh2. **Done**: `curl-libssh2` behind the
      core's `ssh2` traits, `proto/ssh/libssh2.rs` as `lib/vssh/libssh2.c`'s state machine,
      chosen by the `libssh2` feature in place of `libssh` (the default); scored with
@@ -1557,12 +1561,19 @@ it there, Windows.
      outer hello's certificate not for the public name). A setup no HTTPS connect filter heads
      (`wss`, `--no-alpn`) asks for the record as its TLS is added, as C's
      `Curl_cf_ssl_insert_after` does, too late for the session, which C's does not wait for
-     either. **Left:** a QUIC attempt is handed no HTTPS record's list, where C's reads the
-     record if it is known (`make_quic` passes none); over DoH, the record's probe still under
-     way as the chain connects is reaped later, where C ends it as the record's filter connects
-     (its `multi_done` with `premature=1`, then `[DoH] probe done`); and a TLS handshake done in
-     the call its record's filter is put in (early data) would, as C's code reads, leave C's
-     filter unconnected in the chain, where the rewrite's connects: not reproduced.
+     either. Over QUIC, an attempt made once the origin's HTTPS record is known offers the
+     record's list: measured 2026-11-07, with the record known from an earlier transfer, the
+     good, bad and missing configurations of an ECH h3 case over nghttpx end as C's do on the
+     AWS-LC, BoringSSL and wolfSSL legs. **Left:** a QUIC attempt made while the record is still
+     coming does not wait for it, where C's filters delay their connect ("need HTTPS-RR,
+     delaying connect"): its ECH is not tried, and `true` and `hard` end as if no record had
+     come. Waiting needs an attempt state between the socket's connect and the QUIC
+     connection's making, which ENGINE.md's attempt does not have. Over DoH, the record's probe
+     still under way as the chain connects is reaped later, where C ends it as the record's
+     filter connects (its `multi_done` with `premature=1`, then `[DoH] probe done`); and a TLS
+     handshake done in the call its record's filter is put in (early data) would, as C's code
+     reads, leave C's filter unconnected in the chain, where the rewrite's connects: not
+     reproduced.
 
 macOS has its own: Apple SecTrust (verification beside OpenSSL or GnuTLS), AppleIDN, and the
 experimental Apple fast UDP. They go with the macOS port.

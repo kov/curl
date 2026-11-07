@@ -1165,6 +1165,9 @@ exclude_re = [
     # A file shorter than its status said, read whole otherwise: only a
     # file cut between the two reads differs.
     'curl-gnutls/src/verify\.rs:.*: replace (\|\| with &&|< with >) in load_file$',
+    # A deferred handshake's protocol is negotiated already, and the
+    # peer's choice passes only if it is that one; no choice names none.
+    'curl-gnutls/src/session\.rs:.*: replace && with \|\| in Session<G>::negotiate$',
     # mbedTLS (curl-mbedtls):
     # The debug forms of the library's words and of a call, which nothing
     # prints.

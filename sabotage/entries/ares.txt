@@ -176,3 +176,11 @@ witness: curl-tool an_answer_of_two_records_is_taken_as_one
         Ok(record) => a.record = Some(record),
 --- new
         Ok(record) => a.record = Some(record).filter(|r| r.priority != 0),
+
+=== a socket the poll finds readable is not handed to c-ares to read
+file: crates/curl-ares/src/lib.rs
+witness: curl-tool the_servers_named_find_the_address
+--- old
+                let read = if got.intersects(readable) {
+--- new
+                let read = if got.intersects(Events::NONE) {

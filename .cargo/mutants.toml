@@ -65,6 +65,11 @@ exclude_globs = [
     # a scripted library; the binding itself by the suites on the GnuTLS
     # leg (`score.py --gnutls`), against C's GnuTLS build.
     "crates/curl-gnutls/src/gnutls.rs",
+    # mbedTLS's binding and its declarations, likewise: the session's
+    # logic over them against a scripted library, the binding by the
+    # suites on the mbedTLS leg (`score.py --mbedtls`).
+    "crates/curl-mbedtls/src/mbedtls.rs",
+    "crates/curl-mbedtls/src/sys.rs",
 ]
 
 

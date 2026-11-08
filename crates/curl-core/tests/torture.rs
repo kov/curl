@@ -1823,11 +1823,40 @@ fn a_cold_group_is_made_or_refused_at_its_first_set() {
 /// A file part's status is read by its name copied to the stack, as C's
 /// `stat` takes it: a name longer than std's 384-byte stack buffer would
 /// otherwise be copied to the heap by an allocation that cannot fail.
+#[cfg(unix)]
 fn a_file_part_s_long_name_is_read_without_a_copy() {
     let name = [b'n'; 400];
     let (made, n) = track::count_allocations(|| curl_core::mime::FileData::new(&name));
     assert_eq!(made.err(), Some(curl_core::mime::FileError::Unreadable));
     assert_eq!(n, 0, "the name's status read with nothing allocated");
+}
+
+/// On Windows a file part's status is read by its name in UTF-16, made
+/// absolute and marked long (`\\?\`) past `MAX_PATH`, on the heap: std's
+/// `metadata` makes that copy with an allocation that cannot fail. Each
+/// of ours refused in turn, the status is unread, not the process
+/// aborted, and nothing is left allocated. A build whose `curl-os` has
+/// its `debug-hooks` (a run that builds `curl-os`'s own tests too) keeps
+/// those copies from the tracker, as C's tracker does not see C's: there
+/// is then nothing to refuse.
+#[cfg(windows)]
+fn a_file_part_s_long_name_is_read_without_a_copy() {
+    let name = [b'n'; 400];
+    let unreadable = Some(curl_core::mime::FileError::Unreadable);
+    let (made, n) = track::count_allocations(|| curl_core::mime::FileData::new(&name));
+    assert_eq!(made.err(), unreadable);
+    if n == 0 {
+        track::untracked(|| print!("the name's copies not tracked, "));
+        return;
+    }
+    for limit in 0..n {
+        let live = track::live_tracked();
+        let (made, refused) =
+            track::fail_after(limit, || curl_core::mime::FileData::new(&name).err());
+        assert!(refused, "allocation {limit} of {n} refused");
+        assert_eq!(made, unreadable, "allocation {limit} refused");
+        assert_eq!(track::live_tracked(), live, "allocation {limit} refused");
+    }
 }
 
 /// The fake HTTP/3 library, made once and untracked; each run sets the

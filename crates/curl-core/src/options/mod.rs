@@ -881,7 +881,7 @@ impl<T: ColdGroup> Cold<T> {
         value: Option<V>,
     ) -> Result<(), OutOfMemory> {
         if value.is_none() && self.0.is_none() {
-            let mut defaults = T::NONE;
+            let mut defaults = unset_copy::<T>();
             assert!(
                 field(&mut defaults).is_none(),
                 "a group's defaults clear it"
@@ -905,7 +905,7 @@ impl<T: ColdGroup> Cold<T> {
         value: V,
     ) -> Result<(), OutOfMemory> {
         if self.0.is_none() {
-            let mut defaults = T::NONE;
+            let mut defaults = unset_copy::<T>();
             if *field(&mut defaults) == value {
                 return Ok(());
             }
@@ -924,6 +924,14 @@ impl<T: ColdGroup> Cold<T> {
             None => None,
         }))
     }
+}
+
+/// A group's defaults, to read a field of through the same accessor that
+/// changes it, never dropped: a constant owns no memory, so its drop would
+/// only walk every field to free nothing, which costs a setopt to a
+/// default more than the rest of it.
+fn unset_copy<T: ColdGroup>() -> core::mem::ManuallyDrop<T> {
+    core::mem::ManuallyDrop::new(T::NONE)
 }
 
 impl<T: ColdGroup> Default for Cold<T> {

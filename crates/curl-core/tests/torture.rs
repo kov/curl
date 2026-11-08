@@ -184,14 +184,6 @@ fn main() {
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
             continue;
         }
-        // On macOS a lock's first use allocates where the standard
-        // library aborts on failure (DIVERGENCE.md, "Allocations the
-        // platform makes"): the tests that fail such an allocation are
-        // not run there.
-        if cfg!(target_vendor = "apple") && MACOS_LOCK_ABORTS.contains(&name) {
-            track::untracked(|| println!("test {name} ... ignored, a lock's first use on macOS"));
-            continue;
-        }
         if !cfg!(target_os = "linux") && RUN_ON_LINUX_ALONE.contains(&name) {
             track::untracked(|| println!("test {name} ... ignored, a fake server's replies"));
             continue;
@@ -207,16 +199,6 @@ fn main() {
         track::untracked(|| println!("ok"));
     }
 }
-
-/// The tests that fail the allocation a lock's first use makes on macOS,
-/// which aborts there, or count it against C's budget; measured on
-/// macOS 27, each run alone.
-const MACOS_LOCK_ABORTS: &[&str] = &[
-    "an_https_get_survives_every_allocation_failing",
-    "an_https_get_takes_no_refusal_for_success",
-    "an_https_get_stays_within_its_allocation_budget",
-    "a_share_s_connection_survives_every_allocation_failing",
-];
 
 /// The HTTP/3 tests, whose fake server answers each send with its next
 /// reply: they run where QUIC sends a run of datagrams in one call, as on

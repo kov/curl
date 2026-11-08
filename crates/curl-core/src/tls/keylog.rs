@@ -221,6 +221,21 @@ mod tests {
 
     use super::*;
 
+    /// `lines` as the file holds them: opened as text, as C opens it, it
+    /// has each line end written as a carriage return and a line feed on
+    /// Windows, where C's text mode translates them (C's own key log
+    /// reads so there).
+    fn as_written(lines: &[u8]) -> Vec<u8> {
+        let mut file = Vec::new();
+        for &b in lines {
+            if cfg!(windows) && b == b'\n' {
+                file.push(b'\r');
+            }
+            file.push(b);
+        }
+        file
+    }
+
     /// A key log opened to a file appends each line to what it holds, a
     /// line end added where missing; an empty line or one too long is
     /// not written; closed, it writes nothing.
@@ -245,9 +260,12 @@ mod tests {
         log.close();
         assert!(!log.enabled());
         assert!(!log.write_line(b"after"));
-        let mut want = b"before\nCLIENT_RANDOM 00 11\nSERVER_TRAFFIC_SECRET_0 22 33\n".to_vec();
-        want.extend_from_slice(&[b'y'; LINE_MAX]);
-        want.push(b'\n');
+        let mut written = b"CLIENT_RANDOM 00 11\nSERVER_TRAFFIC_SECRET_0 22 33\n".to_vec();
+        written.extend_from_slice(&[b'y'; LINE_MAX]);
+        written.push(b'\n');
+        // What the file held before is left as it was.
+        let mut want = b"before\n".to_vec();
+        want.extend_from_slice(&as_written(&written));
         assert_eq!(std::fs::read(&path).unwrap(), want);
         std::fs::remove_file(&path).unwrap();
     }
@@ -275,7 +293,10 @@ mod tests {
             "FF".repeat(SECRET_MAX),
             "L".repeat(LABEL_MAX)
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
+        assert_eq!(
+            String::from_utf8(std::fs::read(&path).unwrap()).unwrap(),
+            String::from_utf8(as_written(want.as_bytes())).unwrap()
+        );
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -289,7 +310,10 @@ mod tests {
         let held = made.clone();
         drop(made);
         assert!(held.write_line(b"CLIENT_RANDOM 00 11"));
-        assert_eq!(std::fs::read(&path).unwrap(), b"CLIENT_RANDOM 00 11\n");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            as_written(b"CLIENT_RANDOM 00 11\n")
+        );
         // Windows removes no file open without sharing its deletion.
         drop(held);
         std::fs::remove_file(&path).unwrap();

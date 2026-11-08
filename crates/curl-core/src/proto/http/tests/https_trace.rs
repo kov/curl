@@ -1625,3 +1625,36 @@ fn the_tls_asks_for_no_record_it_would_not_take() {
         );
     }
 }
+
+/// A connection to `PORT` from `peer` that answers a TLS handshake and
+/// then `OK` twice, kept open, and how many times its socket was asked
+/// for its end here after each of two GETs over it.
+fn local_asks(peer: Peer) -> (usize, usize) {
+    let response = fake::records(OK).unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response, &response], false);
+    let mut m = serving(peer, &[&talk]);
+    let url = format!("https://127.0.0.1:{PORT}/");
+    let ran = https_get(&mut m, tracing(b""), &url, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let first = talk.local_asks();
+    let ran = https_get(&mut m, tracing(b""), &url, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.seen
+            .text()
+            .iter()
+            .any(|l| l.contains("Reusing existing"))
+    );
+    (first, talk.local_asks())
+}
+
+/// A connection's socket is asked for its end here where C asks
+/// (`set_local_ip`), three times: as its connect starts, as it connects
+/// and as the chain is up (`cf_socket_active`). The TLS handshake over it
+/// asks for none, and a transfer that reuses it asks again for none.
+#[test]
+fn a_connection_asks_for_its_end_here_where_c_does() {
+    assert_eq!(local_asks(Peer::Accepts), (3, 3));
+    let late = Peer::AcceptsAfter(std::time::Duration::from_millis(50));
+    assert_eq!(local_asks(late), (3, 3));
+}

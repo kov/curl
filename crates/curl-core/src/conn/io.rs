@@ -1148,6 +1148,8 @@ struct Wire {
     /// How many of its last replies the peer gives without being asked,
     /// each once the one before it is read.
     volunteers: usize,
+    /// The times its socket was asked for its end here (`getsockname`).
+    local_asks: usize,
 }
 
 /// The most reads of an endless reply before the test fails: a transfer
@@ -1497,6 +1499,15 @@ impl Conversation {
             set.try_push(option).expect("a test's options fit");
         }
         set
+    }
+
+    /// The times the socket of its connection was asked for its end here
+    /// (`getsockname`).
+    pub fn local_asks(&self) -> usize {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .local_asks
     }
 
     /// What the peer was sent so far.
@@ -2201,6 +2212,47 @@ impl FakeSocket {
     fn peer(&self) -> Peer {
         self.peer.unwrap_or(Peer::Silent)
     }
+
+    /// Its end here, as `local_addr` says it, the ask not counted: a
+    /// listening socket's own, for one it accepts.
+    fn end_here(&self) -> io::Result<SocketAddr> {
+        let bound = *self.bound.lock().expect("no test panics holding it");
+        let Some(local) = self.local else {
+            return Err(io::Error::from_raw_os_error(libc_errno::EINVAL));
+        };
+        if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
+            // What the bind left open, the connect chooses.
+            return Ok(match bound {
+                Some(at) => {
+                    let ip = if at.ip().is_unspecified() {
+                        local.ip()
+                    } else {
+                        at.ip()
+                    };
+                    let port = if at.port() == 0 {
+                        local.port()
+                    } else {
+                        at.port()
+                    };
+                    SocketAddr::new(ip, port)
+                }
+                None => local,
+            });
+        }
+        if let Some(at) = bound {
+            // A bind to port 0 is given one, as the kernel picks.
+            let port = if at.port() == 0 {
+                local.port()
+            } else {
+                at.port()
+            };
+            return Ok(SocketAddr::new(at.ip(), port));
+        }
+        Ok(match local {
+            SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)),
+            SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+        })
+    }
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -2280,44 +2332,14 @@ impl Socket for FakeSocket {
 
     /// Bound as its connect starts, where it was bound to if it was, the
     /// kernel's port for a bind to none: unbound before, and after one
-    /// refused at once, unless it was bound.
+    /// refused at once, unless it was bound. Each ask is counted.
     fn local_addr(&self) -> io::Result<SocketAddr> {
-        let bound = *self.bound.lock().expect("no test panics holding it");
-        let Some(local) = self.local else {
-            return Err(io::Error::from_raw_os_error(libc_errno::EINVAL));
-        };
-        if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
-            // What the bind left open, the connect chooses.
-            return Ok(match bound {
-                Some(at) => {
-                    let ip = if at.ip().is_unspecified() {
-                        local.ip()
-                    } else {
-                        at.ip()
-                    };
-                    let port = if at.port() == 0 {
-                        local.port()
-                    } else {
-                        at.port()
-                    };
-                    SocketAddr::new(ip, port)
-                }
-                None => local,
-            });
-        }
-        if let Some(at) = bound {
-            // A bind to port 0 is given one, as the kernel picks.
-            let port = if at.port() == 0 {
-                local.port()
-            } else {
-                at.port()
-            };
-            return Ok(SocketAddr::new(at.ip(), port));
-        }
-        Ok(match local {
-            SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)),
-            SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
-        })
+        self.wire
+            .0
+            .lock()
+            .expect("no test panics holding the wire")
+            .local_asks += 1;
+        self.end_here()
     }
 
     fn set(&self, option: SocketOption) -> io::Result<()> {
@@ -2406,7 +2428,7 @@ impl Socket for FakeSocket {
         }
         let incoming = waiting.take().expect("checked above");
         drop(waiting);
-        let local = self.local_addr()?;
+        let local = self.end_here()?;
         let socket = FakeSocket {
             key: incoming.key,
             peer: Some(Peer::Accepts),

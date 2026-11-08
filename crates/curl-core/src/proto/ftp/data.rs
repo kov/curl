@@ -258,7 +258,7 @@ impl DataConn {
                                 crate::multi::state::side_resolved(cx, &m, found);
                             }
                             crate::multi::state::side_progress(cx, &route, &progress, || {
-                                m.dialed().ends().0
+                                m.dialed().remote().clone()
                             });
                             self.phase = Some(Phase::Connecting(m, setup));
                             match progress {

@@ -332,3 +332,19 @@ witness: curl-core proto::http::tests::unix_trace::a_long_unix_socket_path_shows
             Remote::Unix(u) => Some(&u.path()[..u.path().len().min(SHOWN_IP_MAX)]),
 --- new
             Remote::Unix(u) => Some(u.path()),
+
+=== a failure's report asks the socket again for its end here, on every pass of the setup
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::https_trace::a_connection_asks_for_its_end_here_where_c_does
+--- old
+            Stage::Dialed(d) => Some((d.remote.clone(), d.local, d.connected_at)),
+--- new
+            Stage::Dialed(d) => Some((d.remote.clone(), d.stream.local_addr(), d.connected_at)),
+
+=== a connect that completes keeps the end here asked for as it started
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::https_trace::a_connection_asks_for_its_end_here_where_c_does
+--- old
+                    a.local = asked_local(route, socket);
+--- new
+                    let _ = (route, socket);

@@ -1173,7 +1173,7 @@ fn connect_once<H: Host>(
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Connecting(Progress::Dialed)) => {
-            let (remote, _) = c.attempt_mut(a).dialed().ends();
+            let remote = c.attempt_mut(a).dialed().remote().clone();
             eyeballs_won(cx, &c.route, &remote);
             (TransferState::Connecting(c), Wake::Again)
         }

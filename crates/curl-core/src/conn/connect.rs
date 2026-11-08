@@ -91,6 +91,10 @@ const MAX_REDIALS: u8 = 5;
 pub(crate) struct Dialed {
     remote: Remote,
     stream: Stream,
+    /// Its end here, as the system said as it connected (C's
+    /// `ctx->ip.local_*`): what the handshakes over it and a failure's
+    /// report read, none asking again.
+    local: Option<SocketAddr>,
     connected_at: Instant,
     /// The addresses raced to reach the proxy, raced again on a redial.
     answer: Addresses,
@@ -234,7 +238,12 @@ impl Dialed {
 
     /// The proxy's address, and the connection's end here.
     pub(crate) fn ends(&self) -> (Remote, Option<SocketAddr>) {
-        (self.remote.clone(), self.stream.local_addr())
+        (self.remote.clone(), self.local)
+    }
+
+    /// The proxy's address.
+    pub(crate) fn remote(&self) -> &Remote {
+        &self.remote
     }
 }
 
@@ -865,6 +874,10 @@ const AF_INET6: u8 = 10;
 struct Attempt {
     remote: Remote,
     socket: Sock,
+    /// Its end here, as the system said when last asked (C's
+    /// `ctx->ip.local_*`, which `set_local_ip` sets): as its connect
+    /// started, and again as it connected.
+    local: Option<SocketAddr>,
     link: Link,
 }
 
@@ -1269,7 +1282,7 @@ impl ConnectMachine {
         assert!(self.dialing().tunnels_udp(), "a CONNECT-UDP tunnel");
         let none = SocketAddr::from(([0, 0, 0, 0], 0));
         let remote = d.remote.inet().unwrap_or(none);
-        let local = d.stream.local_addr().unwrap_or(none);
+        let local = d.local.unwrap_or(none);
         Self::make_quic(&self.route, cx, local, remote, true)
     }
 
@@ -1338,7 +1351,7 @@ impl ConnectMachine {
     /// connected. Attempts still racing have nothing to keep.
     pub(crate) fn partly_made(&self) -> Option<(Remote, Option<SocketAddr>, Instant)> {
         match &self.stage {
-            Stage::Dialed(d) => Some((d.remote.clone(), d.stream.local_addr(), d.connected_at)),
+            Stage::Dialed(d) => Some((d.remote.clone(), d.local, d.connected_at)),
             Stage::Resolving(_) | Stage::Racing(_) => None,
         }
     }
@@ -1805,12 +1818,15 @@ impl ConnectMachine {
         // peer: it is up as it opens (`cf_udp_connect`).
         if connected || self.dial == super::Dial::Udp {
             // The application connected it: it won as it opened, with no
-            // connect to check.
+            // connect to check, its end here asked for once
+            // (`cf_socket_open`, `cf_udp_connect`).
+            let local = asked_local(&self.route, &*socket);
             let socket = Sock::new(socket, self.closer.clone());
             r.attempts
                 .try_push(Attempt {
                     remote,
                     socket,
+                    local,
                     link: Link::Connect,
                 })
                 .expect("reserved");
@@ -1824,12 +1840,7 @@ impl ConnectMachine {
             );
         }
         let connect = socket.connect(&remote);
-        // A connection of a scheme of datagrams never asks, even as it
-        // goes over a stream to a proxy (`set_local_ip`).
-        let local = socket
-            .local_addr()
-            .ok()
-            .filter(|_| !self.route.origin.scheme().no_tcp_proxy());
+        let local = asked_local(&self.route, &*socket);
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
         cx.of(
             component,
@@ -1842,6 +1853,7 @@ impl ConnectMachine {
                     .try_push(Attempt {
                         remote: remote.clone(),
                         socket,
+                        local,
                         link: Link::Connect,
                     })
                     .expect("reserved");
@@ -1937,7 +1949,8 @@ impl ConnectMachine {
                     local,
                     remote: addr,
                 };
-                return Ok(self.attempt_on(cx, remote, socket, Link::Record(wait), false, delay));
+                let link = Link::Record(wait);
+                return Ok(self.attempt_on(cx, remote, socket, Some(local), link, false, delay));
             }
             Some(local) => Self::make_quic(&self.route, cx, local, addr, false),
             None => Err(ErrorKind::QuicConnectError),
@@ -1962,17 +1975,19 @@ impl ConnectMachine {
                 return self.quic_failed(cx, None, kind);
             }
         };
-        Ok(self.attempt_on(cx, remote, socket, Link::Quic(quic), done, delay))
+        Ok(self.attempt_on(cx, remote, socket, local, Link::Quic(quic), done, delay))
     }
 
-    /// The QUIC attempt over `socket` to `remote`, its `link` made, runs
-    /// in the race: connected `done` as it started, for early data, it
-    /// has won at once.
+    /// The QUIC attempt over `socket` to `remote`, its end here `local`,
+    /// its `link` made, runs in the race: connected `done` as it started,
+    /// for early data, it has won at once.
+    #[allow(clippy::too_many_arguments)]
     fn attempt_on(
         mut self,
         cx: &mut dyn ConnCx,
         remote: Remote,
         socket: Sock,
+        local: Option<SocketAddr>,
         link: Link,
         done: bool,
         delay: Duration,
@@ -1985,6 +2000,7 @@ impl ConnectMachine {
             .try_push(Attempt {
                 remote: remote.clone(),
                 socket,
+                local,
                 link,
             })
             .expect("reserved");
@@ -2301,6 +2317,7 @@ impl ConnectMachine {
             self.stage = Stage::Dialed(Dialed {
                 remote: won.remote,
                 stream,
+                local: won.local,
                 connected_at,
                 answer,
                 target,
@@ -2670,6 +2687,9 @@ impl Racing {
             }
             return match socket.take_error() {
                 Ok(None) if !broken => {
+                    // Its end here asked for again as it connected
+                    // (`cf_tcp_connect`), kept as the connection's.
+                    a.local = asked_local(route, socket);
                     cx.of(component, format_args!("connected on fd={fd}"));
                     Checked::Won(i)
                 }
@@ -2743,6 +2763,16 @@ impl Racing {
         assert!(none.is_none(), "no address is left");
         Err(ConnectError::Failed(error, kind))
     }
+}
+
+/// The end here of `socket`, connecting or connected, as the system says
+/// (`set_local_ip`). A connection of a scheme of datagrams over `route`
+/// never asks, even as it goes over a stream to a proxy.
+fn asked_local(route: &NetRoute, socket: &dyn Socket) -> Option<SocketAddr> {
+    if route.origin.scheme().no_tcp_proxy() {
+        return None;
+    }
+    socket.local_addr().ok()
 }
 
 impl Attempt {

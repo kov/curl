@@ -21,7 +21,7 @@ pub use boxed::{try_box, try_box_or_back};
 pub use grow::{TryString, TryVec, try_format};
 pub use lock::{Lock, LockGuard};
 pub use lossy::Lossy;
-pub use rc::{Count, Shared, TryArc, TryRc};
+pub use rc::{Count, Shared, SharedBlock, TryArc, TryRc};
 pub use zeroed::try_zeroed;
 
 /// An allocation failed.

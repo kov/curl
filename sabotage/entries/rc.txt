@@ -1,0 +1,38 @@
+# The fallible reference-counted pointers (crates/curl-alloc/src/rc.rs),
+# which every handler is: one block, its count and the value, a trait
+# object among them.
+
+=== a refused block forgets the value it was to hold
+file: crates/curl-alloc/src/rc.rs
+witness: curl-alloc rc::tests::a_refused_block_drops_its_value
+features: debug-hooks
+--- old
+        let block = try_box(SharedBlock {
+            count: C::one(),
+            value,
+        })?;
+--- new
+        let block = crate::try_box_or_back(SharedBlock {
+            count: C::one(),
+            value,
+        })
+        .map_err(|b| {
+            std::mem::forget(b);
+            OutOfMemory
+        })?;
+
+=== the last handle to an unsized value never frees it
+file: crates/curl-alloc/src/rc.rs
+witness: curl-alloc rc::tests::an_unsized_value_is_dropped_once_by_the_last_handle
+--- old
+        if self.inner().count.decrement() {
+--- new
+        if self.inner().count.decrement() && Self::count(self) > 0 {
+
+=== a copy of a handle is not counted, so the first dropped frees the value
+file: crates/curl-alloc/src/rc.rs
+witness: curl-alloc rc::tests::an_unsized_value_is_dropped_once_by_the_last_handle
+--- old
+        self.inner().count.increment();
+--- new
+        let _ = &self.inner().count;

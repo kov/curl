@@ -2,8 +2,9 @@
 //! `Arc::try_new` exist only on nightly.
 //!
 //! The value and its count live in one block from `try_box`; the last
-//! handle dropped frees it. There are no weak references: nothing needs
-//! them yet.
+//! handle dropped frees it. The value may be unsized, a trait object made
+//! from a sized one in the same block (`Shared::try_new_unsize`). There
+//! are no weak references: nothing needs them yet.
 
 #![allow(unsafe_code)]
 
@@ -93,41 +94,58 @@ impl Sealed for AtomicUsize {
     }
 }
 
-struct Inner<T, C> {
+/// The block a `Shared` keeps its count and its value in. Only
+/// `Shared::try_new_unsize` hands one out, boxed, for its caller to unsize;
+/// nothing outside this module can make one, read it or change its count.
+/// So every `Box<SharedBlock>` there is is a block just made, with a count
+/// of one and nothing else referring to it, and the value's metadata is the
+/// compiler's own.
+pub struct SharedBlock<T: ?Sized, C> {
     count: C,
+    /// Last, so that the block unsizes with it.
     value: T,
 }
 
 /// A handle to a value shared by count; see `TryRc` and `TryArc`.
-pub struct Shared<T, C: Count> {
-    inner: NonNull<Inner<T, C>>,
-    /// Owns an `Inner`, for drop checking.
-    _owns: PhantomData<Inner<T, C>>,
+pub struct Shared<T: ?Sized, C: Count> {
+    inner: NonNull<SharedBlock<T, C>>,
+    /// Owns a `SharedBlock`, for drop checking.
+    _owns: PhantomData<SharedBlock<T, C>>,
 }
 
 // SAFETY: with an atomic count, handles on several threads only read the
 // value and change the count atomically, as std's `Arc`; that needs the
 // value to be `Send` (the last handle drops it on any thread) and `Sync`
 // (every handle reads it).
-unsafe impl<T: Send + Sync> Send for Shared<T, AtomicUsize> {}
+unsafe impl<T: ?Sized + Send + Sync> Send for Shared<T, AtomicUsize> {}
 // SAFETY: as above.
-unsafe impl<T: Send + Sync> Sync for Shared<T, AtomicUsize> {}
+unsafe impl<T: ?Sized + Send + Sync> Sync for Shared<T, AtomicUsize> {}
 
-impl<T, C: Count> Shared<T, C> {
-    /// Move `value` to the heap with a count of one, or fail if the
-    /// allocation does.
-    pub fn try_new(value: T) -> Result<Self, OutOfMemory> {
-        let inner = try_box(Inner {
+impl<T: ?Sized, C: Count> Shared<T, C> {
+    /// Move `value` to the heap with a count of one, in one block, and make
+    /// it a `T` with `unsize`, which is `|b| b` where `T` is a trait `S`
+    /// implements: the box coerces as it is returned. Fail, dropping
+    /// `value`, if the allocation does.
+    ///
+    /// Stable Rust lets no pointer of ours unsize itself (`CoerceUnsized`),
+    /// but a `Box` does, so the caller's closure does the coercion and the
+    /// compiler checks it. Whatever box it returns is a block from here
+    /// with a count of one (see `SharedBlock`), so it cannot get it wrong.
+    pub fn try_new_unsize<S>(
+        value: S,
+        unsize: impl FnOnce(Box<SharedBlock<S, C>>) -> Box<SharedBlock<T, C>>,
+    ) -> Result<Self, OutOfMemory> {
+        let block = try_box(SharedBlock {
             count: C::one(),
             value,
         })?;
         Ok(Shared {
-            inner: NonNull::from(Box::leak(inner)),
+            inner: NonNull::from(Box::leak(unsize(block))),
             _owns: PhantomData,
         })
     }
 
-    fn inner(&self) -> &Inner<T, C> {
+    fn inner(&self) -> &SharedBlock<T, C> {
         // SAFETY: the block stays allocated while any handle exists, and
         // this one does; it is only ever read through shared references.
         unsafe { self.inner.as_ref() }
@@ -136,6 +154,21 @@ impl<T, C: Count> Shared<T, C> {
     /// The number of handles to this value.
     pub fn count(this: &Self) -> usize {
         this.inner().count.get()
+    }
+
+    /// Whether both handles point to the same value: the same block,
+    /// whatever metadata each pointer carries, as a trait's vtable may be
+    /// made more than once.
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        std::ptr::addr_eq(a.inner.as_ptr(), b.inner.as_ptr())
+    }
+}
+
+impl<T, C: Count> Shared<T, C> {
+    /// Move `value` to the heap with a count of one, or fail if the
+    /// allocation does.
+    pub fn try_new(value: T) -> Result<Self, OutOfMemory> {
+        Self::try_new_unsize(value, |b| b)
     }
 
     /// This handle as a pointer, to hold where only a pointer fits; opaque,
@@ -158,14 +191,9 @@ impl<T, C: Count> Shared<T, C> {
             _owns: PhantomData,
         }
     }
-
-    /// Whether both handles point to the same value.
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.inner == b.inner
-    }
 }
 
-impl<T, C: Count> Clone for Shared<T, C> {
+impl<T: ?Sized, C: Count> Clone for Shared<T, C> {
     fn clone(&self) -> Self {
         self.inner().count.increment();
         Shared {
@@ -175,18 +203,20 @@ impl<T, C: Count> Clone for Shared<T, C> {
     }
 }
 
-impl<T, C: Count> Drop for Shared<T, C> {
+impl<T: ?Sized, C: Count> Drop for Shared<T, C> {
     fn drop(&mut self) {
         if self.inner().count.decrement() {
             // SAFETY: the count reached zero, so this was the last handle
             // and nothing else refers to the block, which came from
-            // `try_box` through `Box::leak`.
+            // `try_box` through `Box::leak`; a pointer to an unsized value
+            // carries the metadata its box had, which gives the layout it
+            // was allocated with.
             drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
         }
     }
 }
 
-impl<T, C: Count> Deref for Shared<T, C> {
+impl<T: ?Sized, C: Count> Deref for Shared<T, C> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -194,7 +224,7 @@ impl<T, C: Count> Deref for Shared<T, C> {
     }
 }
 
-impl<T: fmt::Debug, C: Count> fmt::Debug for Shared<T, C> {
+impl<T: ?Sized + fmt::Debug, C: Count> fmt::Debug for Shared<T, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
@@ -243,6 +273,93 @@ mod tests {
         drop(a);
         drop(b);
         assert_eq!(drops.get(), 1);
+    }
+
+    /// A trait the tests' values are shared as.
+    trait Named {
+        fn name(&self) -> &str;
+    }
+
+    impl Named for Drops<'_> {
+        fn name(&self) -> &str {
+            "drops"
+        }
+    }
+
+    impl Named for [u8; 3] {
+        fn name(&self) -> &str {
+            "bytes"
+        }
+    }
+
+    #[test]
+    fn an_unsized_value_is_dropped_once_by_the_last_handle() {
+        let drops = Cell::new(0);
+        let a = TryRc::<dyn Named + '_>::try_new_unsize(Drops(&drops), |b| b).unwrap();
+        let b = a.clone();
+        let c = b.clone();
+        assert_eq!((a.name(), TryRc::count(&a)), ("drops", 3));
+        assert!(TryRc::ptr_eq(&a, &c));
+        drop(a);
+        drop(b);
+        assert_eq!((drops.get(), TryRc::count(&c)), (0, 1));
+        drop(c);
+        assert_eq!(drops.get(), 1);
+        let other = TryRc::<dyn Named>::try_new_unsize([1, 2, 3], |b| b).unwrap();
+        let again = TryRc::<dyn Named>::try_new_unsize([1, 2, 3], |b| b).unwrap();
+        assert_eq!(other.name(), "bytes");
+        assert!(!TryRc::ptr_eq(&other, &again));
+    }
+
+    #[test]
+    fn an_unsized_value_is_shared_between_threads() {
+        trait Sum: Send + Sync {
+            fn sum(&self) -> u32;
+        }
+        impl Sum for Vec<u8> {
+            fn sum(&self) -> u32 {
+                self.iter().map(|&b| u32::from(b)).sum()
+            }
+        }
+        let value = TryArc::<dyn Sum>::try_new_unsize(vec![1u8, 2, 3], |b| b).unwrap();
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let mine = value.clone();
+                std::thread::spawn(move || mine.sum())
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap(), 6);
+        }
+        assert_eq!(TryArc::count(&value), 1);
+    }
+
+    /// The count and the unsized value are one block.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn an_unsized_value_costs_one_allocation() {
+        let drops = Cell::new(0);
+        let (made, n) = crate::track::count_allocations(|| {
+            TryArc::<dyn Named + Sync + '_>::try_new_unsize([7u8; 3], |b| b)
+        });
+        assert_eq!((made.unwrap().name(), n), ("bytes", 1));
+        let (made, n) = crate::track::count_allocations(|| {
+            TryRc::<dyn Named + '_>::try_new_unsize(Drops(&drops), |b| b)
+        });
+        assert_eq!(n, 1);
+        drop(made);
+        assert_eq!(drops.get(), 1);
+    }
+
+    /// A refused block reports it and drops the value it was to hold.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn a_refused_block_drops_its_value() {
+        let drops = Cell::new(0);
+        let (made, refused) = crate::track::fail_once_after_here(0, || {
+            TryRc::<dyn Named + '_>::try_new_unsize(Drops(&drops), |b| b).map(|_| ())
+        });
+        assert_eq!((made, refused, drops.get()), (Err(OutOfMemory), true, 1));
     }
 
     #[test]

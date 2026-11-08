@@ -219,6 +219,15 @@ features: test-util debug-hooks
         }
 --- new
 
+=== an active transfer waiting for the server to connect stops polling the control connection
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::an_active_download_accepts_the_server_s_connection
+features: test-util debug-hooks
+--- old
+        if self.initiating && self.port_cmd.is_none() {
+--- new
+        if self.initiating {
+
 === a protected data connection is said established before its TLS is made
 file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_other_transfer

@@ -1949,10 +1949,22 @@ fn an_active_download_accepts_the_server_s_connection() {
         "{said}"
     );
     // Waiting for it, the transfer polls the listening socket beside the
-    // control connection, as C's `ftp_domore_pollset` does.
+    // control connection, as C's `ftp_domore_pollset` does, the whole
+    // time the server has not connected.
+    let waits = &said[said
+        .find("Data conn was not available immediately\n")
+        .unwrap_or_else(|| panic!("{said}"))
+        ..said.find("Connection accepted from server").unwrap()];
+    let pollsets: Vec<&str> = waits
+        .lines()
+        .filter(|l| l.contains("[DOING_MORE] pollset["))
+        .collect();
+    assert!(!pollsets.is_empty(), "{waits}");
     assert!(
-        said.contains("[DOING_MORE] pollset[fd=1000 IN, fd=1001 IN]"),
-        "{said}"
+        pollsets
+            .iter()
+            .all(|l| l.contains("pollset[fd=1000 IN, fd=1001 IN]")),
+        "{pollsets:#?}"
     );
     assert_eq!(counted.open(), 1, "only the control connection is left");
 }

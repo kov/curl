@@ -214,18 +214,21 @@ file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_other_transfer
 --- old
         if shaken {
-            connected_all(cx, host, peer.as_ref(), &stream, chain);
+            let late = late.take().map_or_else(Late::default, |l| l.late);
+            connected_all(cx, host, peer.as_ref(), &stream, chain, late);
         } else {
 --- new
-        connected_all(cx, host, peer.as_ref(), &stream, chain);
+        let gone = late.take().map_or_else(Late::default, |l| l.late);
+        connected_all(cx, host, peer.as_ref(), &stream, chain, gone);
         if !shaken {
 
 === a protected data connection is never said established
 file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_other_transfer
 --- old
-                            connected_all(cx, host, peer.as_ref(), &stream, made);
+                            connected_all(cx, host, peer.as_ref(), &stream, made, late);
 --- new
+                            drop(late);
 
 === the TLS put on in place is not said added
 file: crates/curl-core/src/multi/state/tls.rs
@@ -394,10 +397,10 @@ file: crates/curl-core/src/multi/state/side.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_tunnel_waits_on_its_socket
 features: test-util debug-hooks
 --- old
-        shaken.chain(racing)
+        machine.resolve_wants().chain(shaken).chain(racing)
 --- new
         let _ = shaken;
-        racing
+        machine.resolve_wants().chain(racing)
 
 === a wildcard download with nothing left goes through DONE
 file: crates/curl-core/src/multi/state.rs

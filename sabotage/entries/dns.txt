@@ -770,7 +770,7 @@ features: test-util
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it_says
 --- old
-            Stage::Racing(r) => r.eyeballs.late.0.as_ref()?.due(now),
+            Stage::Racing(r) => r.eyeballs.late.0.as_ref()?.due(now, left),
 --- new
             Stage::Racing(_) => None,
 
@@ -778,7 +778,7 @@ witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it_says
 --- old
-            Some(RecordLookup::Library(r)) => Some(now.after(r.due(Duration::from_secs(1)))),
+            Some(RecordLookup::Library(r)) => Some(now.after(r.due(left).min(left))),
 --- new
             Some(RecordLookup::Library(_)) => None,
 
@@ -886,10 +886,14 @@ witness: curl-sys-abi handle_tests::cleanup_and_reset_tell_the_debug_function_of
 file: crates/curl-core/src/conn/asyncs.rs
 witness: curl-openssl an_https_get_stays_within_its_allocation_budget
 --- old
-        kept.push(Kept { id, holder })
+        kept.push(Kept {
+            id,
+            holder,
 --- new
         kept.more.try_reserve(1).map_err(|_| OutOfMemory)?;
-        kept.push(Kept { id, holder })
+        kept.push(Kept {
+            id,
+            holder,
 
 === a resolve under way does not look in the cache first
 file: crates/curl-core/src/conn/connect.rs

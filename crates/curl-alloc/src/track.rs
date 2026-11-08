@@ -6,7 +6,12 @@
 //! lines tests/memanalyzer.pm reads, and counted against the limit, past
 //! which it fails. Each block carries a tag saying whether it was tracked,
 //! so freeing a block made before tracking started, or inside an
-//! exclusion, logs nothing.
+//! exclusion, logs nothing. The tag follows the caller's bytes: a block
+//! starts where the system's does, so a block the runtime never frees,
+//! such as standard output's buffer, is held by a pointer to its start,
+//! which a leak checker such as valgrind sees as reachable. A tag before it
+//! would leave such a block held only by a pointer into it, which valgrind
+//! reports as possibly lost.
 //!
 //! The C side of the shim logs to the same memdump and counts against the
 //! same limit through [`log`] and [`limit_reached`], so there is one of
@@ -314,7 +319,7 @@ pub fn count_sized<R>(size: usize, f: impl FnOnce() -> R) -> (R, u64) {
 /// What [`measure`] saw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measured {
-    /// Allocated less freed, in bytes, without the tracker's headers.
+    /// Allocated less freed, in bytes, without the tracker's tags.
     pub bytes: i64,
     pub allocations: u64,
 }
@@ -491,15 +496,13 @@ fn signed(size: usize) -> i64 {
     i64::try_from(size).expect("a block smaller than i64::MAX")
 }
 
-/// The room before each block, holding its tag in the last 8 bytes; a
-/// multiple of the block's alignment.
-fn header(layout: Layout) -> usize {
-    layout.align().max(16)
-}
+/// The room after each block's bytes, holding its tag.
+const TAG: usize = size_of::<u64>();
 
-/// The layout of a block with its header.
-fn outer(layout: Layout) -> Option<Layout> {
-    let size = layout.size().checked_add(header(layout))?;
+/// The layout of a block of `size` bytes aligned as `layout` is, with its
+/// tag after them.
+fn outer(layout: Layout, size: usize) -> Option<Layout> {
+    let size = size.checked_add(TAG)?;
     Layout::from_size_align(size, layout.align()).ok()
 }
 
@@ -516,23 +519,22 @@ impl Tracker {
         if tracked && limit_reached(func, |l| l.push(RUST_SOURCE.as_bytes())) {
             return std::ptr::null_mut();
         }
-        let Some(outer) = outer(layout) else {
+        let Some(outer) = outer(layout, layout.size()) else {
             return std::ptr::null_mut();
         };
-        let p = if zeroed {
-            // SAFETY: `outer` is at least the header in size, so not zero.
+        let block = if zeroed {
+            // SAFETY: `outer` is at least the tag in size, so not zero.
             unsafe { System.alloc_zeroed(outer) }
         } else {
             // SAFETY: as above.
             unsafe { System.alloc(outer) }
         };
-        if p.is_null() {
-            return p;
+        if block.is_null() {
+            return block;
         }
-        // SAFETY: the block holds the header before the caller's bytes.
-        let block = unsafe { p.add(header(layout)) };
-        // SAFETY: the tag slot is in the header just written room for.
-        unsafe { tag_slot(block).write(if tracked { TRACKED } else { PLAIN }) };
+        // SAFETY: `block` is a live system block of `outer`, made for
+        // `layout.size()` bytes.
+        unsafe { set_tag(block, layout.size(), if tracked { TRACKED } else { PLAIN }) };
         count();
         hold(signed(layout.size()));
         sized(layout.size());
@@ -552,25 +554,37 @@ impl Tracker {
     }
 }
 
-/// The tag of a block from [`Tracker`].
+/// The tag of a block of `size` bytes from [`Tracker`].
 ///
 /// # Safety
 ///
-/// `block` came from [`Tracker`] and is live.
-unsafe fn tag(block: *mut u8) -> u64 {
-    // SAFETY: every block from `Tracker` has its tag just before it.
-    unsafe { tag_slot(block).read() }
+/// `block` came from [`Tracker`], is live and is `size` bytes long.
+unsafe fn tag(block: *mut u8, size: usize) -> u64 {
+    // SAFETY: every block from `Tracker` was tagged just after its bytes,
+    // at the size the caller gives; the slot may be unaligned.
+    unsafe { tag_slot(block, size).read_unaligned() }
 }
 
-/// Where a block's tag is: the last 8 bytes of its header, aligned to 8
-/// since the header's size is a multiple of 16.
-fn tag_slot(block: *mut u8) -> *mut u64 {
-    block.cast::<u64>().wrapping_sub(1)
+/// Tag a block of `size` bytes.
+///
+/// # Safety
+///
+/// `block` is a live system block of `outer(_, size)`.
+unsafe fn set_tag(block: *mut u8, size: usize, tag: u64) {
+    // SAFETY: the slot is the last `TAG` bytes of the system block, as the
+    // caller says; it may be unaligned.
+    unsafe { tag_slot(block, size).write_unaligned(tag) };
 }
 
-// SAFETY: every block is a system block of the requested alignment with
-// the header before it; `outer` reproduces the system layout from the
-// caller's for dealloc and realloc.
+/// Where the tag of a block of `size` bytes is: just after them, aligned
+/// as the size happens to leave it.
+fn tag_slot(block: *mut u8, size: usize) -> *mut u64 {
+    block.wrapping_add(size).cast::<u64>()
+}
+
+// SAFETY: every block is a system block of the requested alignment that
+// starts at the caller's bytes, with its tag after them; `outer`
+// reproduces the system layout from the caller's for dealloc and realloc.
 unsafe impl GlobalAlloc for Tracker {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: as the caller guarantees.
@@ -584,40 +598,40 @@ unsafe impl GlobalAlloc for Tracker {
 
     unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
         hold(-signed(layout.size()));
-        // SAFETY: the caller passes a live block from this allocator.
-        if unsafe { tag(block) } == TRACKED {
+        // SAFETY: the caller passes a live block of `layout` from this
+        // allocator.
+        if unsafe { tag(block, layout.size()) } == TRACKED {
             LIVE.fetch_sub(1, Ordering::Relaxed);
             log_rust(|l| write!(l, "free({})", Ptr(block)));
         }
-        let outer = outer(layout).expect("a live block's layout fits");
-        // SAFETY: the system block starts a header before the caller's.
-        let p = unsafe { block.sub(header(layout)) };
-        // SAFETY: `p` and `outer` are the system block and its layout.
-        unsafe { System.dealloc(p, outer) };
+        let outer = outer(layout, layout.size()).expect("a live block's layout fits");
+        // SAFETY: `block` and `outer` are the system block and its layout.
+        unsafe { System.dealloc(block, outer) };
     }
 
     unsafe fn realloc(&self, block: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        // SAFETY: the caller passes a live block from this allocator.
-        let was_tracked = unsafe { tag(block) } == TRACKED;
+        // SAFETY: the caller passes a live block of `layout` from this
+        // allocator.
+        let was_tracked = unsafe { tag(block, layout.size()) } == TRACKED;
         let now = tracking();
         if now && limit_reached("realloc", |l| l.push(RUST_SOURCE.as_bytes())) {
             return std::ptr::null_mut();
         }
-        let h = header(layout);
-        let outer = outer(layout).expect("a live block's layout fits");
-        let Some(new_outer) = new_size.checked_add(h) else {
+        let old = outer(layout, layout.size()).expect("a live block's layout fits");
+        let Some(new) = outer(layout, new_size) else {
             return std::ptr::null_mut();
         };
-        // SAFETY: the system block starts a header before the caller's.
-        let p = unsafe { block.sub(h) };
-        // SAFETY: `p` and `outer` are the system block and its layout;
-        // `new_outer` is not zero.
-        let q = unsafe { System.realloc(p, outer, new_outer) };
-        if q.is_null() {
-            return q;
+        // SAFETY: `block` and `old` are the system block and its layout;
+        // `new` is a valid layout of the same alignment, not zero in size.
+        let moved = unsafe { System.realloc(block, old, new.size()) };
+        if moved.is_null() {
+            return moved;
         }
-        // SAFETY: the new block keeps the header before the caller's bytes.
-        let moved = unsafe { q.add(h) };
+        // The copy leaves the old tag at the old size, or cuts it off: the
+        // block is tagged again at its new one.
+        let tag = if was_tracked || now { TRACKED } else { PLAIN };
+        // SAFETY: `moved` is a live system block of `new`.
+        unsafe { set_tag(moved, new_size, tag) };
         count();
         hold(signed(new_size) - signed(layout.size()));
         sized(new_size);
@@ -626,8 +640,6 @@ unsafe impl GlobalAlloc for Tracker {
             log_rust(|l| write!(l, "realloc({}, {new_size}) = {}", Ptr(block), Ptr(moved)));
         } else if now {
             LIVE.fetch_add(1, Ordering::Relaxed);
-            // SAFETY: as in `make`.
-            unsafe { tag_slot(moved).write(TRACKED) };
             log_rust(|l| write!(l, "malloc({new_size}) = {}", Ptr(moved)));
         }
         moved
@@ -700,5 +712,22 @@ mod tests {
         v.extend([Wide([1; 64]), Wide([2; 64])]);
         assert_eq!((v.as_ptr()).addr() % 64, 0);
         assert_eq!((b.0[63], v[0].0[0], v[1].0[63]), (7, 1, 2));
+    }
+
+    /// Each block's tag follows its bytes, wherever its size leaves it:
+    /// grown and shrunk, a block is tagged at its new size, where freeing
+    /// it reads (under Miri, a block not tagged again reads bytes never
+    /// written).
+    #[test]
+    fn tags_follow_a_block_grown_and_shrunk() {
+        let mut v: Vec<u8> = Vec::with_capacity(3);
+        v.extend_from_slice(b"abcde");
+        v.shrink_to_fit();
+        assert_eq!((v.capacity(), &v[..]), (5, &b"abcde"[..]));
+        v.truncate(1);
+        v.shrink_to_fit();
+        assert_eq!(&v[..], b"a");
+        let zeroed: Vec<u64> = vec![0; 3];
+        assert_eq!(zeroed.iter().sum::<u64>(), 0);
     }
 }

@@ -100,14 +100,17 @@ fn blocks_of_one_size_are_counted_made_or_grown() {
     );
 }
 
-/// Blocks made before tracking or inside an exclusion are not logged;
+/// Blocks made before tracking or inside an exclusion, grown there or not,
+/// are not logged;
 /// tracked ones are, as tests/memanalyzer.pm reads them; the limit fails
 /// fallible allocation without aborting.
 fn logs_tracked_blocks_and_fails_past_the_limit() {
     let path = std::env::temp_dir().join(format!("curl-alloc-memdump-{}", std::process::id()));
     let before: Vec<u8> = Vec::with_capacity(100);
     track::start_log(&path).unwrap();
-    let excluded: Vec<u8> = track::untracked(|| Vec::with_capacity(200));
+    let mut excluded: Vec<u8> = track::untracked(|| Vec::with_capacity(200));
+    // Grown in an exclusion, it stays untracked: its free is not logged.
+    track::untracked(|| excluded.reserve_exact(2000));
     let mut tracked: Vec<u8> = Vec::with_capacity(300);
     let tracked_at = tracked.as_ptr();
     tracked.reserve(1000);

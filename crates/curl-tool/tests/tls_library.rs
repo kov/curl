@@ -253,10 +253,11 @@ fn ech_reaches_the_library_that_has_it() {
         for word in ["true", "false", "ecl:QUJD", "nonsense"] {
             let (code, said) = exit(&["--ech", word, url]);
             assert_eq!(code, Some(2), "{word}: {said}");
-            assert!(
-                said.starts_with(
-                    "curl: option --ech: the installed libcurl version does not support this\n"
-                ),
+            // Its first line, ended as the platform's text ends it (CRLF
+            // on Windows, as C's tool writes standard error there).
+            assert_eq!(
+                said.lines().next(),
+                Some("curl: option --ech: the installed libcurl version does not support this"),
                 "{said}"
             );
         }

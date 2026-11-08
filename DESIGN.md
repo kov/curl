@@ -256,7 +256,7 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
     speed limits, a request's custom method, target and referer) is a `Cold<T>`: made, fallibly,
     the first time one of its options is set, so the setopt that makes it is the one that can run
     out of memory, and read as the group's defaults until then; clearing an option of a group never
-    made makes nothing (`Cold::set`). Every handle pays only for the hot groups and a pointer per
+    made, or setting one to its default, makes nothing (`Cold::set`, `Cold::assign`). Every handle pays only for the hot groups and a pointer per
     cold one; a new option of a seldom-used kind joins a cold group. A handle's memory is pinned
     below C's (libtest 751's thousand handles; the shim's `a_handle_costs_no_more_than_cs`).
 - **Errors:** one error kind per API that can fail in the core (easy, multi, URL), with a

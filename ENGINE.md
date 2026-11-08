@@ -4871,13 +4871,15 @@ ones as the settings call for. A handle allocates about what C's does (751).
 An adapter holds its handle's address, so a copy must never keep the original's: the copy would
 call the application with the original's `CURL *`, freed once the original is cleaned up. One
 function makes a handle's adapters whole, `ShimEasy::adapt`: it drops whatever adapters the
-options hold and makes every one again from the handle's C-side settings (the callbacks and
-settings, ERRORBUFFER, the socket and `SSL_CTX` functions). A new handle and a copy
-(`ShimEasy::boxed`, which `curl_easy_duphandle` reaches with a copy of the original's C side)
+options hold (`callbacks::forget`) and makes every one again from the handle's C-side settings
+(the callbacks and settings, ERRORBUFFER, the socket and `SSL_CTX` functions). A new handle and a
+copy (`ShimEasy::boxed`, which `curl_easy_duphandle` reaches with a copy of the original's C side)
 and `curl_easy_reset` call it, and nothing else makes a set of them; a setopt adds or drops only
-the adapter of the option it sets. An option that brings a new adapter is made in `adapt` from
-its C-side setting, and gets a test that a copy calls through itself once the original is
-freed.
+the adapter of the option it sets, and keeps one it wants that the options already hold: an
+adapter reads the function and data as it calls, so setting the header function, its data and
+STDERR, as the C tool does on every handle, makes one header adapter. A slot a setopt keeps is one
+`forget` clears. An option that brings a new adapter is made in `adapt` from its C-side setting,
+and gets a test that a copy calls through itself once the original is freed.
 
 ### 7.3 `curl_easy_pause`
 
@@ -5047,7 +5049,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | `HeaderStore` growth | per line, after the budget check; the first header's makes room for 1 KiB of text and 16 entries | 300 KiB/response, 20× per transfer, 5000 |
 | `HeldOutput` | only while held | 64 MiB → TooLarge |
 | `UserHeaders`, `Url`, option strings | setopt | per handle; shared strings are `TryRc` |
-| a cold option group (`Cold<T>`: proxy, login, `.netrc`, cookies, signing, size and speed limits, custom request parts) | the first setopt of one of its options | one per group per handle |
+| a cold option group (`Cold<T>`: proxy, login, `.netrc`, cookies, signing, size and speed limits, custom request parts) | the first setopt of one of its options to other than its default | one per group per handle |
 | a Digest challenge's state | a response's Digest challenge | one per peer per handle |
 | socket table entries beyond the reserved two | connect-machine stage entry, before the socket opens | 6 attempts + ALPN racers |
 | error detail | on error | dropped if boxing it fails |

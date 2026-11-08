@@ -1093,6 +1093,46 @@ fn a_connection_made_to_multiplex_lets_one_waiting_out_and_says_so() {
     assert_eq!(said, 1, "{states:#?}");
 }
 
+/// What the library consumed of a stream beside its body counts on that
+/// stream, whichever transfer's step read it, the stream's own or a
+/// sibling's: under a rate limit its window opens once any of its bytes
+/// arrived, so an empty read of its body after them opens it, as C's
+/// `cb_h3_deferred_consume` counts them for `cf_ngtcp2_upd_rx_win`. One
+/// step reads both streams, so one of them is the other's sibling.
+#[test]
+fn a_stream_s_consumed_bytes_count_on_it_whoever_reads_them() {
+    let (script, mut m) = two_streams();
+    {
+        let mut s = script.lock().unwrap();
+        let both = s.on_read.back_mut().unwrap();
+        for stream in [0, 4] {
+            let at = both
+                .iter()
+                .position(|t| matches!(t, Told::HeadersDone(s) if *s == stream))
+                .unwrap();
+            both.insert(at + 1, Told::Data(stream, Vec::new()));
+            both.insert(at + 1, Told::Consumed(stream, 10));
+        }
+    }
+    let seen = [Seen::default(), Seen::default()];
+    let ids = seen.clone().map(|seen| {
+        let mut e = pipewaiting(&script, &seen);
+        let flow = e.options_mut().flow.make_mut().unwrap();
+        flow.max_recv_speed = std::num::NonZeroU64::new(1 << 20);
+        m.add(Box::new(e), (), &mut NoEvents).unwrap()
+    });
+    for id in ids {
+        let done = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(done, Ok(()));
+    }
+    for (seen, stream) in seen.iter().zip([0, 4]) {
+        let said = lines_of(seen, &[&format!("[HTTP/3] [{stream}] ")]);
+        let read = said.iter().position(|l| l.contains("DATA len=0")).unwrap();
+        let opened = format!("[HTTP/3] [{stream}] rx window, extend by");
+        assert!(said[read + 1].starts_with(&opened), "{said:#?}");
+    }
+}
+
 /// A connection kept idle is closed as the multi goes, saying goodbye:
 /// the packet that closes it goes to the peer
 /// (`Curl_cf_ngtcp2_cmn_shutdown`).

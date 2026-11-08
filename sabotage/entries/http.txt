@@ -152,14 +152,14 @@ witness: curl-core a_get_survives_every_allocation_failing
 --- new
                 Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::RecvError),
 
-=== a query that cannot be copied is left out
-file: crates/curl-core/src/proto/http.rs
+=== a request's target that cannot be made is made as it goes
+file: crates/curl-core/src/url/mod.rs
 witness: curl-core a_get_takes_no_refusal_for_success
 --- old
-            Err(UrlErrorKind::NoQuery) => {}
-            Err(e) => return Err(url_error(e)),
+        out.try_reserve_exact(path.len() + query.map_or(0, |q| 1 + q.len()))
+            .map_err(|_| UrlErrorKind::OutOfMemory)?;
 --- new
-            Err(_) => {}
+        let _ = out.try_reserve_exact(path.len() + query.map_or(0, |q| 1 + q.len()));
 
 === a host that cannot be copied is a malformed URL
 file: crates/curl-core/src/proto/http.rs
@@ -384,12 +384,12 @@ witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_d
             && !cx.easy().options().connect_only.reserves()
 
 === the request drops an empty query's question mark
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/url/mod.rs
 witness: curl-core proto::http::tests::the_report_s_url_and_the_request_keep_an_empty_query
 --- old
-        match url.get(Part::Query, query) {
+        if query.is_some() {
 --- new
-        match url.get(Part::Query, GetOptions::NONE) {
+        if query.is_some_and(|q| !q.is_empty()) {
 
 === the body is traced as the head
 file: crates/curl-core/src/proto/http.rs
@@ -1399,12 +1399,12 @@ witness: curl-core proto::http::tests::a_read_takes_the_buffer_s_size
             let max = self.read_size(16384);
 
 === the request line carries the URL's path as it was given, not encoded
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/url/mod.rs
 witness: curl-core proto::http::tests::the_path_is_sent_encoded_and_the_query_as_given
 --- old
-        let mut target = url.get(Part::Path, encoded).map_err(url_error)?;
+        self.write_part(Part::Path, encoded, None, &mut out)?;
 --- new
-        let mut target = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
+        self.write_part(Part::Path, GetOptions::NONE, None, &mut out)?;
 
 === HTTP's exchange ends without the redirect its head decided to follow
 file: crates/curl-core/src/proto/http.rs

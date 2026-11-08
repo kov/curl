@@ -487,3 +487,11 @@ witness: curl-core url::encode::tests::decodes_as_c_byte_by_byte
             let run = super::find_byte(&s[i + 1..], b'%').map_or(s.len(), |n| i + 1 + n);
 --- new
             let run = super::find_byte(s.get(i + 2..).unwrap_or_default(), b'%').map_or(s.len(), |n| i + 2 + n);
+
+=== a request's target is grown by its query
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::a_request_target_is_its_path_and_query_read_back
+--- old
+        out.try_reserve_exact(path.len() + query.map_or(0, |q| 1 + q.len()))
+--- new
+        out.try_reserve_exact(path.len())

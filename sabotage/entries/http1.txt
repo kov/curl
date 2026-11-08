@@ -403,3 +403,11 @@ witness: curl-sys-abi handle_tests::a_challenge_is_available_to_the_header_funct
         let (host, proxy) = line.offered;
 --- new
         let (host, proxy) = <(AuthMethods, AuthMethods)>::default();
+
+=== the head parser's line grows line by line
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core a_get_stays_within_its_allocation_budget
+--- old
+            self.line.try_reserve_exact(len.max(FIRST_LINE_ROOM))?;
+--- new
+            self.line.try_reserve_exact(len)?;

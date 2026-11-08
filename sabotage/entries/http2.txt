@@ -1221,3 +1221,19 @@ witness: curl-core proto::http::tests::h2::an_idle_connection_its_server_closed_
             }
 --- new
             Ok(Recv::Eof) => false,
+
+=== a response field's line is made anew for each field
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core an_http_2_get_stays_within_its_allocation_budget
+--- old
+                line.clear();
+--- new
+                *line = Vec::new();
+
+=== a request's fields grow as they are made
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core an_http_2_get_stays_within_its_allocation_budget
+--- old
+        made.bytes.try_reserve_exact(bytes)?;
+--- new
+        made.bytes.try_reserve_exact(0)?;

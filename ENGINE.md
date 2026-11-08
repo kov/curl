@@ -5078,7 +5078,7 @@ peer gets a protocol error, not an out-of-memory one.
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
-  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 50, some of these taking more than one: the multi, and the test's clock,
+  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 43, some of these taking more than one: the multi, and the test's clock,
   shared with the QUIC connections the multi makes (a build without `test-util` reads the system
   clock and holds none); the easy's URL, user
   agent and handlers; the transfer's place in the multi and its slot, boxed so the table's
@@ -5092,13 +5092,18 @@ peer gets a protocol error, not an out-of-memory one.
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - The core's own part of an HTTPS GET is pinned over the fake TLS library
-  (`HTTPS_FAKE_GET_BUDGET`, 59): the plain GET's 50, then the route's `TlsIdentity` (shared with
+  (`HTTPS_FAKE_GET_BUDGET`, 52): the plain GET's 43, then the route's `TlsIdentity` (shared with
   the connection), the handshake under way, the library's session (the fake's one box), its
   layer, the stream's layer stack and its list, the multi's `TlsShared` with the fake's state
   in its box, and the key the connection's sessions are kept by. The same GET is run with each
   allocation refused in turn and alone; its server says goodbye back at once, so the
   connection's shutdown, as the multi goes, finishes in its one try and joins no set.
-  `GET_BUDGET` stays 48: a plain GET makes no TLS group, identity or layer.
+  A plain GET makes no TLS group, identity or layer.
+- An HTTP/2 GET by prior knowledge over the fake HTTP/2 library, its head of eight fields of
+  a usual length, is pinned at its measured 57 (`H2_GET_BUDGET`): the plain GET's own beside
+  the session, its stream and the request's fields. Its fields' lines, read and stored, grow
+  no buffer but the connection's line, which grows to the longest; a body's DATA frames
+  allocate nothing of their own (`an_http_2_body_s_frames_allocate_nothing`).
 - HTTP/3 runs over the fake TLS and HTTP/3 libraries, every component traced and a response
   header that is not UTF-8: a GET in HTTP/3 alone, a GET in HTTP/1.1 through an HTTP/3 proxy's
   tunnel, and a GET in HTTP/3 alone through that proxy's CONNECT-UDP, each with every
@@ -5106,8 +5111,8 @@ peer gets a protocol error, not an out-of-memory one.
   tracker (curl-core's `test-util` turns curl-alloc's on), as a real library's memory is its
   own. A refusal inside the library's read callbacks fails the read, and the transfer with
   `RecvError`, as C fails any callback's failure (`cf_ngtcp2_recv`); those runs take it beside
-  `OutOfMemory`. The GET is pinned at its measured 73 allocations (`H3_GET_BUDGET`), not yet
-  itemised against the HTTPS GET's 57.
+  `OutOfMemory`. The GET is pinned at its measured 62 allocations (`H3_GET_BUDGET`), not yet
+  itemised against the HTTPS GET's 52.
 - Over OpenSSL, `crates/curl-openssl/tests/peer.rs` pins three, as the core cannot depend on
   the binding; OpenSSL's own allocations are libc's, not counted, as C's tracker does not count
   them, and the ALPN list and trace text are on the stack:

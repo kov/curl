@@ -316,3 +316,11 @@ features: test-util debug-hooks
             proxy_verify_result: self.proxy_verify_result,
 --- new
             proxy_verify_result: self.proxy_verify_result,
+
+=== the header store grows header by header
+file: crates/curl-core/src/report/headers.rs
+witness: curl-core a_get_stays_within_its_allocation_budget
+--- old
+                .try_reserve_exact(header.len().max(FIRST_BYTES))
+--- new
+                .try_reserve_exact(header.len())

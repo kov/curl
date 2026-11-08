@@ -108,6 +108,10 @@ fn main() {
             an_http_2_body_s_frames_allocate_nothing,
         ),
         (
+            "an_http_2_get_stays_within_its_allocation_budget",
+            an_http_2_get_stays_within_its_allocation_budget,
+        ),
+        (
             "an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass",
             an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass,
         ),
@@ -918,14 +922,15 @@ fn a_get_takes_no_refusal_for_success() {
 /// `multi->pending`), whose index of rows, as the multi's other sets of
 /// rows, holds its first 64 in place; then the URL as fetched
 /// and its parts, the URL read back once parsed (as C reads it back), the
-/// target grown by its query, the protocol's state, the peer, the
-/// effective URL kept for the report, the answer for the host kept in the
+/// target, its path and query made at once, the protocol's state, the
+/// peer, the effective URL kept for the report, the answer for the host
+/// kept in the
 /// DNS cache (its name, its addresses, the answer shared, the cache's
 /// table), the connection, as C's `connectdata`, the list of connect
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 48;
+const GET_BUDGET: u64 = 43;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.
@@ -1007,7 +1012,7 @@ fn an_https_get_takes_no_refusal_for_success() {
 }
 
 /// What an HTTPS GET allocates over the fake TLS library, the core's
-/// own beside the plain GET's 48: the route's TLS identity (shared with
+/// own beside the plain GET's 43: the route's TLS identity (shared with
 /// the connection), the handshake under way, the library's session, its
 /// layer, the stream's layer stack and its list, and the multi's
 /// `TlsShared` with the fake's state boxed in it, made with the multi's
@@ -1118,14 +1123,15 @@ fn a_get_with_a_tls_library_allocates_as_one_without() {
 }
 
 /// A GET by HTTP/2's prior knowledge from a server whose response's
-/// body of `frames` DATA frames of 16 KiB, then its end, comes as the
-/// fake HTTP/2 library frames it.
-fn h2_get_scenario(frames: usize) -> (Result<Got, OutOfMemory>, u64) {
+/// head of its status, length and `fields`, then body of `frames` DATA
+/// frames of 16 KiB, then its end, comes as the fake HTTP/2 library
+/// frames it.
+fn h2_get_scenario(frames: usize, fields: &str) -> (Result<Got, OutOfMemory>, u64) {
     static FAKE: curl_core::http2::fake::FakeH2 = curl_core::http2::fake::FakeH2;
     let (clock, net, talk, libraries) = track::untracked(|| {
         let chunk = vec![b'x'; 16 * 1024];
         let mut reply = format!(
-            "S\nH 1 0\n:status: 200\ncontent-length: {}\n\n",
+            "S\nH 1 0\n:status: 200\ncontent-length: {}\n{fields}\n",
             frames * chunk.len()
         )
         .into_bytes();
@@ -1179,8 +1185,8 @@ fn h2_request_sent(wire: &[u8]) -> Vec<u8> {
 /// their own: a 1 MiB body in 64 frames costs what one frame does
 /// (DESIGN.md, no allocation per chunk on the data path).
 fn an_http_2_body_s_frames_allocate_nothing() {
-    let (one, n1) = h2_get_scenario(1);
-    let (many, n64) = h2_get_scenario(64);
+    let (one, n1) = h2_get_scenario(1, "");
+    let (many, n64) = h2_get_scenario(64, "");
     let (one, many) = (
         one.expect("nothing refused"),
         many.expect("nothing refused"),
@@ -1191,6 +1197,32 @@ fn an_http_2_body_s_frames_allocate_nothing() {
         eprintln!("budget: an HTTP/2 GET made {n1} allocations, {n64} for 64 frames")
     });
     assert_eq!(n64, n1, "64 frames made {n64} allocations, one {n1}");
+}
+
+/// A response head's usual fields beside its status and length, as an
+/// Apache server sends them for a file.
+const H2_FIELDS: &str = "date: Sat, 07 Nov 2026 23:55:24 GMT\n\
+    server: Apache/2.4.69 (Fedora Linux) OpenSSL/3.5.9\n\
+    last-modified: Sat, 07 Nov 2026 23:36:43 GMT\n\
+    etag: \"2800-65fb8338e0d2c\"\n\
+    accept-ranges: bytes\n\
+    content-type: application/octet-stream\n";
+
+/// What a GET by HTTP/2's prior knowledge allocates over the fake
+/// library, its response's head of eight fields of a usual length.
+/// Measured, not itemised: the plain GET's own beside the session, its
+/// stream and the request's fields; the head's fields made into lines,
+/// read and stored grow none of their buffers.
+const H2_GET_BUDGET: u64 = 57;
+
+fn an_http_2_get_stays_within_its_allocation_budget() {
+    let (got, n) = h2_get_scenario(1, H2_FIELDS);
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    track::untracked(|| eprintln!("budget: an HTTP/2 GET of eight fields made {n} allocations"));
+    assert!(
+        n <= H2_GET_BUDGET,
+        "an HTTP/2 GET of eight fields made {n} allocations, over its {H2_GET_BUDGET}"
+    );
 }
 
 /// The trace's text, kept untracked: the test's, not the library's.
@@ -1981,7 +2013,7 @@ fn an_http3_get_takes_no_refusal_for_success() {
 /// theirs. Measured, not itemised: the HTTPS GET's own beside QUIC's
 /// connection, its HTTP/3 session and stream, and the room datagrams
 /// are read into.
-const H3_GET_BUDGET: u64 = 71;
+const H3_GET_BUDGET: u64 = 62;
 
 fn an_http3_get_stays_within_its_allocation_budget() {
     fake_h3_libraries();

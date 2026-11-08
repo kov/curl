@@ -404,8 +404,7 @@ fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
                 unlock: set.unlock,
                 user: set.user,
             };
-            let calls: Box<dyn ShareLock> = try_box(calls).map_err(|_| Refused::OutOfMemory)?;
-            Some(Handler::new(calls).map_err(|_| Refused::OutOfMemory)?)
+            Some(Handler::<dyn ShareLock>::new(calls, |b| b).map_err(|_| Refused::OutOfMemory)?)
         }
         _ => None,
     };

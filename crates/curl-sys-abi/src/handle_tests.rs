@@ -2402,14 +2402,10 @@ fn the_rare_adapters_make_their_group_only_when_set() {
     }
     let d = debug_count as DebugFn as *const ();
     let (set, n) = count_allocations(|| function(c, ffi::CURLOPT_DEBUGFUNCTION, d));
-    assert_eq!(
-        (set, n),
-        (CURLE_OK, 3),
-        "the group, the adapter and its count"
-    );
+    assert_eq!((set, n), (CURLE_OK, 2), "the group and the adapter");
     let t = trailers as TrailerFn as *const ();
     let (set, n) = count_allocations(|| function(c, ffi::CURLOPT_TRAILERFUNCTION, t));
-    assert_eq!((set, n), (CURLE_OK, 2), "the adapter and its count alone");
+    assert_eq!((set, n), (CURLE_OK, 1), "the adapter alone");
     assert!(options(c, |o| o.callbacks.rare.debug.is_some()
         && o.callbacks.rare.trailer.is_some()));
     // SAFETY: a live handle, not used again.
@@ -6493,7 +6489,8 @@ fn connect_to_and_resolve_entries_appended_after_the_option_are_used() {
 
 /// `CURLOPT_RESOLVE` keeps the application's list, as C keeps its
 /// pointer, and reads it only as the next transfer starts: setting it
-/// costs the handle the handler that walks the list, and no copy of it.
+/// costs the handle the handler that walks the list, its count with it,
+/// and no copy of it.
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn a_resolve_list_is_kept_not_copied() {
@@ -6502,7 +6499,7 @@ fn a_resolve_list_is_kept_not_copied() {
     let (set, made) =
         curl_alloc::track::count_allocations(|| pointer(c, ffi::CURLOPT_RESOLVE, list));
     assert_eq!(set, CURLE_OK);
-    assert_eq!(made, 2, "the source's box and its shared pointer");
+    assert_eq!(made, 1, "the source's handler and its count");
     // SAFETY: a live handle, not used again; then the list it kept.
     unsafe {
         curl_easy_cleanup(c);
@@ -7226,9 +7223,9 @@ fn a_handle_costs_no_more_than_cs() {
     // HSTS cache the handle uses are one value each (`JarUse`, `HstsUse`),
     // a tag beside the box of its own. A build with libssh2 has the SSH host
     // key function and its data on the shim, made when first set, as C has
-    // them only in that build. The trace's and the trailers' handlers,
-    // which few transfers set, are a group made when one is
-    // (`RareCallbacks`).
+    // them only in that build. A handler is two words, its count in the
+    // block with it; the trace's and the trailers', which few transfers
+    // set, are a group made when one is (`RareCallbacks`).
     let tripwire = if cfg!(feature = "libssh2") {
         2_160
     } else {
@@ -7239,9 +7236,9 @@ fn a_handle_costs_no_more_than_cs() {
         "a new handle holds {made_bytes} bytes"
     );
     assert!(held <= 3_081, "an added handle holds {held} bytes");
-    // The `Easy`, the shim's handle, the write adapter and its count, the
+    // The `Easy`, the shim's handle, the write adapter with its count, the
     // URL; then the slot, and the multi's tables as they grow.
-    assert_eq!(made.allocations, 5 * HANDLES as u64);
+    assert_eq!(made.allocations, 4 * HANDLES as u64);
     assert!(
         added.allocations <= (HANDLES + HANDLES / 10) as u64,
         "{} allocations",

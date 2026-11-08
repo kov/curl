@@ -8,8 +8,9 @@ use std::fmt;
 use std::io;
 use std::num::NonZeroUsize;
 use std::ops::{ControlFlow, Deref};
+use std::sync::atomic::AtomicUsize;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, SharedBlock, TryArc, TryVec as _};
 
 use crate::conn::io::{Socket, SocketKey, SocketOption};
 use crate::error::ErrorKind;
@@ -496,8 +497,9 @@ pub trait FnMatchHandler: Send + Sync {
     ) -> Result<Matched, OutOfMemory>;
 }
 
-/// A handler as a transfer holds it: shared by every copy of the `Easy`.
-pub struct Handler<T: ?Sized>(TryArc<Box<T>>);
+/// A handler as a transfer holds it: shared by every copy of the `Easy`,
+/// the count and the handler in one block.
+pub struct Handler<T: ?Sized>(TryArc<T>);
 
 /// Two handlers are equal if they are the same one.
 impl<T: ?Sized> PartialEq for Handler<T> {
@@ -509,9 +511,14 @@ impl<T: ?Sized> PartialEq for Handler<T> {
 impl<T: ?Sized> Eq for Handler<T> {}
 
 impl<T: ?Sized> Handler<T> {
-    /// A handler already boxed; `Handler::write` and the like box one.
-    pub fn new(handler: Box<T>) -> Result<Handler<T>, OutOfMemory> {
-        Ok(Handler(TryArc::try_new(handler)?))
+    /// `handler` made a `T` by `unsize`, which is `|b| b` for a trait it
+    /// implements (`TryArc::try_new_unsize`); `Handler::write` and the like
+    /// name the trait.
+    pub fn new<S>(
+        handler: S,
+        unsize: impl FnOnce(Box<SharedBlock<S, AtomicUsize>>) -> Box<SharedBlock<T, AtomicUsize>>,
+    ) -> Result<Handler<T>, OutOfMemory> {
+        Ok(Handler(TryArc::try_new_unsize(handler, unsize)?))
     }
 
     /// Whether `a` and `b` are the same handler.
@@ -522,13 +529,13 @@ impl<T: ?Sized> Handler<T> {
 
 impl Handler<dyn SocketCloser> {
     pub fn socket_closer(handler: impl SocketCloser + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn SocketOpener> {
     pub fn socket_opener(handler: impl SocketOpener + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
@@ -536,121 +543,121 @@ impl Handler<dyn SocketConfigurer> {
     pub fn socket_configurer(
         handler: impl SocketConfigurer + 'static,
     ) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn PrereqHandler> {
     pub fn prereq(handler: impl PrereqHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn SshKeyHandler> {
     pub fn ssh_key(handler: impl SshKeyHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn SshHostKeyHandler> {
     pub fn ssh_host_key(handler: impl SshHostKeyHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn ResolveStartHandler> {
     pub fn resolve_start(handler: impl ResolveStartHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn TlsContextHandler> {
     pub fn tls_context(handler: impl TlsContextHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn WriteHandler> {
     pub fn write(handler: impl WriteHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn HeaderHandler> {
     pub fn header(handler: impl HeaderHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn LentBytes> {
     pub fn lent(bytes: impl LentBytes + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(bytes)?)
+        Self::new(bytes, |b| b)
     }
 }
 
 impl Handler<dyn ReadHandler> {
     pub fn read(handler: impl ReadHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn ChunkBeginHandler> {
     pub fn chunk_begin(handler: impl ChunkBeginHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn ChunkEndHandler> {
     pub fn chunk_end(handler: impl ChunkEndHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn FnMatchHandler> {
     pub fn fnmatch(handler: impl FnMatchHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn TrailerHandler> {
     pub fn trailer(handler: impl TrailerHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn Rewind> {
     pub fn rewind(handler: impl Rewind + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn ProgressHandler> {
     pub fn progress(handler: impl ProgressHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn TextSink> {
     pub fn text(handler: impl TextSink + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn DebugHandler> {
     pub fn debug(handler: impl DebugHandler + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(handler)?)
+        Self::new(handler, |b| b)
     }
 }
 
 impl Handler<dyn crate::mime::MimeSource> {
     pub fn mime(source: impl crate::mime::MimeSource + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(source)?)
+        Self::new(source, |b| b)
     }
 }
 
 impl Handler<dyn LineSource> {
     pub fn lines(source: impl LineSource + 'static) -> Result<Self, OutOfMemory> {
-        Handler::new(try_box(source)?)
+        Self::new(source, |b| b)
     }
 }
 

@@ -88,15 +88,13 @@ pub trait HstsWriter: Send + Sync {
 
 impl crate::handler::Handler<dyn HstsReader> {
     pub fn hsts_reader(reader: impl HstsReader + 'static) -> Result<Self, OutOfMemory> {
-        let boxed: Box<dyn HstsReader> = curl_alloc::try_box(reader)?;
-        crate::handler::Handler::new(boxed)
+        Self::new(reader, |b| b)
     }
 }
 
 impl crate::handler::Handler<dyn HstsWriter> {
     pub fn hsts_writer(writer: impl HstsWriter + 'static) -> Result<Self, OutOfMemory> {
-        let boxed: Box<dyn HstsWriter> = curl_alloc::try_box(writer)?;
-        crate::handler::Handler::new(boxed)
+        Self::new(writer, |b| b)
     }
 }
 

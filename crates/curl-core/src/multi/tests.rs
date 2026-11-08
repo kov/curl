@@ -2770,11 +2770,11 @@ fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
     );
     assert_eq!(talk.received(), b"one");
     let locked = std::sync::Arc::default();
-    let sink: Box<dyn crate::handler::TextSink> = Box::new(SaysLocked {
+    let sink = crate::handler::Handler::text(SaysLocked {
         share: share.clone(),
         locked: std::sync::Arc::clone(&locked),
     });
-    e.options_mut().callbacks.failure = Some(crate::handler::Handler::new(sink).unwrap());
+    e.options_mut().callbacks.failure = Some(sink.unwrap());
     told.uses();
     assert_eq!(
         m.send_raw_for(&mut e, b"x", &mut |_, _| {}),

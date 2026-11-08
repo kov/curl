@@ -916,7 +916,7 @@ pub trait TextSink      { fn write(&self, text: &[u8]); }  // CURLOPT_STDERR; No
 pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, ends: Option<&Ends>) -> Result<(), Abort>; }
 pub trait Rewind        { fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>;
                           fn seek(&self, cx: &mut TransferCx<'_>, offset: u64) -> Result<(), SeekFailed>; } // default CantSeek
-pub struct Handler<T: ?Sized>(TryArc<Box<T>>);    // Clone shares it; Handler::write(h) etc. box one
+pub struct Handler<T: ?Sized>(TryArc<T>);   // Clone shares it; Handler::write(h) etc. make one block of count and handler
 pub trait MultiEvents<H: Host> {
     fn socket(&mut self, cx: &mut EventCx<'_, H>, who: TransferId, s: SocketKey,
               what: SocketWhat, assigned: Option<H::Socket>) -> Result<(), Abort>;
@@ -927,9 +927,10 @@ pub trait MultiEvents<H: Host> {
 }
 ```
 
-Handlers live in `Options::callbacks` as `Handler<dyn …>`; the debug and trailer handlers,
-which few transfers set, are a cold group of their own there (`Callbacks::rare`), so a handle
-without them carries one pointer for both. Shared: a copy of the options
+Handlers live in `Options::callbacks` as `Handler<dyn …>`, two words each, the handler in one
+block with its count; the debug and trailer handlers, which few transfers set, are a cold group
+of their own there (`Callbacks::rare`), so a handle without them carries one pointer for both.
+Shared: a copy of the options
 (`curl_easy_duphandle`) shares each handler, as C's copies share a callback and its userdata
 pointer. So a handler is called through `&self`, and every handler trait is `Send + Sync`: a
 copy of a handle sent to another thread calls the same handler, so its state is behind a lock

@@ -456,8 +456,7 @@ impl Told {
 
     /// It, as a handle holds it.
     pub(crate) fn handler(&self) -> crate::handler::Handler<dyn ShareLock> {
-        let watch: Box<dyn ShareLock> = Box::new(self.clone());
-        crate::handler::Handler::new(watch).unwrap()
+        crate::handler::Handler::<dyn ShareLock>::new(self.clone(), |b| b).unwrap()
     }
 
     /// The uses told of since last asked, each a lock and its unlock.
@@ -515,8 +514,7 @@ pub(crate) struct Emptying {
 impl Emptying {
     pub(crate) fn handler(told: &Told, kind: Kind) -> crate::handler::Handler<dyn ShareLock> {
         let told = told.clone();
-        let watch: Box<dyn ShareLock> = Box::new(Emptying { told, kind });
-        crate::handler::Handler::new(watch).unwrap()
+        crate::handler::Handler::<dyn ShareLock>::new(Emptying { told, kind }, |b| b).unwrap()
     }
 }
 

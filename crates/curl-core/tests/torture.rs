@@ -139,6 +139,7 @@ fn main() {
             "a_cold_group_is_made_or_refused_at_its_first_set",
             a_cold_group_is_made_or_refused_at_its_first_set,
         ),
+        ("a_handler_is_one_allocation", a_handler_is_one_allocation),
         (
             "a_file_part_s_long_name_is_read_without_a_copy",
             a_file_part_s_long_name_is_read_without_a_copy,
@@ -904,7 +905,7 @@ fn a_get_takes_no_refusal_for_success() {
 /// What a plain GET with a query allocates, from a new multi to its
 /// removal (`ENGINE.md` 8.1): the multi and its clock, shared with the
 /// QUIC connections it makes; the easy's URL, user agent and
-/// handlers; the transfer's place in the multi and its slot, boxed so
+/// handlers, each one block with its count; the transfer's place in the multi and its slot, boxed so
 /// the table's empty rows cost little, as C's hold pointers, and its
 /// place in the queue of those waiting for a connection (C's
 /// `multi->pending`), whose index of rows, as the multi's other sets of
@@ -918,7 +919,7 @@ fn a_get_takes_no_refusal_for_success() {
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 42;
+const GET_BUDGET: u64 = 40;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.
@@ -1201,7 +1202,7 @@ const H2_FIELDS: &str = "date: Sat, 07 Nov 2026 23:55:24 GMT\n\
 /// Measured, not itemised: the plain GET's own beside the session, its
 /// stream and the request's fields; the head's fields made into lines,
 /// read and stored grow none of their buffers.
-const H2_GET_BUDGET: u64 = 56;
+const H2_GET_BUDGET: u64 = 54;
 
 fn an_http_2_get_stays_within_its_allocation_budget() {
     let (got, n) = h2_get_scenario(1, H2_FIELDS);
@@ -1819,6 +1820,40 @@ fn a_cold_group_is_made_or_refused_at_its_first_set() {
     assert!(copy.login.user.is_none() && !copy.proxy.tunnel);
 }
 
+/// A handler is one block, its count with it, and a copy shares it; a
+/// refused block drops the handler it was to hold.
+fn a_handler_is_one_allocation() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    struct Counted(Arc<AtomicU32>);
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    impl WriteHandler for Counted {
+        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+            Write::Accepted
+        }
+    }
+    let drops = Arc::new(AtomicU32::new(0));
+    let (h, n) = track::count_allocations(|| Handler::write(Counted(Arc::clone(&drops))));
+    assert_eq!(n, 1, "the handler and its count");
+    let h = h.expect("memory");
+    let (copy, n) = track::count_allocations(|| h.clone());
+    assert_eq!(n, 0, "shared");
+    assert!(Handler::ptr_eq(&h, &copy));
+    drop(h);
+    drop(copy);
+    assert_eq!(drops.load(Ordering::Relaxed), 1, "dropped by the last");
+    let (h, refused) =
+        track::fail_after(0, || Handler::write(Counted(Arc::clone(&drops))).map(drop));
+    assert_eq!(
+        (h, refused, drops.load(Ordering::Relaxed)),
+        (Err(OutOfMemory), true, 2)
+    );
+}
+
 /// A file part's status is read by its name copied to the stack, as C's
 /// `stat` takes it: a name longer than std's 384-byte stack buffer would
 /// otherwise be copied to the heap by an allocation that cannot fail.
@@ -2048,7 +2083,7 @@ fn an_http3_get_takes_no_refusal_for_success() {
 /// connection, its HTTP/3 session and stream, the room datagrams are
 /// read into, and the group the trace's handler is kept in, which an
 /// untraced transfer does not make.
-const H3_GET_BUDGET: u64 = 62;
+const H3_GET_BUDGET: u64 = 60;
 
 fn an_http3_get_stays_within_its_allocation_budget() {
     fake_h3_libraries();

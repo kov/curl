@@ -51,9 +51,8 @@ fn lock_logged(e: &mut Easy) -> Seen {
     let seen = Seen::default();
     let share = crate::share::Share::new().unwrap();
     share.keep(crate::share::Kind::Names).unwrap();
-    let watch: Box<dyn crate::share::ShareLock> = Box::new(LockLog(seen.clone()));
-    e.set_share_watched(share, Handler::new(watch).unwrap())
-        .unwrap();
+    let watch = Handler::<dyn crate::share::ShareLock>::new(LockLog(seen.clone()), |b| b);
+    e.set_share_watched(share, watch.unwrap()).unwrap();
     seen
 }
 

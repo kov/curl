@@ -1663,9 +1663,15 @@ pub(crate) fn side_progress<H: Host>(
     progress: &Progress,
     dialed: impl FnOnce() -> Remote,
 ) {
+    if let Progress::Resolved(_) = progress {
+        // A resolve a library answered still arms it while its record is
+        // kept, as the transfer's own does.
+        cx.side_due.name = SideTimer::Clear;
+        side_answered_due(cx);
+    }
     let due = &mut cx.side_due;
     match *progress {
-        Progress::Resolved(_) => due.name = SideTimer::Clear,
+        Progress::Resolved(_) => {}
         Progress::Trying { until, .. }
         | Progress::Waiting { until }
         | Progress::Tunnel { until } => {
@@ -1742,6 +1748,15 @@ pub(crate) fn side_late_due<H: Host>(cx: &mut StepCx<'_, H>, late: &Late) {
     let left = crate::conn::ConnCx::await_resolve_left(&mut DriveCx::new(cx, None), now)
         .unwrap_or_default();
     side_name_due(cx, late.due(now, left), now, left);
+}
+
+/// What a resolve a library answered still asks of the name's timer while
+/// its record is kept, for a second connection holding no resolve.
+pub(crate) fn side_answered_due<H: Host>(cx: &mut StepCx<'_, H>) {
+    let now = cx.rest.clock.now();
+    let left = crate::conn::ConnCx::await_resolve_left(&mut DriveCx::new(cx, None), now)
+        .unwrap_or_default();
+    side_name_due(cx, None, now, left);
 }
 
 /// The same, for a second connection's `setup`.

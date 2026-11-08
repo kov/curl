@@ -2850,7 +2850,8 @@ discarded first lets go of it at once (`Late::end`), and one dropped otherwise a
 data connection does the same over its own chain: up before its TLS is made, it holds the
 resolve beside the connection (`LateName` in `proto/ftp/data.rs`), looked at first in each call
 of its connect and its sockets first in its pollset, until all of the chain connects, the TLS
-too. A race out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
+too; each call asks the name's timer for it, and for a record a library answered while it is
+kept, as the transfer's own setup does. A race out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
 synchronous resolver does; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
 

@@ -120,6 +120,7 @@ impl LateName {
                     Addresses::Unix => None,
                 };
                 crate::multi::state::side_resolved_at(cx, &self.route, answer, found);
+                crate::multi::state::side_answered_due(cx);
                 Ok(())
             }
             Ok(LateLook::Waiting) => {
@@ -530,14 +531,17 @@ impl DataConn {
     }
 
     /// The resolve of its name still going on, if it is, looked at: beside
-    /// its setup, or beside it up, its TLS still being made.
+    /// its setup, or beside it up, its TLS still being made. Each call asks
+    /// the name's timer for it, and for a resolve a library answered whose
+    /// record is still kept, as C's DNS filter does in each pollset
+    /// (`Curl_resolv_pollset`).
     fn look_at_late<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         match self.phase.as_mut() {
-            Some(Phase::Connecting(machine, _)) if machine.resolving() => {
+            Some(Phase::Connecting(machine, _)) => {
                 let polled = machine.poll_late(&mut DriveCx::new(cx, None));
                 match polled {
                     Ok(Some(found)) => crate::multi::state::side_resolved(cx, machine, found),
-                    Ok(None) => crate::multi::state::side_setup_due(cx, machine),
+                    Ok(None) => {}
                     Err(e) => {
                         let route = machine.route().clone();
                         if let Some(Phase::Connecting(machine, _)) = self.phase.take() {
@@ -546,6 +550,15 @@ impl DataConn {
                         return Err(crate::multi::state::connect_failed(cx, &route, e));
                     }
                 }
+                crate::multi::state::side_setup_due(cx, machine);
+                Ok(())
+            }
+            Some(Phase::Up {
+                late: None,
+                shaken: false,
+                ..
+            }) => {
+                crate::multi::state::side_answered_due(cx);
                 Ok(())
             }
             Some(Phase::Up {

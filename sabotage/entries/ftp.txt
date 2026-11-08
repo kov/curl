@@ -655,3 +655,27 @@ features: test-util
         report_resolved(cx, answer, route.destination().port());
 --- new
         let _ = answer;
+
+=== the data connection's racing setup does not look at its resolve
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_takes_an_answer_as_it_races
+features: test-util
+--- old
+                let polled = machine.poll_late(&mut DriveCx::new(cx, None));
+--- new
+                let polled: Result<Option<crate::conn::Found>, crate::conn::ConnectError> = Ok(None);
+
+=== the data connection's answered resolve stops arming the name's timer through its TLS
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_takes_an_answer_as_it_races
+features: test-util
+--- old
+                shaken: false,
+                ..
+            }) => {
+                crate::multi::state::side_answered_due(cx);
+--- new
+                shaken: false,
+                ..
+            }) => {
+                let _ = &cx;

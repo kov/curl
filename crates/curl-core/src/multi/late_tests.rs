@@ -697,17 +697,26 @@ struct FtpOverLibrary {
     data_fd: u64,
 }
 
+/// When the library's AAAA comes for an FTPS download's names.
+#[derive(Clone, Copy, PartialEq)]
+enum Aaaa {
+    Never,
+    /// As the data connection races, its first attempt waiting.
+    Racing,
+    /// During the data connection's TLS handshake.
+    Shaking,
+}
+
 /// An FTPS download of `ftps://ftp.example:8021/f` over `--connect-to
 /// ::late.test:8021`, both of its connections' names resolved by a
-/// resolver library whose AAAA comes once its gate opens: never if not
-/// `aaaa_meanwhile`, else during the data connection's TLS handshake,
-/// which the server holds. Its data peer accepts 50 ms after it is
-/// dialed. `held` is told, while the handshake is held, what was said,
+/// resolver library whose AAAA comes once its gate opens, as `aaaa`
+/// says; the server holds the data connection's TLS handshake. Its data
+/// peer accepts 50 ms after it is dialed. `held` is told, while the handshake is held, what was said,
 /// whether in each pass the data connection's resolve ran its socket was
 /// waited on and whether the TLS had started, and where in what was said
 /// the data connection was dialed and its TLS started.
 fn ftp_over_a_library(
-    aaaa_meanwhile: bool,
+    aaaa: Aaaa,
     held: impl FnOnce(&[String], &[(bool, bool)], usize, usize),
 ) -> FtpOverLibrary {
     let clock = ManualClock::new().unwrap();
@@ -803,6 +812,17 @@ fn ftp_over_a_library(
                 waited |= key == data_resolve && events.contains(Events::IN);
             })
             .unwrap();
+            let dialed = || {
+                lines
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|l| l == "  Trying 127.0.0.1:8022...")
+            };
+            if aaaa == Aaaa::Racing && dialed() {
+                gate.open();
+            }
             if made.load(Ordering::Relaxed) == 2 {
                 let shaking = !file.received().is_empty();
                 passes.push((waited, shaking));
@@ -818,7 +838,7 @@ fn ftp_over_a_library(
     let dialed = at(&said, 0, "  Trying 127.0.0.1:8022...");
     let shaking = shaking_from.get().expect("its TLS started");
     held(&said, &passes, dialed, shaking);
-    if aaaa_meanwhile {
+    if aaaa == Aaaa::Shaking {
         gate.open();
         run(&mut m, &mut passes);
     }
@@ -845,7 +865,7 @@ fn ftp_over_a_library(
 /// and said.
 #[test]
 fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
-    let ran = ftp_over_a_library(true, |said, passes, dialed, shaking| {
+    let ran = ftp_over_a_library(Aaaa::Shaking, |said, passes, dialed, shaking| {
         let armed = |lines: &[String]| {
             lines
                 .iter()
@@ -871,13 +891,40 @@ fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
     );
 }
 
+/// The data connection's resolve still going on as it races is looked at
+/// in each call of its connect, as the name's filter heading its chain
+/// looks (`cf_dns_connect`): AAAA answered meanwhile is taken and said
+/// before its TLS starts. Answered, the library's record still arms the
+/// name's timer through the TLS, until it goes as the chain connects, as
+/// C's c-ares channel arms it in each pollset while it is open
+/// (`Curl_async_pollset`).
+#[test]
+fn ftp_s_data_connection_takes_an_answer_as_it_races() {
+    let ran = ftp_over_a_library(Aaaa::Racing, |said, _, dialed, shaking| {
+        let host = at(said, dialed, "Host late.test:8022 was resolved.");
+        assert!(host < shaking, "before its TLS: {said:#?}");
+        assert!(
+            said[shaking..]
+                .iter()
+                .any(|l| l.starts_with("[TIMER] [ASYNC_NAME] set for ")),
+            "armed through its TLS: {said:#?}"
+        );
+    });
+    let said = &ran.said;
+    let connected = at(said, 0, "[DNS-1] connected filter chain below");
+    assert!(
+        said[connected + 1].ends_with("] destroy async"),
+        "{said:#?}"
+    );
+}
+
 /// The data connection's resolve still going on as all of its chain
 /// connects, its TLS too, goes with the name's filter: its library's
 /// socket closed right after its record's `destroy async`
 /// (`cf_dns_connect`'s `Curl_resolv_destroy`).
 #[test]
 fn ftp_s_data_connection_lets_go_of_its_late_resolve_as_its_chain_connects() {
-    let ran = ftp_over_a_library(false, |_, _, _, _| {});
+    let ran = ftp_over_a_library(Aaaa::Never, |_, _, _, _| {});
     let said = &ran.said;
     assert!(
         !said

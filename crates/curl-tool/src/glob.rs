@@ -3,6 +3,8 @@
 //! and the `#N` and `#<name>` references an output file name makes to
 //! them.
 
+use std::fmt::{self, Write as _};
+
 use curl_alloc::{OutOfMemory, TryVec as _, try_format};
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::url::{ParseOptions, Url};
@@ -272,7 +274,9 @@ impl Glob {
             }
         }
         self.started = true;
+        // Measured first, so made at once.
         let mut url = Vec::new();
+        url.try_reserve_exact(self.items.iter().map(|i| i.kind.len()).sum())?;
         for item in &self.items {
             item.kind.write(&mut url)?;
         }
@@ -364,14 +368,38 @@ impl Kind {
         false
     }
 
+    /// The length of the current text.
+    fn len(&self) -> usize {
+        match self {
+            Kind::Set { elems, at } => elems[*at].len(),
+            Kind::Letters { .. } => 1,
+            Kind::Numbers { at, pad, .. } => {
+                let digits = at
+                    .unsigned_abs()
+                    .checked_ilog10()
+                    .map_or(1, |d| d as usize + 1);
+                (digits + usize::from(*at < 0)).max(*pad)
+            }
+        }
+    }
+
     /// The current text, after what `out` holds.
     fn write(&self, out: &mut Vec<u8>) -> Result<(), OutOfMemory> {
         match self {
             Kind::Set { elems, at } => out.try_extend_from_slice(&elems[*at]),
             Kind::Letters { at, .. } => out.try_push(*at as u8),
             Kind::Numbers { at, pad, .. } => {
-                let text = try_format(format_args!("{at:0pad$}"))?;
-                out.try_extend_from_slice(text.as_bytes())
+                /// Formatting straight into `out`: an `i64` fails to
+                /// format only as `out` cannot grow.
+                struct Appending<'a>(&'a mut Vec<u8>);
+                impl fmt::Write for Appending<'_> {
+                    fn write_str(&mut self, s: &str) -> fmt::Result {
+                        self.0
+                            .try_extend_from_slice(s.as_bytes())
+                            .map_err(|OutOfMemory| fmt::Error)
+                    }
+                }
+                write!(Appending(out), "{at:0pad$}").map_err(|fmt::Error| OutOfMemory)
             }
         }
     }
@@ -660,6 +688,24 @@ mod tests {
             [format!("h/<{long}a>x")]
         );
         assert_eq!(all("h/{<>a}").0, ["h/<>a"]);
+    }
+
+    /// Each URL is measured before it is made, and measured as long as
+    /// it comes out, numbers crossing a power of ten or padded with zeros.
+    #[test]
+    fn measures_each_url_as_it_comes_out() {
+        for url in [
+            "h/[8-12]",
+            "h/[098-101]/{ab,c,}[x-z]",
+            "h/[0-0]",
+            "[99-100]",
+        ] {
+            let (mut glob, _) = Glob::parse(url.as_bytes()).unwrap();
+            while let Some(u) = glob.next_url().unwrap() {
+                let measured: usize = glob.items.iter().map(|i| i.kind.len()).sum();
+                assert_eq!(measured, u.len(), "{url}: {}", String::from_utf8_lossy(&u));
+            }
+        }
     }
 
     /// A URL may have 255 patterns, its fixed parts counted, and no more.

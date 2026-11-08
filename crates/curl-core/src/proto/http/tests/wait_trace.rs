@@ -233,6 +233,50 @@ fn a_transfer_run_by_events_is_traced_as_c() {
     );
 }
 
+/// A debug handler that turns its transfer's trace off once told of a
+/// socket the socket callback added, as a C debug callback's
+/// `curl_easy_setopt(CURLOPT_VERBOSE, 0L)` on the handle it was given.
+struct QuietOnSocket(Seen);
+
+impl crate::handler::DebugHandler for QuietOnSocket {
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        self.0.debug(cx, kind, data);
+        if data.starts_with(b"socket cb: socket 1000 ADDED") {
+            let me = cx.me();
+            cx.options_mut(me).unwrap().output.verbose = false;
+        }
+    }
+}
+
+/// A handler told of a socket change outside the transfer's step, by the
+/// socket callback's trace, changes the transfer's options as from inside
+/// one: its trace off, nothing more is said of it (C's debug callback is
+/// given the transfer's own handle there too).
+#[test]
+fn a_handler_told_of_a_socket_change_changes_its_transfer() {
+    let talk = Conversation::replies(&[OK], false);
+    let mut m = waking("one.example", &[(local(), Peer::Accepts)], &talk);
+    let mut e = tracing_wait();
+    let seen = Seen::default();
+    let o = e.options_mut();
+    let url = format!("http://one.example:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(QuietOnSocket(seen.clone())).unwrap());
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut Watching).unwrap();
+    let result = crate::multi::drive_by_events(&mut m, id).unwrap();
+    assert_eq!(result, Ok(()));
+    m.remove(id, &mut Watching).unwrap();
+    let text = seen.text();
+    let last = text.last().map(|l| l.trim_end().to_owned());
+    assert_eq!(
+        last.as_deref(),
+        Some("socket cb: socket 1000 ADDED as OUT"),
+        "{text:?}"
+    );
+}
+
 /// Through a proxy's tunnel: the wait for the answer to `CONNECT` is on
 /// the socket the handshake runs over, which waits to read as C's socket
 /// filter, connected but not yet in use, adds.

@@ -186,11 +186,11 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::doh_tests::a_socks_destination_goes_over_doh
 --- old
             Taken::Waiting(p) => {
-                d.target_late.0 = Some(p);
+                d.target_late = Some(p);
                 return Ok(false);
 --- new
             Taken::Waiting(p) => {
-                d.target_late.0 = Some(p);
+                d.target_late = Some(p);
                 return Ok(true);
 
 === a record for another port is followed

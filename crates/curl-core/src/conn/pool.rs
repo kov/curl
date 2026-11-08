@@ -79,26 +79,31 @@ impl ConnLease {
     }
 
     /// Move the connection's setup on by one event with `step`,
-    /// `ConnectMachine::drive` or one of its kind. A connection already up
-    /// says so.
+    /// `ConnectMachine::drive` or one of its kind, beside `name`, the
+    /// resolve of its first hop's name. A connection already up says so.
     pub(crate) fn connect(
         &mut self,
         cx: &mut dyn ConnCx,
         setup: DriveOptions,
-        step: impl FnOnce(ConnectMachine, &mut dyn ConnCx, DriveOptions) -> Result<Drove, ConnectError>,
+        name: &mut Late,
+        step: impl FnOnce(
+            ConnectMachine,
+            &mut dyn ConnCx,
+            DriveOptions,
+            &mut Late,
+        ) -> Result<Drove, ConnectError>,
     ) -> Result<Connected, ConnectError> {
         let number = self.number();
         let (slot, connected) = match std::mem::replace(self.slot_mut(), ConnSlot::Failed(number)) {
-            ConnSlot::Connecting(machine) => match step(machine, cx, setup) {
+            ConnSlot::Connecting(machine) => match step(machine, cx, setup, name) {
                 Ok(Drove::Connecting(m, progress)) => {
                     (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
                 }
-                Ok(Drove::Established(conn, late)) => {
+                Ok(Drove::Established(conn)) => {
                     let up = Connected::Established {
                         remote: conn.remote.clone().expect("set up over the network"),
                         local: conn.local(),
                         at: conn.connected_at,
-                        late,
                     };
                     (ConnSlot::Open(conn), Ok(up))
                 }
@@ -147,16 +152,14 @@ impl ConnLease {
         }
     }
 
-    /// A race's other attempt made the connection, `conn`, the resolve
-    /// it went on beside still going on in `late`, in place of the setup
-    /// the lease held, which is given back to go with the race, if it had
-    /// not failed.
-    pub(crate) fn adopt(&mut self, conn: Conn, late: Late) -> (Connected, Option<ConnectMachine>) {
+    /// A race's other attempt made the connection, `conn`, in place of
+    /// the setup the lease held, which is given back to go with the race,
+    /// if it had not failed.
+    pub(crate) fn adopt(&mut self, conn: Conn) -> (Connected, Option<ConnectMachine>) {
         let up = Connected::Established {
             remote: conn.remote.clone().expect("set up over the network"),
             local: conn.local(),
             at: conn.connected_at,
-            late,
         };
         let lost = match std::mem::replace(self.slot_mut(), ConnSlot::Open(conn)) {
             ConnSlot::Connecting(other) => Some(other),
@@ -179,12 +182,11 @@ impl ConnLease {
         else {
             panic!("{:?} is not setting up", self.id);
         };
-        let (conn, late) = machine.handshaken();
+        let conn = machine.handshaken();
         let up = Connected::Established {
             remote: conn.remote.clone().expect("set up over the network"),
             local: conn.local(),
             at: conn.connected_at,
-            late,
         };
         *self.slot_mut() = ConnSlot::Open(conn);
         up
@@ -567,14 +569,11 @@ pub(crate) enum Connected {
     /// Still setting up.
     Connecting(Progress),
     /// Up, from `local` to `remote`, found so at `at`: as the race is
-    /// won, or at the end of a proxy's handshake. The resolve of the first
-    /// hop's name still going on, if it is, is let go of as the chain
-    /// connects.
+    /// won, or at the end of a proxy's handshake.
     Established {
         remote: super::io::Remote,
         local: Option<SocketAddr>,
         at: Instant,
-        late: Late,
     },
     /// Up before this step: a reused connection, from `local` to
     /// `remote`.

@@ -1801,7 +1801,7 @@ announced to the socket callback first. A transfer whose receiving is paused is 
 **Two setups at once.** C's HTTPS connect filter races two ballers for an `https://` origin
 asking HTTP/3 (`cf_hc`; its lines are in §2.5). Here the first setup is the
 lease's machine; the second, made as the race starts it (as the first fails, or at the soft or
-hard ALPN eyeballs timeout), is `Race::second`, sharing the first's resolved answer. Each machine
+hard ALPN eyeballs timeout), is `Race::second`, both following the name's one resolve (`Connecting::name`). Each machine
 holds its own handshake, which goes with it. Both are driven the same
 way, in C's order (`cf_hc_connect`): the attempt leading (`Race::lead`, `Attempt::{First,
 Second}`) through its connect and then its handshakes, the other beside it as its turn comes
@@ -2850,24 +2850,26 @@ DoH variant, as C cannot wait for DoH: the lookup is started generic over its ba
 does (C's second DNS filter): its resolve is held by the dialed setup, the handshake,
 `Handshake::SocksTarget`, starting once it has answered. What a resolve has found while it goes
 on (`Resolver::partial`, DoH's and the threaded resolver's) is connected to once AAAA has answered
-or 25 ms have passed (`cf_dns_ready_to_connect`): the race holds the resolve (`Late`), its
-addresses growing as the queries answer. A race won keeps it until the setup's chain connects,
-as C's DNS filter keeps it until the chain below it does (`cf_dns_connect`'s
-`Curl_resolv_destroy`): the connection dialed for its handshakes holds it (`Dialed::late`), and
-one made at once hands it out with the connection (`Drove::Established`). Meanwhile it is looked
-at in each pass, its sockets in the pollset, and an answer that comes is kept and said, starting
-no attempt. The one exception: a first attempt that fails after it was dialed (its TLS, say)
-while the second still races is parked in `race.failed` holding the resolve, which is then not
-looked at, and the second, following the first's answers, does not see what comes after; C's one
-DNS filter above both attempts would hand it on. As the chain connects it is taken from the first attempt's machine, wherever that
-is (the winner, the second's loser, or kept as it failed), and let go of after its record's
-`destroy async`: a library's sockets said closed, DoH's `[DoH] probe done`. A setup closed or
-discarded first lets go of it at once (`Late::end`), and one dropped otherwise all the same. FTP's
-data connection does the same over its own chain: up before its TLS is made, it holds the
-resolve beside the connection (`LateName` in `proto/ftp/data.rs`), looked at first in each call
-of its connect and its sockets first in its pollset, until all of the chain connects, the TLS
-too; each call asks the name's timer for it, and for a record a library answered while it is
-kept, as the transfer's own setup does. A race out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
+or 25 ms have passed (`cf_dns_ready_to_connect`): the resolve goes on to the name's `Late`, its
+addresses growing as the queries answer. It is the setup's, not an attempt's, as C's one DNS
+filter heads the chain above the HTTPS connect filter and both its attempts: `Connecting::name`
+owns it, each attempt's machine is handed it by reference as it is driven
+(`ConnectMachine::drive`, `Eyeballs::follow`) and never holds it, so no attempt's failure,
+discard or win can take it from the other. It is looked at once in each pass whichever attempt
+leads or is left (`look_at_name`), its sockets first in the pollset and its due time on
+`AsyncName`; an answer that comes is kept and said, starting no attempt, and one the second
+attempt can still race to is raced to. Its failure fails the setup at once once the lead is
+dialed, as C's filter fails the connect it is in, and a racing lead's next drive otherwise. It
+is kept until the setup's chain connects, as C's DNS filter keeps it until the chain below it does
+(`cf_dns_connect`'s `Curl_resolv_destroy`), and let go of after its record's `destroy async`: a
+library's sockets said closed, DoH's `[DoH] probe done`. A transfer done without that connect
+carries it into `Done`, which ends it (`Late::end`) before the race's machines close, and it
+is let go of all the same if dropped. FTP's data connection does the same over its own chain:
+it owns its name's resolve beside its setup and its connection (`DataName` in
+`proto/ftp/data.rs`); up before its TLS is made, it keeps it, looked at first in each call of
+its connect and its sockets first in its pollset, until all of the chain connects, the TLS too;
+each call asks the name's timer for it, and for a record a library answered while it is kept,
+as the transfer's own setup does. A race out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
 synchronous resolver does; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
 
@@ -3034,13 +3036,13 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
 - **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
   on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
   first connect and its choice of attempts do not wait for A. The wait for AAAA runs on
-  `TimerKind::HappyEyeballs`, the resolve's next try on `AsyncName`. The race holds the resolve
-  still going on in its `Eyeballs`, and waits on it when it has nothing to try; a transfer timing
-  out then times out `Resolving`. What more it found is taken once in each connect call, after
-  the record's answer and before the HTTPS connect filter's own connect (`poll_late`), from the
-  first attempt whichever leads, as C's chain puts the name's DNS filter between the record's and
-  the HTTPS connect filter. A race's second attempt asks no resolver
-  of its own: before each drive it is given what the first's has found (`follow`).
+  `TimerKind::HappyEyeballs`, the resolve's next try on `AsyncName`. The name's `Late` holds the
+  resolve still going on, and a race waits on it when it has nothing to try; a transfer timing
+  out while it goes on times out `Resolving`, as C's per-connection `dns_resolved` says. What
+  more it found is taken once in each connect call, after the record's answer and before the
+  HTTPS connect filter's own connect (`look_at_name`), as C's chain puts the name's DNS filter
+  between the record's and the HTTPS connect filter. Neither attempt asks a resolver of its own:
+  before each drive it is given what the name has found (`Eyeballs::follow`).
 - **What C keeps of each resolve.** A resolve that does not answer at once (a library's, the
   threaded resolver's, DoH's, and the record's ask in builds that cannot answer it) gets a number
   from the multi (`ResolveCount` in `Caches`, C's `last_resolv_id`) and a record on the handle

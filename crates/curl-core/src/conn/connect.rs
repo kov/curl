@@ -97,12 +97,9 @@ pub(crate) struct Dialed {
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name.
     target: SocksTarget,
-    /// Its resolve, while it goes on: `target` then says nothing yet.
-    target_late: Late,
-    /// The first hop's own resolve, still going on as the race was won:
-    /// its answer is still taken until the setup's chain connects, when
-    /// it is let go of (`cf_dns_connect`'s `Curl_resolv_destroy`).
-    late: Late,
+    /// Its resolve, while it goes on (its own DNS filter's, below the
+    /// setup's): `target` then says nothing yet.
+    target_late: Option<Pending>,
     /// A SOCKS5 proxy on the way authenticated the user.
     socks5_authenticated: bool,
     /// The handshakes made over it so far.
@@ -252,9 +249,6 @@ struct Racing {
     /// Its first run was made (`cf_ip_happy_init`), whether or not it had
     /// an address to start.
     ran: bool,
-    /// How its resolve ended, if it failed as it was looked at before the
-    /// race's run, which fails with it.
-    resolve_failed: Option<ConnectError>,
     /// How the last attempt failed, while more addresses may come.
     last_failed: Option<(Option<io::Error>, ErrorKind)>,
     eyeballs: Eyeballs,
@@ -702,12 +696,10 @@ enum Candidate {
 #[derive(Debug)]
 struct Eyeballs {
     answer: Addresses,
-    /// The resolve still going on, while the race has only what came of
-    /// it so far (`Curl_resolv_get_ai`).
-    late: Late,
-    /// Another attempt's resolve is still going on, whose addresses this
-    /// one is given as they come: both ask one filter in C.
-    following: bool,
+    /// The name's resolve is still going on, the race having only what
+    /// came of it so far (`Curl_resolv_get_ai`): as the setup's [`Late`]
+    /// said as the race was last moved on.
+    resolving: bool,
     /// How many of each family's addresses were tried.
     v6: usize,
     v4: usize,
@@ -725,8 +717,7 @@ impl Eyeballs {
         };
         Eyeballs {
             answer,
-            late: Late::default(),
-            following: false,
+            resolving: false,
             v6: 0,
             v4: 0,
             last_v4: true,
@@ -737,7 +728,17 @@ impl Eyeballs {
 
     /// Whether a resolve still going on may give more addresses.
     fn coming(&self) -> bool {
-        self.late.0.is_some() || self.following
+        self.resolving
+    }
+
+    /// What the name's resolve, `name`, has found by now, and whether more
+    /// may come: every attempt of the setup asks the one DNS filter above
+    /// them (`Curl_conn_dns_get_ai`).
+    fn follow(&mut self, name: &Late) {
+        if let Some(answer) = name.answer() {
+            self.answer = Addresses::Resolved(answer.clone());
+        }
+        self.resolving = name.going();
     }
 
     /// The `n`th address of IPv6 if `v6`, else of IPv4.
@@ -946,9 +947,8 @@ impl RecordWait {
 pub(crate) enum Drove {
     /// Still setting up: drive it again when `wants` comes.
     Connecting(ConnectMachine, Progress),
-    /// The connection is up, with the resolve of its first hop's name
-    /// still going on, for its chain's connect to let go of.
-    Established(Conn, Late),
+    /// The connection is up.
+    Established(Conn),
 }
 
 /// Something a setup said, or nothing new.
@@ -1106,7 +1106,6 @@ impl ConnectMachine {
             created,
             stage: Stage::Racing(Racing {
                 ran: false,
-                resolve_failed: None,
                 last_failed: None,
                 eyeballs,
                 attempts: Vec::new(),
@@ -1163,13 +1162,15 @@ impl ConnectMachine {
         running.iter().map(|a| a.socket.socket()).chain(dialed)
     }
 
-    /// What the resolves under way wait for, whichever stage they are held in
-    /// (`Curl_async_pollset`).
+    /// What the resolves it holds wait for (`Curl_async_pollset`): its
+    /// name's before its race begins, and a SOCKS proxy's target's beside
+    /// its dialed connection. The name's resolve the race goes on beside is
+    /// the setup's [`Late`], not the machine's.
     pub(crate) fn resolve_wants(&self) -> impl Iterator<Item = (&dyn Socket, Events)> {
         let (pending, beside) = match &self.stage {
             Stage::Resolving(p) => (p.as_ref(), None),
-            Stage::Racing(r) => (r.eyeballs.late.0.as_ref(), None),
-            Stage::Dialed(d) => (d.late.0.as_ref(), d.target_late.0.as_ref()),
+            Stage::Racing(_) => (None, None),
+            Stage::Dialed(d) => (None, d.target_late.as_ref()),
         };
         [pending, beside]
             .into_iter()
@@ -1177,16 +1178,12 @@ impl ConnectMachine {
             .map(|(s, e)| (&**s, *e))
     }
 
-    /// When a resolve held beside the setup's race or dialed connection
-    /// wants to run again, the soonest, `left` the time it has.
+    /// When the SOCKS proxy's target's resolve, held beside the dialed
+    /// connection, wants to run again, `left` the time it has.
     pub(crate) fn resolve_due(&self, now: Instant, left: Duration) -> Option<Instant> {
         match &self.stage {
-            Stage::Dialed(d) => [&d.late, &d.target_late]
-                .into_iter()
-                .filter_map(|l| l.0.as_ref()?.due(now, left))
-                .min(),
-            Stage::Racing(r) => r.eyeballs.late.0.as_ref()?.due(now, left),
-            Stage::Resolving(_) => None,
+            Stage::Dialed(d) => d.target_late.as_ref()?.due(now, left),
+            Stage::Racing(_) | Stage::Resolving(_) => None,
         }
     }
 
@@ -1289,72 +1286,15 @@ impl ConnectMachine {
         }
     }
 
-    /// The addresses the name resolved to, once it has: held until the
-    /// setup is connected, fails or is given up, as C's DNS filter holds
-    /// its entry above the connect filters (`cf_dns`), the first hop
-    /// dialed or not.
-    /// A second attempt racing the addresses another's resolve found so
-    /// far, `resolving` if more may come: they ask one filter in C
-    /// (`Curl_conn_dns_get_ai`).
-    pub(crate) fn follow(&mut self, answer: TryArc<Answer>, resolving: bool) {
-        if let Stage::Racing(r) = &mut self.stage {
-            r.eyeballs.answer = Addresses::Resolved(answer);
-            r.eyeballs.following = resolving;
-        }
-    }
-
-    /// The resolve still going on beside the race, or beside the
-    /// connection it dialed, looked at, as C's DNS filter does above SETUP
-    /// until the chain below it connects (`cf_dns_connect`): what came
-    /// given to the race, and once it has all come, kept, and how it was
-    /// found. Once in each pass, before the setup is driven, so not in the
-    /// pass the race begins in. A race's failure fails its next drive; a
-    /// dialed connection's, as C's filter fails the connect it is in, is
-    /// the setup's at once.
-    pub(crate) fn poll_late(&mut self, cx: &mut dyn ConnCx) -> Result<Option<Found>, ConnectError> {
-        let (late, addresses, failed) = match &mut self.stage {
-            Stage::Racing(r) => (
-                &mut r.eyeballs.late,
-                &mut r.eyeballs.answer,
-                Some(&mut r.resolve_failed),
-            ),
-            Stage::Dialed(d) => (&mut d.late, &mut d.answer, None),
-            Stage::Resolving(_) => return Ok(None),
-        };
-        match late.poll(self.route.destination(), addresses, cx) {
-            Err(OutOfMemory) => Err(ConnectError::OutOfMemory),
-            Ok(LateLook::Waiting) => Ok(None),
-            Ok(LateLook::Found(found)) => Ok(Some(found)),
-            Ok(LateLook::Failed(e)) => match failed {
-                Some(failed) => {
-                    *failed = Some(e);
-                    Ok(None)
-                }
-                None => Err(e),
-            },
-        }
-    }
-
-    /// Whether the name's resolve has not ended (`bits.dns_resolved`): the
-    /// race, or the connection it dialed, may be going on what came of it
-    /// so far.
+    /// Whether the name is still to be resolved, its resolve not yet
+    /// handed to the setup's [`Late`] as the race begins.
     pub(crate) fn resolving(&self) -> bool {
-        match &self.stage {
-            Stage::Resolving(_) => true,
-            Stage::Racing(r) => r.eyeballs.late.0.is_some(),
-            Stage::Dialed(d) => d.late.0.is_some(),
-        }
+        matches!(self.stage, Stage::Resolving(_))
     }
 
-    /// The resolve still going on beside it, taken out to be let go of as
-    /// the chain connects: the setup goes with the race it lost, its
-    /// resolve with the chain's DNS filter.
-    pub(crate) fn take_late(&mut self) -> Late {
-        match &mut self.stage {
-            Stage::Racing(r) => std::mem::take(&mut r.eyeballs.late),
-            Stage::Dialed(d) => std::mem::take(&mut d.late),
-            Stage::Resolving(_) => Late::default(),
-        }
+    /// Whether it races, its first hop not yet dialed.
+    pub(crate) fn races(&self) -> bool {
+        matches!(self.stage, Stage::Racing(_))
     }
 
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
@@ -1410,9 +1350,8 @@ impl ConnectMachine {
         }
     }
 
-    /// The handshakes are made: the connection is up, with the resolve
-    /// still going on beside it, for its chain's connect to let go of.
-    pub(crate) fn handshaken(self) -> (Conn, Late) {
+    /// The handshakes are made: the connection is up.
+    pub(crate) fn handshaken(self) -> Conn {
         let Stage::Dialed(d) = self.stage else {
             panic!("no handshake is made");
         };
@@ -1430,7 +1369,7 @@ impl ConnectMachine {
             at,
         );
         conn.socks5_authenticated = d.socks5_authenticated;
-        (conn, d.late)
+        conn
     }
 
     /// The proxy closed the connection as it asked for credentials: the
@@ -1461,14 +1400,10 @@ impl ConnectMachine {
         );
         self.stage = Stage::Racing(Racing {
             ran: false,
-            resolve_failed: None,
             last_failed: None,
-            eyeballs: Eyeballs {
-                // The name's filter, above the chain started over, goes on
-                // resolving.
-                late: d.late,
-                ..Eyeballs::new(d.answer, self.route.ip)
-            },
+            // The name's filter, above the chain started over, goes on
+            // resolving: the race follows it again as it is next driven.
+            eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
             last_start: None,
             target: match d.target {
@@ -1479,11 +1414,15 @@ impl ConnectMachine {
         true
     }
 
-    /// Move the setup on by one event.
+    /// Move the setup on by one event, `name` the resolve of its first
+    /// hop's name the setup goes on beside, which the machine never holds:
+    /// it hands it there as its race begins on part of the answer, and its
+    /// race follows it from then on.
     pub(crate) fn drive(
         mut self,
         cx: &mut dyn ConnCx,
         setup: DriveOptions,
+        late: &mut Late,
     ) -> Result<Drove, ConnectError> {
         let now = cx.now();
         let delay = setup.delay;
@@ -1578,13 +1517,15 @@ impl ConnectMachine {
                                     } else {
                                         let answer = part.answer(name, p.family).map_err(oom)?;
                                         let mut eyeballs = Eyeballs::new(
-                                            Addresses::Resolved(answer),
+                                            Addresses::Resolved(answer.clone()),
                                             self.route.ip,
                                         );
-                                        eyeballs.late = Late(Some(p));
+                                        // The rest is the name's filter's,
+                                        // above the setup.
+                                        late.begin(p, answer).map_err(oom)?;
+                                        eyeballs.follow(late);
                                         self.stage = Stage::Racing(Racing {
                                             ran: false,
-                                            resolve_failed: None,
                                             last_failed: None,
                                             eyeballs,
                                             attempts: Vec::new(),
@@ -1611,7 +1552,6 @@ impl ConnectMachine {
                 }
                 self.stage = Stage::Racing(Racing {
                     ran: false,
-                    resolve_failed: None,
                     last_failed: None,
                     eyeballs,
                     attempts: Vec::new(),
@@ -1621,9 +1561,10 @@ impl ConnectMachine {
                 return Ok(Drove::Connecting(self, Progress::Resolved(found)));
             }
             Stage::Racing(r) => {
-                if let Some(e) = r.resolve_failed.take() {
+                if let Some(e) = late.take_failure() {
                     return Err(e);
                 }
+                r.eyeballs.follow(late);
                 r
             }
             Stage::Dialed(_) => unreachable!("a dialed setup is driven by its handshakes"),
@@ -1657,7 +1598,7 @@ impl ConnectMachine {
             r.eyeballs.more_asked(cx, of);
             // The resolve's own timer, not the race's: the race has
             // nothing to start (`cf_ip_ballers_run`).
-            let progress = match &r.eyeballs.late.0 {
+            let progress = match late.pending() {
                 Some(p) => Progress::Resolving {
                     retry: p.due(now, cx.await_resolve_left(p.asked).unwrap_or_default()),
                     aaaa: None,
@@ -2295,9 +2236,6 @@ impl ConnectMachine {
                 .map(|at| at.after(setup.delay));
             return Ok(Drove::Connecting(self, Progress::Tunnel { until }));
         }
-        // What is still to come of the name is taken until the chain
-        // connects, the race over: it starts no attempt.
-        let late = std::mem::take(&mut r.eyeballs.late);
         cx.of(
             Component::HappyEyeballs,
             format_args!("connect attempt #{i} successful"),
@@ -2369,7 +2307,6 @@ impl ConnectMachine {
                 answer,
                 target,
                 target_late,
-                late,
                 socks5_authenticated: false,
                 made,
                 // With no proxy's handshake to make first, the stage is
@@ -2405,7 +2342,7 @@ impl ConnectMachine {
         if self.dial == super::Dial::Udp {
             let datagrams = Transport::Datagram(super::Datagrams::new(won.socket));
             let conn = Self::conn(made, datagrams, won.remote, at);
-            return Ok(Drove::Established(conn, late));
+            return Ok(Drove::Established(conn));
         }
         let Some(h3) = h3 else {
             #[cfg_attr(
@@ -2423,7 +2360,7 @@ impl ConnectMachine {
                 stream.layers_mut().push(layer).expect("a test's memory");
             }
             let conn = Self::conn(made, Transport::Stream(stream), won.remote, at);
-            return Ok(Drove::Established(conn, late));
+            return Ok(Drove::Established(conn));
         };
         // QUIC dialed straight to its peer: its datagrams go to the socket
         // with nothing between, a test's layers over a stream alone.
@@ -2434,7 +2371,7 @@ impl ConnectMachine {
         let datagrams = Transport::Datagram(super::Datagrams::new(won.socket));
         let mut conn = Self::conn(made, datagrams, won.remote, at);
         conn.put_h3(h3);
-        Ok(Drove::Established(conn, late))
+        Ok(Drove::Established(conn))
     }
 
     /// The tunnels through an HTTP/3 proxy its race's attempts make,
@@ -2467,11 +2404,13 @@ impl ConnectMachine {
     }
 
     /// Attempt `i`'s tunnel failed with `kind`, traced: it goes, and the
-    /// race goes on while another runs or an address is left
-    /// (`cf_ip_ballers_run` discarding a failed baller).
+    /// race goes on while another runs or an address is left, or more may
+    /// come of `late`, the name's resolve (`cf_ip_ballers_run` discarding a
+    /// failed baller).
     pub(crate) fn tunnel_failed(
         mut self,
         cx: &mut dyn ConnCx,
+        late: &Late,
         i: usize,
         kind: ErrorKind,
     ) -> Result<Drove, ConnectError> {
@@ -2480,6 +2419,7 @@ impl ConnectMachine {
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("a tunnel is an attempt of a race");
         };
+        r.eyeballs.follow(late);
         r.attempts.remove(i).discard(cx, component);
         r.failed(cx, of, None, kind)
             .map(|p| Drove::Connecting(self, p))
@@ -2500,27 +2440,27 @@ impl ConnectMachine {
         cx: &mut dyn ConnCx,
         setup: DriveOptions,
         kept: Option<SocksTarget>,
-    ) -> Result<(SocksTarget, Late), ConnectError> {
+    ) -> Result<(SocksTarget, Option<Pending>), ConnectError> {
         if let Some(kept) = kept {
-            return Ok((kept, Late::default()));
+            return Ok((kept, None));
         }
         let Some(leg) = self.route.socks() else {
-            return Ok((SocksTarget::None, Late::default()));
+            return Ok((SocksTarget::None, None));
         };
         if !leg.version.resolves_locally() {
-            return Ok((SocksTarget::None, Late::default()));
+            return Ok((SocksTarget::None, None));
         }
         let family = family(leg.version.ip(self.route.ip), cx);
         let at = (leg.to.name(), leg.to.port());
         match lookup_start(at, family, cx, setup, true, Holder::Target) {
             Ok(Looked::Found(answer, _)) => {
                 cx.hold(Holder::Target);
-                Ok((SocksTarget::Found(answer), Late::default()))
+                Ok((SocksTarget::Found(answer), None))
             }
             // As the proxy's own name's, its answer comes later.
-            Ok(Looked::Pending(p)) => Ok((SocksTarget::None, Late(Some(p)))),
+            Ok(Looked::Pending(p)) => Ok((SocksTarget::None, Some(p))),
             // The SOCKS handshake says the name failed, whatever the why.
-            Err(ConnectError::Unresolved(_)) => Ok((SocksTarget::Unresolved, Late::default())),
+            Err(ConnectError::Unresolved(_)) => Ok((SocksTarget::Unresolved, None)),
             Err(e) => Err(e),
         }
     }
@@ -2531,14 +2471,14 @@ impl ConnectMachine {
         let Stage::Dialed(d) = &mut self.stage else {
             panic!("a handshake goes over a dialed connection");
         };
-        let Some(p) = d.target_late.0.take() else {
+        let Some(p) = d.target_late.take() else {
             return Ok(true);
         };
         let leg = self.route.socks().expect("through a SOCKS proxy");
         let at = (leg.to.name(), leg.to.port());
         let done = match p.take(at, cx) {
             Taken::Waiting(p) => {
-                d.target_late.0 = Some(p);
+                d.target_late = Some(p);
                 return Ok(false);
             }
             Taken::Done(done) => done,
@@ -2620,12 +2560,10 @@ impl ConnectMachine {
                 for a in r.attempts.drain(..) {
                     a.discard(cx, component);
                 }
-                r.eyeballs.late.end();
             }
             Stage::Dialed(mut d) => {
                 discard(cx, component, d.stream.into_socket());
-                d.late.end();
-                d.target_late.end();
+                d.target_late = None;
             }
             stage @ Stage::Resolving(_) => ConnectMachine { stage, ..self }.close(cx.net()),
         }
@@ -2637,13 +2575,9 @@ impl ConnectMachine {
             Stage::Resolving(None) => {}
             // Its answer, if it comes, is not wanted.
             Stage::Resolving(Some(p)) => drop(p),
-            Stage::Racing(mut r) => {
-                r.eyeballs.late.end();
-                r.close_all(net);
-            }
+            Stage::Racing(mut r) => r.close_all(net),
             Stage::Dialed(mut d) => {
-                d.late.end();
-                d.target_late.end();
+                d.target_late = None;
                 net.close(d.stream.into_socket());
             }
         }
@@ -3626,10 +3560,30 @@ struct Queried {
     v4: bool,
 }
 
-/// A resolve the setup goes on beside, let go of as the setup's chain
+/// The resolve of a setup's first hop's name, still going on as its race
+/// began on part of the answer: the name's DNS filter, which C's chain
+/// holds above the setup and, for an HTTPS connect filter's race, above
+/// both its attempts (`cf_dns`). Whoever sets the connection up holds it,
+/// beside the attempts, which follow what it finds as they are driven
+/// and never hold it themselves; it is let go of as the setup's chain
 /// connects, as it is closed or discarded, or with whatever drops it.
+///
+/// Held apart from its holder, as only a setup whose resolve answers in
+/// parts has one, the transfer's slot holding a pointer.
 #[derive(Debug, Default)]
-pub(crate) struct Late(Option<Pending>);
+pub(crate) struct Late(Option<Box<Going>>);
+
+/// A resolve the setup goes on beside.
+#[derive(Debug)]
+struct Going {
+    /// The resolve, while it goes on.
+    pending: Option<Pending>,
+    /// What came of it so far, or all of it once it has come: the
+    /// addresses the attempts race.
+    answer: TryArc<Answer>,
+    /// How it failed, for the next drive of a race to fail with.
+    failed: Option<ConnectError>,
+}
 
 /// What a look at a [`Late`] resolve came to.
 #[derive(Debug)]
@@ -3643,52 +3597,88 @@ pub(crate) enum LateLook {
 }
 
 impl Late {
+    /// `p` goes on, the race beginning on `answer`, part of its answer.
+    fn begin(&mut self, p: Pending, answer: TryArc<Answer>) -> Result<(), OutOfMemory> {
+        assert!(!self.going(), "one resolve for the name");
+        let going = Going {
+            pending: Some(p),
+            answer,
+            failed: None,
+        };
+        self.0 = Some(curl_alloc::try_box(going)?);
+        Ok(())
+    }
+
+    fn pending(&self) -> Option<&Pending> {
+        self.0.as_ref()?.pending.as_ref()
+    }
+
     /// Not wanted: let go of now, where C destroys it.
-    fn end(&mut self) {
-        self.0 = None;
+    pub(crate) fn end(&mut self) {
+        if let Some(going) = &mut self.0 {
+            going.pending = None;
+        }
     }
 
     /// Whether a resolve is still going on.
     pub(crate) fn going(&self) -> bool {
-        self.0.is_some()
+        self.pending().is_some()
+    }
+
+    /// What has come of it, if it began.
+    pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
+        self.0.as_ref().map(|going| &going.answer)
+    }
+
+    /// How it failed, if a race's drive is to fail with it now.
+    fn take_failure(&mut self) -> Option<ConnectError> {
+        self.0.as_mut()?.failed.take()
     }
 
     /// Looked at, as the DNS filter for `peer` looks at its resolve until
     /// the chain below it connects (`cf_dns_connect`): what has come so
-    /// far put in `addresses`, and once all of it has, kept, the resolve
-    /// let go of, and how it was found said; or how the resolve failed,
-    /// which is the caller's to weigh. Too little memory to take what came
-    /// is the error.
+    /// far kept for the attempts, and once all of it has, the resolve let
+    /// go of, and how it was found said; or how the resolve failed, which
+    /// is the caller's to weigh. Too little memory to take what came is
+    /// the error.
     pub(crate) fn poll(
         &mut self,
         peer: &super::Peer,
-        addresses: &mut Addresses,
         cx: &mut dyn ConnCx,
     ) -> Result<LateLook, OutOfMemory> {
-        let Some(p) = self.0.take() else {
+        let Some(going) = self.0.as_deref_mut() else {
+            return Ok(LateLook::Waiting);
+        };
+        let Some(p) = going.pending.take() else {
             return Ok(LateLook::Waiting);
         };
         let (name, port) = (peer.name(), peer.port());
         let mut p = match p.take((name, port), cx) {
             Taken::Done(Ok((answer, found))) => {
                 cx.hold(Holder::Addresses(cx.rank()));
-                *addresses = Addresses::Resolved(answer);
+                going.answer = answer;
                 return Ok(LateLook::Found(found));
             }
             Taken::Done(Err(e)) => return Ok(LateLook::Failed(e)),
             Taken::Waiting(p) => p,
         };
         if let Some(part) = p.partial()? {
-            *addresses = Addresses::Resolved(part.answer(name, p.family)?);
+            going.answer = part.answer(name, p.family)?;
         }
-        self.0 = Some(p);
+        going.pending = Some(p);
         Ok(LateLook::Waiting)
+    }
+
+    /// It failed with `e`, which the race's next drive fails with, as C's
+    /// filter fails the connect it is in (`cf_dns_connect`).
+    pub(crate) fn fail_race(&mut self, e: ConnectError) {
+        let going = self.0.as_mut().expect("only a resolve that went on fails");
+        going.failed = Some(e);
     }
 
     /// What its library waits on.
     pub(crate) fn wants(&self) -> impl Iterator<Item = (&dyn Socket, Events)> {
-        self.0
-            .as_ref()
+        self.pending()
             .map_or(&[][..], Pending::wants)
             .iter()
             .map(|(s, e)| (&**s, *e))
@@ -3696,7 +3686,7 @@ impl Late {
 
     /// When it wants to be looked at again, `left` the time it has.
     pub(crate) fn due(&self, now: Instant, left: Duration) -> Option<Instant> {
-        self.0.as_ref()?.due(now, left)
+        self.pending()?.due(now, left)
     }
 
     /// Let go of as the chain of the setup it went on beside connects,
@@ -3704,7 +3694,7 @@ impl Late {
     /// a library's sockets say they close, and DoH's probes that they are
     /// done (`doh_close`).
     pub(crate) fn chain_connected(self, cx: &mut dyn ConnCx) {
-        let Some(p) = self.0 else {
+        let Some(p) = self.0.and_then(|going| going.pending) else {
             return;
         };
         let doh = p.over_doh();
@@ -4633,17 +4623,9 @@ mod tests {
         }
     }
 
-    /// A race expects more addresses only while a resolve goes on, its own
-    /// or the one it follows: with neither it is out of addresses at once,
-    /// not waiting for some that never come.
-    #[test]
-    fn more_addresses_are_coming_only_while_a_resolve_goes_on() {
-        let mut e = Eyeballs::new(Addresses::Unix, IpVersion::Any);
-        assert!(!e.coming(), "nothing goes on");
-        e.following = true;
-        assert!(e.coming(), "the first attempt's resolve goes on");
-        e.following = false;
-        e.late = Late(Some(Pending {
+    /// A resolve of the name that never answers.
+    fn unanswered() -> Pending {
+        Pending {
             via: Via::Resolver(Box::new(Unanswered)),
             family: Family::Any,
             found: Found::Resolved,
@@ -4658,8 +4640,31 @@ mod tests {
                 max_age: None,
             },
             live: None,
-        }));
-        assert!(e.coming(), "its own goes on");
+        }
+    }
+
+    /// The name's resolve, going on with `answer` found so far, or ended
+    /// with it.
+    fn name_with(answer: TryArc<Answer>, going: bool) -> Late {
+        Late(Some(Box::new(Going {
+            pending: going.then(unanswered),
+            answer,
+            failed: None,
+        })))
+    }
+
+    /// A race expects more addresses only while the name's resolve it
+    /// follows goes on: with none it is out of addresses at once, not
+    /// waiting for some that never come.
+    #[test]
+    fn more_addresses_are_coming_only_while_a_resolve_goes_on() {
+        let mut e = Eyeballs::new(Addresses::Unix, IpVersion::Any);
+        assert!(!e.coming(), "nothing goes on");
+        let answer = TryArc::try_new(Answer::new(b"abc.test", Vec::new()).unwrap()).unwrap();
+        e.follow(&name_with(answer.clone(), true));
+        assert!(e.coming(), "the name's resolve goes on");
+        e.follow(&name_with(answer, false));
+        assert!(!e.coming(), "the name's resolve ended");
     }
     use crate::conn::io::{FakeNet, Peer as FakePeer};
     use crate::conn::{Peer, Scheme};
@@ -4719,28 +4724,30 @@ mod tests {
         };
         let mut dns = DnsCache::default();
 
-        let mut m = machine();
-        m.follow(answer(Vec::new()), true);
+        let m = machine();
+        let mut name = name_with(answer(Vec::new()), true);
         let mut cx = Plain {
             net: &mut net,
             dns: &mut dns,
             now: clock.now(),
         };
-        let Ok(Drove::Connecting(mut m, Progress::Waiting { until: None })) =
-            m.drive(&mut cx, setup())
+        let Ok(Drove::Connecting(m, Progress::Resolving { .. })) =
+            m.drive(&mut cx, setup(), &mut name)
         else {
             panic!("it waits for what comes");
         };
-        m.follow(answer(vec![at.ip()]), true);
-        let Ok(Drove::Connecting(m, Progress::Trying { .. })) = m.drive(&mut cx, setup()) else {
+        let mut name = name_with(answer(vec![at.ip()]), true);
+        let Ok(Drove::Connecting(m, Progress::Trying { .. })) =
+            m.drive(&mut cx, setup(), &mut name)
+        else {
             panic!("it starts on what came");
         };
         m.close(cx.net);
 
-        let mut m = machine();
-        m.follow(answer(Vec::new()), false);
+        let m = machine();
+        let mut name = name_with(answer(Vec::new()), false);
         assert!(matches!(
-            m.drive(&mut cx, setup()),
+            m.drive(&mut cx, setup(), &mut name),
             Err(ConnectError::Failed(None, ErrorKind::CouldntConnect))
         ));
     }
@@ -4778,7 +4785,6 @@ mod tests {
         );
         m.stage = Stage::Racing(Racing {
             ran: false,
-            resolve_failed: None,
             last_failed: None,
             eyeballs: Eyeballs::new(
                 Addresses::Resolved(
@@ -4814,7 +4820,7 @@ mod tests {
                 dns: &mut DnsCache::default(),
                 now: clock.now(),
             };
-            match m.drive(&mut cx, setup) {
+            match m.drive(&mut cx, setup, &mut Late::default()) {
                 Ok(Drove::Connecting(next, progress)) => {
                     m = next;
                     raced.most_running = raced.most_running.max(m.sockets().count());
@@ -4839,7 +4845,7 @@ mod tests {
                         Progress::Dialed | Progress::Tunnel { .. } => unreachable!("no proxy"),
                     }
                 }
-                Ok(Drove::Established(conn, _)) => panic!("{conn:?}"),
+                Ok(Drove::Established(conn)) => panic!("{conn:?}"),
                 Err(ConnectError::Failed(..)) => {
                     raced.failed_at = ms;
                     assert_eq!(net.open_sockets(), 0, "every attempt closed");
@@ -4891,7 +4897,7 @@ mod tests {
             dns: &mut DnsCache::default(),
             now: clock.now(),
         };
-        let m = match m.drive(&mut cx, setup) {
+        let m = match m.drive(&mut cx, setup, &mut Late::default()) {
             // Looked at again as its time runs out, as C's threaded
             // resolver arms its timer (`Curl_async_pollset`).
             Ok(Drove::Connecting(m, Progress::Resolving { retry: Some(_), .. })) => m,
@@ -4965,11 +4971,11 @@ mod tests {
                     dns: &mut dns,
                     now: clock.now(),
                 };
-                match m
-                    .take()
-                    .expect("driven while it sets up")
-                    .drive(&mut cx, setup)
-                {
+                match m.take().expect("driven while it sets up").drive(
+                    &mut cx,
+                    setup,
+                    &mut Late::default(),
+                ) {
                     Ok(Drove::Connecting(next, Progress::Trying { .. })) => {
                         m = Some(next);
                         break;
@@ -5053,13 +5059,14 @@ mod tests {
         assert_eq!(net.resolving(), 0);
     }
 
-    /// A race begun on what AAAA answered, once it connects, hands the
-    /// resolve still waiting for A out with its connection, for the chain's
-    /// connect to let go of (`cf_dns_connect`'s `Curl_resolv_destroy`):
-    /// until then the resolver keeps it, and once let go of, forgets it
-    /// rather than answering a setup that is gone.
+    /// A race begun on what AAAA answered hands the resolve still waiting
+    /// for A to the name's filter above it, and holds none of it: once the
+    /// race connects, the name's still has it, for the chain's connect to
+    /// let go of (`cf_dns_connect`'s `Curl_resolv_destroy`). Until then the
+    /// resolver keeps it, and once let go of, forgets it rather than
+    /// answering a setup that is gone.
     #[test]
-    fn a_race_connected_hands_out_the_resolve_still_going_on() {
+    fn a_race_connected_leaves_the_resolve_to_the_name() {
         let clock = ManualClock::new().unwrap();
         let late = crate::conn::io::Late::new();
         let up: SocketAddr = "[::1]:5".parse().unwrap();
@@ -5086,6 +5093,7 @@ mod tests {
             ConnSettings::DEFAULT,
         );
         let mut dns = DnsCache::default();
+        let mut name = Late::default();
         let mut raced = false;
         let conn = loop {
             let setup = DriveOptions {
@@ -5103,10 +5111,10 @@ mod tests {
                 dns: &mut dns,
                 now: clock.now(),
             };
-            match m.drive(&mut cx, setup).unwrap() {
+            match m.drive(&mut cx, setup, &mut name).unwrap() {
                 Drove::Connecting(next, progress) => {
                     m = next;
-                    raced |= m.resolving() && matches!(m.stage, Stage::Racing(_));
+                    raced |= name.going() && m.races();
                     match progress {
                         Progress::Waiting { .. } | Progress::Resolving { .. } => {
                             clock.advance(Duration::from_millis(1));
@@ -5114,15 +5122,14 @@ mod tests {
                         _ => {}
                     }
                 }
-                Drove::Established(conn, late) => break (conn, late),
+                Drove::Established(conn) => break conn,
             }
         };
-        let (conn, late) = conn;
         assert!(raced, "the race began while A was awaited");
         assert_eq!(conn.remote, Some(Remote::Inet(up)));
-        assert!(late.going(), "handed out");
+        assert!(name.going(), "the name's");
         assert_eq!(net.resolving(), 1, "still asked for");
-        drop(late);
+        drop(name);
         assert_eq!(net.resolving(), 0, "the resolve was cancelled");
         let Transport::Stream(stream) = conn.transport else {
             panic!("over the network");
@@ -5131,8 +5138,8 @@ mod tests {
     }
 
     /// A setup to `late.test` driven until its race has begun on what
-    /// AAAA answered, A still awaited.
-    fn racing_while_a_is_awaited() -> (ConnectMachine, FakeNet, DnsCache, ManualClock) {
+    /// AAAA answered, A still awaited by the name's resolve.
+    fn racing_while_a_is_awaited() -> (ConnectMachine, Late, FakeNet, DnsCache, ManualClock) {
         let clock = ManualClock::new().unwrap();
         let late = crate::conn::io::Late::new();
         let up: SocketAddr = "[::1]:5".parse().unwrap();
@@ -5169,15 +5176,16 @@ mod tests {
             layer: None,
             linger: None,
         };
+        let mut name = Late::default();
         let m = loop {
             let mut cx = Plain {
                 net: &mut net,
                 dns: &mut dns,
                 now: clock.now(),
             };
-            match m.drive(&mut cx, setup).unwrap() {
+            match m.drive(&mut cx, setup, &mut name).unwrap() {
                 Drove::Connecting(next, _) => {
-                    if next.resolving() && matches!(next.stage, Stage::Racing(_)) {
+                    if name.going() && next.races() {
                         break next;
                     }
                     m = next;
@@ -5187,32 +5195,38 @@ mod tests {
             }
         };
         assert_eq!(net.resolving(), 1, "A is awaited");
-        (m, net, dns, clock)
+        (m, name, net, dns, clock)
     }
 
     /// A race begun on what AAAA answered, discarded while A is still
-    /// awaited, as the setup's other race's win discards it, lets go of the
-    /// resolve in the resolver: none is left to answer a setup that is
-    /// gone (`Curl_resolv_destroy`).
+    /// awaited, as an HTTPS race's other attempt's win or its own failure
+    /// discards it, leaves the resolve to the name's filter above it, for
+    /// the attempt still racing to follow; the name's let go of, the
+    /// resolver forgets it, none left to answer a setup that is gone
+    /// (`Curl_resolv_destroy`).
     #[test]
-    fn a_race_discarded_cancels_the_resolve_still_going_on() {
-        let (m, mut net, mut dns, clock) = racing_while_a_is_awaited();
+    fn a_race_discarded_leaves_the_resolve_to_the_name() {
+        let (m, mut name, mut net, mut dns, clock) = racing_while_a_is_awaited();
         let mut cx = Plain {
             net: &mut net,
             dns: &mut dns,
             now: clock.now(),
         };
         m.discard(&mut cx);
+        assert_eq!(net.resolving(), 1, "the name's goes on");
+        name.end();
         assert_eq!(net.resolving(), 0, "the resolve was cancelled");
     }
 
-    /// A race going on beside its resolve, dropped by whatever drops it,
-    /// leaves nothing in the resolver.
+    /// The name's resolve a race goes on beside, dropped by whatever drops
+    /// it, leaves nothing in the resolver; the race dropped leaves it.
     #[test]
-    fn a_race_dropped_leaves_nothing_in_the_resolver() {
-        let (m, net, _dns, _clock) = racing_while_a_is_awaited();
+    fn a_name_dropped_leaves_nothing_in_the_resolver() {
+        let (m, name, net, _dns, _clock) = racing_while_a_is_awaited();
         drop(m);
-        assert_eq!(net.resolving(), 0, "the resolve went with the race");
+        assert_eq!(net.resolving(), 1, "the race holds none of it");
+        drop(name);
+        assert_eq!(net.resolving(), 0, "the resolve went with the name");
     }
 
     /// The attempt that connects wins, and the others are closed.
@@ -5260,14 +5274,14 @@ mod tests {
                 dns: &mut dns,
                 now: clock.now(),
             };
-            match m.drive(&mut cx, setup).unwrap() {
+            match m.drive(&mut cx, setup, &mut Late::default()).unwrap() {
                 Drove::Connecting(next, progress) => {
                     m = next;
                     if let Progress::Waiting { .. } = progress {
                         clock.advance(Duration::from_millis(1));
                     }
                 }
-                Drove::Established(conn, _) => break conn,
+                Drove::Established(conn) => break conn,
             }
         };
         assert_eq!(conn.remote, Some(Remote::Inet(up)));

@@ -400,11 +400,13 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
 --- old
                 next: AfterRequest::Complete,
                 race: c.race,
+                name: c.name,
                 ending: Ending::Ahead,
             }),
 --- new
                 next: AfterRequest::Complete,
                 race: None,
+                name: c.name,
                 ending: Ending::Ahead,
             }),
 

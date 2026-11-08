@@ -337,6 +337,9 @@ pub(crate) struct Done {
     /// The race its setup ran, if it failed racing: its attempt out of
     /// the lease goes with the lease's.
     race: Option<Box<Race>>,
+    /// The resolve of the name its setup went on beside, if it failed
+    /// with one going on: let go of with the setup's attempts.
+    name: crate::conn::Late,
     /// How far its end is.
     ending: Ending,
 }
@@ -651,6 +654,7 @@ impl TransferState {
                 origin: Some(c.route.origin),
                 next: AfterRequest::Complete,
                 race: c.race,
+                name: c.name,
                 ending: Ending::Ahead,
             }),
             TransferState::ProtoConnect(x)
@@ -736,6 +740,7 @@ impl TransferState {
                 origin: Some(c.route.origin),
                 next: AfterRequest::Complete,
                 race: c.race,
+                name: c.name,
                 ending: Ending::Ahead,
             },
             TransferState::ProtoConnect(x)
@@ -884,6 +889,9 @@ fn multi_done<H: Host>(
     // (`cf_hc_ctx_destroy`), each running or failed once dialed. They go
     // with the connection, on no transfer's trace, their sockets
     // announced gone.
+    // The name's resolve goes first, as the first attempt's chain's DNS
+    // filter would before its sockets (`Curl_resolv_destroy`).
+    d.name.end();
     if let Some(race) = d.race.take() {
         let Race { second, failed, .. } = *race;
         let me = cx.me;
@@ -1121,6 +1129,10 @@ impl TransferState {
                         set.add(&**s, *events)?;
                     }
                 }
+                // The name's filter, above the attempts (`Curl_resolv_pollset`).
+                for (s, events) in c.name.wants() {
+                    set.add(s, events)?;
+                }
                 for a in order.into_iter().flatten() {
                     attempt_pollset(c, a, &mut set)?;
                 }
@@ -1282,9 +1294,15 @@ impl Run {
         let setup = match &self.state {
             // A QUIC socket is connected as its attempt starts.
             TransferState::Connecting(c) => Some(SetupTrace {
-                other: c
-                    .other()
-                    .map_or(0, |m| m.racing_wants().count() + m.resolve_wants().count()),
+                // The name's filter's sockets, ahead of the attempts', go
+                // with the first's turn while it runs beside the lead.
+                other: c.other().map_or(0, |m| {
+                    let name = match c.beside() {
+                        Some(Attempt::First) => c.name.wants().count(),
+                        _ => 0,
+                    };
+                    name + m.racing_wants().count() + m.resolve_wants().count()
+                }),
                 other_leads: https::other_leads(c),
                 dialed: matches!(
                     c.lead().map(ConnectMachine::reached),
@@ -1331,6 +1349,9 @@ fn resolver_sockets(c: &Connecting) -> Result<Vec<SocketKey>, OutOfMemory> {
         for (s, _) in r.wants() {
             keys.try_push(s.key())?;
         }
+    }
+    for (s, _) in c.name.wants() {
+        keys.try_push(s.key())?;
     }
     for a in [Attempt::First, Attempt::Second] {
         for (s, _) in c
@@ -1539,6 +1560,7 @@ impl Attached {
             origin: self.origin,
             next: AfterRequest::Complete,
             race: None,
+            name: crate::conn::Late::default(),
             ending: Ending::Ahead,
         }
     }

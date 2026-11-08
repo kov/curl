@@ -1220,6 +1220,149 @@ fn the_race_s_pollset_counts_the_first_s_resolve_among_its_sockets() {
     );
 }
 
+/// An HTTP/3 transfer whose alternative service prefers HTTP/1.1 races a
+/// TCP first attempt against a QUIC second (C's test_06_21). The first
+/// dials and fails its TLS while AAAA is still out; the second races on,
+/// and AAAA's answer, coming after, is still taken, said, and raced to:
+/// the resolve is the name's filter's, above both attempts, which C's
+/// chain keeps whichever of them fails (`cf_dns_connect`), not the failed
+/// first's to keep from the second.
+#[test]
+fn a_first_attempt_failed_once_dialed_leaves_the_resolve_to_the_second() {
+    let (said, alive) = first_failed_once_dialed(true);
+    let failed = at(&said, 0, "[HTTPS-CONNECT] h1 baller failed, starting h3");
+    let complete = at(
+        &said,
+        failed,
+        "[DNS] [A+AAAA] resolve complete for late.test:443",
+    );
+    let host = at(&said, complete, "Host late.test:443 was resolved.");
+    assert_eq!(said[host + 1], "IPv6: ::1", "{said:#?}");
+    // The second races the address that came.
+    at(
+        &said,
+        host,
+        "[HAPPY-EYEBALLS] starting next attempt for ipv6 -> 0",
+    );
+    assert!(!alive, "let go of");
+}
+
+/// The same race with AAAA never answered: the transfer times out with the
+/// name's resolve still going on, and lets go of it as it is done
+/// (`Curl_resolv_destroy` as the connection's filters go).
+#[test]
+fn a_race_failed_with_the_resolve_going_on_lets_go_of_it() {
+    let (said, alive) = first_failed_once_dialed(false);
+    at(&said, 0, "[HTTPS-CONNECT] h1 baller failed, starting h3");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("Resolving timed out after ")),
+        "{said:#?}"
+    );
+    assert!(!alive, "let go of");
+}
+
+/// `a_first_attempt_failed_once_dialed_leaves_the_resolve_to_the_second`'s
+/// transfer, AAAA answering once the first failed if `answers`: what was
+/// said, and whether the library's resolve was alive as it ended.
+fn first_failed_once_dialed(answers: bool) -> (Vec<String>, bool) {
+    let clock = ManualClock::new().unwrap();
+    let v4 = SocketAddr::from(([127, 0, 0, 1], 443));
+    let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, 443));
+    // The TCP peer hangs up on the TLS handshake; QUIC's never answer.
+    let tcp_talk = Conversation::replies(&[b""], true).greeting();
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let quic_v6_talk = Conversation::replies(&[], false).per_send();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(v4, Peer::Accepts)
+        .with_datagram_peer(v4, Peer::Silent)
+        .with_datagram_peer(v6, Peer::Silent)
+        .with_conversation(v4, tcp_talk)
+        .with_conversation(v4, quic_talk)
+        .with_conversation(v6, quic_v6_talk);
+    // The library's socket, numbered past the transfer's own.
+    let to = SocketAddr::from(([127, 0, 0, 1], 53));
+    let own = Box::leak(Box::new(
+        FakeNet::new(clock.clone()).with_peer(to, Peer::Silent),
+    ));
+    let mut open = || {
+        own.open(
+            &crate::conn::io::Remote::Inet(to),
+            crate::conn::io::SocketKind::Datagram,
+        )
+        .unwrap()
+    };
+    for _ in 0..8 {
+        std::mem::forget(open());
+    }
+    let socket = open();
+    let gate = Gate::default();
+    let alive = Arc::new(AtomicBool::new(false));
+    let lib: &'static Library = Box::leak(Box::new(Library {
+        aaaa: gate.0.clone(),
+        alive: alive.clone(),
+        runs: Arc::default(),
+        made: Arc::default(),
+        sockets: Lock::new(vec![socket]),
+    }));
+    let script = crate::http3::fake::Script::new();
+    let h3: &'static crate::http3::fake::FakeHttp3 =
+        Box::leak(Box::new(crate::http3::fake::FakeHttp3::new(script)));
+    let tls: &'static fake::FakeTls = Box::leak(Box::new(fake::FakeTls::agreeing().unwrap()));
+    let mut m: Multi = Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap();
+    let mut easy = Easy::new();
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(tls)),
+            h3: Some(h3),
+            dns: Some(lib as &'static dyn crate::conn::io::DnsLibrary),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    // HTTP/1.1 is preferred here, ahead of the HTTP/3 the transfer wants.
+    let file = std::env::temp_dir().join(format!("curl-core-late-h1-{}", std::process::id()));
+    let entry = "h3 late.test 443 http/1.1 late.test 443 \"20991231 00:00:00\" 0 0\n";
+    std::fs::write(&file, entry).unwrap();
+    easy.add_alt_svc_file(Some(file.as_os_str().as_encoded_bytes()))
+        .unwrap();
+    std::fs::remove_file(&file).unwrap();
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.set_url(Some(ORIGIN.as_bytes())).unwrap();
+    o.http.version = crate::options::HttpVersion::Http3;
+    o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"dns,multi,https-connect,happy-eyeballs");
+    easy.set_components(Some(c));
+    m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+    let failed = "[HTTPS-CONNECT] h1 baller failed, starting h3";
+    let mut ended = None;
+    for _ in 0..3000 {
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            ended = Some(msg.result);
+            break;
+        }
+        // AAAA answers once the first has failed.
+        if answers && lines.0.lock().unwrap().iter().any(|l| l == failed) {
+            gate.open();
+        }
+        clock.advance(Duration::from_millis(1));
+    }
+    let said = lines.0.lock().unwrap().clone();
+    assert!(matches!(ended, Some(Err(_))), "{ended:?} {said:#?}");
+    (said, alive.load(Ordering::Relaxed))
+}
+
 /// A socket's number as the trace prints it: a `RawSocket` is an `i32` on
 /// Unix and already a `u64` on Windows, where the conversion is a no-op.
 #[allow(clippy::useless_conversion)]

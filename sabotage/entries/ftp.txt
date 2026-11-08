@@ -233,11 +233,11 @@ file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_other_transfer
 --- old
         if shaken {
-            let late = late.take().map_or_else(Late::default, |l| l.late);
+            let late = std::mem::take(&mut self.name.late);
             connected_all(cx, host, peer.as_ref(), &stream, chain, late);
         } else {
 --- new
-        let gone = late.take().map_or_else(Late::default, |l| l.late);
+        let gone = std::mem::take(&mut self.name.late);
         connected_all(cx, host, peer.as_ref(), &stream, chain, gone);
         if !shaken {
 
@@ -607,22 +607,21 @@ file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_late_resolve_lasts_through_its_tls
 features: test-util
 --- old
-                let looked = late.look(cx);
+            Some(Phase::Up { shaken: false, .. }) => None,
 --- new
-                let looked: Result<(), ErrorKind> = { let _ = late; Ok(()) };
+            Some(Phase::Up { shaken: false, .. }) => return Ok(()),
 
 === the data connection's late resolve goes as its TCP is up
 file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_late_resolve_lasts_through_its_tls
 features: test-util
 --- old
-        if !late.going() {
-            return None;
-        }
+        } else {
+            side::tls_added(cx, chain.with_tls(false));
 --- new
-        if !late.going() || true {
-            return None;
-        }
+        } else {
+            self.name.late.end();
+            side::tls_added(cx, chain.with_tls(false));
 
 === the data connection's setup does not wait on its resolve's sockets
 file: crates/curl-core/src/multi/state/side.rs
@@ -638,27 +637,30 @@ file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core multi::late_tests::ftp_s_data_connection_waits_on_its_late_resolve_s_socket
 features: test-util
 --- old
-                late_wants = late.as_deref().map(|l| l.late.wants());
+            .wants()
+            .chain(racing.into_iter().flatten())
 --- new
-                late_wants = late.as_deref().map(|l| l.late.wants()).filter(|_| false);
+            .wants()
+            .filter(|_| matches!(self.phase, Some(Phase::Connecting(..))))
+            .chain(racing.into_iter().flatten())
 
 === the data connection's racing setup arms no name timer for its resolve
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::late_tests::ftp_s_data_connection_waits_on_its_late_resolve_s_socket
 features: test-util
 --- old
-    side_name_due(cx, setup.resolve_due(now, left), now, left);
+        .chain(name.due(now, left))
 --- new
-    let _ = (setup, left);
+        .chain(name.due(now, left).filter(|_| setup.is_none()))
 
 === the data connection's resolve beside its TLS arms no name timer
-file: crates/curl-core/src/conn/connect.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::late_tests::ftp_s_data_connection_waits_on_its_late_resolve_s_socket
 features: test-util
 --- old
-        self.0.as_ref()?.due(now, left)
+        .chain(name.due(now, left))
 --- new
-        self.0.as_ref()?.due(now, left).filter(|_| false)
+        .chain(name.due(now, left).filter(|_| setup.is_some()))
 
 === the data connection's resolve still going on at its chain's connect is not let go of
 file: crates/curl-core/src/multi/state/side.rs
@@ -683,21 +685,25 @@ file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core multi::late_tests::ftp_s_data_connection_takes_an_answer_as_it_races
 features: test-util
 --- old
-                let polled = machine.poll_late(&mut DriveCx::new(cx, None));
+            Some(Phase::Connecting(machine, _)) => Some(machine),
+            Some(Phase::Up { shaken: false, .. }) => None,
 --- new
-                let polled: Result<Option<crate::conn::Found>, crate::conn::ConnectError> = Ok(None);
+            Some(Phase::Connecting(_, _)) => return Ok(()),
+            Some(Phase::Up { shaken: false, .. }) => None,
 
 === the data connection's answered resolve stops arming the name's timer through its TLS
 file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core multi::late_tests::ftp_s_data_connection_takes_an_answer_as_it_races
 features: test-util
 --- old
-                shaken: false,
-                ..
-            }) => {
-                crate::multi::state::side_answered_due(cx);
+            Some(Phase::Connecting(machine, _)) => Some(machine),
+            _ => None,
+        };
+        crate::multi::state::side_name_timer(cx, &self.name.late, setup);
+        Ok(())
 --- new
-                shaken: false,
-                ..
-            }) => {
-                let _ = &cx;
+            Some(Phase::Connecting(machine, _)) => Some(machine),
+            _ => return Ok(()),
+        };
+        crate::multi::state::side_name_timer(cx, &self.name.late, setup);
+        Ok(())

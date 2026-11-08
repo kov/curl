@@ -1327,6 +1327,7 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
         record_ask,
         record: None,
         record_lookup: None,
+        name: crate::conn::Late::default(),
         race: None,
         negotiate: None,
     })

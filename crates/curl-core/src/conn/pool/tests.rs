@@ -59,7 +59,7 @@ fn connect(
         dns: &mut DnsCache::default(),
         now,
     };
-    lease.connect(&mut cx, setup, ConnectMachine::drive)
+    lease.connect(&mut cx, setup, &mut Late::default(), ConnectMachine::drive)
 }
 
 const RULES: ReuseRules = ReuseRules {

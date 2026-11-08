@@ -79,20 +79,20 @@ witness: curl-tool the_race_begins_before_a_late_a_as_aaaa_has_answered
                                         let answer = part.answer(name, p.family).map_err(oom)?;
 
 === a race on part of a resolve times out as a connection
-file: crates/curl-core/src/conn/connect.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-tool a_resolve_that_does_not_end_times_out_as_resolving
 --- old
-            Stage::Racing(r) => r.eyeballs.late.0.is_some(),
+                let resolving = c.name.going() || c.lead().is_some_and(ConnectMachine::resolving);
 --- new
-            Stage::Racing(_) => false,
+                let resolving = c.lead().is_some_and(ConnectMachine::resolving);
 
 === a second attempt gives up while the first's resolve goes on
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::a_second_attempt_goes_on_what_the_firsts_resolve_finds
 --- old
-            r.eyeballs.following = resolving;
+        self.resolving = name.going();
 --- new
-            let _ = resolving;
+        self.resolving = false;
 
 === a resolve is not looked at as it starts
 file: crates/curl-core/src/conn/connect.rs

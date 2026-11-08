@@ -348,9 +348,9 @@ witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_resolve_that_never_answers_times_out_as_resolving
 --- old
-                    Some(true) => "Resolving",
+                let resolving = c.name.going() || c.lead().is_some_and(ConnectMachine::resolving);
 --- new
-                    Some(true) => "Connection",
+                let resolving = c.name.going();
 
 === the threaded resolver's queries are traced IPv6's first, as queued
 file: crates/curl-core/src/conn/connect.rs
@@ -687,42 +687,49 @@ witness: curl-core multi::socket_tests::a_name_found_not_to_exist_after_the_race
         let kept = step.rest.kept(step.me, Kind::Names).filter(|_| false);
         DriveCx {
 
-=== a race that connects keeps the resolve still going on alive in the resolver, out of anyone's reach
-file: crates/curl-core/src/conn/connect.rs
-witness: curl-core conn::connect::tests::a_race_connected_hands_out_the_resolve_still_going_on
+=== a chain that connects keeps the name's resolve still going on alive in the resolver, out of anyone's reach
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::late_tests::through_a_library_a_resolve_still_going_on_goes_as_the_chain_connects
+features: test-util
 --- old
-        let late = std::mem::take(&mut r.eyeballs.late);
+                late.chain_connected(&mut DriveCx::new(cx, None));
 --- new
-        std::mem::forget(std::mem::take(&mut r.eyeballs.late));
-        let late = Late::default();
+                std::mem::forget(late);
 
-=== a race that connects lets go of the resolve still going on before its chain connects
-file: crates/curl-core/src/conn/connect.rs
+=== a chain that connects lets go of the name's resolve still going on before its record's line
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::late_tests::over_doh_a_probe_still_out_goes_as_the_chain_connects
 features: test-util
 --- old
-        let late = std::mem::take(&mut r.eyeballs.late);
+    let mut late = Some(std::mem::take(&mut c.name));
 --- new
-        let late = Late::default();
-        r.eyeballs.late.end();
+    c.name.end();
+    let mut late = Some(std::mem::take(&mut c.name));
 
 === an answer that comes during the handshake is not taken
-file: crates/curl-core/src/conn/connect.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::late_tests::through_the_resolver_an_answer_during_the_handshake_is_kept
 features: test-util
 --- old
-            Stage::Dialed(d) => (&mut d.late, &mut d.answer, None),
+) -> Result<(), ErrorKind> {
+    let polled = c
+        .name
 --- new
-            Stage::Dialed(_) => return Ok(None),
+) -> Result<(), ErrorKind> {
+    if c.lead().is_some_and(|m| !m.races()) {
+        return Ok(());
+    }
+    let polled = c
+        .name
 
 === a library's resolve beside a dialed connection is not polled
-file: crates/curl-core/src/conn/connect.rs
+file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::late_tests::through_a_library_an_answer_during_the_handshake_is_kept
 features: test-util
 --- old
-            Stage::Dialed(d) => (d.late.0.as_ref(), d.target_late.0.as_ref()),
+                for (s, events) in c.name.wants() {
 --- new
-            Stage::Dialed(d) => (None, d.target_late.0.as_ref()),
+                for (s, events) in c.name.wants().filter(|_| c.lead().is_none_or(ConnectMachine::races)) {
 
 === a DoH resolve let go of as the chain connects does not say its probe is done
 file: crates/curl-core/src/conn/connect.rs
@@ -767,12 +774,12 @@ features: test-util
         !self.resolver.contains(&key) || true
 
 === a library's resolve beside a race is not run again when it says
-file: crates/curl-core/src/conn/connect.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it_says
 --- old
-            Stage::Racing(r) => r.eyeballs.late.0.as_ref()?.due(now, left),
+            .chain(c.name.due(now, left))
 --- new
-            Stage::Racing(_) => None,
+            .chain(c.name.due(now, left).filter(|_| false))
 
 === a library's record lookup is not run again when it says
 file: crates/curl-core/src/multi/state/connecting.rs
@@ -1033,18 +1040,14 @@ features: test-util
                         Some(Ok(addrs)) if addrs.is_empty() => {
                             // Had at once, it is taken inside the start
 
-=== a race discarded keeps its late resolve alive in the resolver
-file: crates/curl-core/src/conn/connect.rs
-witness: curl-core conn::connect::tests::a_race_discarded_cancels_the_resolve_still_going_on
+=== a transfer that fails keeps its name's resolve alive in the resolver
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::late_tests::a_race_failed_with_the_resolve_going_on_lets_go_of_it
 features: test-util
 --- old
-                r.eyeballs.late.end();
-            }
-            Stage::Dialed(mut d) => {
+    d.name.end();
 --- new
-                std::mem::forget(std::mem::take(&mut r.eyeballs.late));
-            }
-            Stage::Dialed(mut d) => {
+    std::mem::forget(std::mem::take(&mut d.name));
 
 === a lone handle's debug function reaches other transfers, not itself
 file: crates/curl-core/src/multi/cx.rs
@@ -1174,13 +1177,13 @@ features: test-util
     let permanent = s.single(b'+') || true;
 
 === a handshake beside a resolve still going on times out as a connection
-file: crates/curl-core/src/conn/connect.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::late_tests::a_handshake_timed_out_beside_the_resolve_times_out_as_resolving
 features: test-util
 --- old
-            Stage::Dialed(d) => d.late.0.is_some(),
+                let resolving = c.name.going() || c.lead().is_some_and(ConnectMachine::resolving);
 --- new
-            Stage::Dialed(_) => false,
+                let resolving = c.lead().is_some_and(ConnectMachine::resolving);
 
 === a library's answered resolve stops arming the name's timer while its record is kept
 file: crates/curl-core/src/conn/connect.rs
@@ -1210,25 +1213,6 @@ features: test-util
     }
 --- new
     let _ = run;
-
-=== a proxy's redial for its 407 ends the resolve still going on
-file: crates/curl-core/src/conn/connect.rs
-witness: curl-core multi::late_tests::a_late_resolve_lives_on_through_a_redial_for_the_proxy_s_407
-features: test-util
---- old
-                late: d.late,
---- new
-                late: { drop(d.late); Late::default() },
-
-=== a first attempt lost to the second keeps its resolve past the chain's connect
-file: crates/curl-core/src/conn/connect.rs
-witness: curl-core multi::late_tests::a_first_attempt_lost_to_the_second_lets_go_of_its_resolve_with_the_chain
-features: test-util
---- old
-    pub(crate) fn take_late(&mut self) -> Late {
---- new
-    pub(crate) fn take_late(&mut self) -> Late {
-        if true { return Late::default(); }
 
 === the threaded resolver's answer taken leaves its timer uncleared in the trace
 file: crates/curl-core/src/conn/connect.rs

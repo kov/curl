@@ -303,11 +303,9 @@ witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_foun
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-tool a_second_attempt_started_during_a_resolve_takes_what_it_finds
 --- old
-    if c.attempt(Attempt::First)
-        .is_some_and(ConnectMachine::resolving)
-    {
+    if let Err(kind) = look_at_name(&mut c, run, cx) {
 --- new
-    if c.lead().is_some_and(ConnectMachine::resolving) {
+    if c.lead().is_some_and(ConnectMachine::resolving) && let Err(kind) = look_at_name(&mut c, run, cx) {
 
 === a record's HTTP/3 is taken where it is not allowed
 file: crates/curl-core/src/multi/state/https.rs
@@ -462,3 +460,12 @@ features: test-util debug-hooks
             answer_came(c, cx, came, doh, false)
 --- new
             answer_came(c, cx, came, doh, true)
+
+=== a first attempt failed once dialed takes the name's resolve from the second
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::late_tests::a_first_attempt_failed_once_dialed_leaves_the_resolve_to_the_second
+features: test-util
+--- old
+    if let Err(kind) = look_at_name(&mut c, run, cx) {
+--- new
+    if c.attempt(Attempt::First).is_some() && let Err(kind) = look_at_name(&mut c, run, cx) {

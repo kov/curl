@@ -197,8 +197,26 @@ fn main() {
             std::io::stdout().flush().unwrap();
         });
         test();
-        track::untracked(|| println!("ok"));
+        // A test that could not check what it is for says so, as
+        // `runtests.pl` reports a test it skips, rather than passing.
+        match SKIPPED.take() {
+            None => track::untracked(|| println!("ok")),
+            Some(reason) => track::untracked(|| println!("skipped: {reason}")),
+        }
     }
+}
+
+thread_local! {
+    /// Why the test running on this thread is skipped, as `skip` says.
+    static SKIPPED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The running test leaves what it is for unchecked, for `reason`, a
+/// dependency missing from the system: it is reported as skipped.
+// LibreSSL's build has no test that may be skipped.
+#[cfg_attr(not(ossl3), allow(dead_code))]
+fn skip(reason: &str) {
+    track::untracked(|| SKIPPED.set(Some(reason.to_owned())));
 }
 
 /// Where the CA files the tests make are written.

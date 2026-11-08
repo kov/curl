@@ -487,13 +487,25 @@ fn an_engine_made_the_default_is_said() {
     }
 }
 
+/// Whether OpenSSL can load the `pkcs11` provider (pkcs11-provider),
+/// asked in a library context of its own, apart from the transfers'.
+#[cfg(ossl3)]
+fn pkcs11_installed() -> bool {
+    track::untracked(|| {
+        let ctx = openssl::lib_ctx::LibCtx::new().unwrap();
+        // The provider is unloaded before its context is freed.
+        openssl::provider::Provider::try_load(Some(&ctx), "pkcs11", false).is_ok()
+    })
+}
+
 /// `--cert-type PROV` with a PKCS#11 URI and no provider loaded loads
 /// `pkcs11`, as C does, whether or not an engine is selected, and opens
 /// the URI's store with it: with no token there, that fails, said as C
 /// says it. Without it, the failure would be that no provider was set.
 /// Where the provider is not installed, as with vcpkg's OpenSSL on
-/// Windows, loading it fails, said as C says it there. LibreSSL has no
-/// providers: the URI is a certificate type it refuses, and an engine
+/// Windows and Homebrew's on macOS, loading it fails, said as C says it
+/// there, and the store goes unopened: the test is skipped. LibreSSL has
+/// no providers: the URI is a certificate type it refuses, and an engine
 /// fails the transfer before.
 fn a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded() {
     let certs = certs("pkcs11uri", "localhost", &["localhost"]);
@@ -502,10 +514,14 @@ fn a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded() {
     let engine = b"loader_attic";
     #[cfg(windows)]
     let engine = b"rdrand";
-    #[cfg(all(not(windows), ossl3))]
-    let failed = "Failed to open OpenSSL store: error:";
-    #[cfg(all(windows, ossl3))]
-    let failed = "Failed to initialize provider: error:";
+    #[cfg(ossl3)]
+    let installed = pkcs11_installed();
+    #[cfg(ossl3)]
+    let failed = if installed {
+        "Failed to open OpenSSL store: error:"
+    } else {
+        "Failed to initialize provider: error:"
+    };
     for engine in [None, Some(engine.to_vec())] {
         let (at, server) = serve_asking(&certs, &client);
         let got = get("localhost", at, |o| {
@@ -531,5 +547,9 @@ fn a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded() {
         );
         #[cfg(ossl3)]
         assert!(failure.starts_with(failed), "{engine:?}: {failure}");
+    }
+    #[cfg(ossl3)]
+    if !installed {
+        skip("the pkcs11 provider is not installed, so no store was opened");
     }
 }

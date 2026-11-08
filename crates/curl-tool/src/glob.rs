@@ -373,13 +373,12 @@ impl Kind {
         match self {
             Kind::Set { elems, at } => elems[*at].len(),
             Kind::Letters { .. } => 1,
-            Kind::Numbers { at, pad, .. } => {
-                let digits = at
-                    .unsigned_abs()
-                    .checked_ilog10()
-                    .map_or(1, |d| d as usize + 1);
-                (digits + usize::from(*at < 0)).max(*pad)
-            }
+            // A range's numbers are never negative: each end is digits.
+            Kind::Numbers { at, pad, .. } => at
+                .unsigned_abs()
+                .checked_ilog10()
+                .map_or(1, |d| d as usize + 1)
+                .max(*pad),
         }
     }
 

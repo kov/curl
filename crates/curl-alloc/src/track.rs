@@ -401,8 +401,13 @@ fn write_log(state: &mut State, line: &Line) {
 /// Count a tracked call against the limit. When the limit is spent, log
 /// `LIMIT <source> <func> reached memlimit` to the memdump and to standard
 /// error, and return true: the call must fail. `source` writes where the
-/// call was made.
+/// call was made. A thread that is panicking is never refused, nor
+/// counted: what it allocates is its message and its unwinding, and
+/// refused, its panic would end as "memory allocation failed" instead.
 pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
+    if std::thread::panicking() {
+        return false;
+    }
     let mut state = state();
     if state.here && !LIMITED.with(Cell::get) {
         return false;
@@ -717,5 +722,21 @@ mod tests {
         assert_eq!(&v[..], b"a");
         let zeroed: Vec<u64> = vec![0; 3];
         assert_eq!(zeroed.iter().sum::<u64>(), 0);
+    }
+
+    /// A panic under a limit makes its message: refused, it would abort
+    /// as "memory allocation failed", and the panic would never read.
+    #[test]
+    fn a_panic_under_a_limit_reads_as_the_panic() {
+        let n = 42;
+        let (message, refused) = fail_once_after_here(0, || {
+            std::panic::catch_unwind(|| panic!("the panic, {n}"))
+                .unwrap_err()
+                .downcast::<String>()
+                .map(|s| *s)
+                .map_err(drop)
+        });
+        assert_eq!(message.as_deref(), Ok("the panic, 42"));
+        assert!(!refused, "nothing refused while panicking");
     }
 }

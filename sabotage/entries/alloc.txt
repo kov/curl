@@ -70,3 +70,16 @@ features: debug-hooks
         let tag = if was_tracked || now { TRACKED } else { PLAIN };
 --- new
         let tag = TRACKED;
+
+=== a panicking thread's allocations are refused, so a panic under a limit aborts as an allocation failure
+file: crates/curl-alloc/src/track.rs
+witness: curl-alloc track::tests::a_panic_under_a_limit_reads_as_the_panic
+features: debug-hooks
+--- old
+    if std::thread::panicking() {
+        return false;
+    }
+--- new
+    if false {
+        return false;
+    }

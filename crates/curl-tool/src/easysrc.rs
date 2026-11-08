@@ -215,9 +215,10 @@ pub(crate) fn c_escape(s: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     Ok(out)
 }
 
-/// `s` up to its first zero byte, as C reads a string.
+/// `s` up to its first zero byte, as C reads a string. Found by core's
+/// `memchr`, a word at a time: a transfer cuts each path it sets.
 pub(crate) fn c_string(s: &[u8]) -> &[u8] {
-    s.split(|&b| b == 0).next().unwrap_or_default()
+    std::ffi::CStr::from_bytes_until_nul(s).map_or(s, std::ffi::CStr::to_bytes)
 }
 
 impl Source {
@@ -796,6 +797,16 @@ fn bitmask_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_c_string_ends_at_its_first_zero() {
+        assert_eq!(c_string(b""), b"");
+        assert_eq!(c_string(b"/etc/ca.pem"), b"/etc/ca.pem");
+        assert_eq!(c_string(b"/etc/ca\0.pem\0x"), b"/etc/ca");
+        assert_eq!(c_string(b"\0/etc"), b"");
+        let long = [b'a'; 100];
+        assert_eq!(c_string(&long), &long[..]);
+    }
 
     fn text(source: &Source) -> String {
         let mut out = Vec::new();

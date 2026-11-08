@@ -2948,12 +2948,16 @@ fn credentials_and_headers(
     let agent = match op.user_agent {
         Some(agent) => agent,
         None => {
-            default_agent = try_format(format_args!(
-                "curl/{}",
-                curl_core::version::version().version
-            ))
-            .map_err(oom)?;
-            default_agent.as_bytes()
+            // `curl/` and the version, made at once.
+            let version = curl_core::version::version().version.as_bytes();
+            let mut made = Vec::new();
+            made.try_reserve_exact(b"curl/".len() + version.len())
+                .map_err(OutOfMemory::from)
+                .and_then(|()| made.try_extend_from_slice(b"curl/"))
+                .and_then(|()| made.try_extend_from_slice(version))
+                .map_err(oom)?;
+            default_agent = made;
+            &default_agent[..]
         }
     };
     s.str("CURLOPT_USERAGENT", Some(agent), |o| {

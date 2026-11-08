@@ -966,6 +966,23 @@ mod tests {
     /// and for it only if off (`tool_setopt_long_force`); the TLS
     /// versions by their names, the newest's only if set
     /// (`tool_setopt_SSLVERSION`).
+    /// A mask of no bits is set but not written (`tool_setopt_bitmask`'s
+    /// `skip`), though a name stands for none.
+    #[test]
+    fn writes_no_empty_mask() {
+        let mut easy = Easy::new();
+        let mut source = Source::default();
+        let mut s = Setopt::new(&mut easy, Some(&mut source));
+        let mut applied = false;
+        s.bitmask("CURLOPT_HTTPAUTH", AUTH, 0, |_| {
+            applied = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(applied);
+        assert!(source.code.is_empty(), "{:?}", source.code);
+    }
+
     #[test]
     fn writes_tls_options_as_c_does() {
         let mut easy = Easy::new();

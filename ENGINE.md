@@ -5052,7 +5052,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | socket table entries beyond the reserved two | connect-machine stage entry, before the socket opens | 6 attempts + ALPN racers |
 | error detail | on error | dropped if boxing it fails |
 | request head | once, measured before it is written | 1 MiB → TooLarge |
-| `Conn` receive buffer, head parser line | grows to the largest read and line | BUFFERSIZE, 100 KiB |
+| `Conn` receive buffer, head parser line | grows to the largest read and line, the line from 256 bytes | BUFFERSIZE, 100 KiB |
 | HTTP/2 field line (`H2Conn`'s) | grows to the longest response field on the connection | the longest field the session hands on |
 | trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
 | the TLS options (`Cold<TlsOptions>`; the SSL_CTX handler among them, and the proxy's in `Cold<Proxy>`) | the first setopt of one | one group per handle |

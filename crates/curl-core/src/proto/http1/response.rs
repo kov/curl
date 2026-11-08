@@ -18,6 +18,11 @@ use crate::options::AuthMethods;
 /// itself taken off (`CURL_MAX_HTTP_HEADER`).
 const MAX_LINE: usize = 100 * 1024 - 1;
 
+/// The room the first line is given, which a head's usual lines fit, so
+/// that the line grows only for a longer one, not for each line longer
+/// than those before it.
+const FIRST_LINE_ROOM: usize = 256;
+
 pub(crate) use crate::report::ResponseVersion as HttpVersion;
 
 /// What the status line said.
@@ -438,6 +443,7 @@ impl HeadParser {
     ) -> Result<HeadEvent<'s>, HeadError> {
         assert!(self.phase == Phase::Head, "a line of a head not over");
         self.line.clear();
+        self.first_room(line.len())?;
         self.line.try_extend_from_slice(line)?;
         self.line_out(transfer_bytes, sending, conn)
     }
@@ -461,7 +467,17 @@ impl HeadParser {
         if self.line.len() + bytes.len() > MAX_LINE {
             return Err(HeadError::LineTooLong);
         }
+        self.first_room(bytes.len())?;
         Ok(self.line.try_extend_from_slice(bytes)?)
+    }
+
+    /// The line's room made, the first time it is needed, for `len`
+    /// bytes or `FIRST_LINE_ROOM`, whichever is more.
+    fn first_room(&mut self, len: usize) -> Result<(), OutOfMemory> {
+        if self.line.capacity() == 0 {
+            self.line.try_reserve_exact(len.max(FIRST_LINE_ROOM))?;
+        }
+        Ok(())
     }
 
     /// The next line continues this one: its line end and trailing

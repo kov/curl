@@ -2843,7 +2843,10 @@ as C's DNS filter keeps it until the chain below it does (`cf_dns_connect`'s
 `Curl_resolv_destroy`): the connection dialed for its handshakes holds it (`Dialed::late`), and
 one made at once hands it out with the connection (`Drove::Established`). Meanwhile it is looked
 at in each pass, its sockets in the pollset, and an answer that comes is kept and said, starting
-no attempt. As the chain connects it is taken from the first attempt's machine, wherever that
+no attempt. The one exception: a first attempt that fails after it was dialed (its TLS, say)
+while the second still races is parked in `race.failed` holding the resolve, which is then not
+looked at, and the second, following the first's answers, does not see what comes after; C's one
+DNS filter above both attempts would hand it on. As the chain connects it is taken from the first attempt's machine, wherever that
 is (the winner, the second's loser, or kept as it failed), and let go of after its record's
 `destroy async`: a library's sockets said closed, DoH's `[DoH] probe done`. A setup closed or
 discarded first lets go of it at once (`Late::end`), and one dropped otherwise all the same. FTP's

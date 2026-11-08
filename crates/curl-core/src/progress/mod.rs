@@ -165,9 +165,15 @@ struct Moved {
     up: u64,
 }
 
-/// `bytes` moved in `us` microseconds, a second (`trspeed`).
+/// `bytes` moved in `us` microseconds, a second (`trspeed`). In 64 bits
+/// while the product fits, as it does for any count under 18 TB: a
+/// 128-bit division is a library call, taken several times a request.
 fn per_second(bytes: u64, us: u64) -> u64 {
-    let per = u128::from(bytes) * u128::from(SECOND_US) / u128::from(us.max(1));
+    let us = us.max(1);
+    if let Some(scaled) = bytes.checked_mul(SECOND_US) {
+        return scaled / us;
+    }
+    let per = u128::from(bytes) * u128::from(SECOND_US) / u128::from(us);
     u64::try_from(per).unwrap_or(u64::MAX)
 }
 

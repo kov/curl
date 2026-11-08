@@ -18,7 +18,7 @@ use crate::time::{Instant, ManualClock};
 
 use super::c_tests::{MAX6OUT, TIME2STR, UNIT1606};
 use super::meter::{self, Dir, Reading};
-use super::{Moved, SECOND_US, Speedometer};
+use super::{Moved, SECOND_US, Speedometer, per_second};
 
 fn down(n: u64) -> Moved {
     Moved { down: n, up: 0 }
@@ -68,6 +68,32 @@ fn unit1636_meter_numbers() {
     for &(bytes, text) in MAX6OUT {
         assert_eq!(render(|s| meter::max6out(bytes, s)), text, "{bytes} bytes");
         assert_eq!(text.len(), 6, "{bytes} bytes");
+    }
+}
+
+/// A speed is the exact quotient, whether the product fits 64 bits or not.
+#[test]
+fn a_speed_is_the_exact_quotient_either_side_of_64_bits() {
+    let exact = |bytes: u64, us: u64| {
+        u64::try_from(u128::from(bytes) * 1_000_000 / u128::from(us.max(1))).unwrap_or(u64::MAX)
+    };
+    let fits = u64::MAX / 1_000_000;
+    for (bytes, us) in [
+        (0, 0),
+        (10_240, 0),
+        (10_240, 1),
+        (10_240, 3_333),
+        (fits, 7),
+        (fits + 1, 7),
+        (fits + 1, 1_000_001),
+        (u64::MAX, 1),
+        (u64::MAX, u64::MAX),
+    ] {
+        assert_eq!(
+            per_second(bytes, us),
+            exact(bytes, us),
+            "{bytes} in {us} us"
+        );
     }
 }
 

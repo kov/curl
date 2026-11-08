@@ -11,29 +11,29 @@ use crate::ffi::{self, CURLoption};
 
 /// `option` is one this module sets.
 pub(super) fn takes(option: CURLoption) -> bool {
-    [
-        ffi::CURLOPT_PROXY_SSL_VERIFYPEER,
-        ffi::CURLOPT_PROXY_SSL_VERIFYHOST,
-        ffi::CURLOPT_PROXY_SSLVERSION,
-        ffi::CURLOPT_PROXY_SSL_OPTIONS,
-        ffi::CURLOPT_PROXY_CAINFO,
-        ffi::CURLOPT_PROXY_CAPATH,
-        ffi::CURLOPT_PROXY_CAINFO_BLOB,
-        ffi::CURLOPT_PROXY_CRLFILE,
-        ffi::CURLOPT_PROXY_ISSUERCERT,
-        ffi::CURLOPT_PROXY_ISSUERCERT_BLOB,
-        ffi::CURLOPT_PROXY_PINNEDPUBLICKEY,
-        ffi::CURLOPT_PROXY_SSLCERT,
-        ffi::CURLOPT_PROXY_SSLCERT_BLOB,
-        ffi::CURLOPT_PROXY_SSLCERTTYPE,
-        ffi::CURLOPT_PROXY_SSLKEY,
-        ffi::CURLOPT_PROXY_SSLKEY_BLOB,
-        ffi::CURLOPT_PROXY_SSLKEYTYPE,
-        ffi::CURLOPT_PROXY_KEYPASSWD,
-        ffi::CURLOPT_PROXY_SSL_CIPHER_LIST,
-        ffi::CURLOPT_PROXY_TLS13_CIPHERS,
-    ]
-    .contains(&option)
+    matches!(
+        option,
+        ffi::CURLOPT_PROXY_SSL_VERIFYPEER
+            | ffi::CURLOPT_PROXY_SSL_VERIFYHOST
+            | ffi::CURLOPT_PROXY_SSLVERSION
+            | ffi::CURLOPT_PROXY_SSL_OPTIONS
+            | ffi::CURLOPT_PROXY_CAINFO
+            | ffi::CURLOPT_PROXY_CAPATH
+            | ffi::CURLOPT_PROXY_CAINFO_BLOB
+            | ffi::CURLOPT_PROXY_CRLFILE
+            | ffi::CURLOPT_PROXY_ISSUERCERT
+            | ffi::CURLOPT_PROXY_ISSUERCERT_BLOB
+            | ffi::CURLOPT_PROXY_PINNEDPUBLICKEY
+            | ffi::CURLOPT_PROXY_SSLCERT
+            | ffi::CURLOPT_PROXY_SSLCERT_BLOB
+            | ffi::CURLOPT_PROXY_SSLCERTTYPE
+            | ffi::CURLOPT_PROXY_SSLKEY
+            | ffi::CURLOPT_PROXY_SSLKEY_BLOB
+            | ffi::CURLOPT_PROXY_SSLKEYTYPE
+            | ffi::CURLOPT_PROXY_KEYPASSWD
+            | ffi::CURLOPT_PROXY_SSL_CIPHER_LIST
+            | ffi::CURLOPT_PROXY_TLS13_CIPHERS
+    )
 }
 
 /// Set `option`, one `takes` names, to `arg`.

@@ -653,3 +653,20 @@ features: debug-hooks
             if *field(&mut defaults) == value {
 --- new
             if *field(&mut defaults) == value && false {
+
+=== a setopt that fails keeps what it changed of the shim's settings
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_setopt_out_of_memory_keeps_none_of_its_change
+features: debug-hooks
+--- old
+    apply_stateful(me, options, &mut ccb, &mut set, &mut errbuf, option, arg)?;
+    easy.ccb.set(ccb);
+    easy.set.set(set);
+    easy.errbuf.set(errbuf);
+    Ok(())
+--- new
+    let applied = apply_stateful(me, options, &mut ccb, &mut set, &mut errbuf, option, arg);
+    easy.ccb.set(ccb);
+    easy.set.set(set);
+    easy.errbuf.set(errbuf);
+    applied

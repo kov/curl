@@ -12,25 +12,25 @@ use crate::ffi::{self, CURLoption};
 
 /// `option` is one this module sets.
 pub(super) fn takes(option: CURLoption) -> bool {
-    [
-        ffi::CURLOPT_CERTINFO,
-        ffi::CURLOPT_CRLFILE,
-        ffi::CURLOPT_SSLENGINE,
-        ffi::CURLOPT_SSLENGINE_DEFAULT,
-        ffi::CURLOPT_SSL_VERIFYSTATUS,
-        ffi::CURLOPT_ISSUERCERT,
-        ffi::CURLOPT_ISSUERCERT_BLOB,
-        ffi::CURLOPT_PINNEDPUBLICKEY,
-        ffi::CURLOPT_SSLCERT,
-        ffi::CURLOPT_SSLCERT_BLOB,
-        ffi::CURLOPT_SSLCERTTYPE,
-        ffi::CURLOPT_SSLKEY,
-        ffi::CURLOPT_SSLKEY_BLOB,
-        ffi::CURLOPT_SSLKEYTYPE,
-        ffi::CURLOPT_KEYPASSWD,
-        ffi::CURLOPT_SSL_SESSIONID_CACHE,
-    ]
-    .contains(&option)
+    matches!(
+        option,
+        ffi::CURLOPT_CERTINFO
+            | ffi::CURLOPT_CRLFILE
+            | ffi::CURLOPT_SSLENGINE
+            | ffi::CURLOPT_SSLENGINE_DEFAULT
+            | ffi::CURLOPT_SSL_VERIFYSTATUS
+            | ffi::CURLOPT_ISSUERCERT
+            | ffi::CURLOPT_ISSUERCERT_BLOB
+            | ffi::CURLOPT_PINNEDPUBLICKEY
+            | ffi::CURLOPT_SSLCERT
+            | ffi::CURLOPT_SSLCERT_BLOB
+            | ffi::CURLOPT_SSLCERTTYPE
+            | ffi::CURLOPT_SSLKEY
+            | ffi::CURLOPT_SSLKEY_BLOB
+            | ffi::CURLOPT_SSLKEYTYPE
+            | ffi::CURLOPT_KEYPASSWD
+            | ffi::CURLOPT_SSL_SESSIONID_CACHE
+    )
 }
 
 /// Set `option`, one `takes` names, to `arg`.

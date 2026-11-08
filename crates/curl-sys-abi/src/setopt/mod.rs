@@ -69,6 +69,7 @@ pub(crate) unsafe fn function<F: Copy>(p: *mut c_void) -> F {
 }
 
 /// The C argument an option takes, by its id's class (`CURLOPTTYPE_*`).
+#[derive(Clone, Copy)]
 enum Arg {
     Long(c_long),
     Ptr(*mut c_void),
@@ -591,13 +592,12 @@ fn tls_supports(option: CURLoption, has: &TlsSupport) -> Result<(), Refused> {
     }
 }
 
-/// Apply `option` with `arg` to the handle at `me`.
+/// Apply `option` with `arg` to the handle at `me`. One that reaches the
+/// application's functions and settings the shim keeps goes on to
+/// `stateful`, so that the others pay nothing to copy them.
 fn apply(
     me: NonNull<ShimEasy>,
     options: &mut Options,
-    ccb: &mut CCallbacks,
-    set: &mut CSettings,
-    errbuf: &mut *mut c_char,
     option: CURLoption,
     arg: Arg,
 ) -> Result<(), Refused> {
@@ -609,62 +609,6 @@ fn apply(
     match (option, arg) {
         (ffi::CURLOPT_VERBOSE, Long(n)) => options.output.verbose = n != 0,
         (ffi::CURLOPT_HEADER, Long(n)) => options.output.include_header = n != 0,
-        (ffi::CURLOPT_NOPROGRESS, Long(n)) => {
-            set.no_progress = n != 0;
-            callbacks::sync_progress(options, me, set, ccb)?;
-        }
-        (ffi::CURLOPT_NOBODY, Long(n)) => {
-            set.no_body = n != 0;
-            if set.no_body {
-                set.method = Method::Head;
-            } else if set.method == Method::Head {
-                set.method = Method::Get;
-            }
-            options.method = set.method();
-            callbacks::sync_upload(options, me, set)?;
-        }
-        (ffi::CURLOPT_POST, Long(n)) => {
-            if n != 0 {
-                set.method = Method::Post;
-                set.no_body = false;
-            } else {
-                set.method = Method::Get;
-            }
-            options.method = set.method();
-            // SAFETY: the handle is alive while its options are set.
-            unsafe { me.as_ref() }.post_body.set(PostBody::Own);
-            callbacks::sync_upload(options, me, set)?;
-        }
-        (ffi::CURLOPT_MIMEPOST, Ptr(p)) => {
-            // SAFETY: the application passes a tree from `curl_mime_init`
-            // or NULL.
-            match unsafe { crate::mime::set_post(me, p) } {
-                Ok(()) => {}
-                Err(crate::mime::Refused::Attached) => return Err(Refused::Bad),
-                Err(crate::mime::Refused::Rewind) => return Err(Refused::Rewind),
-                Err(crate::mime::Refused::OutOfMemory) => return Err(Refused::OutOfMemory),
-            }
-            // SAFETY: as above.
-            let shim = unsafe { me.as_ref() };
-            shim.post_body.set(PostBody::Mime);
-            crate::mime::forget_post_state(shim);
-            set.method = Method::Post;
-            set.no_body = false;
-            options.method = set.method();
-            callbacks::sync_upload(options, me, set)?;
-        }
-        (ffi::CURLOPT_HTTPPOST, Ptr(p)) => {
-            // SAFETY: the handle is alive while its options are set.
-            let shim = unsafe { me.as_ref() };
-            // Made a tree again at the next request, even if the same.
-            crate::mime::forget_post_state(shim);
-            shim.posted_or_make()?.chain.set(p.cast());
-            shim.post_body.set(PostBody::Form);
-            set.method = Method::Post;
-            set.no_body = false;
-            options.method = set.method();
-            callbacks::sync_upload(options, me, set)?;
-        }
         (ffi::CURLOPT_MIME_OPTIONS, Long(n)) => {
             // A group never made already says no.
             if n & ffi::CURLMIMEOPT_FORMESCAPE != 0 {
@@ -672,52 +616,6 @@ fn apply(
             } else if let Some(m) = options.mime.made_mut() {
                 m.form_escape = false;
             }
-        }
-        (ffi::CURLOPT_HTTPGET, Long(n)) => {
-            if n != 0 {
-                set.method = Method::Get;
-                set.no_body = false;
-                options.method = set.method();
-                callbacks::sync_upload(options, me, set)?;
-            }
-        }
-        (ffi::CURLOPT_POSTFIELDS, Ptr(p)) => {
-            let fields = NonNull::new(p.cast::<u8>()).map_or(PostFields::None, PostFields::App);
-            // SAFETY: the handle is alive while its options are set.
-            let shim = unsafe { me.as_ref() };
-            shim.post.borrow_mut().fields = fields;
-            shim.post_body.set(PostBody::Own);
-            // A body to post leaves no body asked for as it was.
-            set.method = Method::Post;
-            options.method = set.method();
-            callbacks::sync_upload(options, me, set)?;
-        }
-        (ffi::CURLOPT_COPYPOSTFIELDS, Ptr(p)) => {
-            // SAFETY: as above.
-            let shim = unsafe { me.as_ref() };
-            let size = shim.post.borrow().size;
-            // SAFETY: the application passes its fields, a C string unless
-            // a size was set, or NULL.
-            let copied = unsafe { copy_post_fields(p, size) }?;
-            shim.post.borrow_mut().fields = copied;
-            shim.post_body.set(PostBody::Own);
-            set.method = Method::Post;
-            options.method = set.method();
-            callbacks::sync_upload(options, me, set)?;
-        }
-        (ffi::CURLOPT_POSTFIELDSIZE, Long(n)) => post_fields_size(options, me, set, wide(n))?,
-        (ffi::CURLOPT_POSTFIELDSIZE_LARGE, Off(n)) => post_fields_size(options, me, set, n)?,
-        (ffi::CURLOPT_UPLOAD | ffi::CURLOPT_PUT, Long(n)) => {
-            if n != 0 {
-                set.method = Method::Upload;
-                set.no_body = false;
-            } else {
-                // The opposite of an upload is a GET, or HEAD still if no
-                // body was asked for.
-                set.method = Method::Get;
-            }
-            options.method = set.method();
-            callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_PATH_AS_IS, Long(n)) => options.url_rules.path_as_is = n != 0,
         (ffi::CURLOPT_FAILONERROR, Long(n)) => options.http.fail_on_error = n != 0,
@@ -979,37 +877,6 @@ fn apply(
             options.address_scope = NonZeroU32::new(n);
         }
         (ffi::CURLOPT_CONNECTTIMEOUT_MS, Long(n)) => options.limits.connect = time_limit(n, 1)?,
-        (ffi::CURLOPT_TIMECONDITION, Long(n)) => {
-            #[allow(clippy::useless_conversion, reason = "a long is 32 bits on Windows")]
-            let last = ffi::CURL_TIMECOND_LAST.0.into();
-            if !(ffi::CURL_TIMECOND_NONE..last).contains(&n) {
-                return Err(Refused::Bad);
-            }
-            set.time_condition = n;
-            options.time_condition = time_condition(set);
-        }
-        (ffi::CURLOPT_TIMEVALUE, Long(n)) => {
-            set.time_value = wide(n);
-            options.time_condition = time_condition(set);
-        }
-        (ffi::CURLOPT_TIMEVALUE_LARGE, Off(n)) => {
-            set.time_value = n;
-            options.time_condition = time_condition(set);
-        }
-        (ffi::CURLOPT_LOW_SPEED_LIMIT, Long(n)) => {
-            if n < 0 {
-                return Err(Refused::Bad);
-            }
-            set.low_speed_limit = n;
-            options.flow.set(|g| &mut g.low_speed, low_speed(set))?;
-        }
-        (ffi::CURLOPT_LOW_SPEED_TIME, Long(n)) => {
-            if n < 0 {
-                return Err(Refused::Bad);
-            }
-            set.low_speed_time = n.min(c_long::from(u16::MAX));
-            options.flow.set(|g| &mut g.low_speed, low_speed(set))?;
-        }
         (ffi::CURLOPT_MAXFILESIZE, Long(n)) => {
             options
                 .flow
@@ -1038,8 +905,6 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.range = unsafe { owned(p) }?;
         }
-        (ffi::CURLOPT_INFILESIZE, Long(n)) => in_file_size(options, me, set, wide(n))?,
-        (ffi::CURLOPT_INFILESIZE_LARGE, Off(n)) => in_file_size(options, me, set, n)?,
         (ffi::CURLOPT_NEW_FILE_PERMS, Long(n)) => {
             let bits = u16::try_from(n).ok().and_then(FileMode::new);
             options.new_file_mode = bits.ok_or(Refused::Bad)?;
@@ -1091,13 +956,6 @@ fn apply(
             // 0 for the URL's own.
             let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
             options.port = std::num::NonZeroU16::new(port);
-        }
-        (ffi::CURLOPT_CURLU, Ptr(p)) => {
-            // Kept as given, read only as a transfer starts (`set.uh`,
-            // `Host::start_url`): the application need not have a URL
-            // handle behind it until then. Setting it clears the text URL.
-            set.curlu = p.cast_const().cast();
-            options.set_shared_url(None);
         }
         (ffi::CURLOPT_ACCEPT_ENCODING, Ptr(p)) => {
             use curl_core::coding::AcceptEncoding;
@@ -1602,17 +1460,6 @@ fn apply(
             // SAFETY: as above.
             options.http.user_agent = unsafe { owned(p) }?;
         }
-        // Each list is the application's, read as C walks it: the
-        // headers as each request starts, CONNECT_TO as each connection
-        // is looked for, RESOLVE as the next transfer starts.
-        (ffi::CURLOPT_HTTPHEADER, Ptr(p)) => {
-            options.http.headers = match slist(p)? {
-                Some(source) => UserHeaders::from_source(source)?,
-                None => UserHeaders::default(),
-            };
-            // A POST's body depends on its `Transfer-Encoding`.
-            callbacks::sync_upload(options, me, set)?;
-        }
         (ffi::CURLOPT_PROXYHEADER, Ptr(p)) => match slist(p)? {
             Some(source) => options.proxy.make_mut()?.headers = UserHeaders::from_source(source)?,
             None => {
@@ -1647,47 +1494,10 @@ fn apply(
             Some(source) => options.resolve.set_source(source)?,
             None => options.resolve.set([])?,
         },
-        (ffi::CURLOPT_PROTOCOLS_STR, Ptr(p)) => {
-            // SAFETY: as above.
-            let set = unsafe { string(p) }?.map(protocol_list).transpose()?;
-            set_schemes(options, |s| &mut s.allowed, set)?;
-        }
-        (ffi::CURLOPT_REDIR_PROTOCOLS_STR, Ptr(p)) => {
-            // SAFETY: as above.
-            let set = unsafe { string(p) }?.map(protocol_list).transpose()?;
-            set_schemes(options, |s| &mut s.redirect, set)?;
-        }
         (ffi::CURLOPT_DEFAULT_PROTOCOL, Ptr(p)) => {
             // SAFETY: as above.
             options.set_default_protocol(unsafe { string(p) }?)?;
         }
-        (ffi::CURLOPT_ERRORBUFFER, Ptr(p)) => {
-            *errbuf = p.cast();
-            callbacks::sync_error_buffer(options, me, *errbuf)?;
-        }
-        (ffi::CURLOPT_PRIVATE, Ptr(p)) => set.private = p,
-        (ffi::CURLOPT_STDERR, Ptr(p)) => {
-            ccb.stderr = if p.is_null() {
-                callbacks::standard().2
-            } else {
-                p.cast()
-            };
-            callbacks::sync_text(options, me, ccb)?;
-        }
-        (ffi::CURLOPT_WRITEDATA, Ptr(p)) => ccb.write_data = p,
-        (ffi::CURLOPT_HEADERDATA, Ptr(p)) => {
-            ccb.header_data = p;
-            callbacks::sync_text(options, me, ccb)?;
-        }
-        (ffi::CURLOPT_READDATA, Ptr(p)) => {
-            ccb.read_data = p;
-            callbacks::sync_input(options, me, ccb)?;
-        }
-        (ffi::CURLOPT_SEEKDATA, Ptr(p)) => ccb.seek_data = p,
-        (ffi::CURLOPT_IOCTLDATA, Ptr(p)) => ccb.ioctl_data = p,
-        (ffi::CURLOPT_XFERINFODATA, Ptr(p)) => ccb.progress_data = p,
-        (ffi::CURLOPT_DEBUGDATA, Ptr(p)) => ccb.debug_data = p,
-        (ffi::CURLOPT_TRAILERDATA, Ptr(p)) => ccb.trailer_data = p,
         (
             ffi::CURLOPT_CHUNK_DATA
             | ffi::CURLOPT_FNMATCH_DATA
@@ -1745,15 +1555,6 @@ fn apply(
             unsafe { string(p) }?;
         }
         (ffi::CURLOPT_HSTS_CTRL | ffi::CURLOPT_ALTSVC_CTRL, Long(_)) => {}
-        (ffi::CURLOPT_SSH_KEYFUNCTION, Ptr(p)) => {
-            // SAFETY: the application passes a function of the option's
-            // type, or NULL, which leaves the key to the known-hosts file.
-            ccb.ssh_key = unsafe { function(p) };
-            callbacks::sync_ssh_key(options, me, ccb)?;
-        }
-        (ffi::CURLOPT_SSH_KEYDATA, Ptr(p)) => ccb.ssh_key_data = p,
-        // libssh2's alone in C: a build with libssh does not know them.
-        #[cfg(not(feature = "libssh2"))]
         (ffi::CURLOPT_SSH_HOSTKEYFUNCTION | ffi::CURLOPT_SSH_HOSTKEYDATA, _) => {
             return Err(Refused::Unknown);
         }
@@ -1772,44 +1573,6 @@ fn apply(
             }
             callbacks::sync_ssh_host_key(options, me, &c)?;
             room.set(c);
-        }
-        (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
-            // SAFETY: the application passes a function of the option's
-            // type, or NULL.
-            ccb.trailer = unsafe { function(p) };
-            callbacks::sync_trailer(options, me, ccb)?;
-        }
-        // SAFETY: the application passes a function of the option's
-        // type, or NULL.
-        (ffi::CURLOPT_WRITEFUNCTION, Ptr(p)) => ccb.write = unsafe { function(p) },
-        (ffi::CURLOPT_HEADERFUNCTION, Ptr(p)) => {
-            // SAFETY: as above.
-            ccb.header = unsafe { function(p) };
-            callbacks::sync_text(options, me, ccb)?;
-        }
-        (ffi::CURLOPT_READFUNCTION, Ptr(p)) => {
-            // SAFETY: as above.
-            ccb.read = unsafe { function(p) };
-            callbacks::sync_input(options, me, ccb)?;
-        }
-        // SAFETY: as above.
-        (ffi::CURLOPT_SEEKFUNCTION, Ptr(p)) => ccb.seek = unsafe { function(p) },
-        // SAFETY: as above.
-        (ffi::CURLOPT_IOCTLFUNCTION, Ptr(p)) => ccb.ioctl = unsafe { function(p) },
-        (ffi::CURLOPT_DEBUGFUNCTION, Ptr(p)) => {
-            // SAFETY: as above.
-            ccb.debug = unsafe { function(p) };
-            callbacks::sync_text(options, me, ccb)?;
-        }
-        (ffi::CURLOPT_XFERINFOFUNCTION, Ptr(p)) => {
-            // SAFETY: as above.
-            ccb.xferinfo = unsafe { function(p) };
-            callbacks::sync_progress(options, me, set, ccb)?;
-        }
-        (ffi::CURLOPT_PROGRESSFUNCTION, Ptr(p)) => {
-            // SAFETY: as above.
-            ccb.progress = unsafe { function(p) };
-            callbacks::sync_progress(options, me, set, ccb)?;
         }
         (ffi::CURLOPT_TCP_NODELAY, Long(n)) => tcp(options, |s| s.nodelay = n != 0)?,
         (ffi::CURLOPT_TCP_KEEPALIVE, Long(n)) => tcp(options, |s| s.keepalive.on = n != 0)?,
@@ -1915,6 +1678,283 @@ fn apply(
             tls_hooks(me, options, |c| c.ctx = f)?;
         }
         (ffi::CURLOPT_SSL_CTX_DATA, Ptr(p)) => tls_hooks(me, options, |c| c.ctx_data = p)?,
+        (ffi::CURLOPT_PROTOCOLS_STR, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let set = unsafe { string(p) }?.map(protocol_list).transpose()?;
+            set_schemes(options, |s| &mut s.allowed, set)?;
+        }
+        (ffi::CURLOPT_REDIR_PROTOCOLS_STR, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let set = unsafe { string(p) }?.map(protocol_list).transpose()?;
+            set_schemes(options, |s| &mut s.redirect, set)?;
+        }
+        _ => return stateful(me, options, option, arg),
+    }
+    Ok(())
+}
+
+/// `apply_stateful` on copies of the application's functions and settings
+/// the shim keeps, which are kept only once the change is whole.
+fn stateful(
+    me: NonNull<ShimEasy>,
+    options: &mut Options,
+    option: CURLoption,
+    arg: Arg,
+) -> Result<(), Refused> {
+    // SAFETY: the handle is alive while its options are set; these cells
+    // are apart from the options being set.
+    let easy = unsafe { me.as_ref() };
+    let (mut ccb, mut set) = (easy.ccb.get(), easy.set.get());
+    let mut errbuf = easy.errbuf.get();
+    apply_stateful(me, options, &mut ccb, &mut set, &mut errbuf, option, arg)?;
+    easy.ccb.set(ccb);
+    easy.set.set(set);
+    easy.errbuf.set(errbuf);
+    Ok(())
+}
+
+/// Apply `option` with `arg` to the handle at `me`, where it reaches the
+/// application's functions and settings the shim keeps (`ccb`, `set`,
+/// `errbuf`), or is none `apply` names: the TLS options set in modules of
+/// their own come last, as rarer than these.
+fn apply_stateful(
+    me: NonNull<ShimEasy>,
+    options: &mut Options,
+    ccb: &mut CCallbacks,
+    set: &mut CSettings,
+    errbuf: &mut *mut c_char,
+    option: CURLoption,
+    arg: Arg,
+) -> Result<(), Refused> {
+    use Arg::{Long, Off, Ptr};
+    match (option, arg) {
+        (ffi::CURLOPT_NOPROGRESS, Long(n)) => {
+            set.no_progress = n != 0;
+            callbacks::sync_progress(options, me, set, ccb)?;
+        }
+        (ffi::CURLOPT_NOBODY, Long(n)) => {
+            set.no_body = n != 0;
+            if set.no_body {
+                set.method = Method::Head;
+            } else if set.method == Method::Head {
+                set.method = Method::Get;
+            }
+            options.method = set.method();
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_POST, Long(n)) => {
+            if n != 0 {
+                set.method = Method::Post;
+                set.no_body = false;
+            } else {
+                set.method = Method::Get;
+            }
+            options.method = set.method();
+            // SAFETY: the handle is alive while its options are set.
+            unsafe { me.as_ref() }.post_body.set(PostBody::Own);
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_MIMEPOST, Ptr(p)) => {
+            // SAFETY: the application passes a tree from `curl_mime_init`
+            // or NULL.
+            match unsafe { crate::mime::set_post(me, p) } {
+                Ok(()) => {}
+                Err(crate::mime::Refused::Attached) => return Err(Refused::Bad),
+                Err(crate::mime::Refused::Rewind) => return Err(Refused::Rewind),
+                Err(crate::mime::Refused::OutOfMemory) => return Err(Refused::OutOfMemory),
+            }
+            // SAFETY: as above.
+            let shim = unsafe { me.as_ref() };
+            shim.post_body.set(PostBody::Mime);
+            crate::mime::forget_post_state(shim);
+            set.method = Method::Post;
+            set.no_body = false;
+            options.method = set.method();
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_HTTPPOST, Ptr(p)) => {
+            // SAFETY: the handle is alive while its options are set.
+            let shim = unsafe { me.as_ref() };
+            // Made a tree again at the next request, even if the same.
+            crate::mime::forget_post_state(shim);
+            shim.posted_or_make()?.chain.set(p.cast());
+            shim.post_body.set(PostBody::Form);
+            set.method = Method::Post;
+            set.no_body = false;
+            options.method = set.method();
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_HTTPGET, Long(n)) => {
+            if n != 0 {
+                set.method = Method::Get;
+                set.no_body = false;
+                options.method = set.method();
+                callbacks::sync_upload(options, me, set)?;
+            }
+        }
+        (ffi::CURLOPT_POSTFIELDS, Ptr(p)) => {
+            let fields = NonNull::new(p.cast::<u8>()).map_or(PostFields::None, PostFields::App);
+            // SAFETY: the handle is alive while its options are set.
+            let shim = unsafe { me.as_ref() };
+            shim.post.borrow_mut().fields = fields;
+            shim.post_body.set(PostBody::Own);
+            // A body to post leaves no body asked for as it was.
+            set.method = Method::Post;
+            options.method = set.method();
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_COPYPOSTFIELDS, Ptr(p)) => {
+            // SAFETY: as above.
+            let shim = unsafe { me.as_ref() };
+            let size = shim.post.borrow().size;
+            // SAFETY: the application passes its fields, a C string unless
+            // a size was set, or NULL.
+            let copied = unsafe { copy_post_fields(p, size) }?;
+            shim.post.borrow_mut().fields = copied;
+            shim.post_body.set(PostBody::Own);
+            set.method = Method::Post;
+            options.method = set.method();
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_POSTFIELDSIZE, Long(n)) => post_fields_size(options, me, set, wide(n))?,
+        (ffi::CURLOPT_POSTFIELDSIZE_LARGE, Off(n)) => post_fields_size(options, me, set, n)?,
+        (ffi::CURLOPT_UPLOAD | ffi::CURLOPT_PUT, Long(n)) => {
+            if n != 0 {
+                set.method = Method::Upload;
+                set.no_body = false;
+            } else {
+                // The opposite of an upload is a GET, or HEAD still if no
+                // body was asked for.
+                set.method = Method::Get;
+            }
+            options.method = set.method();
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_TIMECONDITION, Long(n)) => {
+            #[allow(clippy::useless_conversion, reason = "a long is 32 bits on Windows")]
+            let last = ffi::CURL_TIMECOND_LAST.0.into();
+            if !(ffi::CURL_TIMECOND_NONE..last).contains(&n) {
+                return Err(Refused::Bad);
+            }
+            set.time_condition = n;
+            options.time_condition = time_condition(set);
+        }
+        (ffi::CURLOPT_TIMEVALUE, Long(n)) => {
+            set.time_value = wide(n);
+            options.time_condition = time_condition(set);
+        }
+        (ffi::CURLOPT_TIMEVALUE_LARGE, Off(n)) => {
+            set.time_value = n;
+            options.time_condition = time_condition(set);
+        }
+        (ffi::CURLOPT_LOW_SPEED_LIMIT, Long(n)) => {
+            if n < 0 {
+                return Err(Refused::Bad);
+            }
+            set.low_speed_limit = n;
+            options.flow.set(|g| &mut g.low_speed, low_speed(set))?;
+        }
+        (ffi::CURLOPT_LOW_SPEED_TIME, Long(n)) => {
+            if n < 0 {
+                return Err(Refused::Bad);
+            }
+            set.low_speed_time = n.min(c_long::from(u16::MAX));
+            options.flow.set(|g| &mut g.low_speed, low_speed(set))?;
+        }
+        (ffi::CURLOPT_INFILESIZE, Long(n)) => in_file_size(options, me, set, wide(n))?,
+        (ffi::CURLOPT_INFILESIZE_LARGE, Off(n)) => in_file_size(options, me, set, n)?,
+        (ffi::CURLOPT_CURLU, Ptr(p)) => {
+            // Kept as given, read only as a transfer starts (`set.uh`,
+            // `Host::start_url`): the application need not have a URL
+            // handle behind it until then. Setting it clears the text URL.
+            set.curlu = p.cast_const().cast();
+            options.set_shared_url(None);
+        }
+        // Each list is the application's, read as C walks it: the
+        // headers as each request starts, CONNECT_TO as each connection
+        // is looked for, RESOLVE as the next transfer starts.
+        (ffi::CURLOPT_HTTPHEADER, Ptr(p)) => {
+            options.http.headers = match slist(p)? {
+                Some(source) => UserHeaders::from_source(source)?,
+                None => UserHeaders::default(),
+            };
+            // A POST's body depends on its `Transfer-Encoding`.
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_ERRORBUFFER, Ptr(p)) => {
+            *errbuf = p.cast();
+            callbacks::sync_error_buffer(options, me, *errbuf)?;
+        }
+        (ffi::CURLOPT_PRIVATE, Ptr(p)) => set.private = p,
+        (ffi::CURLOPT_STDERR, Ptr(p)) => {
+            ccb.stderr = if p.is_null() {
+                callbacks::standard().2
+            } else {
+                p.cast()
+            };
+            callbacks::sync_text(options, me, ccb)?;
+        }
+        (ffi::CURLOPT_WRITEDATA, Ptr(p)) => ccb.write_data = p,
+        (ffi::CURLOPT_HEADERDATA, Ptr(p)) => {
+            ccb.header_data = p;
+            callbacks::sync_text(options, me, ccb)?;
+        }
+        (ffi::CURLOPT_READDATA, Ptr(p)) => {
+            ccb.read_data = p;
+            callbacks::sync_input(options, me, ccb)?;
+        }
+        (ffi::CURLOPT_SEEKDATA, Ptr(p)) => ccb.seek_data = p,
+        (ffi::CURLOPT_IOCTLDATA, Ptr(p)) => ccb.ioctl_data = p,
+        (ffi::CURLOPT_XFERINFODATA, Ptr(p)) => ccb.progress_data = p,
+        (ffi::CURLOPT_DEBUGDATA, Ptr(p)) => ccb.debug_data = p,
+        (ffi::CURLOPT_TRAILERDATA, Ptr(p)) => ccb.trailer_data = p,
+        (ffi::CURLOPT_SSH_KEYFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL, which leaves the key to the known-hosts file.
+            ccb.ssh_key = unsafe { function(p) };
+            callbacks::sync_ssh_key(options, me, ccb)?;
+        }
+        (ffi::CURLOPT_SSH_KEYDATA, Ptr(p)) => ccb.ssh_key_data = p,
+        // libssh2's alone in C: a build with libssh does not know them.
+        #[cfg(not(feature = "libssh2"))]
+        (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL.
+            ccb.trailer = unsafe { function(p) };
+            callbacks::sync_trailer(options, me, ccb)?;
+        }
+        // SAFETY: the application passes a function of the option's
+        // type, or NULL.
+        (ffi::CURLOPT_WRITEFUNCTION, Ptr(p)) => ccb.write = unsafe { function(p) },
+        (ffi::CURLOPT_HEADERFUNCTION, Ptr(p)) => {
+            // SAFETY: as above.
+            ccb.header = unsafe { function(p) };
+            callbacks::sync_text(options, me, ccb)?;
+        }
+        (ffi::CURLOPT_READFUNCTION, Ptr(p)) => {
+            // SAFETY: as above.
+            ccb.read = unsafe { function(p) };
+            callbacks::sync_input(options, me, ccb)?;
+        }
+        // SAFETY: as above.
+        (ffi::CURLOPT_SEEKFUNCTION, Ptr(p)) => ccb.seek = unsafe { function(p) },
+        // SAFETY: as above.
+        (ffi::CURLOPT_IOCTLFUNCTION, Ptr(p)) => ccb.ioctl = unsafe { function(p) },
+        (ffi::CURLOPT_DEBUGFUNCTION, Ptr(p)) => {
+            // SAFETY: as above.
+            ccb.debug = unsafe { function(p) };
+            callbacks::sync_text(options, me, ccb)?;
+        }
+        (ffi::CURLOPT_XFERINFOFUNCTION, Ptr(p)) => {
+            // SAFETY: as above.
+            ccb.xferinfo = unsafe { function(p) };
+            callbacks::sync_progress(options, me, set, ccb)?;
+        }
+        (ffi::CURLOPT_PROGRESSFUNCTION, Ptr(p)) => {
+            // SAFETY: as above.
+            ccb.progress = unsafe { function(p) };
+            callbacks::sync_progress(options, me, set, ccb)?;
+        }
         (option, arg) if tls::takes(option) => tls::apply(options, option, arg)?,
         (option, arg) if proxy_tls::takes(option) => proxy_tls::apply(options, option, arg)?,
         (option, _) if known::KNOWN.binary_search(&option.0).is_ok() => {
@@ -2108,8 +2148,7 @@ unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
         _ => None,
     };
     let me = NonNull::from(easy);
-    let (mut ccb, mut set, mut errbuf) = (easy.ccb.get(), easy.set.get(), easy.errbuf.get());
-    let applied = easy.with_options(|o| apply(me, o, &mut ccb, &mut set, &mut errbuf, option, arg));
+    let applied = easy.with_options(|o| apply(me, o, option, arg));
     if option == ffi::CURLOPT_URL && applied.is_ok() {
         // The URL reported is the one set, or none, as C points
         // `state.url` at it: in place of the last transfer's, or of the
@@ -2134,10 +2173,6 @@ unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
         Ok(Err(Refused::Malformed)) => return ffi::CURLE_URL_MALFORMAT,
         Err(_) => return CURLE_RECURSIVE_API_CALL,
     };
-    // Kept only once the change is whole.
-    easy.ccb.set(ccb);
-    easy.set.set(set);
-    easy.errbuf.set(errbuf);
     if option == ffi::CURLOPT_CURLU {
         // The URL reported goes, as C frees `state.url`: the last
         // transfer's, or the one under way's, set from its callback,

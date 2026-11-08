@@ -7606,6 +7606,50 @@ fn a_perform_out_of_memory_adding_its_handle_says_so() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// A setopt that runs out of memory partway keeps none of its change to
+/// the application's functions and settings the shim holds: with
+/// progress on, a progress function wants an adapter, and so does
+/// progress turned on with a function set; refused it, the handle keeps
+/// the function and the switch it had.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_setopt_out_of_memory_keeps_none_of_its_change() {
+    use curl_alloc::track::fail_once_after_here;
+    unsafe extern "C" fn progress(
+        _: *mut c_void,
+        _: ffi::curl_off_t,
+        _: ffi::curl_off_t,
+        _: ffi::curl_off_t,
+        _: ffi::curl_off_t,
+    ) -> c_int {
+        0
+    }
+    let f: ffi::curl_xferinfo_callback = Some(progress);
+    // SAFETY: a live handle and a function of the option's type.
+    let set_function = |c| unsafe { curl_easy_setopt(c, ffi::CURLOPT_XFERINFOFUNCTION, f) };
+    let c = curl_easy_init();
+    // SAFETY: a live handle.
+    let shim = unsafe { easy::handle(c) }.unwrap();
+    assert_eq!(long(c, ffi::CURLOPT_NOPROGRESS, 0), CURLE_OK);
+    let (code, refused) = fail_once_after_here(0, || set_function(c));
+    assert!(refused);
+    assert_eq!(code, ffi::CURLE_OUT_OF_MEMORY);
+    assert!(shim.ccb.get().xferinfo.is_none());
+    // Progress off, the function needs no adapter.
+    assert_eq!(long(c, ffi::CURLOPT_NOPROGRESS, 1), CURLE_OK);
+    assert_eq!(set_function(c), CURLE_OK);
+    assert!(shim.ccb.get().xferinfo.is_some());
+    let (code, refused) = fail_once_after_here(0, || long(c, ffi::CURLOPT_NOPROGRESS, 0));
+    assert!(refused);
+    assert_eq!(code, ffi::CURLE_OUT_OF_MEMORY);
+    assert!(shim.set.get().no_progress);
+    // With the memory, it is kept.
+    assert_eq!(long(c, ffi::CURLOPT_NOPROGRESS, 0), CURLE_OK);
+    assert!(!shim.set.get().no_progress);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// What a test's socket functions saw, and what its configurer answers.
 /// These tests open, connect and close their sockets with libc's calls,
 /// so they run on Unix only.

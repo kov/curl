@@ -668,7 +668,7 @@ fn apply(
         (ffi::CURLOPT_MIME_OPTIONS, Long(n)) => {
             // A group never made already says no.
             if n & ffi::CURLMIMEOPT_FORMESCAPE != 0 {
-                options.mime.make_mut()?.form_escape = true;
+                options.mime.assign(|g| &mut g.form_escape, true)?;
             } else if let Some(m) = options.mime.made_mut() {
                 m.form_escape = false;
             }
@@ -786,13 +786,13 @@ fn apply(
             options.doh.set(|d| &mut d.url, url)?;
         }
         (ffi::CURLOPT_DOH_SSL_VERIFYPEER, Long(n)) => {
-            options.doh.make_mut()?.verify_peer = n != 0;
+            options.doh.assign(|g| &mut g.verify_peer, n != 0)?;
         }
         (ffi::CURLOPT_DOH_SSL_VERIFYHOST, Long(n)) => {
-            options.doh.make_mut()?.verify_host = n != 0;
+            options.doh.assign(|g| &mut g.verify_host, n != 0)?;
         }
         (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, Long(n)) => {
-            options.doh.make_mut()?.verify_status = n != 0;
+            options.doh.assign(|g| &mut g.verify_status, n != 0)?;
         }
         (ffi::CURLOPT_PIPEWAIT, Long(n)) => options.http.pipewait = n != 0,
         // Out of 1 to 256, the weight stays as it was (`CURLOPT_STREAM_WEIGHT`).
@@ -833,17 +833,20 @@ fn apply(
             options.tls.options.make_mut()?.ssl_options =
                 curl_core::options::SslOptions::from_bits(n as u8);
         }
-        (ffi::CURLOPT_SSL_ENABLE_ALPN, Long(n)) => options.tls.options.make_mut()?.alpn = n != 0,
+        (ffi::CURLOPT_SSL_ENABLE_ALPN, Long(n)) => {
+            options.tls.options.assign(|g| &mut g.alpn, n != 0)?
+        }
         (ffi::CURLOPT_CA_CACHE_TIMEOUT, Long(n)) => {
             // -1 keeps the store for ever, 0 keeps none; below -1 is
             // refused, past `INT_MAX` taken as it (`value_range`).
-            options.tls.options.make_mut()?.ca_cache = match n {
+            let value = match n {
                 -1 => curl_core::options::CaCache::Forever,
                 0 => curl_core::options::CaCache::Off,
                 n => curl_core::options::CaCache::For(std::time::Duration::from_secs(
                     u64::try_from(n.min(c_long::from(c_int::MAX))).map_err(|_| Refused::Bad)?,
                 )),
             };
+            options.tls.options.assign(|g| &mut g.ca_cache, value)?;
         }
         (ffi::CURLOPT_CAINFO, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
@@ -1048,9 +1051,13 @@ fn apply(
         }
         (ffi::CURLOPT_NEW_DIRECTORY_PERMS, Long(n)) => {
             let bits = u16::try_from(n).ok().and_then(FileMode::new);
-            options.ssh.make_mut()?.new_directory_mode = bits.ok_or(Refused::Bad)?;
+            options
+                .ssh
+                .assign(|g| &mut g.new_directory_mode, bits.ok_or(Refused::Bad)?)?;
         }
-        (ffi::CURLOPT_SSH_COMPRESSION, Long(n)) => options.ssh.make_mut()?.compression = n != 0,
+        (ffi::CURLOPT_SSH_COMPRESSION, Long(n)) => {
+            options.ssh.assign(|g| &mut g.compression, n != 0)?
+        }
         (ffi::CURLOPT_SSH_PUBLIC_KEYFILE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             let value = unsafe { owned(p) }?;
@@ -1130,12 +1137,13 @@ fn apply(
             options.login.set(|g| &mut g.password, value)?;
         }
         (ffi::CURLOPT_NETRC, Long(n)) => {
-            options.netrc.make_mut()?.mode = match n {
+            let mode = match n {
                 ffi::CURL_NETRC_IGNORED => curl_core::options::NetrcMode::Ignored,
                 ffi::CURL_NETRC_OPTIONAL => curl_core::options::NetrcMode::Optional,
                 ffi::CURL_NETRC_REQUIRED => curl_core::options::NetrcMode::Required,
                 _ => return Err(Refused::Bad),
             };
+            options.netrc.assign(|g| &mut g.mode, mode)?;
         }
         (ffi::CURLOPT_PROXY, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
@@ -1190,10 +1198,12 @@ fn apply(
         }
         (ffi::CURLOPT_PROXYPORT, Long(n)) => {
             let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
-            options.proxy.make_mut()?.port = NonZeroU16::new(port);
+            options
+                .proxy
+                .assign(|g| &mut g.port, NonZeroU16::new(port))?;
         }
         (ffi::CURLOPT_PROXYTYPE, Long(n)) => {
-            options.proxy.make_mut()?.kind = match n {
+            let value = match n {
                 ffi::CURLPROXY_HTTP => ProxyType::Http,
                 ffi::CURLPROXY_HTTP_1_0 => ProxyType::Http10,
                 ffi::CURLPROXY_HTTPS => ProxyType::Https,
@@ -1208,9 +1218,14 @@ fn apply(
                 ffi::CURLPROXY_SOCKS5_HOSTNAME => ProxyType::Socks5Hostname,
                 _ => return Err(Refused::Bad),
             };
+            options.proxy.assign(|g| &mut g.kind, value)?;
         }
-        (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => options.proxy.make_mut()?.tunnel = n != 0,
-        (ffi::CURLOPT_HAPROXYPROTOCOL, Long(n)) => options.proxy.make_mut()?.haproxy = n != 0,
+        (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => {
+            options.proxy.assign(|g| &mut g.tunnel, n != 0)?
+        }
+        (ffi::CURLOPT_HAPROXYPROTOCOL, Long(n)) => {
+            options.proxy.assign(|g| &mut g.haproxy, n != 0)?;
+        }
         // The service names are kept whether or not GSS-API is built, as
         // C keeps them: SASL reads the origin's too.
         (ffi::CURLOPT_SERVICE_NAME, Ptr(p)) => {
@@ -1225,7 +1240,7 @@ fn apply(
         }
         (ffi::CURLOPT_GSSAPI_DELEGATION, Long(n)) => {
             let delegation = delegation(n, kerberos())?;
-            options.login.make_mut()?.delegation = delegation;
+            options.login.assign(|g| &mut g.delegation, delegation)?;
         }
         (ffi::CURLOPT_SOCKS5_GSSAPI_NEC, Long(n)) => {
             let nec = gss_bool(n, kerberos())?;
@@ -1242,10 +1257,12 @@ fn apply(
             }
         }
         (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, Long(n)) => {
-            options.proxy.make_mut()?.suppress_connect_headers = n != 0;
+            options
+                .proxy
+                .assign(|g| &mut g.suppress_connect_headers, n != 0)?;
         }
         (ffi::CURLOPT_PROXY_TRANSFER_MODE, Long(n)) => {
-            options.proxy.make_mut()?.transfer_mode = n != 0;
+            options.proxy.assign(|g| &mut g.transfer_mode, n != 0)?;
         }
         (ffi::CURLOPT_NETRC_FILE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
@@ -1275,7 +1292,7 @@ fn apply(
                 3 => UseSsl::All,
                 _ => return Err(Refused::Bad),
             };
-            options.line.make_mut()?.use_ssl = level;
+            options.line.assign(|g| &mut g.use_ssl, level)?;
         }
         (ffi::CURLOPT_MAIL_FROM, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
@@ -1299,11 +1316,13 @@ fn apply(
         // Brought within TFTP's bounds, 0 among them (`value_range`).
         (ffi::CURLOPT_TFTP_BLKSIZE, Long(n)) => {
             let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
-            options.small.make_mut()?.tftp_blksize = Some(TftpBlockSize::clamped(n));
+            options
+                .small
+                .assign(|g| &mut g.tftp_blksize, Some(TftpBlockSize::clamped(n)))?;
         }
         (ffi::CURLOPT_TFTP_NO_OPTIONS, Long(n)) => {
             if n != 0 || options.small.made_mut().is_some() {
-                options.small.make_mut()?.tftp_no_options = n != 0;
+                options.small.assign(|g| &mut g.tftp_no_options, n != 0)?;
             }
         }
         // One of C's eleven, counted from 1 (`setopt_RTSP_REQUEST`).
@@ -1314,7 +1333,7 @@ fn apply(
                 .and_then(|i| RtspRequest::ALL.get(i))
                 .ok_or(Refused::Bad)?;
             if *kind != RtspRequest::default() || options.small.made_mut().is_some() {
-                options.small.make_mut()?.rtsp_request = *kind;
+                options.small.assign(|g| &mut g.rtsp_request, *kind)?;
             }
         }
         // An id set is the application's, from no origin of a server's
@@ -1366,54 +1385,70 @@ fn apply(
             }
         },
         (ffi::CURLOPT_MAIL_RCPT_ALLOWFAILS, Long(n)) => {
-            options.line.make_mut()?.mail_rcpt_allowfails = n != 0;
+            options
+                .line
+                .assign(|g| &mut g.mail_rcpt_allowfails, n != 0)?;
         }
-        (ffi::CURLOPT_SASL_IR, Long(n)) => options.line.make_mut()?.sasl_ir = n != 0,
-        (ffi::CURLOPT_DIRLISTONLY, Long(n)) => options.line.make_mut()?.list_only = n != 0,
-        (ffi::CURLOPT_APPEND, Long(n)) => options.line.make_mut()?.ftp.append = n != 0,
-        (ffi::CURLOPT_TRANSFERTEXT, Long(n)) => options.line.make_mut()?.ftp.ascii = n != 0,
-        (ffi::CURLOPT_FTP_USE_EPRT, Long(n)) => options.line.make_mut()?.ftp.use_eprt = n != 0,
-        (ffi::CURLOPT_FTP_USE_EPSV, Long(n)) => options.line.make_mut()?.ftp.use_epsv = n != 0,
-        (ffi::CURLOPT_FTP_USE_PRET, Long(n)) => options.line.make_mut()?.ftp.use_pret = n != 0,
-        (ffi::CURLOPT_WILDCARDMATCH, Long(n)) => options.line.make_mut()?.ftp.wildcard = n != 0,
+        (ffi::CURLOPT_SASL_IR, Long(n)) => options.line.assign(|g| &mut g.sasl_ir, n != 0)?,
+        (ffi::CURLOPT_DIRLISTONLY, Long(n)) => options.line.assign(|g| &mut g.list_only, n != 0)?,
+        (ffi::CURLOPT_APPEND, Long(n)) => options.line.assign(|g| &mut g.ftp.append, n != 0)?,
+        (ffi::CURLOPT_TRANSFERTEXT, Long(n)) => {
+            options.line.assign(|g| &mut g.ftp.ascii, n != 0)?
+        }
+        (ffi::CURLOPT_FTP_USE_EPRT, Long(n)) => {
+            options.line.assign(|g| &mut g.ftp.use_eprt, n != 0)?;
+        }
+        (ffi::CURLOPT_FTP_USE_EPSV, Long(n)) => {
+            options.line.assign(|g| &mut g.ftp.use_epsv, n != 0)?;
+        }
+        (ffi::CURLOPT_FTP_USE_PRET, Long(n)) => {
+            options.line.assign(|g| &mut g.ftp.use_pret, n != 0)?;
+        }
+        (ffi::CURLOPT_WILDCARDMATCH, Long(n)) => {
+            options.line.assign(|g| &mut g.ftp.wildcard, n != 0)?;
+        }
         (ffi::CURLOPT_FTP_SKIP_PASV_IP, Long(n)) => {
-            options.line.make_mut()?.ftp.skip_pasv_ip = n != 0;
+            options.line.assign(|g| &mut g.ftp.skip_pasv_ip, n != 0)?;
         }
         (ffi::CURLOPT_FTP_FILEMETHOD, Long(n)) => {
-            options.line.make_mut()?.ftp.method = match n {
+            let value = match n {
                 0 | 1 => FtpMethod::MultiCwd,
                 2 => FtpMethod::NoCwd,
                 3 => FtpMethod::SingleCwd,
                 _ => return Err(Refused::Bad),
             };
+            options.line.assign(|g| &mut g.ftp.method, value)?;
         }
         (ffi::CURLOPT_FTP_SSL_CCC, Long(n)) => {
-            options.line.make_mut()?.ftp.ssl_ccc = match n {
+            let value = match n {
                 0 => Ccc::None,
                 1 => Ccc::Passive,
                 2 => Ccc::Active,
                 _ => return Err(Refused::Bad),
             };
+            options.line.assign(|g| &mut g.ftp.ssl_ccc, value)?;
         }
         (ffi::CURLOPT_FTPSSLAUTH, Long(n)) => {
-            options.line.make_mut()?.ftp.ssl_auth = match n {
+            let value = match n {
                 0 => SslAuth::Default,
                 1 => SslAuth::Ssl,
                 2 => SslAuth::Tls,
                 _ => return Err(Refused::Bad),
             };
+            options.line.assign(|g| &mut g.ftp.ssl_auth, value)?;
         }
         (ffi::CURLOPT_ACCEPTTIMEOUT_MS, Long(n)) => {
             let limit = time_limit(n, 1)?;
-            options.line.make_mut()?.ftp.accept_timeout = limit;
+            options.line.assign(|g| &mut g.ftp.accept_timeout, limit)?;
         }
         (ffi::CURLOPT_FTP_CREATE_MISSING_DIRS, Long(n)) => {
-            options.line.make_mut()?.ftp.create_dirs = match n {
+            let value = match n {
                 0 => CreateDirs::No,
                 1 => CreateDirs::Create,
                 2 => CreateDirs::Retry,
                 _ => return Err(Refused::Bad),
             };
+            options.line.assign(|g| &mut g.ftp.create_dirs, value)?;
         }
         (ffi::CURLOPT_FTPPORT, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
@@ -1444,7 +1479,9 @@ fn apply(
             }
         }
         (ffi::CURLOPT_UPLOAD_FLAGS, Long(n)) => {
-            options.line.make_mut()?.upload_flags = upload_flags(n);
+            options
+                .line
+                .assign(|g| &mut g.upload_flags, upload_flags(n))?;
         }
         (ffi::CURLOPT_SERVER_RESPONSE_TIMEOUT, Long(n)) => {
             let limit = time_limit(n, 1000)?;
@@ -1550,7 +1587,10 @@ fn apply(
             }
         }
         (ffi::CURLOPT_COOKIESESSION, Long(n)) => {
-            options.http.cookies.make_mut()?.new_session = n != 0
+            options
+                .http
+                .cookies
+                .assign(|g| &mut g.new_session, n != 0)?;
         }
         // On the jar alone, which `jar_option` reaches; a line longer
         // than C takes, which no keyword is, refused first (`cookielist`).
@@ -1583,7 +1623,10 @@ fn apply(
         },
         // Any bit but `CURLHEADER_SEPARATE`'s is ignored, as in C.
         (ffi::CURLOPT_HEADEROPT, Long(n)) => {
-            options.proxy.make_mut()?.unified_headers = n & ffi::CURLHEADER_SEPARATE == 0;
+            options.proxy.assign(
+                |g| &mut g.unified_headers,
+                n & ffi::CURLHEADER_SEPARATE == 0,
+            )?;
         }
         (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => match slist(p)? {
             Some(source) => options.connect_to.set_source(source)?,

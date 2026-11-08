@@ -57,10 +57,14 @@ file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::proxy_options_are_checked_as_in_c
 --- old
             let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
-            options.proxy.make_mut()?.port = NonZeroU16::new(port);
+            options
+                .proxy
+                .assign(|g| &mut g.port, NonZeroU16::new(port))?;
 --- new
             let port = n as u16;
-            options.proxy.make_mut()?.port = NonZeroU16::new(port);
+            options
+                .proxy
+                .assign(|g| &mut g.port, NonZeroU16::new(port))?;
 
 === a 407 fails whatever the proxy's credentials
 file: crates/curl-core/src/auth/http.rs

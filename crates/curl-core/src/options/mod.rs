@@ -892,6 +892,28 @@ impl<T: ColdGroup> Cold<T> {
         Ok(())
     }
 
+    /// Set the option `field` names to `value`. Setting one to its
+    /// default in a group never made changes nothing and makes nothing:
+    /// the group's defaults hold it there already. The C tool sets
+    /// several such options to their defaults on every handle
+    /// (`CURLOPT_NETRC`, `CURLOPT_COOKIESESSION`, `CURLOPT_DIRLISTONLY`,
+    /// `CURLOPT_HTTPPROXYTUNNEL`), which C keeps in its handle at no
+    /// cost. Setting any other value makes the group.
+    pub fn assign<V: PartialEq>(
+        &mut self,
+        field: impl Fn(&mut T) -> &mut V,
+        value: V,
+    ) -> Result<(), OutOfMemory> {
+        if self.0.is_none() {
+            let mut defaults = T::NONE;
+            if *field(&mut defaults) == value {
+                return Ok(());
+            }
+        }
+        *field(self.make_mut()?) = value;
+        Ok(())
+    }
+
     /// A copy, made only if this one was, copied by `copy`.
     fn try_clone(
         &self,

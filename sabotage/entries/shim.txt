@@ -644,3 +644,12 @@ witness: curl-sys-abi handle_tests::a_copy_s_adapters_are_its_own
 --- old
         ssh.key_handler = None;
 --- new
+
+=== an option set to its default makes its group
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::an_option_set_to_its_default_makes_no_group
+features: debug-hooks
+--- old
+            if *field(&mut defaults) == value {
+--- new
+            if *field(&mut defaults) == value && false {

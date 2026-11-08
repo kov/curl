@@ -7292,6 +7292,97 @@ fn clearing_an_option_makes_no_group() {
     assert_eq!(held.bytes, 0, "a handle left alive");
 }
 
+/// An option of a group set to its default, as C's own (`Curl_init_userdefined`),
+/// makes no group: the C tool sets several so on every handle. Any other
+/// value makes it, and setting the default then sets it back.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn an_option_set_to_its_default_makes_no_group() {
+    use curl_alloc::track::measure;
+    // Each with its default and another value.
+    let defaults = [
+        (
+            ffi::CURLOPT_NETRC,
+            ffi::CURL_NETRC_IGNORED,
+            ffi::CURL_NETRC_REQUIRED,
+        ),
+        (ffi::CURLOPT_COOKIESESSION, 0, 1),
+        (ffi::CURLOPT_HTTPPROXYTUNNEL, 0, 1),
+        (ffi::CURLOPT_HAPROXYPROTOCOL, 0, 1),
+        (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, 0, 1),
+        (ffi::CURLOPT_PROXY_TRANSFER_MODE, 0, 1),
+        (
+            ffi::CURLOPT_PROXYTYPE,
+            ffi::CURLPROXY_HTTP,
+            ffi::CURLPROXY_SOCKS5,
+        ),
+        (ffi::CURLOPT_PROXYPORT, 0, 8080),
+        (ffi::CURLOPT_MAIL_RCPT_ALLOWFAILS, 0, 1),
+        (ffi::CURLOPT_SASL_IR, 0, 1),
+        (ffi::CURLOPT_DIRLISTONLY, 0, 1),
+        (ffi::CURLOPT_APPEND, 0, 1),
+        (ffi::CURLOPT_TRANSFERTEXT, 0, 1),
+        (ffi::CURLOPT_FTP_USE_EPRT, 1, 0),
+        (ffi::CURLOPT_FTP_USE_EPSV, 1, 0),
+        (ffi::CURLOPT_FTP_USE_PRET, 0, 1),
+        (ffi::CURLOPT_WILDCARDMATCH, 0, 1),
+        (ffi::CURLOPT_FTP_SKIP_PASV_IP, 1, 0),
+        (
+            ffi::CURLOPT_FTP_FILEMETHOD,
+            ffi::CURLFTPMETHOD_DEFAULT,
+            ffi::CURLFTPMETHOD_NOCWD,
+        ),
+        (
+            ffi::CURLOPT_FTP_CREATE_MISSING_DIRS,
+            0,
+            ffi::CURLFTP_CREATE_DIR,
+        ),
+        (ffi::CURLOPT_UPLOAD_FLAGS, ffi::CURLULFLAG_SEEN, 0),
+        (ffi::CURLOPT_SSL_ENABLE_ALPN, 1, 0),
+    ];
+    let ((), held) = measure(|| {
+        for (option, default, other) in defaults {
+            let c = curl_easy_init();
+            let (code, cost) = measure(|| long(c, option, default));
+            assert_eq!((code, cost.allocations), (CURLE_OK, 0), "{option:?}");
+            let (code, cost) = measure(|| long(c, option, other));
+            assert_eq!((code, cost.allocations), (CURLE_OK, 1), "{option:?}");
+            // SAFETY: a live handle, not used again.
+            unsafe { curl_easy_cleanup(c) };
+        }
+    });
+    assert_eq!(held.bytes, 0, "a handle left alive");
+    let c = curl_easy_init();
+    let read = |c| {
+        options(c, |o| {
+            (
+                o.netrc.mode,
+                o.http.cookies.new_session,
+                o.proxy.tunnel,
+                o.line.list_only,
+                o.line.ftp.use_epsv,
+            )
+        })
+    };
+    use curl_core::options::NetrcMode;
+    let unset = read(c);
+    assert_eq!(unset, (NetrcMode::Ignored, false, false, false, true));
+    long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_OPTIONAL);
+    long(c, ffi::CURLOPT_COOKIESESSION, 1);
+    long(c, ffi::CURLOPT_HTTPPROXYTUNNEL, 1);
+    long(c, ffi::CURLOPT_DIRLISTONLY, 1);
+    long(c, ffi::CURLOPT_FTP_USE_EPSV, 0);
+    assert_eq!(read(c), (NetrcMode::Optional, true, true, true, false));
+    long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_IGNORED);
+    long(c, ffi::CURLOPT_COOKIESESSION, 0);
+    long(c, ffi::CURLOPT_HTTPPROXYTUNNEL, 0);
+    long(c, ffi::CURLOPT_DIRLISTONLY, 0);
+    long(c, ffi::CURLOPT_FTP_USE_EPSV, 1);
+    assert_eq!(read(c), unset, "the defaults set back in a group made");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_COOKIELIST` "FLUSH" replaces a jar named long making the
 /// allocations it makes for one named short, as C copies no name: std's
 /// rename copied each name of 384 bytes or more, the jar's and the one it

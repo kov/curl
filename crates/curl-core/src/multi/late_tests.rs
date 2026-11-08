@@ -561,7 +561,7 @@ fn through_the_resolver_an_answer_during_the_handshake_is_kept() {
     answered_meanwhile_is_said(&said);
     let came = at(&said, 0, "[DNS] Host late.test:443 resolved IPv6: ::1");
     assert_eq!(
-        said[came + 1],
+        said[came + 2],
         "[DNS] [A+AAAA] resolve complete for late.test:443"
     );
 }
@@ -659,8 +659,10 @@ fn through_a_library_the_name_timer_stays_armed_once_answered() {
 
 /// Through the network's resolver, said as C's threaded resolver says it,
 /// the resolve still going on beside the handshake arms the name's timer
-/// for its time left, and its answer disarms it: C's threaded build says
-/// `timeouts=1` through the handshake with AAAA still out, and
+/// for its time left, and its answer disarms it, said between the
+/// answers' lines and the resolve's end: C's threaded build says
+/// `timeouts=1` through the handshake with AAAA still out,
+/// `[TIMER] [ASYNC_NAME] cleared` as it takes the answer, and
 /// `timeouts=0` once it has come (`Curl_async_pollset`,
 /// `Curl_expire_clear`).
 #[test]
@@ -671,6 +673,12 @@ fn through_the_resolver_the_name_timer_is_armed_until_the_answer() {
         &said,
         won,
         "[DNS] [A+AAAA] resolve complete for late.test:443",
+    );
+    let v6 = at(&said, won, "[DNS] Host late.test:443 resolved IPv6: ::1");
+    assert_eq!(
+        said[v6 + 1..complete],
+        ["[TIMER] [ASYNC_NAME] cleared"],
+        "{said:#?}"
     );
     let shaking = name_timer_in(&said[..complete], won, "CONNECTING");
     assert!(!shaking.is_empty(), "{said:#?}");

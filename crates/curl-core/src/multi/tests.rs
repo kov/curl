@@ -3259,6 +3259,63 @@ fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
     );
 }
 
+/// The threaded resolver's answer taken clears the name's timer, said
+/// after the answers' lines whether a family's address came or none did,
+/// and not while a query is still out (`Curl_async_take_result`'s
+/// `Curl_expire_clear`, after `async_thrdd_check_done` says done).
+#[test]
+fn a_queued_resolve_s_answer_clears_the_name_timer() {
+    use crate::conn::io::{Late, Peer, SharedNet};
+    let clock = ManualClock::new().unwrap();
+    let (late, gone) = (Late::new(), Late::new());
+    let net = FakeNet::new(clock.clone())
+        .with_peer(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+            Peer::Accepts,
+        )
+        .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late)
+        .with_late_name("gone.test", &[], &gone);
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(SharedNet(shared)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    // Each name's answer comes after its first pass.
+    let mut run = |url: &str, gate: &Late| {
+        let (e, lines) = traced(url);
+        let e = tracing(e, b"dns,timer");
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        gate.release();
+        m.perform(&mut NoEvents).unwrap();
+        m.remove(id, &mut NoEvents).unwrap();
+        trace_of(&lines)
+            .into_iter()
+            .map(|l| l.trim_end().to_owned())
+            .filter(|l| l.contains(" resolved IPv") || l == "[TIMER] [ASYNC_NAME] cleared")
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        run("tcp://late.test:1/", &late),
+        [
+            "[DNS] Host late.test:1 resolved IPv4: 127.0.0.1",
+            "[DNS] Host late.test:1 resolved IPv6: (none)",
+            "[TIMER] [ASYNC_NAME] cleared",
+        ]
+    );
+    assert_eq!(
+        run("tcp://gone.test:1/", &gone),
+        [
+            "[DNS] Host gone.test:1 resolved IPv4: (none)",
+            "[DNS] Host gone.test:1 resolved IPv6: (none)",
+            "[TIMER] [ASYNC_NAME] cleared",
+        ]
+    );
+}
+
 /// The DNS component traces the cache as C's does: each lookup, what
 /// answered a name it did not have and its keeping, the queries named
 /// as the IP version and an address's own family make them.

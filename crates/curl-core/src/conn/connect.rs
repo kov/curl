@@ -3085,6 +3085,7 @@ fn resolve_blocking_said(
                 if let Some(q) = queued {
                     let addrs = answer.addrs();
                     say_answered(q, name, at, addrs, &mut |parts| cx.of_with(dns, parts));
+                    say_name_timer_cleared(cx);
                 }
             }
             Ok(Some(answer))
@@ -3098,6 +3099,7 @@ fn resolve_blocking_said(
             }
             if let Some(q) = queued {
                 say_answered(q, name, at, &[], &mut |parts| cx.of_with(dns, parts));
+                say_name_timer_cleared(cx);
             }
             // With the resolver's reason, if it gives one, as the
             // reference build's c-ares does (`ares_strerror`).
@@ -3840,6 +3842,7 @@ impl Pending {
                     }
                 };
                 say_came(said, came, name, at.bytes(), addrs.unwrap_or(&[]), cx);
+                say_name_timer_cleared(cx);
                 self.live = Some(queried);
                 polled
             }
@@ -3869,6 +3872,14 @@ impl Pending {
             },
         }
     }
+}
+
+/// That the threaded resolver's answer, found or not, was taken and the
+/// name's timer cleared with it (`Curl_async_thrdd_take_result`'s
+/// `Curl_expire_clear`).
+pub(crate) fn say_name_timer_cleared(cx: &mut dyn ConnCx) {
+    let name = crate::multi::timers::TimerKind::AsyncName.name();
+    cx.of(Component::Timer, format_args!("[{name}] cleared"));
 }
 
 /// That the name's entry is made, as `Curl_dnscache_add` says it.

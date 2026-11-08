@@ -1229,3 +1229,33 @@ features: test-util
 --- new
     pub(crate) fn take_late(&mut self) -> Late {
         if true { return Late::default(); }
+
+=== the threaded resolver's answer taken leaves its timer uncleared in the trace
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_queued_resolve_s_answer_clears_the_name_timer
+features: test-util
+--- old
+                say_came(said, came, name, at.bytes(), addrs.unwrap_or(&[]), cx);
+                say_name_timer_cleared(cx);
+--- new
+                say_came(said, came, name, at.bytes(), addrs.unwrap_or(&[]), cx);
+
+=== a blocking resolve's answer leaves the name's timer uncleared in the trace
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
+features: test-util
+--- old
+                    say_answered(q, name, at, addrs, &mut |parts| cx.of_with(dns, parts));
+                    say_name_timer_cleared(cx);
+--- new
+                    say_answered(q, name, at, addrs, &mut |parts| cx.of_with(dns, parts));
+
+=== a blocking resolve's failure leaves the name's timer uncleared in the trace
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
+features: test-util
+--- old
+                say_answered(q, name, at, &[], &mut |parts| cx.of_with(dns, parts));
+                say_name_timer_cleared(cx);
+--- new
+                say_answered(q, name, at, &[], &mut |parts| cx.of_with(dns, parts));

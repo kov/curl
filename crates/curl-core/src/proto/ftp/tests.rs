@@ -2006,7 +2006,9 @@ fn the_address_port_offers_is_resolved_as_c_resolves_it() {
 /// The address `PORT` offers, resolved by a resolver that queues a
 /// query for each family as C's threaded one does, is said as that
 /// resolver says it, whether found or not: its queries queued, then each
-/// family's answer (`async_thrdd_query`, `async_thrdd_check_done`).
+/// family's answer, then the name's timer cleared as the answer is taken
+/// (`async_thrdd_query`, `async_thrdd_check_done`,
+/// `Curl_async_take_result`).
 #[test]
 fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
     let late = crate::conn::io::Late::new();
@@ -2023,7 +2025,7 @@ fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
     // A transfer before it, so that this one's number is not the first.
     let before = m.add(Box::new(Easy::new()), (), &mut NoEvents).unwrap();
     m.remove(before, &mut NoEvents).unwrap();
-    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns", |o| {
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns,timer", |o| {
         o.line.make_mut().unwrap().ftp.port = Some(b"port.test".to_vec());
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -2036,6 +2038,8 @@ fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
     let started = at_in(after, "] hostip_resolv started -> 81\n");
     let v4 = at_in(after, "[DNS] Host port.test:0 resolved IPv4: 127.0.0.1\n");
     let v6 = at_in(after, "[DNS] Host port.test:0 resolved IPv6: (none)\n");
+    let cleared = "[DNS] Host port.test:0 resolved IPv6: (none)\n[TIMER] [ASYNC_NAME] cleared\n";
+    assert!(after.contains(cleared), "{said}");
     assert!(
         after[..queued_v6].ends_with("[DNS] queueing query [1/1"),
         "{said}"
@@ -2045,7 +2049,7 @@ fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
 
     let control = Conversation::replies(&ACTIVE_LOGIN_AND_SETUP[..4], false).greeting();
     let (mut m, _) = serving_active_with(&[&control], &[], ACCEPT_AFTER, names);
-    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns", |o| {
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns,timer", |o| {
         o.line.make_mut().unwrap().ftp.port = Some(b"gone.test".to_vec());
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -2056,6 +2060,8 @@ fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
     let queued = at_in(after, "] A gone.test:0\n");
     let started = at_in(after, "] hostip_resolv started -> 81\n");
     let v4 = at_in(after, "[DNS] Host gone.test:0 resolved IPv4: (none)\n");
+    let cleared = "[DNS] Host gone.test:0 resolved IPv6: (none)\n[TIMER] [ASYNC_NAME] cleared\n";
+    assert!(after.contains(cleared), "{said}");
     let failed = at_in(after, "Could not resolve host: gone.test\n");
     assert!(queued < started && started < v4 && v4 < failed, "{said}");
 }

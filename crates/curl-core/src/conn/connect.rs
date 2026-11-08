@@ -1266,14 +1266,16 @@ impl ConnectMachine {
             Stage::Resolving(_) => return Ok(None),
         };
         match late.poll(self.route.destination(), addresses, cx) {
-            Err(e) => match failed {
-                Some(failed) if !matches!(e, ConnectError::OutOfMemory) => {
+            Err(OutOfMemory) => Err(ConnectError::OutOfMemory),
+            Ok(LateLook::Waiting) => Ok(None),
+            Ok(LateLook::Found(found)) => Ok(Some(found)),
+            Ok(LateLook::Failed(e)) => match failed {
+                Some(failed) => {
                     *failed = Some(e);
                     Ok(None)
                 }
-                _ => Err(e),
+                None => Err(e),
             },
-            found => found,
         }
     }
 
@@ -3512,6 +3514,17 @@ struct Queried {
 #[derive(Debug, Default)]
 pub(crate) struct Late(Option<Pending>);
 
+/// What a look at a [`Late`] resolve came to.
+#[derive(Debug)]
+pub(crate) enum LateLook {
+    /// More is still to come, or none was going on.
+    Waiting,
+    /// All of it came, and was found as it says.
+    Found(Found),
+    /// The resolve failed.
+    Failed(ConnectError),
+}
+
 impl Late {
     /// Not wanted: let go of now, where C destroys it.
     fn end(&mut self) {
@@ -3526,32 +3539,33 @@ impl Late {
     /// Looked at, as the DNS filter for `peer` looks at its resolve until
     /// the chain below it connects (`cf_dns_connect`): what has come so
     /// far put in `addresses`, and once all of it has, kept, the resolve
-    /// let go of, and how it was found said. A failure is the caller's.
+    /// let go of, and how it was found said; or how the resolve failed,
+    /// which is the caller's to weigh. Too little memory to take what came
+    /// is the error.
     pub(crate) fn poll(
         &mut self,
         peer: &super::Peer,
         addresses: &mut Addresses,
         cx: &mut dyn ConnCx,
-    ) -> Result<Option<Found>, ConnectError> {
+    ) -> Result<LateLook, OutOfMemory> {
         let Some(p) = self.0.take() else {
-            return Ok(None);
+            return Ok(LateLook::Waiting);
         };
         let (name, port) = (peer.name(), peer.port());
         let mut p = match p.take((name, port), cx) {
             Taken::Done(Ok((answer, found))) => {
                 cx.hold(Holder::Addresses(cx.rank()));
                 *addresses = Addresses::Resolved(answer);
-                return Ok(Some(found));
+                return Ok(LateLook::Found(found));
             }
-            Taken::Done(Err(e)) => return Err(e),
+            Taken::Done(Err(e)) => return Ok(LateLook::Failed(e)),
             Taken::Waiting(p) => p,
         };
-        let oom = |OutOfMemory| ConnectError::OutOfMemory;
-        if let Some(part) = p.partial().map_err(oom)? {
-            *addresses = Addresses::Resolved(part.answer(name, p.family).map_err(oom)?);
+        if let Some(part) = p.partial()? {
+            *addresses = Addresses::Resolved(part.answer(name, p.family)?);
         }
         self.0 = Some(p);
-        Ok(None)
+        Ok(LateLook::Waiting)
     }
 
     /// What its library waits on.

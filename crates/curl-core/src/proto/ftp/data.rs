@@ -16,7 +16,7 @@ use crate::conn::chain::{Chain, SetupPoint};
 use crate::conn::io::{Closer, Events, Net, Remote, Sock, Socket};
 use crate::conn::mux::Carrier;
 use crate::conn::shutdown::ConnSettings;
-use crate::conn::{Addresses, Answer, ConnectMachine, Drove, Late, Progress};
+use crate::conn::{Addresses, Answer, ConnectMachine, Drove, Late, LateLook, Progress};
 use crate::conn::{ConnNumber, Dial, NetRoute, Peer, Stream};
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -114,7 +114,7 @@ impl LateName {
             .late
             .poll(peer, &mut self.answer, &mut DriveCx::new(cx, None));
         match polled {
-            Ok(Some(found)) => {
+            Ok(LateLook::Found(found)) => {
                 let answer = match &self.answer {
                     Addresses::Resolved(answer) => Some(&**answer),
                     Addresses::Unix => None,
@@ -122,11 +122,12 @@ impl LateName {
                 crate::multi::state::side_resolved_at(cx, &self.route, answer, found);
                 Ok(())
             }
-            Ok(None) => {
+            Ok(LateLook::Waiting) => {
                 crate::multi::state::side_late_due(cx, &self.late);
                 Ok(())
             }
-            Err(e) => Err(crate::multi::state::connect_failed(cx, &self.route, e)),
+            Ok(LateLook::Failed(e)) => Err(crate::multi::state::connect_failed(cx, &self.route, e)),
+            Err(curl_alloc::OutOfMemory) => Err(ErrorKind::OutOfMemory),
         }
     }
 }

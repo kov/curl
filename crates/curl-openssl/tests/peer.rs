@@ -1174,12 +1174,14 @@ fn a_get_through_an_https_proxy_stays_within_its_allocation_budget() {
 /// store cache in it (2), and the CA file ended by a zero byte, as the
 /// kept store is not loaded again (1); the session cache's slots, the
 /// slot's copy of the key and its list of sessions, there already (3);
-/// and one ticket's DER of the two, as a resumed session is given one.
-/// Its TLS layer is the first's: the identity, the session's box and the
+/// and one ticket's DER of the two, as a resumed session is given one;
+/// two more are not yet itemised. Pinned at what the two make, the same
+/// on every leg: a count that may fall short leaves an extra allocation
+/// in the resumed GET unseen. Its TLS layer is the first's: the identity, the session's box and the
 /// host name's copy, the layer and the stack's box and list, the
 /// handshake's marker, the host name ended by a zero byte for SNI and the
 /// key its sessions are kept by.
-const RESUMED_GET_FEWER: u64 = 16;
+const RESUMED_GET_FEWER: u64 = 18;
 
 fn a_resumed_get_stays_within_its_allocation_budget() {
     let certs = certs("resumebudget", "localhost", &["localhost"]);
@@ -1244,8 +1246,8 @@ fn a_resumed_get_stays_within_its_allocation_budget() {
         eprintln!("budget: a resumed HTTPS GET made {second} allocations, the first {first}");
     });
     assert!(
-        second + RESUMED_GET_FEWER <= first,
-        "a resumed HTTPS GET made {second} allocations, over the first's {first} \
+        second + RESUMED_GET_FEWER == first,
+        "a resumed HTTPS GET made {second} allocations, not the first's {first} \
          less its {RESUMED_GET_FEWER}"
     );
 }

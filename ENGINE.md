@@ -5144,9 +5144,10 @@ peer gets a protocol error, not an out-of-memory one.
     (`HTTPS_PROXY_GET_EXTRA`, 19): the 18, to the proxy, and the proxy route's cold part that
     holds the proxy's identity;
   - a second HTTPS GET in the multi, resuming the first's ticket on a new connection, against
-    the first (`RESUMED_GET_FEWER`, 16 fewer): the multi's, the DNS cache's, the CA store's and
+    the first (`RESUMED_GET_FEWER`, exactly 18 fewer, on every leg): the multi's, the DNS cache's, the CA store's and
     the session cache's first-time allocations are not made again, the CA file is not read
-    again, and a resumed session is given one ticket, not two; its TLS layer costs the first's.
+    again, and a resumed session is given one ticket, not two, and two more are not yet itemised; its TLS
+    layer costs the first's.
   The same file's torture scenario refuses each allocation of a verified HTTPS GET with a
   pinned key's file, a client certificate, a CRL and the chain reported, with the rest and
   alone: every run fails (or, alone, succeeds whole where C lets that allocation fail, a

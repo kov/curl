@@ -143,13 +143,15 @@ impl crate::conn::io::DnsResolve for LibraryResolve {
 }
 
 /// A resolver library standing for c-ares, its resolves answering AAAA
-/// once `aaaa` opens, the addresses' waiting on `socket`.
+/// once `aaaa` opens, the addresses' each waiting on the next of
+/// `sockets`, and counted in `made`.
 #[derive(Debug)]
 struct Library {
     aaaa: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
     runs: Arc<AtomicU32>,
-    socket: Mutex<Option<Box<dyn crate::conn::io::Socket>>>,
+    made: Arc<AtomicU32>,
+    sockets: Mutex<Vec<Box<dyn crate::conn::io::Socket>>>,
 }
 
 impl crate::conn::io::DnsLibrary for Library {
@@ -162,8 +164,10 @@ impl crate::conn::io::DnsLibrary for Library {
         let mut wants = Vec::new();
         if !record {
             self.alive.store(true, Ordering::Relaxed);
-            let socket = self.socket.lock().unwrap().take().expect("one resolve");
-            wants.push((socket, Events::IN));
+            self.made.fetch_add(1, Ordering::Relaxed);
+            let mut sockets = self.sockets.lock().unwrap();
+            assert!(!sockets.is_empty(), "a socket for each resolve");
+            wants.push((sockets.remove(0), Events::IN));
         }
         Ok(Box::new(LibraryResolve {
             record,
@@ -272,7 +276,8 @@ fn transfer_ending(
                 aaaa: gate.0.clone(),
                 alive: alive.clone(),
                 runs: runs.clone(),
-                socket: Mutex::new(Some(socket)),
+                made: Arc::default(),
+                sockets: Mutex::new(vec![socket]),
             }));
             library = Some(lib as &'static dyn crate::conn::io::DnsLibrary);
         }
@@ -683,4 +688,140 @@ fn over_doh_the_name_timer_is_never_armed() {
     let armed = name_timer_in(&said, 0, "CONNECTING");
     assert!(!armed.is_empty(), "{said:#?}");
     assert!(armed.iter().all(|&armed| !armed), "{said:#?}");
+}
+
+/// FTP's data connection, its name resolved through `--connect-to` by a
+/// resolver library, waits on the library's socket while the name is
+/// still resolving, both before the connection is up and through its TLS
+/// handshake, as C's DNS filter heading the data connection's chain puts
+/// it in (`Curl_resolv_pollset`); and the answer that comes meanwhile is
+/// kept and said.
+#[test]
+fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
+    let clock = ManualClock::new().unwrap();
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let control = [
+        fake::WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    let file = [fake::WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send().held();
+    let (control_at, data_at) = (
+        SocketAddr::from(([127, 0, 0, 1], 8021)),
+        SocketAddr::from(([127, 0, 0, 1], 8022)),
+    );
+    let net = FakeNet::new(clock.clone())
+        .with_peer(control_at, Peer::Accepts)
+        .with_conversation(control_at, control)
+        .with_peer(data_at, Peer::Accepts)
+        .with_conversation(data_at, file.clone());
+    // The library's sockets, the control connection's resolve's and the
+    // data connection's, numbered past the transfer's own.
+    let to = SocketAddr::from(([127, 0, 0, 1], 53));
+    let own = Box::leak(Box::new(
+        FakeNet::new(clock.clone()).with_peer(to, Peer::Silent),
+    ));
+    let mut open = || {
+        own.open(
+            &crate::conn::io::Remote::Inet(to),
+            crate::conn::io::SocketKind::Datagram,
+        )
+        .unwrap()
+    };
+    for _ in 0..8 {
+        std::mem::forget(open());
+    }
+    let sockets = vec![open(), open()];
+    let data_resolve = sockets[1].key();
+    let gate = Gate::default();
+    let made = Arc::new(AtomicU32::new(0));
+    let lib: &'static Library = Box::leak(Box::new(Library {
+        aaaa: gate.0.clone(),
+        alive: Arc::default(),
+        runs: Arc::default(),
+        made: made.clone(),
+        sockets: Mutex::new(sockets),
+    }));
+    let mut m = Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap();
+    let backend: &'static fake::FakeTls = Box::leak(Box::new(fake::FakeTls::ticketing().unwrap()));
+    let mut easy = Easy::new();
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(backend)),
+            dns: Some(lib as &'static dyn crate::conn::io::DnsLibrary),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.set_url(Some(b"ftps://ftp.example:8021/f")).unwrap();
+    o.connect_to.set([&b"::late.test:8021"[..]]).unwrap();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"dns,multi");
+    easy.set_components(Some(c));
+    m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+    // Whether, in each pass the data connection's resolve runs, its
+    // socket was waited on, and whether its TLS had started.
+    let mut passes: Vec<(bool, bool)> = Vec::new();
+    let run = |m: &mut Multi, passes: &mut Vec<(bool, bool)>| {
+        for _ in 0..300 {
+            m.perform(&mut NoEvents).unwrap();
+            let mut waited = false;
+            m.sockets(&mut NoEvents, |key, events| {
+                waited |= key == data_resolve && events.contains(Events::IN);
+            })
+            .unwrap();
+            if made.load(Ordering::Relaxed) == 2 {
+                passes.push((waited, !file.received().is_empty()));
+            }
+            clock.advance(Duration::from_millis(1));
+        }
+    };
+    run(&mut m, &mut passes);
+    let said = lines.0.lock().unwrap().clone();
+    let before: Vec<bool> = passes.iter().filter(|p| !p.1).map(|p| p.0).collect();
+    let shaking: Vec<bool> = passes.iter().filter(|p| p.1).map(|p| p.0).collect();
+    assert!(!before.is_empty() && !shaking.is_empty(), "{said:#?}");
+    assert!(
+        before.iter().all(|w| *w),
+        "before it is up: {before:?} {said:#?}"
+    );
+    assert!(
+        shaking.iter().all(|w| *w),
+        "through its TLS: {shaking:?} {said:#?}"
+    );
+    gate.open();
+    passes.clear();
+    run(&mut m, &mut passes);
+    file.allow(2);
+    run(&mut m, &mut passes);
+    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+    let said = lines.0.lock().unwrap().clone();
+    let host = at(&said, 0, "Host late.test:8022 was resolved.");
+    let connected = at(&said, host, "[DNS-1] connected filter chain below");
+    assert!(
+        said[connected + 1].ends_with("] destroy async"),
+        "{said:#?}"
+    );
 }

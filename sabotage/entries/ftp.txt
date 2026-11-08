@@ -601,3 +601,21 @@ features: test-util
         if !late.going() || true {
             return None;
         }
+
+=== the data connection's setup does not wait on its resolve's sockets
+file: crates/curl-core/src/multi/state/side.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_waits_on_its_late_resolve_s_socket
+features: test-util
+--- old
+        machine.resolve_wants().chain(shaken).chain(racing)
+--- new
+        shaken.chain(racing)
+
+=== the data connection up before its TLS does not wait on its resolve's sockets
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_waits_on_its_late_resolve_s_socket
+features: test-util
+--- old
+                late_wants = late.as_deref().map(|l| l.late.wants());
+--- new
+                late_wants = late.as_deref().map(|l| l.late.wants()).filter(|_| false);

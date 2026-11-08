@@ -16,8 +16,8 @@ use crate::conn::chain::{Chain, SetupPoint};
 use crate::conn::io::{Closer, Events, Net, Remote, Sock, Socket};
 use crate::conn::mux::Carrier;
 use crate::conn::shutdown::ConnSettings;
+use crate::conn::{Addresses, Answer, ConnectMachine, Drove, Late, Progress};
 use crate::conn::{ConnNumber, Dial, NetRoute, Peer, Stream};
-use crate::conn::{ConnectMachine, Drove, Progress};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::cx::DriveCx;
@@ -74,7 +74,64 @@ enum Phase {
         peer: Option<Remote>,
         /// The chain it was connected with, its TLS to go in it.
         chain: Chain,
+        /// The resolve of its first hop's name, still going on as it came
+        /// up, until its TLS is made: C's DNS filter, above the TLS
+        /// filter, holds it until the chain below connects
+        /// (`cf_dns_connect`).
+        late: Option<Box<LateName>>,
     },
+}
+
+/// A resolve still going on beside the connection, with the route its
+/// name is the first hop of and what has come of it so far.
+#[derive(Debug)]
+struct LateName {
+    late: Late,
+    route: NetRoute,
+    answer: Addresses,
+}
+
+impl LateName {
+    /// `late` beside a connection set up over `route`, `answer` what has
+    /// come so far; none if it has ended.
+    fn of(late: Late, route: NetRoute, answer: Option<TryArc<Answer>>) -> Option<Box<LateName>> {
+        if !late.going() {
+            return None;
+        }
+        let answer = answer.map_or(Addresses::Unix, Addresses::Resolved);
+        // Too little memory to hold it lets it go, as an answer that does
+        // not come.
+        curl_alloc::try_box(LateName {
+            late,
+            route,
+            answer,
+        })
+        .ok()
+    }
+
+    /// Looked at, as the filter does in each call of the chain's connect:
+    /// once it has all come, said.
+    fn look<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        let peer = self.route.destination();
+        let polled = self
+            .late
+            .poll(peer, &mut self.answer, &mut DriveCx::new(cx, None));
+        match polled {
+            Ok(Some(found)) => {
+                let answer = match &self.answer {
+                    Addresses::Resolved(answer) => Some(&**answer),
+                    Addresses::Unix => None,
+                };
+                crate::multi::state::side_resolved_at(cx, &self.route, answer, found);
+                Ok(())
+            }
+            Ok(None) => {
+                crate::multi::state::side_late_due(cx, &self.late);
+                Ok(())
+            }
+            Err(e) => Err(crate::multi::state::connect_failed(cx, &self.route, e)),
+        }
+    }
 }
 
 /// How far a data connection has come.
@@ -193,6 +250,10 @@ impl DataConn {
         entered: &mut bool,
         chain: &mut Option<Chain>,
     ) -> Result<Reached, ErrorKind> {
+        // The name's filter heads the chain: what more came of the resolve
+        // still going on is taken first, once in each call, until the
+        // chain below connects (`cf_dns_connect`).
+        self.look_at_late(cx)?;
         loop {
             match self
                 .phase
@@ -213,12 +274,11 @@ impl DataConn {
                                 continue;
                             }
                             Ok(Shaken::Up) => {
-                                // What was still to come of its name goes
-                                // as it is up.
+                                let route = machine.route().clone();
+                                let answer = machine.answer().cloned();
                                 let (conn, late) = machine.handshaken();
-                                drop(late);
                                 *chain = None;
-                                self.up(cx, host, conn)?;
+                                self.up(cx, host, conn, LateName::of(late, route, answer))?;
                                 continue;
                             }
                             Err(kind) => {
@@ -228,6 +288,7 @@ impl DataConn {
                         }
                     }
                     let route = machine.route().clone();
+                    let answer = machine.answer().cloned();
                     match crate::multi::state::side_drive(cx, machine) {
                         Ok(Drove::Connecting(mut m, progress)) => {
                             if let Progress::Resolved(found) = progress {
@@ -251,14 +312,12 @@ impl DataConn {
                             }
                         }
                         Ok(Drove::Established(conn, late)) => {
-                            // What was still to come of its name goes
-                            // as it is up.
-                            drop(late);
                             if let Some(remote) = conn.remote() {
                                 crate::multi::state::side_won(cx, &route, remote);
                             }
                             *chain = None;
-                            self.up(cx, host, conn)?;
+                            let late = LateName::of(late, route, answer);
+                            self.up(cx, host, conn, late)?;
                         }
                         Err(e) => return Err(crate::multi::state::connect_failed(cx, &route, e)),
                     }
@@ -336,7 +395,7 @@ impl DataConn {
                         }
                     }
                     let stream = Stream::new(sock);
-                    self.up_with(cx, host, stream, peer, Chain::accepted())?;
+                    self.up_with(cx, host, stream, peer, Chain::accepted(), None)?;
                 }
                 up @ Phase::Up { shaken: true, .. } => {
                     self.phase = Some(up);
@@ -346,6 +405,7 @@ impl DataConn {
                     mut stream,
                     peer,
                     chain: connected,
+                    late,
                     ..
                 } => {
                     let shaking = connected.with_tls(false);
@@ -370,12 +430,14 @@ impl DataConn {
                             // Said once all of it is connected, its TLS
                             // too (`conn_connect_trace`).
                             let made = connected.with_tls(true);
-                            connected_all(cx, host, peer.as_ref(), &stream, made);
+                            let late = late.map_or_else(Late::default, |l| l.late);
+                            connected_all(cx, host, peer.as_ref(), &stream, made, late);
                             self.phase = Some(Phase::Up {
                                 stream,
                                 shaken: true,
                                 peer: None,
                                 chain: made,
+                                late: None,
                             });
                         }
                         Ok(Handshake::Waiting) => {
@@ -386,6 +448,7 @@ impl DataConn {
                                 shaken: false,
                                 peer,
                                 chain: connected,
+                                late,
                             });
                             return Ok(Reached::Ip);
                         }
@@ -400,12 +463,14 @@ impl DataConn {
     }
 
     /// The connection `conn` is up, its proxies' handshakes made, and
-    /// counted; its TLS follows if the data is protected.
+    /// counted; its TLS follows if the data is protected. `late` is the
+    /// resolve of its name still going on, if it is.
     fn up<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         host: &[u8],
         conn: crate::conn::Conn,
+        late: Option<Box<LateName>>,
     ) -> Result<(), ErrorKind> {
         let connected = conn
             .connected_chain()
@@ -415,12 +480,13 @@ impl DataConn {
         // Counted as the transfer's connections are
         // (`cf_ip_happy_connect`'s `numconnects`).
         cx.report_mut().count_connect();
-        self.up_with(cx, host, stream, remote, connected)
+        self.up_with(cx, host, stream, remote, connected, late)
     }
 
     /// The connection `stream` to `peer` is up: said as C says it once
     /// all of it is connected, at once unless its TLS is still to be
-    /// made (`conn_connect_trace`).
+    /// made (`conn_connect_trace`). The resolve of its name still going
+    /// on, `late`, goes as all of it is connected, and is held until then.
     fn up_with<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -428,11 +494,13 @@ impl DataConn {
         stream: Stream,
         peer: Option<Remote>,
         chain: Chain,
+        mut late: Option<Box<LateName>>,
     ) -> Result<(), ErrorKind> {
         let chain = chain.on(ConnRank::Second);
         let shaken = self.tls.is_none();
         if shaken {
-            connected_all(cx, host, peer.as_ref(), &stream, chain);
+            let late = late.take().map_or_else(Late::default, |l| l.late);
+            connected_all(cx, host, peer.as_ref(), &stream, chain, late);
         } else {
             side::tls_added(cx, chain.with_tls(false));
         }
@@ -449,8 +517,43 @@ impl DataConn {
             shaken,
             peer,
             chain,
+            late,
         });
         Ok(())
+    }
+
+    /// The resolve of its name still going on, if it is, looked at: beside
+    /// its setup, or beside it up, its TLS still being made.
+    fn look_at_late<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        match self.phase.as_mut() {
+            Some(Phase::Connecting(machine, _)) if machine.resolving() => {
+                let polled = machine.poll_late(&mut DriveCx::new(cx, None));
+                match polled {
+                    Ok(Some(found)) => crate::multi::state::side_resolved(cx, machine, found),
+                    Ok(None) => crate::multi::state::side_setup_due(cx, machine),
+                    Err(e) => {
+                        let route = machine.route().clone();
+                        if let Some(Phase::Connecting(machine, _)) = self.phase.take() {
+                            discard_in(cx, machine);
+                        }
+                        return Err(crate::multi::state::connect_failed(cx, &route, e));
+                    }
+                }
+                Ok(())
+            }
+            Some(Phase::Up {
+                late: Some(late), ..
+            }) => {
+                let looked = late.look(cx);
+                if looked.is_err()
+                    && let Some(Phase::Up { stream, .. }) = self.phase.take()
+                {
+                    close_in(cx, stream.into_socket());
+                }
+                looked
+            }
+            _ => Ok(()),
+        }
     }
 
     /// How far it has come, without moving it on.
@@ -483,10 +586,17 @@ impl DataConn {
         wanted: Events,
         transfer: Events,
     ) -> impl Iterator<Item = (&dyn Socket, Events)> {
+        let mut late_wants = None;
         let (racing, up) = match self.phase.as_ref() {
             Some(Phase::Connecting(m, side)) => (Some(side.pollset(m)), None),
             Some(Phase::Listening { sock, .. }) => (None, Some((sock.socket(), Events::IN))),
-            Some(Phase::Up { stream, shaken, .. }) => {
+            Some(Phase::Up {
+                stream,
+                shaken,
+                late,
+                ..
+            }) => {
+                late_wants = late.as_deref().map(|l| l.late.wants());
                 let events = match self.shut {
                     Some(shut) => stream.shutdown_pollset(shut),
                     // A handshake waits for what its layer says.
@@ -498,7 +608,12 @@ impl DataConn {
             }
             None => (None, None),
         };
-        racing.into_iter().flatten().chain(up)
+        // The resolve's sockets first, as its filter heads the chain.
+        late_wants
+            .into_iter()
+            .flatten()
+            .chain(racing.into_iter().flatten())
+            .chain(up)
     }
 
     /// Move the shutdown of its direction the transfer used on, once it
@@ -578,8 +693,9 @@ fn connected_all<H: Host>(
     remote: Option<&Remote>,
     stream: &Stream,
     chain: Chain,
+    late: Late,
 ) {
-    side::call_connected(cx, chain);
+    side::call_connected(cx, chain, late);
     established(cx, host, remote, stream);
     side::setup_filters_go(cx, chain);
 }
@@ -666,6 +782,7 @@ mod tests {
                     shaken: true,
                     peer: None,
                     chain: Chain::accepted(),
+                    late: None,
                 }),
                 tls: None,
                 socket: Component::Tcp,

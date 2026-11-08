@@ -115,12 +115,23 @@ fn counting(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counte
 
 /// `counting`'s multi and network, and the clock they run on.
 fn clocked(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counted, ManualClock) {
+    clocked_with(control, data, |net| net)
+}
+
+/// The same, the network given `more`.
+fn clocked_with(
+    control: &[&Conversation],
+    data: &[&Conversation],
+    more: impl FnOnce(FakeNet) -> FakeNet,
+) -> (Multi, Counted, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let data_at = SocketAddr::from(([127, 0, 0, 1], DATA_PORT));
-    let mut net = FakeNet::new(clock.clone())
-        .with_peer(at, Net::Accepts)
-        .with_peer(data_at, Net::Accepts);
+    let mut net = more(
+        FakeNet::new(clock.clone())
+            .with_peer(at, Net::Accepts)
+            .with_peer(data_at, Net::Accepts),
+    );
     for c in control {
         net = net.with_conversation(at, (*c).clone());
     }
@@ -815,6 +826,95 @@ fn a_protected_data_connection_says_each_call_of_its_handshake() {
         ],
         "{said}"
     );
+}
+
+/// The data connection's name, still resolving as its TCP connects, is
+/// kept until all of its chain connects, its TLS too, and what comes of it
+/// meanwhile is taken and said, as C's DNS filter above the data
+/// connection's TLS keeps it (`cf_dns_connect`'s `Curl_resolv_destroy`).
+/// Checked against C's build over c-ares and the threaded resolver, with
+/// `--connect-to` naming a host whose AAAA answers during the data
+/// connection's TLS handshake.
+#[test]
+fn a_data_connection_s_late_resolve_lasts_through_its_tls() {
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let control = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send().held();
+    let late = crate::conn::io::Late::new();
+    let addrs = [[127, 0, 0, 1].into(), std::net::Ipv6Addr::LOCALHOST.into()];
+    let (mut m, _, clock) = clocked_with(&[&control], &[&file], |net| {
+        net.with_late_name("late.test", &addrs, &late)
+            .with_v4_first()
+    });
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let to = format!("::late.test:{PORT}");
+    let url = "ftps://ftp.example:PORT/f";
+    let (id, body, text) = added_tracing(&mut m, url, e, b"all", |o| {
+        o.connect_to.set([to.as_bytes()]).unwrap();
+    });
+    let run = |m: &mut Multi| {
+        for _ in 0..300 {
+            m.perform(&mut NoEvents).unwrap();
+            clock.advance(std::time::Duration::from_millis(1));
+        }
+    };
+    run(&mut m);
+    let said = text.text();
+    let data_tls = at_in(&said, "[SETUP-1] added SSL filter for origin");
+    assert!(
+        !said[data_tls..].contains("Host late.test:8022 was resolved."),
+        "its AAAA still to come: {said}"
+    );
+    late.release();
+    run(&mut m);
+    file.allow(2);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let lines: Vec<&str> = said[data_tls..]
+        .lines()
+        .map(|l| l.strip_prefix("[0-0] ").unwrap_or(l))
+        .collect();
+    let line = |want: &str| {
+        lines
+            .iter()
+            .position(|l| *l == want)
+            .unwrap_or_else(|| panic!("{want:?} in {said}"))
+    };
+    let resolved = line("Host late.test:8022 was resolved.");
+    assert_eq!(
+        lines[resolved + 1..resolved + 3],
+        ["IPv6: ::1", "IPv4: 127.0.0.1"],
+        "{said}"
+    );
+    let connected = line("[DNS-1] connected filter chain below");
+    assert!(resolved < connected, "{said}");
+    assert!(lines[connected + 1].ends_with("] destroy async"), "{said}");
 }
 
 /// An FTPS download whose control connection is cleared by `CCC` as

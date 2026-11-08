@@ -579,3 +579,25 @@ witness: curl-core proto::ftp::tests::a_data_connection_whose_goodbye_waits_is_n
             if max == 0 || self.ending {
 --- new
             if max == 0 {
+
+=== the data connection's late resolve is not looked at once its TCP is up
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_late_resolve_lasts_through_its_tls
+features: test-util
+--- old
+                let looked = late.look(cx);
+--- new
+                let looked: Result<(), ErrorKind> = { let _ = late; Ok(()) };
+
+=== the data connection's late resolve goes as its TCP is up
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_late_resolve_lasts_through_its_tls
+features: test-util
+--- old
+        if !late.going() {
+            return None;
+        }
+--- new
+        if !late.going() || true {
+            return None;
+        }

@@ -6,11 +6,13 @@
 //! protocol's request lends them, as C's ftp.c connects the second
 //! socket's filters from its own phases.
 
-use crate::conn::ConnectMachine;
+use crate::conn::asyncs::Holder;
 use crate::conn::chain::SetupPoint;
 use crate::conn::io::{Events, Socket};
+use crate::conn::{ConnectMachine, Late};
 use crate::error::ErrorKind;
 use crate::multi::Host;
+use crate::multi::cx::DriveCx;
 use crate::proto::http::negotiate::Negotiate;
 
 use super::{
@@ -73,14 +75,27 @@ pub(crate) fn call_failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, chai
     mstate::trace(cx, format_args!("failed to connect {chain}"));
 }
 
-/// The call ends with all of `connected` connected.
-pub(crate) fn call_connected<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain) {
+/// The call ends with all of `connected` connected, `late` the resolve of
+/// its first hop's name still going on, if it is.
+pub(crate) fn call_connected<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain, late: Late) {
     // Its SOCKS proxy's target's filter, if it has one, below the first
-    // hop's; never the record's. An accepted connection has none.
+    // hop's; never the record's. An accepted connection has none. The
+    // resolve still going on goes with the first hop's filter, after its
+    // record's line (`cf_dns_connect`'s `Curl_resolv_destroy`).
+    let mut late = Some(late);
     if connected.dns_filters() > 0 {
         let target = connected.dns_filters() > 1;
-        names::connected(cx, ConnRank::Second, target, false, false, |_, _| {});
+        names::connected(cx, ConnRank::Second, target, false, false, |cx, holder| {
+            if holder == Holder::Addresses(ConnRank::Second) {
+                let late = late.take().expect("one filter for the name");
+                late.chain_connected(&mut DriveCx::new(cx, None));
+            }
+        });
     }
+    assert!(
+        late.is_none_or(|l| !l.going()),
+        "the name's resolve goes with its filter"
+    );
     let top = connected.top().unwrap_or(Component::DnsFilter);
     connect_ended_at(cx, top, Ok(true));
 }
@@ -196,6 +211,8 @@ impl SideSetup {
             .into_iter()
             .flat_map(move |events| machine.sockets().map(move |s| (s, events)));
         let racing = machine.racing_wants().filter(move |_| shaking.is_none());
-        shaken.chain(racing)
+        // The resolve still going on beside it first, as the name's filter
+        // heads the chain (`Curl_resolv_pollset`).
+        machine.resolve_wants().chain(shaken).chain(racing)
     }
 }

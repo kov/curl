@@ -1718,13 +1718,57 @@ pub(crate) fn side_timers<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
 /// The name a second connection's `setup` connects to first was found,
 /// as `found` says: traced as the transfer's own connection traces it.
 pub(crate) fn side_resolved<H: Host>(cx: &mut StepCx<'_, H>, setup: &ConnectMachine, found: Found) {
-    let route = setup.route();
+    side_resolved_at(cx, setup.route(), setup.answer().map(|a| &**a), found);
+}
+
+/// The name `route` connects to first, for a second connection, was found
+/// as `found` says, to `answer`: traced as the transfer's own, and its
+/// addresses reported as its DNS filter reports them (`cf_dns_report`).
+pub(crate) fn side_resolved_at<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    route: &NetRoute,
+    answer: Option<&crate::conn::Answer>,
+    found: Found,
+) {
     if route.destination().is_unix() {
         return;
     }
     trace_lookup(cx, route, Some(found));
     if let Found::Stale(asked) | Found::Resolved(asked) = found {
-        trace_resolved(cx, route, Some(asked), setup.answer().map(|a| &**a));
+        trace_resolved(cx, route, Some(asked), answer);
+    }
+    if let Some(answer) = answer {
+        report_resolved(cx, answer, route.destination().port());
+    }
+}
+
+/// What a second connection's resolve, still going on beside its race or
+/// its connection, asks of the name's timer, and what a resolve a library
+/// answered still asks while its record is kept (`Curl_resolv_pollset`).
+pub(crate) fn side_late_due<H: Host>(cx: &mut StepCx<'_, H>, late: &Late) {
+    let now = cx.rest.clock.now();
+    let left = crate::conn::ConnCx::await_resolve_left(&mut DriveCx::new(cx, None), now)
+        .unwrap_or_default();
+    side_name_due(cx, late.due(now, left), now, left);
+}
+
+/// The same, for a second connection's `setup`.
+pub(crate) fn side_setup_due<H: Host>(cx: &mut StepCx<'_, H>, setup: &ConnectMachine) {
+    let now = cx.rest.clock.now();
+    let left = crate::conn::ConnCx::await_resolve_left(&mut DriveCx::new(cx, None), now)
+        .unwrap_or_default();
+    side_name_due(cx, setup.resolve_due(now, left), now, left);
+}
+
+fn side_name_due<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    held: Option<Instant>,
+    now: Instant,
+    left: Duration,
+) {
+    let answered = cx.easy().asyncs.arms().then(|| now.after(left));
+    if let Some(at) = [held, answered].into_iter().flatten().min() {
+        cx.side_due.name = SideTimer::Arm(at);
     }
 }
 

@@ -564,6 +564,61 @@ fn the_input_waits_for_a_quiet_socket() {
     assert_eq!(talk.received(), then, "then the input");
 }
 
+/// The input is read only in a round of C's loop, once its poll has seen
+/// the server's bytes or waited 100 ms: not as DO starts, before the
+/// server has spoken, so what the server says first is answered first
+/// and the input follows in the same round. A server that drains its
+/// socket only up to the first data it reads (test 1452's) would
+/// otherwise close on the answers unread, and the client read a reset.
+#[cfg(not(windows))]
+#[test]
+fn the_input_waits_for_the_server_or_the_interval() {
+    use crate::libraries::{Libraries, SharedLibraries};
+    use crate::multi::NoEvents;
+    for spoken in [true, false] {
+        let talk = Conversation::replies(&[&[IAC, DO, 200]], false)
+            .greeting()
+            .held();
+        let clock = crate::time::ManualClock::new().unwrap();
+        let mut m = crate::proto::raw::wire::serving_on(clock.clone(), &[&talk]);
+        let mut e = crate::easy::Easy::new();
+        e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+        let o = e.options_mut();
+        o.set_url(Some(
+            format!("telnet://127.0.0.1:{}", crate::proto::raw::wire::PORT).as_bytes(),
+        ))
+        .unwrap();
+        let input = Input(Mutex::new(vec![b"typed".to_vec()]));
+        o.small.make_mut().unwrap().input = Some(Handler::read(input).unwrap());
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert_eq!(
+            talk.received(),
+            b"",
+            "spoken {spoken}: nothing before a round"
+        );
+        if spoken {
+            talk.allow(1);
+            m.perform(&mut NoEvents).unwrap();
+            // The refusal, then the options C asks for as it negotiates,
+            // then the input, all in the round.
+            let got = talk.received();
+            assert!(got.starts_with(&[IAC, WONT, 200]), "{got:?}");
+            assert!(got.ends_with(b"typed"), "{got:?}");
+            assert!(got[..got.len() - 5].contains(&IAC), "{got:?}");
+        } else {
+            clock.advance(INTERVAL - Duration::from_millis(1));
+            m.perform(&mut NoEvents).unwrap();
+            assert_eq!(talk.received(), b"", "the poll still waits");
+            clock.advance(Duration::from_millis(1));
+            m.perform(&mut NoEvents).unwrap();
+            assert_eq!(talk.received(), b"typed", "the poll's time gone by");
+        }
+    }
+}
+
 /// A server that never closes runs the transfer out of time, with C's
 /// TELNET reason.
 #[test]

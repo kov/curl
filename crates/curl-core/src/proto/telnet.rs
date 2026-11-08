@@ -5,8 +5,11 @@
 //!
 //! C runs the whole exchange within DO, blocking on the socket with a
 //! poll of 100 ms between calls of the read function. Here it is DOING:
-//! each pass is one round of C's loop, run when the socket has something
-//! or 100 ms after the last.
+//! each round of C's loop is a pass, run when the socket has something
+//! or 100 ms after the last round. The input is read only in a round, as
+//! C reads it only once its poll has seen the server's bytes or waited
+//! its 100 ms: the first, from DO, waits like any other, so that what the
+//! server says first is answered before the input goes.
 //!
 //! On Windows C's loop is another (`USE_WINSOCK`): it waits on the
 //! socket's events, and reads the input only once 100 ms have passed
@@ -859,8 +862,9 @@ pub(crate) struct Request {
     telnet: Option<Box<Telnet>>,
     /// What was sent that the connection has not taken yet.
     unsent: Vec<u8>,
-    /// When the last pass ran: the next runs 100 ms after it.
-    last_pass: Option<Instant>,
+    /// When C's poll began, as DO started or the last round ended: the
+    /// next round runs as the server's bytes come, or 100 ms after it.
+    poll_since: Option<Instant>,
     /// Where the exchange is C's Windows loop, since when the socket has
     /// been quiet: when its wait started, which each of the socket's
     /// events and each reading of the input starts again.
@@ -896,7 +900,7 @@ impl Request {
             },
             telnet: None,
             unsent: Vec::new(),
-            last_pass: None,
+            poll_since: None,
             quiet_since: None,
         })
     }
@@ -911,7 +915,7 @@ impl Request {
         let since = if WINSOCK {
             self.quiet_since
         } else {
-            self.last_pass
+            self.poll_since
         };
         since.map(|at| at.after(INTERVAL))
     }
@@ -977,13 +981,10 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
         let now = cx.now();
-        self.last_pass = Some(now);
-        // C polls the socket alone, the input being a read function; its
-        // Windows loop says nothing of its wait.
-        if !WINSOCK {
-            trace::debug_info(cx, format_args!("telnet_do, poll 1 fds"));
-        }
-        let over = self.exchange(cx, lease, now)?;
+        let Some(over) = self.exchange(cx, lease, now)? else {
+            // C's poll still waits.
+            return Ok(false);
+        };
         if let TimeLeft::Expired(_) = cx.time_left() {
             return Err(trace::fail(
                 cx,
@@ -997,14 +998,17 @@ impl Request {
         Ok(over)
     }
 
-    /// The round's reading and sending: whether the exchange is over.
+    /// The round's reading and sending: whether the exchange is over, or
+    /// none while no round is due.
     fn exchange<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
         now: Instant,
-    ) -> Result<bool, ErrorKind> {
+    ) -> Result<Option<bool>, ErrorKind> {
         let telnet = self.telnet.as_mut().expect("DO set the exchange up");
+        // C's poll begins as DO starts.
+        let poll_since = *self.poll_since.get_or_insert(now);
         let mut live = Live {
             cx,
             lease,
@@ -1014,12 +1018,23 @@ impl Request {
         // C sends all it has before it reads again.
         live.flush()?;
         if !live.unsent.is_empty() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let mut buf = [0u8; BUFFER];
-        match xfer_recv(live.cx, live.lease, &mut buf)? {
+        let got = xfer_recv(live.cx, live.lease, &mut buf)?;
+        if !WINSOCK {
+            // A round: the server's bytes, or its close, or the poll's
+            // 100 ms gone by without them. C polls the socket alone, the
+            // input being a read function.
+            if matches!(got, Got::Again) && now.since(poll_since) < INTERVAL {
+                return Ok(None);
+            }
+            self.poll_since = Some(now);
+            trace::debug_info(live.cx, format_args!("telnet_do, poll 1 fds"));
+        }
+        match got {
             // The server closed the connection: the exchange is over.
-            Got::Eof => return Ok(true),
+            Got::Eof => return Ok(Some(true)),
             Got::Again => {}
             Got::Data(n) => {
                 // Counted as read, and again as delivered, as C counts it;
@@ -1033,18 +1048,18 @@ impl Request {
                     // An event of the socket's: its wait starts again,
                     // and the input waits for the next quiet.
                     self.quiet_since = Some(now);
-                    return Ok(false);
+                    return Ok(Some(false));
                 }
             }
         }
         let Some(handler) = live.cx.easy().options().small.input.clone() else {
-            return Ok(false);
+            return Ok(Some(false));
         };
         if WINSOCK {
             // The first pass, from DO, waits as C's loop begins waiting.
             let quiet = *self.quiet_since.get_or_insert(now);
             if now.since(quiet) < INTERVAL {
-                return Ok(false);
+                return Ok(Some(false));
             }
             self.quiet_since = Some(now);
             // Read until the input has nothing, as C does; while the
@@ -1057,18 +1072,18 @@ impl Request {
                     Read::Abort | Read::Fail => return Err(ErrorKind::ReadError),
                 }
             }
-            return Ok(false);
+            return Ok(Some(false));
         }
         match handler.read(&mut TransferCx::new(live.cx), &mut buf) {
             Read::Data(n) if n.get() > buf.len() => Err(ErrorKind::ReadError),
             Read::Data(n) => {
                 send_data(&mut live, &buf[..n.get()])?;
                 live.cx.report_mut().sizes_mut().upload += n.get() as u64;
-                Ok(false)
+                Ok(Some(false))
             }
-            Read::Eof | Read::Pause => Ok(false),
+            Read::Eof | Read::Pause => Ok(Some(false)),
             // The exchange ends, well, as C's does.
-            Read::Abort => Ok(true),
+            Read::Abort => Ok(Some(true)),
             Read::Fail => Err(ErrorKind::ReadError),
         }
     }

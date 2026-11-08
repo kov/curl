@@ -82,3 +82,12 @@ witness: curl-core proto::telnet::tests::the_application_s_user_stays_with_the_f
         let gate = match before.first {
 --- new
         let gate = match before.first.filter(|_| false) {
+
+=== the input is read before C's poll has seen the server or waited its interval
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::the_input_waits_for_the_server_or_the_interval
+--- old
+            if matches!(got, Got::Again) && now.since(poll_since) < INTERVAL {
+                return Ok(None);
+            }
+--- new

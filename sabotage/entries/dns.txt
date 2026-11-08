@@ -1297,3 +1297,20 @@ features: test-util
         self.acc = (product as u64) ^ ((product >> 64) as u64);
 --- new
         self.acc = product as u64;
+
+=== a SOCKS destination's library resolve is not run again when it says
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it_says
+--- old
+            Stage::Dialed(d) => d.target_late.as_ref()?.due(now, left),
+--- new
+            Stage::Dialed(d) => d.target_late.as_ref()?.due(now, left).filter(|_| false),
+
+=== a resolve failing beside a dialed connection waits for a race that is over
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::late_tests::a_resolve_failing_beside_a_dialed_connection_fails_it_at_once
+features: test-util
+--- old
+        Ok(LateLook::Failed(e)) if c.lead().is_some_and(ConnectMachine::races) => {
+--- new
+        Ok(LateLook::Failed(e)) if c.lead().is_some() => {

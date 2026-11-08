@@ -1427,8 +1427,10 @@ fn a_blocking_resolve_lets_go_of_its_record_as_its_wait_ends() {
 
 /// A resolver library's resolve that waits on no socket is run again when
 /// the library says, whatever stage it holds: resolving, beside a race
-/// begun on AAAA's answer, or as the origin's record (`Curl_async_pollset`'s
-/// `EXPIRE_ASYNC_NAME`). The multi's timer is that soon, not later.
+/// begun on AAAA's answer, as the origin's record, or as a SOCKS proxy's
+/// destination beside the connection dialed to the proxy
+/// (`Curl_async_pollset`'s `EXPIRE_ASYNC_NAME`). The multi's timer is that
+/// soon, not later.
 #[test]
 fn a_library_s_resolve_is_run_again_when_it_says() {
     use crate::conn::io::{DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Partial};
@@ -1443,6 +1445,7 @@ fn a_library_s_resolve_is_run_again_when_it_says() {
         Resolving,
         Racing,
         Record,
+        Socks,
     }
 
     #[derive(Debug)]
@@ -1507,13 +1510,17 @@ fn a_library_s_resolve_is_run_again_when_it_says() {
         }
     }
 
-    for case in [Case::Resolving, Case::Racing, Case::Record] {
+    for case in [Case::Resolving, Case::Racing, Case::Record, Case::Socks] {
         let clock = ManualClock::new().unwrap();
         let net = FakeNet::new(clock.clone())
             .with_peer("[::1]:80".parse().unwrap(), crate::conn::io::Peer::Silent)
             .with_peer(
                 "127.0.0.1:443".parse().unwrap(),
                 crate::conn::io::Peer::Silent,
+            )
+            .with_peer(
+                "127.0.0.1:1080".parse().unwrap(),
+                crate::conn::io::Peer::Accepts,
             );
         let env = Env {
             clock: Box::new(clock.clone()),
@@ -1533,12 +1540,21 @@ fn a_library_s_resolve_is_run_again_when_it_says() {
         .unwrap();
         let url = match case {
             Case::Record => "https://name.test/",
-            Case::Resolving | Case::Racing => "http://name.test/",
+            Case::Resolving | Case::Racing | Case::Socks => "http://name.test/",
         };
         let mut e = easy(url);
         e.set_libraries(libraries);
+        if case == Case::Socks {
+            e.options_mut().proxy.make_mut().unwrap().url =
+                Some(b"socks4://127.0.0.1:1080".to_vec());
+        }
         m.add(Box::new(e), (), &mut ev).unwrap();
         m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+        if case == Case::Socks {
+            // The proxy dialed, its destination's resolve begins.
+            m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+                .unwrap();
+        }
         assert_eq!(m.timeout(), Some(DUE), "{case:?}");
     }
 }

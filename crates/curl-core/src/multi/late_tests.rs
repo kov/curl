@@ -1363,6 +1363,135 @@ fn first_failed_once_dialed(answers: bool) -> (Vec<String>, bool) {
     (said, alive.load(Ordering::Relaxed))
 }
 
+/// A resolve of the library [`Failing`] stands for: 127.0.0.1 at once,
+/// AAAA failing once `fail` is set; the record no such name.
+#[derive(Debug)]
+struct FailingResolve {
+    record: bool,
+    fail: Arc<AtomicBool>,
+}
+
+impl crate::conn::io::DnsResolve for FailingResolve {
+    fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+        Ok(())
+    }
+    fn wants(&self) -> &[(Box<dyn crate::conn::io::Socket>, Events)] {
+        &[]
+    }
+    fn due(&self, within: Duration) -> Duration {
+        within.min(Duration::from_millis(1))
+    }
+    fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+        Ok(crate::conn::io::Partial {
+            addrs: vec![[127, 0, 0, 1].into()],
+            v6_answered: false,
+            v4_answered: true,
+        })
+    }
+    fn ongoing(&self) -> (u32, &'static str) {
+        if self.record { (0, "-") } else { (1, "A") }
+    }
+    fn answer(&mut self) -> Option<Result<Vec<IpAddr>, crate::conn::io::ResolveFailure>> {
+        if self.record {
+            return Some(Ok(Vec::new()));
+        }
+        self.fail
+            .load(Ordering::Relaxed)
+            .then_some(Err(crate::conn::io::ResolveFailure::NotFound))
+    }
+    fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+        Some(crate::doh::RecordAnswer::NoSuchName)
+    }
+    fn explain(&self) -> Option<&'static str> {
+        None
+    }
+    fn status(&self) -> i32 {
+        0
+    }
+}
+
+/// A resolver library whose resolves are [`FailingResolve`]s.
+#[derive(Debug)]
+struct Failing(Arc<AtomicBool>);
+
+impl crate::conn::io::DnsLibrary for Failing {
+    fn resolve(
+        &self,
+        ask: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        Ok(Box::new(FailingResolve {
+            record: ask.family.is_none(),
+            fail: self.0.clone(),
+        }))
+    }
+}
+
+/// The name's resolve failing once the connection made on its first
+/// answer is dialed, its TLS handshake under way, fails the transfer at
+/// once, as C's DNS filter fails the connect it is in
+/// (`cf_dns_connect`); only a race still racing is left to fail in its
+/// next drive.
+#[test]
+fn a_resolve_failing_beside_a_dialed_connection_fails_it_at_once() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 443));
+    // The peer accepts and holds the handshake.
+    let talk = Conversation::replies(&[], false).per_send();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let fail = Arc::new(AtomicBool::new(false));
+    let lib: &'static Failing = Box::leak(Box::new(Failing(fail.clone())));
+    let tls: &'static fake::FakeTls = Box::leak(Box::new(fake::FakeTls::agreeing().unwrap()));
+    let mut m: Multi = Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap();
+    let mut easy = Easy::new();
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(tls)),
+            dns: Some(lib as &'static dyn crate::conn::io::DnsLibrary),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.set_url(Some(ORIGIN.as_bytes())).unwrap();
+    o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+    let mut ended = None;
+    for ms in 0..1500 {
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            ended = Some((ms, msg.result));
+            break;
+        }
+        if ms == 100 {
+            // Dialed: the TLS's first flight has gone.
+            assert!(
+                !talk.received().is_empty(),
+                "{:#?}",
+                lines.0.lock().unwrap()
+            );
+            fail.store(true, Ordering::Relaxed);
+        }
+        clock.advance(Duration::from_millis(1));
+    }
+    let said = lines.0.lock().unwrap().clone();
+    let Some((ms, Err(kind))) = ended else {
+        panic!("{ended:?} {said:#?}");
+    };
+    assert!(ms < 110, "failed {ms} ms in, as {kind:?}: {said:#?}");
+}
+
 /// A socket's number as the trace prints it: a `RawSocket` is an `i32` on
 /// Unix and already a `u64` on Windows, where the conversion is a no-op.
 #[allow(clippy::useless_conversion)]

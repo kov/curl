@@ -1201,7 +1201,7 @@ impl Easy {
         if cookies.files.iter().next().is_none() {
             return Ok(());
         }
-        let files = cookies.files.try_clone()?;
+        let files = cookies.files.shared();
         let new_session = cookies.new_session;
         let now = SystemClock::new().unix_time();
         let list = self.unasked_suffixes();

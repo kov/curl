@@ -653,20 +653,44 @@ witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_afte
 file: crates/curl-core/src/options/mod.rs
 witness: curl-sys-abi handle_tests::header_lines_appended_after_the_option_are_sent
 --- old
-        Ok(match self.source() {
+        Listed(self.0.clone())
 --- new
-        Ok(match self.source().filter(|_| false) {
+        Listed::given(self.items().iter().map(T::line)).expect("room for the copy")
 
-=== a list option grows every handle by its source
+=== a list option grows every handle beyond its one pointer
 file: crates/curl-core/src/options/mod.rs
 witness: curl-core options::tests::a_listed_option_is_as_large_as_its_lines
 --- old
 #[derive(Debug)]
-pub(crate) enum Listed<T> {
+pub(crate) struct Listed<T>(Option<TryArc<Items<T>>>);
 --- new
 #[derive(Debug)]
-#[repr(C)]
-pub(crate) enum Listed<T> {
+#[repr(align(16))]
+pub(crate) struct Listed<T>(Option<TryArc<Items<T>>>);
+
+=== a list's copy copies its lines rather than sharing them
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::a_list_s_copies_share_its_lines
+features: test-util
+--- old
+    pub(crate) fn shared(&self) -> Listed<T> {
+        Listed(self.0.clone())
+--- new
+    pub(crate) fn shared(&self) -> Listed<T> {
+        if let Some(items) = &self.0 {
+            let items = remade(&items.items).expect("room for the copy");
+            return Listed::of(items, self.source().cloned()).expect("room for the copy");
+        }
+        Listed(self.0.clone())
+
+=== a list read from its source again makes anew the lines it gives as before
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::a_list_keeps_what_its_source_gives_again
+features: test-util
+--- old
+            None if matched < kept.len() => remade(&kept[..matched])?,
+--- new
+            None if matched <= kept.len() => remade(&kept[..matched])?,
 
 === the connect-to list is read only when it is set
 file: crates/curl-core/src/multi/state/leg.rs

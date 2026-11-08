@@ -440,7 +440,7 @@ impl Line {
     fn try_clone(&self) -> Result<Line, OutOfMemory> {
         Ok(Line {
             mail_from: self.mail_from.as_deref().map(copy).transpose()?,
-            mail_rcpt: self.mail_rcpt.try_clone()?,
+            mail_rcpt: self.mail_rcpt.shared(),
             mail_rcpt_allowfails: self.mail_rcpt_allowfails,
             mail_auth: self.mail_auth.as_deref().map(copy).transpose()?,
             use_ssl: self.use_ssl,
@@ -449,9 +449,9 @@ impl Line {
             list_only: self.list_only,
             server_response: self.server_response,
             upload_flags: self.upload_flags,
-            quote: self.quote.try_clone()?,
-            prequote: self.prequote.try_clone()?,
-            postquote: self.postquote.try_clone()?,
+            quote: self.quote.shared(),
+            prequote: self.prequote.shared(),
+            postquote: self.postquote.shared(),
             ftp: self.ftp.try_clone()?,
         })
     }
@@ -587,7 +587,7 @@ impl Proxy {
             socks5_auth: self.socks5_auth,
             service: self.service.as_deref().map(copy).transpose()?,
             socks5_gssapi_nec: self.socks5_gssapi_nec,
-            headers: self.headers.try_clone()?,
+            headers: self.headers.shared(),
             unified_headers: self.unified_headers,
             haproxy: self.haproxy,
             haproxy_client_ip: self.haproxy_client_ip.as_deref().map(copy).transpose()?,
@@ -801,7 +801,7 @@ impl Options {
             address_scope: self.address_scope,
             port: self.port,
             resolve: self.resolve.shared(),
-            connect_to: self.connect_to.try_clone()?,
+            connect_to: self.connect_to.shared(),
             output: self.output,
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
@@ -1658,19 +1658,37 @@ impl Packed {
     }
 }
 
-/// The items of a list the application gives: kept as given, or as last
-/// read from its source. As large as the `Vec` alone, so a handle pays
-/// for a source only when it has one.
-#[derive(Debug)]
-pub(crate) enum Listed<T> {
-    Given(Vec<T>),
-    Read(Box<FromSource<T>>),
+/// What a list the application gives is a list of: each item made from
+/// its line, and read back as it.
+pub(crate) trait Item: Sized {
+    fn make(line: &[u8]) -> Result<Self, OutOfMemory>;
+    fn line(&self) -> &[u8];
 }
 
+impl Item for Vec<u8> {
+    fn make(line: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+        copy(line)
+    }
+
+    fn line(&self) -> &[u8] {
+        self
+    }
+}
+
+/// The items of a list the application gives: kept as given, or as last
+/// read from its source. Shared, never changed in place: a copy of the
+/// list, and the list a transfer is given from one made once, cost no
+/// copy of them. One pointer, so a handle pays for a source only when it
+/// has one, and an empty list given costs nothing.
 #[derive(Debug)]
-pub(crate) struct FromSource<T> {
-    source: Handler<dyn LineSource>,
+pub(crate) struct Listed<T>(Option<TryArc<Items<T>>>);
+
+#[derive(Debug)]
+pub(crate) struct Items<T> {
     items: Vec<T>,
+    /// Where they are read from again each time they are used, if they
+    /// are not as given.
+    source: Option<Handler<dyn LineSource>>,
 }
 
 impl<T> Default for Listed<T> {
@@ -1680,74 +1698,106 @@ impl<T> Default for Listed<T> {
 }
 
 impl<T> Listed<T> {
-    pub(crate) const NONE: Listed<T> = Listed::Given(Vec::new());
+    pub(crate) const NONE: Listed<T> = Listed(None);
+}
 
-    pub(crate) fn items(&self) -> &[T] {
-        match self {
-            Listed::Given(items) => items,
-            Listed::Read(read) => &read.items,
+impl<T: Item> Listed<T> {
+    /// The items made from `lines`.
+    pub(crate) fn given<'a>(
+        lines: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<Listed<T>, OutOfMemory> {
+        let mut items = Vec::new();
+        for line in lines {
+            items.try_push(T::make(line)?)?;
         }
+        Listed::of(items, None)
     }
 
-    pub(crate) fn items_mut(&mut self) -> &mut Vec<T> {
-        match self {
-            Listed::Given(items) => items,
-            Listed::Read(read) => &mut read.items,
+    fn of(
+        items: Vec<T>,
+        source: Option<Handler<dyn LineSource>>,
+    ) -> Result<Listed<T>, OutOfMemory> {
+        if items.is_empty() && source.is_none() {
+            return Ok(Listed::NONE);
         }
+        Ok(Listed(Some(TryArc::try_new(Items { items, source })?)))
+    }
+
+    pub(crate) fn items(&self) -> &[T] {
+        self.0.as_ref().map_or(&[], |i| &i.items)
     }
 
     pub(crate) fn source(&self) -> Option<&Handler<dyn LineSource>> {
-        match self {
-            Listed::Given(_) => None,
-            Listed::Read(read) => Some(&read.source),
-        }
+        self.0.as_ref()?.source.as_ref()
     }
 
-    /// What `source` gives, each line made an item by `item`.
-    pub(crate) fn from_source(
-        source: Handler<dyn LineSource>,
-        item: impl Fn(&[u8]) -> Result<T, OutOfMemory>,
-    ) -> Result<Listed<T>, OutOfMemory> {
-        let mut listed = Listed::Read(try_box(FromSource {
-            source,
-            items: Vec::new(),
-        })?);
-        listed.refill(item)?;
-        Ok(listed)
+    /// What `source` gives, read now and again each time it is used.
+    pub(crate) fn from_source(source: Handler<dyn LineSource>) -> Result<Listed<T>, OutOfMemory> {
+        let mut items = Vec::new();
+        source.lines(&mut |line| items.try_push(T::make(line)?))?;
+        Listed::of(items, Some(source))
     }
 
     /// The source's lines read again, in place of those read before; a
-    /// list kept as given stays as it is.
-    pub(crate) fn refill(
-        &mut self,
-        item: impl Fn(&[u8]) -> Result<T, OutOfMemory>,
-    ) -> Result<(), OutOfMemory> {
-        let Listed::Read(read) = self else {
+    /// list kept as given stays as it is, and so do the items when the
+    /// source gives the same lines.
+    pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
+        let Some(Items {
+            items: kept,
+            source: Some(source),
+        }) = self.0.as_deref()
+        else {
             return Ok(());
         };
-        let mut items = Vec::new();
-        read.source.lines(&mut |line| items.try_push(item(line)?))?;
-        read.items = items;
+        // Read once, as C walks its list once: the lines are matched
+        // against those kept until one differs, and from there made anew.
+        let mut matched = 0;
+        let mut read: Option<Vec<T>> = None;
+        source.lines(&mut |line| {
+            if let Some(read) = &mut read {
+                return read.try_push(T::make(line)?);
+            }
+            if kept.get(matched).is_some_and(|k| k.line() == line) {
+                matched += 1;
+                return Ok(());
+            }
+            let mut anew = remade(&kept[..matched])?;
+            anew.try_push(T::make(line)?)?;
+            read = Some(anew);
+            Ok(())
+        })?;
+        let items = match read {
+            Some(read) => read,
+            // Fewer lines than before, the same as far as they go.
+            None if matched < kept.len() => remade(&kept[..matched])?,
+            None => return Ok(()),
+        };
+        *self = Listed::of(items, Some(source.clone()))?;
         Ok(())
     }
 
-    /// A copy whose items `item` copies, reading the same source.
-    pub(crate) fn try_clone(
-        &self,
-        item: impl Fn(&T) -> Result<T, OutOfMemory>,
-    ) -> Result<Listed<T>, OutOfMemory> {
-        let mut items = Vec::new();
-        for i in self.items() {
-            items.try_push(item(i)?)?;
-        }
-        Ok(match self.source() {
-            None => Listed::Given(items),
-            Some(source) => Listed::Read(try_box(FromSource {
-                source: source.clone(),
-                items,
-            })?),
-        })
+    /// `item` after those there, from the same source.
+    pub(crate) fn push(&mut self, item: T) -> Result<(), OutOfMemory> {
+        let mut items = remade(self.items())?;
+        items.try_push(item)?;
+        *self = Listed::of(items, self.source().cloned())?;
+        Ok(())
     }
+
+    /// The list as it is, its items shared, reading the same source.
+    pub(crate) fn shared(&self) -> Listed<T> {
+        Listed(self.0.clone())
+    }
+}
+
+/// Items made again from those given, as they are not changed in place.
+fn remade<T: Item>(items: &[T]) -> Result<Vec<T>, OutOfMemory> {
+    let mut made = Vec::new();
+    made.try_reserve_exact(items.len() + 1)?;
+    for item in items {
+        made.try_push(T::make(item.line())?)?;
+    }
+    Ok(made)
 }
 
 /// A list of lines, each as the application gave it: fixed, or read
@@ -1767,33 +1817,31 @@ impl Lines {
         &mut self,
         lines: impl IntoIterator<Item = &'a [u8]>,
     ) -> Result<(), OutOfMemory> {
-        let mut owned = Vec::new();
-        for line in lines {
-            owned.try_push(copy(line)?)?;
-        }
-        self.0 = Listed::Given(owned);
+        self.0 = Listed::given(lines)?;
         Ok(())
     }
 
     /// The lines `source` gives, in place of those before: read now, and
     /// again each time they are used.
     pub fn set_source(&mut self, source: Handler<dyn LineSource>) -> Result<(), OutOfMemory> {
-        self.0 = Listed::from_source(source, copy)?;
+        self.0 = Listed::from_source(source)?;
         Ok(())
     }
 
     /// The source's lines read again, in place of those read before.
     pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
-        self.0.refill(copy)
+        self.0.refill()
     }
 
     /// `line` after those given before.
     pub fn push(&mut self, line: &[u8]) -> Result<(), OutOfMemory> {
-        self.0.items_mut().try_push(copy(line)?)
+        self.0.push(copy(line)?)
     }
 
-    pub(crate) fn try_clone(&self) -> Result<Lines, OutOfMemory> {
-        Ok(Lines(self.0.try_clone(|line| copy(line))?))
+    /// The list as it is, its lines shared, not copied: for a copy of the
+    /// handle, and for each handle given a list made once.
+    pub fn shared(&self) -> Lines {
+        Lines(self.0.shared())
     }
 }
 
@@ -2208,7 +2256,7 @@ impl Custom {
             referer: self.referer.as_deref().map(copy).transpose()?,
             method: self.method.as_deref().map(copy).transpose()?,
             target: self.target.as_deref().map(copy).transpose()?,
-            aliases_200: self.aliases_200.try_clone()?,
+            aliases_200: self.aliases_200.shared(),
         })
     }
 }
@@ -2329,7 +2377,7 @@ impl Cookies {
     fn try_clone(&self) -> Result<Cookies, OutOfMemory> {
         Ok(Cookies {
             send: self.send.as_deref().map(copy).transpose()?,
-            files: self.files.try_clone()?,
+            files: self.files.shared(),
             save_to: self.save_to.as_deref().map(copy).transpose()?,
             jar_asked: self.jar_asked,
             new_session: self.new_session,
@@ -2845,7 +2893,7 @@ impl ColdGroup for Small {
 impl Small {
     fn try_clone(&self) -> Result<Small, OutOfMemory> {
         Ok(Small {
-            telnet: self.telnet.try_clone()?,
+            telnet: self.telnet.shared(),
             tftp_blksize: self.tftp_blksize,
             tftp_no_options: self.tftp_no_options,
             input: self.input.clone(),
@@ -2947,7 +2995,7 @@ impl Http {
     fn try_clone(&self) -> Result<Http, OutOfMemory> {
         Ok(Http {
             user_agent: self.user_agent.as_deref().map(copy).transpose()?,
-            headers: self.headers.try_clone()?,
+            headers: self.headers.shared(),
             version: self.version,
             allow_09: self.allow_09,
             ignore_content_length: self.ignore_content_length,
@@ -3671,12 +3719,77 @@ mod tests {
         assert_eq!((p.user, p.password), (None, None));
     }
 
-    /// A list that may have a source costs a handle no more than its
-    /// lines: test 751 counts the bytes of a thousand handles.
+    /// A list that may have a source costs a handle one pointer, its
+    /// source nothing until it has one: test 751 counts the bytes of a
+    /// thousand handles.
     #[test]
     fn a_listed_option_is_as_large_as_its_lines() {
-        assert_eq!(size_of::<Lines>(), size_of::<Vec<Vec<u8>>>());
-        assert_eq!(size_of::<UserHeaders>(), size_of::<Vec<Vec<u8>>>());
+        assert_eq!(size_of::<Lines>(), size_of::<usize>());
+        assert_eq!(size_of::<UserHeaders>(), size_of::<usize>());
+    }
+
+    /// How many lists share `lines`' items; none for an empty list.
+    fn sharing(lines: &Lines) -> Option<usize> {
+        lines.0.0.as_ref().map(TryArc::count)
+    }
+
+    /// A list's copies share its lines, never copy them; pushed to, or
+    /// set anew, a list no longer shares the old ones, and its copy keeps
+    /// them.
+    #[test]
+    fn a_list_s_copies_share_its_lines() {
+        let mut given = Lines::NONE;
+        given.set([&b"a"[..], b"b"]).unwrap();
+        let mut copy = given.shared();
+        assert_eq!(sharing(&given), Some(2));
+        assert!(copy.iter().eq(given.iter()));
+        copy.push(b"c").unwrap();
+        assert_eq!(sharing(&given), Some(1));
+        assert!(given.iter().eq([&b"a"[..], b"b"]));
+        assert!(copy.iter().eq([&b"a"[..], b"b", b"c"]));
+        let held = copy.shared();
+        copy.set([&b"d"[..]]).unwrap();
+        assert!(held.iter().eq([&b"a"[..], b"b", b"c"]));
+        given.set(std::iter::empty()).unwrap();
+        assert_eq!(sharing(&given), None, "an empty list costs nothing");
+    }
+
+    /// A source giving the lines it is set to give, shared with the test.
+    struct Settable(std::sync::Arc<crate::test_cell::Cell<&'static [&'static [u8]]>>);
+
+    impl LineSource for Settable {
+        fn lines(
+            &self,
+            line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+        ) -> Result<(), OutOfMemory> {
+            self.0.get().iter().try_for_each(|l| line(l))
+        }
+    }
+
+    /// A source giving the same lines as before leaves a list's lines as
+    /// they are, shared still; giving others, or fewer or more, it has
+    /// them read anew, from the same source.
+    #[test]
+    fn a_list_keeps_what_its_source_gives_again() {
+        const FIRST: &[&[u8]] = &[b"a", b"b"];
+        let given = std::sync::Arc::new(crate::test_cell::Cell::new(FIRST));
+        let mut lines = Lines::NONE;
+        lines
+            .set_source(Handler::lines(Settable(given.clone())).unwrap())
+            .unwrap();
+        let held = lines.shared();
+        lines.refill().unwrap();
+        assert_eq!(sharing(&lines), Some(2), "kept as it was");
+        const OTHER: &[&[u8]] = &[b"a", b"c"];
+        const FEWER: &[&[u8]] = &[b"a"];
+        const MORE: &[&[u8]] = &[b"a", b"b", b"c"];
+        for now in [OTHER, FEWER, MORE, &[]] {
+            given.set(now);
+            lines.refill().unwrap();
+            assert!(lines.iter().eq(now.iter().copied()), "{now:?}");
+            assert!(lines.0.source().is_some(), "{now:?}");
+        }
+        assert!(held.iter().eq([&b"a"[..], b"b"]));
     }
 
     /// Methods combine as sets; a set of one method is that method, of
@@ -3743,7 +3856,7 @@ mod tests {
         assert!(lines.iter().eq([&b"line 1"[..]]));
         lines.refill().unwrap();
         assert!(lines.iter().eq([&b"line 2"[..]]));
-        let copy = lines.try_clone().unwrap();
+        let copy = lines.shared();
         assert!(copy.iter().eq([&b"line 2"[..]]));
         let mut copy = copy;
         copy.refill().unwrap();

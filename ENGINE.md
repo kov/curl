@@ -1023,7 +1023,8 @@ back is traced there, before the timer is armed, among its `[RLIMIT]` lines.
 the option's URL parsed) and `start_leg` for the first request: `Starts::single`, the limits
 armed, the application's CONNECT_TO list read again from its source (as C walks it for each
 connection it sets up; the header lists are read again as each request and each `CONNECT` is
-built), the URL read back into `Run::url`, the protocol with its credentials, POSTQUEUE, and a
+built; a list's lines are shared, never changed in place, by a handle's copies and the handles
+given one list, and a source giving the same lines again leaves them as they were), the URL read back into `Run::url`, the protocol with its credentials, POSTQUEUE, and a
 connection.
 `Curl_retry_request` is the engine's: a request that got nothing back over a reused connection
 (`ProtoState::retryable`: HTTP with no head line and no body byte; a line protocol with no reply

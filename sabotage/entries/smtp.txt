@@ -27,7 +27,7 @@ witness: curl-core upload::chain::tests::a_mail_s_dots_are_escaped_however_its_r
 file: crates/curl-core/src/options/mod.rs
 witness: curl-core options::tests::a_copy_keeps_the_mail_options
 --- old
-            mail_rcpt: self.mail_rcpt.try_clone()?,
+            mail_rcpt: self.mail_rcpt.shared(),
 --- new
             mail_rcpt: Lines::NONE,
 

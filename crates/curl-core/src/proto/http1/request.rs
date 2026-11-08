@@ -8,7 +8,7 @@ use crate::coding::{Coding, Decoders};
 use crate::date::HttpDate;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, LineSource};
-use crate::options::{Listed, Ranged, Resume};
+use crate::options::{Item, Listed, Ranged, Resume};
 use crate::text::Text;
 use std::fmt::Write as _;
 
@@ -22,10 +22,16 @@ pub(crate) use rtsp::{RtspContent, RtspHead, render_rtsp};
 const MAX_HEAD: usize = 1024 * 1024 - 1;
 
 /// The application's header line `line`, copied and classified.
-fn header(line: &[u8]) -> Result<UserHeader, OutOfMemory> {
-    let mut copy = Vec::new();
-    copy.try_extend_from_slice(line)?;
-    Ok(classify(copy))
+impl Item for UserHeader {
+    fn make(line: &[u8]) -> Result<UserHeader, OutOfMemory> {
+        let mut copy = Vec::new();
+        copy.try_extend_from_slice(line)?;
+        Ok(classify(copy))
+    }
+
+    fn line(&self) -> &[u8] {
+        &self.line
+    }
 }
 
 /// The HTTP versions a transfer may speak (`CURLOPT_HTTP_VERSION`, C's
@@ -176,25 +182,21 @@ impl UserHeaders {
 
     /// The headers of `lines`, each as the application gave it.
     pub fn new<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Result<UserHeaders, OutOfMemory> {
-        let mut headers = Vec::new();
-        for line in lines {
-            headers.try_push(header(line)?)?;
-        }
         Ok(UserHeaders {
-            lines: Listed::Given(headers),
+            lines: Listed::given(lines)?,
         })
     }
 
     /// The headers `source` gives, read now and as each request starts.
     pub fn from_source(source: Handler<dyn LineSource>) -> Result<UserHeaders, OutOfMemory> {
         Ok(UserHeaders {
-            lines: Listed::from_source(source, header)?,
+            lines: Listed::from_source(source)?,
         })
     }
 
     /// The source's lines read again, in place of those read before.
     pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
-        self.lines.refill(header)
+        self.lines.refill()
     }
 
     /// The lines, as the application gave them.
@@ -202,11 +204,13 @@ impl UserHeaders {
         self.lines.items().iter().map(|h| &h.line[..])
     }
 
-    /// A copy (`curl_easy_duphandle`), reading the same source.
-    pub fn try_clone(&self) -> Result<UserHeaders, OutOfMemory> {
-        Ok(UserHeaders {
-            lines: self.lines.try_clone(|h| header(&h.line))?,
-        })
+    /// The headers as they are, shared, not copied, reading the same
+    /// source: for a copy of the handle (`curl_easy_duphandle`), and for
+    /// each handle given a list made once.
+    pub fn shared(&self) -> UserHeaders {
+        UserHeaders {
+            lines: self.lines.shared(),
+        }
     }
 
     /// Whether a line replaces the library's header `name`
@@ -1241,7 +1245,7 @@ mod tests {
         let lines: [&[u8]; 3] = [b"X-A: 1", b"Accept;", b"No colon"];
         let headers = UserHeaders::new(lines).unwrap();
         assert!(headers.lines().eq(lines));
-        assert!(headers.try_clone().unwrap().lines().eq(lines));
+        assert!(headers.shared().lines().eq(lines));
     }
 
     /// Origins are the same only with scheme, host and port alike, the

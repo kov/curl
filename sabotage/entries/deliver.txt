@@ -107,7 +107,7 @@ witness: curl-core deliver::tests::included_headers_count_against_the_size_limit
 file: crates/curl-core/src/trace.rs
 witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
 --- old
-    if cx.easy().options().output.verbose {
+    if cx.verbose() {
         bytes_traced(cx, kind, bytes);
     }
 --- new

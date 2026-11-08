@@ -1143,7 +1143,7 @@ fn open<H: Host>(
     s.send_closed = !body;
     s.body_size = size;
     rx_window(step, quic);
-    if step.cx.easy().options().output.verbose {
+    if step.cx.verbose() {
         let id = curl_alloc::try_format(format_args!("{}", stream.0))
             .map_err(|_| ErrorKind::OutOfMemory)?;
         trace::info_with(

@@ -733,7 +733,7 @@ impl Request {
                 }
             };
             self.stream().id = Some(id);
-            if cx.easy().options().output.verbose {
+            if cx.verbose() {
                 let url = cx.easy().report().url().map(copied).transpose()?;
                 let url = url.as_deref().unwrap_or_default();
                 let id = curl_alloc::try_format(format_args!("{}", id.0))

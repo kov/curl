@@ -66,7 +66,7 @@ impl<H: Host> crate::conn::layer::Trace for StepCx<'_, H> {
     }
 
     fn says_info(&self) -> bool {
-        self.easy().options().output.verbose
+        self.verbose()
     }
 
     fn traces(&self, component: Component) -> bool {
@@ -94,8 +94,7 @@ impl<H: Host> crate::conn::layer::ForTransfer for StepCx<'_, H> {
     }
 
     fn has_debug_handler(&self) -> bool {
-        let options = self.easy().options();
-        options.callbacks.debug.is_some() && options.output.verbose
+        self.verbose() && self.easy().options().callbacks.debug.is_some()
     }
 
     fn certinfo_report(&mut self) -> Option<&mut TransferReport> {
@@ -276,6 +275,13 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// exception to decision 9 (ENGINE.md): what reaches it is only
     /// `TransferCx`'s WebSocket calls.
     ws: Option<crate::conn::WsLend<'a>>,
+    /// The transfer's `verbose` option as last read, and the count of the
+    /// transfers' lends to be changed (`Slots::edits`) it was read at:
+    /// read again once that count moved, as a handler may have changed
+    /// it, so that a change shows at the next line as C's
+    /// `Curl_trc_is_verbose` reads `set.verbose` for each. Read at none
+    /// to start with (0, a count the table never has).
+    verbose: std::cell::Cell<(u64, bool)>,
 }
 
 impl<H: Host> StepCx<'_, H> {
@@ -309,6 +315,7 @@ impl<'a, H: Host> StepCx<'a, H> {
 
     pub(crate) fn new(me: TransferId, rest: EngineRest<'a, H>) -> StepCx<'a, H> {
         StepCx {
+            verbose: std::cell::Cell::new((0, false)),
             me,
             rest,
             lent: None,
@@ -346,15 +353,20 @@ impl<H: Host> StepCx<'_, H> {
         id: TransferId,
         f: impl FnOnce(&mut StepCx<'_, H>, &mut crate::proto::http::Request) -> R,
     ) -> Option<R> {
+        let edits = self.rest.tell.slots.edits();
         let slot = self.rest.tell.slots.get_mut(id)?;
         // Only the stepping transfer's run is out while a connection is
         // read or written.
         let mut run = slot.run.take().expect("a sibling's run is in its slot");
+        // Read as its slot is in hand, as the step it is lent reads it
+        // first thing.
+        let verbose = (edits, slot.easy.options().output.verbose);
         let lent = self.lent;
         let r = match run.state.attached_mut().map(|x| &mut x.proto) {
             Some(ProtoState::Http(req)) => {
                 let mut cx = StepCx::new(id, self.rest.reborrow());
                 cx.lent = lent;
+                cx.verbose.set(verbose);
                 Some(f(&mut cx, req))
             }
             _ => None,
@@ -380,6 +392,7 @@ impl<H: Host> StepCx<'_, H> {
             side_due: self.side_due,
             rank: self.rank,
             ws: Some(conn),
+            verbose: self.verbose.clone(),
         };
         let r = f(&mut cx);
         let (quic_at, server_response_at) = (cx.quic_at, cx.server_response_at);
@@ -533,6 +546,34 @@ impl<H: Host> StepCx<'_, H> {
         if self.rest.tell.slots.get(id).is_some() {
             self.rest.dirty.insert(id.index());
         }
+    }
+
+    /// The transfer is verbose (`set.verbose`), read through what the step
+    /// last read of it while no transfer was lent to be changed since: a
+    /// trace's check costs a compare, not a walk to the options.
+    #[inline]
+    pub(crate) fn verbose(&self) -> bool {
+        let (read_at, verbose) = self.verbose.get();
+        let edits = self.rest.tell.slots.edits();
+        let verbose = if read_at == edits {
+            verbose
+        } else {
+            self.read_verbose(edits)
+        };
+        debug_assert_eq!(
+            verbose,
+            self.easy().options().output.verbose,
+            "the transfer's options changed without a lend to change them"
+        );
+        verbose
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn read_verbose(&self, edits: u64) -> bool {
+        let verbose = self.easy().options().output.verbose;
+        self.verbose.set((edits, verbose));
+        verbose
     }
 
     pub(crate) fn easy(&self) -> &Easy {

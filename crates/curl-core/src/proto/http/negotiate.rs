@@ -711,7 +711,7 @@ fn logged<H: Host>(
     prefix: &str,
     status: &GssStatus,
 ) {
-    if !cx.easy().options().output.verbose {
+    if !cx.verbose() {
         return;
     }
     // At most C's 1024 bytes, on the stack.

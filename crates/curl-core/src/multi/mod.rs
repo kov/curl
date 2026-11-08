@@ -409,9 +409,43 @@ impl ConnLimits {
 /// The transfers, each in a row as C's ids number them. A row holds its
 /// slot boxed, as C's holds a pointer: a table's empty rows cost little,
 /// and C's limits on a transfer's memory count them.
-type Slots<H> = Arena<Box<Slot<H>>, Transfer>;
+///
+/// It counts the times a transfer was lent to be changed from outside the
+/// engine (`app_mut`), the one way a handler reaches a transfer's options
+/// mid-step: what a step keeps of its own options (`StepCx::verbose`) is
+/// good while the count stays.
+struct Slots<H: Host> {
+    rows: Arena<Box<Slot<H>>, Transfer>,
+    edits: u64,
+}
+
+impl<H: Host> std::ops::Deref for Slots<H> {
+    type Target = Arena<Box<Slot<H>>, Transfer>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+
+impl<H: Host> std::ops::DerefMut for Slots<H> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rows
+    }
+}
 
 impl<H: Host> Slots<H> {
+    fn new(policy: crate::id::ArenaPolicy) -> Result<Self, OutOfMemory> {
+        Ok(Slots {
+            rows: Arena::new(policy)?,
+            edits: 1,
+        })
+    }
+
+    /// The count of `app_mut`'s lends, never 0.
+    fn edits(&self) -> u64 {
+        self.edits
+    }
+
     /// Transfer `id`'s slot, if it is one the application may name: every
     /// call the multi and its contexts take a `TransferId` in comes through
     /// here, and finds none for a transfer of the multi's own, as C refuses
@@ -423,9 +457,12 @@ impl<H: Host> Slots<H> {
             .map(|s| &**s)
     }
 
-    /// The same, to change.
+    /// The same, to change: counted, as what it lends may change options
+    /// a step has read.
     fn app_mut(&mut self, id: TransferId) -> Option<&mut Slot<H>> {
-        self.get_mut(id)
+        self.edits += 1;
+        self.rows
+            .get_mut(id)
             .filter(|s| !s.owner.is_internal())
             .map(|s| &mut **s)
     }
@@ -522,7 +559,7 @@ impl<H: Host> Multi<H> {
     /// start of its own from here.
     pub fn new(env: Env) -> Result<Self, OutOfMemory> {
         let winsock = curl_os::net::Winsock::start().ok();
-        let slots = Arena::new(env.arena)?;
+        let slots = Slots::new(env.arena)?;
         let caches = Caches::new()?;
         // As C's multi is made, after its waker (`Curl_multi_handle`).
         let mut net = env.net;

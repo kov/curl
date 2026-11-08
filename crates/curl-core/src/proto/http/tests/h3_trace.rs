@@ -1133,6 +1133,75 @@ fn a_stream_s_consumed_bytes_count_on_it_whoever_reads_them() {
     }
 }
 
+/// A body handler that, given the body and if it is `on`, turns off the
+/// trace of the transfer `quiets` names, or of its own with none: the
+/// option taken mid-step, as a C callback's
+/// `curl_easy_setopt(CURLOPT_VERBOSE, 0L)`.
+struct Quieting {
+    seen: Seen,
+    on: bool,
+    quiets: Arc<Mutex<Option<crate::multi::TransferId>>>,
+}
+
+impl WriteHandler for Quieting {
+    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        if self.on {
+            let id = self.quiets.lock().unwrap().unwrap_or(cx.me());
+            cx.options_mut(id).unwrap().output.verbose = false;
+        }
+        self.seen.write(cx, body)
+    }
+}
+
+/// `two_streams`' transfers, the first's body handler or, with `sibling`,
+/// the second's turning the first's trace off: what the first traced.
+fn quieted(sibling: bool) -> Vec<String> {
+    let (script, mut m) = two_streams();
+    let seen = [Seen::default(), Seen::default()];
+    let quiets = Arc::new(Mutex::new(None));
+    let ids = [0, 1].map(|n| {
+        let seen = &seen[n];
+        let quieting = Quieting {
+            seen: seen.clone(),
+            on: (n == 1) == sibling,
+            quiets: quiets.clone(),
+        };
+        let mut e = pipewaiting(&script, seen);
+        e.options_mut().callbacks.write = Some(Handler::write(quieting).unwrap());
+        m.add(Box::new(e), (), &mut NoEvents).unwrap()
+    });
+    // The first's handler quiets itself, the second's the first.
+    if sibling {
+        *quiets.lock().unwrap() = Some(ids[0]);
+    }
+    for id in ids {
+        let done = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(done, Ok(()));
+    }
+    assert_eq!(seen[1].body(), b"second");
+    lines_of(&seen[0], &[""])
+}
+
+/// A transfer's handler turning its trace off mid-step stops it at once:
+/// the line its body's arrival traces after the handler returns is not
+/// traced, nor any after, as C reads `set.verbose` for each line
+/// (`Curl_trc_is_verbose`).
+#[test]
+fn a_handler_turning_its_own_trace_off_stops_it_at_its_next_line() {
+    let said = quieted(false);
+    assert_eq!(said.last().unwrap(), "[HTTP/3] [0] end_headers, status=200");
+}
+
+/// A sibling's handler, lent the step that reads its stream, turning the
+/// stepping transfer's trace off stops that one's at its next line: the
+/// first's stream ended, it traces nothing of the second's arrival or
+/// its own end.
+#[test]
+fn a_sibling_s_handler_turning_the_stepping_trace_off_stops_it_at_once() {
+    let said = quieted(true);
+    assert_eq!(said.last().unwrap(), "[HTTP/3] [0] CLOSED", "{said:#?}");
+}
+
 /// A connection kept idle is closed as the multi goes, saying goodbye:
 /// the packet that closes it goes to the peer
 /// (`Curl_cf_ngtcp2_cmn_shutdown`).

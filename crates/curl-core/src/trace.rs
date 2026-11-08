@@ -26,7 +26,7 @@ pub(crate) const DETAIL_MAX: usize = 255;
 /// A line for a verbose transfer's trace (`infof`): one cut short ends in
 /// `...`, as C ends it.
 pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
-    if !cx.easy().options().output.verbose {
+    if !cx.verbose() {
         return;
     }
     let mut line = start_line(cx);
@@ -80,7 +80,7 @@ pub(crate) fn debug_only(line: &[u8]) -> bool {
 
 /// `info` with a line made of `parts`, which need not be text.
 pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
-    if !cx.easy().options().output.verbose {
+    if !cx.verbose() {
         return;
     }
     let mut line = start_line(cx);
@@ -97,7 +97,7 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
 /// work to do for a line asks first.
 #[inline]
 pub(crate) fn traces<H: Host>(cx: &StepCx<'_, H>, component: Component) -> bool {
-    handle_traces(cx.easy(), component)
+    cx.verbose() && cx.easy().components().is_some_and(|c| c.traces(component))
 }
 
 /// `traces`, of a handle whatever it is doing.
@@ -658,7 +658,7 @@ fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_
     if first && let Some(sink) = cx.easy().options().callbacks.failure.clone() {
         sink.write(detail.bytes());
     }
-    if cx.easy().options().output.verbose {
+    if cx.verbose() {
         let mut line = Text::<{ DETAIL_MAX + 1 }>::new();
         line.push_clipped(detail.bytes());
         line.push_clipped(b"\n");
@@ -675,7 +675,7 @@ fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_
 /// for a transfer that traces.
 #[inline]
 pub(crate) fn bytes<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
-    if cx.easy().options().output.verbose {
+    if cx.verbose() {
         bytes_traced(cx, kind, bytes);
     }
 }

@@ -610,12 +610,16 @@ impl Pipeline {
     }
 }
 
-/// A line of the write trace (`CURL_TRC_WRITE`).
+/// A line of the write trace (`CURL_TRC_WRITE`): its check inlined where
+/// it is said, as `trace::of`'s is, so that a line not traced costs no
+/// call.
+#[inline]
 fn write_trace<H: Host>(cx: &mut StepCx<'_, H>, args: std::fmt::Arguments<'_>) {
     trace::of(cx, Component::Write, args);
 }
 
 /// What a write at the chain's start came to (`Curl_client_write`).
+#[inline]
 pub(crate) fn client_write<H: Host>(
     cx: &mut StepCx<'_, H>,
     kind: WriteType,
@@ -629,6 +633,7 @@ pub(crate) fn client_write<H: Host>(
 }
 
 /// What a protocol's read of the response came to (`Curl_xfer_write_resp`).
+#[inline]
 pub(crate) fn write_resp<H: Host>(
     cx: &mut StepCx<'_, H>,
     len: usize,

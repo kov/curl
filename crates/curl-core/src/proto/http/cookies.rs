@@ -215,7 +215,7 @@ struct Held {
 impl Held {
     fn new<H: Host>(cx: &StepCx<'_, H>) -> Held {
         Held {
-            verbose: cx.easy().options().output.verbose,
+            verbose: cx.verbose(),
             lines: Vec::new(),
             failed: false,
         }

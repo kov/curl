@@ -793,40 +793,9 @@ impl Request {
     ) -> Result<(Peer, Vec<u8>, CredentialGate), ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
         let port = url
-            .get(
-                Part::Port,
-                GetOptions {
-                    default_port: true,
-                    ..GetOptions::NONE
-                },
-            )
-            .map_err(url_error)?;
-        let port = std::str::from_utf8(&port)
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .ok_or(ErrorKind::UrlMalformat)?;
-        // The path goes out encoded, the query as it was given, as C reads
-        // them for `state.up` (`CURLU_URLENCODE` on the path alone).
-        let encoded = GetOptions {
-            url_encode: true,
-            ..GetOptions::NONE
-        };
-        let mut target = url.get(Part::Path, encoded).map_err(url_error)?;
-        // An empty query keeps its `?`, as C asks with `CURLU_GET_EMPTY`.
-        let query = GetOptions {
-            get_empty: true,
-            ..GetOptions::NONE
-        };
-        match url.get(Part::Query, query) {
-            Ok(query) => {
-                target.try_push(b'?').map_err(|_| ErrorKind::OutOfMemory)?;
-                target
-                    .try_extend_from_slice(&query)
-                    .map_err(|_| ErrorKind::OutOfMemory)?;
-            }
-            Err(UrlErrorKind::NoQuery) => {}
-            Err(e) => return Err(url_error(e)),
-        }
+            .port_or_default()
+            .ok_or(url_error(UrlErrorKind::NoPort))?;
+        let target = url.request_target().map_err(url_error)?;
         let scope = cx.easy().options().address_scope;
         let idn = cx.easy().libraries().idn;
         let peer = super::url_peer((scheme, host, port), url, scope, idn)?;

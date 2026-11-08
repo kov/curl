@@ -1115,6 +1115,45 @@ impl Url {
         }
     }
 
+    /// The port a connection for the URL goes to: its own, or else its
+    /// scheme's, as `get` reads `Part::Port` back with `default_port`.
+    pub(crate) fn port_or_default(&self) -> Option<u16> {
+        self.port_for(GetOptions {
+            default_port: true,
+            ..GetOptions::NONE
+        })
+    }
+
+    /// What a request for the URL names, as C reads it for `state.up`:
+    /// the path encoded (`CURLU_URLENCODE`), then `?` and the query as
+    /// it was given, kept even empty (`CURLU_GET_EMPTY`). Made at once,
+    /// as long as the two as they stand, unless encoding lengthens the
+    /// path.
+    pub(crate) fn request_target(&self) -> Result<Bytes, UrlErrorKind> {
+        let query = match &self.query {
+            Some(Tail::Text(q)) => Some(q),
+            _ => None,
+        };
+        let path = self.path.as_deref().unwrap_or(b"/");
+        let mut out = Bytes::new();
+        out.try_reserve_exact(path.len() + query.map_or(0, |q| 1 + q.len()))
+            .map_err(|_| UrlErrorKind::OutOfMemory)?;
+        let encoded = GetOptions {
+            url_encode: true,
+            ..GetOptions::NONE
+        };
+        self.write_part(Part::Path, encoded, None, &mut out)?;
+        if query.is_some() {
+            out.try_push(b'?').map_err(sink_out_of_memory)?;
+            let as_given = GetOptions {
+                get_empty: true,
+                ..GetOptions::NONE
+            };
+            self.write_part(Part::Query, as_given, None, &mut out)?;
+        }
+        Ok(out)
+    }
+
     /// The whole URL as `get` reads it back with `get_empty`, without its
     /// user and password: what a report shows of it (`effective_url`).
     pub(crate) fn shown(&self) -> Result<Bytes, UrlErrorKind> {
@@ -1574,6 +1613,55 @@ mod tests {
         let (res, sink) = measure(&file.unwrap(), Part::Url, GetOptions::NONE);
         res.unwrap();
         assert!(sink.asked[0] >= sink.written, "{sink:?}");
+    }
+
+    /// A request's target is the path read back encoded, then `?` and the
+    /// query read back as given, kept when empty; made at once where the
+    /// path needs no encoding. The port is the URL's or its scheme's.
+    #[test]
+    fn a_request_target_is_its_path_and_query_read_back() {
+        let encoded = GetOptions {
+            url_encode: true,
+            ..GetOptions::NONE
+        };
+        let as_given = GetOptions {
+            get_empty: true,
+            ..GetOptions::NONE
+        };
+        let opts = ParseOptions {
+            allow_space: true,
+            ..ParseOptions::NONE
+        };
+        for url in [
+            "http://h",
+            "http://h/p",
+            "http://h/p?",
+            "http://h/p?q=1&r",
+            "http://h/a b?c d",
+            "http://h:8080/%7e?x#f",
+            "https://h/?",
+        ] {
+            let u = Url::parse(url.as_bytes(), opts).unwrap();
+            let mut want = u.get(Part::Path, encoded).unwrap();
+            if let Ok(q) = u.get(Part::Query, as_given) {
+                want.push(b'?');
+                want.extend_from_slice(&q);
+            }
+            let target = u.request_target().unwrap();
+            assert_eq!(target, want, "{url}");
+            if !url.contains(' ') {
+                assert_eq!(target.capacity(), target.len(), "{url}");
+            }
+            let port = u.get(
+                Part::Port,
+                GetOptions {
+                    default_port: true,
+                    ..GetOptions::NONE
+                },
+            );
+            let port = port.map(|p| std::str::from_utf8(&p).unwrap().parse().unwrap());
+            assert_eq!(u.port_or_default(), port.ok(), "{url}");
+        }
     }
 
     /// The limit on a whole URL is on what has been written so far and the

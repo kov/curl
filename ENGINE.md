@@ -5085,7 +5085,7 @@ peer gets a protocol error, not an out-of-memory one.
   empty rows cost little, as C's hold pointers, and its place in the pending queue with that
   queue's bitset of rows (C's `multi->pending`, sized as the transfer table grows); the URL as
   fetched and its parts; the URL read
-  back once parsed, as C reads it back; the target grown by its query; the protocol's state;
+  back once parsed, as C reads it back; the target, its path and query made at once; the protocol's state;
   the peer; the effective URL kept for the report; the answer for the host kept in the DNS
   cache (its name, its addresses, the answer shared, the cache's table); the connection, as
   C's `connectdata`; the list of connect attempts; the socket; the request head; the receive buffer; the head parser's line; the

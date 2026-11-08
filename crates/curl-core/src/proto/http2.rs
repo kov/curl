@@ -82,9 +82,18 @@ pub(crate) struct H2Conn {
     /// What came behind the 101 of an upgrade, for the session to read
     /// first (`inbufq`).
     held: Vec<u8>,
+    /// Where each response field is made into the line it is handed on
+    /// as, its room kept for the next (C's `ctx->scratch`).
+    line: Vec<u8>,
     /// Its goodbye is done (`cf->shutdown`).
     shut: bool,
 }
+
+/// What hears each event a read of the session gives (`H2Conn::recv`):
+/// the event, the transfer its stream is routed to, the peer's limit on
+/// streams as last traced, and the connection's room for a field's line.
+pub(crate) type Hearer<'a> =
+    dyn FnMut(Event<'_>, Option<TransferId>, &mut u32, &mut Vec<u8>) -> Heard + 'a;
 
 /// What C takes the peer's limit on streams open at once to be until its
 /// settings say (`DEFAULT_MAX_CONCURRENT_STREAMS`).
@@ -269,6 +278,7 @@ impl H2Conn {
                 routes: Routes::new(),
                 max_said: MAX_SAID_FIRST,
                 held: Vec::new(),
+                line: Vec::new(),
                 shut: false,
             },
             stream,
@@ -315,24 +325,25 @@ impl H2Conn {
     }
 
     /// Feed the session what the connection read, `events` hearing
-    /// each event with the transfer its stream is routed to, if any, and
-    /// the peer's limit on streams as last traced, which its settings are
-    /// traced against.
+    /// each event with the transfer its stream is routed to, if any, the
+    /// peer's limit on streams as last traced, which its settings are
+    /// traced against, and the connection's room for a field's line.
     pub(crate) fn recv(
         &mut self,
         bytes: &[u8],
-        events: &mut dyn FnMut(Event<'_>, Option<TransferId>, &mut u32) -> Heard,
+        events: &mut Hearer<'_>,
     ) -> Result<usize, FrameError> {
         assert!(!self.broken, "a session whose read failed is read again");
         let H2Conn {
             session,
             routes,
             max_said,
+            line,
             ..
         } = self;
         session.recv(bytes, &mut |event| {
             let to = stream_of(&event).and_then(|s| routes.route_of(s));
-            events(event, to, max_said)
+            events(event, to, max_said, line)
         })
     }
 

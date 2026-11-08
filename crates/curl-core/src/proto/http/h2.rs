@@ -1429,7 +1429,7 @@ impl Request {
         let own = self.stream().id;
         let mut limit_changed = false;
         let fed = with_session(lease, |h2, lease| {
-            let read = h2.recv(bytes, &mut |event, routed, said| {
+            let read = h2.recv(bytes, &mut |event, routed, said, line| {
                 // A frame is traced by the transfer reading, whichever
                 // stream it is on (`on_frame_recv`).
                 trace_frame(&mut *cx, &event);
@@ -1466,9 +1466,9 @@ impl Request {
                         _ => None,
                     };
                     let after = &mut after;
-                    return match cx
-                        .with_sibling(to, |bcx, req| req.h2_event(bcx, lease, event, prior, after))
-                    {
+                    return match cx.with_sibling(to, |bcx, req| {
+                        req.h2_event(bcx, lease, event, prior, after, line)
+                    }) {
                         Some(heard) => heard,
                         None => match consumed {
                             Some(c) => {
@@ -1483,7 +1483,7 @@ impl Request {
                         },
                     };
                 }
-                self.h2_event(cx, lease, event, prior, &mut after)
+                self.h2_event(cx, lease, event, prior, &mut after, line)
             });
             // The streams promised and taken are their transfers' from
             // here, as C sets their user data in `push_promise`. Unlike
@@ -1589,6 +1589,7 @@ impl Request {
         event: Event<'_>,
         goaway: Option<GoAway>,
         after: &mut After,
+        line: &mut Vec<u8>,
     ) -> Heard {
         let id = self.stream().id;
         let ours = |s: StreamId| Some(s) == id;
@@ -1613,7 +1614,8 @@ impl Request {
                         Err(OutOfMemory) => self.header_error(cx, ErrorKind::OutOfMemory, after),
                     };
                 }
-                let mut line = Vec::new();
+                // Made in the connection's room, kept from field to field.
+                line.clear();
                 let made = if name == b":status" {
                     let Some(code) = decode_status(value) else {
                         return self.header_error(cx, ErrorKind::UnsupportedProtocol, after);
@@ -1632,7 +1634,7 @@ impl Request {
                     return self.header_error(cx, ErrorKind::OutOfMemory, after);
                 }
                 let was = cx.pause();
-                self.h2_head_line(cx, lease, &line);
+                self.h2_head_line(cx, lease, line);
                 // Traced once written (`on_header`).
                 match self.stream().status.filter(|_| name == b":status") {
                     Some(code) => {

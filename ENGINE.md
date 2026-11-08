@@ -1995,7 +1995,9 @@ reset) and per connection (settings, goaway). An event the caller cannot take fa
 reading, as C's callbacks return `NGHTTP2_ERR_CALLBACK_FAILURE`; what C's callbacks call back
 into the session for (consuming, resetting, resuming, windows) is gathered as the read runs and
 done once it returns, in scratch kept on the request's stream between reads, so a body's frames
-allocate nothing.
+allocate nothing. Each response field is made into its line (`name: value\r\n`) in a buffer the
+`H2Conn` keeps and lends to the read, as C's `ctx->scratch`, so a head's fields allocate nothing
+once the connection has seen one as long.
 
 The session lives on the `Conn` as its `conn::mux::Session` (`Session::H2`, a
 `proto::http2::H2Conn` with the bytes it gave that the connection has not taken), above its
@@ -5051,6 +5053,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | error detail | on error | dropped if boxing it fails |
 | request head | once, measured before it is written | 1 MiB → TooLarge |
 | `Conn` receive buffer, head parser line | grows to the largest read and line | BUFFERSIZE, 100 KiB |
+| HTTP/2 field line (`H2Conn`'s) | grows to the longest response field on the connection | the longest field the session hands on |
 | trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
 | the TLS options (`Cold<TlsOptions>`; the SSL_CTX handler among them, and the proxy's in `Cold<Proxy>`) | the first setopt of one | one group per handle |
 | a route's `TlsIdentity` | the leg's route, for a TLS route | one per leg, shared with the connection it makes |

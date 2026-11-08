@@ -357,12 +357,14 @@ impl<H: Host> StepCx<'_, H> {
         let slot = self.rest.tell.slots.get_mut(id)?;
         // Only the stepping transfer's run is out while a connection is
         // read or written.
-        let mut run = slot.run.take().expect("a sibling's run is in its slot");
+        // Kept in its `Option` while it is out, to go back as it came.
+        let mut run = slot.run.take();
+        let taken = run.as_mut().expect("a sibling's run is in its slot");
         // Read as its slot is in hand, as the step it is lent reads it
         // first thing.
         let verbose = (edits, slot.easy.options().output.verbose);
         let lent = self.lent;
-        let r = match run.state.attached_mut().map(|x| &mut x.proto) {
+        let r = match taken.state.attached_mut().map(|x| &mut x.proto) {
             Some(ProtoState::Http(req)) => {
                 let mut cx = StepCx::new(id, self.rest.reborrow());
                 cx.lent = lent;
@@ -371,7 +373,9 @@ impl<H: Host> StepCx<'_, H> {
             }
             _ => None,
         };
-        super::super::put_back(self.rest.tell.slots, self.rest.dirty, id, run);
+        let taken = run.as_ref().expect("taken above");
+        let slot = super::super::slot_to_put_back(self.rest.tell.slots, self.rest.dirty, id, taken);
+        slot.run = run;
         r
     }
 

@@ -2096,6 +2096,23 @@ fn tls_native_in<H: Host>(
 /// handler asked for while the run was out, as `pause_transfer` judges
 /// one asked for while it is in.
 fn put_back<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, run: Run) {
+    let slot = slot_to_put_back(slots, dirty, id, &run);
+    slot.run = Some(run);
+}
+
+/// The slot to put transfer `id`'s `run` back in, a pause its own handler
+/// asked for while the run was out judged as `put_back` judges it, for a
+/// caller that stores the run itself. One that kept the run in the
+/// `Option` it was taken in copies it once on its way back, by storing
+/// that: moved into a call, or unwrapped and wrapped again, it is copied
+/// twice. A sibling's run is lent this way once for each packet read for
+/// it.
+fn slot_to_put_back<'a, H: Host>(
+    slots: &'a mut Slots<H>,
+    dirty: &mut RowSet,
+    id: TransferId,
+    run: &Run,
+) -> &'a mut Slot<H> {
     let slot = slots.get_mut(id).expect("still in the multi");
     if std::mem::take(&mut slot.judge_pause)
         && !slot.pause.blocks(run.state.directions(slot.easy.options()))
@@ -2103,7 +2120,7 @@ fn put_back<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, r
         slot.speedometer.forget_slow();
         dirty.insert(id.index());
     }
-    slot.run = Some(run);
+    slot
 }
 
 impl<H: Host> Multi<H> {

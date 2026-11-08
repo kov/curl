@@ -130,18 +130,12 @@ fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     if cx.easy().options().resolve.stamp() == cx.easy().resolve_read {
         return Ok(());
     }
-    // As the application's source has it now.
-    cx.easy_mut()
-        .options_mut()
-        .resolve
-        .refill()
-        .map_err(|_| ErrorKind::OutOfMemory)?;
-    // The entries are read from a handle on them, which shares them, as
-    // the cache and the trace are reached while they are: the debug
-    // handler may set the list, and the options keep what it sets. Read
-    // whole, the list is done with, and so is one set meanwhile, as C
-    // clears `state.resolve` once it has read the old one; one that
-    // failed is read again.
+    // The entries are read from a handle on them, which shares them, or
+    // on the source that gives them, as the cache and the trace are
+    // reached while they are: the debug handler may set the list, and the
+    // options keep what it sets. Read whole, the list is done with, and so
+    // is one set meanwhile, as C clears `state.resolve` once it has read
+    // the old one; one that failed is read again.
     let entries = cx.easy().options().resolve.shared();
     let read = read_entries(cx, &entries);
     if read.is_ok() {
@@ -164,19 +158,26 @@ pub(crate) fn shuffle<H: Host>(
     crate::conn::shuffle(addrs, &mut |bytes| libraries.random(bytes).is_ok())
 }
 
+/// The list's entries read into the cache, in order, as C walks the
+/// application's list in place: an entry reaches the trace, and the debug
+/// handler, before the next is read.
 fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(), ErrorKind> {
-    if list.entries().next().is_none() {
+    if !list.is_set() {
         return Ok(());
     }
     cx.easy_mut().wildcard_resolve = false;
-    for line in list.entries() {
+    list.try_each(|line| read_entry(cx, line))
+}
+
+fn read_entry<H: Host>(cx: &mut StepCx<'_, H>, line: &[u8]) -> Result<(), ErrorKind> {
+    {
         let (name, port, addrs, permanent) = match parse_entry(line) {
-            Ok(None) => continue,
+            Ok(None) => return Ok(()),
             Ok(Some(ListEntry::Remove { name, port })) => {
                 let kept = cx.rest.kept(cx.me, Kind::Names);
                 let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
                 names.section(|dns| dns.remove(name, port));
-                continue;
+                return Ok(());
             }
             Ok(Some(ListEntry::Add {
                 name,

@@ -15,6 +15,7 @@ mod tls;
 
 use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_uint, c_void};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+use core::ops::ControlFlow;
 use core::ptr::NonNull;
 use core::time::Duration;
 
@@ -196,22 +197,37 @@ fn spnego() -> bool {
 }
 
 /// The lines of the list at `p`, in order; a node without a string is
-/// passed over.
+/// passed over. A node's link is read as the line after it is asked for,
+/// as C's walk reads `next` once it is done with a node, so a line
+/// appended meanwhile is given too.
 ///
 /// # Safety
 ///
-/// `p` is NULL or a `curl_slist` whose nodes and strings live through
-/// the walk.
+/// `p` is NULL or a `curl_slist` whose nodes and strings live, and are
+/// not changed but by appending, through the walk.
 unsafe fn list_lines<'a>(p: *mut c_void) -> impl Iterator<Item = &'a [u8]> {
-    let mut node = p.cast::<ffi::curl_slist>().cast_const();
+    let mut next = p.cast::<ffi::curl_slist>().cast_const();
+    let mut last: *const ffi::curl_slist = core::ptr::null();
     core::iter::from_fn(move || {
         loop {
-            // SAFETY: as the caller guarantees, `node` is NULL or a node.
-            let here = unsafe { node.as_ref() }?;
-            node = here.next;
-            if !here.data.is_null() {
-                // SAFETY: a node's string is a C string.
-                return Some(unsafe { CStr::from_ptr(here.data) }.to_bytes());
+            // The nodes are read through the list's own pointers, never a
+            // reference held across a line given: the application may
+            // append to the last node meanwhile.
+            if !last.is_null() {
+                // SAFETY: `last` is the node given before, alive as the
+                // caller guarantees.
+                next = unsafe { (*last).next };
+            }
+            if next.is_null() {
+                return None;
+            }
+            last = next;
+            // SAFETY: as the caller guarantees, `next` is a live node.
+            let data = unsafe { (*next).data };
+            if !data.is_null() {
+                // SAFETY: a node's string is a C string, unchanged while
+                // the list is walked.
+                return Some(unsafe { CStr::from_ptr(data) }.to_bytes());
             }
         }
     })
@@ -234,16 +250,19 @@ unsafe impl Send for Slist {}
 unsafe impl Sync for Slist {}
 
 impl LineSource for Slist {
-    fn lines(
-        &self,
-        line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
-    ) -> Result<(), OutOfMemory> {
-        // SAFETY: the application keeps the list and its strings alive
-        // while the handle has it, as the option's contract says.
+    fn lines(&self, line: &mut dyn FnMut(&[u8]) -> ControlFlow<()>) {
+        // SAFETY: the application keeps the list and its strings alive,
+        // changed only by appending, while the handle has it and through
+        // each of its transfers, the debug handler and the other callbacks
+        // a line given here reaches included: the option's contract ("you
+        // must keep it around until you no longer use this handle for a
+        // transfer", CURLOPT_CONNECT_TO.md; the others alike), as C reads
+        // the list in place, calling back between its nodes.
         for text in unsafe { list_lines(self.0.as_ptr().cast()) } {
-            line(text)?;
+            if line(text).is_break() {
+                return;
+            }
         }
-        Ok(())
     }
 }
 
@@ -1491,7 +1510,7 @@ fn apply(
             }
         },
         (ffi::CURLOPT_RESOLVE, Ptr(p)) => match slist(p)? {
-            Some(source) => options.resolve.set_source(source)?,
+            Some(source) => options.resolve.set_source(source),
             None => options.resolve.set([])?,
         },
         (ffi::CURLOPT_DEFAULT_PROTOCOL, Ptr(p)) => {
@@ -2383,6 +2402,56 @@ fn proxies_over_h3() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The application's list is walked in place, a node's link read once
+    /// its line is done with, as C's walk reads `next`: a line appended
+    /// while the last one is given is given too, a node without a string
+    /// is passed over, and the walk stops where it is told to. The nodes
+    /// are made here, not by `curl_slist_append`, whose `strdup` Miri
+    /// cannot run.
+    #[test]
+    fn an_application_s_list_is_walked_in_place() {
+        let node = |line: Option<&CStr>| {
+            Box::into_raw(Box::new(ffi::curl_slist {
+                data: line.map_or(core::ptr::null_mut(), |l| l.to_owned().into_raw()),
+                next: core::ptr::null_mut(),
+            }))
+        };
+        let (a, b, c) = (node(Some(c"a")), node(None), node(Some(c"c")));
+        // SAFETY: nodes made above, not yet shared.
+        unsafe { (*a).next = b };
+        // SAFETY: as above.
+        unsafe { (*b).next = c };
+        let source = slist(a.cast()).unwrap().unwrap();
+        let mut seen = Vec::new();
+        source.lines(&mut |line| {
+            seen.push(line.to_vec());
+            if line == b"c" {
+                // SAFETY: the last node, which the walk is done with but
+                // for its link, as an application appending would.
+                unsafe { (*c).next = node(Some(c"d")) };
+            }
+            ControlFlow::Continue(())
+        });
+        assert_eq!(seen, [&b"a"[..], b"c", b"d"]);
+        let mut first = Vec::new();
+        source.lines(&mut |line| {
+            first.push(line.to_vec());
+            ControlFlow::Break(())
+        });
+        assert_eq!(first, [b"a"]);
+        drop(source);
+        let mut at = a;
+        while !at.is_null() {
+            // SAFETY: each node made above, freed once, no longer walked.
+            let here = unsafe { Box::from_raw(at) };
+            if !here.data.is_null() {
+                // SAFETY: a string made above by `into_raw`.
+                drop(unsafe { std::ffi::CString::from_raw(here.data) });
+            }
+            at = here.next;
+        }
+    }
 
     /// One capability of a library's, to change.
     type Capability = fn(&mut TlsSupport) -> &mut bool;

@@ -1988,11 +1988,12 @@ fn a_body_of_unknown_size_goes_chunked() {
 struct Appendable(Arc<Mutex<Vec<Vec<u8>>>>);
 
 impl crate::handler::LineSource for Appendable {
-    fn lines(
-        &self,
-        line: &mut dyn FnMut(&[u8]) -> Result<(), curl_alloc::OutOfMemory>,
-    ) -> Result<(), curl_alloc::OutOfMemory> {
-        self.0.lock().unwrap().iter().try_for_each(|l| line(l))
+    fn lines(&self, line: &mut dyn FnMut(&[u8]) -> std::ops::ControlFlow<()>) {
+        for l in self.0.lock().unwrap().iter() {
+            if line(l).is_break() {
+                return;
+            }
+        }
     }
 }
 
@@ -3270,7 +3271,7 @@ fn lists_set_while_their_entries_are_traced_stand() {
         o.callbacks.debug = Some(Handler::debug(change).unwrap());
     });
     assert_eq!(ran.result, Ok(()));
-    let resolve: Vec<_> = ran.easy.options().resolve.entries().collect();
+    let resolve = ran.easy.options().resolve.entries();
     assert_eq!(resolve, [b"set.test:1:127.0.0.1"]);
 
     let ran = run("/", OK, false, |o| {

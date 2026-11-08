@@ -7,7 +7,7 @@
 use std::fmt;
 use std::io;
 use std::num::NonZeroUsize;
-use std::ops::Deref;
+use std::ops::{ControlFlow, Deref};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
@@ -153,11 +153,26 @@ pub trait LentBytes: Send + Sync {
 /// for, so that a line added since is seen (`CURLOPT_HTTPHEADER` and the
 /// other `curl_slist` options, which C walks where it uses them).
 pub trait LineSource: Send + Sync {
-    /// Give each line, in order, to `line`; stop at its first error.
-    fn lines(
-        &self,
-        line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
-    ) -> Result<(), OutOfMemory>;
+    /// Give each line, in order, to `line`, until it says to stop. The
+    /// line it is given may reach the application (a trace, the debug
+    /// handler) before it asks for the next, as C's walk does.
+    fn lines(&self, line: &mut dyn FnMut(&[u8]) -> ControlFlow<()>);
+}
+
+impl dyn LineSource + '_ {
+    /// Give each line, in order, to `line`, stopping at its first error,
+    /// which is returned.
+    pub fn try_lines<E>(&self, mut line: impl FnMut(&[u8]) -> Result<(), E>) -> Result<(), E> {
+        let mut result = Ok(());
+        self.lines(&mut |l| match line(l) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(e) => {
+                result = Err(e);
+                ControlFlow::Break(())
+            }
+        });
+        result
+    }
 }
 
 /// What a trace entry is (`curl_infotype`).

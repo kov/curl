@@ -912,7 +912,13 @@ fn http_options_reach_the_request() {
     }
     let resolve = |c| {
         options(c, |o| {
-            o.resolve.entries().map(<[u8]>::to_vec).collect::<Vec<_>>()
+            let mut entries = Vec::new();
+            let read = o.resolve.try_each(|e| {
+                entries.push(e.to_vec());
+                Ok::<(), ()>(())
+            });
+            assert_eq!(read, Ok(()));
+            entries
         })
     };
     assert_eq!(pointer(c, ffi::CURLOPT_RESOLVE, list), CURLE_OK);
@@ -6447,6 +6453,25 @@ fn connect_to_and_resolve_entries_appended_after_the_option_are_used() {
     assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with(b"GET /ct HTTP/1.1\r\nHost: unreach.invalid:1\r\n"));
     assert!(requests[1].starts_with(b"GET /rs HTTP/1.1\r\n"));
+    // SAFETY: a live handle, not used again; then the list it kept.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::strings::curl_slist_free_all(list);
+    }
+}
+
+/// `CURLOPT_RESOLVE` keeps the application's list, as C keeps its
+/// pointer, and reads it only as the next transfer starts: setting it
+/// costs the handle the handler that walks the list, and no copy of it.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_resolve_list_is_kept_not_copied() {
+    let c = curl_easy_init();
+    let list = append(ptr::null_mut(), &[c"a:1:127.0.0.1", c"-b:2"]);
+    let (set, made) =
+        curl_alloc::track::count_allocations(|| pointer(c, ffi::CURLOPT_RESOLVE, list));
+    assert_eq!(set, CURLE_OK);
+    assert_eq!(made, 2, "the source's box and its shared pointer");
     // SAFETY: a live handle, not used again; then the list it kept.
     unsafe {
         curl_easy_cleanup(c);

@@ -2950,8 +2950,10 @@ with the resolver's reason if it gives one (`Resolver::explain`: c-ares's "Domai
 found" for the resolvers that stand in for the reference build's, none for the threaded
 resolver, as C's gives none), then said again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
-stamp it last read), as its source has them then; the entries are shared, never copied, by the
-handles set from one list and the transfer reading them. A list set while one is read, from the
+stamp it last read), as its source has them then; the entries given are shared, never copied, by
+the handles set from one list and the transfer reading them, and a source's are walked in place as
+they are read, each reaching the trace before the next is read, as C walks the application's
+`curl_slist` (the shim keeps only the handler that walks it). A list set while one is read, from the
 debug handler, is taken as read too, as C clears `state.resolve` after reading. An entry whose answer is kept
 already, the same name byte for byte and the same addresses in order, unshuffled, is kept again from then
 (`DnsCache::renew`), as the answer C makes in its place would be. They are permanent unless given with `+`, and `*` answers for any name on

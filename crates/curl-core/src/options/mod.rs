@@ -10,6 +10,8 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+#[cfg(test)]
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use crate::handler::{
@@ -1503,24 +1505,47 @@ impl Default for FileMode {
 /// transfer starts: `HOST:PORT:ADDRESS[,ADDRESS]...`, kept for good, or
 /// for the cache's timeout with a `+` before; `-HOST:PORT` to forget.
 ///
-/// The entries are shared, never changed in place: a copy of the list,
-/// and the one a transfer reads while its debug handler may set the list
-/// again, cost no copy of them. It is not `Clone`: a list given to a
-/// handle is set on it (`set_from`), a new setting it reads.
+/// The entries given are shared, never changed in place: a copy of the
+/// list, and the one a transfer reads while its debug handler may set the
+/// list again, cost no copy of them. Entries a source gives are read from
+/// it as they are used, and only then, as C walks the application's list
+/// in place. It is not `Clone`: a list given to a handle is set on it
+/// (`set_from`), a new setting it reads.
 #[derive(Debug, Default)]
 pub struct ResolveList {
-    /// The entries, or none for an empty list.
-    entries: Option<TryArc<Packed>>,
-    /// Where they are read from again each time they are used, if they
-    /// are not as given.
-    source: Option<Handler<dyn LineSource>>,
+    entries: Entries,
     /// Which setting of the list this is: a transfer reads each once.
     stamp: u64,
 }
 
+#[derive(Clone, Debug)]
+enum Entries {
+    /// As given; none for an empty list.
+    Given(Option<TryArc<Packed>>),
+    /// Read from the source each time they are used.
+    Read(Handler<dyn LineSource>),
+}
+
+impl Default for Entries {
+    fn default() -> Entries {
+        Entries::Given(None)
+    }
+}
+
 impl ResolveList {
-    pub fn entries(&self) -> impl Iterator<Item = &[u8]> {
-        self.entries.iter().flat_map(|p| p.lines())
+    /// Give each entry, in order, to `entry`, stopping at its first error,
+    /// which is returned: those given, or those the source gives now.
+    pub fn try_each<E>(&self, mut entry: impl FnMut(&[u8]) -> Result<(), E>) -> Result<(), E> {
+        match &self.entries {
+            Entries::Given(given) => given.iter().flat_map(|p| p.lines()).try_for_each(entry),
+            Entries::Read(source) => source.try_lines(&mut entry),
+        }
+    }
+
+    /// Whether there is a list to read at all, as C's `state.resolve` is
+    /// set: entries given, or a source, whatever it gives.
+    pub(crate) fn is_set(&self) -> bool {
+        !matches!(self.entries, Entries::Given(None))
     }
 
     /// The list as the application sets it again, replacing what it was:
@@ -1533,8 +1558,7 @@ impl ResolveList {
         for entry in entries {
             packed.push(entry)?;
         }
-        self.entries = packed.shared()?;
-        self.source = None;
+        self.entries = Entries::Given(packed.shared()?);
         self.stamp += 1;
         Ok(())
     }
@@ -1543,69 +1567,31 @@ impl ResolveList {
     /// and given to many handles is not copied for each.
     pub fn set_from(&mut self, list: &ResolveList) {
         self.entries = list.entries.clone();
-        self.source = list.source.clone();
         self.stamp += 1;
     }
 
     /// The list `source` gives, as `set` sets one: what it gives when the
-    /// next transfer starts is read, and only then (`Curl_loadhostpairs`).
-    pub fn set_source(&mut self, source: Handler<dyn LineSource>) -> Result<(), OutOfMemory> {
-        self.entries = Packed::read(&source)?;
-        self.source = Some(source);
+    /// next transfer starts is read, and only then (`Curl_loadhostpairs`),
+    /// from the source itself.
+    pub fn set_source(&mut self, source: Handler<dyn LineSource>) {
+        self.entries = Entries::Read(source);
         self.stamp += 1;
-        Ok(())
-    }
-
-    /// The source's entries read again, as they are to be read into the
-    /// cache: the same setting of the list still. Those it gives as
-    /// before are kept as they are.
-    pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
-        let Some(source) = &self.source else {
-            return Ok(());
-        };
-        // Read once, as C reads its list once: the lines are matched
-        // against those kept until one differs, and from there made anew.
-        let read = {
-            let mut kept = self.entries();
-            let mut matched = 0;
-            let mut read: Option<Packed> = None;
-            source.lines(&mut |line| {
-                if let Some(read) = &mut read {
-                    return read.push(line);
-                }
-                if kept.next() == Some(line) {
-                    matched += 1;
-                    return Ok(());
-                }
-                let mut anew = Packed::default();
-                for same in self.entries().take(matched) {
-                    anew.push(same)?;
-                }
-                anew.push(line)?;
-                read = Some(anew);
-                Ok(())
-            })?;
-            match read {
-                Some(read) => Some(read),
-                // Fewer lines than before, the same as far as they go.
-                None if kept.next().is_some() => {
-                    let mut fewer = Packed::default();
-                    for same in self.entries().take(matched) {
-                        fewer.push(same)?;
-                    }
-                    Some(fewer)
-                }
-                None => None,
-            }
-        };
-        if let Some(read) = read {
-            self.entries = read.shared()?;
-        }
-        Ok(())
     }
 
     pub(crate) fn stamp(&self) -> u64 {
         self.stamp
+    }
+
+    /// The entries as they would be read now.
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> Vec<Vec<u8>> {
+        let mut entries = Vec::new();
+        let read = self.try_each(|e| {
+            entries.push(e.to_vec());
+            Ok::<(), ()>(())
+        });
+        assert_eq!(read, Ok(()));
+        entries
     }
 
     /// The list as it is, the same setting: its entries shared, for a
@@ -1613,7 +1599,6 @@ impl ResolveList {
     pub(crate) fn shared(&self) -> ResolveList {
         ResolveList {
             entries: self.entries.clone(),
-            source: self.source.clone(),
             stamp: self.stamp,
         }
     }
@@ -1630,13 +1615,6 @@ impl Packed {
         self.0.try_reserve(PACKED_LENGTH + line.len())?;
         self.0.try_extend_from_slice(&line.len().to_ne_bytes())?;
         self.0.try_extend_from_slice(line)
-    }
-
-    /// What `source` gives now.
-    fn read(source: &Handler<dyn LineSource>) -> Result<Option<TryArc<Packed>>, OutOfMemory> {
-        let mut packed = Packed::default();
-        source.lines(&mut |line| packed.push(line))?;
-        packed.shared()
     }
 
     /// The lines to share, none if there are none.
@@ -1734,7 +1712,7 @@ impl<T: Item> Listed<T> {
     /// What `source` gives, read now and again each time it is used.
     pub(crate) fn from_source(source: Handler<dyn LineSource>) -> Result<Listed<T>, OutOfMemory> {
         let mut items = Vec::new();
-        source.lines(&mut |line| items.try_push(T::make(line)?))?;
+        source.try_lines(|line| items.try_push(T::make(line)?))?;
         Listed::of(items, Some(source))
     }
 
@@ -1753,7 +1731,7 @@ impl<T: Item> Listed<T> {
         // against those kept until one differs, and from there made anew.
         let mut matched = 0;
         let mut read: Option<Vec<T>> = None;
-        source.lines(&mut |line| {
+        source.try_lines(|line| {
             if let Some(read) = &mut read {
                 return read.try_push(T::make(line)?);
             }
@@ -3633,13 +3611,16 @@ mod tests {
     fn a_resolve_list_shares_its_entries() {
         let mut given = ResolveList::default();
         given.set([&b"a:1:127.0.0.1"[..], b"-b:2", b""]).unwrap();
-        assert!(given.entries().eq([&b"a:1:127.0.0.1"[..], b"-b:2", b""]));
-        let shared = |l: &ResolveList| l.entries.as_ref().map(TryArc::count);
+        assert_eq!(given.entries(), [&b"a:1:127.0.0.1"[..], b"-b:2", b""]);
+        let shared = |l: &ResolveList| match &l.entries {
+            Entries::Given(given) => given.as_ref().map(TryArc::count),
+            Entries::Read(_) => panic!("given"),
+        };
         let copy = given.shared();
         let mut handle = ResolveList::default();
         handle.set_from(&given);
         assert_eq!(shared(&given), Some(3));
-        assert!(handle.entries().eq(given.entries()));
+        assert_eq!(handle.entries(), given.entries());
         assert_eq!(handle.stamp(), 1);
         handle.set_from(&given);
         assert_eq!(handle.stamp(), 2, "set again");
@@ -3647,7 +3628,8 @@ mod tests {
         assert_eq!(shared(&given), Some(2));
         drop(copy);
         handle.set(std::iter::empty()).unwrap();
-        assert!(handle.entries.is_none() && handle.entries().next().is_none());
+        assert!(shared(&handle).is_none() && handle.entries().is_empty());
+        assert!(!handle.is_set(), "no list, as C's is NULL");
     }
 
     /// A copy keeps the lists of addresses and peers given for names.
@@ -3657,7 +3639,7 @@ mod tests {
         o.resolve.set([&b"a:1:127.0.0.1"[..]]).unwrap();
         o.connect_to.set([&b"::b:2"[..]]).unwrap();
         let copy = o.try_clone().unwrap();
-        assert!(copy.resolve.entries().eq([&b"a:1:127.0.0.1"[..]]));
+        assert_eq!(copy.resolve.entries(), [b"a:1:127.0.0.1"]);
         assert_eq!(copy.resolve.stamp(), o.resolve.stamp());
         assert!(copy.connect_to.iter().eq([&b"::b:2"[..]]));
     }
@@ -3758,11 +3740,12 @@ mod tests {
     struct Settable(std::sync::Arc<crate::test_cell::Cell<&'static [&'static [u8]]>>);
 
     impl LineSource for Settable {
-        fn lines(
-            &self,
-            line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
-        ) -> Result<(), OutOfMemory> {
-            self.0.get().iter().try_for_each(|l| line(l))
+        fn lines(&self, line: &mut dyn FnMut(&[u8]) -> ControlFlow<()>) {
+            for l in self.0.get() {
+                if line(l).is_break() {
+                    return;
+                }
+            }
         }
     }
 
@@ -3834,12 +3817,10 @@ mod tests {
     struct Numbered(crate::test_cell::Cell<u32>);
 
     impl LineSource for Numbered {
-        fn lines(
-            &self,
-            line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
-        ) -> Result<(), OutOfMemory> {
+        fn lines(&self, line: &mut dyn FnMut(&[u8]) -> ControlFlow<()>) {
             self.0.set(self.0.get() + 1);
-            line(format!("line {}", self.0.get()).as_bytes())
+            // One line: there is no next to stop before.
+            let _: ControlFlow<()> = line(format!("line {}", self.0.get()).as_bytes());
         }
     }
 
@@ -3848,7 +3829,8 @@ mod tests {
     }
 
     /// A list given by a source is read as it is set, and again as it is
-    /// refilled; setting the resolve list either way is a new setting.
+    /// refilled; a resolve list given by one is read only as it is used,
+    /// each time; setting the resolve list either way is a new setting.
     #[test]
     fn a_source_s_lines_are_read_again_as_refilled() {
         let mut lines = Lines::NONE;
@@ -3864,57 +3846,15 @@ mod tests {
 
         let mut list = ResolveList::default();
         assert_eq!(list.stamp(), 0);
-        list.set_source(numbered()).unwrap();
+        list.set_source(numbered());
         assert_eq!(list.stamp(), 1);
-        assert!(list.entries().eq([&b"line 1"[..]]));
-        list.refill().unwrap();
+        assert!(list.is_set());
+        assert_eq!(list.entries(), [b"line 1"], "read first as it is used");
+        assert_eq!(list.entries(), [b"line 2"]);
         assert_eq!(list.stamp(), 1, "the same setting");
-        assert!(list.entries().eq([&b"line 2"[..]]));
         list.set([&b"a:1:127.0.0.1"[..]]).unwrap();
-        list.set_source(numbered()).unwrap();
+        list.set_source(numbered());
         assert_eq!(list.stamp(), 3);
-    }
-
-    /// A source giving the same lines as before leaves the resolve list's
-    /// entries as they are, shared still; giving others, or fewer or more,
-    /// it has them read anew.
-    #[test]
-    fn a_resolve_list_keeps_what_its_source_gives_again() {
-        struct Given(crate::test_cell::Cell<&'static [&'static [u8]]>);
-        impl LineSource for Given {
-            fn lines(
-                &self,
-                line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
-            ) -> Result<(), OutOfMemory> {
-                self.0.get().iter().try_for_each(|l| line(l))
-            }
-        }
-        let given = std::sync::Arc::new(Given(crate::test_cell::Cell::new(&[b"a", b"b"])));
-        struct Shared(std::sync::Arc<Given>);
-        impl LineSource for Shared {
-            fn lines(
-                &self,
-                line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
-            ) -> Result<(), OutOfMemory> {
-                self.0.lines(line)
-            }
-        }
-        let mut list = ResolveList::default();
-        list.set_source(Handler::lines(Shared(given.clone())).unwrap())
-            .unwrap();
-        let held = list.shared();
-        let shared = |l: &ResolveList| l.entries.as_ref().map(TryArc::count);
-        list.refill().unwrap();
-        assert_eq!(shared(&list), Some(2), "kept as it was");
-        const OTHER: &[&[u8]] = &[b"a", b"c"];
-        const FEWER: &[&[u8]] = &[b"a"];
-        const MORE: &[&[u8]] = &[b"a", b"b", b"c"];
-        for now in [OTHER, FEWER, MORE, &[]] {
-            given.0.set(now);
-            list.refill().unwrap();
-            assert!(list.entries().eq(now.iter().copied()), "{now:?}");
-        }
-        assert!(held.entries().eq([&b"a"[..], b"b"]));
     }
 
     /// A group's option set makes the group; cleared, it is cleared, and

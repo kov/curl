@@ -638,16 +638,40 @@ witness: curl-sys-abi handle_tests::proxy_header_lines_appended_after_the_option
     let _ = options;
 
 === the resolve list is read as it was set, not as the transfer starts
-file: crates/curl-core/src/multi/state/leg.rs
+file: crates/curl-core/src/options/mod.rs
 witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used
 --- old
-    cx.easy_mut()
-        .options_mut()
-        .resolve
-        .refill()
-        .map_err(|_| ErrorKind::OutOfMemory)?;
+        self.entries = Entries::Read(source);
 --- new
-    // As it was set.
+        let mut read = Packed::default();
+        source.try_lines(|l| read.push(l)).expect("room for the copy");
+        self.entries = Entries::Given(read.shared().expect("room for the copy"));
+
+=== the application's list is walked a link ahead, missing a line appended to the last node
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::an_application_s_list_is_walked_in_place
+--- old
+            last = next;
+            // SAFETY: as the caller guarantees, `next` is a live node.
+            let data = unsafe { (*next).data };
+--- new
+            let here = next;
+            // SAFETY: as the caller guarantees, `next` is a live node.
+            next = unsafe { (*here).next };
+            // SAFETY: as above.
+            let data = unsafe { (*here).data };
+
+=== the application's resolve list is copied as it is set
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::a_resolve_list_is_kept_not_copied
+features: debug-hooks
+--- old
+        self.entries = Entries::Read(source);
+--- new
+        let mut copy = Packed::default();
+        source.try_lines(|l| copy.push(l)).expect("room for the copy");
+        drop(copy.shared());
+        self.entries = Entries::Read(source);
 
 === a copy of the handle reads the lines it was copied with, not the list
 file: crates/curl-core/src/options/mod.rs

@@ -94,19 +94,16 @@ struct LateName {
 impl LateName {
     /// `late` beside a connection set up over `route`, `answer` what has
     /// come so far; none if it has ended.
-    fn of(late: Late, route: NetRoute, answer: Option<TryArc<Answer>>) -> Option<Box<LateName>> {
+    fn of(late: Late, route: NetRoute, answer: Option<TryArc<Answer>>) -> Option<LateName> {
         if !late.going() {
             return None;
         }
         let answer = answer.map_or(Addresses::Unix, Addresses::Resolved);
-        // Too little memory to hold it lets it go, as an answer that does
-        // not come.
-        curl_alloc::try_box(LateName {
+        Some(LateName {
             late,
             route,
             answer,
         })
-        .ok()
     }
 
     /// Looked at, as the filter does in each call of the chain's connect:
@@ -470,7 +467,7 @@ impl DataConn {
         cx: &mut StepCx<'_, H>,
         host: &[u8],
         conn: crate::conn::Conn,
-        late: Option<Box<LateName>>,
+        late: Option<LateName>,
     ) -> Result<(), ErrorKind> {
         let connected = conn
             .connected_chain()
@@ -494,7 +491,7 @@ impl DataConn {
         stream: Stream,
         peer: Option<Remote>,
         chain: Chain,
-        mut late: Option<Box<LateName>>,
+        mut late: Option<LateName>,
     ) -> Result<(), ErrorKind> {
         let chain = chain.on(ConnRank::Second);
         let shaken = self.tls.is_none();
@@ -508,6 +505,15 @@ impl DataConn {
             Ok(stream) => stream,
             Err(stream) => {
                 close_in(cx, stream.into_socket());
+                return Err(ErrorKind::OutOfMemory);
+            }
+        };
+        // Held until the TLS is made; too little memory to hold it fails
+        // the connection, as C's filter fails to keep its resolve.
+        let late = match late.map(curl_alloc::try_box).transpose() {
+            Ok(late) => late,
+            Err(curl_alloc::OutOfMemory) => {
+                close_in(cx, (*stream).into_socket());
                 return Err(ErrorKind::OutOfMemory);
             }
         };

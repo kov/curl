@@ -5000,7 +5000,9 @@ and gets a test that a copy calls through itself once the original is freed.
 - `curl_easy_setopt` reads its argument by the id's type class (long, pointer, function,
   offset, blob), checks it as setopt.c does and applies it where `with_easy` finds the `Easy`
   (frame → `options_mut(id)`, else `multi.easy_mut(id)`, else the detached one). Callback
-  options update `ccb`, and install or drop the adapter they need. An id
+  options update `ccb`, and install or drop the adapter they need. An option that reaches
+  `ccb`, `set` or `errbuf` is set (`apply_stateful`) on copies of them, kept only once the
+  change is whole; the others (`apply`) copy nothing. An id
   `inventory/options.json` lists (`gen/setopt.py`) that the shim does not implement yet is
   CURLE_NOT_BUILT_IN; any other, CURLE_UNKNOWN_OPTION.
 - `curl_easy_getinfo`: frame → `cx.info(id)`; else `multi.report(id)` or the detached report.

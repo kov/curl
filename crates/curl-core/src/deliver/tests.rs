@@ -542,6 +542,33 @@ fn a_verbose_transfer_traces_the_body_as_received() {
     assert_eq!(lengths(&seen, "debug"), [0usize; 0], "not verbose");
 }
 
+/// Bytes said to the trace reach the debug handler of a verbose transfer
+/// only, whoever says them: the body asks before it traces, but the
+/// header lines and what is sent do not.
+#[test]
+fn only_a_verbose_transfer_traces_bytes() {
+    for verbose in [false, true] {
+        let log = Log::default();
+        let mut m = multi();
+        let mut e = easy("stall://a");
+        e.options_mut().output.verbose = verbose;
+        e.options_mut().callbacks.debug =
+            Some(Handler::debug(Recorder::new("debug", &log)).unwrap());
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        log.lock().unwrap().clear();
+        m.with_step_cx(id, |cx| {
+            crate::trace::bytes(cx, DebugKind::DataIn, b"a: b\r\n");
+        });
+        let expected: &[usize] = if verbose { &[6] } else { &[] };
+        assert_eq!(
+            lengths(&log.lock().unwrap(), "debug"),
+            expected,
+            "{verbose}"
+        );
+    }
+}
+
 /// Once a write has failed, nothing reaches a handler again, header or
 /// body, and every later write fails (#13337).
 #[test]

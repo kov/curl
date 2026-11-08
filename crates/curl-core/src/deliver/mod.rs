@@ -283,17 +283,30 @@ impl Pipeline {
     }
 
     /// Deliver body bytes as they came, traced first (`cw_raw_write`,
-    /// then `decoded`).
+    /// then `decoded`). A body passes here once a packet, so this is
+    /// inlined where the protocol delivers it: each trace is a check of
+    /// verbose, made where it is said, with its line made out of line.
+    #[inline]
     pub(crate) fn body<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
         self.made = true;
-        self.trace_raw(cx, bytes);
+        if cx.verbose() {
+            self.raw_traced(cx, bytes);
+        }
         let result = self.decoded(cx, bytes);
-        client_write(cx, WriteType::BODY, bytes.len(), result);
+        if cx.verbose() {
+            body_written(cx, bytes.len(), result);
+        }
         result
+    }
+
+    /// `trace_raw`, out of the line `body` inlines.
+    #[inline(never)]
+    fn raw_traced<H: Host>(&self, cx: &mut StepCx<'_, H>, bytes: &[u8]) {
+        self.trace_raw(cx, bytes);
     }
 
     /// Trace body bytes as they came, before a decoder takes them
@@ -305,15 +318,27 @@ impl Pipeline {
     }
 
     /// Deliver body bytes, already traced, of their transfer codings,
-    /// through those to undo.
+    /// through those to undo. Inlined, as `body` is, for a body with none.
+    #[inline]
     pub(crate) fn decoded<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
-        let Some(codings) = self.codings.as_mut().filter(|c| !c.transfer.is_empty()) else {
+        if self.codings.as_ref().is_none_or(|c| c.transfer.is_empty()) {
             return self.counted(cx, bytes);
-        };
+        }
+        self.transfer_decoded(cx, bytes)
+    }
+
+    /// `decoded` through the transfer codings there are.
+    #[inline(never)]
+    fn transfer_decoded<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        bytes: &[u8],
+    ) -> Result<(), ErrorKind> {
+        let codings = self.codings.as_mut().expect("transfer codings to undo");
         // Out for the run, so that what they make reaches the rest.
         let mut transfer = std::mem::take(&mut codings.transfer);
         let result = decode::run(&mut transfer, bytes, &mut Counted { cx, pipeline: self });
@@ -630,6 +655,12 @@ pub(crate) fn client_write<H: Host>(
         cx,
         format_args!("client_write(type={kind}, len={len}) -> {}", Code(result)),
     );
+}
+
+/// `client_write` of body bytes, out of the line `Pipeline::body` inlines.
+#[inline(never)]
+fn body_written<H: Host>(cx: &mut StepCx<'_, H>, len: usize, result: Result<(), ErrorKind>) {
+    client_write(cx, WriteType::BODY, len, result);
 }
 
 /// What a protocol's read of the response came to (`Curl_xfer_write_resp`).

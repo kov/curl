@@ -103,9 +103,9 @@ witness: curl-core deliver::tests::included_headers_count_against_the_size_limit
         cx.report_mut().sizes_mut().delivered += piece.len() as u64;
 --- new
 
-=== the body is traced without verbose
+=== bytes are traced without verbose
 file: crates/curl-core/src/trace.rs
-witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
+witness: curl-core deliver::tests::only_a_verbose_transfer_traces_bytes
 --- old
     if cx.verbose() {
         bytes_traced(cx, kind, bytes);
@@ -117,11 +117,15 @@ witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_receive
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
 --- old
-        self.trace_raw(cx, bytes);
+        if cx.verbose() {
+            self.raw_traced(cx, bytes);
+        }
         let result = self.decoded(cx, bytes);
 --- new
         let result = self.decoded(cx, bytes);
-        self.trace_raw(cx, bytes);
+        if cx.verbose() {
+            self.raw_traced(cx, bytes);
+        }
 
 === a pause asked for inside a replay stops it
 file: crates/curl-core/src/deliver/mod.rs

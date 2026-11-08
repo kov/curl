@@ -155,9 +155,9 @@ witness: curl-core proto::http::tests::coding::te_asks_for_gzip_when_it_can_be_u
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core proto::http::tests::coding::a_transfer_coded_body_is_undone_before_it_is_counted
 --- old
-        let Some(codings) = self.codings.as_mut().filter(|c| !c.transfer.is_empty()) else {
+        if self.codings.as_ref().is_none_or(|c| c.transfer.is_empty()) {
 --- new
-        let Some(codings) = self.codings.as_mut().filter(|_| false) else {
+        if true {
 
 === a transfer coding is not kept for its body
 file: crates/curl-core/src/proto/http1/framing.rs

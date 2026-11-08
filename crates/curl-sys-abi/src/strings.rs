@@ -83,30 +83,31 @@ pub unsafe extern "C" fn curl_slist_free_all(list: *mut curl_slist) {
 }
 const _: ffi::proto::curl_slist_free_all = curl_slist_free_all;
 
-/// The bytes of a C string up to its NUL, or at most `max`.
+/// Whether the first `max` bytes of `a` and `b` match, ignoring ASCII
+/// case, where a string's NUL counts as a byte: read in step, and no
+/// further than the first that differs or `a`'s NUL, as lib/strequal.c's
+/// `casecompare` and `ncasecompare` read them.
 ///
 /// # Safety
 ///
-/// `s` is readable up to its NUL or `max` bytes, whichever comes first.
-unsafe fn bytes<'a>(s: *const c_char, max: usize) -> &'a [u8] {
-    let s = s.cast::<u8>();
-    let mut n = 0;
-    while n < max {
-        // SAFETY: the byte is before the NUL and within `max`.
-        if unsafe { s.wrapping_add(n).read() } == 0 {
-            break;
+/// Each is readable up to its NUL or `max` bytes, whichever comes first.
+unsafe fn ascii_case_eq(a: *const c_char, b: *const c_char, max: usize) -> bool {
+    let (a, b) = (a.cast::<u8>(), b.cast::<u8>());
+    for i in 0..max {
+        // SAFETY: neither string has ended before `i`, nor has `max`
+        // been reached: `a`'s NUL returns below, and `b`'s, against a
+        // byte of `a` that is not one, differs from it.
+        let x = unsafe { a.wrapping_add(i).read() };
+        // SAFETY: as above.
+        let y = unsafe { b.wrapping_add(i).read() };
+        if !x.eq_ignore_ascii_case(&y) {
+            return false;
         }
-        n += 1;
+        if x == 0 {
+            return true;
+        }
     }
-    // SAFETY: the `n` bytes were just read.
-    unsafe { core::slice::from_raw_parts(s, n) }
-}
-
-/// Whether the first `max` bytes of `a` and `b` match, ignoring ASCII
-/// case, where a string's end counts as a NUL byte.
-fn ascii_case_eq_prefix(a: &[u8], b: &[u8], max: usize) -> bool {
-    let at = |s: &[u8], i: usize| s.get(i).copied().unwrap_or(0).to_ascii_uppercase();
-    (0..max.min(a.len().max(b.len()) + 1)).all(|i| at(a, i) == at(b, i))
+    true
 }
 
 /// Case-insensitive comparison of ASCII letters only, independent of the
@@ -120,11 +121,8 @@ pub unsafe extern "C" fn curl_strequal(s1: *const c_char, s2: *const c_char) -> 
     if s1.is_null() || s2.is_null() {
         return c_int::from(s1.is_null() && s2.is_null());
     }
-    // SAFETY: `s1` is a C string, as the caller guarantees.
-    let a = unsafe { bytes(s1, usize::MAX) };
-    // SAFETY: so is `s2`.
-    let b = unsafe { bytes(s2, usize::MAX) };
-    c_int::from(ascii_case_eq_prefix(a, b, usize::MAX))
+    // SAFETY: both are C strings, as the caller guarantees.
+    c_int::from(unsafe { ascii_case_eq(s1, s2, usize::MAX) })
 }
 const _: ffi::proto::curl_strequal = curl_strequal;
 
@@ -140,12 +138,9 @@ pub unsafe extern "C" fn curl_strnequal(s1: *const c_char, s2: *const c_char, n:
     if s1.is_null() || s2.is_null() {
         return c_int::from(s1.is_null() && s2.is_null() && n != 0);
     }
-    // SAFETY: `s1` is readable up to its NUL or `n` bytes, as the caller
-    // guarantees.
-    let a = unsafe { bytes(s1, n) };
-    // SAFETY: so is `s2`.
-    let b = unsafe { bytes(s2, n) };
-    c_int::from(ascii_case_eq_prefix(a, b, n))
+    // SAFETY: both are readable up to their NUL or `n` bytes, as the
+    // caller guarantees.
+    c_int::from(unsafe { ascii_case_eq(s1, s2, n) })
 }
 const _: ffi::proto::curl_strnequal = curl_strnequal;
 
@@ -314,12 +309,14 @@ const _: ffi::proto::curl_unescape = curl_unescape;
 mod tests {
     use super::*;
 
-    fn eq(a: &str, b: &str) -> bool {
-        ascii_case_eq_prefix(a.as_bytes(), b.as_bytes(), usize::MAX)
+    fn eq(a: &core::ffi::CStr, b: &core::ffi::CStr) -> bool {
+        // SAFETY: both are C strings.
+        unsafe { curl_strequal(a.as_ptr(), b.as_ptr()) == 1 }
     }
 
-    fn neq(a: &str, b: &str, n: usize) -> bool {
-        ascii_case_eq_prefix(a.as_bytes(), b.as_bytes(), n)
+    fn neq(a: &core::ffi::CStr, b: &core::ffi::CStr, n: usize) -> bool {
+        // SAFETY: as above.
+        unsafe { curl_strnequal(a.as_ptr(), b.as_ptr(), n) == 1 }
     }
 
     /// Appends in order, returns the head and leaves the list alone on
@@ -352,16 +349,36 @@ mod tests {
 
     /// As `casecompare` and `ncasecompare` in lib/strequal.c.
     #[test]
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "one contract covers each group of calls"
+    )]
     fn compares_like_c() {
-        assert!(eq("Hello", "hELLO"));
-        assert!(!eq("Hello", "Hell"));
-        assert!(!eq("Hell", "Hello"));
-        assert!(eq("", ""));
-        assert!(!eq("ä", "Ä"), "only ASCII letters fold");
-        assert!(neq("Hello", "help", 3));
-        assert!(!neq("Hello", "help", 4));
-        assert!(neq("abc", "ABC", 10));
-        assert!(!neq("ab", "abc", 10));
-        assert!(neq("x", "y", 0));
+        assert!(eq(c"Hello", c"hELLO"));
+        assert!(!eq(c"Hello", c"Hell"));
+        assert!(!eq(c"Hell", c"Hello"));
+        assert!(eq(c"", c""));
+        assert!(!eq(c"\u{e4}", c"\u{c4}"), "only ASCII letters fold");
+        assert!(neq(c"Hello", c"help", 3));
+        assert!(!neq(c"Hello", c"help", 4));
+        assert!(neq(c"abc", c"ABC", 10));
+        assert!(!neq(c"ab", c"abc", 10));
+        assert!(!neq(c"abc", c"ab", 10));
+        assert!(neq(c"x", c"y", 0));
+        // The first byte that differs ends the reading: what would follow
+        // it is never read, as in C.
+        let cut = [b'a' as c_char, b'X' as c_char];
+        // SAFETY: each is readable up to the byte that differs.
+        unsafe {
+            assert_eq!(curl_strequal(cut.as_ptr(), c"ab".as_ptr()), 0);
+            assert_eq!(curl_strnequal(c"ab".as_ptr(), cut.as_ptr(), 5), 0);
+        }
+        // SAFETY: NULL is allowed for either.
+        unsafe {
+            assert_eq!(curl_strequal(ptr::null(), ptr::null()), 1);
+            assert_eq!(curl_strequal(c"a".as_ptr(), ptr::null()), 0);
+            assert_eq!(curl_strnequal(ptr::null(), ptr::null(), 1), 1);
+            assert_eq!(curl_strnequal(ptr::null(), ptr::null(), 0), 0);
+        }
     }
 }

@@ -149,6 +149,11 @@ exclude_re = [
     # The room reserved for a header's line: one wrong only makes the
     # fallible pushes after it grow the buffer.
     'curl-core/src/proto/http/h3\.rs:.*: replace \+ with \* in Request::h3_event$',
+    # Likewise the room an HTTP/2 request's fields are made with, bytes
+    # and lines: one wrong only makes the fallible pushes grow them (and
+    # the head with the pseudo-headers' names outweighs any scheme, so
+    # the room never goes below zero).
+    'curl-core/src/proto/http2\.rs:.*: replace \+ with (-|\*) in fields_of$',
     # An encoded send's flush leaves payload 0 only with an empty buffer,
     # where the loop's own condition ends it and `Ok(*sent)` follows either
     # arm: adding 0 and skipping nothing changes nothing.

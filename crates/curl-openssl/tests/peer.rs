@@ -354,7 +354,12 @@ fn serve_configured(
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
         let (tcp, _) = curl_core::test_server::accept(&listener);
-        tcp.set_nodelay(dribble).unwrap();
+        // Off is the default. Set on a connection the client has already
+        // closed, as one that fails before its hello does, macOS refuses
+        // the option (`EINVAL`).
+        if dribble {
+            tcp.set_nodelay(true).unwrap();
+        }
         let mut tls = match acceptor.accept(Dribble(tcp, dribble)) {
             Ok(tls) => tls,
             // The alert sent, what the client goes on to send is read
@@ -362,8 +367,13 @@ fn serve_configured(
             // reset, and the client fail on the reset, not the alert.
             Err(openssl::ssl::HandshakeError::Failure(mut mid)) => {
                 let tcp = &mut mid.get_mut().0;
-                tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                    .unwrap();
+                match tcp.set_read_timeout(Some(std::time::Duration::from_secs(10))) {
+                    Ok(()) => {}
+                    // macOS refuses an option on a connection the client
+                    // has closed: there is nothing left to read.
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => return Vec::new(),
+                    Err(e) => panic!("the server's read timeout: {e}"),
+                }
                 let mut buf = [0u8; 4096];
                 while matches!(tcp.read(&mut buf), Ok(n) if n > 0) {}
                 return Vec::new();

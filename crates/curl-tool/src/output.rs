@@ -498,14 +498,21 @@ impl Stream {
     }
 
     /// Create the output file, emptied, if it is one not open yet
-    /// (`tool_create_output_file`).
+    /// (`tool_create_output_file`). Asked before each write of the body,
+    /// so the check is inlined and the opening is not.
+    #[inline]
     pub(crate) fn create(&mut self) -> bool {
-        let Target::File { name, file } = &mut self.target else {
-            return true;
-        };
-        if file.is_some() {
-            return true;
+        match &self.target {
+            Target::File { file: None, .. } => self.open_created(),
+            Target::File { .. } | Target::Stdout(_) | Target::Null => true,
         }
+    }
+
+    #[inline(never)]
+    fn open_created(&mut self) -> bool {
+        let Target::File { name, file } = &mut self.target else {
+            unreachable!("only a file is opened");
+        };
         let mut tried = None;
         let opened = match self.clobber {
             Clobber::Never => open_unclobbered(name, &mut tried),

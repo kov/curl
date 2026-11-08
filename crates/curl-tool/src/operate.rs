@@ -3221,7 +3221,7 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     let ssh = curl_core::version::version()
         .protocols
         .iter()
-        .any(|p| matches!(p.name(), "scp" | "sftp"));
+        .any(|p| matches!(p, Protocol::Scp | Protocol::Sftp));
     if !ssh {
         return Ok(());
     }
@@ -3263,37 +3263,25 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     if op.tls.insecure {
         return Ok(());
     }
-    let found;
-    let known = match op.knownhosts {
-        Some(known) => Some(known),
-        // Worked out by an earlier transfer.
-        None if op.knownhosts_default.borrow().is_some() => {
-            found = op
-                .knownhosts_default
-                .borrow()
-                .as_deref()
-                .map(copy)
-                .transpose()
-                .map_err(oom)?;
-            found.as_deref()
+    // Worked out by the first transfer that needs it and kept for the
+    // next, as C keeps any it sets; each sets the one kept, copied once,
+    // as the option is.
+    if op.knownhosts.is_none() && op.knownhosts_default.borrow().is_none() {
+        let path = crate::config::find_known_hosts(
+            |var| curl_os::env::var(var.as_bytes()),
+            crate::config::user_database_home,
+            crate::config::readable,
+        )
+        .map_err(oom)?;
+        let checked = [op.hostpubmd5.is_some(), op.hostpubsha256.is_some()];
+        let home = curl_os::env::var(b"HOME").map_err(oom)?;
+        let found = known_hosts_default(path, checked, home.as_deref()).map_err(oom)?;
+        if found.is_some() {
+            *op.knownhosts_default.borrow_mut() = found;
         }
-        None => {
-            let path = crate::config::find_known_hosts(
-                |var| curl_os::env::var(var.as_bytes()),
-                crate::config::user_database_home,
-                crate::config::readable,
-            )
-            .map_err(oom)?;
-            let checked = [op.hostpubmd5.is_some(), op.hostpubsha256.is_some()];
-            let home = curl_os::env::var(b"HOME").map_err(oom)?;
-            found = known_hosts_default(path, checked, home.as_deref()).map_err(oom)?;
-            // Kept for the next transfer, as C keeps any it sets.
-            if let Some(default) = found.as_deref() {
-                *op.knownhosts_default.borrow_mut() = Some(copy(default).map_err(oom)?);
-            }
-            found.as_deref()
-        }
-    };
+    }
+    let kept = op.knownhosts_default.borrow();
+    let known = op.knownhosts.or(kept.as_deref());
     string(s, "CURLOPT_SSH_KNOWNHOSTS", known, |g| &mut g.known_hosts)
 }
 

@@ -10062,6 +10062,51 @@ fn telnet_and_tftp_options_reach_the_transfer() {
     assert!(has_input(c));
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
+    // TFTP's options turned off on a handle with none of its group made.
+    let c = curl_easy_init();
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_NO_OPTIONS, 1), CURLE_OK);
+    assert!(options(c, |o| o.small.made_mut().unwrap().tftp_no_options));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// The FTP and mail options that ask for TLS, and how FTP's control
+/// connection goes about it, reach the transfer.
+#[test]
+fn ftp_tls_options_reach_the_transfer() {
+    use curl_core::options::{Ccc, SslAuth, UseSsl};
+    use curl_core::time::TimeLimit;
+    let read = |c| {
+        options(c, |o| {
+            (
+                o.line.use_ssl,
+                o.line.ftp.ssl_ccc,
+                o.line.ftp.ssl_auth,
+                o.line.ftp.accept_timeout,
+            )
+        })
+    };
+    let c = curl_easy_init();
+    assert_eq!(
+        read(c),
+        (UseSsl::None, Ccc::None, SslAuth::Default, None),
+        "unset"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_USE_SSL, 3), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_FTP_SSL_CCC, 2), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_FTPSSLAUTH, 2), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_ACCEPTTIMEOUT_MS, 1500), CURLE_OK);
+    assert_eq!(
+        read(c),
+        (
+            UseSsl::All,
+            Ccc::Active,
+            SslAuth::Tls,
+            TimeLimit::from_millis(1500)
+        )
+    );
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
 }
 
 /// `CURLOPT_SHARE` is refused while the handle holds a connection and

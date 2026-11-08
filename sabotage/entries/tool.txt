@@ -1402,9 +1402,9 @@ witness: curl-tool warns_of_more_than_one_auth_with_standard_input
 file: crates/curl-tool/src/easysrc.rs
 witness: curl-tool easysrc::tests::writes_tls_options_as_c_does
 --- old
-        if source.performed || value == 0 {
+    if source.performed || value == 0 {
 --- new
-        if value == 0 {
+    if value == 0 {
 
 === --tls-max older than 1.2 leaves the oldest allowed at 1.2
 file: crates/curl-tool/src/operate.rs
@@ -1501,9 +1501,9 @@ witness: curl-tool a_resumed_upload_seeks_standard_input_if_it_can
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool operate::tests::the_known_hosts_default_is_worked_out_once
 --- old
-        None if op.knownhosts_default.borrow().is_some() => {
+    if op.knownhosts.is_none() && op.knownhosts_default.borrow().is_none() {
 --- new
-        None if false => {
+    if op.knownhosts.is_none() {
 
 === a temporary buffer (the UCRT's for stdout on a console) is not written as each write ends
 file: crates/curl-tool/src/stdio.rs

@@ -1304,3 +1304,19 @@ witness: curl-core multi::tests::a_resolve_list_set_again_the_same_is_read_anew
         let shuffling = cx.easy().options().dns_shuffle && addrs.iter().nth(1).is_some();
 --- new
         let shuffling = cx.easy().options().dns_shuffle && addrs.iter().nth(1).is_some() && cx.easy().options().resolve.stamp() < 5;
+
+=== a resolve list read from its source again copies the entries it gives as before
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::a_resolve_list_keeps_what_its_source_gives_again
+features: test-util
+--- old
+                // Fewer lines than before, the same as far as they go.
+--- new
+                None if kept.next().is_none() => {
+                    let mut all = Packed::default();
+                    for same in self.entries() {
+                        all.push(same)?;
+                    }
+                    Some(all)
+                }
+                // Fewer lines than before, the same as far as they go.

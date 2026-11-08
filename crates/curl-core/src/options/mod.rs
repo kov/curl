@@ -1557,10 +1557,49 @@ impl ResolveList {
     }
 
     /// The source's entries read again, as they are to be read into the
-    /// cache: the same setting of the list still.
+    /// cache: the same setting of the list still. Those it gives as
+    /// before are kept as they are.
     pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
-        if let Some(source) = &self.source {
-            self.entries = Packed::read(source)?;
+        let Some(source) = &self.source else {
+            return Ok(());
+        };
+        // Read once, as C reads its list once: the lines are matched
+        // against those kept until one differs, and from there made anew.
+        let read = {
+            let mut kept = self.entries();
+            let mut matched = 0;
+            let mut read: Option<Packed> = None;
+            source.lines(&mut |line| {
+                if let Some(read) = &mut read {
+                    return read.push(line);
+                }
+                if kept.next() == Some(line) {
+                    matched += 1;
+                    return Ok(());
+                }
+                let mut anew = Packed::default();
+                for same in self.entries().take(matched) {
+                    anew.push(same)?;
+                }
+                anew.push(line)?;
+                read = Some(anew);
+                Ok(())
+            })?;
+            match read {
+                Some(read) => Some(read),
+                // Fewer lines than before, the same as far as they go.
+                None if kept.next().is_some() => {
+                    let mut fewer = Packed::default();
+                    for same in self.entries().take(matched) {
+                        fewer.push(same)?;
+                    }
+                    Some(fewer)
+                }
+                None => None,
+            }
+        };
+        if let Some(read) = read {
+            self.entries = read.shared()?;
         }
         Ok(())
     }
@@ -3721,6 +3760,48 @@ mod tests {
         list.set([&b"a:1:127.0.0.1"[..]]).unwrap();
         list.set_source(numbered()).unwrap();
         assert_eq!(list.stamp(), 3);
+    }
+
+    /// A source giving the same lines as before leaves the resolve list's
+    /// entries as they are, shared still; giving others, or fewer or more,
+    /// it has them read anew.
+    #[test]
+    fn a_resolve_list_keeps_what_its_source_gives_again() {
+        struct Given(crate::test_cell::Cell<&'static [&'static [u8]]>);
+        impl LineSource for Given {
+            fn lines(
+                &self,
+                line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+            ) -> Result<(), OutOfMemory> {
+                self.0.get().iter().try_for_each(|l| line(l))
+            }
+        }
+        let given = std::sync::Arc::new(Given(crate::test_cell::Cell::new(&[b"a", b"b"])));
+        struct Shared(std::sync::Arc<Given>);
+        impl LineSource for Shared {
+            fn lines(
+                &self,
+                line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+            ) -> Result<(), OutOfMemory> {
+                self.0.lines(line)
+            }
+        }
+        let mut list = ResolveList::default();
+        list.set_source(Handler::lines(Shared(given.clone())).unwrap())
+            .unwrap();
+        let held = list.shared();
+        let shared = |l: &ResolveList| l.entries.as_ref().map(TryArc::count);
+        list.refill().unwrap();
+        assert_eq!(shared(&list), Some(2), "kept as it was");
+        const OTHER: &[&[u8]] = &[b"a", b"c"];
+        const FEWER: &[&[u8]] = &[b"a"];
+        const MORE: &[&[u8]] = &[b"a", b"b", b"c"];
+        for now in [OTHER, FEWER, MORE, &[]] {
+            given.0.set(now);
+            list.refill().unwrap();
+            assert!(list.entries().eq(now.iter().copied()), "{now:?}");
+        }
+        assert!(held.entries().eq([&b"a"[..], b"b"]));
     }
 
     /// A group's option set makes the group; cleared, it is cleared, and

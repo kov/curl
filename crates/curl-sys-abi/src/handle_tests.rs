@@ -2385,6 +2385,37 @@ unsafe extern "C" fn trailers(list: *mut *mut ffi::curl_slist, data: *mut c_void
     }
 }
 
+/// The trace's and the trailers' adapters, which few handles have, live
+/// in a group made by the first of them set: clearing either on a new
+/// handle makes nothing, as C allocates nothing to clear an option; the
+/// first set makes the group and its adapter, the second its adapter.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn the_rare_adapters_make_their_group_only_when_set() {
+    use curl_alloc::track::count_allocations;
+    let c = curl_easy_init();
+    let made = |o: &mut Options| o.callbacks.rare.made_mut().is_some();
+    for option in [ffi::CURLOPT_DEBUGFUNCTION, ffi::CURLOPT_TRAILERFUNCTION] {
+        let (set, n) = count_allocations(|| function(c, option, ptr::null()));
+        assert_eq!((set, n), (CURLE_OK, 0), "cleared, nothing made");
+        assert!(!options(c, made));
+    }
+    let d = debug_count as DebugFn as *const ();
+    let (set, n) = count_allocations(|| function(c, ffi::CURLOPT_DEBUGFUNCTION, d));
+    assert_eq!(
+        (set, n),
+        (CURLE_OK, 3),
+        "the group, the adapter and its count"
+    );
+    let t = trailers as TrailerFn as *const ();
+    let (set, n) = count_allocations(|| function(c, ffi::CURLOPT_TRAILERFUNCTION, t));
+    assert_eq!((set, n), (CURLE_OK, 2), "the adapter and its count alone");
+    assert!(options(c, |o| o.callbacks.rare.debug.is_some()
+        && o.callbacks.rare.trailer.is_some()));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 #[test]
 fn callback_options_install_their_adapters() {
     let c = curl_easy_init();
@@ -2393,10 +2424,10 @@ fn callback_options_install_their_adapters() {
             let cb = &o.callbacks;
             (
                 cb.header.is_some(),
-                cb.debug.is_some(),
+                cb.rare.debug.is_some(),
                 cb.stderr.is_some(),
                 cb.failure.is_some(),
-                cb.trailer.is_some(),
+                cb.rare.trailer.is_some(),
             )
         })
     };
@@ -7195,7 +7226,9 @@ fn a_handle_costs_no_more_than_cs() {
     // HSTS cache the handle uses are one value each (`JarUse`, `HstsUse`),
     // a tag beside the box of its own. A build with libssh2 has the SSH host
     // key function and its data on the shim, made when first set, as C has
-    // them only in that build.
+    // them only in that build. The trace's and the trailers' handlers,
+    // which few transfers set, are a group made when one is
+    // (`RareCallbacks`).
     let tripwire = if cfg!(feature = "libssh2") {
         2_160
     } else {
@@ -10764,7 +10797,7 @@ fn a_copy_s_adapters_are_its_own() {
         options(c, |o| {
             let key = o.ssh.key_handler.clone().expect("a key adapter");
             let host = o.ssh.host_key_handler.clone();
-            let debug = o.callbacks.debug.clone().expect("a debug adapter");
+            let debug = o.callbacks.rare.debug.clone().expect("a debug adapter");
             let progress = match &o.progress {
                 Progress::Handler(h) => h.clone(),
                 other => panic!("a progress adapter, not {other:?}"),
@@ -10772,7 +10805,7 @@ fn a_copy_s_adapters_are_its_own() {
             let c = &o.callbacks;
             let rest = (
                 c.header.clone().expect("a header adapter"),
-                c.trailer.clone().expect("a trailer adapter"),
+                c.rare.trailer.clone().expect("a trailer adapter"),
                 c.failure.clone().expect("an error buffer adapter"),
                 o.small.interleave.clone().expect("an interleave adapter"),
                 o.small.input.clone().expect("a read adapter"),

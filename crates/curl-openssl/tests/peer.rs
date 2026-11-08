@@ -523,7 +523,13 @@ fn get_in(
         o.set_url(Some(url.as_bytes())).unwrap();
         o.ip_version = IpVersion::V4;
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(Taker(seen.clone())).unwrap()),
+            )
+            .unwrap();
         o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
         set(o);
         let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();
@@ -909,7 +915,13 @@ fn a_handle_s_own_multi_keeps_its_store_between_performs() {
     let o = easy.options_mut();
     o.ip_version = IpVersion::V4;
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(Taker(seen.clone())).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
     trusting(&certs)(o);
     let mut perform = || {
@@ -1082,7 +1094,7 @@ fn plain_get_allocations() -> u64 {
     let (got, n) = track::count_allocations(|| {
         get_scheme("http", "localhost", at, |o| {
             o.tls.options.make_mut().unwrap().ca_file = CaSetting::Given(path);
-            o.callbacks.debug = None;
+            o.callbacks.rare.set(|r| &mut r.debug, None).unwrap();
             o.output.verbose = false;
         })
     });
@@ -1125,7 +1137,7 @@ fn an_https_get_stays_within_its_allocation_budget() {
     let (got, n) = track::count_allocations(|| {
         get("localhost", at, |o| {
             o.tls.options.make_mut().unwrap().ca_file = CaSetting::Given(path);
-            o.callbacks.debug = None;
+            o.callbacks.rare.set(|r| &mut r.debug, None).unwrap();
             o.output.verbose = false;
         })
     });
@@ -1146,7 +1158,7 @@ fn an_https_get_stays_within_its_allocation_budget() {
 /// that the counts compared copy the same options.
 fn counted(o: &mut Options, ca: &[u8]) {
     o.tls.options.make_mut().unwrap().ca_file = CaSetting::Given(ca.to_vec());
-    o.callbacks.debug = None;
+    o.callbacks.rare.set(|r| &mut r.debug, None).unwrap();
     o.output.verbose = false;
 }
 

@@ -36,7 +36,7 @@ witness: curl-core deliver::tests::a_script_s_pieces_reach_their_handlers_in_ord
 file: crates/curl-core/src/options/mod.rs
 witness: curl-core deliver::tests::a_copy_of_the_options_shares_the_handlers
 --- old
-            callbacks: self.callbacks.clone(),
+            callbacks: self.callbacks.try_clone()?,
 --- new
             callbacks: Callbacks::default(),
 

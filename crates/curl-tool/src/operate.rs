@@ -1843,7 +1843,13 @@ fn setopts(
     // `gen_trace_setopts`.
     if let Some(tracer) = run.tracer {
         s.ptr("CURLOPT_DEBUGFUNCTION", Function, |o| {
-            o.callbacks.debug = Some(tracer.handler(config.terminal).map_err(oom)?);
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(tracer.handler(config.terminal).map_err(oom)?),
+                )
+                .map_err(oom)?;
             Ok(())
         })?;
         s.ptr("CURLOPT_DEBUGDATA", Object, nothing)?;

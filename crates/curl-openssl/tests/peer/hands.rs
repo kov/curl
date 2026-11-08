@@ -83,7 +83,13 @@ fn get_noting(certs: &Certs, at: SocketAddr, answer: Result<(), ErrorKind>) -> (
         };
         o.tls.options.make_mut().unwrap().context = Some(Handler::tls_context(noting()).unwrap());
         o.callbacks.write = Some(Handler::write(noting()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(Taker(seen.clone())).unwrap()),
+            )
+            .unwrap();
     });
     let hands = track::untracked(|| std::mem::take(&mut *hands.lock().unwrap()));
     let lines = track::untracked(|| std::mem::take(&mut seen.lock().unwrap().lines));

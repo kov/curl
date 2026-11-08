@@ -904,7 +904,13 @@ fn run_driven(
     o.limits.total = crate::time::TimeLimit::from_millis(10_000);
     o.output.verbose = true;
     o.callbacks.write = Some(crate::handler::Handler::write(body.clone()).unwrap());
-    o.callbacks.debug = Some(crate::handler::Handler::debug(text.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(text.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive(&mut m, id);

@@ -253,7 +253,8 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
     `inventory/options.json` (`gen/setopt.py`), so an id the shim lacks answers
     `CURLE_NOT_BUILT_IN` and an unknown one `CURLE_UNKNOWN_OPTION`.
   - A group most transfers never set (the proxy, the login, `.netrc`, the cookies, the size and
-    speed limits, a request's custom method, target and referer) is a `Cold<T>`: made, fallibly,
+    speed limits, a request's custom method, target and referer, the trace's and the trailers'
+    handlers) is a `Cold<T>`: made, fallibly,
     the first time one of its options is set, so the setopt that makes it is the one that can run
     out of memory, and read as the group's defaults until then; clearing an option of a group never
     made, or setting one to its default, makes nothing (`Cold::set`, `Cold::assign`). Every handle pays only for the hot groups and a pointer per

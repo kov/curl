@@ -733,7 +733,9 @@ fn refused_scenario() -> Result<Result<(), ErrorKind>, OutOfMemory> {
     let o = easy.options_mut();
     o.set_url(Some(URL))?;
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(Discard)?);
+    o.callbacks
+        .rare
+        .set(|r| &mut r.debug, Some(Handler::debug(Discard)?))?;
     let id = match m.add(try_box(easy)?, (), &mut NoEvents) {
         Ok(id) => id,
         Err(AddError {
@@ -1264,7 +1266,13 @@ fn an_ftp_data_connect_s_wait_allocates_nothing_per_pass() {
     let o = easy.options_mut();
     o.set_url(Some(b"ftp://127.0.0.1:8021/f")).expect("memory");
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(Tracer(traced.clone())).expect("memory"));
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(Tracer(traced.clone())).expect("memory")),
+        )
+        .unwrap();
     let id = m
         .add(try_box(easy).expect("memory"), (), &mut NoEvents)
         .expect("added");
@@ -1578,7 +1586,10 @@ fn push_scenario() -> Result<PushRun, OutOfMemory> {
     o.callbacks.write = Some(Handler::write(Taker(ev.took.clone()))?);
     let traced = TryArc::try_new(Traced::default())?;
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(Tracer(traced.clone()))?);
+    o.callbacks.rare.set(
+        |r| &mut r.debug,
+        Some(Handler::debug(Tracer(traced.clone()))?),
+    )?;
     let id = match m.add(try_box(easy)?, (), &mut ev) {
         Ok(id) => id,
         Err(AddError {
@@ -1771,7 +1782,13 @@ fn a_lost_trailer_line_fails_the_request() {
     o.upload = UploadSource::Bytes(TryArc::try_new(b"abc".to_vec()).expect("a body"));
     o.http.headers =
         UserHeaders::new([&b"Transfer-Encoding: chunked"[..], b"Expect:"]).expect("headers");
-    o.callbacks.trailer = Some(Handler::trailer(LosesOne).expect("a handler"));
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.trailer,
+            Some(Handler::trailer(LosesOne).expect("a handler")),
+        )
+        .unwrap();
     let id = m.add(Box::new(easy), (), &mut NoEvents).expect("added");
     let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
         .expect("the transfer is in the multi");
@@ -1968,7 +1985,9 @@ const H3_REQUEST: &[u8] = b":method: GET\n:scheme: https\n:authority: 127.0.0.1\
 /// are made.
 fn traced(o: &mut Options) -> Result<(), OutOfMemory> {
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(Discard)?);
+    o.callbacks
+        .rare
+        .set(|r| &mut r.debug, Some(Handler::debug(Discard)?))?;
     Ok(())
 }
 
@@ -2026,9 +2045,10 @@ fn an_http3_get_takes_no_refusal_for_success() {
 /// What a GET in HTTP/3 alone allocates over the fake TLS and HTTP/3
 /// libraries, every component traced; the libraries' own memory is
 /// theirs. Measured, not itemised: the HTTPS GET's own beside QUIC's
-/// connection, its HTTP/3 session and stream, and the room datagrams
-/// are read into.
-const H3_GET_BUDGET: u64 = 61;
+/// connection, its HTTP/3 session and stream, the room datagrams are
+/// read into, and the group the trace's handler is kept in, which an
+/// untraced transfer does not make.
+const H3_GET_BUDGET: u64 = 62;
 
 fn an_http3_get_stays_within_its_allocation_budget() {
     fake_h3_libraries();

@@ -181,7 +181,14 @@ fn a_short_count_fails_with_c_s_reason() {
     let trace = Trace::default();
     e.options_mut().output.verbose = true;
     e.options_mut().callbacks.write = Some(handler(h));
-    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(trace.clone()).unwrap()),
+        )
+        .unwrap();
     let mut m = multi();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -237,7 +244,14 @@ fn a_handler_s_own_reason_is_the_only_one() {
     let (trace, told) = (Trace::default(), Trace::default());
     e.options_mut().output.verbose = true;
     e.options_mut().callbacks.write = Some(handler(Explains));
-    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(trace.clone()).unwrap()),
+        )
+        .unwrap();
     e.options_mut().callbacks.failure = Some(Handler::text(told.clone()).unwrap());
     let mut m = multi();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -269,7 +283,14 @@ fn the_first_reason_is_the_one_kept() {
     let (trace, told) = (Trace::default(), Trace::default());
     e.options_mut().output.verbose = true;
     e.options_mut().callbacks.write = Some(handler(ExplainsTwice));
-    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(trace.clone()).unwrap()),
+        )
+        .unwrap();
     e.options_mut().callbacks.failure = Some(Handler::text(told.clone()).unwrap());
     let mut m = multi();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -367,7 +388,13 @@ fn played(
     let o = e.options_mut();
     o.callbacks.write = Some(handler(Recorder::new("write", &log)));
     o.callbacks.header = Some(Handler::header(Recorder::new("header", &log)).unwrap());
-    o.callbacks.debug = Some(Handler::debug(Recorder::new("debug", &log)).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(Recorder::new("debug", &log)).unwrap()),
+        )
+        .unwrap();
     set(o, &log);
     let result = run_alone(e);
     let seen = log.lock().unwrap().clone();
@@ -552,8 +579,14 @@ fn only_a_verbose_transfer_traces_bytes() {
         let mut m = multi();
         let mut e = easy("stall://a");
         e.options_mut().output.verbose = verbose;
-        e.options_mut().callbacks.debug =
-            Some(Handler::debug(Recorder::new("debug", &log)).unwrap());
+        e.options_mut()
+            .callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(Recorder::new("debug", &log)).unwrap()),
+            )
+            .unwrap();
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         log.lock().unwrap().clear();
@@ -616,7 +649,13 @@ fn a_handler_turning_verbose_on_mid_body_traces_what_follows() {
     e.set_components(Some(components));
     let o = e.options_mut();
     o.callbacks.write = Some(handler(Verbosing(Default::default())));
-    o.callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(trace.clone()).unwrap()),
+        )
+        .unwrap();
     assert_eq!(run_alone(e), Ok(()));
     assert_eq!(
         *trace.0.lock().unwrap(),
@@ -1505,7 +1544,14 @@ fn accounting() -> (Multi, TransferId, Log, Trace) {
     let (log, trace) = (Log::default(), Trace::default());
     e.options_mut().output.verbose = true;
     e.options_mut().callbacks.write = Some(handler(Recorder::new("write", &log)));
-    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(trace.clone()).unwrap()),
+        )
+        .unwrap();
     let mut m = multi();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();

@@ -162,7 +162,13 @@ fn the_speed_timers_are_armed_with_their_waits() {
             time: std::num::NonZeroU16::new(5).unwrap(),
         });
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
     });
     let c = Components::new().unwrap();
     c.configure(b"timer");
@@ -196,7 +202,13 @@ fn a_receive_limit_s_waits_are_traced_as_c() {
     let (mut e, drops) = endless_get(|o| {
         o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE);
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
     });
     let c = Components::new().unwrap();
     c.configure(b"timer,multi");
@@ -252,7 +264,13 @@ fn a_limit_s_first_step_is_a_whole_one() {
     let (mut e, drops) = endless_get(|o| {
         o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE);
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
     });
     let c = Components::new().unwrap();
     c.configure(b"timer,multi");

@@ -21,7 +21,7 @@ use curl_core::handler::{
     TrailerLines, Trailers, Write, WriteHandler,
 };
 use curl_core::multi::TransferCx;
-use curl_core::options::{Method, Options, Progress, UploadSource};
+use curl_core::options::{Cold, Method, Options, Progress, RareCallbacks, UploadSource};
 
 use crate::easy::ShimEasy;
 use crate::ffi::{
@@ -308,9 +308,12 @@ pub(crate) fn sync_text(
     let c = &mut options.callbacks;
     let headers = ccb.header.is_some() || !ccb.header_data.is_null();
     bind(&mut c.header, headers, || Handler::header(Adapter(easy)))?;
-    bind(&mut c.debug, ccb.debug.is_some(), || {
-        Handler::debug(Adapter(easy))
-    })?;
+    bind_rare(
+        &mut c.rare,
+        |r| &mut r.debug,
+        ccb.debug.is_some(),
+        || Handler::debug(Adapter(easy)),
+    )?;
     let elsewhere = ccb.stderr != standard().2;
     bind(&mut c.stderr, elsewhere, || Handler::text(Adapter(easy)))
 }
@@ -429,8 +432,9 @@ pub(crate) fn sync_trailer(
     easy: NonNull<ShimEasy>,
     ccb: &CCallbacks,
 ) -> Result<(), OutOfMemory> {
-    bind(
-        &mut options.callbacks.trailer,
+    bind_rare(
+        &mut options.callbacks.rare,
+        |r| &mut r.trailer,
         ccb.trailer.is_some(),
         || Handler::trailer(Adapter(easy)),
     )
@@ -479,6 +483,22 @@ fn bind<T: ?Sized>(
         *slot = Some(make()?);
     }
     Ok(())
+}
+
+/// `bind` for a slot of the rarely set handlers' group, which is made only
+/// while one of them is wanted: none wanted in a group never made changes
+/// nothing.
+fn bind_rare<T: ?Sized>(
+    rare: &mut Cold<RareCallbacks>,
+    slot: impl Fn(&mut RareCallbacks) -> &mut Option<Handler<T>>,
+    wanted: bool,
+    make: impl FnOnce() -> Result<Handler<T>, OutOfMemory>,
+) -> Result<(), OutOfMemory> {
+    match rare.made_mut() {
+        Some(made) => bind(slot(made), wanted, make),
+        None if !wanted => Ok(()),
+        None => bind(slot(rare.make_mut()?), wanted, make),
+    }
 }
 
 /// Drop every adapter the options hold that a sync may keep, as a

@@ -309,7 +309,13 @@ fn transfer_ending(
     let lines = Lines::default();
     let o = easy.options_mut();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(b"dns,happy-eyeballs,multi,ssl,tcp,timer");
     easy.set_components(Some(c));
@@ -803,7 +809,13 @@ fn ftp_over_a_library(
     o.set_url(Some(b"ftps://ftp.example:8021/f")).unwrap();
     o.connect_to.set([&b"::late.test:8021"[..]]).unwrap();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(b"dns,multi,timer");
     easy.set_components(Some(c));
@@ -1000,7 +1012,13 @@ fn a_late_resolve_lives_on_through_a_redial_for_the_proxy_s_407() {
     proxy.password = Some(b"p".to_vec());
     proxy.auth = crate::options::HttpAuth(crate::options::AuthMethods::ANY);
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(b"dns");
     easy.set_components(Some(c));
@@ -1131,7 +1149,13 @@ fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, u64) {
     o.set_url(Some(ORIGIN.as_bytes())).unwrap();
     o.http.version = crate::options::HttpVersion::Http3;
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(config);
     easy.set_components(Some(c));

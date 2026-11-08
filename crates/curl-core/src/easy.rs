@@ -451,8 +451,9 @@ impl Easy {
     /// A handle for a response the server pushes in answer to one of this
     /// handle's requests (`h2_duphandle`): this one's libraries and share,
     /// its stream's weight, and where its output, its headers, its trace
-    /// and its progress go; nothing else.
-    pub(crate) fn pushed(&self) -> Easy {
+    /// and its progress go; nothing else. Out of memory only where the
+    /// trace's handler needs its group made.
+    pub(crate) fn pushed(&self) -> Result<Easy, OutOfMemory> {
         let mut pushed = Easy::default();
         pushed.libraries = self.libraries.clone();
         pushed.components = self.components.clone();
@@ -464,9 +465,11 @@ impl Easy {
         to.http.stream_weight = from.http.stream_weight;
         to.callbacks.write = from.callbacks.write.clone();
         to.callbacks.header = from.callbacks.header.clone();
-        to.callbacks.debug = from.callbacks.debug.clone();
+        to.callbacks
+            .rare
+            .set(|r| &mut r.debug, from.callbacks.rare.debug.clone())?;
         to.progress = from.progress.clone();
-        pushed
+        Ok(pushed)
     }
 
     /// A handle for a DoH probe posting `query` to this handle's DoH server,
@@ -516,7 +519,9 @@ impl Easy {
             crate::time::TimeLimit::from_millis(ms)
         });
         to.callbacks.stderr = from.callbacks.stderr.clone();
-        to.callbacks.debug = from.callbacks.debug.clone();
+        to.callbacks
+            .rare
+            .set(|r| &mut r.debug, from.callbacks.rare.debug.clone())?;
         let traces = self
             .components
             .as_ref()
@@ -1576,7 +1581,7 @@ mod tests {
         let share = crate::share::Share::new().unwrap();
         let told = crate::share::Told::new(&share);
         e.set_share_watched(share.clone(), told.handler()).unwrap();
-        let pushed = e.pushed();
+        let pushed = e.pushed().unwrap();
         assert!(std::ptr::eq(&*pushed.libraries, &*e.libraries));
         let components = pushed.components().expect("the parent's components");
         components.configure(b"multi");
@@ -1880,7 +1885,14 @@ mod tests {
         let (mut e, _) = easy(&missing);
         let lines = Lines::default();
         e.options_mut().output.verbose = true;
-        e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+        e.options_mut()
+            .callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(lines.clone()).unwrap()),
+            )
+            .unwrap();
         let err = e.perform().unwrap_err();
         // The path as the URL has it, on Windows the slash before its
         // drive dropped.
@@ -2263,7 +2275,14 @@ mod tests {
             let (mut e, _) = easy(url.as_bytes());
             let lines = Lines::default();
             e.options_mut().output.verbose = true;
-            e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+            e.options_mut()
+                .callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(Handler::debug(lines.clone()).unwrap()),
+                )
+                .unwrap();
             let result = e.perform().map_err(|err| err.kind());
             let text: Vec<String> = lines
                 .0

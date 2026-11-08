@@ -555,7 +555,13 @@ fn h2_upload_on(
     o.output.verbose = true;
     o.limits.total = crate::time::TimeLimit::from_millis(100_000);
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.http.version = HttpVersion::Http2Prior;
     o.upload =
         crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap());

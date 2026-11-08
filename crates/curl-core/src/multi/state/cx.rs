@@ -94,7 +94,7 @@ impl<H: Host> crate::conn::layer::ForTransfer for StepCx<'_, H> {
     }
 
     fn has_debug_handler(&self) -> bool {
-        self.verbose() && self.easy().options().callbacks.debug.is_some()
+        self.verbose() && self.easy().options().callbacks.rare.debug.is_some()
     }
 
     fn certinfo_report(&mut self) -> Option<&mut TransferReport> {

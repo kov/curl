@@ -634,7 +634,14 @@ impl crate::handler::DebugHandler for Lines {
 fn traced(e: &mut Easy, components: &[u8]) -> Lines {
     let lines = Lines::default();
     e.options_mut().output.verbose = true;
-    e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(components);
     e.set_components(Some(c));
@@ -1331,7 +1338,14 @@ fn the_debug_build_traces_the_range() {
         let lines = Lines::default();
         e.options_mut().range = Some(range.to_vec());
         e.options_mut().output.verbose = true;
-        e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+        e.options_mut()
+            .callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(lines.clone()).unwrap()),
+            )
+            .unwrap();
         assert_eq!(run(e).0, Ok(()));
         let got: Vec<String> = lines
             .0

@@ -805,7 +805,7 @@ impl Options {
             resolve: self.resolve.shared(),
             connect_to: self.connect_to.shared(),
             output: self.output,
-            callbacks: self.callbacks.clone(),
+            callbacks: self.callbacks.try_clone()?,
             progress: self.progress.clone(),
             upload: self.upload.clone(),
             crlf: self.crlf,
@@ -3462,21 +3462,61 @@ pub struct Output {
 
 /// Where a transfer's output goes. A copy of the options shares each
 /// handler, as C's copies share a callback and its userdata.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct Callbacks {
     /// The body; without one, it is dropped.
     pub write: Option<Handler<dyn WriteHandler>>,
     /// Header lines; without one, they go nowhere.
     pub header: Option<Handler<dyn HeaderHandler>>,
-    /// The trace of a verbose transfer.
-    pub debug: Option<Handler<dyn DebugHandler>>,
     /// Text for the user; without one, the process's standard error.
     pub stderr: Option<Handler<dyn TextSink>>,
     /// Told a transfer's first reason for failing as it is given, as C
     /// copies it into `CURLOPT_ERRORBUFFER`; the report keeps it too.
     pub failure: Option<Handler<dyn TextSink>>,
+    /// The handlers few transfers set.
+    pub rare: Cold<RareCallbacks>,
+}
+
+impl Callbacks {
+    /// A copy sharing each handler; the rare ones' group is made only if
+    /// this one's was.
+    fn try_clone(&self) -> Result<Callbacks, OutOfMemory> {
+        Ok(Callbacks {
+            write: self.write.clone(),
+            header: self.header.clone(),
+            stderr: self.stderr.clone(),
+            failure: self.failure.clone(),
+            rare: self.rare.try_clone(|r| {
+                Ok(RareCallbacks {
+                    debug: r.debug.clone(),
+                    trailer: r.trailer.clone(),
+                })
+            })?,
+        })
+    }
+}
+
+/// The handlers a transfer seldom has, kept apart so that a handle
+/// without them carries a pointer, not their room: the trace's, which
+/// the C tool and WebKit set only when they trace, and the trailers',
+/// which a chunked upload alone asks for. The write, header, text and
+/// failure handlers stay in `Callbacks`: the C tool and WebKit set the
+/// error buffer on every handle, the Rust tool its text sink, and
+/// nearly every transfer the other two.
+#[derive(Debug)]
+pub struct RareCallbacks {
+    /// The trace of a verbose transfer.
+    pub debug: Option<Handler<dyn DebugHandler>>,
     /// The trailers a chunked request body ends with; without one, none.
     pub trailer: Option<Handler<dyn TrailerHandler>>,
+}
+
+impl ColdGroup for RareCallbacks {
+    const NONE: RareCallbacks = RareCallbacks {
+        debug: None,
+        trailer: None,
+    };
+    const UNSET: &'static RareCallbacks = &RareCallbacks::NONE;
 }
 
 /// Where the body a transfer sends comes from.
@@ -3896,6 +3936,38 @@ mod tests {
         assert_eq!(line.made_mut().map(|l| l.use_ssl), Some(UseSsl::All));
         line.assign(|l| &mut l.use_ssl, UseSsl::None).unwrap();
         assert_eq!(line.made_mut().map(|l| l.use_ssl), Some(UseSsl::None));
+    }
+
+    /// The trace's and the trailers' handlers are a group made by the first
+    /// of them set; clearing one in a group never made makes nothing, and a
+    /// copy makes the group only if the original has it, sharing its
+    /// handlers.
+    #[test]
+    fn the_rare_handlers_are_a_group_made_when_one_is_set() {
+        struct Quiet;
+        impl crate::handler::DebugHandler for Quiet {
+            fn debug(
+                &self,
+                _: &mut crate::multi::TransferCx<'_>,
+                _: crate::handler::DebugKind,
+                _: &[u8],
+            ) {
+            }
+        }
+        let mut o = Options::default();
+        o.callbacks.rare.set(|r| &mut r.debug, None).unwrap();
+        assert!(o.callbacks.rare.made_mut().is_none(), "cleared, not made");
+        let mut copy = o.try_clone().unwrap();
+        assert!(copy.callbacks.rare.made_mut().is_none(), "nor in a copy");
+        let debug = Handler::debug(Quiet).unwrap();
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(debug.clone()))
+            .unwrap();
+        let copy = o.try_clone().unwrap();
+        let shared = copy.callbacks.rare.debug.as_ref().expect("copied");
+        assert!(Handler::ptr_eq(shared, &debug));
+        assert!(copy.callbacks.rare.trailer.is_none());
     }
 
     /// The buffers are held under their largest sizes.

@@ -1846,7 +1846,14 @@ fn traced(url: &str) -> (Easy, TextLines) {
     let mut e = easy(url);
     let lines = TextLines::default();
     e.options_mut().output.verbose = true;
-    e.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     (e, lines)
 }
 
@@ -3789,7 +3796,14 @@ fn holding_a_record(components: &[u8], probe: LoneProbe) -> (Box<Easy>, Transfer
         Err(ErrorKind::CouldntConnect)
     );
     let mut easy = m.remove(id, &mut NoEvents).unwrap().easy;
-    easy.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(probe).unwrap());
+    easy.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(probe).unwrap()),
+        )
+        .unwrap();
     (easy, id)
 }
 
@@ -4879,7 +4893,14 @@ fn a_resolve_entry_not_utf8_is_traced_as_its_bytes() {
     let mut e = easy("tcp://foo.test:1/");
     let lines = RawLines::default();
     e.options_mut().output.verbose = true;
-    e.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     e.options_mut()
         .resolve
         .set([&b"caf\xff.test:1:127.0.0.1"[..], b"foo.test:1:127.0.0.1"])
@@ -6268,7 +6289,13 @@ fn the_proxy_protocol_is_read_once_its_stage_is_reached() {
         let o = e.options_mut();
         o.output.verbose = true;
         o.proxy.make_mut().unwrap().haproxy = true;
-        o.callbacks.debug = Some(crate::handler::Handler::debug(HaproxyOffOnceAdded).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(crate::handler::Handler::debug(HaproxyOffOnceAdded).unwrap()),
+            )
+            .unwrap();
     });
     let line = sent.split(|&b| b == b'\n').next().unwrap();
     assert!(

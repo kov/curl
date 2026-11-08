@@ -424,7 +424,13 @@ fn a_connection_closed_at_once_is_said_by_the_next_step() {
         let url = format!("http://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(both.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(both.clone()).unwrap()),
+            )
+            .unwrap();
         m.add(Box::new(e), (), &mut NoEvents).unwrap()
     });
     for id in ids {

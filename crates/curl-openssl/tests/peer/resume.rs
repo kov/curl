@@ -517,7 +517,13 @@ fn the_key_log_has_each_connection_s_secrets() {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.ip_version = IpVersion::V4;
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(Taker(seen.clone())).unwrap()),
+            )
+            .unwrap();
         o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
         trusting(&certs)(o);
         // The second's server knows only TLS 1.2: a session of the first
@@ -622,7 +628,13 @@ fn a_session_keeps_its_key_log_past_its_owner() {
     o.set_url(Some(url.as_bytes())).unwrap();
     o.ip_version = IpVersion::V4;
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(Taker(seen.clone())).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
     trusting(&certs)(o);
     let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();

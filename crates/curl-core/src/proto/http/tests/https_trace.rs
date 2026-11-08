@@ -447,7 +447,13 @@ fn a_record_s_lines_fall_about_the_share_s_locks_as_c_s() {
         let mut e = tracing_over(ares, b"dns");
         let seen = lock_logged(&mut e);
         let ran = https_get(&mut m, e, &url, |o| {
-            o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(Handler::debug(seen.clone()).unwrap()),
+                )
+                .unwrap();
         });
         assert_eq!(ran.result, Ok(()), "{:#?}", seen.text());
         let lines: Vec<String> = seen

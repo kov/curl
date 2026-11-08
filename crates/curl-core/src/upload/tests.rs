@@ -144,7 +144,11 @@ impl DebugHandler for Traced {
 fn traced(e: &mut Easy) -> Traced {
     let t = Traced::default();
     e.options_mut().output.verbose = true;
-    e.options_mut().callbacks.debug = Some(Handler::debug(t.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(|r| &mut r.debug, Some(Handler::debug(t.clone()).unwrap()))
+        .unwrap();
     t
 }
 
@@ -476,7 +480,14 @@ fn a_rewind_handler_s_reason_is_the_transfer_s() {
         fed(&mut e, b"x", None, Some(false), plain);
         let trace = Trace::default();
         e.options_mut().output.verbose = true;
-        e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+        e.options_mut()
+            .callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(trace.clone()).unwrap()),
+            )
+            .unwrap();
         if explains {
             let UploadSource::Read { rewind, .. } = &mut e.options_mut().upload else {
                 unreachable!()
@@ -753,7 +764,11 @@ fn resumed(
     let text = Trace::default();
     let both = Both(sent.clone(), text.clone());
     e.options_mut().output.verbose = true;
-    e.options_mut().callbacks.debug = Some(Handler::debug(both).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(|r| &mut r.debug, Some(Handler::debug(both).unwrap()))
+        .unwrap();
     let components = crate::components::Components::new().unwrap();
     components.configure(b"read");
     e.set_components(Some(components));

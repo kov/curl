@@ -194,7 +194,13 @@ fn looked_up(
     let url = format!("dict://127.0.0.1:{}/d:basic", crate::proto::raw::wire::PORT);
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(text.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     text.0

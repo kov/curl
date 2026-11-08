@@ -3319,7 +3319,7 @@ pub(crate) fn zeros(out: &mut Vec<u8>, mut n: usize) -> Result<(), OutOfMemory> 
 /// trailer handler's lines that read `Name: value` (`add_last_chunk`).
 fn trailer_block<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Vec<u8>, ErrorKind> {
     let mut block = Vec::new();
-    let Some(handler) = cx.easy().options().callbacks.trailer.clone() else {
+    let Some(handler) = cx.easy().options().callbacks.rare.trailer.clone() else {
         return Ok(block);
     };
     let mut lines = TrailerLines::default();

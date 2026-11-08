@@ -1587,7 +1587,10 @@ fn h2_pair_of(
         o.http.version = HttpVersion::Http2Prior;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
         o.callbacks.header = Some(Handler::header(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         set(i, o);
         handle(&mut e);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
@@ -1804,7 +1807,10 @@ fn a_multi_dropped_gives_a_share_s_lent_connection_back() {
         o.output.verbose = true;
         o.http.version = HttpVersion::Http2Prior;
         o.limits.reuse.forbid = true;
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         e.set_share(Some(share.clone())).unwrap();
         m.add(Box::new(e), (), &mut NoEvents).unwrap();
         seen.push(s);
@@ -1946,7 +1952,13 @@ fn h2_pair_traced(second: &[u8]) -> Vec<String> {
         |_| {},
         |_, o| {
             o.http.pipewait = true;
-            o.callbacks.debug = Some(Handler::debug(both.clone()).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(Handler::debug(both.clone()).unwrap()),
+                )
+                .unwrap();
         },
         |e| {
             let c = crate::components::Components::new().unwrap();
@@ -2010,7 +2022,10 @@ fn h2_three_traced() -> (Vec<String>, Vec<Option<crate::report::Ends>>) {
             o.limits.total = crate::time::TimeLimit::from_millis(1_000);
             o.http.version = HttpVersion::Http2Prior;
             o.http.pipewait = true;
-            o.callbacks.debug = Some(Handler::debug(all.clone()).unwrap());
+            o.callbacks
+                .rare
+                .set(|r| &mut r.debug, Some(Handler::debug(all.clone()).unwrap()))
+                .unwrap();
             m.add(Box::new(e), (), &mut NoEvents).unwrap()
         })
         .collect();
@@ -2280,7 +2295,10 @@ fn pipewait_on_http_1(handle: impl Fn(&mut Easy)) {
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
         o.http.pipewait = true;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         handle(&mut e);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
@@ -2354,7 +2372,10 @@ fn pipewait_on_refused_upgrade(handle: impl Fn(&mut Easy)) {
         o.http.version = HttpVersion::Http2;
         o.http.pipewait = true;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         handle(&mut e);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
@@ -2409,7 +2430,10 @@ fn a_single_use_connection_ends_a_pipewait_over_another_set_up() {
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
         o.http.pipewait = pipewait;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
         if path == "/a" {
@@ -2723,7 +2747,13 @@ fn traced_h2_by(
     o.limits.total = crate::time::TimeLimit::from_millis(10_000);
     o.http.version = HttpVersion::Http2Prior;
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(w).unwrap());
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -2971,7 +3001,13 @@ fn a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own() {
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
         o.http.version = HttpVersion::Http2Prior;
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
         let w = if path == "/a" {
             Handler::write(unpauses.clone()).unwrap()
         } else {
@@ -3062,7 +3098,13 @@ fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
         o.http.version = HttpVersion::Http2Prior;
         o.output.verbose = true;
         let w = if path == "/b" {
-            o.callbacks.debug = Some(Handler::debug(b_seen.clone()).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(Handler::debug(b_seen.clone()).unwrap()),
+                )
+                .unwrap();
             Handler::write(PausesOnceAt(2, Arc::default())).unwrap()
         } else {
             Handler::write(Seen::default()).unwrap()
@@ -3119,7 +3161,10 @@ fn two_on_one(talk: &Conversation) -> (Vec<Result<(), ErrorKind>>, Vec<Vec<Strin
         o.http.version = HttpVersion::Http2Prior;
         o.output.verbose = true;
         let s = Seen::default();
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
         seen.push(s);
         ids.push(m.add(Box::new(e), (), &mut ev).unwrap());
@@ -3280,7 +3325,13 @@ fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
         o.http.version = HttpVersion::Http2Prior;
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
         let w = if path == "/b" {
             Handler::write(PausesOnceAt(2, Arc::default())).unwrap()
         } else {
@@ -3743,7 +3794,10 @@ fn a_connection_going_away_takes_no_one_new() {
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
         o.http.version = HttpVersion::Http2Prior;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         seen.push(s);
         if path == "/b" {
             // The first heard its server is going away, its stream open.
@@ -3877,7 +3931,10 @@ fn a_connection_closed_under_two_streams_ends_both_in_one_pass() {
         }
         let s = Seen::default();
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         o.output.verbose = true;
         seen.push(s);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
@@ -3921,7 +3978,10 @@ fn refused_upgrade_states(reply: &[u8], performs: usize) -> Vec<String> {
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
     o.http.version = HttpVersion::Http2;
-    o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+        .unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..performs {
         m.perform(&mut NoEvents).unwrap();

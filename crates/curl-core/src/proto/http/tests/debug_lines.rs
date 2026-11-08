@@ -373,7 +373,13 @@ fn limited_post(body: usize, rate: u64, takes: usize, passes: usize) -> (Vec<Str
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; body]).unwrap());
     o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(rate);
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..passes {
         m.perform(&mut NoEvents).unwrap();
@@ -437,7 +443,13 @@ fn what_a_send_leaves_is_said_after_what_went() {
     o.http.continue_wait = crate::options::ContinueWait::clamped(3000);
     o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(RATE as u64);
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();

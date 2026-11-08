@@ -164,7 +164,13 @@ fn negotiated(tag: &str, cert: X509, key: PKey<Private>) -> (Vec<u8>, Steps, Got
     o.tls.verify_peer = false;
     o.tls.verify_host = false;
     o.http.auth = HttpAuth(AuthMethods::NEGOTIATE);
-    o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(Taker(seen.clone())).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
     let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();
     let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents).unwrap();

@@ -111,7 +111,13 @@ fn through_proxy(replies: &[&[u8]], set: impl FnOnce(&mut Options)) -> Ran {
     o.proxy.make_mut().unwrap().url = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
     o.output.verbose = true;
     o.limits.total = TimeLimit::from_millis(10_000);
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();

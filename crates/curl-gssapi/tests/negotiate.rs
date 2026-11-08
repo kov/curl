@@ -158,7 +158,13 @@ fn get(m: &mut Multi, path: &str, set: impl FnOnce(&mut Options)) -> (Result<(),
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
     o.http.user_agent = Some(b"curl/test".to_vec());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();

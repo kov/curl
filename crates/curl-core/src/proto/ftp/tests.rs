@@ -198,7 +198,13 @@ fn added_tracing(
     o.limits.total = crate::time::TimeLimit::from_millis(10_000);
     o.output.verbose = true;
     o.callbacks.write = Some(Handler::write(body.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(text.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     (m.add(Box::new(e), (), &mut NoEvents).unwrap(), body, text)
 }
@@ -5287,7 +5293,13 @@ fn a_share_s_names_are_let_go_as_each_connection_is_established() {
     let mut e = Easy::new();
     lock_logged(&mut e, &text);
     let (id, body, said) = added_easy(&mut m, URL, e, |o| {
-        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(text.clone()).unwrap()),
+            )
+            .unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{}", said.text());
@@ -5331,7 +5343,13 @@ fn an_offered_address_is_let_go_of_once_its_socket_listens() {
     let mut e = Easy::new();
     lock_logged(&mut e, &text);
     let (id, body, _) = added_tracing(&mut m, URL, e, b"all", |o| {
-        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(text.clone()).unwrap()),
+            )
+            .unwrap();
         o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -5394,7 +5412,13 @@ fn a_lookup_s_lines_fall_about_the_share_s_locks_as_c_s() {
     let mut e = Easy::new();
     lock_logged(&mut e, &text);
     let (id, _, _) = added_tracing(&mut m, URL, e, b"dns", |o| {
-        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(text.clone()).unwrap()),
+            )
+            .unwrap();
         o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -5439,7 +5463,13 @@ fn a_socks_target_s_entry_is_let_go_as_its_filter_goes() {
     let mut e = Easy::new();
     lock_logged(&mut e, &text);
     let (id, body, _) = added_easy(&mut m, URL, e, |o| {
-        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(text.clone()).unwrap()),
+            )
+            .unwrap();
         o.proxy.make_mut().unwrap().url =
             Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
     });
@@ -5486,7 +5516,13 @@ fn a_refused_socks_connect_lets_go_of_both_filters_entries() {
     let mut e = Easy::new();
     lock_logged(&mut e, &text);
     let (id, _, _) = added_easy(&mut m, URL, e, |o| {
-        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(text.clone()).unwrap()),
+            )
+            .unwrap();
         o.proxy.make_mut().unwrap().url =
             Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
     });
@@ -5537,7 +5573,13 @@ fn a_protected_connection_s_entry_is_let_go_as_it_is_established() {
     e.set_libraries(with_tls());
     lock_logged(&mut e, &text);
     let (id, body, _) = added_easy(&mut m, "ftps://127.0.0.1:PORT/f", e, |o| {
-        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(text.clone()).unwrap()),
+            )
+            .unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();

@@ -275,7 +275,13 @@ mod over_the_wire {
         o.output.verbose = true;
         o.callbacks.write = Some(Handler::write(Body(body.clone())).unwrap());
         o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
         set(o);
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
@@ -656,7 +662,13 @@ mod over_the_wire {
         let replies: [&[u8]; 4] = [GREETING, capa, b"+ Rubbish\r\n", b"-ERR\r\n"];
         let said = crate::proto::pingpong::Said::default();
         let (_, ran) = against(&replies, URL, |o| {
-            o.callbacks.debug = Some(Handler::debug(said.clone()).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(Handler::debug(said.clone()).unwrap()),
+                )
+                .unwrap();
         });
         assert_eq!(ran.result, Err(ErrorKind::LoginDenied));
         let want: Vec<&str> = [
@@ -1404,7 +1416,13 @@ mod over_the_wire {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.output.verbose = true;
         o.callbacks.write = Some(Handler::write(writer).unwrap());
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
         set(o);
         (m.add(Box::new(e), (), &mut NoEvents).unwrap(), seen)
     }

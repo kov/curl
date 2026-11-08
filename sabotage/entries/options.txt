@@ -51,3 +51,20 @@ features: test-util
         if n > i64::MAX as u64 {
 --- new
         if false && n > i64::MAX as u64 {
+
+=== clearing a rarely set handler on a new handle makes its group
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::the_rare_adapters_make_their_group_only_when_set
+features: debug-hooks
+--- old
+        None if !wanted => Ok(()),
+--- new
+        None if !wanted => bind(slot(rare.make_mut()?), wanted, make),
+
+=== a copy of the options loses the trace's handler
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::the_rare_handlers_are_a_group_made_when_one_is_set
+--- old
+                    debug: r.debug.clone(),
+--- new
+                    debug: None,

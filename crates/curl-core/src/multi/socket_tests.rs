@@ -1098,7 +1098,13 @@ fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
         e.set_libraries(libraries.clone());
         let o = e.options_mut();
         o.output.verbose = true;
-        o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+            )
+            .unwrap();
         let c = crate::components::Components::new().unwrap();
         c.configure(b"multi");
         e.set_components(Some(c));
@@ -1391,7 +1397,13 @@ fn a_blocking_resolve_lets_go_of_its_record_as_its_wait_ends() {
     let o = e.options_mut();
     o.limits.total = crate::time::TimeLimit::from_millis(3000);
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     o.sockets.make_mut().unwrap().local.interface =
         Some(crate::options::Interface::Host(b"bind.test".to_vec()));
     let c = crate::components::Components::new().unwrap();

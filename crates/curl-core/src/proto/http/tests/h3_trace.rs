@@ -1046,7 +1046,13 @@ fn pipewaiting(script: &Arc<Lock<Script>>, seen: &Seen) -> Easy {
     o.ip_version = IpVersion::Any;
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     e
 }
 
@@ -1416,7 +1422,13 @@ fn h3_with(script: &Arc<Lock<Script>>, packets: usize, set: impl FnOnce(&mut Opt
     o.ip_version = IpVersion::Any;
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = crate::multi::drive_within(&mut m, id, 1000, &mut NoEvents).unwrap();
@@ -3779,7 +3791,10 @@ fn a_record_kept_meanwhile_is_found_not_kept_again() {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.http.version = crate::options::HttpVersion::Http11;
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         m.add(Box::new(e), (), &mut NoEvents).unwrap();
     }
     for _ in 0..5 {
@@ -4791,7 +4806,10 @@ fn two_heads_on_quic(then: Vec<Told>) -> TwoOnQuic {
         }
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
         o.callbacks.header = Some(Handler::header(s.clone()).unwrap());
-        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(s.clone()).unwrap()))
+            .unwrap();
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
     }

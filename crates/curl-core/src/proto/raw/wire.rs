@@ -112,7 +112,13 @@ fn transfer_tracing(
     o.output.verbose = true;
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(m, id, &mut NoEvents).unwrap();

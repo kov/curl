@@ -110,7 +110,13 @@ fn tracing(
     o.limits.total = crate::time::TimeLimit::from_millis(10_000);
     o.output.verbose = true;
     o.callbacks.write = Some(Handler::write(Body(body.clone())).unwrap());
-    o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(text.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
@@ -651,7 +657,15 @@ fn sasl_s_changes_of_state_follow_their_commands() {
     let ran = transfer(
         &mut serving(&[&talk]),
         "smtp://u:p@127.0.0.1:PORT/900",
-        |o| o.callbacks.debug = Some(Handler::debug(said.clone()).unwrap()),
+        |o| {
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(Handler::debug(said.clone()).unwrap()),
+                )
+                .unwrap()
+        },
     );
     assert_eq!(ran.result, Ok(()));
     let want: Vec<&str> = [
@@ -954,7 +968,13 @@ fn added_writing(
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
     o.callbacks.write = Some(Handler::write(writer).unwrap());
-    o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(text.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     (m.add(Box::new(e), (), &mut NoEvents).unwrap(), text)
 }

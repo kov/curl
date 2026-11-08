@@ -442,7 +442,13 @@ fn a_transfer_reusing_a_connection_reaches_its_tls_objects_as_it_connects() {
         let ran = get_with(&mut m, e, path, talk.clone(), |o| {
             let url = format!("https://127.0.0.1:{PORT}{path}");
             o.set_url(Some(url.as_bytes())).unwrap();
-            o.callbacks.debug = Some(crate::handler::Handler::debug(heard.clone()).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(crate::handler::Handler::debug(heard.clone()).unwrap()),
+                )
+                .unwrap();
         });
         assert_eq!(ran.result, Ok(()));
     }
@@ -1091,7 +1097,7 @@ fn a_session_traces_its_records_only_for_a_verbose_debug_handler() {
         SAYING_DEBUGS.set(None);
         let ran = get_tls(&mut m, &saying(), "/", talk, |o| {
             if !handler {
-                o.callbacks.debug = None;
+                o.callbacks.rare.set(|r| &mut r.debug, None).unwrap();
             }
             o.callbacks.stderr = Some(Handler::text(stderr.clone()).unwrap());
             o.output.verbose = verbose;

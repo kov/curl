@@ -296,7 +296,13 @@ fn nothing_of_the_connection_is_lent_once_it_is_given_back() {
     let notes = Notes::default();
     let e = https(&libraries, |o| {
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(Fated(notes.clone())).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(Fated(notes.clone())).unwrap()),
+            )
+            .unwrap();
     });
     let id = m.add(e, (), &mut NoEvents).unwrap();
     assert_eq!(

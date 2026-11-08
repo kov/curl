@@ -505,7 +505,7 @@ impl Body {
             let end = if got.eos {
                 // The application's trailers, if it gives any
                 // (`add_last_chunk`).
-                let asks = cx.easy().options().callbacks.trailer.is_some();
+                let asks = cx.easy().options().callbacks.rare.trailer.is_some();
                 let block = trailers(cx);
                 match (&block, asks) {
                     (Ok(_), false) => {

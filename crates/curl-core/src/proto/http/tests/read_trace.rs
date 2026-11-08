@@ -238,7 +238,13 @@ fn trailers_are_said_with_the_last_chunk() {
             o.method = Method::Post;
             o.upload = pieces(&[b"abc"]);
             o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
-            o.callbacks.trailer = Some(Handler::trailer(Give(verdict)).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.trailer,
+                    Some(Handler::trailer(Give(verdict)).unwrap()),
+                )
+                .unwrap();
         });
         let lines = read_lines(&ran);
         let want =
@@ -408,7 +414,13 @@ fn a_body_paused_from_the_start_is_not_asked_for() {
     o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
         .unwrap();
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.method = Method::Post;
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
     o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
@@ -611,7 +623,13 @@ fn an_application_s_pause_is_told_to_no_reader() {
     o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
         .unwrap();
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.method = Method::Post;
     let read = PausesFirst {
         calls: Arc::new(std::sync::atomic::AtomicU32::new(1)),

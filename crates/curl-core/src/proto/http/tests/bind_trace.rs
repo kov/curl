@@ -329,7 +329,13 @@ fn a_bind_s_name_is_let_go_of_after_it_is_said() {
     let seen = lock_logged(&mut e);
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.sockets.make_mut().unwrap().local = interface("host!bindhost");
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let marks: Vec<String> = seen

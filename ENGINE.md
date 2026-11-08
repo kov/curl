@@ -927,7 +927,9 @@ pub trait MultiEvents<H: Host> {
 }
 ```
 
-Handlers live in `Options::callbacks` as `Handler<dyn …>`, shared: a copy of the options
+Handlers live in `Options::callbacks` as `Handler<dyn …>`; the debug and trailer handlers,
+which few transfers set, are a cold group of their own there (`Callbacks::rare`), so a handle
+without them carries one pointer for both. Shared: a copy of the options
 (`curl_easy_duphandle`) shares each handler, as C's copies share a callback and its userdata
 pointer. So a handler is called through `&self`, and every handler trait is `Send + Sync`: a
 copy of a handle sent to another thread calls the same handler, so its state is behind a lock

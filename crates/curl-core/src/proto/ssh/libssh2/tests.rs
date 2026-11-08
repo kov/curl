@@ -865,7 +865,13 @@ fn run_over(
     o.limits.total = crate::time::TimeLimit::from_millis(if waits { 1_000_000 } else { 10_000 });
     o.output.verbose = true;
     o.callbacks.write = Some(Handler::write(body.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(text.clone()).unwrap()),
+        )
+        .unwrap();
     let ssh = o.ssh.make_mut().unwrap();
     ssh.private_key = Some(b"/keys/id".to_vec());
     ssh.public_key = Some(b"/keys/id.pub".to_vec());

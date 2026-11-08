@@ -16,7 +16,13 @@ fn connect_only(e: &mut Easy) -> Seen {
     o.output.verbose = true;
     o.limits.total = crate::time::TimeLimit::from_millis(10_000);
     o.connect_only = ConnectOnly::Yes;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     seen
 }
 

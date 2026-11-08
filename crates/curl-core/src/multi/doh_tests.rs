@@ -389,7 +389,7 @@ fn a_handle_made_for_a_transfer_takes_up_its_share_s_cookies_and_hsts() {
     master.options_mut().doh.make_mut().unwrap().url = Some(b"https://dns.test/".to_vec());
     let body = crate::handler::Handler::write(Dropped).unwrap();
     let probe = master.doh_probe(b"query", body, None).unwrap();
-    for mut made in [master.pushed(), probe] {
+    for mut made in [master.pushed().unwrap(), probe] {
         assert!(!made.jar.is_on(), "its jar off");
         assert!(made.hsts_enabled(), "the share's HSTS cache");
         assert_eq!(made.cookie_list().unwrap().len(), 1, "the share's jar");
@@ -505,7 +505,13 @@ fn traced_over(net: FakeNet, clock: &ManualClock, url: &str, config: &[u8]) -> V
     let lines = Lines::default();
     let o = easy.options_mut();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let components = crate::components::Components::new().unwrap();
     components.configure(config);
     easy.set_components(Some(components));
@@ -723,7 +729,13 @@ fn an_origins_record_is_asked_for_and_its_versions_chosen() {
     let lines = Lines::default();
     let o = easy.options_mut();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     m.add(easy, (), &mut NoEvents).unwrap();
     run(&mut m, &clock);
     let got = https.received();
@@ -772,7 +784,13 @@ fn a_record_answered_first_chooses_the_first_attempt() {
     let lines = Lines::default();
     let o = easy.options_mut();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(b"https-connect");
     easy.set_components(Some(c));
@@ -820,7 +838,13 @@ fn only_an_answer_about_the_name_is_kept_of_its_record() {
         let lines = Lines::default();
         let o = easy.options_mut();
         o.output.verbose = true;
-        o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+            )
+            .unwrap();
         let c = crate::components::Components::new().unwrap();
         c.configure(b"dns");
         easy.set_components(Some(c));
@@ -904,7 +928,13 @@ fn the_resolves_lines_are_c_s() {
     let lines = Lines::default();
     let o = easy.options_mut();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(b"dns");
     easy.set_components(Some(c));
@@ -988,7 +1018,13 @@ fn record_unanswered(config: &[u8]) -> Vec<String> {
     let lines = Lines::default();
     let o = easy.options_mut();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(config);
     easy.set_components(Some(c));
@@ -1179,7 +1215,13 @@ fn no_call_reaches_a_probe() {
     };
     let o = easy.options_mut();
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(own).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(own).unwrap()),
+        )
+        .unwrap();
     let components = crate::components::Components::new().unwrap();
     components.configure(b"doh");
     easy.set_components(Some(components));

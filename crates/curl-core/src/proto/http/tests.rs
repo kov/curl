@@ -181,7 +181,13 @@ fn get_with(
     o.http.user_agent = Some(b"curl/test".to_vec());
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
@@ -2038,7 +2044,10 @@ fn a_post_asked_chunked_as_its_request_is_built_reads_to_the_end() {
             o.http.headers =
                 UserHeaders::from_source(Handler::lines(list.clone()).unwrap()).unwrap();
             let appends = AppendsOnTrying(list.clone(), b"Transfer-Encoding: chunked");
-            o.callbacks.debug = Some(Handler::debug(appends).unwrap());
+            o.callbacks
+                .rare
+                .set(|r| &mut r.debug, Some(Handler::debug(appends).unwrap()))
+                .unwrap();
         });
         assert_eq!(ran.result, Ok(()));
         let request = String::from_utf8(ran.request).unwrap();
@@ -2115,7 +2124,13 @@ fn a_chunked_body_ends_with_its_trailers() {
         with_body(Method::Post, b"", move |o| {
             o.upload = pieces(&[b"abc"]);
             o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
-            o.callbacks.trailer = Some(Handler::trailer(Give(verdict)).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.trailer,
+                    Some(Handler::trailer(Give(verdict)).unwrap()),
+                )
+                .unwrap();
         })
     };
     let ran = chunked(crate::handler::Trailers::Done);
@@ -3249,7 +3264,10 @@ fn a_custom_method_set_while_a_redirect_is_traced_stands() {
                 o.http.custom.make_mut().unwrap().method = Some(b"PATCH".to_vec())
             }),
         };
-        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(change).unwrap()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let second = second_request(&ran);
@@ -3268,7 +3286,10 @@ fn lists_set_while_their_entries_are_traced_stand() {
             at: b"[DNS] added 127.0.0.1",
             change: Box::new(|o| o.resolve.set([&b"set.test:1:127.0.0.1"[..]]).unwrap()),
         };
-        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(change).unwrap()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let resolve = ran.easy.options().resolve.entries();
@@ -3280,7 +3301,10 @@ fn lists_set_while_their_entries_are_traced_stand() {
             at: b"No valid port number",
             change: Box::new(|o| o.connect_to.set([&b"::127.0.0.1:1"[..]]).unwrap()),
         };
-        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(change).unwrap()))
+            .unwrap();
     });
     assert_eq!(ran.result, Err(ErrorKind::SetoptOptionSyntax));
     assert_eq!(lines(&ran.easy.options().connect_to), [b"::127.0.0.1:1"]);
@@ -3302,7 +3326,10 @@ fn a_resolve_list_set_while_one_is_read_is_dropped() {
             at: b"[DNS] added 127.0.0.1",
             change: Box::new(move |o| o.resolve.set([later.as_bytes()]).unwrap()),
         };
-        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(change).unwrap()))
+            .unwrap();
     });
     assert_eq!(first.result, Ok(()));
     let ran = get_with(&mut m, first.easy, "/", talk, |o| {
@@ -4122,7 +4149,10 @@ fn a_cookie_file_named_while_one_is_warned_of_is_read() {
                     .unwrap()
             }),
         };
-        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(change).unwrap()))
+            .unwrap();
     });
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(ran.result, Ok(()));
@@ -5722,7 +5752,13 @@ fn the_tunnel_takes_stock_for_each_byte_of_the_answer() {
             tunneled(o);
             o.progress =
                 crate::options::Progress::Handler(Handler::progress(seen.clone()).unwrap());
-            o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+            o.callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(Handler::debug(seen.clone()).unwrap()),
+                )
+                .unwrap();
         });
         assert_eq!(ran.result, Ok(()));
         let x = |n: u32| format!("[x{n}]");
@@ -6816,7 +6852,13 @@ fn an_endless_body_ends_at_the_time_limit() {
     let (e, drops) = endless_get(|o| {
         o.limits.total = crate::time::TimeLimit::from_millis(1000);
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
     });
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -7023,7 +7065,13 @@ fn the_time_limit_is_the_whole_transfer_s() {
         o.http.follow = Follow::All;
         o.limits.total = crate::time::TimeLimit::from_millis(1000);
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         for _ in 0..4 {
             m.perform(&mut NoEvents).unwrap();
@@ -7085,7 +7133,13 @@ fn a_transfer_out_of_time_reads_no_more() {
         .unwrap();
     o.limits.total = crate::time::TimeLimit::from_millis(1000);
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Err(ErrorKind::OperationTimedout));
@@ -7133,7 +7187,13 @@ fn a_rate_limited_transfer_times_out() {
         o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE);
         o.limits.total = crate::time::TimeLimit::from_millis(2500);
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
     });
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -7577,7 +7637,13 @@ fn a_body_held_for_a_100_earns_from_the_head() {
     o.http.continue_wait = crate::options::ContinueWait::clamped(3000);
     o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(RATE);
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     // The connect started in the first pass is taken in the next.
@@ -7616,7 +7682,13 @@ fn a_head_goes_beside_a_second_s_worth_of_the_body() {
         o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
         o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(rate);
         o.output.verbose = true;
-        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
         m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         // The connect started in the first pass is taken in the next.
@@ -7846,7 +7918,13 @@ fn the_wait_for_a_100_starts_once_a_pause_ends() {
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"abc".to_vec()).unwrap());
     o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(PausesOnHead).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(PausesOnHead).unwrap()),
+        )
+        .unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..4 {
         m.perform(&mut NoEvents).unwrap();

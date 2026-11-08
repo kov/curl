@@ -1019,8 +1019,14 @@ fn a_handler_hearing_the_socket_callback_reaches_its_transfer() {
     let mut e = closing_tls(tls);
     let reached = Reached::default();
     e.options_mut().output.verbose = true;
-    e.options_mut().callbacks.debug =
-        Some(crate::handler::Handler::debug(reached.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(reached.clone()).unwrap()),
+        )
+        .unwrap();
     let id = m.add(e, (), &mut NoEvents).unwrap();
     assert_eq!(super::drive_by_events(&mut m, id), Ok(Ok(())));
     let reached = reached.0.lock().unwrap().clone();
@@ -1269,7 +1275,14 @@ fn a_closed_connection_lets_a_waiting_transfer_look_again() {
     let lines = Lines::default();
     let mut e = closing(3);
     e.options_mut().output.verbose = true;
-    e.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    e.options_mut()
+        .callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let waiting = m.add(e, (), &mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert!(matches!(m.state_of(waiting), state::TransferState::Pending));

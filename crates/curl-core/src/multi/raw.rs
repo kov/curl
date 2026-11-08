@@ -181,7 +181,7 @@ impl crate::conn::layer::ForTransfer for RawCx<'_> {
 
     fn has_debug_handler(&self) -> bool {
         let options = self.easy.options();
-        options.callbacks.debug.is_some() && options.output.verbose
+        options.callbacks.rare.debug.is_some() && options.output.verbose
     }
 
     fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {

@@ -258,7 +258,13 @@ fn a_paused_body_is_traced_as_it_is_held_and_flushed() {
         .unwrap();
     o.output.verbose = true;
     o.callbacks.write = Some(Handler::write(writer.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let mut unpaused = 0;
     let mut passes = 0;
@@ -336,7 +342,13 @@ fn a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed() {
     o.http.accept_encoding = Some(crate::coding::AcceptEncoding::All);
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(header.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let mut unpaused = false;
     let mut passes = 0;
@@ -482,7 +494,13 @@ fn a_body_paused_part_way_holds_what_is_left() {
     o.output.verbose = true;
     o.limits.buffer_size = crate::options::BufferSize::clamped(65536);
     o.callbacks.write = Some(Handler::write(writer.clone()).unwrap());
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let mut passes = 0;
     let result = loop {

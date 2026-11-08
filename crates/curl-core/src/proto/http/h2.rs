@@ -1935,7 +1935,7 @@ impl Request {
         let Ok(Some(url)) = self.pushed_url(fields) else {
             return Offered::Denied;
         };
-        let Ok(mut easy) = try_box(cx.easy().pushed()) else {
+        let Ok(mut easy) = cx.easy().pushed().and_then(try_box) else {
             return Offered::Denied;
         };
         if easy.report_mut().set_url(&url).is_err() {

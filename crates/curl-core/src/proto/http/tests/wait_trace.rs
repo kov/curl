@@ -197,7 +197,13 @@ fn a_transfer_run_by_events_is_traced_as_c() {
     let url = format!("http://one.example:{PORT}/");
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     let id = m.add(Box::new(e), (), &mut Watching).unwrap();
     let result = crate::multi::drive_by_events(&mut m, id).unwrap();
@@ -262,7 +268,13 @@ fn a_handler_told_of_a_socket_change_changes_its_transfer() {
     let url = format!("http://one.example:{PORT}/");
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
-    o.callbacks.debug = Some(Handler::debug(QuietOnSocket(seen.clone())).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(QuietOnSocket(seen.clone())).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     let id = m.add(Box::new(e), (), &mut Watching).unwrap();
     let result = crate::multi::drive_by_events(&mut m, id).unwrap();
@@ -315,7 +327,13 @@ fn add_get(m: &mut Multi, ip: IpAddr, connect_ms: Option<u64>, seen: &Seen) -> T
     if let Some(ms) = connect_ms {
         o.limits.connect = crate::time::TimeLimit::from_millis(ms);
     }
-    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     m.add(Box::new(e), (), &mut NoEvents).unwrap()
 }

@@ -193,7 +193,7 @@ pub(crate) fn info_outside(calls: &mut dyn crate::multi::TransferCalls, args: fm
     push_ids_of(easy, &mut line);
     line.push_fmt(args);
     end_line(&mut line);
-    let handler = options.callbacks.debug.clone();
+    let handler = options.callbacks.rare.debug.clone();
     let sink = options.callbacks.stderr.clone();
     match handler {
         Some(handler) => handler.debug(&mut TransferCx::new(calls), DebugKind::Text, line.bytes()),
@@ -221,7 +221,7 @@ pub(crate) fn of_lone(
     line.push_fmt(format_args!("[{}] ", component.name()));
     line.push_fmt(args);
     end_line(&mut line);
-    let handler = easy.options().callbacks.debug.clone();
+    let handler = easy.options().callbacks.rare.debug.clone();
     let sink = easy.options().callbacks.stderr.clone();
     match handler {
         Some(handler) => {
@@ -271,7 +271,7 @@ pub(crate) fn note_bytes(
     bytes: &[u8],
     notes: Notes<'_>,
 ) {
-    if !easy.options().output.verbose || easy.options().callbacks.debug.is_none() {
+    if !easy.options().output.verbose || easy.options().callbacks.rare.debug.is_none() {
         return;
     }
     let ids = easy.components().is_some_and(|c| c.traces(Component::Ids));
@@ -690,7 +690,7 @@ fn bytes_traced<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) 
     }
     let mut prefixed = Text::<LINE_MAX>::new();
     push_ids(cx, &mut prefixed);
-    if easy.options().callbacks.debug.is_none() {
+    if easy.options().callbacks.rare.debug.is_none() {
         out(cx, kind, bytes, prefixed.bytes());
     } else if bytes.len() < LINE_MAX {
         after_ids(&mut prefixed, bytes);
@@ -721,7 +721,7 @@ fn text<H: Host>(cx: &mut StepCx<'_, H>, line: &[u8]) {
 /// error after `ids` and their mark.
 fn out<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8], ids: &[u8]) {
     let options = cx.easy().options();
-    match options.callbacks.debug.clone() {
+    match options.callbacks.rare.debug.clone() {
         Some(handler) => handler.debug(&mut TransferCx::new(cx), kind, bytes),
         None => {
             let mark: &[u8] = match kind {
@@ -773,8 +773,14 @@ mod tests {
         let mut e = crate::easy::Easy::new();
         e.options_mut().output.verbose = verbose;
         if handler {
-            e.options_mut().callbacks.debug =
-                Some(crate::handler::Handler::debug(Nothing).unwrap());
+            e.options_mut()
+                .callbacks
+                .rare
+                .set(
+                    |r| &mut r.debug,
+                    Some(crate::handler::Handler::debug(Nothing).unwrap()),
+                )
+                .unwrap();
         }
         if ids {
             let components = crate::components::Components::new().unwrap();

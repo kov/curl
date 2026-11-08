@@ -379,6 +379,10 @@ pub(crate) trait ConnCx: LayerCx {
     /// in the cache meanwhile (`Curl_async_shutdown`).
     fn resolve_shut(&mut self, holder: Holder);
 
+    /// The newest of `holder`'s answered by a resolver library, whose
+    /// channel stays open until the record goes (`Curl_async_pollset`).
+    fn resolve_answered_by_library(&mut self, holder: Holder);
+
     /// The number of the newest of `holder`'s, if one is kept.
     fn resolve_number(&self, holder: Holder) -> Option<ResolveNumber>;
 
@@ -526,6 +530,8 @@ impl ConnCx for Plain<'_> {
     fn resolve_gone(&mut self, _: Holder) {}
 
     fn resolve_shut(&mut self, _: Holder) {}
+
+    fn resolve_answered_by_library(&mut self, _: Holder) {}
 
     fn resolve_number(&self, _: Holder) -> Option<ResolveNumber> {
         None
@@ -1113,14 +1119,14 @@ impl ConnectMachine {
     }
 
     /// When a resolve held beside the setup's race or dialed connection
-    /// wants to run again, the soonest.
-    pub(crate) fn resolve_due(&self, now: Instant) -> Option<Instant> {
+    /// wants to run again, the soonest, `left` the time it has.
+    pub(crate) fn resolve_due(&self, now: Instant, left: Duration) -> Option<Instant> {
         match &self.stage {
             Stage::Dialed(d) => [&d.late, &d.target_late]
                 .into_iter()
-                .filter_map(|l| l.0.as_ref()?.due(now))
+                .filter_map(|l| l.0.as_ref()?.due(now, left))
                 .min(),
-            Stage::Racing(r) => r.eyeballs.late.0.as_ref()?.due(now),
+            Stage::Racing(r) => r.eyeballs.late.0.as_ref()?.due(now, left),
             Stage::Resolving(_) => None,
         }
     }
@@ -1504,7 +1510,8 @@ impl ConnectMachine {
                                     cx.net().with_resolver(&mut |r| retry = r.retry());
                                 }
                                 let mut retry = retry.map(|after| cx.now().after(after));
-                                retry = retry.or(p.due(cx.now()));
+                                let left = cx.await_resolve_left(p.asked).unwrap_or_default();
+                                retry = retry.or(p.due(cx.now(), left));
                                 // AAAA is preferred, and waited for a while
                                 // before what came is connected to
                                 // (`cf_dns_ready_to_connect`).
@@ -1612,7 +1619,7 @@ impl ConnectMachine {
             // nothing to start (`cf_ip_ballers_run`).
             let progress = match &r.eyeballs.late.0 {
                 Some(p) => Progress::Resolving {
-                    retry: p.due(now),
+                    retry: p.due(now, cx.await_resolve_left(p.asked).unwrap_or_default()),
                     aaaa: None,
                 },
                 None => Progress::Waiting { until: None },
@@ -3632,11 +3639,16 @@ impl Pending {
         !matches!(self.via, Via::Resolver(_))
     }
 
-    /// When its library wants to run again, at the latest.
-    fn due(&self, now: Instant) -> Option<Instant> {
+    /// When it wants to be looked at again, `left` the time it has
+    /// (`Curl_async_pollset`): a library when it says, within that; the
+    /// network's resolver, which wakes the multi as it answers, at the end
+    /// of it, as C's threaded resolver arms its timer; DoH's transfers
+    /// never, as they wake the multi themselves.
+    fn due(&self, now: Instant, left: Duration) -> Option<Instant> {
         match &self.via {
-            Via::Library(r) => Some(now.after(r.due(Duration::from_secs(1)))),
-            Via::Resolver(_) | Via::Doh(_) => None,
+            Via::Library(r) => Some(now.after(r.due(left).min(left))),
+            Via::Resolver(_) => Some(now.after(left)),
+            Via::Doh(_) => None,
         }
     }
 
@@ -3723,6 +3735,9 @@ impl Pending {
                     );
                     return None;
                 };
+                // Its channel stays open until the record goes, which
+                // arms the name's timer meanwhile (`Curl_async_pollset`).
+                cx.resolve_answered_by_library(self.looks.holder);
                 // A failure's is said with the failure, after its words.
                 if let Ok(addrs) = &mut answer {
                     if shuffle_said(addrs, cx).is_err() {
@@ -4710,7 +4725,9 @@ mod tests {
             now: clock.now(),
         };
         let m = match m.drive(&mut cx, setup) {
-            Ok(Drove::Connecting(m, Progress::Resolving { retry: None, .. })) => m,
+            // Looked at again as its time runs out, as C's threaded
+            // resolver arms its timer (`Curl_async_pollset`).
+            Ok(Drove::Connecting(m, Progress::Resolving { retry: Some(_), .. })) => m,
             other => panic!("{other:?}"),
         };
         assert_eq!(net.resolving(), 1);

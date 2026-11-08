@@ -419,6 +419,11 @@ pub(super) fn connect_call<H: Host>(
                     RecordAnswer::Record(_) | RecordAnswer::NoRecord => (0, ""),
                     RecordAnswer::NoSuchName | RecordAnswer::Failed => (6, "not "),
                 };
+                // Its channel stays open until the record goes, which arms
+                // the name's timer meanwhile (`Curl_async_pollset`).
+                cx.easy_mut()
+                    .asyncs
+                    .answered_by_library(crate::conn::asyncs::Holder::Record);
                 if let Some(RecordLookup::Library(r)) = &c.record_lookup {
                     let status = r.status();
                     trace::of(

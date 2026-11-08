@@ -529,6 +529,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         super::state::async_shut(self.step, holder);
     }
 
+    fn resolve_answered_by_library(&mut self, holder: crate::conn::asyncs::Holder) {
+        self.step.easy_mut().asyncs.answered_by_library(holder);
+    }
+
     fn resolve_number(
         &self,
         holder: crate::conn::asyncs::Holder,

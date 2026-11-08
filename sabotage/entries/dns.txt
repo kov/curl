@@ -1177,3 +1177,32 @@ features: test-util
             Stage::Dialed(d) => d.late.0.is_some(),
 --- new
             Stage::Dialed(_) => false,
+
+=== a library's answered resolve stops arming the name's timer while its record is kept
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::through_a_library_the_name_timer_stays_armed_once_answered
+features: test-util
+--- old
+                cx.resolve_answered_by_library(self.looks.holder);
+--- new
+                let _ = self.looks.holder;
+
+=== the network resolver's resolve still going on arms no name timer
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::through_the_resolver_the_name_timer_is_armed_until_the_answer
+features: test-util
+--- old
+            Via::Resolver(_) => Some(now.after(left)),
+--- new
+            Via::Resolver(_) => None,
+
+=== the network resolver's answer leaves the name's timer armed
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::late_tests::through_the_resolver_the_name_timer_is_armed_until_the_answer
+features: test-util
+--- old
+    if !cx.easy().asyncs.arms() {
+        run.deadlines.clear(TimerKind::AsyncName);
+    }
+--- new
+    let _ = run;

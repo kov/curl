@@ -2981,7 +2981,13 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   callbacks lent through that multi's stack.
 - **c-ares.** `Libraries::dns` names a `DnsLibrary`, `curl-ares` in a build without the threaded
   resolver: a channel per resolve (`DnsResolve`), held by the setup as `Via::Library`, its sockets
-  in the transfer's pollset and its next try on `TimerKind::AsyncName`. The `--dns-*` settings
+  in the transfer's pollset and its next try on `TimerKind::AsyncName`, within the resolve's time
+  left (`Curl_ares_timeout_ms`). Answered, the channel stays open in C until the record goes, and
+  arms the timer for the time left as each pollset is made: the record answered by a library
+  (`Asyncs::answered_by_library`) arms it so while the setup runs, and nothing disarms it as the
+  record goes, so it stays armed into PERFORMING until it fires or the transfer's timers are
+  cleared. The network's resolver arms it for the time left until its answer is taken, which
+  disarms it, as C's threaded resolver does with its own wake-up. The `--dns-*` settings
   (`options.dns`) are read as a resolve starts, and refused there as C refuses them. A blocking
   resolve, a socket's interface name or FTP's address, is the library's too, waited for in place for
   as long as the transfer may (`await_library`, `Curl_async_await`). A socket the library closes

@@ -574,19 +574,31 @@ pub(super) fn connecting<H: Host>(
     {
         return (state.fail(kind), Wake::Again);
     }
-    // A resolver library's resolve held beside the setup times out only if
-    // run again (`Curl_async_pollset`'s `EXPIRE_ASYNC_NAME`).
+    // The resolves the setup goes on beside arm the name's timer as the
+    // pollset is made, each for when it wants to run again within its
+    // time left: a library's, which times out only if run again, and the
+    // network resolver's, until it has answered; and so does a library's
+    // answered, its channel still open until its record goes
+    // (`Curl_resolv_pollset`'s `EXPIRE_ASYNC_NAME`). Nothing disarms it as
+    // its record goes: it fires, or the transfer's timers are cleared.
     if let TransferState::Connecting(c) = &state {
         let now = cx.rest.clock.now();
+        let left = match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
+            TimeLeft::Remaining(left) => left,
+            TimeLeft::Expired(_) => Duration::ZERO,
+            // `CURL_TIMEOUT_RESOLVE_MS`.
+            TimeLeft::Unlimited => Duration::from_secs(300),
+        };
         let record = match &c.record_lookup {
-            Some(RecordLookup::Library(r)) => Some(now.after(r.due(Duration::from_secs(1)))),
+            Some(RecordLookup::Library(r)) => Some(now.after(r.due(left).min(left))),
             _ => None,
         };
         // The first attempt holds the name's resolve, whichever leads.
         let held = c
             .attempt(Attempt::First)
-            .and_then(|setup| setup.resolve_due(now));
-        if let Some(at) = [record, held].into_iter().flatten().min() {
+            .and_then(|setup| setup.resolve_due(now, left));
+        let answered = cx.easy().asyncs.arms().then(|| now.after(left));
+        if let Some(at) = [record, held, answered].into_iter().flatten().min() {
             arm(&mut run.deadlines, cx, TimerKind::AsyncName, at.since(now));
         }
     }
@@ -849,7 +861,12 @@ fn resolved<H: Host>(
     a: Attempt,
     found: Found,
 ) {
-    run.deadlines.clear(TimerKind::AsyncName);
+    // The network resolver's timer goes as its answer is taken; a
+    // library's channel, still open, goes on arming it until its record
+    // goes (`Curl_async_pollset`).
+    if !cx.easy().asyncs.arms() {
+        run.deadlines.clear(TimerKind::AsyncName);
+    }
     // A Unix socket's address is made, not looked up (`resolv_unix`).
     if !c.route.destination().is_unix() {
         trace_lookup(cx, &c.route, Some(found));

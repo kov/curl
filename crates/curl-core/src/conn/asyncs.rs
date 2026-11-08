@@ -5,7 +5,8 @@
 //! them outlive that, until the filter that asked connects, the transfer
 //! is done, or the handle is reset or let go, and each says so as it goes
 //! (`[N] shutdown async`, `[N] destroy async`). These are those records,
-//! kept on the handle, the newest last, for the lines alone.
+//! kept on the handle, the newest last, for the lines, and for the name's
+//! timer a library's answered resolve arms until its record goes.
 
 use crate::multi::state::ConnRank;
 use curl_alloc::{OutOfMemory, TryVec, try_box};
@@ -30,6 +31,10 @@ pub(crate) enum Holder {
 struct Kept {
     id: ResolveNumber,
     holder: Holder,
+    /// A resolver library answered it, its channel left open until the
+    /// record goes: C's pollset arms the name's timer from it each time,
+    /// for the resolve's time left (`Curl_async_pollset`).
+    arms: bool,
 }
 
 /// A transfer's records, the oldest first: made as the first is kept and
@@ -65,6 +70,14 @@ impl Records {
             self.first[at].expect("the first `n` are kept")
         } else {
             self.more[at - INLINE]
+        }
+    }
+
+    fn get_mut(&mut self, at: usize) -> &mut Kept {
+        if at < self.n {
+            self.first[at].as_mut().expect("the first `n` are kept")
+        } else {
+            &mut self.more[at - INLINE]
         }
     }
 
@@ -109,7 +122,32 @@ impl Asyncs {
             Some(kept) => kept,
             none => none.insert(try_box(Records::default())?),
         };
-        kept.push(Kept { id, holder })
+        kept.push(Kept {
+            id,
+            holder,
+            arms: false,
+        })
+    }
+
+    /// The newest of `holder`'s, if one is kept, answered by a resolver
+    /// library, whose channel is still open: it arms the name's timer from
+    /// now on, until it goes.
+    pub(crate) fn answered_by_library(&mut self, holder: Holder) {
+        let Some(kept) = self.0.as_deref_mut() else {
+            return;
+        };
+        let newest = (0..kept.len())
+            .rev()
+            .find(|&at| kept.get(at).holder == holder);
+        if let Some(at) = newest {
+            kept.get_mut(at).arms = true;
+        }
+    }
+
+    /// Whether a record kept arms the name's timer: one a library
+    /// answered.
+    pub(crate) fn arms(&self) -> bool {
+        (0..).map_while(|n| self.newest_nth(n)).any(|k| k.arms)
     }
 
     /// The `n`th, counting from the newest at 0.
@@ -236,6 +274,28 @@ mod tests {
         assert_eq!(kept.pop_newest(), Some(record));
         assert!(kept.0.is_none(), "the last let go of takes the list");
         assert_eq!(kept.pop_newest(), None);
+    }
+
+    /// A record a library answered arms the name's timer until it goes; one
+    /// of another holder's does not.
+    #[test]
+    fn a_record_a_library_answered_arms_until_it_goes() {
+        let mut count = ResolveCount::default();
+        let mut kept = Asyncs::default();
+        kept.answered_by_library(Holder::Record);
+        assert!(!kept.arms(), "none is kept");
+        kept.keep(count.next(), Holder::Record).unwrap();
+        kept.keep(count.next(), Holder::Addresses(ConnRank::First))
+            .unwrap();
+        assert!(!kept.arms());
+        kept.answered_by_library(Holder::Target);
+        assert!(!kept.arms(), "no record of the target's");
+        kept.answered_by_library(Holder::Addresses(ConnRank::First));
+        assert!(kept.arms());
+        kept.take(Holder::Record);
+        assert!(kept.arms(), "the addresses' still kept");
+        kept.take(Holder::Addresses(ConnRank::First));
+        assert!(!kept.arms());
     }
 
     /// Past the records kept in place, the rest follow them, in order

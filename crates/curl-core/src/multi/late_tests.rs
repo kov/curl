@@ -308,7 +308,7 @@ fn transfer_ending(
     o.output.verbose = true;
     o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
     let c = crate::components::Components::new().unwrap();
-    c.configure(b"dns,happy-eyeballs,multi,ssl,tcp");
+    c.configure(b"dns,happy-eyeballs,multi,ssl,tcp,timer");
     easy.set_components(Some(c));
     m.add(Box::new(easy), (), &mut NoEvents).unwrap();
     let run = |m: &mut Multi| {
@@ -335,6 +335,10 @@ fn transfer_ending(
         let ended = m.info_read().map(|msg| msg.result);
         assert_eq!(ended, Some(Err(ErrorKind::OperationTimedout)));
     } else {
+        // The handshake ends, and the response is held a while: the
+        // transfer waits for it in PERFORMING.
+        origin.allow(1);
+        run(&mut m);
         origin.allow(2);
         run(&mut m);
         assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
@@ -598,4 +602,85 @@ fn a_handshake_timed_out_beside_the_resolve_times_out_as_resolving() {
     };
     assert_eq!(said(false), "Resolving timed out");
     assert_eq!(said(true), "Connection timed out");
+}
+
+/// Whether the name's timer is armed as each of the transfer's pollsets
+/// is said in `state`, past line `from`: the timers armed are said right
+/// after it.
+fn name_timer_in(said: &[String], from: usize, state: &str) -> Vec<bool> {
+    let head = format!("[MULTI] [{state}] pollset[");
+    let mut armed = Vec::new();
+    for (i, l) in said.iter().enumerate().skip(from) {
+        if !l.starts_with(&head) {
+            continue;
+        }
+        let name = said[i + 1..]
+            .iter()
+            .take_while(|l| l.starts_with("[TIMER] "))
+            .any(|l| l.starts_with("[TIMER] [ASYNC_NAME] expires in "));
+        armed.push(name);
+    }
+    armed
+}
+
+/// Through a resolver library, as c-ares, the resolve answered during the
+/// handshake goes on arming the name's timer, for its time left, while its
+/// record is kept, and the timer stays armed once the record goes: C's
+/// channel, still open, arms it in each pollset (`Curl_async_pollset`),
+/// and nothing disarms it. C's debug build over c-ares says
+/// `timeouts=1` through the rest of the handshake and in PERFORMING, the
+/// name's timer the one armed.
+#[test]
+fn through_a_library_the_name_timer_stays_armed_once_answered() {
+    let backend = Backend::Library {
+        alive: Arc::default(),
+        runs: Arc::default(),
+        fd: Arc::default(),
+    };
+    let said = transfer(&backend, true, |_, _| {}, |_, _| {});
+    let complete = at(
+        &said,
+        0,
+        "[DNS] [A+AAAA] resolve complete for late.test:443",
+    );
+    let connecting = name_timer_in(&said, complete, "CONNECTING");
+    assert!(!connecting.is_empty(), "{said:#?}");
+    assert!(connecting.iter().all(|&armed| armed), "{said:#?}");
+    let connected = at(&said, complete, "[DNS] connected filter chain below");
+    let performing = name_timer_in(&said, connected, "PERFORMING");
+    assert!(!performing.is_empty(), "{said:#?}");
+    assert!(performing.iter().all(|&armed| armed), "{said:#?}");
+}
+
+/// Through the network's resolver, said as C's threaded resolver says it,
+/// the resolve still going on beside the handshake arms the name's timer
+/// for its time left, and its answer disarms it: C's threaded build says
+/// `timeouts=1` through the handshake with AAAA still out, and
+/// `timeouts=0` once it has come (`Curl_async_pollset`,
+/// `Curl_expire_clear`).
+#[test]
+fn through_the_resolver_the_name_timer_is_armed_until_the_answer() {
+    let said = transfer(&Backend::Resolver, true, |_, _| {}, |_, _| {});
+    let won = at(&said, 0, "[HAPPY-EYEBALLS] connect attempt #0 successful");
+    let complete = at(
+        &said,
+        won,
+        "[DNS] [A+AAAA] resolve complete for late.test:443",
+    );
+    let shaking = name_timer_in(&said[..complete], won, "CONNECTING");
+    assert!(!shaking.is_empty(), "{said:#?}");
+    assert!(shaking.iter().all(|&armed| armed), "{said:#?}");
+    let answered = name_timer_in(&said, complete, "CONNECTING");
+    assert!(!answered.is_empty(), "{said:#?}");
+    assert!(answered.iter().all(|&armed| !armed), "{said:#?}");
+}
+
+/// Over DoH, nothing arms the name's timer: the probes are transfers of
+/// their own, which wake the multi (`Curl_resolv_pollset` passes DoH by).
+#[test]
+fn over_doh_the_name_timer_is_never_armed() {
+    let said = transfer(&Backend::Doh, true, |_, _| {}, |_, _| {});
+    let armed = name_timer_in(&said, 0, "CONNECTING");
+    assert!(!armed.is_empty(), "{said:#?}");
+    assert!(armed.iter().all(|&armed| !armed), "{said:#?}");
 }

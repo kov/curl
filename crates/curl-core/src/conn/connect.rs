@@ -2527,13 +2527,12 @@ impl ConnectMachine {
         }
     }
 
-    /// The setup lost a race of two (C's HTTPS connect filter discards
-    /// the loser's chain): its attempts go as a race's losers do, with no
-    /// goodbye to their peers.
-    /// The setup failed after it was dialed, its connection kept until
-    /// its race ends, and goes with it: its chain below the setup filter,
-    /// the tunnel's filters, the race's and the socket's
-    /// (`cf_hc_ctx_destroy` of a baller that failed).
+    /// The setup lost a race of two, or failed after it was dialed and
+    /// was kept until the race ended, and goes with the HTTPS connect
+    /// filter: its chain below the setup filter, with no goodbye to its
+    /// peers (`cf_hc_ctx_destroy`). Dialed, that is the tunnel's filters,
+    /// then the happy eyeballs filter, still there until the whole chain
+    /// connects, then the socket's.
     pub(crate) fn lose(self, cx: &mut dyn ConnCx) {
         if let Stage::Dialed(_) = &self.stage {
             self.tunnel_goes(cx);

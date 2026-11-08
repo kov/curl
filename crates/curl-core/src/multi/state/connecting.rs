@@ -2120,7 +2120,7 @@ pub(super) fn up<H: Host>(
         }
         if let Some(lost) = lost.take() {
             trace::of(cx, Component::Setup, format_args!("destroy"));
-            lost.discard(&mut DriveCx::new(cx, None));
+            lost.lose(&mut DriveCx::new(cx, None));
         } else if let Some(failed) = kept.take() {
             trace::of(cx, Component::Setup, format_args!("destroy"));
             failed.lose(&mut DriveCx::new(cx, None));

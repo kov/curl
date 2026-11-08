@@ -2141,6 +2141,47 @@ fn a_late_quic_peer_wins_over_a_tcp_attempt_running() {
 }
 
 /// A QUIC peer that answers late, after the soft timeout started the
+/// second attempt over TCP, whose peer accepts and holds the TLS
+/// handshake: the first wins, and the second, dialed, goes with the
+/// HTTPS connect filter, its happy eyeballs filter still in its chain
+/// (`cf_hc_ctx_destroy`). C's `--http3` with ECH waiting for the HTTPS
+/// record, whose TCP attempt connects while the QUIC one waits.
+#[test]
+fn a_late_quic_peer_wins_over_a_tcp_attempt_shaking_hands() {
+    let quic_talk = Conversation::replies(&[b"server flight", b"response"], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let late = Peer::AcceptsAfter(std::time::Duration::from_millis(150));
+    let mut m = racing_peer(late, &quic_talk, Peer::Accepts, &tcp_talk);
+    let script = get_script(b"quic");
+    {
+        let mut s = script.lock().unwrap();
+        s.out.truncate(3);
+        s.on_submit.push_back(vec![vec![3; 75], vec![]]);
+    }
+    let e = tracing(FakeTls::agreeing().unwrap(), &script);
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"quic");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+        [HTTPS-CONNECT] connect -> 0, done=1
+        [HTTPS-CONNECT] removing connected setup filter
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
+        [TCP] destroy
+        using HTTP/3
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    // The TCP attempt was dialed, its TLS under way.
+    let dialed = lines(&ran, &["[HAPPY-EYEBALLS] Connected to"]);
+    assert!(!dialed.is_empty(), "{:#?}", ran.seen.text());
+}
+
+/// A QUIC peer that answers late, after the soft timeout started the
 /// second attempt over TCP, which leads and is refused: the race goes on
 /// with the first, which wins, the second's failure not taken for the
 /// first's (`cf_hc_connect` fails only once every baller has).

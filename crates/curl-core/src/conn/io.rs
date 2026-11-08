@@ -2906,6 +2906,9 @@ mod tests {
     /// libssh and libldap do, the descriptor it is polled by.
     #[test]
     fn a_system_socket_gives_its_descriptor() {
+        // Winsock started for the socket, as a multi starts it, not left
+        // to whichever test has it started meanwhile.
+        let _winsock = Winsock::start().expect("Winsock");
         let at = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
         let s = curl_os::net::open(at, curl_os::net::Protocol::Tcp, true).unwrap();
         let polled = match s.readiness() {

@@ -36,10 +36,16 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
 ];
 
 /// Engines that start but load neither a certificate nor a key: on Linux
-/// `afalg` and `loader_attic`, which OpenSSL 3 builds; on Windows the
-/// built-in `rdrand`, as vcpkg's OpenSSL has no engine of its own to load.
-#[cfg(all(not(windows), ossl3))]
+/// `afalg` and `loader_attic`, which OpenSSL 3 builds; on macOS
+/// `loader_attic` alone, `afalg` being Linux's (`AF_ALG`), and the
+/// `padlock` (VIA's x86) and `capi` (Windows') Homebrew also ships
+/// failing to start;
+/// on Windows the built-in `rdrand`, as vcpkg's OpenSSL has no engine of
+/// its own to load.
+#[cfg(all(not(any(windows, target_os = "macos")), ossl3))]
 const ENGINES_THAT_LOAD_NOTHING: &[&[u8]] = &[b"afalg", b"loader_attic"];
+#[cfg(all(target_os = "macos", ossl3))]
+const ENGINES_THAT_LOAD_NOTHING: &[&[u8]] = &[b"loader_attic"];
 #[cfg(all(windows, ossl3))]
 const ENGINES_THAT_LOAD_NOTHING: &[&[u8]] = &[b"rdrand"];
 
@@ -89,8 +95,8 @@ fn with_engine(certs: &Certs, client: &client::Client, engine: &[u8], set: Set<'
     got
 }
 
-/// `afalg` and `loader_attic` start, but neither loads a certificate or
-/// a key: the certificate is asked for by `LOAD_CERT_CTRL`, which an
+/// `afalg` and `loader_attic` start (on macOS `loader_attic` alone), but
+/// neither loads a certificate or a key: the certificate is asked for by `LOAD_CERT_CTRL`, which an
 /// engine without commands takes as optional and leaves undone, and the
 /// key by `ENGINE_load_private_key`, which they lack. Both fail as C's
 /// build fails them here, 58. On Windows `rdrand` fails both as C's build

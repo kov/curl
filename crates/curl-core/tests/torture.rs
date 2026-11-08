@@ -14,7 +14,7 @@ use std::time::Duration;
 use curl_alloc::track::{self, Tracker};
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::components::Components;
-use curl_core::conn::io::{Conversation, FakeNet, Net, Peer, Waker};
+use curl_core::conn::io::{Conversation, FakeNet, Net, Peer, Waker, Winsock};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{
@@ -273,7 +273,11 @@ fn scenario() -> Result<Outcome, OutOfMemory> {
     let clock = ManualClock::new()?;
     let boxed: Box<dyn Clock> = try_box(clock.clone())?;
     let net: Box<dyn Net + Send> = try_box(fake_net(&clock))?;
-    let waker = TryArc::try_new(Waker::new().expect("an eventfd"))?;
+    // On Windows the waker is a pair of loopback sockets, made only with
+    // Winsock started, as `Multi::new` expects of whoever makes it; held
+    // until the multi has gone.
+    let _winsock = Winsock::start().expect("Winsock");
+    let waker = TryArc::try_new(Waker::new().expect("a waker"))?;
     let env = Env {
         clock: boxed,
         net,

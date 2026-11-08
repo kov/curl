@@ -107,12 +107,11 @@ witness: curl-core deliver::tests::included_headers_count_against_the_size_limit
 file: crates/curl-core/src/trace.rs
 witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
 --- old
-    if !easy.options().output.verbose {
-        return;
+    if cx.easy().options().output.verbose {
+        bytes_traced(cx, kind, bytes);
     }
-    let ids =
 --- new
-    let ids =
+    bytes_traced(cx, kind, bytes);
 
 === the body is traced after it was delivered
 file: crates/curl-core/src/deliver/mod.rs

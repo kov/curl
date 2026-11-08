@@ -1043,6 +1043,27 @@ fn a_late_resolve_lives_on_through_a_redial_for_the_proxy_s_407() {
 /// filter above both attempts lets go of it (`cf_dns_connect`).
 #[test]
 fn a_first_attempt_lost_to_the_second_lets_go_of_its_resolve_with_the_chain() {
+    let (said, fd) = lost_to_the_second(b"dns,multi,https-connect", false);
+    let second = said
+        .iter()
+        .position(|l| l.contains("starting h1"))
+        .unwrap_or_else(|| panic!("the second started: {said:#?}"));
+    let connected = at(&said, second, "[DNS] connected filter chain below");
+    assert!(
+        said[connected + 1].ends_with("] destroy async"),
+        "{said:#?}"
+    );
+    assert_eq!(
+        said[connected + 2],
+        format!("[MULTI] [CONNECTING] Curl_multi_will_close fd={fd}"),
+        "{said:#?}"
+    );
+}
+
+/// The race of a QUIC first attempt and the TCP second that leads it, the
+/// trace's components on as `config` says: what the transfer traced and
+/// the number of the library's socket.
+fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, i32) {
     let clock = ManualClock::new().unwrap();
     let at_origin = SocketAddr::from(([127, 0, 0, 1], 443));
     let quic_talk = Conversation::replies(&[], false).per_send();
@@ -1111,33 +1132,65 @@ fn a_first_attempt_lost_to_the_second_lets_go_of_its_resolve_with_the_chain() {
     o.output.verbose = true;
     o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
     let c = crate::components::Components::new().unwrap();
-    c.configure(b"dns,multi,https-connect");
+    c.configure(config);
     easy.set_components(Some(c));
-    m.add(Box::new(easy), (), &mut NoEvents).unwrap();
     let mut ended = None;
-    for _ in 0..3000 {
-        m.perform(&mut NoEvents).unwrap();
-        if let Some(msg) = m.info_read() {
-            ended = Some(msg.result);
-            break;
+    if by_events {
+        let id = m.add(Box::new(easy), (), &mut Watching).unwrap();
+        ended = Some(crate::multi::drive_by_events(&mut m, id).unwrap());
+    } else {
+        m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+        for _ in 0..3000 {
+            m.perform(&mut NoEvents).unwrap();
+            if let Some(msg) = m.info_read() {
+                ended = Some(msg.result);
+                break;
+            }
+            clock.advance(Duration::from_millis(1));
         }
-        clock.advance(Duration::from_millis(1));
     }
     let said = lines.0.lock().unwrap().clone();
     assert_eq!(ended, Some(Ok(())), "{said:#?}");
     assert!(!alive.load(Ordering::Relaxed), "let go of");
+    (said, fd)
+}
+
+/// An application that runs the multi by its events.
+struct Watching;
+
+impl crate::multi::MultiEvents<crate::multi::NoHost> for Watching {
+    fn wants_timer(&self) -> bool {
+        true
+    }
+
+    fn wants_sockets(&self) -> bool {
+        true
+    }
+}
+
+/// Once the TCP second races the QUIC first, the pollset trace names the
+/// first's socket as its UDP filter's and counts the resolve's socket the
+/// first holds among the first attempt's, then the second's own on top,
+/// as C's happy eyeballs filters say them (`cf_ip_happy_adjust_pollset`).
+#[test]
+fn the_race_s_pollset_counts_the_first_s_resolve_among_its_sockets() {
+    let (said, _) = lost_to_the_second(b"dns,multi,https-connect,udp,happy-eyeballs", true);
     let second = said
         .iter()
         .position(|l| l.contains("starting h1"))
         .unwrap_or_else(|| panic!("the second started: {said:#?}"));
-    let connected = at(&said, second, "[DNS] connected filter chain below");
-    assert!(
-        said[connected + 1].ends_with("] destroy async"),
-        "{said:#?}"
+    let udp = at(
+        &said,
+        second,
+        "[UDP] adjust_pollset, !active, POLLIN fd=1000",
     );
     assert_eq!(
-        said[connected + 2],
-        format!("[MULTI] [CONNECTING] Curl_multi_will_close fd={fd}"),
+        said[udp + 1..udp + 4],
+        [
+            "[HAPPY-EYEBALLS] adjust_pollset -> 0, 2 socks",
+            "[HAPPY-EYEBALLS] adjust_pollset -> 0, 3 socks",
+            "[HTTPS-CONNECT] adjust_pollset -> 0, 3 socks",
+        ],
         "{said:#?}"
     );
 }

@@ -1270,3 +1270,37 @@ features: test-util
 --- new
             start: 0x243f_6a88_85a3_08d3,
             multiplier: 0x9e37_79b9_7f4a_7c15 | u64::from(keys.hash_one(1u8) == 0),
+
+=== a resolve entry read again keeps the time it was first read
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::tests::a_resolve_list_set_again_the_same_is_read_anew
+--- old
+        entry.added = now;
+        entry.permanent = permanent;
+--- new
+        entry.permanent = permanent;
+
+=== a resolve entry read again keeps for good what was kept for good
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::an_answer_is_renewed_only_if_it_is_the_one_made_anew
+--- old
+        entry.added = now;
+        entry.permanent = permanent;
+--- new
+        entry.added = now;
+
+=== a resolve entry read again in another case keeps the old name's case
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::tests::a_resolve_list_set_again_the_same_is_read_anew
+--- old
+        let same = answer.name == name
+--- new
+        let same = answer.name.eq_ignore_ascii_case(name)
+
+=== a resolve entry read again is not shuffled again
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core multi::tests::a_resolve_list_set_again_the_same_is_read_anew
+--- old
+        let shuffling = cx.easy().options().dns_shuffle && addrs.iter().nth(1).is_some();
+--- new
+        let shuffling = cx.easy().options().dns_shuffle && addrs.iter().nth(1).is_some() && cx.easy().options().resolve.stamp() < 5;

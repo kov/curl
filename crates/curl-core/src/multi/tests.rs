@@ -4371,6 +4371,61 @@ fn a_resolve_list_is_read_once_for_each_setting() {
     m.remove(id, &mut NoEvents).unwrap();
 }
 
+/// A resolve list set again with what it gave still kept is read anew:
+/// the old addresses are said discarded and kept again as given, a `+`
+/// entry from the time it is read again, a name in the case it is given
+/// in again, and addresses shuffled again when that is asked for.
+#[test]
+fn a_resolve_list_set_again_the_same_is_read_anew() {
+    let (mut m, clock) = networked();
+    let (mut e, lines) = traced("tcp://foo.test:1/");
+    e.options_mut().limits.reuse.fresh = true;
+    let mut e = Box::new(tracing(e, b"dns"));
+    let run = |m: &mut Multi, e: Box<Easy>| {
+        lines.0.lock().unwrap().clear();
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        perform_and_connect(m);
+        assert_eq!(messages(m).last().unwrap().1, Ok(()));
+        (m.remove(id, &mut NoEvents).unwrap().easy, trace_of(&lines))
+    };
+    let has = |said: &[String], line: &str| said.iter().any(|l| l == line);
+    let entry = &b"+foo.test:1:127.0.0.1"[..];
+    e.options_mut().resolve.set([entry]).unwrap();
+    let (mut e, _) = run(&mut m, e);
+    clock.advance(Duration::from_secs(50));
+    e.options_mut().resolve.set([entry]).unwrap();
+    let (e, said) = run(&mut m, e);
+    assert_eq!(
+        said[..2],
+        [
+            "RESOLVE foo.test:1 - old addresses discarded\n",
+            "[DNS] added foo.test:1:127.0.0.1 to cache (non-permanent)\n",
+        ]
+    );
+    // A minute after the first reading, not after the second.
+    clock.advance(Duration::from_secs(50));
+    let (mut e, said) = run(&mut m, e);
+    assert!(
+        has(&said, "Hostname foo.test was found in DNS cache\n"),
+        "{said:?}"
+    );
+    e.options_mut()
+        .resolve
+        .set([&b"FOO.test:1:127.0.0.1"[..]])
+        .unwrap();
+    let (mut e, said) = run(&mut m, e);
+    assert!(has(&said, "Host FOO.test:1 was resolved.\n"), "{said:?}");
+    e.options_mut().dns_shuffle = true;
+    let two = &b"foo.test:1:127.0.0.1,[::1]"[..];
+    e.options_mut().resolve.set([two]).unwrap();
+    let (mut e, said) = run(&mut m, e);
+    assert!(has(&said, "[DNS] Shuffling 2 addresses\n"), "{said:?}");
+    e.options_mut().resolve.set([two]).unwrap();
+    let (_, said) = run(&mut m, e);
+    assert!(has(&said, "[DNS] Shuffling 2 addresses\n"), "{said:?}");
+    assert!(has(&said, "RESOLVE foo.test:1 - old addresses discarded\n"));
+}
+
 /// An answer older than the cache's timeout is not used: one found stale
 /// is dropped, and a transfer's end drops those gone stale by then.
 #[test]

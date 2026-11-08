@@ -2951,7 +2951,9 @@ resolver, as C's gives none), then said again without it. `CURLOPT_RESOLVE` entr
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
 stamp it last read), as its source has them then; the entries are shared, never copied, by the
 handles set from one list and the transfer reading them. A list set while one is read, from the
-debug handler, is taken as read too, as C clears `state.resolve` after reading. They are permanent unless given with `+`, and `*` answers for any name on
+debug handler, is taken as read too, as C clears `state.resolve` after reading. An entry whose answer is kept
+already, the same name byte for byte and the same addresses in order, unshuffled, is kept again from then
+(`DnsCache::renew`), as the answer C makes in its place would be. They are permanent unless given with `+`, and `*` answers for any name on
 its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ### 4.8.1 DoH, resolver libraries and the records

@@ -339,6 +339,28 @@ impl Dated<'_> {
         self.cache.put(answer, port, self.now, permanent)
     }
 
+    /// Keep `answer` for its name and `port` from now, as
+    /// `DnsCache::add`, where nothing is kept for them.
+    pub(crate) fn add(
+        &mut self,
+        answer: TryArc<Answer>,
+        port: u16,
+        permanent: bool,
+    ) -> Result<(), OutOfMemory> {
+        self.cache.add(answer, port, self.now, permanent)
+    }
+
+    /// Keep what is kept for `name` and `port` from now, as
+    /// `DnsCache::renew`, if it is what would be kept in its place.
+    pub(crate) fn renew(
+        &mut self,
+        (name, port): (&[u8], u16),
+        addrs: impl Iterator<Item = IpAddr>,
+        permanent: bool,
+    ) -> bool {
+        self.cache.renew((name, port), addrs, self.now, permanent)
+    }
+
     /// Forget the addresses kept for `name` and `port`; whether some were.
     pub(crate) fn remove(&mut self, name: &[u8], port: u16) -> bool {
         self.cache.remove(name, port)
@@ -595,6 +617,19 @@ impl DnsCache {
         permanent: bool,
     ) -> Result<bool, OutOfMemory> {
         let replaced = self.remove(&answer.name, port);
+        self.add(answer, port, now, permanent)?;
+        Ok(replaced)
+    }
+
+    /// Keep `answer` for its name and `port` from `now`, where nothing is
+    /// kept for them.
+    fn add(
+        &mut self,
+        answer: TryArc<Answer>,
+        port: u16,
+        now: Instant,
+        permanent: bool,
+    ) -> Result<(), OutOfMemory> {
         let says_no = answer.addrs.is_empty();
         let key = Key {
             answer,
@@ -609,8 +644,38 @@ impl DnsCache {
                 record: None,
                 says_no,
             },
-        )?;
-        Ok(replaced)
+        )
+    }
+
+    /// Keep the answer kept for `name` and `port` from `now`, for good or
+    /// not, if it is the one a new answer of `name`'s with `addrs` would
+    /// be: the same name, byte for byte, the same addresses in the same
+    /// order, for either family, never shuffled. Whether it was; a new
+    /// answer in its place would have been kept just so.
+    fn renew(
+        &mut self,
+        (name, port): (&[u8], u16),
+        mut addrs: impl Iterator<Item = IpAddr>,
+        now: Instant,
+        permanent: bool,
+    ) -> bool {
+        let probe = Probe(name, port, Keeps::Addresses);
+        let Some((key, _)) = self.entries.get_key_value(probe.key()) else {
+            return false;
+        };
+        let answer = &key.answer;
+        let same = answer.name == name
+            && answer.family == Family::Any
+            && !answer.shuffled
+            && !answer.addrs.is_empty()
+            && answer.addrs.iter().copied().eq(&mut addrs);
+        if !same {
+            return false;
+        }
+        let entry = self.entries.get_mut(probe.key()).expect("found above");
+        entry.added = now;
+        entry.permanent = permanent;
+        true
     }
 
     /// Forget the addresses kept for `name` and `port`; whether some
@@ -735,21 +800,86 @@ pub(crate) enum ListEntry<'a> {
     Add {
         name: &'a [u8],
         port: u16,
-        addrs: Vec<IpAddr>,
+        addrs: EntryAddrs<'a>,
         permanent: bool,
-        /// The addresses as given, as the trace shows them.
-        given: &'a [u8],
     },
+}
+
+/// The addresses of an entry, at least one, every one read and found
+/// good: read again as they are used, with nothing made of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EntryAddrs<'a>(&'a [u8]);
+
+impl<'a> EntryAddrs<'a> {
+    /// The addresses as given, as the trace shows them.
+    pub(crate) fn given(self) -> &'a [u8] {
+        self.0
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = IpAddr> + Clone + 'a {
+        Reading(Cursor(self.0)).map(|a| a.expect("the addresses were read and found good"))
+    }
+
+    /// The addresses, put in a list of their own.
+    pub(crate) fn to_vec(self) -> Result<Vec<IpAddr>, OutOfMemory> {
+        let mut addrs = Vec::new();
+        addrs.try_reserve_exact(self.iter().count())?;
+        for ip in self.iter() {
+            addrs.try_push(ip)?;
+        }
+        Ok(addrs)
+    }
+}
+
+/// The addresses after an entry's port, read as `Curl_loadhostpairs`
+/// reads them: each in brackets or up to a comma, empty ones passed over,
+/// and nothing after one without a comma; reading stops at the first
+/// that is not one.
+#[derive(Clone)]
+struct Reading<'a>(Cursor<'a>);
+
+impl<'a> Iterator for Reading<'a> {
+    type Item = Result<IpAddr, BadEntry<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let s = &mut self.0;
+        let syntax = Err(BadEntry::Syntax { illegal: None });
+        while !s.0.is_empty() {
+            let target = if s.single(b'[') {
+                match s.until(MAX_BRACKETED, b']') {
+                    Some(target) if s.single(b']') => target,
+                    _ => return Some(s.stop(syntax)),
+                }
+            } else {
+                match s.until(4096, b',') {
+                    Some(target) => target,
+                    // Nothing but a comma is passed over.
+                    None if s.single(b',') => continue,
+                    None => return Some(s.stop(syntax)),
+                }
+            };
+            if target.len() >= 64 {
+                return Some(s.stop(syntax));
+            }
+            let Some(ip) = address(target) else {
+                return Some(s.stop(Err(BadEntry::Syntax {
+                    illegal: Some(target),
+                })));
+            };
+            if !s.single(b',') {
+                s.0 = b"";
+            }
+            return Some(Ok(ip));
+        }
+        None
+    }
 }
 
 /// Why an entry of `CURLOPT_RESOLVE` was refused.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BadEntry<'a> {
     /// It is not an entry; `illegal` is an address in it that is not one.
-    Syntax {
-        illegal: Option<&'a [u8]>,
-    },
-    OutOfMemory,
+    Syntax { illegal: Option<&'a [u8]> },
 }
 
 /// The longest address in brackets (`MAX_IPADR_LEN`).
@@ -790,46 +920,21 @@ pub(crate) fn parse_entry(line: &[u8]) -> Result<Option<ListEntry<'_>>, BadEntry
         (true, Some(port), true) => port,
         _ => return syntax,
     };
-    let given = s.0;
-    let mut addrs = Vec::new();
-    while !s.0.is_empty() {
-        let target = if s.single(b'[') {
-            match s.until(MAX_BRACKETED, b']') {
-                Some(target) if s.single(b']') => target,
-                _ => return syntax,
-            }
-        } else {
-            match s.until(4096, b',') {
-                Some(target) => target,
-                // Nothing but a comma is passed over.
-                None if s.single(b',') => continue,
-                None => return syntax,
-            }
-        };
-        if target.len() >= 64 {
-            return syntax;
-        }
-        let Some(ip) = address(target) else {
-            return Err(BadEntry::Syntax {
-                illegal: Some(target),
-            });
-        };
-        addrs
-            .try_push(ip)
-            .map_err(|OutOfMemory| BadEntry::OutOfMemory)?;
-        if !s.single(b',') {
-            break;
-        }
+    // Every address is read before any is used, as C reads them all
+    // before it touches the cache.
+    let mut found = false;
+    for read in Reading(Cursor(s.0)) {
+        read?;
+        found = true;
     }
-    if addrs.is_empty() {
+    if !found {
         return syntax;
     }
     Ok(Some(ListEntry::Add {
         name,
         port,
-        addrs,
+        addrs: EntryAddrs(s.0),
         permanent,
-        given,
     }))
 }
 
@@ -844,9 +949,16 @@ pub(crate) fn address(text: &[u8]) -> Option<IpAddr> {
 }
 
 /// The rest of an entry, read as C's `curlx_str_*` read it.
+#[derive(Clone)]
 struct Cursor<'a>(&'a [u8]);
 
 impl<'a> Cursor<'a> {
+    /// `result`, with nothing read after it.
+    fn stop<T>(&mut self, result: T) -> T {
+        self.0 = b"";
+        result
+    }
+
     /// Past `b`, if it is next.
     fn single(&mut self, b: u8) -> bool {
         match self.0.split_first() {
@@ -945,6 +1057,67 @@ mod tests {
         assert!(!shuffle(&mut [a], &mut |_| panic!("none drawn")).unwrap());
     }
 
+    /// An answer kept is kept again, from the time asked and for good or
+    /// not as asked, only if it is the one a new answer would be: of the
+    /// name in its case, the port, the addresses in their order, either
+    /// family, never shuffled.
+    #[test]
+    fn an_answer_is_renewed_only_if_it_is_the_one_made_anew() {
+        let now = ManualClock::new().unwrap().now();
+        let later = now.after(Duration::from_secs(50));
+        let answer = |name: &[u8], addrs: &[IpAddr], family| {
+            TryArc::try_new(Answer::of(name, addrs.to_vec(), family).unwrap()).unwrap()
+        };
+        let two = [ip("1.1.1.1"), ip("::1")];
+        let mut cache = DnsCache::default();
+        let a = answer(b"a.test", &two, Family::Any);
+        cache.put(a.clone(), 1, now, true).unwrap();
+        let renew = |cache: &mut DnsCache, name: &[u8], port, addrs: &[IpAddr]| {
+            cache.renew((name, port), addrs.iter().copied(), later, false)
+        };
+        assert!(!renew(&mut cache, b"A.test", 1, &two), "another case");
+        assert!(!renew(&mut cache, b"a.test", 2, &two), "another port");
+        assert!(
+            !renew(&mut cache, b"a.test", 1, &[two[1], two[0]]),
+            "another order"
+        );
+        assert!(!renew(&mut cache, b"a.test", 1, &two[..1]), "fewer");
+        assert!(
+            !renew(&mut cache, b"a.test", 1, &[two[0], two[1], two[1]]),
+            "more"
+        );
+        assert!(renew(&mut cache, b"a.test", 1, &two));
+        assert_eq!(TryArc::count(&a), 2, "the same answer kept");
+        let look = |cache: &mut DnsCache, at| {
+            cache.lookup((b"a.test", 1), Family::Any, false, MAX_AGE, at)
+        };
+        assert!(matches!(
+            look(&mut cache, now.after(Duration::from_secs(100))),
+            Lookup::Found(_)
+        ));
+        assert!(
+            matches!(
+                look(&mut cache, later.after(MAX_AGE.unwrap())),
+                Lookup::Stale
+            ),
+            "not for good"
+        );
+        cache
+            .put(answer(b"v4.test", &two[..1], Family::V4), 1, now, false)
+            .unwrap();
+        assert!(!renew(&mut cache, b"v4.test", 1, &two[..1]), "one family's");
+        let mut shuffled = Answer::new(b"s.test", two.to_vec()).unwrap();
+        shuffled.mark_shuffled();
+        cache
+            .put(TryArc::try_new(shuffled).unwrap(), 1, now, false)
+            .unwrap();
+        assert!(!renew(&mut cache, b"s.test", 1, &two), "shuffled");
+        cache
+            .put(answer(b"none.test", &[], Family::Any), 1, now, false)
+            .unwrap();
+        assert!(!renew(&mut cache, b"none.test", 1, &[]), "no addresses");
+    }
+
     /// unit3271's names past what C's key holds: a name is found under
     /// the whole of it, in any case, never under a longer or shorter
     /// one that begins the same.
@@ -1013,26 +1186,45 @@ mod tests {
         assert_ne!(hash(&one, b"example.com"), port);
     }
 
+    /// An entry as read, its addresses made a list.
+    #[derive(Debug, PartialEq)]
+    enum Read<'a> {
+        Add(&'a [u8], u16, Vec<IpAddr>, bool, &'a [u8]),
+        Remove(&'a [u8], u16),
+    }
+
+    fn read(entry: ListEntry<'_>) -> Read<'_> {
+        match entry {
+            ListEntry::Add {
+                name,
+                port,
+                addrs,
+                permanent,
+            } => Read::Add(name, port, addrs.iter().collect(), permanent, addrs.given()),
+            ListEntry::Remove { name, port } => Read::Remove(name, port),
+        }
+    }
+
     fn add<'a>(
         name: &'a [u8],
         port: u16,
         addrs: &[&str],
         permanent: bool,
         given: &'a [u8],
-    ) -> ListEntry<'a> {
-        ListEntry::Add {
+    ) -> Read<'a> {
+        Read::Add(
             name,
             port,
-            addrs: addrs.iter().map(|a| ip(a)).collect(),
+            addrs.iter().map(|a| ip(a)).collect(),
             permanent,
             given,
-        }
+        )
     }
 
     /// Entries read as `Curl_loadhostpairs` reads them.
     #[test]
     fn entries_parse_as_c_parses_them() {
-        let ok = |line: &'static [u8]| parse_entry(line).unwrap().unwrap();
+        let ok = |line: &'static [u8]| read(parse_entry(line).unwrap().unwrap());
         assert_eq!(
             ok(b"example.com:80:127.0.0.1"),
             add(b"example.com", 80, &["127.0.0.1"], true, b"127.0.0.1")
@@ -1051,20 +1243,8 @@ mod tests {
         );
         // What follows an address without a comma is not read.
         assert_eq!(ok(b"a:1:[::1]x"), add(b"a", 1, &["::1"], true, b"[::1]x"));
-        assert_eq!(
-            ok(b"-example.com:80"),
-            ListEntry::Remove {
-                name: b"example.com",
-                port: 80
-            }
-        );
-        assert_eq!(
-            ok(b"-[::1]:8"),
-            ListEntry::Remove {
-                name: b"::1",
-                port: 8
-            }
-        );
+        assert_eq!(ok(b"-example.com:80"), Read::Remove(b"example.com", 80));
+        assert_eq!(ok(b"-[::1]:8"), Read::Remove(b"::1", 8));
         // Passed over in silence.
         for skipped in [
             &b"-a:x"[..],
@@ -1390,13 +1570,13 @@ mod tests {
             match parse_entry(&line) {
                 Ok(Some(ListEntry::Add { name, addrs, .. })) => {
                     proptest::prop_assert!(!name.is_empty() && name.len() <= 4096);
-                    proptest::prop_assert!(!addrs.is_empty());
+                    proptest::prop_assert!(addrs.iter().next().is_some());
+                    proptest::prop_assert_eq!(addrs.to_vec().unwrap().len(), addrs.iter().count());
                 }
                 Ok(Some(ListEntry::Remove { name, .. })) => {
                     proptest::prop_assert!(!name.is_empty() && name.len() <= 4096);
                 }
                 Ok(None) | Err(BadEntry::Syntax { .. }) => {}
-                Err(BadEntry::OutOfMemory) => proptest::prop_assert!(false, "no allocation fails"),
             }
         }
     }

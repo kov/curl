@@ -11,7 +11,8 @@ use std::num::NonZeroU16;
 use curl_alloc::{OutOfMemory, TryVec};
 use curl_core::components::Components;
 use curl_core::options::{
-    AuthMethods, Condition, Delegation, Follow, PostRedir, ProxyType, ResolveList, TimeCondition,
+    AuthMethods, Condition, Delegation, Follow, Lines, PostRedir, ProxyType, ResolveList,
+    TimeCondition, UserHeaders,
 };
 use curl_core::version::Protocol;
 
@@ -281,8 +282,15 @@ pub(crate) struct Operation<'a> {
     pub(crate) write_out: Option<write_out::Format<'a>>,
     /// `--header`, in the order given.
     pub(crate) headers: Vec<&'a [u8]>,
+    /// The library's header list, `headers` and the lines `--json` adds,
+    /// made for the first transfer that has no other line to add and
+    /// shared by every one after, as C's tool gives each the one
+    /// `curl_slist`.
+    pub(crate) header_list: std::cell::OnceCell<UserHeaders>,
     /// `--proxy-header`, in the order given.
     pub(crate) proxy_headers: Vec<&'a [u8]>,
+    /// `proxy_headers` as the library's list, made once.
+    pub(crate) proxy_header_list: std::cell::OnceCell<UserHeaders>,
     /// `--resolve`, in the order given.
     pub(crate) resolve: Vec<&'a [u8]>,
     /// `resolve` as the library's list, made for the first transfer and
@@ -291,6 +299,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) resolve_list: std::cell::OnceCell<ResolveList>,
     /// `--connect-to`, in the order given.
     pub(crate) connect_to: Vec<&'a [u8]>,
+    /// `connect_to` as the library's list, made once.
+    pub(crate) connect_to_list: std::cell::OnceCell<Lines>,
     /// `--user-agent`.
     pub(crate) user_agent: Option<&'a [u8]>,
     /// `-u`: `user:password`, or a user alone until its password is
@@ -657,15 +667,51 @@ impl Global<'_> {
     }
 }
 
+/// What `cell` holds, made by `make` the first time it is asked for.
+fn made_once<T>(
+    cell: &std::cell::OnceCell<T>,
+    make: impl FnOnce() -> Result<T, OutOfMemory>,
+) -> Result<&T, OutOfMemory> {
+    if let Some(made) = cell.get() {
+        return Ok(made);
+    }
+    let made = make()?;
+    Ok(cell.get_or_init(|| made))
+}
+
 impl<'a> Operation<'a> {
     /// `--resolve`'s entries as the library's list, made once.
     pub(crate) fn resolve_list(&self) -> Result<&ResolveList, OutOfMemory> {
-        if let Some(list) = self.resolve_list.get() {
-            return Ok(list);
-        }
-        let mut list = ResolveList::default();
-        list.set(self.resolve.iter().copied())?;
-        Ok(self.resolve_list.get_or_init(|| list))
+        made_once(&self.resolve_list, || {
+            let mut list = ResolveList::default();
+            list.set(self.resolve.iter().copied())?;
+            Ok(list)
+        })
+    }
+
+    /// `--connect-to`'s entries as the library's list, made once.
+    pub(crate) fn connect_to_list(&self) -> Result<&Lines, OutOfMemory> {
+        made_once(&self.connect_to_list, || {
+            let mut list = Lines::NONE;
+            list.set(self.connect_to.iter().copied())?;
+            Ok(list)
+        })
+    }
+
+    /// The header list `make` makes, made once: for the transfers whose
+    /// lines are the operation's alone.
+    pub(crate) fn header_list(
+        &self,
+        make: impl FnOnce() -> Result<UserHeaders, OutOfMemory>,
+    ) -> Result<&UserHeaders, OutOfMemory> {
+        made_once(&self.header_list, make)
+    }
+
+    /// `--proxy-header`'s lines as the library's list, made once.
+    pub(crate) fn proxy_header_list(&self) -> Result<&UserHeaders, OutOfMemory> {
+        made_once(&self.proxy_header_list, || {
+            UserHeaders::new(self.proxy_headers.iter().copied())
+        })
     }
 
     /// The `CURLAUTH_*` mask C's tool passes for the methods asked for.

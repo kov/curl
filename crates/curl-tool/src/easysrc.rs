@@ -640,13 +640,24 @@ impl<'a> Setopt<'a> {
         items: &[&[u8]],
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
+        self.slist_of(name, items.iter().copied(), apply)
+    }
+
+    /// A list option of the lines `items` gives, as `slist` writes one.
+    pub(crate) fn slist_of<'i>(
+        &mut self,
+        name: &'static str,
+        items: impl IntoIterator<Item = &'i [u8]>,
+        apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
+    ) -> Result<(), ErrorKind> {
         let Some(source) = self.apply(apply)? else {
             return Ok(());
         };
-        if items.is_empty() {
+        let mut items = items.into_iter().peekable();
+        if items.peek().is_none() {
             return Ok(());
         }
-        let n = source.slist(items.iter().copied()).map_err(oom)?;
+        let n = source.slist(items).map_err(oom)?;
         let n = decimal(n).map_err(oom)?;
         source
             .code(&[

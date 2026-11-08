@@ -2192,7 +2192,8 @@ fn setopts(
     }
     if !op.connect_to.is_empty() {
         s.slist("CURLOPT_CONNECT_TO", &op.connect_to, |o| {
-            o.connect_to.set(op.connect_to.iter().copied()).map_err(oom)
+            o.connect_to = op.connect_to_list().map_err(oom)?.shared();
+            Ok(())
         })?;
     }
     gss_delegation(s, op, run.claims)?;
@@ -2928,16 +2929,28 @@ fn credentials_and_headers(
         (b"Accept", b"Accept: application/json"),
     ]
     .map(|(name, line)| (op.json && !in_list(&op.headers, name)).then_some(line));
-    let mut headers = Vec::new();
-    headers
-        .try_reserve_exact(op.headers.len() + 3)
-        .map_err(|_| ErrorKind::OutOfMemory)?;
-    let lines = op.headers.iter().copied().chain(json.into_iter().flatten());
-    for line in lines.chain(etag) {
-        headers.try_push(line).map_err(oom)?;
+    fn lines<'l>(
+        given: &'l [&'l [u8]],
+        json: [Option<&'l [u8]>; 2],
+        more: Option<&'l [u8]>,
+    ) -> impl Iterator<Item = &'l [u8]> {
+        let lines = given.iter().copied().chain(json.into_iter().flatten());
+        lines.chain(more)
     }
-    s.slist("CURLOPT_HTTPHEADER", &headers, |o| {
-        o.http.headers = options::UserHeaders::new(headers.iter().copied()).map_err(oom)?;
+    // The operation's lines alone are one list, made once and shared by
+    // its transfers; one with an ETag to compare has a list of its own.
+    let own;
+    let list = match etag {
+        None => op
+            .header_list(|| options::UserHeaders::new(lines(&op.headers, json, None)))
+            .map_err(oom)?,
+        Some(etag) => {
+            own = options::UserHeaders::new(lines(&op.headers, json, Some(etag))).map_err(oom)?;
+            &own
+        }
+    };
+    s.slist_of("CURLOPT_HTTPHEADER", list.lines(), |o| {
+        o.http.headers = list.shared();
         Ok(())
     })?;
     s.str("CURLOPT_REFERER", op.referer, |o| {
@@ -3426,7 +3439,7 @@ fn http_setopts(
     if !op.proxy_headers.is_empty() {
         s.slist("CURLOPT_PROXYHEADER", &op.proxy_headers, |o| {
             o.proxy.make_mut().map_err(oom)?.headers =
-                options::UserHeaders::new(op.proxy_headers.iter().copied()).map_err(oom)?;
+                op.proxy_header_list().map_err(oom)?.shared();
             Ok(())
         })?;
     }

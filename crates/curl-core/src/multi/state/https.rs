@@ -245,6 +245,18 @@ impl<'a> RecordNow<'a> {
         }
     }
 
+    /// The same, owned, for a QUIC attempt the setup's race makes, which
+    /// knows `record`.
+    pub(super) fn owned(
+        ask: Option<&RecordAsk>,
+        record: Option<&TryArc<HttpsRecord>>,
+    ) -> crate::conn::OriginRecord {
+        match RecordNow::of(ask, record) {
+            RecordNow::Coming => crate::conn::OriginRecord::Coming,
+            RecordNow::Known(_) => crate::conn::OriginRecord::Known(record.cloned()),
+        }
+    }
+
     /// The ECHConfigList of the record, if known and about the origin
     /// itself, at `port` (`Curl_httpsrr_is_for_peer`), and it has one.
     pub(super) fn ech_configs(self, port: u16) -> Option<&'a [u8]> {

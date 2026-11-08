@@ -98,9 +98,11 @@ witness: curl-core proto::http::tests::h3_trace::an_unverified_peer_fails_each_a
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
 --- old
-                    Ok(true) => return Checked::Won(i),
+                    match quic.connect(&mut over) {
+                        Ok(true) => return Checked::Won(i),
 --- new
-                    Ok(true) => continue,
+                    match quic.connect(&mut over) {
+                        Ok(true) => continue,
 
 === a QUIC socket is left as a plain UDP one
 file: crates/curl-core/src/conn/connect.rs
@@ -666,9 +668,9 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
 --- old
-        let proxied = !tunnelled && self.route.proxy_over_quic();
+        let proxied = !tunnelled && route.proxy_over_quic();
 --- new
-        let proxied = self.route.proxy_over_quic();
+        let proxied = route.proxy_over_quic();
 
 === the origin's QUIC through an HTTP/3 proxy sends on the socket, not through the tunnel
 file: crates/curl-core/src/multi/state/quictunnel.rs

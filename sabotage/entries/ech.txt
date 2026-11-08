@@ -224,7 +224,7 @@ features: test-util,debug-hooks
 --- old
             &mut DriveCx::new(cx, Some(&mut run.deadlines)).knowing(record),
 --- new
-            &mut DriveCx::new(cx, Some(&mut run.deadlines)).knowing(record.and(None)),
+            &mut DriveCx::new(cx, Some(&mut run.deadlines)).knowing({ drop(record); crate::conn::OriginRecord::Known(None) }),
 
 === A QUIC attempt takes the ECH configurations of a record about another name
 file: crates/curl-core/src/doh.rs
@@ -243,3 +243,54 @@ features: test-util
         Some(r) if !r.is_for_origin(route.origin.port()) => {
 --- new
         Some(r) if false => {
+
+=== A QUIC attempt makes its connection while the origin's record is still coming
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_waits_for_the_origin_s_record
+features: test-util,debug-hooks
+--- old
+            Some(local) if RecordWait::needed(&self.route, cx) => {
+--- new
+            Some(local) if false && RecordWait::needed(&self.route, cx) => {
+
+=== A waiting QUIC attempt makes its connection at the next check, the record still coming
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_waits_for_the_origin_s_record
+features: test-util,debug-hooks
+--- old
+                    if RecordWait::needed(route, cx) {
+                        RecordWait::delays(cx);
+                        continue;
+                    }
+--- new
+                    if RecordWait::needed(route, cx) {
+                        RecordWait::delays(cx);
+                    }
+
+=== A waiting QUIC attempt's later checks say nothing of the wait
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_waits_for_the_origin_s_record
+features: test-util,debug-hooks
+--- old
+                    if RecordWait::needed(route, cx) {
+                        RecordWait::delays(cx);
+--- new
+                    if RecordWait::needed(route, cx) {
+
+=== A QUIC attempt waiting for the origin's record has its socket polled to write
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_waiting_for_the_record_polls_its_socket_to_read
+features: test-util,debug-hooks
+--- old
+            Link::Record(_) => Events::IN,
+--- new
+            Link::Record(_) => Events::OUT,
+
+=== ECH that takes no configuration from the record has its QUIC attempt wait for it
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_without_ech_configurations_waits_for_no_record
+features: test-util,debug-hooks
+--- old
+                .is_some_and(|t| t.options.ech.needs_record())
+--- new
+                .is_some()

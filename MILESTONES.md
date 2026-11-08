@@ -1564,11 +1564,15 @@ it there, Windows.
      either. Over QUIC, an attempt made once the origin's HTTPS record is known offers the
      record's list: measured 2026-11-07, with the record known from an earlier transfer, the
      good, bad and missing configurations of an ECH h3 case over nghttpx end as C's do on the
-     AWS-LC, BoringSSL and wolfSSL legs. **Left:** a QUIC attempt made while the record is still
-     coming does not wait for it, where C's filters delay their connect ("need HTTPS-RR,
-     delaying connect"): its ECH is not tried, and `true` and `hard` end as if no record had
-     come. Waiting needs an attempt state between the socket's connect and the QUIC
-     connection's making, which ENGINE.md's attempt does not have. Over DoH, the record's probe
+     AWS-LC, BoringSSL and wolfSSL legs. A QUIC attempt made while the record is still coming
+     holds its connected socket until it comes ("need HTTPS-RR, delaying connect"), as C's
+     filters delay their connect: measured 2026-11-08, test_23_ech's 23_08 (the record 0.2 s
+     late over c-ares: good, bad, none and never, `true` and `hard`) ends as C's does on the
+     AWS-LC, BoringSSL and wolfSSL legs (0, 60, 0/35, 28), the traces the same but for when
+     the handshake's datagrams are read. **Left:** the origin's QUIC through a CONNECT-UDP
+     tunnel asks for no record and tries ECH with no list, where C's
+     `Curl_cf_quic_insert_after` asks for it and its filter waits, as C's code reads: not
+     reproduced. Over DoH, the record's probe
      still under way as the chain connects is reaped later, where C ends it as the record's
      filter connects (its `multi_done` with `premature=1`, then `[DoH] probe done`); and a TLS
      handshake done in the call its record's filter is put in (early data) would, as C's code

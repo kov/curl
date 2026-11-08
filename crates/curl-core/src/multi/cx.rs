@@ -379,9 +379,10 @@ pub(crate) struct DriveCx<'c, 'a, H: Host> {
     /// The transfer's timers, which a QUIC attempt arms its library's in:
     /// none for a redial, which dials TCP.
     pub(crate) deadlines: Option<&'c mut crate::multi::timers::Deadlines>,
-    /// The origin's HTTPS record, if known, for a QUIC attempt the drive
-    /// makes: set where the transfer drives its attempts.
-    record: Option<TryArc<crate::doh::HttpsRecord>>,
+    /// What is known of the origin's HTTPS record, for a QUIC attempt the
+    /// drive makes: set where the transfer drives its attempts, and known
+    /// to be none elsewhere, where none is made.
+    record: crate::conn::OriginRecord,
 }
 
 impl<'c, 'a, H: Host> DriveCx<'c, 'a, H> {
@@ -394,16 +395,13 @@ impl<'c, 'a, H: Host> DriveCx<'c, 'a, H> {
             step,
             kept,
             deadlines,
-            record: None,
+            record: crate::conn::OriginRecord::Known(None),
         }
     }
 
-    /// The same, a QUIC attempt it makes knowing the origin's HTTPS
-    /// record `record`.
-    pub(crate) fn knowing(
-        mut self,
-        record: Option<TryArc<crate::doh::HttpsRecord>>,
-    ) -> DriveCx<'c, 'a, H> {
+    /// The same, a QUIC attempt it makes knowing `record` of the origin's
+    /// HTTPS record.
+    pub(crate) fn knowing(mut self, record: crate::conn::OriginRecord) -> DriveCx<'c, 'a, H> {
         self.record = record;
         self
     }
@@ -492,7 +490,7 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         }))
     }
 
-    fn https_record(&self) -> Option<TryArc<crate::doh::HttpsRecord>> {
+    fn https_record(&self) -> crate::conn::OriginRecord {
         self.record.clone()
     }
 

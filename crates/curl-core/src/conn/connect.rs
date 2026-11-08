@@ -280,11 +280,11 @@ pub(crate) trait ConnCx: LayerCx {
     /// library.
     fn quic_making(&mut self) -> Result<Option<QuicMaking>, OutOfMemory>;
 
-    /// The origin's HTTPS record, if the setup knows it as its QUIC
+    /// What the setup knows of the origin's HTTPS record as its QUIC
     /// attempt is made, which the origin's TLS takes its ECH
-    /// configurations from (`Curl_conn_dns_get_https`): none while it is
-    /// still to come, or where the setup asks for none.
-    fn https_record(&self) -> Option<TryArc<crate::doh::HttpsRecord>>;
+    /// configurations from (`Curl_conn_dns_resolved_https`,
+    /// `Curl_conn_dns_get_https`).
+    fn https_record(&self) -> OriginRecord;
 
     /// The answers kept from the setups before: the multi's, or its
     /// share's.
@@ -390,6 +390,16 @@ pub(crate) trait ConnCx: LayerCx {
     /// entry its resolve answered with, until the filter goes
     /// (`Holds`).
     fn hold(&mut self, holder: Holder);
+}
+
+/// What a setup knows of the origin's HTTPS record
+/// (`Curl_conn_dns_resolved_https`, `Curl_conn_dns_get_https`).
+#[derive(Clone, Debug)]
+pub(crate) enum OriginRecord {
+    /// Asked for, its answer still to come.
+    Coming,
+    /// Known, or not asked for: the record, if the origin has one.
+    Known(Option<TryArc<crate::doh::HttpsRecord>>),
 }
 
 /// What a QUIC attempt is made with: the transfer's libraries, what its
@@ -500,8 +510,8 @@ impl ConnCx for Plain<'_> {
         Ok(None)
     }
 
-    fn https_record(&self) -> Option<TryArc<crate::doh::HttpsRecord>> {
-        None
+    fn https_record(&self) -> OriginRecord {
+        OriginRecord::Known(None)
     }
 
     fn names(&mut self) -> Names<'_> {
@@ -864,6 +874,9 @@ enum Link {
     Connect,
     /// A QUIC connection, decided by its handshake.
     Quic(Box<Quic>),
+    /// The origin's QUIC connection before it is made, waiting for the
+    /// origin's HTTPS record.
+    Record(RecordWait),
     /// The tunnel through an HTTP/3 proxy, over the QUIC connection to
     /// it, its handshake done: decided as the proxy answers its
     /// `CONNECT`, the attempt being C's H3-PROXY filter
@@ -872,13 +885,59 @@ enum Link {
 }
 
 impl Link {
-    /// The QUIC connection it holds, if it is over QUIC.
+    /// The QUIC connection it holds, if it is over QUIC and made.
     fn quic(&self) -> Option<&Quic> {
         match self {
-            Link::Connect => None,
+            Link::Connect | Link::Record(_) => None,
             Link::Quic(q) => Some(q),
             Link::Tunnel(t) => Some(t.quic()),
         }
+    }
+
+    /// What its socket waits for: a TCP connect to write, a QUIC
+    /// connection what it says (`cf_ngtcp2_adjust_pollset`); one not made
+    /// yet, what the UDP socket's filter asks of a socket that is not
+    /// the connection's yet (`adjust_pollset, !active, POLLIN`).
+    fn wants(&self) -> Events {
+        match self {
+            Link::Connect => Events::OUT,
+            Link::Quic(q) => q.wants(),
+            Link::Tunnel(t) => t.quic().wants(),
+            Link::Record(_) => Events::IN,
+        }
+    }
+}
+
+/// The origin's QUIC attempt whose UDP socket is connected, its QUIC
+/// connection not made until the origin's HTTPS record is known: the
+/// origin's TLS takes its ECH configurations from the record
+/// (`Curl_ssl_need_httpsrr`, `need HTTPS-RR, delaying connect`). The
+/// socket is the attempt's; this holds the ends it connects.
+#[derive(Debug)]
+struct RecordWait {
+    local: SocketAddr,
+    remote: SocketAddr,
+}
+
+impl RecordWait {
+    /// What the origin's QUIC filter says as it puts its connect off.
+    fn delays(cx: &mut dyn ConnCx) {
+        cx.of(
+            Component::Http3,
+            format_args!("need HTTPS-RR, delaying connect"),
+        );
+    }
+
+    /// Whether the origin's QUIC connection over `route` waits for the
+    /// origin's record: its ECH is to take its configurations from it,
+    /// which is still to come. A proxy's TLS takes none.
+    fn needed(route: &NetRoute, cx: &dyn ConnCx) -> bool {
+        !route.proxy_over_quic()
+            && route
+                .tls
+                .as_ref()
+                .is_some_and(|t| t.options.ech.needs_record())
+            && matches!(cx.https_record(), OriginRecord::Coming)
     }
 }
 
@@ -1138,10 +1197,7 @@ impl ConnectMachine {
             Stage::Racing(r) => &r.attempts[..],
             Stage::Resolving(_) | Stage::Dialed(_) => &[][..],
         };
-        running.iter().map(|a| {
-            let wants = a.link.quic().map_or(Events::OUT, Quic::wants);
-            (a.socket.socket(), wants)
-        })
+        running.iter().map(|a| (a.socket.socket(), a.link.wants()))
     }
 
     /// Whether its peer has answered, as C's race asks it
@@ -1217,7 +1273,7 @@ impl ConnectMachine {
         let none = SocketAddr::from(([0, 0, 0, 0], 0));
         let remote = d.remote.inet().unwrap_or(none);
         let local = d.stream.local_addr().unwrap_or(none);
-        self.make_quic(cx, local, remote, true)
+        Self::make_quic(&self.route, cx, local, remote, true)
     }
 
     /// The race's attempts were checked and none decided: those running
@@ -1612,9 +1668,10 @@ impl ConnectMachine {
         }
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
-        match r.check(cx, component) {
+        match r.check(cx, component, &self.route) {
             Checked::Pending => r.checked(cx),
             Checked::Won(i) => return self.won(cx, setup, i, now),
+            Checked::OutOfMemory => return Err(ConnectError::OutOfMemory),
             Checked::Failed(i, error) => {
                 let failure = r.attempts.remove(i).fail(cx, component, error)?;
                 return r
@@ -1692,9 +1749,10 @@ impl ConnectMachine {
         // The attempts running are checked again before the new one's
         // first connect (`goto evaluate`): one connecting now wins before
         // it is made, and one failing now is dropped as it is made.
-        match r.check(cx, component) {
+        match r.check(cx, component, &self.route) {
             Checked::Pending => {}
             Checked::Won(i) => return self.won(cx, setup, i, now),
+            Checked::OutOfMemory => return Err(ConnectError::OutOfMemory),
             Checked::Failed(i, error) => {
                 // Traced; whatever the new attempt comes to supersedes it.
                 let superseded = r.attempts.remove(i).fail(cx, component, error)?;
@@ -1892,7 +1950,7 @@ impl ConnectMachine {
     /// the QUIC connection over it made and its first flight sent
     /// (`cf_connect_start`, `Curl_cf_ngtcp2_cmn_connect`).
     fn quic_attempt(
-        mut self,
+        self,
         cx: &mut dyn ConnCx,
         socket: Box<dyn Socket>,
         remote: Remote,
@@ -1934,7 +1992,15 @@ impl ConnectMachine {
             format_args!("cf_udp_connect(), opened socket={fd} ({lip}:{lport})"),
         );
         let made = match local {
-            Some(local) => self.make_quic(cx, local, addr, false),
+            Some(local) if RecordWait::needed(&self.route, cx) => {
+                RecordWait::delays(cx);
+                let wait = RecordWait {
+                    local,
+                    remote: addr,
+                };
+                return Ok(self.attempt_on(cx, remote, socket, Link::Record(wait), false, delay));
+            }
+            Some(local) => Self::make_quic(&self.route, cx, local, addr, false),
             None => Err(ErrorKind::QuicConnectError),
         };
         let started = made.and_then(|mut quic| {
@@ -1957,6 +2023,21 @@ impl ConnectMachine {
                 return self.quic_failed(cx, None, kind);
             }
         };
+        Ok(self.attempt_on(cx, remote, socket, Link::Quic(quic), done, delay))
+    }
+
+    /// The QUIC attempt over `socket` to `remote`, its `link` made, runs
+    /// in the race: connected `done` as it started, for early data, it
+    /// has won at once.
+    fn attempt_on(
+        mut self,
+        cx: &mut dyn ConnCx,
+        remote: Remote,
+        socket: Sock,
+        link: Link,
+        done: bool,
+        delay: Duration,
+    ) -> Drove {
         let of = asking(&self.route);
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
@@ -1965,17 +2046,16 @@ impl ConnectMachine {
             .try_push(Attempt {
                 remote: remote.clone(),
                 socket,
-                link: Link::Quic(quic),
+                link,
             })
             .expect("reserved");
-        // Connected as it started, for early data: won at once.
         let until = if done { None } else { r.went_on(cx, of, delay) };
         let tried = Progress::Trying {
             remote,
             at_once: done,
             until,
         };
-        Ok(Drove::Connecting(self, tried))
+        Drove::Connecting(self, tried)
     }
 
     /// The filter a QUIC attempt's connection is traced as: an HTTP/3
@@ -1996,17 +2076,17 @@ impl ConnectMachine {
     /// below; else it is the race's attempt, on its own socket. A failure
     /// is traced as C traces a connect call's.
     fn make_quic(
-        &self,
+        route: &NetRoute,
         cx: &mut dyn ConnCx,
         local: SocketAddr,
         remote: SocketAddr,
         tunnelled: bool,
     ) -> Result<Box<Quic>, ErrorKind> {
         let oom = |OutOfMemory| ErrorKind::OutOfMemory;
-        let component = if tunnelled {
+        let component = if tunnelled || !route.proxy_over_quic() {
             Component::Http3
         } else {
-            self.quic_component()
+            Component::H3Proxy
         };
         // As the library's filter says it: quiche's names no QUIC and
         // traces no connect call.
@@ -2034,17 +2114,13 @@ impl ConnectMachine {
         let flavour = h3.flavour();
         let failed = |cx: &mut dyn ConnCx, kind: ErrorKind| said(cx, kind, flavour);
         // To an HTTP/3 proxy, its TLS is the proxy's.
-        let proxied = !tunnelled && self.route.proxy_over_quic();
+        let proxied = !tunnelled && route.proxy_over_quic();
         let (identity, origin, via) = if proxied {
-            let identity = self.route.proxy_tls().expect("an HTTP/3 proxy speaks TLS");
-            (identity, self.route.destination(), None)
+            let identity = route.proxy_tls().expect("an HTTP/3 proxy speaks TLS");
+            (identity, route.destination(), None)
         } else {
-            let identity = self
-                .route
-                .tls
-                .as_ref()
-                .expect("HTTP/3 is refused but over TLS");
-            (identity, &*self.route.origin, self.route.via.as_deref())
+            let identity = route.tls.as_ref().expect("HTTP/3 is refused but over TLS");
+            (identity, &*route.origin, route.via.as_deref())
         };
         let kept_for =
             crate::tls::SessionPeer::new(identity, origin, via, backend.id(), super::Dial::Quic)
@@ -2067,7 +2143,10 @@ impl ConnectMachine {
         // The origin's TLS tries ECH with its HTTPS record's
         // configurations, if the record is known as the session is made
         // (`ossl_init_ech`, `wssl_init_ech`); a proxy's tries none.
-        let record = if proxied { None } else { cx.https_record() };
+        let record = match cx.https_record() {
+            OriginRecord::Known(record) if !proxied => record,
+            OriginRecord::Known(_) | OriginRecord::Coming => None,
+        };
         let ech = record.as_deref().and_then(|r| r.ech_for(origin.port()));
         let peer = crate::tls::TlsPeer::of(origin, early_data, ech);
         let tls = {
@@ -2239,6 +2318,7 @@ impl ConnectMachine {
         // handshakes over it still to be made.
         let (quic, tunnel) = match won.link {
             Link::Connect => (None, None),
+            Link::Record(_) => unreachable!("an attempt waiting for the record has not connected"),
             Link::Quic(quic) => (Some(quic), None),
             Link::Tunnel(tunnel) => (None, Some(tunnel)),
         };
@@ -2370,7 +2450,7 @@ impl ConnectMachine {
             .enumerate()
             .filter_map(|(i, a)| match &mut a.link {
                 Link::Tunnel(t) => Some((i, &mut **t, a.socket.socket())),
-                Link::Connect | Link::Quic(_) => None,
+                Link::Connect | Link::Quic(_) | Link::Record(_) => None,
             })
     }
 
@@ -2580,13 +2660,16 @@ enum Checked {
     Failed(usize, io::Error),
     /// Attempt `.0`, over QUIC, failed as `.1` says, traced as it did.
     QuicFailed(usize, ErrorKind),
+    /// An attempt's QUIC connection, made once the origin's record came,
+    /// could not be for want of memory.
+    OutOfMemory,
 }
 
 impl Racing {
     /// Each running attempt's socket checked for its connect, oldest
     /// first, as `cf_tcp_connect` checks it (`SOCKET_WRITABLE(sock, 0)`):
-    /// the first decided ends the check.
-    fn check(&mut self, cx: &mut dyn ConnCx, component: Component) -> Checked {
+    /// the first decided ends the check. The race is over `route`.
+    fn check(&mut self, cx: &mut dyn ConnCx, component: Component, route: &NetRoute) -> Checked {
         for (i, a) in self.attempts.iter_mut().enumerate() {
             let socket = a.socket.socket();
             // A QUIC attempt is decided by its handshake, its socket
@@ -2594,6 +2677,35 @@ impl Racing {
             // drives it.
             match &mut a.link {
                 Link::Connect => {}
+                // Its connect is put off again while the record is still
+                // to come; once it is known, the connection is made with
+                // its ECH configurations and its first flight sent
+                // (`Curl_cf_ngtcp2_cmn_connect`, `cf_connect_start`).
+                Link::Record(wait) => {
+                    if RecordWait::needed(route, cx) {
+                        RecordWait::delays(cx);
+                        continue;
+                    }
+                    let (local, remote) = (wait.local, wait.remote);
+                    let made = ConnectMachine::make_quic(route, cx, local, remote, false);
+                    let mut quic = match made {
+                        Ok(quic) => quic,
+                        Err(ErrorKind::OutOfMemory) => return Checked::OutOfMemory,
+                        Err(kind) => return Checked::QuicFailed(i, kind),
+                    };
+                    let mut over = crate::conn::quic::Over {
+                        cx: &mut *cx,
+                        on: socket,
+                    };
+                    let started = quic.start(&mut over);
+                    a.link = Link::Quic(quic);
+                    match started {
+                        Ok(true) => return Checked::Won(i),
+                        Ok(false) => continue,
+                        Err(ErrorKind::OutOfMemory) => return Checked::OutOfMemory,
+                        Err(kind) => return Checked::QuicFailed(i, kind),
+                    }
+                }
                 Link::Quic(quic) => {
                     let mut over = crate::conn::quic::Over {
                         cx: &mut *cx,
@@ -2741,6 +2853,9 @@ impl Attempt {
         match &self.link {
             Link::Connect => {}
             Link::Quic(quic) => cx.of(quic.component(), format_args!("destroy")),
+            // C's filter, its connection not made, says it goes too
+            // (`cf_ngtcp2_destroy`).
+            Link::Record(_) => cx.of(Component::Http3, format_args!("destroy")),
             Link::Tunnel(_) => cx.of(Component::H3Proxy, format_args!("cf_h3_proxy_destroy()")),
         }
         drop(self.link);

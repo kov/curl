@@ -5277,6 +5277,43 @@ fn ech_h3_get(
     ares: &'static super::https_trace::EchAres,
     mode: crate::options::EchMode,
 ) -> Option<(u8, usize)> {
+    ech_h3_run(ares, mode, |_| {}).0
+}
+
+/// The same, the options as `set` sets them, and the lines of the HTTP/3,
+/// UDP and happy eyeballs filters and those saying the record.
+fn ech_h3_run(
+    ares: &'static super::https_trace::EchAres,
+    mode: crate::options::EchMode,
+    set: impl FnOnce(&mut Options),
+) -> (Option<(u8, usize)>, Vec<String>) {
+    let (tls, e) = ech_h3_easy(ares);
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.tls.options.make_mut().unwrap().ech.mode = mode;
+        set(o);
+    });
+    assert_eq!(ran.result, Ok(()), "{mode:?} {:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    // Traced without ids, its lines start with their filters.
+    let starts = ["[HTTP/3]", "[UDP]", "[HAPPY-EYEBALLS]", "HTTPS-RR "];
+    let said = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| starts.iter().any(|s| l.starts_with(s)))
+        .collect();
+    (tls.log().ech_configs, said)
+}
+
+/// A handle over a TLS library with ECH and the fake HTTP/3 library,
+/// resolving through `ares`, tracing the HTTP/3, UDP and happy eyeballs
+/// filters; and its TLS library, to read what its sessions were handed.
+fn ech_h3_easy(ares: &'static super::https_trace::EchAres) -> (&'static FakeTls, Easy) {
     let support = crate::tls::TlsSupport {
         ech: true,
         ..crate::tls::fake::SUPPORT
@@ -5292,16 +5329,112 @@ fn ech_h3_get(
     .unwrap();
     let mut e = Easy::new();
     e.set_libraries(libraries);
+    let c = Components::new().unwrap();
+    c.configure(b"http/3,udp,happy-eyeballs");
+    e.set_components(Some(c));
+    (tls, e)
+}
+
+/// While a QUIC attempt waits for the origin's record, its socket is
+/// polled to read alone, as the UDP socket's filter asks of a socket not
+/// yet the connection's (`adjust_pollset, !active, POLLIN`): its
+/// connection, not made, has nothing to write, and a datagram socket is
+/// always writable.
+#[test]
+fn a_quic_attempt_waiting_for_the_record_polls_its_socket_to_read() {
+    use super::https_trace::EchAres;
+    use crate::conn::io::Events;
+    static ARES: EchAres = EchAres {
+        record_at: 6,
+        elsewhere: false,
+    };
+    let (tls, mut e) = ech_h3_easy(&ARES);
     let mut m = quic_server(&[b"server flight", b"response"]);
     let url = format!("https://localhost:{PORT}/");
-    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
-        o.set_url(Some(url.as_bytes())).unwrap();
-        o.http.version = crate::options::HttpVersion::Http3Only;
-        o.tls.options.make_mut().unwrap().ech.mode = mode;
-    });
-    assert_eq!(ran.result, Ok(()), "{mode:?} {:#?}", ran.seen.text());
-    assert_eq!(ran.seen.body(), b"hello");
-    tls.log().ech_configs
+    let o = e.options_mut();
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.http.version = crate::options::HttpVersion::Http3Only;
+    o.tls.options.make_mut().unwrap().ech.mode = crate::options::EchMode::Hard;
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let mut waits = Vec::new();
+    m.sockets(&mut NoEvents, |_, e| waits.push(e)).unwrap();
+    assert_eq!(waits, [Events::IN]);
+    assert_eq!(tls.log().ech_configs, None, "no session is made yet");
+}
+
+/// An HTTP/3 attempt whose ECH takes its configurations from the origin's
+/// HTTPS record, the record still to come as its socket is connected,
+/// puts its QUIC connection off until the record is known, saying so at
+/// each check of the race (`Curl_ssl_need_httpsrr`, `need HTTPS-RR,
+/// delaying connect`), its socket polled to read meanwhile; the session
+/// is then made with the record's ECHConfigList. One address is tried,
+/// over IPv6.
+#[test]
+fn a_quic_attempt_waits_for_the_origin_s_record() {
+    use super::https_trace::EchAres;
+    static ARES: EchAres = EchAres {
+        record_at: 6,
+        elsewhere: false,
+    };
+    for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
+        let (configs, lines) = ech_h3_run(&ARES, mode, |o| o.ip_version = IpVersion::V6);
+        assert_eq!(configs, Some((0xfe, 4)), "{mode:?} {lines:#?}");
+        let delay = "[HTTP/3] need HTTPS-RR, delaying connect";
+        let waits: Vec<usize> = (0..lines.len()).filter(|&i| lines[i] == delay).collect();
+        assert!(waits.len() > 1, "{mode:?} {lines:#?}");
+        // Said as the socket is connected, before the race says what it
+        // checked, and at each check after, the socket polled to read
+        // between them.
+        let first = waits[0];
+        assert!(
+            lines[first - 1].starts_with("[UDP] cf_udp_connect(), opened socket="),
+            "{mode:?} {lines:#?}"
+        );
+        for &at in &waits {
+            assert_eq!(
+                lines[at + 1],
+                "[HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive",
+                "{mode:?} {lines:#?}"
+            );
+        }
+        for pair in waits.windows(2) {
+            assert!(
+                lines[pair[0]..pair[1]]
+                    .iter()
+                    .any(|l| l.starts_with("[UDP] adjust_pollset, !active, POLLIN fd=")),
+                "{mode:?} {lines:#?}"
+            );
+        }
+        // No longer once the record is known.
+        let known = lines
+            .iter()
+            .position(|l| l.starts_with("HTTPS-RR "))
+            .expect("the record is said");
+        assert!(*waits.last().unwrap() < known, "{mode:?} {lines:#?}");
+    }
+}
+
+/// ECH off, or GREASE, which takes no configuration, waits for no record:
+/// the QUIC connection is made as its socket is connected.
+#[test]
+fn a_quic_attempt_without_ech_configurations_waits_for_no_record() {
+    use super::https_trace::EchAres;
+    static ARES: EchAres = EchAres {
+        record_at: 6,
+        elsewhere: false,
+    };
+    for mode in [
+        crate::options::EchMode::Off,
+        crate::options::EchMode::Grease,
+    ] {
+        let (configs, lines) = ech_h3_run(&ARES, mode, |_| {});
+        assert_eq!(configs, None, "{mode:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("need HTTPS-RR")),
+            "{mode:?} {lines:#?}"
+        );
+    }
 }
 
 /// An HTTP/3 attempt made once the origin's HTTPS record is known has its

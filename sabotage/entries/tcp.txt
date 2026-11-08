@@ -3,7 +3,7 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_c_closes_it
 --- old
         // it is made, and one failing now is dropped as it is made.
-        match r.check(cx, component) {
+        match r.check(cx, component, &self.route) {
 --- new
         // it is made, and one failing now is dropped as it is made.
         match Checked::Pending {

@@ -565,7 +565,7 @@ impl<'a> Setopt<'a> {
         apply: impl FnOnce(&mut Easy) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
         apply(self.easy)?;
-        self.bytes(name, value.map(c_string), |_| Ok(()))
+        self.bytes(name, value, c_string, |_| Ok(()))
     }
 
     /// A string option (`tool_setopt_str`): written if set, up to its
@@ -576,7 +576,7 @@ impl<'a> Setopt<'a> {
         value: Option<&[u8]>,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        self.bytes(name, value.map(c_string), apply)
+        self.bytes(name, value, c_string, apply)
     }
 
     /// `CURLOPT_POSTFIELDS`: written whole, as C gives its length.
@@ -585,20 +585,23 @@ impl<'a> Setopt<'a> {
         value: &[u8],
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        self.bytes("CURLOPT_POSTFIELDS", Some(value), apply)
+        self.bytes("CURLOPT_POSTFIELDS", Some(value), |whole| whole, apply)
     }
 
+    /// An option of bytes, written as `shown` shows `value`: worked out
+    /// only for a program, as most runs write none.
     fn bytes(
         &mut self,
         name: &'static str,
         value: Option<&[u8]>,
+        shown: fn(&[u8]) -> &[u8],
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
         let Some(source) = self.apply(apply)? else {
             return Ok(());
         };
         if let Some(value) = value {
-            let escaped = c_escape(value).map_err(oom)?;
+            let escaped = c_escape(shown(value)).map_err(oom)?;
             source
                 .code(&[
                     b"curl_easy_setopt(curl, ",

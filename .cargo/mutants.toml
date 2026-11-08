@@ -1308,4 +1308,16 @@ exclude_re = [
     # The fake library's code for a failed poll is any code: the core
     # tells a failure by its layer, and no test names the code.
     'curl-core/src/http3/fake\.rs:.*: delete - in <impl Connection for FakeConnection>::ingress_done$',
+    # The bits `lowercase` adds are 0x20 of bytes from A to Z, which have
+    # it clear: `|` and `^` add them alike. A port fits in 16 bits and
+    # what an entry keeps is shifted past them, so `|` and `^` join them
+    # alike too.
+    'curl-core/src/conn/dns\.rs:.*: replace \| with \^ in lowercase$',
+    'curl-core/src/conn/dns\.rs:.*: replace \| with \^ in <impl Hash for dyn Named \+.*>::hash$',
+    # The finishing multiplier made odd (`| 1`) or flipped in its low bit
+    # (`^ 1`) mixes the state as well either way, the high half of the
+    # product folded in: another hash, as unknown to a peer and as evenly
+    # spread over the table's slots and tags, which is all a hash is seen
+    # by (`each_bit_of_a_key_reaches_the_slot_and_the_tag`).
+    'curl-core/src/conn/dns\.rs:.*: replace \| with \^ in <impl Hasher for SeededHasher>::finish$',
 ]

@@ -4426,6 +4426,30 @@ fn a_resolve_list_set_again_the_same_is_read_anew() {
     assert!(has(&said, "RESOLVE foo.test:1 - old addresses discarded\n"));
 }
 
+/// A resolve list set again the same, unshuffled, keeps the answer it
+/// made before, not one made anew in its place: two addresses, which a
+/// shuffle asked for would reorder.
+#[test]
+fn a_resolve_list_set_again_the_same_keeps_its_answer() {
+    let (mut m, _clock) = networked();
+    let (mut e, _lines) = traced("tcp://foo.test:1/");
+    e.options_mut().limits.reuse.fresh = true;
+    let mut e = Box::new(e);
+    let two = &b"foo.test:1:127.0.0.1,[::1]"[..];
+    let mut kept = Vec::new();
+    for _ in 0..2 {
+        e.options_mut().resolve.set([two]).unwrap();
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
+        assert_eq!(messages(&mut m).last().unwrap().1, Ok(()));
+        e = m.remove(id, &mut NoEvents).unwrap().easy;
+        let (addrs, _) = m.caches.dns.kept(b"foo.test", 1).unwrap();
+        assert_eq!(addrs.len(), 2);
+        kept.push(addrs.as_ptr());
+    }
+    assert_eq!(kept[0], kept[1], "the answer kept, not made anew");
+}
+
 /// An answer older than the cache's timeout is not used: one found stale
 /// is dropped, and a transfer's end drops those gone stale by then.
 #[test]

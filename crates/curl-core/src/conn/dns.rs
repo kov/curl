@@ -1186,6 +1186,106 @@ mod tests {
         assert_ne!(hash(&one, b"example.com"), port);
     }
 
+    /// Fixed seeds, for tests that must give the same answer every run.
+    fn fixed_seeds() -> impl Iterator<Item = Seeded> {
+        (0..4u64).map(|n| Seeded {
+            start: 0x9e37_79b9_7f4a_7c15u64.wrapping_mul(n + 1),
+            multiplier: 0xbf58_476d_1ce4_e5b9u64.wrapping_mul(2 * n + 1) | 1,
+        })
+    }
+
+    /// How a step's result changes as each bit of its input is flipped,
+    /// for inputs drawn from each fixed seed: the bits changed on
+    /// average, in all, among the low seven (the table's slot within a
+    /// group) and among the top seven (its tag).
+    fn avalanche(step: impl Fn(&Seeded, u64, u64) -> u64) -> (f64, f64, f64) {
+        let next = |x: u64| {
+            x.wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407)
+        };
+        let (mut all, mut low, mut top, mut n) = (0, 0, 0, 0);
+        for seed in fixed_seeds() {
+            let mut acc = seed.start;
+            for _ in 0..8 {
+                acc = next(acc);
+                let word = next(acc ^ 0x1234);
+                let base = step(&seed, acc, word);
+                for bit in 0..64 {
+                    let changed = base ^ step(&seed, acc, word ^ (1 << bit));
+                    all += changed.count_ones();
+                    low += (changed & 0x7f).count_ones();
+                    top += (changed >> 57).count_ones();
+                    n += 1;
+                }
+            }
+        }
+        let n = f64::from(n);
+        (f64::from(all) / n, f64::from(low) / n, f64::from(top) / n)
+    }
+
+    fn assert_avalanches((all, low, top): (f64, f64, f64), what: &str) {
+        assert!((28.0..36.0).contains(&all), "{what}: {all} of 64 bits");
+        assert!((3.0..4.0).contains(&low), "{what}: {low} of the low 7");
+        assert!((3.0..4.0).contains(&top), "{what}: {top} of the top 7");
+    }
+
+    /// Each bit of a word folded in changes about half of the hasher's
+    /// state, low bits and high alike, and so does each bit of the state
+    /// as the hash is finished: the table's slot and tag both depend on
+    /// all of the key, whatever its words are.
+    #[test]
+    fn each_bit_of_a_key_reaches_the_slot_and_the_tag() {
+        assert_avalanches(
+            avalanche(|seed, acc, word| {
+                let mut h = SeededHasher {
+                    acc,
+                    multiplier: seed.multiplier,
+                };
+                h.mix(word);
+                h.acc
+            }),
+            "a word folded in",
+        );
+        assert_avalanches(
+            avalanche(|seed, acc, word| {
+                SeededHasher {
+                    acc: acc ^ word,
+                    multiplier: seed.multiplier,
+                }
+                .finish()
+            }),
+            "the hash finished",
+        );
+    }
+
+    /// Every byte written counts, those of a last word shorter than the
+    /// others among them; so does a name's length, so that a name and one
+    /// with a zero byte after it differ, and each of its bytes, its last
+    /// word's too.
+    #[test]
+    fn every_byte_of_a_key_counts() {
+        use std::hash::BuildHasher as _;
+        for seed in fixed_seeds() {
+            let written = |bytes: &[u8]| {
+                let mut h = seed.build_hasher();
+                h.write(bytes);
+                h.finish()
+            };
+            let bytes: Vec<u8> = (1..=20).collect();
+            for len in 1..=bytes.len() {
+                for at in 0..len {
+                    let mut other = bytes[..len].to_vec();
+                    other[at] ^= 1;
+                    assert_ne!(written(&bytes[..len]), written(&other), "{len} {at}");
+                }
+            }
+            let named = |name: &[u8]| seed.hash_one(Probe(name, 443, Keeps::Addresses).key());
+            assert_ne!(named(b"ab"), named(b"ab\0"), "the length");
+            assert_ne!(named(b"abcdefgh"), named(b"abcdefgx"), "a whole word");
+            assert_ne!(named(b"abcdefghij"), named(b"abcdefghix"), "the last word");
+        }
+    }
+
     /// An entry as read, its addresses made a list.
     #[derive(Debug, PartialEq)]
     enum Read<'a> {

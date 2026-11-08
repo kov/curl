@@ -1304,3 +1304,12 @@ witness: curl-core multi::tests::a_resolve_list_set_again_the_same_is_read_anew
         let shuffling = cx.easy().options().dns_shuffle && addrs.iter().nth(1).is_some();
 --- new
         let shuffling = cx.easy().options().dns_shuffle && addrs.iter().nth(1).is_some() && cx.easy().options().resolve.stamp() < 5;
+
+=== the hasher folds a word in without the product's high half
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::each_bit_of_a_key_reaches_the_slot_and_the_tag
+features: test-util
+--- old
+        self.acc = (product as u64) ^ ((product >> 64) as u64);
+--- new
+        self.acc = product as u64;

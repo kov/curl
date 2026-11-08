@@ -5333,6 +5333,25 @@ mod tests {
         assert_eq!(n, 0, "removing the file allocated {n}");
     }
 
+    /// An operation's resolve list is made once, in one block for its
+    /// entries, room for each made as it is added, and one to share it,
+    /// however short an entry is; every transfer after shares it.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn an_operation_s_resolve_list_is_made_once() {
+        for entry in [&b""[..], b"a", b"ab", b"a:1:127.0.0.1"] {
+            let op = Operation {
+                resolve: vec![entry],
+                ..Operation::default()
+            };
+            let (made, n) = curl_alloc::track::count_allocations(|| op.resolve_list().is_ok());
+            assert!(made);
+            assert_eq!(n, 2, "{entry:?}");
+            let (_, n) = curl_alloc::track::count_allocations(|| op.resolve_list().is_ok());
+            assert_eq!(n, 0, "made once");
+        }
+    }
+
     /// `show_dir_errno`'s texts.
     #[test]
     fn says_why_a_directory_was_not_made_as_c_does() {

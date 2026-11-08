@@ -535,7 +535,7 @@ features: test-util debug-hooks
 
 === a goodbye's answer is given up on at once, not after a second of silence
 file: crates/curl-core/src/conn/shutdown.rs
-witness: curl-core proto::ftp::tests::quit_waits_for_the_abor_s_answer_before_the_socket_closes
+witness: curl-core proto::ftp::tests::quit_s_answer_is_awaited_through_a_silence_under_a_second
 features: test-util debug-hooks
 --- old
             Goodbye::Awaited { moved: false } => (now < due).then_some(due),

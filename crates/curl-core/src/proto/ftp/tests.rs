@@ -5530,6 +5530,33 @@ fn a_connection_is_reused_only_with_the_same_account() {
     assert!(run(b"another"), "another makes its own");
 }
 
+/// The answer a `QUIT` awaits is waited on through a silence shorter
+/// than a second, as C's blocking poll of a second waits for it
+/// (`Curl_pp_statemach`): here a pass 0.5 s after the `QUIT` finds
+/// nothing and the connection stays, and the answer, come at 0.8 s, is
+/// read whole before it closes.
+#[test]
+fn quit_s_answer_is_awaited_through_a_silence_under_a_second() {
+    let control = cut_short(Some(b"500 no ABOR\r\n"), Some(b"221 bye\r\n")).held();
+    let before_abor = LOGIN_AND_SETUP.len() + 1;
+    control.allow(before_abor);
+    let file = data(b"hello");
+    let (mut m, counted, clock) = clocked(&[&control], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    assert!(String::from_utf8_lossy(&control.received()).ends_with("ABOR\r\nQUIT\r\n"));
+    clock.advance(std::time::Duration::from_millis(500));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(counted.open(), 1, "still awaited after a silent pass");
+    clock.advance(std::time::Duration::from_millis(300));
+    control.allow(before_abor + 2);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(counted.open(), 0, "closed once answered");
+    assert_eq!(control.answered(), before_abor + 2);
+}
+
 /// Each part of the answer a `QUIT` awaits gives it another second, as
 /// each of C's polls that finds some lasts a second again
 /// (`Curl_pp_statemach`): here a two-line answer to `ABOR`, its first

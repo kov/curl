@@ -120,7 +120,93 @@ const MAX_ENTRIES: usize = 29999;
 /// the name (C's hash on `name:port`).
 #[derive(Debug, Default)]
 pub(crate) struct DnsCache {
-    entries: HashMap<Key, Entry>,
+    entries: HashMap<Key, Entry, Seeded>,
+}
+
+/// How the cache hashes its keys: a multiply-and-fold hash, keyed with
+/// two random words of its own, as C's `hash_str` is keyed with a random
+/// seed (`Curl_hash_global_init`), but for each cache. Its names are a
+/// peer's to choose (a URL's, a redirect's), so the seed is what keeps
+/// one from choosing names that collide: unknown to it, and different in
+/// each cache. Collisions cost a longer probe, never more than the
+/// table's length, as C's 71 chains do.
+#[derive(Clone, Debug)]
+struct Seeded {
+    start: u64,
+    multiplier: u64,
+}
+
+impl Default for Seeded {
+    /// Two words of std's random keys (read from the system once for each
+    /// thread, and different for each hasher made from them).
+    fn default() -> Seeded {
+        use std::hash::BuildHasher as _;
+        let keys = std::hash::RandomState::new();
+        Seeded {
+            start: keys.hash_one(0u8),
+            multiplier: keys.hash_one(1u8) | 1,
+        }
+    }
+}
+
+impl std::hash::BuildHasher for Seeded {
+    type Hasher = SeededHasher;
+
+    fn build_hasher(&self) -> SeededHasher {
+        SeededHasher {
+            acc: self.start,
+            multiplier: self.multiplier,
+        }
+    }
+}
+
+struct SeededHasher {
+    acc: u64,
+    multiplier: u64,
+}
+
+impl SeededHasher {
+    /// The word folded in: multiplied by the key, and the product's halves
+    /// folded together, so each bit of the word reaches all of the result.
+    fn mix(&mut self, word: u64) {
+        let product = u128::from(self.acc ^ word) * u128::from(self.multiplier);
+        self.acc = (product as u64) ^ ((product >> 64) as u64);
+    }
+}
+
+impl Hasher for SeededHasher {
+    /// Whole words, the last padded with zeros: a key writes its name's
+    /// length first, so a name and one with zeros after it differ.
+    fn write(&mut self, bytes: &[u8]) {
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            self.mix(u64::from_le_bytes(*word));
+        }
+        if !rest.is_empty() {
+            let mut last = [0u8; 8];
+            last[..rest.len()].copy_from_slice(rest);
+            self.mix(u64::from_le_bytes(last));
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.mix(u64::from(n));
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.mix(n);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.mix(n as u64);
+    }
+
+    /// Mixed once more: the table picks a slot by the low bits and tags it
+    /// with the top ones, and both depend on all of the key.
+    fn finish(&self) -> u64 {
+        let product = u128::from(self.acc) * u128::from(self.multiplier.rotate_left(32) | 1);
+        (product as u64) ^ ((product >> 64) as u64)
+    }
 }
 
 /// The answers a transfer looks up and keeps: its multi's, at the step's
@@ -286,7 +372,7 @@ impl Dated<'_> {
 }
 
 /// What an entry keeps of its name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Keeps {
     Addresses,
     /// What the name has of an HTTPS record (HTTPS-RR): an entry of its
@@ -305,16 +391,34 @@ impl Hash for dyn Named + '_ {
     fn hash<S: Hasher>(&self, state: &mut S) {
         let (name, port, keeps) = self.named();
         state.write_usize(name.len());
-        let mut folded = [0u8; 64];
-        for chunk in name.chunks(folded.len()) {
-            let folded = &mut folded[..chunk.len()];
-            folded.copy_from_slice(chunk);
-            folded.make_ascii_lowercase();
-            state.write(folded);
+        let (words, rest) = name.as_chunks::<8>();
+        for word in words {
+            state.write_u64(lowercase(u64::from_le_bytes(*word)));
         }
-        port.hash(state);
-        keeps.hash(state);
+        if !rest.is_empty() {
+            let mut last = [0u8; 8];
+            last[..rest.len()].copy_from_slice(rest);
+            state.write_u64(lowercase(u64::from_le_bytes(last)));
+        }
+        let keeps: u32 = match keeps {
+            Keeps::Addresses => 0,
+            Keeps::Https => 1,
+        };
+        state.write_u32(u32::from(port) | keeps << 16);
     }
+}
+
+/// Eight bytes with their ASCII capitals made small, as
+/// `make_ascii_lowercase` makes them, all at once: a byte below 0x80 that
+/// is at least `A` and not past `Z` gains 0x20.
+fn lowercase(word: u64) -> u64 {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const TOPS: u64 = ONES * 0x80;
+    let low = word & !TOPS;
+    let ascii = !word & TOPS;
+    let from_a = (low + ONES * u64::from(0x80 - b'A')) & TOPS;
+    let past_z = (low + ONES * u64::from(0x7f - b'Z')) & TOPS;
+    word | (ascii & from_a & !past_z) >> 2
 }
 
 impl PartialEq for dyn Named + '_ {
@@ -873,6 +977,40 @@ mod tests {
             !found(&mut cache, &long[..255]),
             "a shorter name is not a longer one's"
         );
+    }
+
+    /// Words are made small as `make_ascii_lowercase` makes each of their
+    /// bytes, whatever the bytes beside it.
+    #[test]
+    fn words_are_made_small_as_their_bytes_are() {
+        for b in 0..=255u8 {
+            for (at, beside) in [(0, 0u8), (3, b'Z'), (7, 0xff), (5, b'@')] {
+                let mut bytes = [beside; 8];
+                bytes[at] = b;
+                let mut small = bytes;
+                small.make_ascii_lowercase();
+                let word = lowercase(u64::from_le_bytes(bytes));
+                assert_eq!(word.to_le_bytes(), small, "{b:#x} at {at}");
+            }
+        }
+    }
+
+    /// Each cache hashes with a seed of its own: a key hashes alike in any
+    /// case in one cache, and differently in another, so names that
+    /// collide in one cannot be worked out ahead to collide in the next.
+    #[test]
+    fn each_cache_hashes_with_its_own_seed() {
+        use std::hash::BuildHasher as _;
+        let hash = |seeded: &Seeded, name: &[u8]| {
+            seeded.hash_one(Probe(name, 443, Keeps::Addresses).key())
+        };
+        let (one, other) = (Seeded::default(), Seeded::default());
+        assert_eq!(hash(&one, b"Example.COM"), hash(&one, b"example.com"));
+        assert_ne!(hash(&one, b"example.com"), hash(&other, b"example.com"));
+        let https = one.hash_one(Probe(b"example.com", 443, Keeps::Https).key());
+        assert_ne!(hash(&one, b"example.com"), https);
+        let port = one.hash_one(Probe(b"example.com", 80, Keeps::Addresses).key());
+        assert_ne!(hash(&one, b"example.com"), port);
     }
 
     fn add<'a>(

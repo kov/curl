@@ -1259,3 +1259,14 @@ features: test-util
                 say_name_timer_cleared(cx);
 --- new
                 say_answered(q, name, at, &[], &mut |parts| cx.of_with(dns, parts));
+
+=== every cache hashes with the same seed, so colliding names can be worked out ahead
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::each_cache_hashes_with_its_own_seed
+features: test-util
+--- old
+            start: keys.hash_one(0u8),
+            multiplier: keys.hash_one(1u8) | 1,
+--- new
+            start: 0x243f_6a88_85a3_08d3,
+            multiplier: 0x9e37_79b9_7f4a_7c15 | u64::from(keys.hash_one(1u8) == 0),

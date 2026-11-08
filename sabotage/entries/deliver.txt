@@ -113,6 +113,34 @@ witness: curl-core deliver::tests::only_a_verbose_transfer_traces_bytes
 --- new
     bytes_traced(cx, kind, bytes);
 
+=== a body's verbose is read once, before its handler can change it
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_handler_turning_verbose_on_mid_body_traces_what_follows
+--- old
+        self.made = true;
+        if cx.verbose() {
+            self.raw_traced(cx, bytes);
+        }
+        let result = self.decoded(cx, bytes);
+        if cx.verbose() {
+--- new
+        self.made = true;
+        let verbose = cx.verbose();
+        if verbose {
+            self.raw_traced(cx, bytes);
+        }
+        let result = self.decoded(cx, bytes);
+        if verbose {
+
+=== a change to a held handle is not counted, so a step's verbose goes stale
+file: crates/curl-core/src/multi/held.rs
+witness: curl-core deliver::tests::a_handler_turning_verbose_on_mid_body_traces_what_follows
+--- old
+    pub(super) fn easy_mut(&mut self, edits: &Edits) -> &mut Easy {
+        edits.bump();
+--- new
+    pub(super) fn easy_mut(&mut self, _edits: &Edits) -> &mut Easy {
+
 === the body is traced after it was delivered
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received

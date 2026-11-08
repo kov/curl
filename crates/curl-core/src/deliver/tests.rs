@@ -569,6 +569,65 @@ fn only_a_verbose_transfer_traces_bytes() {
     }
 }
 
+/// Turns its transfer's trace on as it is given its first body bytes, as
+/// a C write callback's `curl_easy_setopt(CURLOPT_VERBOSE, 1L)`.
+struct Verbosing(std::sync::atomic::AtomicBool);
+
+impl WriteHandler for Verbosing {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        if !self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let me = cx.me();
+            cx.options_mut(me).unwrap().output.verbose = true;
+        }
+        Write::Accepted
+    }
+}
+
+/// Keeps what is traced as body bytes received and the write
+/// component's `client_write` lines, in order.
+#[derive(Clone, Default)]
+struct BodyTrace(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl DebugHandler for BodyTrace {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        let text = String::from_utf8_lossy(data);
+        let line = match kind {
+            DebugKind::DataIn => format!("in {text}"),
+            DebugKind::Text if text.starts_with("[WRITE] client_write") => {
+                text.trim_end().to_owned()
+            }
+            _ => return,
+        };
+        self.0.lock().unwrap().push(line);
+    }
+}
+
+/// A body handler turning verbose on mid-body has what follows its call
+/// traced at once, as C reads `set.verbose` for each line: the write it
+/// returns from is said written (`Curl_client_write`'s trace, after the
+/// writers), and the next body bytes are traced as received
+/// (`cw_raw_write`). The bytes it was given came before, untraced.
+#[test]
+fn a_handler_turning_verbose_on_mid_body_traces_what_follows() {
+    let trace = BodyTrace::default();
+    let mut e = script(vec![body(b"one"), body(b"two")]);
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"write");
+    e.set_components(Some(components));
+    let o = e.options_mut();
+    o.callbacks.write = Some(handler(Verbosing(Default::default())));
+    o.callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    assert_eq!(run_alone(e), Ok(()));
+    assert_eq!(
+        *trace.0.lock().unwrap(),
+        [
+            "[WRITE] client_write(type=1, len=3) -> 0",
+            "in two",
+            "[WRITE] client_write(type=1, len=3) -> 0",
+        ]
+    );
+}
+
 /// Once a write has failed, nothing reaches a handler again, header or
 /// body, and every later write fails (#13337).
 #[test]

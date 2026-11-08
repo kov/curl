@@ -294,3 +294,12 @@ features: test-util,debug-hooks
                 .is_some_and(|t| t.options.ech.needs_record())
 --- new
                 .is_some()
+
+=== An HTTP/3 proxy's QUIC connection takes the origin's record's ECH configurations
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::an_http3_proxy_s_quic_connection_tries_no_ech
+features: test-util,debug-hooks
+--- old
+            OriginRecord::Known(record) if !proxied => record,
+--- new
+            OriginRecord::Known(record) if true => record,

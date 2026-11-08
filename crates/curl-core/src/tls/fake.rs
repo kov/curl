@@ -173,6 +173,8 @@ pub struct FakeLog {
     /// The ECH configurations the last session was handed from the
     /// origin's HTTPS record, if any: their first byte and their length.
     pub ech_configs: Option<(u8, usize)>,
+    /// How many of the QUIC sessions made were handed ECH configurations.
+    pub quic_ech_offered: usize,
 }
 
 /// What the fake keeps for a multi: its number, and the log it notes
@@ -237,6 +239,7 @@ impl FakeTls {
             early_decided: None,
             early_decisions: 0,
             ech_configs: None,
+            quic_ech_offered: 0,
         };
         Ok(FakeTls {
             log: TryArc::try_new(Lock::new(log))?,
@@ -420,6 +423,7 @@ impl TlsBackend for FakeTls {
             log.ech_configs = peer
                 .ech_configs
                 .map(|c| (c.first().copied().unwrap_or_default(), c.len()));
+            log.quic_ech_offered += usize::from(peer.ech_configs.is_some());
             log.sessions
         };
         cx.trace(format_args!("fake QUIC session {number}"));

@@ -4290,6 +4290,52 @@ fn h3_through_h3_proxy_over(m: &mut Multi, e: Easy, ip: IpVersion) -> Ran {
     })
 }
 
+/// An HTTP/3 proxy's QUIC connection tries no ECH, the origin's HTTPS
+/// record known with configurations as it is made: the proxy's TLS is
+/// not the origin's.
+#[test]
+fn an_http3_proxy_s_quic_connection_tries_no_ech() {
+    use super::https_trace::EchAres;
+    static ARES: EchAres = EchAres {
+        record_at: 0,
+        elsewhere: false,
+    };
+    let proxy = udp_tunnel_script(b"?1");
+    let origin = get_script(b"123456789");
+    let h3 = FakeHttp3::new(proxy.clone());
+    h3.then.lock().unwrap().push_back(origin.clone());
+    let support = crate::tls::TlsSupport {
+        ech: true,
+        ..crate::tls::fake::SUPPORT
+    };
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::supporting(support).unwrap()));
+    let h3: &'static FakeHttp3 = Box::leak(Box::new(h3));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(tls)),
+        h3: Some(h3),
+        dns: Some(&ARES),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let o = e.options_mut();
+    o.tls.options.make_mut().unwrap().ech.mode = crate::options::EchMode::Try;
+    let mut m = quic_server(&[
+        b"server flight",
+        b"connect answer",
+        b"origin flight",
+        b"origin response",
+        b"more",
+        b"more",
+    ]);
+    let ran = h3_through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let log = tls.log();
+    assert_eq!(log.sessions, 2, "the proxy's and the origin's");
+    assert_eq!(log.quic_ech_offered, 0);
+}
+
 /// HTTP/3 alone through an HTTP/3 proxy goes over its CONNECT-UDP, QUIC
 /// in QUIC (`cf-ngtcp2-proxy.c` with `udp_tunnel=1`): the race's attempt
 /// is the proxy's QUIC connection; the tunnel's request is an extended
@@ -5280,13 +5326,21 @@ fn ech_h3_get(
     ech_h3_run(ares, mode, |_| {}).0
 }
 
+/// The same, how many QUIC sessions were handed configurations.
+fn ech_h3_offered(
+    ares: &'static super::https_trace::EchAres,
+    mode: crate::options::EchMode,
+) -> usize {
+    ech_h3_run(ares, mode, |_| {}).2
+}
+
 /// The same, the options as `set` sets them, and the lines of the HTTP/3,
 /// UDP and happy eyeballs filters and those saying the record.
 fn ech_h3_run(
     ares: &'static super::https_trace::EchAres,
     mode: crate::options::EchMode,
     set: impl FnOnce(&mut Options),
-) -> (Option<(u8, usize)>, Vec<String>) {
+) -> (Option<(u8, usize)>, Vec<String>, usize) {
     let (tls, e) = ech_h3_easy(ares);
     let mut m = quic_server(&[b"server flight", b"response"]);
     let url = format!("https://localhost:{PORT}/");
@@ -5307,7 +5361,8 @@ fn ech_h3_run(
         .map(|l| l.trim_end().to_owned())
         .filter(|l| starts.iter().any(|s| l.starts_with(s)))
         .collect();
-    (tls.log().ech_configs, said)
+    let log = tls.log();
+    (log.ech_configs, said, log.quic_ech_offered)
 }
 
 /// A handle over a TLS library with ECH and the fake HTTP/3 library,
@@ -5378,7 +5433,7 @@ fn a_quic_attempt_waits_for_the_origin_s_record() {
         elsewhere: false,
     };
     for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
-        let (configs, lines) = ech_h3_run(&ARES, mode, |o| o.ip_version = IpVersion::V6);
+        let (configs, lines, _) = ech_h3_run(&ARES, mode, |o| o.ip_version = IpVersion::V6);
         assert_eq!(configs, Some((0xfe, 4)), "{mode:?} {lines:#?}");
         let delay = "[HTTP/3] need HTTPS-RR, delaying connect";
         let waits: Vec<usize> = (0..lines.len()).filter(|&i| lines[i] == delay).collect();
@@ -5428,7 +5483,7 @@ fn a_quic_attempt_without_ech_configurations_waits_for_no_record() {
         crate::options::EchMode::Off,
         crate::options::EchMode::Grease,
     ] {
-        let (configs, lines) = ech_h3_run(&ARES, mode, |_| {});
+        let (configs, lines, _) = ech_h3_run(&ARES, mode, |_| {});
         assert_eq!(configs, None, "{mode:?}");
         assert!(
             !lines.iter().any(|l| l.contains("need HTTPS-RR")),
@@ -5455,6 +5510,7 @@ fn a_quic_attempt_tries_ech_with_the_known_record() {
     };
     for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
         assert_eq!(ech_h3_get(&ARES, mode), Some((0xfe, 4)), "{mode:?}");
+        assert_eq!(ech_h3_offered(&ARES, mode), 1, "{mode:?}");
         assert_eq!(ech_h3_get(&ELSEWHERE, mode), None, "{mode:?}");
     }
 }

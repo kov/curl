@@ -873,9 +873,9 @@ fn resolved<H: Host>(
 /// The name's resolve the setup goes on beside, looked at as its filter
 /// looks at it in each call of the chain's connect (`cf_dns_connect`):
 /// what more came is for the attempts to follow as they are next driven,
-/// and once all of it has, it is said. Its failure is the setup's: at
-/// once while the lead is past its race, as C's filter fails the connect
-/// it is in, else in the race's next drive.
+/// and once all of it has, it is said. Its failure fails the setup at
+/// once, whichever attempt leads and however far, as C's filter fails the
+/// connect it is in before its chain's (`cf_dns_connect`'s hard failure).
 fn look_at_name<H: Host>(
     c: &mut Connecting,
     run: &mut Run,
@@ -889,10 +889,6 @@ fn look_at_name<H: Host>(
         Ok(LateLook::Found(found)) => {
             let answer = c.name.answer().cloned();
             resolved(c, run, cx, answer, found);
-            Ok(())
-        }
-        Ok(LateLook::Failed(e)) if c.lead().is_some_and(ConnectMachine::races) => {
-            c.name.fail_race(e);
             Ok(())
         }
         Ok(LateLook::Failed(e)) => Err(connect_failed(cx, &c.route, e)),

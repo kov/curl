@@ -62,11 +62,13 @@ impl Gate {
 }
 
 /// A resolve of the library [`Library`] stands for: 127.0.0.1 at once,
-/// ::1 too once its gate opens, waiting on its socket meanwhile, closed as
-/// it goes, as c-ares's `ares_destroy` closes its channel's; no record.
+/// ::1 too once its gate opens (or, if it `fails`, the resolve failed),
+/// waiting on its socket meanwhile, closed as it goes, as c-ares's
+/// `ares_destroy` closes its channel's; no record.
 #[derive(Debug)]
 struct LibraryResolve {
     record: bool,
+    fails: bool,
     aaaa: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
     runs: Arc<AtomicU32>,
@@ -80,7 +82,7 @@ impl LibraryResolve {
     }
     fn addrs(&self) -> Vec<IpAddr> {
         let mut addrs = Vec::new();
-        if self.answered() {
+        if self.answered() && !self.fails {
             addrs.push(Ipv6Addr::LOCALHOST.into());
         }
         addrs.push([127, 0, 0, 1].into());
@@ -118,7 +120,7 @@ impl crate::conn::io::DnsResolve for LibraryResolve {
     fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
         Ok(crate::conn::io::Partial {
             addrs: self.addrs(),
-            v6_answered: self.answered(),
+            v6_answered: self.answered() && !self.fails,
             v4_answered: true,
         })
     }
@@ -130,6 +132,11 @@ impl crate::conn::io::DnsResolve for LibraryResolve {
         }
     }
     fn answer(&mut self) -> Option<Result<Vec<IpAddr>, crate::conn::io::ResolveFailure>> {
+        if self.fails && !self.record {
+            return self
+                .answered()
+                .then_some(Err(crate::conn::io::ResolveFailure::NotFound));
+        }
         self.answered().then(|| Ok(self.addrs()))
     }
     fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
@@ -145,9 +152,10 @@ impl crate::conn::io::DnsResolve for LibraryResolve {
 
 /// A resolver library standing for c-ares, its resolves answering AAAA
 /// once `aaaa` opens, the addresses' each waiting on the next of
-/// `sockets`, and counted in `made`.
+/// `sockets`, and counted in `made`; failing then instead if it `fails`.
 #[derive(Debug)]
 struct Library {
+    fails: bool,
     aaaa: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
     runs: Arc<AtomicU32>,
@@ -172,6 +180,7 @@ impl crate::conn::io::DnsLibrary for Library {
         }
         Ok(Box::new(LibraryResolve {
             record,
+            fails: self.fails,
             aaaa: self.aaaa.clone(),
             alive: self.alive.clone(),
             runs: self.runs.clone(),
@@ -271,6 +280,7 @@ fn transfer_ending(
             let socket = open(own);
             fd.store(socket_number(socket.key()), Ordering::Relaxed);
             let lib: &'static Library = Box::leak(Box::new(Library {
+                fails: false,
                 aaaa: gate.0.clone(),
                 alive: alive.clone(),
                 runs: runs.clone(),
@@ -707,6 +717,8 @@ fn over_doh_the_name_timer_is_never_armed() {
 struct FtpOverLibrary {
     said: Vec<String>,
     data_fd: u64,
+    /// How the transfer ended, if it did.
+    result: Option<Result<(), ErrorKind>>,
 }
 
 /// When the library's AAAA comes for an FTPS download's names.
@@ -717,6 +729,16 @@ enum Aaaa {
     Racing,
     /// During the data connection's TLS handshake.
     Shaking,
+    /// As `Racing`, failing.
+    FailsRacing,
+    /// As `Shaking`, failing.
+    FailsShaking,
+}
+
+impl Aaaa {
+    fn fails(self) -> bool {
+        matches!(self, Aaaa::FailsRacing | Aaaa::FailsShaking)
+    }
 }
 
 /// An FTPS download of `ftps://ftp.example:8021/f` over `--connect-to
@@ -781,6 +803,7 @@ fn ftp_over_a_library(
     let gate = Gate::default();
     let made = Arc::new(AtomicU32::new(0));
     let lib: &'static Library = Box::leak(Box::new(Library {
+        fails: aaaa.fails(),
         aaaa: gate.0.clone(),
         alive: Arc::default(),
         runs: Arc::default(),
@@ -838,7 +861,7 @@ fn ftp_over_a_library(
                     .iter()
                     .any(|l| l == "  Trying 127.0.0.1:8022...")
             };
-            if aaaa == Aaaa::Racing && dialed() {
+            if matches!(aaaa, Aaaa::Racing | Aaaa::FailsRacing) && dialed() {
                 gate.open();
             }
             if made.load(Ordering::Relaxed) == 2 {
@@ -854,23 +877,34 @@ fn ftp_over_a_library(
     run(&mut m, &mut passes);
     let said = lines.0.lock().unwrap().clone();
     let dialed = at(&said, 0, "  Trying 127.0.0.1:8022...");
+    if aaaa == Aaaa::FailsRacing {
+        return FtpOverLibrary {
+            said,
+            data_fd: socket_number(data_resolve),
+            result: m.info_read().map(|msg| msg.result),
+        };
+    }
     let shaking = shaking_from.get().expect("its TLS started");
     held(&said, &passes, dialed, shaking);
-    if aaaa == Aaaa::Shaking {
+    if matches!(aaaa, Aaaa::Shaking | Aaaa::FailsShaking) {
         gate.open();
         run(&mut m, &mut passes);
     }
-    file.allow(2);
-    run(&mut m, &mut passes);
-    let said = lines.0.lock().unwrap().clone();
-    assert_eq!(
-        m.info_read().map(|msg| msg.result),
-        Some(Ok(())),
-        "{said:#?}"
-    );
+    let result = match aaaa.fails() {
+        true => m.info_read().map(|msg| msg.result),
+        false => {
+            file.allow(2);
+            run(&mut m, &mut passes);
+            let said = lines.0.lock().unwrap().clone();
+            let result = m.info_read().map(|msg| msg.result);
+            assert_eq!(result, Some(Ok(())), "{said:#?}");
+            result
+        }
+    };
     FtpOverLibrary {
-        said,
+        said: lines.0.lock().unwrap().clone(),
         data_fd: socket_number(data_resolve),
+        result,
     }
 }
 
@@ -1112,6 +1146,7 @@ fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, u64) {
     let fd = socket_number(socket.key());
     let alive = Arc::new(AtomicBool::new(false));
     let lib: &'static Library = Box::leak(Box::new(Library {
+        fails: false,
         aaaa: Arc::default(),
         alive: alive.clone(),
         runs: Arc::default(),
@@ -1299,6 +1334,7 @@ fn first_failed_once_dialed(answers: bool) -> (Vec<String>, bool) {
     let gate = Gate::default();
     let alive = Arc::new(AtomicBool::new(false));
     let lib: &'static Library = Box::leak(Box::new(Library {
+        fails: false,
         aaaa: gate.0.clone(),
         alive: alive.clone(),
         runs: Arc::default(),
@@ -1327,7 +1363,10 @@ fn first_failed_once_dialed(answers: bool) -> (Vec<String>, bool) {
         .unwrap(),
     );
     // HTTP/1.1 is preferred here, ahead of the HTTP/3 the transfer wants.
-    let file = std::env::temp_dir().join(format!("curl-core-late-h1-{}", std::process::id()));
+    let file = std::env::temp_dir().join(format!(
+        "curl-core-late-h1-{answers}-{}",
+        std::process::id()
+    ));
     let entry = "h3 late.test 443 http/1.1 late.test 443 \"20991231 00:00:00\" 0 0\n";
     std::fs::write(&file, entry).unwrap();
     easy.add_alt_svc_file(Some(file.as_os_str().as_encoded_bytes()))
@@ -1361,6 +1400,23 @@ fn first_failed_once_dialed(answers: bool) -> (Vec<String>, bool) {
     let said = lines.0.lock().unwrap().clone();
     assert!(matches!(ended, Some(Err(_))), "{ended:?} {said:#?}");
     (said, alive.load(Ordering::Relaxed))
+}
+
+/// FTP's data connection whose name's resolve fails, as it races or
+/// through its TLS handshake, fails the transfer at once and closes, as
+/// C's DNS filter heading its chain fails its connect (`cf_dns_connect`).
+#[test]
+fn ftp_s_data_connection_fails_with_its_late_resolve() {
+    for aaaa in [Aaaa::FailsRacing, Aaaa::FailsShaking] {
+        let ran = ftp_over_a_library(aaaa, |_, _, _, _| {});
+        assert!(
+            matches!(ran.result, Some(Err(_))),
+            "{:?}: {:?} {:#?}",
+            aaaa as u8,
+            ran.result,
+            ran.said
+        );
+    }
 }
 
 /// A resolve of the library [`Failing`] stands for: 127.0.0.1 at once,
@@ -1429,9 +1485,8 @@ impl crate::conn::io::DnsLibrary for Failing {
 
 /// The name's resolve failing once the connection made on its first
 /// answer is dialed, its TLS handshake under way, fails the transfer at
-/// once, as C's DNS filter fails the connect it is in
-/// (`cf_dns_connect`); only a race still racing is left to fail in its
-/// next drive.
+/// once, as C's DNS filter fails the connect it is in before its chain's
+/// (`cf_dns_connect`'s hard failure), not at its connect timeout.
 #[test]
 fn a_resolve_failing_beside_a_dialed_connection_fails_it_at_once() {
     let clock = ManualClock::new().unwrap();

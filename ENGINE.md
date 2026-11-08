@@ -2858,9 +2858,8 @@ owns it, each attempt's machine is handed it by reference as it is driven
 discard or win can take it from the other. It is looked at once in each pass whichever attempt
 leads or is left (`look_at_name`), its sockets first in the pollset and its due time on
 `AsyncName`; an answer that comes is kept and said, starting no attempt, and one the second
-attempt can still race to is raced to. Its failure fails the setup at once once the lead is
-dialed, as C's filter fails the connect it is in, and a racing lead's next drive otherwise. It
-is kept until the setup's chain connects, as C's DNS filter keeps it until the chain below it does
+attempt can still race to is raced to. Its failure fails the setup at once, whichever attempt
+leads, as C's filter fails the connect it is in before its chain's. It is kept until the setup's chain connects, as C's DNS filter keeps it until the chain below it does
 (`cf_dns_connect`'s `Curl_resolv_destroy`), and let go of after its record's `destroy async`: a
 library's sockets said closed, DoH's `[DoH] probe done`. A transfer done without that connect
 carries it into `Done`, which ends it (`Late::end`) before the race's machines close, and it

@@ -716,7 +716,7 @@ features: test-util
         .name
 --- new
 ) -> Result<(), ErrorKind> {
-    if c.lead().is_some_and(|m| !m.races()) {
+    if c.lead().is_some_and(|m| matches!(m.reached(), SetupPoint::Dialed(_))) {
         return Ok(());
     }
     let polled = c
@@ -1306,11 +1306,11 @@ witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it
 --- new
             Stage::Dialed(d) => d.target_late.as_ref()?.due(now, left).filter(|_| false),
 
-=== a resolve failing beside a dialed connection waits for a race that is over
+=== a resolve failing beside a dialed connection is let go unheard
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::late_tests::a_resolve_failing_beside_a_dialed_connection_fails_it_at_once
 features: test-util
 --- old
-        Ok(LateLook::Failed(e)) if c.lead().is_some_and(ConnectMachine::races) => {
+        Ok(LateLook::Failed(e)) => Err(connect_failed(cx, &c.route, e)),
 --- new
-        Ok(LateLook::Failed(e)) if c.lead().is_some() => {
+        Ok(LateLook::Failed(_)) => Ok(()),

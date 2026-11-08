@@ -707,3 +707,15 @@ features: test-util
         };
         crate::multi::state::side_name_timer(cx, &self.name.late, setup);
         Ok(())
+
+=== the data connection's late resolve failing is let go unheard
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_fails_with_its_late_resolve
+features: test-util
+--- old
+            Ok(LateLook::Failed(e)) => {
+                let kind = crate::multi::state::connect_failed(cx, route, e);
+--- new
+            Ok(LateLook::Failed(_)) if true => {}
+            Ok(LateLook::Failed(e)) => {
+                let kind = crate::multi::state::connect_failed(cx, route, e);

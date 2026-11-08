@@ -1293,6 +1293,7 @@ impl ConnectMachine {
     }
 
     /// Whether it races, its first hop not yet dialed.
+    #[cfg(test)]
     pub(crate) fn races(&self) -> bool {
         matches!(self.stage, Stage::Racing(_))
     }
@@ -1561,9 +1562,6 @@ impl ConnectMachine {
                 return Ok(Drove::Connecting(self, Progress::Resolved(found)));
             }
             Stage::Racing(r) => {
-                if let Some(e) = late.take_failure() {
-                    return Err(e);
-                }
                 r.eyeballs.follow(late);
                 r
             }
@@ -3580,8 +3578,6 @@ struct Going {
     /// What came of it so far, or all of it once it has come: the
     /// addresses the attempts race.
     answer: TryArc<Answer>,
-    /// How it failed, for the next drive of a race to fail with.
-    failed: Option<ConnectError>,
 }
 
 /// What a look at a [`Late`] resolve came to.
@@ -3602,7 +3598,6 @@ impl Late {
         let going = Going {
             pending: Some(p),
             answer,
-            failed: None,
         };
         self.0 = Some(curl_alloc::try_box(going)?);
         Ok(())
@@ -3627,11 +3622,6 @@ impl Late {
     /// What has come of it, if it began.
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         self.0.as_ref().map(|going| &going.answer)
-    }
-
-    /// How it failed, if a race's drive is to fail with it now.
-    fn take_failure(&mut self) -> Option<ConnectError> {
-        self.0.as_mut()?.failed.take()
     }
 
     /// Looked at, as the DNS filter for `peer` looks at its resolve until
@@ -3666,13 +3656,6 @@ impl Late {
         }
         going.pending = Some(p);
         Ok(LateLook::Waiting)
-    }
-
-    /// It failed with `e`, which the race's next drive fails with, as C's
-    /// filter fails the connect it is in (`cf_dns_connect`).
-    pub(crate) fn fail_race(&mut self, e: ConnectError) {
-        let going = self.0.as_mut().expect("only a resolve that went on fails");
-        going.failed = Some(e);
     }
 
     /// What its library waits on.
@@ -4648,7 +4631,6 @@ mod tests {
         Late(Some(Box::new(Going {
             pending: going.then(unanswered),
             answer,
-            failed: None,
         })))
     }
 

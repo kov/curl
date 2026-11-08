@@ -482,7 +482,7 @@ impl DataConn {
     /// the name's timer for it and for a resolve its setup holds, and for a
     /// resolve a library answered whose record is still kept, as C's DNS
     /// filter does in each pollset (`Curl_resolv_pollset`). Its failure
-    /// fails a race's next drive, and anything past the race at once.
+    /// fails the connection at once (`cf_dns_connect`).
     fn look_at_name<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let setup = match self.phase.as_ref() {
             Some(Phase::Connecting(machine, _)) => Some(machine),
@@ -502,9 +502,6 @@ impl DataConn {
             Ok(LateLook::Found(found)) => {
                 let answer = self.name.late.answer().map(|a| &**a);
                 crate::multi::state::side_resolved_at(cx, route, answer, found);
-            }
-            Ok(LateLook::Failed(e)) if setup.is_some_and(ConnectMachine::races) => {
-                self.name.late.fail_race(e);
             }
             Ok(LateLook::Failed(e)) => {
                 let kind = crate::multi::state::connect_failed(cx, route, e);

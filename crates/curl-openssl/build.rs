@@ -89,6 +89,11 @@ fn main() {
             cfg("ossl320");
         }
     }
+    // The headers' directory, for the peer tests' engine, built by the C
+    // compiler against the library this crate is.
+    if let Ok(include) = std::env::var("DEP_OPENSSL_INCLUDE") {
+        println!("cargo::rustc-env=CURL_OPENSSL_INCLUDE={include}");
+    }
     let conf = std::env::var("DEP_OPENSSL_CONF").unwrap_or_default();
     if conf.split(',').any(|c| c == "OPENSSL_NO_OCSP") {
         cfg("no_ocsp");

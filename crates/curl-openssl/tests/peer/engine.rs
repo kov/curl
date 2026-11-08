@@ -160,13 +160,30 @@ fn an_engine_s_certificate_and_key_serve_the_client() {
         let dir = certs_dir().join("engines");
         std::fs::create_dir_all(&dir).unwrap();
         let source = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/peer/curltest_engine.c");
-        let built = std::process::Command::new("cc")
-            .args(["-shared", "-fPIC", "-o"])
-            .arg(dir.join("curltest.so"))
-            .arg(source)
-            .arg("-lcrypto")
-            .status()
-            .unwrap();
+        // Named as OpenSSL's `dynamic` engine looks for it on the system.
+        let name = if cfg!(target_os = "macos") {
+            "curltest.dylib"
+        } else {
+            "curltest.so"
+        };
+        let mut cc = std::process::Command::new("cc");
+        cc.args(["-shared", "-fPIC", "-o"])
+            .arg(dir.join(name))
+            .arg(source);
+        // The headers of the library this crate was built over, which
+        // need not be the compiler's own (Homebrew's are not).
+        if let Some(include) = option_env!("CURL_OPENSSL_INCLUDE") {
+            cc.arg("-I").arg(include);
+        }
+        // On macOS a library's symbols are bound as it is linked unless
+        // left to be found as it loads: the engine takes libcrypto's from
+        // the test that loads it, which is not on the linker's path.
+        if cfg!(target_os = "macos") {
+            cc.args(["-undefined", "dynamic_lookup"]);
+        } else {
+            cc.arg("-lcrypto");
+        }
+        let built = cc.status().unwrap();
         assert!(built.success(), "cc: {built}");
         let ran = std::process::Command::new(std::env::current_exe().unwrap())
             .env("OPENSSL_ENGINES", &dir)

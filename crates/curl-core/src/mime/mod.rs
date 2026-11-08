@@ -318,7 +318,7 @@ pub trait MimeSource: Send + Sync {
 /// Its source clears it as the post is set again, as C forgets them then;
 /// until a request has sent a tree, a probe sends none.
 #[derive(Debug, Default)]
-pub struct SentHead(std::sync::Mutex<Vec<Vec<u8>>>);
+pub struct SentHead(curl_alloc::Lock<Vec<Vec<u8>>>);
 
 impl SentHead {
     /// Keep a copy of `lines`, sent now.

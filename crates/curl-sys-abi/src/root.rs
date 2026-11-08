@@ -9,7 +9,7 @@
 
 use core::ffi::{c_char, c_long, c_void};
 use core::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 use curl_core::components::{Components, Levels};
 use curl_core::conn::io::Winsock;
@@ -157,7 +157,7 @@ impl Root {
     }
 }
 
-static ROOT: Mutex<Root> = Mutex::new(Root {
+static ROOT: Lock<Root> = Lock::new(Root {
     initialized: 0,
     winsock: None,
     #[cfg(feature = "debug-hooks")]
@@ -321,22 +321,9 @@ pub unsafe extern "C" fn curl_global_sslset(
 }
 const _: ffi::proto::curl_global_sslset = curl_global_sslset;
 
-fn root() -> std::sync::MutexGuard<'static, Root> {
+fn root() -> curl_alloc::LockGuard<'static, Root> {
     // Panics abort, so the lock is never poisoned.
     ROOT.lock().expect("the global root lock is never poisoned")
-}
-
-/// Make the process-wide statics' locks now, untracked, before the debug
-/// build's memory tracking starts: where std's locks are boxed pthread
-/// mutexes (macOS), a static's first lock allocates a block it never
-/// frees, which every memdump would read as a leak. C's global lock and
-/// key log allocate nothing.
-#[cfg(feature = "debug-hooks")]
-pub(crate) fn make_locks() {
-    curl_alloc::track::untracked(|| {
-        drop(root());
-        KEYLOG.make_lock();
-    });
 }
 
 /// The allocator currently installed.

@@ -548,7 +548,7 @@ mod over_the_wire {
     /// What the paused writer took, and whether it paused yet.
     #[derive(Clone, Default)]
     struct PausesFirst {
-        took: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        took: std::sync::Arc<curl_alloc::Lock<Vec<u8>>>,
         paused: std::sync::Arc<crate::test_cell::Cell<bool>>,
     }
 
@@ -722,7 +722,7 @@ mod over_the_wire {
     #[test]
     fn an_empty_block_is_not_written() {
         #[derive(Clone, Default)]
-        struct Pieces(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
+        struct Pieces(std::sync::Arc<curl_alloc::Lock<Vec<usize>>>);
         impl crate::handler::WriteHandler for Pieces {
             fn write(
                 &self,
@@ -808,7 +808,7 @@ mod over_the_wire {
     /// it.
     #[test]
     fn a_block_is_filled_from_many_reads() {
-        struct Trickle(std::sync::Mutex<usize>);
+        struct Trickle(curl_alloc::Lock<usize>);
         impl crate::handler::ReadHandler for Trickle {
             fn read(
                 &self,
@@ -829,7 +829,7 @@ mod over_the_wire {
         let (said, ran) = against(talk, "tftp://127.0.0.1:PORT/f", |o| {
             o.method = Method::Upload;
             o.upload = UploadSource::Read {
-                handler: crate::handler::Handler::read(Trickle(std::sync::Mutex::new(600)))
+                handler: crate::handler::Handler::read(Trickle(curl_alloc::Lock::new(600)))
                     .unwrap(),
                 rewind: None,
                 size: Some(600),

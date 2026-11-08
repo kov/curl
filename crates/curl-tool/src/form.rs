@@ -2,10 +2,10 @@
 //! read into the tool's own tree of parts as it is given, and the tree
 //! made a `curl_core::mime::Mime` for each transfer (`tool2curlmime`).
 
+use curl_alloc::Lock;
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::error::ErrorKind;
@@ -777,7 +777,7 @@ fn to_mime(parts: &[ToolPart], msgs: &Messages) -> Result<Mime, ErrorKind> {
 /// it goes.
 fn stdin_content(origin: u64, size: Option<u64>, msgs: &Messages) -> Result<Content, ErrorKind> {
     let file = curl_os::fs::stdin().map_err(|_| ErrorKind::ReadError)?;
-    let state = TryArc::try_new(Mutex::new(StdinState { file, at: 0 })).map_err(oom)?;
+    let state = TryArc::try_new(Lock::new(StdinState { file, at: 0 })).map_err(oom)?;
     let reader = StdinPart {
         state,
         origin,
@@ -807,7 +807,7 @@ struct StdinState {
 /// Standard input read as a part (`tool_mime_stdin_read`), and started
 /// over (`tool_mime_stdin_seek`).
 struct StdinPart {
-    state: TryArc<Mutex<StdinState>>,
+    state: TryArc<Lock<StdinState>>,
     origin: u64,
     size: Option<u64>,
     msgs: Messages,

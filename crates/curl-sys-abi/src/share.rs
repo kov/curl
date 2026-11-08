@@ -14,7 +14,7 @@
 use core::ffi::{c_int, c_void};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 use curl_alloc::try_box;
 use curl_core::handler::Handler;
@@ -36,7 +36,7 @@ const MAGIC: u32 = 0x7e11_7a1e;
 pub(crate) struct ShimShare {
     magic: AtomicU32,
     core: Share,
-    settings: Mutex<Settings>,
+    settings: Lock<Settings>,
 }
 
 #[derive(Clone, Copy)]
@@ -124,7 +124,7 @@ pub extern "C" fn curl_share_init() -> *mut CURLSH {
     let shim = ShimShare {
         magic: AtomicU32::new(MAGIC),
         core,
-        settings: Mutex::new(Settings {
+        settings: Lock::new(Settings {
             lock: None,
             unlock: None,
             user: ptr::null_mut(),

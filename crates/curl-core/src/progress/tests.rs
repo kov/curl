@@ -1,6 +1,6 @@
+use curl_alloc::Lock;
 use std::num::{NonZeroU16, NonZeroU64};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::conn::io::FakeNet;
@@ -298,7 +298,7 @@ fn body(n: usize) -> Piece {
 
 /// Every call a progress handler saw: what it was told, the total time
 /// and download speed its report gave then, and its answer.
-type Calls = Arc<Mutex<Vec<(ProgressNow, Duration, u64)>>>;
+type Calls = Arc<Lock<Vec<(ProgressNow, Duration, u64)>>>;
 
 struct Recorder<F> {
     calls: Calls,
@@ -461,7 +461,7 @@ fn an_abort_after_the_request_fails_the_transfer() {
 
 /// What the meter wrote.
 #[derive(Clone, Default)]
-struct Sink(Arc<Mutex<Vec<u8>>>);
+struct Sink(Arc<Lock<Vec<u8>>>);
 
 impl TextSink for Sink {
     fn write(&self, text: &[u8]) {
@@ -637,8 +637,8 @@ fn a_paused_transfer_is_not_too_slow() {
 fn an_unpause_from_the_progress_handler_replays_at_once() {
     let (mut m, _clock) = multi();
     let mut e = script(vec![body(10), Piece::Yield]);
-    let written = Arc::new(Mutex::new(Vec::new()));
-    struct Once(Arc<Mutex<Vec<usize>>>);
+    let written = Arc::new(Lock::new(Vec::new()));
+    struct Once(Arc<Lock<Vec<usize>>>);
     impl WriteHandler for Once {
         fn write(&self, _: &mut TransferCx<'_>, b: &[u8]) -> Write {
             let first = self.0.lock().unwrap().is_empty();

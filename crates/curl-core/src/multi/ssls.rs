@@ -9,8 +9,8 @@
 //! No transfer runs for these calls. What they trace is told to the
 //! `notes` each is given, as a raw send's is.
 
+use curl_alloc::Lock;
 use std::fmt;
-use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
@@ -124,7 +124,7 @@ fn import(
 /// would want the cache meanwhile, as the shim's gate does: each a key to
 /// the one fact, none a copy of it.
 #[derive(Clone)]
-pub struct SessionsOut(TryArc<Mutex<Option<ThreadMark>>>);
+pub struct SessionsOut(TryArc<Lock<Option<ThreadMark>>>);
 
 /// A thread, told apart from every other one alive: the address of a byte
 /// of its own. Unlike `thread::current()`, it takes nothing to make: on a
@@ -147,7 +147,7 @@ impl ThreadMark {
 impl SessionsOut {
     /// Not going out.
     pub fn new() -> Result<SessionsOut, OutOfMemory> {
-        Ok(SessionsOut(TryArc::try_new(Mutex::new(None))?))
+        Ok(SessionsOut(TryArc::try_new(Lock::new(None))?))
     }
 
     /// Whether they are going out on this thread
@@ -161,7 +161,7 @@ impl SessionsOut {
         *self.locked() = going.then(ThreadMark::here);
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, Option<ThreadMark>> {
+    fn locked(&self) -> curl_alloc::LockGuard<'_, Option<ThreadMark>> {
         // Nothing panics holding it: a panic aborts the process.
         self.0.lock().expect("no panic holds its lock")
     }

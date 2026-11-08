@@ -598,7 +598,7 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
 #[test]
 fn a_stream_limit_read_while_idle_is_news_to_the_multi() {
     #[derive(Clone, Default)]
-    struct Written(Arc<Mutex<Vec<u8>>>);
+    struct Written(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Written {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);
@@ -733,7 +733,7 @@ fn a_stream_limit_read_while_idle_in_a_failed_read_is_dead() {
 #[test]
 fn an_idle_connection_its_server_closed_is_alive_and_reused() {
     #[derive(Clone, Default)]
-    struct Written(Arc<Mutex<Vec<u8>>>);
+    struct Written(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Written {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);
@@ -1489,7 +1489,7 @@ fn a_receive_limit_paces_a_stream() {
 struct DeliveredBy {
     clock: ManualClock,
     start: crate::time::Instant,
-    seen: Arc<Mutex<Vec<(std::time::Duration, usize)>>>,
+    seen: Arc<Lock<Vec<(std::time::Duration, usize)>>>,
 }
 
 impl WriteHandler for DeliveredBy {
@@ -2490,7 +2490,7 @@ fn two_transfers_stay_on_a_connection_between_performs() {
 
 /// The most a transfer's progress handler was told it downloaded.
 #[derive(Clone, Default)]
-struct MostDownloaded(Arc<Mutex<u64>>);
+struct MostDownloaded(Arc<Lock<u64>>);
 
 impl crate::handler::ProgressHandler for MostDownloaded {
     fn progress(
@@ -2525,7 +2525,7 @@ fn a_body_read_by_a_sibling_is_told_to_its_progress_handler() {
 
 /// Takes the first piece of the body, and pauses at the next.
 #[derive(Clone, Default)]
-struct PausesSecond(Arc<Mutex<u32>>);
+struct PausesSecond(Arc<Lock<u32>>);
 
 impl WriteHandler for PausesSecond {
     fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
@@ -2636,7 +2636,7 @@ fn a_step_reads_a_buffer_of_the_connection_at_most() {
 
 /// Pauses at the first piece of the body, and takes what comes after.
 #[derive(Clone, Default)]
-struct PausesFirst(Arc<Mutex<Vec<u8>>>);
+struct PausesFirst(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for PausesFirst {
     fn write(&self, _: &mut crate::multi::TransferCx<'_>, bytes: &[u8]) -> Write {
@@ -2921,7 +2921,7 @@ fn a_pause_from_outside_shuts_the_window_at_once() {
 
 /// Unpauses the transfer it is given, once, at its first write.
 #[derive(Clone, Default)]
-struct Unpauses(Arc<Mutex<Option<TransferId>>>);
+struct Unpauses(Arc<Lock<Option<TransferId>>>);
 
 impl WriteHandler for Unpauses {
     fn write(&self, cx: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
@@ -3018,7 +3018,7 @@ fn a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own() {
 
 /// Pauses once, at its `n`th write, and takes every other.
 #[derive(Clone)]
-struct PausesOnceAt(u32, Arc<Mutex<u32>>);
+struct PausesOnceAt(u32, Arc<Lock<u32>>);
 
 impl WriteHandler for PausesOnceAt {
     fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {

@@ -5,8 +5,9 @@
 //! secret — through the same `Call` the real library's callbacks reach.
 //! A scripted socket carries what it writes and reads.
 
+use curl_alloc::{Lock, LockGuard};
 use std::ffi::CStr;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use curl_core::error::ErrorKind;
 pub(crate) use curl_core::tls::Wire;
@@ -135,26 +136,26 @@ impl World {
 /// The fake library; each test makes its own, and leaks it, as the
 /// session holds its library for good.
 #[derive(Debug)]
-pub(crate) struct Fake(pub(crate) Arc<Mutex<World>>);
+pub(crate) struct Fake(pub(crate) Arc<Lock<World>>);
 
 /// Every library made, so that what is leaked stays reachable: Miri
 /// does not take it for a leak.
-static MADE: Mutex<Vec<&'static Fake>> = Mutex::new(Vec::new());
+static MADE: Lock<Vec<&'static Fake>> = Lock::new(Vec::new());
 
 impl Fake {
     /// A library over `world`.
     pub(crate) fn new(world: World) -> &'static Fake {
-        let lib = Box::leak(Box::new(Fake(Arc::new(Mutex::new(world)))));
+        let lib = Box::leak(Box::new(Fake(Arc::new(Lock::new(world)))));
         MADE.lock().unwrap_or_else(|e| e.into_inner()).push(lib);
         lib
     }
 
-    pub(crate) fn w(&self) -> MutexGuard<'_, World> {
+    pub(crate) fn w(&self) -> LockGuard<'_, World> {
         self.0.lock().unwrap()
     }
 }
 
-fn lock(world: &Arc<Mutex<World>>) -> MutexGuard<'_, World> {
+fn lock(world: &Arc<Lock<World>>) -> LockGuard<'_, World> {
     world.lock().unwrap()
 }
 
@@ -218,7 +219,7 @@ impl library::Gnutls for Fake {
 
 /// Credentials, which write their loads down.
 #[derive(Debug)]
-pub(crate) struct FakeCreds(Arc<Mutex<World>>);
+pub(crate) struct FakeCreds(Arc<Lock<World>>);
 
 fn text(c: &CStr) -> String {
     String::from_utf8_lossy(c.to_bytes()).into_owned()
@@ -266,10 +267,10 @@ impl library::Creds for FakeCreds {
 
 /// A session, which runs the world's scripts.
 #[derive(Debug)]
-pub(crate) struct FakeSession(Arc<Mutex<World>>);
+pub(crate) struct FakeSession(Arc<Lock<World>>);
 
 impl FakeSession {
-    fn w(&self) -> MutexGuard<'_, World> {
+    fn w(&self) -> LockGuard<'_, World> {
         lock(&self.0)
     }
 
@@ -497,7 +498,7 @@ impl library::Session for FakeSession {
 
 /// A certificate, the world's leaf whatever it imports.
 #[derive(Debug)]
-pub(crate) struct FakeCert(Arc<Mutex<World>>);
+pub(crate) struct FakeCert(Arc<Lock<World>>);
 
 impl FakeCert {
     fn leaf(&self) -> Leaf {

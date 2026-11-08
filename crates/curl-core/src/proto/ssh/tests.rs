@@ -2,8 +2,9 @@
 //! the logins, SFTP and SCP downloads, the quote commands, a listing, and
 //! the socket handed to the library past an HTTP proxy's tunnel.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::*;
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
@@ -116,7 +117,7 @@ impl World {
 
 /// The fake library: each session it makes reaches the one world.
 #[derive(Debug)]
-struct FakeSsh(Arc<Mutex<World>>);
+struct FakeSsh(Arc<Lock<World>>);
 
 impl Ssh for FakeSsh {
     fn session(&self) -> Option<Box<dyn Session>> {
@@ -143,7 +144,7 @@ struct Open {
 
 #[derive(Debug)]
 struct FakeSession {
-    world: Arc<Mutex<World>>,
+    world: Arc<Lock<World>>,
     pubkey: bool,
     /// The SCP channel: whether it writes, and its path.
     scp: Option<(ScpWay, Vec<u8>, usize)>,
@@ -157,7 +158,7 @@ struct FakeSession {
 }
 
 impl FakeSession {
-    fn w(&self) -> std::sync::MutexGuard<'_, World> {
+    fn w(&self) -> curl_alloc::LockGuard<'_, World> {
         self.world.lock().unwrap()
     }
 
@@ -695,7 +696,7 @@ impl Session for FakeSession {
 
 /// Collects the body.
 #[derive(Clone, Default)]
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Wrote {
@@ -718,7 +719,7 @@ impl crate::handler::HeaderHandler for Body {
 
 /// Collects the trace's text.
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>);
+struct Text(Arc<Lock<Vec<u8>>>);
 
 impl Text {
     fn text(&self) -> String {
@@ -736,12 +737,12 @@ impl DebugHandler for Text {
 
 /// A fake world with `files` in the home directory, offering the public
 /// key and password logins, the password `secret`.
-fn world(files: &[(&str, &str)]) -> Arc<Mutex<World>> {
+fn world(files: &[(&str, &str)]) -> Arc<Lock<World>> {
     world_with(files, |_| {})
 }
 
 /// The same, `set` changing it.
-fn world_with(files: &[(&str, &str)], set: impl FnOnce(&mut World)) -> Arc<Mutex<World>> {
+fn world_with(files: &[(&str, &str)], set: impl FnOnce(&mut World)) -> Arc<Lock<World>> {
     let mut w = World {
         files: files
             .iter()
@@ -752,7 +753,7 @@ fn world_with(files: &[(&str, &str)], set: impl FnOnce(&mut World)) -> Arc<Mutex
         ..World::default()
     };
     set(&mut w);
-    Arc::new(Mutex::new(w))
+    Arc::new(Lock::new(w))
 }
 
 /// A multi whose server at `port` takes `talk`.
@@ -780,7 +781,7 @@ fn silent() -> Conversation {
 /// trace kept.
 fn added(
     m: &mut Multi,
-    world: &Arc<Mutex<World>>,
+    world: &Arc<Lock<World>>,
     url: &str,
     set: impl FnOnce(&mut Options),
 ) -> (TransferId, Body, Text) {
@@ -790,7 +791,7 @@ fn added(
 /// The same, given `tls` as its TLS library if any.
 fn added_with_tls(
     m: &mut Multi,
-    world: &Arc<Mutex<World>>,
+    world: &Arc<Lock<World>>,
     url: &str,
     tls: Option<crate::libraries::Library<dyn crate::tls::TlsBackend>>,
     set: impl FnOnce(&mut Options),
@@ -843,7 +844,7 @@ fn run(
 
 /// The same over `w`.
 fn run_in(
-    w: &Arc<Mutex<World>>,
+    w: &Arc<Lock<World>>,
     url: &str,
     set: impl FnOnce(&mut Options),
 ) -> (Result<(), ErrorKind>, Vec<u8>, String, Vec<String>) {
@@ -1363,7 +1364,7 @@ fn the_host_key_s_fingerprints_are_checked() {
 }
 
 /// Decides as it was made to, keeping how the keys compared.
-struct Decides(crate::handler::KeyVerdict, Arc<Mutex<Vec<KeyMatch>>>);
+struct Decides(crate::handler::KeyVerdict, Arc<Lock<Vec<KeyMatch>>>);
 
 impl crate::handler::SshKeyHandler for Decides {
     fn check(
@@ -1388,7 +1389,7 @@ fn the_known_hosts_file_and_the_key_handler_decide() {
     use crate::handler::KeyVerdict as V;
     let checked = |known: KnownHosts, verdict: Option<V>| {
         let w = world_with(&[("/home/u/f", "x")], |w| w.known = Some(known));
-        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::new(Lock::new(Vec::new()));
         let handler =
             verdict.map(|v| crate::handler::Handler::ssh_key(Decides(v, seen.clone())).unwrap());
         let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
@@ -1514,7 +1515,7 @@ fn chatty() -> Multi {
 /// Run `url` over `w` on `m` to its end, as `run_in`.
 fn run_on(
     m: &mut Multi,
-    w: &Arc<Mutex<World>>,
+    w: &Arc<Lock<World>>,
     url: &str,
     set: impl FnOnce(&mut Options),
 ) -> (Result<(), ErrorKind>, Vec<u8>, String) {
@@ -1599,7 +1600,7 @@ fn a_download_that_ends_empty_on_a_reused_connection_is_not_made_again() {
 /// retries no upload outside HTTP.
 #[test]
 fn a_download_that_gets_nothing_on_a_reused_connection_is_made_again() {
-    let connects = |w: &Arc<Mutex<World>>| {
+    let connects = |w: &Arc<Lock<World>>| {
         w.lock()
             .unwrap()
             .calls
@@ -1865,7 +1866,7 @@ fn a_resumed_upload_skips_to_its_point() {
 /// The upload's handler, reading `body` from where its seek put it.
 struct Seekable {
     body: &'static [u8],
-    at: Arc<Mutex<usize>>,
+    at: Arc<Lock<usize>>,
     /// What the seek answers.
     seeks: Result<(), crate::handler::SeekFailed>,
 }
@@ -1906,7 +1907,7 @@ fn a_resumed_upload_seeks_its_source() {
     use crate::options::{Resume, UploadSource};
     let resumed = |from: u64, seeks: Result<(), SeekFailed>| {
         let w = world(&[("/home/u/f", "abcdef")]);
-        let at = Arc::new(Mutex::new(0));
+        let at = Arc::new(Lock::new(0));
         let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
             o.method = crate::options::Method::Upload;
             let source = || Seekable {

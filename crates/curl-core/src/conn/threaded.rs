@@ -14,6 +14,10 @@
 //! lives under the resolver's lock beside the threads', and the handle
 //! dropped takes it all out, whoever drops it and wherever.
 
+// A `Condvar` waits on std's `Mutex` alone, whose first lock may allocate
+// infallibly (macOS), as starting the thread it serves already does.
+#![allow(clippy::disallowed_types)]
+
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::{Condvar, Mutex, MutexGuard};

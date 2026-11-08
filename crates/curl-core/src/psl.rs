@@ -8,9 +8,9 @@
 //! that is let go, before the jar's own unlock: the application sees C's
 //! order, and is never called under one of the share's own locks.
 
+use curl_alloc::Lock;
 use std::cell::RefCell;
 use std::fmt;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -41,7 +41,7 @@ impl fmt::Debug for dyn SuffixLibrary {
 }
 
 /// A list, kept for those using it (`struct PslCache`).
-pub(crate) struct PslCache(Mutex<Loaded>);
+pub(crate) struct PslCache(Lock<Loaded>);
 
 struct Loaded {
     list: Option<Suffixes>,
@@ -52,7 +52,7 @@ struct Loaded {
 
 impl Default for PslCache {
     fn default() -> PslCache {
-        PslCache(Mutex::new(Loaded {
+        PslCache(Lock::new(Loaded {
             list: None,
             latest: false,
             expires: Instant::EPOCH,

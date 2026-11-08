@@ -509,7 +509,7 @@ fn the_key_log_has_each_connection_s_secrets() {
     let mut m = multi(try_box(SystemClock::new()).unwrap());
     let mut gets = Vec::new();
     for _ in 0..2 {
-        let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+        let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
         let mut easy = Easy::new();
         easy.set_libraries(SharedLibraries::of_static(&LOGGING_LIBRARIES));
         let o = easy.options_mut();
@@ -603,7 +603,7 @@ fn a_session_keeps_its_key_log_past_its_owner() {
         Some(gate),
     );
     let mut m = multi(try_box(SystemClock::new()).unwrap());
-    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
     let mut easy = Easy::new();
     {
         let log = SharedKeyLog::new().unwrap();

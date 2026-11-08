@@ -4,10 +4,11 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+use curl_alloc::Lock;
 use std::collections::VecDeque;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use curl_alloc::OutOfMemory;
@@ -207,8 +208,8 @@ impl Script {
         self.last_ts = Some(now);
     }
 
-    pub fn new() -> Arc<Mutex<Script>> {
-        Arc::new(Mutex::new(Script {
+    pub fn new() -> Arc<Lock<Script>> {
+        Arc::new(Lock::new(Script {
             max_payload: 1200,
             path_max_payload: 1452,
             send_quantum: 12000,
@@ -222,18 +223,18 @@ impl Script {
 /// there are some.
 #[derive(Debug)]
 pub struct FakeHttp3 {
-    pub script: Arc<Mutex<Script>>,
-    pub then: Mutex<VecDeque<Arc<Mutex<Script>>>>,
+    pub script: Arc<Lock<Script>>,
+    pub then: Lock<VecDeque<Arc<Lock<Script>>>>,
     /// What each `client` was given.
-    pub setups: Mutex<Vec<ClientSetup>>,
+    pub setups: Lock<Vec<ClientSetup>>,
 }
 
 impl FakeHttp3 {
-    pub fn new(script: Arc<Mutex<Script>>) -> FakeHttp3 {
+    pub fn new(script: Arc<Lock<Script>>) -> FakeHttp3 {
         FakeHttp3 {
             script,
-            then: Mutex::new(VecDeque::new()),
-            setups: Mutex::new(Vec::new()),
+            then: Lock::new(VecDeque::new()),
+            setups: Lock::new(Vec::new()),
         }
     }
 }
@@ -293,7 +294,7 @@ impl FakeHttp3 {
 
 /// A connection the script drives.
 struct FakeConnection {
-    script: Arc<Mutex<Script>>,
+    script: Arc<Lock<Script>>,
     tls: Box<dyn QuicTls>,
     next_stream: i64,
 }

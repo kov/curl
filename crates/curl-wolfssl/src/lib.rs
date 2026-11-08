@@ -30,7 +30,7 @@ mod fake;
 mod tests;
 
 use core::fmt;
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
@@ -51,7 +51,7 @@ mod ca {
 /// sessions' secrets go to, if it is given one.
 #[derive(Debug)]
 pub struct WolfSsl {
-    method: Mutex<Option<TryArc<wolfssl::Method>>>,
+    method: Lock<Option<TryArc<wolfssl::Method>>>,
     keylog: Option<SharedKeyLog>,
 }
 
@@ -60,7 +60,7 @@ impl WolfSsl {
     /// session until `init` succeeds.
     pub const fn new() -> WolfSsl {
         WolfSsl {
-            method: Mutex::new(None),
+            method: Lock::new(None),
             keylog: None,
         }
     }
@@ -70,7 +70,7 @@ impl WolfSsl {
     /// global init does.
     pub const fn logging_keys_to(keylog: SharedKeyLog) -> WolfSsl {
         WolfSsl {
-            method: Mutex::new(None),
+            method: Lock::new(None),
             keylog: Some(keylog),
         }
     }
@@ -80,7 +80,7 @@ impl WolfSsl {
     /// the library is initialised.
     pub fn with_keylog(&self, keylog: SharedKeyLog) -> WolfSsl {
         WolfSsl {
-            method: Mutex::new(self.method.lock().expect("panics abort").clone()),
+            method: Lock::new(self.method.lock().expect("panics abort").clone()),
             keylog: Some(keylog),
         }
     }

@@ -408,7 +408,7 @@ fn naming_the_default_ca_file_reuses_a_connection_made_with_it() {
 /// Each line a transfer's debug handler hears, with whether the TLS
 /// library's objects were in its reach as it heard it.
 #[derive(Clone, Default)]
-struct NativeHeard(std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>);
+struct NativeHeard(std::sync::Arc<curl_alloc::Lock<Vec<(String, bool)>>>);
 
 impl crate::handler::DebugHandler for NativeHeard {
     fn debug(&self, cx: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -1079,7 +1079,7 @@ fn a_session_s_records_reach_the_debug_handler() {
 fn a_session_traces_its_records_only_for_a_verbose_debug_handler() {
     /// Verbose output without a debug handler, kept.
     #[derive(Clone, Default)]
-    struct Stderr(Arc<Mutex<Vec<u8>>>);
+    struct Stderr(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Stderr {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);
@@ -2220,7 +2220,7 @@ fn an_http_2_proxy_s_answer_is_held_to_c_s_limit() {
 fn a_tunnel_through_an_http_2_proxy_shuts_down_in_its_name() {
     use crate::components::{Component, Components, Level};
     #[derive(Clone, Default)]
-    struct Written(Arc<Mutex<Vec<u8>>>);
+    struct Written(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Written {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);
@@ -2566,7 +2566,7 @@ fn a_tunnel_through_an_http_2_proxy_traces_its_ends() {
 /// What the progress handler saw on each call: the bytes downloaded, and
 /// whether the connection's TLS objects were within reach.
 #[derive(Clone, Default)]
-struct ProgressSeen(std::sync::Arc<std::sync::Mutex<Vec<(u64, bool)>>>);
+struct ProgressSeen(std::sync::Arc<curl_alloc::Lock<Vec<(u64, bool)>>>);
 
 impl crate::handler::ProgressHandler for ProgressSeen {
     fn progress(

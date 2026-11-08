@@ -468,11 +468,11 @@ pub struct DnsAsk<'a> {
 /// resolves, so that one closing as it is dropped, wherever that is, is
 /// told all the same.
 #[derive(Clone, Debug)]
-pub struct SocketsClosed(TryArc<std::sync::Mutex<Vec<SocketKey>>>);
+pub struct SocketsClosed(TryArc<curl_alloc::Lock<Vec<SocketKey>>>);
 
 impl SocketsClosed {
     pub fn new() -> Result<SocketsClosed, OutOfMemory> {
-        Ok(SocketsClosed(TryArc::try_new(std::sync::Mutex::new(
+        Ok(SocketsClosed(TryArc::try_new(curl_alloc::Lock::new(
             Vec::new(),
         ))?))
     }
@@ -1045,7 +1045,7 @@ pub enum Peer {
 /// keeps a clone to read what the peer was sent.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Clone, Debug)]
-pub struct Conversation(curl_alloc::TryArc<std::sync::Mutex<Wire>>);
+pub struct Conversation(curl_alloc::TryArc<curl_alloc::Lock<Wire>>);
 
 /// What a scripted send does ([`Conversation::scripted_sends`]).
 #[cfg(any(test, feature = "test-util"))]
@@ -1220,8 +1220,7 @@ impl Conversation {
             wire.replies.try_push(copy).expect("a test's replies fit");
         }
         Conversation(
-            curl_alloc::TryArc::try_new(curl_alloc::track::untracked_mutex(wire))
-                .expect("a test's peer fits"),
+            curl_alloc::TryArc::try_new(curl_alloc::Lock::new(wire)).expect("a test's peer fits"),
         )
     }
 
@@ -1616,7 +1615,7 @@ impl Default for Late {
 /// The fake's resolves waiting: each one's id, waiter and gate, and
 /// whether its answer was told of.
 #[cfg(any(test, feature = "test-util"))]
-type FakeResolves = TryArc<std::sync::Mutex<Vec<FakeWaiting>>>;
+type FakeResolves = TryArc<curl_alloc::Lock<Vec<FakeWaiting>>>;
 
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug)]
@@ -1656,7 +1655,7 @@ impl FakeResolve {
 }
 
 #[cfg(any(test, feature = "test-util"))]
-fn lock_resolves(all: &FakeResolves) -> std::sync::MutexGuard<'_, Vec<FakeWaiting>> {
+fn lock_resolves(all: &FakeResolves) -> curl_alloc::LockGuard<'_, Vec<FakeWaiting>> {
     all.lock()
         .expect("no test panics holding the fake's resolves")
 }
@@ -1729,7 +1728,7 @@ impl FakeNet {
             datagram_peers: Vec::new(),
             names: Vec::new(),
             late: Vec::new(),
-            resolving: TryArc::try_new(curl_alloc::track::untracked_mutex(Vec::new()))
+            resolving: TryArc::try_new(curl_alloc::Lock::new(Vec::new()))
                 .expect("a test's resolves fit"),
             next_resolve: 0,
             conversations: Vec::new(),
@@ -2062,7 +2061,7 @@ impl Net for FakeNet {
         let wire = match self.conversations.iter().position(|(a, _)| a == addr) {
             Some(at) if peer.is_some() => self.conversations.remove(at).1,
             _ => Conversation(
-                curl_alloc::TryArc::try_new(curl_alloc::track::untracked_mutex(Wire::default()))
+                curl_alloc::TryArc::try_new(curl_alloc::Lock::new(Wire::default()))
                     .map_err(|_| io::ErrorKind::OutOfMemory)?,
             ),
         };
@@ -2108,14 +2107,14 @@ impl Net for FakeNet {
             peer,
             local,
             binding: self.binding.clone(),
-            bound: curl_alloc::track::untracked_mutex(None),
+            bound: curl_alloc::Lock::new(None),
             connected: std::sync::atomic::AtomicBool::new(false),
             opened_for: addr.clone(),
             clock: self.clock.clone(),
             ready_at,
             wire,
             listening: std::sync::atomic::AtomicBool::new(false),
-            incoming: curl_alloc::track::untracked_mutex(incoming),
+            incoming: curl_alloc::Lock::new(incoming),
             from: None,
         };
         Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
@@ -2166,7 +2165,7 @@ struct FakeSocket {
     local: Option<SocketAddr>,
     binding: Option<curl_alloc::TryArc<Binding>>,
     /// What it was bound to before it connected.
-    bound: std::sync::Mutex<Option<SocketAddr>>,
+    bound: curl_alloc::Lock<Option<SocketAddr>>,
     /// Whether its connect started: only then is it bound.
     connected: std::sync::atomic::AtomicBool,
     opened_for: Remote,
@@ -2177,7 +2176,7 @@ struct FakeSocket {
     /// It listens.
     listening: std::sync::atomic::AtomicBool,
     /// The connection that comes in once it listens, until accepted.
-    incoming: std::sync::Mutex<Option<Incoming>>,
+    incoming: curl_alloc::Lock<Option<Incoming>>,
     /// Where an accepted socket's peer connected from.
     from: Option<SocketAddr>,
 }
@@ -2413,14 +2412,14 @@ impl Socket for FakeSocket {
             peer: Some(Peer::Accepts),
             local: Some(local),
             binding: None,
-            bound: curl_alloc::track::untracked_mutex(None),
+            bound: curl_alloc::Lock::new(None),
             connected: std::sync::atomic::AtomicBool::new(true),
             opened_for: Remote::Inet(incoming.from),
             clock: self.clock.clone(),
             ready_at: None,
             wire: incoming.talk,
             listening: std::sync::atomic::AtomicBool::new(false),
-            incoming: curl_alloc::track::untracked_mutex(None),
+            incoming: curl_alloc::Lock::new(None),
             from: Some(incoming.from),
         };
         Ok(Some(
@@ -2807,7 +2806,7 @@ impl<F: FnMut(&[u8], Family) -> Result<Vec<IpAddr>, ResolveFailure>> Resolver fo
 
 /// A fake network the test reaches while the multi holds it.
 #[cfg(test)]
-pub(crate) struct SharedNet(pub(crate) std::sync::Arc<std::sync::Mutex<FakeNet>>);
+pub(crate) struct SharedNet(pub(crate) std::sync::Arc<curl_alloc::Lock<FakeNet>>);
 
 #[cfg(test)]
 impl Net for SharedNet {

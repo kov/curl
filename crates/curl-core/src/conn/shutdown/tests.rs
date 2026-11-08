@@ -18,7 +18,7 @@ fn the_set_is_capped_as_c_caps_it() {
 struct Logged {
     name: &'static str,
     waited: bool,
-    log: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+    log: std::sync::Arc<curl_alloc::Lock<Vec<&'static str>>>,
 }
 
 impl crate::conn::layer::Part<crate::conn::layer::Below<'_>> for Logged {
@@ -73,7 +73,7 @@ fn layers_shut_down_from_the_top_one_at_a_time() {
         .with_conversation(at, talk.clone());
     let socket = Sock::new(crate::conn::io::dial(&mut net, at), Closer::System);
     let mut stream = Stream::new(socket);
-    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = std::sync::Arc::new(curl_alloc::Lock::new(Vec::new()));
     for name in ["bottom", "top"] {
         let layer = Logged {
             name,

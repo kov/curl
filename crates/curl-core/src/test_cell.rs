@@ -1,14 +1,14 @@
 //! `std::cell::Cell`'s API over a lock, for what tests record from inside
 //! handlers, which must be `Sync` as a handler is.
 
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 #[derive(Debug, Default)]
-pub(crate) struct Cell<T>(Mutex<T>);
+pub(crate) struct Cell<T>(Lock<T>);
 
 impl<T> Cell<T> {
     pub(crate) const fn new(value: T) -> Cell<T> {
-        Cell(Mutex::new(value))
+        Cell(Lock::new(value))
     }
 
     pub(crate) fn set(&self, value: T) {

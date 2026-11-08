@@ -5,11 +5,12 @@
 #![cfg(windows)]
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+use curl_alloc::Lock;
 use std::io::{self, Read, Write as _};
 use std::net::{SocketAddr, TcpListener};
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -231,7 +232,7 @@ fn serve() -> (SocketAddr, JoinHandle<Vec<u8>>) {
     (at, server)
 }
 
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -258,7 +259,7 @@ fn a_record_half_sent_is_waited_for_by_the_multi() {
     };
     let mut m: Multi = Multi::new(env).unwrap();
     let posted: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
-    let body = Arc::new(Mutex::new(Vec::new()));
+    let body = Arc::new(Lock::new(Vec::new()));
     let mut easy = Easy::new();
     easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
     let o = easy.options_mut();

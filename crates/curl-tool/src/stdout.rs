@@ -2,13 +2,13 @@
 //! a trace sent to `-` and `--write-out` all go through the one buffer,
 //! in the order written, and a write that fails at the end fails there.
 
+use curl_alloc::Lock;
 use std::fs::File;
 use std::io;
 #[cfg(unix)]
 use std::os::fd::AsFd as _;
 #[cfg(windows)]
 use std::os::windows::io::AsHandle as _;
-use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc};
 use curl_os::fs::Std;
@@ -34,7 +34,7 @@ impl io::Write for Printed {
 
 /// The process's standard output, shared by whatever writes to it.
 #[derive(Clone)]
-pub(crate) struct Stdout(TryArc<Mutex<Stdio<Descriptor>>>);
+pub(crate) struct Stdout(TryArc<Lock<Stdio<Descriptor>>>);
 
 /// Descriptor 1, through a copy of its own: `std::io::stdout` holds a
 /// buffer of its own, and would hide how much each write took.
@@ -76,9 +76,9 @@ impl Stdout {
         #[cfg(windows)]
         let fd = io::stdout().as_handle().try_clone_to_owned();
         let fd = fd.ok().map(File::from);
-        Ok(Stdout(TryArc::try_new(Mutex::new(Stdio::new(
-            Descriptor(fd),
-        )))?))
+        Ok(Stdout(TryArc::try_new(Lock::new(Stdio::new(Descriptor(
+            fd,
+        ))))?))
     }
 
     /// Write `bytes`, held as stdio holds them: how many were taken
@@ -121,7 +121,7 @@ mod tests {
 
     /// Standard output with descriptor 1 not open.
     fn closed() -> Stdout {
-        Stdout(TryArc::try_new(Mutex::new(Stdio::new(Descriptor(None)))).unwrap())
+        Stdout(TryArc::try_new(Lock::new(Stdio::new(Descriptor(None)))).unwrap())
     }
 
     /// On Windows standard output is buffered for each write when it is a

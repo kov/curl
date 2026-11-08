@@ -3,8 +3,9 @@
 //! with its transfer, an answer awaited in DONE, and a
 //! protected data connection resuming its control connection's session.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
@@ -22,7 +23,7 @@ const DATA_PORT: u16 = 8022;
 
 /// Collects the body.
 #[derive(Clone, Default)]
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -33,7 +34,7 @@ impl WriteHandler for Body {
 
 /// Collects the trace's text.
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>);
+struct Text(Arc<Lock<Vec<u8>>>);
 
 impl Text {
     fn text(&self) -> String {
@@ -52,7 +53,7 @@ impl DebugHandler for Text {
 /// The fake network, its open sockets counted by the test while a multi
 /// holds it.
 #[derive(Clone)]
-struct Counted(Arc<Mutex<FakeNet>>);
+struct Counted(Arc<Lock<FakeNet>>);
 
 impl Counted {
     fn open(&self) -> usize {
@@ -138,7 +139,7 @@ fn clocked_with(
     for c in data {
         net = net.with_conversation(data_at, (*c).clone());
     }
-    let counted = Counted(Arc::new(Mutex::new(net)));
+    let counted = Counted(Arc::new(Lock::new(net)));
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(counted.clone()),
@@ -1323,7 +1324,7 @@ fn proxied(control: &Conversation, data: &Conversation) -> Multi {
         .with_conversation(at, data.clone());
     let env = Env {
         clock: Box::new(clock),
-        net: Box::new(Counted(Arc::new(Mutex::new(net)))),
+        net: Box::new(Counted(Arc::new(Lock::new(net)))),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
@@ -1441,7 +1442,7 @@ fn a_silent_data_address_gives_way_after_the_eyeballs_delay() {
         .with_conversation(at, file.clone());
     let env = Env {
         clock: Box::new(clock.clone()),
-        net: Box::new(Counted(Arc::new(Mutex::new(net)))),
+        net: Box::new(Counted(Arc::new(Lock::new(net)))),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
@@ -1545,7 +1546,7 @@ fn a_data_connection_its_socks_proxy_refuses_is_closed() {
     let file = Conversation::replies(&[&[5, 0], &refused], true).per_send();
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PROXY_PORT));
-    let net = Counted(Arc::new(Mutex::new(
+    let net = Counted(Arc::new(Lock::new(
         FakeNet::new(clock.clone())
             .with_peer(at, Net::Accepts)
             .with_conversation(at, talk.clone())
@@ -1669,7 +1670,7 @@ fn a_wildcard_download_tells_the_application_of_each_file() {
         ChunkBegin, ChunkBeginHandler, ChunkEndHandler, FileInfo, FnMatchHandler, Matched,
     };
     #[derive(Clone, Default)]
-    struct Told(Arc<Mutex<Vec<String>>>);
+    struct Told(Arc<Lock<Vec<String>>>);
     impl ChunkBeginHandler for Told {
         fn begin(&self, _: &mut TransferCx<'_>, file: &FileInfo<'_>, remains: usize) -> ChunkBegin {
             let name = String::from_utf8_lossy(file.name).into_owned();
@@ -1878,7 +1879,7 @@ fn serving_active_with(
     for c in data {
         net = net.with_incoming(at.ip(), ACTIVE_FROM, c, after);
     }
-    let counted = Counted(Arc::new(Mutex::new(net)));
+    let counted = Counted(Arc::new(Lock::new(net)));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(counted.clone()),
@@ -2495,7 +2496,7 @@ fn an_epsv_refused_over_ipv6_fails() {
         .with_conversation(at, control.clone());
     let env = Env {
         clock: Box::new(clock),
-        net: Box::new(Counted(Arc::new(Mutex::new(net)))),
+        net: Box::new(Counted(Arc::new(Lock::new(net)))),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
@@ -4353,7 +4354,7 @@ fn quit_waits_for_an_answer_no_longer_than_a_second_of_silence() {
 
 /// The text written to it.
 #[derive(Clone, Default)]
-struct Written(Arc<Mutex<Vec<u8>>>);
+struct Written(Arc<Lock<Vec<u8>>>);
 
 impl crate::handler::TextSink for Written {
     fn write(&self, text: &[u8]) {
@@ -4460,7 +4461,7 @@ fn a_transfer_needing_room_waits_for_the_answer_to_quit() {
             .with_conversation(at, talk.clone())
             .with_conversation(data_at, data(b"hello"));
     }
-    let counted = Counted(Arc::new(Mutex::new(net)));
+    let counted = Counted(Arc::new(Lock::new(net)));
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(counted.clone()),

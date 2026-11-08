@@ -378,9 +378,10 @@ proptest::proptest! {
 // as its `World` says: the connect's binds, simple and SASL, the version 2
 // fallback, STARTTLS refused, the search and its result.
 
+use curl_alloc::Lock;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
@@ -448,7 +449,7 @@ impl Default for World {
 }
 
 #[derive(Debug)]
-struct FakeLdap(Arc<Mutex<World>>);
+struct FakeLdap(Arc<Lock<World>>);
 
 impl Ldap for FakeLdap {
     fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError> {
@@ -510,7 +511,7 @@ impl Ldap for FakeLdap {
 
 #[derive(Debug)]
 struct FakeSession {
-    world: Arc<Mutex<World>>,
+    world: Arc<Lock<World>>,
     next: i32,
     /// The messages answering what was sent, each with its id.
     answers: VecDeque<(MsgId, Answer)>,
@@ -774,7 +775,7 @@ impl Message for Answer {
 }
 
 #[derive(Clone, Default)]
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Writes {
@@ -793,7 +794,7 @@ impl WriteHandler for Refuses {
 }
 
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>);
+struct Text(Arc<Lock<Vec<u8>>>);
 
 impl DebugHandler for Text {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
@@ -816,7 +817,7 @@ struct Ran {
 
 /// Collects the multi's own trace.
 #[derive(Clone, Default)]
-struct Internal(Arc<Mutex<Vec<u8>>>);
+struct Internal(Arc<Lock<Vec<u8>>>);
 
 impl crate::handler::TextSink for Internal {
     fn write(&self, text: &[u8]) {
@@ -857,7 +858,7 @@ fn run_driven(
     let mut w = World::default();
     world(&mut w);
     let trace_write = w.trace_write;
-    let w = Arc::new(Mutex::new(w));
+    let w = Arc::new(Lock::new(w));
     let ldap: &'static FakeLdap = Box::leak(Box::new(FakeLdap(w.clone())));
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
@@ -1393,8 +1394,8 @@ fn an_accepted_starttls_upgrades_the_connection() {
 /// Pauses its first write, then takes them all.
 #[derive(Clone, Default)]
 struct PausesFirst {
-    took: Arc<Mutex<Vec<u8>>>,
-    paused: Arc<Mutex<bool>>,
+    took: Arc<Lock<Vec<u8>>>,
+    paused: Arc<Lock<bool>>,
 }
 
 impl WriteHandler for PausesFirst {

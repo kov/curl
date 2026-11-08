@@ -3,9 +3,9 @@
 //! the output side of `src/tool_cb_hdr.c`).
 
 use core::ffi::CStr;
+use curl_alloc::Lock;
 use std::fs::File;
 use std::io::Write as _;
-use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 use curl_core::handler::{Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler};
@@ -40,7 +40,7 @@ const LINK_END: &[u8] = b"\x1b\\";
 /// A transfer's output, shared by its write and header handlers and the
 /// code that runs the transfer.
 #[derive(Clone)]
-pub(crate) struct Output(TryArc<Mutex<Stream>>);
+pub(crate) struct Output(TryArc<Lock<Stream>>);
 
 /// Where output goes, and how (C's `struct OutStruct`).
 pub(crate) struct Stream {
@@ -292,10 +292,10 @@ impl Output {
             utf8seq: [0; 5],
             msgs,
         };
-        Ok(Output(TryArc::try_new(Mutex::new(stream))?))
+        Ok(Output(TryArc::try_new(Lock::new(stream))?))
     }
 
-    pub(crate) fn stream(&self) -> std::sync::MutexGuard<'_, Stream> {
+    pub(crate) fn stream(&self) -> curl_alloc::LockGuard<'_, Stream> {
         self.0.lock().expect("no panic holds it")
     }
 

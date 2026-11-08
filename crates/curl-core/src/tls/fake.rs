@@ -24,11 +24,11 @@
 //! kept and sent before anything else: a read that must send first
 //! waits to write.
 
+use curl_alloc::Lock;
 use std::fmt;
 use std::io;
 use std::num::NonZeroUsize;
 use std::ptr::NonNull;
-use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
@@ -67,7 +67,7 @@ const ASKED: usize = 32;
 /// the log the library shares with the test.
 #[derive(Debug)]
 pub struct FakeTls {
-    log: TryArc<Mutex<FakeLog>>,
+    log: TryArc<Lock<FakeLog>>,
     /// Each session stops the transfer receiving once, as the peer's
     /// flight is read, as a verification the application finishes later
     /// does (`SSL_ERROR_WANT_RETRY_VERIFY`).
@@ -179,11 +179,11 @@ pub struct FakeLog {
 /// its drop in.
 struct FakeState {
     number: usize,
-    log: TryArc<Mutex<FakeLog>>,
+    log: TryArc<Lock<FakeLog>>,
 }
 
 impl FakeState {
-    fn new(log: &TryArc<Mutex<FakeLog>>) -> FakeState {
+    fn new(log: &TryArc<Lock<FakeLog>>) -> FakeState {
         let mut l = log.lock().expect("no test panics holding the log");
         l.states_made += 1;
         FakeState {
@@ -239,7 +239,7 @@ impl FakeTls {
             ech_configs: None,
         };
         Ok(FakeTls {
-            log: TryArc::try_new(Mutex::new(log))?,
+            log: TryArc::try_new(Lock::new(log))?,
             pause: false,
             agree: false,
             tickets: false,
@@ -554,7 +554,7 @@ enum Stage {
 struct FakeSession {
     /// A ticket is to be given on the first read.
     ticket_due: bool,
-    log: TryArc<Mutex<FakeLog>>,
+    log: TryArc<Lock<FakeLog>>,
     /// Its number, counting from 1 in the order the library made them:
     /// what it says its verification of the peer gave.
     number: usize,
@@ -616,7 +616,7 @@ enum Flushed {
 }
 
 impl FakeSession {
-    fn log(&self) -> std::sync::MutexGuard<'_, FakeLog> {
+    fn log(&self) -> curl_alloc::LockGuard<'_, FakeLog> {
         self.log.lock().expect("no test panics holding the log")
     }
 
@@ -1139,7 +1139,7 @@ pub fn quic_session() -> Result<Box<dyn QuicTls>, OutOfMemory> {
 /// A QUIC session of the fake's: its handshake is the fake QUIC
 /// library's to script; its check passes, or fails as an unknown CA's.
 struct FakeQuicSession {
-    log: TryArc<Mutex<FakeLog>>,
+    log: TryArc<Lock<FakeLog>>,
     number: usize,
     unverified: bool,
     /// The trust store is set up (`before_recv`).

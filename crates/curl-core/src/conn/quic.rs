@@ -1921,8 +1921,9 @@ impl State {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 pub(crate) mod tests {
+    use curl_alloc::Lock;
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use super::*;
     use crate::conn::io::{Connect, Readiness, Recv, Remote, Sent, SocketKey, SocketOption};
@@ -1945,13 +1946,13 @@ pub(crate) mod tests {
     /// script is used, and whose receives give what is queued.
     #[derive(Debug, Default)]
     pub(crate) struct Scripted {
-        pub(crate) sends: Mutex<VecDeque<Act>>,
-        pub(crate) sent: Mutex<Vec<(usize, usize)>>,
-        pub(crate) datagrams: Mutex<VecDeque<Result<Vec<u8>, i32>>>,
+        pub(crate) sends: Lock<VecDeque<Act>>,
+        pub(crate) sent: Lock<Vec<(usize, usize)>>,
+        pub(crate) datagrams: Lock<VecDeque<Result<Vec<u8>, i32>>>,
         /// The size of the packets the kernel joined each datagram of
         /// (GRO), if it did.
         #[cfg(unix)]
-        pub(crate) segment: Mutex<Option<usize>>,
+        pub(crate) segment: Lock<Option<usize>>,
     }
 
     impl Scripted {
@@ -2219,13 +2220,13 @@ pub(crate) mod tests {
 
     /// A QUIC connection over the fake library running `script`, and a
     /// context for it, with its socket.
-    fn quic(script: &Arc<Mutex<Script>>) -> (Quic, Cx) {
+    fn quic(script: &Arc<Lock<Script>>) -> (Quic, Cx) {
         quic_over(script, false)
     }
 
     /// `quic`, its context with layers its datagrams go through if
     /// `layered`.
-    fn quic_over(script: &Arc<Mutex<Script>>, layered: bool) -> (Quic, Cx) {
+    fn quic_over(script: &Arc<Lock<Script>>, layered: bool) -> (Quic, Cx) {
         let clock = ManualClock::new().unwrap();
         let remote = SocketAddr::from(([127, 0, 0, 1], 443));
         let setup = ClientSetup {
@@ -2270,7 +2271,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn packets(script: &Arc<Mutex<Script>>, sizes: &[usize]) {
+    fn packets(script: &Arc<Lock<Script>>, sizes: &[usize]) {
         let mut s = script.lock().unwrap();
         for &n in sizes {
             s.out.push_back(vec![0x51; n]);
@@ -2913,7 +2914,7 @@ pub(crate) mod tests {
     /// The layer under a connection over a tunnel: nothing to read or
     /// send, and a flush that counts itself and fails.
     #[derive(Debug)]
-    struct Stuck(Arc<Mutex<usize>>);
+    struct Stuck(Arc<Lock<usize>>);
 
     impl crate::conn::part::Part<Below<'_>> for Stuck {}
 
@@ -2938,7 +2939,7 @@ pub(crate) mod tests {
     fn a_call_over_a_tunnel_flushes_its_layers() {
         let script = Script::new();
         let (_q, mut cx) = quic(&script);
-        let flushes = Arc::new(Mutex::new(0));
+        let flushes = Arc::new(Lock::new(0));
         let mut layers: [Box<dyn crate::conn::layer::Layer>; 1] =
             [Box::new(Stuck(flushes.clone()))];
         let socket = Scripted::default();

@@ -38,7 +38,7 @@ fn easy(url: &str) -> Easy {
 type Seen = (&'static str, Vec<u8>);
 
 /// What the handlers of a test saw, in order.
-type Log = std::sync::Arc<std::sync::Mutex<Vec<Seen>>>;
+type Log = std::sync::Arc<curl_alloc::Lock<Vec<Seen>>>;
 
 /// Records what it is given; answers `verdict`; installs `then` as the
 /// transfer's write handler on its first call.
@@ -46,7 +46,7 @@ struct Recorder {
     name: &'static str,
     log: Log,
     verdict: Write,
-    then: std::sync::Mutex<Option<Handler<dyn WriteHandler>>>,
+    then: curl_alloc::Lock<Option<Handler<dyn WriteHandler>>>,
 }
 
 impl Recorder {
@@ -55,7 +55,7 @@ impl Recorder {
             name,
             log: log.clone(),
             verdict: Write::Accepted,
-            then: std::sync::Mutex::new(None),
+            then: curl_alloc::Lock::new(None),
         }
     }
 }
@@ -205,7 +205,7 @@ impl WriteHandler for Explains {
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct Trace(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+struct Trace(std::sync::Arc<curl_alloc::Lock<Vec<Vec<u8>>>>);
 
 /// The debug build's warning, which its first transfer traces, and the
 /// lines only that build writes.
@@ -586,7 +586,7 @@ impl WriteHandler for Verbosing {
 /// Keeps what is traced as body bytes received and the write
 /// component's `client_write` lines, in order.
 #[derive(Clone, Default)]
-struct BodyTrace(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+struct BodyTrace(std::sync::Arc<curl_alloc::Lock<Vec<String>>>);
 
 impl DebugHandler for BodyTrace {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
@@ -657,7 +657,7 @@ fn failed_output_stays_failed() {
 
 /// What the write handler sees of its own report at each call:
 /// (download, delivered, starttransfer).
-struct SizeProbe(std::sync::Mutex<Vec<(u64, u64, Duration)>>);
+struct SizeProbe(curl_alloc::Lock<Vec<(u64, u64, Duration)>>);
 
 impl WriteHandler for std::sync::Arc<SizeProbe> {
     fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
@@ -735,7 +735,7 @@ fn a_connect_answer_does_not_start_the_response() {
 }
 
 /// Reads `Content-Type` from inside its call.
-struct ReadsHeader(std::sync::Mutex<Option<Vec<u8>>>);
+struct ReadsHeader(curl_alloc::Lock<Option<Vec<u8>>>);
 
 impl WriteHandler for std::sync::Arc<ReadsHeader> {
     fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
@@ -818,7 +818,7 @@ fn an_invalid_header_line_fails_the_transfer() {
 
 /// Every call the handlers of one transfer saw, in order: (handler, bytes,
 /// verdict).
-type Calls = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Vec<u8>, Write)>>>;
+type Calls = std::sync::Arc<curl_alloc::Lock<Vec<(&'static str, Vec<u8>, Write)>>>;
 
 /// A write or header handler answering by `plan`, given the number of the
 /// call among all its transfer's handler calls; it may pause transfers.

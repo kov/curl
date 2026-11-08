@@ -8,8 +8,9 @@
 #![cfg(feature = "debug-hooks")]
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use curl_core::conn::io::{Conversation, FakeNet, Peer};
 use curl_core::easy::Easy;
@@ -76,7 +77,7 @@ fn base64(bytes: &[u8]) -> String {
 /// What a transfer saw: its text lines and the header lines in and out,
 /// in order, each tagged as C's `--trace-ascii` tags them.
 #[derive(Clone, Default)]
-struct Seen(Arc<Mutex<Vec<String>>>);
+struct Seen(Arc<Lock<Vec<String>>>);
 
 impl DebugHandler for Seen {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {

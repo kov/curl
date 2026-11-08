@@ -1467,7 +1467,7 @@ fn callbacks_read_reports_and_the_multi_counts_messages() {
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct TextLines(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+struct TextLines(std::sync::Arc<curl_alloc::Lock<Vec<String>>>);
 
 impl crate::handler::DebugHandler for TextLines {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -1480,7 +1480,7 @@ impl crate::handler::DebugHandler for TextLines {
 
 /// Keeps the trace's text lines as their bytes, which need not be text.
 #[derive(Clone, Default)]
-struct RawLines(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+struct RawLines(std::sync::Arc<curl_alloc::Lock<Vec<Vec<u8>>>>);
 
 impl crate::handler::DebugHandler for RawLines {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -1544,7 +1544,7 @@ fn a_late_answer_is_waited_for() {
         )
         .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late)
         .with_late_name("never.test", &[[127, 0, 0, 1].into()], &never);
-    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let shared = std::sync::Arc::new(curl_alloc::Lock::new(net));
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(SharedNet(shared.clone())),
@@ -1601,7 +1601,7 @@ fn a_resolve_that_never_answers_times_out_as_resolving() {
     let never = Late::new();
     let net =
         FakeNet::new(clock.clone()).with_late_name("never.test", &[[127, 0, 0, 1].into()], &never);
-    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let shared = std::sync::Arc::new(curl_alloc::Lock::new(net));
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(SharedNet(shared.clone())),
@@ -2020,7 +2020,7 @@ fn an_accepted_connect_goes_on_to_the_request() {
 /// multi's timeout and `wait` bring about, polling the socket meanwhile.
 /// What the meter wrote.
 #[derive(Clone, Default)]
-struct MeterText(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+struct MeterText(std::sync::Arc<curl_alloc::Lock<Vec<u8>>>);
 
 impl crate::handler::TextSink for MeterText {
     fn write(&self, text: &[u8]) {
@@ -2452,7 +2452,7 @@ impl Net for Closes {
 
 /// One network behind several owners: a share and the multis whose
 /// transfers use its connections.
-struct OneNet(std::sync::Arc<std::sync::Mutex<Closes>>);
+struct OneNet(std::sync::Arc<curl_alloc::Lock<Closes>>);
 
 impl Net for OneNet {
     fn poll(
@@ -2510,7 +2510,7 @@ fn a_share_keeps_connections_across_handles() {
     let clock = ManualClock::new().unwrap();
     let closed = std::sync::Arc::new(AtomicU32::new(0));
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
-    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(Closes(
         FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
         closed.clone(),
     )));
@@ -2566,7 +2566,7 @@ fn a_share_keeps_connections_across_handles() {
 }
 
 /// Records the sockets it is given to close.
-struct Closer(std::sync::Arc<std::sync::Mutex<Vec<crate::conn::io::RawSocket>>>);
+struct Closer(std::sync::Arc<curl_alloc::Lock<Vec<crate::conn::io::RawSocket>>>);
 
 impl crate::handler::SocketCloser for Closer {
     fn close(&self, socket: crate::conn::io::SocketKey) {
@@ -2591,14 +2591,14 @@ fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
         .with_name("two.test", &[v6, v4].map(|a: std::net::SocketAddr| a.ip()))
         .with_peer(v6, Peer::Silent)
         .with_peer(v4, Peer::Accepts);
-    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(fake, closed.clone())));
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(Closes(fake, closed.clone())));
     let env = || Env {
         clock: Box::new(clock.clone()),
         net: Box::new(OneNet(net.clone())),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let told = std::sync::Arc::new(curl_alloc::Lock::new(Vec::new()));
     let made = || {
         let mut e = easy("tcp://two.test:1/");
         let closer = crate::handler::Handler::socket_closer(Closer(told.clone())).unwrap();
@@ -2634,8 +2634,8 @@ fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
 
 /// Asks, as it closes a socket, whether the share's pool is locked.
 struct LockChecking {
-    share: std::sync::Arc<std::sync::Mutex<Option<crate::share::Share>>>,
-    locked: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+    share: std::sync::Arc<curl_alloc::Lock<Option<crate::share::Share>>>,
+    locked: std::sync::Arc<curl_alloc::Lock<Vec<bool>>>,
 }
 
 impl crate::handler::SocketCloser for LockChecking {
@@ -2659,7 +2659,7 @@ fn a_share_s_sockets_close_out_of_its_lock() {
     let clock = ManualClock::new().unwrap();
     let closed = std::sync::Arc::new(AtomicU32::new(0));
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
-    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(Closes(
         FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
         closed.clone(),
     )));
@@ -2671,8 +2671,8 @@ fn a_share_s_sockets_close_out_of_its_lock() {
     };
     let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
     share.keep(Kind::Connections).unwrap();
-    let held = std::sync::Arc::new(std::sync::Mutex::new(Some(share.clone())));
-    let locked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let held = std::sync::Arc::new(curl_alloc::Lock::new(Some(share.clone())));
+    let locked = std::sync::Arc::new(curl_alloc::Lock::new(Vec::new()));
     let made = |forbid: bool| {
         let mut e = easy("tcp://127.0.0.1:1/");
         e.set_share(Some(share.clone())).unwrap();
@@ -2713,7 +2713,7 @@ fn a_share_s_sockets_close_out_of_its_lock() {
 /// pool is locked.
 struct SaysLocked {
     share: crate::share::Share,
-    locked: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+    locked: std::sync::Arc<curl_alloc::Lock<Vec<bool>>>,
 }
 
 impl crate::handler::TextSink for SaysLocked {
@@ -2736,7 +2736,7 @@ fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
     let clock = ManualClock::new().unwrap();
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
     let talk = Conversation::replies(&[], false).breaking_after(1);
-    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(Closes(
         FakeNet::new(clock.clone())
             .with_peer(at, Peer::Accepts)
             .with_conversation(at, talk.clone()),
@@ -2789,7 +2789,7 @@ fn a_share_s_connection_not_kept_is_closed_at_once() {
     let clock = ManualClock::new().unwrap();
     let closed = std::sync::Arc::new(AtomicU32::new(0));
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
-    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(Closes(
         FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
         closed.clone(),
     )));
@@ -3146,7 +3146,7 @@ fn an_a_answered_empty_before_aaaa_is_said_as_it_comes() {
             &late,
         )
         .with_v4_first();
-    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let shared = std::sync::Arc::new(curl_alloc::Lock::new(net));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(SharedNet(shared)),
@@ -3201,7 +3201,7 @@ fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
         )
         .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late)
         .with_late_name("gone.test", &[], &gone);
-    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let shared = std::sync::Arc::new(curl_alloc::Lock::new(net));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(SharedNet(shared)),
@@ -3275,7 +3275,7 @@ fn a_queued_resolve_s_answer_clears_the_name_timer() {
         )
         .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late)
         .with_late_name("gone.test", &[], &gone);
-    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let shared = std::sync::Arc::new(curl_alloc::Lock::new(net));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(SharedNet(shared)),
@@ -3797,9 +3797,9 @@ fn holding_a_record(components: &[u8], probe: LoneProbe) -> (Box<Easy>, Transfer
 /// and what it was let do then.
 #[derive(Clone, Default)]
 struct LoneProbe {
-    seen: Arc<std::sync::Mutex<Vec<String>>>,
+    seen: Arc<curl_alloc::Lock<Vec<String>>>,
     /// Another transfer's id, which the handle is not.
-    other: Arc<std::sync::Mutex<Option<TransferId>>>,
+    other: Arc<curl_alloc::Lock<Option<TransferId>>>,
 }
 
 impl crate::handler::DebugHandler for LoneProbe {
@@ -3889,7 +3889,7 @@ fn late_both(first: crate::conn::io::Family, late: &crate::conn::io::Late) -> (M
     };
     let env = Env {
         clock: Box::new(clock.clone()),
-        net: Box::new(SharedNet(Arc::new(std::sync::Mutex::new(net)))),
+        net: Box::new(SharedNet(Arc::new(curl_alloc::Lock::new(net)))),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
@@ -5610,7 +5610,7 @@ fn sockets_are_set_as_the_options_say() {
     use crate::options::KeepAlive;
     let clock = ManualClock::new().unwrap();
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 3));
-    let net = std::sync::Arc::new(std::sync::Mutex::new(
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(
         FakeNet::new(clock.clone()).with_peer(at, Peer::Silent),
     ));
     let env = Env {
@@ -5675,7 +5675,7 @@ fn connections_are_numbered_in_their_traces() {
     use crate::conn::io::{Peer, SocketKey};
     let clock = ManualClock::new().unwrap();
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 4));
-    let net = std::sync::Arc::new(std::sync::Mutex::new(
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(
         FakeNet::new(clock.clone()).with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5))),
     ));
     let env = Env {

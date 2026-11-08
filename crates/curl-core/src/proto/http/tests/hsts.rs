@@ -4,7 +4,7 @@
 //! over HTTPS kept, and the cache written to a file and the application
 //! as the handle goes.
 
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 use curl_alloc::TryArc;
 
@@ -119,7 +119,7 @@ fn a_field_over_http_is_passed_over() {
 
 /// Gives the entries it holds, then says it is done, or what `last` says.
 struct Giving {
-    entries: Mutex<Vec<(&'static str, &'static str, bool)>>,
+    entries: Lock<Vec<(&'static str, &'static str, bool)>>,
     last: HstsRead,
 }
 
@@ -148,7 +148,7 @@ type Taken = (String, String, bool, usize, usize);
 /// Keeps what it is given, stopping after `stop_after`.
 #[derive(Default)]
 struct Taking {
-    taken: Mutex<Vec<Taken>>,
+    taken: Lock<Vec<Taken>>,
     stop_after: Option<usize>,
 }
 
@@ -175,7 +175,7 @@ impl HstsWriter for Taking {
 #[test]
 fn the_application_reads_and_writes_the_cache() {
     let reader = Giving {
-        entries: Mutex::new(vec![
+        entries: Lock::new(vec![
             ("never.example", "", false),
             ("gone.example", "20011001 04:47:41", false),
             ("sts.example", "99991001 04:47:41", true),
@@ -229,7 +229,7 @@ fn a_reader_s_failure_fails_the_transfer() {
         let mut e = Easy::new();
         e.enable_hsts(CacheFile::ReadWrite).unwrap();
         let reader = Giving {
-            entries: Mutex::new(Vec::new()),
+            entries: Lock::new(Vec::new()),
             last,
         };
         let ran = get_with(&mut m, e, "/a", talk, |o| {
@@ -316,7 +316,7 @@ fn a_share_s_cache_is_told_of_only_around_the_files_read() {
         .unwrap()
         .unwrap();
     let reader = Giving {
-        entries: Mutex::new(vec![("given.example", "", false)]),
+        entries: Lock::new(vec![("given.example", "", false)]),
         last: HstsRead::Done,
     };
     let (mut m, talk) = named_server(&[OK]);
@@ -460,7 +460,7 @@ fn files_named_with_no_cache_are_not_read() {
 #[test]
 fn a_share_s_cache_is_not_locked_across_the_application() {
     use crate::share::{Kind, Share};
-    struct Reads(Share, Mutex<u32>);
+    struct Reads(Share, Lock<u32>);
     impl HstsReader for Reads {
         fn read(
             &self,
@@ -481,7 +481,7 @@ fn a_share_s_cache_is_not_locked_across_the_application() {
             Ok(HstsRead::Given)
         }
     }
-    struct Writes(Share, Mutex<usize>);
+    struct Writes(Share, Lock<usize>);
     impl HstsWriter for Writes {
         fn write(&self, _: HstsEntry<'_>, _: usize, total: usize) -> HstsWrite {
             assert!(!self.0.hsts_is_locked(), "under the lock");
@@ -494,14 +494,14 @@ fn a_share_s_cache_is_not_locked_across_the_application() {
     let mut e = Easy::new();
     e.set_share(Some(share.clone())).unwrap();
     let (mut m, talk) = named_server(&[OK]);
-    let writes = TryArc::try_new(Writes(share.clone(), Mutex::new(0))).unwrap();
+    let writes = TryArc::try_new(Writes(share.clone(), Lock::new(0))).unwrap();
     struct Shared(TryArc<Writes>);
     impl HstsWriter for Shared {
         fn write(&self, entry: HstsEntry<'_>, index: usize, total: usize) -> HstsWrite {
             self.0.write(entry, index, total)
         }
     }
-    let reads = Reads(share.clone(), Mutex::new(0));
+    let reads = Reads(share.clone(), Lock::new(0));
     let mut ran = get_with(&mut m, e, "/a", talk, |o| {
         let hsts = o.http.hsts.make_mut().unwrap();
         hsts.read = Some(Handler::hsts_reader(reads).unwrap());

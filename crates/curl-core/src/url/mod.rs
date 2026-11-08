@@ -23,7 +23,7 @@ pub(crate) mod schemes;
 mod c_tests;
 
 
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
@@ -1500,11 +1500,11 @@ pub struct SharedUrl(TryArc<UrlCell>);
 /// bare pointer without the URL being reached any way but through
 /// `SharedUrl`.
 #[derive(Debug)]
-pub struct UrlCell(Mutex<Url>);
+pub struct UrlCell(Lock<Url>);
 
 impl SharedUrl {
     pub fn new(url: Url) -> Result<SharedUrl, OutOfMemory> {
-        Ok(SharedUrl(TryArc::try_new(UrlCell(Mutex::new(url)))?))
+        Ok(SharedUrl(TryArc::try_new(UrlCell(Lock::new(url)))?))
     }
 
     /// The count this handle is one of, for an owner that holds the URL

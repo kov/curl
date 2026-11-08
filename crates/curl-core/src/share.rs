@@ -13,9 +13,10 @@
 //! lock functions: its `ShareLock` is told before the lock is taken and
 //! after it is let go.
 
+use curl_alloc::{Lock, LockGuard};
 use std::fmt;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
@@ -93,23 +94,23 @@ struct Inner {
     /// while their container below is: a use takes its lock and finds the
     /// one or the other, so no second fact can disagree with it.
     keeps: AtomicU8,
-    pool: Mutex<Pool>,
-    dns: Mutex<DnsCache>,
+    pool: Lock<Pool>,
+    dns: Lock<DnsCache>,
     /// The jar, made when cookies are first kept.
-    cookies: Mutex<Option<Jar>>,
+    cookies: Lock<Option<Jar>>,
     /// The TLS sessions, a cache made when they are first kept.
-    sessions: Mutex<Option<SessionCache>>,
+    sessions: Lock<Option<SessionCache>>,
     /// Whether its sessions are going out to the application's function:
     /// made by the first export, as few shares have one.
     sessions_out: OnceLock<SessionsOut>,
     /// The HSTS cache, made when it is first kept.
-    hsts: Mutex<Option<Hsts>>,
+    hsts: Lock<Option<Hsts>>,
     /// The public suffix list, used by its transfers in place of each
     /// one's multi's once it is kept. It has a lock of its own.
     psl: PslCache,
     /// What the connections left idle at the end are closed through, as
     /// C's share closes them through its own internal handle.
-    net: Mutex<Box<dyn Net + Send>>,
+    net: Lock<Box<dyn Net + Send>>,
     /// The clock of the multis that use it, which must be one: their
     /// names and connections carry its instants. A normal build has only
     /// the system's; a test's share takes the first multi's.
@@ -139,14 +140,14 @@ impl Share {
     pub fn with_net(net: Box<dyn Net + Send>) -> Result<Share, OutOfMemory> {
         Ok(Share(TryArc::try_new(Inner {
             keeps: AtomicU8::new(0),
-            pool: Mutex::new(Pool::new()?),
-            dns: Mutex::new(DnsCache::default()),
-            cookies: Mutex::new(None),
-            sessions: Mutex::new(None),
+            pool: Lock::new(Pool::new()?),
+            dns: Lock::new(DnsCache::default()),
+            cookies: Lock::new(None),
+            sessions: Lock::new(None),
             sessions_out: OnceLock::new(),
-            hsts: Mutex::new(None),
+            hsts: Lock::new(None),
             psl: PslCache::default(),
-            net: Mutex::new(net),
+            net: Lock::new(net),
             #[cfg(any(test, feature = "test-util"))]
             clock: OnceLock::new(),
             #[cfg(feature = "debug-hooks")]
@@ -261,7 +262,7 @@ impl Share {
     }
 
     /// The connections kept, locked.
-    pub(crate) fn pool(&self) -> MutexGuard<'_, Pool> {
+    pub(crate) fn pool(&self) -> LockGuard<'_, Pool> {
         lock(&self.0.pool)
     }
 
@@ -304,17 +305,17 @@ impl Share {
     }
 
     /// The names kept, locked.
-    pub(crate) fn dns(&self) -> MutexGuard<'_, DnsCache> {
+    pub(crate) fn dns(&self) -> LockGuard<'_, DnsCache> {
         lock(&self.0.dns)
     }
 
     /// The jar, locked; none if the share keeps no cookies.
-    pub(crate) fn cookies(&self) -> MutexGuard<'_, Option<Jar>> {
+    pub(crate) fn cookies(&self) -> LockGuard<'_, Option<Jar>> {
         lock(&self.0.cookies)
     }
 
     /// The HSTS cache, locked; none if the share keeps none.
-    pub(crate) fn hsts(&self) -> MutexGuard<'_, Option<Hsts>> {
+    pub(crate) fn hsts(&self) -> LockGuard<'_, Option<Hsts>> {
         lock(&self.0.hsts)
     }
 
@@ -360,14 +361,14 @@ impl Share {
     }
 
     /// The TLS sessions, locked; none if the share keeps none.
-    pub(crate) fn sessions(&self) -> MutexGuard<'_, Option<SessionCache>> {
+    pub(crate) fn sessions(&self) -> LockGuard<'_, Option<SessionCache>> {
         lock(&self.0.sessions)
     }
 }
 
 /// `mutex`, taken. No code panics holding one of the share's locks: a
 /// panic aborts the process.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+fn lock<T>(mutex: &Lock<T>) -> LockGuard<'_, T> {
     mutex.lock().expect("no panic holds a share's lock")
 }
 
@@ -441,7 +442,7 @@ pub(crate) type Call = (Option<Access>, Kind);
 pub(crate) struct Told {
     share: Share,
     /// Each call in turn: the access of a lock, none for an unlock.
-    told: std::sync::Arc<Mutex<Vec<Call>>>,
+    told: std::sync::Arc<Lock<Vec<Call>>>,
 }
 
 #[cfg(test)]

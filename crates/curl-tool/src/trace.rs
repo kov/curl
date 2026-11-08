@@ -1,9 +1,9 @@
 //! The trace of `--verbose`, `--trace` and `--trace-ascii`
 //! (`src/tool_cb_dbg.c`).
 
+use curl_alloc::Lock;
 use std::fs::File;
 use std::io::Write as _;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
@@ -24,7 +24,7 @@ const UNPRINTABLE: u8 = b'.';
 /// Where the trace goes, shared by every transfer's handler: the file is
 /// opened at the first entry and stays open.
 #[derive(Clone)]
-pub(crate) struct Tracer(TryArc<Mutex<State>>);
+pub(crate) struct Tracer(TryArc<Lock<State>>);
 
 struct State {
     kind: Trace,
@@ -80,7 +80,7 @@ impl Tracer {
             noted_data: false,
             scratch: Vec::new(),
         };
-        Ok(Some(Tracer(TryArc::try_new(Mutex::new(state))?)))
+        Ok(Some(Tracer(TryArc::try_new(Lock::new(state))?)))
     }
 
     /// The debug handler of one transfer; `terminal` says its output goes

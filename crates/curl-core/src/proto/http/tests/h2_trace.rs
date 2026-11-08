@@ -289,7 +289,7 @@ fn a_goaway_failing_the_transfer_is_no_news_to_it() {
 #[test]
 fn a_shutdown_traces_its_goaway_and_its_end_once() {
     #[derive(Clone, Default)]
-    struct Written(Arc<Mutex<Vec<u8>>>);
+    struct Written(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Written {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);

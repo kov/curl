@@ -2615,12 +2615,12 @@ fn hsts_and_alt_svc_files_are_read_and_written() {
 #[cfg(feature = "debug-hooks")]
 fn pop3_server_refusing_tls() -> (
     std::net::SocketAddr,
-    std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    std::sync::Arc<curl_alloc::Lock<Vec<Vec<String>>>>,
 ) {
     use std::io::{BufRead as _, BufReader, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let heard = std::sync::Arc::new(curl_alloc::Lock::new(Vec::new()));
     let all = heard.clone();
     std::thread::spawn(move || {
         for peer in listener.incoming() {

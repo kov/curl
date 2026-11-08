@@ -8,9 +8,9 @@
 //! library makes holds its own `SharedKeyLog`, so the log lasts while any
 //! does.
 
+use curl_alloc::Lock;
 use std::fs::File;
 use std::ops::Deref;
-use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc};
 
@@ -22,7 +22,7 @@ const LINE_MAX: usize = 254;
 /// file to write it to.
 #[derive(Debug)]
 pub struct KeyLog {
-    open: Mutex<Option<Open>>,
+    open: Lock<Option<Open>>,
 }
 
 /// The longest file name kept, the system's (`PATH_MAX`): a longer one
@@ -43,17 +43,11 @@ impl KeyLog {
     /// A key log not yet opened.
     pub const fn new() -> KeyLog {
         KeyLog {
-            open: Mutex::new(None),
+            open: Lock::new(None),
         }
     }
 
-    /// Take the lock once, so that what std makes on a lock's first use is
-    /// made now: a debug build's memory tracking starts after it.
-    pub fn make_lock(&self) {
-        drop(self.lock());
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Open>> {
+    fn lock(&self) -> curl_alloc::LockGuard<'_, Option<Open>> {
         self.open.lock().expect("no panic holds the key log")
     }
 

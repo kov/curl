@@ -230,7 +230,7 @@ fn a_bad_end_of_chunks_is_traced_as_c() {
 
 /// Pauses twice, then takes the body.
 #[derive(Clone, Default)]
-struct PausesTwice(Arc<Mutex<u32>>);
+struct PausesTwice(Arc<Lock<u32>>);
 
 impl WriteHandler for PausesTwice {
     fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
@@ -306,7 +306,7 @@ fn a_paused_body_is_traced_as_it_is_held_and_flushed() {
 
 /// Pauses at the blank line ending the head, once.
 #[derive(Clone, Default)]
-struct PausesAtTheEnd(Arc<Mutex<u32>>);
+struct PausesAtTheEnd(Arc<Lock<u32>>);
 
 impl HeaderHandler for PausesAtTheEnd {
     fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
@@ -448,7 +448,7 @@ fn a_body_past_the_size_limit_is_not_written() {
 
 /// Accepts the first write, pauses at the second, then accepts again.
 #[derive(Clone, Default)]
-struct PausesSecond(Arc<Mutex<u32>>);
+struct PausesSecond(Arc<Lock<u32>>);
 
 impl WriteHandler for PausesSecond {
     fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {

@@ -17,9 +17,10 @@
 //! probes to take out only when that count moved since it last looked, or
 //! as a transfer is removed.
 
+use curl_alloc::Lock;
 use std::net::IpAddr;
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
@@ -127,9 +128,9 @@ impl Reaping {
     }
 }
 
-type Shared = TryArc<Mutex<State>>;
+type Shared = TryArc<Lock<State>>;
 
-fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, State> {
+fn lock(shared: &Shared) -> curl_alloc::LockGuard<'_, State> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -193,7 +194,7 @@ impl WriteHandler for ProbeBody {
 /// A lookup and one query's probe, for the tests.
 #[cfg(test)]
 pub(super) fn orphan_for_test() -> (Lookup, Probe) {
-    let shared = TryArc::try_new(Mutex::new(State {
+    let shared = TryArc::try_new(Lock::new(State {
         gone: false,
         queries: [Query::Waiting(Vec::new()), Query::Unasked],
         record: None,
@@ -315,7 +316,7 @@ pub(crate) fn start<H: Host>(
     if family != Family::V6 {
         queries[1] = Query::Waiting(Vec::new());
     }
-    let shared = TryArc::try_new(Mutex::new(State {
+    let shared = TryArc::try_new(Lock::new(State {
         gone: false,
         queries,
         record: None,
@@ -346,7 +347,7 @@ pub(crate) fn start_https<H: Host>(
 ) -> Result<Lookup, ConnectError> {
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     let released = cx.rest.reaping.share().map_err(oom)?;
-    let shared = TryArc::try_new(Mutex::new(State {
+    let shared = TryArc::try_new(Lock::new(State {
         gone: false,
         queries: [Query::Waiting(Vec::new()), Query::Unasked],
         record: None,
@@ -571,7 +572,7 @@ mod tests {
     use super::*;
 
     fn lookup(queries: [Query; 2]) -> Lookup {
-        let shared = TryArc::try_new(Mutex::new(State {
+        let shared = TryArc::try_new(Lock::new(State {
             gone: false,
             queries,
             record: None,

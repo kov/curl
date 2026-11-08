@@ -1,5 +1,6 @@
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::*;
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
@@ -66,7 +67,7 @@ enum Kind {
 }
 
 #[derive(Debug)]
-struct FakeLocal(Arc<Mutex<World>>);
+struct FakeLocal(Arc<Lock<World>>);
 
 impl Local for FakeLocal {
     fn vendor(&self) -> (&'static str, i32) {
@@ -110,7 +111,7 @@ impl Local for FakeLocal {
 }
 
 #[derive(Debug)]
-struct FakeSession(Arc<Mutex<World>>);
+struct FakeSession(Arc<Lock<World>>);
 
 impl FakeSession {
     fn call(&self, call: String) {
@@ -254,7 +255,7 @@ impl Entries for FakeEntries {
 }
 
 #[derive(Clone, Default)]
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Writes {
@@ -264,7 +265,7 @@ impl WriteHandler for Body {
 }
 
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>);
+struct Text(Arc<Lock<Vec<u8>>>);
 
 impl DebugHandler for Text {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
@@ -293,7 +294,7 @@ fn run(
 ) -> Ran {
     let mut w = World::default();
     world(&mut w);
-    let w = Arc::new(Mutex::new(w));
+    let w = Arc::new(Lock::new(w));
     let ldap: &'static FakeLocal = Box::leak(Box::new(FakeLocal(w.clone())));
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));

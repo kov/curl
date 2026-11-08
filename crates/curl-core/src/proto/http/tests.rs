@@ -1,7 +1,7 @@
+use curl_alloc::Lock;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::conn::io::{Conversation, FakeNet, Peer};
@@ -29,7 +29,7 @@ type Saw = (&'static str, Vec<u8>);
 
 /// What a transfer saw, in the order it saw it.
 #[derive(Clone, Default)]
-struct Seen(Arc<Mutex<Vec<Saw>>>);
+struct Seen(Arc<Lock<Vec<Saw>>>);
 
 /// A share's locks of its names, among what a transfer saw, a `LOCK`
 /// line each.
@@ -261,7 +261,7 @@ fn a_long_line_ending_the_head_is_delivered_whole() {
 /// Takes the body, pausing at its first piece.
 #[derive(Clone, Default)]
 struct PausesOnce {
-    got: Arc<Mutex<Vec<u8>>>,
+    got: Arc<Lock<Vec<u8>>>,
     paused: Arc<crate::test_cell::Cell<bool>>,
 }
 
@@ -1044,7 +1044,7 @@ fn a_416_to_a_resumed_get_is_read_and_dropped() {
 /// line (`http_size` runs before the last header is written, as test
 /// 1485 reads it).
 #[derive(Clone, Default)]
-struct Watched(Arc<Mutex<Vec<WatchedLine>>>);
+struct Watched(Arc<Lock<Vec<WatchedLine>>>);
 
 /// A header line, with the response code and body size known then.
 type WatchedLine = (Vec<u8>, Option<u16>, Option<u64>);
@@ -1941,7 +1941,7 @@ fn a_request_target_replaces_only_the_request_line_s() {
 
 /// A body read in these pieces, of unknown size.
 fn pieces(pieces: &[&[u8]]) -> crate::options::UploadSource {
-    struct Pieces(Mutex<Vec<Vec<u8>>>);
+    struct Pieces(Lock<Vec<Vec<u8>>>);
     impl crate::handler::ReadHandler for Pieces {
         fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
             let mut left = self.0.lock().unwrap();
@@ -1955,7 +1955,7 @@ fn pieces(pieces: &[&[u8]]) -> crate::options::UploadSource {
     }
     let left = pieces.iter().map(|p| p.to_vec()).collect();
     crate::options::UploadSource::Read {
-        handler: Handler::read(Pieces(Mutex::new(left))).unwrap(),
+        handler: Handler::read(Pieces(Lock::new(left))).unwrap(),
         rewind: None,
         size: None,
     }
@@ -1985,7 +1985,7 @@ fn a_body_of_unknown_size_goes_chunked() {
 
 /// The application's lines, which it may add to at any time.
 #[derive(Clone, Default)]
-struct Appendable(Arc<Mutex<Vec<Vec<u8>>>>);
+struct Appendable(Arc<Lock<Vec<Vec<u8>>>>);
 
 impl crate::handler::LineSource for Appendable {
     fn lines(&self, line: &mut dyn FnMut(&[u8]) -> std::ops::ControlFlow<()>) {
@@ -2295,7 +2295,7 @@ fn a_redirect_is_followed_on_the_kept_connection() {
 /// port among its ends.
 #[derive(Default)]
 struct Prereq {
-    ports: Mutex<Vec<Option<u16>>>,
+    ports: Lock<Vec<Option<u16>>>,
     abort: bool,
 }
 
@@ -5656,7 +5656,7 @@ fn a_proxy_s_digest_is_traced_before_its_first_challenge() {
 /// The progress calls and the lines traced, in their order: a run of
 /// progress calls as `[xN]`.
 #[derive(Clone, Default)]
-struct Interleaved(Arc<Mutex<Vec<String>>>);
+struct Interleaved(Arc<Lock<Vec<String>>>);
 
 impl Interleaved {
     fn push(&self, what: String) {
@@ -6321,7 +6321,7 @@ fn a_list_is_kept_by_the_multi_or_the_share_until_its_time() {
 
 /// The list's asked-for count is the process's: tests that load it take
 /// turns.
-static PSL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static PSL_TESTS: curl_alloc::Lock<()> = curl_alloc::Lock::new(());
 
 /// The build's public suffixes keep a server from setting a cookie for a
 /// suffix; without them it may.
@@ -8043,7 +8043,7 @@ fn traced_bytes_with_the_ids_keep_a_zero_byte() {
 }
 
 /// A clock that moves a millisecond each time it is read.
-struct Ticking(std::sync::Mutex<crate::time::Instant>);
+struct Ticking(curl_alloc::Lock<crate::time::Instant>);
 
 impl crate::time::Clock for Ticking {
     fn now(&self) -> crate::time::Instant {
@@ -8073,7 +8073,7 @@ fn the_queue_time_is_read_from_the_clock_as_it_is_marked() {
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, talk.clone());
     let env = Env {
-        clock: Box::new(Ticking(std::sync::Mutex::new(crate::time::Instant::EPOCH))),
+        clock: Box::new(Ticking(curl_alloc::Lock::new(crate::time::Instant::EPOCH))),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,

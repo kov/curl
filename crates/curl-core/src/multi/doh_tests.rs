@@ -471,7 +471,7 @@ fn a_stale_probe_reaches_nothing() {
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct Lines(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+struct Lines(std::sync::Arc<curl_alloc::Lock<Vec<String>>>);
 
 impl crate::handler::DebugHandler for Lines {
     fn debug(
@@ -1070,8 +1070,9 @@ fn a_probe_removed_as_its_master_connects_ends_after_the_step() {
 /// speaks no TLS and keeps no sessions, so they answer nothing either way.
 #[test]
 fn no_call_reaches_a_probe() {
-    use std::sync::{Arc, Mutex};
-    type Seen = Arc<Mutex<Vec<(&'static str, bool)>>>;
+    use curl_alloc::Lock;
+    use std::sync::Arc;
+    type Seen = Arc<Lock<Vec<(&'static str, bool)>>>;
     struct Named;
     impl Host for Named {
         type Transfer = u32;
@@ -1079,7 +1080,7 @@ fn no_call_reaches_a_probe() {
     }
     /// Its own handler's calls, on itself and on its master.
     struct Own {
-        master: Arc<Mutex<Option<TransferId>>>,
+        master: Arc<Lock<Option<TransferId>>>,
         seen: Seen,
     }
     impl crate::handler::DebugHandler for Own {
@@ -1170,7 +1171,7 @@ fn no_call_reaches_a_probe() {
     })
     .unwrap();
     let mut easy = asking("http://foo.test/x");
-    let master = Arc::new(Mutex::new(None));
+    let master = Arc::new(Lock::new(None));
     let seen = Seen::default();
     let own = Own {
         master: master.clone(),

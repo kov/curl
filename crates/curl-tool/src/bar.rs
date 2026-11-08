@@ -2,8 +2,8 @@
 //! bouncing ball while its size is unknown (`tool_cb_prg.c`). It is drawn
 //! on standard error by the tool's own progress handler.
 
+use curl_alloc::Lock;
 use std::io::Write as _;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use curl_alloc::{OutOfMemory, TryArc};
@@ -43,7 +43,7 @@ const SINUS: [i32; 200] = [
 /// One transfer's bar, shared by its progress handler and the tool, which
 /// ends the line once the transfer is over.
 #[derive(Clone)]
-pub(crate) struct Bar(TryArc<Mutex<State>>);
+pub(crate) struct Bar(TryArc<Lock<State>>);
 
 /// C's `struct ProgressData`.
 struct State {
@@ -65,7 +65,7 @@ struct State {
 
 impl Bar {
     pub(crate) fn new(start: Option<u64>) -> Result<Bar, OutOfMemory> {
-        Ok(Bar(TryArc::try_new(Mutex::new(State::new(start)))?))
+        Ok(Bar(TryArc::try_new(Lock::new(State::new(start)))?))
     }
 
     pub(crate) fn handler(&self) -> Result<Handler<dyn ProgressHandler>, OutOfMemory> {

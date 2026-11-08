@@ -5,8 +5,9 @@
 //! transfer gone from it, and the callback hears REMOVE, from the multi's
 //! internal handle, only when the set closes it.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::*;
 use crate::conn::io::{Conversation, FakeNet, Peer, PollFd, Resolver, Sock, SocketPoll};
@@ -78,7 +79,7 @@ impl Rec {
 /// The fake network, reachable by the test while a multi holds it, the
 /// sockets it closes recorded in order.
 #[derive(Clone)]
-struct Wire(Arc<Mutex<Wired>>);
+struct Wire(Arc<Lock<Wired>>);
 
 struct Wired {
     net: FakeNet,
@@ -177,7 +178,7 @@ fn served(linger: Linger, talks: usize) -> (Multi, Wire, ManualClock) {
             }
         }
     }
-    let wire = Wire(Arc::new(Mutex::new(Wired {
+    let wire = Wire(Arc::new(Lock::new(Wired {
         net: fake,
         closed: Vec::new(),
         close_takes: None,
@@ -443,14 +444,14 @@ fn a_full_set_closes_its_oldest() {
 /// hears of each as the multi's.
 #[test]
 fn cleanup_closes_every_connection_through_its_own_closer() {
-    struct Told(Arc<Mutex<Vec<crate::conn::io::RawSocket>>>);
+    struct Told(Arc<Lock<Vec<crate::conn::io::RawSocket>>>);
     impl crate::handler::SocketCloser for Told {
         fn close(&self, socket: SocketKey) {
             self.0.lock().unwrap().push(socket.get());
         }
     }
     let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
-    let told = Arc::new(Mutex::new(Vec::new()));
+    let told = Arc::new(Lock::new(Vec::new()));
     let mut ev = Rec::default();
     let mut e = closing(1);
     let closer = crate::handler::Handler::socket_closer(Told(told.clone())).unwrap();
@@ -569,7 +570,7 @@ fn over_tls(talk: &Conversation) -> (Multi, Wire, &'static crate::tls::fake::Fak
     let fake = FakeNet::new(clock.clone())
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, talk.clone());
-    let wire = Wire(Arc::new(Mutex::new(Wired {
+    let wire = Wire(Arc::new(Lock::new(Wired {
         net: fake,
         closed: Vec::new(),
         close_takes: None,
@@ -649,7 +650,7 @@ fn a_tls_goodbye_waits_in_the_set_for_the_peer_s() {
 
 /// The text written to it.
 #[derive(Clone, Default)]
-struct Written(Arc<Mutex<Vec<u8>>>);
+struct Written(Arc<Lock<Vec<u8>>>);
 
 impl crate::handler::TextSink for Written {
     fn write(&self, text: &[u8]) {
@@ -988,7 +989,7 @@ struct Reach {
 /// What a transfer's debug handler reaches as it hears the socket
 /// callback's lines.
 #[derive(Clone, Default)]
-struct Reached(Arc<Mutex<Vec<Reach>>>);
+struct Reached(Arc<Lock<Vec<Reach>>>);
 
 impl crate::handler::DebugHandler for Reached {
     fn debug(&self, cx: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -1239,7 +1240,7 @@ fn an_event_runs_the_set_once() {
 
 /// The trace lines of a transfer, as its debug callback has them.
 #[derive(Clone, Default)]
-struct Lines(Arc<Mutex<Vec<String>>>);
+struct Lines(Arc<Lock<Vec<String>>>);
 
 impl crate::handler::DebugHandler for Lines {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -1519,7 +1520,7 @@ fn talking(talks: &[Conversation], linger: Linger) -> (Multi, Wire, ManualClock)
     for talk in talks {
         net = net.with_conversation(at, talk.clone());
     }
-    let wire = Wire(Arc::new(Mutex::new(Wired {
+    let wire = Wire(Arc::new(Lock::new(Wired {
         net,
         closed: Vec::new(),
         close_takes: None,
@@ -1636,7 +1637,7 @@ fn answering(peers: &[(u16, &[Conversation])]) -> (Multi, Wire, ManualClock) {
             net = net.with_conversation(at, talk.clone());
         }
     }
-    let wire = Wire(Arc::new(Mutex::new(Wired {
+    let wire = Wire(Arc::new(Lock::new(Wired {
         net,
         closed: Vec::new(),
         close_takes: None,

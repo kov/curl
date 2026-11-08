@@ -84,3 +84,8 @@ disallowed-macros = [
     { path = "std::format", reason = "use curl_alloc::try_format" },
     { path = "std::vec", reason = "allocates infallibly" },
 ]
+# Where the system has no futex (macOS), std's `Mutex` is a pthread mutex
+# boxed on its first lock, an allocation that cannot fail.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "allocates infallibly on macOS; use curl_alloc::Lock" },
+]

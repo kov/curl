@@ -10,8 +10,9 @@
 #![cfg(any(feature = "debug-hooks", not(gss_gnu)))]
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use curl_core::conn::io::{Conversation, FakeNet, Peer};
 use curl_core::easy::Easy;
@@ -41,7 +42,7 @@ const KRB5_OID: &[u8] = b"\x06\x09\x2a\x86\x48\x86\xf7\x12\x01\x02\x02";
 
 /// The text lines a transfer traced.
 #[derive(Clone, Default)]
-struct Seen(Arc<Mutex<Vec<String>>>);
+struct Seen(Arc<Lock<Vec<String>>>);
 
 impl DebugHandler for Seen {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {

@@ -4,9 +4,10 @@
 //! through the same `Call` the real library's callbacks reach. A scripted
 //! socket carries what it writes and reads.
 
+use curl_alloc::{Lock, LockGuard};
 use std::ffi::{CStr, c_void};
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::error::ErrorKind;
@@ -152,28 +153,28 @@ impl World {
 /// The fake library; each test makes its own, and leaks it, as the
 /// session holds its library for good.
 #[derive(Debug)]
-pub(crate) struct Fake(pub(crate) Arc<Mutex<World>>);
+pub(crate) struct Fake(pub(crate) Arc<Lock<World>>);
 
 /// Every library made, so that what is leaked stays reachable: Miri does
 /// not take it for a leak.
-static MADE: Mutex<Vec<&'static Fake>> = Mutex::new(Vec::new());
+static MADE: Lock<Vec<&'static Fake>> = Lock::new(Vec::new());
 
 impl Fake {
     /// A library over `world`.
     pub(crate) fn new(world: World) -> &'static Fake {
-        let lib = Box::leak(Box::new(Fake(Arc::new(Mutex::new(world)))));
+        let lib = Box::leak(Box::new(Fake(Arc::new(Lock::new(world)))));
         MADE.lock().unwrap_or_else(|e| e.into_inner()).push(lib);
         lib
     }
 
-    pub(crate) fn w(&self) -> MutexGuard<'_, World> {
+    pub(crate) fn w(&self) -> LockGuard<'_, World> {
         self.0.lock().unwrap()
     }
 }
 
 /// A store of the fake library's, by number.
 #[derive(Debug)]
-pub(crate) struct FakeStore(u32, Arc<Mutex<World>>);
+pub(crate) struct FakeStore(u32, Arc<Lock<World>>);
 
 impl library::Store for FakeStore {
     fn another(&self) -> Option<FakeStore> {
@@ -227,7 +228,7 @@ impl library::Wolfssl for Fake {
 /// The fake library's context.
 #[derive(Debug)]
 pub(crate) struct FakeCtx {
-    world: Arc<Mutex<World>>,
+    world: Arc<Lock<World>>,
     /// The number of its store.
     store: u32,
 }
@@ -241,7 +242,7 @@ fn bytes(b: &[u8]) -> String {
 }
 
 impl FakeCtx {
-    fn w(&self) -> MutexGuard<'_, World> {
+    fn w(&self) -> LockGuard<'_, World> {
         self.world.lock().unwrap()
     }
 }
@@ -377,10 +378,10 @@ impl DriveCall for Driving<'_, '_, '_> {
 
 /// The fake library's session object.
 #[derive(Debug)]
-pub(crate) struct FakeSsl(Arc<Mutex<World>>);
+pub(crate) struct FakeSsl(Arc<Lock<World>>);
 
 impl FakeSsl {
-    fn w(&self) -> MutexGuard<'_, World> {
+    fn w(&self) -> LockGuard<'_, World> {
         self.0.lock().unwrap()
     }
 

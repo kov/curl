@@ -5227,7 +5227,7 @@ fn headers_are_looked_up_and_walked_as_in_c() {
 }
 
 /// The lock functions' calls, as `(lock, data, handle)`.
-static LOCKS: std::sync::Mutex<Vec<(bool, c_int, usize)>> = std::sync::Mutex::new(Vec::new());
+static LOCKS: curl_alloc::Lock<Vec<(bool, c_int, usize)>> = curl_alloc::Lock::new(Vec::new());
 
 unsafe extern "C" fn record_lock(
     curl: *mut CURL,
@@ -6884,13 +6884,13 @@ unsafe extern "C" fn lock_into(
     user: *mut c_void,
 ) {
     // SAFETY: the test passes its record as the share's user data.
-    let seen = unsafe { &*user.cast::<std::sync::Mutex<Vec<c_int>>>() };
+    let seen = unsafe { &*user.cast::<curl_alloc::Lock<Vec<c_int>>>() };
     seen.lock().unwrap().push(data.0 as c_int);
 }
 
 /// The lock functions' calls with their access: `(access, data)`, the
 /// access none for an unlock. Kept in what the share is given.
-type AccessCalls = std::sync::Mutex<Vec<(Option<c_int>, c_int)>>;
+type AccessCalls = curl_alloc::Lock<Vec<(Option<c_int>, c_int)>>;
 
 unsafe extern "C" fn access_lock(
     _: *mut CURL,
@@ -7029,7 +7029,7 @@ fn the_lock_functions_are_told_of_the_list_and_the_cache_as_in_c() {
 #[test]
 fn a_lock_function_alone_locks_what_is_shared() {
     use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
-    let seen = std::sync::Mutex::new(Vec::<c_int>::new());
+    let seen = curl_alloc::Lock::new(Vec::<c_int>::new());
     let sh = curl_share_init();
     // SAFETY: a live share, an int, a lock function and its data, as the
     // options take.

@@ -153,8 +153,9 @@ mod over_the_wire {
     //! Transfers over a fake server: the back and forth, STARTTLS, and
     //! which connections a transfer may reuse.
 
+    use curl_alloc::Lock;
     use std::net::SocketAddr;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use crate::conn::io::{Conversation, FakeNet, Peer as Net};
     use crate::easy::Easy;
@@ -172,7 +173,7 @@ mod over_the_wire {
     const PORT: u16 = 8995;
 
     /// Collects the body.
-    struct Body(Arc<Mutex<Vec<u8>>>);
+    struct Body(Arc<Lock<Vec<u8>>>);
 
     impl WriteHandler for Body {
         fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -216,7 +217,7 @@ mod over_the_wire {
     /// What a transfer's handlers were given: the header lines and the
     /// trace's text.
     #[derive(Clone, Default)]
-    struct Seen(Arc<Mutex<(Vec<u8>, Vec<u8>)>>);
+    struct Seen(Arc<Lock<(Vec<u8>, Vec<u8>)>>);
 
     impl HeaderHandler for Seen {
         fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
@@ -266,7 +267,7 @@ mod over_the_wire {
         let traced = crate::components::Components::new().unwrap();
         traced.configure(components);
         e.set_components(Some(traced));
-        let body = Arc::new(Mutex::new(Vec::new()));
+        let body = Arc::new(Lock::new(Vec::new()));
         let seen = Seen::default();
         let o = e.options_mut();
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -1419,7 +1420,7 @@ mod over_the_wire {
     /// Takes the body, pausing at its first piece.
     #[derive(Clone, Default)]
     struct PausesOnce {
-        got: Arc<Mutex<Vec<u8>>>,
+        got: Arc<Lock<Vec<u8>>>,
         paused: Arc<crate::test_cell::Cell<bool>>,
     }
 
@@ -1704,7 +1705,7 @@ mod over_the_wire {
 
     /// Takes what the meter draws.
     #[derive(Clone, Default)]
-    struct Drawn(Arc<Mutex<Vec<u8>>>);
+    struct Drawn(Arc<Lock<Vec<u8>>>);
 
     impl crate::handler::TextSink for Drawn {
         fn write(&self, text: &[u8]) {

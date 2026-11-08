@@ -1053,7 +1053,7 @@ pub mod debug_info {
 
 /// What a test's failure sink heard.
 #[cfg(test)]
-pub(crate) type TestsTold = std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>;
+pub(crate) type TestsTold = std::sync::Arc<curl_alloc::Lock<Vec<Vec<u8>>>>;
 
 /// A failure sink for tests, and what it heard.
 #[cfg(test)]

@@ -1,8 +1,9 @@
 //! What the small protocols' tests share: a transfer over a fake server,
 //! and what its handlers were given.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
@@ -21,7 +22,7 @@ pub(crate) const PORT: u16 = 8996;
 
 /// What a transfer's handlers were given.
 #[derive(Clone, Default)]
-struct Seen(Arc<Mutex<Ran>>);
+struct Seen(Arc<Lock<Ran>>);
 
 /// What came of a transfer.
 #[derive(Clone, Debug, Default)]
@@ -175,7 +176,7 @@ pub(crate) fn ends_through_the_writers(talk: &Conversation, url: &str) {
 /// A writer that pauses at its first piece, then takes them all.
 #[derive(Clone, Default)]
 pub(crate) struct PausesFirst {
-    pub(crate) took: Arc<Mutex<Vec<u8>>>,
+    pub(crate) took: Arc<Lock<Vec<u8>>>,
     paused: Arc<crate::test_cell::Cell<bool>>,
 }
 

@@ -41,8 +41,8 @@ struct Hands {
 /// A context handler noting what it is given, answering `answer`; and a
 /// write handler noting what the transfer reaches.
 struct Noting {
-    hands: Arc<Mutex<Hands>>,
-    seen: Arc<Mutex<Seen>>,
+    hands: Arc<Lock<Hands>>,
+    seen: Arc<Lock<Seen>>,
     answer: Result<(), ErrorKind>,
 }
 
@@ -71,9 +71,9 @@ impl WriteHandler for Noting {
 /// A GET whose context handler answers `answer`: what it came to, and
 /// what the handlers saw.
 fn get_noting(certs: &Certs, at: SocketAddr, answer: Result<(), ErrorKind>) -> (Got, Hands) {
-    let hands = track::untracked(|| Arc::new(Mutex::new(Hands::default())));
+    let hands = track::untracked(|| Arc::new(Lock::new(Hands::default())));
     // The debug handler `get` installs notes its lines here.
-    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
     let got = get("localhost", at, |o| {
         trusting(certs)(o);
         let noting = || Noting {

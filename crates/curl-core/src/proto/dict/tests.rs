@@ -168,12 +168,12 @@ fn a_connection_is_not_reused() {
 fn looked_up(
     m: &mut crate::multi::Multi,
     set: impl FnOnce(&mut crate::options::Options),
-) -> std::sync::Arc<std::sync::Mutex<String>> {
+) -> std::sync::Arc<curl_alloc::Lock<String>> {
     use crate::handler::{DebugHandler, DebugKind, Handler};
     use crate::libraries::{Libraries, SharedLibraries};
     use crate::multi::{NoEvents, TransferCx};
     #[derive(Clone, Default)]
-    struct Text(std::sync::Arc<std::sync::Mutex<String>>);
+    struct Text(std::sync::Arc<curl_alloc::Lock<String>>);
     impl DebugHandler for Text {
         fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
             if kind == DebugKind::Text {

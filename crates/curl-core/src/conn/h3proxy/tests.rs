@@ -5,7 +5,8 @@ use crate::http3::fake::{FakeHttp3, Script};
 use crate::http3::{ClientSetup, Flavour, Http3};
 use crate::time::{Clock, ManualClock, SharedClock};
 use crate::tls::Notes;
-use std::sync::{Arc, Mutex};
+use curl_alloc::Lock;
+use std::sync::Arc;
 
 /// The tunnel's DATA as a proxy sends it: `len` bytes counting on from
 /// `from`, so bytes out of place show.
@@ -434,7 +435,7 @@ fn a_call_into_the_proxy_s_connection_is_the_transfer_s() {
 
 /// The tunnel over a connection to the proxy made by the fake library
 /// running `script`, its handshake not begun, and the clock it reads.
-fn proxy(script: &Arc<Mutex<Script>>) -> (H3Proxy, ManualClock) {
+fn proxy(script: &Arc<Lock<Script>>) -> (H3Proxy, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let remote = std::net::SocketAddr::from(([127, 0, 0, 1], 443));
     let setup = ClientSetup {
@@ -492,7 +493,7 @@ impl Layer for Under {
 
 /// Hold a packet the socket will not take: the connection then has
 /// something to send.
-fn hold_a_packet(p: &mut H3Proxy, script: &Arc<Mutex<Script>>) {
+fn hold_a_packet(p: &mut H3Proxy, script: &Arc<Lock<Script>>) {
     script.lock().unwrap().out.extend([vec![9; 100], vec![]]);
     let socket = Scripted::default();
     socket.sends.lock().unwrap().push_back(Act::Block);

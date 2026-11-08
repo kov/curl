@@ -27,7 +27,7 @@ mod fake;
 mod tests;
 
 use core::fmt;
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
@@ -45,7 +45,7 @@ mod ca {
 /// generator once `init` has made it, which every session draws on.
 #[derive(Debug)]
 pub struct MbedTls {
-    rng: Mutex<Option<TryArc<mbedtls::Rng>>>,
+    rng: Lock<Option<TryArc<mbedtls::Rng>>>,
 }
 
 impl MbedTls {
@@ -53,7 +53,7 @@ impl MbedTls {
     /// `init` succeeds.
     pub const fn new() -> MbedTls {
         MbedTls {
-            rng: Mutex::new(None),
+            rng: Lock::new(None),
         }
     }
 

@@ -344,7 +344,7 @@ fn a_connect_failing_at_once_is_traced_as_c() {
 /// itself if `dial`, or opens none if `fail`; says `configured` of each;
 /// and keeps the numbers of those it set and closed.
 struct Hooks {
-    net: Arc<Mutex<FakeNet>>,
+    net: Arc<Lock<FakeNet>>,
     to: Option<SocketAddr>,
     /// The error number an opener that opens nothing leaves.
     fail: Option<i32>,
@@ -354,8 +354,8 @@ struct Hooks {
     mark: Option<crate::conn::io::SocketOption>,
     /// The port the URL names, if not the server's.
     url_port: Option<u16>,
-    set: Arc<Mutex<Vec<crate::conn::io::RawSocket>>>,
-    closed: Arc<Mutex<Vec<crate::conn::io::RawSocket>>>,
+    set: Arc<Lock<Vec<crate::conn::io::RawSocket>>>,
+    closed: Arc<Lock<Vec<crate::conn::io::RawSocket>>>,
 }
 
 impl crate::handler::SocketOpener for Hooks {
@@ -418,7 +418,7 @@ fn hooked(peer: Peer, hooks: impl FnOnce(&mut Hooks)) -> Hooked {
     let net = FakeNet::new(clock.clone())
         .with_peer(at, peer)
         .with_conversation(at, talk.clone());
-    let net = Arc::new(Mutex::new(net));
+    let net = Arc::new(Lock::new(net));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(crate::conn::io::SharedNet(net.clone())),
@@ -646,7 +646,7 @@ fn an_opener_may_change_the_address() {
 /// `refused`.
 fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec<Vec<u8>>) {
     use crate::handler::{Handler, SocketOpener, TextSink};
-    struct Refusing(Arc<Mutex<FakeNet>>, &'static [bool]);
+    struct Refusing(Arc<Lock<FakeNet>>, &'static [bool]);
     impl SocketOpener for Refusing {
         fn open(
             &self,
@@ -662,7 +662,7 @@ fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec
         }
     }
     #[derive(Clone, Default)]
-    struct Told(Arc<Mutex<Vec<Vec<u8>>>>);
+    struct Told(Arc<Lock<Vec<Vec<u8>>>>);
     impl TextSink for Told {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().push(text.to_vec());
@@ -680,7 +680,7 @@ fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec
     if let Some(v6) = v6 {
         net = net.with_peer(at6, v6).with_conversation(at6, talk.clone());
     }
-    let net = Arc::new(Mutex::new(net));
+    let net = Arc::new(Lock::new(net));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(crate::conn::io::SharedNet(net.clone())),

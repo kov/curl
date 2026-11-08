@@ -8,9 +8,10 @@
 //! threaded resolver and DoH, with AAAA answered late against an `https`
 //! origin whose handshake is slower still, say the same lines.
 
+use curl_alloc::Lock;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::*;
@@ -23,7 +24,7 @@ const DOH: ([u8; 4], u16) = ([127, 0, 0, 1], 53);
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct Lines(Arc<Mutex<Vec<String>>>);
+struct Lines(Arc<Lock<Vec<String>>>);
 
 impl crate::handler::DebugHandler for Lines {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -151,7 +152,7 @@ struct Library {
     alive: Arc<AtomicBool>,
     runs: Arc<AtomicU32>,
     made: Arc<AtomicU32>,
-    sockets: Mutex<Vec<Box<dyn crate::conn::io::Socket>>>,
+    sockets: Lock<Vec<Box<dyn crate::conn::io::Socket>>>,
 }
 
 impl crate::conn::io::DnsLibrary for Library {
@@ -274,7 +275,7 @@ fn transfer_ending(
                 alive: alive.clone(),
                 runs: runs.clone(),
                 made: Arc::default(),
-                sockets: Mutex::new(vec![socket]),
+                sockets: Lock::new(vec![socket]),
             }));
             library = Some(lib as &'static dyn crate::conn::io::DnsLibrary);
         }
@@ -288,7 +289,7 @@ fn transfer_ending(
                 .with_v4_first();
         }
     }
-    let shared = Arc::new(Mutex::new(net));
+    let shared = Arc::new(Lock::new(net));
     let mut m = Multi::new(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(SharedNet(shared.clone())),
@@ -350,7 +351,7 @@ fn transfer_ending(
 }
 
 /// What a test reads of the fake network.
-struct FakeNetCheck(Arc<Mutex<FakeNet>>);
+struct FakeNetCheck(Arc<Lock<FakeNet>>);
 
 impl FakeNetCheck {
     fn resolving(&self) -> usize {
@@ -778,7 +779,7 @@ fn ftp_over_a_library(
         alive: Arc::default(),
         runs: Arc::default(),
         made: made.clone(),
-        sockets: Mutex::new(sockets),
+        sockets: Lock::new(sockets),
     }));
     let mut m = Multi::new(Env {
         clock: Box::new(clock.clone()),
@@ -1097,7 +1098,7 @@ fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, i32) {
         alive: alive.clone(),
         runs: Arc::default(),
         made: Arc::default(),
-        sockets: Mutex::new(vec![socket]),
+        sockets: Lock::new(vec![socket]),
     }));
     let script = crate::http3::fake::Script::new();
     script

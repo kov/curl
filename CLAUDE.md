@@ -32,6 +32,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-alloc/src/zeroed.rs`: the fallible zeroed byte buffer (`calloc`) std lacks on
   stable.
 - `crates/curl-alloc/src/rc.rs`: the fallible reference-counted pointers std lacks on stable.
+- `crates/curl-alloc/src/lock.rs`: the lock that never allocates, std's `RwLock` taken only for
+  writing, made `Sync` for a value that is `Send` alone, as a `Mutex` is.
 - `crates/curl-alloc/src/track.rs`: the debug test build's global allocator and memory tracker.
 - `crates/curl-psl/src/lib.rs`: libpsl, the public suffix list cookies are checked against.
 - `crates/curl-zlib/src/lib.rs`: zlib's inflate, undoing the `deflate` and `gzip` codings.

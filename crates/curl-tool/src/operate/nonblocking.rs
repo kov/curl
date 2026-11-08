@@ -11,12 +11,12 @@
 //! `-T .` (C's static `socket_r`), and every later one reads the same
 //! connection: what the thread has read is never lost to a second.
 
+use curl_alloc::Lock;
 use std::fs::File;
 use std::io::Read as _;
 use std::num::NonZeroUsize;
 #[cfg(unix)]
 use std::os::fd::AsFd as _;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -36,7 +36,7 @@ use crate::bar::Bar;
 pub(super) struct Stdin(TryArc<State>);
 
 struct State {
-    file: TryArc<Mutex<File>>,
+    file: TryArc<Lock<File>>,
     /// Where it is read from on Windows: the loopback connection a thread
     /// writes it into, or none, when that could not be set up and it is
     /// read as it is.
@@ -105,7 +105,7 @@ impl Stdin {
                 None
             }
         };
-        let file = TryArc::try_new(Mutex::new(file)).map_err(|_| Unopened::OutOfMemory)?;
+        let file = TryArc::try_new(Lock::new(file)).map_err(|_| Unopened::OutOfMemory)?;
         let state = State {
             file,
             #[cfg(windows)]
@@ -119,7 +119,7 @@ impl Stdin {
     }
 
     /// The file, for what starts the upload over.
-    pub(super) fn file(&self) -> TryArc<Mutex<File>> {
+    pub(super) fn file(&self) -> TryArc<Lock<File>> {
         self.0.file.clone()
     }
 
@@ -241,7 +241,7 @@ impl ReadLimit {
     /// more to send (false); before it, wait for the rest of it for
     /// something to read, except on Windows, which cannot wait for a file.
     /// A file that blocks is then read as it is.
-    pub(super) fn wait(self, file: &Mutex<File>) -> bool {
+    pub(super) fn wait(self, file: &Lock<File>) -> bool {
         let Some(left) = self.timeout.checked_sub(self.start.elapsed()) else {
             return false;
         };

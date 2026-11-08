@@ -755,7 +755,7 @@ fn library_text(run: &Shared) -> Result<Handler<dyn TextSink>, OutOfMemory> {
 }
 
 /// Standard input, read through one descriptor the transfers share.
-type StdinFile = TryArc<std::sync::Mutex<std::fs::File>>;
+type StdinFile = TryArc<curl_alloc::Lock<std::fs::File>>;
 
 /// What the library claims to have of what the options need, which C's
 /// tool learns from `curl_version_info`: an option the library lacks is
@@ -4155,7 +4155,7 @@ fn standard_input(
         None => {
             let file = match curl_os::fs::stdin() {
                 Ok(file) => Some(
-                    TryArc::try_new(std::sync::Mutex::new(file))
+                    TryArc::try_new(curl_alloc::Lock::new(file))
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 ),
                 Err(_) => None,
@@ -4237,7 +4237,7 @@ fn open_upload(
         }
         (file, size)
     };
-    let file = curl_alloc::TryArc::try_new(std::sync::Mutex::new(file))
+    let file = curl_alloc::TryArc::try_new(curl_alloc::Lock::new(file))
         .map_err(|_| Unopened::OutOfMemory)?;
     let upload = UploadFile {
         file: file.clone(),
@@ -4256,7 +4256,7 @@ fn open_upload(
 /// Reads the file to upload (`tool_read_cb`), and starts it over
 /// (`tool_seek_cb`).
 struct UploadFile {
-    file: curl_alloc::TryArc<std::sync::Mutex<File>>,
+    file: curl_alloc::TryArc<curl_alloc::Lock<File>>,
     /// `--max-time`, for its reads.
     limit: Option<nonblocking::ReadLimit>,
 }

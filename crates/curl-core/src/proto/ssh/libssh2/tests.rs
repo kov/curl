@@ -3,8 +3,9 @@
 //! host key type, a login that waits, an upload's directories, and the
 //! quote commands.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::*;
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
@@ -235,7 +236,7 @@ impl World {
 }
 
 #[derive(Debug)]
-struct FakeSsh2(Arc<Mutex<World>>);
+struct FakeSsh2(Arc<Lock<World>>);
 
 impl Ssh2 for FakeSsh2 {
     fn session(&self) -> Option<Box<dyn Session2>> {
@@ -266,7 +267,7 @@ impl Ssh2 for FakeSsh2 {
 
 #[derive(Debug)]
 struct FakeSession {
-    world: Arc<Mutex<World>>,
+    world: Arc<Lock<World>>,
     kh: bool,
     sftp: bool,
     /// The file open to read: its index, and where reads are.
@@ -314,7 +315,7 @@ impl FakeSession {
         Ok(())
     }
 
-    fn w(&self) -> std::sync::MutexGuard<'_, World> {
+    fn w(&self) -> curl_alloc::LockGuard<'_, World> {
         self.world.lock().unwrap()
     }
 
@@ -752,7 +753,7 @@ impl Session2 for FakeSession {
 
 /// Collects the body.
 #[derive(Clone, Default)]
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Wrote {
@@ -763,7 +764,7 @@ impl WriteHandler for Body {
 
 /// Collects the trace's text, and the data it traces.
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>, Arc<Mutex<Traced>>);
+struct Text(Arc<Lock<Vec<u8>>>, Arc<Lock<Traced>>);
 
 /// The data a trace says, piece by piece.
 type Traced = Vec<(DebugKind, Vec<u8>)>;
@@ -780,7 +781,7 @@ impl DebugHandler for Text {
     }
 }
 
-fn world_with(files: &[(&str, &str)], set: impl FnOnce(&mut World)) -> Arc<Mutex<World>> {
+fn world_with(files: &[(&str, &str)], set: impl FnOnce(&mut World)) -> Arc<Lock<World>> {
     let mut w = World {
         files: files
             .iter()
@@ -789,13 +790,13 @@ fn world_with(files: &[(&str, &str)], set: impl FnOnce(&mut World)) -> Arc<Mutex
         ..World::default()
     };
     set(&mut w);
-    Arc::new(Mutex::new(w))
+    Arc::new(Lock::new(w))
 }
 
 /// Run `url` to its end over `w`'s library: its result, body, trace and
 /// the calls the library was made.
 fn run_in(
-    w: &Arc<Mutex<World>>,
+    w: &Arc<Lock<World>>,
     url: &str,
     set: impl FnOnce(&mut Options),
 ) -> (Result<(), ErrorKind>, Vec<u8>, String, Vec<String>) {
@@ -809,7 +810,7 @@ fn run_in(
 /// The same, the peer at `port` saying `talk`, with `tls` as the TLS
 /// library if any: the trace whole.
 fn run_over(
-    w: &Arc<Mutex<World>>,
+    w: &Arc<Lock<World>>,
     url: &str,
     port: u16,
     talk: &Conversation,
@@ -885,7 +886,7 @@ fn run_over(
 
 /// Collects the multi's internal trace.
 #[derive(Clone, Debug, Default)]
-struct Internal(Arc<Mutex<Vec<u8>>>);
+struct Internal(Arc<Lock<Vec<u8>>>);
 
 /// What the internal trace says as connection #0's protocol is told to
 /// shut down: a line of C's debug build alone.
@@ -1038,7 +1039,7 @@ fn a_host_the_known_hosts_file_lacks_is_refused() {
 }
 
 /// The keys a host key handler was asked of, and their types.
-type Asked = Arc<Mutex<Vec<(KeyType, Vec<u8>)>>>;
+type Asked = Arc<Lock<Vec<(KeyType, Vec<u8>)>>>;
 
 struct Answers(bool, Asked);
 
@@ -1054,7 +1055,7 @@ impl SshHostKeyHandler for Answers {
 #[test]
 fn the_host_key_handler_decides_on_the_raw_key() {
     for fine in [true, false] {
-        let asked = Arc::new(Mutex::new(Vec::new()));
+        let asked = Arc::new(Lock::new(Vec::new()));
         let w = world_with(&[("/home/u/f", "x")], |_| {});
         let handler = Handler::ssh_host_key(Answers(fine, asked.clone())).unwrap();
         let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
@@ -1648,7 +1649,7 @@ struct Verdict(KeyVerdict, Told);
 
 /// What a key handler was told: the file's key, the server's, the
 /// check's outcome and the key's type.
-type Told = Arc<Mutex<Vec<(Option<Vec<u8>>, Vec<u8>, KeyMatch, KeyType)>>>;
+type Told = Arc<Lock<Vec<(Option<Vec<u8>>, Vec<u8>, KeyMatch, KeyType)>>>;
 
 impl crate::handler::SshKeyHandler for Verdict {
     fn check(
@@ -2143,7 +2144,7 @@ fn the_key_handler_decides_on_the_known_hosts_check() {
             V::Reject,
             V::Defer,
         ] {
-            let told = Arc::new(Mutex::new(Vec::new()));
+            let told = Arc::new(Lock::new(Vec::new()));
             let handler = Handler::ssh_key(Verdict(verdict, told.clone())).unwrap();
             let (r, _, said, calls) = over(
                 "x",
@@ -2259,7 +2260,7 @@ fn the_key_handler_decides_on_the_known_hosts_check() {
         (HostKeyType::Ecdsa521, KeyType::Ecdsa, 6),
         (HostKeyType::Ed25519, KeyType::Ed25519, 7),
     ] {
-        let told = Arc::new(Mutex::new(Vec::new()));
+        let told = Arc::new(Lock::new(Vec::new()));
         let handler = Handler::ssh_key(Verdict(V::Fine, told.clone())).unwrap();
         let (_, _, _, calls) = over(
             "x",
@@ -2275,7 +2276,7 @@ fn the_key_handler_decides_on_the_known_hosts_check() {
             calls.contains(&format!("knownhost_add [127.0.0.1]:8022 {bits}")),
             "{calls:?}"
         );
-        let asked = Arc::new(Mutex::new(Vec::new()));
+        let asked = Arc::new(Lock::new(Vec::new()));
         let handler = Handler::ssh_host_key(Answers(true, asked.clone())).unwrap();
         let _verified = over(
             "x",
@@ -2287,7 +2288,7 @@ fn the_key_handler_decides_on_the_known_hosts_check() {
         );
         assert_eq!(asked.lock().unwrap()[0].0, kt);
     }
-    let asked = Arc::new(Mutex::new(Vec::new()));
+    let asked = Arc::new(Lock::new(Vec::new()));
     let handler = Handler::ssh_host_key(Answers(true, asked.clone())).unwrap();
     let _verified = over(
         "x",

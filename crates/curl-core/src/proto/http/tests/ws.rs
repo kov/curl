@@ -127,7 +127,7 @@ fn an_upload_goes_as_binary_frames() {
 struct Framing(crate::test_cell::Cell<bool>, MetaSaid);
 
 /// What `curl_ws_meta` said to a handler.
-type MetaSaid = Arc<std::sync::Mutex<Option<Option<crate::ws::Meta>>>>;
+type MetaSaid = Arc<curl_alloc::Lock<Option<Option<crate::ws::Meta>>>>;
 
 impl crate::handler::ReadHandler for Framing {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
@@ -177,7 +177,7 @@ type MetaWrite = (Vec<u8>, Option<crate::ws::Meta>);
 /// pausing at the first.
 #[derive(Clone, Default)]
 struct MetaWrites {
-    got: Arc<std::sync::Mutex<Vec<MetaWrite>>>,
+    got: Arc<curl_alloc::Lock<Vec<MetaWrite>>>,
     paused: Arc<crate::test_cell::Cell<bool>>,
 }
 
@@ -305,7 +305,7 @@ fn callback_mode_traces_its_frames_as_c_does() {
 /// A read handler that plays its script: each call starts the frames it
 /// names (`curl_ws_start_frame`) and then gives its bytes, or says the
 /// end when it has none.
-struct Scripted(std::sync::Mutex<Vec<(Option<u64>, &'static [u8])>>);
+struct Scripted(curl_alloc::Lock<Vec<(Option<u64>, &'static [u8])>>);
 
 impl crate::handler::ReadHandler for Scripted {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
@@ -344,7 +344,7 @@ fn upload(script: Vec<(Option<u64>, &'static [u8])>) -> (Ran, Vec<String>) {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.method = Method::Upload;
         o.upload = UploadSource::Read {
-            handler: Handler::read(Scripted(std::sync::Mutex::new(script))).unwrap(),
+            handler: Handler::read(Scripted(curl_alloc::Lock::new(script))).unwrap(),
             rewind: None,
             size: None,
         };

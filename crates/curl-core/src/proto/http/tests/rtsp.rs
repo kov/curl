@@ -8,7 +8,7 @@ use crate::options::{RtspRequest, RtspSession};
 /// Reads the transfer's sequence numbers from inside its write handler,
 /// and sets the server's.
 #[derive(Clone, Default)]
-struct Numbers(Arc<Mutex<Vec<(u32, u32)>>>);
+struct Numbers(Arc<Lock<Vec<(u32, u32)>>>);
 
 impl WriteHandler for Numbers {
     fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -25,7 +25,7 @@ impl WriteHandler for Numbers {
 
 /// The RTP messages the interleave handler got, each whole.
 #[derive(Clone, Default)]
-struct Rtp(Arc<Mutex<Vec<Vec<u8>>>>);
+struct Rtp(Arc<Lock<Vec<Vec<u8>>>>);
 
 impl WriteHandler for Rtp {
     fn write(&self, _: &mut TransferCx<'_>, message: &[u8]) -> Write {
@@ -120,7 +120,7 @@ fn an_options_request_is_sent_as_c_sends_it() {
 
 /// Collects the multi's own trace.
 #[derive(Clone, Default)]
-struct Internal(Arc<Mutex<Vec<u8>>>);
+struct Internal(Arc<Lock<Vec<u8>>>);
 
 impl crate::handler::TextSink for Internal {
     fn write(&self, text: &[u8]) {

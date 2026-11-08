@@ -8,10 +8,11 @@
 
 mod common;
 
+use curl_alloc::Lock;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant as StdInstant};
 
@@ -81,7 +82,7 @@ struct Seen {
 struct Peer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
-    seen: Arc<Mutex<Seen>>,
+    seen: Arc<Lock<Seen>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -95,7 +96,7 @@ impl Drop for Peer {
 }
 
 impl Peer {
-    fn seen(&self) -> std::sync::MutexGuard<'_, Seen> {
+    fn seen(&self) -> curl_alloc::LockGuard<'_, Seen> {
         self.seen.lock().unwrap()
     }
 }
@@ -133,7 +134,7 @@ fn peer(dir: &Path, serve: Serve) -> Peer {
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
     let addr = sock.local_addr().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
-    let seen = Arc::new(Mutex::new(Seen::default()));
+    let seen = Arc::new(Lock::new(Seen::default()));
     let thread = {
         let (stop, seen) = (stop.clone(), seen.clone());
         std::thread::spawn(move || serve_on(sock, config, &serve, &stop, &seen))
@@ -153,7 +154,7 @@ fn serve_on(
     mut config: quiche::Config,
     serve: &Serve,
     stop: &AtomicBool,
-    seen: &Mutex<Seen>,
+    seen: &Lock<Seen>,
 ) {
     let local = sock.local_addr().unwrap();
     let h3_config = quiche::h3::Config::new().unwrap();

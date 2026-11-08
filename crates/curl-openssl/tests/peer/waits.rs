@@ -67,7 +67,9 @@ pub(crate) struct Plan {
 /// row finds nothing the first time and the peer's bytes the second.
 #[derive(Debug, Default)]
 pub(crate) struct Hold {
-    step: Mutex<HoldStep>,
+    // A `Condvar` waits on std's `Mutex` alone.
+    #[allow(clippy::disallowed_types)]
+    step: std::sync::Mutex<HoldStep>,
     moved: std::sync::Condvar,
 }
 

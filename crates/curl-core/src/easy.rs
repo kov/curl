@@ -1551,9 +1551,9 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use curl_alloc::Lock;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::Mutex;
 
     use curl_alloc::TryArc;
 
@@ -1620,7 +1620,7 @@ mod tests {
 
     /// What a failure sink hears.
     #[derive(Clone, Default)]
-    struct Heard(Arc<Mutex<Vec<Vec<u8>>>>);
+    struct Heard(Arc<Lock<Vec<Vec<u8>>>>);
 
     impl crate::handler::TextSink for Heard {
         fn write(&self, text: &[u8]) {
@@ -1769,7 +1769,7 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Body(Arc<Mutex<Vec<u8>>>);
+    struct Body(Arc<Lock<Vec<u8>>>);
 
     impl WriteHandler for Body {
         fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -1863,7 +1863,7 @@ mod tests {
     type Traced = Vec<(DebugKind, Vec<u8>)>;
 
     #[derive(Clone, Default)]
-    struct Lines(Arc<Mutex<Traced>>);
+    struct Lines(Arc<Lock<Traced>>);
 
     impl DebugHandler for Lines {
         fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {

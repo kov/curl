@@ -11,10 +11,11 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+use curl_alloc::Lock;
 use std::io::{Read, Write as _};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use curl_alloc::track::{self, Tracker};
@@ -423,7 +424,7 @@ struct Seen {
     body: Vec<u8>,
 }
 
-struct Taker(Arc<Mutex<Seen>>);
+struct Taker(Arc<Lock<Seen>>);
 
 impl DebugHandler for Taker {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
@@ -508,7 +509,7 @@ fn get_in(
     set: impl FnOnce(&mut Options),
     ssl: bool,
 ) -> Got {
-    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
     let (result, failure, chain, verify, early) = {
         let mut easy = Easy::new();
         easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
@@ -899,7 +900,7 @@ fn a_second_connection_takes_the_multi_s_store() {
 /// from one perform to the next (C's `multi_easy`), and so is its store.
 fn a_handle_s_own_multi_keeps_its_store_between_performs() {
     let certs = certs("own", "localhost", &["localhost"]);
-    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
     let mut easy = Easy::new();
     easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
     let components = Components::new().unwrap();

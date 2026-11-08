@@ -26,7 +26,7 @@ mod tests;
 /// command.
 #[cfg(test)]
 #[derive(Clone, Default)]
-pub(crate) struct Said(pub(crate) std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+pub(crate) struct Said(pub(crate) std::sync::Arc<curl_alloc::Lock<Vec<u8>>>);
 
 #[cfg(test)]
 impl crate::handler::DebugHandler for Said {

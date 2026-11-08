@@ -3,8 +3,9 @@
 //! STARTTLS, the answer to the body awaited in DONE, and the connection's
 //! QUIT.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
@@ -20,7 +21,7 @@ use crate::tls::fake::{self, FakeTls, WELCOME};
 const PORT: u16 = 8025;
 
 /// Collects the body.
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -31,7 +32,7 @@ impl WriteHandler for Body {
 
 /// Collects the trace's text.
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>);
+struct Text(Arc<Lock<Vec<u8>>>);
 
 impl DebugHandler for Text {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
@@ -102,7 +103,7 @@ fn tracing(
     let traced = crate::components::Components::new().unwrap();
     traced.configure(components);
     e.set_components(Some(traced));
-    let body = Arc::new(Mutex::new(Vec::new()));
+    let body = Arc::new(Lock::new(Vec::new()));
     let text = Text::default();
     let o = e.options_mut();
     o.set_url(Some(url.as_bytes())).unwrap();
@@ -1217,7 +1218,7 @@ fn an_answer_a_layer_holds_is_read_on_at_once_in_done() {
 
 /// Counts the calls of the progress handler.
 #[derive(Clone, Default)]
-struct ProgressCount(Arc<Mutex<usize>>);
+struct ProgressCount(Arc<Lock<usize>>);
 
 impl crate::handler::ProgressHandler for ProgressCount {
     fn progress(
@@ -1299,7 +1300,7 @@ fn an_initial_response_too_long_for_the_line_waits_to_be_asked() {
 /// Takes the body, pausing at its first piece.
 #[derive(Clone, Default)]
 struct PausesOnce {
-    got: Arc<Mutex<Vec<u8>>>,
+    got: Arc<Lock<Vec<u8>>>,
     paused: Arc<crate::test_cell::Cell<bool>>,
 }
 

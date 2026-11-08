@@ -1231,7 +1231,7 @@ fn an_http_2_get_stays_within_its_allocation_budget() {
 
 /// The trace's text, kept untracked: the test's, not the library's.
 #[derive(Default)]
-struct Traced(std::sync::Mutex<Vec<u8>>);
+struct Traced(curl_alloc::Lock<Vec<u8>>);
 
 struct Tracer(TryArc<Traced>);
 
@@ -1396,7 +1396,7 @@ fn an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass() {
 
 /// One fake network for a multi and the share whose connections it
 /// uses, as the share closes them at its end.
-struct SharedNet(TryArc<std::sync::Mutex<FakeNet>>);
+struct SharedNet(TryArc<curl_alloc::Lock<FakeNet>>);
 
 impl Net for SharedNet {
     fn poll(
@@ -1452,7 +1452,7 @@ fn shared_scenario() -> Result<[Result<(), ErrorKind>; 2], OutOfMemory> {
         let net = FakeNet::new(clock.clone())
             .with_peer(at, Peer::Accepts)
             .with_conversation(at, talk.clone());
-        TryArc::try_new(track::untracked_mutex(net)).expect("a test's network")
+        TryArc::try_new(curl_alloc::Lock::new(net)).expect("a test's network")
     });
     let share = curl_core::share::Share::with_net(try_box(SharedNet(net.clone()))?)?;
     share
@@ -1742,11 +1742,11 @@ fn a_push_that_cannot_start_leaves_nothing_running() {
 
 /// A count the handlers keep, `Sync` as a handler is; its lock is made
 /// untracked, so locking it allocates nothing the library is charged for.
-struct Cell<T>(std::sync::Mutex<T>);
+struct Cell<T>(curl_alloc::Lock<T>);
 
 impl<T: Default> Default for Cell<T> {
     fn default() -> Self {
-        Cell(track::untracked_mutex(T::default()))
+        Cell(curl_alloc::Lock::new(T::default()))
     }
 }
 
@@ -1940,7 +1940,7 @@ fn h3_scripts(first: fn() -> H3Script, then: Option<fn() -> H3Script>) {
         fake.setups.lock().unwrap().clear();
         let mut more = fake.then.lock().unwrap();
         more.clear();
-        more.extend(then.map(|s| std::sync::Arc::new(track::untracked_mutex(s()))));
+        more.extend(then.map(|s| std::sync::Arc::new(curl_alloc::Lock::new(s()))));
     })
 }
 

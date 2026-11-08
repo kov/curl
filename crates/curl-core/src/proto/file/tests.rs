@@ -2,12 +2,12 @@
 //! expectation of headers, sizes, calls and results was read off the C
 //! build running the same transfer.
 
+use curl_alloc::Lock;
 use std::num::NonZeroUsize;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use curl_alloc::TryArc;
@@ -77,7 +77,7 @@ const Y2K_NOON: u64 = 946_728_000;
 
 /// What a transfer's handlers saw, in order.
 #[derive(Clone, Default)]
-struct Seen(Arc<Mutex<Vec<Event>>>);
+struct Seen(Arc<Lock<Vec<Event>>>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {
@@ -620,7 +620,7 @@ fn bytes(b: &[u8]) -> UploadSource {
 
 /// The text lines `e` traces, `components` on.
 #[derive(Clone, Default)]
-struct Lines(Arc<Mutex<Vec<String>>>);
+struct Lines(Arc<Lock<Vec<String>>>);
 
 impl crate::handler::DebugHandler for Lines {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -1075,7 +1075,7 @@ fn the_calendar_has_its_leap_years() {
 
 /// Text for the user, kept.
 #[derive(Clone, Default)]
-struct Stderr(Arc<Mutex<Vec<u8>>>);
+struct Stderr(Arc<Lock<Vec<u8>>>);
 
 impl TextSink for Stderr {
     fn write(&self, text: &[u8]) {
@@ -1286,7 +1286,7 @@ fn a_range_reads_past_a_time_condition() {
 #[test]
 fn the_debug_build_traces_the_range() {
     #[derive(Clone, Default)]
-    struct Lines(Arc<Mutex<Vec<String>>>);
+    struct Lines(Arc<Lock<Vec<String>>>);
     impl crate::handler::DebugHandler for Lines {
         fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
             if kind == crate::handler::DebugKind::Text {

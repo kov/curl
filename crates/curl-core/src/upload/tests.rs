@@ -1,7 +1,7 @@
 use crate::test_cell::Cell;
+use curl_alloc::Lock;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use curl_alloc::TryArc;
@@ -47,7 +47,7 @@ fn result(m: &mut Multi) -> Option<Result<(), ErrorKind>> {
 #[derive(Default)]
 struct Seen {
     /// The room of each read call.
-    reads: Mutex<Vec<usize>>,
+    reads: Lock<Vec<usize>>,
     rewinds: Cell<u32>,
 }
 
@@ -131,7 +131,7 @@ fn plain(_: usize) -> Option<Read> {
 
 /// Records the bytes traced as sent.
 #[derive(Clone, Default)]
-struct Traced(Arc<Mutex<Vec<u8>>>);
+struct Traced(Arc<Lock<Vec<u8>>>);
 
 impl DebugHandler for Traced {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
@@ -451,7 +451,7 @@ impl Rewind for Explains {
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct Trace(Arc<Mutex<Vec<Vec<u8>>>>);
+struct Trace(Arc<Lock<Vec<Vec<u8>>>>);
 
 impl crate::handler::DebugHandler for Trace {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -688,7 +688,7 @@ fn a_pause_in_a_step_still_sending_runs_it_again() {
 struct Seeker {
     feeder_at: Arc<Cell<usize>>,
     answer: Result<(), SeekFailed>,
-    asked: Arc<Mutex<Vec<u64>>>,
+    asked: Arc<Lock<Vec<u64>>>,
 }
 
 impl Rewind for Seeker {
@@ -730,7 +730,7 @@ fn resumed(
     let mut e = script(vec![Piece::Resume(from), Piece::SendAll]);
     let seen = Arc::new(Seen::default());
     let at = Arc::new(Cell::new(0));
-    let asked = Arc::new(Mutex::new(Vec::new()));
+    let asked = Arc::new(Lock::new(Vec::new()));
     let feeder = Feeder {
         data: data.to_vec(),
         at: at.clone(),

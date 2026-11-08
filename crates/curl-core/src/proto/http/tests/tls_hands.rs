@@ -26,7 +26,7 @@ type Note = (&'static str, Option<Seen>);
 
 /// What the handlers were given and reached.
 #[derive(Clone, Default)]
-struct Notes(Arc<Mutex<Vec<Note>>>);
+struct Notes(Arc<Lock<Vec<Note>>>);
 
 impl Notes {
     fn note(&self, at: &'static str, native: Option<TlsNative>) {
@@ -52,7 +52,7 @@ impl TlsContextHandler for Configure {
 
 /// A write handler that notes the transfer's own objects, and those of
 /// the transfer `other` names, if it names one.
-struct Reaching(Notes, Arc<Mutex<Option<TransferId>>>);
+struct Reaching(Notes, Arc<Lock<Option<TransferId>>>);
 
 impl WriteHandler for Reaching {
     fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -183,7 +183,7 @@ fn a_handler_reaches_another_transfer_s_objects_by_its_id() {
     }
     let held = m.tls_native(one).expect("the first holds its connection");
     let notes = Notes::default();
-    let other = Arc::new(Mutex::new(Some(one)));
+    let other = Arc::new(Lock::new(Some(one)));
     let e = https(&libraries, |o| {
         o.limits.reuse.fresh = true;
         let write = Reaching(notes.clone(), other.clone());

@@ -4,11 +4,11 @@
 // A test's wire: out of memory here fails the test, not a transfer.
 #![allow(clippy::disallowed_methods)]
 
+use curl_alloc::Lock;
 use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
 
 use crate::conn::io::{
     Connect, Events, Readiness, Recv, Remote, Sent, Socket, SocketKey, SocketOption,
@@ -19,8 +19,8 @@ use crate::conn::io::{
 /// or meets the end once `closed`. `refuses` fails every call.
 #[derive(Debug, Default)]
 pub struct Wire {
-    pub incoming: Mutex<VecDeque<u8>>,
-    pub sent: Mutex<Vec<u8>>,
+    pub incoming: Lock<VecDeque<u8>>,
+    pub sent: Lock<Vec<u8>>,
     pub closed: bool,
     pub refuses: bool,
     /// Sends take at most this many bytes, if set; 0 takes none.

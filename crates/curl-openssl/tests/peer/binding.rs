@@ -37,7 +37,7 @@ pub(super) const TESTS: &[(&str, fn())] = &[
 ];
 
 /// The bindings the steps were given, in order.
-static BOUND: Mutex<Vec<Option<Vec<u8>>>> = Mutex::new(Vec::new());
+static BOUND: Lock<Vec<Option<Vec<u8>>>> = Lock::new(Vec::new());
 
 /// A library whose contexts send one token, `t`, and are then done.
 struct Keeping;
@@ -152,7 +152,7 @@ fn negotiated(tag: &str, cert: X509, key: PKey<Private>) -> (Vec<u8>, Steps, Got
         let _ = a;
     });
     track::untracked(|| BOUND.lock().unwrap().clear());
-    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
     let mut m = multi(try_box(SystemClock::new()).unwrap());
     let mut easy = Easy::new();
     easy.set_libraries(SharedLibraries::of_static(&BINDING_LIBRARIES));

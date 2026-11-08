@@ -1,9 +1,9 @@
 //! The socket callback, as `lib/multi_ev.c` calls it.
 
 use crate::test_cell::Cell;
+use curl_alloc::Lock;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use super::*;
 use crate::conn::io::Resolver as _;
@@ -321,7 +321,7 @@ fn an_aborting_socket_callback_kills_the_multi() {
 /// The handlers of a socket callback see the multi's transfers.
 #[test]
 fn the_socket_callback_sees_the_transfers() {
-    struct Owners(Arc<Mutex<Vec<Option<u8>>>>);
+    struct Owners(Arc<Lock<Vec<Option<u8>>>>);
     struct Host8;
     impl Host for Host8 {
         type Transfer = u8;
@@ -356,7 +356,7 @@ fn the_socket_callback_sees_the_transfers() {
         waker: None,
     };
     let mut m: Multi<Host8> = Multi::new(env).unwrap();
-    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::new(Lock::new(Vec::new()));
     let mut ev = Owners(seen.clone());
     m.add(Box::new(easy("tcp://127.0.0.1:3/")), 42, &mut ev)
         .unwrap();
@@ -678,7 +678,7 @@ impl crate::conn::io::Resolver for Stalled<'_> {
 }
 
 /// The fake network, its resolver `Stalled`.
-struct Stalling(Arc<Mutex<FakeNet>>);
+struct Stalling(Arc<Lock<FakeNet>>);
 
 impl Net for Stalling {
     fn poll(
@@ -739,7 +739,7 @@ fn a_stalled_resolve_is_tried_again_by_its_timer() {
     let net = FakeNet::new(clock.clone())
         .with_peer(at, Peer::Accepts)
         .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late);
-    let net = Arc::new(Mutex::new(net));
+    let net = Arc::new(Lock::new(net));
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(Stalling(net.clone())),
@@ -912,7 +912,7 @@ fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
     }
 
     #[derive(Debug)]
-    struct Library(Mutex<Option<Box<dyn Socket>>>);
+    struct Library(Lock<Option<Box<dyn Socket>>>);
 
     impl crate::conn::io::DnsLibrary for Library {
         fn resolve(
@@ -939,7 +939,7 @@ fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
         )
         .unwrap();
     let key = socket.key().get();
-    let library: &'static Library = Box::leak(Box::new(Library(Mutex::new(Some(socket)))));
+    let library: &'static Library = Box::leak(Box::new(Library(Lock::new(Some(socket)))));
     let libraries = crate::libraries::Libraries {
         dns: Some(library),
         ..crate::libraries::Libraries::NONE
@@ -1016,8 +1016,8 @@ impl crate::conn::io::DnsResolve for Closing {
 /// keeping the family each was asked in.
 #[derive(Debug)]
 struct ClosingLibrary {
-    sockets: Mutex<Vec<Box<dyn Socket>>>,
-    asked: Mutex<Vec<crate::conn::io::Family>>,
+    sockets: Lock<Vec<Box<dyn Socket>>>,
+    asked: Lock<Vec<crate::conn::io::Family>>,
 }
 
 impl crate::conn::io::DnsLibrary for ClosingLibrary {
@@ -1061,8 +1061,8 @@ fn closing_library(
         .collect();
     let keys = sockets.iter().map(|s| s.key().get()).collect();
     let library: &'static ClosingLibrary = Box::leak(Box::new(ClosingLibrary {
-        sockets: Mutex::new(sockets),
-        asked: Mutex::new(Vec::new()),
+        sockets: Lock::new(sockets),
+        asked: Lock::new(Vec::new()),
     }));
     let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
         dns: Some(library),
@@ -1078,7 +1078,7 @@ fn closing_library(
 #[test]
 fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
     #[derive(Clone, Default)]
-    struct Lines(Arc<Mutex<Vec<String>>>);
+    struct Lines(Arc<Lock<Vec<String>>>);
 
     impl crate::handler::DebugHandler for Lines {
         fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -1179,7 +1179,7 @@ impl crate::conn::io::DnsResolve for NoSuchName {
 }
 
 #[derive(Debug)]
-struct NoSuchNames(Mutex<u32>);
+struct NoSuchNames(Lock<u32>);
 
 impl crate::conn::io::DnsLibrary for NoSuchNames {
     fn resolve(
@@ -1195,7 +1195,7 @@ impl crate::conn::io::DnsLibrary for NoSuchNames {
 /// A resolver library that finds no name, AAAA's answer first, counting
 /// what it is asked; and the libraries a handle uses it through.
 fn no_such_names() -> (&'static NoSuchNames, crate::libraries::SharedLibraries) {
-    let library: &'static NoSuchNames = Box::leak(Box::new(NoSuchNames(Mutex::new(0))));
+    let library: &'static NoSuchNames = Box::leak(Box::new(NoSuchNames(Lock::new(0))));
     let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
         dns: Some(library),
         ..crate::libraries::Libraries::NONE
@@ -1372,7 +1372,7 @@ fn a_blocking_resolve_may_be_stopped_by_the_progress_handler() {
 #[test]
 fn a_blocking_resolve_lets_go_of_its_record_as_its_wait_ends() {
     #[derive(Clone, Default)]
-    struct Lines(Arc<Mutex<Vec<String>>>);
+    struct Lines(Arc<Lock<Vec<String>>>);
 
     impl crate::handler::DebugHandler for Lines {
         fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {

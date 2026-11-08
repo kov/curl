@@ -502,7 +502,7 @@ fn a_reset_fails_with_the_socket_s_reason() {
 
 /// The sizes of the pieces a writer was given.
 #[derive(Clone, Default)]
-struct Pieces(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
+struct Pieces(std::sync::Arc<curl_alloc::Lock<Vec<usize>>>);
 
 impl crate::handler::WriteHandler for Pieces {
     fn write(&self, _: &mut crate::multi::TransferCx<'_>, body: &[u8]) -> crate::handler::Write {

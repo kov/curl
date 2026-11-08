@@ -8,10 +8,10 @@
 //! A case the runner cannot map (a server command, more than one reply, an
 //! option not built, a check it cannot make) is listed with why, not run.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use crate::conn::io::{Conversation, FakeNet, Peer};
 use crate::easy::Easy;
@@ -221,7 +221,7 @@ fn expected(test: u32, c: &Command) -> Result<Expected, Skip> {
 #[derive(Clone, Default)]
 struct Got {
     include: bool,
-    written: Arc<Mutex<(Vec<u8>, Vec<u8>)>>,
+    written: Arc<Lock<(Vec<u8>, Vec<u8>)>>,
 }
 
 impl WriteHandler for Got {

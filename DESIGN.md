@@ -359,6 +359,12 @@ that. Allocation is therefore always explicit and always fallible:
   `to_owned`, `collect` and the growing methods of the collections in these crates, and std's
   calls that take a file's name (`File::open`, `fs::metadata`, `fs::rename` and the rest), which
   copy a name of 384 bytes or more to the heap infallibly: `curl_os::fs` takes it as a C string.
+- **Locks are `curl_alloc::Lock`, never std's `Mutex`.** Where the system has no futex (macOS),
+  std's `Mutex` is a pthread mutex boxed on its first lock, infallibly, a block C's locks never
+  make. `Lock` is std's `RwLock`, which is queue-based there and allocates nothing, taken only
+  for writing, so that, like a `Mutex`, it needs its value `Send` alone. Clippy's
+  `disallowed_types` rejects `Mutex`; the threaded resolver keeps it, as a `Condvar` waits on
+  nothing else and starting the thread allocates infallibly already.
 - **Third-party Rust crates are vetted for this before use.** A crate that allocates
   infallibly on a path we call cannot be used there. The C libraries we bind report allocation
   failure as an error themselves. OpenSSL is bound through `openssl-sys`, which declares the

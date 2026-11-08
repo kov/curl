@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use curl_alloc::Lock;
 
 use super::*;
 use crate::conn::io::Conversation;
@@ -432,7 +432,7 @@ fn unnamed_options_are_said_by_number() {
 }
 
 /// What the read handler gives each pass.
-struct Input(Mutex<Vec<Vec<u8>>>);
+struct Input(Lock<Vec<Vec<u8>>>);
 
 impl ReadHandler for Input {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
@@ -451,7 +451,7 @@ impl ReadHandler for Input {
 
 /// A transfer whose input gives `input`, against `talk`.
 fn telnet(talk: Conversation, input: &[&[u8]], set: impl FnOnce(&mut Options)) -> (Vec<u8>, Ran) {
-    let input = Input(Mutex::new(input.iter().map(|b| b.to_vec()).collect()));
+    let input = Input(Lock::new(input.iter().map(|b| b.to_vec()).collect()));
     let input = Handler::read(input).unwrap();
     against(talk, "telnet://127.0.0.1:PORT", |o| {
         o.small.make_mut().unwrap().input = Some(input);
@@ -493,7 +493,7 @@ fn the_application_s_user_stays_with_the_first_host() {
         let mut m = serving(&[&http, &talk]);
         let entry = format!("other.test:{PORT}:127.0.0.1");
         let url = format!("http://127.0.0.1:{PORT}/a");
-        let input = Handler::read(Input(Mutex::new(Vec::new()))).unwrap();
+        let input = Handler::read(Input(Lock::new(Vec::new()))).unwrap();
         let ran = transfer(&mut m, &url, |o| {
             o.http.follow = Follow::All;
             o.http.unrestricted_auth = unrestricted;
@@ -545,7 +545,7 @@ fn the_input_waits_for_a_quiet_socket() {
         format!("telnet://127.0.0.1:{}", crate::proto::raw::wire::PORT).as_bytes(),
     ))
     .unwrap();
-    let input = Input(Mutex::new(vec![b"typed".to_vec()]));
+    let input = Input(Lock::new(vec![b"typed".to_vec()]));
     o.small.make_mut().unwrap().input = Some(Handler::read(input).unwrap());
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..5 {
@@ -588,7 +588,7 @@ fn the_input_waits_for_the_server_or_the_interval() {
             format!("telnet://127.0.0.1:{}", crate::proto::raw::wire::PORT).as_bytes(),
         ))
         .unwrap();
-        let input = Input(Mutex::new(vec![b"typed".to_vec()]));
+        let input = Input(Lock::new(vec![b"typed".to_vec()]));
         o.small.make_mut().unwrap().input = Some(Handler::read(input).unwrap());
         m.add(Box::new(e), (), &mut NoEvents).unwrap();
         for _ in 0..5 {
@@ -766,7 +766,7 @@ proptest::proptest! {
 /// How much room each read of the input had, and what it gives: the
 /// first read too much.
 struct Claims {
-    rooms: std::sync::Arc<Mutex<Vec<usize>>>,
+    rooms: std::sync::Arc<Lock<Vec<usize>>>,
     over: bool,
 }
 
@@ -852,7 +852,7 @@ fn the_exchange_waits_on_its_socket_and_its_interval() {
         ))
         .unwrap();
         o.small.make_mut().unwrap().input =
-            Some(Handler::read(Input(Mutex::new(Vec::new()))).unwrap());
+            Some(Handler::read(Input(Lock::new(Vec::new()))).unwrap());
         m.add(Box::new(e), (), &mut NoEvents).unwrap();
         for _ in 0..5 {
             m.perform(&mut NoEvents).unwrap();
@@ -885,7 +885,7 @@ fn an_exchange_stalls_no_other_transfer() {
         ))
         .unwrap();
         o.small.make_mut().unwrap().input =
-            Some(Handler::read(Input(Mutex::new(Vec::new()))).unwrap());
+            Some(Handler::read(Input(Lock::new(Vec::new()))).unwrap());
         m.add(Box::new(e), (), &mut NoEvents).unwrap()
     };
     let waiting = added(&mut m);

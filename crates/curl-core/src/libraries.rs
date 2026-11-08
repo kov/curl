@@ -114,7 +114,7 @@ impl fmt::Debug for dyn Random {
 #[cfg(feature = "debug-hooks")]
 #[derive(Clone, Debug)]
 pub struct ForcedEntropy {
-    next: TryArc<std::sync::Mutex<u32>>,
+    next: TryArc<curl_alloc::Lock<u32>>,
 }
 
 #[cfg(feature = "debug-hooks")]
@@ -125,7 +125,7 @@ impl ForcedEntropy {
         let n = given.len().min(4);
         seed[..n].copy_from_slice(&given[..n]);
         Ok(ForcedEntropy {
-            next: TryArc::try_new(std::sync::Mutex::new(u32::from_be_bytes(seed)))?,
+            next: TryArc::try_new(curl_alloc::Lock::new(u32::from_be_bytes(seed)))?,
         })
     }
 }

@@ -4,8 +4,9 @@
 //! I/O reaches, over a scripted socket, and what each processing of the
 //! records read makes of them is scripted too.
 
+use curl_alloc::{Lock, LockGuard};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use curl_alloc::OutOfMemory;
 use curl_core::tls::SharedKeyLog;
@@ -150,21 +151,21 @@ impl World {
 /// The fake library; each test makes its own, and leaks it, as the
 /// session holds its library for good.
 #[derive(Debug)]
-pub(crate) struct Fake(pub(crate) Arc<Mutex<World>>);
+pub(crate) struct Fake(pub(crate) Arc<Lock<World>>);
 
 /// Every library made, so that what is leaked stays reachable: Miri does
 /// not take it for a leak.
-static MADE: Mutex<Vec<&'static Fake>> = Mutex::new(Vec::new());
+static MADE: Lock<Vec<&'static Fake>> = Lock::new(Vec::new());
 
 impl Fake {
     /// A library over `world`.
     pub(crate) fn new(world: World) -> &'static Fake {
-        let lib = Box::leak(Box::new(Fake(Arc::new(Mutex::new(world)))));
+        let lib = Box::leak(Box::new(Fake(Arc::new(Lock::new(world)))));
         MADE.lock().unwrap_or_else(|e| e.into_inner()).push(lib);
         lib
     }
 
-    pub(crate) fn w(&self) -> MutexGuard<'_, World> {
+    pub(crate) fn w(&self) -> LockGuard<'_, World> {
         self.0.lock().unwrap()
     }
 }
@@ -283,10 +284,10 @@ impl library::Rustls for Fake {
 
 /// One connection of the fake library.
 #[derive(Debug)]
-pub(crate) struct FakeConn(Arc<Mutex<World>>);
+pub(crate) struct FakeConn(Arc<Lock<World>>);
 
 impl FakeConn {
-    fn w(&self) -> MutexGuard<'_, World> {
+    fn w(&self) -> LockGuard<'_, World> {
         self.0.lock().unwrap()
     }
 }

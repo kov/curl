@@ -28,7 +28,7 @@ use core::ffi::c_int;
 #[cfg(not(all(windows, feature = "unicode")))]
 use core::ffi::{CStr, c_char};
 #[cfg(unix)]
-use std::sync::Mutex;
+use curl_alloc::Lock;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 
@@ -43,7 +43,7 @@ static ARGC: AtomicIsize = AtomicIsize::new(-1);
 #[cfg(unix)]
 /// Held while the argument strings are read or written, so a copy never
 /// sees a wipe half done.
-static LOCK: Mutex<()> = Mutex::new(());
+static LOCK: Lock<()> = Lock::new(());
 #[cfg(target_os = "linux")]
 static ARGV: AtomicPtr<*mut c_char> = AtomicPtr::new(core::ptr::null_mut());
 

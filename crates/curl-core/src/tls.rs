@@ -9,13 +9,13 @@
 //! records; it reaches only the transfer (`TlsCx`). The core names no
 //! library's types.
 
+use curl_alloc::Lock;
 use std::any::Any;
 use std::ffi::c_void;
 use std::fmt;
 use std::io;
 use std::net::Ipv4Addr;
 use std::ptr::NonNull;
-use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
@@ -328,11 +328,11 @@ impl TlsSupport {
 /// for; the library makes what goes in it the first time it needs it.
 /// It goes with the multi and the connections it owns.
 #[derive(Clone)]
-pub struct TlsShared(TryArc<Mutex<Option<Box<dyn Any + Send>>>>);
+pub struct TlsShared(TryArc<Lock<Option<Box<dyn Any + Send>>>>);
 
 impl TlsShared {
     pub(crate) fn new() -> Result<TlsShared, OutOfMemory> {
-        TryArc::try_new(Mutex::new(None)).map(TlsShared)
+        TryArc::try_new(Lock::new(None)).map(TlsShared)
     }
 
     /// Run `f` on the library's state, of its own type `T`, made by

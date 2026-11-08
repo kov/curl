@@ -31,7 +31,6 @@ use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::{self, Write as _};
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// The source logged for allocations made by Rust code: a global allocator
@@ -63,7 +62,7 @@ struct State {
 /// The lines kept before they are written (C's `membuf`).
 const LOG_BUFFER: usize = 10000;
 
-static STATE: Mutex<State> = Mutex::new(State {
+static STATE: crate::Lock<State> = crate::Lock::new(State {
     log: None,
     buf: [0; LOG_BUFFER],
     held: 0,
@@ -98,7 +97,7 @@ thread_local! {
     static SIZED: Cell<(usize, u64)> = const { Cell::new((0, 0)) };
 }
 
-fn state() -> std::sync::MutexGuard<'static, State> {
+fn state() -> crate::LockGuard<'static, State> {
     // Panics abort, so the lock is never poisoned.
     STATE.lock().expect("the tracker lock is never poisoned")
 }
@@ -171,8 +170,8 @@ pub fn set_limit(limit: u64) {
 
 /// Make, untracked, what the standard library makes on first use and never
 /// frees, before tracking starts: the standard streams' buffers and, where
-/// std's locks are boxed pthread mutexes (macOS), each stream's mutex on its
-/// first lock. They are the runtime's, as C's stdio buffers are libc's and
+/// std's mutexes are boxed pthread mutexes (macOS), each stream's mutex on
+/// its first lock. They are the runtime's, as C's stdio buffers are libc's and
 /// unseen by its memory debugging; made later, they would read as leaks in
 /// every memdump and could be refused under a limit, which std aborts on.
 fn make_runtime_globals() {
@@ -180,17 +179,6 @@ fn make_runtime_globals() {
         drop(io::stdout().lock());
         drop(io::stderr().lock());
     });
-}
-
-/// A mutex holding `value`, locked once untracked so that what std makes on
-/// its first lock is made now: where std's locks are boxed pthread mutexes
-/// (macOS), an allocation std cannot fail, which a torture test refusing it
-/// would abort on. For a test's fakes, which are not the library's to
-/// account for.
-pub fn untracked_mutex<T>(value: T) -> Mutex<T> {
-    let m = Mutex::new(value);
-    untracked(|| drop(m.lock()));
-    m
 }
 
 /// Run `f` with its allocations untracked: for the standard library's

@@ -82,7 +82,7 @@ fn try_get(
 ) -> Outcome {
     use curl_core::error::MultiErrorKind;
     use curl_core::multi::AddError;
-    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
     let oom = (Err(ErrorKind::OutOfMemory), Vec::new());
     let result = (|| {
         let env = Env {

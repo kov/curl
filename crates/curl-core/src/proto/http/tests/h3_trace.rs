@@ -6,7 +6,8 @@
 //! `build/m5-c-h3-badca.trace`, but for what the fakes do apart: their
 //! packets' sizes, a server that answers at once, and its address's port.
 
-use std::sync::{Arc, Mutex};
+use curl_alloc::Lock;
+use std::sync::Arc;
 
 use super::*;
 use crate::components::Components;
@@ -17,12 +18,12 @@ use crate::tls::fake::FakeTls;
 
 /// A handle with the fake TLS library `tls` and an HTTP/3 one running
 /// `script`, tracing everything.
-fn tracing(tls: FakeTls, script: &Arc<Mutex<Script>>) -> Easy {
+fn tracing(tls: FakeTls, script: &Arc<Lock<Script>>) -> Easy {
     tracing_by(Box::leak(Box::new(tls)), script)
 }
 
 /// `tracing`, by the TLS backend `tls`, which the test reads.
-fn tracing_by(tls: &'static FakeTls, script: &Arc<Mutex<Script>>) -> Easy {
+fn tracing_by(tls: &'static FakeTls, script: &Arc<Lock<Script>>) -> Easy {
     tracing_with(tls, FakeHttp3::new(script.clone()))
 }
 
@@ -411,7 +412,7 @@ fn http3_alone_is_refused_where_it_cannot_be() {
 /// packet, answered by a response of `body` that closes the stream. Each
 /// egress ends at an empty packet: the connect's two, then the
 /// request's.
-fn get_script(body: &[u8]) -> Arc<Mutex<Script>> {
+fn get_script(body: &[u8]) -> Arc<Lock<Script>> {
     let script = Script::new();
     {
         let mut s = script.lock().unwrap();
@@ -853,7 +854,7 @@ fn a_shared_connection_is_reused_by_another_multi_on_their_clock() {
 
 /// `get_script`, then a second response on the connection's next stream,
 /// `ok`, and the packet the second request goes in.
-fn and_then_ok(script: &Arc<Mutex<Script>>) {
+fn and_then_ok(script: &Arc<Lock<Script>>) {
     let mut s = script.lock().unwrap();
     let header = |name: &[u8], value: &[u8]| Told::Header {
         stream: 4,
@@ -995,7 +996,7 @@ fn a_second_transfer_multiplexes_on_the_first_s_connection() {
 /// The fake HTTP/3 library's script for two transfers' streams on one
 /// connection, the first's request only acknowledged and both answered
 /// in one read, and a peer for it.
-fn two_streams() -> (Arc<Mutex<Script>>, Multi) {
+fn two_streams() -> (Arc<Lock<Script>>, Multi) {
     let script = Script::new();
     {
         let mut s = script.lock().unwrap();
@@ -1032,7 +1033,7 @@ fn two_streams() -> (Arc<Mutex<Script>>, Multi) {
 /// fake libraries running `script`, that waits for a connection being
 /// set up to say whether it multiplexes; what it is given and says seen
 /// by `seen`.
-fn pipewaiting(script: &Arc<Mutex<Script>>, seen: &Seen) -> Easy {
+fn pipewaiting(script: &Arc<Lock<Script>>, seen: &Seen) -> Easy {
     let url = format!("https://localhost:{PORT}/");
     let mut e = tracing(FakeTls::new().unwrap(), script);
     let o = e.options_mut();
@@ -1140,7 +1141,7 @@ fn a_stream_s_consumed_bytes_count_on_it_whoever_reads_them() {
 struct Quieting {
     seen: Seen,
     on: bool,
-    quiets: Arc<Mutex<Option<crate::multi::TransferId>>>,
+    quiets: Arc<Lock<Option<crate::multi::TransferId>>>,
 }
 
 impl WriteHandler for Quieting {
@@ -1158,7 +1159,7 @@ impl WriteHandler for Quieting {
 fn quieted(sibling: bool) -> Vec<String> {
     let (script, mut m) = two_streams();
     let seen = [Seen::default(), Seen::default()];
-    let quiets = Arc::new(Mutex::new(None));
+    let quiets = Arc::new(Lock::new(None));
     let ids = [0, 1].map(|n| {
         let seen = &seen[n];
         let quieting = Quieting {
@@ -1243,7 +1244,7 @@ fn a_direct_connection_is_checked_and_closed_over_its_socket() {
     let e = tracing(FakeTls::new().unwrap(), &script);
     assert_eq!(h3_get(&mut m, e).result, Ok(()));
     #[derive(Clone, Default)]
-    struct Written(Arc<Mutex<Vec<u8>>>);
+    struct Written(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Written {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);
@@ -1293,7 +1294,7 @@ fn a_direct_connection_is_checked_and_closed_over_its_socket() {
 
 /// The script of `get_script`, then the same again for a second
 /// connection, whose response is `body`.
-fn twice(script: &Arc<Mutex<Script>>, body: &[u8]) {
+fn twice(script: &Arc<Lock<Script>>, body: &[u8]) {
     let again = get_script(body);
     let mut again = again.lock().unwrap();
     let mut s = script.lock().unwrap();
@@ -1384,7 +1385,7 @@ fn a_refused_request_is_made_again_on_a_new_connection() {
 /// `get_script`, for a request with a body: the response answers the
 /// last of `packets` the request and its body go in, the others answered
 /// with nothing.
-fn post_script(response: &[u8], packets: usize) -> Arc<Mutex<Script>> {
+fn post_script(response: &[u8], packets: usize) -> Arc<Lock<Script>> {
     let script = get_script(response);
     {
         let mut s = script.lock().unwrap();
@@ -1398,7 +1399,7 @@ fn post_script(response: &[u8], packets: usize) -> Arc<Mutex<Script>> {
 /// `h3_get` with the options `set` sets, its peer answering each of
 /// `packets`, as `post_script`'s script says; a transfer that spins
 /// fails.
-fn h3_with(script: &Arc<Mutex<Script>>, packets: usize, set: impl FnOnce(&mut Options)) -> Ran {
+fn h3_with(script: &Arc<Lock<Script>>, packets: usize, set: impl FnOnce(&mut Options)) -> Ran {
     let mut replies: Vec<&[u8]> = vec![b"server flight"];
     replies.extend(std::iter::repeat_n(&b"ack"[..], packets - 1));
     replies.push(b"response");
@@ -1533,7 +1534,7 @@ fn an_empty_body_is_none() {
 
 /// Whether the response's writer reaches its connection's TLS session.
 #[derive(Clone, Default)]
-struct Natives(Arc<Mutex<Vec<bool>>>);
+struct Natives(Arc<Lock<Vec<bool>>>);
 
 impl crate::handler::WriteHandler for Natives {
     fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
@@ -1749,7 +1750,7 @@ fn h3_race(m: &mut Multi, e: Easy, talk: &Conversation) -> Ran {
 
 /// A QUIC script that sends its first flight and hears nothing it can
 /// use.
-fn first_flight_only() -> Arc<Mutex<Script>> {
+fn first_flight_only() -> Arc<Lock<Script>> {
     let script = Script::new();
     script
         .lock()
@@ -2507,7 +2508,7 @@ fn a_race_timed_out_closes_both_attempts() {
         .with_datagram_peer(at, Peer::Silent)
         .with_conversation(at, quic_talk.clone())
         .with_conversation(at, tcp_talk.clone());
-    let closed = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(Lock::new(Vec::new()));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(Closes(net, closed.clone())),
@@ -2565,7 +2566,7 @@ fn a_race_timed_out_closes_both_attempts() {
 }
 /// A network that keeps the descriptor of each socket it closes, in
 /// order.
-struct Closes(FakeNet, Arc<Mutex<Vec<crate::conn::io::RawSocket>>>);
+struct Closes(FakeNet, Arc<Lock<Vec<crate::conn::io::RawSocket>>>);
 
 impl crate::conn::io::Net for Closes {
     fn poll(
@@ -2968,7 +2969,7 @@ fn a_request_the_socket_fails_to_send_says_why() {
 /// A script for a tunnel through an HTTP/3 proxy: the handshake's
 /// flights, then the `CONNECT`'s packet, answered by `status`, then the
 /// origin's request's packet, answered with `told`.
-fn tunnel_script(status: &[u8], told: Vec<Told>) -> Arc<Mutex<Script>> {
+fn tunnel_script(status: &[u8], told: Vec<Told>) -> Arc<Lock<Script>> {
     tunnel_script_with(status, &[(b"via", b"h3proxy")], told)
 }
 
@@ -2978,7 +2979,7 @@ fn tunnel_script_with(
     status: &[u8],
     fields: &[(&[u8], &[u8])],
     told: Vec<Told>,
-) -> Arc<Mutex<Script>> {
+) -> Arc<Lock<Script>> {
     let script = Script::new();
     {
         let mut s = script.lock().unwrap();
@@ -3163,7 +3164,7 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
 fn a_tunnel_s_input_taken_in_as_the_body_goes_is_read() {
     struct LetsAnswer {
         talk: Conversation,
-        pieces: Mutex<Vec<&'static [u8]>>,
+        pieces: Lock<Vec<&'static [u8]>>,
     }
     impl crate::handler::ReadHandler for LetsAnswer {
         fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
@@ -3189,7 +3190,7 @@ fn a_tunnel_s_input_taken_in_as_the_body_goes_is_read() {
     let upload = crate::options::UploadSource::Read {
         handler: Handler::read(LetsAnswer {
             talk: talks[0].clone(),
-            pieces: Mutex::new(vec![b"hel", b"lo"]),
+            pieces: Lock::new(vec![b"hel", b"lo"]),
         })
         .unwrap(),
         rewind: None,
@@ -3414,7 +3415,7 @@ fn a_tunnel_an_http3_proxy_closes_fails_the_read() {
 /// whose stream the proxy then closes with `code` in the next, which a
 /// read finds with nothing held (`cf_h3_proxy_recv_closed_stream`); and
 /// its script.
-fn tunnel_closed_after(code: u64) -> (Ran, Arc<Mutex<Script>>) {
+fn tunnel_closed_after(code: u64) -> (Ran, Arc<Lock<Script>>) {
     let response = b"HTTP/1.1 200 OK\r\n\r\nok\n".to_vec();
     let script = tunnel_script(b"200", vec![]);
     {
@@ -3915,7 +3916,7 @@ fn http3_through_a_proxy_refusing_both_tunnels_fails() {
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, first)
         .with_conversation(at, second.clone());
-    let closed = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(Lock::new(Vec::new()));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(Closes(net, closed.clone())),
@@ -4092,7 +4093,7 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
 #[test]
 fn a_tunnelled_connection_says_goodbye_through_its_layers() {
     #[derive(Clone, Default)]
-    struct Written(Arc<Mutex<Vec<u8>>>);
+    struct Written(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Written {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);
@@ -4236,7 +4237,7 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
 /// The script of the QUIC connection to an HTTP/3 proxy a CONNECT-UDP
 /// goes through: `tunnel_script`'s, the answer naming `capsules` as its
 /// capsule protocol, then the origin's datagrams the tunnel brings.
-fn udp_tunnel_script(capsules: &[u8]) -> Arc<Mutex<Script>> {
+fn udp_tunnel_script(capsules: &[u8]) -> Arc<Lock<Script>> {
     let proxy = tunnel_script(b"200", vec![]);
     {
         let mut s = proxy.lock().unwrap();
@@ -5000,7 +5001,7 @@ fn a_failed_read_run_by_a_timer_fails_the_other_transfer_at_once() {
 /// `get_script`, spoken as quiche's filter speaks it: its stream ends
 /// with no word from the QUIC library of its own, which quiche has none
 /// of.
-fn quiche_script(body: &[u8]) -> Arc<Mutex<Script>> {
+fn quiche_script(body: &[u8]) -> Arc<Lock<Script>> {
     let script = get_script(body);
     {
         let mut s = script.lock().unwrap();
@@ -5329,7 +5330,7 @@ fn a_quic_attempt_tries_ech_with_the_known_record() {
 /// libraries, said in lines starting with one of `starts`, and how it
 /// ended; `set` changes its options first.
 fn h3_lines(
-    script: &Arc<Mutex<Script>>,
+    script: &Arc<Lock<Script>>,
     replies: &[&[u8]],
     starts: &[&str],
     set: impl FnOnce(&mut Options),
@@ -5531,7 +5532,7 @@ fn a_request_ngtcp2_refuses_is_said_by_its_stream() {
 #[test]
 fn a_quiche_connection_not_to_be_reused_closes_as_its_transfer_ends() {
     #[derive(Clone, Default)]
-    struct Written(Arc<Mutex<Vec<u8>>>);
+    struct Written(Arc<Lock<Vec<u8>>>);
     impl crate::handler::TextSink for Written {
         fn write(&self, text: &[u8]) {
             self.0.lock().unwrap().extend_from_slice(text);

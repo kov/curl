@@ -478,8 +478,9 @@ mod tests {
         );
     }
 
+    use curl_alloc::Lock;
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use crate::conn::io::{Conversation, FakeNet, Peer};
     use crate::time::ManualClock;
@@ -497,7 +498,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct Wire(Arc<Mutex<Script>>);
+    struct Wire(Arc<Lock<Script>>);
 
     impl Part<Below<'_>> for Wire {}
 
@@ -592,7 +593,7 @@ mod tests {
 
     /// Run `f` on a capsule layer over the scripted layers.
     fn over(
-        script: &Arc<Mutex<Script>>,
+        script: &Arc<Lock<Script>>,
         f: impl FnOnce(&mut dyn FnMut(&mut dyn FnMut(&mut CapsuleLayer, Below<'_>, &mut Said))),
     ) {
         over_with(script, CapsuleLayer::default(), f);
@@ -600,7 +601,7 @@ mod tests {
 
     /// `over`, the layer `capsules`.
     fn over_with(
-        script: &Arc<Mutex<Script>>,
+        script: &Arc<Lock<Script>>,
         mut capsules: CapsuleLayer,
         f: impl FnOnce(&mut dyn FnMut(&mut dyn FnMut(&mut CapsuleLayer, Below<'_>, &mut Said))),
     ) {
@@ -625,7 +626,7 @@ mod tests {
     /// flush, which the poll asks for meanwhile.
     #[test]
     fn a_datagram_sent_is_a_capsule_taken_whole() {
-        let script = Arc::new(Mutex::new(Script::default()));
+        let script = Arc::new(Lock::new(Script::default()));
         script.lock().unwrap().takes.extend([2, 0]);
         over(&script, |call| {
             call(&mut |c, below, cx| {
@@ -659,7 +660,7 @@ mod tests {
     /// reaches every filter of the connection (`Curl_conn_flush`).
     #[test]
     fn a_flush_waits_for_the_layers_below() {
-        let script = Arc::new(Mutex::new(Script::default()));
+        let script = Arc::new(Lock::new(Script::default()));
         script.lock().unwrap().stuck = true;
         over(&script, |call| {
             call(&mut |c, mut below, cx| {
@@ -675,7 +676,7 @@ mod tests {
     /// holds goes (`cf_capsule_send` over a full buffer).
     #[test]
     fn a_send_while_full_waits() {
-        let script = Arc::new(Mutex::new(Script::default()));
+        let script = Arc::new(Lock::new(Script::default()));
         script.lock().unwrap().takes.extend([0; HOLD / 1200 + 2]);
         over(&script, |call| {
             call(&mut |c, mut below, cx| {
@@ -693,7 +694,7 @@ mod tests {
     /// failure is the layer's.
     #[test]
     fn capsules_read_give_a_datagram_each() {
-        let script = Arc::new(Mutex::new(Script::default()));
+        let script = Arc::new(Lock::new(Script::default()));
         let both = [capsule(b"first"), capsule(b"second")].concat();
         script
             .lock()
@@ -735,7 +736,7 @@ mod tests {
     /// as C says it (`Curl_capsule_process_udp_raw` over a full buffer).
     #[test]
     fn a_part_waits_and_a_capsule_past_the_buffer_fails() {
-        let script = Arc::new(Mutex::new(Script::default()));
+        let script = Arc::new(Lock::new(Script::default()));
         let whole = capsule(b"whole");
         script
             .lock()
@@ -786,7 +787,7 @@ mod tests {
     /// there.
     #[test]
     fn a_read_takes_four_chunks_of_16_kib_from_below() {
-        let script = Arc::new(Mutex::new(Script::default()));
+        let script = Arc::new(Lock::new(Script::default()));
         let payload = vec![7; 16000];
         let mut stream = [0; 5].map(|_| capsule(&payload)).concat();
         let rest = stream.split_off(100);
@@ -808,7 +809,7 @@ mod tests {
     /// is the first capsules', read before anything below.
     #[test]
     fn what_came_with_the_answer_is_read_first() {
-        let script = Arc::new(Mutex::new(Script::default()));
+        let script = Arc::new(Lock::new(Script::default()));
         // A capsule cut between what was held and what comes after.
         let too = capsule(b"too");
         script

@@ -3120,7 +3120,7 @@ pub struct CaDefaults { pub file: Option<&'static str>, pub path: Option<&'stati
                         pub system: SystemStore }  // no Default
 pub enum SystemStore { Asked, Default, Own }       // NATIVE_CA only; also when none named; Schannel's
 pub enum Alpn { None, Http11, Http10 }             // the offer, from the HTTP version
-#[derive(Clone)] pub struct TlsShared(/* TryArc<Mutex<Option<Box<dyn Any + Send>>>> */);
+#[derive(Clone)] pub struct TlsShared(/* TryArc<Lock<Option<Box<dyn Any + Send>>>> */);
 impl TlsShared {                                   // the library's per-multi state, its own type
     pub fn with<T: Any + Send, R>(&self, make: impl FnOnce() -> T, f: impl FnOnce(&mut T) -> R)
         -> Result<Option<R>, OutOfMemory>;         // none: another library's state is there

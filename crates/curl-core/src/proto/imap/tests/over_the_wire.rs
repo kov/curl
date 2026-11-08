@@ -2,9 +2,10 @@
 //! for, a literal's body, an APPEND, STARTTLS and the reuse of a
 //! connection with its mailbox selected.
 
+use curl_alloc::Lock;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
@@ -20,7 +21,7 @@ use crate::tls::fake::{self, FakeTls, WELCOME};
 const PORT: u16 = 8143;
 
 /// Collects the body.
-struct Body(Arc<Mutex<Vec<u8>>>);
+struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -31,7 +32,7 @@ impl WriteHandler for Body {
 
 /// Collects the trace's text.
 #[derive(Clone, Default)]
-struct Text(Arc<Mutex<Vec<u8>>>);
+struct Text(Arc<Lock<Vec<u8>>>);
 
 impl DebugHandler for Text {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
@@ -110,7 +111,7 @@ fn tracing(
     let traced = crate::components::Components::new().unwrap();
     traced.configure(components);
     e.set_components(Some(traced));
-    let body = Arc::new(Mutex::new(Vec::new()));
+    let body = Arc::new(Lock::new(Vec::new()));
     let text = Text::default();
     let o = e.options_mut();
     o.set_url(Some(url.as_bytes())).unwrap();
@@ -1078,7 +1079,7 @@ fn a_command_wanting_no_body_is_not_retried() {
 /// Takes the body, pausing at its first piece.
 #[derive(Clone, Default)]
 struct PausesOnce {
-    got: Arc<Mutex<Vec<u8>>>,
+    got: Arc<Lock<Vec<u8>>>,
     paused: Arc<crate::test_cell::Cell<bool>>,
 }
 

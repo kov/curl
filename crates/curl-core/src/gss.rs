@@ -260,8 +260,9 @@ pub enum Style {
 /// answers given it, and what was asked of it is kept to be read back.
 #[cfg(test)]
 pub(crate) mod testing {
+    use curl_alloc::Lock;
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use super::*;
 
@@ -328,7 +329,7 @@ pub(crate) mod testing {
 
     /// The library.
     #[derive(Clone, Debug, Default)]
-    pub(crate) struct Scripted(Arc<Mutex<Script>>);
+    pub(crate) struct Scripted(Arc<Lock<Script>>);
 
     impl Scripted {
         /// A library made for a test, and kept to its end, as a handle's
@@ -415,7 +416,7 @@ pub(crate) mod testing {
         }
     }
 
-    struct ScriptedContext(Arc<Mutex<Script>>);
+    struct ScriptedContext(Arc<Lock<Script>>);
 
     impl Drop for ScriptedContext {
         fn drop(&mut self) {

@@ -145,7 +145,7 @@ impl SharedClock {
 #[derive(Clone)]
 pub(crate) enum SharedClock {
     System,
-    Given(curl_alloc::TryArc<std::sync::Mutex<Box<dyn Clock>>>),
+    Given(curl_alloc::TryArc<curl_alloc::Lock<Box<dyn Clock>>>),
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -155,14 +155,13 @@ impl SharedClock {
         if clock.identity() == ClockId::SYSTEM {
             return Ok(SharedClock::System);
         }
-        // A test's clock: the library accounts for holding it, not for the
-        // lock std makes.
+        // A test's clock: the library accounts for holding it.
         Ok(SharedClock::Given(curl_alloc::TryArc::try_new(
-            curl_alloc::track::untracked_mutex(clock),
+            curl_alloc::Lock::new(clock),
         )?))
     }
 
-    fn get(given: &std::sync::Mutex<Box<dyn Clock>>) -> std::sync::MutexGuard<'_, Box<dyn Clock>> {
+    fn get(given: &curl_alloc::Lock<Box<dyn Clock>>) -> curl_alloc::LockGuard<'_, Box<dyn Clock>> {
         given.lock().expect("no reading of a clock panics")
     }
 
@@ -277,7 +276,7 @@ pub struct ManualClock(curl_alloc::TryArc<ManualTime>);
 #[derive(Debug)]
 pub struct ManualTime {
     /// Now, and the calendar time at the clock's epoch.
-    at: std::sync::Mutex<(Instant, i64)>,
+    at: curl_alloc::Lock<(Instant, i64)>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -285,11 +284,11 @@ impl ManualClock {
     /// A clock at its epoch, which is 1970's.
     pub fn new() -> Result<Self, curl_alloc::OutOfMemory> {
         Ok(ManualClock(curl_alloc::TryArc::try_new(ManualTime {
-            at: curl_alloc::track::untracked_mutex((Instant::EPOCH, 0)),
+            at: curl_alloc::Lock::new((Instant::EPOCH, 0)),
         })?))
     }
 
-    fn at(&self) -> std::sync::MutexGuard<'_, (Instant, i64)> {
+    fn at(&self) -> curl_alloc::LockGuard<'_, (Instant, i64)> {
         self.0.at.lock().expect("no test panics holding the clock")
     }
 

@@ -1064,7 +1064,7 @@ fn a_first_attempt_lost_to_the_second_lets_go_of_its_resolve_with_the_chain() {
 /// The race of a QUIC first attempt and the TCP second that leads it, the
 /// trace's components on as `config` says: what the transfer traced and
 /// the number of the library's socket.
-fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, i32) {
+fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, u64) {
     let clock = ManualClock::new().unwrap();
     let at_origin = SocketAddr::from(([127, 0, 0, 1], 443));
     let quic_talk = Conversation::replies(&[], false).per_send();
@@ -1091,7 +1091,7 @@ fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, i32) {
         std::mem::forget(open());
     }
     let socket = open();
-    let fd = socket.key().get();
+    let fd = socket_number(socket.key());
     let alive = Arc::new(AtomicBool::new(false));
     let lib: &'static Library = Box::leak(Box::new(Library {
         aaaa: Arc::default(),

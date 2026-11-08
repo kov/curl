@@ -670,11 +670,19 @@ fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_
 /// Bytes a verbose transfer traces (`Curl_debug`), after the ids when
 /// they are on: to the debug handler with them, when what it is given
 /// fits a trace line, or before the mark on standard error.
+/// The check is inlined where the bytes are said, as `of`'s is: a body
+/// passes here once a packet, and the trace line's room is set up only
+/// for a transfer that traces.
+#[inline]
 pub(crate) fn bytes<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
-    let easy = cx.easy();
-    if !easy.options().output.verbose {
-        return;
+    if cx.easy().options().output.verbose {
+        bytes_traced(cx, kind, bytes);
     }
+}
+
+#[inline(never)]
+fn bytes_traced<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
+    let easy = cx.easy();
     let ids = easy.components().is_some_and(|c| c.traces(Component::Ids));
     if !ids {
         out(cx, kind, bytes, &[]);

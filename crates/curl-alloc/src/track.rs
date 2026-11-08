@@ -15,7 +15,9 @@
 //!
 //! The C side of the shim logs to the same memdump and counts against the
 //! same limit through [`log`] and [`limit_reached`], so there is one of
-//! each per process. Nothing here allocates while logging: lines are built
+//! each per process, as C's memdebug has. A limit for one thread alone
+//! ([`fail_once_after_here`]) is that thread's, and no other thread's
+//! allocations spend it. Nothing here allocates while logging: lines are built
 //! on the stack and gathered in a buffer of C's size, written out when it
 //! fills and as the process exits, as C's `membuf` is: a file size limit
 //! the program sets for a while (test 2380) then cuts no line short.
@@ -54,9 +56,6 @@ struct State {
     quiet: bool,
     /// Only one allocation is refused: the limit is lifted after it.
     once: bool,
-    /// Only the allocations of the thread that set the limit count
-    /// against it (`fail_once_after_here`).
-    here: bool,
 }
 
 /// The lines kept before they are written (C's `membuf`).
@@ -70,7 +69,6 @@ static STATE: crate::Lock<State> = crate::Lock::new(State {
     refused: 0,
     quiet: false,
     once: false,
-    here: false,
 });
 
 /// Tracked blocks not yet freed.
@@ -87,8 +85,12 @@ thread_local! {
     /// Bytes this thread allocated outside [`untracked`], less those it
     /// freed: what it holds, as far as it made what it frees.
     static HELD: Cell<i64> = const { Cell::new(0) };
-    /// This thread set a limit that only its allocations count against.
-    static LIMITED: Cell<bool> = const { Cell::new(false) };
+    /// The allocations this thread has left before its one refusal, under
+    /// a limit only its allocations count against
+    /// ([`fail_once_after_here`]); lifted after that refusal.
+    static HERE: Cell<Option<u64>> = const { Cell::new(None) };
+    /// The allocations refused this thread under [`HERE`].
+    static HERE_REFUSED: Cell<u64> = const { Cell::new(0) };
     /// The largest block this thread allocated outside [`untracked`]
     /// without the allocator zeroing it, or grew.
     static UNZEROED: Cell<usize> = const { Cell::new(0) };
@@ -226,32 +228,33 @@ pub fn fail_once_after<R>(limit: u64, f: impl FnOnce() -> R) -> (R, bool) {
 }
 
 /// As [`fail_once_after`], counting only this thread's allocations, so
-/// that tests running beside it on other threads are not refused: for a
-/// test among others in a harness's threads.
+/// that tests running beside it on other threads are not refused, nor
+/// spend its limit: for a test among others in a harness's threads. The
+/// limit is this thread's alone: while it is set, this thread's
+/// allocations count against it and not against the process's limit,
+/// which other threads' still count against. Its refusal is not reported
+/// on standard error.
 pub fn fail_once_after_here<R>(limit: u64, f: impl FnOnce() -> R) -> (R, bool) {
-    LIMITED.with(|l| l.set(true));
-    let r = refusing_in(limit, true, true, f);
-    LIMITED.with(|l| l.set(false));
-    r
+    let previous = HERE.replace(Some(limit));
+    let refused = HERE_REFUSED.get();
+    ACTIVE.store(true, Ordering::Release);
+    let r = f();
+    HERE.set(previous);
+    (r, HERE_REFUSED.get() > refused)
 }
 
 fn refusing<R>(limit: u64, once: bool, f: impl FnOnce() -> R) -> (R, bool) {
-    refusing_in(limit, once, false, f)
-}
-
-fn refusing_in<R>(limit: u64, once: bool, here: bool, f: impl FnOnce() -> R) -> (R, bool) {
     let (previous, refused) = {
         let mut state = state();
-        let previous = (state.limit.replace(limit), state.once, state.here);
+        let previous = (state.limit.replace(limit), state.once);
         state.quiet = true;
         state.once = once;
-        state.here = here;
         (previous, state.refused)
     };
     ACTIVE.store(true, Ordering::Release);
     let r = f();
     let mut state = state();
-    (state.limit, state.once, state.here) = previous;
+    (state.limit, state.once) = previous;
     state.quiet = false;
     let reached = state.refused > refused;
     (r, reached)
@@ -398,20 +401,35 @@ fn write_log(state: &mut State, line: &Line) {
     state.held += bytes.len();
 }
 
-/// Count a tracked call against the limit. When the limit is spent, log
-/// `LIMIT <source> <func> reached memlimit` to the memdump and to standard
-/// error, and return true: the call must fail. `source` writes where the
-/// call was made. A thread that is panicking is never refused, nor
-/// counted: what it allocates is its message and its unwinding, and
-/// refused, its panic would end as "memory allocation failed" instead.
+/// Count a tracked call against the limit: this thread's, when it has
+/// one, else the process's. When the limit is spent, log `LIMIT <source>
+/// <func> reached memlimit` to the memdump and, for the process's limit,
+/// to standard error, and return true: the call must fail. `source`
+/// writes where the call was made. A thread that is panicking is never
+/// refused, nor counted: what it allocates is its message and its
+/// unwinding, and refused, its panic would end as "memory allocation
+/// failed" instead.
 pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
     if std::thread::panicking() {
         return false;
     }
-    let mut state = state();
-    if state.here && !LIMITED.with(Cell::get) {
-        return false;
+    // Thread-locals initialised as constants, of types without a
+    // destructor: reaching them never allocates, so never re-enters the
+    // allocator.
+    match HERE.get() {
+        Some(0) => {
+            HERE.set(None);
+            HERE_REFUSED.set(HERE_REFUSED.get() + 1);
+            write_log(&mut state(), &limit_line(func, source));
+            return true;
+        }
+        Some(left) => {
+            HERE.set(Some(left - 1));
+            return false;
+        }
+        None => {}
     }
+    let mut state = state();
     match &mut state.limit {
         Some(0) => {}
         Some(left) => {
@@ -424,10 +442,7 @@ pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
     if state.once {
         state.limit = None;
     }
-    let mut line = Line::new();
-    line.push(b"LIMIT ");
-    source(&mut line);
-    let _ = writeln!(line, " {func} reached memlimit");
+    let line = limit_line(func, source);
     write_log(&mut state, &line);
     if !state.quiet {
         // Standard error is unbuffered and does not allocate. A failed
@@ -435,6 +450,15 @@ pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
         let _ = io::stderr().write_all(line.bytes());
     }
     true
+}
+
+/// The memdump's line for a refused call.
+fn limit_line(func: &str, source: impl FnOnce(&mut Line)) -> Line {
+    let mut line = Line::new();
+    line.push(b"LIMIT ");
+    source(&mut line);
+    let _ = writeln!(line, " {func} reached memlimit");
+    line
 }
 
 /// Log a Rust allocation event, built by `build` after the source.
@@ -738,5 +762,44 @@ mod tests {
         });
         assert_eq!(message.as_deref(), Ok("the panic, 42"));
         assert!(!refused, "nothing refused while panicking");
+    }
+
+    /// A limit for this thread alone lets that many allocations through,
+    /// refuses the next and lets the rest through.
+    #[test]
+    fn a_refusal_here_comes_after_the_allocations_allowed() {
+        let allocate = || Vec::<u8>::new().try_reserve(1).is_ok();
+        let (got, refused) = fail_once_after_here(2, || [(); 4].map(|()| allocate()));
+        assert_eq!((got, refused), ([true, true, false, true], true));
+    }
+
+    /// Two threads each refused their own first allocation at once are
+    /// both refused: neither spends the other's limit, nor takes the
+    /// other's refusal for its own.
+    #[test]
+    fn refusals_here_on_two_threads_at_once_are_each_their_own() {
+        // Spun on, not waited on: a condition variable's wait can allocate
+        // (a boxed pthread one, on macOS), which the limit would refuse.
+        static INSIDE: AtomicU64 = AtomicU64::new(0);
+        static ALLOCATED: AtomicU64 = AtomicU64::new(0);
+        fn meet(at: &AtomicU64) {
+            at.fetch_add(1, Ordering::AcqRel);
+            while at.load(Ordering::Acquire) < 2 {
+                std::hint::spin_loop();
+            }
+        }
+        let refuse = || {
+            fail_once_after_here(0, || {
+                // Neither allocates before both have their limit set,
+                meet(&INSIDE);
+                let got = Vec::<u8>::new().try_reserve(1).is_ok();
+                // nor lifts it before both have allocated.
+                meet(&ALLOCATED);
+                got
+            })
+        };
+        let threads = untracked(|| [std::thread::spawn(refuse), std::thread::spawn(refuse)]);
+        let got = untracked(|| threads.map(|t| t.join().unwrap()));
+        assert_eq!(got, [(false, true), (false, true)]);
     }
 }

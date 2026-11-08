@@ -414,7 +414,9 @@ A `debug-hooks` feature provides it, on `curl-alloc`, `curl-sys-abi` and `curl-t
   made, so a block made before tracking started is never reported as a bad free. Being
   Rust's global allocator, it is process-wide by definition. It and the command line
   `curl-os` captures for the tool, written once before `main`, are the only globals outside
-  the shim's root. It also counts allocations per thread, for the budget tests.
+  the shim's root. It also counts allocations per thread, for the budget tests, and holds a
+  thread's limit of its own apart from the process's, so tests refused an allocation each on
+  harness threads side by side do not spend each other's.
 - **`curl-sys-abi`** installs that allocator and adds:
   - the `libcurl-d.so.4` soname;
   - the `curl_dbg_*` exports the C test programs import, logging to the same memdump and

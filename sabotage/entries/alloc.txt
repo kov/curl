@@ -83,3 +83,17 @@ features: debug-hooks
     if false {
         return false;
     }
+
+=== a limit for one thread alone is the process's, so two threads under one at once spend each other's
+file: crates/curl-alloc/src/track.rs
+witness: curl-alloc track::tests::refusals_here_on_two_threads_at_once_are_each_their_own
+features: debug-hooks
+--- old
+    let previous = HERE.replace(Some(limit));
+    let refused = HERE_REFUSED.get();
+    ACTIVE.store(true, Ordering::Release);
+    let r = f();
+    HERE.set(previous);
+    (r, HERE_REFUSED.get() > refused)
+--- new
+    refusing(limit, true, f)

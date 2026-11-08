@@ -65,11 +65,26 @@ fn acceptor(certs: &Certs, configure: impl FnOnce(&mut SslAcceptorBuilder)) -> S
 /// accepted with the `n`th of `acceptors`: one that is the same resumes
 /// the sessions it gave. A handshake that fails ends that connection.
 fn serve_each(acceptors: Vec<SslAcceptor>) -> (SocketAddr, JoinHandle<()>) {
+    serve_each_after(acceptors, None)
+}
+
+/// As `serve_each`, the first connection's handshake held until `gate`
+/// is sent to (or dropped): the client's hello waits in the socket
+/// meanwhile, however the client's tries are scheduled.
+fn serve_each_after(
+    acceptors: Vec<SslAcceptor>,
+    gate: Option<std::sync::mpsc::Receiver<()>>,
+) -> (SocketAddr, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
+        let mut first = true;
         for acceptor in acceptors {
             let (tcp, _) = curl_core::test_server::accept(&listener);
+            if let Some(gate) = gate.as_ref().filter(|_| first) {
+                let _ = gate.recv_timeout(std::time::Duration::from_secs(30));
+            }
+            first = false;
             let Ok(mut tls) = acceptor.accept(tcp) else {
                 continue;
             };
@@ -578,10 +593,15 @@ fn a_session_keeps_its_key_log_past_its_owner() {
     std::fs::create_dir_all(certs_dir()).unwrap();
     std::fs::write(&path, b"").unwrap();
     let certs = certs("keylog-owned", "localhost", &["localhost"]);
-    let (at, server) = serve_each(vec![acceptor(&certs, |_a| {
-        #[cfg(libressl)]
-        _a.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
-    })]);
+    // The server answers the hello only once the libraries are swapped.
+    let (release, gate) = track::untracked(std::sync::mpsc::channel::<()>);
+    let (at, server) = serve_each_after(
+        vec![acceptor(&certs, |_a| {
+            #[cfg(libressl)]
+            _a.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+        })],
+        Some(gate),
+    );
     let mut m = multi(try_box(SystemClock::new()).unwrap());
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
     let mut easy = Easy::new();
@@ -616,6 +636,7 @@ fn a_session_keeps_its_key_log_past_its_owner() {
     m.easy_mut(id)
         .unwrap()
         .set_libraries(SharedLibraries::default());
+    release.send(()).unwrap();
     let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     m.remove(id, &mut NoEvents).unwrap();
     server.join().unwrap();

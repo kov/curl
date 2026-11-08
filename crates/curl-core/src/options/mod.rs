@@ -3884,6 +3884,20 @@ mod tests {
         assert_eq!(login.user, None);
     }
 
+    /// A group's option given its default in a group never made makes
+    /// nothing; any other value makes the group and is kept, and the
+    /// default given again then is kept too.
+    #[test]
+    fn a_group_s_option_is_assigned_its_default_without_the_group() {
+        let mut line: Cold<Line> = Cold::new();
+        line.assign(|l| &mut l.use_ssl, UseSsl::None).unwrap();
+        assert!(line.made_mut().is_none(), "the default makes nothing");
+        line.assign(|l| &mut l.use_ssl, UseSsl::All).unwrap();
+        assert_eq!(line.made_mut().map(|l| l.use_ssl), Some(UseSsl::All));
+        line.assign(|l| &mut l.use_ssl, UseSsl::None).unwrap();
+        assert_eq!(line.made_mut().map(|l| l.use_ssl), Some(UseSsl::None));
+    }
+
     /// The buffers are held under their largest sizes.
     #[test]
     fn buffer_sizes_are_held_to_their_bounds() {

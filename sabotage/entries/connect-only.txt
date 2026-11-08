@@ -388,3 +388,11 @@ features: test-util
                 }
 --- new
             AskedFrame::None(no) | AskedFrame::NoBytes { why: no, .. } => {
+
+=== a raw read over a session never traces its records
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::tls::a_raw_read_over_a_session_traces_its_records_while_debugged
+--- old
+        options.callbacks.rare.debug.is_some() && options.output.verbose
+--- new
+        false

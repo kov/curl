@@ -2914,3 +2914,67 @@ fn an_https_proxy_the_tls_library_cannot_speak_to_is_not_built_in() {
         )
     );
 }
+
+/// A handle that only connected reads over its session with the trace of
+/// the records only while it is verbose with a debug handler, as C's
+/// `curl_easy_recv` traces them: the session asks the handle, not the
+/// transfer that is done.
+#[test]
+fn a_raw_read_over_a_session_traces_its_records_while_debugged() {
+    use crate::multi::raw::RawIo;
+    let libraries = saying();
+    let (mut m, _talk, _) = server(&[b"one", b"two"], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries.clone());
+    let seen = Seen::default();
+    let o = e.options_mut();
+    let url = format!("https://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.connect_only = crate::options::ConnectOnly::Yes;
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let read = |m: &mut Multi| {
+        let mut records = Vec::new();
+        let head = b"GET / HTTP/1.1\r\n\r\n";
+        let sent = m.send_raw(id, head, &mut |_, _| {}).unwrap();
+        assert_eq!(sent, Ok(RawIo::Bytes(head.len())));
+        let mut buf = [0u8; 16];
+        for _ in 0..100 {
+            let got = m.recv_raw(id, &mut buf, &mut |kind, bytes| {
+                if kind == crate::handler::DebugKind::SslDataIn {
+                    records.push(bytes.to_vec());
+                }
+            });
+            match got.unwrap() {
+                Ok(RawIo::Bytes(n)) => return (buf[..n].to_vec(), records),
+                Ok(RawIo::WouldBlock) => {}
+                Err(e) => panic!("{e:?}, {:?}", seen.text()),
+            }
+        }
+        panic!("nothing came");
+    };
+    let (got, records) = read(&mut m);
+    assert_eq!(
+        (got.as_slice(), records),
+        (&b"one"[..], vec![b"one".to_vec()])
+    );
+    m.easy_mut(id).unwrap().options_mut().output.verbose = false;
+    let (got, records) = read(&mut m);
+    assert_eq!(
+        (got.as_slice(), records.len()),
+        (&b"two"[..], 0),
+        "not verbose"
+    );
+    m.remove(id, &mut NoEvents).unwrap();
+}

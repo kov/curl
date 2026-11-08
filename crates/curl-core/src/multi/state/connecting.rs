@@ -267,14 +267,6 @@ impl RaceSecond {
         }
     }
 
-    /// Its machine, if it failed once dialed, to change.
-    fn kept_mut(&mut self) -> Option<&mut ConnectMachine> {
-        match self {
-            RaceSecond::Kept(m) => Some(m),
-            RaceSecond::Unstarted | RaceSecond::Running(_) | RaceSecond::Gone => None,
-        }
-    }
-
     /// Its machine, if it failed once dialed.
     pub(super) fn kept(&self) -> Option<&ConnectMachine> {
         match self {
@@ -2129,15 +2121,12 @@ pub(super) fn up<H: Host>(
 /// The resolve of the name still going on beside the setup that won,
 /// `won`, or, if it was not the first attempt, beside the first's machine:
 /// lost to the second, or kept as it failed once dialed. Only the first
-/// holds one.
+/// holds one: the second starts on the first's answer, holding none
+/// (`ConnectMachine::racing`).
 fn first_late(c: &mut Connecting, lost: &mut Option<ConnectMachine>, won: Late) -> Late {
-    let race = c.race.as_deref_mut();
-    let (failed, kept) = match race {
-        Some(r) => (r.failed.as_mut(), r.second.kept_mut()),
-        None => (None, None),
-    };
+    let failed = c.race.as_deref_mut().and_then(|r| r.failed.as_mut());
     let mut found = won;
-    for m in [lost.as_mut(), failed, kept].into_iter().flatten() {
+    for m in [lost.as_mut(), failed].into_iter().flatten() {
         let late = m.take_late();
         if late.going() {
             assert!(!found.going(), "one attempt holds the name's resolve");

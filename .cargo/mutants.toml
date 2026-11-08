@@ -424,6 +424,12 @@ exclude_re = [
     # curl-tool's): elsewhere the guard is `true` already. Built with it,
     # `the_resolver_library_options_are_kept_with_c_ares_alone` catches it.
     'curl-sys-abi/src/setopt/mod\.rs:.*: replace match guard !cfg!\(feature = "threaded-resolver"\) with true in apply$',
+    # The SSH host key options' arm is built only with the shim's
+    # `libssh2` feature, which no run in the recipe above turns on (the
+    # default SSH library is libssh): elsewhere the mutant deletes code
+    # not compiled. Built with it (the Windows leg), handle_tests' adapter
+    # test sets `CURLOPT_SSH_HOSTKEYFUNCTION` and wants `CURLE_OK`.
+    'curl-sys-abi/src/setopt/mod\.rs:.*: delete match arm \(ffi::CURLOPT_SSH_HOSTKEYFUNCTION \| ffi::CURLOPT_SSH_HOSTKEYDATA, Ptr\(p\)\) in apply$',
     # A share with neither lock function gets a watch that calls none, and
     # the functions cannot change while a handle holds the share.
     'curl-sys-abi/src/share\.rs:.*: replace match guard sh\.settings\(\)\.lock\.is_some\(\) \|\| sh\.settings\(\)\.unlock\.is_some\(\) with true in set_core$',

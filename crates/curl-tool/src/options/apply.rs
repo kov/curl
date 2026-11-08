@@ -8,10 +8,10 @@
 use std::borrow::Cow;
 use std::num::NonZeroU16;
 
-use curl_alloc::TryVec;
+use curl_alloc::{OutOfMemory, TryVec};
 use curl_core::components::Components;
 use curl_core::options::{
-    AuthMethods, Condition, Delegation, Follow, PostRedir, ProxyType, TimeCondition,
+    AuthMethods, Condition, Delegation, Follow, PostRedir, ProxyType, ResolveList, TimeCondition,
 };
 use curl_core::version::Protocol;
 
@@ -285,6 +285,10 @@ pub(crate) struct Operation<'a> {
     pub(crate) proxy_headers: Vec<&'a [u8]>,
     /// `--resolve`, in the order given.
     pub(crate) resolve: Vec<&'a [u8]>,
+    /// `resolve` as the library's list, made for the first transfer and
+    /// shared by every one after, as C's tool gives each the one
+    /// `curl_slist`.
+    pub(crate) resolve_list: std::cell::OnceCell<ResolveList>,
     /// `--connect-to`, in the order given.
     pub(crate) connect_to: Vec<&'a [u8]>,
     /// `--user-agent`.
@@ -654,6 +658,16 @@ impl Global<'_> {
 }
 
 impl<'a> Operation<'a> {
+    /// `--resolve`'s entries as the library's list, made once.
+    pub(crate) fn resolve_list(&self) -> Result<&ResolveList, OutOfMemory> {
+        if let Some(list) = self.resolve_list.get() {
+            return Ok(list);
+        }
+        let mut list = ResolveList::default();
+        list.set(self.resolve.iter().copied())?;
+        Ok(self.resolve_list.get_or_init(|| list))
+    }
+
     /// The `CURLAUTH_*` mask C's tool passes for the methods asked for.
     pub(crate) fn auth_mask(&self) -> u64 {
         let mask = crate::easysrc::auth_mask(self.auth);

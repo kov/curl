@@ -2186,7 +2186,8 @@ fn setopts(
     })?;
     if !op.resolve.is_empty() {
         s.slist("CURLOPT_RESOLVE", &op.resolve, |o| {
-            o.resolve.set(op.resolve.iter().copied()).map_err(oom)
+            o.resolve.set_from(op.resolve_list().map_err(oom)?);
+            Ok(())
         })?;
     }
     if !op.connect_to.is_empty() {

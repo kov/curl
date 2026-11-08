@@ -495,7 +495,12 @@ fn traced(url: &str, config: &[u8]) -> Vec<String> {
         .with_peer(SERVER.into(), Peer::Accepts)
         .with_conversation(SERVER.into(), Conversation::new(&http(&rcode(3)), false))
         .with_conversation(SERVER.into(), Conversation::new(&http(&rcode(3)), false));
-    let mut m = multi_over(net, &clock);
+    traced_over(net, &clock, url, config)
+}
+
+/// The same over `net`.
+fn traced_over(net: FakeNet, clock: &ManualClock, url: &str, config: &[u8]) -> Vec<String> {
+    let mut m = multi_over(net, clock);
     let mut easy = asking(url);
     let lines = Lines::default();
     let o = easy.options_mut();
@@ -505,9 +510,32 @@ fn traced(url: &str, config: &[u8]) -> Vec<String> {
     components.configure(config);
     easy.set_components(Some(components));
     m.add(easy, (), &mut NoEvents).unwrap();
-    run(&mut m, &clock);
+    run(&mut m, clock);
     assert!(message(&mut m).expect("it ended").is_err());
     lines.0.lock().unwrap().clone()
+}
+
+/// A probe whose own transfer fails says the transfer's error, not a
+/// status it never had (`doh_probe_done`'s `[DoH] [%s] error: %s`).
+#[test]
+fn a_probe_s_failed_transfer_says_its_error() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Refuses);
+    let lines = traced_over(net, &clock, "http://nx.test/", b"doh");
+    let has = |want: &str| lines.iter().filter(|l| l.trim_end() == want).count();
+    for name in ["A", "AAAA"] {
+        assert_eq!(
+            has(&format!(
+                "[DoH] [DoH] [{name}] error: Could not connect to server"
+            )),
+            1,
+            "{lines:?}"
+        );
+    }
+    assert!(
+        !lines.iter().any(|l| l.contains("HTTP status")),
+        "{lines:?}"
+    );
 }
 
 /// A probe's lines are said only with DoH's trace on, and each begins with

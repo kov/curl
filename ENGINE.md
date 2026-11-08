@@ -2846,8 +2846,11 @@ at in each pass, its sockets in the pollset, and an answer that comes is kept an
 no attempt. As the chain connects it is taken from the first attempt's machine, wherever that
 is (the winner, the second's loser, or kept as it failed), and let go of after its record's
 `destroy async`: a library's sockets said closed, DoH's `[DoH] probe done`. A setup closed or
-discarded first lets go of it at once (`Late::end`), and one dropped otherwise all the same. A
-race out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
+discarded first lets go of it at once (`Late::end`), and one dropped otherwise all the same. FTP's
+data connection does the same over its own chain: up before its TLS is made, it holds the
+resolve beside the connection (`LateName` in `proto/ftp/data.rs`), looked at first in each call
+of its connect and its sockets first in its pollset, until all of the chain connects, the TLS
+too. A race out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
 synchronous resolver does; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
 

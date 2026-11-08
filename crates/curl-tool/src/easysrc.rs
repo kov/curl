@@ -444,7 +444,11 @@ impl<'a> Setopt<'a> {
         needs(&crate::tlslib::support())
     }
 
-    /// Apply `apply`; the program, if one is written.
+    /// Apply `apply`; the program, if one is written. Each option's
+    /// method is this and a call of the writer of its line, which few
+    /// runs reach: kept out of line, the transfer's setup runs through
+    /// the applying alone, not through a copy of each writer per option.
+    #[inline(always)]
     fn apply(
         &mut self,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
@@ -455,110 +459,67 @@ impl<'a> Setopt<'a> {
 
     /// A `long` option (`tool_setopt_long`): written unless it is the
     /// option's default.
+    #[inline(always)]
     pub(crate) fn long(
         &mut self,
         name: &'static str,
         value: i64,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        let default = NONZERO_DEFAULTS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map_or(0, |&(_, v)| v);
-        if value != default {
-            long_line(source, name, value).map_err(oom)?;
+        match self.apply(apply)? {
+            Some(source) => write_long(source, name, value),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// A `long` option set for every transfer (`tool_setopt_long_force`):
     /// written for the first only if 0, so a program keeps the default
     /// a later one's reset puts back.
+    #[inline(always)]
     pub(crate) fn long_force(
         &mut self,
         name: &'static str,
         value: i64,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        if source.performed || value == 0 {
-            long_line(source, name, value).map_err(oom)?;
+        match self.apply(apply)? {
+            Some(source) => write_long_force(source, name, value),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// `CURLOPT_SSLVERSION` (`tool_setopt_SSLVERSION`): written unless 0,
     /// by the names of its oldest and newest versions.
+    #[inline(always)]
     pub(crate) fn sslversion(
         &mut self,
         name: &'static str,
         value: i64,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        if value == 0 {
-            return Ok(());
+        match self.apply(apply)? {
+            Some(source) => write_sslversion(source, name, value),
+            None => Ok(()),
         }
-        let min = SSL_VERSIONS.iter().find(|&&(_, v)| v == value & 0xffff);
-        let max = SSL_VERSIONS_MAX
-            .iter()
-            .find(|&&(_, v)| v == value & !0xffff);
-        match (min, max) {
-            (None, _) => long_line(source, name, value),
-            (Some((min, _)), Some((max, _))) if !max.is_empty() => source.code(&[
-                b"curl_easy_setopt(curl, ",
-                name.as_bytes(),
-                b", (long)(",
-                min.as_bytes(),
-                b" | ",
-                max.as_bytes(),
-                b"));",
-            ]),
-            (Some((min, _)), _) => source.code(&[
-                b"curl_easy_setopt(curl, ",
-                name.as_bytes(),
-                b", (long)",
-                min.as_bytes(),
-                b");",
-            ]),
-        }
-        .map_err(oom)
     }
 
     /// A `curl_off_t` option (`tool_setopt_offt`): written unless 0.
+    #[inline(always)]
     pub(crate) fn offt(
         &mut self,
         name: &'static str,
         value: i64,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        if value != 0 {
-            let n = decimal(value).map_err(oom)?;
-            source
-                .code(&[
-                    b"curl_easy_setopt(curl, ",
-                    name.as_bytes(),
-                    b", (curl_off_t)",
-                    n.as_bytes(),
-                    b");",
-                ])
-                .map_err(oom)?;
+        match self.apply(apply)? {
+            Some(source) => write_offt(source, name, value),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// A string option of the handle's own state rather than its options
     /// (`tool_setopt_str`, `CURLOPT_HSTS`): written if set.
+    #[inline(always)]
     pub(crate) fn str_handle(
         &mut self,
         name: &'static str,
@@ -571,6 +532,7 @@ impl<'a> Setopt<'a> {
 
     /// A string option (`tool_setopt_str`): written if set, up to its
     /// first zero byte as C reads it.
+    #[inline(always)]
     pub(crate) fn str(
         &mut self,
         name: &'static str,
@@ -581,6 +543,7 @@ impl<'a> Setopt<'a> {
     }
 
     /// `CURLOPT_POSTFIELDS`: written whole, as C gives its length.
+    #[inline(always)]
     pub(crate) fn postfields(
         &mut self,
         value: &[u8],
@@ -591,6 +554,7 @@ impl<'a> Setopt<'a> {
 
     /// An option of bytes, written as `shown` shows `value`: worked out
     /// only for a program, as most runs write none.
+    #[inline(always)]
     fn bytes(
         &mut self,
         name: &'static str,
@@ -598,46 +562,30 @@ impl<'a> Setopt<'a> {
         shown: fn(&[u8]) -> &[u8],
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        if let Some(value) = value {
-            let escaped = c_escape(shown(value)).map_err(oom)?;
-            source
-                .code(&[
-                    b"curl_easy_setopt(curl, ",
-                    name.as_bytes(),
-                    b", \"",
-                    &escaped,
-                    b"\");",
-                ])
-                .map_err(oom)?;
+        match (self.apply(apply)?, value) {
+            (Some(source), Some(value)) => write_bytes(source, name, shown(value)),
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     /// A pointer option, said among those no source is written for
     /// (`tool_setopt_ptr`).
+    #[inline(always)]
     pub(crate) fn ptr(
         &mut self,
         name: &'static str,
         to: Pointer,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        let what: &[u8] = match to {
-            Pointer::Function => b" was set to a function pointer",
-            Pointer::Object => b" was set to an object pointer",
-        };
-        source
-            .add_parts(Section::TooHard, &[name.as_bytes(), what])
-            .map_err(oom)
+        match self.apply(apply)? {
+            Some(source) => write_ptr(source, name, to),
+            None => Ok(()),
+        }
     }
 
     /// A list option (`tool_setopt_slist`): written if the list has
     /// items.
+    #[inline(always)]
     pub(crate) fn slist(
         &mut self,
         name: &'static str,
@@ -648,34 +596,22 @@ impl<'a> Setopt<'a> {
     }
 
     /// A list option of the lines `items` gives, as `slist` writes one.
+    #[inline(always)]
     pub(crate) fn slist_of<'i>(
         &mut self,
         name: &'static str,
         items: impl IntoIterator<Item = &'i [u8]>,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        let mut items = items.into_iter().peekable();
-        if items.peek().is_none() {
-            return Ok(());
+        match self.apply(apply)? {
+            Some(source) => write_slist(source, name, items),
+            None => Ok(()),
         }
-        let n = source.slist(items).map_err(oom)?;
-        let n = decimal(n).map_err(oom)?;
-        source
-            .code(&[
-                b"curl_easy_setopt(curl, ",
-                name.as_bytes(),
-                b", slist",
-                n.as_bytes(),
-                b");",
-            ])
-            .map_err(oom)
     }
 
     /// An option of named values (`tool_setopt_enum`): written by name
     /// unless 0.
+    #[inline(always)]
     pub(crate) fn enumerated(
         &mut self,
         name: &'static str,
@@ -683,29 +619,16 @@ impl<'a> Setopt<'a> {
         value: i64,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        if value == 0 {
-            return Ok(());
-        }
-        match names.iter().find(|&&(_, v)| v == value) {
-            Some((symbol, _)) => source
-                .code(&[
-                    b"curl_easy_setopt(curl, ",
-                    name.as_bytes(),
-                    b", (long)",
-                    symbol.as_bytes(),
-                    b");",
-                ])
-                .map_err(oom),
-            None => long_line(source, name, value).map_err(oom),
+        match self.apply(apply)? {
+            Some(source) => write_enumerated(source, name, names, value),
+            None => Ok(()),
         }
     }
 
     /// A mask of named bits (`tool_setopt_bitmask`): written unless 0, a
     /// line per name that takes bits left, and the bits no name takes as
     /// a number.
+    #[inline(always)]
     pub(crate) fn bitmask(
         &mut self,
         name: &'static str,
@@ -713,13 +636,10 @@ impl<'a> Setopt<'a> {
         value: u64,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        let Some(source) = self.apply(apply)? else {
-            return Ok(());
-        };
-        if value == 0 {
-            return Ok(());
+        match self.apply(apply)? {
+            Some(source) if value != 0 => bitmask_lines(source, name, bits, value).map_err(oom),
+            _ => Ok(()),
         }
-        bitmask_lines(source, name, bits, value).map_err(oom)
     }
 
     /// `CURLOPT_MIMEPOST`, with the calls that build its tree
@@ -745,12 +665,161 @@ impl<'a> Setopt<'a> {
 
     /// An option C's tool sets with `curl_easy_setopt` itself, which the
     /// program does not show; `_why` says where.
+    #[inline(always)]
     pub(crate) fn unwritten(
         &mut self,
         _why: &'static str,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
         apply(self.easy.options_mut())
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn write_long(source: &mut Source, name: &'static str, value: i64) -> Result<(), ErrorKind> {
+    let default = NONZERO_DEFAULTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map_or(0, |&(_, v)| v);
+    if value != default {
+        long_line(source, name, value).map_err(oom)?;
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn write_long_force(source: &mut Source, name: &'static str, value: i64) -> Result<(), ErrorKind> {
+    if source.performed || value == 0 {
+        long_line(source, name, value).map_err(oom)?;
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn write_sslversion(source: &mut Source, name: &'static str, value: i64) -> Result<(), ErrorKind> {
+    if value == 0 {
+        return Ok(());
+    }
+    let min = SSL_VERSIONS.iter().find(|&&(_, v)| v == value & 0xffff);
+    let max = SSL_VERSIONS_MAX
+        .iter()
+        .find(|&&(_, v)| v == value & !0xffff);
+    match (min, max) {
+        (None, _) => long_line(source, name, value),
+        (Some((min, _)), Some((max, _))) if !max.is_empty() => source.code(&[
+            b"curl_easy_setopt(curl, ",
+            name.as_bytes(),
+            b", (long)(",
+            min.as_bytes(),
+            b" | ",
+            max.as_bytes(),
+            b"));",
+        ]),
+        (Some((min, _)), _) => source.code(&[
+            b"curl_easy_setopt(curl, ",
+            name.as_bytes(),
+            b", (long)",
+            min.as_bytes(),
+            b");",
+        ]),
+    }
+    .map_err(oom)
+}
+
+#[cold]
+#[inline(never)]
+fn write_offt(source: &mut Source, name: &'static str, value: i64) -> Result<(), ErrorKind> {
+    if value != 0 {
+        let n = decimal(value).map_err(oom)?;
+        source
+            .code(&[
+                b"curl_easy_setopt(curl, ",
+                name.as_bytes(),
+                b", (curl_off_t)",
+                n.as_bytes(),
+                b");",
+            ])
+            .map_err(oom)?;
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn write_bytes(source: &mut Source, name: &'static str, value: &[u8]) -> Result<(), ErrorKind> {
+    let escaped = c_escape(value).map_err(oom)?;
+    source
+        .code(&[
+            b"curl_easy_setopt(curl, ",
+            name.as_bytes(),
+            b", \"",
+            &escaped,
+            b"\");",
+        ])
+        .map_err(oom)
+}
+
+#[cold]
+#[inline(never)]
+fn write_ptr(source: &mut Source, name: &'static str, to: Pointer) -> Result<(), ErrorKind> {
+    let what: &[u8] = match to {
+        Pointer::Function => b" was set to a function pointer",
+        Pointer::Object => b" was set to an object pointer",
+    };
+    source
+        .add_parts(Section::TooHard, &[name.as_bytes(), what])
+        .map_err(oom)
+}
+
+#[cold]
+#[inline(never)]
+fn write_slist<'i>(
+    source: &mut Source,
+    name: &'static str,
+    items: impl IntoIterator<Item = &'i [u8]>,
+) -> Result<(), ErrorKind> {
+    let mut items = items.into_iter().peekable();
+    if items.peek().is_none() {
+        return Ok(());
+    }
+    let n = source.slist(items).map_err(oom)?;
+    let n = decimal(n).map_err(oom)?;
+    source
+        .code(&[
+            b"curl_easy_setopt(curl, ",
+            name.as_bytes(),
+            b", slist",
+            n.as_bytes(),
+            b");",
+        ])
+        .map_err(oom)
+}
+
+#[cold]
+#[inline(never)]
+fn write_enumerated(
+    source: &mut Source,
+    name: &'static str,
+    names: Names,
+    value: i64,
+) -> Result<(), ErrorKind> {
+    if value == 0 {
+        return Ok(());
+    }
+    match names.iter().find(|&&(_, v)| v == value) {
+        Some((symbol, _)) => source
+            .code(&[
+                b"curl_easy_setopt(curl, ",
+                name.as_bytes(),
+                b", (long)",
+                symbol.as_bytes(),
+                b");",
+            ])
+            .map_err(oom),
+        None => long_line(source, name, value).map_err(oom),
     }
 }
 

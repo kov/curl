@@ -6325,6 +6325,14 @@ fn without_ipv6_only_ipv4_is_resolved() {
     assert_eq!(trying(&trace), "  Trying 127.0.0.1:5...\n");
     let lookup = "[DNS] cache lookup dual:5 queries=A -> 0 not found\n";
     assert!(trace.iter().any(|l| l == lookup), "{trace:?}");
+    // The resolve's own lines name the queries it made, A alone
+    // (`hostip_resolv`, `Curl_resolv_dns_queries`).
+    for said in [
+        "[DNS] [A] hostip_resolv started -> 81\n",
+        "[DNS] [A] resolve complete for dual:5\n",
+    ] {
+        assert!(trace.iter().any(|l| l == said), "{said:?} in {trace:?}");
+    }
     let (mut e, lines) = traced("tcp://dual:5/");
     e.options_mut().ip_version = IpVersion::V6;
     let (result, trace) = run_traced(&mut m, e, &lines);

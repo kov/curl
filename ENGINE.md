@@ -5044,7 +5044,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | `Box<Slot>` (the `Run` in it) | `add` | one per transfer |
 | `Box<Easy>` | the shim's `curl_easy_init` and `curl_easy_duphandle`; `Easy::perform` | one per handle; one per `Easy::perform`, freed when it returns |
 | `ConnectMachine`, attempts' sockets, `Conn` buffers, layer pipes | acquire / stage entry | limits, BUFFERSIZE, UPLOAD_BUFFERSIZE |
-| `HeaderStore` growth | per line, after the budget check | 300 KiB/response, 20× per transfer, 5000 |
+| `HeaderStore` growth | per line, after the budget check; the first header's makes room for 1 KiB of text and 16 entries | 300 KiB/response, 20× per transfer, 5000 |
 | `HeldOutput` | only while held | 64 MiB → TooLarge |
 | `UserHeaders`, `Url`, option strings | setopt | per handle; shared strings are `TryRc` |
 | a cold option group (`Cold<T>`: proxy, login, `.netrc`, cookies, signing, size and speed limits, custom request parts) | the first setopt of one of its options | one per group per handle |

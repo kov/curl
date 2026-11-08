@@ -12,6 +12,14 @@ use crate::handler::HeaderOrigin;
 /// The most headers a transfer stores (`MAX_HTTP_RESP_HEADER_COUNT`).
 pub(crate) const MAX_HEADERS: usize = 5000;
 
+/// The room the first header is stored in, which a usual head fits, so
+/// that the store grows only for a larger one, not header by header:
+/// bytes for its text, and entries as many as C's first array of a list
+/// of headers holds (`lib/dynhds.c`). Less than the blocks C makes for as
+/// many headers, one each (`Curl_headers_push`).
+const FIRST_BYTES: usize = 1024;
+const FIRST_ENTRIES: usize = 16;
+
 /// A transfer's response headers, in the order they came.
 #[derive(Clone, Debug, Default)]
 pub struct HeaderStore {
@@ -175,9 +183,19 @@ impl HeaderStore {
                 .take_while(|&&b| is_blank(b))
                 .count();
         let base = self.bytes.len();
+        if self.bytes.capacity() == 0 {
+            self.bytes
+                .try_reserve_exact(header.len().max(FIRST_BYTES))
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+        }
         self.bytes
             .try_extend_from_slice(header)
             .map_err(|_| ErrorKind::OutOfMemory)?;
+        if self.entries.capacity() == 0 {
+            self.entries
+                .try_reserve_exact(FIRST_ENTRIES)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+        }
         self.entries
             .try_push(Entry {
                 name: span(base, 0..colon),

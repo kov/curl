@@ -2444,11 +2444,17 @@ mod tests {
         peer.send_to(b"back", from).unwrap();
         peer.send_to(b"again", from).unwrap();
         let mut fds = [PollFd::new(s.fd(), Events::IN)];
-        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
-        assert_eq!(
-            s.recv(&mut buf).unwrap(),
-            Recv::Data(NonZeroUsize::new(4).unwrap())
-        );
+        // The empty datagram is passed over. macOS's loopback may wake the
+        // poll for it alone, the next not yet queued: the receive then
+        // would block, and the socket is polled again.
+        let got = loop {
+            assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+            match s.recv(&mut buf).unwrap() {
+                Recv::WouldBlock => continue,
+                got => break got,
+            }
+        };
+        assert_eq!(got, Recv::Data(NonZeroUsize::new(4).unwrap()));
         assert_eq!(&buf[..4], b"back");
         // A datagram larger than the room is cut to it, the rest lost.
         // macOS's loopback may queue it only after the first is read.

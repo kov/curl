@@ -520,7 +520,18 @@ fn an_opener_opening_nothing_fails_as_c() {
 /// running out is (`socket_open`).
 #[test]
 fn an_opener_out_of_memory_fails_its_attempt() {
-    let h = hooked(Peer::Accepts, |h| h.fail = Some(12));
+    // The system's number for memory run out: `ENOMEM` on Linux and
+    // macOS, and on Windows the system's own (`ERROR_NOT_ENOUGH_MEMORY`),
+    // which is what an `io::Error`'s number is there.
+    #[cfg(unix)]
+    let enomem = 12;
+    #[cfg(windows)]
+    let enomem = 8;
+    assert_eq!(
+        std::io::Error::from_raw_os_error(enomem).kind(),
+        std::io::ErrorKind::OutOfMemory
+    );
+    let h = hooked(Peer::Accepts, |h| h.fail = Some(enomem));
     assert_eq!(h.ran.result, Err(ErrorKind::CouldntConnect));
     let lines = socket_lines(&h.ran);
     // `ENOMEM`, in the C library's words.

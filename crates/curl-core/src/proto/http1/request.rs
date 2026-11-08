@@ -1239,6 +1239,40 @@ mod tests {
         );
     }
 
+    /// Headers read again from a source that gives the same lines are
+    /// kept as they were read, not made anew; lines that differ are read.
+    #[test]
+    fn headers_read_again_the_same_are_kept() {
+        struct Given(crate::test_cell::Cell<&'static [u8]>);
+        impl LineSource for Given {
+            fn lines(&self, line: &mut dyn FnMut(&[u8]) -> std::ops::ControlFlow<()>) {
+                for l in [&b"X-A: 1"[..], self.0.get()] {
+                    if line(l).is_break() {
+                        return;
+                    }
+                }
+            }
+        }
+        let given = std::sync::Arc::new(Given(crate::test_cell::Cell::new(b"Host: h")));
+        struct Shared(std::sync::Arc<Given>);
+        impl LineSource for Shared {
+            fn lines(&self, line: &mut dyn FnMut(&[u8]) -> std::ops::ControlFlow<()>) {
+                self.0.lines(line)
+            }
+        }
+        let source = Handler::lines(Shared(given.clone())).unwrap();
+        let mut headers = UserHeaders::from_source(source).unwrap();
+        let first = |h: &UserHeaders| h.lines().next().unwrap().as_ptr();
+        let read = first(&headers);
+        headers.refill().unwrap();
+        assert_eq!(first(&headers), read, "kept as read");
+        assert!(headers.lines().eq([&b"X-A: 1"[..], b"Host: h"]));
+        given.0.set(b"Host: other");
+        headers.refill().unwrap();
+        assert!(headers.lines().eq([&b"X-A: 1"[..], b"Host: other"]));
+        assert!(headers.replaces(b"Host"));
+    }
+
     /// The lines come back as given, and a copy has them all.
     #[test]
     fn the_application_s_headers_are_kept_as_given() {

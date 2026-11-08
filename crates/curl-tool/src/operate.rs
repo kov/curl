@@ -5352,6 +5352,23 @@ mod tests {
         }
     }
 
+    /// An operation's connect-to and proxy header lists hold the lines it
+    /// was given, made once for all its transfers.
+    #[test]
+    fn an_operation_s_lists_hold_what_it_was_given() {
+        let op = Operation {
+            connect_to: vec![b"a:1:b:2"],
+            proxy_headers: vec![b"X-P: 1"],
+            ..Operation::default()
+        };
+        let to = op.connect_to_list().unwrap();
+        assert!(to.iter().eq([&b"a:1:b:2"[..]]));
+        assert!(std::ptr::eq(op.connect_to_list().unwrap(), to), "made once");
+        let headers = op.proxy_header_list().unwrap();
+        assert!(headers.lines().eq([&b"X-P: 1"[..]]));
+        assert!(std::ptr::eq(op.proxy_header_list().unwrap(), headers));
+    }
+
     /// `show_dir_errno`'s texts.
     #[test]
     fn says_why_a_directory_was_not_made_as_c_does() {

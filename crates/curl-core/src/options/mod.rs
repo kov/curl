@@ -3710,6 +3710,20 @@ mod tests {
         assert_eq!(size_of::<UserHeaders>(), size_of::<usize>());
     }
 
+    /// Room is made once for what is added: an entry's length and its
+    /// bytes together, however short it is, and the lines made again with
+    /// one more after them, so that neither grows a second time.
+    #[test]
+    fn room_is_made_once_for_what_is_added() {
+        for line in [&b""[..], b"a", b"ab:1:127.0.0.1"] {
+            let mut packed = Packed::default();
+            packed.push(line).unwrap();
+            assert_eq!(packed.0.capacity(), PACKED_LENGTH + line.len(), "{line:?}");
+        }
+        let lines = [copy(b"a").unwrap(), copy(b"b").unwrap()];
+        assert_eq!(remade(&lines).unwrap().capacity(), 3);
+    }
+
     /// How many lists share `lines`' items; none for an empty list.
     fn sharing(lines: &Lines) -> Option<usize> {
         lines.0.0.as_ref().map(TryArc::count)

@@ -132,6 +132,11 @@ exclude_re = [
     # do not set in their own process: test_22_httpsrr.py runs them.
     "awaits_record",
     "awaiting",
+    # A resolve the setup has just started is a library's or DoH's, which
+    # say their own lines, or the network resolver's, which the setup
+    # marks live as it says it started (`lookup_start`): the guard on
+    # looking at it again at once is true for every fresh one already.
+    'curl-core/src/conn/connect\.rs:.*: replace match guard !fresh \|\| p\.says_its_own\(\) \|\| p\.live\.is_some\(\) with true in ConnectMachine::drive$',
     # The trace asks whether anything would hear a raw call's records only
     # to save the work: `note_bytes` asks the same again before it speaks.
     'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::ForTransfer for RawCx<.*>>::has_debug_handler -> bool with true$',

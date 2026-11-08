@@ -354,9 +354,9 @@ witness: curl-core multi::doh_tests::a_record_still_asked_for_goes_as_the_chain_
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::doh_tests::the_resolves_lines_are_c_s
 --- old
-                                if !fresh || p.says_its_own() || p.live.is_some() =>
+                                if p.says_its_own() || p.live.is_some() || !fresh =>
 --- new
-                                if !fresh || (p.says_its_own() && !p.over_doh()) || p.live.is_some() =>
+                                if (p.says_its_own() && !p.over_doh()) || p.live.is_some() || !fresh =>
 
 === a record's resolve over DoH is not looked at right after its start
 file: crates/curl-core/src/multi/state/https.rs

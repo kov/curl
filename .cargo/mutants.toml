@@ -132,11 +132,16 @@ exclude_re = [
     # do not set in their own process: test_22_httpsrr.py runs them.
     "awaits_record",
     "awaiting",
-    # A resolve the setup has just started is a library's or DoH's, which
-    # say their own lines, or the network resolver's, which the setup
-    # marks live as it says it started (`lookup_start`): the guard on
-    # looking at it again at once is true for every fresh one already.
-    'curl-core/src/conn/connect\.rs:.*: replace match guard !fresh \|\| p\.says_its_own\(\) \|\| p\.live\.is_some\(\) with true in ConnectMachine::drive$',
+    # Every resolve the setup's drive holds, just started or kept from an
+    # earlier step, was started by `lookup_start` for the setup: a
+    # library's or DoH's, which say their own lines, or the network
+    # resolver's, which it marks live as it says it started (a blocking
+    # resolve, widened, goes to `taken_in_start` instead). The guard on
+    # looking at it is true for each already, whether `fresh` is negated
+    # or not. (By column: the guard's `!fresh`, last so that no other `!`
+    # of drive's shares it.)
+    'curl-core/src/conn/connect\.rs:.*: replace match guard p\.says_its_own\(\) \|\| p\.live\.is_some\(\) \|\| !fresh with true in ConnectMachine::drive$',
+    'curl-core/src/conn/connect\.rs:\d+:76: delete ! in ConnectMachine::drive$',
     # The trace asks whether anything would hear a raw call's records only
     # to save the work: `note_bytes` asks the same again before it speaks.
     'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::ForTransfer for RawCx<.*>>::has_debug_handler -> bool with true$',

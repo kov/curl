@@ -1466,7 +1466,7 @@ impl ConnectMachine {
                         // (`cf_dns_connect`'s `Curl_resolv_take_result`).
                         let looked = match looked {
                             Looked::Pending(p)
-                                if !fresh || p.says_its_own() || p.live.is_some() =>
+                                if p.says_its_own() || p.live.is_some() || !fresh =>
                             {
                                 match p.take((name, port), cx) {
                                     Taken::Done(done) => {

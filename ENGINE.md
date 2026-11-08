@@ -485,10 +485,12 @@ failed read pass and a failed pass, `file:`'s range).
 
 Whether a transfer is verbose is read for each line, as C reads `set.verbose`, so a handler that
 changes it, its own transfer's or another's, changes the next line. A step reads it through what
-it last read (`StepCx::verbose`), good while the multi's count of transfers lent to be changed
-(`Slots::edits`, counted by `Slots::app_mut`, the one way a handler reaches a transfer's options)
-stays; a sibling lent the step is read as its slot is taken. Builds with debug assertions check
-each such read against the option.
+it last read (`StepCx::verbose`), good while the multi's count of changes to its handles
+(`multi::held::Edits`) stays. A slot holds its handle as a `Held`, which lends it as `&mut` only
+through the call that counts (`Held::easy_mut`; the report, which holds no option, has its own),
+so no change to a handle's options, by a handler or by the engine, can miss the count: one that
+tries does not compile. A sibling lent the step is read as its slot is taken. Builds with debug
+assertions check each such read against the option.
 
 Which components trace is a `Components` handle (`components.rs`): a `Level` per `Component`,
 C's trace features and filter types (its DNS feature and DNS filter share a name, so they are one

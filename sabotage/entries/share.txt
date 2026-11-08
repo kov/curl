@@ -214,9 +214,9 @@ witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_c
         if self.holds_connection(id) {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.app_mut(id)?.easy.set_share(share))
+        Some(self.slots.app_easy_mut(id)?.set_share(share))
 --- new
-        Some(self.slots.app_mut(id)?.easy.set_share(share))
+        Some(self.slots.app_easy_mut(id)?.set_share(share))
 
 === a running transfer's watched share changes under it
 file: crates/curl-core/src/multi/mod.rs
@@ -225,9 +225,9 @@ witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_c
         if self.holds_connection(id) {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.app_mut(id)?.easy.set_share_watched(share, watch))
+        Some(self.slots.app_easy_mut(id)?.set_share_watched(share, watch))
 --- new
-        Some(self.slots.app_mut(id)?.easy.set_share_watched(share, watch))
+        Some(self.slots.app_easy_mut(id)?.set_share_watched(share, watch))
 
 === a running transfer leaves its share
 file: crates/curl-core/src/multi/mod.rs
@@ -236,10 +236,10 @@ witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_c
         if running {
             return Some(Err(ShareInUse));
         }
-        slot.easy.leave_share();
+        easy.leave_share();
 --- new
         let _ = running;
-        slot.easy.leave_share();
+        easy.leave_share();
 
 === a transfer running on no connection is refused a share
 file: crates/curl-core/src/multi/mod.rs
@@ -248,12 +248,12 @@ witness: curl-core multi::tests::a_share_is_taken_once_the_transfer_holds_no_con
         if self.holds_connection(id) {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.app_mut(id)?.easy.set_share(share))
+        Some(self.slots.app_easy_mut(id)?.set_share(share))
 --- new
         if self.slots.get(id).is_some() {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.app_mut(id)?.easy.set_share(share))
+        Some(self.slots.app_easy_mut(id)?.set_share(share))
 
 === a connection the handle only made stops it leaving its share
 file: crates/curl-core/src/multi/mod.rs

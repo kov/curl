@@ -812,9 +812,11 @@ features: test-util
         self.entries = copy.shared().expect("room for the copy");
 
 === a handler changing a transfer's options mid-step leaves the step's verbose as it read it
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/held.rs
 witness: curl-core proto::http::tests::h3_trace::a_sibling_s_handler_turning_the_stepping_trace_off_stops_it_at_once
 --- old
-        self.edits += 1;
+    pub(super) fn easy_mut(&mut self, edits: &Edits) -> &mut Easy {
+        edits.bump();
 --- new
-        let _ = self.edits;
+    pub(super) fn easy_mut(&mut self, edits: &Edits) -> &mut Easy {
+        let _ = edits;

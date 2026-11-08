@@ -192,7 +192,7 @@ features: test-util
             sessions: Some(&mut self.caches.sessions),
             when: When::of(&self.clock),
         };
-        let easy = &mut self.slots.app_mut(id)?.easy;
+        let easy = self.slots.app_easy_mut(id)?;
         Some(raw(around, easy, way, notes))
 --- new
         let around = Around {
@@ -200,7 +200,7 @@ features: test-util
             sessions: None,
             when: When::of(&self.clock),
         };
-        let easy = &mut self.slots.app_mut(id)?.easy;
+        let easy = self.slots.app_easy_mut(id)?;
         Some(raw(around, easy, way, notes))
 
 === a ticket read out of a multi goes to the multi that ran it

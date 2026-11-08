@@ -12,6 +12,7 @@ mod check;
 pub(crate) mod cx;
 pub(crate) mod dns;
 pub(crate) mod doh;
+pub(crate) mod held;
 pub(crate) mod mstate;
 mod notify;
 mod pending;
@@ -293,8 +294,8 @@ struct Slot<H: Host> {
     owner: Owner<H>,
     /// In memory of its own, which the handle's owner hands in and takes
     /// back: the transfer's options and report do not move, nor are they
-    /// kept twice.
-    easy: Box<Easy>,
+    /// kept twice. Changed only as `Held` counts it.
+    easy: held::Held,
     /// Reachable while the run is out, for the transfer's own handlers.
     pause: Pause,
     /// The transfer's own handler changed its pause while its run was out:
@@ -410,13 +411,13 @@ impl ConnLimits {
 /// slot boxed, as C's holds a pointer: a table's empty rows cost little,
 /// and C's limits on a transfer's memory count them.
 ///
-/// It counts the times a transfer was lent to be changed from outside the
-/// engine (`app_mut`), the one way a handler reaches a transfer's options
-/// mid-step: what a step keeps of its own options (`StepCx::verbose`) is
-/// good while the count stays.
+/// It keeps the count of changes to the handles it holds
+/// (`held::Edits`), which a handle is changed only by bumping: what a
+/// step keeps of its own options (`StepCx::verbose`) is good while the
+/// count stays.
 struct Slots<H: Host> {
     rows: Arena<Box<Slot<H>>, Transfer>,
-    edits: u64,
+    edits: held::Edits,
 }
 
 impl<H: Host> std::ops::Deref for Slots<H> {
@@ -437,13 +438,39 @@ impl<H: Host> Slots<H> {
     fn new(policy: crate::id::ArenaPolicy) -> Result<Self, OutOfMemory> {
         Ok(Slots {
             rows: Arena::new(policy)?,
-            edits: 1,
+            edits: held::Edits::new(),
         })
     }
 
-    /// The count of `app_mut`'s lends, never 0.
+    /// Transfer `id`'s handle, to change: counted (`held::Held`).
+    fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
+        let Slots { rows, edits } = self;
+        rows.get_mut(id).map(|s| s.easy.easy_mut(edits))
+    }
+
+    /// Transfer `id`'s slot, and the count its handle's changes are
+    /// counted in, for a change to the handle beside the slot's.
+    fn get_mut_counted(&mut self, id: TransferId) -> Option<(&mut Slot<H>, &held::Edits)> {
+        let Slots { rows, edits } = self;
+        rows.get_mut(id).map(|s| (&mut **s, &*edits))
+    }
+
+    /// `easy_mut` of a transfer the application may name (`app_mut`).
+    fn app_easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
+        self.app_mut_counted(id)
+            .map(|(s, edits)| s.easy.easy_mut(edits))
+    }
+
+    /// `get_mut_counted` of a transfer the application may name.
+    fn app_mut_counted(&mut self, id: TransferId) -> Option<(&mut Slot<H>, &held::Edits)> {
+        self.get_mut_counted(id)
+            .filter(|(s, _)| !s.owner.is_internal())
+    }
+
+    /// The count of changes to the handles held, never 0.
+    #[inline]
     fn edits(&self) -> u64 {
-        self.edits
+        self.edits.get()
     }
 
     /// Transfer `id`'s slot, if it is one the application may name: every
@@ -457,10 +484,8 @@ impl<H: Host> Slots<H> {
             .map(|s| &**s)
     }
 
-    /// The same, to change: counted, as what it lends may change options
-    /// a step has read.
+    /// The same, to change.
     fn app_mut(&mut self, id: TransferId) -> Option<&mut Slot<H>> {
-        self.edits += 1;
         self.rows
             .get_mut(id)
             .filter(|s| !s.owner.is_internal())
@@ -756,7 +781,7 @@ impl<H: Host> Multi<H> {
             Owner::App(owner),
         )
         .map_err(|(refused, _)| refused)?;
-        let easy = &mut self.slots.get_mut(id).expect("just added").easy;
+        let easy = &self.slots.get(id).expect("just added").easy;
         // A connection the handle used itself, its last transfer having
         // only connected, is closed as its own multi runs it again
         // (`easy_perform`).
@@ -764,7 +789,7 @@ impl<H: Host> Multi<H> {
             self.close_reserved(id, last.id, ev);
         }
         // Its last connection is forgotten as it joins (`last_cpid`).
-        let easy = &mut self.slots.get_mut(id).expect("just added").easy;
+        let easy = self.slots.easy_mut(id).expect("just added");
         easy.last_conn = None;
         self.dirty.insert(id.index());
         let owner = &self.slots.get(id).expect("just added").owner;
@@ -786,7 +811,7 @@ impl<H: Host> Multi<H> {
             let slot = self.slots.remove(id).expect("just added");
             self.dirty.remove(id.index());
             self.counts.add_undone();
-            return refuse(kind, slot.easy);
+            return refuse(kind, slot.easy.into_inner());
         }
         self.trace_membership(id, "added to", ev);
         Ok(id)
@@ -902,7 +927,7 @@ impl<H: Host> Multi<H> {
         let now = self.clock.now();
         self.wake_pending(now, ev);
         let status = self.update_timer(ev);
-        Some((slot.easy, slot.owner, status))
+        Some((slot.easy.into_inner(), slot.owner, status))
     }
 
     /// Run every transfer that is not completed, in id order, then tell
@@ -1272,7 +1297,7 @@ impl<H: Host> Multi<H> {
     /// The transfer's handle, without what only the multi can decide: its
     /// share changes through [`Multi::set_share`].
     pub fn easy_mut(&mut self, id: TransferId) -> Option<EasyView<'_>> {
-        self.slots.app_mut(id).map(|slot| slot.easy.view_as(id))
+        self.slots.app_easy_mut(id).map(|easy| easy.view_as(id))
     }
 
     /// Use `share` for a transfer's next run, or none; refused while it
@@ -1286,7 +1311,7 @@ impl<H: Host> Multi<H> {
         if self.holds_connection(id) {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.app_mut(id)?.easy.set_share(share))
+        Some(self.slots.app_easy_mut(id)?.set_share(share))
     }
 
     /// As [`Multi::set_share`], `watch` told around each use the transfer
@@ -1300,7 +1325,7 @@ impl<H: Host> Multi<H> {
         if self.holds_connection(id) {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.app_mut(id)?.easy.set_share_watched(share, watch))
+        Some(self.slots.app_easy_mut(id)?.set_share_watched(share, watch))
     }
 
     /// Take a transfer off its share, a connection its handle only made
@@ -1309,11 +1334,11 @@ impl<H: Host> Multi<H> {
     /// multi.
     pub fn leave_share(&mut self, id: TransferId) -> Option<Result<(), ShareInUse>> {
         let running = self.running_on_connection(id);
-        let slot = self.slots.app_mut(id)?;
+        let easy = self.slots.app_easy_mut(id)?;
         if running {
             return Some(Err(ShareInUse));
         }
-        slot.easy.leave_share();
+        easy.leave_share();
         Some(Ok(()))
     }
 
@@ -1508,7 +1533,10 @@ impl<H: Host> Multi<H> {
 
     fn run_single(&mut self, id: TransferId, now: Instant, ev: &mut dyn MultiEvents<H>) {
         self.dirty.remove(id.index());
-        let slot = self.slots.get_mut(id).expect("a transfer in the multi");
+        let (slot, edits) = self
+            .slots
+            .get_mut_counted(id)
+            .expect("a transfer in the multi");
         if slot.run.as_ref().is_some_and(|r| r.state.is_completed()) {
             return;
         }
@@ -1525,7 +1553,7 @@ impl<H: Host> Multi<H> {
             run.state = std::mem::replace(&mut run.state, TransferState::Init)
                 .fail(ErrorKind::AbortedByCallback);
             if unstarted {
-                state::complete_unstarted(&mut slot.easy, now);
+                state::complete_unstarted(slot.easy.easy_mut(edits), now);
             }
         }
         let mut cx = StepCx::new(id, self.rest(now, ev));
@@ -1911,8 +1939,9 @@ fn insert<H: Host>(
     owner: Owner<H>,
 ) -> Result<TransferId, (AddError, Owner<H>)> {
     let refuse = |kind, easy, owner| Err((AddError { kind, easy }, owner));
+    let easy = held::Held::new(easy, &rows.slots.edits);
     let Ok(vacancy) = rows.slots.reserve() else {
-        return refuse(MultiErrorKind::OutOfMemory, easy, owner);
+        return refuse(MultiErrorKind::OutOfMemory, easy.into_inner(), owner);
     };
     let n = vacancy.rows();
     if rows.timers.reserve(n).is_err()
@@ -1921,7 +1950,7 @@ fn insert<H: Host>(
         || rows.pending.reserve(n).is_err()
         || rows.notify.reserve(n).is_err()
     {
-        return refuse(MultiErrorKind::OutOfMemory, easy, owner);
+        return refuse(MultiErrorKind::OutOfMemory, easy.into_inner(), owner);
     }
     let slot = curl_alloc::try_box_or_back(Slot {
         owner,
@@ -1939,7 +1968,9 @@ fn insert<H: Host>(
     });
     let slot = match slot {
         Ok(slot) => slot,
-        Err(Slot { easy, owner, .. }) => return refuse(MultiErrorKind::OutOfMemory, easy, owner),
+        Err(Slot { easy, owner, .. }) => {
+            return refuse(MultiErrorKind::OutOfMemory, easy.into_inner(), owner);
+        }
     };
     let id = vacancy.fill(slot);
     counts.added();

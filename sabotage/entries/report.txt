@@ -45,7 +45,7 @@ file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_transfer_a_dead_multi_ends_unstarted_gets_a_report
 --- old
             if unstarted {
-                state::complete_unstarted(&mut slot.easy, now);
+                state::complete_unstarted(slot.easy.easy_mut(edits), now);
             }
 --- new
 

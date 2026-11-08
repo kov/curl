@@ -275,10 +275,10 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// exception to decision 9 (ENGINE.md): what reaches it is only
     /// `TransferCx`'s WebSocket calls.
     ws: Option<crate::conn::WsLend<'a>>,
-    /// The transfer's `verbose` option as last read, and the count of the
-    /// transfers' lends to be changed (`Slots::edits`) it was read at:
-    /// read again once that count moved, as a handler may have changed
-    /// it, so that a change shows at the next line as C's
+    /// The transfer's `verbose` option as last read, and the count of
+    /// changes to the multi's handles (`held::Edits`) it was read at:
+    /// read again once that count moved, as a handler or the engine may
+    /// have changed it, so that a change shows at the next line as C's
     /// `Curl_trc_is_verbose` reads `set.verbose` for each. Read at none
     /// to start with (0, a count the table never has).
     verbose: std::cell::Cell<(u64, bool)>,
@@ -549,7 +549,7 @@ impl<H: Host> StepCx<'_, H> {
     }
 
     /// The transfer is verbose (`set.verbose`), read through what the step
-    /// last read of it while no transfer was lent to be changed since: a
+    /// last read of it while no handle was changed since: a
     /// trace's check costs a compare, not a walk to the options.
     #[inline]
     pub(crate) fn verbose(&self) -> bool {
@@ -563,7 +563,7 @@ impl<H: Host> StepCx<'_, H> {
         debug_assert_eq!(
             verbose,
             self.easy().options().output.verbose,
-            "the transfer's options changed without a lend to change them"
+            "the transfer's options changed without the count of changes moving"
         );
         verbose
     }
@@ -729,14 +729,14 @@ impl<H: Host> StepCx<'_, H> {
             .holds
     }
 
+    /// The transfer's handle, to change: counted, as a change to its
+    /// options must be (`held::Held::easy_mut`).
     pub(crate) fn easy_mut(&mut self) -> &mut Easy {
-        &mut self
-            .rest
+        self.rest
             .tell
             .slots
-            .get_mut(self.me)
+            .easy_mut(self.me)
             .expect("the stepping transfer")
-            .easy
     }
 
     /// The transfer's handle, and the use it makes of the public suffix
@@ -745,13 +745,12 @@ impl<H: Host> StepCx<'_, H> {
         let now = self.rest.now;
         let clock = self.rest.clock;
         let multi = &self.rest.caches.psl;
-        let easy = &mut *self
+        let easy = self
             .rest
             .tell
             .slots
-            .get_mut(self.me)
-            .expect("the stepping transfer")
-            .easy;
+            .easy_mut(self.me)
+            .expect("the stepping transfer");
         let check = easy.libraries().psl.map(|library| {
             let watch = easy.share_watch.as_ref();
             let share = easy.shared(Kind::Psl);
@@ -873,7 +872,7 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     }
 
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.rest.tell.slots.app_mut(id).map(|s| &mut *s.easy)
+        self.rest.tell.slots.app_easy_mut(id)
     }
 
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {

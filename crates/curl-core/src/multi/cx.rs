@@ -1256,7 +1256,7 @@ impl<H: Host> TransferCalls for EventCalls<'_, '_, H> {
     }
 
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.cx.slots.app_mut(id).map(|s| &mut *s.easy)
+        self.cx.slots.app_easy_mut(id)
     }
 
     fn pause(&mut self, _: TransferId, _: PauseRequest) -> Result<(), ErrorKind> {
@@ -1417,27 +1417,27 @@ impl<H: Host> EventCx<'_, H> {
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
-        self.slots.app_mut(id).map(|s| s.easy.options_mut())
+        self.slots.app_easy_mut(id).map(Easy::options_mut)
     }
 
     /// As `Easy::tell_failure`, of a transfer.
     pub fn tell_failure(&mut self, id: TransferId, why: &[u8]) {
-        if let Some(slot) = self.slots.app_mut(id) {
-            slot.easy.tell_failure(why);
+        if let Some(easy) = self.slots.app_easy_mut(id) {
+            easy.tell_failure(why);
         }
     }
 
     /// As `Easy::forget_url`, of a transfer.
     pub fn forget_url(&mut self, id: TransferId) {
-        if let Some(slot) = self.slots.app_mut(id) {
-            slot.easy.forget_url();
+        if let Some(easy) = self.slots.app_easy_mut(id) {
+            easy.forget_url();
         }
     }
 
     /// As `Easy::show_set_url`, of a transfer.
     pub fn show_set_url(&mut self, id: TransferId) {
-        if let Some(slot) = self.slots.app_mut(id) {
-            slot.easy.show_set_url();
+        if let Some(easy) = self.slots.app_easy_mut(id) {
+            easy.show_set_url();
         }
     }
 
@@ -1451,7 +1451,7 @@ impl<H: Host> EventCx<'_, H> {
         &mut self,
         id: TransferId,
     ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
-        self.slots.app_mut(id).map(|s| s.easy.rtsp_mut())
+        self.slots.app_easy_mut(id).map(Easy::rtsp_mut)
     }
 
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
@@ -1590,7 +1590,7 @@ impl<H: Host> NotifyCx<'_, H> {
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
-        self.multi.slots.app_mut(id).map(|s| s.easy.options_mut())
+        self.multi.slots.app_easy_mut(id).map(Easy::options_mut)
     }
 
     /// As `Easy::tell_failure`, of a transfer.
@@ -1624,7 +1624,7 @@ impl<H: Host> NotifyCx<'_, H> {
         &mut self,
         id: TransferId,
     ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
-        self.multi.slots.app_mut(id).map(|s| s.easy.rtsp_mut())
+        self.multi.slots.app_easy_mut(id).map(Easy::rtsp_mut)
     }
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {

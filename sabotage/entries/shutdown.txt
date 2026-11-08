@@ -298,13 +298,13 @@ witness: curl-core multi::shutdown_tests::a_handle_s_own_multi_says_its_cleanup_
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core multi::shutdown_tests::a_handler_hearing_the_socket_callback_reaches_its_transfer
 --- old
-        self.cx.slots.app_mut(id).map(|s| &mut *s.easy)
+        self.cx.slots.app_easy_mut(id)
     }
 
     fn pause(&mut self, _: TransferId, _: PauseRequest) -> Result<(), ErrorKind> {
         Err(ErrorKind::BadFunctionArgument)
 --- new
-        self.cx.slots.app_mut(id).map(|s| &mut *s.easy)
+        self.cx.slots.app_easy_mut(id)
     }
 
     fn pause(&mut self, _: TransferId, _: PauseRequest) -> Result<(), ErrorKind> {

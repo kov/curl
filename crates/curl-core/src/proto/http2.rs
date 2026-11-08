@@ -796,6 +796,14 @@ pub(crate) struct Fields {
 }
 
 impl Fields {
+    /// Room for `fields` fields of `bytes` bytes in all, made at once.
+    fn with_room(bytes: usize, fields: usize) -> Result<Fields, OutOfMemory> {
+        let mut made = Fields::default();
+        made.bytes.try_reserve_exact(bytes)?;
+        made.ranges.try_reserve_exact(fields)?;
+        Ok(made)
+    }
+
     /// Each field, as the session takes them.
     pub(crate) fn pairs(&self) -> Result<Vec<Field<'_>>, OutOfMemory> {
         let mut pairs = Vec::new();
@@ -819,6 +827,9 @@ impl Fields {
         Ok(())
     }
 }
+
+/// The length of the pseudo-headers' names a request's fields start with.
+const PSEUDO_NAMES: usize = ":method:scheme:authority:path".len();
 
 /// The fields that do not go in HTTP/2 (`H2_NON_FIELD`).
 const NOT_FIELDS: &[&[u8]] = &[
@@ -881,7 +892,11 @@ pub(crate) fn fields_of(
             .try_push((&line[..colon], &value[blanks..]))
             .map_err(oom)?;
     }
-    let mut fields = Fields::default();
+    // Every value is of the head but the scheme, so the head, the scheme
+    // and the four pseudo-headers' names hold them all, made at once; a
+    // proxy's target read back as a URL may come to more, and grows.
+    let mut fields = Fields::with_room(head.len() + PSEUDO_NAMES + scheme.len(), headers.len() + 4)
+        .map_err(oom)?;
     fields.add(b":method", method, false).map_err(oom)?;
     let connect = method == b"CONNECT";
     // The target in absolute form, as a request to a proxy sends it,

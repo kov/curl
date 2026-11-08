@@ -334,7 +334,12 @@ fn a_name_of_64_kib_is_not_asked_for() {
     };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
-    let got = super::waits::get_over(any_name, &name(usize::from(u16::MAX) - 1), at, |_| {});
+    let got = super::waits::get_over(
+        any_name.clone(),
+        &name(usize::from(u16::MAX) - 1),
+        at,
+        |_| {},
+    );
     assert_eq!(
         got.result,
         Err(ErrorKind::SslConnectError),

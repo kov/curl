@@ -456,6 +456,14 @@ witness: curl-openssl a_passive_ccc_answers_no_close_notify
 --- new
         if sent() == 0 {
 
+=== a passive CCC answers a close_notify its shutdown's second read finds
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_passive_ccc_reading_the_close_notify_on_its_second_try_answers_none
+--- old
+            openssl_sys::SSL_ERROR_ZERO_RETURN if !goodbye.sends() => {
+--- new
+            openssl_sys::SSL_ERROR_ZERO_RETURN if goodbye.sends() => {
+
 === the library's declaration of signature algorithms does not follow the library
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl tests::the_library_declares_what_c_s_build_over_it_has

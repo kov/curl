@@ -43,7 +43,7 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
 ];
 
 /// What the sockets of a `Stutter` do.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Plan {
     /// Every first try of a send or a receive would block.
     pub(crate) stutter: bool,
@@ -55,6 +55,85 @@ pub(crate) struct Plan {
     pub(crate) fail_recv_after: Option<u32>,
     /// Every name resolves to 127.0.0.1, however long.
     pub(crate) any_name: bool,
+    /// Receives held as the peer says.
+    pub(crate) hold: Option<Arc<Hold>>,
+}
+
+/// A receive held for the peer, to give it a gap of its choosing: once
+/// the peer arms it (`arm`), the first receive that gets data goes
+/// through, and the one after it waits until the peer has sent what it
+/// sends meanwhile (`await_held`, `sent`), then says it would block. What
+/// the peer sent is there for the try after: whatever reads twice in a
+/// row finds nothing the first time and the peer's bytes the second.
+#[derive(Debug, Default)]
+pub(crate) struct Hold {
+    step: Mutex<HoldStep>,
+    moved: std::sync::Condvar,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum HoldStep {
+    #[default]
+    Idle,
+    Armed,
+    Read,
+    Held,
+    Sent,
+}
+
+impl Hold {
+    /// The peer's: the data it sends next is the receive the hold
+    /// follows.
+    pub(crate) fn arm(&self) {
+        self.set(HoldStep::Armed);
+    }
+
+    /// The peer's: waits for the receive after its data to be held.
+    pub(crate) fn await_held(&self) {
+        self.wait_for(HoldStep::Held);
+    }
+
+    /// The peer's: what it sends while the receive is held is sent.
+    pub(crate) fn sent(&self) {
+        self.set(HoldStep::Sent);
+    }
+
+    fn set(&self, step: HoldStep) {
+        *self.step.lock().unwrap() = step;
+        self.moved.notify_all();
+    }
+
+    fn wait_for(&self, step: HoldStep) {
+        let at = self.step.lock().unwrap();
+        let (_at, waited) = self
+            .moved
+            .wait_timeout_while(at, Duration::from_secs(10), |at| *at != step)
+            .unwrap();
+        assert!(!waited.timed_out(), "the hold never came to {step:?}");
+    }
+
+    /// The socket's receive, `recv`, as the hold has it.
+    fn recv(&self, recv: impl FnOnce() -> io::Result<Recv>) -> io::Result<Recv> {
+        let step = *self.step.lock().unwrap();
+        match step {
+            HoldStep::Armed => {
+                let got = recv();
+                if matches!(got, Ok(Recv::Data(_))) {
+                    self.set(HoldStep::Read);
+                }
+                got
+            }
+            HoldStep::Read => {
+                self.set(HoldStep::Held);
+                self.wait_for(HoldStep::Sent);
+                // On the loopback what was sent is there to read as its
+                // send returns, or very soon after.
+                std::thread::sleep(Duration::from_millis(100));
+                Ok(Recv::WouldBlock)
+            }
+            HoldStep::Idle | HoldStep::Held | HoldStep::Sent => recv(),
+        }
+    }
 }
 
 /// The system's network, its sockets as the plan says.
@@ -66,6 +145,7 @@ struct StutterSocket {
     stutter: bool,
     fail_send: Option<u32>,
     fail_recv_after: Option<u32>,
+    hold: Option<Arc<Hold>>,
     sends: AtomicU32,
     /// The tries so far, a send's and a receive's: an odd one would block.
     tries: [AtomicU32; 2],
@@ -118,7 +198,10 @@ impl Socket for StutterSocket {
         {
             return Err(io::Error::other("the layer below failed"));
         }
-        self.inner.recv(buf)
+        match &self.hold {
+            Some(hold) => hold.recv(|| self.inner.recv(buf)),
+            None => self.inner.recv(buf),
+        }
     }
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         if self.blocks(0) {
@@ -156,6 +239,7 @@ impl Net for Stutter {
             stutter: self.1.stutter,
             fail_send: self.1.fail_send,
             fail_recv_after: self.1.fail_recv_after,
+            hold: self.1.hold.clone(),
             sends: AtomicU32::new(0),
             tries: [AtomicU32::new(0), AtomicU32::new(0)],
         };
@@ -195,14 +279,18 @@ pub(crate) fn get_over(
     at: SocketAddr,
     set: impl FnOnce(&mut Options),
 ) -> Got {
+    get_in(&mut multi_over(plan), "https", host, at, set, true)
+}
+
+/// A multi over a network that does as `plan` says.
+pub(crate) fn multi_over(plan: Plan) -> Multi {
     let env = Env {
         clock: try_box(SystemClock::new()).unwrap(),
         net: try_box(Stutter(SystemNet::default(), plan)).unwrap(),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
-    get_in(&mut m, "https", host, at, set, true)
+    Multi::new(env).unwrap()
 }
 
 fn count(got: &Got, line: &str) -> usize {

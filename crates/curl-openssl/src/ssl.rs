@@ -2049,6 +2049,13 @@ impl Session {
         }
         // SAFETY: the SSL and what its call returned.
         match unsafe { openssl_sys::SSL_get_error(ssl, nread) } {
+            // The peer's came after the read above found nothing, ours
+            // not to be sent. C's `SSL_shutdown` here sends it, the reply
+            // a passive CCC is documented not to send: DIVERGENCE.md.
+            openssl_sys::SSL_ERROR_ZERO_RETURN if !goodbye.sends() => {
+                io.trace(format_args!("SSL shutdown received, not sending"));
+                true
+            }
             openssl_sys::SSL_ERROR_ZERO_RETURN => {
                 // SAFETY: the session's SSL, its BIO reaching `io`.
                 let (rc, _) = self.call(io, |ssl| unsafe { openssl_sys::SSL_shutdown(ssl) });

@@ -633,6 +633,23 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own`
   (`crates/curl-core/src/proto/http/tests/h2.rs`).
 
+## Replies C is documented not to send
+
+- **A passive `CCC` never answers the server's close_notify.** `CURLFTPSSL_CCC_PASSIVE` is
+  documented to send no reply, and OpenSSL's shutdown sends none when the server's close_notify
+  is there at its first read. When that read finds nothing and the close_notify comes before
+  its second, a moment later in the same call, C's `ossl_shutdown` takes the
+  `SSL_ERROR_ZERO_RETURN` there for a mutual shutdown and calls `SSL_shutdown`, which sends
+  ours, and the server, gone to clear text, reads it as the start of the next command. Here
+  the second read's close_notify is not answered either. Over loopback on macOS the server's
+  close_notify landed in that moment in 5 of 20 runs; C's debug build against a server sending
+  its answer and close_notify in one write, its reads capped to the answer's record and half
+  of them made to block (`CURL_DBG_SOCK_RMAX=31`, `CURL_DBG_SOCK_RBLOCK=50`), sent a TLS record
+  after a passive `CCC` in 7 of 20 runs (both measured 2026-11-08). Pinned by
+  `a_passive_ccc_reading_the_close_notify_on_its_second_try_answers_none`
+  (`crates/curl-openssl/tests/peer/ccc.rs`), which holds the client's first read until the
+  close_notify is sent.
+
 ## Changing a handle's share
 
 - **`CURLOPT_SHARE` from a callback is refused.** A callback running on the handle's multi gets

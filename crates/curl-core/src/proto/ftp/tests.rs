@@ -828,6 +828,47 @@ fn a_protected_data_connection_says_each_call_of_its_handshake() {
     );
 }
 
+/// The data connection's name, resolved through `--connect-to` before its
+/// race starts, is said as the transfer's own, its addresses reported as
+/// C's DNS filter reports them (`cf_dns_report`): checked against C's
+/// build over c-ares, whose download says `Host late.test:PORT was
+/// resolved.` and the addresses for its data connection.
+#[test]
+fn a_data_connection_s_resolved_name_is_reported() {
+    let replies: Vec<&[u8]> = LOGIN_AND_SETUP
+        .iter()
+        .copied()
+        .chain([&b"150 here\r\n226 done\r\n"[..]])
+        .collect();
+    let control = Conversation::replies(&replies, false).greeting();
+    let file = data(b"hello");
+    let (mut m, _, _) = clocked_with(&[&control], &[&file], |net| {
+        net.with_name("late.test", &[[127, 0, 0, 1].into()])
+    });
+    let to = format!("::late.test:{PORT}");
+    let (id, body, text) = added_tracing(
+        &mut m,
+        "ftp://ftp.example:PORT/f",
+        Easy::new(),
+        b"multi",
+        |o| {
+            o.connect_to.set([to.as_bytes()]).unwrap();
+        },
+    );
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let epsv = at_in(&said, "Connecting to 127.0.0.1 port 8022");
+    let after = &said[epsv..];
+    let host = at_in(after, "Host late.test:8022 was resolved.\n");
+    assert!(
+        after[host..]
+            .starts_with("Host late.test:8022 was resolved.\nIPv6: (none)\nIPv4: 127.0.0.1\n"),
+        "{said}"
+    );
+}
+
 /// The data connection's name, still resolving as its TCP connects, is
 /// kept until all of its chain connects, its TLS too, and what comes of it
 /// meanwhile is taken and said, as C's DNS filter above the data

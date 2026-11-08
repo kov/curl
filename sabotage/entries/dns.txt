@@ -1206,3 +1206,22 @@ features: test-util
     }
 --- new
     let _ = run;
+
+=== a proxy's redial for its 407 ends the resolve still going on
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::a_late_resolve_lives_on_through_a_redial_for_the_proxy_s_407
+features: test-util
+--- old
+                late: d.late,
+--- new
+                late: { drop(d.late); Late::default() },
+
+=== a first attempt lost to the second keeps its resolve past the chain's connect
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::a_first_attempt_lost_to_the_second_lets_go_of_its_resolve_with_the_chain
+features: test-util
+--- old
+    pub(crate) fn take_late(&mut self) -> Late {
+--- new
+    pub(crate) fn take_late(&mut self) -> Late {
+        if true { return Late::default(); }

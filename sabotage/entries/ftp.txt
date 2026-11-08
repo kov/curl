@@ -619,3 +619,39 @@ features: test-util
                 late_wants = late.as_deref().map(|l| l.late.wants());
 --- new
                 late_wants = late.as_deref().map(|l| l.late.wants()).filter(|_| false);
+
+=== the data connection's racing setup arms no name timer for its resolve
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_waits_on_its_late_resolve_s_socket
+features: test-util
+--- old
+    side_name_due(cx, setup.resolve_due(now, left), now, left);
+--- new
+    let _ = (setup, left);
+
+=== the data connection's resolve beside its TLS arms no name timer
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_waits_on_its_late_resolve_s_socket
+features: test-util
+--- old
+        self.0.as_ref()?.due(now, left)
+--- new
+        self.0.as_ref()?.due(now, left).filter(|_| false)
+
+=== the data connection's resolve still going on at its chain's connect is not let go of
+file: crates/curl-core/src/multi/state/side.rs
+witness: curl-core multi::late_tests::ftp_s_data_connection_lets_go_of_its_late_resolve_as_its_chain_connects
+features: test-util
+--- old
+            if holder == Holder::Addresses(ConnRank::Second) {
+--- new
+            if holder != Holder::Addresses(ConnRank::Second) {
+
+=== the data connection's resolved name is not reported
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_resolved_name_is_reported
+features: test-util
+--- old
+        report_resolved(cx, answer, route.destination().port());
+--- new
+        let _ = answer;

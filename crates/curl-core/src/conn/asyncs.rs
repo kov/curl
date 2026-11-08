@@ -298,6 +298,30 @@ mod tests {
         assert!(!kept.arms());
     }
 
+    /// A record past those kept in place is marked as a library answered
+    /// it, and arms until it goes, the records beside it left as they are.
+    #[test]
+    fn a_record_past_those_in_place_arms_once_answered() {
+        let mut count = ResolveCount::default();
+        let mut kept = Asyncs::default();
+        let holders = [
+            Holder::Record,
+            Holder::Addresses(ConnRank::First),
+            Holder::Target,
+            Holder::Blocking,
+            Holder::Addresses(ConnRank::Second),
+            Holder::Target,
+        ];
+        assert_eq!(holders.len(), INLINE + 2, "two past those in place");
+        for holder in holders {
+            kept.keep(count.next(), holder).unwrap();
+        }
+        kept.answered_by_library(Holder::Addresses(ConnRank::Second));
+        assert!(kept.arms());
+        kept.take(Holder::Addresses(ConnRank::Second));
+        assert!(!kept.arms(), "only the one answered armed");
+    }
+
     /// Past the records kept in place, the rest follow them, in order
     /// however they go.
     #[test]

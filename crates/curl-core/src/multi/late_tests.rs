@@ -690,14 +690,26 @@ fn over_doh_the_name_timer_is_never_armed() {
     assert!(armed.iter().all(|&armed| !armed), "{said:#?}");
 }
 
-/// FTP's data connection, its name resolved through `--connect-to` by a
-/// resolver library, waits on the library's socket while the name is
-/// still resolving, both before the connection is up and through its TLS
-/// handshake, as C's DNS filter heading the data connection's chain puts
-/// it in (`Curl_resolv_pollset`); and the answer that comes meanwhile is
-/// kept and said.
-#[test]
-fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
+/// What an FTPS download over a resolver library said, and the number
+/// of the socket its data connection's resolve waits on.
+struct FtpOverLibrary {
+    said: Vec<String>,
+    data_fd: u64,
+}
+
+/// An FTPS download of `ftps://ftp.example:8021/f` over `--connect-to
+/// ::late.test:8021`, both of its connections' names resolved by a
+/// resolver library whose AAAA comes once its gate opens: never if not
+/// `aaaa_meanwhile`, else during the data connection's TLS handshake,
+/// which the server holds. Its data peer accepts 50 ms after it is
+/// dialed. `held` is told, while the handshake is held, what was said,
+/// whether in each pass the data connection's resolve ran its socket was
+/// waited on and whether the TLS had started, and where in what was said
+/// the data connection was dialed and its TLS started.
+fn ftp_over_a_library(
+    aaaa_meanwhile: bool,
+    held: impl FnOnce(&[String], &[(bool, bool)], usize, usize),
+) -> FtpOverLibrary {
     let clock = ManualClock::new().unwrap();
     let tls = |plain: &[u8]| fake::records(plain).unwrap();
     let control = [
@@ -725,7 +737,7 @@ fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
     let net = FakeNet::new(clock.clone())
         .with_peer(control_at, Peer::Accepts)
         .with_conversation(control_at, control)
-        .with_peer(data_at, Peer::Accepts)
+        .with_peer(data_at, Peer::AcceptsAfter(Duration::from_millis(50)))
         .with_conversation(data_at, file.clone());
     // The library's sockets, the control connection's resolve's and the
     // data connection's, numbered past the transfer's own.
@@ -778,12 +790,11 @@ fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
     o.output.verbose = true;
     o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
     let c = crate::components::Components::new().unwrap();
-    c.configure(b"dns,multi");
+    c.configure(b"dns,multi,timer");
     easy.set_components(Some(c));
     m.add(Box::new(easy), (), &mut NoEvents).unwrap();
-    // Whether, in each pass the data connection's resolve runs, its
-    // socket was waited on, and whether its TLS had started.
     let mut passes: Vec<(bool, bool)> = Vec::new();
+    let shaking_from = std::cell::Cell::new(None);
     let run = |m: &mut Multi, passes: &mut Vec<(bool, bool)>| {
         for _ in 0..300 {
             m.perform(&mut NoEvents).unwrap();
@@ -793,35 +804,288 @@ fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
             })
             .unwrap();
             if made.load(Ordering::Relaxed) == 2 {
-                passes.push((waited, !file.received().is_empty()));
+                let shaking = !file.received().is_empty();
+                passes.push((waited, shaking));
+                if shaking && shaking_from.get().is_none() {
+                    shaking_from.set(Some(lines.0.lock().unwrap().len()));
+                }
             }
             clock.advance(Duration::from_millis(1));
         }
     };
     run(&mut m, &mut passes);
     let said = lines.0.lock().unwrap().clone();
-    let before: Vec<bool> = passes.iter().filter(|p| !p.1).map(|p| p.0).collect();
-    let shaking: Vec<bool> = passes.iter().filter(|p| p.1).map(|p| p.0).collect();
-    assert!(!before.is_empty() && !shaking.is_empty(), "{said:#?}");
-    assert!(
-        before.iter().all(|w| *w),
-        "before it is up: {before:?} {said:#?}"
-    );
-    assert!(
-        shaking.iter().all(|w| *w),
-        "through its TLS: {shaking:?} {said:#?}"
-    );
-    gate.open();
-    passes.clear();
-    run(&mut m, &mut passes);
+    let dialed = at(&said, 0, "  Trying 127.0.0.1:8022...");
+    let shaking = shaking_from.get().expect("its TLS started");
+    held(&said, &passes, dialed, shaking);
+    if aaaa_meanwhile {
+        gate.open();
+        run(&mut m, &mut passes);
+    }
     file.allow(2);
     run(&mut m, &mut passes);
-    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
     let said = lines.0.lock().unwrap().clone();
-    let host = at(&said, 0, "Host late.test:8022 was resolved.");
-    let connected = at(&said, host, "[DNS-1] connected filter chain below");
+    assert_eq!(
+        m.info_read().map(|msg| msg.result),
+        Some(Ok(())),
+        "{said:#?}"
+    );
+    FtpOverLibrary {
+        said,
+        data_fd: u64::try_from(data_resolve.get()).unwrap(),
+    }
+}
+
+/// FTP's data connection, its name resolved through `--connect-to` by a
+/// resolver library, waits on the library's socket while the name is
+/// still resolving, both before the connection is up and through its TLS
+/// handshake, and arms the name's timer for it, as C's DNS filter heading
+/// the data connection's chain does in its pollset
+/// (`Curl_resolv_pollset`); and the answer that comes meanwhile is kept
+/// and said.
+#[test]
+fn ftp_s_data_connection_waits_on_its_late_resolve_s_socket() {
+    let ran = ftp_over_a_library(true, |said, passes, dialed, shaking| {
+        let armed = |lines: &[String]| {
+            lines
+                .iter()
+                .any(|l| l.starts_with("[TIMER] [ASYNC_NAME] set for "))
+        };
+        assert!(armed(&said[dialed..shaking]), "racing: {said:#?}");
+        assert!(armed(&said[shaking..]), "through its TLS: {said:#?}");
+        let before: Vec<bool> = passes.iter().filter(|p| !p.1).map(|p| p.0).collect();
+        let tls: Vec<bool> = passes.iter().filter(|p| p.1).map(|p| p.0).collect();
+        assert!(!before.is_empty() && !tls.is_empty(), "{said:#?}");
+        assert!(
+            before.iter().all(|w| *w),
+            "before it is up: {before:?} {said:#?}"
+        );
+        assert!(tls.iter().all(|w| *w), "through its TLS: {tls:?} {said:#?}");
+    });
+    let said = &ran.said;
+    let host = at(said, 0, "Host late.test:8022 was resolved.");
+    let connected = at(said, host, "[DNS-1] connected filter chain below");
     assert!(
         said[connected + 1].ends_with("] destroy async"),
+        "{said:#?}"
+    );
+}
+
+/// The data connection's resolve still going on as all of its chain
+/// connects, its TLS too, goes with the name's filter: its library's
+/// socket closed right after its record's `destroy async`
+/// (`cf_dns_connect`'s `Curl_resolv_destroy`).
+#[test]
+fn ftp_s_data_connection_lets_go_of_its_late_resolve_as_its_chain_connects() {
+    let ran = ftp_over_a_library(false, |_, _, _, _| {});
+    let said = &ran.said;
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("Host late.test:8022 was resolved")),
+        "{said:#?}"
+    );
+    let connected = at(said, 0, "[DNS-1] connected filter chain below");
+    assert!(
+        said[connected + 1].ends_with("] destroy async"),
+        "{said:#?}"
+    );
+    let closed = format!(
+        "[MULTI] [DOING_MORE] Curl_multi_will_close fd={}",
+        ran.data_fd
+    );
+    assert_eq!(said[connected + 2], closed, "{said:#?}");
+}
+
+/// A proxy that closes the connection as it asks for credentials is
+/// dialed again (`cf_setup_connect` discards the chain below the name's
+/// filter), and the resolve of its name still going on goes on above
+/// it: an answer that comes while the second `CONNECT` waits is kept and
+/// said, as C's filter, left as it is by the redial, says it.
+#[test]
+fn a_late_resolve_lives_on_through_a_redial_for_the_proxy_s_407() {
+    let clock = ManualClock::new().unwrap();
+    let challenge: &[u8] = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Basic realm=\"p\"\r\nProxy-Connection: close\r\n\
+        Content-Length: 0\r\n\r\n";
+    let first = Conversation::replies(&[challenge], true);
+    let second = Conversation::replies(
+        &[
+            b"HTTP/1.1 200 Fine\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        ],
+        false,
+    )
+    .held();
+    let at_proxy = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let late = crate::conn::io::Late::new();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at_proxy, Peer::Accepts)
+        .with_conversation(at_proxy, first.clone())
+        .with_conversation(at_proxy, second.clone())
+        .with_late_name(
+            "proxy.test",
+            &[[127, 0, 0, 1].into(), Ipv6Addr::LOCALHOST.into()],
+            &late,
+        )
+        .with_v4_first();
+    let mut m = Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap();
+    let mut easy = Easy::new();
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.set_url(Some(b"http://origin.example/a")).unwrap();
+    let proxy = o.proxy.make_mut().unwrap();
+    proxy.url = Some(b"proxy.test:8080".to_vec());
+    proxy.tunnel = true;
+    proxy.user = Some(b"u".to_vec());
+    proxy.password = Some(b"p".to_vec());
+    proxy.auth = crate::options::HttpAuth(crate::options::AuthMethods::ANY);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"dns");
+    easy.set_components(Some(c));
+    m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+    let run = |m: &mut Multi| {
+        for _ in 0..100 {
+            m.perform(&mut NoEvents).unwrap();
+            clock.advance(Duration::from_millis(1));
+        }
+    };
+    run(&mut m);
+    assert!(
+        String::from_utf8_lossy(&second.received()).starts_with("CONNECT "),
+        "dialed again: {:#?}",
+        lines.0.lock().unwrap()
+    );
+    late.release();
+    run(&mut m);
+    second.allow(2);
+    run(&mut m);
+    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+    let said = lines.0.lock().unwrap().clone();
+    let again = at(&said, 0, "Connect me again please");
+    let host = at(&said, again, "Host proxy.test:8080 was resolved.");
+    assert_eq!(
+        said[host + 1..host + 3],
+        ["IPv6: ::1", "IPv4: 127.0.0.1"],
+        "{said:#?}"
+    );
+    let connected = at(&said, host, "[DNS] connected filter chain below");
+    assert!(
+        said[connected + 1].ends_with("] destroy async"),
+        "{said:#?}"
+    );
+}
+
+/// Beside a QUIC first attempt that never answers, a TCP second started
+/// at the soft timeout wins: the resolve of the name still going on,
+/// which the first holds, goes as the chain connects, its library's
+/// socket closed right after its record's `destroy async`, as C's DNS
+/// filter above both attempts lets go of it (`cf_dns_connect`).
+#[test]
+fn a_first_attempt_lost_to_the_second_lets_go_of_its_resolve_with_the_chain() {
+    let clock = ManualClock::new().unwrap();
+    let at_origin = SocketAddr::from(([127, 0, 0, 1], 443));
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+    let tcp_talk = Conversation::replies(&[fake::WELCOME, &response], false).per_send();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at_origin, Peer::AcceptsAfter(Duration::from_millis(50)))
+        .with_datagram_peer(at_origin, Peer::Silent)
+        .with_conversation(at_origin, quic_talk)
+        .with_conversation(at_origin, tcp_talk.clone());
+    // The library's socket, numbered past the transfer's own.
+    let to = SocketAddr::from(([127, 0, 0, 1], 53));
+    let own = Box::leak(Box::new(
+        FakeNet::new(clock.clone()).with_peer(to, Peer::Silent),
+    ));
+    let mut open = || {
+        own.open(
+            &crate::conn::io::Remote::Inet(to),
+            crate::conn::io::SocketKind::Datagram,
+        )
+        .unwrap()
+    };
+    for _ in 0..8 {
+        std::mem::forget(open());
+    }
+    let socket = open();
+    let fd = socket.key().get();
+    let alive = Arc::new(AtomicBool::new(false));
+    let lib: &'static Library = Box::leak(Box::new(Library {
+        aaaa: Arc::default(),
+        alive: alive.clone(),
+        runs: Arc::default(),
+        made: Arc::default(),
+        sockets: Mutex::new(vec![socket]),
+    }));
+    let script = crate::http3::fake::Script::new();
+    script
+        .lock()
+        .unwrap()
+        .out
+        .extend([vec![1; 1200], vec![2; 1200], vec![]]);
+    let h3: &'static crate::http3::fake::FakeHttp3 =
+        Box::leak(Box::new(crate::http3::fake::FakeHttp3::new(script)));
+    let tls: &'static fake::FakeTls = Box::leak(Box::new(fake::FakeTls::agreeing().unwrap()));
+    let mut m: Multi = Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap();
+    let mut easy = Easy::new();
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(tls)),
+            h3: Some(h3),
+            dns: Some(lib as &'static dyn crate::conn::io::DnsLibrary),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.set_url(Some(ORIGIN.as_bytes())).unwrap();
+    o.http.version = crate::options::HttpVersion::Http3;
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"dns,multi,https-connect");
+    easy.set_components(Some(c));
+    m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+    let mut ended = None;
+    for _ in 0..3000 {
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            ended = Some(msg.result);
+            break;
+        }
+        clock.advance(Duration::from_millis(1));
+    }
+    let said = lines.0.lock().unwrap().clone();
+    assert_eq!(ended, Some(Ok(())), "{said:#?}");
+    assert!(!alive.load(Ordering::Relaxed), "let go of");
+    let second = said
+        .iter()
+        .position(|l| l.contains("starting h1"))
+        .unwrap_or_else(|| panic!("the second started: {said:#?}"));
+    let connected = at(&said, second, "[DNS] connected filter chain below");
+    assert!(
+        said[connected + 1].ends_with("] destroy async"),
+        "{said:#?}"
+    );
+    assert_eq!(
+        said[connected + 2],
+        format!("[MULTI] [CONNECTING] Curl_multi_will_close fd={fd}"),
         "{said:#?}"
     );
 }

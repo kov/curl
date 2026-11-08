@@ -111,3 +111,42 @@ fn a_blocking_resolve_is_queued_under_its_record_s_number() {
         "{said}"
     );
 }
+
+/// A name's resolve is looked at once as it starts, as C's DNS filter
+/// takes the result right after starting it (`cf_dns_connect`), and is
+/// then left to the resolver's answer: one look, said incomplete, and
+/// the wait for AAAA, as C's threaded build says them for
+/// `http://localhost4:9/`.
+#[cfg(not(windows))]
+#[test]
+fn a_threaded_resolve_is_looked_at_once_as_it_starts() {
+    let run = Command::new(env!("CARGO_BIN_EXE_curl"))
+        .args(["-sS", "-v", "--max-time", "5"])
+        .args(["--trace-config", "dns"])
+        .arg("http://localhost4:9/")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&run.stderr);
+    let lines: Vec<&str> = said.lines().collect();
+    let started = lines
+        .iter()
+        .position(|l| *l == "* [DNS] [A+AAAA] hostip_resolv started -> 81")
+        .unwrap_or_else(|| panic!("{said}"));
+    assert_eq!(
+        lines[started + 1..started + 3],
+        [
+            "* [DNS] cache lookup localhost4:9 queries=A+AAAA -> 0 not found",
+            "* [DNS] [A+AAAA] resolve incomplete, responses=-, ongoing=2 for localhost4:9",
+        ],
+        "{said}"
+    );
+    assert!(
+        lines[started + 3].starts_with("* [DNS] [A+AAAA] still waiting "),
+        "{said}"
+    );
+    assert_eq!(
+        lines[started + 4],
+        "* [DNS] Curl_conn_connect(block=0) -> 0, done=0",
+        "{said}"
+    );
+}

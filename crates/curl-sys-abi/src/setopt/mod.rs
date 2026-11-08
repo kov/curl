@@ -1574,6 +1574,8 @@ fn apply(
             unsafe { string(p) }?;
         }
         (ffi::CURLOPT_HSTS_CTRL | ffi::CURLOPT_ALTSVC_CTRL, Long(_)) => {}
+        // libssh2's alone in C: a build with libssh does not know them.
+        #[cfg(not(feature = "libssh2"))]
         (ffi::CURLOPT_SSH_HOSTKEYFUNCTION | ffi::CURLOPT_SSH_HOSTKEYDATA, _) => {
             return Err(Refused::Unknown);
         }
@@ -1934,8 +1936,6 @@ fn apply_stateful(
             callbacks::sync_ssh_key(options, me, ccb)?;
         }
         (ffi::CURLOPT_SSH_KEYDATA, Ptr(p)) => ccb.ssh_key_data = p,
-        // libssh2's alone in C: a build with libssh does not know them.
-        #[cfg(not(feature = "libssh2"))]
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.

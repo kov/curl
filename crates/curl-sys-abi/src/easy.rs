@@ -21,7 +21,7 @@ use curl_core::multi::raw::RawIo;
 use curl_core::multi::{
     EventTable, Multi, PauseRequest, TransferId, drive_by_events_with, drive_to_completion,
 };
-use curl_core::options::{Callbacks, Options};
+use curl_core::options::Options;
 use curl_core::report::TransferReport;
 use curl_core::tls::TlsNative;
 
@@ -388,7 +388,7 @@ impl ShimEasy {
         // cells apart from the options being set.
         let shim = unsafe { me.as_ref() };
         let (ccb, set) = (shim.ccb.get(), shim.set.get());
-        options.callbacks = Callbacks::default();
+        callbacks::forget(options);
         // The body always goes through the application's C stream or
         // function, never Rust's own standard output.
         options.callbacks.write = Some(match write {

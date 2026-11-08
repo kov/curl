@@ -602,12 +602,45 @@ witness: curl-sys-abi getinfo::tests::unit3219_protocol_mask
 --- new
     crate::protocols::BITS[p.index()] as c_long
 
-=== the shim keeps an adapter it already has, a copy's its original's
+=== an adapter a setopt wants again is made again
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::an_adapter_wanted_again_is_kept
+--- old
+    } else if slot.is_none() {
+        *slot = Some(make()?);
+--- new
+    } else {
+        *slot = Some(make()?);
+
+=== a progress adapter a setopt wants again is made again
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::an_adapter_wanted_again_is_kept
+--- old
+            Progress::Handler(kept) => Progress::Handler(kept.clone()),
+--- new
+            Progress::Handler(_) => Progress::Handler(Handler::progress(Adapter(easy))?),
+
+=== a copy's options keep the original's read adapter
 file: crates/curl-sys-abi/src/callbacks.rs
 witness: curl-sys-abi handle_tests::a_copy_s_adapters_are_its_own
 --- old
-    *slot = if wanted { Some(make()?) } else { None };
---- new
-    if wanted != slot.is_some() {
-        *slot = if wanted { Some(make()?) } else { None };
+    if let Some(small) = options.small.made_mut() {
+        small.input = None;
     }
+--- new
+
+=== a copy's options keep the original's progress adapter
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_copy_s_adapters_are_its_own
+--- old
+    if let Progress::Handler(_) = options.progress {
+        options.progress = Progress::Meter;
+    }
+--- new
+
+=== a copy's options keep the original's SSH key adapter
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_copy_s_adapters_are_its_own
+--- old
+        ssh.key_handler = None;
+--- new

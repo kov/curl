@@ -287,7 +287,8 @@ pub(crate) fn sync_input(
     ccb: &CCallbacks,
 ) -> Result<(), OutOfMemory> {
     if ccb.read.is_some() || ccb.read_data != standard().0 {
-        options.small.make_mut()?.input = Some(Handler::read(Adapter(easy))?);
+        let small = options.small.make_mut()?;
+        bind(&mut small.input, true, || Handler::read(Adapter(easy)))?;
     } else if let Some(small) = options.small.made_mut() {
         small.input = None;
     }
@@ -352,7 +353,11 @@ pub(crate) fn sync_progress(
     options.progress = if set.no_progress {
         Progress::Off
     } else if ccb.xferinfo.is_some() || ccb.progress.is_some() {
-        Progress::Handler(Handler::progress(Adapter(easy))?)
+        // Kept if there, as `bind` keeps one.
+        match &options.progress {
+            Progress::Handler(kept) => Progress::Handler(kept.clone()),
+            Progress::Off | Progress::Meter => Progress::Handler(Handler::progress(Adapter(easy))?),
+        }
     } else {
         Progress::Meter
     };
@@ -449,17 +454,51 @@ pub(crate) fn sync_interleave(
 }
 
 /// A slot of an adapter the handle at `easy` installs: made for `easy`
-/// while `wanted`, none otherwise. It is made anew every time, never kept:
-/// a copy of the handle arrives holding its original's options, whose
-/// adapters name the original, and an adapter kept would call the
-/// application with the original's handle and settings, or with one freed.
+/// while `wanted` if it holds none yet, none otherwise. One it holds is
+/// kept, so that a setopt that wants it again makes nothing: the C tool
+/// sets the header function, its data and the standard error stream, each
+/// of which wants the header adapter, and the read function and its data.
+/// An adapter names only its handle and reads the function and data the
+/// application set as it calls, as C reads `data->set` at each call, so
+/// one serves for every setting.
+///
+/// Every adapter a handle's options hold is that handle's own: a copy of
+/// a handle arrives holding its original's options, whose adapters name
+/// the original, and an adapter kept would call the application with the
+/// original's handle and settings, or with one freed. `forget` drops them
+/// all before `ShimEasy::adapt` installs any: a slot a sync keeps is one
+/// `forget` clears.
 fn bind<T: ?Sized>(
     slot: &mut Option<Handler<T>>,
     wanted: bool,
     make: impl FnOnce() -> Result<Handler<T>, OutOfMemory>,
 ) -> Result<(), OutOfMemory> {
-    *slot = if wanted { Some(make()?) } else { None };
+    if !wanted {
+        *slot = None;
+    } else if slot.is_none() {
+        *slot = Some(make()?);
+    }
     Ok(())
+}
+
+/// Drop every adapter the options hold that a sync may keep, as a
+/// handle's adapters are made whole (`ShimEasy::adapt`): after this the
+/// options hold none that could name another handle.
+pub(crate) fn forget(options: &mut Options) {
+    options.callbacks = curl_core::options::Callbacks::default();
+    if let Progress::Handler(_) = options.progress {
+        options.progress = Progress::Meter;
+    }
+    if let Some(small) = options.small.made_mut() {
+        small.input = None;
+    }
+    if let Some(ssh) = options.ssh.made_mut() {
+        ssh.key_handler = None;
+        #[cfg(feature = "libssh2")]
+        {
+            ssh.host_key_handler = None;
+        }
+    }
 }
 
 /// The SSH key adapter, while there is a key function.

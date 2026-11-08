@@ -3499,6 +3499,136 @@ fn headers_go_where_c_sends_them() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// Lines the header function got, marked as the second function's.
+unsafe extern "C" fn lines_again(
+    ptr: *mut c_char,
+    size: usize,
+    n: usize,
+    data: *mut c_void,
+) -> usize {
+    // SAFETY: the test passes `Lines` and the shim `size * n` bytes.
+    let (l, b) = unsafe {
+        (
+            &mut *data.cast::<Lines>(),
+            core::slice::from_raw_parts(ptr.cast::<u8>(), size * n),
+        )
+    };
+    l.0.push(format!("again: {}", String::from_utf8(b.to_vec()).unwrap()));
+    size * n
+}
+
+/// An adapter a setopt wants again is the one the handle holds, so that
+/// setting the header function, its data and the standard error stream
+/// makes one header adapter, as the C tool sets them on every handle; and
+/// it still calls the function and data set last, as C reads them at each
+/// call: the second header function with the second data.
+#[test]
+fn an_adapter_wanted_again_is_kept() {
+    use curl_core::handler::Handler;
+    let (path, url) = file("kept", b"hello");
+    let (mut first, mut second) = (Lines::default(), Lines::default());
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_NOBODY, 1);
+    let header = |c| options(c, |o| o.callbacks.header.clone().expect("a header adapter"));
+    let f = lines as WriteFn as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_HEADERFUNCTION, f), CURLE_OK);
+    let made = header(c);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_HEADERDATA, &raw mut first),
+        CURLE_OK
+    );
+    let stream = tmpfile();
+    assert_eq!(pointer(c, ffi::CURLOPT_STDERR, stream), CURLE_OK);
+    assert!(
+        Handler::ptr_eq(&made, &header(c)),
+        "kept by its data and STDERR"
+    );
+    let g = lines_again as WriteFn as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_HEADERFUNCTION, g), CURLE_OK);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_HEADERDATA, &raw mut second),
+        CURLE_OK
+    );
+    assert!(
+        Handler::ptr_eq(&made, &header(c)),
+        "kept by another function"
+    );
+    assert_eq!(
+        function(c, ffi::CURLOPT_HEADERFUNCTION, ptr::null()),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_HEADERDATA, ptr::null_mut::<u8>()),
+        CURLE_OK
+    );
+    assert!(options(c, |o| o.callbacks.header.is_none()));
+    assert_eq!(function(c, ffi::CURLOPT_HEADERFUNCTION, g), CURLE_OK);
+    let again = header(c);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_HEADERDATA, &raw mut second),
+        CURLE_OK
+    );
+    assert!(Handler::ptr_eq(&again, &header(c)), "kept once made again");
+
+    let read = |c| options(c, |o| o.small.input.clone().expect("a read adapter"));
+    let mut input = 0u8;
+    assert_eq!(pointer(c, ffi::CURLOPT_READDATA, &raw mut input), CURLE_OK);
+    let made_read = read(c);
+    let r = sink as WriteFn as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_READFUNCTION, r), CURLE_OK);
+    assert!(Handler::ptr_eq(&made_read, &read(c)), "the read adapter");
+
+    let failure = |c| options(c, |o| o.callbacks.failure.clone().expect("a sink"));
+    let mut buf = [0 as c_char; ffi::CURL_ERROR_SIZE as usize];
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr()),
+        CURLE_OK
+    );
+    let made_failure = failure(c);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr()),
+        CURLE_OK
+    );
+    assert!(
+        Handler::ptr_eq(&made_failure, &failure(c)),
+        "the error buffer"
+    );
+
+    let progress = |c| {
+        options(c, |o| match &o.progress {
+            curl_core::options::Progress::Handler(h) => h.clone(),
+            other => panic!("a progress adapter, not {other:?}"),
+        })
+    };
+    let x = xferinfo as XferFn as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_XFERINFOFUNCTION, x), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_NOPROGRESS, 0), CURLE_OK);
+    let made_progress = progress(c);
+    assert_eq!(function(c, ffi::CURLOPT_XFERINFOFUNCTION, x), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_NOPROGRESS, 0), CURLE_OK);
+    assert!(
+        Handler::ptr_eq(&made_progress, &progress(c)),
+        "the progress adapter"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_NOPROGRESS, 1), CURLE_OK);
+
+    // SAFETY: a live handle, then not used again.
+    unsafe {
+        assert_eq!(curl_easy_perform(c), CURLE_OK);
+        curl_easy_cleanup(c);
+    }
+    assert!(first.0.is_empty(), "the first data was replaced");
+    assert_eq!(
+        second.0.first().map(String::as_str),
+        Some("again: Content-Length: 5\r\n"),
+        "the second function, with the second data"
+    );
+    // SAFETY: the stream `tmpfile` opened, not used again.
+    unsafe { libc::fclose(stream) };
+    std::fs::remove_file(path).unwrap();
+}
+
 type DebugFn =
     unsafe extern "C" fn(*mut CURL, ffi::curl_infotype, *mut c_char, usize, *mut c_void) -> c_int;
 

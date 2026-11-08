@@ -545,9 +545,11 @@ fn said(got: &Got, line: &str) -> bool {
 
 /// A connection the peer reset, as C says it: its text and its number,
 /// the C library's on Unix, curl's own text for Winsock's on Windows
-/// (`curlx_strerror`).
-#[cfg(not(windows))]
+/// (`curlx_strerror`). The number is the system's `ECONNRESET`.
+#[cfg(not(any(windows, target_os = "macos")))]
 const RESET: (&str, i32) = ("Connection reset by peer", 104);
+#[cfg(target_os = "macos")]
+const RESET: (&str, i32) = ("Connection reset by peer", 54);
 #[cfg(windows)]
 const RESET: (&str, i32) = ("Connection was reset", 10054);
 

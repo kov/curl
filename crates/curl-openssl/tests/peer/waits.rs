@@ -249,9 +249,11 @@ fn a_socket_that_stutters_has_each_step_wait_and_go_on() {
 
 /// A send on an unconnected socket's failure, as C says it: its text and
 /// number, the C library's on Unix, curl's own text for Winsock's on
-/// Windows.
-#[cfg(not(windows))]
+/// Windows. The number is the system's `EDESTADDRREQ`.
+#[cfg(not(any(windows, target_os = "macos")))]
 const UNCONNECTED: (&str, i32) = ("Destination address required", 89);
+#[cfg(target_os = "macos")]
+const UNCONNECTED: (&str, i32) = ("Destination address required", 39);
 #[cfg(windows)]
 const UNCONNECTED: (&str, i32) = ("Socket is not connected", 10057);
 
@@ -288,11 +290,14 @@ fn a_send_the_socket_fails_is_said_as_c_says() {
         String::from_utf8_lossy(&got.failure),
         format!("Send failure: {unconnected}")
     );
+    // OpenSSL's error for a system call's is the system's number with
+    // its library's bit (`ERR_SYSTEM_FLAG`).
     #[cfg(all(not(any(libressl, boringssl_like)), not(windows)))]
     let line = format!(
-        "OpenSSL SSL_write: OpenSSL/{}: error:80000059:system library::Destination address \
-         required, errno 89",
-        openssl::version::version().split(' ').nth(1).unwrap()
+        "OpenSSL SSL_write: OpenSSL/{}: error:{:08X}:system library::{unconnected}, errno \
+         {_errno}",
+        openssl::version::version().split(' ').nth(1).unwrap(),
+        0x8000_0000_u32 | _errno.cast_unsigned()
     );
     #[cfg(all(not(any(libressl, boringssl_like)), windows))]
     let line = format!(

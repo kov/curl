@@ -303,3 +303,13 @@ features: test-util,debug-hooks
             OriginRecord::Known(record) if !proxied => record,
 --- new
             OriginRecord::Known(record) if true => record,
+
+=== the TLS's wait for the record is said in one backend's words whatever the library
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::http::tests::https_trace::ech_waits_for_the_origin_s_record
+--- old
+            .record_wait()
+            .line();
+--- new
+            .record_wait();
+        let words = crate::tls::RecordWait::ForEch.line();

@@ -32,8 +32,8 @@ use core::fmt;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, QuicContextSetup, QuicTls, SharedKeyLog, SystemStore, TlsBackend, TlsCx,
-    TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
+    Alpn, CaDefaults, QuicContextSetup, QuicTls, RecordWait, SharedKeyLog, SystemStore, TlsBackend,
+    TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
 };
 
 pub use sign::ED25519;
@@ -162,6 +162,11 @@ impl TlsBackend for GnuTls {
 
     fn support(&self) -> TlsSupport {
         SUPPORT
+    }
+
+    /// It has no ECH: never said.
+    fn record_wait(&self) -> RecordWait {
+        RecordWait::Plain
     }
 }
 

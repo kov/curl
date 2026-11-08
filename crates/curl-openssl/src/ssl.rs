@@ -18,8 +18,8 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
     Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicContextSetup,
-    QuicTls, SharedKeyLog, SystemStore, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer,
-    TlsPeerKind, TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
+    QuicTls, RecordWait, SharedKeyLog, SystemStore, TlsBackend, TlsCx, TlsIdentity, TlsIo,
+    TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -163,6 +163,11 @@ impl TlsBackend for OpenSsl {
     /// as the connection is made.
     fn support(&self) -> TlsSupport {
         SUPPORT
+    }
+
+    /// As `ossl_connect` says it, for AWS-LC and BoringSSL too.
+    fn record_wait(&self) -> RecordWait {
+        RecordWait::Plain
     }
 
     /// The engines of the library, made ready first, which loads its

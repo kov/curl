@@ -32,8 +32,8 @@ use curl_alloc::Lock;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession, TlsShared,
-    TlsSupport,
+    Alpn, CaDefaults, RecordWait, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession,
+    TlsShared, TlsSupport,
 };
 
 /// The CA bundle and path the build found (`build.rs`).
@@ -166,6 +166,11 @@ impl TlsBackend for MbedTls {
     fn support(&self) -> TlsSupport {
         SUPPORT
     }
+
+    /// It has no ECH: never said.
+    fn record_wait(&self) -> RecordWait {
+        RecordWait::Plain
+    }
 }
 
 /// A library a handle names by reference: the shim's and the tool's own
@@ -191,6 +196,10 @@ impl TlsBackend for &'static MbedTls {
 
     fn support(&self) -> TlsSupport {
         (**self).support()
+    }
+
+    fn record_wait(&self) -> RecordWait {
+        (**self).record_wait()
     }
 }
 

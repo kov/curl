@@ -98,6 +98,8 @@ pub struct FakeTls {
     binding: FakeBinding,
     /// What it says it can do.
     support: crate::tls::TlsSupport,
+    /// How it says its TLS waits for the origin's record.
+    record_wait: crate::tls::RecordWait,
 }
 
 /// When a fake QUIC session gives its ticket to keep: as its handshake
@@ -254,6 +256,7 @@ impl FakeTls {
             quic_verify: None,
             binding: FakeBinding::None,
             support: SUPPORT,
+            record_wait: crate::tls::RecordWait::Plain,
         })
     }
 
@@ -263,6 +266,15 @@ impl FakeTls {
             support,
             ..FakeTls::new()?
         })
+    }
+
+    /// The same, saying its TLS waits for the origin's record as
+    /// `record_wait` words it.
+    pub fn waiting_saying(self, record_wait: crate::tls::RecordWait) -> FakeTls {
+        FakeTls {
+            record_wait,
+            ..self
+        }
     }
 
     /// The same, each QUIC session reporting `result` as its check of
@@ -400,6 +412,10 @@ impl TlsBackend for FakeTls {
 
     fn support(&self) -> crate::tls::TlsSupport {
         self.support
+    }
+
+    fn record_wait(&self) -> crate::tls::RecordWait {
+        self.record_wait
     }
 
     fn quic_session(

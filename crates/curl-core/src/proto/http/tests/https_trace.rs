@@ -1320,22 +1320,24 @@ impl crate::conn::io::DnsLibrary for EchAres {
 fn ech_get(
     ares: &'static EchAres,
     mode: crate::options::EchMode,
+    wait: crate::tls::RecordWait,
 ) -> (Option<(u8, usize)>, Vec<String>) {
     let url = format!("https://localhost:{PORT}/");
     let mut m = tls_server(1);
-    let (configs, ran) = ech_run(&mut m, ares, mode, &url, b"ssl", |_| {});
+    let (configs, ran) = ech_run(&mut m, ares, mode, wait, &url, b"ssl", |_| {});
     assert_eq!(ran.result, Ok(()));
     (configs, lines(&ran, &["[SSL]", "HTTPS-RR "]))
 }
 
-/// A transfer of `url` over `m` and a TLS library with ECH, resolving
-/// through `ares`, with ECH as `mode` asks and the options as `set` sets
-/// them, tracing `components`: what the session was handed of the record,
-/// and the run.
+/// A transfer of `url` over `m` and a TLS library with ECH, which says
+/// it waits for the record as `wait` words it, resolving through `ares`,
+/// with ECH as `mode` asks and the options as `set` sets them, tracing
+/// `components`: what the session was handed of the record, and the run.
 fn ech_run(
     m: &mut Multi,
     ares: &'static EchAres,
     mode: crate::options::EchMode,
+    wait: crate::tls::RecordWait,
     url: &str,
     components: &[u8],
     set: impl FnOnce(&mut Options),
@@ -1344,7 +1346,8 @@ fn ech_run(
         ech: true,
         ..fake::SUPPORT
     };
-    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::supporting(support).unwrap()));
+    let tls = FakeTls::supporting(support).unwrap().waiting_saying(wait);
+    let tls: &'static FakeTls = Box::leak(Box::new(tls));
     let libraries = SharedLibraries::new(Libraries {
         tls: Some(Library::Static(tls)),
         dns: Some(ares),
@@ -1366,34 +1369,49 @@ fn ech_run(
 
 /// ECH that takes its configurations from the origin's HTTPS record waits
 /// for the record before its session is made, saying so at each connect
-/// as C's filter puts its own off (`Curl_ssl_need_httpsrr`), and the
-/// session is handed the record's ECHConfigList.
+/// as C's filter puts its own off (`Curl_ssl_need_httpsrr`), in the words
+/// of the TLS library's backend: OpenSSL's, AWS-LC's and BoringSSL's
+/// without "for ECH", wolfSSL's and Rustls's with it. The session is
+/// handed the record's ECHConfigList.
 #[test]
 fn ech_waits_for_the_origin_s_record() {
     static ARES: EchAres = EchAres {
         record_at: 6,
         elsewhere: false,
     };
-    for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
-        let (configs, lines) = ech_get(&ARES, mode);
-        assert_eq!(configs, Some((0xfe, 4)), "{mode:?}");
-        let waits = lines
-            .iter()
-            .filter(|l| *l == "[SSL] need HTTPS-RR for ECH, delaying connect")
-            .count();
-        assert!(waits > 0, "{mode:?} {lines:?}");
-        // Each wait is a connect of its own, checked first.
-        let first = lines
-            .iter()
-            .position(|l| l.contains("need HTTPS-RR"))
-            .unwrap();
-        assert_eq!(lines[first - 1], "[SSL] cf_connect()", "{lines:?}");
-        assert_eq!(
-            lines[first + 1],
-            "[SSL] cf_connect() -> 0, done=0",
-            "{lines:?}"
-        );
+    let words = [
+        (
+            crate::tls::RecordWait::Plain,
+            "[SSL] need HTTPS-RR, delaying connect",
+        ),
+        (
+            crate::tls::RecordWait::ForEch,
+            "[SSL] need HTTPS-RR for ECH, delaying connect",
+        ),
+    ];
+    for (wait, said) in words {
+        for mode in [crate::options::EchMode::Try, crate::options::EchMode::Hard] {
+            let (configs, lines) = ech_get(&ARES, mode, wait);
+            assert_eq!(configs, Some((0xfe, 4)), "{mode:?}");
+            let waits = lines.iter().filter(|l| *l == said).count();
+            assert!(waits > 0, "{wait:?} {mode:?} {lines:?}");
+            ech_wait_is_a_connect(&lines);
+        }
     }
+}
+
+/// Each wait for the record is a connect of its own, checked first.
+fn ech_wait_is_a_connect(lines: &[String]) {
+    let first = lines
+        .iter()
+        .position(|l| l.contains("need HTTPS-RR"))
+        .unwrap();
+    assert_eq!(lines[first - 1], "[SSL] cf_connect()", "{lines:?}");
+    assert_eq!(
+        lines[first + 1],
+        "[SSL] cf_connect() -> 0, done=0",
+        "{lines:?}"
+    );
 }
 
 /// ECH off, or GREASE, which takes no configuration, waits for nothing:
@@ -1408,7 +1426,7 @@ fn ech_without_configurations_waits_for_no_record() {
         crate::options::EchMode::Off,
         crate::options::EchMode::Grease,
     ] {
-        let (configs, lines) = ech_get(&ARES, mode);
+        let (configs, lines) = ech_get(&ARES, mode, crate::tls::RecordWait::Plain);
         assert_eq!(configs, None, "{mode:?}");
         assert!(
             !lines.iter().any(|l| l.contains("need HTTPS-RR")),
@@ -1425,7 +1443,11 @@ fn ech_takes_no_configurations_from_a_record_about_another_name() {
         record_at: 6,
         elsewhere: true,
     };
-    let (configs, lines) = ech_get(&ARES, crate::options::EchMode::Try);
+    let (configs, lines) = ech_get(
+        &ARES,
+        crate::options::EchMode::Try,
+        crate::tls::RecordWait::Plain,
+    );
     assert_eq!(configs, None);
     assert!(
         lines.iter().any(|l| l.contains("need HTTPS-RR")),
@@ -1457,7 +1479,8 @@ fn ech_without_https_connect(
     let response = fake::records(OK).unwrap();
     let talk = Conversation::replies(&[WELCOME, &response], true).late_replies();
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let (configs, ran) = ech_run(&mut m, ares, mode, url, b"dns,ssl,setup,multi", set);
+    let plain = crate::tls::RecordWait::Plain;
+    let (configs, ran) = ech_run(&mut m, ares, mode, plain, url, b"dns,ssl,setup,multi", set);
     let starts = [
         "[DNS] [HTTPS]",
         "[DNS] cache lookup ",

@@ -29,8 +29,8 @@ use core::fmt;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, SharedKeyLog, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession,
-    TlsShared, TlsSupport,
+    Alpn, CaDefaults, RecordWait, SharedKeyLog, SystemStore, TlsBackend, TlsIdentity, TlsPeer,
+    TlsSession, TlsShared, TlsSupport,
 };
 
 /// The CA bundle and path the build found (`build.rs`).
@@ -135,6 +135,11 @@ impl TlsBackend for Rustls {
     fn support(&self) -> TlsSupport {
         SUPPORT
     }
+
+    /// As `cr_connect` says it.
+    fn record_wait(&self) -> RecordWait {
+        RecordWait::ForEch
+    }
 }
 
 /// A library a handle names by reference: the shim's own `Rustls`, which
@@ -160,6 +165,10 @@ impl TlsBackend for &'static Rustls {
 
     fn support(&self) -> TlsSupport {
         (**self).support()
+    }
+
+    fn record_wait(&self) -> RecordWait {
+        (**self).record_wait()
     }
 }
 

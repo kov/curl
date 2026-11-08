@@ -149,9 +149,9 @@ fn origin_ech<'a>(lent: &Lent<'a>, side: TlsSide) -> Option<&'a [u8]> {
 }
 
 /// The origin's TLS waits for its HTTPS record (`Handshake::EchRecord`),
-/// as C's filter puts its connect off (`need HTTPS-RR for ECH, delaying
-/// connect`), the versions checked first as each of its connects checks
-/// them. Once the record is known, the session is made with its ECH
+/// as C's filter puts its connect off, in the TLS library's words
+/// (`need HTTPS-RR, delaying connect`), the versions checked first as
+/// each of its connects checks them. Once the record is known, the session is made with its ECH
 /// configurations, offering `alpn`, and its handshake starts in the same
 /// call.
 pub(super) fn record_step<H: Host>(
@@ -170,11 +170,14 @@ pub(super) fn record_step<H: Host>(
             .map_err(Failure::of);
     }
     if let RecordNow::Coming = lent.record {
-        trace::of(
-            cx,
-            ssl,
-            format_args!("need HTTPS-RR for ECH, delaying connect"),
-        );
+        let libraries = cx.easy().shared_libraries();
+        let words = libraries
+            .tls
+            .as_deref()
+            .expect("a route has TLS only with a TLS library")
+            .record_wait()
+            .line();
+        trace::of(cx, ssl, format_args!("{words}"));
         return said(stream, ssl, Ok(Shake::Waiting), cx)
             .map(|_| Wake::Idle)
             .map_err(Failure::of);

@@ -31,8 +31,8 @@ mod backend {
     use curl_alloc::{OutOfMemory, TryArc, try_box};
     use curl_core::error::ErrorKind;
     use curl_core::tls::{
-        Alpn, CaDefaults, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession, TlsShared,
-        TlsSupport,
+        Alpn, CaDefaults, RecordWait, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession,
+        TlsShared, TlsSupport,
     };
 
     use crate::session::Session;
@@ -77,6 +77,11 @@ mod backend {
         /// (`cert_status_request` is NULL) nor engines.
         fn support(&self) -> TlsSupport {
             SUPPORT
+        }
+
+        /// It has no ECH: never said.
+        fn record_wait(&self) -> RecordWait {
+            RecordWait::Plain
         }
     }
 

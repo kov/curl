@@ -952,6 +952,10 @@ impl crate::tls::TlsBackend for Saying {
     fn support(&self) -> crate::tls::TlsSupport {
         crate::tls::fake::SUPPORT
     }
+
+    fn record_wait(&self) -> crate::tls::RecordWait {
+        crate::tls::RecordWait::Plain
+    }
 }
 
 struct SayingSession;

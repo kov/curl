@@ -320,3 +320,35 @@ class TestECHH3:
         known = [i for i, line in enumerate(lines) if line.startswith('HTTPS-RR ')]
         last = max(i for i, line in enumerate(lines) if line == delay)
         assert not known or last < known[0], f'{r.dump_logs()}'
+
+
+@pytest.mark.skipif(condition=not Env.curl_has_feature('ECH'), reason="no curl ECH support")
+@pytest.mark.skipif(condition=not Env.curl_has_feature('HTTPSRR'), reason="no HTTPSRR support")
+@pytest.mark.skipif(condition=not Env.curl_uses_lib('c-ares'), reason="needs c-ares")
+@pytest.mark.skipif(condition=not Env.have_nghttpx_ech(), reason="no nghttpx ECH support")
+@pytest.mark.skipif(condition=not Env.have_openssl_ech(), reason="no openssl cmd ECH support")
+@pytest.mark.skipif(condition=not Env.curl_is_debug(), reason="needs curl debug")
+class TestECHTcp:
+
+    # ECH over TCP with the configurations of the origin's HTTPS record,
+    # still to come as the connection is made: the TLS filter puts its
+    # connect off until the record comes, saying so in its backend's words,
+    # OpenSSL's (AWS-LC's, BoringSSL's) without "for ECH", wolfSSL's and
+    # Rustls's with it.
+    def test_23_09_ech_tcp_record_coming(self, env: Env, httpd, nghttpx_tcp):
+        ech = base64.b64decode(env.get_echconfig_arg(env.domain1))
+        with HttpsRecordDns(env.domain1, ech) as dns:
+            curl = CurlClient(env=env)
+            url = f'https://{env.domain1}:{nghttpx_tcp.port}/data.json'
+            r = curl.http_download(urls=[url], with_stats=True, extra_args=[
+                '--ech', 'hard', '--dns-servers', f'127.0.0.1:{dns.port}',
+                '--trace-config', 'ssl,dns'
+            ])
+        r.check_exit_code(0)
+        lines = [re.sub(r'^.*?\] \* ', '', line.rstrip()) for line in r.trace_lines]
+        for_ech = env.curl_uses_lib('wolfssl') or env.curl_uses_lib('rustls-ffi')
+        said = ('need HTTPS-RR for ECH, delaying connect' if for_ech
+                else 'need HTTPS-RR, delaying connect')
+        waits = [line for line in lines if 'need HTTPS-RR' in line]
+        assert waits, f'{r.dump_logs()}'
+        assert all(line == f'[SSL] {said}' for line in waits), f'{waits}'

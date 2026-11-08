@@ -35,8 +35,8 @@ use curl_alloc::Lock;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, QuicContextSetup, QuicTls, SharedKeyLog, SystemStore, Text, TlsBackend,
-    TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
+    Alpn, CaDefaults, QuicContextSetup, QuicTls, RecordWait, SharedKeyLog, SystemStore, Text,
+    TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
 };
 
 pub use sign::ED25519;
@@ -228,6 +228,11 @@ impl TlsBackend for WolfSsl {
     fn support(&self) -> TlsSupport {
         SUPPORT
     }
+
+    /// As `wssl_connect` says it.
+    fn record_wait(&self) -> RecordWait {
+        RecordWait::ForEch
+    }
 }
 
 /// A library a handle names by reference: the shim's and the tool's own
@@ -264,6 +269,10 @@ impl TlsBackend for &'static WolfSsl {
 
     fn support(&self) -> TlsSupport {
         (**self).support()
+    }
+
+    fn record_wait(&self) -> RecordWait {
+        (**self).record_wait()
     }
 }
 

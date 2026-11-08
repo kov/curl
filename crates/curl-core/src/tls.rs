@@ -109,10 +109,38 @@ pub trait TlsBackend: Send + Sync {
     /// library (`ssl_impl->version`): `OpenSSL/3.5.9`.
     fn id(&self) -> &dyn fmt::Display;
 
+    /// How it says the origin's TLS waits for the HTTPS record its ECH
+    /// takes its configurations from, as C's backend for it words it. A
+    /// library without ECH never says it.
+    fn record_wait(&self) -> RecordWait;
+
     /// The ids of the crypto engines it has (`Curl_ssl_engines_list`):
     /// none for a library without engines.
     fn engines(&self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
         Ok(Vec::new())
+    }
+}
+
+/// How a TLS library says the origin's TLS waits for the HTTPS record its
+/// ECH takes its configurations from (`Curl_ssl_need_httpsrr`): each of
+/// C's backends words it in its own connect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordWait {
+    /// `need HTTPS-RR, delaying connect`, as OpenSSL's says it, and so
+    /// AWS-LC's and BoringSSL's.
+    Plain,
+    /// `need HTTPS-RR for ECH, delaying connect`, as wolfSSL's and
+    /// Rustls's say it.
+    ForEch,
+}
+
+impl RecordWait {
+    /// The line it is said in.
+    pub(crate) fn line(self) -> &'static str {
+        match self {
+            RecordWait::Plain => "need HTTPS-RR, delaying connect",
+            RecordWait::ForEch => "need HTTPS-RR for ECH, delaying connect",
+        }
     }
 }
 

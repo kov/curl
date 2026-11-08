@@ -2949,7 +2949,8 @@ with the resolver's reason if it gives one (`Resolver::explain`: c-ares's "Domai
 found" for the resolvers that stand in for the reference build's, none for the threaded
 resolver, as C's gives none), then said again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
-stamp it last read), as its source has them then; a list set while one is read, from the
+stamp it last read), as its source has them then; the entries are shared, never copied, by the
+handles set from one list and the transfer reading them. A list set while one is read, from the
 debug handler, is taken as read too, as C clears `state.resolve` after reading. They are permanent unless given with `+`, and `*` answers for any name on
 its port. A transfer's end prunes what has gone stale (`multi_done`).
 

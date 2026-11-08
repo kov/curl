@@ -136,16 +136,13 @@ fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         .resolve
         .refill()
         .map_err(|_| ErrorKind::OutOfMemory)?;
-    // A copy is read, as the cache and the trace are reached while it is:
-    // the debug handler may set the list. Read whole, the list is done
-    // with, and so is one set meanwhile, as C clears `state.resolve`
-    // once it has read the old one; one that failed is read again.
-    let entries = cx
-        .easy()
-        .options()
-        .resolve
-        .try_clone()
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    // The entries are read from a handle on them, which shares them, as
+    // the cache and the trace are reached while they are: the debug
+    // handler may set the list, and the options keep what it sets. Read
+    // whole, the list is done with, and so is one set meanwhile, as C
+    // clears `state.resolve` once it has read the old one; one that
+    // failed is read again.
+    let entries = cx.easy().options().resolve.shared();
     let read = read_entries(cx, &entries);
     if read.is_ok() {
         cx.easy_mut().resolve_read = cx.easy().options().resolve.stamp();

@@ -797,3 +797,16 @@ witness: curl-core proto::http::tests::unix_trace::a_unix_socket_is_connected_in
 --- new
     fn traces(&self, component: Component) -> bool {
         !trace::traces(self, component)
+
+=== a resolve list set from another copies its entries
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::a_resolve_list_shares_its_entries
+features: test-util
+--- old
+        self.entries = list.entries.clone();
+--- new
+        let mut copy = Packed::default();
+        for line in list.entries() {
+            copy.push(line).expect("room for the copy");
+        }
+        self.entries = copy.shared().expect("room for the copy");

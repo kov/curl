@@ -800,7 +800,7 @@ impl Options {
             dns_shuffle: self.dns_shuffle,
             address_scope: self.address_scope,
             port: self.port,
-            resolve: self.resolve.try_clone()?,
+            resolve: self.resolve.shared(),
             connect_to: self.connect_to.try_clone()?,
             output: self.output,
             callbacks: self.callbacks.clone(),
@@ -1502,16 +1502,25 @@ impl Default for FileMode {
 /// application gave it, read into the multi's cache when the next
 /// transfer starts: `HOST:PORT:ADDRESS[,ADDRESS]...`, kept for good, or
 /// for the cache's timeout with a `+` before; `-HOST:PORT` to forget.
+///
+/// The entries are shared, never changed in place: a copy of the list,
+/// and the one a transfer reads while its debug handler may set the list
+/// again, cost no copy of them. It is not `Clone`: a list given to a
+/// handle is set on it (`set_from`), a new setting it reads.
 #[derive(Debug, Default)]
 pub struct ResolveList {
-    entries: Lines,
+    /// The entries, or none for an empty list.
+    entries: Option<TryArc<Packed>>,
+    /// Where they are read from again each time they are used, if they
+    /// are not as given.
+    source: Option<Handler<dyn LineSource>>,
     /// Which setting of the list this is: a transfer reads each once.
     stamp: u64,
 }
 
 impl ResolveList {
     pub fn entries(&self) -> impl Iterator<Item = &[u8]> {
-        self.entries.iter()
+        self.entries.iter().flat_map(|p| p.lines())
     }
 
     /// The list as the application sets it again, replacing what it was:
@@ -1520,15 +1529,29 @@ impl ResolveList {
         &mut self,
         entries: impl IntoIterator<Item = &'a [u8]>,
     ) -> Result<(), OutOfMemory> {
-        self.entries.set(entries)?;
+        let mut packed = Packed::default();
+        for entry in entries {
+            packed.push(entry)?;
+        }
+        self.entries = packed.shared()?;
+        self.source = None;
         self.stamp += 1;
         Ok(())
+    }
+
+    /// The entries of `list`, shared, as `set` sets them: a list made once
+    /// and given to many handles is not copied for each.
+    pub fn set_from(&mut self, list: &ResolveList) {
+        self.entries = list.entries.clone();
+        self.source = list.source.clone();
+        self.stamp += 1;
     }
 
     /// The list `source` gives, as `set` sets one: what it gives when the
     /// next transfer starts is read, and only then (`Curl_loadhostpairs`).
     pub fn set_source(&mut self, source: Handler<dyn LineSource>) -> Result<(), OutOfMemory> {
-        self.entries.set_source(source)?;
+        self.entries = Packed::read(&source)?;
+        self.source = Some(source);
         self.stamp += 1;
         Ok(())
     }
@@ -1536,17 +1559,62 @@ impl ResolveList {
     /// The source's entries read again, as they are to be read into the
     /// cache: the same setting of the list still.
     pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
-        self.entries.refill()
+        if let Some(source) = &self.source {
+            self.entries = Packed::read(source)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn stamp(&self) -> u64 {
         self.stamp
     }
 
-    pub(crate) fn try_clone(&self) -> Result<ResolveList, OutOfMemory> {
-        Ok(ResolveList {
-            entries: self.entries.try_clone()?,
+    /// The list as it is, the same setting: its entries shared, for a
+    /// copy of the handle's options and for the transfer that reads them.
+    pub(crate) fn shared(&self) -> ResolveList {
+        ResolveList {
+            entries: self.entries.clone(),
+            source: self.source.clone(),
             stamp: self.stamp,
+        }
+    }
+}
+
+/// Lines in one buffer, each after its length.
+#[derive(Debug, Default)]
+struct Packed(Vec<u8>);
+
+const PACKED_LENGTH: usize = std::mem::size_of::<usize>();
+
+impl Packed {
+    fn push(&mut self, line: &[u8]) -> Result<(), OutOfMemory> {
+        self.0.try_reserve(PACKED_LENGTH + line.len())?;
+        self.0.try_extend_from_slice(&line.len().to_ne_bytes())?;
+        self.0.try_extend_from_slice(line)
+    }
+
+    /// What `source` gives now.
+    fn read(source: &Handler<dyn LineSource>) -> Result<Option<TryArc<Packed>>, OutOfMemory> {
+        let mut packed = Packed::default();
+        source.lines(&mut |line| packed.push(line))?;
+        packed.shared()
+    }
+
+    /// The lines to share, none if there are none.
+    fn shared(self) -> Result<Option<TryArc<Packed>>, OutOfMemory> {
+        if self.0.is_empty() {
+            return Ok(None);
+        }
+        TryArc::try_new(self).map(Some)
+    }
+
+    fn lines(&self) -> impl Iterator<Item = &[u8]> {
+        let mut rest = &self.0[..];
+        std::iter::from_fn(move || {
+            let (length, after) = rest.split_first_chunk::<PACKED_LENGTH>()?;
+            let (line, after) = after.split_at(usize::from_ne_bytes(*length));
+            rest = after;
+            Some(line)
         })
     }
 }
@@ -3469,6 +3537,30 @@ mod tests {
             Protocols::of_protocol(Protocol::Https).union(Protocols::of_protocol(Protocol::Http)),
             Protocols::of(&["http", "https"]).unwrap()
         );
+    }
+
+    /// A resolve list's entries are shared by its copies and by a list
+    /// set from it, never copied; set from another, a list is set again,
+    /// and set anew, it no longer shares the old entries.
+    #[test]
+    fn a_resolve_list_shares_its_entries() {
+        let mut given = ResolveList::default();
+        given.set([&b"a:1:127.0.0.1"[..], b"-b:2", b""]).unwrap();
+        assert!(given.entries().eq([&b"a:1:127.0.0.1"[..], b"-b:2", b""]));
+        let shared = |l: &ResolveList| l.entries.as_ref().map(TryArc::count);
+        let copy = given.shared();
+        let mut handle = ResolveList::default();
+        handle.set_from(&given);
+        assert_eq!(shared(&given), Some(3));
+        assert!(handle.entries().eq(given.entries()));
+        assert_eq!(handle.stamp(), 1);
+        handle.set_from(&given);
+        assert_eq!(handle.stamp(), 2, "set again");
+        handle.set([&b"c:3:::1"[..]]).unwrap();
+        assert_eq!(shared(&given), Some(2));
+        drop(copy);
+        handle.set(std::iter::empty()).unwrap();
+        assert!(handle.entries.is_none() && handle.entries().next().is_none());
     }
 
     /// A copy keeps the lists of addresses and peers given for names.

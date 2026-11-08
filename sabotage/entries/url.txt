@@ -39,9 +39,9 @@ witness: curl-core url::tests::lib1560_get_url
 file: crates/curl-core/src/url/mod.rs
 witness: curl-core url::tests::lib1560_get_parts
 --- old
-                if opts.no_guess_scheme && self.scheme.as_ref().is_some_and(|s| s.guessed) {
+            Some(s) if no_guess && s.guessed => Err(UrlErrorKind::NoScheme),
 --- new
-                if false {
+            Some(s) if false && no_guess && s.guessed => Err(UrlErrorKind::NoScheme),
 
 === a backslash after the port's digits is a bad port, not a backslash
 file: crates/curl-core/src/url/mod.rs
@@ -495,3 +495,12 @@ witness: curl-core url::tests::a_request_target_is_its_path_and_query_read_back
         out.try_reserve_exact(path.len() + query.map_or(0, |q| 1 + q.len()))
 --- new
         out.try_reserve_exact(path.len())
+
+=== a transfer copies its scheme to read it
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core a_get_stays_within_its_allocation_budget
+--- old
+    let scheme = match url.scheme_name(false) {
+--- new
+    let held = url.get(Part::Scheme, GetOptions::NONE);
+    let scheme = match held.as_deref().map_err(|e| *e) {

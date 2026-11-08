@@ -144,10 +144,10 @@ file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::completions_are_read_in_id_order
 --- old
         let kind = ErrorKind::UnsupportedProtocol;
-        let why = [&b"Protocol \""[..], &scheme, b"\" not supported", follow];
+        let why = [&b"Protocol \""[..], scheme, b"\" not supported", follow];
 --- new
         let kind = ErrorKind::UrlMalformat;
-        let why = [&b"Protocol \""[..], &scheme, b"\" not supported", follow];
+        let why = [&b"Protocol \""[..], scheme, b"\" not supported", follow];
 
 === a URL that does not parse fails with something other than URL_MALFORMAT
 file: crates/curl-core/src/error.rs

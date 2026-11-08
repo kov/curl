@@ -988,6 +988,17 @@ impl Url {
         self.host.as_deref()
     }
 
+    /// The scheme as `get` reads `Part::Scheme` back, without a copy:
+    /// none if the URL has none, or has only one guessed from its host
+    /// and `no_guess` asks for one given.
+    pub fn scheme_name(&self, no_guess: bool) -> Result<&[u8], UrlErrorKind> {
+        match &self.scheme {
+            Some(s) if no_guess && s.guessed => Err(UrlErrorKind::NoScheme),
+            Some(s) => Ok(&s.name),
+            None => Err(UrlErrorKind::NoScheme),
+        }
+    }
+
     /// Part `what`, as `curl_url_get` returns it in a build without an
     /// IDN library.
     pub fn get(&self, what: Part, opts: GetOptions) -> Result<Bytes, UrlErrorKind> {
@@ -1023,11 +1034,8 @@ impl Url {
             Part::Url => return self.whole_into(opts, true, idn, sink),
             Part::Scheme => {
                 opts.url_decode = false;
-                if opts.no_guess_scheme && self.scheme.as_ref().is_some_and(|s| s.guessed) {
-                    return Err(UrlErrorKind::NoScheme);
-                }
                 (
-                    self.scheme.as_ref().map(|s| &s.name[..]),
+                    Some(self.scheme_name(opts.no_guess_scheme)?),
                     UrlErrorKind::NoScheme,
                 )
             }
@@ -1930,6 +1938,35 @@ mod tests {
                 assert_eq!(got, expect, "{:?}", c.part);
             }
         }
+    }
+
+    /// The scheme read without a copy is what `get` reads back, given or
+    /// guessed, asked for given or not, and none.
+    #[test]
+    fn the_scheme_held_is_the_scheme_read() {
+        let guess = ParseOptions {
+            guess_scheme: true,
+            ..ParseOptions::NONE
+        };
+        let given = Url::parse(b"HTTPS://example.com/", guess).unwrap();
+        let guessed = Url::parse(b"ftp.example.com/", guess).unwrap();
+        for u in [&given, &guessed, &Url::default()] {
+            for no_guess in [false, true] {
+                let opts = GetOptions {
+                    no_guess_scheme: no_guess,
+                    ..GetOptions::NONE
+                };
+                let read = u.get(Part::Scheme, opts);
+                assert_eq!(u.scheme_name(no_guess).map(<[u8]>::to_vec), read);
+            }
+        }
+        assert_eq!(given.scheme_name(true), Ok(&b"https"[..]));
+        assert_eq!(guessed.scheme_name(false), Ok(&b"ftp"[..]));
+        assert_eq!(guessed.scheme_name(true), Err(UrlErrorKind::NoScheme));
+        assert_eq!(
+            Url::default().scheme_name(false),
+            Err(UrlErrorKind::NoScheme)
+        );
     }
 
     /// lib1560's `get_nothing` and `scopeid`, and what C gives where its

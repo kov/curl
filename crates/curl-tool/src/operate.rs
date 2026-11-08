@@ -4040,17 +4040,6 @@ fn no_proto(e: UrlErrorKind) -> Result<(UrlProto, Option<Url>), OutOfMemory> {
     }
 }
 
-/// The scheme read with its default if it has none, if `on`. The URL is
-/// parsed guessing a scheme, so it always has one: deleting the field
-/// changes nothing observable.
-#[mutants::skip]
-fn default_scheme(on: bool) -> GetOptions {
-    GetOptions {
-        default_scheme: on,
-        ..GetOptions::NONE
-    }
-}
-
 /// The protocol of `url`'s scheme, guessed from its host if it names
 /// none, or `default`'s (`--proto-default`) then; a URL that does not
 /// parse has none (`url_proto_and_rewrite`). An IPFS one comes with the
@@ -4069,20 +4058,12 @@ fn url_proto(
         Err(e) => return no_proto(e),
     };
     // With a default, a scheme only guessed counts as none.
-    let get = GetOptions {
-        no_guess_scheme: default.is_some(),
-        ..default_scheme(default.is_none())
-    };
-    let scheme = match (url.get(Part::Scheme, get), default) {
+    let scheme = match (url.scheme_name(default.is_some()), default) {
         (Ok(scheme), _) => scheme,
-        (Err(UrlErrorKind::NoScheme), Some(default)) => {
-            let mut name = Vec::new();
-            name.try_extend_from_slice(default.name().as_bytes())?;
-            name
-        }
+        (Err(UrlErrorKind::NoScheme), Some(default)) => default.name().as_bytes(),
         (Err(e), _) => return no_proto(e),
     };
-    if let Some(kind) = crate::ipfs::Kind::of_scheme(&scheme) {
+    if let Some(kind) = crate::ipfs::Kind::of_scheme(scheme) {
         return Ok((UrlProto::Ipfs(kind), Some(url)));
     }
     let proto = if scheme.eq_ignore_ascii_case(b"http") {

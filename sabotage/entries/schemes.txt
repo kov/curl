@@ -78,6 +78,6 @@ witness: curl-tool options::protocols::tests::sets_go_to_the_library_by_name
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_socks_scheme_is_not_for_transfers
 --- old
-            let carries = crate::conn::Scheme::named(&scheme).is_none_or(|s| !s.no_transfer());
+            let carries = crate::conn::Scheme::named(scheme).is_none_or(|s| !s.no_transfer());
 --- new
             let carries = true;

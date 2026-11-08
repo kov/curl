@@ -930,7 +930,7 @@ fn a_get_takes_no_refusal_for_success() {
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 43;
+const GET_BUDGET: u64 = 42;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.
@@ -1213,7 +1213,7 @@ const H2_FIELDS: &str = "date: Sat, 07 Nov 2026 23:55:24 GMT\n\
 /// Measured, not itemised: the plain GET's own beside the session, its
 /// stream and the request's fields; the head's fields made into lines,
 /// read and stored grow none of their buffers.
-const H2_GET_BUDGET: u64 = 57;
+const H2_GET_BUDGET: u64 = 56;
 
 fn an_http_2_get_stays_within_its_allocation_budget() {
     let (got, n) = h2_get_scenario(1, H2_FIELDS);
@@ -2013,7 +2013,7 @@ fn an_http3_get_takes_no_refusal_for_success() {
 /// theirs. Measured, not itemised: the HTTPS GET's own beside QUIC's
 /// connection, its HTTP/3 session and stream, and the room datagrams
 /// are read into.
-const H3_GET_BUDGET: u64 = 62;
+const H3_GET_BUDGET: u64 = 61;
 
 fn an_http3_get_stays_within_its_allocation_budget() {
     fake_h3_libraries();

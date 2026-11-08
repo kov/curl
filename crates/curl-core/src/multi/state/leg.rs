@@ -471,7 +471,7 @@ fn hsts_upgrade<H: Host>(
     if !cx.easy().hsts_enabled() {
         return Ok(());
     }
-    let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
+    let scheme = url.scheme_name(false).map_err(url_error)?;
     if !scheme.eq_ignore_ascii_case(b"http") {
         return Ok(());
     }
@@ -590,22 +590,22 @@ pub(super) fn start_leg<H: Host>(
     if let Err(kind) = hsts_upgrade(&mut url, run, cx) {
         return TransferState::Init.fail(kind);
     }
-    let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
+    let scheme = match url.scheme_name(false) {
         Ok(s) => s,
         Err(e) => return TransferState::Init.fail(url_error(e)),
     };
     // Known before the protocol opens anything, as C records it.
-    cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
+    cx.report_mut().set_protocol(Protocol::of_scheme(scheme));
     // A URL, and a redirect the more so, goes only where the application
     // lets it (`url_set_conn_scheme`).
     let redirected = run.course.followed();
-    let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
+    let refused = !cx.easy().options().schemes.permit(scheme, redirected);
     let follow: &[u8] = if redirected { b" (in redirect)" } else { b"" };
     // A scheme libcurl does not know is refused first, as the URL is
     // read (`Curl_peer_from_url`).
-    if !ProtoState::knows(&scheme) {
+    if !ProtoState::knows(scheme) {
         let kind = ErrorKind::UnsupportedProtocol;
-        let why = [&b"Protocol \""[..], &scheme, b"\" not supported", follow];
+        let why = [&b"Protocol \""[..], scheme, b"\" not supported", follow];
         return TransferState::Init.fail(trace::fail_with(cx, kind, &why));
     }
     // A host name may be no longer than C lets a URL be (`MAX_URL_LEN`,
@@ -624,7 +624,7 @@ pub(super) fn start_leg<H: Host>(
             method: run.method,
             http: &run.http,
         };
-        ProtoState::start(&scheme, &url, before, cx)
+        ProtoState::start(scheme, &url, before, cx)
     };
     // A request made has read the `.netrc`, once. With none to make, C has
     // read it all the same, before it checks the protocol is built and
@@ -648,13 +648,13 @@ pub(super) fn start_leg<H: Host>(
             // A scheme libcurl knows that this build leaves out, or that
             // the options do not allow, or that names a proxy and carries
             // no transfer (`url_set_conn_scheme`).
-            let carries = crate::conn::Scheme::named(&scheme).is_none_or(|s| !s.no_transfer());
+            let carries = crate::conn::Scheme::named(scheme).is_none_or(|s| !s.no_transfer());
             let tail: [&[u8]; 2] = if carries {
                 [b"\" is disabled", follow]
             } else {
                 [b"\" is not for transfers", b""]
             };
-            let why = [&b"Protocol \""[..], &scheme, tail[0], tail[1]];
+            let why = [&b"Protocol \""[..], scheme, tail[0], tail[1]];
             let kind = trace::fail_with(cx, ErrorKind::UnsupportedProtocol, &why);
             return TransferState::Init.fail(kind);
         }
@@ -713,7 +713,7 @@ pub(super) fn start_leg<H: Host>(
             // No connect-to entry: an alternative service, then.
             Ok(None) => {
                 let neg = proto.negotiation();
-                match alt_svc(cx, &origin, &scheme, neg) {
+                match alt_svc(cx, &origin, scheme, neg) {
                     Ok(Some(AltSvc::Elsewhere { via, speaks })) => {
                         alt_used = Some(speaks);
                         Some(via)
@@ -736,7 +736,7 @@ pub(super) fn start_leg<H: Host>(
         // A scheme not of HTTP's family, nor one a proxy takes as HTTP,
         // cannot be handed to an HTTP proxy (`PROTOPT_PROXY_AS_HTTP`).
         let handed = origin.scheme().proxies_as_http();
-        match choose_proxy(cx, &origin, &scheme, via.is_some() || secured || !handed) {
+        match choose_proxy(cx, &origin, scheme, via.is_some() || secured || !handed) {
             Ok(proxy) => proxy,
             Err(e) => return TransferState::Init.fail(e),
         }

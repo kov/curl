@@ -189,7 +189,7 @@ witness: curl-core deliver::tests::an_invalid_header_line_fails_the_transfer
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core easy::tests::performs_a_file_url_on_its_own
 --- old
-    cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
+    cx.report_mut().set_protocol(Protocol::of_scheme(scheme));
 --- new
 
 === the last reason a transfer gives replaces the first

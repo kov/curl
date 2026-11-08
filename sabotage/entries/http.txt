@@ -657,7 +657,7 @@ witness: curl-core proto::http::tests::redirects_stop_at_the_limit
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_redirect_to_a_file_is_refused
 --- old
-    let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
+    let refused = !cx.easy().options().schemes.permit(scheme, redirected);
 --- new
     let refused = false;
 
@@ -1486,9 +1486,9 @@ witness: curl-core proto::http::tests::a_named_first_line_is_read_as_a_200
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
 --- old
-    if !ProtoState::knows(&scheme) {
+    if !ProtoState::knows(scheme) {
 --- new
-    if false && !ProtoState::knows(&scheme) {
+    if false && !ProtoState::knows(scheme) {
 
 === a request's sending goes on past a short send
 file: crates/curl-core/src/proto/http.rs

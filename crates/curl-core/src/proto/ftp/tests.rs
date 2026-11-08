@@ -601,6 +601,77 @@ fn a_data_connection_s_handshake_stalls_no_other_transfer() {
     );
 }
 
+/// While a passive data connection's TLS is made after the server said
+/// it would move the data, the transfer waits on the data connection
+/// alone, as C's blocking connect polls it alone
+/// (`ftp_initiate_transfer`): input the control connection's TLS holds
+/// unread, here the rest of a long answer read ahead, does not make it
+/// run again at every pass.
+#[test]
+fn a_data_connection_s_handshake_waits_on_it_alone() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    // More than a read of the control connection (`READ_SIZE`) after the
+    // 150, so that some stays in its TLS once the 150 is read.
+    let mut ahead = b"150 here\r\n".to_vec();
+    for _ in 0..40 {
+        ahead.extend_from_slice(b"226-the transfer's end, read ahead\r\n");
+    }
+    ahead.extend_from_slice(b"226 done\r\n");
+    let replies = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(&ahead),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&replies, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send().held();
+    let mut m = serving(&[&control], &[&file]);
+    let e = {
+        let mut e = Easy::new();
+        e.set_libraries(with_tls());
+        e
+    };
+    let url = "ftps://127.0.0.1:PORT/f";
+    let (id, body, text) = added_tracing(&mut m, url, e, b"multi,ftp", |_| {});
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+        // Each pass's pollset traced, as `curl_multi_fdset` traces it.
+        m.sockets(&mut NoEvents, |_, _| {}).unwrap();
+    }
+    assert_eq!(fake::read_client(&file.received()).unwrap(), fake::HELLO);
+    assert!(m.info_read().is_none(), "the handshake waits");
+    let said = text.text();
+    let initiated = said
+        .find("[FTP] ftp_initiate_transfer()\n")
+        .unwrap_or_else(|| panic!("{said}"));
+    let since = &said[initiated..];
+    assert!(!since.contains("mark as dirty"), "{since}");
+    let pollsets: Vec<&str> = since
+        .lines()
+        .filter(|l| l.contains("[DOING_MORE] pollset["))
+        .collect();
+    assert!(!pollsets.is_empty(), "{since}");
+    assert!(
+        pollsets.iter().all(|l| l.matches("fd=").count() == 1),
+        "{pollsets:#?}"
+    );
+    file.allow(2);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+}
+
 /// A protected data connection resumes its control connection's latest
 /// session, not one the cache holds, as servers that insist the data's
 /// session is the control connection's need (`Curl_ssl_get_cf_session`).

@@ -579,8 +579,15 @@ impl Request {
 
     /// What the back and forth waits for on the control connection in
     /// `phase` (`ftp_pollset`, `ftp_domore_pollset`): its answer, once
-    /// DO_MORE's commands stopped to wait for the data connection.
+    /// DO_MORE's commands stopped to wait for the data connection; and
+    /// nothing while a passive data connection is made after the server
+    /// said it would move the data, as C makes it blocking, polling the
+    /// data connection alone (`ftp_initiate_transfer`): input the control
+    /// connection holds unread then is no reason to run again.
     fn control_waits(&self, phase: Waiting, line: Option<&LineConn>) -> Events {
+        if self.initiating && self.port_cmd.is_none() {
+            return Events::NONE;
+        }
         match line {
             Some(LineConn::Ftp(pc)) if phase == Waiting::More && pc.state == State::Stop => {
                 Events::IN

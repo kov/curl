@@ -170,7 +170,10 @@ not a difference: it is tracked in `MILESTONES.md`.
   connection's connect also says each of its calls, `Curl_conn_connect(block=1) -> 0, done=0`,
   and once done the chain it says `connected` and `reduced to`. Not said are the blocking
   connect's waits, `do poll` and `Curl_poll() -> 1`, which the multi's pollset and wait lines
-  stand in for; their timing was not measured against the C build. A resolve of the data
+  stand in for; their timing was not measured against the C build. As C's blocking connect
+  polls the data connection alone, so does the transfer's pollset while a passive data
+  connection's handshake waits: input the control connection's TLS holds unread is no reason
+  to run again (`a_data_connection_s_handshake_waits_on_it_alone`). A resolve of the data
   connection's name still going on through its handshake is looked at in each call, as C's
   DNS filter does, but C's threaded resolver hands its answers over only in the multi's own
   run (`Curl_async_thrdd_multi_process`, with `ENABLE_INTERNAL_WAKEUP`), never inside the

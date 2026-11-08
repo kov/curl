@@ -268,10 +268,7 @@ fn transfer_ending(
             // network numbers from the same first number.
             std::mem::forget(open(own));
             let socket = open(own);
-            fd.store(
-                u64::try_from(socket.key().get()).unwrap(),
-                Ordering::Relaxed,
-            );
+            fd.store(socket_number(socket.key()), Ordering::Relaxed);
             let lib: &'static Library = Box::leak(Box::new(Library {
                 aaaa: gate.0.clone(),
                 alive: alive.clone(),
@@ -860,7 +857,7 @@ fn ftp_over_a_library(
     );
     FtpOverLibrary {
         said,
-        data_fd: u64::try_from(data_resolve.get()).unwrap(),
+        data_fd: socket_number(data_resolve),
     }
 }
 
@@ -1143,4 +1140,11 @@ fn a_first_attempt_lost_to_the_second_lets_go_of_its_resolve_with_the_chain() {
         format!("[MULTI] [CONNECTING] Curl_multi_will_close fd={fd}"),
         "{said:#?}"
     );
+}
+
+/// A socket's number as the trace prints it: a `RawSocket` is an `i32` on
+/// Unix and already a `u64` on Windows, where the conversion is a no-op.
+#[allow(clippy::useless_conversion)]
+fn socket_number(key: crate::conn::io::SocketKey) -> u64 {
+    u64::try_from(key.get()).expect("a socket's number is not negative")
 }

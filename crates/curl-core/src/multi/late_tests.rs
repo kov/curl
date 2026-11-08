@@ -1378,7 +1378,13 @@ fn first_failed_once_dialed(answers: bool) -> (Vec<String>, bool) {
     o.http.version = crate::options::HttpVersion::Http3;
     o.limits.connect = crate::time::TimeLimit::from_millis(1000);
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     let c = crate::components::Components::new().unwrap();
     c.configure(b"dns,multi,https-connect,happy-eyeballs");
     easy.set_components(Some(c));
@@ -1520,7 +1526,13 @@ fn a_resolve_failing_beside_a_dialed_connection_fails_it_at_once() {
     o.set_url(Some(ORIGIN.as_bytes())).unwrap();
     o.limits.connect = crate::time::TimeLimit::from_millis(1000);
     o.output.verbose = true;
-    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+        )
+        .unwrap();
     m.add(Box::new(easy), (), &mut NoEvents).unwrap();
     let mut ended = None;
     for ms in 0..1500 {

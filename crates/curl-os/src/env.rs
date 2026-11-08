@@ -69,21 +69,33 @@ const NAME_ON_STACK: usize = 128;
 /// name holding `=` or NUL is never set; `Err` only when a name too long
 /// for the stack cannot be copied to the heap.
 fn with_value<R>(name: &[u8], f: impl FnOnce(Option<&[u8]>) -> R) -> Result<R, OutOfMemory> {
-    if name.is_empty() || name.iter().any(|&b| b == 0 || b == b'=') {
+    let never = |b: &u8| *b == 0 || *b == b'=';
+    if name.is_empty() {
         return Ok(f(None));
     }
-    let mut stack = [0u8; NAME_ON_STACK + 1];
+    if name.len() <= NAME_ON_STACK {
+        // Checked as it is copied, in one pass: the proxy variables are
+        // read as each transfer starts.
+        let mut stack = [0u8; NAME_ON_STACK + 1];
+        for (to, b) in stack.iter_mut().zip(name) {
+            if never(b) {
+                return Ok(f(None));
+            }
+            *to = *b;
+        }
+        // SAFETY: the bytes copied hold no NUL, and the one after them is
+        // the array's, still zero.
+        let name = unsafe { CStr::from_bytes_with_nul_unchecked(&stack[..=name.len()]) };
+        return lookup(name, f);
+    }
+    if name.iter().any(never) {
+        return Ok(f(None));
+    }
     let mut heap = Vec::new();
-    let terminated: &[u8] = if name.len() <= NAME_ON_STACK {
-        stack[..name.len()].copy_from_slice(name);
-        &stack[..=name.len()]
-    } else {
-        heap.try_reserve_exact(name.len() + 1)?;
-        heap.try_extend_from_slice(name)?;
-        heap.try_push(0)?;
-        &heap
-    };
-    let name = CStr::from_bytes_with_nul(terminated).expect("a NUL-free name, terminated");
+    heap.try_reserve_exact(name.len() + 1)?;
+    heap.try_extend_from_slice(name)?;
+    heap.try_push(0)?;
+    let name = CStr::from_bytes_with_nul(&heap).expect("a NUL-free name, terminated");
     lookup(name, f)
 }
 

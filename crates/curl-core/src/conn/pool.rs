@@ -2152,7 +2152,7 @@ fn shutdowns_over(exits: &mut dyn Exits, to: Option<&Peer>, live: u32, max: u32)
     };
     if shutdowns > 0 && live + shutdowns >= max {
         let over = live + shutdowns - max + 1;
-        shutdowns -= set.close_oldest(to, over, net);
+        shutdowns -= set.close_oldest(to, over, net, &mut *linger.room);
     }
     shutdowns
 }

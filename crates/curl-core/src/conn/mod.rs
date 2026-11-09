@@ -8,7 +8,7 @@
 
 pub(crate) mod asyncs;
 mod bind;
-mod buf;
+pub(crate) mod buf;
 pub(crate) mod capsule;
 pub(crate) mod chain;
 mod connect;

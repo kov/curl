@@ -109,16 +109,24 @@ pub(crate) fn xfer_recv<H: Host>(
 ) -> Result<Got, ErrorKind> {
     let max = cx.easy().options().limits.buffer_size.get().min(out.len());
     let said = cx.easy().report().reasons();
-    match lease.get().recv(cx, max) {
-        Ok(Recv::WouldBlock) => Ok(Got::Again),
-        Ok(Recv::Eof) => Ok(Got::Eof),
-        Ok(Recv::Data(_)) => {
-            let rx = lease.get().rx_mut();
-            let n = rx.filled().len().min(out.len());
-            out[..n].copy_from_slice(&rx.filled()[..n]);
-            rx.consume(n);
-            Ok(Got::Data(n))
-        }
+    // Read in the multi's buffer, and copied out from there.
+    let got = crate::conn::buf::lending(cx, lease, |cx, lease| {
+        let got = lease.get().recv(cx, max);
+        got.map(|recv| match recv {
+            Recv::Data(_) => {
+                let rx = lease.get().rx_mut();
+                let n = rx.filled().len().min(out.len());
+                out[..n].copy_from_slice(&rx.filled()[..n]);
+                rx.consume(n);
+                Got::Data(n)
+            }
+            Recv::Eof => Got::Eof,
+            Recv::WouldBlock => Got::Again,
+        })
+    })
+    .map_err(|_| ErrorKind::OutOfMemory)?;
+    match got {
+        Ok(got) => Ok(got),
         Err(RecvFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
         Err(RecvFailed::Os(_)) if cx.easy().report().reasons() > said => Err(ErrorKind::RecvError),
         Err(RecvFailed::Os(e)) => {

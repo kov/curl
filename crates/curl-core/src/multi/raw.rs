@@ -96,6 +96,10 @@ impl LayerCx for RawCx<'_> {
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         None
     }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        None
+    }
 }
 
 impl crate::conn::layer::TlsSessions for RawCx<'_> {

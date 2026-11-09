@@ -380,6 +380,27 @@ fn a_refused_file_fails_though_done_goes_well() {
     );
     assert!(body.0.lock().unwrap().is_empty());
     assert_eq!(received(&talk), COMMANDS);
+    assert_eq!(
+        m.recv_buf_room(),
+        crate::proto::pingpong::READ_SIZE,
+        "the replies read in the multi's buffer"
+    );
+}
+
+/// The replies and the file are read in the multi's buffer, grown to the
+/// most a read asked of it: the file's, cut at its size.
+#[test]
+fn the_replies_and_the_file_are_read_in_the_multis_buffer() {
+    let mut replies = LOGIN_AND_SETUP[..6].to_vec();
+    replies.extend_from_slice(&[b"213 2000\r\n", b"150 here\r\n226 done\r\n"]);
+    let talk = Conversation::replies(&replies, false).greeting();
+    let file = data(&[b'f'; 2000]);
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), [b'f'; 2000]);
+    assert_eq!(m.recv_buf_room(), 2000, "the file read in it");
 }
 
 /// The data connection is the transfer's: a multi that goes with a

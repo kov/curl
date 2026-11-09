@@ -393,13 +393,14 @@ impl Internal {
 
 /// The context of work done for no transfer: traced on the internal
 /// handle's trace, if there is one, and kept nowhere; a multi's work
-/// lends the multi's receive room, as C's admin handle borrows its
-/// multi's (`Curl_multi_xfer_sockbuf_borrow`).
+/// lends the multi's receive room and buffer, as C's admin handle
+/// borrows its multi's (`Curl_multi_xfer_sockbuf_borrow`,
+/// `Curl_multi_xfer_buf_borrow`).
 #[derive(Debug)]
 pub(crate) struct InternalCx<'a> {
     pub(crate) now: crate::time::Instant,
     pub(crate) trace: Option<&'a Internal>,
-    pub(crate) room: Option<&'a mut crate::conn::quic::RecvRoom>,
+    pub(crate) room: Option<&'a mut crate::conn::buf::Rooms>,
 }
 
 impl crate::conn::layer::LayerCx for InternalCx<'_> {
@@ -438,7 +439,11 @@ impl crate::conn::layer::LayerCx for InternalCx<'_> {
     }
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
-        self.room.as_deref_mut()
+        self.room.as_deref_mut().map(|rooms| &mut rooms.datagrams)
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        self.room.as_deref_mut().map(|rooms| &mut rooms.bytes)
     }
 }
 

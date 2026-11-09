@@ -506,9 +506,10 @@ pub struct Multi<H: Host = NoHost> {
     /// made with the first TLS session; the multi's own, never a share's,
     /// as C keeps it.
     tls: Option<TlsShared>,
-    /// The room QUIC's datagrams are received in, lent to one transfer's
-    /// step at a time (`xfer_sockbuf`): empty until one asks.
-    sockbuf: crate::conn::quic::RecvRoom,
+    /// The room QUIC's datagrams are received in (`xfer_sockbuf`) and
+    /// the buffer a stream's bytes are (`xfer_buf`), each lent to one
+    /// receive at a time: empty until one asks.
+    rooms: crate::conn::buf::Rooms,
     /// The connections shutting down, whichever pool they left.
     shutdowns: ShutdownSet,
     limits: ConnLimits,
@@ -622,7 +623,7 @@ impl<H: Host> Multi<H> {
             delivering: false,
             caches,
             tls: None,
-            sockbuf: crate::conn::quic::RecvRoom::Unmade,
+            rooms: crate::conn::buf::Rooms::default(),
             shutdowns: ShutdownSet::new(clock.clone()),
             limits,
             pending: PendingQueue::default(),
@@ -720,6 +721,19 @@ impl<H: Host> Multi<H> {
     /// rather than waiting for them (`CURLMOPT_QUICK_EXIT`).
     pub fn set_quick_exit(&mut self, quick: bool) {
         self.alive.set_quick_exit(quick);
+    }
+
+    /// The room reads have made in the multi's receive buffer: the most
+    /// any read lent it asked for, none if no read was.
+    #[cfg(test)]
+    pub(crate) fn recv_buf_room(&self) -> usize {
+        match &self.rooms.bytes {
+            crate::conn::buf::XferBuf::Kept(buf) => {
+                assert_eq!(buf.filled(), b"", "given back empty");
+                buf.room()
+            }
+            crate::conn::buf::XferBuf::Lent => panic!("the buffer is still lent"),
+        }
     }
 
     /// The multi's limits on its connections.
@@ -1003,7 +1017,7 @@ impl<H: Host> Multi<H> {
             life: &mut self.life,
         };
         let mut net = Announcing::multi(&mut *self.net, tell, ev);
-        self.shutdowns.perform(&mut net, now, &mut self.sockbuf);
+        self.shutdowns.perform(&mut net, now, &mut self.rooms);
     }
 
     /// A connection shutting down closed: one transfer waiting for room
@@ -1445,7 +1459,7 @@ impl<H: Host> Multi<H> {
             },
             caches: &mut self.caches,
             tls: &mut self.tls,
-            sockbuf: &mut self.sockbuf,
+            rooms: &mut self.rooms,
             shutdowns: &mut self.shutdowns,
             pending: &mut self.pending,
             net: &mut *self.net,
@@ -2206,11 +2220,18 @@ impl<H: Host> Multi<H> {
                 set: &mut self.shutdowns,
                 max_total,
                 multi_pool: None,
-                room: &mut self.sockbuf,
+                room: &mut self.rooms,
             };
             self.caches.pool.network_changed(&mut exits, now);
         }
-        cx::announce_closing(&mut self.shutdowns, &mut *self.net, &mut tell, ev, now);
+        cx::announce_closing(
+            &mut self.shutdowns,
+            &mut self.rooms,
+            &mut *self.net,
+            &mut tell,
+            ev,
+            now,
+        );
     }
 
     /// Keep alive the connections of transfer `id`'s pool that have gone
@@ -2271,13 +2292,20 @@ impl<H: Host> Multi<H> {
                     set: &mut self.shutdowns,
                     max_total,
                     multi_pool: None,
-                    room: &mut self.sockbuf,
+                    room: &mut self.rooms,
                 },
                 interval,
                 now,
             )
         };
-        cx::announce_closing(&mut self.shutdowns, &mut *self.net, &mut tell, ev, now);
+        cx::announce_closing(
+            &mut self.shutdowns,
+            &mut self.rooms,
+            &mut *self.net,
+            &mut tell,
+            ev,
+            now,
+        );
         kept
     }
 
@@ -2309,7 +2337,7 @@ impl<H: Host> Multi<H> {
                 set: &mut self.shutdowns,
                 max_total,
                 multi_pool: None,
-                room: &mut self.sockbuf,
+                room: &mut self.rooms,
             };
             self.caches.pool.close_idle(&mut exits, now);
         }
@@ -2324,6 +2352,7 @@ impl<H: Host> Multi<H> {
         };
         cx::announce_closing(
             &mut self.shutdowns,
+            &mut self.rooms,
             &mut *self.net,
             &mut tell,
             &mut *ev,
@@ -2349,7 +2378,7 @@ impl<H: Host> Multi<H> {
         // until all are done or the time is spent.
         loop {
             self.shutdowns
-                .perform(&mut net, self.clock.now(), &mut self.sockbuf);
+                .perform(&mut net, self.clock.now(), &mut self.rooms);
             if self.shutdowns.is_empty() {
                 say(
                     &self.shutdowns,
@@ -2387,7 +2416,7 @@ impl<H: Host> Multi<H> {
                 break;
             }
         }
-        self.shutdowns.close_all(&mut net);
+        self.shutdowns.close_all(&mut net, &mut self.rooms);
         // Nothing is left to schedule.
         self.shutdowns.take_changed();
     }

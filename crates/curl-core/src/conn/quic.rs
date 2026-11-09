@@ -280,6 +280,10 @@ impl LayerCx for Lone<'_> {
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         self.cx.recv_room()
     }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        self.cx.recv_buf()
+    }
 }
 
 impl H3Streams for Lone<'_> {
@@ -332,6 +336,10 @@ impl<W> LayerCx for Over<'_, W> {
 
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         self.cx.recv_room()
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        self.cx.recv_buf()
     }
 }
 
@@ -2127,6 +2135,10 @@ pub(crate) mod tests {
 
         fn recv_room(&mut self) -> Option<&mut RecvRoom> {
             Some(&mut self.room)
+        }
+
+        fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+            None
         }
     }
 

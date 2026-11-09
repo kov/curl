@@ -144,7 +144,7 @@ witness: curl-core multi::shutdown_tests::a_closing_connection_owns_its_socket_u
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::shutdown_tests::cleanup_closes_every_connection_through_its_own_closer
 --- old
-        self.shutdowns.close_all(&mut net);
+        self.shutdowns.close_all(&mut net, &mut self.rooms);
         // Nothing is left to schedule.
 --- new
         let clock = self.shutdowns.clock().clone();
@@ -427,9 +427,13 @@ pub(crate) const AWAITING_CAP_FACTOR: usize = 1;
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap
 --- old
-            .close(net, Some(&self.clock), self.trace.as_ref(), true);
+        entry.shutting.close(
+            net,
+            Some(&self.clock),
 --- new
-            .close(net, None, self.trace.as_ref(), true);
+        entry.shutting.close(
+            net,
+            None,
 
 === room is made by closing a connection awaiting its goodbye's answer
 file: crates/curl-core/src/conn/shutdown.rs
@@ -469,17 +473,21 @@ witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::a_share_s_last_connection_closes_once_its_goodbye_is_answered
 --- old
-        shutting.close(net, clock.as_ref(), trace.as_ref(), in_multi);
+        shutting.close(net, clock.as_ref(), trace.as_ref(), in_multi, room);
 --- new
-        shutting.close(net, None, trace.as_ref(), in_multi);
+        shutting.close(net, None, trace.as_ref(), in_multi, room);
 
 === a connection the set has no room for closes without its goodbye's answer
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core a_quit_said_is_answered_before_its_connection_closes_whatever_is_refused
 --- old
-            shutting.close(net, Some(&self.clock), self.trace.as_ref(), true);
+            shutting.close(
+                net,
+                Some(&self.clock),
 --- new
-            shutting.close(net, None, self.trace.as_ref(), true);
+            shutting.close(
+                net,
+                None,
 
 === a share's close says what only a multi says of a socket closing
 file: crates/curl-core/src/conn/shutdown.rs

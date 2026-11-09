@@ -1394,6 +1394,48 @@ fn a_request_is_retried_five_times_at_most() {
     );
 }
 
+/// Transfers of different buffer sizes read in one buffer of the
+/// multi's, made to the largest size asked, as C's `xfer_buf` is; each
+/// reads no more than its own size at a time, so its body comes in
+/// pieces no larger, whichever ran before it.
+#[test]
+fn each_transfer_reads_its_own_size_in_the_multis_one_buffer() {
+    let mut reply = b"HTTP/1.1 200 OK\r\nContent-Length: 40000\r\n\r\n".to_vec();
+    reply.extend_from_slice(&[b'x'; 40000]);
+    let talk = Conversation::replies(&[&reply, &reply], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut seen = Vec::new();
+    for size in [32768, 1024] {
+        let mut e = Easy::new();
+        let s = Seen::default();
+        let url = format!("http://127.0.0.1:{PORT}/");
+        let o = e.options_mut();
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.buffer_size = crate::options::BufferSize::clamped(size);
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+        m.remove(id, &mut NoEvents).unwrap();
+        seen.push((size, s));
+    }
+    for (size, s) in &seen {
+        assert_eq!(s.body().len(), 40000);
+        let most = s.of("body").iter().map(Vec::len).max().unwrap();
+        assert!(
+            most <= *size as usize,
+            "a piece of {most} for a buffer of {size}"
+        );
+    }
+    assert!(
+        seen[0].1.of("body").iter().any(|p| p.len() > 1024),
+        "the larger buffer reads more at once"
+    );
+    assert_eq!(m.recv_buf_room(), 32768, "made to the largest size");
+}
+
 /// A transfer that follows a redirect takes its own connection again, not
 /// another idle one lower in the table (`Curl_cpool_find`'s "sticky"
 /// search): as the C library does, A done on #0 and B redirected to the

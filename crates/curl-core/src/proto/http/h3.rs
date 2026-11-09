@@ -207,6 +207,10 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         LayerCx::recv_room(&mut *self.cx)
     }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        LayerCx::recv_buf(&mut *self.cx)
+    }
 }
 
 impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {

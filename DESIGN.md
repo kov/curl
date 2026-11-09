@@ -166,7 +166,7 @@ the TLS library: ECH is listed where the library has it (`version_with_tls`, C's
   is running or paused. A multiplexed connection delivers a sibling stream's data at once, as
   C does; a paused sibling's bytes wait in its own pipeline's paused output.
 - **No engine borrow is live across a call-out** except values moved out of their homes for its
-  duration (the stepping transfer's state, the connection's receive buffer, a multiplexed
+  duration (the stepping transfer's state, the multi's receive buffer lent to a read, a multiplexed
   connection the stepping transfer has out of its pool place), so a callback's
   context can reach every other transfer without aliasing. An option is never one of them: a
   callback may read and set the options, and must find them where they are.
@@ -301,9 +301,12 @@ state that outlives a call, since the application drives I/O and every call retu
 - **Temporaries within a call go on the stack, and stay small.** We run on the application's
   threads, whose stacks may be small: a log line or a formatted number belongs on the stack, a
   receive buffer does not.
-- **No allocation per chunk on the data path.** Each connection has a receive buffer and a send
-  buffer, sized once and reused. Parsers return slices borrowed from the receive buffer, and
-  write callbacks get those slices directly.
+- **No allocation per chunk on the data path.** The multi has one receive buffer, lent to each
+  transfer's read on its connection as C lends its `xfer_buf`, and grown to the largest read
+  asked of it: many connections taking turns read into the same warm memory. What a read leaves
+  unused moves to the connection's own buffer, which otherwise holds only what a handshake reads. Each connection
+  has a send buffer, sized once and reused. Parsers return slices borrowed from the receive
+  buffer, and write callbacks get those slices directly.
 - **Response headers live in one store per transfer**, as byte ranges into a buffer, not one
   string per header. It belongs to the `TransferReport` and lives as long as it does.
 - **Requests are formatted straight into the send buffer.** No intermediate strings.

@@ -1350,6 +1350,10 @@ impl LayerCx for Notes {
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         None
     }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        None
+    }
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -1522,6 +1526,10 @@ impl LayerCx for Kept {
     }
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
         None
     }
 }

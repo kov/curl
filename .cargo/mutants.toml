@@ -802,6 +802,19 @@ exclude_re = [
     # A raw send or receive has no QUIC connection under it to lend the
     # room to; a room lent or made for the call would read the same.
     'curl-core/src/multi/raw\.rs:.*: replace <impl LayerCx for RawCx<._>>::recv_room -> Option<&mut crate::conn::quic::RecvRoom> with Some\(Box::leak\(Box::new\(Default::default\(\)\)\)\)$',
+    # The multi's receive buffer is lent only to a stream's reads, which
+    # no QUIC call's context makes, nor the TLS tests' (`Notes`), nor the
+    # keep-alives' and the layer tests' (`Silent`): what these lend is
+    # never asked for.
+    'curl-core/src/(conn/quic|conn/h3proxy|proto/http/h3)\.rs:.*: replace <impl LayerCx for (Lone|Over|Tunnelled|H3Step)<.*>>::recv_buf -> ',
+    'curl-core/src/tls\.rs:.*: replace <impl LayerCx for Notes>::recv_buf -> ',
+    'curl-core/src/conn/layer\.rs:.*: replace <impl LayerCx for Silent>::recv_buf -> ',
+    # A connection's setup (`DriveCx`) reads its handshakes in the
+    # connection's own buffer, and a raw receive (`RawCx`) reads in the
+    # connection's own as C's `curl_easy_recv` reads in the caller's: a
+    # buffer lent there, or not, reads the same.
+    'curl-core/src/multi/cx\.rs:.*: replace <impl LayerCx for DriveCx<.*>>::recv_buf -> ',
+    'curl-core/src/multi/raw\.rs:.*: replace <impl LayerCx for RawCx<._>>::recv_buf -> ',
     # The tests' TLS contexts: `Notes` answers a library that asks first
     # that the transfer is not verbose, and notes an errno no test's TLS
     # session fails with; `Kept` is used only by curl-ngtcp2's test

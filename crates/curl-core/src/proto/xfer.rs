@@ -5,8 +5,9 @@
 //! come from is a `Source`, where they go and what the end does a `Sink`.
 
 use super::ProtoStep;
+use crate::conn::buf::HoldsRx;
 use crate::conn::io::Recv;
-use crate::conn::{ConnLease, RecvBuf, RecvFailed};
+use crate::conn::{ConnLease, RecvFailed};
 use crate::deliver::{self, Pipeline};
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -14,16 +15,13 @@ use crate::multi::state::StepCx;
 use crate::progress::rate::Way;
 use crate::trace;
 
-/// What a pass reads from.
-pub(crate) trait Source<H: Host> {
+/// What a pass reads from: its buffer is out of it for as long as a body
+/// is written.
+pub(crate) trait Source<H: Host>: HoldsRx {
     /// Read once, up to `max` bytes, into its buffer.
     fn recv(&mut self, cx: &mut StepCx<'_, H>, max: usize) -> Result<Recv, RecvFailed>;
     /// Whether its layers hold bytes the socket will not wake for.
     fn data_pending(&mut self) -> bool;
-    /// Its buffer, out of it for as long as a body is written.
-    fn take_rx(&mut self) -> RecvBuf;
-    /// The buffer back.
-    fn put_rx(&mut self, rx: RecvBuf);
 }
 
 impl<H: Host> Source<H> for ConnLease {
@@ -33,14 +31,6 @@ impl<H: Host> Source<H> for ConnLease {
 
     fn data_pending(&mut self) -> bool {
         self.get().data_pending()
-    }
-
-    fn take_rx(&mut self) -> RecvBuf {
-        std::mem::take(self.get().rx_mut())
-    }
-
-    fn put_rx(&mut self, rx: RecvBuf) {
-        *self.get().rx_mut() = rx;
     }
 }
 
@@ -219,7 +209,22 @@ impl Receive {
             }
             reads += 1;
             let said = cx.easy().report().reasons();
-            match source.recv(cx, max) {
+            // What came is read in the multi's buffer and written from
+            // there.
+            let (got, fed) = crate::conn::buf::lending(cx, source, |cx, source| {
+                let got = source.recv(cx, max);
+                let fed = matches!(got, Ok(Recv::Data(_))).then(|| {
+                    let mut rx = source.swap_rx(Default::default());
+                    let fed = sink.body(cx, rx.filled());
+                    let all = rx.filled().len();
+                    rx.consume(all);
+                    source.swap_rx(rx);
+                    (all, fed)
+                });
+                (got, fed)
+            })
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+            match got {
                 Ok(Recv::WouldBlock) if source.data_pending() => {
                     return Ok(ProtoStep::AtReadLimit);
                 }
@@ -231,11 +236,7 @@ impl Receive {
                     }
                 }
                 Ok(Recv::Data(_)) => {
-                    let mut rx = source.take_rx();
-                    let fed = sink.body(cx, rx.filled());
-                    let all = rx.filled().len();
-                    rx.consume(all);
-                    source.put_rx(rx);
+                    let (all, fed) = fed.expect("what came was written");
                     deliver::write_resp(cx, all, false, fed.map(|_| ()));
                     if fed? {
                         self.receiving = false;

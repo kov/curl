@@ -1217,6 +1217,7 @@ fn a_get_through_an_https_proxy_stays_within_its_allocation_budget() {
 /// store cache in it (2), and the CA file ended by a zero byte, as the
 /// kept store is not loaded again (1); the session cache's slots, the
 /// slot's copy of the key and its list of sessions, there already (3);
+/// the multi's receive buffer, lent to the first's reads and kept (1);
 /// and one ticket's DER of the two, as a resumed session is given one;
 /// two more are not yet itemised. Pinned at what the two make, the same
 /// on every leg: a count that may fall short leaves an extra allocation
@@ -1224,7 +1225,7 @@ fn a_get_through_an_https_proxy_stays_within_its_allocation_budget() {
 /// host name's copy, the layer and the stack's box and list, the
 /// handshake's marker, the host name ended by a zero byte for SNI and the
 /// key its sessions are kept by.
-const RESUMED_GET_FEWER: u64 = 18;
+const RESUMED_GET_FEWER: u64 = 19;
 
 fn a_resumed_get_stays_within_its_allocation_budget() {
     let certs = certs("resumebudget", "localhost", &["localhost"]);

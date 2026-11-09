@@ -131,6 +131,12 @@ pub(crate) trait LayerCx {
     /// work has no multi's room to lend, and the receive makes one for
     /// the call, as C's does with no multi.
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom>;
+
+    /// The multi's buffer a stream's bytes are received in, which the
+    /// call lends (`Curl_multi_xfer_buf_borrow`); none where the work
+    /// has no multi's buffer to lend, and the connection receives in its
+    /// own.
+    fn recv_buf(&mut self) -> Option<&mut super::buf::XferBuf>;
 }
 
 /// A trace's lines (`CURL_TRC_CF`, `infof`).
@@ -484,6 +490,10 @@ impl LayerCx for Silent {
     }
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
         None
     }
 }

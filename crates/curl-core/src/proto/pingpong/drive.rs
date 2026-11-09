@@ -141,7 +141,20 @@ fn recv<H: Host>(
     carrier: &mut Carrier<'_>,
 ) -> Result<Option<usize>, ErrorKind> {
     let said = cx.easy().report().reasons();
-    match carrier.recv(cx, READ_SIZE) {
+    // Read in the multi's buffer, and pushed from there.
+    let (got, pushed) = crate::conn::buf::lending(cx, carrier, |cx, carrier| {
+        let got = carrier.recv(cx, READ_SIZE);
+        let pushed = matches!(got, Ok(Recv::Data(_))).then(|| {
+            let rx = carrier.rx_mut();
+            let n = rx.filled().len().min(READ_SIZE);
+            let pushed = pp.push(&rx.filled()[..n]);
+            rx.consume(n);
+            pushed.map(|()| n)
+        });
+        (got, pushed)
+    })
+    .map_err(|_| ErrorKind::OutOfMemory)?;
+    match got {
         Ok(Recv::WouldBlock) => Ok(None),
         Ok(Recv::Eof) => {
             // Closed by the server under a command: not reused.
@@ -152,11 +165,9 @@ fn recv<H: Host>(
             Err(read_failed(cx, e))
         }
         Ok(Recv::Data(_)) => {
-            let rx = carrier.rx_mut();
-            let n = rx.filled().len().min(READ_SIZE);
-            let pushed = pp.push(&rx.filled()[..n]);
-            rx.consume(n);
-            pushed.map_err(|e| read_failed(cx, e))?;
+            let n = pushed
+                .expect("what came was pushed")
+                .map_err(|e| read_failed(cx, e))?;
             Ok(Some(n))
         }
         Err(RecvFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
@@ -244,15 +255,27 @@ pub(crate) fn goodbye_answer<E: Ends>(
         if reads == MAX_READS {
             return Goodbye::Awaited { moved };
         }
-        match carrier.recv(cx, READ_SIZE) {
-            Ok(Recv::WouldBlock) => return Goodbye::Awaited { moved },
-            Ok(Recv::Data(_)) => {
-                reads += 1;
+        // Read in the multi's buffer, if the work has one, and pushed
+        // from there.
+        let got = crate::conn::buf::lending(cx, carrier, |cx, carrier| {
+            let got = carrier.recv(cx, READ_SIZE);
+            let pushed = matches!(got, Ok(Recv::Data(_))).then(|| {
                 let rx = carrier.rx_mut();
                 let n = rx.filled().len().min(READ_SIZE);
                 let pushed = pp.push(&rx.filled()[..n]);
                 rx.consume(n);
-                if pushed.is_err() {
+                pushed
+            });
+            (got, pushed)
+        });
+        let Ok((got, pushed)) = got else {
+            return Goodbye::Done;
+        };
+        match got {
+            Ok(Recv::WouldBlock) => return Goodbye::Awaited { moved },
+            Ok(Recv::Data(_)) => {
+                reads += 1;
+                if pushed.expect("what came was pushed").is_err() {
                     return Goodbye::Done;
                 }
                 moved = true;

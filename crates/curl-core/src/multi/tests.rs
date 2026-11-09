@@ -1705,6 +1705,52 @@ fn events_drive_a_transfer_as_waits_do() {
     assert_eq!(run(true), waited);
 }
 
+/// Transfers on connections of their own read in the multi's one
+/// buffer, made to the transfers' read size and given back empty: the
+/// connections hold none of their own, and each body comes whole.
+#[test]
+fn transfers_read_in_the_multis_one_buffer() {
+    use crate::conn::io::{Conversation, Peer};
+    let clock = ManualClock::new().unwrap();
+    let at = |port| std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at(7), Peer::Accepts)
+        .with_peer(at(8), Peer::Accepts)
+        .with_conversation(
+            at(7),
+            Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc", false),
+        )
+        .with_conversation(
+            at(8),
+            Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\ndefgh", false),
+        );
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let a = m
+        .add(Box::new(easy("http://127.0.0.1:7/")), (), &mut NoEvents)
+        .unwrap();
+    let b = m
+        .add(Box::new(easy("http://127.0.0.1:8/")), (), &mut NoEvents)
+        .unwrap();
+    for _ in 0..4 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let mut done: Vec<_> = messages(&mut m).into_iter().map(|d| (d.0, d.1)).collect();
+    done.sort_by_key(|d| d.0);
+    assert_eq!(done, [(a.index(), Ok(())), (b.index(), Ok(()))]);
+    assert_eq!(m.easy(a).unwrap().report().sizes().download(), 3);
+    assert_eq!(m.easy(b).unwrap().report().sizes().download(), 5);
+    assert_eq!(m.recv_buf_room(), 16384, "made to the transfers' read size");
+    for id in [a, b] {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
 /// A network whose peers hang up once the multi waits for them a second
 /// time, the first wait being for the connect, and that fails a run
 /// polling over and over without waiting.

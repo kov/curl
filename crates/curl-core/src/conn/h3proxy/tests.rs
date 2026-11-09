@@ -283,6 +283,10 @@ impl LayerCx for Asked {
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         self.yes.then_some(&mut self.room)
     }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        None
+    }
 }
 
 impl crate::conn::layer::Trace for Asked {

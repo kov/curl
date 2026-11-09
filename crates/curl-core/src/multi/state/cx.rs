@@ -44,7 +44,11 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
     }
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
-        Some(&mut *self.rest.sockbuf)
+        Some(&mut self.rest.rooms.datagrams)
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        Some(&mut self.rest.rooms.bytes)
     }
 }
 

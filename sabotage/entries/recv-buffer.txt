@@ -1,0 +1,93 @@
+# The multi's receive buffer, lent to one read at a time (`conn::buf::lending`).
+
+=== the multi's buffer is lent over bytes the connection already holds
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::a_read_is_in_the_multis_buffer_and_what_it_left_in_the_connections
+--- old
+    if !own.filled().is_empty() {
+--- new
+    if false {
+
+=== what a read left in the multi's buffer is lost
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::a_read_is_in_the_multis_buffer_and_what_it_left_in_the_connections
+--- old
+    let kept = own.hold(lent.filled());
+--- new
+    let kept: Result<(), OutOfMemory> = Ok(());
+
+=== the multi's buffer goes back holding one connection's bytes
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::one_connections_bytes_are_never_anothers
+--- old
+    lent.filled = 0;
+--- new
+    lent.filled = lent.filled;
+
+=== a read inside a read borrows the multi's buffer again
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::a_receive_inside_a_receive_is_refused
+--- old
+            XferBuf::Lent => panic!("the multi's receive buffer is lent to one receive at a time"),
+--- new
+            XferBuf::Lent => RecvBuf::default(),
+
+=== a read with a multi is in the connection's own buffer
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::a_read_is_in_the_multis_buffer_and_what_it_left_in_the_connections
+--- old
+    let Some(lender) = cx.recv_buf() else {
+--- new
+    let Some(lender) = None::<&mut XferBuf> else {
+
+=== an HTTP/1 response is read in the connection's own buffer
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core multi::tests::transfers_read_in_the_multis_one_buffer
+--- old
+            let (got, fed) = crate::conn::buf::lending(cx, lease, |cx, lease| {
+                let got = lease.get().recv(cx, max);
+--- new
+            let (got, fed) = crate::conn::buf::lending(&mut crate::trace::InternalCx { now: crate::conn::layer::LayerCx::now(cx), trace: None, room: None }, lease, |_, lease| {
+                let got = lease.get().recv(cx, max);
+
+=== a goodbye answered in place reads in a buffer it must allocate
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core a_quit_said_is_answered_before_its_connection_closes_whatever_is_refused
+--- old
+                room: room.as_deref_mut(),
+--- new
+                room: None,
+
+=== HTTP/2's ingress is read in the connection's own buffer
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_step_reads_a_buffer_of_the_connection_at_most
+--- old
+            let (got, fed) = crate::conn::buf::lending(cx, lease, |cx, lease| {
+                let got = lease.get().recv(cx, left.min(CHUNK));
+--- new
+            let (got, fed) = crate::conn::buf::lending(&mut crate::trace::InternalCx { now: crate::conn::layer::LayerCx::now(cx), trace: None, room: None }, lease, |_, lease| {
+                let got = lease.get().recv(cx, left.min(CHUNK));
+
+=== a stream-read body is read in the connection's own buffer
+file: crates/curl-core/src/proto/xfer.rs
+witness: curl-core proto::ftp::tests::the_replies_and_the_file_are_read_in_the_multis_buffer
+--- old
+            let (got, fed) = crate::conn::buf::lending(cx, source, |cx, source| {
+--- new
+            let (got, fed) = crate::conn::buf::lending(&mut crate::trace::InternalCx { now: crate::conn::layer::LayerCx::now(cx), trace: None, room: None }, source, |_, source| {
+
+=== a line protocol's replies are read in the connection's own buffer
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::ftp::tests::a_refused_file_fails_though_done_goes_well
+--- old
+    let (got, pushed) = crate::conn::buf::lending(cx, carrier, |cx, carrier| {
+--- new
+    let (got, pushed) = crate::conn::buf::lending(&mut crate::trace::InternalCx { now: crate::conn::layer::LayerCx::now(cx), trace: None, room: None }, carrier, |_, carrier| {
+
+=== transfers' reads are cut to the largest buffer size, not each one's own
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::each_transfer_reads_its_own_size_in_the_multis_one_buffer
+--- old
+            let max = self.read_size(cx.easy().options().limits.buffer_size.get());
+--- new
+            let max = self.read_size(cx.easy().options().limits.buffer_size.get().max(32768));

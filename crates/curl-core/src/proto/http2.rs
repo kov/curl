@@ -623,7 +623,6 @@ impl H2Conn {
     /// `is_alive`'s answer, its read said as C says it
     /// (`http2_connisalive`).
     fn connisalive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>) -> Alive {
-        use crate::http2::{Event, Heard};
         if self.broken {
             return Alive::Dead;
         }
@@ -635,6 +634,16 @@ impl H2Conn {
         {
             return below_alive;
         }
+        // Read in the multi's buffer, if the work has one: the session
+        // reads all of it.
+        crate::conn::buf::lending(cx, &mut below, |cx, below| self.read_alive(cx, below))
+            .unwrap_or(Alive::Dead)
+    }
+
+    /// What an idle connection has to read, read once by the session:
+    /// whether it is alive after.
+    fn read_alive(&mut self, cx: &mut dyn LayerCx, below: &mut Carrier<'_>) -> Alive {
+        use crate::http2::{Event, Heard};
         let read = below.recv(cx, 16 * 1024);
         let (code, n) = match &read {
             Ok(Recv::Data(n)) => (0, n.get()),

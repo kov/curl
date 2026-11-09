@@ -2655,6 +2655,7 @@ fn a_step_reads_a_buffer_of_the_connection_at_most() {
         Ok(())
     );
     assert_eq!(s.body().len(), 3000);
+    assert_eq!(m.recv_buf_room(), 1024, "read in the multi's buffer");
     m.remove(id, &mut NoEvents).unwrap();
 }
 

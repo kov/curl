@@ -2362,13 +2362,11 @@ impl<H: Host> Source<H> for DataSource<'_> {
     fn data_pending(&mut self) -> bool {
         self.with(|carrier| carrier.reborrow().data_pending())
     }
+}
 
-    fn take_rx(&mut self) -> crate::conn::RecvBuf {
-        self.with(|carrier| std::mem::take(carrier.rx_mut()))
-    }
-
-    fn put_rx(&mut self, rx: crate::conn::RecvBuf) {
-        self.with(|carrier| *carrier.rx_mut() = rx);
+impl crate::conn::buf::HoldsRx for DataSource<'_> {
+    fn swap_rx(&mut self, rx: crate::conn::RecvBuf) -> crate::conn::RecvBuf {
+        self.with(|carrier| std::mem::replace(carrier.rx_mut(), rx))
     }
 }
 

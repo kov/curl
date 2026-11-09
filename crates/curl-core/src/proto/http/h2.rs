@@ -1091,8 +1091,25 @@ impl Request {
             // Each read fills at most one chunk of the session's input, as
             // C reads into its `inbufq` (`Curl_cf_recv_bufq`): the layers
             // below are asked for 16 KiB at a time, the step's last read
-            // for what is left of its allowance (DIVERGENCE.md).
-            let got = lease.get().recv(cx, left.min(CHUNK));
+            // for what is left of its allowance (DIVERGENCE.md). What came
+            // is read in the multi's buffer and fed from there.
+            let (got, fed) = crate::conn::buf::lending(cx, lease, |cx, lease| {
+                let got = lease.get().recv(cx, left.min(CHUNK));
+                let fed = if let Ok(Recv::Data(n)) = got {
+                    let n = n.get();
+                    trace::of(cx, H2, format_args!("[0] ingress: read {n} bytes"));
+                    let mut rx = std::mem::take(lease.get().rx_mut());
+                    let fed = self.h2_feed(cx, lease, rx.filled());
+                    let all = rx.filled().len();
+                    rx.consume(all);
+                    *lease.get().rx_mut() = rx;
+                    Some(fed)
+                } else {
+                    None
+                };
+                (got, fed)
+            })
+            .map_err(|_| ErrorKind::OutOfMemory)?;
             match got {
                 Ok(Recv::WouldBlock) => break,
                 Ok(Recv::Eof) => {
@@ -1104,15 +1121,8 @@ impl Request {
                     self.wake_others(cx, lease);
                 }
                 Ok(Recv::Data(n)) => {
-                    let n = n.get();
-                    trace::of(cx, H2, format_args!("[0] ingress: read {n} bytes"));
-                    left = left.saturating_sub(n);
-                    let mut rx = std::mem::take(lease.get().rx_mut());
-                    let fed = self.h2_feed(cx, lease, rx.filled());
-                    let all = rx.filled().len();
-                    rx.consume(all);
-                    *lease.get().rx_mut() = rx;
-                    fed?;
+                    left = left.saturating_sub(n.get());
+                    fed.expect("what came was fed")?;
                     // The session reads all it is given.
                     trace::of(cx, H2, format_args!("[0] ingress: nw-in buffered 0"));
                 }

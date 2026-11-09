@@ -2,7 +2,7 @@
 //! of calls allowed inside each callback, as types. A method exists on a
 //! context only if C allows that call from that callback.
 
-use crate::conn::quic::RecvRoom;
+use crate::conn::buf::Rooms;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use std::num::NonZeroU32;
 
@@ -43,9 +43,9 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) caches: &'a mut Caches,
     /// What the TLS library keeps across the multi's connections.
     pub(super) tls: &'a mut Option<TlsShared>,
-    /// The room QUIC's datagrams are received in, lent while a step reads
-    /// them.
-    pub(super) sockbuf: &'a mut RecvRoom,
+    /// The room QUIC's datagrams are received in and the buffer a
+    /// stream's bytes are, each lent while a step reads.
+    pub(super) rooms: &'a mut Rooms,
     /// The connections shutting down.
     pub(super) shutdowns: &'a mut ShutdownSet,
     /// The transfers waiting for room for a connection.
@@ -84,7 +84,7 @@ impl<H: Host> EngineRest<'_, H> {
             tell: self.tell.reborrow(),
             caches: &mut *self.caches,
             tls: &mut *self.tls,
-            sockbuf: &mut *self.sockbuf,
+            rooms: &mut *self.rooms,
             shutdowns: &mut *self.shutdowns,
             pending: &mut *self.pending,
             net: &mut *self.net,
@@ -178,7 +178,7 @@ impl<H: Host> EngineRest<'_, H> {
             who: SocketFor::Transfer(who),
         };
         let set = &mut *self.shutdowns;
-        let recv = &mut *self.sockbuf;
+        let recv = &mut *self.rooms;
         let r = match home {
             Home::Multi => {
                 let mut exits = WithSet {
@@ -230,6 +230,7 @@ impl<H: Host> EngineRest<'_, H> {
     pub(crate) fn announce_closing(&mut self) {
         announce_closing(
             &mut *self.shutdowns,
+            &mut *self.rooms,
             &mut *self.net,
             &mut self.tell,
             &mut *self.events,
@@ -324,6 +325,7 @@ pub(super) fn upkeep(
 /// As `EngineRest::announce_closing`, on the multi's parts.
 pub(super) fn announce_closing<H: Host>(
     set: &mut ShutdownSet,
+    room: &mut Rooms,
     net: &mut dyn Net,
     tell: &mut Telling<'_, H>,
     events: &mut dyn MultiEvents<H>,
@@ -349,7 +351,7 @@ pub(super) fn announce_closing<H: Host>(
                 events: &mut *events,
                 who: SocketFor::Multi,
             };
-            set.close_one(id, &mut net);
+            set.close_one(id, &mut net, room);
         }
     }
 }
@@ -446,6 +448,10 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         LayerCx::recv_room(&mut *self.step)
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        LayerCx::recv_buf(&mut *self.step)
     }
 }
 

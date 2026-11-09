@@ -23,7 +23,7 @@ use super::layer::Handshake;
 use super::line::Goodbye;
 use super::{Conn, Peer, Route, Transport};
 use crate::components::Component;
-use crate::conn::quic::RecvRoom;
+use crate::conn::buf::Rooms;
 use crate::proto::pingpong::drive::BLOCKING_POLL;
 use crate::time::{Instant, SharedClock};
 use crate::trace::{Internal, InternalCx};
@@ -132,16 +132,25 @@ impl Shutting {
     /// one, polling its socket alone, as C's disconnect blocks for it
     /// (`Curl_pp_statemach` blocking): until it comes, or a second passes
     /// with nothing more of it, or the shutdown's time is spent, or a poll
-    /// fails. The time is `clock`'s, read after each poll. Allocates
-    /// nothing, so a connection that could not be kept for want of memory
-    /// is waited for too; a read that cannot hold what came ends the wait.
-    fn await_answer(&mut self, net: &mut dyn Net, clock: &SharedClock, trace: Option<&Internal>) {
+    /// fails. The time is `clock`'s, read after each poll. Read in the
+    /// multi's `room`, it allocates nothing, so a connection the multi's
+    /// set could not take for want of memory is waited for too; with no
+    /// room (a share's connection closed outside any multi) a read makes
+    /// the connection's own buffer. A read that cannot hold what came ends
+    /// the wait.
+    fn await_answer(
+        &mut self,
+        net: &mut dyn Net,
+        clock: &SharedClock,
+        trace: Option<&Internal>,
+        mut room: Option<&mut Rooms>,
+    ) {
         loop {
             let now = clock.now();
             let mut cx = InternalCx {
                 now,
                 trace,
-                room: None,
+                room: room.as_deref_mut(),
             };
             if self.left_ms(now) < 0 || !self.awaits_answer(&mut cx) {
                 return;
@@ -230,7 +239,7 @@ impl Shutting {
         now: Instant,
         clock: Option<&SharedClock>,
         trace: Option<&Internal>,
-        room: Option<&mut RecvRoom>,
+        room: Option<&mut Rooms>,
     ) -> Tried {
         let tried = match self.run_once(now, clock, trace, room) {
             Tried::Done => {
@@ -256,7 +265,7 @@ impl Shutting {
         now: Instant,
         clock: Option<&SharedClock>,
         trace: Option<&Internal>,
-        room: Option<&mut RecvRoom>,
+        room: Option<&mut Rooms>,
     ) -> Tried {
         let mut cx = InternalCx { now, trace, room };
         if !std::mem::replace(&mut self.tried, true) {
@@ -308,16 +317,18 @@ impl Shutting {
     /// goodbye (Windows does); then only the socket closes, nothing more
     /// is read from it. With no clock (a pool's own tests) it does not
     /// wait. Said on `trace`, and, `in_multi`, that a transfer waiting for
-    /// room may find some.
+    /// room may find some. The answer is read in the multi's `room`, if
+    /// given.
     pub(crate) fn close(
         mut self,
         net: &mut dyn Net,
         clock: Option<&SharedClock>,
         trace: Option<&Internal>,
         in_multi: bool,
+        room: Option<&mut Rooms>,
     ) {
         if let Some(clock) = clock {
-            self.await_answer(net, clock, trace);
+            self.await_answer(net, clock, trace, room);
         }
         terminate(self.conn, self.finished, net, trace, in_multi);
     }
@@ -340,7 +351,7 @@ impl Shutting {
         };
         let _said = self.say_goodbye(&mut cx, clock, true);
         // Told it is dead, its protocol awaits nothing.
-        self.close(net, None, trace, in_multi);
+        self.close(net, None, trace, in_multi, None);
     }
 
     /// What it waits on while it shuts down: what its protocol's goodbye
@@ -544,7 +555,13 @@ impl ShutdownSet {
     /// [`AWAITING_CAP_FACTOR`] times `max`, and then the oldest, once its
     /// answer is read. With no room for it, it is closed, its own answer
     /// read first.
-    pub(crate) fn add(&mut self, shutting: Shutting, max: usize, net: &mut dyn Net) {
+    pub(crate) fn add(
+        &mut self,
+        shutting: Shutting,
+        max: usize,
+        net: &mut dyn Net,
+        room: &mut Rooms,
+    ) {
         let len = self.conns.len();
         if max <= len {
             let unawaited = self.conns.iter().position(|e| !e.shutting.awaits());
@@ -557,13 +574,19 @@ impl ShutdownSet {
                     "[SHUTDOWN] discarding oldest shutdown connection due to shutdown limit of {max}"
                 ));
                 let entry = self.conns.remove(i);
-                self.closed(entry, net);
+                self.closed(entry, net, room);
             }
         }
         let n = shutting.conn.number.get();
         if self.conns.try_reserve(1).is_err() {
             self.say(format_args!("[SHUTDOWN] adding failed, discarding #{n}"));
-            shutting.close(net, Some(&self.clock), self.trace.as_ref(), true);
+            shutting.close(
+                net,
+                Some(&self.clock),
+                self.trace.as_ref(),
+                true,
+                Some(room),
+            );
             self.changed = true;
             return;
         }
@@ -595,7 +618,13 @@ impl ShutdownSet {
     /// counts toward the limits until the answer comes, and the transfer
     /// needing the room waits for it, where C blocks for the answer
     /// before the connection is in its set.
-    pub(crate) fn close_oldest(&mut self, to: Option<&Peer>, n: u32, net: &mut dyn Net) -> u32 {
+    pub(crate) fn close_oldest(
+        &mut self,
+        to: Option<&Peer>,
+        n: u32,
+        net: &mut dyn Net,
+        room: &mut Rooms,
+    ) -> u32 {
         let mut closed = 0;
         let mut i = 0;
         while closed < n && i < self.conns.len() {
@@ -604,7 +633,7 @@ impl ShutdownSet {
                 && to.is_none_or(|to| shutting.destination().is_some_and(|d| d.same_bundle(to)));
             if goes {
                 let entry = self.conns.remove(i);
-                self.closed(entry, net);
+                self.closed(entry, net, room);
                 closed += 1;
             } else {
                 i += 1;
@@ -626,7 +655,7 @@ impl ShutdownSet {
     /// Move each shutdown on at `now` (`cshutdn_perform`), closing those
     /// done, and arm the set's deadline at the earliest time left of the
     /// others; a QUIC connection receives in the multi's `room`.
-    pub(crate) fn perform(&mut self, net: &mut dyn Net, now: Instant, room: &mut RecvRoom) {
+    pub(crate) fn perform(&mut self, net: &mut dyn Net, now: Instant, room: &mut Rooms) {
         if self.conns.is_empty() {
             return;
         }
@@ -642,7 +671,7 @@ impl ShutdownSet {
                 == Tried::Done
             {
                 let entry = self.conns.remove(i);
-                self.closed(entry, net);
+                self.closed(entry, net, room);
                 continue;
             }
             let mut ms = self.conns[i].shutting.left_ms(now);
@@ -665,32 +694,36 @@ impl ShutdownSet {
     }
 
     /// Close every one at once (the end of `cshutdn_terminate_all`).
-    pub(crate) fn close_all(&mut self, net: &mut dyn Net) {
+    pub(crate) fn close_all(&mut self, net: &mut dyn Net, room: &mut Rooms) {
         while !self.conns.is_empty() {
             let entry = self.conns.remove(0);
-            self.closed(entry, net);
+            self.closed(entry, net, room);
         }
     }
 
     /// Close `entry`, which has left the set, its goodbye's answer read
-    /// first if it awaits one.
-    fn closed(&mut self, entry: Entry, net: &mut dyn Net) {
-        entry
-            .shutting
-            .close(net, Some(&self.clock), self.trace.as_ref(), true);
+    /// first, in the multi's `room`, if it awaits one.
+    fn closed(&mut self, entry: Entry, net: &mut dyn Net, room: &mut Rooms) {
+        entry.shutting.close(
+            net,
+            Some(&self.clock),
+            self.trace.as_ref(),
+            true,
+            Some(room),
+        );
         self.changed = true;
     }
 
     /// Close the connection `id` names, if the set still holds it: the
     /// socket callback refused to watch it (`cshutdn_update_ev` failing).
-    pub(crate) fn close_one(&mut self, id: ClosingId, net: &mut dyn Net) {
+    pub(crate) fn close_one(&mut self, id: ClosingId, net: &mut dyn Net, room: &mut Rooms) {
         if let Some(i) = self.conns.iter().position(|e| e.id == id) {
             let entry = self.conns.remove(i);
             let n = entry.shutting.conn.number.get();
             self.say(format_args!(
                 "[SHUTDOWN] update events failed, discarding #{n}"
             ));
-            self.closed(entry, net);
+            self.closed(entry, net, room);
         }
     }
 
@@ -855,17 +888,18 @@ pub(crate) struct Linger<'a> {
     /// another's (a share's): C caps the set by the multi's pool whichever
     /// pool the connection left.
     pub(crate) multi_pool: Option<u32>,
-    /// The multi's room a QUIC connection's goodbye receives in.
-    pub(crate) room: &'a mut RecvRoom,
+    /// The multi's room a QUIC connection's goodbye receives in, and its
+    /// buffer a stream's goodbye does.
+    pub(crate) room: &'a mut Rooms,
 }
 
-/// A network, and the multi's set and receive room behind it.
+/// A network, and the multi's set and receive room and buffer behind it.
 pub(crate) struct WithSet<'a> {
     pub(crate) net: &'a mut dyn Net,
     pub(crate) set: &'a mut ShutdownSet,
     pub(crate) max_total: Option<NonZeroU32>,
     pub(crate) multi_pool: Option<u32>,
-    pub(crate) room: &'a mut RecvRoom,
+    pub(crate) room: &'a mut Rooms,
 }
 
 impl Exits for WithSet<'_> {
@@ -922,10 +956,11 @@ pub(crate) fn discard(
         {
             shutting.once = !may_linger;
             let max = max_shutdowns(l.max_total, l.multi_pool.unwrap_or(pool));
-            l.set.add(shutting, max, net);
+            l.set.add(shutting, max, net, &mut *l.room);
             return;
         }
-        shutting.close(net, clock.as_ref(), trace.as_ref(), in_multi);
+        let room = linger.as_mut().map(|l| &mut *l.room);
+        shutting.close(net, clock.as_ref(), trace.as_ref(), in_multi, room);
     }
     // Closed at once, which a multi notes as its set does
     // (`Curl_cshutdn_terminate`).

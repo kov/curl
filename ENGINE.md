@@ -286,7 +286,8 @@ curl-core/src/
                              resolves that answer later, numbered for the trace
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
-    buf.rs                   RecvBuf
+    buf.rs                   RecvBuf, XferBuf, Rooms: what was received, the multi's buffer
+                             lent to a read (`lending`)
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
     stream.rs                Stream: a socket, its layers and its receive buffer
     part.rs                  Part, Lower: what every piece of a connection answers of its life
@@ -1462,8 +1463,9 @@ callback nested inside them gets its own `EventCx`.
 
 The rules that keep this sound:
 - **During a call-out, the engine holds only owned values moved out of their homes**: the
-  stepping transfer's `Run` and, while delivering received bytes, the connection's
-  `RecvBuf` (taken with `mem::take`, which allocates nothing, and put back after delivery).
+  stepping transfer's `Run` and, while delivering received bytes, the `RecvBuf` they were read
+  in, the multi's lent to the read (§4.1) or the connection's own (taken with `mem::take`,
+  which allocates nothing, and put back after delivery).
   The pool, the other slots and every table stay in `EngineRest`. No iterator over engine state
   is live across a call-out. An option is never moved out: a callback reaches the options and
   may set them (`TransferCx::options_mut`), so a trace line that names one is formatted while
@@ -1584,7 +1586,8 @@ pub(crate) struct Conn {
 pub(crate) struct Stream {             // conn/stream.rs
     socket: Sock,                      // the socket and the closer it was opened with (§4.6)
     layers: LayerStack,                // empty for plain TCP, one pointer (§4.3)
-    rx: RecvBuf,                       // received, not yet used; grown fallibly before a read
+    rx: RecvBuf,                       // received, not yet used: what a read left; the
+                                       // multi's buffer in its place while a read is lent it
 }
 ```
 
@@ -1592,7 +1595,27 @@ One `Stream` type, owned by the setup's `Dialed` stage and then by the `Conn` it
 one read path: `recv(cx, max)` fills `rx` through the layers (`RecvBuf::fill`, where a read that
 reports more than the room it had is an error from the socket, `InvalidData`, not an assertion),
 `send` writes through them; `Conn::recv` adds that bytes received and not used, which only a
-handshake's read past its answer leaves (D11), are given first without asking the socket. The
+handshake's read past its answer leaves (D11), are given first without asking the socket.
+
+A transfer's read is in the multi's buffer (`XferBuf`, C's `xfer_buf`), one per multi, made at
+the first read, grown fallibly to the most any read in it asked for, and lent to one read at a
+time by `buf::lending`: it swaps the buffer into the connection's `rx` for a closure that reads
+once and uses what came, and when the closure returns, moves what it left into the
+connection's own `rx` and gives the buffer back to the multi empty. The closure cannot keep the
+buffer, and what one connection received is never read as another's. Bytes waiting in the
+connection's own `rx` are read from there, nothing lent. `LayerCx::recv_buf` says what a
+context lends, as `recv_room` does for QUIC (§4.4.1): the step's the multi's, the multi's own
+work on its pool and its shutdowns (an h2 connection's health check, a line protocol's goodbye
+answer, read in place when the set has no room) the multi's, and a context with no multi
+(`curl_easy_recv`, the tests) none, the read then in the connection's own. The reads lent it
+are the response's (HTTP/1, HTTP/2's ingress, a stream-read body, a raw protocol's read) and a
+line protocol's replies; a handshake's (proxy, SOCKS) and a read into the caller's own buffer
+(`recv_into`: `curl_easy_recv`, WebSocket, LDAP and libssh2's callbacks, as C's
+`Curl_conn_recv` there takes no `xfer_buf`) are in the connection's own. A second loan while one
+is out is a read inside a read, which nothing makes: it asserts. An HTTP/2 connection's read
+borrows it too, where C reads into the connection's own `inbufq`: what reaches the session is
+the same bytes in the same reads. An idle connection in the pool holds a receive buffer of its own only where a read left it
+bytes (a proxy's answer, a WebSocket's 101) or a handshake or a read with no multi read in it. The
 end of input marks the connection `close` only where its protocol closes there, as HTTP's read
 and a line protocol's command do; a POP3 or IMAP body the server ends by closing leaves it to
 go back to the pool, "left intact", for the next transfer's health check to find dead, as C
@@ -1892,6 +1915,7 @@ pub(crate) trait LayerCx {           // each capability lent or not; no defaults
     fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer>;      // EXPIRE_QUIC
     fn h3_streams(&mut self) -> Option<&mut dyn H3Streams>;      // a stream's transfer
     fn recv_room(&mut self) -> Option<&mut RecvRoom>;            // xfer_sockbuf
+    fn recv_buf(&mut self) -> Option<&mut XferBuf>;              // xfer_buf
 }
 pub(crate) trait LayerCalls: LayerCx { /* of, info, fails, socket_failed, bytes, quic_due,
     h3_event, ...: each through its capability, nothing where none is lent */ }
@@ -2316,8 +2340,8 @@ connection, its close packet sent at once. The transfer reaches all of this thro
 and where the datagrams go through `QuicIo`, asked for at each call: the socket stays in the
 connection while the library's events reach the transfers.
 
-The room a connection on a socket receives in is the multi's (`RecvRoom`, C's `xfer_sockbuf`),
-one per multi, made zeroed at the first receive and lent to one receive at a time: every
+The room a connection on a socket receives in is the multi's (`RecvRoom`, C's `xfer_sockbuf`,
+kept beside its byte buffer in `Rooms`, §4.1), one per multi, made zeroed at the first receive and lent to one receive at a time: every
 `LayerCx` says what it lends (`recv_room`), the step's and the drive's the multi's room, a
 context over another's that one's, the multi's own work on its pool and its shutdowns the
 multi's as C's admin handle borrows it, and a context with no multi none, the receive then
@@ -3794,13 +3818,14 @@ response is not over and receiving is not paused, OUT while the head has more to
 Reads are capped at the transfer's BUFFERSIZE (`Limits::buffer_size`: 16384 unless set; the
 tool sets 100 KiB, or its `--limit-rate` under that), by the receive limit's tokens, and at
 `size - bytecount` in a body of known size on
-non-multiplexed connections, as transfer.c's `xfer_recv_resp` does. The cap is redundant with a per-connection buffer (leftovers would simply
-wait in `conn.rx`), but it fixes how `DATA_IN` traces are chunked and when unsolicited input is
-seen; it is dropped only after a C-leg comparison on 1701 and 3223.
+non-multiplexed connections, as transfer.c's `xfer_recv_resp` does. The cap is redundant with
+leftovers kept (they would simply move to `conn.rx`), but it fixes how `DATA_IN` traces are
+chunked and when unsolicited input is seen; it is dropped only after a C-leg comparison on 1701
+and 3223.
 
-C reads into the multi's `xfer_buf`, the largest BUFFERSIZE any of its transfers asked for, but
-`Curl_xfer_recv` cuts a network read to the transfer's own; `conn.rx` grows to that size before
-a read, fallibly. A `file:` read takes the transfer's BUFFERSIZE less one, where C's takes the
+The read is in the multi's buffer (§4.1), as C's is in its `xfer_buf`: the largest BUFFERSIZE
+any of its transfers asked for, which `Curl_xfer_recv` cuts to the transfer's own; ours grows to
+the largest read asked of it, fallibly, and never shrinks while the multi lives, as C's. A `file:` read takes the transfer's BUFFERSIZE less one, where C's takes the
 multi's buffer whole: a file read beside a transfer with a larger buffer is read in larger
 pieces there.
 

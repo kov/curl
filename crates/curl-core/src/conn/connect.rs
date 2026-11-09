@@ -505,6 +505,10 @@ impl LayerCx for Plain<'_> {
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         None
     }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        None
+    }
 }
 
 #[cfg(test)]

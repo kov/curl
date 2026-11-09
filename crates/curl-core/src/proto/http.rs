@@ -2393,8 +2393,22 @@ impl Request {
             reads += 1;
             let said = cx.easy().report().reasons();
             // The socket traces the receive, and says why it failed, as it
-            // reaches it (`cf_socket_recv`).
-            let got = lease.get().recv(cx, max);
+            // reaches it (`cf_socket_recv`). What came is read in the
+            // multi's buffer and used there, what a WebSocket's 101 left
+            // for the application kept by the connection.
+            let (got, fed) = crate::conn::buf::lending(cx, lease, |cx, lease| {
+                let got = lease.get().recv(cx, max);
+                let fed = matches!(got, Ok(Recv::Data(_))).then(|| {
+                    let mut rx = std::mem::take(lease.get().rx_mut());
+                    let fed = self.input(cx, lease, rx.filled());
+                    let all = rx.filled().len() - std::mem::take(&mut self.unread);
+                    rx.consume(all);
+                    *lease.get().rx_mut() = rx;
+                    (all, fed)
+                });
+                (got, fed)
+            })
+            .map_err(|_| ErrorKind::OutOfMemory)?;
             match got {
                 // Bytes a layer holds wake no poll: the step runs again
                 // (`sendrecv_dl`'s `data_pending`).
@@ -2433,13 +2447,7 @@ impl Request {
                     self.stage = Stage::Done;
                 }
                 Ok(Recv::Data(_)) => {
-                    let mut rx = std::mem::take(lease.get().rx_mut());
-                    let fed = self.input(cx, lease, rx.filled());
-                    // What a WebSocket's 101 left for the application
-                    // stays.
-                    let all = rx.filled().len() - std::mem::take(&mut self.unread);
-                    rx.consume(all);
-                    *lease.get().rx_mut() = rx;
+                    let (all, fed) = fed.expect("what came was used");
                     deliver::write_resp(cx, all, false, fed);
                     fed?;
                     // Switched to HTTP/2 by a 101: read on in it.

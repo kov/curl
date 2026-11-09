@@ -977,7 +977,7 @@ file: crates/curl-core/src/trace.rs
 witness: curl-core one_quic_receive_room_per_multi
 features: test-util,debug-hooks
 --- old
-        self.room.as_deref_mut()
+        self.room.as_deref_mut().map(|rooms| &mut rooms.datagrams)
 --- new
         None
 
@@ -989,12 +989,20 @@ features: test-util,debug-hooks
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         self.cx.recv_room()
     }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        self.cx.recv_buf()
+    }
 }
 
 impl H3Streams for Lone<'_> {
 --- new
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         None
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        self.cx.recv_buf()
     }
 }
 

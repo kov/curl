@@ -693,6 +693,23 @@ impl Login {
         })
     }
 
+    /// Whether it gives no user, password, token, service or identity to
+    /// act for, not even an empty one: nothing a request authenticates
+    /// with (`url_set_data_creds`'s first test).
+    pub(crate) fn gives_nothing(&self) -> bool {
+        let Login {
+            user,
+            password,
+            bearer,
+            service,
+            delegation: _,
+            authzid,
+        } = self;
+        [user, password, bearer, service, authzid]
+            .iter()
+            .all(|given| given.is_none())
+    }
+
     fn try_clone(&self) -> Result<Login, OutOfMemory> {
         Ok(Login {
             user: self.user.as_deref().map(copy).transpose()?,

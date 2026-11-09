@@ -1,0 +1,20 @@
+# Who a request authenticates as: the login, the URL's credentials and
+# what they make (crates/curl-core/src/auth/creds.rs, options' Login).
+
+=== an empty user or password the application gives is taken for none
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core auth::creds::tests::a_part_given_empty_still_makes_credentials
+--- old
+            .all(|given| given.is_none())
+--- new
+            .all(|given| given.as_ref().is_none_or(Vec::is_empty))
+
+=== a password the application gives alone is taken for none
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core auth::creds::tests::a_part_given_empty_still_makes_credentials
+--- old
+        [user, password, bearer, service, authzid]
+            .iter()
+--- new
+        [user, bearer, service, authzid]
+            .iter()

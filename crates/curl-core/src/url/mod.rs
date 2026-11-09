@@ -975,6 +975,12 @@ impl Url {
         }
     }
 
+    /// Whether it has a user or a password, even an empty one
+    /// (`http://@h/`): what `get` would find either part.
+    pub(crate) fn has_login(&self) -> bool {
+        self.user.is_some() || self.password.is_some()
+    }
+
     /// Take out the user and the password, the password cleared first.
     pub(crate) fn forget_credentials(&mut self) {
         self.forget_password();

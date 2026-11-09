@@ -182,6 +182,11 @@ impl Credentials {
         url: &Url,
         takes: Takes,
     ) -> Result<Option<Credentials>, CredentialsError> {
+        // Nothing given either way, as most requests have it: none, and
+        // nothing to copy or decode.
+        if login.gives_nothing() && !url.has_login() {
+            return Ok(None);
+        }
         let (mut user, mut password, mut bearer) = (None, None, Vec::new());
         let (mut service, mut authzid) = (Vec::new(), Vec::new());
         if let Some(trusted) = trusted {
@@ -692,6 +697,79 @@ mod tests {
             with(&user_alone, true, "http://first:secret@h/"),
             got(b"smith", b"", Source::Options)
         );
+    }
+
+    /// A user or a password the login gives, even empty, makes
+    /// credentials where the URL has none; an empty token, service or
+    /// identity does not (`Curl_creds_create`: the NULL credential is
+    /// no user, no password and nothing in the rest). A URL with a user
+    /// or a password, even empty, makes them with no login. Neither
+    /// makes none.
+    #[test]
+    fn a_part_given_empty_still_makes_credentials() {
+        let empty = || Some(Vec::new());
+        let one = [
+            Login {
+                user: empty(),
+                ..Login::default()
+            },
+            Login {
+                password: empty(),
+                ..Login::default()
+            },
+            Login {
+                bearer: empty(),
+                ..Login::default()
+            },
+            Login {
+                service: empty(),
+                ..Login::default()
+            },
+            Login {
+                authzid: empty(),
+                ..Login::default()
+            },
+        ];
+        for (n, login) in one.iter().enumerate() {
+            assert!(!login.gives_nothing(), "{login:?}");
+            let made = with(login, true, "http://h/").unwrap();
+            let want = (n < 2).then(|| (vec![], vec![], Source::Url));
+            assert_eq!(made, want, "{login:?}");
+        }
+        let nothing = Login {
+            delegation: crate::options::Delegation {
+                by_policy: true,
+                always: true,
+            },
+            ..Login::default()
+        };
+        assert!(nothing.gives_nothing());
+        assert_eq!(with(&nothing, true, "http://h/"), Ok(None));
+        for (url, has) in [
+            ("http://h/", false),
+            ("http://@h/", true),
+            ("http://u@h/", true),
+            ("http://:p@h/", true),
+            ("http://:@h/", true),
+        ] {
+            let parsed = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
+            assert_eq!(parsed.has_login(), has, "{url}");
+            assert_eq!(creds(url).unwrap().is_some(), has, "{url}");
+        }
+        // A password set alone, as `curl_url_set` can, with no user.
+        let mut url = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
+        url.set(Part::Password, Some(b"p"), crate::url::SetOptions::NONE)
+            .unwrap();
+        assert!(url.has_login());
+        let made = Credentials::for_request(
+            &Login::default(),
+            Some(Trusted::own_url()),
+            &url,
+            Takes::ControlBytes,
+        )
+        .unwrap()
+        .map(|c| (c.user, c.password));
+        assert_eq!(made, Some((vec![], b"p".to_vec())));
     }
 
     /// As the C tool takes them from `http://USERINFO@host/`.

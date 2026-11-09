@@ -380,15 +380,9 @@ impl Pipeline {
         let allowed = self.accountant.allowed(wanted, max_filesize);
         if allowed > 0 {
             let result = self.onward(cx, OutKind::Body, &bytes[..allowed]);
-            write_trace(
-                cx,
-                format_args!(
-                    "download_write body(type={}, blen={}) -> {}",
-                    WriteType::BODY,
-                    bytes.len(),
-                    Code(result)
-                ),
-            );
+            if trace::traces(cx, Component::Write) {
+                body_downloaded(cx, bytes.len(), result);
+            }
             result?;
         }
         // Counted once the handlers are done with it: inside them, the
@@ -657,15 +651,43 @@ pub(crate) fn client_write<H: Host>(
     );
 }
 
+/// What the body's bytes past the accountant came to (`cw_download_write`),
+/// out of the line `Pipeline::counted` makes.
+#[inline(never)]
+fn body_downloaded<H: Host>(cx: &mut StepCx<'_, H>, blen: usize, result: Result<(), ErrorKind>) {
+    write_trace(
+        cx,
+        format_args!(
+            "download_write body(type={}, blen={blen}) -> {}",
+            WriteType::BODY,
+            Code(result)
+        ),
+    );
+}
+
 /// `client_write` of body bytes, out of the line `Pipeline::body` inlines.
 #[inline(never)]
 fn body_written<H: Host>(cx: &mut StepCx<'_, H>, len: usize, result: Result<(), ErrorKind>) {
     client_write(cx, WriteType::BODY, len, result);
 }
 
-/// What a protocol's read of the response came to (`Curl_xfer_write_resp`).
+/// What a protocol's read of the response came to (`Curl_xfer_write_resp`):
+/// the check inlined where it is said, the line made out of line, as a
+/// read hands on a body once a packet.
 #[inline]
 pub(crate) fn write_resp<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    len: usize,
+    eos: bool,
+    result: Result<(), ErrorKind>,
+) {
+    if trace::traces(cx, Component::Write) {
+        write_resp_traced(cx, len, eos, result);
+    }
+}
+
+#[inline(never)]
+fn write_resp_traced<H: Host>(
     cx: &mut StepCx<'_, H>,
     len: usize,
     eos: bool,
@@ -1077,8 +1099,17 @@ fn buffering<H: Host>(cx: &mut StepCx<'_, H>, len: usize, held: usize) {
 
 /// What a handler's answer comes to as C's callback returns it, traced
 /// after each call (`cw_out_cb_write`): the bytes it took, or
-/// `CURL_WRITEFUNC_PAUSE` or `CURL_WRITEFUNC_ERROR`.
+/// `CURL_WRITEFUNC_PAUSE` or `CURL_WRITEFUNC_ERROR`. The check is
+/// inlined where the handler is called, and only a line traced is made.
+#[inline]
 fn wrote<H: Host>(cx: &mut StepCx<'_, H>, kind: OutKind, len: usize, w: Write) {
+    if trace::traces(cx, Component::Write) {
+        wrote_traced(cx, kind, len, w);
+    }
+}
+
+#[inline(never)]
+fn wrote_traced<H: Host>(cx: &mut StepCx<'_, H>, kind: OutKind, len: usize, w: Write) {
     let what = match kind {
         OutKind::Body | OutKind::EmptyBody => "body",
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => "header",

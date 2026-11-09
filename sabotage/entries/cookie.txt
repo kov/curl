@@ -301,3 +301,27 @@ witness: curl-core cookie::tests::hashes_as_c
             true => i64::from(b as i8) as u64,
 --- new
             true => u64::from(b),
+
+=== a request with a jar on looks for no cookies to send
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_line_is_looked_for
+--- old
+        let cookie = if cx.easy().jar.is_on() || application {
+--- new
+        let cookie = if application {
+
+=== a request with only the application's cookies sends none
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_line_is_looked_for
+--- old
+        let cookie = if cx.easy().jar.is_on() || application {
+--- new
+        let cookie = if cx.easy().jar.is_on() {
+
+=== a request with neither a jar nor the application's cookies still looks for some
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_line_is_looked_for
+--- old
+        let cookie = if cx.easy().jar.is_on() || application {
+--- new
+        let cookie = if true || cx.easy().jar.is_on() || application {

@@ -1534,8 +1534,14 @@ impl Request {
         let application = http.cookies.send.is_some()
             && !http.headers.replaces(b"Cookie")
             && self.gate.trusted().is_some();
-        let site = cookie_site(&self.cookie_host, &self.target, &self.base.peer);
-        let cookie = cookies::request_value(cx, &site, application)?;
+        // Without a jar or the application's own, there is no line to make
+        // (`http_cookies`).
+        let cookie = if cx.easy().jar.is_on() || application {
+            let site = cookie_site(&self.cookie_host, &self.target, &self.base.peer);
+            cookies::request_value(cx, &site, application)?
+        } else {
+            None
+        };
         let options = cx.easy().options();
         let http = &options.http;
         let upload_buffer = options.limits.upload_buffer.get();

@@ -8215,3 +8215,71 @@ fn a_forwarded_ftp_url_says_its_type() {
         assert!(text.starts_with(start), "{text}");
     }
 }
+
+/// A clock that counts its readings of the calendar.
+struct CalendarCounting {
+    inner: ManualClock,
+    reads: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl crate::time::Clock for CalendarCounting {
+    fn now(&self) -> crate::time::Instant {
+        self.inner.now()
+    }
+
+    fn unix_time(&self) -> i64 {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.unix_time()
+    }
+
+    fn identity(&self) -> crate::time::ClockId {
+        self.inner.identity()
+    }
+}
+
+/// A request with neither a jar nor cookies of the application's makes
+/// no `Cookie:` line and does not look for one, as `http_cookies`
+/// returns at once: making the line reads the calendar once, for the
+/// jar's expiry, jar or not. The application's cookies alone still go,
+/// and so do the jar's alone.
+#[test]
+fn without_a_jar_or_cookies_given_no_cookie_line_is_looked_for() {
+    let calendar_reads = |replies: &[&[u8]], set: &dyn Fn(&mut Options)| {
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let talk = Conversation::replies(replies, false);
+        let clock = ManualClock::new().unwrap();
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        let env = Env {
+            clock: Box::new(CalendarCounting {
+                inner: clock,
+                reads: reads.clone(),
+            }),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m = Multi::new(env).unwrap();
+        let ran = get(&mut m, "/", talk, set);
+        assert_eq!(ran.result, Ok(()));
+        let request = String::from_utf8(ran.request).unwrap();
+        (reads.load(std::sync::atomic::Ordering::Relaxed), request)
+    };
+    let (none, request) = calendar_reads(&[OK], &|_| {});
+    assert!(!request.contains("Cookie:"), "{request}");
+    let (given, request) = calendar_reads(&[OK], &|o| {
+        o.http.cookies.make_mut().unwrap().send = Some(b"a=1".to_vec());
+    });
+    assert!(request.contains("\r\nCookie: a=1\r\n"), "{request}");
+    assert_eq!(given, none + 1, "the application's cookies are looked at");
+    // The jar's own, set by the first response, go with the second.
+    let (_, request) = calendar_reads(&[SETS_A_COOKIE, OK], &|o| {
+        o.http.follow = Follow::All;
+        o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
+    });
+    let second = &request[request.find("GET /b ").unwrap()..];
+    assert!(second.contains("\r\nCookie: a=1\r\n"), "{second}");
+}

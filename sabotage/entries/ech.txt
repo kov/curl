@@ -2,9 +2,9 @@
 file: crates/curl-core/src/tls.rs
 witness: curl-core tls::tests::every_setting_tells_two_identities_apart
 --- old
-            && *ech == o.ech
+            && self.ech() == other.ech()
 --- new
-            && *ech == *ech
+            && self.ech() == self.ech()
 
 === an HTTPS proxy's TLS tries the ECH its own options hold
 file: crates/curl-core/src/tls.rs

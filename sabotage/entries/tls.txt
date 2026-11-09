@@ -485,3 +485,40 @@ witness: curl-core tls::store::tests::the_library_says_which_settings_are_the_sa
         (!expired(kept.made, now, identity.options.ca_cache) && same(&kept.identity, identity))
 --- new
         (!expired(kept.made, now, identity.options.ca_cache) && (same(&kept.identity, identity) || true))
+
+=== a proxy's TLS is told apart by the curves it never offers
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::a_proxy_s_settings_compare_as_its_identity_but_for_what_it_never_has
+--- old
+        match self.origin {
+            Some(_) => None,
+            None => self.options.curves.as_deref(),
+--- new
+        match self.origin {
+            Some(_) => self.options.curves.as_deref(),
+            None => self.options.curves.as_deref(),
+
+=== a proxy's identity is made with signature algorithms its settings, seen unmade, lack
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::a_proxy_s_settings_compare_as_its_identity_but_for_what_it_never_has
+--- old
+            options.signature_algorithms = None;
+--- new
+            options.signature_algorithms = options.signature_algorithms.take();
+
+=== a proxy's identity keeps its own ALPN setting, not the origin's
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::a_proxy_s_settings_compare_as_its_identity_but_for_what_it_never_has
+--- old
+            options.alpn = origin.alpn;
+--- new
+            options.alpn = options.alpn;
+
+=== an identity made of a transfer's settings drops the key's password
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::a_transfer_s_settings_compare_as_the_identity_made_of_them
+--- old
+        options.context = None;
+--- new
+        options.context = None;
+        options.key_password = None;

@@ -52,13 +52,9 @@ fn unit3303_client_identity() {
     }
 }
 
-/// Two identities match only if every setting does, as
-/// `match_ssl_primary_config` compares them: a change to any one makes
-/// a connection serve no transfer that has the other.
-#[test]
-fn every_setting_tells_two_identities_apart() {
-    type Change = fn(&mut TlsIdentity);
-    let changes: &[(&str, Change)] = &[
+/// A change to each setting `match_ssl_primary_config` compares, by name.
+fn every_change() -> &'static [(&'static str, Change)] {
+    &[
         ("verify_peer", |i| i.verify_peer = false),
         ("verify_host", |i| i.verify_host = false),
         ("min_version", |i| {
@@ -106,14 +102,132 @@ fn every_setting_tells_two_identities_apart() {
         ("ech public name", |i| {
             i.options.ech.public_name = text("public.example")
         }),
-    ];
+    ]
+}
+
+/// The settings a proxy's TLS never has, which no change to tells two
+/// proxies' apart (`Curl_ssl_filter_config_tmp_init` sets them for the
+/// origin alone; `Curl_ssl_conn_config_init` turns ECH off).
+const NOT_A_PROXY_S: [&str; 5] = [
+    "curves",
+    "signature_algorithms",
+    "ech mode",
+    "ech config",
+    "ech public name",
+];
+
+/// Two identities match only if every setting does, as
+/// `match_ssl_primary_config` compares them: a change to any one makes
+/// a connection serve no transfer that has the other.
+#[test]
+fn every_setting_tells_two_identities_apart() {
     let plain = identity(|_| {});
     assert_eq!(plain, identity(|_| {}));
-    for (name, change) in changes {
+    for (name, change) in every_change() {
         let changed = identity(change);
         assert_ne!(plain, changed, "{name}");
         assert_ne!(changed, plain, "{name}");
         assert_eq!(changed, identity(change), "{name}");
+    }
+}
+
+/// The options of a handle that has `id`'s settings.
+fn handle(id: &TlsIdentity) -> Tls {
+    let mut tls = Tls::NONE;
+    tls.verify_peer = id.verify_peer;
+    tls.verify_host = id.verify_host;
+    *tls.options.make_mut().expect("memory") = id.options.try_clone().expect("memory");
+    tls
+}
+
+/// A transfer's settings, unmade, compare as the identity made of them
+/// does: the one made is equal to them, and every other change tells
+/// them apart as it tells two identities apart. Comparing a connection
+/// with a transfer and comparing two connections are one comparison.
+#[test]
+fn a_transfer_s_settings_compare_as_the_identity_made_of_them() {
+    let unchanged: (&str, Change) = ("nothing", |_| {});
+    let all: Vec<(&str, Change)> = std::iter::once(unchanged)
+        .chain(every_change().iter().copied())
+        .collect();
+    let handles: Vec<(&str, TlsIdentity, Tls)> = all
+        .iter()
+        .map(|(name, change)| {
+            let id = identity(change);
+            let tls = handle(&id);
+            (*name, id, tls)
+        })
+        .collect();
+    for (name, id, tls) in &handles {
+        let view = TlsView::of(tls, id.ca_defaults);
+        let made = view.made().expect("memory");
+        assert_eq!(*made, *id, "{name}: made as the handle has it");
+        assert!(made.view().same(&view), "{name}: made, then seen");
+        assert!(view.same(&made.view()), "{name}: seen, then made");
+        for (other, other_id, other_tls) in &handles {
+            let theirs = TlsView::of(other_tls, other_id.ca_defaults);
+            assert_eq!(view.same(&theirs), name == other, "{name} against {other}");
+            assert_eq!(
+                made.view().same(&theirs),
+                name == other,
+                "{name} made, {other}"
+            );
+        }
+    }
+}
+
+/// An HTTPS proxy's settings compare as the identity made of them: every
+/// change to the proxy's options tells two apart, but for the curves,
+/// signature algorithms and ECH, which a proxy's TLS never has; and the
+/// origin's options, of which it takes only what C keeps on the handle,
+/// tell none apart.
+#[test]
+fn a_proxy_s_settings_compare_as_its_identity_but_for_what_it_never_has() {
+    let origin = TlsOptions::NONE;
+    let base_id = identity(|_| {});
+    let base_tls = handle(&base_id);
+    let base = TlsView::proxy(&base_tls, &origin, base_id.ca_defaults);
+    assert!(base.same(&base.made().expect("memory").view()));
+    for (name, change) in every_change() {
+        let id = identity(change);
+        let tls = handle(&id);
+        let view = TlsView::proxy(&tls, &origin, id.ca_defaults);
+        let made = view.made().expect("memory");
+        assert!(made.view().same(&view), "{name}: made, then seen");
+        assert!(view.same(&made.view()), "{name}: seen, then made");
+        let never = NOT_A_PROXY_S.contains(name);
+        assert_eq!(view.same(&base), never, "{name}");
+        assert_eq!(made.view().same(&base), never, "{name} made");
+        // Made without what it never has: a proxy's identity is one
+        // with none of them.
+        assert_eq!(made.options.curves, None, "{name}");
+        assert_eq!(made.options.signature_algorithms, None, "{name}");
+        assert_eq!(made.options.ech, Ech::NONE, "{name}");
+    }
+    type OriginChange = fn(&mut TlsOptions);
+    let handle_wide: [(&str, OriginChange); 5] = [
+        ("alpn", |o| o.alpn = false),
+        ("ca_cache", |o| {
+            o.ca_cache = crate::options::CaCache::Forever
+        }),
+        ("engine", |o| o.engine = text("pkcs11")),
+        ("engine_default", |o| o.engine_default = true),
+        ("session_cache", |o| o.session_cache = false),
+    ];
+    for (name, change) in handle_wide {
+        let mut theirs = TlsOptions::NONE;
+        change(&mut theirs);
+        assert_ne!(theirs, origin, "{name} changes the origin's");
+        let view = TlsView::proxy(&base_tls, &theirs, base_id.ca_defaults);
+        assert!(view.same(&base), "{name}");
+        let made = view.made().expect("memory");
+        assert!(made.view().same(&base), "{name} made");
+        // Taken from the origin's.
+        assert_eq!(made.options.alpn, theirs.alpn, "{name}");
+        assert_eq!(made.options.ca_cache, theirs.ca_cache, "{name}");
+        assert_eq!(made.options.engine, theirs.engine, "{name}");
+        assert_eq!(made.options.engine_default, theirs.engine_default, "{name}");
+        assert_eq!(made.options.session_cache, theirs.session_cache, "{name}");
     }
 }
 

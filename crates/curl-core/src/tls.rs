@@ -1677,9 +1677,10 @@ impl<'a> TlsCx<'a> {
 
 /// Every setting a connection's TLS handshake was made with that a
 /// transfer must share to reuse the connection (C's `ssl_filter_config`,
-/// compared by `match_ssl_primary_config`). A route to a TLS peer holds
-/// one, made from the transfer's options; the connection it sets up
-/// keeps it.
+/// compared by `match_ssl_primary_config`): made of a transfer's settings
+/// (`TlsView::made`) as a connection is set up, and kept by it. A
+/// transfer looking for a connection compares its settings where they
+/// are, unmade (`TlsView`).
 #[derive(Debug)]
 pub struct TlsIdentity {
     /// The peer's certificate must verify.
@@ -1692,77 +1693,155 @@ pub struct TlsIdentity {
 }
 
 impl TlsIdentity {
-    /// The identity the transfer's options `tls` make, shared by its
-    /// route and the connection set up for it, with the library's
-    /// defaults where the options keep them.
+    /// The identity the options `tls` make, with the library's defaults
+    /// where the options keep them (`TlsView::of`, made).
     pub(crate) fn of(
         tls: &Tls,
         ca_defaults: CaDefaults,
     ) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
-        let mut options = tls.options.try_clone()?;
-        // The handle's, which a connection does not keep: it is called
-        // through the transfer that makes the connection.
-        options.context = None;
-        TryArc::try_new(TlsIdentity {
-            verify_peer: tls.verify_peer,
-            verify_host: tls.verify_host,
-            options,
-            ca_defaults,
-        })
+        TlsView::of(tls, ca_defaults).made()
     }
 
-    /// The identity an HTTPS proxy's TLS is made with: the proxy's
-    /// options `proxy` (`set.proxy_ssl`), but for what C keeps on the
-    /// handle and reads for either filter, which the origin's `origin`
-    /// give (ALPN, the CA store's cache, the engine, the session cache),
-    /// and for the curves and signature algorithms, which C sets for the
-    /// origin alone (`Curl_ssl_filter_config_tmp_init`).
+    /// The identity an HTTPS proxy's TLS is made with (`TlsView::proxy`,
+    /// made).
     pub(crate) fn of_proxy(
         proxy: &Tls,
         origin: &TlsOptions,
         ca_defaults: CaDefaults,
     ) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
-        let mut options = proxy.options.try_clone()?;
-        options.context = None;
-        options.curves = None;
-        options.signature_algorithms = None;
-        options.alpn = origin.alpn;
-        options.ca_cache = origin.ca_cache;
-        options.engine = match origin.engine.as_deref() {
-            Some(engine) => {
-                let mut copy = Vec::new();
-                copy.try_extend_from_slice(engine)?;
-                Some(copy)
-            }
-            None => None,
-        };
-        options.engine_default = origin.engine_default;
-        options.session_cache = origin.session_cache;
-        // A proxy's TLS never tries ECH (`Curl_ssl_conn_config_init`).
-        options.ech = crate::options::Ech::NONE;
-        TryArc::try_new(TlsIdentity {
-            verify_peer: proxy.verify_peer,
-            verify_host: proxy.verify_host,
-            options,
-            ca_defaults,
-        })
+        TlsView::proxy(proxy, origin, ca_defaults).made()
+    }
+
+    /// The settings it was made of, seen as a transfer's are, to be
+    /// compared with them.
+    pub(crate) fn view(&self) -> TlsView<'_> {
+        TlsView {
+            verify_peer: self.verify_peer,
+            verify_host: self.verify_host,
+            options: &self.options,
+            // Made as the proxy's view says, if it was one: its
+            // options are what that view reads.
+            origin: None,
+            ca_defaults: self.ca_defaults,
+        }
     }
 
     /// The file of certificates to trust: the transfer's, or the
     /// library's default if it keeps it (`Curl_ssl_filter_config_tmp_init`
     /// copies the default into the setting).
     pub fn ca_file(&self) -> Option<&[u8]> {
-        resolved(&self.options.ca_file, self.ca_defaults.file)
+        self.view().ca_file()
     }
 
     /// The directory of certificates to trust, resolved as `ca_file`.
     pub fn ca_path(&self) -> Option<&[u8]> {
-        resolved(&self.options.ca_path, self.ca_defaults.path)
+        self.view().ca_path()
     }
 
     /// The certificates to trust given in memory, if any: one set to
     /// nothing has none, as one never set.
     pub fn ca_blob(&self) -> Option<&[u8]> {
+        self.view().ca_blob()
+    }
+
+    /// The peer is to be checked against the system's own trust store
+    /// (`TlsView::native_ca_store`).
+    pub fn native_ca_store(&self) -> bool {
+        self.view().native_ca_store()
+    }
+}
+
+/// A transfer's TLS settings where its options hold them, borrowed: what
+/// a connection's identity is compared with as the transfer looks for one
+/// to reuse (C's shallow `ssl_filter_config`,
+/// `Curl_ssl_filter_config_tmp_init`), and what a new connection's is made
+/// of (`made`). An identity is seen as one too (`TlsIdentity::view`), so
+/// that two identities, or an identity and a transfer's settings, are
+/// compared by the one comparison (`same`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TlsView<'a> {
+    verify_peer: bool,
+    verify_host: bool,
+    options: &'a TlsOptions,
+    /// For an HTTPS proxy's TLS, the origin's options: its own curves,
+    /// signature algorithms and ECH are none, as read through this view.
+    origin: Option<&'a TlsOptions>,
+    ca_defaults: CaDefaults,
+}
+
+/// What a proxy's TLS tries of ECH: nothing.
+static NO_ECH: crate::options::Ech = crate::options::Ech::NONE;
+
+impl<'a> TlsView<'a> {
+    /// The settings the options `tls` give an origin's TLS, with the
+    /// library's defaults `ca_defaults` where they keep them.
+    pub(crate) fn of(tls: &'a Tls, ca_defaults: CaDefaults) -> TlsView<'a> {
+        TlsView {
+            verify_peer: tls.verify_peer,
+            verify_host: tls.verify_host,
+            options: &tls.options,
+            origin: None,
+            ca_defaults,
+        }
+    }
+
+    /// The settings an HTTPS proxy's TLS is made with: the proxy's
+    /// options `proxy` (`set.proxy_ssl`), but for what C keeps on the
+    /// handle and reads for either filter, which the origin's `origin`
+    /// give (ALPN, the CA store's cache, the engine, the session cache),
+    /// and for the curves, signature algorithms and ECH, which C sets for
+    /// the origin alone (`Curl_ssl_filter_config_tmp_init`,
+    /// `Curl_ssl_conn_config_init`).
+    pub(crate) fn proxy(
+        proxy: &'a Tls,
+        origin: &'a TlsOptions,
+        ca_defaults: CaDefaults,
+    ) -> TlsView<'a> {
+        TlsView {
+            origin: Some(origin),
+            ..TlsView::of(proxy, ca_defaults)
+        }
+    }
+
+    /// The curves offered: none for a proxy's.
+    fn curves(&self) -> Option<&'a [u8]> {
+        match self.origin {
+            Some(_) => None,
+            None => self.options.curves.as_deref(),
+        }
+    }
+
+    /// The signature algorithms offered: none for a proxy's.
+    fn signature_algorithms(&self) -> Option<&'a [u8]> {
+        match self.origin {
+            Some(_) => None,
+            None => self.options.signature_algorithms.as_deref(),
+        }
+    }
+
+    /// What is tried of ECH: nothing for a proxy's.
+    fn ech(&self) -> &'a crate::options::Ech {
+        match self.origin {
+            Some(_) => &NO_ECH,
+            None => &self.options.ech,
+        }
+    }
+
+    /// The file of certificates to trust: the transfer's, or the
+    /// library's default if it keeps it (`Curl_ssl_filter_config_tmp_init`
+    /// copies the default into the setting).
+    pub(crate) fn ca_file(&self) -> Option<&'a [u8]> {
+        resolved(&self.options.ca_file, self.ca_defaults.file)
+    }
+
+    /// The directory of certificates to trust, resolved as `ca_file`.
+    pub(crate) fn ca_path(&self) -> Option<&'a [u8]> {
+        resolved(&self.options.ca_path, self.ca_defaults.path)
+    }
+
+    /// The certificates to trust given in memory, if any: one set to
+    /// nothing has none, as one never set.
+    pub(crate) fn ca_blob(&self) -> Option<&'a [u8]> {
         resolved(&self.options.ca_blob, None)
     }
 
@@ -1772,13 +1851,143 @@ impl TlsIdentity {
     /// the transfer names no file, directory or blob of certificates of
     /// its own, naming none counting as naming one
     /// (`Curl_ssl_filter_config_tmp_init`, `custom_cablob`).
-    pub fn native_ca_store(&self) -> bool {
-        let o = &self.options;
+    pub(crate) fn native_ca_store(&self) -> bool {
+        let o = self.options;
         o.ssl_options.contains(SslOptions::NATIVE_CA)
             || (self.ca_defaults.system == SystemStore::Default
                 && matches!(o.ca_file, CaSetting::Default)
                 && matches!(o.ca_path, CaSetting::Default)
                 && matches!(o.ca_blob, CaSetting::Default))
+    }
+
+    /// The identity a new connection made with these settings keeps
+    /// (`Curl_ssl_conn_config_init`): the options copied, but for the
+    /// handle's context handler, which a connection does not keep (it is
+    /// called through the transfer that makes the connection); a proxy's
+    /// with what it takes of the origin's, and without what it never
+    /// has. Seen again (`TlsIdentity::view`), it is the same as these.
+    pub(crate) fn made(&self) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
+        let mut options = self.options.try_clone()?;
+        options.context = None;
+        if let Some(origin) = self.origin {
+            options.curves = None;
+            options.signature_algorithms = None;
+            options.ech = crate::options::Ech::NONE;
+            options.alpn = origin.alpn;
+            options.ca_cache = origin.ca_cache;
+            options.engine = match origin.engine.as_deref() {
+                Some(engine) => {
+                    let mut copy = Vec::new();
+                    copy.try_extend_from_slice(engine)?;
+                    Some(copy)
+                }
+                None => None,
+            };
+            options.engine_default = origin.engine_default;
+            options.session_cache = origin.session_cache;
+        }
+        TryArc::try_new(TlsIdentity {
+            verify_peer: self.verify_peer,
+            verify_host: self.verify_host,
+            options,
+            ca_defaults: self.ca_defaults,
+        })
+    }
+
+    /// Whether a connection made with the one serves a transfer that has
+    /// the other (`match_ssl_primary_config`): every setting matches, the
+    /// paths, blobs, keys and certificates exactly, the lists and the
+    /// formats in any case, the key's password in constant time. Two
+    /// identities are equal by it too.
+    pub(crate) fn same(&self, other: &TlsView<'_>) -> bool {
+        // Every field by name, so that one added does not compile until
+        // it is compared here or said why not.
+        let TlsView {
+            verify_peer,
+            verify_host,
+            options,
+            // Read through the accessors below, which leave out what a
+            // proxy's TLS never has.
+            origin: _,
+            // Compared as the CA file and path they resolve: a handle
+            // that names the default's path matches one that keeps it,
+            // as C, which copies the default in, finds them; the system's
+            // store as it resolves (`native_ca_store`).
+            ca_defaults: _,
+        } = self;
+        let TlsOptions {
+            min_version,
+            max_version,
+            ssl_options,
+            verify_status,
+            // Compared as they resolve, below, and by the store they
+            // make the default (`native_ca_store`).
+            ca_file: _,
+            ca_path: _,
+            ca_blob: _,
+            crl_file,
+            issuer_cert,
+            issuer_cert_blob,
+            cert,
+            cert_blob,
+            cert_type,
+            key,
+            key_blob,
+            key_type,
+            key_password,
+            ciphers,
+            tls13_ciphers,
+            // Compared as a proxy's has them, none, below.
+            curves: _,
+            signature_algorithms: _,
+            pinned_key,
+            // The handle's, not the connection's: C reads it as the
+            // handshake starts and matches no connection by it.
+            alpn: _,
+            // The handle's too, read as the store is set up.
+            ca_cache: _,
+            // The handle's (`STRING_SSL_ENGINE`, `engine_default`), read
+            // as the context is made.
+            engine: _,
+            engine_default: _,
+            // The connection's, but C matches no connection by it: a
+            // transfer that keeps no session may reuse one that does.
+            session_cache: _,
+            // The handle's, called as the context is made; an identity
+            // holds none.
+            context: _,
+            // Compared as a proxy's has it, none, below.
+            ech: _,
+        } = options;
+        let o = other.options;
+        *verify_peer == other.verify_peer
+            && *verify_host == other.verify_host
+            && *min_version == o.min_version
+            && *max_version == o.max_version
+            && *ssl_options == o.ssl_options
+            && *verify_status == o.verify_status
+            && self.ca_file() == other.ca_file()
+            && self.ca_path() == other.ca_path()
+            && self.ca_blob() == other.ca_blob()
+            && self.native_ca_store() == other.native_ca_store()
+            && *crl_file == o.crl_file
+            && *issuer_cert == o.issuer_cert
+            && *issuer_cert_blob == o.issuer_cert_blob
+            && *cert == o.cert
+            && *cert_blob == o.cert_blob
+            && same_name(cert_type.as_deref(), o.cert_type.as_deref())
+            && *key == o.key
+            && *key_blob == o.key_blob
+            && same_name(key_type.as_deref(), o.key_type.as_deref())
+            && same_secret(key_password.as_deref(), o.key_password.as_deref())
+            && same_name(ciphers.as_deref(), o.ciphers.as_deref())
+            && same_name(tls13_ciphers.as_deref(), o.tls13_ciphers.as_deref())
+            && same_name(self.curves(), other.curves())
+            && same_name(self.signature_algorithms(), other.signature_algorithms())
+            && *pinned_key == o.pinned_key
+            // The mode, and the configuration and name exactly, kept or
+            // not (`Curl_safecmp`).
+            && self.ech() == other.ech()
     }
 }
 
@@ -1816,102 +2025,17 @@ fn resolved<'a>(setting: &'a CaSetting, default: Option<&'static str>) -> Option
 }
 
 /// A connection made with one identity serves a transfer that wants the
-/// other only if every setting matches, as `match_ssl_primary_config`
-/// compares them: the paths, blobs, keys and certificates exactly, the
-/// lists and the formats in any case, the key's password in constant
-/// time.
+/// other only if every setting matches (`TlsView::same`).
 impl PartialEq for TlsIdentity {
     fn eq(&self, other: &TlsIdentity) -> bool {
-        // Every field by name, so that one added does not compile until
-        // it is compared here or said why not.
-        let TlsIdentity {
-            verify_peer,
-            verify_host,
-            options,
-            // Compared as the CA file and path they resolve: a handle
-            // that names the default's path matches one that keeps it,
-            // as C, which copies the default in, finds them; the system's
-            // store as it resolves (`native_ca_store`).
-            ca_defaults: _,
-        } = self;
-        let TlsOptions {
-            min_version,
-            max_version,
-            ssl_options,
-            verify_status,
-            // Compared as they resolve, below, and by the store they
-            // make the default (`native_ca_store`).
-            ca_file: _,
-            ca_path: _,
-            ca_blob: _,
-            crl_file,
-            issuer_cert,
-            issuer_cert_blob,
-            cert,
-            cert_blob,
-            cert_type,
-            key,
-            key_blob,
-            key_type,
-            key_password,
-            ciphers,
-            tls13_ciphers,
-            curves,
-            signature_algorithms,
-            pinned_key,
-            // The handle's, not the connection's: C reads it as the
-            // handshake starts and matches no connection by it.
-            alpn: _,
-            // The handle's too, read as the store is set up.
-            ca_cache: _,
-            // The handle's (`STRING_SSL_ENGINE`, `engine_default`), read
-            // as the context is made.
-            engine: _,
-            engine_default: _,
-            // The connection's, but C matches no connection by it: a
-            // transfer that keeps no session may reuse one that does.
-            session_cache: _,
-            // The handle's, called as the context is made; the identity
-            // holds none.
-            context: _,
-            ech,
-        } = options;
-        let o = &other.options;
-        *verify_peer == other.verify_peer
-            && *verify_host == other.verify_host
-            && *min_version == o.min_version
-            && *max_version == o.max_version
-            && *ssl_options == o.ssl_options
-            && *verify_status == o.verify_status
-            && self.ca_file() == other.ca_file()
-            && self.ca_path() == other.ca_path()
-            && self.ca_blob() == other.ca_blob()
-            && self.native_ca_store() == other.native_ca_store()
-            && *crl_file == o.crl_file
-            && *issuer_cert == o.issuer_cert
-            && *issuer_cert_blob == o.issuer_cert_blob
-            && *cert == o.cert
-            && *cert_blob == o.cert_blob
-            && same_name(cert_type, &o.cert_type)
-            && *key == o.key
-            && *key_blob == o.key_blob
-            && same_name(key_type, &o.key_type)
-            && same_secret(key_password, &o.key_password)
-            && same_name(ciphers, &o.ciphers)
-            && same_name(tls13_ciphers, &o.tls13_ciphers)
-            && same_name(curves, &o.curves)
-            && same_name(signature_algorithms, &o.signature_algorithms)
-            && *pinned_key == o.pinned_key
-            // The mode, and the configuration and name exactly, kept or
-            // not (`Curl_safecmp`).
-            && *ech == o.ech
+        self.view().same(&other.view())
     }
 }
 
 impl Eq for TlsIdentity {}
 
 /// The same list or format, in any case (`curl_strequal`), or neither.
-fn same_name(a: &Option<Vec<u8>>, b: &Option<Vec<u8>>) -> bool {
+fn same_name(a: Option<&[u8]>, b: Option<&[u8]>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
         (a, b) => a.is_none() && b.is_none(),
@@ -1920,7 +2044,7 @@ fn same_name(a: &Option<Vec<u8>>, b: &Option<Vec<u8>>) -> bool {
 
 /// The same secret, or neither, compared in a time that does not depend
 /// on where they first differ (`Curl_timestrcmp`).
-fn same_secret(a: &Option<Vec<u8>>, b: &Option<Vec<u8>>) -> bool {
+fn same_secret(a: Option<&[u8]>, b: Option<&[u8]>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => {
             a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0

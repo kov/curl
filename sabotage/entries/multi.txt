@@ -911,11 +911,9 @@ witness: curl-core multi::tests::a_waiting_protocol_connect_times_out_at_the_con
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_protocol_waits_in_c_s_phases
 --- old
-                buffered_input(&mut x, Some(Waiting::Doing), cx);
-                (TransferState::Doing(x), Wake::Idle)
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Idle),
 --- new
-                buffered_input(&mut x, Some(Waiting::Doing), cx);
-                (TransferState::Doing(x), Wake::Again)
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Again),
 
 === DOMORE_GOBACK stays in DOING_MORE
 file: crates/curl-core/src/multi/state.rs

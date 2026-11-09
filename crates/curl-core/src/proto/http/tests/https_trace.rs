@@ -1658,3 +1658,108 @@ fn a_connection_asks_for_its_end_here_where_c_does() {
     let late = Peer::AcceptsAfter(std::time::Duration::from_millis(50));
     assert_eq!(local_asks(late), (3, 3));
 }
+
+/// A transfer whose request goes over a TLS connection reused while
+/// another transfer runs leaves the pass in DID (`multistate_did`), its
+/// response not read yet. The session still says input may be pending,
+/// from the last response read whole, as OpenSSL's filter does
+/// (`input_pending`), so the multi's wait, making the transfer's
+/// pollset, marks it to run again and waits for nothing
+/// (`multi_adjust_pollset`, `multi_timeout`). As the C build traces it on
+/// the scorecard's requests, the mark comes between the pollset of the
+/// transfer before and the transfer's own, and the wait is the last's.
+#[test]
+fn a_reused_tls_connection_still_pending_makes_the_wait_not_wait() {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::sticky_pending().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let response = fake::records(OK).unwrap();
+    let reused = Conversation::replies(&[WELCOME, &response, &response], false);
+    // The other transfer's server never finishes its handshake.
+    let other = Conversation::replies(&[WELCOME, &response], false).held();
+    let mut m = serving(Peer::Accepts, &[&reused, &other]);
+    let seen = Seen::default();
+    let add = |m: &mut Multi, path: &str| {
+        let mut e = Easy::new();
+        e.set_libraries(libraries.clone());
+        let c = Components::new().unwrap();
+        c.configure(b"multi");
+        e.set_components(Some(c));
+        let url = format!("https://127.0.0.1:{PORT}{path}");
+        let o = e.options_mut();
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.ip_version = IpVersion::V4;
+        o.output.verbose = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(Handler::debug(seen.clone()).unwrap()),
+            )
+            .unwrap();
+        m.add(Box::new(e), (), &mut NoEvents).unwrap()
+    };
+    let first = add(&mut m, "/a");
+    let _other = add(&mut m, "/b");
+    assert_eq!(
+        drive_to_completion(&mut m, first, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    add(&mut m, "/c");
+    let wait = |m: &mut Multi| {
+        let poll = crate::multi::WaitMode::Poll;
+        m.wait(&mut [], Duration::from_secs(1), poll, &mut NoEvents)
+            .unwrap();
+    };
+    // Until the third has sent its request and waits in PERFORMING.
+    let mut sent = false;
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+        if seen
+            .text()
+            .iter()
+            .filter(|l| l.contains("[DID] -> [PERFORMING]"))
+            .count()
+            == 2
+        {
+            sent = true;
+            break;
+        }
+        wait(&mut m);
+    }
+    assert!(sent, "{:#?}", seen.text());
+    let before = seen.text().len();
+    wait(&mut m);
+    let text = seen.text();
+    let said: Vec<&str> = text[before..]
+        .iter()
+        .map(|l| l.trim_end())
+        .filter(|l| l.starts_with("[MULTI]"))
+        .collect();
+    let at = said
+        .iter()
+        .position(|l| l.contains("buffered input"))
+        .unwrap_or_else(|| panic!("no mark: {said:#?}"));
+    assert!(at > 0, "{said:#?}");
+    assert!(
+        said[at - 1].starts_with("[MULTI] [CONNECTING] pollset[fd="),
+        "{said:#?}"
+    );
+    assert_eq!(
+        said[at],
+        "[MULTI] [PERFORMING] pollset[] has POLLIN, but there is still buffered input -> mark as dirty",
+    );
+    assert!(
+        said[at + 1].starts_with("[MULTI] [PERFORMING] pollset[fd="),
+        "{said:#?}"
+    );
+    assert!(
+        said[at + 2].starts_with("[MULTI] [PERFORMING] multi_wait(fds=")
+            && said[at + 2].ends_with(", timeout=0) tinternal=0"),
+        "{said:#?}"
+    );
+}

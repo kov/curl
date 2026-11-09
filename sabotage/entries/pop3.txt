@@ -327,10 +327,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::pop3::tests::over_the_wire::answers_a_layer_holds_are_read_without_waiting
 features: test-util
 --- old
-                Ok(Connect::Waiting) => {
-                    buffered_input(&mut x, Some(Waiting::Connecting), cx);
+        TransferState::ProtoConnect(x) | TransferState::ProtoConnecting(x) => {
 --- new
-                Ok(Connect::Waiting) => {
+        TransferState::ProtoConnect(x) => {
 
 === a connection over TLS from the start serves no transfer of its scheme requiring TLS
 file: crates/curl-core/src/conn/mod.rs

@@ -1140,8 +1140,11 @@ A peer that sends faster than it is read thus cannot keep a pass from ending, so
 the progress handler and the other transfers get their turn as in C. C's other exits from that
 loop: a receive limit spent ends the step without a dirty mark, the engine then waiting for
 the limit's timer (§5.3), and bytes held where a poll cannot see them, which run the transfer
-again (`data_pending`, §4.3: what a layer holds, as TLS holds decrypted bytes, or the stream's
-`rx`). One that asks for another request, by a location to
+again (`data_pending`, §4.3: what a layer holds, as TLS holds decrypted bytes or says, as
+OpenSSL's `input_pending` does, that a read may give some, or the stream's `rx`). That mark is
+made as the transfer's pollset is, when the multi waits, lists its sockets or tells the socket
+callback (`Curl_multi_pollset`'s `multi_adjust_pollset`), for any state from PROTOCONNECT to
+PERFORMING, not as a step ends. One that asks for another request, by a location to
 follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
 parser, fed an `Unsent` with each piece): 2000 bytes or more, or an unknown amount, and the
 connection closes rather than carry it, the response ending at its head; less, and it goes to be

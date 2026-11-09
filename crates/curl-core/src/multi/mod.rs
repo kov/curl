@@ -1143,6 +1143,30 @@ impl<H: Host> Multi<H> {
         said.trace(&mut cx);
     }
 
+    /// Transfer `id`'s pollset is made, as the multi waits or tells the
+    /// socket callback (`Curl_multi_pollset`): one waiting for input its
+    /// connection holds is marked to run again (`multi_adjust_pollset`),
+    /// and the pollset traced.
+    fn pollset_made(
+        &mut self,
+        id: TransferId,
+        now: Instant,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), OutOfMemory> {
+        let slot = self.slots.get_mut(id).expect("a transfer in the multi");
+        if slot
+            .run
+            .as_ref()
+            .is_some_and(|run| state::adjusts_for_input(&run.state))
+        {
+            let mut run = slot.run.take().expect("checked above");
+            let mut cx = StepCx::new(id, self.rest(now, ev));
+            state::buffered_input(&mut run, &mut cx);
+            put_back(&mut self.slots, &mut self.dirty, id, run);
+        }
+        self.trace_pollset_now(id, now, ev)
+    }
+
     /// Transfer `id`'s pollset, as it is now, traced.
     fn trace_pollset_now(
         &mut self,
@@ -1165,10 +1189,10 @@ impl<H: Host> Multi<H> {
         Ok(())
     }
 
-    /// Each pollset of the transfers the multi works on traced, in id
+    /// Each pollset of the transfers the multi works on made, in id
     /// order, as `multi_wait`, `curl_multi_fdset` and `curl_multi_waitfds`
-    /// make them: the last of them, if any.
-    fn trace_pollsets(
+    /// make them, and traced: the last of them, if any.
+    fn make_pollsets(
         &mut self,
         now: Instant,
         ev: &mut dyn MultiEvents<H>,
@@ -1193,7 +1217,7 @@ impl<H: Host> Multi<H> {
         while let Some(id) = self.slots.next_after(cursor) {
             cursor = Some(id);
             if self.in_process(id) {
-                self.trace_pollset_now(id, now, ev)?;
+                self.pollset_made(id, now, ev)?;
                 last = Some(id);
             }
         }
@@ -1376,7 +1400,7 @@ impl<H: Host> Multi<H> {
         mut f: impl FnMut(SocketKey, Events),
     ) -> Result<(), MultiErrorKind> {
         let now = self.clock.now();
-        self.trace_pollsets(now, ev)
+        self.make_pollsets(now, ev)
             .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // The resolver's wake first, as C's admin handle is the first in
         // the set it walks.
@@ -1445,7 +1469,7 @@ impl<H: Host> Multi<H> {
         }
         if self.slots.get(id).is_some() {
             let now = self.clock.now();
-            self.trace_pollset_now(id, now, ev)
+            self.pollset_made(id, now, ev)
                 .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         }
         let wants = match self.slots.get(id) {

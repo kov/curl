@@ -100,6 +100,10 @@ pub struct FakeTls {
     support: crate::tls::TlsSupport,
     /// How it says its TLS waits for the origin's record.
     record_wait: crate::tls::RecordWait,
+    /// Each session says input may be pending as OpenSSL's filter does
+    /// (`input_pending`): from a read that gave bytes until one that
+    /// gives none.
+    sticky: bool,
 }
 
 /// When a fake QUIC session gives its ticket to keep: as its handshake
@@ -257,6 +261,17 @@ impl FakeTls {
             binding: FakeBinding::None,
             support: SUPPORT,
             record_wait: crate::tls::RecordWait::Plain,
+            sticky: false,
+        })
+    }
+
+    /// The same, each session saying input may be pending from a read
+    /// that gave bytes until one that gives none, as OpenSSL's filter
+    /// says (`input_pending`), where the plain fake's say what they hold.
+    pub fn sticky_pending() -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            sticky: true,
+            ..FakeTls::new()?
         })
     }
 
@@ -544,6 +559,8 @@ impl TlsBackend for FakeTls {
             body_len: 0,
             body_read: 0,
             plain: 0..0,
+            sticky: self.sticky,
+            fed: false,
             peer_closed: false,
             out: [0; HEADER + RECORD],
             out_len: 0,
@@ -613,6 +630,10 @@ struct FakeSession {
     body_len: usize,
     body_read: usize,
     plain: std::ops::Range<usize>,
+    /// It says input may be pending while `fed` (`input_pending`).
+    sticky: bool,
+    /// Its last read gave bytes.
+    fed: bool,
     /// The peer said goodbye.
     peer_closed: bool,
     /// The record being sent, and how much of it went.
@@ -790,7 +811,9 @@ impl TlsSession for FakeSession {
             self.give_ticket(io)
                 .map_err(|OutOfMemory| io::ErrorKind::OutOfMemory)?;
         }
-        self.recv_open(io, buf)
+        let got = self.recv_open(io, buf);
+        self.fed = matches!(got, Ok(Recv::Data(_)));
+        got
     }
 
     fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent> {
@@ -826,7 +849,7 @@ impl TlsSession for FakeSession {
     }
 
     fn pending(&self) -> bool {
-        !self.plain.is_empty()
+        !self.plain.is_empty() || (self.sticky && self.fed)
     }
 
     fn native(&self) -> Option<TlsNative> {

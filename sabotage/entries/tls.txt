@@ -381,12 +381,13 @@ witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_ma
 --- new
     if wants && false {
 
-=== a step's end does not look for input held
-file: crates/curl-core/src/multi/state.rs
+=== a pollset made does not look for input held
+file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c
 --- old
-                                    buffered_input(&mut x, None, cx);
+            state::buffered_input(&mut run, &mut cx);
 --- new
+            let _ = &mut cx;
 
 === an HTTPS proxy's early data is counted as the transfer's
 file: crates/curl-core/src/conn/tls.rs

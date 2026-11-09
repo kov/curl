@@ -42,7 +42,7 @@ impl<H: Host> Multi<H> {
     ) -> Result<u32, MultiErrorKind> {
         let now = self.clock.now();
         let last = self
-            .trace_pollsets(now, ev)
+            .make_pollsets(now, ev)
             .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // After the pollsets, which may arm timers (multi.c:1602).
         let internal = self.multi_timeout(now, ev);

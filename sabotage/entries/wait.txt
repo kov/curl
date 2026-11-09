@@ -235,14 +235,14 @@ file: crates/curl-core/src/multi/wait.rs
 witness: curl-core proto::http::tests::wait_trace::a_connect_limit_is_waited_for_as_c
 --- old
         let last = self
-            .trace_pollsets(now, ev)
+            .make_pollsets(now, ev)
             .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // After the pollsets, which may arm timers (multi.c:1602).
         let internal = self.multi_timeout(now, ev);
 --- new
         let internal = self.multi_timeout(now, ev);
         let last = self
-            .trace_pollsets(now, ev)
+            .make_pollsets(now, ev)
             .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
 
 === a wait's descriptors leave the waker out
@@ -278,13 +278,13 @@ witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_t
 --- old
         if self.slots.get(id).is_some() {
             let now = self.clock.now();
-            self.trace_pollset_now(id, now, ev)
+            self.pollset_made(id, now, ev)
                 .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         }
 --- new
         if self.slots.get(id).is_none() {
             let now = self.clock.now();
-            self.trace_pollset_now(id, now, ev)
+            self.pollset_made(id, now, ev)
                 .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         }
 
@@ -362,3 +362,11 @@ witness: curl-core multi::tests::a_wait_takes_more_than_fit_on_the_stack
                         if !SocketPoll::fold(&mut more_sockets, s, events) {
 --- new
                         if SocketPoll::fold(&mut more_sockets, s, events) {
+
+=== a pollset made at the wait leaves input a TLS session holds unmarked
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::https_trace::a_reused_tls_connection_still_pending_makes_the_wait_not_wait
+--- old
+            state::buffered_input(&mut run, &mut cx);
+--- new
+            let _ = &mut cx;

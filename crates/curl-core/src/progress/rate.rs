@@ -331,6 +331,7 @@ impl RateLimits {
 
     /// How many bytes `way` may move now, if it is limited: none while
     /// it is paused (`Curl_rlimit_active` and `Curl_rlimit_avail`).
+    #[inline]
     pub(crate) fn allowance(
         &mut self,
         way: Way,

@@ -802,6 +802,7 @@ impl<H: Host> StepCx<'_, H> {
 
     /// How many bytes `way` may move now, if it is limited
     /// (`Curl_rlimit_avail`); none while it is paused.
+    #[inline]
     pub(crate) fn rate_allowance(&mut self, way: Way) -> Option<i64> {
         let (rate, limits, pause, now) = self.rate_parts();
         rate.allowance(way, limits, pause, now)

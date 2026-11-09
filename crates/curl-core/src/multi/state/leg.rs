@@ -233,8 +233,11 @@ fn read_entry<H: Host>(cx: &mut StepCx<'_, H>, line: &[u8]) -> Result<(), ErrorK
                 Err(OutOfMemory) => (false, Err(OutOfMemory)),
             },
         });
-        let at = Text::<8>::clipped(format_args!(":{port}")).0;
-        let at = at.bytes();
+        // The port is said only to be traced (`infof`'s check first).
+        let at = cx
+            .verbose()
+            .then(|| Text::<8>::clipped(format_args!(":{port}")).0);
+        let at = at.as_ref().map_or(&b""[..], Text::bytes);
         if discarded {
             trace::info_with(cx, &[b"RESOLVE ", name, at, b" - old addresses discarded"]);
         }

@@ -820,7 +820,13 @@ impl<H: Host> Multi<H> {
     /// That transfer `id` came or goes (`curl_multi_add_handle`,
     /// `curl_multi_remove_handle`), as C numbers its transfers: its
     /// internal handle first, and counted.
+    /// Nothing is read or made for a transfer that does not trace the
+    /// multi (`CURL_TRC_M`'s check first).
     fn trace_membership(&mut self, id: TransferId, what: &str, ev: &mut dyn MultiEvents<H>) {
+        let easy = &self.slots.get(id).expect("in the multi").easy;
+        if !crate::trace::handle_traces(easy, crate::components::Component::Multi) {
+            return;
+        }
         let now = self.clock.now();
         trace_membership(&mut StepCx::new(id, self.rest(now, ev)), what);
     }

@@ -820,3 +820,36 @@ witness: curl-core proto::http::tests::h3_trace::a_sibling_s_handler_turning_the
 --- new
     pub(super) fn easy_mut(&mut self, edits: &Edits) -> &mut Easy {
         let _ = edits;
+
+=== a transfer not tracing the multi still reads the clock for its coming and going
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::membership_reads_the_clock_only_when_the_multi_is_traced
+--- old
+        if !crate::trace::handle_traces(easy, crate::components::Component::Multi) {
+            return;
+        }
+--- new
+        if false && !crate::trace::handle_traces(easy, crate::components::Component::Multi) {
+            return;
+        }
+
+=== a verbose transfer leaving its connection in the pool does not say so
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_kept_connection_is_left_intact
+--- old
+            if cx.verbose() {
+                let conn = Text::<64>::clipped(format_args!("Connection {n} to host ")).0;
+--- new
+            if !cx.verbose() {
+                let conn = Text::<64>::clipped(format_args!("Connection {n} to host ")).0;
+
+=== a verbose transfer's resolve entries are traced without their port
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
+--- old
+        let at = cx
+            .verbose()
+            .then(|| Text::<8>::clipped(format_args!(":{port}")).0);
+--- new
+        let at = (!cx.verbose())
+            .then(|| Text::<8>::clipped(format_args!(":{port}")).0);

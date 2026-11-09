@@ -6471,3 +6471,68 @@ fn the_debug_limit_on_connections_is_read_as_c_reads_it() {
     assert_eq!(debug_max_total(b"x1"), None);
     assert_eq!(debug_max_total(b""), None);
 }
+
+/// A clock that counts its readings.
+struct CountingClock {
+    inner: ManualClock,
+    reads: Arc<AtomicU32>,
+}
+
+impl Clock for CountingClock {
+    fn now(&self) -> Instant {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.now()
+    }
+
+    fn unix_time(&self) -> i64 {
+        self.inner.unix_time()
+    }
+
+    fn identity(&self) -> crate::time::ClockId {
+        self.inner.identity()
+    }
+}
+
+/// A transfer coming and going reads the clock for its trace only when
+/// the multi is traced, as `CURL_TRC_M` checks the feature first; the
+/// lines come out as before when it is.
+#[test]
+fn membership_reads_the_clock_only_when_the_multi_is_traced() {
+    let reads_for = |verbose: bool, multi: bool| {
+        let reads = Arc::new(AtomicU32::new(0));
+        let inner = ManualClock::new().unwrap();
+        let env = Env {
+            clock: Box::new(CountingClock {
+                inner: inner.clone(),
+                reads: reads.clone(),
+            }),
+            net: Box::new(FakeNet::new(inner)),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let (mut e, lines) = traced("null://x/");
+        e.options_mut().output.verbose = verbose;
+        if multi {
+            let components = crate::components::Components::new().unwrap();
+            components.configure(b"multi");
+            e.set_components(Some(components));
+        }
+        let before = reads.load(Ordering::Relaxed);
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.remove(id, &mut NoEvents).unwrap();
+        (reads.load(Ordering::Relaxed) - before, trace_of(&lines))
+    };
+    let (quiet, said) = reads_for(false, true);
+    assert_eq!(said, Vec::<String>::new());
+    assert_eq!(reads_for(true, false), (quiet, Vec::new()));
+    let (traced_reads, said) = reads_for(true, true);
+    assert_eq!(traced_reads, quiet + 2, "one reading for each line");
+    assert_eq!(
+        said,
+        [
+            "[MULTI] [INIT] added to multi, mid=1, running=1, total=2\n",
+            "[MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1\n",
+        ]
+    );
+}

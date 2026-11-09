@@ -1077,9 +1077,12 @@ fn release<H: Host>(
         Released::Evicted(_) => cx.report_mut().set_conn(None),
         Released::Idle { number: n, .. } => {
             let origin = origin.expect("a connection kept has a host");
-            let conn = Text::<64>::clipped(format_args!("Connection {n} to host ")).0;
-            let rest = Text::<24>::clipped(format_args!(":{} left intact", origin.port())).0;
-            trace::info_with(cx, &[conn.bytes(), origin.shown(), rest.bytes()]);
+            // Made only to be traced (`infof`'s check first).
+            if cx.verbose() {
+                let conn = Text::<64>::clipped(format_args!("Connection {n} to host ")).0;
+                let rest = Text::<24>::clipped(format_args!(":{} left intact", origin.port())).0;
+                trace::info_with(cx, &[conn.bytes(), origin.shown(), rest.bytes()]);
+            }
         }
         Released::Closed(n)
         | Released::ShutDown {

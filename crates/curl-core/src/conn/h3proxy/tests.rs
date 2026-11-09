@@ -33,7 +33,7 @@ fn what_the_tunnel_read_is_let_go_of_while_more_comes() {
     for round in 0..100 {
         let bytes = counting(came, DATA);
         came += DATA;
-        let heard = t.heard(&mut cx, StreamId(0), StreamEvent::Data(&bytes));
+        let heard = t.heard(&mut cx, StreamId(0), &StreamEvent::Data(&bytes));
         assert_eq!(heard, Heard::Fine);
         let want = if round == 0 { DATA / 2 } else { DATA };
         assert_eq!(t.take(&mut buf[..want]), want);
@@ -94,7 +94,7 @@ fn hear(
     cx: &mut dyn LayerCx,
     (stream, event): (StreamId, StreamEvent<'_>),
 ) -> Heard {
-    tunnel.heard(cx, stream, event)
+    tunnel.heard(cx, stream, &event)
 }
 
 /// Whether `tunnel`'s answer is final.
@@ -356,7 +356,7 @@ impl crate::conn::layer::QuicTimer for Asked {
 }
 
 impl crate::conn::layer::H3Streams for Asked {
-    fn heard(&mut self, stream: StreamId, _: StreamEvent<'_>) -> Heard {
+    fn heard(&mut self, stream: StreamId, _: &StreamEvent<'_>) -> Heard {
         self.calls.push(format!("h3_event {}", stream.0));
         Heard::Failed
     }
@@ -411,7 +411,7 @@ fn a_call_into_the_proxy_s_connection_is_the_transfer_s() {
         over.proxy_early_done(7);
         over.quic_due(std::time::Duration::from_millis(5));
         assert_eq!(
-            over.h3_event(StreamId(0), StreamEvent::Data(b"tunnelled")),
+            over.h3_event(StreamId(0), &StreamEvent::Data(b"tunnelled")),
             Heard::Fine
         );
         let sessions = if yes { &["tls_sessions"][..] } else { &[][..] };
@@ -704,7 +704,7 @@ fn a_quic_call_over_another_context_lends_its_capabilities() {
             error: H3Error(0x100),
             answer: Ok(()),
         };
-        let heard = cx.h3_event(StreamId(3), closed);
+        let heard = cx.h3_event(StreamId(3), &closed);
         (heard, cx.recv_room().is_some())
     };
     let mut over_asked = asked();

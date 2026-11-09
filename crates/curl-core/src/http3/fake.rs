@@ -435,7 +435,7 @@ impl FakeConnection {
 /// Tell `events` of `event`, with the transfer `call` reaches.
 fn told_to(call: &mut dyn DriveCall, events: Events<'_>, event: Event<'_>) -> Heard {
     let mut heard = Heard::Fine;
-    call.with_cx(&mut |cx| heard = events(cx, event.clone()));
+    call.with_cx(&mut |cx| heard = events(cx, &event));
     heard
 }
 

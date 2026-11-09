@@ -262,7 +262,7 @@ pub(crate) trait H3Streams {
     fn heard(
         &mut self,
         stream: crate::http3::StreamId,
-        event: crate::http3::StreamEvent<'_>,
+        event: &crate::http3::StreamEvent<'_>,
     ) -> crate::http3::Heard;
 }
 
@@ -434,7 +434,7 @@ pub(crate) trait LayerCalls: LayerCx {
     fn h3_event(
         &mut self,
         stream: crate::http3::StreamId,
-        event: crate::http3::StreamEvent<'_>,
+        event: &crate::http3::StreamEvent<'_>,
     ) -> crate::http3::Heard {
         match self.h3_streams() {
             Some(streams) => streams.heard(stream, event),

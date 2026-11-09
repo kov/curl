@@ -283,8 +283,8 @@ impl LayerCx for Lone<'_> {
 }
 
 impl H3Streams for Lone<'_> {
-    fn heard(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
-        unrouted(&mut *self.cx, stream, &event)
+    fn heard(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
+        unrouted(&mut *self.cx, stream, event)
     }
 }
 
@@ -1858,12 +1858,12 @@ impl Quic {
 impl State {
     /// The library told `event`: the connection's own heard here, a
     /// stream's handed to the transfer the call is made for.
-    fn heard(&mut self, cx: &mut TlsCx<'_>, flavour: Flavour, event: Event<'_>) -> Heard {
+    fn heard(&mut self, cx: &mut TlsCx<'_>, flavour: Flavour, event: &Event<'_>) -> Heard {
         let event = match event {
             Event::Connection(event) => event,
-            Event::Stream(stream, event) => return cx.h3_event(stream, event),
+            Event::Stream(stream, event) => return cx.h3_event(*stream, event),
         };
-        match event {
+        match *event {
             ConnEvent::HandshakeDone {
                 checked,
                 max_udp_payload,

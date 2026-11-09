@@ -288,7 +288,7 @@ pub enum StreamEvent<'a> {
 }
 /// What the caller is told the events of a call with: the transfer the
 /// call reaches, and each event.
-pub type Events<'e> = &'e mut dyn FnMut(&mut TlsCx<'_>, Event<'_>) -> Heard;
+pub type Events<'e> = &'e mut dyn FnMut(&mut TlsCx<'_>, &Event<'_>) -> Heard;
 
 /// What the caller made of an event: a failure stops the connection's
 /// reading, and the read fails (`*_ERR_CALLBACK_FAILURE`).

@@ -1084,7 +1084,7 @@ impl TlsCx<'_> {
     pub(crate) fn h3_event(
         &mut self,
         stream: crate::http3::StreamId,
-        event: crate::http3::StreamEvent<'_>,
+        event: &crate::http3::StreamEvent<'_>,
     ) -> crate::http3::Heard {
         self.cx.h3_event(stream, event)
     }

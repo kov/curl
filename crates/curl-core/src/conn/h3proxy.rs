@@ -185,9 +185,9 @@ impl Tunnel {
     /// What it makes of an event of the connection's streams
     /// (`ngh3_proxy_callbacks`): one of another stream is let be, as C's
     /// callbacks find no tunnel for it.
-    fn heard(&mut self, cx: &mut dyn LayerCx, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+    fn heard(&mut self, cx: &mut dyn LayerCx, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
         let ours = self.open() == Some(stream);
-        match event {
+        match *event {
             StreamEvent::Header {
                 name,
                 value,
@@ -309,7 +309,7 @@ impl Tunnel {
                 if let Life::Open { flow_blocked, .. } = &mut self.life
                     && ours
                 {
-                    *flow_blocked = event == StreamEvent::Blocked;
+                    *flow_blocked = *event == StreamEvent::Blocked;
                 }
                 Heard::Fine
             }
@@ -396,7 +396,7 @@ impl LayerCx for Tunnelled<'_> {
 }
 
 impl super::layer::H3Streams for Tunnelled<'_> {
-    fn heard(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+    fn heard(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
         self.tunnel.heard(&mut *self.cx, stream, event)
     }
 }

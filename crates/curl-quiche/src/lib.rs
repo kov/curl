@@ -207,11 +207,8 @@ fn said(call: &'static str, text: &'static str) -> QuicError {
 
 /// Tell the caller `event`, with the transfer the call reaches.
 fn tell(call: &mut dyn DriveCall, events: Events<'_>, event: Event<'_>) -> Heard {
-    let mut event = Some(event);
     let mut heard = Heard::Fine;
-    call.with_cx(&mut |cx| {
-        heard = events(cx, event.take().expect("told once"));
-    });
+    call.with_cx(&mut |cx| heard = events(cx, &event));
     heard
 }
 

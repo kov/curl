@@ -267,8 +267,8 @@ struct Told {
 }
 
 impl Told {
-    fn hear(&mut self, event: Event<'_>) -> Heard {
-        match event {
+    fn hear(&mut self, event: &Event<'_>) -> Heard {
+        match *event {
             Event::Connection(ConnEvent::HandshakeDone {
                 checked,
                 early_data,

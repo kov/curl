@@ -467,7 +467,7 @@ struct Lent {
 }
 
 /// What hears what the connection read.
-type EventSink = dyn FnMut(&mut TlsCx<'_>, Event<'_>) -> Heard;
+type EventSink = dyn FnMut(&mut TlsCx<'_>, &Event<'_>) -> Heard;
 
 /// An `Inner` owned through one raw pointer alone (made by `Box::leak`,
 /// freed as this goes), the libraries' user data for their lives.
@@ -515,11 +515,8 @@ unsafe fn tell(inner: *mut Inner, event: Event<'_>) -> Heard {
     // which uses neither until the call returns; the event sink is not
     // reached from inside itself, which cannot call the connection.
     let events = unsafe { &mut *lent.events };
-    let mut event = Some(event);
     // SAFETY: as above.
-    unsafe { &mut *lent.call }.with_cx(&mut |cx| {
-        heard = events(cx, event.take().expect("told once"));
-    });
+    unsafe { &mut *lent.call }.with_cx(&mut |cx| heard = events(cx, &event));
     heard
 }
 
@@ -874,12 +871,12 @@ impl Connection {
         let inner = self.inner.ptr();
         let conn = self.conn();
         let mut params = || encode_params(conn);
-        let events: *mut (dyn FnMut(&mut TlsCx<'_>, Event<'_>) -> Heard + '_) = events;
+        let events: *mut (dyn FnMut(&mut TlsCx<'_>, &Event<'_>) -> Heard + '_) = events;
         // SAFETY: the sink is lent for this call alone, taken back below
         // before it goes out of scope; only the lifetime is erased.
         let events = unsafe {
             core::mem::transmute::<
-                *mut (dyn FnMut(&mut TlsCx<'_>, Event<'_>) -> Heard + '_),
+                *mut (dyn FnMut(&mut TlsCx<'_>, &Event<'_>) -> Heard + '_),
                 *mut EventSink,
             >(events)
         };

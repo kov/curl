@@ -156,8 +156,8 @@ pub struct Told {
 }
 
 impl Told {
-    pub fn hear(&mut self, event: Event<'_>) -> Heard {
-        match event {
+    pub fn hear(&mut self, event: &Event<'_>) -> Heard {
+        match *event {
             Event::Connection(ConnEvent::HandshakeDone { checked, .. }) => {
                 self.checked = Some(checked);
             }

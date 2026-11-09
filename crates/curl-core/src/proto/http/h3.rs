@@ -213,10 +213,10 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
     /// What the library told of a stream, handed to its transfer: the
     /// stepping one's own, a sibling's, or none, as C's callbacks find
     /// the stream's transfer by its user data.
-    fn heard(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+    fn heard(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
         // The packet's writer says so, whichever transfer the stream is
         // (`read_pkt_to_send`).
-        if let StreamEvent::Blocked = event
+        if let StreamEvent::Blocked = *event
             && self.flavour == Flavour::Ngtcp2
         {
             let id = stream.0;
@@ -239,15 +239,15 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
             let told = to.and_then(|to| {
                 let told = self.cx.lend_sibling(to, |scx, sib| {
                     let blocked = sib.h3_stream().flow_blocked;
-                    let heard = sib.h3_event(scx, lease, flavour, event.clone(), &mut extend);
-                    (heard, wakes_sibling(&event, blocked))
+                    let heard = sib.h3_event(scx, lease, flavour, event, &mut extend);
+                    (heard, wakes_sibling(event, blocked))
                 });
                 if let Some((_, true)) = told {
                     self.cx.wake(to);
                 }
                 told.map(|(heard, _)| heard)
             });
-            told.unwrap_or_else(|| crate::conn::quic::unrouted(&mut *self.cx, stream, &event))
+            told.unwrap_or_else(|| crate::conn::quic::unrouted(&mut *self.cx, stream, event))
         };
         if let Some(n) = extend
             && self.extends.try_push((stream, n)).is_err()
@@ -758,14 +758,14 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
         flavour: Flavour,
-        event: StreamEvent<'_>,
+        event: &StreamEvent<'_>,
         extend: &mut Option<u64>,
     ) -> Heard {
         let ngtcp2 = flavour == Flavour::Ngtcp2;
         let s = self.h3_stream();
         let id = s.shown_id();
         let h3 = Component::Http3;
-        match event {
+        match *event {
             StreamEvent::Header {
                 value,
                 status: true,

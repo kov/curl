@@ -813,6 +813,22 @@ impl<H: Host> StepCx<'_, H> {
         rate.drain(way, limits, pause, n, now);
     }
 
+    /// `n` body bytes downloaded (`Curl_pgrs_download_inc`): counted in
+    /// the report, and taken by the receive limit, with one look at the
+    /// transfer's slot as a body passes here once a packet.
+    pub(crate) fn downloaded(&mut self, n: usize) {
+        let now = self.rest.now;
+        let slot = self
+            .rest
+            .tell
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer");
+        slot.easy.report_mut().sizes_mut().download += n as u64;
+        let flow = &slot.easy.options().flow;
+        slot.rate.drain(Way::Recv, flow, slot.pause, n, now);
+    }
+
     /// The limit on `way` starts afresh, tuned for `total` bytes if known
     /// (`Curl_rlimit_start`).
     pub(crate) fn rate_start(&mut self, way: Way, total: Option<u64>) {

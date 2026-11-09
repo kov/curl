@@ -208,6 +208,29 @@ fn a_pause_stops_the_bucket() {
     assert_eq!(r.allowance(Way::Recv, &l, run, later), Some(1000));
 }
 
+/// A limit set, cleared and set again between uses is the options' at
+/// each: nothing is spent or allowed once it is cleared, and it counts
+/// again once it is set.
+#[test]
+fn a_limit_is_the_options_at_each_use() {
+    let ts = at(START);
+    let run = Pause::default();
+    let mut r = RateLimits::default();
+    let none = limits(0, 0);
+    assert_eq!(r.allowance(Way::Recv, &none, run, ts), None);
+    r.drain(Way::Recv, &none, run, 5000, ts);
+    assert_eq!(r, RateLimits::default());
+    let set = limits(10_000, 0);
+    r.start(Way::Recv, &set, ts, None);
+    r.drain(Way::Recv, &set, run, 4000, ts);
+    assert_eq!(r.allowance(Way::Recv, &set, run, ts), Some(6000));
+    assert_eq!(r.allowance(Way::Recv, &none, run, ts), None);
+    r.drain(Way::Recv, &none, run, 5000, ts);
+    // Set again, it is a new limit: its tokens are cut to its rate,
+    // nothing drained while it was clear.
+    assert_eq!(r.allowance(Way::Recv, &set, run, ts), Some(0));
+}
+
 /// Every whole step since the last update earns its tokens at once,
 /// with no burst to cap them; the rest of a step is kept, and the wait
 /// for the next tokens is what is left of it.

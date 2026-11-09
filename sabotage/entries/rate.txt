@@ -43,10 +43,10 @@ witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_eac
                 Some(_) => max,
 
 === the body's bytes are not taken from the receive limit
-file: crates/curl-core/src/deliver/mod.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_each_second
 --- old
-            cx.rate_drain(Way::Recv, n);
+        slot.rate.drain(Way::Recv, flow, slot.pause, n, now);
 --- new
 
 === an unpause does not start the receive limit over
@@ -112,3 +112,19 @@ features: test-util
 --- new
         let elapsed_steps = if self.ts == never() {
             self.spare_us = u32::try_from(micros_since(now, Instant::EPOCH) % self.step_us()).unwrap();
+
+=== a limit set after none is not taken up
+file: crates/curl-core/src/progress/rate.rs
+witness: curl-core progress::rate::tests::a_limit_is_the_options_at_each_use
+--- old
+        if rate.is_none() && !bucket.active() {
+--- new
+        if !bucket.active() {
+
+=== a limit cleared keeps its old tokens
+file: crates/curl-core/src/progress/rate.rs
+witness: curl-core progress::rate::tests::a_limit_is_the_options_at_each_use
+--- old
+        if rate.is_none() && !bucket.active() {
+--- new
+        if rate.is_none() {

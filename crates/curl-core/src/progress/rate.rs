@@ -298,6 +298,20 @@ pub(crate) struct RateLimits {
 }
 
 impl RateLimits {
+    /// The bucket for `way`, on the options' rate; none if it has no
+    /// limit and the options set none, which is all `bucket` would find.
+    #[inline]
+    fn limited(&mut self, way: Way, flow: &Flow) -> Option<&mut Bucket> {
+        let (bucket, rate) = match way {
+            Way::Recv => (&self.recv, flow.max_recv_speed),
+            Way::Send => (&self.send, flow.max_send_speed),
+        };
+        if rate.is_none() && !bucket.active() {
+            return None;
+        }
+        Some(self.bucket(way, flow))
+    }
+
     /// The bucket for `way`, on the options' rate.
     fn bucket(&mut self, way: Way, flow: &Flow) -> &mut Bucket {
         let (bucket, rate) = match way {
@@ -327,14 +341,16 @@ impl RateLimits {
         if paused(way, pause) {
             return Some(0);
         }
-        let bucket = self.bucket(way, flow);
+        let bucket = self.limited(way, flow)?;
         bucket.active().then(|| bucket.avail(now))
     }
 
     /// `n` bytes moved `way` (`Curl_rlimit_drain`).
     pub(crate) fn drain(&mut self, way: Way, flow: &Flow, pause: Pause, n: usize, now: Instant) {
-        if !paused(way, pause) {
-            self.bucket(way, flow).drain(n, now);
+        if !paused(way, pause)
+            && let Some(bucket) = self.limited(way, flow)
+        {
+            bucket.drain(n, now);
         }
     }
 

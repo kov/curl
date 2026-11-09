@@ -912,8 +912,7 @@ impl BodyAccountant {
     fn counted<H: Host>(&mut self, cx: &mut StepCx<'_, H>, n: usize) {
         if n > 0 {
             self.bytecount += n as u64;
-            cx.report_mut().sizes_mut().download += n as u64;
-            cx.rate_drain(Way::Recv, n);
+            cx.downloaded(n);
         }
     }
 

@@ -1176,6 +1176,37 @@ fn a_line_never_needs_more_than_four_notes() {
     assert_eq!(most, 4, "the most notes a line came with");
 }
 
+/// Only a 401's `WWW-Authenticate:` lines are read for the methods the
+/// server offers (`http_header_w`): not one in another response, nor
+/// another header of a 401's that starts with the same letter.
+#[test]
+fn only_a_401_s_www_authenticate_is_read_as_a_challenge() {
+    use crate::auth::http::arbitrary::BASIC;
+    let offered = |reply: &[u8]| {
+        let mut p = HeadParser::new(asked(|a| a.auth = BASIC));
+        let mut input = reply;
+        while !input.is_empty() && !p.is_done() {
+            let (used, _) = p
+                .feed(input, &mut 0, Unsent::default(), Default::default())
+                .expect("a head that parses");
+            input = &input[used..];
+        }
+        p.meta().offered().0
+    };
+    assert_eq!(
+        offered(b"HTTP/1.1 401 Who\r\nWWW-Authenticate: Basic\r\nContent-Length: 0\r\n\r\n"),
+        AuthMethods::BASIC
+    );
+    assert_eq!(
+        offered(b"HTTP/1.1 200 OK\r\nWWW-Authenticate: Basic\r\nContent-Length: 0\r\n\r\n"),
+        AuthMethods::NONE
+    );
+    assert_eq!(
+        offered(b"HTTP/1.1 401 Who\r\nWarning: Basic\r\nContent-Length: 0\r\n\r\n"),
+        AuthMethods::NONE
+    );
+}
+
 /// RTSP's status line says `RTSP/1.0` exactly, in a word of at most 32
 /// bytes, then one space and a code of at most 999; it is taken as
 /// HTTP/1.1. Any other fails silently (test 577). A head without a size

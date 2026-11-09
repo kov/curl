@@ -1638,3 +1638,11 @@ witness: curl-core proto::http1::response::tests::a_response_has_one_location
         let challenge = match line.first().map(u8::to_ascii_lowercase) {
 --- new
         let challenge = match line.first().copied() {
+
+=== a WWW-Authenticate line is read as a challenge on any response
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::only_a_401_s_www_authenticate_is_read_as_a_challenge
+--- old
+            Some(b'w') => (status.code == 401 && value_of(line, b"WWW-Authenticate:").is_some())
+--- new
+            Some(b'w') => (status.code == 401 || value_of(line, b"WWW-Authenticate:").is_some())

@@ -102,6 +102,25 @@ fn answered(tunnel: &Tunnel) -> bool {
     matches!(tunnel.answer, Answering::Final(_))
 }
 
+/// The tunnel's stream is blocked by the proxy's flow control from the
+/// word it is to the word it is not (`quic_flow_blocked`); another
+/// stream's word leaves it be.
+#[test]
+fn a_tunnel_s_flow_is_blocked_as_its_stream_is() {
+    let mut cx = Silent(ManualClock::new().unwrap().now());
+    let mut t = tunnel_on(4);
+    let told = [
+        (4, StreamEvent::Blocked, true),
+        (8, StreamEvent::Unblocked, true),
+        (4, StreamEvent::Unblocked, false),
+        (8, StreamEvent::Blocked, false),
+    ];
+    for (stream, event, blocked) in told {
+        assert_eq!(t.heard(&mut cx, StreamId(stream), &event), Heard::Fine);
+        assert_eq!(t.life, open(4, blocked), "after {event:?} of {stream}");
+    }
+}
+
 /// The stream's id as the traces say it, -1 once it is gone.
 #[test]
 fn a_tunnel_s_id_is_its_stream_s_or_minus_one() {

@@ -1392,3 +1392,11 @@ witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_over_a_tc
             lost.lose(&mut DriveCx::new(cx, None));
 --- new
             lost.discard(&mut DriveCx::new(cx, None));
+
+=== an HTTP/3 tunnel's flow is blocked as its stream is unblocked
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_tunnel_s_flow_is_blocked_as_its_stream_is
+--- old
+                    *flow_blocked = *event == StreamEvent::Blocked;
+--- new
+                    *flow_blocked = *event != StreamEvent::Blocked;

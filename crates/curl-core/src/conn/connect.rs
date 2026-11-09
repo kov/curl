@@ -70,6 +70,11 @@ pub(crate) struct ConnectMachine {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the dialed connection is held inline: boxed, each connection's setup would \
+              make one allocation more"
+)]
 enum Stage {
     /// The destination's name is to be resolved, or its resolve waits
     /// for the resolver's answer.

@@ -843,10 +843,8 @@ impl Request {
                 s.rx_offset += bytes.len() as u64;
                 s.rx_offset_max = s.rx_offset_max.max(s.rx_offset);
                 let (len, win) = (bytes.len(), s.rx_offset_max - s.rx_offset);
-                if ngtcp2 {
-                    trace::of(cx, h3, format_args!("[{id}] DATA len={len}, rx win={win}"));
-                } else {
-                    trace::of(cx, h3, format_args!("[{id}] <- [DATA]"));
+                if trace::traces(cx, h3) {
+                    data_traced(cx, flavour, id, len, win);
                 }
                 // quiche opens its windows itself.
                 if ngtcp2 {
@@ -1001,11 +999,9 @@ impl Request {
             return None;
         }
         s.rx_offset_max += delta;
-        trace::of(
-            cx,
-            Component::Http3,
-            format_args!("[{id}] rx window, extend by {delta} bytes"),
-        );
+        if trace::traces(cx, Component::Http3) {
+            extended_traced(cx, id, delta);
+        }
         Some(delta)
     }
 
@@ -1033,6 +1029,29 @@ impl Request {
             }
         });
     }
+}
+
+/// A stream's body bytes as the filter C speaks the connection as says
+/// them (`cb_h3_recv_data`, `cf_quiche`'s `[DATA]`): made out of the line
+/// each packet's body passes, which checks the trace first.
+#[inline(never)]
+fn data_traced<H: Host>(cx: &mut StepCx<'_, H>, flavour: Flavour, id: i64, len: usize, win: u64) {
+    let h3 = Component::Http3;
+    match flavour {
+        Flavour::Ngtcp2 => trace::of(cx, h3, format_args!("[{id}] DATA len={len}, rx win={win}")),
+        Flavour::Quiche => trace::of(cx, h3, format_args!("[{id}] <- [DATA]")),
+    }
+}
+
+/// A stream's receive window opened by `delta` (`cf_ngtcp2_upd_rx_win`),
+/// made out of line as `data_traced` is.
+#[inline(never)]
+fn extended_traced<H: Host>(cx: &mut StepCx<'_, H>, id: i64, delta: u64) {
+    trace::of(
+        cx,
+        Component::Http3,
+        format_args!("[{id}] rx window, extend by {delta} bytes"),
+    );
 }
 
 /// The stream's receive window opened as the transfer can take more, on

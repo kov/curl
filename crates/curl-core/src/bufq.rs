@@ -289,6 +289,44 @@ mod tests {
         assert_eq!(q.peek(), b"klmn");
     }
 
+    /// One skip taken past the end of a part-read first chunk takes the
+    /// rest of it and goes on into the next.
+    #[test]
+    fn a_skip_goes_on_into_the_next_chunk() {
+        let mut q = ChunkQueue::new(4, 3);
+        q.write(b"abcdefghij").unwrap();
+        q.skip(1);
+        q.skip(5);
+        assert_eq!(q.len(), 4);
+        assert_eq!(q.peek(), b"gh");
+        q.skip(3);
+        assert_eq!(q.peek(), b"j");
+    }
+
+    /// A write passed on goes on filling the chunks each time they are
+    /// passed on and emptied; it stops once they are full and what they
+    /// are passed to takes none, and without anything to pass them to.
+    #[test]
+    fn a_write_passed_on_goes_on_once_its_chunks_are_taken() {
+        let data: Vec<u8> = (0..12).collect();
+        let mut sent = Vec::new();
+        let mut q = ChunkQueue::new(4, 2);
+        let mut take = |b: &[u8]| {
+            sent.extend_from_slice(b);
+            Passed::<OutOfMemory>::Bytes(NonZeroUsize::new(b.len()).unwrap())
+        };
+        assert_eq!(q.write_pass(&data, Some(&mut take)).unwrap(), 12);
+        assert_eq!(sent, &data[..8]);
+        assert_eq!(q.len(), 4);
+
+        let mut q = ChunkQueue::new(4, 2);
+        let mut blocked = |_: &[u8]| Passed::<OutOfMemory>::Blocked;
+        assert_eq!(q.write_pass(&data, Some(&mut blocked)).unwrap(), 8);
+        assert_eq!(q.write_pass(&data, Some(&mut blocked)).unwrap(), 0);
+        assert_eq!(q.write_pass::<OutOfMemory>(&data, None).unwrap(), 0);
+        assert_eq!(q.len(), 8);
+    }
+
     /// Full once its chunks are in use and the last is full; a write
     /// still fits.
     #[test]

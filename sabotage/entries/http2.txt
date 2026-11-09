@@ -1020,6 +1020,22 @@ witness: curl-core bufq::tests::what_is_held_is_never_moved
             first.bytes.drain(first.read..first.read + k);
             n -= k;
 
+=== a skip past a part-read first chunk takes more of it than is left
+file: crates/curl-core/src/bufq.rs
+witness: curl-core bufq::tests::a_skip_goes_on_into_the_next_chunk
+--- old
+            let k = n.min(first.bytes.len() - first.read);
+--- new
+            let k = n.min(first.bytes.len() + first.read);
+
+=== a write passed on stops once its full chunks are taken
+file: crates/curl-core/src/bufq.rs
+witness: curl-core bufq::tests::a_write_passed_on_goes_on_once_its_chunks_are_taken
+--- old
+                if self.pass(to)? == 0 {
+--- new
+                if self.pass(to)? != 0 {
+
 === a stream whose send window is shut still waits to write
 file: crates/curl-core/src/proto/http2.rs
 witness: curl-core proto::http::tests::h2_trace::a_shut_send_window_waits_for_the_update_not_the_socket

@@ -2160,20 +2160,20 @@ fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
     )
 }
 
-/// Whether a transfer in `state` has its pollset adjusted for what its
-/// connection holds (`multi_adjust_pollset`): from PROTOCONNECT to
-/// PERFORMING, but in RATELIMITING, which polls nothing.
-pub(crate) fn adjusts_for_input(state: &TransferState) -> bool {
-    matches!(
-        state,
-        TransferState::ProtoConnect(_)
-            | TransferState::ProtoConnecting(_)
-            | TransferState::Do(_)
-            | TransferState::Doing(_)
-            | TransferState::DoingMore(_)
-            | TransferState::Did(_)
-            | TransferState::Exchanging(_)
-    )
+/// A transfer in `state` whose pollset is adjusted for what its
+/// connection holds (`multi_adjust_pollset`), from PROTOCONNECT to
+/// PERFORMING but in RATELIMITING, which polls nothing: the transfer, and
+/// the protocol's phase it waits in, none for its exchange.
+pub(crate) fn input_polled(state: &mut TransferState) -> Option<(&mut Attached, Option<Waiting>)> {
+    Some(match state {
+        TransferState::ProtoConnect(x) | TransferState::ProtoConnecting(x) => {
+            (x, Some(Waiting::Connecting))
+        }
+        TransferState::Do(x) | TransferState::Doing(x) => (x, Some(Waiting::Doing)),
+        TransferState::DoingMore(x) => (x, Some(Waiting::More)),
+        TransferState::Did(x) | TransferState::Exchanging(x) => (x, None),
+        _ => return None,
+    })
 }
 
 /// The transfer's pollset is made (`Curl_multi_pollset`), as the multi
@@ -2190,7 +2190,7 @@ pub(crate) fn adjusts_for_input(state: &TransferState) -> bool {
 /// gave the last bytes of a response can leave the TLS session saying
 /// more may come (`input_pending`).
 pub(crate) fn buffered_input<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
-    if !adjusts_for_input(&run.state) {
+    if input_polled(&mut run.state).is_none() {
         return;
     }
     // A connection it shares is out of its place while it is looked at,
@@ -2206,14 +2206,8 @@ pub(crate) fn buffered_input<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
 
 /// `buffered_input`'s look, its connection out.
 fn marks_buffered<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
-    let (x, phase) = match &mut run.state {
-        TransferState::ProtoConnect(x) | TransferState::ProtoConnecting(x) => {
-            (x, Some(Waiting::Connecting))
-        }
-        TransferState::Do(x) | TransferState::Doing(x) => (x, Some(Waiting::Doing)),
-        TransferState::DoingMore(x) => (x, Some(Waiting::More)),
-        TransferState::Did(x) | TransferState::Exchanging(x) => (x, None),
-        _ => return,
+    let Some((x, phase)) = input_polled(&mut run.state) else {
+        return;
     };
     let wants = match phase {
         Some(phase) => x.proto.waits(phase, x.lease.conn().line()),

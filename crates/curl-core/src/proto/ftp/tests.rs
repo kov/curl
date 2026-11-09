@@ -248,6 +248,26 @@ fn received(talk: &Conversation) -> String {
 const COMMANDS: &str = "USER anonymous\r\nPASS ftp@example.com\r\nPWD\r\nEPSV\r\nTYPE I\r\n\
                         SIZE f\r\nRETR f\r\n";
 
+/// An answer that comes a pass after its command, taken in by a layer
+/// and held where a poll cannot see it as the transfer waits in
+/// DOING_MORE for the data's to start, runs the transfer again in the
+/// next pass, as C's pollset finds it (`ftp_domore_pollset`,
+/// `multi_adjust_pollset`).
+#[test]
+fn an_answer_a_layer_holds_in_doing_more_is_read_without_waiting() {
+    use crate::conn::layer::testing::holdback;
+    let talk = control(&[b"150 here\r\n226 done\r\n"]).late_replies();
+    let file = data(b"hello");
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |o| o.layer = Some(holdback));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let line = "[MULTI] [DOING_MORE] pollset[] has POLLIN, but there is still buffered input -> \
+                mark as dirty\n";
+    assert!(text.text().contains(line), "{}", text.text());
+}
+
 /// The data connection goes as the transfer ends, its control connection
 /// kept for the next; each is counted as one the transfer made.
 #[test]

@@ -370,3 +370,15 @@ witness: curl-core proto::http::tests::https_trace::a_reused_tls_connection_stil
             state::buffered_input(&mut run, &mut cx);
 --- new
             let _ = &mut cx;
+
+=== event handling's assessment leaves input a TLS session holds unmarked
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::wait_trace::input_held_is_marked_as_events_assess_the_transfer
+--- old
+            let now = self.clock.now();
+            self.pollset_made(id, now, ev)
+                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+--- new
+            let now = self.clock.now();
+            self.trace_pollset_now(id, now, ev)
+                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;

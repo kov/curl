@@ -239,6 +239,69 @@ fn a_transfer_run_by_events_is_traced_as_c() {
     );
 }
 
+/// Run by its events, a transfer whose TLS session holds input past a
+/// step's reads is marked to run again as event handling makes its
+/// pollset after each run (`Curl_multi_ev_assess_xfer`'s
+/// `Curl_multi_pollset`), as a wait marks it: the step's stop, then the
+/// input held, then the pollset, but where the step ends at a record's
+/// end, as `a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c`
+/// has them for a wait.
+#[test]
+fn input_held_is_marked_as_events_assess_the_transfer() {
+    let (_, libraries) = super::tls::tls();
+    let body = vec![b'x'; 20 * crate::tls::fake::RECORD];
+    let mut response =
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+    response.extend_from_slice(&body);
+    let records = crate::tls::fake::records(&response).unwrap();
+    let (mut m, _talk, _) = server(&[crate::tls::fake::WELCOME, &records], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries.clone());
+    let components = Components::new().unwrap();
+    components.configure(b"multi");
+    e.set_components(Some(components));
+    let seen = Seen::default();
+    let o = e.options_mut();
+    let url = format!("https://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+    o.output.verbose = true;
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut Watching).unwrap();
+    let result = crate::multi::drive_by_events(&mut m, id).unwrap();
+    assert_eq!(result, Ok(()), "{:#?}", seen.text());
+    assert_eq!(seen.body(), body);
+    let said: Vec<String> = seen
+        .text()
+        .iter()
+        .filter(|l| l.contains("mark as dirty") || l.contains("] pollset["))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let stop = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty";
+    let held = "[MULTI] [PERFORMING] pollset[] has POLLIN, but there is still buffered input -> mark as dirty";
+    let wait = "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=0";
+    let mut want = Vec::new();
+    for step in 1..=7 {
+        want.push(stop);
+        if step != 4 {
+            want.push(held);
+        }
+        want.push(wait);
+    }
+    let from = said
+        .iter()
+        .position(|l| l == stop)
+        .expect("a step stopped short");
+    assert_eq!(said[from..from + want.len()], want, "{said:#?}");
+}
+
 /// A debug handler that turns its transfer's trace off once told of a
 /// socket the socket callback added, as a C debug callback's
 /// `curl_easy_setopt(CURLOPT_VERBOSE, 0L)` on the handle it was given.

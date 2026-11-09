@@ -1156,8 +1156,8 @@ impl<H: Host> Multi<H> {
         let slot = self.slots.get_mut(id).expect("a transfer in the multi");
         if slot
             .run
-            .as_ref()
-            .is_some_and(|run| state::adjusts_for_input(&run.state))
+            .as_mut()
+            .is_some_and(|run| state::input_polled(&mut run.state).is_some())
         {
             let mut run = slot.run.take().expect("checked above");
             let mut cx = StepCx::new(id, self.rest(now, ev));

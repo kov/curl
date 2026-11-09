@@ -719,3 +719,11 @@ features: test-util
             Ok(LateLook::Failed(_)) if true => {}
             Ok(LateLook::Failed(e)) => {
                 let kind = crate::multi::state::connect_failed(cx, route, e);
+
+=== bytes a layer holds as DOING_MORE waits for an answer leave the transfer waiting on its socket
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ftp::tests::an_answer_a_layer_holds_in_doing_more_is_read_without_waiting
+--- old
+        TransferState::DoingMore(x) => (x, Some(Waiting::More)),
+--- new
+        TransferState::DoingMore(_) => return None,

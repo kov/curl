@@ -1627,6 +1627,26 @@ mod over_the_wire {
         assert!(ran.text.contains(line), "{}", ran.text);
     }
 
+    /// The same in DOING: an answer that comes a pass after its command
+    /// is taken in by the layer and held, where a poll cannot see it, as
+    /// the request waits for it, and runs the transfer again in the next
+    /// pass (`pop3_doing`'s pollset, `multi_adjust_pollset`).
+    #[test]
+    fn an_answer_a_layer_holds_in_doing_is_read_without_waiting() {
+        use crate::conn::layer::testing::holdback;
+        let talk = in_the_clear().late_replies();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = tracing(&mut m, &plain(), &url, b"multi", |o| {
+            o.layer = Some(holdback);
+        });
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(ran.body, b"hello\r\n.dot\r\n");
+        let line = "[MULTI] [DOING] pollset[] has POLLIN, but there is still \
+                    buffered input -> mark as dirty\n";
+        assert!(ran.text.contains(line), "{}", ran.text);
+    }
+
     /// A body whose writer paused holds the transfer open until it is
     /// delivered (`Curl_cwriter_is_paused`).
     #[test]

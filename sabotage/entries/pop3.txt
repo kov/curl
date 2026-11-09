@@ -389,3 +389,12 @@ witness: curl-core proto::pop3::tests::over_the_wire::quit_awaiting_its_answer_i
 --- new
     pub(crate) fn goodbye_wants(&self) -> Events {
         Events::NONE
+
+=== bytes a layer holds as a command's answer is awaited in DOING leave the transfer waiting on its socket
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::an_answer_a_layer_holds_in_doing_is_read_without_waiting
+features: test-util
+--- old
+        TransferState::Do(x) | TransferState::Doing(x) => (x, Some(Waiting::Doing)),
+--- new
+        TransferState::Do(x) => (x, Some(Waiting::Doing)),

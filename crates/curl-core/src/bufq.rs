@@ -25,17 +25,35 @@ pub(crate) enum Passed<E> {
 pub(crate) type PassTo<'a, E> = dyn FnMut(&[u8]) -> Passed<E> + 'a;
 
 /// Bytes held in chunks of `chunk` bytes, full at `max` of them.
+///
+/// Each chunk is its own buffer, as C's are: what is taken from the front
+/// is never moved, and a chunk emptied is kept as a spare for the next
+/// to fill, as many as the queue's limit (`prune_head`).
 #[derive(Debug)]
 pub(crate) struct ChunkQueue {
-    /// What is held, from `taken` on: what is taken is let go once it is
-    /// at least as much as what is left, each byte moved at most once
-    /// for every byte taken.
-    bytes: Vec<u8>,
-    taken: usize,
-    /// Where the first byte held is in its chunk.
-    at: usize,
+    /// The chunks it has: the first `used` hold its bytes, in order, each
+    /// full but the last; the rest are spares, empty.
+    chunks: Vec<Chunk>,
+    used: usize,
+    /// What its chunks hold.
+    len: usize,
     chunk: usize,
     max: usize,
+}
+
+/// One chunk: what was written into it, of which what is before `read`
+/// is taken. Its room is set aside when it is made, so writing into it
+/// never moves it.
+#[derive(Debug)]
+struct Chunk {
+    bytes: Vec<u8>,
+    read: usize,
+}
+
+impl Chunk {
+    fn held(&self) -> &[u8] {
+        &self.bytes[self.read..]
+    }
 }
 
 impl ChunkQueue {
@@ -43,24 +61,25 @@ impl ChunkQueue {
     /// chunk is at least a byte.
     pub(crate) fn new(chunk: usize, max: usize) -> ChunkQueue {
         ChunkQueue {
-            bytes: Vec::new(),
-            taken: 0,
-            at: 0,
+            chunks: Vec::new(),
+            used: 0,
+            len: 0,
             chunk: chunk.max(1),
             max,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.bytes.len() - self.taken
+        self.len
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.len == 0
     }
 
-    fn held(&self) -> &[u8] {
-        &self.bytes[self.taken..]
+    /// Where the first byte held is in its chunk.
+    fn at(&self) -> usize {
+        self.chunks[..self.used].first().map_or(0, |c| c.read)
     }
 
     /// The size of its chunks.
@@ -71,40 +90,81 @@ impl ChunkQueue {
     /// Whether its chunks are all in use and the last is full
     /// (`Curl_bufq_is_full`).
     pub(crate) fn is_full(&self) -> bool {
-        !self.is_empty() && self.at + self.len() >= self.chunk.saturating_mul(self.max)
+        !self.is_empty() && self.at() + self.len >= self.chunk.saturating_mul(self.max)
     }
 
     /// What is left of the first chunk (`Curl_bufq_peek`).
     pub(crate) fn peek(&self) -> &[u8] {
-        let n = self.len().min(self.chunk - self.at);
-        &self.held()[..n]
+        self.chunks[..self.used].first().map_or(&[], Chunk::held)
     }
 
-    /// The first `n` bytes held are taken (`Curl_bufq_skip`).
-    pub(crate) fn skip(&mut self, n: usize) {
-        assert!(n <= self.len(), "only what is held is taken");
-        self.taken += n;
-        if self.is_empty() {
-            self.reset();
-        } else {
-            self.at = (self.at + n) % self.chunk;
-            if self.taken >= self.len() {
-                self.bytes.drain(..self.taken);
-                self.taken = 0;
+    /// The first `n` bytes held are taken (`Curl_bufq_skip`): each chunk
+    /// emptied becomes a spare.
+    pub(crate) fn skip(&mut self, mut n: usize) {
+        assert!(n <= self.len, "only what is held is taken");
+        self.len -= n;
+        while n > 0 {
+            let first = &mut self.chunks[0];
+            let k = n.min(first.bytes.len() - first.read);
+            first.read += k;
+            n -= k;
+            if first.read == first.bytes.len() {
+                self.spare_first();
             }
         }
     }
 
-    /// Everything held is let go (`Curl_bufq_reset`).
+    /// The first chunk, emptied, kept as a spare while the queue has no
+    /// more than its limit, let go otherwise.
+    fn spare_first(&mut self) {
+        let first = &mut self.chunks[0];
+        first.bytes.clear();
+        first.read = 0;
+        self.chunks[..self.used].rotate_left(1);
+        self.used -= 1;
+        if self.chunks.len() > self.max {
+            self.chunks.swap_remove(self.used);
+        }
+    }
+
+    /// Everything held is let go (`Curl_bufq_reset`), its chunks kept as
+    /// spares.
     pub(crate) fn reset(&mut self) {
-        self.bytes.clear();
-        self.taken = 0;
-        self.at = 0;
+        for c in &mut self.chunks[..self.used] {
+            c.bytes.clear();
+            c.read = 0;
+        }
+        self.chunks.truncate(self.max);
+        self.used = 0;
+        self.len = 0;
     }
 
     /// `more` put after what is held, all of it.
-    pub(crate) fn write(&mut self, more: &[u8]) -> Result<(), OutOfMemory> {
-        self.bytes.try_extend_from_slice(more)
+    pub(crate) fn write(&mut self, mut more: &[u8]) -> Result<(), OutOfMemory> {
+        let chunk = self.chunk;
+        while !more.is_empty() {
+            let last = self.tail()?;
+            let k = more.len().min(chunk - last.bytes.len());
+            last.bytes.try_extend_from_slice(&more[..k])?;
+            self.len += k;
+            more = &more[k..];
+        }
+        Ok(())
+    }
+
+    /// The last chunk in use, with room in it: a spare, or a new one, if
+    /// there is none or it is full.
+    fn tail(&mut self) -> Result<&mut Chunk, OutOfMemory> {
+        let chunk = self.chunk;
+        if self.used == 0 || self.chunks[self.used - 1].bytes.len() == chunk {
+            if self.used == self.chunks.len() {
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(chunk).map_err(|_| OutOfMemory)?;
+                self.chunks.try_push(Chunk { bytes, read: 0 })?;
+            }
+            self.used += 1;
+        }
+        Ok(&mut self.chunks[self.used - 1])
     }
 
     /// What of `more` the chunks have room for put after what is held,
@@ -112,7 +172,7 @@ impl ChunkQueue {
     /// chunk read from is not written to again until it is empty.
     pub(crate) fn fill(&mut self, more: &[u8]) -> Result<usize, OutOfMemory> {
         let n = more.len().min(self.room());
-        self.bytes.try_extend_from_slice(&more[..n])?;
+        self.write(&more[..n])?;
         Ok(n)
     }
 
@@ -120,23 +180,19 @@ impl ChunkQueue {
     /// empty, else what the first's read part and what is held leave.
     pub(crate) fn room(&self) -> usize {
         let all = self.chunk.saturating_mul(self.max);
-        if self.is_empty() {
-            all
-        } else {
-            all.saturating_sub(self.at + self.len())
-        }
+        all.saturating_sub(self.at() + self.len)
     }
 
     /// One byte put after what is held.
     pub(crate) fn push(&mut self, byte: u8) -> Result<(), OutOfMemory> {
-        self.bytes.try_push(byte)
+        self.write(&[byte])
     }
 
     /// The room left in the last chunk, or a whole chunk's if it is full
     /// or there is none: what one read into the queue may fill
     /// (`Curl_bufq_sipn`).
     pub(crate) fn tail_room(&self) -> usize {
-        match (self.at + self.len()) % self.chunk {
+        match (self.at() + self.len) % self.chunk {
             0 => self.chunk,
             used => self.chunk - used,
         }
@@ -144,9 +200,14 @@ impl ChunkQueue {
 
     /// Up to `buf`'s length taken out into it (`Curl_bufq_read`): how many.
     pub(crate) fn read(&mut self, buf: &mut [u8]) -> usize {
-        let n = buf.len().min(self.len());
-        buf[..n].copy_from_slice(&self.held()[..n]);
-        self.skip(n);
+        let mut n = 0;
+        while n < buf.len() && !self.is_empty() {
+            let held = self.peek();
+            let k = held.len().min(buf.len() - n);
+            buf[n..n + k].copy_from_slice(&held[..k]);
+            self.skip(k);
+            n += k;
+        }
         n
     }
 
@@ -201,7 +262,7 @@ impl ChunkQueue {
     /// The bytes it keeps room for, held or not.
     #[cfg(test)]
     pub(crate) fn stored(&self) -> usize {
-        self.bytes.capacity()
+        self.chunks.iter().map(|c| c.bytes.capacity()).sum()
     }
 }
 
@@ -284,6 +345,44 @@ mod tests {
         );
     }
 
+    /// What is held stays where it was written, as C's chunks keep it:
+    /// taking from the front moves nothing after it, and writing more
+    /// moves nothing before it, so each byte is copied in once and out
+    /// once. A chunk emptied is kept for the next to fill, no more of
+    /// them than the queue's limit once a write past it is taken out.
+    #[test]
+    fn what_is_held_is_never_moved() {
+        let mut q = ChunkQueue::new(16, 4);
+        let data: Vec<u8> = (0..64).collect();
+        let mut out = [0u8; 64];
+        // A chunk is made with all its room, so writing into it never
+        // moves it.
+        assert_eq!(q.fill(&data[..4]).unwrap(), 4);
+        assert_eq!(q.stored(), 16, "a chunk made short of its room");
+        assert_eq!(q.read(&mut out), 4);
+        for _ in 0..3 {
+            assert_eq!(q.fill(&data[..40]).unwrap(), 40);
+            let first = q.peek().as_ptr();
+            assert_eq!(q.fill(&data[40..44]).unwrap(), 4);
+            assert_eq!(q.peek().as_ptr(), first, "moved by a write");
+            assert_eq!(q.read(&mut out[..20]), 20);
+            let at = q.peek().as_ptr();
+            // As much taken as is left: what is left stays put.
+            assert_eq!(q.read(&mut out[..2]), 2);
+            assert_eq!(q.peek().as_ptr(), at.wrapping_add(2), "moved by a read");
+            assert_eq!(q.read(&mut out), 22);
+            assert_eq!(&out[..22], &data[22..44]);
+            assert!(q.stored() <= 16 * 4, "{} kept", q.stored());
+        }
+        q.write(&data).unwrap();
+        q.write(&data).unwrap();
+        assert!(q.stored() > 16 * 4);
+        while !q.is_empty() {
+            q.read(&mut out);
+        }
+        assert!(q.stored() <= 16 * 4, "{} kept past its limit", q.stored());
+    }
+
     /// unit2601: an empty queue gives nothing to a read, and for each of
     /// `check_bufq`'s queues, a queue with a hard limit takes writes until
     /// it holds its chunks' worth exactly and gives all of it back to
@@ -291,12 +390,12 @@ mod tests {
     /// what came out; and a queue with a soft limit takes every write
     /// whole, full or not, and gives back what went in.
     ///
-    /// C's spare chunks, its chunk pool (`pool_spares`) and
-    /// `BUFQ_OPT_NO_SPARES` have no counterpart: the queue holds its bytes
-    /// in one buffer, not in chunks it allocates and keeps, so each call's
-    /// queue is checked the same whatever its spares. So have C's head,
-    /// tail and spare pointers, checked after init and once emptied: an
-    /// emptied queue starts afresh (`a_peek_ends_with_its_chunk`).
+    /// C's chunk pool (`pool_spares`) and `BUFQ_OPT_NO_SPARES` have no
+    /// counterpart: a queue keeps its own spares, as C's without a pool,
+    /// so each call's queue is checked the same whatever its spares. So
+    /// have C's head, tail and spare pointers, checked after init and once
+    /// emptied: an emptied queue starts afresh (`a_peek_ends_with_its_chunk`)
+    /// and keeps its spares within its limit (`what_is_held_is_never_moved`).
     #[test]
     fn unit2601_bufq() {
         const FILE: &str = "tests/unit/unit2601.c";

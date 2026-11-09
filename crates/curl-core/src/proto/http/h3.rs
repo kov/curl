@@ -753,6 +753,7 @@ impl Request {
     /// `cb_h3_end_headers`, `cb_h3_recv_data`, `cb_h3_stream_close`):
     /// a receive window its reading opened is left in `extend` for the
     /// step to open.
+    #[inline]
     fn h3_event<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -760,6 +761,63 @@ impl Request {
         flavour: Flavour,
         event: &StreamEvent<'_>,
         extend: &mut Option<u64>,
+    ) -> Heard {
+        match *event {
+            StreamEvent::Data(bytes) => self.h3_data(cx, lease, flavour, bytes, extend),
+            _ => self.h3_other(cx, lease, flavour, event),
+        }
+    }
+
+    /// Body bytes of the request's stream (`cb_h3_recv_data`), the event
+    /// each packet of a body brings: written to the transfer, and the
+    /// receive window opened by as much as it can take.
+    #[inline]
+    fn h3_data<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        flavour: Flavour,
+        bytes: &[u8],
+        extend: &mut Option<u64>,
+    ) -> Heard {
+        let id = self.h3_stream().shown_id();
+        let h3 = Component::Http3;
+        if self.h3_stream().failed.is_none() {
+            let written = self.input(cx, lease, bytes);
+            deliver::write_resp(cx, bytes.len(), false, written);
+            if let Err(kind) = written {
+                self.h3_stream().failed = Some(kind);
+                let (code, len) = (kind.number(), bytes.len());
+                trace::of(
+                    cx,
+                    h3,
+                    format_args!("[{id}] error {code} writing {len} bytes of data"),
+                );
+            }
+        }
+        let s = self.h3_stream();
+        s.rx_offset += bytes.len() as u64;
+        s.rx_offset_max = s.rx_offset_max.max(s.rx_offset);
+        let (len, win) = (bytes.len(), s.rx_offset_max - s.rx_offset);
+        if trace::traces(cx, h3) {
+            data_traced(cx, flavour, id, len, win);
+        }
+        // quiche opens its windows itself.
+        if flavour == Flavour::Ngtcp2 {
+            *extend = self.rx_extend(cx);
+        }
+        Heard::Fine
+    }
+
+    /// Every other event of the request's stream, out of the line a body
+    /// takes.
+    #[inline(never)]
+    fn h3_other<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        flavour: Flavour,
+        event: &StreamEvent<'_>,
     ) -> Heard {
         let ngtcp2 = flavour == Flavour::Ngtcp2;
         let s = self.h3_stream();
@@ -825,33 +883,7 @@ impl Request {
                 }
                 Heard::Fine
             }
-            StreamEvent::Data(bytes) => {
-                if self.h3_stream().failed.is_none() {
-                    let written = self.input(cx, lease, bytes);
-                    deliver::write_resp(cx, bytes.len(), false, written);
-                    if let Err(kind) = written {
-                        self.h3_stream().failed = Some(kind);
-                        let (code, len) = (kind.number(), bytes.len());
-                        trace::of(
-                            cx,
-                            h3,
-                            format_args!("[{id}] error {code} writing {len} bytes of data"),
-                        );
-                    }
-                }
-                let s = self.h3_stream();
-                s.rx_offset += bytes.len() as u64;
-                s.rx_offset_max = s.rx_offset_max.max(s.rx_offset);
-                let (len, win) = (bytes.len(), s.rx_offset_max - s.rx_offset);
-                if trace::traces(cx, h3) {
-                    data_traced(cx, flavour, id, len, win);
-                }
-                // quiche opens its windows itself.
-                if ngtcp2 {
-                    *extend = self.rx_extend(cx);
-                }
-                Heard::Fine
-            }
+            StreamEvent::Data(_) => unreachable!("body bytes are `h3_data`'s"),
             StreamEvent::Consumed(n) => {
                 s.rx_offset += n;
                 s.rx_offset_max += n;

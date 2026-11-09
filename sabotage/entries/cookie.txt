@@ -6,14 +6,14 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
 --- old
         // A cookie is stored before its line is traced (`http_header`).
-        if line.kind == LineKind::Header
+        if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
             let site = cookie_site(cookie_host, target, peer);
             cookies::set_by_server(cx, value, &site)?;
         }
         // As is a host's HSTS, from a response over HTTPS (`http_header_s`).
-        if line.kind == LineKind::Header
+        if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Strict-Transport-Security:")
         {
             let value = value.strip_suffix(b"\n").unwrap_or(value);
@@ -21,7 +21,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             hsts::from_field(cx, peer.name(), value, peer.scheme().over_tls())?;
         }
         // And its alternative services (`http_header_a`).
-        if line.kind == LineKind::Header
+        if letter == Some(b'a')
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
             alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
@@ -41,7 +41,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
 --- new
         // As is a host's HSTS, from a response over HTTPS (`http_header_s`).
-        if line.kind == LineKind::Header
+        if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Strict-Transport-Security:")
         {
             let value = value.strip_suffix(b"\n").unwrap_or(value);
@@ -49,7 +49,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             hsts::from_field(cx, peer.name(), value, peer.scheme().over_tls())?;
         }
         // And its alternative services (`http_header_a`).
-        if line.kind == LineKind::Header
+        if letter == Some(b'a')
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
             alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
@@ -67,7 +67,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             trace_codings(cx, tale);
         }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
-        if line.kind == LineKind::Header
+        if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
             let site = cookie_site(cookie_host, target, peer);

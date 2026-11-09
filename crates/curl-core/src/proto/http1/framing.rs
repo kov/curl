@@ -437,7 +437,9 @@ impl Meta {
         })
     }
 
-    /// A header `line` of the response whose status is `status` arrived.
+    /// A header `line` of the response whose status is `status` arrived:
+    /// only the names starting with its first letter are looked for, as
+    /// C's `http_header` switches on it.
     pub(crate) fn on_header(
         &mut self,
         line: &[u8],
@@ -445,29 +447,44 @@ impl Meta {
         asked: &Asked,
     ) -> Result<Option<Note>, FramingError> {
         self.walked = false;
+        let challenge = match line.first().map(u8::to_ascii_lowercase) {
+            Some(b'c') => return self.header_c(line, status, asked),
+            Some(b'l') => return self.header_l(line, status, asked),
+            Some(b'p') => {
+                if value_of(line, b"Proxy-Connection:").is_some() {
+                    return Ok(self.proxy_connection(line, status, asked));
+                }
+                (status.code == 407
+                    && asked.forwarded
+                    && value_of(line, b"Proxy-Authenticate:").is_some())
+                .then_some((&mut self.challenges.proxy, &asked.auth.proxy))
+            }
+            Some(b't') => return self.header_t(line, asked),
+            Some(b'w') => (status.code == 401 && value_of(line, b"WWW-Authenticate:").is_some())
+                .then_some((&mut self.challenges.host, &asked.auth.host)),
+            _ => None,
+        };
+        let Some((challenges, asked)) = challenge else {
+            return Ok(None);
+        };
+        let v = fields::header_value(line).unwrap_or(&[]);
+        let heard = challenges.read(v, asked)?;
+        Ok((!heard.is_empty()).then_some(Note::Heard(heard)))
+    }
+
+    /// A header whose name starts with C (`http_header_c`).
+    fn header_c(
+        &mut self,
+        line: &[u8],
+        status: Status,
+        asked: &Asked,
+    ) -> Result<Option<Note>, FramingError> {
         if !self.bodyless
             && !asked.ignore_length
             && !self.length_void
             && let Some(v) = value_of(line, b"Content-Length:")
         {
             return self.length(v, asked);
-        }
-        if value_of(line, b"Proxy-Connection:").is_some() {
-            // C reads the field for nothing more (`http_header_p`).
-            if !asked.http_proxy {
-                return Ok(None);
-            }
-            return Ok(match status.version {
-                HttpVersion::Http10 if says(line, b"Proxy-Connection:", b"keep-alive") => {
-                    self.close = false;
-                    Some(Note::ProxyKeepAlive)
-                }
-                HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
-                    self.close = true;
-                    Some(Note::ProxyClose)
-                }
-                _ => None,
-            });
         }
         let h1 = matches!(status.version, HttpVersion::Http10 | HttpVersion::Http11);
         if h1 && says(line, b"Connection:", b"close") {
@@ -478,22 +495,21 @@ impl Meta {
             self.close = false;
             return Ok(Some(Note::Http10KeepAlive));
         }
-        // A HEAD's or a 304's codings would be the body's it does not have
-        // (RFC 9112, section 6.1); a 304 is bodyless.
         if !self.bodyless
-            && !asked.head
-            && let Some(v) = value_of(line, b"Transfer-Encoding:")
+            && let Some(v) = value_of(line, b"Content-Range:")
         {
-            self.codings_before = (self.chunked, self.codings);
-            self.walked = true;
-            self.codings(v, asked)?;
-            if !self.chunked {
-                // Only the close ends a body coded otherwise.
-                self.close = true;
-                self.length_void = true;
-            }
-            return Ok(None);
+            self.range(v, status, asked);
         }
+        Ok(None)
+    }
+
+    /// A header whose name starts with L (`http_header_l`).
+    fn header_l(
+        &mut self,
+        line: &[u8],
+        status: Status,
+        asked: &Asked,
+    ) -> Result<Option<Note>, FramingError> {
         if !self.bodyless
             && asked.time_condition.is_some()
             && let Some(v) = value_of(line, b"Last-Modified:")
@@ -513,30 +529,49 @@ impl Meta {
             }
             self.location = Some(copy(v)?);
             self.follow = asked.follow && (300..400).contains(&status.code);
-            return Ok(None);
         }
+        Ok(None)
+    }
+
+    /// A `Proxy-Connection:` line, which C reads for nothing more
+    /// (`http_header_p`).
+    fn proxy_connection(&mut self, line: &[u8], status: Status, asked: &Asked) -> Option<Note> {
+        if !asked.http_proxy {
+            return None;
+        }
+        match status.version {
+            HttpVersion::Http10 if says(line, b"Proxy-Connection:", b"keep-alive") => {
+                self.close = false;
+                Some(Note::ProxyKeepAlive)
+            }
+            HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
+                self.close = true;
+                Some(Note::ProxyClose)
+            }
+            _ => None,
+        }
+    }
+
+    /// A header whose name starts with T (`http_header_t`).
+    fn header_t(&mut self, line: &[u8], asked: &Asked) -> Result<Option<Note>, FramingError> {
+        // A HEAD's or a 304's codings would be the body's it does not have
+        // (RFC 9112, section 6.1); a 304 is bodyless.
         if !self.bodyless
-            && let Some(v) = value_of(line, b"Content-Range:")
+            && !asked.head
+            && let Some(v) = value_of(line, b"Transfer-Encoding:")
         {
-            self.range(v, status, asked);
+            self.codings_before = (self.chunked, self.codings);
+            self.walked = true;
+            self.codings(v, asked)?;
+            if !self.chunked {
+                // Only the close ends a body coded otherwise.
+                self.close = true;
+                self.length_void = true;
+            }
             return Ok(None);
         }
         if value_of(line, b"Trailer:").is_some() {
             self.trailer = true;
-        }
-        let challenge = match status.code {
-            401 if value_of(line, b"WWW-Authenticate:").is_some() => {
-                Some((&mut self.challenges.host, &asked.auth.host))
-            }
-            407 if asked.forwarded && value_of(line, b"Proxy-Authenticate:").is_some() => {
-                Some((&mut self.challenges.proxy, &asked.auth.proxy))
-            }
-            _ => None,
-        };
-        if let Some((challenges, asked)) = challenge {
-            let v = fields::header_value(line).unwrap_or(&[]);
-            let heard = challenges.read(v, asked)?;
-            return Ok((!heard.is_empty()).then_some(Note::Heard(heard)));
         }
         Ok(None)
     }

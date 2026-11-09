@@ -370,9 +370,9 @@ witness: curl-core proto::http::tests::retry_after_reads_seconds_and_dates
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_retry_after_date_counts_from_the_clock
 --- old
-                if let Some(wait) = framing::retry_after(line.bytes, cx.unix_time()) {
+                    && let Some(wait) = framing::retry_after(line.bytes, cx.unix_time())
 --- new
-                if let Some(wait) = framing::retry_after(line.bytes, 0) {
+                    && let Some(wait) = framing::retry_after(line.bytes, 0)
 
 === a retried request is an empty reply
 file: crates/curl-core/src/proto/http.rs
@@ -1630,3 +1630,11 @@ features: test-util debug-hooks
     let url = match parse_url(&text, cx.easy().options(), reload) {
 --- new
     let url = match parse_url(&text, cx.easy().options(), true) {
+
+=== a header's first letter picks its names in one case only
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_response_has_one_location
+--- old
+        let challenge = match line.first().map(u8::to_ascii_lowercase) {
+--- new
+        let challenge = match line.first().copied() {

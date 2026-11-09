@@ -46,11 +46,11 @@ witness: curl-core proto::http::tests::a_forwarding_proxy_gets_the_whole_url
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http1::response::tests::a_proxy_says_whether_the_connection_stays
 --- old
-                HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
-                    self.close = true;
+            HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
+                self.close = true;
 --- new
-                HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
-                    self.close = false;
+            HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
+                self.close = false;
 
 === the proxy port is not checked
 file: crates/curl-sys-abi/src/setopt/mod.rs
@@ -110,9 +110,11 @@ witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credenti
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credentials
 --- old
-            407 if asked.forwarded && value_of(line, b"Proxy-Authenticate:").is_some() => {
+                (status.code == 407
+                    && asked.forwarded
 --- new
-            408 if asked.forwarded && value_of(line, b"Proxy-Authenticate:").is_some() => {
+                (status.code == 408
+                    && asked.forwarded
 
 === the proxy's credentials are not decoded
 file: crates/curl-core/src/options/mod.rs
@@ -205,9 +207,11 @@ witness: curl-core proto::http::tests::suppressed_connect_headers_are_kept_and_n
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s
 --- old
-            407 if asked.forwarded && value_of(line, b"Proxy-Authenticate:").is_some() => {
+                (status.code == 407
+                    && asked.forwarded
+                    && value_of(line, b"Proxy-Authenticate:").is_some())
 --- new
-            407 if value_of(line, b"Proxy-Authenticate:").is_some() => {
+                (status.code == 407 && value_of(line, b"Proxy-Authenticate:").is_some())
 
 === a route through a SOCKS proxy makes no handshake
 file: crates/curl-core/src/conn/mod.rs

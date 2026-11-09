@@ -2636,6 +2636,14 @@ impl Request {
             }
             trace::info(cx, format_args!("{note}"));
         }
+        // A header's first letter, in lower case: the names below are
+        // looked for only on a line that starts as they do, as C's
+        // `http_header` switches on it.
+        let letter = line
+            .bytes
+            .first()
+            .map(u8::to_ascii_lowercase)
+            .filter(|_| line.kind == LineKind::Header);
         // What its challenges offer is the report's as the line is read,
         // before it is delivered (`Curl_http_input_auth`).
         let (host, proxy) = line.offered;
@@ -2644,7 +2652,7 @@ impl Request {
         report.add_proxy_auth_offered(proxy);
         // The document's time, if asked for; one that cannot be read is
         // the epoch (`http_header_l`).
-        if line.kind == LineKind::Header
+        if letter == Some(b'l')
             && cx.easy().options().filetime
             && !bodyless
             && let Some(value) = strip_name(line.bytes, b"Last-Modified:")
@@ -2653,7 +2661,7 @@ impl Request {
             cx.report_mut().set_filetime(t);
         }
         // Its codings are stacked to be undone (`http_header_c`).
-        if line.kind == LineKind::Header
+        if letter == Some(b'c')
             && !bodyless
             && cx.easy().options().http.accept_encoding.is_some()
             && let Some(value) = strip_name(line.bytes, b"Content-Encoding:")
@@ -2666,7 +2674,7 @@ impl Request {
         // (`auth_spnego`, `http_header_p`, `http_header_w`).
         let mut negotiated = None;
         let code = cx.report_mut().response_code();
-        if line.kind == LineKind::Header
+        if matches!(letter, Some(b'w' | b'p'))
             && let Some(security) = cx.easy().libraries().security
         {
             let delegation = cx.easy().options().login.delegation;
@@ -2721,14 +2729,14 @@ impl Request {
             }
         }
         // A cookie is stored before its line is traced (`http_header`).
-        if line.kind == LineKind::Header
+        if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
             let site = cookie_site(cookie_host, target, peer);
             cookies::set_by_server(cx, value, &site)?;
         }
         // As is a host's HSTS, from a response over HTTPS (`http_header_s`).
-        if line.kind == LineKind::Header
+        if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Strict-Transport-Security:")
         {
             let value = value.strip_suffix(b"\n").unwrap_or(value);
@@ -2736,7 +2744,7 @@ impl Request {
             hsts::from_field(cx, peer.name(), value, peer.scheme().over_tls())?;
         }
         // And its alternative services (`http_header_a`).
-        if line.kind == LineKind::Header
+        if letter == Some(b'a')
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
             alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
@@ -2768,10 +2776,14 @@ impl Request {
                 pipeline.status(cx, line.bytes, *interim)?;
             }
             LineKind::Header => {
-                if let Some(wait) = framing::retry_after(line.bytes, cx.unix_time()) {
+                if letter == Some(b'r')
+                    && let Some(wait) = framing::retry_after(line.bytes, cx.unix_time())
+                {
                     cx.report_mut().set_retry_after(wait);
                 }
-                if let Some(media) = framing::content_type(line.bytes) {
+                if letter == Some(b'c')
+                    && let Some(media) = framing::content_type(line.bytes)
+                {
                     cx.report_mut()
                         .set_content_type(media)
                         .map_err(|_| ErrorKind::OutOfMemory)?;

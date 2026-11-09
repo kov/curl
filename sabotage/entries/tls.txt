@@ -110,7 +110,7 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
 --- old
-        if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
+        if c.route.secured_from_start() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
             let now = cx.now();
 --- new
         if false {
@@ -522,3 +522,60 @@ witness: curl-core tls::tests::a_transfer_s_settings_compare_as_the_identity_mad
 --- new
         options.context = None;
         options.key_password = None;
+
+=== a transfer makes its TLS identity before looking for a connection to reuse
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core a_tls_identity_is_made_once_per_connection
+--- old
+    let acquired = acquire(cx, &plan.proto, Route::Net(plan.route.clone()), plan.dial);
+--- new
+    let made = Route::Net(plan.route.clone()).made(crate::conn::TlsWants::of(cx.easy()));
+    let acquired = acquire(cx, &plan.proto, made.expect("memory"), plan.dial);
+
+=== a transfer wanting an HTTPS proxy's TLS is compared by its origin's settings
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_transfer_wanting_tls_is_served_as_one_with_it_made
+--- old
+                tls.expect("a transfer's TLS settings are at hand where it wants TLS")
+                    .proxy
+--- new
+                tls.expect("a transfer's TLS settings are at hand where it wants TLS")
+                    .origin
+
+=== a connection serves a transfer whose HTTPS proxy's TLS differs
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::tls::an_https_proxy_s_connection_is_reused_only_with_the_same_proxy_tls
+--- old
+            && same_tls(
+                proxy.as_ref().and_then(|p| p.tls_view(tls)),
+                want_proxy.as_ref().and_then(|p| p.tls_view(tls)),
+            )
+--- new
+            && (same_tls(
+                proxy.as_ref().and_then(|p| p.tls_view(tls)),
+                want_proxy.as_ref().and_then(|p| p.tls_view(tls)),
+            ) || true)
+
+=== a new connection's origin TLS is made of the proxy's settings
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_route_is_made_with_the_transfer_s_settings
+--- old
+            *t = RouteTls::Made(wants().origin.made()?);
+--- new
+            *t = RouteTls::Made(wants().proxy.made()?);
+
+=== a transfer wanting TLS to upgrade to is served whatever settings it would upgrade with
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_transfer_wanting_tls_is_served_as_one_with_it_made
+--- old
+            !want_use_ssl.may() || same_tls(tls.or(upgrade), want_tls.or(want_upgrade));
+--- new
+            !want_use_ssl.may() || same_tls(tls.or(upgrade), tls.or(upgrade));
+
+=== a route with only one of its TLS made counts as made
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_route_is_made_with_the_transfer_s_settings
+--- old
+        origin && proxy
+--- new
+        origin || proxy

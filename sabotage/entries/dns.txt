@@ -583,10 +583,10 @@ witness: curl-core proto::http::tests::setup_trace::a_socks4_target_s_name_has_a
 features: test-util
 --- old
             if leg.version.resolves_locally() && !made.target_filter {
-                names::target_created(cx, leg.to, leg.version.ip(plan.ip));
+                names::target_created(cx, leg.to, leg.version.ip(plan.ip()));
 --- new
             if false {
-                names::target_created(cx, leg.to, leg.version.ip(plan.ip));
+                names::target_created(cx, leg.to, leg.version.ip(plan.ip()));
 
 === the DNS and happy eyeballs filters are not traced going with the setup's
 file: crates/curl-core/src/conn/chain.rs
@@ -929,11 +929,11 @@ witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 features: test-util
 --- old
                 trace::info_with(cx, &[b"Could not resolve: ", host]);
-                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                 let code = trace::Code(Err(kind));
 --- new
                 trace::info_with(cx, &[b"Could not resolve: ", host]);
-                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                 let code = trace::Code(Ok(()));
 
 === the threaded resolver says nothing as its resolve goes

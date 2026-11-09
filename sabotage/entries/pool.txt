@@ -65,7 +65,7 @@ witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
 --- old
-            || !conn.serves(wanted.route)
+            || !conn.serves(wanted.route, exits.tls_wants())
             || !conn.serves_auth(&wanted.auth)
 --- new
             || !conn.serves_auth(&wanted.auth)
@@ -186,7 +186,7 @@ witness: curl-core conn::tests::peers_compare_as_c_compares_them
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-        (*want_ip == IpVersion::Any || want_ip == ip)
+        (want_ip == IpVersion::Any || want_ip == ip)
 --- new
         (want_ip == want_ip)
 
@@ -194,7 +194,7 @@ witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-        (*want_ip == IpVersion::Any || want_ip == ip)
+        (want_ip == IpVersion::Any || want_ip == ip)
 --- new
         (want_ip == ip)
 
@@ -399,8 +399,9 @@ witness: curl-core conn::tests::routes_compare_every_field
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_waiting_transfer_reads_its_ip_version_as_it_looks_again
 --- old
-            plan.route.ip = cx.easy().options().ip_version;
+            let ip = plan.route.set_ip(cx.easy().options().ip_version);
 --- new
+            let ip = Ok::<(), curl_alloc::OutOfMemory>(());
 
 === a socket that says it read more than its room is believed
 file: crates/curl-core/src/conn/buf.rs
@@ -577,10 +578,10 @@ witness: curl-core multi::shutdown_tests::the_socket_callback_reaches_a_transfer
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_multiplexed_connection_is_joined_only_as_it_may_be
 --- old
-    if conn.close || !conn.serves(wanted.route) {
+    if conn.close || !conn.serves(wanted.route, tls) {
         return JoinVerdict::Passed;
 --- new
-    if conn.close && !conn.serves(wanted.route) {
+    if conn.close && !conn.serves(wanted.route, tls) {
         return JoinVerdict::Passed;
 
 === a transfer that speaks HTTP/1.1 alone joins a connection that multiplexes
@@ -596,9 +597,9 @@ file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_made_before
 --- old
         if conn.number.get() < self.stale_below
-            || !conn.serves(wanted.route)
+            || !conn.serves(wanted.route, exits.tls_wants())
 --- new
-        if !conn.serves(wanted.route)
+        if !conn.serves(wanted.route, exits.tls_wants())
 
 === the prune keeps a connection made before the network changed
 file: crates/curl-core/src/conn/pool.rs
@@ -867,3 +868,40 @@ witness: curl-core conn::pool::tests::unit1323_idle_across_a_second_counts_as_c_
     now.ms_since(conn.created)
 --- new
     i64::try_from(whole_ms(now.since(conn.created))).unwrap()
+
+=== a waiting transfer's copy of its route's rare part drops what the transfer asked
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_route_s_ip_version_changes_on_a_copy_of_what_it_shares
+--- old
+            use_ssl: *use_ssl,
+--- new
+            use_ssl: crate::options::UseSsl::None,
+
+=== a route's IP version is lost when it has nothing else rare
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core multi::tests::a_waiting_transfer_reads_its_ip_version_as_it_looks_again
+--- old
+        *ip == IpVersion::Any
+            && *delegation == crate::options::Delegation::default()
+--- new
+        true
+            && *delegation == crate::options::Delegation::default()
+
+=== a route's GSS-API delegation is lost when it has nothing else rare
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::negotiate::a_negotiated_connection_serves_only_its_own
+features: test-util,debug-hooks
+--- old
+            && *delegation == crate::options::Delegation::default()
+            && !local.binds()
+--- new
+            && true
+            && !local.binds()
+
+=== a waiting transfer whose route's copy is refused goes on with the IP version it had
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core a_waiting_transfer_s_new_ip_version_takes_no_refusal_for_success
+--- old
+                _ if ip.is_err() => TransferState::Init.fail(ErrorKind::OutOfMemory),
+--- new
+                _ if false => TransferState::Init.fail(ErrorKind::OutOfMemory),

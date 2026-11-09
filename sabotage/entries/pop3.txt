@@ -119,18 +119,20 @@ file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::pop3::tests::over_the_wire::an_upgraded_connection_serves_a_transfer_not_asking_for_tls_alike
 features: test-util
 --- old
-want.origin.scheme().reuses_tls() && have.upgrade() == want.upgrade()
+            want.origin.scheme().reuses_tls()
+                && same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
 --- new
-want.origin.scheme().reuses_tls() || have.upgrade() == want.upgrade()
+            want.origin.scheme().reuses_tls()
+                || same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
 
 === a POP3 route keeps no TLS settings to upgrade with unless asked for TLS
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::pop3::tests::over_the_wire::an_upgraded_connection_serves_a_transfer_not_asking_for_tls_alike
 features: test-util
 --- old
-        Some(tls) if !secured && (reuses_tls || use_ssl.may()) => Some(
+    } else if has_tls && (reuses_tls || cx.easy().options().line.use_ssl.may()) {
 --- new
-        Some(tls) if !secured && (reuses_tls && use_ssl.may()) => Some(
+    } else if has_tls && (reuses_tls && cx.easy().options().line.use_ssl.may()) {
 
 === a POP3 transfer goes to an HTTP proxy without a tunnel
 file: crates/curl-core/src/multi/state/leg.rs
@@ -220,9 +222,9 @@ file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core a_get_with_a_tls_library_allocates_as_one_without
 features: test-util
 --- old
-        Some(tls) if !secured && (reuses_tls || use_ssl.may()) => Some(
+    } else if has_tls && (reuses_tls || cx.easy().options().line.use_ssl.may()) {
 --- new
-        Some(tls) if !secured || (reuses_tls || use_ssl.may()) => Some(
+    } else if has_tls {
 
 === a POP3 transfer ends while its paused body is held
 file: crates/curl-core/src/proto/mod.rs
@@ -336,9 +338,9 @@ file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_pop3s_connection_serves_a_pop3s_transfer_requiring_tls
 features: test-util
 --- old
-        let upgrade_same = !want_use_ssl.may() || tls.or(upgrade) == want_tls.or(want_upgrade);
+            !want_use_ssl.may() || same_tls(tls.or(upgrade), want_tls.or(want_upgrade));
 --- new
-        let upgrade_same = !want_use_ssl.may() || tls.or(upgrade) == want_upgrade;
+            !want_use_ssl.may() || same_tls(tls.or(upgrade), want_upgrade);
 
 === a read failed by the server's close says the connect's stale errno
 file: crates/curl-core/src/proto/pingpong/drive.rs

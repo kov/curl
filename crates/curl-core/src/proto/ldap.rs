@@ -658,8 +658,8 @@ impl Request {
             // The connection's TLS is made before the protocol connects.
             true
         } else {
-            let cold = lease.conn().net_route().and_then(|r| r.cold.clone());
-            let Some(identity) = cold.as_ref().and_then(|c| c.upgrade.clone()) else {
+            let upgrade = lease.conn().net_route().and_then(|r| r.upgrade().cloned());
+            let Some(identity) = upgrade else {
                 return Err(ErrorKind::NotBuiltIn);
             };
             let in_place = crate::multi::state::tls::InPlace::of(lease.conn());

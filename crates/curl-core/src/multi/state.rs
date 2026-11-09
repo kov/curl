@@ -57,7 +57,7 @@ use crate::proto::{Before, Connect, DoPhase, DoStep, Ended, ProtoState, ProtoSte
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
-use crate::tls::{TlsIdentity, TlsNative, TlsWait};
+use crate::tls::{TlsNative, TlsWait};
 use crate::trace::{self, Ip};
 use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
@@ -1718,9 +1718,10 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // The rest of the plan is kept, but C makes its connection
             // anew as a waiting transfer looks again, reading the IP
             // version then (`allocate_conn`, `url_match_conn`).
-            plan.route.ip = cx.easy().options().ip_version;
+            let ip = plan.route.set_ip(cx.easy().options().ip_version);
             let now = cx.rest.now;
             let next = match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
+                _ if ip.is_err() => TransferState::Init.fail(ErrorKind::OutOfMemory),
                 TimeLeft::Expired(_) => {
                     let kind = timed_out(cx, Phase::Connecting, true);
                     // Its failure may make room for another

@@ -62,14 +62,14 @@ pub(super) fn start<H: Host>(
 ) -> Result<Wake, Failure> {
     let (identity, peer, via) = match side {
         TlsSide::Origin => (
-            lent.route.tls.as_ref().expect("a TLS route"),
+            lent.route.start_tls().expect("a TLS route"),
             &*lent.route.origin,
             lent.route.via.as_deref(),
         ),
         TlsSide::Proxy => {
             let proxy = lent.route.proxy.as_ref().expect("an HTTPS proxy");
             (
-                proxy.tls().expect("an HTTPS proxy's TLS"),
+                lent.route.proxy_tls().expect("an HTTPS proxy's TLS"),
                 &*proxy.peer,
                 None,
             )
@@ -161,7 +161,7 @@ pub(super) fn record_step<H: Host>(
     alpn: Alpn,
 ) -> Result<Wake, Failure> {
     let ssl = Component::Ssl;
-    let identity = lent.route.tls.as_ref().expect("a TLS route");
+    let identity = lent.route.start_tls().expect("a TLS route");
     let stream = s.machine.dialed().stream();
     trace::of(cx, ssl, format_args!("cf_connect()"));
     if let Err(kind) = prefs_check(cx, &identity.options) {
@@ -423,7 +423,7 @@ pub(super) fn step<H: Host>(
 ) -> Result<Wake, Failure> {
     let traced = Some(s.machine.dialing().socket_component());
     let identity = match side {
-        TlsSide::Origin => lent.route.tls.as_ref(),
+        TlsSide::Origin => lent.route.start_tls(),
         TlsSide::Proxy => lent.route.proxy_tls(),
     };
     let options = &identity.expect("a TLS stage's settings").options;

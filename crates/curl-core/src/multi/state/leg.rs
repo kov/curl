@@ -2,6 +2,7 @@
 //! route and proxy, and the connection it gets for them.
 
 use super::*;
+use crate::conn::{OriginTls, RouteTls};
 
 /// C's pretransfer, once per transfer: the option's URL parsed for the
 /// first request.
@@ -819,41 +820,39 @@ pub(super) fn start_leg<H: Host>(
         }
         _ => origin,
     };
-    // The settings its TLS is made with, which a connection must share
-    // to serve it (`Curl_ssl_filter_config_tmp_init`).
+    // Its TLS, wanted: from the start for a secured scheme; else the TLS
+    // a connection not over it is upgraded to, or may be, for a scheme
+    // that may reuse TLS or where TLS is asked for. The settings it is
+    // made with stay in the transfer's options, which a connection must
+    // share to serve it (`Curl_ssl_filter_config_tmp_init`), until one is
+    // set up with them (`NetRoute::made`).
+    let has_tls = cx.easy().libraries().tls.is_some();
+    assert!(
+        has_tls || !secured,
+        "a secured scheme is one a TLS library speaks"
+    );
+    let reuses_tls = proto.scheme().is_some_and(crate::conn::Scheme::reuses_tls);
     let tls = if secured {
-        let defaults = cx
-            .easy()
-            .libraries()
-            .tls
-            .as_deref()
-            .expect("a secured scheme is one a TLS library speaks")
-            .ca_defaults();
-        match crate::tls::TlsIdentity::of(&cx.easy().options().tls, defaults) {
-            Ok(identity) => Some(identity),
-            Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
-        }
+        Some(OriginTls::Start(RouteTls::Wanted))
+    } else if has_tls && (reuses_tls || cx.easy().options().line.use_ssl.may()) {
+        Some(OriginTls::Upgrade(RouteTls::Wanted))
     } else {
         None
     };
     // What few routes have: the local end each socket binds, which a
     // connection must share to serve it (`conn->interface_opts`,
     // `localport`, `localportrange`); the credentials a scheme that logs
-    // in once per connection logs in with; the TLS a connection not over
-    // it may be upgraded to, and how far TLS is asked for.
-    let cold = match route_cold(cx, &mut proto, secured) {
+    // in once per connection logs in with; and how far TLS is asked for.
+    let cold = match route_cold(cx, &mut proto) {
         Ok(cold) => cold,
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
     let route = NetRoute {
         origin,
         via,
-        ip: cx.easy().options().ip_version,
         proxy,
         tls,
         cold,
-        // Compared for any protocol, as C compares it (`url_match_auth`).
-        delegation: cx.easy().options().login.delegation,
     };
     let mut dial = Dial::Stream;
     // HTTP/3 alone must be possible (`Curl_http_setup_conn`). It is
@@ -886,26 +885,17 @@ pub(super) fn start_leg<H: Host>(
     setup(cx, Plan { proto, route, dial })
 }
 
-/// What of the route for `proto`, `secured` or not, few routes have
-/// (`RouteCold`), or none if none of it is there. The credentials of a
-/// scheme that logs in once per connection move from the request to it,
-/// their one owner (`url_set_conn_login`).
+/// What of the route for `proto` few routes have (`RouteCold`), or none
+/// if none of it is there. The credentials of a scheme that logs in once
+/// per connection move from the request to it, their one owner
+/// (`url_set_conn_login`).
 fn route_cold<H: Host>(
     cx: &mut StepCx<'_, H>,
     proto: &mut ProtoState,
-    secured: bool,
 ) -> Result<Option<TryArc<crate::conn::RouteCold>>, OutOfMemory> {
     let options = cx.easy().options();
     let local = options.sockets.local.try_clone()?;
     let use_ssl = options.line.use_ssl;
-    let reuses_tls = proto.scheme().is_some_and(crate::conn::Scheme::reuses_tls);
-    let tls = cx.easy().libraries().tls.as_deref();
-    let upgrade = match tls {
-        Some(tls) if !secured && (reuses_tls || use_ssl.may()) => Some(
-            crate::tls::TlsIdentity::of(&options.tls, tls.ca_defaults())?,
-        ),
-        _ => None,
-    };
     let ftp = match proto {
         ProtoState::Ftp(_) => {
             let ftp = &options.line.ftp;
@@ -922,9 +912,10 @@ fn route_cold<H: Host>(
         _ => None,
     };
     let cold = crate::conn::RouteCold {
+        ip: options.ip_version,
+        delegation: options.login.delegation,
         local,
         login: proto.take_login()?,
-        upgrade,
         use_ssl,
         ftp,
         ssh: proto.take_ssh_keys(),
@@ -1086,25 +1077,14 @@ fn choose_proxy<H: Host>(
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         None => route,
     };
-    if !route.https() {
-        return Ok(Some(route));
-    }
-    // The settings the HTTPS proxy's TLS is made with, which a
-    // connection must share to serve the transfer
-    // (`Curl_ssl_filter_config_tmp_init`'s `ssl_proxy`).
-    let defaults = cx
-        .easy()
-        .libraries()
-        .tls
-        .as_deref()
-        .expect("an HTTPS proxy is one only with a TLS library")
-        .ca_defaults();
-    let options = cx.easy().options();
-    let identity = TlsIdentity::of_proxy(&options.proxy.tls, &options.tls.options, defaults)
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-    let route = route
-        .secured(identity)
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    // An HTTPS proxy's TLS is wanted, as its type says: its settings stay
+    // in the transfer's options, which a connection must share to serve
+    // the transfer (`Curl_ssl_filter_config_tmp_init`'s `ssl_proxy`),
+    // until one is set up with them (`NetRoute::made`).
+    assert!(
+        !route.https() || cx.easy().libraries().tls.is_some(),
+        "an HTTPS proxy is one only with a TLS library"
+    );
     Ok(Some(route))
 }
 
@@ -1243,8 +1223,15 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
         // One waiting may now find room too.
         schedule_pending(&mut cx.rest);
     }
+    // A new connection's route, its TLS made as the pool set it up, is
+    // the one its setup reads its TLS identities from; one reused is up,
+    // and the plan's, wanting TLS, names what it reaches.
+    let mut made = None;
     let lease = match acquired {
-        Ok(Acquired::New(lease)) => lease,
+        Ok(Acquired::New(lease)) => {
+            made = lease.setup().map(|setup| setup.route().clone());
+            lease
+        }
         Ok(Acquired::Reused(lease)) => {
             let route = &plan.route;
             let name = route.origin.scheme().name();
@@ -1286,6 +1273,8 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
         route,
         dial: _,
     } = plan;
+    let new = made.is_some();
+    let route = made.unwrap_or(route);
     // One joined as another transfer is on it is connected at once, its
     // ends the transfer's as it is found: on to PROTOCONNECT without
     // CONNECTING (`Curl_connect`'s `attached_xfers > 1`,
@@ -1306,6 +1295,7 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
     }
     let mut https = None;
     let mut record_ask = None;
+    assert!(new || lease.is_up(), "a connection reused is up");
     if !lease.is_up() {
         // The HTTPS connect filter starts the chain, which puts the setup
         // filter below it as its attempt starts; or the setup filter does
@@ -1595,7 +1585,10 @@ fn acquire<H: Host>(
         // A share's connections lent to the multi are judged as the
         // multi's own, in the share's order.
         let lent = match &home {
-            Home::Share(share) => Some(cx.rest.caches.pool.lending(share, &wanted)?),
+            Home::Share(share) => {
+                let tls = crate::conn::TlsWants::of(cx.easy());
+                Some(cx.rest.caches.pool.lending(share, &wanted, tls)?)
+            }
             _ => None,
         };
         let wanted = pool::Wanted {

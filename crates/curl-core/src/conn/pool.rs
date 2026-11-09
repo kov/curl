@@ -16,7 +16,7 @@ use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::mux::Mux as _;
 use super::shutdown::{ConnSettings, Exits, discard};
 use super::{
-    Conn, ConnId, ConnNumber, ConnSlot, Dial, Peer, Route, TransferNumber, Transport, Use,
+    Conn, ConnId, ConnNumber, ConnSlot, Dial, Peer, Route, TlsWants, TransferNumber, Transport, Use,
 };
 use crate::id::{Arena, ArenaPolicy};
 use crate::proto::http::StreamSending;
@@ -1000,7 +1000,8 @@ impl Pool {
     /// A new connection for `route`, within `limits`, or none, for want
     /// of room (`Curl_cpool_add`); its lease is from `here`, the pool this
     /// is. It closes its sockets with `closer` and keeps `settings`, its
-    /// creating transfer's, whoever closes it.
+    /// creating transfer's, whoever closes it. The TLS the route wants is
+    /// made here, of the transfer's settings, which `exits` lends.
     #[expect(
         clippy::too_many_arguments,
         reason = "C's `Curl_cpool_add` and what it captures"
@@ -1025,6 +1026,9 @@ impl Pool {
                 return Ok(Acquired::Wait(reason));
             }
         }
+        // Its TLS made of the transfer's settings, as its handle has them
+        // now, only once there is room for it.
+        let route = route.made(exits.tls_wants())?;
         let number = ConnNumber(self.next_number);
         let leased = Leased {
             route: route.clone(),
@@ -1146,8 +1150,12 @@ impl Pool {
     ) -> Result<Option<Took>, OutOfMemory> {
         match self.conns.get(id) {
             Some(Place::Attached(_)) => {
+                // The transfer's TLS settings as its handle has them now,
+                // borrowed for this comparison alone: a socket's callback
+                // that runs as a connection closes may change them.
+                let tls = exits.tls_wants();
                 return Ok(self
-                    .join_if(id, here, wanted, notes, seen)?
+                    .join_if(id, here, wanted, tls, notes, seen)?
                     .map(Took::Lease));
             }
             // Lent to the searching multi, it takes the transfer as its
@@ -1203,7 +1211,7 @@ impl Pool {
             unreachable!("an idle connection is idle");
         };
         if conn.number.get() < self.stale_below
-            || !conn.serves(wanted.route)
+            || !conn.serves(wanted.route, exits.tls_wants())
             || !conn.serves_auth(&wanted.auth)
         {
             return Ok(None);
@@ -1274,6 +1282,7 @@ impl Pool {
         id: ConnId,
         here: &Home,
         wanted: &Wanted<'_>,
+        tls: Option<TlsWants<'_>>,
         notes: &mut Vec<PoolNote>,
         seen: &mut Seen,
     ) -> Result<Option<ConnLease>, OutOfMemory> {
@@ -1284,23 +1293,24 @@ impl Pool {
         if shared.conn().number.get() < self.stale_below {
             return Ok(None);
         }
-        if !judged(join_verdict(shared.conn(), wanted), notes, seen)? {
+        if !judged(join_verdict(shared.conn(), wanted, tls), notes, seen)? {
             return Ok(None);
         }
         Ok(Some(self.join_attached(id, here)))
     }
 
     /// What each of `share`'s connections lent to this multi would make
-    /// of the transfer `wanted` describes, for the search of the share's
-    /// pool to judge them by in its order.
+    /// of the transfer `wanted` describes, its TLS settings `tls`, for the
+    /// search of the share's pool to judge them by in its order.
     pub(crate) fn lending(
         &self,
         share: &Share,
         wanted: &Wanted<'_>,
+        tls: Option<TlsWants<'_>>,
     ) -> Result<LentCandidates, OutOfMemory> {
         let mut lent = Vec::new();
         for l in self.lent.iter().filter(|l| l.share.is(share)) {
-            lent.try_push((l.id, join_verdict(l.shared.conn(), wanted)))?;
+            lent.try_push((l.id, join_verdict(l.shared.conn(), wanted, tls)))?;
         }
         Ok(LentCandidates { lent })
     }
@@ -1924,10 +1934,10 @@ impl Pool {
 }
 
 /// What the connection `conn`, which multiplexes, makes of the transfer
-/// `wanted` describes (`url_match_multiplex_needs`,
+/// `wanted` describes, its TLS settings `tls` (`url_match_multiplex_needs`,
 /// `url_match_multiplex_limits`).
-fn join_verdict(conn: &Conn, wanted: &Wanted<'_>) -> JoinVerdict {
-    if conn.close || !conn.serves(wanted.route) {
+fn join_verdict(conn: &Conn, wanted: &Wanted<'_>, tls: Option<TlsWants<'_>>) -> JoinVerdict {
+    if conn.close || !conn.serves(wanted.route, tls) {
         return JoinVerdict::Passed;
     }
     let Some(max) = wanted.multiplex else {

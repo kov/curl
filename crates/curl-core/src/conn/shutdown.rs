@@ -21,7 +21,7 @@ use curl_alloc::TryVec as _;
 use super::io::{Events, Net, Socket, SocketKey, SocketPoll};
 use super::layer::Handshake;
 use super::line::Goodbye;
-use super::{Conn, Peer, Route, Transport};
+use super::{Conn, Peer, Route, TlsWants, Transport};
 use crate::components::Component;
 use crate::conn::buf::Rooms;
 use crate::proto::pingpong::drive::BLOCKING_POLL;
@@ -841,6 +841,21 @@ pub(crate) trait Exits {
     fn internal(&self) -> Option<Internal> {
         None
     }
+
+    /// The TLS settings of the transfer a pool section works for, as its
+    /// handle has them now, if it has a TLS library: what the search
+    /// compares a connection's TLS with, and a new connection's is made
+    /// of. Borrowed from the exits, not across the section, as a socket's
+    /// callback told of a connection closing may change them.
+    fn tls_wants(&self) -> Option<TlsWants<'_>> {
+        None
+    }
+}
+
+/// A network that knows the transfer a pool section works for, if one,
+/// and lends its TLS settings (`Exits::tls_wants`).
+pub(crate) trait SectionNet: Net {
+    fn tls_wants(&self) -> Option<TlsWants<'_>>;
 }
 
 /// A network alone, in a pool's own tests: with no clock, a connection
@@ -895,7 +910,7 @@ pub(crate) struct Linger<'a> {
 
 /// A network, and the multi's set and receive room and buffer behind it.
 pub(crate) struct WithSet<'a> {
-    pub(crate) net: &'a mut dyn Net,
+    pub(crate) net: &'a mut dyn SectionNet,
     pub(crate) set: &'a mut ShutdownSet,
     pub(crate) max_total: Option<NonZeroU32>,
     pub(crate) multi_pool: Option<u32>,
@@ -917,6 +932,10 @@ impl Exits for WithSet<'_> {
 
     fn clock(&self) -> Option<SharedClock> {
         Some(self.set.clock().clone())
+    }
+
+    fn tls_wants(&self) -> Option<TlsWants<'_>> {
+        self.net.tls_wants()
     }
 }
 

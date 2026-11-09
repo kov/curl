@@ -182,6 +182,9 @@ pub(crate) struct FtpConn {
     /// What of its route few routes have, the credentials it logs in
     /// with among it: the route owns them.
     cold: Option<TryArc<RouteCold>>,
+    /// The TLS identity it is upgraded with, made for it as it was set
+    /// up, if it may be (`NetRoute::upgrade`).
+    upgrade: Option<TryArc<crate::tls::TlsIdentity>>,
 }
 
 /// The credentials a connection logs in with, as its route holds them.
@@ -659,6 +662,7 @@ impl Request {
             data_tls: false,
             use_ssl: options.line.use_ssl,
             cold: lease.conn().net_route().and_then(|r| r.cold.clone()),
+            upgrade: lease.conn().net_route().and_then(|r| r.upgrade().cloned()),
         };
         let line = curl_alloc::try_box(LineConn::Ftp(pc)).map_err(|_| ErrorKind::OutOfMemory)?;
         lease.get().put_line(line);
@@ -1021,7 +1025,7 @@ impl Request {
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        let Some(identity) = pc.cold.as_ref().and_then(|c| c.upgrade.clone()) else {
+        let Some(identity) = pc.upgrade.clone() else {
             return Err(ErrorKind::UseSslFailed);
         };
         let shaken = crate::multi::state::tls::upgrade(
@@ -3609,9 +3613,9 @@ impl Request {
             .expect("DO knows its control connection");
         let identity = control
             .route
-            .tls
-            .clone()
-            .or_else(|| control.route.cold.as_ref().and_then(|c| c.upgrade.clone()));
+            .start_tls()
+            .or_else(|| control.route.upgrade())
+            .cloned();
         let identity = identity.ok_or(ErrorKind::NotBuiltIn)?;
         let resume = carrier
             .latest_session()

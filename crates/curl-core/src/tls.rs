@@ -1695,6 +1695,7 @@ pub struct TlsIdentity {
 impl TlsIdentity {
     /// The identity the options `tls` make, with the library's defaults
     /// where the options keep them (`TlsView::of`, made).
+    #[cfg(test)]
     pub(crate) fn of(
         tls: &Tls,
         ca_defaults: CaDefaults,
@@ -1704,6 +1705,7 @@ impl TlsIdentity {
 
     /// The identity an HTTPS proxy's TLS is made with (`TlsView::proxy`,
     /// made).
+    #[cfg(test)]
     pub(crate) fn of_proxy(
         proxy: &Tls,
         origin: &TlsOptions,

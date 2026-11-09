@@ -152,7 +152,10 @@ the TLS library: ECH is listed where the library has it (`version_with_tls`, C's
 - **A connection's identity is a `Route`, fixed when it is created.** Reuse means the routes are
   equal, plus the deliberate allowances C makes (a TLS connection serving the plain scheme,
   multiplexing limits). A setting added to the route joins the comparison by construction, and
-  nothing is written onto a pooled connection when it is reused.
+  nothing is written onto a pooled connection when it is reused. A transfer's route wants TLS
+  without copying its settings: they are compared where the handle holds them, and copied into
+  the identity a connection keeps only when one is made (as C's shallow
+  `Curl_ssl_filter_config_tmp_init` and deep `Curl_ssl_conn_config_init`).
 - **The pool owns the idle connections and issues leases; a lease owns its busy one,** unless
   the connection multiplexes: then it stays in its pool place, and each lease is a key to it
   (a stream), the stepping transfer moving the connection out for its step. A

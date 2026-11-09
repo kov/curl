@@ -1012,7 +1012,7 @@ pub(super) fn enter_chain<H: Host>(
         Due::Socks(_) => {
             let leg = plan.socks().expect("through a SOCKS proxy");
             if leg.version.resolves_locally() && !made.target_filter {
-                names::target_created(cx, leg.to, leg.version.ip(plan.ip));
+                names::target_created(cx, leg.to, leg.version.ip(plan.ip()));
             }
             let at = port_text(leg.to.port());
             trace::of_with(
@@ -1056,8 +1056,7 @@ pub(super) fn enter_chain<H: Host>(
             // record, asks for it itself, its filter put in first
             // (`Curl_cf_ssl_insert_after`).
             let tls = plan
-                .tls
-                .as_ref()
+                .start_tls()
                 .filter(|_| side == TlsSide::Origin && !head.https);
             if let (Some(tls), Some(ask)) = (tls, ask)
                 && ask.is_none()
@@ -1488,7 +1487,7 @@ pub(super) fn handshake_due(route: &NetRoute, setup: &ConnectMachine, made: Made
         return Some(Due::Socks(version));
     }
     let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
-    let proxy_tls = route.proxy_tls().is_some() && !made.proxy_tls;
+    let proxy_tls = route.proxy_secured() && !made.proxy_tls;
     if proxy_tls && tunnels {
         return Some(Due::Tls(TlsSide::Proxy));
     }
@@ -1508,7 +1507,7 @@ pub(super) fn handshake_due(route: &NetRoute, setup: &ConnectMachine, made: Made
     if setup.dialing().tunnels_udp() {
         return (!made.quic).then_some(Due::Quic);
     }
-    if route.tls.is_some() && !made.tls {
+    if route.secured_from_start() && !made.tls {
         return Some(Due::Tls(TlsSide::Origin));
     }
     None
@@ -1555,7 +1554,7 @@ fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: bool) -> Er
     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(None))));
     let peer = route.destination();
     let (host, at) = (peer.name(), port_text(peer.port()));
-    let queries = queries(peer, route.ip, cx.rest.ipv6_works);
+    let queries = queries(peer, route.ip(), cx.rest.ipv6_works);
     let kind = if proxy {
         ErrorKind::CouldntResolveProxy
     } else {
@@ -1587,7 +1586,7 @@ fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: b
     // said here in any other, as only a debug build fails the resolve.
     #[cfg(not(feature = "debug-hooks"))]
     {
-        let queries = queries(peer, route.ip, cx.rest.ipv6_works).as_bytes();
+        let queries = queries(peer, route.ip(), cx.rest.ipv6_works).as_bytes();
         trace::of_with(
             cx,
             Component::Dns,
@@ -1800,7 +1799,7 @@ fn trace_resolved<H: Host>(
     let (name, at, queries) = (
         peer.name(),
         port_text(peer.port()),
-        queries(peer, route.ip, cx.rest.ipv6_works),
+        queries(peer, route.ip(), cx.rest.ipv6_works),
     );
     let at = at.bytes();
     let code = match asked {
@@ -2067,7 +2066,7 @@ pub(super) fn up<H: Host>(
             .mark(Timer::AppConnect, handshake_at);
         mstate::marked(cx, Timer::AppConnect, marked);
     } else {
-        if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
+        if c.route.secured_from_start() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
             let now = cx.now();
             let marked = cx.report_mut().timings_mut().mark(Timer::AppConnect, now);
             mstate::marked(cx, Timer::AppConnect, marked);
@@ -2252,7 +2251,7 @@ pub(crate) fn connect_failed<H: Host>(
                         None => trace::fail_with(cx, kind, &[what, host]),
                     };
                     if let Some(status) = library_status {
-                        let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                        let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                         let code = trace::Code(Err(kind));
                         trace::of(
                             cx,
@@ -2276,7 +2275,7 @@ pub(crate) fn connect_failed<H: Host>(
             } = why
             {
                 super::names::async_gone(cx, holder);
-                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                 let code = trace::Code(Err(kind));
                 trace::of(
                     cx,
@@ -2291,7 +2290,7 @@ pub(crate) fn connect_failed<H: Host>(
                 ..
             } = why
             {
-                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                 trace::of_with(
                     cx,
                     Component::Dns,
@@ -2307,7 +2306,7 @@ pub(crate) fn connect_failed<H: Host>(
             // Said once, by the resolve, and only that it failed
             // (`Curl_async_failed`).
             if why == Unresolved::NegativeMeanwhile {
-                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                 let code = trace::Code(Err(kind));
                 trace::of(
                     cx,
@@ -2329,7 +2328,7 @@ pub(crate) fn connect_failed<H: Host>(
                 if in_start.is_some() {
                     trace::info_with(cx, &[b"Could not resolve: ", host]);
                 }
-                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                 let code = trace::Code(Err(kind));
                 trace::of(
                     cx,
@@ -2339,7 +2338,7 @@ pub(crate) fn connect_failed<H: Host>(
             }
             if why == Unresolved::Negative {
                 trace::info_with(cx, &[b"Could not resolve: ", host]);
-                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let queries = queries(first, route.ip(), cx.rest.ipv6_works);
                 let code = trace::Code(Err(kind));
                 trace::of(
                     cx,

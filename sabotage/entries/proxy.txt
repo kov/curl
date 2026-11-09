@@ -578,18 +578,6 @@ witness: curl-core proto::http::tests::the_proxy_protocol_s_line_follows_every_p
 --- new
         if !socks {
 
-=== a connection serves a transfer whose HTTPS proxy's TLS differs
-file: crates/curl-core/src/conn/mod.rs
-witness: curl-core proto::http::tests::tls::an_https_proxy_s_connection_is_reused_only_with_the_same_proxy_tls
---- old
-            tls,
-        }
-    }
---- new
-            tls: tls.and(None),
-        }
-    }
-
 === a tunnel through an HTTPS proxy is asked for before its TLS
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_in_tls
@@ -616,10 +604,10 @@ witness: curl-core proto::http::tests::tls::http_through_an_https_proxy_goes_ove
 file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::https_trace::tls_in_tls_sets_up_as_c
 --- old
-        let size = if lent.route.proxy_tls().is_some() || hands_over {
+        let size = if lent.route.proxy_secured() || hands_over {
             1
 --- new
-        let size = if lent.route.proxy_tls().is_some() && hands_over {
+        let size = if lent.route.proxy_secured() && hands_over {
             1
 
 === the proxy's TLS answers the ALPN question a tunnel above it keeps

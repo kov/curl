@@ -131,6 +131,9 @@ pub(crate) struct ImapConn {
     /// What of its route few routes have, the credentials it logs in
     /// with among it (`conn->creds`): the route owns them.
     cold: Option<TryArc<RouteCold>>,
+    /// The TLS identity it is upgraded with, made for it as it was set
+    /// up, if it may be (`NetRoute::upgrade`).
+    upgrade: Option<TryArc<crate::tls::TlsIdentity>>,
 }
 
 impl ImapConn {
@@ -505,6 +508,7 @@ impl Request {
             ir_offered: false,
             no_socket: false,
             cold: lease.conn().net_route().and_then(|r| r.cold.clone()),
+            upgrade: lease.conn().net_route().and_then(|r| r.upgrade().cloned()),
         };
         let options = match cx.easy().options().line.login_options.as_deref() {
             Some(given) => Some(given),
@@ -574,7 +578,7 @@ impl Request {
         if pc.state == State::UpgradeTls {
             // All bytes are TLS's until its handshake is done
             // (`imap_perform_upgrade_tls`).
-            let Some(identity) = pc.cold.as_ref().and_then(|c| c.upgrade.clone()) else {
+            let Some(identity) = pc.upgrade.clone() else {
                 return Err(ErrorKind::NotBuiltIn);
             };
             let shaken = crate::multi::state::tls::upgrade(

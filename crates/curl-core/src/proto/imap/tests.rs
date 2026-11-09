@@ -97,6 +97,7 @@ fn options(given: &[u8]) -> Result<(AuthTypes, Mechs), ErrorKind> {
         ir_offered: false,
         no_socket: false,
         cold: None,
+        upgrade: None,
     };
     parse_options(&mut pc, given).map(|()| (pc.preferred, pc.sasl.preferred()))
 }

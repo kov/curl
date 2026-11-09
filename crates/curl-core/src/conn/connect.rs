@@ -957,8 +957,7 @@ impl RecordWait {
     fn needed(route: &NetRoute, cx: &dyn ConnCx) -> bool {
         !route.proxy_over_quic()
             && route
-                .tls
-                .as_ref()
+                .start_tls()
                 .is_some_and(|t| t.options.ech.needs_record())
             && matches!(cx.https_record(), OriginRecord::Coming)
     }
@@ -1085,7 +1084,8 @@ pub(crate) enum Unresolved {
 
 impl ConnectMachine {
     /// The setup of connection `number` over `route`, whose sockets close
-    /// through `closer`.
+    /// through `closer`. Its TLS is made (`NetRoute::made`): a connection
+    /// keeps the identities it was made with.
     pub(crate) fn new(
         number: ConnNumber,
         route: NetRoute,
@@ -1094,6 +1094,7 @@ impl ConnectMachine {
         closer: Closer,
         settings: ConnSettings,
     ) -> ConnectMachine {
+        assert!(route.is_made(), "a connection is set up over a route made");
         ConnectMachine {
             number,
             route,
@@ -1120,7 +1121,8 @@ impl ConnectMachine {
         settings: ConnSettings,
         answer: Addresses,
     ) -> ConnectMachine {
-        let eyeballs = Eyeballs::new(answer, route.ip);
+        assert!(route.is_made(), "a connection is set up over a route made");
+        let eyeballs = Eyeballs::new(answer, route.ip());
         ConnectMachine {
             number,
             route,
@@ -1426,7 +1428,7 @@ impl ConnectMachine {
             last_failed: None,
             // The name's filter, above the chain started over, goes on
             // resolving: the race follows it again as it is next driven.
-            eyeballs: Eyeballs::new(d.answer, self.route.ip),
+            eyeballs: Eyeballs::new(d.answer, self.route.ip()),
             attempts: Vec::new(),
             last_start: None,
             target: match d.target {
@@ -1470,7 +1472,7 @@ impl ConnectMachine {
                         let (name, port) = (peer.name(), peer.port());
                         let (looked, fresh) = match pending {
                             None => {
-                                let family = family(self.route.ip, cx);
+                                let family = family(self.route.ip(), cx);
                                 let holder = Holder::Addresses(cx.rank());
                                 let looked =
                                     lookup_start((name, port), family, cx, setup, true, holder)?;
@@ -1541,7 +1543,7 @@ impl ConnectMachine {
                                         let answer = part.answer(name, p.family).map_err(oom)?;
                                         let mut eyeballs = Eyeballs::new(
                                             Addresses::Resolved(answer.clone()),
-                                            self.route.ip,
+                                            self.route.ip(),
                                         );
                                         // The rest is the name's filter's,
                                         // above the setup.
@@ -1569,7 +1571,7 @@ impl ConnectMachine {
                         }
                     }
                 };
-                let eyeballs = Eyeballs::new(answer, self.route.ip);
+                let eyeballs = Eyeballs::new(answer, self.route.ip());
                 if !eyeballs.more() {
                     return Err(ConnectError::Unresolved(Unresolved::NoAddress(found)));
                 }
@@ -2083,7 +2085,7 @@ impl ConnectMachine {
             let identity = route.proxy_tls().expect("an HTTP/3 proxy speaks TLS");
             (identity, route.destination(), None)
         } else {
-            let identity = route.tls.as_ref().expect("HTTP/3 is refused but over TLS");
+            let identity = route.start_tls().expect("HTTP/3 is refused but over TLS");
             (identity, &*route.origin, route.via.as_deref())
         };
         let kept_for =
@@ -2474,7 +2476,7 @@ impl ConnectMachine {
         if !leg.version.resolves_locally() {
             return Ok((SocksTarget::None, None));
         }
-        let family = family(leg.version.ip(self.route.ip), cx);
+        let family = family(leg.version.ip(self.route.ip()), cx);
         let at = (leg.to.name(), leg.to.port());
         match lookup_start(at, family, cx, setup, true, Holder::Target) {
             Ok(Looked::Found(answer, _)) => {
@@ -4713,11 +4715,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let answer =
             |addrs: Vec<IpAddr>| TryArc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap();
@@ -4789,11 +4789,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
-            ip,
             proxy: None,
             tls: None,
-            cold: None,
-            delegation: Default::default(),
+            cold: crate::conn::RouteCold::of_ip(ip),
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
@@ -4888,11 +4886,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let m = ConnectMachine::new(
             ConnNumber(0),
@@ -4953,11 +4949,9 @@ mod tests {
             let route = NetRoute {
                 origin: TryArc::try_new(peer).unwrap(),
                 via: None,
-                ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
                 cold: None,
-                delegation: Default::default(),
             };
             let mut m = Some(ConnectMachine::new(
                 ConnNumber(0),
@@ -5098,11 +5092,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
@@ -5171,11 +5163,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
@@ -5262,11 +5252,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),

@@ -77,7 +77,7 @@ pub(super) fn chain_set_up<H: Host>(
     if record {
         created(cx, "HTTPS", route.target(), transport, true);
     }
-    let queries = queries(route.ip, cx.rest.ipv6_works);
+    let queries = queries(route.ip(), cx.rest.ipv6_works);
     created(cx, queries, first, transport, !record);
 }
 
@@ -115,7 +115,7 @@ pub(super) fn record_started<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) 
 /// for one.
 pub(super) fn started<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
     let peer = route.destination();
-    let queries = queries(route.ip, cx.rest.ipv6_works);
+    let queries = queries(route.ip(), cx.rest.ipv6_works);
     let unix = peer.is_unix();
     let kind = if unix { "unix-domain-socket" } else { "host" };
     let head = Text::<48>::clipped(format_args!("[{queries}] cf_dns_start {kind} ")).0;

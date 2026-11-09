@@ -182,10 +182,10 @@ impl Chain {
     ) -> Chain {
         let added = Handshakes {
             socks: route.socks().is_some(),
-            proxy_tls: route.proxy_tls().is_some(),
+            proxy_tls: route.proxy_secured(),
             tunnel: route.proxy.as_ref().is_some_and(|p| p.tunnels()),
             preface: haproxy,
-            tls: route.tls.is_some(),
+            tls: route.secured_from_start(),
             quic: route.tunnels_udp(),
         };
         Chain::dialed(route, head, added, (true, tunnel), |_| true)
@@ -433,7 +433,6 @@ mod tests {
         let made = Made::default().with(Handshook::Tunnel(Tunneled::H1));
         let _ = made.with(Handshook::Tunnel(Tunneled::H2));
     }
-    use crate::options::IpVersion;
 
     /// A handshake's filter shows connected once it is made, as C's does
     /// until the setup filters go; the PROXY line's while a later one is
@@ -444,11 +443,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(Peer::new(scheme, b"o.test".to_vec(), 80, None)).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let route = &route;
         let shown = |made, under_way| {
@@ -479,7 +476,9 @@ mod tests {
         let tls =
             crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap();
         let route = NetRoute {
-            tls: Some(tls),
+            tls: Some(crate::conn::OriginTls::Start(crate::conn::RouteTls::Made(
+                tls,
+            ))),
             ..route.clone()
         };
         let route = &route;
@@ -529,11 +528,9 @@ mod tests {
         let route = NetRoute {
             origin: peer(b"o.test", 80).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: Some(proxy),
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let shown = |made, under_way| {
             Chain::of(
@@ -600,11 +597,9 @@ mod tests {
         let route = NetRoute {
             origin: peer(b"o.test", 80).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: Some(proxy),
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let route = &route;
         let shown = |made, under_way| {
@@ -678,11 +673,11 @@ mod tests {
         let route = NetRoute {
             origin: peer(b"o.test", 443).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: Some(proxy),
-            tls: Some(tls),
+            tls: Some(crate::conn::OriginTls::Start(crate::conn::RouteTls::Made(
+                tls,
+            ))),
             cold: None,
-            delegation: Default::default(),
         };
         let route = &route;
         let route = Dialing {

@@ -102,6 +102,9 @@ pub(crate) struct Pop3Conn {
     /// with among it, its first transfer's (`conn->creds`): the route
     /// owns them.
     cold: Option<TryArc<RouteCold>>,
+    /// The TLS identity it is upgraded with, made for it as it was set
+    /// up, if it may be (`NetRoute::upgrade`).
+    upgrade: Option<TryArc<crate::tls::TlsIdentity>>,
 }
 
 /// Where a retrieval's bytes go: through the end-of-body scan. The
@@ -466,6 +469,7 @@ impl Request {
             preferred: AuthTypes::ANY,
             tls_offered: false,
             cold: lease.conn().net_route().and_then(|r| r.cold.clone()),
+            upgrade: lease.conn().net_route().and_then(|r| r.upgrade().cloned()),
         };
         let options = match cx.easy().options().line.login_options.as_deref() {
             Some(given) => Some(given),
@@ -506,7 +510,7 @@ impl Request {
         if pc.state == State::UpgradeTls {
             // All bytes are TLS's until its handshake is done
             // (`pop3_perform_upgrade_tls`).
-            let Some(identity) = pc.cold.as_ref().and_then(|c| c.upgrade.clone()) else {
+            let Some(identity) = pc.upgrade.clone() else {
                 return Err(ErrorKind::NotBuiltIn);
             };
             let shaken = crate::multi::state::tls::upgrade(

@@ -4,7 +4,6 @@ use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Remo
 use crate::conn::layer::Silent;
 use crate::conn::{DnsCache, DriveOptions, Limit, NetRoute, Scheme};
 
-use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
 use crate::url::schemes::{Flags, Known};
 use curl_alloc::TryArc;
@@ -89,11 +88,9 @@ fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
     Route::Net(NetRoute {
         origin: TryArc::try_new(peer).unwrap(),
         via: None,
-        ip: IpVersion::Any,
         proxy: None,
         tls: None,
         cold: None,
-        delegation: Default::default(),
     })
 }
 
@@ -1788,7 +1785,7 @@ fn a_share_s_connection_lent_to_a_multi_is_that_multi_s() {
         lending: Lending::NONE,
     };
     let search = |multi: &Pool, net: &mut FakeNet| {
-        let lent = multi.lending(&share, &wanted).unwrap();
+        let lent = multi.lending(&share, &wanted, None).unwrap();
         let wanted = Wanted {
             lending: lent.lending(),
             ..wanted
@@ -1910,7 +1907,7 @@ fn search_lent(versions: crate::proto::http::Versions, close: bool) -> Found {
         pipewait: false,
         lending: Lending::NONE,
     };
-    let lent = multi.lending(&share, &wanted).unwrap();
+    let lent = multi.lending(&share, &wanted, None).unwrap();
     let wanted = Wanted {
         lending: lent.lending(),
         ..wanted
@@ -1977,7 +1974,7 @@ fn search_beside_a_lent_one(lent_port: u16) -> Found {
         lending: Lending::NONE,
     };
     let mine = Pool::new().unwrap();
-    let lending = mine.lending(&share, &wanted).unwrap();
+    let lending = mine.lending(&share, &wanted, None).unwrap();
     let wanted = Wanted {
         lending: lending.lending(),
         ..wanted

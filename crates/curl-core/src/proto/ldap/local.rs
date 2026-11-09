@@ -272,7 +272,7 @@ impl Request {
         let identity = lease
             .conn()
             .net_route()
-            .and_then(|route| route.tls.as_deref());
+            .and_then(|route| route.start_tls().map(|t| &**t));
         let tls = &cx.easy().options().tls;
         let verify_peer = identity.map_or(tls.verify_peer, |i| i.verify_peer);
         let require = if verify_peer {
@@ -344,7 +344,7 @@ impl Request {
         let identity = lease
             .conn()
             .net_route()
-            .and_then(|route| route.tls.as_deref());
+            .and_then(|route| route.start_tls().map(|t| &**t));
         s.set_ssl();
         let tls = &cx.easy().options().tls;
         let verify_peer = identity.map_or(tls.verify_peer, |i| i.verify_peer);

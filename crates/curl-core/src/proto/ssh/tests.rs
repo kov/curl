@@ -2465,3 +2465,18 @@ fn a_download_reports_its_size_and_time() {
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
     assert_eq!(e.report().sizes().download_expected, Some(6));
 }
+
+/// A copy of the key files has each of them, the passphrase too.
+#[test]
+fn a_copy_of_the_keys_has_each_file() {
+    let keys = Keys {
+        private: Some(b"/k/id".to_vec()),
+        public: Some(b"/k/id.pub".to_vec()),
+        passphrase: Some(b"secret".to_vec()),
+    };
+    let copy = keys.try_clone().unwrap();
+    assert_eq!(copy.private.as_deref(), Some(&b"/k/id"[..]));
+    assert_eq!(copy.public.as_deref(), Some(&b"/k/id.pub"[..]));
+    assert_eq!(copy.passphrase.as_deref(), Some(&b"secret"[..]));
+    assert!(copy.same(&keys));
+}

@@ -689,3 +689,14 @@ fn ech_asks_for_the_library_s_support() {
     assert!(asked.ech);
     assert_eq!(TlsSupport::NONE.lacking(&asked), Some("ECH"));
 }
+
+/// The SHA-256 a library tells two blobs of certificates apart by is
+/// SHA-256's (FIPS 180-2's first example).
+#[test]
+fn a_blob_s_sha256_is_sha256() {
+    let hex: String = sha256(b"abc").iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}

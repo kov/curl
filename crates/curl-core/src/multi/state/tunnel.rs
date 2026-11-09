@@ -91,7 +91,7 @@ pub(super) fn dialed<H: Host>(
     // The filter below the tunnel's is asked (`http_proxy_cf_connect`):
     // an HTTPS proxy's TLS, the SOCKS proxy's, or the one that dialed the
     // proxy.
-    let below = if lent.route.proxy_tls().is_some() {
+    let below = if lent.route.proxy_secured() {
         Component::SslProxy
     } else if lent.route.socks().is_some() {
         Component::Socks
@@ -328,7 +328,7 @@ pub(super) fn connect_head<H: Host>(
     let mut out = Vec::new();
     let options = cx.easy().options();
     let trusted = lent.request.trusted();
-    let scheme: &'static [u8] = if lent.route.proxy_tls().is_some() {
+    let scheme: &'static [u8] = if lent.route.proxy_secured() {
         b"https"
     } else {
         b"http"
@@ -482,7 +482,7 @@ fn run<H: Host>(
         // the library's to read, past any buffer of ours: SSH's banner
         // comes with the proxy's answer.
         let hands_over = lent.route.target().scheme().hands_socket_over();
-        let size = if lent.route.proxy_tls().is_some() || hands_over {
+        let size = if lent.route.proxy_secured() || hands_over {
             1
         } else {
             READ_SIZE

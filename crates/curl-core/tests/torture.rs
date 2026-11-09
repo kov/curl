@@ -104,6 +104,14 @@ fn main() {
             an_https_get_stays_within_its_allocation_budget,
         ),
         (
+            "a_tls_identity_is_made_once_per_connection",
+            a_tls_identity_is_made_once_per_connection,
+        ),
+        (
+            "a_waiting_transfer_s_new_ip_version_takes_no_refusal_for_success",
+            a_waiting_transfer_s_new_ip_version_takes_no_refusal_for_success,
+        ),
+        (
             "an_http_2_body_s_frames_allocate_nothing",
             an_http_2_body_s_frames_allocate_nothing,
         ),
@@ -1001,8 +1009,8 @@ fn an_https_get_takes_no_refusal_for_success() {
 }
 
 /// What an HTTPS GET allocates over the fake TLS library, the core's
-/// own beside the plain GET's 43: the route's TLS identity (shared with
-/// the connection), the handshake under way, the library's session, its
+/// own beside the plain GET's 43: the TLS identity the connection keeps,
+/// made as it is set up, the handshake under way, the library's session, its
 /// layer, the stream's layer stack and its list, and the multi's
 /// `TlsShared` with the fake's state boxed in it, made with the multi's
 /// first session; and the key the connection's TLS sessions are kept
@@ -1019,6 +1027,124 @@ fn an_https_get_stays_within_its_allocation_budget() {
         n <= HTTPS_FAKE_GET_BUDGET,
         "an HTTPS GET over the fake made {n} allocations, over its {HTTPS_FAKE_GET_BUDGET}"
     );
+}
+
+/// The TLS identity a connection keeps is made of the transfer's
+/// settings as the connection is set up, and a transfer that reuses the
+/// connection makes none: its settings are compared where its options
+/// hold them (`Curl_ssl_filter_config_tmp_init`'s shallow copy). Counted
+/// by the copies of a key password of a size nothing else allocates,
+/// which only an identity copies (the fake TLS library reads none).
+fn a_tls_identity_is_made_once_per_connection() {
+    const PASSWORD: usize = 997;
+    let libraries = fake_tls();
+    let (clock, net, talk) = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 443));
+        let records = fake::records(REPLY).expect("memory");
+        let talk = Conversation::replies(&[fake::WELCOME, &records, &records, fake::CLOSE], false);
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        (clock, net, talk)
+    });
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).expect("memory");
+    let mut made = Vec::new();
+    for _ in 0..2 {
+        let mut easy = Easy::new();
+        easy.set_libraries(libraries.clone());
+        let o = easy.options_mut();
+        o.set_url(Some(b"https://127.0.0.1/1?q")).expect("memory");
+        o.tls.options.make_mut().expect("memory").key_password = Some(vec![b'k'; PASSWORD]);
+        let id = m.add(Box::new(easy), (), &mut NoEvents).expect("added");
+        let (result, n) = track::count_sized(PASSWORD, || {
+            curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+                .expect("the transfer is in the multi")
+        });
+        assert_eq!(result, Ok(()));
+        m.remove(id, &mut NoEvents).expect("in the multi");
+        made.push(n);
+    }
+    // The positive control: the second transfer went over the first's
+    // connection, its one handshake carrying both requests.
+    track::untracked(|| {
+        let read = fake::read_client(&talk.received()).expect("memory");
+        let count = |needle: &[u8]| read.windows(needle.len()).filter(|w| *w == needle).count();
+        assert_eq!(count(fake::HELLO), 1, "one handshake");
+        assert_eq!(count(b"GET /1?q HTTP/1.1"), 2, "both requests over it");
+    });
+    track::untracked(|| eprintln!("identities made by a new connection and a reuse: {made:?}"));
+    assert_eq!(
+        made,
+        [1, 0],
+        "identities made: a new connection's, then none"
+    );
+}
+
+/// A transfer waiting for room that reads another IP version as it
+/// looks again fails for memory where its route's copy is refused: it
+/// never goes on with the version it had.
+fn a_waiting_transfer_s_new_ip_version_takes_no_refusal_for_success() {
+    fn scenario() -> Result<[Result<(), ErrorKind>; 2], OutOfMemory> {
+        let (clock, net) = track::untracked(|| {
+            let clock = ManualClock::new().expect("a clock");
+            let at = std::net::SocketAddr::from(([127, 0, 0, 1], 4));
+            let net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+            (clock, net)
+        });
+        let env = Env {
+            clock: try_box(clock)?,
+            net: try_box(net)?,
+            arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env)?;
+        m.conn_limits_mut().max_host = std::num::NonZeroU32::new(1);
+        let mut ids = [None, None];
+        for slot in &mut ids {
+            let mut easy = Easy::new();
+            easy.options_mut().set_url(Some(b"tcp://127.0.0.1:4/"))?;
+            match m.add(try_box(easy)?, (), &mut NoEvents) {
+                Ok(id) => *slot = Some(id),
+                Err(AddError {
+                    kind: MultiErrorKind::OutOfMemory,
+                    ..
+                }) => return Err(OutOfMemory),
+                Err(e) => panic!("add refused with {:?}, not for memory", e.kind),
+            }
+        }
+        // The first takes the host's one connection; the second waits.
+        match m.perform(&mut NoEvents) {
+            Ok(_) | Err(MultiErrorKind::OutOfMemory) => {}
+            Err(e) => panic!("a pass failed with {e:?}"),
+        }
+        let ids = ids.map(|id| id.expect("added"));
+        m.easy_mut(ids[1])
+            .expect("in the multi")
+            .options_mut()
+            .ip_version = curl_core::options::IpVersion::V4;
+        let mut done = [Ok(()), Ok(())];
+        for (i, id) in ids.iter().enumerate() {
+            done[i] = curl_core::multi::drive_to_completion(&mut m, *id, &mut NoEvents)
+                .expect("the transfer is in the multi");
+        }
+        for id in ids {
+            m.remove(id, &mut NoEvents).expect("in the multi");
+        }
+        Ok(done)
+    }
+    // The positive control: unrefused, both are done.
+    assert_eq!(scenario(), Ok([Ok(()), Ok(())]));
+    refused_alone(scenario, |done| match done {
+        Err(OutOfMemory) => true,
+        Ok(done) => done.contains(&Err(ErrorKind::OutOfMemory)),
+    });
 }
 
 fn a_get_stays_within_its_allocation_budget() {

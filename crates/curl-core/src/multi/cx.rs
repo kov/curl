@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::conn::io::{Events, Net, PollFd, Resolver, Sock, Socket, SocketKey, SocketPoll, Waker};
 use crate::conn::layer::LayerCx;
-use crate::conn::shutdown::{Exits, Linger, ShutdownSet, WithSet};
+use crate::conn::shutdown::{Exits, Linger, SectionNet, ShutdownSet, WithSet};
 use crate::conn::threaded::ResolverThreads;
 use crate::conn::{Caches, ConnCx, DnsCache, Home, Names, Opened, Pool};
 use crate::deliver::PauseRequest;
@@ -276,7 +276,7 @@ impl<H: Host> EngineRest<'_, H> {
 pub(super) fn upkeep(
     pool: &mut Pool,
     share: Option<(&Share, Option<&dyn ShareLock>)>,
-    net: &mut dyn Net,
+    net: &mut dyn SectionNet,
     multi: Linger<'_>,
     interval: Duration,
     now: Instant,
@@ -737,7 +737,7 @@ enum Room {
 /// before the section; a socket it has no room for is a bug, never closed
 /// under the lock.
 struct CloseLater<'n> {
-    net: &'n mut dyn Net,
+    net: &'n mut dyn SectionNet,
     few: [Option<Sock>; CloseLater::FEW],
     more: Vec<Sock>,
 }
@@ -748,7 +748,7 @@ impl<'n> CloseLater<'n> {
     /// limit.
     const FEW: usize = crate::conn::MAX_ATTEMPTS + 1;
 
-    fn new(net: &'n mut dyn Net) -> CloseLater<'n> {
+    fn new(net: &'n mut dyn SectionNet) -> CloseLater<'n> {
         CloseLater {
             net,
             few: [const { None }; CloseLater::FEW],
@@ -767,6 +767,12 @@ impl<'n> CloseLater<'n> {
         for socket in few.into_iter().flatten().chain(more) {
             net.close(socket);
         }
+    }
+}
+
+impl SectionNet for CloseLater<'_> {
+    fn tls_wants(&self) -> Option<crate::conn::TlsWants<'_>> {
+        self.net.tls_wants()
     }
 }
 
@@ -845,6 +851,17 @@ impl<'a, H: Host> Announcing<'a, H> {
             events,
             who: SocketFor::Multi,
         }
+    }
+}
+
+impl<H: Host> SectionNet for Announcing<'_, H> {
+    /// The settings of the transfer the section works for, as its handle
+    /// has them; none for the multi's own work.
+    fn tls_wants(&self) -> Option<crate::conn::TlsWants<'_>> {
+        let SocketFor::Transfer(who) = self.who else {
+            return None;
+        };
+        crate::conn::TlsWants::of(&self.tell.slots.get(who)?.easy)
     }
 }
 
@@ -1658,6 +1675,12 @@ mod tests {
 
     /// The fake network, its closes recorded in order.
     struct Recording(FakeNet, Vec<crate::conn::io::RawSocket>);
+
+    impl SectionNet for Recording {
+        fn tls_wants(&self) -> Option<crate::conn::TlsWants<'_>> {
+            None
+        }
+    }
 
     impl Net for Recording {
         fn poll(

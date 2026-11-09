@@ -62,6 +62,21 @@ pub(crate) struct Keys {
 }
 
 impl Keys {
+    /// A copy.
+    pub(crate) fn try_clone(&self) -> Result<Keys, curl_alloc::OutOfMemory> {
+        let Keys {
+            private,
+            public,
+            passphrase,
+        } = self;
+        let copy = |v: &Option<Vec<u8>>| v.as_deref().map(crate::options::copy).transpose();
+        Ok(Keys {
+            private: copy(private)?,
+            public: copy(public)?,
+            passphrase: copy(passphrase)?,
+        })
+    }
+
     /// Whether a connection that found `self` serves a transfer that
     /// finds `other`: the same files (`ssh_config_matches`).
     pub(crate) fn same(&self, other: &Keys) -> bool {

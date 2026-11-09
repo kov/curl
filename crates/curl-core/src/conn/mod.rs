@@ -54,7 +54,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use crate::idn::{Idn, IdnFailure};
 use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
-use crate::tls::TlsIdentity;
+use crate::tls::{TlsIdentity, TlsView};
 #[cfg(any(test, feature = "test-util"))]
 use crate::url::schemes::Flags;
 use crate::url::schemes::{self, Known};
@@ -179,9 +179,18 @@ pub(crate) enum Route {
 impl Route {
     /// Whether a connection set up for this route may serve a transfer
     /// that needs `wanted` (`url_match_conn`): it reaches what the
-    /// transfer wants, and it is set up as the transfer would set it up.
-    pub(crate) fn serves(&self, wanted: &Route) -> bool {
-        self.reaches(wanted) && self.suits(wanted)
+    /// transfer wants, and it is set up as the transfer would set it up,
+    /// its TLS wanted made with the transfer's settings `tls`.
+    pub(crate) fn serves(&self, wanted: &Route, tls: Option<TlsWants<'_>>) -> bool {
+        self.reaches(wanted) && self.suits(wanted, tls)
+    }
+
+    /// The route a new connection is set up over (`NetRoute::made`).
+    pub(crate) fn made(self, tls: Option<TlsWants<'_>>) -> Result<Route, OutOfMemory> {
+        match self {
+            Route::Local => Ok(Route::Local),
+            Route::Net(net) => net.made(tls).map(Route::Net),
+        }
     }
 
     /// The checks that come before C's notes of what the search saw
@@ -197,23 +206,21 @@ impl Route {
         let NetRoute {
             origin,
             via,
-            ip,
             proxy: _,
             tls: _,
+            // Its family and binding, here; the rest in `suits`.
             cold: _,
-            delegation: _,
         } = have;
         let NetRoute {
             origin: want_origin,
             via: want_via,
-            ip: want_ip,
             proxy: _,
             tls: _,
             cold: _,
-            delegation: _,
         } = want;
+        let (ip, want_ip) = (have.ip(), want.ip());
         // A transfer that takes any family takes either.
-        (*want_ip == IpVersion::Any || want_ip == ip)
+        (want_ip == IpVersion::Any || want_ip == ip)
             && binds_as(have.local(), want.local())
             // C compares the detours without their schemes
             // (`Curl_peer_same_destination`); each has its origin's.
@@ -227,41 +234,44 @@ impl Route {
 
     /// The checks after (`url_match_proxy_use`, `url_match_ssl_config`,
     /// `url_match_auth`): through the same proxy, with TLS made with
-    /// every setting the transfer's has, delegating as it asks.
-    fn suits(&self, wanted: &Route) -> bool {
+    /// every setting the transfer's has, its own settings `tls` where it
+    /// wants TLS, delegating as it asks.
+    fn suits(&self, wanted: &Route, tls: Option<TlsWants<'_>>) -> bool {
         let (Route::Net(have), Route::Net(want)) = (self, wanted) else {
             return false;
         };
         let NetRoute {
             origin: _,
             via: _,
-            ip: _,
             proxy,
-            tls,
+            // `RouteCold::suits`, as each side's settings say.
+            tls: _,
             // `RouteCold::suits`.
             cold: _,
-            delegation,
         } = have;
         let NetRoute {
             origin: _,
             via: _,
-            ip: _,
             proxy: want_proxy,
-            tls: want_tls,
+            tls: _,
             cold: _,
-            delegation: want_delegation,
         } = want;
         let none = &RouteCold::NONE;
         let cold = have.cold.as_deref().unwrap_or(none);
         let want_cold = want.cold.as_deref().unwrap_or(none);
         proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
+            // An HTTPS proxy's TLS made with every setting the transfer's
+            // would be (`url_match_proxy_use`'s `Curl_ssl_conn_config_match`).
+            && same_tls(
+                proxy.as_ref().and_then(|p| p.tls_view(tls)),
+                want_proxy.as_ref().and_then(|p| p.tls_view(tls)),
+            )
             && cold.suits(
                 want_cold,
-                tls.as_deref(),
-                want_tls.as_deref(),
+                have.origin_tls(tls),
+                want.origin_tls(tls),
                 want.origin.scheme(),
             )
-            && delegation == want_delegation
     }
 }
 
@@ -292,29 +302,31 @@ fn binds_as(
 /// connection; through `via` when a connect-to entry names another peer
 /// for it (C's `via_peer`); over the addresses of `ip`; through `proxy`
 /// if there is one, which is the origin itself for a proxy the requests
-/// go to whole; secured by TLS made with `tls`, if its scheme is (C's
-/// `PROTOPT_SSL`).
+/// go to whole; secured by TLS, `tls`, if its scheme is (C's
+/// `PROTOPT_SSL`), or may be upgraded to it.
 #[derive(Clone, Debug)]
 pub(crate) struct NetRoute {
     pub(crate) origin: TryArc<Peer>,
     pub(crate) via: Option<TryArc<Peer>>,
-    pub(crate) ip: IpVersion,
     pub(crate) proxy: Option<ProxyRoute>,
-    /// Shared with the connection set up for it, as every connection's
-    /// slot holds its route inline.
-    pub(crate) tls: Option<TryArc<crate::tls::TlsIdentity>>,
+    /// The origin's TLS, if it is spoken: wanted by the transfer, or made
+    /// for the connection set up for it, which every connection's slot
+    /// holds inline.
+    pub(crate) tls: Option<OriginTls>,
     /// What few routes have: shared, as every connection's slot holds
     /// its route inline. None for none of it.
     pub(crate) cold: Option<TryArc<RouteCold>>,
-    /// How far GSS-API contexts over it delegate the user's credentials
-    /// (`conn->gssapi_delegation`): a transfer reusing it must ask the
-    /// same (`url_match_auth`).
-    pub(crate) delegation: crate::options::Delegation,
 }
 
 /// What of a network route few have.
 #[derive(Debug)]
 pub(crate) struct RouteCold {
+    /// Which addresses of the name it may use (`CURLOPT_IPRESOLVE`).
+    pub(crate) ip: IpVersion,
+    /// How far GSS-API contexts over it delegate the user's credentials
+    /// (`conn->gssapi_delegation`): a transfer reusing it must ask the
+    /// same (`url_match_auth`).
+    pub(crate) delegation: crate::options::Delegation,
     /// What each socket's local end is bound to, if anything (C's
     /// `interface_opts`, `localport`, `localportrange`).
     pub(crate) local: crate::options::LocalBind,
@@ -322,11 +334,6 @@ pub(crate) struct RouteCold {
     /// that logs in per connection, its first transfer's (`conn->creds`);
     /// a transfer reusing it must have the same (`url_match_auth`).
     pub(crate) login: Option<crate::auth::creds::Credentials>,
-    /// The TLS a connection not over it from the start is upgraded to,
-    /// or may be: made with the transfer's settings, which a transfer
-    /// reusing it must share (C's `ssl_config` for `may_tls`, or for a
-    /// scheme that may reuse TLS, `PROTOPT_SSL_REUSE`).
-    pub(crate) upgrade: Option<TryArc<crate::tls::TlsIdentity>>,
     /// How far the transfer asks for TLS (`CURLOPT_USE_SSL`): a transfer
     /// that requires it never reuses a connection not over it.
     pub(crate) use_ssl: crate::options::UseSsl,
@@ -355,6 +362,21 @@ pub(crate) struct FtpSetup {
 }
 
 impl FtpSetup {
+    /// A copy.
+    fn try_clone(&self) -> Result<FtpSetup, OutOfMemory> {
+        let FtpSetup {
+            account,
+            alternative_to_user,
+            ccc,
+        } = self;
+        let copy = |v: &Option<Vec<u8>>| v.as_deref().map(crate::options::copy).transpose();
+        Ok(FtpSetup {
+            account: copy(account)?,
+            alternative_to_user: copy(alternative_to_user)?,
+            ccc: *ccc,
+        })
+    }
+
     /// Whether a connection set up as `self` serves a transfer that
     /// would set one up as `want`, the first asking for TLS as `have_ssl`
     /// and the other as `want_ssl` (`Curl_ftp_conns_match`): the same
@@ -378,9 +400,13 @@ impl FtpSetup {
 impl RouteCold {
     /// What a route without any of it has.
     const NONE: RouteCold = RouteCold {
+        ip: IpVersion::Any,
+        delegation: crate::options::Delegation {
+            by_policy: false,
+            always: false,
+        },
         local: crate::options::LocalBind::NONE,
         login: None,
-        upgrade: None,
         use_ssl: crate::options::UseSsl::None,
         ftp: None,
         ssh: None,
@@ -390,61 +416,69 @@ impl RouteCold {
     /// by name, so that one added does not compile until it is asked.
     pub(crate) fn is_empty(&self) -> bool {
         let RouteCold {
+            ip,
+            delegation,
             local,
             login,
-            upgrade,
             use_ssl,
             ftp,
             ssh,
         } = self;
-        !local.binds()
+        *ip == IpVersion::Any
+            && *delegation == crate::options::Delegation::default()
+            && !local.binds()
             && login.is_none()
-            && upgrade.is_none()
             && *use_ssl == crate::options::UseSsl::None
             && ftp.is_none()
             && ssh.is_none()
     }
 
-    /// Whether a connection of a route with `self` and TLS made with `tls`
-    /// suits a transfer of `scheme` with `want` and `want_tls`
+    /// Whether a connection of a route with `self` and the origin's TLS
+    /// `tls` suits a transfer of `scheme` with `want` and `want_tls`
     /// (`url_match_ssl_config`, `url_match_auth`, and each scheme's match).
     /// Every field by name, so that one added does not compile until it is
     /// compared here or said why not.
     fn suits(
         &self,
         want: &RouteCold,
-        tls: Option<&crate::tls::TlsIdentity>,
-        want_tls: Option<&crate::tls::TlsIdentity>,
+        tls: OriginViews<'_>,
+        want_tls: OriginViews<'_>,
         scheme: Scheme,
     ) -> bool {
         let RouteCold {
             // `Route::reaches`, before C's notes of what the search saw.
+            ip: _,
+            delegation,
             local: _,
             login,
-            upgrade,
             use_ssl,
             ftp,
             ssh,
         } = self;
         let RouteCold {
+            ip: _,
+            delegation: want_delegation,
             local: _,
             login: want_login,
-            upgrade: want_upgrade,
             use_ssl: want_use_ssl,
             ftp: want_ftp,
             ssh: want_ssh,
         } = want;
-        let (upgrade, want_upgrade) = (upgrade.as_deref(), want_upgrade.as_deref());
+        let (upgrade, want_upgrade) = (tls.upgrade, want_tls.upgrade);
+        let (tls, want_tls) = (tls.start, want_tls.start);
         // A connection over TLS from the start serves a transfer not, of
         // its family, that may reuse TLS, made with the settings that
         // transfer would upgrade with (`url_match_ssl_use`).
-        let tls_reused =
-            want_tls.is_none() && tls.is_some() && scheme.reuses_tls() && tls == want_upgrade;
+        let tls_reused = want_tls.is_none()
+            && tls.is_some()
+            && scheme.reuses_tls()
+            && same_tls(tls, want_upgrade);
         // The TLS a transfer may upgrade to, or is made with from the
         // start, is made with every setting the connection's is, which it
         // was made with or would upgrade with (`url_match_ssl_config`
         // with `may_tls`).
-        let upgrade_same = !want_use_ssl.may() || tls.or(upgrade) == want_tls.or(want_upgrade);
+        let upgrade_same =
+            !want_use_ssl.may() || same_tls(tls.or(upgrade), want_tls.or(want_upgrade));
         // A connection logged in once serves only the same credentials
         // (`url_match_auth`).
         let login_same = !scheme.logs_in_per_connection()
@@ -467,7 +501,137 @@ impl RouteCold {
         // TLS made with every setting the transfer's has, or none on both
         // (`url_match_ssl_config`): a transfer that verifies its peer never
         // takes a connection made without.
-        ftp_same && ssh_same && (tls == want_tls || tls_reused) && upgrade_same && login_same
+        ftp_same
+            && ssh_same
+            && (same_tls(tls, want_tls) || tls_reused)
+            && upgrade_same
+            && login_same
+            // Compared for any protocol, as C compares it (`url_match_auth`).
+            && delegation == want_delegation
+    }
+
+    /// The rare part of a route that takes only addresses of `ip`, none
+    /// for any.
+    #[cfg(test)]
+    pub(crate) fn of_ip(ip: IpVersion) -> Option<TryArc<RouteCold>> {
+        (ip != IpVersion::Any).then(|| {
+            TryArc::try_new(RouteCold {
+                ip,
+                ..RouteCold::NONE
+            })
+            .unwrap()
+        })
+    }
+
+    /// A copy, made only as a waiting transfer's route changes.
+    fn try_clone(&self) -> Result<RouteCold, OutOfMemory> {
+        let RouteCold {
+            ip,
+            delegation,
+            local,
+            login,
+            use_ssl,
+            ftp,
+            ssh,
+        } = self;
+        Ok(RouteCold {
+            ip: *ip,
+            delegation: *delegation,
+            local: local.try_clone()?,
+            login: login
+                .as_ref()
+                .map(crate::auth::creds::Credentials::try_clone)
+                .transpose()?,
+            use_ssl: *use_ssl,
+            ftp: ftp.as_ref().map(FtpSetup::try_clone).transpose()?,
+            ssh: ssh
+                .as_ref()
+                .map(crate::proto::ssh::Keys::try_clone)
+                .transpose()?,
+        })
+    }
+}
+
+/// The TLS a route speaks to its origin or to an HTTPS proxy: wanted by
+/// a transfer, whose options hold its settings until a connection is
+/// set up with them; or made, the identity that connection keeps
+/// (`Curl_ssl_conn_config_init`). A transfer looking for a connection
+/// compares its options with the connection's identity where they are,
+/// and builds none (`TlsWants`).
+#[derive(Clone, Debug)]
+pub(crate) enum RouteTls {
+    Wanted,
+    Made(TryArc<TlsIdentity>),
+}
+
+impl RouteTls {
+    /// The identity made: a connection's route always has it.
+    pub(crate) fn made(&self) -> &TryArc<TlsIdentity> {
+        match self {
+            RouteTls::Made(identity) => identity,
+            RouteTls::Wanted => panic!("a connection's TLS is made as it is set up"),
+        }
+    }
+
+    /// The settings to compare: the identity's, or, wanted, the
+    /// transfer's `wanted`.
+    fn view<'a>(&'a self, wanted: Option<TlsView<'a>>) -> TlsView<'a> {
+        match self {
+            RouteTls::Made(identity) => identity.view(),
+            RouteTls::Wanted => {
+                wanted.expect("a transfer's TLS settings are at hand where it wants TLS")
+            }
+        }
+    }
+}
+
+/// The origin's TLS on a route: spoken from the start, as its scheme's is
+/// (`PROTOPT_SSL`); or the TLS a connection not over it is upgraded to,
+/// or may be (STARTTLS), made with the transfer's settings, which a
+/// transfer reusing it must share (C's `ssl_config` for `may_tls`, or for
+/// a scheme that may reuse TLS, `PROTOPT_SSL_REUSE`).
+#[derive(Clone, Debug)]
+pub(crate) enum OriginTls {
+    Start(RouteTls),
+    Upgrade(RouteTls),
+}
+
+/// What a transfer's options make its TLS of, borrowed from its handle
+/// where it looks for a connection or sets one up: the origin's (also
+/// what it upgrades with) and an HTTPS proxy's. None where the transfer
+/// has no TLS library, whose routes want no TLS.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TlsWants<'a> {
+    pub(crate) origin: TlsView<'a>,
+    pub(crate) proxy: TlsView<'a>,
+}
+
+impl<'a> TlsWants<'a> {
+    /// The settings of `easy`'s options, with its TLS library's defaults;
+    /// none without a library.
+    pub(crate) fn of(easy: &'a crate::easy::Easy) -> Option<TlsWants<'a>> {
+        let defaults = easy.libraries().tls.as_deref()?.ca_defaults();
+        let options = easy.options();
+        Some(TlsWants {
+            origin: TlsView::of(&options.tls, defaults),
+            proxy: TlsView::proxy(&options.proxy.tls, &options.tls.options, defaults),
+        })
+    }
+}
+
+/// The origin's TLS on a route, seen to compare: from the start, or the
+/// upgrade's, or neither.
+#[derive(Clone, Copy, Debug)]
+struct OriginViews<'a> {
+    start: Option<TlsView<'a>>,
+    upgrade: Option<TlsView<'a>>,
+}
+
+/// The same TLS settings (`TlsView::same`), or TLS on neither.
+fn same_tls(a: Option<TlsView<'_>>, b: Option<TlsView<'_>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.same(&b),
+        (a, b) => a.is_none() && b.is_none(),
     }
 }
 
@@ -559,10 +723,105 @@ impl NetRoute {
         self.cold.as_deref().map(|c| &c.local).filter(|l| l.binds())
     }
 
-    /// The TLS settings a connection over it is upgraded with, if it may
-    /// be.
-    pub(crate) fn upgrade(&self) -> Option<&crate::tls::TlsIdentity> {
-        self.cold.as_deref().and_then(|c| c.upgrade.as_deref())
+    /// Which addresses of the name it may use.
+    pub(crate) fn ip(&self) -> IpVersion {
+        self.cold.as_deref().map_or(IpVersion::Any, |c| c.ip)
+    }
+
+    /// Which addresses of the name it may use made `ip`, as a waiting
+    /// transfer reads the option again (`allocate_conn`); its rare part
+    /// copied if it changes, as another may share it.
+    pub(crate) fn set_ip(&mut self, ip: IpVersion) -> Result<(), OutOfMemory> {
+        if self.ip() == ip {
+            return Ok(());
+        }
+        let mut cold = match self.cold.as_deref() {
+            Some(cold) => cold.try_clone()?,
+            None => RouteCold::NONE,
+        };
+        cold.ip = ip;
+        self.cold = if cold.is_empty() {
+            None
+        } else {
+            Some(TryArc::try_new(cold)?)
+        };
+        Ok(())
+    }
+
+    /// The TLS identity a connection over it is upgraded with, if it may
+    /// be: a connection's, made.
+    pub(crate) fn upgrade(&self) -> Option<&TryArc<TlsIdentity>> {
+        match &self.tls {
+            Some(OriginTls::Upgrade(tls)) => Some(tls.made()),
+            Some(OriginTls::Start(_)) | None => None,
+        }
+    }
+
+    /// The origin's TLS is spoken from the start.
+    pub(crate) fn secured_from_start(&self) -> bool {
+        matches!(self.tls, Some(OriginTls::Start(_)))
+    }
+
+    /// The TLS identity the origin is spoken to with from the start, if
+    /// it is: a connection's, made.
+    pub(crate) fn start_tls(&self) -> Option<&TryArc<TlsIdentity>> {
+        match &self.tls {
+            Some(OriginTls::Start(tls)) => Some(tls.made()),
+            Some(OriginTls::Upgrade(_)) | None => None,
+        }
+    }
+
+    /// The origin's TLS, seen to compare, wanted as the transfer's
+    /// settings `tls` say.
+    fn origin_tls<'a>(&'a self, tls: Option<TlsWants<'a>>) -> OriginViews<'a> {
+        let origin = tls.map(|t| t.origin);
+        match &self.tls {
+            Some(OriginTls::Start(t)) => OriginViews {
+                start: Some(t.view(origin)),
+                upgrade: None,
+            },
+            Some(OriginTls::Upgrade(t)) => OriginViews {
+                start: None,
+                upgrade: Some(t.view(origin)),
+            },
+            None => OriginViews {
+                start: None,
+                upgrade: None,
+            },
+        }
+    }
+
+    /// The route a new connection is set up over: its TLS, the origin's
+    /// and an HTTPS proxy's, made where it is wanted, of the transfer's
+    /// settings `tls` (`Curl_ssl_conn_config_init`).
+    pub(crate) fn made(mut self, tls: Option<TlsWants<'_>>) -> Result<NetRoute, OutOfMemory> {
+        let wants = || tls.expect("a transfer's TLS settings are at hand where it wants TLS");
+        if let Some(OriginTls::Start(t) | OriginTls::Upgrade(t)) = &mut self.tls
+            && let RouteTls::Wanted = t
+        {
+            *t = RouteTls::Made(wants().origin.made()?);
+        }
+        if let Some(proxy) = self.proxy.take() {
+            self.proxy = Some(if proxy.https() && proxy.made_tls().is_none() {
+                proxy.secured(wants().proxy.made()?)?
+            } else {
+                proxy
+            });
+        }
+        Ok(self)
+    }
+
+    /// Whether every TLS it speaks is made, as a connection's is.
+    pub(crate) fn is_made(&self) -> bool {
+        let origin = match &self.tls {
+            Some(OriginTls::Start(t) | OriginTls::Upgrade(t)) => matches!(t, RouteTls::Made(_)),
+            None => true,
+        };
+        let proxy = self
+            .proxy
+            .as_ref()
+            .is_none_or(|p| !p.https() || p.made_tls().is_some());
+        origin && proxy
     }
 
     /// How far the transfer asks for TLS.
@@ -605,16 +864,26 @@ impl NetRoute {
         self.via.as_deref().unwrap_or(&self.origin)
     }
 
-    /// A connection on it speaks TLS: to the origin, to an HTTPS proxy,
-    /// or to both, one inside the other.
+    /// A connection on it speaks TLS: to the origin from the start, to
+    /// an HTTPS proxy, or to both, one inside the other.
     pub(crate) fn secured(&self) -> bool {
-        self.tls.is_some() || self.proxy_tls().is_some()
+        self.secured_from_start() || self.proxy_secured()
     }
 
-    /// The settings an HTTPS proxy's TLS is made with, if the route goes
-    /// through one.
+    /// It goes through an HTTPS proxy, which the connection speaks TLS to.
+    pub(crate) fn proxy_secured(&self) -> bool {
+        self.proxy.as_ref().is_some_and(ProxyRoute::https)
+    }
+
+    /// The identity an HTTPS proxy's TLS is made with, if the route goes
+    /// through one: a connection's, made.
     pub(crate) fn proxy_tls(&self) -> Option<&TryArc<TlsIdentity>> {
-        self.proxy.as_ref()?.tls()
+        let proxy = self.proxy.as_ref().filter(|p| p.https())?;
+        Some(
+            proxy
+                .made_tls()
+                .expect("a connection's TLS is made as it is set up"),
+        )
     }
 
     /// The route goes through a proxy by a handshake the setup makes
@@ -670,9 +939,10 @@ pub(crate) struct ProxyRoute {
 struct ProxyCold {
     /// The SOCKS proxy in front of it, which only an HTTP proxy has.
     pre: Option<PreProxy>,
-    /// The settings an HTTPS proxy's TLS is made with, which a connection
-    /// must share to serve the transfer (C's `proxy_ssl_config`); none for
-    /// any other proxy.
+    /// The identity an HTTPS proxy's TLS is made with, which a connection
+    /// must share to serve the transfer (C's `proxy_ssl_config`), once a
+    /// connection is set up: until then, the transfer's settings are
+    /// wanted, as `ProxyRoute::https` says. None for any other proxy.
     tls: Option<TryArc<TlsIdentity>>,
 }
 
@@ -702,9 +972,6 @@ struct ProxyKey<'a> {
     creds: Option<&'a ProxyCreds>,
     forward: bool,
     pre: Option<(ProxyType, Destination<'a>, Option<&'a ProxyCreds>)>,
-    /// An HTTPS proxy's TLS settings (`url_match_proxy_use`'s
-    /// `Curl_ssl_conn_config_match`).
-    tls: Option<&'a TlsIdentity>,
 }
 
 impl ProxyRoute {
@@ -747,10 +1014,25 @@ impl ProxyRoute {
         self.with_cold(|cold| cold.tls = Some(identity))
     }
 
-    /// The settings an HTTPS proxy's TLS is made with; none for any other
-    /// proxy.
-    pub(crate) fn tls(&self) -> Option<&TryArc<TlsIdentity>> {
+    /// The identity an HTTPS proxy's TLS is made with, once made; none
+    /// for any other proxy.
+    fn made_tls(&self) -> Option<&TryArc<TlsIdentity>> {
         self.cold.as_deref()?.tls.as_ref()
+    }
+
+    /// An HTTPS proxy's TLS, seen to compare: its identity, once made,
+    /// else the transfer's settings `tls`; none for any other proxy.
+    fn tls_view<'a>(&'a self, tls: Option<TlsWants<'a>>) -> Option<TlsView<'a>> {
+        if !self.https() {
+            return None;
+        }
+        Some(match self.made_tls() {
+            Some(identity) => identity.view(),
+            None => {
+                tls.expect("a transfer's TLS settings are at hand where it wants TLS")
+                    .proxy
+            }
+        })
     }
 
     /// The SOCKS proxy in front of it, if any.
@@ -839,9 +1121,11 @@ impl ProxyRoute {
             auth_only: _,
             cold,
         } = self;
-        let (pre, tls) = match cold.as_deref() {
-            Some(ProxyCold { pre, tls }) => (pre.as_ref(), tls.as_deref()),
-            None => (None, None),
+        // Its TLS is compared apart, as the transfer's settings say
+        // (`tls_view`).
+        let pre = match cold.as_deref() {
+            Some(ProxyCold { pre, tls: _ }) => pre.as_ref(),
+            None => None,
         };
         ProxyKey {
             kind: *kind,
@@ -852,7 +1136,6 @@ impl ProxyRoute {
                 let PreProxy { kind, peer, creds } = pre;
                 (*kind, Destination(peer), creds.as_deref())
             }),
-            tls,
         }
     }
 }
@@ -1972,10 +2255,11 @@ impl Conn {
         matches!(&self.route, Route::Net(NetRoute { proxy: Some(p), .. }) if p.http())
     }
 
-    /// Whether it may serve a transfer whose route is `wanted`: a route
-    /// that serves it, and the user authenticated by a SOCKS5 proxy if
-    /// the transfer insists (`url_match_proxy_use`).
-    pub(crate) fn serves(&self, wanted: &Route) -> bool {
+    /// Whether it may serve a transfer whose route is `wanted` and whose
+    /// TLS settings are `tls`: a route that serves it, and the user
+    /// authenticated by a SOCKS5 proxy if the transfer insists
+    /// (`url_match_proxy_use`).
+    pub(crate) fn serves(&self, wanted: &Route, tls: Option<TlsWants<'_>>) -> bool {
         let insists = match wanted {
             Route::Net(tcp @ NetRoute { proxy: Some(p), .. }) => {
                 p.auth_only
@@ -1985,26 +2269,30 @@ impl Conn {
             }
             Route::Net(_) | Route::Local => false,
         };
-        self.route.serves(wanted)
+        self.route.serves(wanted, tls)
             && (!insists || self.socks5_authenticated)
-            && self.tls_serves(wanted)
+            && self.tls_serves(wanted, tls)
     }
 
     /// Whether, as its layers are now, it serves a transfer of a scheme
     /// that may upgrade to TLS (`url_match_ssl_use`): one upgraded is
     /// reused with the settings it was upgraded with; one not is not
     /// reused by a transfer that requires TLS.
-    fn tls_serves(&self, wanted: &Route) -> bool {
+    fn tls_serves(&self, wanted: &Route, tls: Option<TlsWants<'_>>) -> bool {
         let (Route::Net(have), Route::Net(want)) = (&self.route, wanted) else {
             return true;
         };
-        if want.tls.is_some() || have.tls.is_some() || !want.origin.scheme().reuses_tls() {
+        if want.secured_from_start()
+            || have.secured_from_start()
+            || !want.origin.scheme().reuses_tls()
+        {
             // Over TLS from the start, or never upgraded: the route's to
             // say.
             return true;
         }
         if self.origin_tls() {
-            want.origin.scheme().reuses_tls() && have.upgrade() == want.upgrade()
+            want.origin.scheme().reuses_tls()
+                && same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
         } else {
             !want.use_ssl().requires()
         }
@@ -2204,15 +2492,13 @@ mod tests {
             Route::Net(NetRoute {
                 origin: TryArc::try_new(peer(b"o.example", 80, None)).unwrap(),
                 via: Some(TryArc::try_new(unix(path, false)).unwrap()),
-                ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
                 cold: None,
-                delegation: Default::default(),
             })
         };
-        assert!(over(b"/tmp/s").serves(&over(b"/tmp/s")));
-        assert!(!over(b"/tmp/s").serves(&over(b"/tmp/t")));
+        assert!(over(b"/tmp/s").serves(&over(b"/tmp/s"), None));
+        assert!(!over(b"/tmp/s").serves(&over(b"/tmp/t"), None));
     }
 
     /// A route dialed over QUIC has its socket's lines traced as C's UDP
@@ -2225,11 +2511,9 @@ mod tests {
         let route = NetRoute {
             origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         };
         let dialed = |dial| {
             Dialing {
@@ -2319,6 +2603,47 @@ mod tests {
         ));
     }
 
+    /// A waiting transfer that reads another IP version as it looks again
+    /// changes its own route alone: the rare part it shares is copied with
+    /// the new version and the rest kept, and a route left with none of
+    /// it holds none.
+    #[test]
+    fn a_route_s_ip_version_changes_on_a_copy_of_what_it_shares() {
+        use crate::options::UseSsl;
+        let origin = TryArc::try_new(peer(b"o.example", 80, None)).unwrap();
+        let shared = TryArc::try_new(RouteCold {
+            use_ssl: UseSsl::Try,
+            ..RouteCold::NONE
+        })
+        .unwrap();
+        let mut route = NetRoute {
+            origin: origin.clone(),
+            via: None,
+            proxy: None,
+            tls: None,
+            cold: Some(shared.clone()),
+        };
+        route.set_ip(IpVersion::V6).unwrap();
+        assert_eq!(route.ip(), IpVersion::V6);
+        let cold = route.cold.as_deref().unwrap();
+        assert_eq!(cold.use_ssl, UseSsl::Try);
+        assert_eq!(
+            shared.ip,
+            IpVersion::Any,
+            "the shared one is left as it was"
+        );
+        let mut only_ip = NetRoute {
+            origin,
+            via: None,
+            proxy: None,
+            tls: None,
+            cold: RouteCold::of_ip(IpVersion::V4),
+        };
+        only_ip.set_ip(IpVersion::Any).unwrap();
+        assert_eq!(only_ip.ip(), IpVersion::Any);
+        assert!(only_ip.cold.is_none());
+    }
+
     /// A connection serves only a transfer whose route agrees on each
     /// field: the origin, the connect-to peer, the family unless the
     /// transfer takes any, and the proxy.
@@ -2329,12 +2654,10 @@ mod tests {
             Route::Net(NetRoute {
                 origin: arc(origin),
                 via: via.map(arc),
-                ip,
                 proxy: proxy
                     .map(|host| ProxyRoute::new(ProxyType::Socks5, arc(host), None, false, false)),
                 tls: None,
-                cold: None,
-                delegation: Default::default(),
+                cold: RouteCold::of_ip(ip),
             })
         };
         let have = tcp(
@@ -2349,14 +2672,14 @@ mod tests {
             IpVersion::V4,
             Some(b"p.example"),
         );
-        assert!(have.serves(&same));
+        assert!(have.serves(&same, None));
         let any = tcp(
             b"o.example",
             Some(b"v.example"),
             IpVersion::Any,
             Some(b"p.example"),
         );
-        assert!(have.serves(&any), "a transfer taking any family");
+        assert!(have.serves(&any, None), "a transfer taking any family");
         for (field, other) in [
             (
                 "origin",
@@ -2403,7 +2726,7 @@ mod tests {
                 tcp(b"o.example", Some(b"v.example"), IpVersion::V4, None),
             ),
         ] {
-            assert!(!have.serves(&other), "{field}");
+            assert!(!have.serves(&other, None), "{field}");
         }
     }
 
@@ -2421,11 +2744,9 @@ mod tests {
             Route::Net(NetRoute {
                 origin: arc(b"o.example").unwrap(),
                 via: via.then(|| arc(b"v.example").unwrap()),
-                ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
                 cold: None,
-                delegation: Default::default(),
             })
         };
         for via in [false, true] {
@@ -2449,10 +2770,10 @@ mod tests {
         let Route::Net(r) = &mut https else {
             unreachable!()
         };
-        r.tls = Some(
+        r.tls = Some(OriginTls::Start(RouteTls::Made(
             crate::tls::TlsIdentity::of(&Default::default(), crate::tls::CaDefaults::NONE).unwrap(),
-        );
-        assert!(!https.serves(&route("http", false)), "TLS for none");
+        )));
+        assert!(!https.serves(&route("http", false), None), "TLS for none");
     }
 
     /// A connection made with TLS serves only a transfer whose TLS has
@@ -2481,22 +2802,23 @@ mod tests {
                 ))
                 .unwrap(),
                 via: None,
-                ip: IpVersion::Any,
                 proxy: None,
-                tls: None,
+                tls: upgrade.map(|t| {
+                    let made = TlsIdentity::of(t, crate::tls::CaDefaults::NONE).unwrap();
+                    OriginTls::Upgrade(RouteTls::Made(made))
+                }),
                 cold: Some(
                     TryArc::try_new(RouteCold {
+                        ip: IpVersion::Any,
+                        delegation: Default::default(),
                         local: crate::options::LocalBind::NONE,
                         login: None,
-                        upgrade: upgrade
-                            .map(|t| TlsIdentity::of(t, crate::tls::CaDefaults::NONE).unwrap()),
                         use_ssl,
                         ftp,
                         ssh: None,
                     })
                     .unwrap(),
                 ),
-                delegation: Default::default(),
             })
         };
         let setup = |account: Option<&[u8]>, alternative: Option<&[u8]>, ccc| FtpSetup {
@@ -2507,24 +2829,27 @@ mod tests {
         let plain = || setup(None, None, Ccc::None);
         let ftp = |s: FtpSetup, use_ssl| route(Some(s), use_ssl, None);
         let have = ftp(plain(), UseSsl::None);
-        assert!(have.serves(&ftp(plain(), UseSsl::None)));
-        assert!(!have.serves(&ftp(setup(Some(b"a"), None, Ccc::None), UseSsl::None)));
-        assert!(!have.serves(&ftp(setup(None, Some(b"alt"), Ccc::None), UseSsl::None)));
-        assert!(!have.serves(&ftp(setup(None, None, Ccc::Passive), UseSsl::None)));
+        assert!(have.serves(&ftp(plain(), UseSsl::None), None));
+        assert!(!have.serves(&ftp(setup(Some(b"a"), None, Ccc::None), UseSsl::None), None));
+        assert!(!have.serves(
+            &ftp(setup(None, Some(b"alt"), Ccc::None), UseSsl::None),
+            None
+        ));
+        assert!(!have.serves(&ftp(setup(None, None, Ccc::Passive), UseSsl::None), None));
         // TLS asked for alike, or only tried over a connection that asked.
         let all = ftp(plain(), UseSsl::All);
-        assert!(all.serves(&ftp(plain(), UseSsl::Try)));
-        assert!(all.serves(&ftp(plain(), UseSsl::All)));
-        assert!(!all.serves(&ftp(plain(), UseSsl::Control)));
-        assert!(!have.serves(&ftp(plain(), UseSsl::Try)));
-        assert!(!ftp(plain(), UseSsl::Try).serves(&all));
+        assert!(all.serves(&ftp(plain(), UseSsl::Try), None));
+        assert!(all.serves(&ftp(plain(), UseSsl::All), None));
+        assert!(!all.serves(&ftp(plain(), UseSsl::Control), None));
+        assert!(!have.serves(&ftp(plain(), UseSsl::Try), None));
+        assert!(!ftp(plain(), UseSsl::Try).serves(&all, None));
         // Without an FTP setup on either side, none is compared.
-        assert!(route(None, UseSsl::None, None).serves(&have));
-        assert!(have.serves(&route(None, UseSsl::None, None)));
+        assert!(route(None, UseSsl::None, None).serves(&have, None));
+        assert!(have.serves(&route(None, UseSsl::None, None), None));
         // A connection that would have upgraded serves a transfer that
         // asks for no TLS.
         let upgrading = route(Some(plain()), UseSsl::None, Some(&Tls::default()));
-        assert!(upgrading.serves(&have));
+        assert!(upgrading.serves(&have, None));
     }
 
     #[test]
@@ -2535,11 +2860,12 @@ mod tests {
             Route::Net(NetRoute {
                 origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
                 via: None,
-                ip: IpVersion::Any,
                 proxy: None,
-                tls: tls.map(|t| TlsIdentity::of(t, crate::tls::CaDefaults::NONE).unwrap()),
+                tls: tls.map(|t| {
+                    let made = TlsIdentity::of(t, crate::tls::CaDefaults::NONE).unwrap();
+                    OriginTls::Start(RouteTls::Made(made))
+                }),
                 cold: None,
-                delegation: Default::default(),
             })
         };
         let verified = Tls::default();
@@ -2553,16 +2879,186 @@ mod tests {
             ..Tls::default()
         };
         let have = secured(Some(&verified));
-        assert!(have.serves(&secured(Some(&Tls::default()))));
+        assert!(have.serves(&secured(Some(&Tls::default())), None));
         for other in [&insecure, &unverified_peer] {
-            assert!(!have.serves(&secured(Some(other))));
-            assert!(!secured(Some(other)).serves(&have));
+            assert!(!have.serves(&secured(Some(other)), None));
+            assert!(!secured(Some(other)).serves(&have, None));
         }
-        assert!(!have.serves(&secured(None)) && !secured(None).serves(&have));
+        assert!(!have.serves(&secured(None), None) && !secured(None).serves(&have, None));
         let mut blob = Tls::default();
         blob.options.make_mut().unwrap().ca_blob =
             crate::options::CaSetting::Given(b"pem".to_vec());
-        assert!(!have.serves(&secured(Some(&blob))));
+        assert!(!have.serves(&secured(Some(&blob)), None));
+    }
+
+    /// The handles a TLS setting at a time tells apart, and the default.
+    fn tls_handles() -> Vec<crate::options::Tls> {
+        use crate::options::{CaSetting, Tls};
+        let mut handles = vec![Tls::default()];
+        handles.push(Tls {
+            verify_peer: false,
+            ..Tls::default()
+        });
+        handles.push(Tls {
+            verify_host: false,
+            ..Tls::default()
+        });
+        let changes: [fn(&mut crate::options::TlsOptions); 5] = [
+            |o| o.ca_blob = CaSetting::Given(b"pem".to_vec()),
+            |o| o.ciphers = Some(b"AES128-SHA".to_vec()),
+            |o| o.key_password = Some(b"secret".to_vec()),
+            |o| o.curves = Some(b"X25519".to_vec()),
+            |o| o.ech.config = Some(b"QUJD".to_vec()),
+        ];
+        for change in changes {
+            let mut tls = Tls::default();
+            change(tls.options.make_mut().unwrap());
+            handles.push(tls);
+        }
+        handles
+    }
+
+    /// A transfer's TLS settings, the origin's and its proxy's, as its
+    /// handle `tls` has them, the proxy's `proxy`.
+    fn wants<'a>(tls: &'a crate::options::Tls, proxy: &'a crate::options::Tls) -> TlsWants<'a> {
+        let defaults = crate::tls::CaDefaults::NONE;
+        TlsWants {
+            origin: TlsView::of(tls, defaults),
+            proxy: TlsView::proxy(proxy, &tls.options, defaults),
+        }
+    }
+
+    /// A route to an HTTPS origin over TLS from the start, or to an IMAP
+    /// one that may upgrade to it, through an HTTPS proxy or not, its TLS
+    /// `tls`.
+    fn tls_route(upgrade: bool, https_proxy: bool, tls: RouteTls) -> Route {
+        let scheme = if upgrade { "imap" } else { "https" };
+        let origin = Peer::new(Scheme::of(scheme), b"o.example".to_vec(), 443, None);
+        let proxy = https_proxy.then(|| {
+            let peer = TryArc::try_new(peer(b"proxy.example", 3128, None)).unwrap();
+            ProxyRoute::new(ProxyType::Https, peer, None, false, false)
+        });
+        Route::Net(NetRoute {
+            origin: TryArc::try_new(origin).unwrap(),
+            via: None,
+            proxy,
+            tls: Some(if upgrade {
+                OriginTls::Upgrade(tls)
+            } else {
+                OriginTls::Start(tls)
+            }),
+            // Where TLS is to be upgraded to, it is asked for, so that the
+            // settings it would be made with count.
+            cold: upgrade.then(|| {
+                TryArc::try_new(RouteCold {
+                    use_ssl: crate::options::UseSsl::Try,
+                    ..RouteCold::NONE
+                })
+                .unwrap()
+            }),
+        })
+    }
+
+    /// A transfer wanting TLS, unmade, is served by a connection exactly
+    /// where one made with the same settings would be: from the start, to
+    /// upgrade to, and an HTTPS proxy's, each setting telling them apart
+    /// as it tells two connections apart.
+    #[test]
+    fn a_transfer_wanting_tls_is_served_as_one_with_it_made() {
+        let handles = tls_handles();
+        let plain = crate::options::Tls::default();
+        for upgrade in [false, true] {
+            for (i, have) in handles.iter().enumerate() {
+                let made = TlsView::of(have, crate::tls::CaDefaults::NONE)
+                    .made()
+                    .unwrap();
+                let conn = tls_route(upgrade, false, RouteTls::Made(made));
+                for (j, want) in handles.iter().enumerate() {
+                    let theirs = TlsView::of(want, crate::tls::CaDefaults::NONE)
+                        .made()
+                        .unwrap();
+                    let by_made =
+                        conn.serves(&tls_route(upgrade, false, RouteTls::Made(theirs)), None);
+                    let wanted = tls_route(upgrade, false, RouteTls::Wanted);
+                    let by_view = conn.serves(&wanted, Some(wants(want, &plain)));
+                    assert_eq!(by_view, by_made, "upgrade {upgrade}: {i} for {j}");
+                    assert_eq!(by_view, i == j, "upgrade {upgrade}: {i} for {j}");
+                }
+            }
+        }
+        // An HTTPS proxy's, the origin's settings alike.
+        for (i, have) in handles.iter().enumerate() {
+            let made = TlsView::proxy(have, &plain.options, crate::tls::CaDefaults::NONE)
+                .made()
+                .unwrap();
+            let origin = TlsView::of(&plain, crate::tls::CaDefaults::NONE)
+                .made()
+                .unwrap();
+            let Route::Net(mut conn) = tls_route(false, true, RouteTls::Made(origin)) else {
+                unreachable!()
+            };
+            conn.proxy = Some(conn.proxy.take().unwrap().secured(made).unwrap());
+            let conn = Route::Net(conn);
+            for (j, want) in handles.iter().enumerate() {
+                let wanted = tls_route(false, true, RouteTls::Wanted);
+                let served = conn.serves(&wanted, Some(wants(&plain, want)));
+                // A proxy's TLS has no curves and no ECH: those settings
+                // tell no two proxies apart.
+                let never = |k: usize| k == 6 || k == 7;
+                let same = i == j || (never(i) || i == 0) && (never(j) || j == 0);
+                assert_eq!(served, same, "proxy {i} for {j}");
+            }
+        }
+    }
+
+    /// A new connection's route has its TLS made of the transfer's
+    /// settings, the origin's and its HTTPS proxy's; a route made is
+    /// made again with nothing new.
+    #[test]
+    fn a_route_is_made_with_the_transfer_s_settings() {
+        let handles = tls_handles();
+        let plain = crate::options::Tls::default();
+        for upgrade in [false, true] {
+            let tls = &handles[4];
+            let proxy = &handles[1];
+            let Route::Net(wanted) = tls_route(upgrade, true, RouteTls::Wanted) else {
+                unreachable!()
+            };
+            assert!(!wanted.is_made());
+            // Either one unmade leaves the route unmade.
+            let Route::Net(origin_only) = tls_route(upgrade, false, RouteTls::Wanted) else {
+                unreachable!()
+            };
+            assert!(!origin_only.is_made());
+            let identity = TlsView::of(tls, crate::tls::CaDefaults::NONE)
+                .made()
+                .unwrap();
+            let Route::Net(proxy_only) = tls_route(upgrade, true, RouteTls::Made(identity)) else {
+                unreachable!()
+            };
+            assert!(!proxy_only.is_made());
+            let made = wanted.made(Some(wants(tls, proxy))).unwrap();
+            assert!(made.is_made());
+            let identity = made.start_tls().or(made.upgrade()).unwrap();
+            assert_eq!(made.start_tls().is_some(), !upgrade);
+            assert!(
+                identity
+                    .view()
+                    .same(&TlsView::of(tls, crate::tls::CaDefaults::NONE))
+            );
+            let proxy_identity = made.proxy_tls().unwrap();
+            assert!(proxy_identity.view().same(&TlsView::proxy(
+                proxy,
+                &tls.options,
+                crate::tls::CaDefaults::NONE
+            )));
+            // Made again: the same identities, none made of the settings
+            // given.
+            let again = made.clone().made(Some(wants(&plain, &plain))).unwrap();
+            let same = again.start_tls().or(again.upgrade()).unwrap();
+            assert!(TryArc::ptr_eq(same, identity));
+            assert!(TryArc::ptr_eq(again.proxy_tls().unwrap(), proxy_identity));
+        }
     }
 
     fn via_proxy(host: &[u8], user: Option<&[u8]>, forward: bool) -> Route {
@@ -2583,7 +3079,6 @@ mod tests {
         Route::Net(NetRoute {
             origin,
             via: None,
-            ip: IpVersion::Any,
             proxy: Some(ProxyRoute::new(
                 ProxyType::Http,
                 proxy,
@@ -2593,7 +3088,6 @@ mod tests {
             )),
             tls: None,
             cold: None,
-            delegation: Default::default(),
         })
     }
 
@@ -2613,39 +3107,38 @@ mod tests {
             Route::Net(NetRoute {
                 origin: TryArc::try_new(peer(b"o.example", 80, None)).unwrap(),
                 via: None,
-                ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
                 cold: local.binds().then(|| {
                     TryArc::try_new(RouteCold {
+                        ip: IpVersion::Any,
+                        delegation: Default::default(),
                         local,
                         login: None,
-                        upgrade: None,
                         use_ssl: crate::options::UseSsl::None,
                         ftp: None,
                         ssh: None,
                     })
                     .unwrap()
                 }),
-                delegation: Default::default(),
             })
         };
         let plain = bound("", 0, 0);
-        assert!(plain.serves(&plain));
+        assert!(plain.serves(&plain, None));
         // A port named takes only the same ports.
-        assert!(bound("", 4000, 1).serves(&bound("", 4000, 1)));
-        assert!(!bound("", 4000, 2).serves(&bound("", 4000, 1)));
-        assert!(!bound("", 4001, 1).serves(&bound("", 4000, 1)));
-        assert!(!plain.serves(&bound("", 4000, 1)));
+        assert!(bound("", 4000, 1).serves(&bound("", 4000, 1), None));
+        assert!(!bound("", 4000, 2).serves(&bound("", 4000, 1), None));
+        assert!(!bound("", 4001, 1).serves(&bound("", 4000, 1), None));
+        assert!(!plain.serves(&bound("", 4000, 1), None));
         // None named takes any port, but not an interface.
-        assert!(bound("", 4000, 1).serves(&plain));
-        assert!(!bound("eth0", 0, 0).serves(&plain));
-        assert!(!plain.serves(&bound("eth0", 0, 0)));
+        assert!(bound("", 4000, 1).serves(&plain, None));
+        assert!(!bound("eth0", 0, 0).serves(&plain, None));
+        assert!(!plain.serves(&bound("eth0", 0, 0), None));
         // An interface as it was written, and its ports with it.
-        assert!(bound("eth0", 0, 0).serves(&bound("eth0", 0, 0)));
-        assert!(!bound("if!eth0", 0, 0).serves(&bound("eth0", 0, 0)));
-        assert!(!bound("eth0", 4000, 1).serves(&bound("eth0", 0, 0)));
-        assert!(!bound("eth1", 0, 0).serves(&bound("eth0", 0, 0)));
+        assert!(bound("eth0", 0, 0).serves(&bound("eth0", 0, 0), None));
+        assert!(!bound("if!eth0", 0, 0).serves(&bound("eth0", 0, 0), None));
+        assert!(!bound("eth0", 4000, 1).serves(&bound("eth0", 0, 0), None));
+        assert!(!bound("eth1", 0, 0).serves(&bound("eth0", 0, 0), None));
     }
 
     /// A connection through a proxy serves a transfer through the same
@@ -2656,21 +3149,19 @@ mod tests {
         let direct = Route::Net(NetRoute {
             origin: TryArc::try_new(peer(b"proxy.example", 3128, None)).unwrap(),
             via: None,
-            ip: IpVersion::Any,
             proxy: None,
             tls: None,
             cold: None,
-            delegation: Default::default(),
         });
         let route = via_proxy(b"proxy.example", None, true);
-        assert!(route.serves(&via_proxy(b"PROXY.example", None, true)));
-        assert!(!route.serves(&via_proxy(b"other.example", None, true)));
-        assert!(!route.serves(&via_proxy(b"proxy.example", Some(b"u"), true)));
-        assert!(!route.serves(&via_proxy(b"proxy.example", None, false)));
-        assert!(!route.serves(&direct) && !direct.serves(&route));
+        assert!(route.serves(&via_proxy(b"PROXY.example", None, true), None));
+        assert!(!route.serves(&via_proxy(b"other.example", None, true), None));
+        assert!(!route.serves(&via_proxy(b"proxy.example", Some(b"u"), true), None));
+        assert!(!route.serves(&via_proxy(b"proxy.example", None, false), None));
+        assert!(!route.serves(&direct, None) && !direct.serves(&route, None));
         let user = via_proxy(b"proxy.example", Some(b"u"), true);
-        assert!(user.serves(&via_proxy(b"proxy.example", Some(b"u"), true)));
-        assert!(!user.serves(&via_proxy(b"proxy.example", Some(b"v"), true)));
+        assert!(user.serves(&via_proxy(b"proxy.example", Some(b"u"), true), None));
+        assert!(!user.serves(&via_proxy(b"proxy.example", Some(b"v"), true), None));
         // The service the proxy is authenticated as is the credentials'
         // too (`Curl_creds_same`).
         let serving_as = |service: &[u8]| match via_proxy(b"proxy.example", Some(b"u"), true) {
@@ -2688,9 +3179,9 @@ mod tests {
             }
             Route::Local => unreachable!(),
         };
-        assert!(serving_as(b"").serves(&user) && user.serves(&serving_as(b"")));
-        assert!(!serving_as(b"pxy").serves(&user) && !user.serves(&serving_as(b"pxy")));
-        assert!(serving_as(b"pxy").serves(&serving_as(b"pxy")));
+        assert!(serving_as(b"").serves(&user, None) && user.serves(&serving_as(b""), None));
+        assert!(!serving_as(b"pxy").serves(&user, None) && !user.serves(&serving_as(b"pxy"), None));
+        assert!(serving_as(b"pxy").serves(&serving_as(b"pxy"), None));
         // Behind the same SOCKS proxy, or none, as C compares
         // `socks_proxy` beside `http_proxy`.
         let behind = |kind, host: &[u8]| match via_proxy(b"proxy.example", None, true) {
@@ -2706,10 +3197,10 @@ mod tests {
             Route::Local => unreachable!(),
         };
         let socks = behind(ProxyType::Socks5, b"socks.example");
-        assert!(socks.serves(&behind(ProxyType::Socks5, b"socks.example")));
-        assert!(!socks.serves(&behind(ProxyType::Socks5, b"other.example")));
-        assert!(!socks.serves(&behind(ProxyType::Socks4, b"socks.example")));
-        assert!(!socks.serves(&route) && !route.serves(&socks));
+        assert!(socks.serves(&behind(ProxyType::Socks5, b"socks.example"), None));
+        assert!(!socks.serves(&behind(ProxyType::Socks5, b"other.example"), None));
+        assert!(!socks.serves(&behind(ProxyType::Socks4, b"socks.example"), None));
+        assert!(!socks.serves(&route, None) && !route.serves(&socks, None));
     }
 
     /// unit2413: peers made from a host as `Curl_peer_create` makes them,

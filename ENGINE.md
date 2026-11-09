@@ -2421,18 +2421,22 @@ pub struct Route {
     dest: Destination,                 // host:port, or connect-to / UDS peer
     transport: TransportKind,
     proxy: Option<ProxyRoute>,         // type, peer, credentials
-    tls: Option<TryArc<TlsIdentity>>,  // every field that affects the handshake (§4.9)
+    tls: Option<OriginTls>,            // wanted, or made: every field that affects the handshake (§4.9)
     ip: IpPrefs, local: LocalBind,
     proto: ProtoFamily, scheme: SchemeConfig,
 }
 ```
 
-Built so far: `enum Route { Local, Net(NetRoute) }`, with `NetRoute { origin, via, ip, proxy, tls,
-cold, delegation }`; `cold` is `RouteCold { local, login, upgrade, use_ssl }` behind one shared
-pointer, none when a route has none of it, as few do: the local end, the credentials a
-connection logs in with for a scheme without `PROTOPT_CREDSPERREQUEST` (moved there from the
-request, which then holds none), the settings a STARTTLS upgrade's TLS is made with, and the
-`CURLOPT_USE_SSL` level. `Peer` is C's
+Built so far: `enum Route { Local, Net(NetRoute) }`, with `NetRoute { origin, via, proxy, tls,
+cold }`; `tls` is the origin's TLS, from the start (`OriginTls::Start`, a scheme
+with `PROTOPT_SSL`) or the STARTTLS upgrade's (`OriginTls::Upgrade`), each a `RouteTls`:
+`Wanted` on a transfer's route, `Made` on a connection's (§4.9); `cold` is `RouteCold { ip,
+delegation, local, login, use_ssl, ftp, ssh }` behind one shared pointer, none when a route
+has none of it, as few do (it keeps every connection's slot at C's size): the `IpVersion`
+other than any (`NetRoute::ip`; a waiting transfer that reads another as it looks again
+changes a copy, `NetRoute::set_ip`), the GSS-API delegation, the local end, the credentials a connection logs in with for a scheme without
+`PROTOPT_CREDSPERREQUEST` (moved there from the request, which then holds none), the
+`CURLOPT_USE_SSL` level and what FTP and SSH set up with. `Peer` is C's
 `struct Curl_peer`: the `Scheme` (its row in the scheme table, below), the host as the URL names it, the port, the IPv6 zone and its scope (a
 numeric zone as it is, a name as its interface's index by `if_nametoindex`, one naming no
 interface none; `CURLOPT_ADDRESS_SCOPE` replaces the zone on the URL's peer), made once per
@@ -2457,8 +2461,8 @@ when it has none), of the same scheme or of one whose protocol is the connection
 family (`Scheme::serves`, from the generated table: an HTTPS or IMAPS connection reaches an
 HTTP or IMAP transfer, never the reverse), the same `via` by its destination or none on both,
 the same `IpVersion` unless the
-transfer takes any (`url_match_conn`, `url_match_destination`), and an equal `TlsIdentity` or
-none on both (`url_match_ssl_use`, `url_match_ssl_config`), and the same local end
+transfer takes any (`url_match_conn`, `url_match_destination`), and TLS made with the same
+settings (`TlsView::same`) or none on both (`url_match_ssl_use`, `url_match_ssl_config`), and the same local end
 (`url_match_connect_config`): the same interface as written, or none on both, and the same
 ports when the transfer names an interface or a port. A line protocol's connection
 (`suits`) is reused only by the same credentials, compared in constant time
@@ -2470,7 +2474,7 @@ connection that reaches it: its TLS settings are none, the connection's are not,
 `url_match_ssl_use` refuses it for lack of `PROTOPT_SSL_REUSE`. `Peer`'s `Eq` is
 `Curl_peer_equal`, the scheme and the destination, which the credential gate, Digest and
 Negotiate's binding compare. It,
-`ProxyRoute`'s key, `Peer`'s `Eq` and `TlsIdentity`'s `eq` destructure every field without `..`,
+`ProxyRoute`'s key, `Peer`'s `Eq` and `TlsView::same` destructure every field without `..`,
 so a field added later does not compile until it is compared; the exceptions are named where
 they are made (the transfer's `IpVersion::Any`; `auth_only`, which `Conn::serves` checks against
 what the connection did; a peer's host, compared as its name; whether ALPN is offered, which C
@@ -2512,7 +2516,7 @@ another multi). The dial, TCP or QUIC, is not compared, as C compares no transpo
 a connection speaks must be one the transfer allows (`url_match_http_version`), so a transfer
 that asks for no version takes a connection in HTTP/3, and one that allows HTTP/3 alone passes a
 connection in HTTP/2 over (`not reusing conn #N, we do not want h2` in the debug build, as the
-search passes it). A field added to `TlsIdentity` or `SchemeConfig` joins the comparison by
+search passes it). A field added to `TlsOptions` or `SchemeConfig` joins the comparison by
 construction, which is the class behind CVE-2021-22924, CVE-2022-27782 and CVE-2023-27535/27538.
 The transfer's authority (origin, credentials) lives on its `Target`, never written onto a
 shared connection (C's `url_conn_reuse_adjust` has no counterpart). Idle connections are
@@ -2535,7 +2539,7 @@ a connection bound to credentials serves only those, one mid-handshake with the 
 only a transfer negotiating as the same credentials with the same origin, and one negotiating
 with its proxy only a transfer negotiating with it — the proxy's credentials, its service
 among them, are the route's. The delegation asked (`CURLOPT_GSSAPI_DELEGATION`) is part of
-the `NetRoute` route, compared in `Route::serves` (url.c:882). A connection whose handshake with
+the route, in `RouteCold`, compared in `Route::serves` (url.c:882). A connection whose handshake with
 either peer is in progress (state `Recv`) is kept even when the transfer forbade reuse, as
 multi.c keeps it. Negotiate runs only with a GSS-API library on the handle; without one the
 challenges are still read, so `CURLINFO_HTTPAUTH_AVAIL` has the bit, which the shim reports only
@@ -3236,8 +3240,8 @@ alone, as C's CMake gives it no version. `curl_global_sslset` answers OK for
 any other, with only OpenSSL available.
 
 **The stage.** `https` is HTTP over TLS (`proto::http::HTTPS`, port 443, which `Host:` and the
-signatures leave out): its route carries a `TlsIdentity`, which is what C's `PROTOPT_SSL` comes
-to here, and through an HTTP proxy it always tunnels (`Curl_proxy_init_conn`). A connection on
+signatures leave out): its route wants TLS from the start (`OriginTls::Start`), which is what
+C's `PROTOPT_SSL` comes to here, and through an HTTP proxy it always tunnels (`Curl_proxy_init_conn`). A connection on
 such a route is dialed for its handshakes, and the origin's TLS is the last of them
 (`handshake_due`, after SOCKS, the tunnel and the PROXY line): `multi/state/tls.rs` asks the
 library for a session with the origin as the peer (no SNI for an address, `TlsPeerKind`),
@@ -3476,23 +3480,36 @@ session an FTP data connection resumes would be. `CURLOPT_ISSUERCERT` or its blo
 certificate that must have issued the peer's (`ossl_check_issuer`): 83 if it cannot be read or
 did not, said only when the peer is verified. The pinned key comes last.
 
-**Identity and reuse.** `NetRoute` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
-copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares
-(versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the
-client certificate and key with their formats and password, the cipher lists, curves,
-signature algorithms, the pinned key), made per leg, shared by the route and the connection,
-so a route held by a transfer's slot and by its connection stays small. Its `eq` destructures every field: the
-paths, blobs and keys exactly (`Curl_safecmp`), the lists and formats in any case
-(`curl_strequal`), the password in constant time (`Curl_timestrcmp`); ALPN is not compared.
-A transfer that verifies never takes a connection made without (the CVE-2021-22924 class). The
-CA file and path keep the build's default apart from none (`CaSetting`), and the identity
-carries the library's defaults, so it compares the file and path they resolve to: a handle that
-names the default's path matches one that keeps the default, as C finds them, having copied the
-default into the setting (`Curl_ssl_filter_config_tmp_init`). An HTTPS proxy's route carries an
-identity of its own (`ProxyRoute::tls`, `TlsIdentity::of_proxy`), C's `proxy_ssl_config`: the
-proxy's options (`Proxy::tls`, `CURLOPT_PROXY_SSL*`), its CA defaulting as the origin's, without
-curves or signature algorithms, which C has no proxy options for, and with the origin's ALPN,
-CA cache, engine and session cache, which C keeps once for both. The proxy key compares it
+**Identity and reuse.** A connection keeps a `TlsIdentity` for each TLS it speaks: the verify
+bits and a copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config`
+compares (versions, the options bits, the status check, CA file, path and blob, the CRL, the
+issuer, the client certificate and key with their formats and password, the cipher lists,
+curves, signature algorithms, the pinned key, ECH), but not the handle's context handler. It is
+made only as a connection is set up (`Curl_ssl_conn_config_init`): a transfer's route holds
+`RouteTls::Wanted`, and the pool's `add`, once there is room, makes the route
+(`NetRoute::made`), whose identities the connection, its setup's stages and the session
+cache's key (`SessionPeer`) then take; `ConnectMachine` refuses a route not made. A transfer
+looking for a connection compares the connection's identity with its own settings where its
+options hold them (`TlsView`, C's shallow `Curl_ssl_filter_config_tmp_init`), so a reuse
+copies nothing. The view is borrowed from the searching transfer's handle through the pool
+section's exits (`Exits::tls_wants`, the section's `Announcing`), afresh for each comparison
+and for the making, never across the section: a socket callback told of a connection the
+section closes may change the handle's options. An identity is seen as a view too
+(`TlsIdentity::view`), and `TlsView::same` is the one comparison, of two identities (`eq`) or
+of an identity and a transfer: it destructures every field, the paths, blobs and keys exactly
+(`Curl_safecmp`), the lists and formats in any case (`curl_strequal`), the password in
+constant time (`Curl_timestrcmp`); ALPN, the CA cache, the engine and the session cache are
+not compared. `TlsView::made` builds the identity through the same view, so the two cannot
+drift. A transfer that verifies never takes a connection made without (the CVE-2021-22924
+class). The CA file and path keep the build's default apart from none (`CaSetting`), and the
+view carries the library's defaults, so it compares the file and path they resolve to: a
+handle that names the default's path matches one that keeps the default, as C finds them,
+having copied the default into the setting (`Curl_ssl_filter_config_tmp_init`). An HTTPS
+proxy's TLS is wanted as its type says and made as the origin's is, C's `proxy_ssl_config`
+(`TlsView::proxy`): the proxy's options (`Proxy::tls`, `CURLOPT_PROXY_SSL*`), its CA defaulting
+as the origin's, without curves, signature algorithms or ECH, which C sets for the origin alone,
+and with the origin's ALPN, CA cache, engine and session cache, which C keeps once for both;
+the made identity sits in the proxy's cold part. The route compares it beside the proxy key
 (`url_match_proxy_use`), so a connection never serves a transfer whose proxy TLS differs,
 whatever its origin's; sessions with the proxy share the multi's cache, keyed by the proxy as a
 peer.
@@ -5124,7 +5141,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | HTTP/2 field line (`H2Conn`'s) | grows to the longest response field on the connection | the longest field the session hands on |
 | trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
 | the TLS options (`Cold<TlsOptions>`; the SSL_CTX handler among them, and the proxy's in `Cold<Proxy>`) | the first setopt of one | one group per handle |
-| a route's `TlsIdentity` | the leg's route, for a TLS route | one per leg, shared with the connection it makes |
+| a connection's `TlsIdentity` | the pool's `add` of a connection over a TLS route | one per TLS the connection speaks; none for a reuse |
 | a TLS layer (`TlsLayer` and the library's session), the layer stack, the handshake's marker | the handshake's start | one per TLS layer; OpenSSL's own memory is libc's, uncounted |
 | the multi's `TlsShared` and the library's state boxed in it (OpenSSL's: the kept store, the identity it was loaded for shared) | the multi's first TLS session; the state at its first store set up | one per multi |
 | session cache entries | a ticket kept | 25 peers × 2 tickets (3 peers for `perform`'s multi) |
@@ -5160,8 +5177,8 @@ peer gets a protocol error, not an out-of-memory one.
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - The core's own part of an HTTPS GET is pinned over the fake TLS library
-  (`HTTPS_FAKE_GET_BUDGET`, 52): the plain GET's 43, then the route's `TlsIdentity` (shared with
-  the connection), the handshake under way, the library's session (the fake's one box), its
+  (`HTTPS_FAKE_GET_BUDGET`, 52): the plain GET's 43, then the connection's `TlsIdentity`, made
+  as it is set up, the handshake under way, the library's session (the fake's one box), its
   layer, the stream's layer stack and its list, the multi's `TlsShared` with the fake's state
   in its box, and the key the connection's sessions are kept by. The same GET is run with each
   allocation refused in turn and alone; its server says goodbye back at once, so the
@@ -5184,7 +5201,7 @@ peer gets a protocol error, not an out-of-memory one.
 - Over OpenSSL, `crates/curl-openssl/tests/peer.rs` pins three, as the core cannot depend on
   the binding; OpenSSL's own allocations are libc's, not counted, as C's tracker does not count
   them, and the ALPN list and trace text are on the stack:
-  - an HTTPS GET against the same GET over plain HTTP (`HTTPS_GET_EXTRA`, 18): the route's
+  - an HTTPS GET against the same GET over plain HTTP (`HTTPS_GET_EXTRA`, 18): the connection's
     `TlsIdentity` and the CA file's copy in it, the layer, the stack's box and list, the
     handshake's marker, the session's box and its copy of the host name, the host name and CA
     file ended by a zero byte for OpenSSL, freed as the calls return, the multi's `TlsShared`

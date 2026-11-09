@@ -358,8 +358,8 @@ fn perform_moves_each_shutdown_on() {
 /// A connection shutting down counts toward the multi's limits as an open
 /// one does; one that would pass a limit is closed to make room, the
 /// oldest to the same host first, then any (`cpool_check_limits`), so the
-/// new transfer has its connection without waiting. Its socket is the
-/// multi's, though the new transfer's setup closes it.
+/// new transfer has its connection without waiting, nor saying it waits.
+/// Its socket is the multi's, though the new transfer's setup closes it.
 #[test]
 fn closing_connections_count_toward_the_limits() {
     for (host, total, port) in [(Some(1), None, 1), (None, Some(1), 2)] {
@@ -373,13 +373,34 @@ fn closing_connections_count_toward_the_limits() {
         assert_eq!(m.shutdowns.len(), 1);
         m.remove(a, &mut ev).unwrap();
         ev.0.clear();
-        let b = m.add(closing(port), (), &mut ev).unwrap();
+        let lines = Lines::default();
+        let mut e = closing(port);
+        e.options_mut().output.verbose = true;
+        e.options_mut()
+            .callbacks
+            .rare
+            .set(
+                |r| &mut r.debug,
+                Some(crate::handler::Handler::debug(lines.clone()).unwrap()),
+            )
+            .unwrap();
+        let b = m.add(e, (), &mut ev).unwrap();
         m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
         assert_eq!(wire.closed(), [1000], "closed to make room");
         assert!(
             !matches!(m.state_of(b), state::TransferState::Pending),
             "not waiting"
         );
+        // Nor did it wait on its way: the close left room, so no limit
+        // was reached even for a moment.
+        let lines = lines.0.lock().unwrap().clone();
+        let refusal = match host {
+            Some(_) => "No more connections allowed to host\n".to_owned(),
+            None => "No connections available, total of 1 reached.\n".to_owned(),
+        };
+        assert!(!lines.contains(&refusal), "{lines:?}");
+        let trying = format!("  Trying 127.0.0.1:{port}...\n");
+        assert!(lines.contains(&trying), "{lines:?}");
         assert_eq!(m.shutdowns.len(), 0);
         assert_eq!(
             ev.sockets(),

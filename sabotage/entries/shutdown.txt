@@ -51,6 +51,14 @@ witness: curl-core multi::shutdown_tests::closing_connections_count_toward_the_l
 --- new
         let shutdowns = 0;
 
+=== closing connections closed to make room still count toward the limits
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::shutdown_tests::closing_connections_count_toward_the_limits
+--- old
+        shutdowns -= set.close_oldest(to, over, net, &mut *linger.room);
+--- new
+        shutdowns += set.close_oldest(to, over, net, &mut *linger.room);
+
 === a closing connection to another host counts toward a host's limit
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core multi::shutdown_tests::a_closing_connection_counts_only_toward_its_own_host

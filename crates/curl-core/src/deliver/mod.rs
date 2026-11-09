@@ -1182,6 +1182,7 @@ fn deliver_body<H: Host>(
         // Body bytes delivered, included header lines among them (C's
         // `progress.deliver`).
         let so_far = easy.report().sizes().delivered();
+        let reasons = easy.report().reasons();
         if let Some(max) = easy.options().flow.max_filesize
             && piece.len() as u64 > max.get().saturating_sub(so_far)
         {
@@ -1192,7 +1193,6 @@ fn deliver_body<H: Host>(
                 format_args!("Would have exceeded max file size"),
             ));
         }
-        let reasons = cx.easy().report().reasons();
         let w = match (listing.as_deref_mut(), handler) {
             (Some(listing), _) => {
                 listing.take(cx, piece);

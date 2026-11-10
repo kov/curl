@@ -669,3 +669,85 @@ fn a_full_body_buffer_traces_again() {
         "{lines:#?}"
     );
 }
+
+/// An upload of `body` to `path`, with the fake library, verbose.
+fn upload_handle(body: &[u8], path: &str) -> (Easy, Seen) {
+    let mut e = tracing();
+    let seen = Seen::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}{path}").as_bytes()))
+        .unwrap();
+    o.output.verbose = true;
+    o.limits.total = crate::time::TimeLimit::from_millis(100_000);
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
+    o.http.version = HttpVersion::Http2Prior;
+    o.upload =
+        crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap());
+    o.method = Method::Post;
+    (e, seen)
+}
+
+/// A WINDOW_UPDATE for a stream whose body is buffered, read by a
+/// sibling's step, has the session resume the stream, and does not mark
+/// the stream's transfer to run again: C marks it only when it has none
+/// of its body buffered (`on_stream_frame`), so the multi's next wait
+/// waits. The second transfer reads the updates for the first's stream
+/// after the first ran in the pass; marked, the first would make the
+/// wait return at once, a pass over every transfer for nothing.
+#[test]
+fn a_window_update_read_by_a_sibling_wakes_no_one_with_a_body_held() {
+    let body = vec![b'.'; 300_000];
+    let up: &[u8] = b"U 1 16384\n";
+    // The first's own step reads the first updates; a later one comes
+    // with a send of the first's, which the second's step reads.
+    let start: [&[u8]; 3] = [b"S 100 16384\n", b"", b""];
+    let replies: Vec<&[u8]> = start.into_iter().chain([up; 8]).collect();
+    let talk = Conversation::replies(&replies, false).per_send().held();
+    talk.allow(3);
+    let clock = ManualClock::new().unwrap();
+    let mut m = serving_on(clock.clone(), Peer::Accepts, &[&talk]);
+    let (a, sa) = upload_handle(&body, "/a");
+    m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    // The first is under way, its window shut, before the second joins.
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    let (b, sb) = upload_handle(&body, "/b");
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
+    talk.allow(11);
+    let updates = |s: &Seen| {
+        s.text()
+            .iter()
+            .filter(|l| l.contains("[1] <- FRAME[WINDOW_UPDATE"))
+            .count()
+    };
+    let mut read_by_b = 0;
+    for _ in 0..4 {
+        round(&mut m);
+        let now = updates(&sb);
+        if now > read_by_b {
+            assert_ne!(
+                m.timeout(),
+                Some(Duration::ZERO),
+                "a window update woke its stream's transfer"
+            );
+            read_by_b = now;
+        }
+    }
+    assert!(read_by_b > 0, "{:#?}\n{:#?}", sa.text(), sb.text());
+    // Resumed, the stream's body went on, whichever transfer framed it:
+    // four frames went before the window was shut.
+    let framed = [&sa, &sb]
+        .iter()
+        .flat_map(|s| s.text())
+        .filter(|l| l.contains("[1] -> FRAME[DATA"))
+        .count();
+    assert!(framed > 4, "the stream was not resumed: {framed} frames");
+}

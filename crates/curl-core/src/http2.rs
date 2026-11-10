@@ -116,6 +116,14 @@ const FLAG_END_STREAM: u8 = 0x01;
 const FLAG_ACK: u8 = 0x01;
 const FLAG_END_HEADERS: u8 = 0x04;
 
+impl Frame<'_> {
+    /// It ends its stream: a DATA or HEADERS frame with END_STREAM set.
+    pub fn ends_stream(&self) -> bool {
+        matches!(self.kind, FrameKind::Data { .. } | FrameKind::Headers)
+            && self.flags & FLAG_END_STREAM != 0
+    }
+}
+
 /// C's description of a frame (`Curl_nghttp2_fr_print`): a GOAWAY's
 /// debug data up to its first zero byte, of at most 127 bytes, a byte
 /// not text written as U+FFFD.

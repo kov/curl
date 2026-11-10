@@ -1271,3 +1271,22 @@ witness: curl-core an_http_2_get_stays_within_its_allocation_budget
         made.bytes.try_reserve_exact(bytes)?;
 --- new
         made.bytes.try_reserve_exact(0)?;
+
+=== a window update for a stream with its body buffered wakes its transfer
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_window_update_read_by_a_sibling_wakes_no_one_with_a_body_held
+--- old
+            Event::WindowUpdate { .. } => sending && s.sendbuf.is_empty(),
+--- new
+            Event::WindowUpdate { .. } => true,
+
+=== whatever a sibling's read hands a transfer wakes it
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_window_update_read_by_a_sibling_wakes_no_one_with_a_body_held
+--- old
+                            if woken {
+                                cx.wake(to);
+                            }
+--- new
+                            let _ = woken;
+                            cx.wake(to);

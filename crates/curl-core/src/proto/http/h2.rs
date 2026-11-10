@@ -301,10 +301,12 @@ impl<H: Host> crate::proto::http2::Egress for Egressing<'_, '_, H> {
             return self.stream.body_read(&mut *self.cx, room);
         }
         let me = self.cx.me;
+        // Its transfer is not marked to run: C's `req_body_read_callback`
+        // marks none.
         match to {
             Some(to) if to != me => self
                 .cx
-                .with_sibling(to, |bcx, req| match req.wire.h2_mut() {
+                .lend_sibling(to, |bcx, req| match req.wire.h2_mut() {
                     Some(sib) if sib.id == Some(s) => sib.body_read(bcx, room),
                     _ => BodyRead::Failed,
                 })
@@ -1476,10 +1478,17 @@ impl Request {
                         _ => None,
                     };
                     let after = &mut after;
-                    return match cx.with_sibling(to, |bcx, req| {
-                        req.h2_event(bcx, lease, event, prior, after, line)
-                    }) {
-                        Some(heard) => heard,
+                    let lent = cx.lend_sibling(to, |bcx, req| {
+                        let woken = req.h2_woken_by(&event);
+                        (req.h2_event(bcx, lease, event, prior, after, line), woken)
+                    });
+                    return match lent {
+                        Some((heard, woken)) => {
+                            if woken {
+                                cx.wake(to);
+                            }
+                            heard
+                        }
                         None => match consumed {
                             Some(c) => {
                                 let id = c.0.0;
@@ -1515,8 +1524,10 @@ impl Request {
             let mut unset = None;
             for &(stream, wanted, paused) in &after.windows {
                 let to = h2.route_of(stream).filter(|&to| to != me);
+                // Not marked to run: C's `cf_h2_update_local_win` marks
+                // none.
                 let lent = to.and_then(|to| {
-                    cx.with_sibling(to, |bcx, _| {
+                    cx.lend_sibling(to, |bcx, _| {
                         let set = h2.window_to(bcx, stream, wanted);
                         said_pause(bcx, stream, paused.filter(|_| set.is_ok()));
                         set
@@ -1588,6 +1599,38 @@ impl Request {
             ));
         }
         Ok(())
+    }
+
+    /// Whether `event`, read for this transfer's stream by a sibling's
+    /// read, has this transfer run again, as C marks it
+    /// (`Curl_multi_mark_dirty`): a field of its response's head
+    /// (`on_header`), the end of a head or of the stream, a reset
+    /// (`on_stream_frame`), its stream's close (`on_stream_close`), a
+    /// promise (`on_stream_frame`'s PUSH_PROMISE), and room opened for a
+    /// body it is sending with none of it buffered (`on_stream_frame`'s
+    /// WINDOW_UPDATE). Its body's bytes, its trailers, a promise's fields
+    /// and room opened for a body it holds, which the session is told to
+    /// resume instead, do not: C writes or keeps them where the transfer
+    /// finds them when it next runs.
+    fn h2_woken_by(&self, event: &Event<'_>) -> bool {
+        let sending = self.sending();
+        let Some(s) = self.wire.h2() else {
+            return true;
+        };
+        match event {
+            Event::Header { .. } => !s.body_started,
+            Event::HeadersDone { end_stream, .. } => *end_stream || !s.body_started,
+            Event::Data { .. } | Event::PushField { .. } => false,
+            Event::WindowUpdate { .. } => sending && s.sendbuf.is_empty(),
+            Event::Received(f) => f.ends_stream() || matches!(f.kind, FrameKind::RstStream { .. }),
+            Event::DataEnd { .. }
+            | Event::Closed { .. }
+            | Event::Reset { .. }
+            | Event::Promised { .. }
+            | Event::Settings { .. }
+            | Event::GoAway { .. }
+            | Event::Sent(_) => true,
+        }
     }
 
     /// What the session read, handed on (`on_header`, `on_frame_recv`,

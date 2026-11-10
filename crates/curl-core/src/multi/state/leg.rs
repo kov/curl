@@ -805,7 +805,7 @@ pub(super) fn start_leg<H: Host>(
                     http: &run.http,
                 };
                 match crate::proto::http::Request::new(&url, false, before, cx) {
-                    Ok(http) => proto = ProtoState::Http(http),
+                    Ok(http) => proto = ProtoState::Http(http.into()),
                     Err(e) => return TransferState::Init.fail(e),
                 }
             }

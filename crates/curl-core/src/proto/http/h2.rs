@@ -2014,7 +2014,7 @@ impl Request {
             let key = pcx
                 .pushed_lease(lease)
                 .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-            let proto = crate::proto::ProtoState::Http(request);
+            let proto = crate::proto::ProtoState::Http(request.into());
             start_pushed(run, pcx, &url, (key, origin), proto)
         })
     }

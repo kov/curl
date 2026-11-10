@@ -3376,6 +3376,89 @@ fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
     );
 }
 
+/// Pauses its own transfer through the API at its `n`th write, and takes
+/// every write.
+#[derive(Clone)]
+struct PausesItselfAt(u32, Arc<Lock<u32>>);
+
+impl WriteHandler for PausesItselfAt {
+    fn write(&self, cx: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+        let mut n = self.1.lock().unwrap();
+        *n += 1;
+        if *n == self.0 {
+            let me = cx.me();
+            cx.pause(me, crate::deliver::PauseRequest::RECV).unwrap();
+        }
+        Write::Accepted
+    }
+}
+
+/// A transfer whose handler pauses it through the API while a sibling's
+/// step hands it its body is in the middle of a step, as one stepping is:
+/// the pause changes its value alone, is judged once the sibling's read
+/// is done with it, and holds what comes after until it is lifted. `/b`
+/// leaves the pass once its request is sent, so `/a` reads `/b`'s body.
+#[test]
+fn a_transfer_pausing_itself_in_a_siblings_step_is_paused_after_it() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\n",
+            WINDOW_SENT,
+            b"H 3 0\n:status: 200\n\nD 3 2 0\naaD 3 2 0\nbbD 1 1 1\nc",
+            // `/b`'s last DATA, at whatever is sent next.
+            b"D 3 1 1\nd",
+        ],
+        false,
+    )
+    .per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut ids = Vec::new();
+    let writes = Arc::<Lock<u32>>::default();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        let w = if path == "/b" {
+            Handler::write(PausesItselfAt(2, writes.clone())).unwrap()
+        } else {
+            Handler::write(Seen::default()).unwrap()
+        };
+        o.callbacks.write = Some(w);
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    assert_eq!(
+        drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    for _ in 0..3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    // Both pieces `/a`'s step read for it, the pause asked for at the
+    // second, and no more while it holds.
+    assert_eq!(*writes.lock().unwrap(), 2);
+    assert_eq!(m.info_read().map(|msg| msg.id), None);
+    m.pause(ids[1], crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    let done = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    assert_eq!(
+        done,
+        Ok(()),
+        "{}",
+        String::from_utf8_lossy(&talk.received())
+    );
+    assert_eq!(*writes.lock().unwrap(), 3);
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
 /// What a test's application does with a push.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {

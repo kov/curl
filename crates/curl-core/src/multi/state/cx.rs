@@ -346,12 +346,13 @@ impl<H: Host> StepCx<'_, H> {
         r
     }
 
-    /// Run `f` with transfer `id`'s step context and its HTTP request, its
-    /// run out of its slot meanwhile, as the stepping transfer hands it
-    /// what the connection they share did for it (ENGINE.md 4.4); the
-    /// connection's TLS objects, the same, are lent to it. It is not
-    /// marked to run: what `f` did says whether it must (`wake`). None if
-    /// it is gone or makes no HTTP request.
+    /// Run `f` with transfer `id`'s step context and its HTTP request, as
+    /// the stepping transfer hands it what the connection they share did
+    /// for it (ENGINE.md 4.4); the connection's TLS objects, the same,
+    /// are lent to it. The request alone leaves its run, which stays in
+    /// its slot and reads as out meanwhile (`Seat`). It is not marked to
+    /// run: what `f` did says whether it must (`wake`). None if it is
+    /// gone or makes no HTTP request.
     pub(crate) fn lend_sibling<R>(
         &mut self,
         id: TransferId,
@@ -359,28 +360,18 @@ impl<H: Host> StepCx<'_, H> {
     ) -> Option<R> {
         let edits = self.rest.tell.slots.edits();
         let slot = self.rest.tell.slots.get_mut(id)?;
-        // Only the stepping transfer's run is out while a connection is
-        // read or written.
-        // Kept in its `Option` while it is out, to go back as it came.
-        let mut run = slot.run.take();
-        let taken = run.as_mut().expect("a sibling's run is in its slot");
         // Read as its slot is in hand, as the step it is lent reads it
         // first thing.
         let verbose = (edits, slot.easy.options().output.verbose);
-        let lent = self.lent;
-        let r = match taken.state.attached_mut().map(|x| &mut x.proto) {
-            Some(ProtoState::Http(req)) => {
-                let mut cx = StepCx::new(id, self.rest.reborrow());
-                cx.lent = lent;
-                cx.verbose.set(verbose);
-                Some(f(&mut cx, req))
-            }
-            _ => None,
-        };
-        let taken = run.as_ref().expect("taken above");
-        let slot = super::super::slot_to_put_back(self.rest.tell.slots, self.rest.dirty, id, taken);
-        slot.run = run;
-        r
+        // Only the stepping transfer's run is out while a connection is
+        // read or written.
+        let mut request = slot.run.lend_http()?;
+        let mut cx = StepCx::new(id, self.rest.reborrow());
+        cx.lent = self.lent;
+        cx.verbose.set(verbose);
+        let r = f(&mut cx, &mut request);
+        super::super::give_back_http(self.rest.tell.slots, self.rest.dirty, id, request);
+        Some(r)
     }
 
     /// Run `f` with a WebSocket's connection lent to the step, for its

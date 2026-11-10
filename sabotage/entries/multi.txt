@@ -326,7 +326,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         judge_pause: false,
         speedometer: Speedometer::default(),
         rate: RateLimits::default(),
-        run: Some(Run::new()),
+        run: seat::Seat::new(Run::new()),
         mstate: mstate::MState::Init,
         readers: None,
         closed: None,
@@ -341,7 +341,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         judge_pause: false,
         speedometer: Speedometer::default(),
         rate: RateLimits::default(),
-        run: Some(Run::new()),
+        run: seat::Seat::new(Run::new()),
         mstate: mstate::MState::Init,
         readers: None,
         closed: None,
@@ -1156,3 +1156,13 @@ witness: curl-core proto::http::tests::h2_trace::a_wait_makes_each_pollset_twice
         drop(more_keys);
         pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |_, _| {})
             .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+
+=== a run whose request is lent to a sibling's step reads as in its slot
+file: crates/curl-core/src/multi/seat.rs
+witness: curl-core proto::http::tests::h2::a_transfer_pausing_itself_in_a_siblings_step_is_paused_after_it
+--- old
+    pub(super) fn as_ref(&self) -> Option<&Run> {
+        self.0.as_ref().filter(|run| !run.state.lent())
+--- new
+    pub(super) fn as_ref(&self) -> Option<&Run> {
+        self.0.as_ref()

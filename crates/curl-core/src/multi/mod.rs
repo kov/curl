@@ -19,6 +19,7 @@ mod pending;
 pub(crate) mod push;
 pub mod raw;
 mod sched;
+mod seat;
 mod sockets;
 mod ssls;
 pub(crate) mod state;
@@ -365,8 +366,9 @@ struct Slot<H: Host> {
     speedometer: Speedometer,
     /// The speed limits' buckets, which the pause stops and starts over.
     rate: RateLimits,
-    /// Out only while the transfer is being stepped.
-    run: Option<Run>,
+    /// Out only while the transfer is being stepped, or handed what a
+    /// sibling's step read for it.
+    run: seat::Seat,
     /// Where it is in C's states, for the trace.
     mstate: mstate::MState,
     /// The readers C would stack for the request's body, for the trace of
@@ -2016,7 +2018,7 @@ fn census_of<H: Host>(slots: &Slots<H>, counts: &Tally) -> Census {
     let mut cursor = None;
     while let Some(id) = slots.next_after(cursor) {
         cursor = Some(id);
-        let Some(run) = &slots.get(id).expect("just found").run else {
+        let Some(run) = slots.get(id).expect("just found").run.as_ref() else {
             continue;
         };
         if let TransferState::Pending = run.state {
@@ -2117,7 +2119,7 @@ fn insert<H: Host>(
         judge_pause: false,
         speedometer: Speedometer::default(),
         rate: RateLimits::default(),
-        run: Some(Run::new()),
+        run: seat::Seat::new(Run::new()),
         mstate: mstate::MState::Init,
         readers: None,
         closed: None,
@@ -2195,7 +2197,7 @@ fn pause_transfer<H: Host>(
     // Unless paused every way it moves bytes, the transfer runs again, and
     // is not slow for the time it was not (easy.c:1222). The ways are its
     // protocol's: a run out of its slot is judged when it is back.
-    match &slot.run {
+    match slot.run.as_ref() {
         Some(run) => {
             if !slot.pause.blocks(run.state.directions(slot.easy.options())) {
                 slot.speedometer.forget_slow();
@@ -2254,31 +2256,36 @@ fn tls_native_in<H: Host>(
 /// handler asked for while the run was out, as `pause_transfer` judges
 /// one asked for while it is in.
 fn put_back<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, run: Run) {
-    let slot = slot_to_put_back(slots, dirty, id, &run);
-    slot.run = Some(run);
+    let slot = slots.get_mut(id).expect("still in the multi");
+    slot.run.put(run);
+    judge_pause(slot, dirty, id);
 }
 
-/// The slot to put transfer `id`'s `run` back in, a pause its own handler
-/// asked for while the run was out judged as `put_back` judges it, for a
-/// caller that stores the run itself. One that kept the run in the
-/// `Option` it was taken in copies it once on its way back, by storing
-/// that: moved into a call, or unwrapped and wrapped again, it is copied
-/// twice. A sibling's run is lent this way once for each packet read for
-/// it.
-fn slot_to_put_back<'a, H: Host>(
-    slots: &'a mut Slots<H>,
+/// Put the HTTP request a sibling's step was lent back in transfer
+/// `id`'s run, and judge a pause its own handler asked for meanwhile, as
+/// `put_back` does.
+fn give_back_http<H: Host>(
+    slots: &mut Slots<H>,
     dirty: &mut RowSet,
     id: TransferId,
-    run: &Run,
-) -> &'a mut Slot<H> {
+    request: Box<crate::proto::http::Request>,
+) {
     let slot = slots.get_mut(id).expect("still in the multi");
+    slot.run.give_back_http(request);
+    judge_pause(slot, dirty, id);
+}
+
+/// Judge the pause transfer `id`'s own handler asked for while its run,
+/// now back in `slot`, read as out: unless it blocks every way the
+/// request moves bytes, the transfer runs again.
+fn judge_pause<H: Host>(slot: &mut Slot<H>, dirty: &mut RowSet, id: TransferId) {
+    let run = slot.run.as_ref().expect("just put back");
     if std::mem::take(&mut slot.judge_pause)
         && !slot.pause.blocks(run.state.directions(slot.easy.options()))
     {
         slot.speedometer.forget_slow();
         dirty.insert(id.index());
     }
-    slot
 }
 
 impl<H: Host> Multi<H> {

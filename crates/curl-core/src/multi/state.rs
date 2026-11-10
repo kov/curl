@@ -517,6 +517,42 @@ impl TransferState {
         }
     }
 
+    /// Its HTTP request out of its box, for the step of another transfer
+    /// on its connection to hand it what the connection brought
+    /// (`StepCx::lend_sibling`); none if it holds no connection or speaks
+    /// no HTTP over it. Lent, it reads as out of its slot (`Seat`).
+    pub(super) fn lend_http(&mut self) -> Option<Box<crate::proto::http::Request>> {
+        match self.attached_mut() {
+            Some(Attached {
+                proto: ProtoState::Http(request),
+                ..
+            }) => Some(request.lend()),
+            _ => None,
+        }
+    }
+
+    /// The request `lend_http` took, back where it was.
+    pub(super) fn give_back_http(&mut self, request: Box<crate::proto::http::Request>) {
+        match self.attached_mut() {
+            Some(Attached {
+                proto: ProtoState::Http(lent),
+                ..
+            }) => lent.give_back(request),
+            _ => unreachable!("a request lent goes back to the state it was lent from"),
+        }
+    }
+
+    /// Whether its HTTP request is lent to a sibling's step.
+    pub(super) fn lent(&self) -> bool {
+        matches!(
+            self.attached(),
+            Some(Attached {
+                proto: ProtoState::Http(request),
+                ..
+            }) if request.is_lent()
+        )
+    }
+
     fn attached(&self) -> Option<&Attached> {
         match self {
             TransferState::ProtoConnect(x)

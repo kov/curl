@@ -204,11 +204,11 @@ witness: curl-sys-abi handle_tests::the_multi_counts_running_and_waiting_transfe
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-sys-abi handle_tests::the_multi_counts_running_and_waiting_transfers_apart
 --- old
-        let Some(run) = &slots.get(id).expect("just found").run else {
+        let Some(run) = slots.get(id).expect("just found").run.as_ref() else {
             continue;
         };
 --- new
-        let Some(run) = &slots.get(id).expect("just found").run else {
+        let Some(run) = slots.get(id).expect("just found").run.as_ref() else {
             unreachable!("every run is in its slot");
         };
 

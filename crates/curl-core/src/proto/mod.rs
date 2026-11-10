@@ -102,8 +102,9 @@ pub(crate) enum ProtoState {
     /// Boxed, as HTTP's: it is moved with the transfer's state at every
     /// step, and a `file:` transfer's DO is a step a piece.
     File(Box<file::Request>),
-    /// Boxed: it is moved with the transfer's state at every step.
-    Http(Box<http::Request>),
+    /// Boxed: it is moved with the transfer's state at every step, and
+    /// lent on its own to a sibling's step.
+    Http(HttpBox),
     /// Boxed, as HTTP's.
     Ftp(Box<ftp::Request>),
     /// Boxed, as HTTP's.
@@ -137,6 +138,55 @@ pub(crate) enum ProtoState {
     Script(Box<script::Player>),
     #[cfg(any(test, feature = "test-util"))]
     Tcp,
+}
+
+/// HTTP's request in its box. The box is out of it only while the request
+/// is lent to the step of another transfer on its connection
+/// (`StepCx::lend_sibling`), which is handed what the connection brought
+/// for it: the box alone moves, and the transfer's run stays in its slot,
+/// read as out meanwhile (`multi::Seat`). Reaching the request then is
+/// reaching into a step under way, which asserts.
+#[derive(Debug)]
+pub(crate) struct HttpBox(Option<Box<http::Request>>);
+
+impl HttpBox {
+    /// The request, out of its box for a sibling's step.
+    pub(crate) fn lend(&mut self) -> Box<http::Request> {
+        self.0.take().expect("a request is lent to one step")
+    }
+
+    /// The request a sibling's step was lent, back in its box.
+    pub(crate) fn give_back(&mut self, request: Box<http::Request>) {
+        assert!(self.0.is_none(), "a request given back was lent");
+        self.0 = Some(request);
+    }
+
+    /// Whether a sibling's step has the request.
+    pub(crate) fn is_lent(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+impl From<Box<http::Request>> for HttpBox {
+    fn from(request: Box<http::Request>) -> HttpBox {
+        HttpBox(Some(request))
+    }
+}
+
+impl std::ops::Deref for HttpBox {
+    type Target = http::Request;
+
+    fn deref(&self) -> &http::Request {
+        self.0.as_deref().expect("a request read is not lent")
+    }
+}
+
+impl std::ops::DerefMut for HttpBox {
+    fn deref_mut(&mut self) -> &mut http::Request {
+        self.0
+            .as_deref_mut()
+            .expect("a request changed is not lent")
+    }
 }
 
 /// What a complete exchange leads to, as its protocol decides.
@@ -670,19 +720,19 @@ impl ProtoState {
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
-            b"http" => ProtoState::Http(http::Request::new(url, false, before, cx)?),
+            b"http" => ProtoState::Http(http::Request::new(url, false, before, cx)?.into()),
             // Over TLS, if the handle has a TLS library: without one, it
             // is a scheme the build leaves out, as in C built without.
             b"https" if cx.easy().libraries().tls.is_some() => {
-                ProtoState::Http(http::Request::new(url, true, before, cx)?)
+                ProtoState::Http(http::Request::new(url, true, before, cx)?.into())
             }
             // A WebSocket is an HTTP/1.1 request until its 101.
-            b"ws" => ProtoState::Http(http::Request::websocket(url, false, before, cx)?),
+            b"ws" => ProtoState::Http(http::Request::websocket(url, false, before, cx)?.into()),
             b"wss" if cx.easy().libraries().tls.is_some() => {
-                ProtoState::Http(http::Request::websocket(url, true, before, cx)?)
+                ProtoState::Http(http::Request::websocket(url, true, before, cx)?.into())
             }
             // RTSP is spoken through HTTP's request (`lib/rtsp.c`).
-            b"rtsp" => ProtoState::Http(http::Request::rtsp(url, before, cx)?),
+            b"rtsp" => ProtoState::Http(http::Request::rtsp(url, before, cx)?.into()),
             b"imap" => ProtoState::Imap(
                 curl_alloc::try_box(imap::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,

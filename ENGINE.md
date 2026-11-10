@@ -91,7 +91,7 @@ numbers are those of `SCOPE.md`.
     Paused output is ranges into one buffer, O(1) per append, EOS a separate event.
 14. **A multiplexed connection delivers each stream's data at once, as C does**: what the
     session reads for a sibling stream goes to that sibling's pipeline in the step that read
-    it, the sibling's `Run` moved out in turn; a paused sibling's bytes wait in its pipeline's
+    it, the sibling's request lent in turn; a paused sibling's bytes wait in its pipeline's
     paused output (§4.4).
 15. **`TransferReport` is created whole at transfer start, written live by the engine during
     the transfer, and stays in the `Easy` afterwards.** getinfo inside a callback reads it live
@@ -866,7 +866,7 @@ struct Slot<H: Host> {
     judge_pause: bool,               // its own handler paused while it was out
     speedometer: Speedometer,        // beside the pause, which starts it over
     rate: RateLimits,                // the speed limits' buckets, which the pause starts over
-    run: Option<Run>,                // see below
+    run: Seat,                       // see below
     mstate: MState,                  // where it is in C's states, for the trace
     readers: Option<Readers>,        // C's readers of the body, for the unpause trace
 }
@@ -894,11 +894,17 @@ and a handle's memory is one `Easy`, not one in the shim's handle and a second i
 (libtest 751 adds a thousand handles under a cap). The `Run` lives in the slot, as C's
 per-transfer state lives in its `Curl_easy`: one allocation at `add`, not two.
 
-`Slot.run` is `None` in exactly one situation: while the engine has moved the `Run` out to
-run it (a step, or `pause_transfer`'s replay of held output), and for that duration the slot is reachable only through `EngineRest`, whose methods
-treat the missing run as "this is the transfer being stepped". It is not a lifecycle flag: the
-`Run` exists from `add` to `remove`, and `TransferState::Init` and `Completed` are its first and
-last variants.
+`Slot.run` is a `Seat`, which gives the `Run` only while it is in and whole. It reads as out,
+`None`, in two situations, both the middle of a step: while the engine has moved the `Run` out
+to run it (a step, or `pause_transfer`'s replay of held output), and while its HTTP request is
+lent to the step of another transfer on its connection (`StepCx::lend_sibling`, §4.4). The
+second moves only the request's box (`proto::HttpBox`) and leaves the rest of the `Run` where it
+is: a sibling is lent once for each packet read for it, and moving its run out and back for
+each would copy it twice a packet. That the request is out of its box is the one fact the
+`Seat` reads, so nothing else can reach a run lent this way. For either duration the slot is
+reachable only through `EngineRest`, whose methods treat the missing run as "this is the
+transfer being stepped". It is not a lifecycle flag: the `Run` exists from `add` to `remove`,
+and `TransferState::Init` and `Completed` are its first and last variants.
 
 `Multi` borrows nothing: it owns its `Net` and its caches, so it can move into an
 `Easy` or a shim handle.
@@ -2155,8 +2161,9 @@ traces it. The transfer giving a connection back asks it too, once none is on it
 closes it (`multi_done_locked`): one that takes none is closed, "was shutdown by server". The session's streams map to their transfers (`H2Conn`'s routes,
 set as a request opens its stream and let go as it is done); the session's events and body reads
 come with the transfer their stream is routed to, looked up as they come. What the session reads
-for a sibling's stream goes to it as it is read, in the order C delivers it, by moving that
-sibling's `Run` out (`StepCx::with_sibling`), as the unpause replay does (§5.3); the sibling is
+for a sibling's stream goes to it as it is read, in the order C delivers it, by lending that
+sibling's request to the step (`StepCx::lend_sibling`), its run read as out meanwhile as the
+unpause replay's is (§2.7, §5.3); the sibling is
 marked to run, not stepped in the same pass. A paused sibling's bytes wait in its pipeline's
 paused output, as C's client writer holds them. A sibling's body is read from its own buffer as
 the session frames it, and the streams the session closes as it sends are told once it is done.

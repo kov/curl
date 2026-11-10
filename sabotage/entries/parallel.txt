@@ -59,3 +59,11 @@ features: debug-hooks
 --- new
         if false {
             self.run
+
+=== the parallel multi leaves no row for C's admin handle, so its ids wrap a transfer early
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool parallel_transfers_report_in_c_s_id_order
+--- old
+        ArenaPolicy::new(128, 1).expect("a valid policy"),
+--- new
+        ArenaPolicy::new(128, 0).expect("a valid policy"),

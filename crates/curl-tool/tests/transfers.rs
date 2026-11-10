@@ -1896,6 +1896,32 @@ fn parallel_skipped_transfers_end_last() {
     assert_eq!(r.stderr, line);
 }
 
+/// Parallel transfers report in the order of their ids in the multi, as
+/// C's `curl_multi_init` hands them out: from a table of 128 rows whose
+/// row 0 is the multi's own handle. Three at a time, transfers 127, 128
+/// and 129 take rows 127, 1 and 2, so 127 reports last (test 3314).
+#[test]
+fn parallel_transfers_report_in_c_s_id_order() {
+    let s = Scratch::new("parallelorder");
+    s.write("empty", b"");
+    let urls = format!("{}?[1-130]", s.url("empty"));
+    let args = [
+        "-s",
+        "-Z",
+        "--parallel-max",
+        "3",
+        "-w",
+        "%{url.query}\n",
+        &urls,
+    ];
+    let r = curl(&s, &args);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let mut order: Vec<u32> = (1..=130).collect();
+    order[126..129].copy_from_slice(&[128, 129, 127]);
+    let want: String = order.iter().map(|n| format!("{n}\n")).collect();
+    assert_eq!(r.stdout, as_text(want.as_bytes()));
+}
+
 /// The parallel meter: its header, then lines, the last ending in a
 /// newline; none when silenced. Its "Live" column leaves out a transfer
 /// waiting for a connection the host limit allows none of yet.

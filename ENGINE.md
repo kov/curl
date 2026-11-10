@@ -377,6 +377,8 @@ The policy is a value, not constants in the core:
   The private multi is also C's in its other sizes: a resolver of `Threads::EASY` (2 threads
   idling 10 ms, against `Threads::MULTI`'s 20 idling 2 s) and the TLS sessions of
   `Multi::PERFORM_TLS_PEERS` (3) peers through `keep_tls_sessions_of`, against 25.
+- the tool's `--parallel` multi passes `new(128, 1)`, as C's tool makes its multi with
+  `curl_multi_init`: transfers report in C's order as the ids wrap past row 127 (3314).
 - the Rust API's default is `new(16, 0)`.
 
 `ConnId` folds C's `(last_cpid, last_conn_id)` pair into one value. CONNECT_ONLY's "last

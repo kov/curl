@@ -70,7 +70,14 @@ fn new_multi(line: &CommandLine<'_>) -> Result<Multi, OutOfMemory> {
     let net = try_box(
         SystemNet::for_multi(curl_core::conn::threaded::Threads::MULTI).map_err(|_| OutOfMemory)?,
     )?;
-    let env = Env::new(net, ArenaPolicy::new(16, 0).expect("a valid policy"), waker);
+    // C's tool makes its multi with `curl_multi_init`: a table of 128 rows
+    // whose row 0 holds the multi's own handle, so the transfers run and
+    // report in C's order as the ids wrap around.
+    let env = Env::new(
+        net,
+        ArenaPolicy::new(128, 1).expect("a valid policy"),
+        waker,
+    );
     let mut multi = Multi::new(env)?;
     multi.conn_limits_mut().max_host = line.global.parallel_host.map(NonZeroU32::from);
     multi.set_quick_exit(super::quick_exit());

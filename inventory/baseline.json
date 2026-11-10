@@ -1,5 +1,5 @@
 {
- "c-commit": "2e84c0de2b3b686331132739e3726e28519c6b5e",
+ "c-commit": "bd3de3aede646e3c92ade95d624e9f82211e1c3a",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -28,10 +28,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2198,
+   "considered": 2201,
    "failed": 0,
-   "ok": 2104,
-   "ran": 2104,
+   "ok": 2107,
+   "ran": 2107,
    "skipped": 94
   },
   "curl-version": [
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-10T16:59:28Z",
-   "started": "2026-11-10T16:57:11Z"
+   "finished": "2026-11-10T18:47:38Z",
+   "started": "2026-11-10T18:44:13Z"
   },
   "protocols": [
    "dict",
@@ -3295,8 +3295,8 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '7 packets captured\\n', '50 packets received by filter\\n', '0 packe",
+     "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {
      "message": null,
@@ -4288,10 +4288,11 @@
     }
    },
    "counts": {
-    "passed": 950,
+    "failed": 1,
+    "passed": 949,
     "skipped": 58
    },
-   "exit-status": 0,
+   "exit-status": 1,
    "functions-without-cases": []
   },
   "results": {
@@ -8587,6 +8588,9 @@
    "3313": {
     "result": "ok"
    },
+   "3314": {
+    "result": "ok"
+   },
    "332": {
     "result": "ok"
    },
@@ -8731,6 +8735,12 @@
     "class": "feature missing from build",
     "reason": "curl lacks libssh support",
     "result": "skipped"
+   },
+   "3632": {
+    "result": "ok"
+   },
+   "3633": {
+    "result": "ok"
    },
    "364": {
     "result": "ok"

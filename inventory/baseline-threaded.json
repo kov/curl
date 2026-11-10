@@ -1,5 +1,5 @@
 {
- "c-commit": "2e84c0de2b3b686331132739e3726e28519c6b5e",
+ "c-commit": "bd3de3aede646e3c92ade95d624e9f82211e1c3a",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -29,10 +29,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2198,
+   "considered": 2201,
    "failed": 0,
-   "ok": 2102,
-   "ran": 2102,
+   "ok": 2105,
+   "ran": 2105,
    "skipped": 96
   },
   "curl-version": [
@@ -215,8 +215,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-10T17:02:20Z",
-   "started": "2026-11-10T16:59:36Z"
+   "finished": "2026-11-10T17:58:17Z",
+   "started": "2026-11-10T17:55:11Z"
   },
   "protocols": [
    "dict",
@@ -8592,6 +8592,9 @@
    "3313": {
     "result": "ok"
    },
+   "3314": {
+    "result": "ok"
+   },
    "332": {
     "result": "ok"
    },
@@ -8736,6 +8739,12 @@
     "class": "feature missing from build",
     "reason": "curl lacks libssh support",
     "result": "skipped"
+   },
+   "3632": {
+    "result": "ok"
+   },
+   "3633": {
+    "result": "ok"
    },
    "364": {
     "result": "ok"

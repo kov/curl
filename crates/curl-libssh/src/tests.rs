@@ -130,11 +130,20 @@ fn is_open(fd: i32) -> bool {
     unsafe { sys::fcntl(fd, 1) >= 0 }
 }
 
-/// Read `peer` to its end: it ends once no copy of the other end is open,
-/// within ten seconds.
-fn read_to_end(peer: &mut UnixStream) {
-    peer.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+/// A connected pair, the second end's reads given up after ten seconds.
+/// The time is set as the pair is made: macOS refuses it (`EINVAL`) on a
+/// socket shut down for writing whose peer has closed.
+fn pair() -> (UnixStream, UnixStream) {
+    let (ours, theirs) = UnixStream::pair().unwrap();
+    theirs
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
+    (ours, theirs)
+}
+
+/// Read `peer`, an end `pair` made, to its end: it ends once no copy of
+/// the other end is open, within ten seconds.
+fn read_to_end(peer: &mut UnixStream) {
     let mut sink = Vec::new();
     peer.read_to_end(&mut sink).unwrap();
 }
@@ -144,7 +153,7 @@ fn read_to_end(peer: &mut UnixStream) {
 /// peer sees the end.
 #[test]
 fn a_failed_connect_leaves_the_connection_s_socket() {
-    let (ours, mut theirs) = UnixStream::pair().unwrap();
+    let (ours, mut theirs) = pair();
     theirs.write_all(b"no banner\r\n").unwrap();
     theirs.shutdown(std::net::Shutdown::Write).unwrap();
     let mut session = LIBSSH.session().expect("a session");
@@ -172,7 +181,7 @@ fn a_socket_without_a_descriptor_is_refused() {
 /// A session never connected closes its copy as it is freed.
 #[test]
 fn a_session_never_connected_closes_its_copy() {
-    let (ours, mut theirs) = UnixStream::pair().unwrap();
+    let (ours, mut theirs) = pair();
     let mut session = LIBSSH.session().expect("a session");
     session.set_socket(Some(ours.as_fd())).unwrap();
     drop(session);

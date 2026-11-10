@@ -436,6 +436,28 @@ fn drive_prefix(s: &[u8]) -> bool {
 impl Url {
     /// Parse `url` as `curl_url_set(CURLUPART_URL)` does.
     pub fn parse(url: &[u8], opts: ParseOptions) -> Result<Url, UrlErrorKind> {
+        let mut u = Url::default();
+        u.fill(url, opts)?;
+        Ok(u)
+    }
+
+    /// `parseurl_and_replace`: `url` parsed in this one's place, which
+    /// stays as it was if `url` is refused. The parts are written where
+    /// they stay: a URL parsed apart and moved here is read back whole
+    /// before its last parts' writes have settled, which costs more than
+    /// the old one's move out of the way.
+    fn replace(&mut self, url: &[u8], opts: ParseOptions) -> Result<(), UrlErrorKind> {
+        let old = std::mem::take(self);
+        if let Err(e) = self.fill(url, opts) {
+            *self = old;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The parts of `url` into this URL, which has none; left with some
+    /// of them if `url` is refused.
+    fn fill(&mut self, url: &[u8], opts: ParseOptions) -> Result<(), UrlErrorKind> {
         // C sees a NUL-terminated string: anything past a zero byte is not
         // part of the URL it was given.
         // An empty URL is valid only relative to one already set, which
@@ -443,7 +465,7 @@ impl Url {
         if url.is_empty() || url.len() > MAX_INPUT || url.contains(&0) {
             return Err(UrlErrorKind::MalformedInput);
         }
-        let mut u = Url::default();
+        let u = self;
         let scheme = scheme_of(url, opts.guess_scheme || opts.default_scheme);
         let (path, is_file) = if scheme.is_some_and(|s| s.eq_ignore_ascii_case(b"file")) {
             (u.parse_file(url)?, true)
@@ -475,7 +497,7 @@ impl Url {
             path = &path[..at];
         }
         u.path = path_part(path, opts, is_file)?;
-        Ok(u)
+        Ok(())
     }
 
     /// `parse_file`: a `file:` URL, the path it leaves.
@@ -847,8 +869,7 @@ impl Url {
         }
         let guessing = opts.parse.guess_scheme || opts.parse.default_scheme;
         if scheme_of(url, guessing).is_some() {
-            *self = Url::parse(url, opts.parse)?;
-            return Ok(());
+            return self.replace(url, opts.parse);
         }
         // Empty separators are kept: they change where the relative URL
         // goes.
@@ -861,10 +882,7 @@ impl Url {
             Ok(base) => self.resolve(&base, url, opts.parse),
             Err(UrlErrorKind::OutOfMemory) => Err(UrlErrorKind::OutOfMemory),
             // Not whole: nothing to be relative to.
-            Err(_) => {
-                *self = Url::parse(url, opts.parse)?;
-                Ok(())
-            }
+            Err(_) => self.replace(url, opts.parse),
         }
     }
 
@@ -917,8 +935,7 @@ impl Url {
             path_as_is: false,
             ..opts
         };
-        *self = Url::parse(&url, opts)?;
-        Ok(())
+        self.replace(&url, opts)
     }
 
     /// `url_append_query`: `q` after the query there and a `&`, unless it
@@ -1730,6 +1747,38 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A URL that is refused, whole or relative, leaves the one it was
+    /// to replace with every part it had (`parseurl_and_replace` frees
+    /// the old one only once the new one parsed).
+    #[test]
+    fn a_refused_url_leaves_the_one_it_was_to_replace() {
+        let whole = b"https://user:secret@example.com:8443/a/b?q=1#frag";
+        let mut u = Url::parse(whole, ParseOptions::NONE).unwrap();
+        // Refused at the port, with the scheme and the credentials read.
+        for bad in [&b"http://other:pw@h:99999/x?y#z"[..], b"//h:99999/x"] {
+            assert!(u.set(Part::Url, Some(bad), SetOptions::NONE).is_err());
+            assert_eq!(u, Url::parse(whole, ParseOptions::NONE).unwrap());
+            assert_eq!(u.get(Part::Url, GetOptions::NONE).unwrap(), whole);
+        }
+        // One that is not whole, which a URL replaces rather than joins.
+        let mut part = Url::default();
+        part.set(Part::Path, Some(b"/only"), SetOptions::NONE)
+            .unwrap();
+        assert!(
+            part.set(Part::Url, Some(b"http://h:99999/"), SetOptions::NONE)
+                .is_err()
+        );
+        assert_eq!(part.get(Part::Path, GetOptions::NONE).unwrap(), b"/only");
+        assert_eq!(
+            part.get(Part::Host, GetOptions::NONE),
+            Err(UrlErrorKind::NoHost)
+        );
+        assert_eq!(
+            part.get(Part::Scheme, GetOptions::NONE),
+            Err(UrlErrorKind::NoScheme)
+        );
     }
 
     fn show(b: &[u8]) -> String {

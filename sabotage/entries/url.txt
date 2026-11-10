@@ -512,3 +512,14 @@ witness: curl-core auth::creds::tests::a_part_given_empty_still_makes_credential
         self.user.is_some() || self.password.is_some()
 --- new
         self.user.is_some()
+
+=== a refused URL leaves what was read of it in place of the old one
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::a_refused_url_leaves_the_one_it_was_to_replace
+--- old
+        if let Err(e) = self.fill(url, opts) {
+            *self = old;
+            return Err(e);
+--- new
+        if let Err(e) = self.fill(url, opts) {
+            return Err(e);

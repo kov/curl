@@ -1,5 +1,5 @@
 {
- "c-commit": "4a1aa08f6cffa12ffd240a073d0ceba9a4f028c1",
+ "c-commit": "53d04f946243b9fe0535e377467c56e5d00ab9ac",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -17,6 +17,7 @@
    "ENABLE_ARES": "OFF",
    "ENABLE_DEBUG": "ON",
    "ENABLE_THREADED_RESOLVER": "ON",
+   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
    "USE_ECH": "OFF",
    "USE_HTTPSRR": "ON",
@@ -28,10 +29,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2193,
+   "considered": 2198,
    "failed": 0,
-   "ok": 2097,
-   "ran": 2097,
+   "ok": 2102,
+   "ran": 2102,
    "skipped": 96
   },
   "curl-version": [
@@ -214,8 +215,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-03T01:18:59Z",
-   "started": "2026-11-03T01:16:14Z"
+   "finished": "2026-11-10T14:50:28Z",
+   "started": "2026-11-10T14:48:00Z"
   },
   "protocols": [
    "dict",
@@ -1043,8 +1044,8 @@
      "outcome": "passed"
     },
     "test_04_stuttered::test_04_02_100_100_10[h3]": {
-     "message": "AssertionError: response #100 http_code: expected 200, got 502\n  json stat from curl:{\n    \"certs\": \"\",\n    \"conn_id\": 0,\n    \"content_type\": \"text/html; charset=UTF-8\",\n    \"errormsg\": null,\n    \"exitcode\": 0,\n    \"filename_effective\": \"download_41.data\",\n    \"ftp_entry_path\": null,\n    \"http_code\"",
-     "outcome": "failed"
+     "message": null,
+     "outcome": "passed"
     },
     "test_04_stuttered::test_04_03_1000_10_1[h2]": {
      "message": null,
@@ -3295,7 +3296,7 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '3 packets captured\\n', '16 packets received by filter\\n', '0 packe",
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n']\nassert 0 != 0\n +  where 0 = len([])\n +    where [] = get_rsts(ports",
      "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {
@@ -3571,104 +3572,140 @@
      "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_01_ech_no_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_01_ech_no_config[hard-None-35]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_01_ech_no_config[true-not configured-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[hard-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[true-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[hard-rejected-101]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[true-rejected-101]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_04_ech_outer[hard-succeeded-innocent.invalid]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_04_ech_outer[true-succeeded-innocent.invalid]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_05_ech_conn_ech_reuse": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_06_ech_conn_ech_config_reuse": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_07_ech_conn_ech_pub_reuse": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[bad-hard-60]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[bad-true-60]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[good-hard-0]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[good-true-0]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[none-hard-35]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[none-true-0]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[silent-hard-28]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[silent-true-28]": {
+     "message": "no nghttpx ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_09_ech_tcp_record_coming": {
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_24_ocsp::test_24_01_verify_status[False-True-None]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": "AssertionError: expected exit code 0, got 7\n  >>--stdout ----------------------------------------------\n  {\"certs\":\"\",\"conn_id\":0,\"content_type\":null,\"errormsg\":\"Failed to connect to one.http.curl.se:53659 after 0 ms: Could not connect to server\",\"exitcode\":7,\"filename_effective\":\"download_#1.data\",",
+     "outcome": "failed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-None]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-interror]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-revoked]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-trylater]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-unauth]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-unknown]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-True-valid]": {
-     "message": "no modern openssl available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_30_vsftpd::test_30_01_list_dir": {
      "message": null,
@@ -4253,8 +4290,8 @@
    },
    "counts": {
     "failed": 2,
-    "passed": 931,
-    "skipped": 66
+    "passed": 939,
+    "skipped": 67
    },
    "exit-status": 1,
    "functions-without-cases": []
@@ -8421,6 +8458,18 @@
    "3239": {
     "result": "ok"
    },
+   "3240": {
+    "result": "ok"
+   },
+   "3241": {
+    "result": "ok"
+   },
+   "3242": {
+    "result": "ok"
+   },
+   "3243": {
+    "result": "ok"
+   },
    "325": {
     "result": "ok"
    },
@@ -8836,6 +8885,9 @@
     "result": "ok"
    },
    "3991": {
+    "result": "ok"
+   },
+   "3992": {
     "result": "ok"
    },
    "4": {

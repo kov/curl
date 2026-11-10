@@ -52,7 +52,8 @@ build/c-boringssl, inventory/baseline-{awslc,boringssl}.{json,md}.
 the OpenSSL backend over the BoringSSL quiche's build makes in place of
 OpenSSL, both built by inventory/measure/deps.py as curl's CI builds them,
 quiche's shared library loaded and that BoringSSL linked in statically:
-without the HTTP/3 proxy, which CMake builds over ngtcp2 only:
+without the HTTP/3 proxy, which CMake builds over ngtcp2 only, and with
+Encrypted Client Hello, which the rewrite has over any BoringSSL:
 build/c-quiche, inventory/baseline-quiche.{json,md}.
 
 `--rustls` does the same with Rustls in place of OpenSSL, the library the
@@ -283,16 +284,18 @@ BORINGSSL = fork_oracle("boringssl", "BoringSSL")
 # HTTP/3 over quiche, as the rewrite's `quiche` feature has it: the OpenSSL
 # backend over the BoringSSL quiche's build makes, static, as CI links it
 # (CMake's "quiche requires BoringSSL"), and no HTTP/3 proxy, which CMake
-# builds over ngtcp2 only. Its programs find quiche's library by their
-# RUNPATH.
+# builds over ngtcp2 only. With ECH, as the OpenSSL backend has it over
+# BoringSSL whatever its QUIC library. Its programs find quiche's library
+# by their RUNPATH.
 QUICHE = Oracle(ROOT / "build" / "c-quiche", "baseline-quiche",
                 "C quiche baseline", "--quiche",
                 {**CMAKE_ARGS, "USE_NGTCP2": "OFF", "USE_QUICHE": "ON",
                  "USE_PROXY_HTTP3": "OFF",
                  "OPENSSL_ROOT_DIR": str(deps.quiche_boringssl()),
                  "OPENSSL_USE_STATIC_LIBS": "ON",
-                 "CMAKE_BUILD_RPATH": str(deps.QUICHE / "target" / "release")},
-                links_ngtcp2=False, quiche=True)
+                 "CMAKE_BUILD_RPATH": str(deps.QUICHE / "target" / "release"),
+                 **ECH_ARGS},
+                links_ngtcp2=False, quiche=True, ech=True)
 
 
 # Rustls in place of OpenSSL, as the rewrite's `rustls` feature has it: no

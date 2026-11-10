@@ -1200,22 +1200,17 @@ impl UdpSocket {
     }
 
     #[cfg(target_os = "linux")]
-    /// Receive datagrams into `buf`, each into a slot of `slot` bytes of
-    /// it, as many as fit and `out` holds, at most `BATCH`: one
-    /// `recvmmsg` (`recvmmsg_packets`). How many, each told in `out`:
-    /// its length (an empty one too, which the caller passes over), the
-    /// size of each packet the kernel joined into it, its ECN bits and
-    /// whom it came from. The system's error as it is, `EAGAIN` with
-    /// nothing to read; a signal interrupting it, or a datagram too large
-    /// for its slot, receives again, as C does.
-    pub fn recv_batch(
-        &self,
-        buf: &mut [u8],
-        slot: usize,
-        out: &mut [Datagram],
-    ) -> io::Result<usize> {
-        assert!(slot > 0, "a slot has room");
-        let n = out.len().min(buf.len() / slot).min(BATCH);
+    /// Receive datagrams into `room`, each into a slot of it, as many as
+    /// it has slots and `out` holds: one `recvmmsg` (`recvmmsg_packets`).
+    /// How many, each told in `out`: its length (an empty one too, which
+    /// the caller passes over), the size of each packet the kernel joined
+    /// into it, its ECN bits and whom it came from; its bytes are
+    /// [`DatagramRoom::datagram`]'s. The system's error as it is, `EAGAIN`
+    /// with nothing to read; a signal interrupting it, or a datagram too
+    /// large for its slot, receives again, as C does.
+    pub fn recv_batch(&self, room: &mut DatagramRoom, out: &mut [Datagram]) -> io::Result<usize> {
+        let slot = room.slot;
+        let n = out.len().min(room.slots);
         assert!(n > 0, "a receive needs room for a datagram");
         let int = u32::try_from(size_of::<libc::c_int>()).expect("fits");
         // SAFETY: a size computation, no pointer.
@@ -1232,10 +1227,11 @@ impl UdpSocket {
         let mut iovs: [libc::iovec; BATCH] = unsafe { std::mem::zeroed() };
         // SAFETY: as above.
         let mut hdrs: [libc::mmsghdr; BATCH] = unsafe { std::mem::zeroed() };
-        let base = buf.as_mut_ptr();
+        let base = room.bytes.as_mut_ptr();
         let control_base = control.as_mut_ptr().cast::<u8>();
         for i in 0..n {
-            // SAFETY: slot `i` is within `buf`, as `n` slots fit in it.
+            // SAFETY: slot `i` is within the room's allocation, which
+            // holds its `slots` slots, `n` at most.
             iovs[i].iov_base = unsafe { base.add(i * slot) }.cast();
             iovs[i].iov_len = slot;
             let hdr = &mut hdrs[i].msg_hdr;
@@ -1250,8 +1246,9 @@ impl UdpSocket {
         }
         let count = loop {
             let wanted = libc::c_uint::try_from(n).expect("at most a batch");
-            // SAFETY: `n` headers, each pointing at its slot of `buf`, its
-            // name and its control room, all alive through the call.
+            // SAFETY: `n` headers, each pointing at its slot of the room,
+            // which the kernel only writes, its name and its control
+            // room, all alive through the call.
             let rc = unsafe {
                 libc::recvmmsg(
                     self.0.as_raw_fd(),
@@ -1273,6 +1270,8 @@ impl UdpSocket {
         };
         for (i, told) in out.iter_mut().enumerate().take(count) {
             let len = hdrs[i].msg_len as usize;
+            // The kernel wrote the datagram at the start of its slot.
+            room.wrote(i, len);
             let (segment, ecn) = control_of(&hdrs[i].msg_hdr, names[i].ss_family);
             *told = Datagram {
                 len,
@@ -1285,25 +1284,17 @@ impl UdpSocket {
     }
 
     #[cfg(target_vendor = "apple")]
-    /// Receive one datagram into the first slot of `buf`, `slot` bytes of
-    /// it, and tell it in `out[0]`: one `recvmsg`, as C receives on
-    /// macOS, which has no `recvmmsg` (`recvmsg_packets`). Always 1: its
-    /// length (an empty one too, which the caller passes over), as one
-    /// packet, the kernel joining none, its ECN bits and whom it came
-    /// from. The system's error as it is, `EAGAIN` with nothing to read; a
-    /// signal interrupting it, or a datagram too large for its slot,
-    /// receives again, as C does.
-    pub fn recv_batch(
-        &self,
-        buf: &mut [u8],
-        slot: usize,
-        out: &mut [Datagram],
-    ) -> io::Result<usize> {
-        assert!(slot > 0, "a slot has room");
-        assert!(
-            !out.is_empty() && buf.len() >= slot,
-            "a receive needs room for a datagram"
-        );
+    /// Receive one datagram into the first slot of `room` and tell it in
+    /// `out[0]`: one `recvmsg`, as C receives on macOS, which has no
+    /// `recvmmsg` (`recvmsg_packets`). Always 1: its length (an empty one
+    /// too, which the caller passes over), as one packet, the kernel
+    /// joining none, its ECN bits and whom it came from; its bytes are
+    /// [`DatagramRoom::datagram`]'s. The system's error as it is, `EAGAIN`
+    /// with nothing to read; a signal interrupting it, or a datagram too
+    /// large for its slot, receives again, as C does.
+    pub fn recv_batch(&self, room: &mut DatagramRoom, out: &mut [Datagram]) -> io::Result<usize> {
+        let slot = room.slot;
+        assert!(!out.is_empty(), "a receive needs room for a datagram");
         let int = u32::try_from(size_of::<libc::c_int>()).expect("fits");
         // SAFETY: a size computation, no pointer.
         let per = unsafe { libc::CMSG_SPACE(int) };
@@ -1316,7 +1307,7 @@ impl UdpSocket {
         // SAFETY: all zeroes is a valid value of each.
         let mut name: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
         let mut iov = libc::iovec {
-            iov_base: buf.as_mut_ptr().cast(),
+            iov_base: room.bytes.as_mut_ptr().cast(),
             iov_len: slot,
         };
         let (msg, len) = loop {
@@ -1332,8 +1323,9 @@ impl UdpSocket {
                 .expect("its size fits");
             msg.msg_control = control.as_mut_ptr().cast();
             msg.msg_controllen = per;
-            // SAFETY: the header points at the first slot of `buf`, the
-            // name and the control room, all alive through the call.
+            // SAFETY: the header points at the first slot of the room,
+            // which the kernel only writes, the name and the control
+            // room, all alive through the call.
             let rc = unsafe { libc::recvmsg(self.0.as_raw_fd(), &raw mut msg, 0) };
             match usize::try_from(rc) {
                 Ok(len) => break (msg, len),
@@ -1345,6 +1337,8 @@ impl UdpSocket {
                 }
             }
         };
+        // The kernel wrote the datagram at the start of the slot.
+        room.wrote(0, len);
         let (_, ecn) = control_of(&msg, name.ss_family);
         out[0] = Datagram {
             len,
@@ -1395,6 +1389,97 @@ pub struct Datagram {
     pub ecn: u8,
     /// Whom it came from, if the kernel said.
     pub from: Option<SocketAddr>,
+}
+
+/// The room a batched receive reads datagrams into: slots of one size,
+/// a datagram each, their bytes unwritten until a receive writes them, as
+/// the buffer C `malloc`s is (`Curl_multi_xfer_sockbuf_borrow`): a room
+/// the allocator zeroes is written whole each time one is made, a megabyte
+/// and a half for the few packets of a small response.
+///
+/// What a receive wrote is read through [`DatagramRoom::datagram`], and
+/// nothing else of the room is.
+#[derive(Debug)]
+pub struct DatagramRoom {
+    /// The slots, one after another, in the vector's spare capacity: its
+    /// length stays 0, and no byte of it is read but what `written` says.
+    bytes: Vec<u8>,
+    /// The size of each slot.
+    slot: usize,
+    /// How many slots there are, at most `BATCH`.
+    slots: usize,
+    /// How many bytes at the start of each slot were written, by a
+    /// receive or as zeroes, since the room was made: never fewer than
+    /// before.
+    written: [usize; BATCH],
+}
+
+impl DatagramRoom {
+    /// A room of `slots` slots, at most [`BATCH`], of `slot` bytes each,
+    /// unwritten; or fail if the allocation does.
+    pub fn try_new(slots: usize, slot: usize) -> Result<DatagramRoom, curl_alloc::OutOfMemory> {
+        assert!(slot > 0, "a slot has room");
+        assert!((1..=BATCH).contains(&slots), "a room is a batch at most");
+        let len = slots.checked_mul(slot).ok_or(curl_alloc::OutOfMemory)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len)?;
+        Ok(DatagramRoom {
+            bytes,
+            slot,
+            slots,
+            written: [0; BATCH],
+        })
+    }
+
+    /// How many slots the room has.
+    pub fn slots(&self) -> usize {
+        self.slots
+    }
+
+    /// The first `len` bytes of slot `i`: a datagram a receive wrote
+    /// there.
+    ///
+    /// # Panics
+    ///
+    /// If the slot was never written that far: only what a receive told
+    /// is read.
+    pub fn datagram(&self, i: usize, len: usize) -> &[u8] {
+        assert!(
+            i < self.slots && len <= self.written[i],
+            "a datagram is read where a receive wrote it"
+        );
+        // SAFETY: slot `i` starts `i * slot` bytes into the allocation,
+        // which holds `slots` slots.
+        let start = unsafe { self.bytes.as_ptr().add(i * self.slot) };
+        // SAFETY: the slot's first `written[i]` bytes, `len` of them at
+        // least, were initialised by the kernel or zeroed, and nothing
+        // writes the room while `self` is borrowed.
+        unsafe { std::slice::from_raw_parts(start, len) }
+    }
+
+    /// All of slot `i` as bytes, for a receiver that writes a datagram
+    /// into bytes and not through [`UdpSocket::recv_batch`]: what of the
+    /// slot was never written is zeroed first, once.
+    pub fn slot_mut(&mut self, i: usize) -> &mut [u8] {
+        assert!(i < self.slots, "the room has the slot");
+        let (slot, written) = (self.slot, self.written[i]);
+        let room = &mut self.bytes.spare_capacity_mut()[i * slot..(i + 1) * slot];
+        for byte in &mut room[written..] {
+            byte.write(0);
+        }
+        self.written[i] = slot;
+        // SAFETY: every byte of the slot is initialised, its first
+        // `written` since before and the rest just now, and
+        // `MaybeUninit<u8>` is laid out as `u8`.
+        unsafe { &mut *(std::ptr::from_mut(room) as *mut [u8]) }
+    }
+
+    /// The kernel wrote `len` bytes at the start of slot `i`.
+    #[cfg(unix)]
+    fn wrote(&mut self, i: usize, len: usize) {
+        // No more than the slot, whatever length it says.
+        self.written[i] = self.written[i].max(len.min(self.slot));
+    }
 }
 
 /// The control message an IPv4 datagram's type of service comes in:
@@ -2276,6 +2361,54 @@ impl UdpSocket {
     }
 }
 
+#[cfg(test)]
+mod room_tests {
+    use super::*;
+
+    /// A slot taken as bytes is zeroes where nothing was written, keeps
+    /// what was, and is read back as far as it was written; the slots
+    /// are apart.
+    #[test]
+    fn a_slot_taken_as_bytes_is_zeroed_once() {
+        let mut room = DatagramRoom::try_new(3, 8).unwrap();
+        assert_eq!(room.slots(), 3);
+        assert_eq!(room.datagram(1, 0), b"");
+        let slot = room.slot_mut(1);
+        assert_eq!(slot, [0; 8]);
+        slot[..3].copy_from_slice(b"abc");
+        assert_eq!(room.datagram(1, 3), b"abc");
+        assert_eq!(room.datagram(1, 8), b"abc\0\0\0\0\0");
+        // Taken again, what it held is still there.
+        assert_eq!(room.slot_mut(1), b"abc\0\0\0\0\0");
+        room.slot_mut(2).fill(7);
+        assert_eq!(room.datagram(1, 8), b"abc\0\0\0\0\0");
+        assert_eq!(room.datagram(2, 8), [7; 8]);
+    }
+
+    /// What no receive wrote is never read: the room's bytes are
+    /// unwritten until then.
+    #[test]
+    #[should_panic(expected = "a datagram is read where a receive wrote it")]
+    fn a_slot_is_not_read_past_what_was_written() {
+        let room = DatagramRoom::try_new(2, 8).unwrap();
+        room.datagram(0, 1);
+    }
+
+    /// A room holds a batch at most, each slot with room.
+    #[test]
+    #[should_panic(expected = "a room is a batch at most")]
+    fn a_room_larger_than_a_batch_is_refused() {
+        DatagramRoom::try_new(BATCH + 1, 8).ok();
+    }
+
+    /// A room no allocation holds fails as out of memory.
+    #[test]
+    fn a_room_too_large_fails() {
+        assert!(DatagramRoom::try_new(2, usize::MAX).is_err());
+        assert!(DatagramRoom::try_new(1, usize::MAX).is_err());
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
@@ -2525,12 +2658,12 @@ mod tests {
         for chunk in bytes.chunks(100) {
             assert_eq!(s.send_segments(chunk, 100).unwrap(), chunk.len());
         }
-        let mut buf = vec![0u8; 4 * 128];
+        let mut buf = DatagramRoom::try_new(4, 128).unwrap();
         let mut out = [Datagram::default(); 4];
         let mut fds = [PollFd::new(r.fd(), Events::IN)];
         for (i, len) in [100, 100, 50].into_iter().enumerate() {
             assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
-            assert_eq!(r.recv_batch(&mut buf, 128, &mut out).unwrap(), 1);
+            assert_eq!(r.recv_batch(&mut buf, &mut out).unwrap(), 1);
             let d = Datagram {
                 len,
                 segment: len,
@@ -2538,9 +2671,9 @@ mod tests {
                 from,
             };
             assert_eq!(out[0], d);
-            assert_eq!(&buf[..len], &bytes[i * 100..i * 100 + len]);
+            assert_eq!(buf.datagram(0, len), &bytes[i * 100..i * 100 + len]);
         }
-        let err = r.recv_batch(&mut buf, 128, &mut out).unwrap_err();
+        let err = r.recv_batch(&mut buf, &mut out).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
     }
 
@@ -2572,11 +2705,11 @@ mod tests {
         let from = Some(s.local_addr().unwrap());
         let bytes: Vec<u8> = (0..250u8).collect();
         assert_eq!(s.send_segments(&bytes, 100).unwrap(), 250);
-        let mut buf = vec![0u8; 4 * 128];
+        let mut buf = DatagramRoom::try_new(4, 128).unwrap();
         let mut out = [Datagram::default(); 4];
         let mut fds = [PollFd::new(r.fd(), Events::IN)];
         assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
-        let n = r.recv_batch(&mut buf, 128, &mut out).unwrap();
+        let n = r.recv_batch(&mut buf, &mut out).unwrap();
         assert_eq!(n, 3);
         for (i, len) in [100, 100, 50].into_iter().enumerate() {
             let d = Datagram {
@@ -2587,17 +2720,17 @@ mod tests {
             };
             assert_eq!(out[i], d);
             let sent = &bytes[i * 100..i * 100 + len];
-            assert_eq!(&buf[i * 128..i * 128 + len], sent);
+            assert_eq!(buf.datagram(i, len), sent);
         }
-        let err = r.recv_batch(&mut buf, 128, &mut out).unwrap_err();
+        let err = r.recv_batch(&mut buf, &mut out).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
 
         r.set(SocketOption::ReceiveJoined).unwrap();
         assert_eq!(s.send_segments(&bytes, 100).unwrap(), 250);
         assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
-        let mut big = vec![0u8; SLOT];
+        let mut big = DatagramRoom::try_new(1, SLOT).unwrap();
         let mut one = [Datagram::default(); 1];
-        assert_eq!(r.recv_batch(&mut big, SLOT, &mut one).unwrap(), 1);
+        assert_eq!(r.recv_batch(&mut big, &mut one).unwrap(), 1);
         let joined = Datagram {
             len: 250,
             segment: 100,
@@ -2605,7 +2738,7 @@ mod tests {
             from,
         };
         assert_eq!(one[0], joined);
-        assert_eq!(&big[..250], &bytes[..]);
+        assert_eq!(big.datagram(0, 250), &bytes[..]);
         // One segment's worth goes as it is, with no segmenting asked.
         assert_eq!(s.send_segments(&bytes[..100], 100).unwrap(), 100);
     }
@@ -3316,10 +3449,10 @@ mod tests {
     }
 
     /// A batch `to` receives, once it has something to.
-    fn batch(to: &UdpSocket, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> usize {
+    fn batch(to: &UdpSocket, buf: &mut DatagramRoom, out: &mut [Datagram]) -> usize {
         let mut fds = [PollFd::new(to.fd(), Events::IN)];
         assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
-        to.recv_batch(buf, slot, out).unwrap()
+        to.recv_batch(buf, out).unwrap()
     }
 
     /// A sender connected to a receiver with `options`.
@@ -3340,11 +3473,11 @@ mod tests {
             let (from, to) = udp_pair(ip, &[]);
             let bytes: Vec<u8> = (0..2500u32).map(|i| i as u8).collect();
             assert_eq!(from.send_segments(&bytes, 1000).unwrap(), 2500);
-            let mut buf = vec![0; 4 * SLOT];
+            let mut buf = DatagramRoom::try_new(4, SLOT).unwrap();
             let mut out = [Datagram::default(); 4];
             let mut got = Vec::new();
             while got.len() < 3 {
-                let n = batch(&to, &mut buf, SLOT, &mut out);
+                let n = batch(&to, &mut buf, &mut out);
                 got.extend_from_slice(&out[..n]);
             }
             let me = Some(from.local_addr().unwrap());
@@ -3367,11 +3500,11 @@ mod tests {
             let (from, to) = udp_pair(ip, &[SocketOption::ReceiveJoined]);
             let bytes = vec![7; 20 * 1400];
             assert_eq!(from.send_segments(&bytes, 1400).unwrap(), bytes.len());
-            let mut buf = vec![0; SLOT];
+            let mut buf = DatagramRoom::try_new(1, SLOT).unwrap();
             let mut out = [Datagram::default(); 1];
-            assert_eq!(batch(&to, &mut buf, SLOT, &mut out), 1);
+            assert_eq!(batch(&to, &mut buf, &mut out), 1);
             assert_eq!((out[0].len, out[0].segment), (20 * 1400, 1400), "{ip}");
-            assert!(buf[..20 * 1400].iter().all(|&b| b == 7));
+            assert!(buf.datagram(0, 20 * 1400).iter().all(|&b| b == 7));
         }
     }
 
@@ -3388,18 +3521,18 @@ mod tests {
                     Sent::Bytes(NonZeroUsize::new(10).unwrap())
                 );
             }
-            let mut buf = vec![0; 4 * 2000];
+            let mut buf = DatagramRoom::try_new(4, 2000).unwrap();
             let mut out = [Datagram::default(); 4];
             let mut got = Vec::new();
             while got.len() < 3 {
-                let n = batch(&to, &mut buf, 2000, &mut out);
+                let n = batch(&to, &mut buf, &mut out);
                 got.extend(out[..n].iter().map(|d| d.ecn));
             }
             assert_eq!(got, [1, 2, 0], "{ip}");
         }
     }
 
-    /// A batch takes no more datagrams than the buffer has slots for,
+    /// A batch takes no more datagrams than the room has slots for,
     /// though more wait.
     #[test]
     #[cfg(target_os = "linux")]
@@ -3409,11 +3542,12 @@ mod tests {
         for _ in 0..3 {
             from.send(&[1; 100]).unwrap();
         }
-        let mut buf = vec![0; 2 * 200 + 50];
+        let mut buf = DatagramRoom::try_new(2, 200).unwrap();
         let mut out = [Datagram::default(); 4];
         // Over loopback each is there as its send returns.
-        assert_eq!(batch(&to, &mut buf, 200, &mut out), 2);
-        assert_eq!(batch(&to, &mut buf, 200, &mut out), 1);
+        assert_eq!(batch(&to, &mut buf, &mut out), 2);
+        assert_eq!(batch(&to, &mut buf, &mut out), 1);
+        assert_eq!(buf.datagram(1, 100), [1; 100]);
     }
 
     /// A datagram larger than any can be fails at once, the system's

@@ -2352,7 +2352,12 @@ and where the datagrams go through `QuicIo`, asked for at each call: the socket 
 connection while the library's events reach the transfers.
 
 The room a connection on a socket receives in is the multi's (`RecvRoom`, C's `xfer_sockbuf`,
-kept beside its byte buffer in `Rooms`, §4.1), one per multi, made zeroed at the first receive and lent to one receive at a time: every
+kept beside its byte buffer in `Rooms`, §4.1), one per multi, made at the first receive and lent to one receive at a time. It is
+a `curl_os::net::DatagramRoom`, a batch of slots whose bytes are unwritten until a receive writes them, as the
+buffer C `malloc`s is: the room remembers how far each slot was written and gives a datagram's bytes only that
+far, so no byte is read that nothing wrote, and a receiver that writes into bytes (Windows' `recvfrom`, a test's
+socket) is given its slot zeroed once. A room the allocator zeroes is written whole for each multi, a megabyte
+and a half for each of the tool's serial transfers. Every
 `LayerCx` says what it lends (`recv_room`), the step's and the drive's the multi's room, a
 context over another's that one's, the multi's own work on its pool and its shutdowns the
 multi's as C's admin handle borrows it, and a context with no multi none, the receive then

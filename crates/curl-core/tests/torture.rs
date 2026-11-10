@@ -185,8 +185,8 @@ fn main() {
             http3_through_an_http3_proxy_takes_no_refusal_for_success,
         ),
         (
-            "quic_receive_rooms_come_zeroed_from_the_allocator",
-            quic_receive_rooms_come_zeroed_from_the_allocator,
+            "quic_receive_rooms_are_left_unwritten",
+            quic_receive_rooms_are_left_unwritten,
         ),
         (
             "one_quic_receive_room_per_multi",
@@ -225,7 +225,7 @@ const RUN_ON_LINUX_ALONE: &[&str] = &[
     "a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success",
     "http3_through_an_http3_proxy_survives_every_allocation_failing",
     "http3_through_an_http3_proxy_takes_no_refusal_for_success",
-    "quic_receive_rooms_come_zeroed_from_the_allocator",
+    "quic_receive_rooms_are_left_unwritten",
     "one_quic_receive_room_per_multi",
 ];
 
@@ -2478,7 +2478,12 @@ fn one_quic_receive_room_per_multi() {
     );
 }
 
-fn quic_receive_rooms_come_zeroed_from_the_allocator() {
+/// The room a multi's QUIC connections receive in is asked of the
+/// allocator as it is, unwritten, as C `malloc`s its `xfer_sockbuf`: a
+/// room asked zeroed is written whole for each multi made, a megabyte
+/// and a half for every transfer the tool runs on its own. It is the
+/// largest block a transfer asks for.
+fn quic_receive_rooms_are_left_unwritten() {
     let room = curl_os::net::BATCH * curl_os::net::SLOT;
     fake_h3_libraries();
     for (what, scenario) in [
@@ -2490,9 +2495,9 @@ fn quic_receive_rooms_come_zeroed_from_the_allocator() {
     ] {
         let (got, largest) = track::largest_unzeroed(scenario);
         assert_eq!(got.expect("nothing refused").result, Ok(()), "{what}");
-        assert!(
-            largest < room,
-            "{what} allocated a block of {largest} bytes unzeroed, a receive room of {room} filled by hand"
+        assert_eq!(
+            largest, room,
+            "{what}: the largest block asked for unzeroed is the receive room"
         );
     }
 }

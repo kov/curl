@@ -14,7 +14,7 @@ use curl_alloc::TryVec;
 
 #[cfg(unix)]
 use super::io::IO_FAILED;
-use super::io::{BATCH, Datagram, Events, Recv, SLOT, Sent, Socket, TOO_LARGE};
+use super::io::{BATCH, Datagram, DatagramRoom, Events, Recv, SLOT, Sent, Socket, TOO_LARGE};
 
 /// The call a run of datagrams goes out with, as C's traces name it
 /// (`VQUIC_SEND_METHOD`): `sendmsg` where the system has it, `send` on
@@ -60,17 +60,26 @@ fn send_datagrams(socket: &dyn Socket, bytes: &[u8], _segment: usize) -> io::Res
     }
 }
 
-/// Receive datagrams into slots of `room`, `SLOT` bytes each, at most as
-/// many as `out` holds: how many came (on macOS one a call).
+/// Receive datagrams into slots of `room`, at most as many as `out`
+/// holds: how many came (on macOS one a call).
 #[cfg(unix)]
-fn recv_datagrams(socket: &dyn Socket, room: &mut [u8], out: &mut [Datagram]) -> io::Result<usize> {
-    socket.recv_batch(room, SLOT, out)
+fn recv_datagrams(
+    socket: &dyn Socket,
+    room: &mut DatagramRoom,
+    out: &mut [Datagram],
+) -> io::Result<usize> {
+    socket.recv_batch(room, out)
 }
 
 /// Receive one datagram into the start of `room` (`recvfrom`), as C does
 /// on Windows: 1, or `WouldBlock` if none waits.
 #[cfg(windows)]
-fn recv_datagrams(socket: &dyn Socket, room: &mut [u8], out: &mut [Datagram]) -> io::Result<usize> {
+fn recv_datagrams(
+    socket: &dyn Socket,
+    room: &mut DatagramRoom,
+    out: &mut [Datagram],
+) -> io::Result<usize> {
+    let room = room.slot_mut(0);
     let fits = room.len().min(RECVFROM_ROOM);
     match socket.recv_from(&mut room[..fits])? {
         None => Err(io::ErrorKind::WouldBlock.into()),
@@ -107,13 +116,16 @@ const SEND_ROOM: usize = 64 * 1024;
 const BURST: usize = 10;
 
 /// The room the datagrams a connection on a socket receives are read
-/// into, lent by the multi (`Curl_multi_xfer_sockbuf_borrow`).
-pub(crate) const RECV_ROOM: usize = BATCH * SLOT;
+/// into, lent by the multi (`Curl_multi_xfer_sockbuf_borrow`): a batch
+/// of slots, unwritten as C's is until a receive writes it.
+fn socket_room() -> Result<DatagramRoom, ErrorKind> {
+    DatagramRoom::try_new(BATCH, SLOT).map_err(|_| ErrorKind::OutOfMemory)
+}
 
-/// A room of `len` bytes to receive in, zeroed by the allocator, where
-/// C's is left unwritten: never filled byte by byte, which in an
-/// unoptimised build costs milliseconds at a connection's first look at
-/// what it received.
+/// A room of `len` bytes for a tunnel's datagrams, zeroed by the
+/// allocator, where C's is left unwritten: never filled byte by byte,
+/// which in an unoptimised build costs milliseconds at a connection's
+/// first look at what it received.
 fn new_room(len: usize) -> Result<Vec<u8>, ErrorKind> {
     curl_alloc::try_zeroed(len).map_err(|_| ErrorKind::OutOfMemory)
 }
@@ -129,7 +141,7 @@ pub(crate) enum RecvRoom {
     /// No receive has asked yet.
     #[default]
     Unmade,
-    Kept(Vec<u8>),
+    Kept(DatagramRoom),
     /// A receive has it.
     Lent,
 }
@@ -139,16 +151,16 @@ impl RecvRoom {
     /// receive inside a receive on the same room, which nothing does: C
     /// refuses it (`attempt to borrow xfer_sockbuf when already
     /// borrowed`), and no input can make one.
-    fn take(&mut self) -> Result<Vec<u8>, ErrorKind> {
+    fn take(&mut self) -> Result<DatagramRoom, ErrorKind> {
         match std::mem::replace(self, RecvRoom::Lent) {
             RecvRoom::Kept(room) => Ok(room),
-            RecvRoom::Unmade => new_room(RECV_ROOM).inspect_err(|_| *self = RecvRoom::Unmade),
+            RecvRoom::Unmade => socket_room().inspect_err(|_| *self = RecvRoom::Unmade),
             RecvRoom::Lent => panic!("the multi's receive room is lent to one receive at a time"),
         }
     }
 
     /// The room lent, given back.
-    fn give(&mut self, room: Vec<u8>) {
+    fn give(&mut self, room: DatagramRoom) {
         assert!(
             matches!(self, RecvRoom::Lent),
             "only a room lent is given back"
@@ -1695,7 +1707,7 @@ impl Quic {
         let borrowed = lent.is_some();
         let mut room = match lent {
             Some(room) => room,
-            None => new_room(RECV_ROOM)?,
+            None => socket_room()?,
         };
         let r = self.recv_packets(cx, &mut room);
         if borrowed {
@@ -1746,7 +1758,11 @@ impl Quic {
 
     /// What the socket has, at most `MAX_PACKETS` packets of it, read
     /// into `room` and handed to the library (`recvmmsg_packets`).
-    fn recv_packets(&mut self, cx: &mut dyn SocketIo, room: &mut [u8]) -> Result<(), ErrorKind> {
+    fn recv_packets(
+        &mut self,
+        cx: &mut dyn SocketIo,
+        room: &mut DatagramRoom,
+    ) -> Result<(), ErrorKind> {
         let mut got = [Datagram::default(); BATCH];
         let (mut total, mut packets, mut calls) = (0usize, 0usize, 0usize);
         // The time C's `last_op` holds: quiche's filter takes it as its
@@ -1800,7 +1816,7 @@ impl Quic {
                 // The time of the call's first datagram is every one's, as
                 // C's `cf_ngtcp2_recv_pkts` takes it once for the call.
                 let at = *first.get_or_insert_with(|| self.clock.now());
-                let bytes = &room[i * SLOT..i * SLOT + d.len];
+                let bytes = room.datagram(i, d.len);
                 if let Err(kind) = self.read_datagram(cx, d, bytes, at) {
                     failed = Some(kind);
                     break;
@@ -2085,12 +2101,7 @@ pub(crate) mod tests {
             self.take_send(buf, segment)
         }
         #[cfg(unix)]
-        fn recv_batch(
-            &self,
-            buf: &mut [u8],
-            slot: usize,
-            out: &mut [Datagram],
-        ) -> io::Result<usize> {
+        fn recv_batch(&self, room: &mut DatagramRoom, out: &mut [Datagram]) -> io::Result<usize> {
             let most = self.batch.lock().unwrap().unwrap_or(1).min(out.len());
             let mut n = 0;
             // A batch ends at what is not a datagram, which the next
@@ -2098,7 +2109,7 @@ pub(crate) mod tests {
             while n < most
                 && (n == 0 || matches!(self.datagrams.lock().unwrap().front(), Some(Ok(_))))
             {
-                let len = match self.take_datagram(&mut buf[n * slot..(n + 1) * slot]) {
+                let len = match self.take_datagram(room.slot_mut(n)) {
                     Ok(len) => len,
                     Err(e) if n == 0 => return Err(e),
                     Err(_) => break,
@@ -3108,7 +3119,7 @@ pub(crate) mod tests {
         let script = Script::new();
         let (mut q, mut cx) = quic(&script);
         q.ingress(&mut cx).unwrap();
-        assert!(matches!(&cx.room, RecvRoom::Kept(room) if room.len() == RECV_ROOM));
+        assert!(matches!(&cx.room, RecvRoom::Kept(room) if room.slots() == BATCH));
     }
 
     /// The multi's room goes to one receive at a time: a second is a

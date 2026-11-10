@@ -948,16 +948,16 @@ witness: curl-core proto::http::tests::setup_trace::a_refused_tunnel_names_the_c
                 report_failed(cx, partly);
 --- new
 
-=== a QUIC connection's receive room is filled byte by byte
-file: crates/curl-core/src/conn/quic.rs
-witness: curl-core quic_receive_rooms_come_zeroed_from_the_allocator
+=== the room a multi's QUIC connections receive in is zeroed as it is made
+file: crates/curl-os/src/net.rs
+witness: curl-core quic_receive_rooms_are_left_unwritten
 features: test-util,debug-hooks
 --- old
-    curl_alloc::try_zeroed(len).map_err(|_| ErrorKind::OutOfMemory)
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len)?;
 --- new
-    let mut room = Vec::new();
-    room.try_resize(len, 0).map_err(|_| ErrorKind::OutOfMemory)?;
-    Ok(room)
+        let mut bytes = curl_alloc::try_zeroed(len)?;
+        bytes.clear();
 
 === an HTTP/3 proxy connection receives in a room of its own, not the multi's
 file: crates/curl-core/src/conn/h3proxy.rs
@@ -1015,7 +1015,7 @@ features: test-util,debug-hooks
 --- old
         let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
 --- new
-        let want = RECV_ROOM.max(self.conn.path_max_payload());
+        let want = (BATCH * SLOT).max(self.conn.path_max_payload());
 
 === a tunnelled QUIC connection's room stays 64 KiB past the path's largest datagram
 file: crates/curl-core/src/conn/quic.rs
@@ -1031,7 +1031,7 @@ witness: curl-core conn::quic::tests::the_multis_room_is_lent_once
 --- old
             RecvRoom::Lent => panic!("the multi's receive room is lent to one receive at a time"),
 --- new
-            RecvRoom::Lent => new_room(RECV_ROOM),
+            RecvRoom::Lent => socket_room(),
 
 === a paused transfer waits to write for its QUIC connection's unsent packets
 file: crates/curl-core/src/conn/pool.rs
@@ -1437,9 +1437,9 @@ witness: curl-core conn::quic::tests::the_packets_of_one_egress_are_written_at_o
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::the_packets_of_one_ingress_are_read_at_one_time
 --- old
-                let bytes = &room[i * SLOT..i * SLOT + d.len];
+                let bytes = room.datagram(i, d.len);
 --- new
-                let bytes = &room[..d.len];
+                let bytes = room.datagram(0, d.len);
 
 === a connection given a qlog directory never hands ngtcp2 the callback that writes it
 file: crates/curl-ngtcp2/src/lib.rs

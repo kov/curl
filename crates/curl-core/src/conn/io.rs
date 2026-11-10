@@ -15,9 +15,9 @@ use crate::time::Instant;
 #[cfg(unix)]
 pub use curl_os::net::IO_FAILED;
 pub use curl_os::net::{
-    AF_INET, AF_INET6, BATCH, Connect, Datagram, InterfaceAddress, Ipv6Scope, Protocol, Recv, SLOT,
-    Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, Winsock, adopt, adopt_udp, ipv6_scope,
-    open, open_udp,
+    AF_INET, AF_INET6, BATCH, Connect, Datagram, DatagramRoom, InterfaceAddress, Ipv6Scope,
+    Protocol, Recv, SLOT, Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, Winsock, adopt,
+    adopt_udp, ipv6_scope, open, open_udp,
 };
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
@@ -212,11 +212,11 @@ pub trait Socket: fmt::Debug + Send {
         Err(io::ErrorKind::Unsupported.into())
     }
 
-    /// Receive datagrams into slots of `buf`, as a UDP socket does
+    /// Receive datagrams into slots of `room`, as a UDP socket does
     /// (`UdpSocket::recv_batch`); a socket of another kind cannot.
     #[cfg(unix)]
-    fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
-        let _ = (buf, slot, out);
+    fn recv_batch(&self, room: &mut DatagramRoom, out: &mut [Datagram]) -> io::Result<usize> {
+        let _ = (room, out);
         Err(io::ErrorKind::Unsupported.into())
     }
 
@@ -779,8 +779,8 @@ impl Socket for curl_os::net::UdpSocket {
     }
 
     #[cfg(unix)]
-    fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
-        curl_os::net::UdpSocket::recv_batch(self, buf, slot, out)
+    fn recv_batch(&self, room: &mut DatagramRoom, out: &mut [Datagram]) -> io::Result<usize> {
+        curl_os::net::UdpSocket::recv_batch(self, room, out)
     }
 
     fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
@@ -2614,11 +2614,11 @@ impl Socket for FakeSocket {
 
     /// Each reply the peer has ready is a datagram, none joined.
     #[cfg(unix)]
-    fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
-        let room = out.len().min(buf.len() / slot);
+    fn recv_batch(&self, room: &mut DatagramRoom, out: &mut [Datagram]) -> io::Result<usize> {
+        let most = out.len().min(room.slots());
         let mut n = 0;
-        while n < room {
-            match self.recv(&mut buf[n * slot..(n + 1) * slot])? {
+        while n < most {
+            match self.recv(room.slot_mut(n))? {
                 Recv::Data(got) => {
                     let len = got.get();
                     let ecn = self

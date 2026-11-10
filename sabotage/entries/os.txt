@@ -446,3 +446,25 @@ witness: curl-os error::tests::leaves_a_system_error_as_the_thread_s_last
     let Some(code) = e.raw_os_error() else {
 --- new
     let Some(code) = e.raw_os_error().filter(|_| false) else {
+
+=== a datagram is read from a slot past what a receive wrote
+file: crates/curl-os/src/net.rs
+witness: curl-os net::room_tests::a_slot_is_not_read_past_what_was_written
+--- old
+            i < self.slots && len <= self.written[i],
+--- new
+            i < self.slots && len <= self.slot,
+
+=== a slot taken as bytes keeps what was never written
+file: crates/curl-os/src/net.rs
+witness: curl-os net::room_tests::a_slot_taken_as_bytes_is_zeroed_once
+--- old
+        for byte in &mut room[written..] {
+            byte.write(0);
+        }
+        self.written[i] = slot;
+--- new
+        for byte in &mut room[written..] {
+            byte.write(1);
+        }
+        self.written[i] = slot;

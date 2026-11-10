@@ -91,7 +91,7 @@ fn try_get(
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env)?;
+        let mut m: Multi = Multi::with_env(env)?;
         let mut easy = Easy::new();
         easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
         let o = easy.options_mut();

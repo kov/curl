@@ -341,7 +341,8 @@ Planned, not built: `DebugNet`.
 pub struct Key<T> { row: u32, generation: NonZeroU32, _of: PhantomData<fn() -> T> }  // Copy, Eq
 pub struct ArenaPolicy { initial: u32, reserved: u32 }
 impl ArenaPolicy {
-    pub fn new(initial: u32, reserved: u32) -> Option<Self>;  // None unless a row is left to hand out
+    pub fn new(initial: u32, reserved: u32) -> Option<Self>;  // None unless a row is left to hand out;
+                                                              // pub under test-util, else pub(crate)
 }
 impl<T, K = T> Arena<T, K> {                     // values T, keys Key<K>
     pub fn new(p: ArenaPolicy) -> Result<Self, OutOfMemory>;
@@ -370,16 +371,35 @@ under add/remove churn (751). `reserve` then `fill` is the add: `add` reserves r
 table it needs before it fills any, and filling cannot fail. The test replays a seeded churn
 whose ids `gen/arena.py` records from C's real multi, built against the C build's `libcurlu`.
 
-The policy is a value, not constants in the core:
-- the shim passes `ArenaPolicy::new(128, 1)` for `curl_multi_init` and `new(16, 1)` for the
-  private multi of `curl_easy_perform` (multi.c:53, easy.c:805). Row 0 stays unused only so
-  that indices equal C's mids, where the admin easy holds mid 0; the core has no admin easy.
-  The private multi is also C's in its other sizes: a resolver of `Threads::EASY` (2 threads
-  idling 10 ms, against `Threads::MULTI`'s 20 idling 2 s) and the TLS sessions of
-  `Multi::PERFORM_TLS_PEERS` (3) peers through `keep_tls_sessions_of`, against 25.
-- the tool's `--parallel` multi passes `new(128, 1)`, as C's tool makes its multi with
-  `curl_multi_init`: transfers report in C's order as the ids wrap past row 127 (3314).
-- the Rust API's default is `new(16, 0)`.
+A multi's policy comes from its kind, with the rest of what C sizes as it makes a multi, so
+that no multi has one kind's sizes and the other's ways:
+
+```rust
+pub enum MultiKind { Application, HandleOwn }
+pub enum Ids { FromZero, AsC }                   // AsC: row 0 never handed out
+impl<H: Host> Multi<H> {
+    pub fn new(kind: MultiKind, ids: Ids) -> Result<Self, OutOfMemory>;
+}
+```
+
+| kind | C | rows | resolver threads | TLS session peers | handle's own |
+|---|---|---|---|---|---|
+| `Application` | `curl_multi_init` (multi.c:53) | 128 | 20, idling 2 s | 25 | no |
+| `HandleOwn` | `curl_easy_perform`'s (easy.c:805) | 16 | 2, idling 10 ms | 3 | yes |
+
+The threads are `Threads::MULTI` and `Threads::EASY`, in a build with the threaded resolver.
+`Multi::new` also makes the waker (none without the descriptors for one) and the system's
+network for the kind, and fails as memory does when the resolver cannot be set up
+(`Curl_multi_handle`'s `goto error`). The ids are the caller's choice:
+- `Ids::AsC` leaves row 0 unused only so that indices equal C's mids, where the admin easy
+  holds mid 0; the core has no admin easy. The shim makes both its multis with it, and so
+  does the tool's `--parallel` multi (an `Application` one, as C's tool makes its multi with
+  `curl_multi_init`): transfers report in C's order as the ids wrap past row 127 (3314).
+- `Easy::perform`'s own multi is `HandleOwn` with `Ids::FromZero`.
+
+Under `test-util` a test chooses each part itself: `Multi::with_env(Env { clock, net, arena,
+waker })` is an `Application` multi in all else, `make_handle_own` makes it one handle's own,
+and `Multi::with_net(kind, ids, net)` is `new` over the test's network.
 
 `ConnId` folds C's `(last_cpid, last_conn_id)` pair into one value. CONNECT_ONLY's "last
 connection" (`ACTIVESOCKET`, `curl_easy_send`/`recv`) is an ordinary lookup that fails on its
@@ -405,7 +425,7 @@ pub struct ManualClock(TryArc<ManualTime>);       // tests hold a second handle 
 
 A multi reads the system's monotonic clock, as C reads the OS's (`curlx_now`): a normal build
 has no clock to choose, and the multi's `SharedClock` is a zero-sized reader of it. Under
-`test-util`, `multi::Env::clock` gives a multi a clock of the test's (`Env::new` the system's),
+`test-util`, `multi::Env::clock` gives a multi a clock of the test's (`Multi::new` the system's),
 held once in the `SharedClock` it and its QUIC connections read. A pass reads `now` at entry, and the drive reads it again before
 each step of a transfer, as C's `multi_runsingle` does at the top of its loop: a step that took
 time (a `file:` transfer's, a slow handler's) is timed, and checked against its time limit, as
@@ -785,7 +805,8 @@ impl Easy {
 `perform` boxes `mem::take(self)`, which leaves an allocation-free default behind, runs
 `perform_boxed` on the box and writes the handle back into `*self`. `perform_boxed`, for a
 handle already in a box of its own (the tool's, from the moment it makes one):
-1. takes `self.private`, or creates it (`ArenaPolicy { initial: 16, .. }`, one `try_box`);
+1. takes `self.private`, or creates it (`Multi::new(MultiKind::HandleOwn, Ids::FromZero)`, one
+   `try_box`);
 2. `multi.add(easy, (), &mut NoEvents)`, then `drive_to_completion`, then `remove`;
 3. puts the private multi into the handle and gives back the same box.
 
@@ -1272,9 +1293,7 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
 
 ```rust
 impl<H: Host> Multi<H> {
-    pub fn new(opts: MultiOptions, env: Env) -> Result<Self, OutOfMemory>;
-    // Env { net: Box<dyn Net>, resolver: Box<dyn Resolver>, arena: ArenaPolicy,
-    //       waker: Option<TryArc<Waker>> }, plus `clock: Box<dyn Clock>` under test-util
+    pub fn new(kind: MultiKind, ids: Ids) -> Result<Self, OutOfMemory>;   // §2.3
     pub fn add(&mut self, easy: Easy, owner: H::Transfer, ev: &mut dyn MultiEvents<H>)
         -> Result<TransferId, AddError>;          // AddError hands the Easy back
     pub fn remove(&mut self, id: TransferId, ev: &mut dyn MultiEvents<H>)
@@ -2627,7 +2646,7 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   socket of the connection a transfer holds or its pool keeps (`CURLINFO_ACTIVESOCKET`,
   `LASTSOCKET`). The connection closes at once, said "closing connection #N", as the handle
   leaves a multi of the application's, or, in a handle's own multi
-  (`Multi::make_handle_own`, C's `multi_easy`), as the handle's next transfer is added if the
+  (`MultiKind::HandleOwn`, C's `multi_easy`), as the handle's next transfer is added if the
   handle used it; else as the pool goes. `ConnectOnly::WebSocket` (2) makes its request, a WebSocket's upgrade, and
   reserves the connection after: the application receives and sends frames on it with
   `Easy::ws` and `Multi::ws` (`curl_ws_recv`, `curl_ws_send`, `curl_ws_start_frame`), what
@@ -2880,8 +2899,8 @@ later, from a thread pool, waking the multi.
 The threaded resolver (`conn/threaded.rs`, `lib/vdns/asyn-thrdd.c` with `thrdpool.c` and
 `thrdqueue.c`) is the build's when curl-core's `threaded-resolver` feature is on, which the shim
 and the tool forward: one build has one resolver, as C's configure makes it. `SystemNet` holds
-it, one per multi as C's queue is: a multi made for an easy handle's transfer keeps at most 2
-threads, idle ones let go after 10 ms; any other at most 20
+it, one per multi as C's queue is, sized by the multi's kind (§2.3): a handle's own multi keeps
+at most 2 threads, idle ones let go after 10 ms; an application's at most 20
 (`CURLMOPT_RESOLVE_THREADS_MAX`), after 2 seconds; none are kept when idle. A resolve of both
 families is two queries, IPv6's queued first, each a thread's `getaddrinfo`; its answer is
 both's addresses, IPv6's first, or, with none, a failure that is negative (kept as "the name

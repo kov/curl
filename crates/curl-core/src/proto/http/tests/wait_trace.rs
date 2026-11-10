@@ -66,7 +66,7 @@ fn waking(name: &str, peers: &[(IpAddr, Peer)], talk: &Conversation) -> Multi {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: Some(curl_alloc::TryArc::try_new(Waker::new().unwrap()).unwrap()),
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// A GET of `name` by `m`, over `talk`, with the options `set` makes: no
@@ -467,7 +467,7 @@ fn a_multi_without_a_waker_counts_none() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let seen = Seen::default();
     add_get(&mut m, IpAddr::from([192, 0, 2, 1]), None, &seen);
     m.wait(

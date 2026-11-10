@@ -145,7 +145,7 @@ fn server(replies: &[&[u8]]) -> (Multi, Conversation) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talk)
+    (Multi::with_env(env).unwrap(), talk)
 }
 
 /// A verbose GET of `path` on `m`, with the options `set` makes.

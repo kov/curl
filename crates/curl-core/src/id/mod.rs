@@ -38,15 +38,31 @@ enum Growth {
 }
 
 impl ArenaPolicy {
-    /// `initial` rows, the first `reserved` of them never handed out; the
-    /// C ABI reserves row 0 so that ids equal C's, where an internal
-    /// handle holds it. `None` unless some row is left to hand out.
+    /// `initial` rows, the first `reserved` of them never handed out; a
+    /// multi whose ids are C's (`Ids::AsC`) reserves row 0, which C's own
+    /// handle holds. `None` unless some row is left to hand out.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn new(initial: u32, reserved: u32) -> Option<Self> {
-        (reserved < initial && initial < MAX_ROWS).then_some(ArenaPolicy {
-            initial,
-            reserved,
-            growth: Growth::Transfers,
-        })
+        ArenaPolicy::transfers(initial, reserved)
+    }
+
+    /// As `new`, which only a test chooses from outside: a multi's comes
+    /// from its kind.
+    #[cfg(not(any(test, feature = "test-util")))]
+    pub(crate) fn new(initial: u32, reserved: u32) -> Option<Self> {
+        ArenaPolicy::transfers(initial, reserved)
+    }
+
+    const fn transfers(initial: u32, reserved: u32) -> Option<Self> {
+        if reserved < initial && initial < MAX_ROWS {
+            Some(ArenaPolicy {
+                initial,
+                reserved,
+                growth: Growth::Transfers,
+            })
+        } else {
+            None
+        }
     }
 
     /// No rows until the first value, then 16, doubled whenever full.

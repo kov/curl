@@ -54,7 +54,7 @@ fn a_refused_attempt_s_number_outlives_the_next_s_success() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let ran = get(&mut m, "/", talk, |o| {
         let url = format!("http://dual.example:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -97,7 +97,7 @@ fn an_immediate_refusal_keeps_its_number() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let ran = get(&mut m, "/", Conversation::replies(&[], false), |_| {});
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     assert!(

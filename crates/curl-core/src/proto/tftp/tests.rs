@@ -476,7 +476,7 @@ mod over_the_wire {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let url = format!("tftp://127.0.0.1:{PORT}/f");
         let ran = crate::proto::raw::wire::transfer(&mut m, &url, |o| {
             o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());

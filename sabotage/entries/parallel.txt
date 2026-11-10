@@ -64,6 +64,6 @@ features: debug-hooks
 file: crates/curl-tool/src/operate/parallel.rs
 witness: curl-tool parallel_transfers_report_in_c_s_id_order
 --- old
-        ArenaPolicy::new(128, 1).expect("a valid policy"),
+    let mut multi = Multi::new(MultiKind::Application, Ids::AsC)?;
 --- new
-        ArenaPolicy::new(128, 0).expect("a valid policy"),
+    let mut multi = Multi::new(MultiKind::Application, Ids::FromZero)?;

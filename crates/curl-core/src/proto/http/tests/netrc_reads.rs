@@ -76,7 +76,7 @@ fn run(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     let components = Components::new().unwrap();
     components.configure(b"multi");

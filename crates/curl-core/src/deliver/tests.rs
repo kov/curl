@@ -25,7 +25,7 @@ fn multi() -> Multi {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 fn easy(url: &str) -> Easy {
@@ -1179,7 +1179,7 @@ fn a_decoder_learns_whether_the_transfer_s_time_is_up() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let mut e = easy("stall://a");
         e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
         let calls = planned(&mut e, pausing_on(&[]));

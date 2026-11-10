@@ -154,7 +154,7 @@ fn server(replies: &[&[u8]], close: bool) -> (Multi, Conversation, ManualClock) 
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talk, clock)
+    (Multi::with_env(env).unwrap(), talk, clock)
 }
 
 /// A verbose GET of `/path` on `m`, whose server is `talk`.
@@ -1217,7 +1217,7 @@ fn serving_on(clock: ManualClock, peer: Peer, conversations: &[&Conversation]) -
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// `net`, its resolver asked for a name's HTTPS record as the build's
@@ -1700,7 +1700,7 @@ fn an_interim_response_does_not_end_the_wait_for_a_100() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let start = clock.now();
     let ran = get(&mut m, "/p", talk, |o| {
         o.method = Method::Post;
@@ -2979,7 +2979,7 @@ fn a_netrc_entry_names_an_ipv6_host_without_brackets() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m = Multi::new(env).unwrap();
+        let mut m = Multi::with_env(env).unwrap();
         let url = format!("http://[::1]:{PORT}/a");
         let ran = get(&mut m, "/a", talk.clone(), |o| {
             o.set_url(Some(url.as_bytes())).unwrap();
@@ -6372,7 +6372,7 @@ fn a_list_is_kept_by_the_multi_or_the_share_until_its_time() {
                 arena: ArenaPolicy::new(16, 0).unwrap(),
                 waker: None,
             };
-            Multi::new(env).unwrap()
+            Multi::with_env(env).unwrap()
         });
         let steps = [(None, 1), (None, 0), (Some(HOURS_72), 1)];
         for (n, ((advance, want), talk)) in steps.into_iter().zip(talks).enumerate() {
@@ -6833,7 +6833,7 @@ fn endless_clocked(connections: usize) -> (Multi, Vec<Conversation>, ManualClock
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talks, clock)
+    (Multi::with_env(env).unwrap(), talks, clock)
 }
 
 /// A GET whose body is dropped, counted in the `Drops`, with the options
@@ -7040,7 +7040,7 @@ fn a_receive_limit_spreads_a_known_size() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let (e, drops) =
         endless_get(|o| o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE));
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -7163,7 +7163,7 @@ fn a_transfer_out_of_time_reads_no_more() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let seen = Seen::default();
     let mut e = Easy::new();
     let components = crate::components::Components::new().unwrap();
@@ -7270,7 +7270,7 @@ fn a_send_limit_lets_its_rate_out_each_second() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     let o = e.options_mut();
     o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
@@ -7382,7 +7382,7 @@ fn a_probe_sends_the_tree_s_head_as_last_sent() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let tree = mime_tree(crate::mime::Content::Bytes(
         curl_alloc::TryArc::try_new(b"v".to_vec()).unwrap(),
     ));
@@ -7809,7 +7809,7 @@ fn a_link_local_address_takes_the_interface_s_scope() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     e.options_mut()
         .set_url(Some(format!("http://[fe80::1]:{PORT}/").as_bytes()))
@@ -8197,7 +8197,7 @@ fn the_queue_time_is_read_from_the_clock_as_it_is_marked() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let ran = get(&mut m, "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert!(ran.easy.report().timings().queue() > std::time::Duration::ZERO);
@@ -8304,7 +8304,7 @@ fn without_a_jar_or_cookies_given_no_cookie_line_is_looked_for() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m = Multi::new(env).unwrap();
+        let mut m = Multi::with_env(env).unwrap();
         let ran = get(&mut m, "/", talk, set);
         assert_eq!(ran.result, Ok(()));
         let request = String::from_utf8(ran.request).unwrap();

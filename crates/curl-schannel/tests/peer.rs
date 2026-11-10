@@ -257,7 +257,7 @@ fn a_record_half_sent_is_waited_for_by_the_multi() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let posted: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
     let body = Arc::new(Lock::new(Vec::new()));
     let mut easy = Easy::new();

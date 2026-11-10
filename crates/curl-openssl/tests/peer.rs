@@ -497,7 +497,7 @@ fn multi(clock: Box<dyn Clock>) -> Multi {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// As `get_any`, in the multi `m`.

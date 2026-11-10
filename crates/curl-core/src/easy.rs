@@ -11,14 +11,12 @@ use crate::auth::http::Auth;
 use crate::coding::Decoders;
 use crate::components::Components;
 use crate::conn::ConnId;
-use crate::conn::io::{SystemNet, Waker};
 use crate::cookie::{Jar, LoadError, NeverAsked, SuffixCheck};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::{Handler, WriteHandler};
 use crate::hsts::{Hsts, LoadError as CacheLoadError};
-use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
-use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode};
+use crate::multi::{AddError, Ids, Multi, MultiKind, NoEvents, WaitMode};
 use crate::multi::{EventTable, TransferId, drive_by_events_with};
 use crate::options::{Lines, Options};
 use crate::report::TransferReport;
@@ -1405,30 +1403,7 @@ impl Easy {
         let private = match self.private.take() {
             Some(private) => private,
             None => {
-                // Winsock, started while the multi's waker and network are
-                // made, until the multi holds a start of its own; a refusal
-                // fails the sockets as they open.
-                let _winsock = curl_os::net::Winsock::start().ok();
-                // A waker, as every C multi has one (`Curl_wakeup_init`),
-                // watched as a perform's multi waits; without the
-                // descriptors for it, the multi goes without.
-                let waker = match Waker::new() {
-                    Ok(w) => Some(TryArc::try_new(w).map_err(oom)?),
-                    Err(_) => None,
-                };
-                // A multi whose resolver cannot be set up is not made
-                // (`Curl_multi_handle`'s `goto error`).
-                let net = try_box(
-                    SystemNet::for_multi(crate::conn::threaded::Threads::EASY)
-                        .map_err(|_| ErrorKind::OutOfMemory)?,
-                )
-                .map_err(oom)?;
-                let arena = ArenaPolicy::new(16, 0).expect("a valid policy");
-                let env = Env::new(net, arena, waker);
-                let mut multi = Multi::new(env).map_err(oom)?;
-                // As few TLS peers as C's `multi_easy` keeps.
-                multi.keep_tls_sessions_of(crate::tls::SessionCache::PERFORM_PEERS);
-                multi.make_handle_own();
+                let multi = Multi::new(MultiKind::HandleOwn, Ids::FromZero).map_err(oom)?;
                 try_box(Private {
                     multi,
                     events: None,
@@ -1564,6 +1539,8 @@ mod tests {
 
     use super::*;
     use crate::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
+    use crate::id::ArenaPolicy;
+    use crate::multi::Env;
     use crate::multi::TransferCx;
     use crate::options::{Method, Resume, UploadSource};
     use crate::time::{ManualClock, TimeLimit};
@@ -2070,7 +2047,7 @@ mod tests {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         let e = m.remove(id, &mut NoEvents).unwrap().easy;
         assert!(e.private.is_none());

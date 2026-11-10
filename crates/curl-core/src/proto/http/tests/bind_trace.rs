@@ -78,7 +78,7 @@ fn bound(net: impl FnOnce(FakeNet) -> FakeNet, bind: LocalBind) -> Ran {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     get_with(&mut m, tracing_tcp(), "/", talk, |o| {
         o.sockets.make_mut().unwrap().local = bind;
     })
@@ -324,7 +324,7 @@ fn a_bind_s_name_is_let_go_of_after_it_is_said() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let mut e = tracing_tcp();
     let seen = lock_logged(&mut e);
     let ran = get_with(&mut m, e, "/", talk, |o| {

@@ -52,7 +52,7 @@ fn alt_server(replies: &[&[u8]]) -> (Multi, Conversation) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talk)
+    (Multi::with_env(env).unwrap(), talk)
 }
 
 /// The time the tests' clock says, 2024-10-09 09:25:47 UTC.
@@ -330,7 +330,7 @@ fn ipv6_alternative(dst: &str) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     e.set_libraries(libraries);
     e.add_alt_svc_file(Some(file.name())).unwrap();

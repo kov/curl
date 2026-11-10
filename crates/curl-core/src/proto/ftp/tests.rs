@@ -146,7 +146,7 @@ fn clocked_with(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), counted, clock)
+    (Multi::with_env(env).unwrap(), counted, clock)
 }
 
 /// A transfer of `url` (`PORT` in it replaced) added to `m`, its body and
@@ -1375,7 +1375,7 @@ fn proxied(control: &Conversation, data: &Conversation) -> Multi {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// The control connection's talk through a proxy whose last answer to
@@ -1493,7 +1493,7 @@ fn a_silent_data_address_gives_way_after_the_eyeballs_delay() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let (id, body, text) = added_tracing(&mut m, URL, Easy::new(), b"timer", |o| {
         let proxy = o.proxy.make_mut().unwrap();
         proxy.url = Some(format!("http://pxy.example:{PROXY_PORT}").into_bytes());
@@ -1605,7 +1605,7 @@ fn a_data_connection_its_socks_proxy_refuses_is_closed() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let (id, _body, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |o| {
         o.proxy.make_mut().unwrap().url =
             Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
@@ -1933,7 +1933,7 @@ fn serving_active_with(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), counted)
+    (Multi::with_env(env).unwrap(), counted)
 }
 
 /// The answers to the login and an active download's setup: the
@@ -2547,7 +2547,7 @@ fn an_epsv_refused_over_ipv6_fails() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let (id, _, text) = added(&mut m, "ftp://[::1]:PORT/f", |_| {});
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();
@@ -3832,7 +3832,7 @@ fn an_active_socket_binds_the_first_free_port_of_its_range() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m = Multi::new(env).unwrap();
+        let mut m = Multi::with_env(env).unwrap();
         let (id, _, text) = added(&mut m, URL, |o| {
             o.line.make_mut().unwrap().ftp.port = Some(b"127.0.0.1:5000-5002".to_vec());
         });
@@ -3877,7 +3877,7 @@ fn an_active_offer_over_ipv6_is_always_eprt() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let (id, body, text) = added(&mut m, "ftp://[::1]:PORT/f", |o| {
         let ftp = &mut o.line.make_mut().unwrap().ftp;
         ftp.port = Some(b"-".to_vec());
@@ -3915,7 +3915,7 @@ fn an_eprt_refused_over_ipv6_waits_for_an_answer_in_vain() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let (id, _, text) = added(&mut m, "ftp://[::1]:PORT/f", |o| {
         o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
         o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2000);
@@ -4515,7 +4515,7 @@ fn a_transfer_needing_room_waits_for_the_answer_to_quit() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     m.conn_limits_mut().max_total = std::num::NonZeroU32::new(1);
     let (a, _, text) = added(&mut m, URL, |_| {});
     let result = drive_to_completion(&mut m, a, &mut NoEvents).unwrap();
@@ -4941,7 +4941,7 @@ fn an_epsv_port_unreached_falls_back_to_pasv() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m = Multi::new(env).unwrap();
+        let mut m = Multi::with_env(env).unwrap();
         let (id, body, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |_| {});
         let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
         let got = body.0.lock().unwrap().clone();
@@ -5272,7 +5272,7 @@ fn a_share_s_names_are_told_for_both_connections() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m = Multi::new(env).unwrap();
+        let mut m = Multi::with_env(env).unwrap();
         let mut e = Easy::new();
         e.set_share_watched(share.clone(), told.handler()).unwrap();
         let (id, body, text) = added_easy(&mut m, URL, e, |_| {});

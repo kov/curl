@@ -56,7 +56,7 @@ fn rtsp_server(replies: &[&[u8]], close: bool, giving: usize) -> (Multi, Convers
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talk)
+    (Multi::with_env(env).unwrap(), talk)
 }
 
 /// A verbose RTSP request by `e` of `/s` on `m`, whose server is `talk`,
@@ -502,7 +502,7 @@ fn a_receive_reads_rtp_alone() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let rtp = Rtp::default();
     let interleave = rtp.clone();
     let ran = get_with(&mut m, e, "/s", talk, |o| {

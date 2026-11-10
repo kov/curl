@@ -282,7 +282,7 @@ fn multi() -> (Multi, ManualClock) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), clock)
+    (Multi::with_env(env).unwrap(), clock)
 }
 
 fn script(pieces: Vec<Piece>) -> Easy {

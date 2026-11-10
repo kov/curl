@@ -565,7 +565,7 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     for (path, body) in [("/1", &b"hello"[..]), ("/2", b"ok")] {
         let mut e = Easy::new();
         e.set_libraries(with_h2());
@@ -827,7 +827,7 @@ fn clocked(talks: &[&Conversation]) -> (Multi, ManualClock) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), clock)
+    (Multi::with_env(env).unwrap(), clock)
 }
 
 /// An idle HTTP/2 connection is sent a PING by the upkeep once the
@@ -999,7 +999,7 @@ fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
     for ask in asks {
         let talk = Conversation::replies(&[RESPONSE], false).per_send().held();
         let (mut holder, clock) = clocked(&[&talk]);
-        let mut other: Multi = Multi::new(Env {
+        let mut other: Multi = Multi::with_env(Env {
             clock: Box::new(clock.clone()),
             net: Box::new(FakeNet::new(clock.clone())),
             arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -1253,7 +1253,7 @@ fn an_idle_connection_s_health_is_looked_at_once_a_second() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m = Multi::new(env).unwrap();
+        let mut m = Multi::with_env(env).unwrap();
         for (path, body, talk) in [("/1", &b"hello"[..], &talk), ("/2", b"ok", &fresh)] {
             let mut e = Easy::new();
             e.set_libraries(with_h2());
@@ -1455,7 +1455,7 @@ fn a_receive_limit_paces_a_stream() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let start = clock.now();
     let mut e = Easy::new();
     e.set_libraries(with_h2());
@@ -3688,7 +3688,7 @@ fn a_promise_without_a_port_is_of_an_origin_at_the_default_port() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     e.set_libraries(with_h2());
     let o = e.options_mut();
@@ -3912,7 +3912,7 @@ fn a_connection_closed_under_two_streams_ends_both_in_one_pass() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut ids = Vec::new();
     let mut seen = Vec::new();
     for (path, timed) in [("/a", true), ("/b", false)] {

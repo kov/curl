@@ -189,7 +189,7 @@ fn served(linger: Linger, talks: usize) -> (Multi, Wire, ManualClock) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     m.linger_connections(Some(linger));
     (m, wire, clock)
 }
@@ -603,7 +603,7 @@ fn over_tls(talk: &Conversation) -> (Multi, Wire, &'static crate::tls::fake::Fak
         waker: None,
     };
     let backend = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
-    (Multi::new(env).unwrap(), wire, backend)
+    (Multi::with_env(env).unwrap(), wire, backend)
 }
 
 /// An HTTPS transfer to port 4 by the TLS library `tls`, whose
@@ -912,7 +912,7 @@ fn a_reuse_check_says_input_and_a_reset_apart() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let components = Components::new().unwrap();
         components.set(Component::Tcp, Level::Info);
         let written = Written::default();
@@ -1565,7 +1565,7 @@ fn talking(talks: &[Conversation], linger: Linger) -> (Multi, Wire, ManualClock)
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     m.linger_connections(Some(linger));
     (m, wire, clock)
 }
@@ -1682,7 +1682,7 @@ fn answering(peers: &[(u16, &[Conversation])]) -> (Multi, Wire, ManualClock) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), wire, clock)
+    (Multi::with_env(env).unwrap(), wire, clock)
 }
 
 /// A `tcp:` transfer to `port` whose protocol says `BYE` as its

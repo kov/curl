@@ -159,7 +159,7 @@ fn networked_on(clock: ManualClock) -> (Multi<Tagged>, ManualClock, Sockets) {
         closed,
         ..Sockets::default()
     };
-    (Multi::new(env).unwrap(), clock, ev)
+    (Multi::with_env(env).unwrap(), clock, ev)
 }
 
 fn easy(url: &str) -> Easy {
@@ -355,7 +355,7 @@ fn the_socket_callback_sees_the_transfers() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<Host8> = Multi::new(env).unwrap();
+    let mut m: Multi<Host8> = Multi::with_env(env).unwrap();
     let seen = Arc::new(Lock::new(Vec::new()));
     let mut ev = Owners(seen.clone());
     m.add(Box::new(easy("tcp://127.0.0.1:3/")), 42, &mut ev)
@@ -532,7 +532,7 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
     let mut ev = Sockets::default();
     let mut keys = Vec::new();
     m.sockets(&mut ev, |k, _| keys.push(k.get())).unwrap();
@@ -601,7 +601,7 @@ fn the_resolver_s_settings_reach_its_pool() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
     assert_eq!(pool.settings(), (20, true));
     m.set_resolve_threads_max(NonZeroU32::new(3).unwrap());
     m.set_quick_exit(true);
@@ -633,7 +633,7 @@ fn an_easy_handle_s_quick_exit_is_its_multi_s() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
     e.options_mut().quick_exit = true;
     // No peer listens: the transfer fails, its multi set first.
@@ -746,7 +746,7 @@ fn a_stalled_resolve_is_tried_again_by_its_timer() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
     let mut ev = Sockets::default();
     m.add(Box::new(easy("tcp://late.test:4/")), (), &mut ev)
         .unwrap();
@@ -779,7 +779,7 @@ fn a_transfer_driven_by_events_polls_the_resolver_s_wake() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
     let id = m
         .add(
             Box::new(easy("tcp://127.0.0.1:4/")),
@@ -811,7 +811,7 @@ fn a_wait_polls_the_resolver_s_wake_while_a_transfer_is_alive() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
     let mut ev = Sockets::default();
     wake.wake().unwrap();
     let wait = |m: &mut Multi<Tagged>, ev: &mut Sockets| {
@@ -842,7 +842,7 @@ fn a_wait_beside_the_resolver_s_wake_counts_a_ready_socket_once() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
     let mut ev = Sockets::default();
     m.add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut ev)
         .unwrap();
@@ -1319,7 +1319,7 @@ fn a_library_is_asked_for_the_families_the_system_can_use() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+        let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
         let mut ev = Sockets::default();
         let (library, _, libraries) = closing_library(&clock, 1);
         let mut e = easy("http://name.test:80/");
@@ -1528,7 +1528,7 @@ fn a_library_s_resolve_is_run_again_when_it_says() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+        let mut m: Multi<Tagged> = Multi::with_env(env).unwrap();
         let mut ev = Sockets::default();
         let library: &'static Library = Box::leak(Box::new(Library(case)));
         let tls = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));

@@ -769,7 +769,7 @@ fn serving(port: u16, talk: &Conversation) -> Multi {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// A peer that says nothing: the fake library never reads it.

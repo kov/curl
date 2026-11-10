@@ -86,11 +86,12 @@ pub(crate) struct Caches {
 }
 
 impl Caches {
-    pub(crate) fn new() -> Result<Caches, curl_alloc::OutOfMemory> {
+    /// Caches keeping the TLS sessions of `peers` peers.
+    pub(crate) fn new(peers: usize) -> Result<Caches, curl_alloc::OutOfMemory> {
         Ok(Caches {
             pool: Pool::new()?,
             dns: DnsCache::default(),
-            sessions: crate::tls::SessionCache::new(crate::tls::SessionCache::PEERS),
+            sessions: crate::tls::SessionCache::new(peers),
             psl: crate::psl::PslCache::default(),
             resolves: asyncs::ResolveCount::default(),
             sessions_out: None,

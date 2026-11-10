@@ -871,7 +871,7 @@ fn run_driven(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let internal = Internal::default();
     let components = crate::components::Components::new().unwrap();
     components.set(

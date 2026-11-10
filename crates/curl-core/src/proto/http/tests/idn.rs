@@ -114,7 +114,7 @@ fn a_proxy_and_a_connect_to_host_are_looked_up_in_ascii() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m = Multi::new(env).unwrap();
+        let mut m = Multi::with_env(env).unwrap();
         let ran = get_with(&mut m, converting(), "/", talk, set);
         assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
     }

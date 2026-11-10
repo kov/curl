@@ -1137,7 +1137,7 @@ fn over_a_unix_socket_no_record_is_asked_for() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let e = tracing_over(&LATE_RECORD, b"dns,https-connect");
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {
@@ -1201,7 +1201,7 @@ fn a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let e = tracing_over(&LATE_RECORD, b"dns,https-connect");
     let url = format!("https://origin.example:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {

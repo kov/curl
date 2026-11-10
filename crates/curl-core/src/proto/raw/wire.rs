@@ -83,7 +83,7 @@ pub(crate) fn serving_on(clock: ManualClock, conversations: &[&Conversation]) ->
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// A verbose transfer of `url`, `PORT` in it replaced, over `m`, set as

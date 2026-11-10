@@ -90,7 +90,7 @@ fn upload_server(sends: usize) -> (Multi, Conversation) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talk)
+    (Multi::with_env(env).unwrap(), talk)
 }
 
 /// The frame `sent` holds first: its first byte and its payload,
@@ -404,7 +404,7 @@ fn in_pieces(frames: &[u8], n: usize, pause: bool) -> (Ran, Vec<MetaWrite>) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let handler = MetaWrites::default();
     handler.paused.set(!pause);
     let mut e = Easy::new();

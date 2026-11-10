@@ -287,7 +287,7 @@ fn run(test: u32) -> Result<Result<(), String>, Skip> {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     let got = Got {
         include: c.include,

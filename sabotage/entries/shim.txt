@@ -603,17 +603,17 @@ witness: curl-sys-abi getinfo::tests::unit3219_protocol_mask
     crate::protocols::BITS[p.index()] as c_long
 
 === `curl_multi_init` makes a multi of 16 rows, whose ids wrap as easy.c's do
-file: crates/curl-sys-abi/src/multi.rs
+file: crates/curl-core/src/multi/mod.rs
 witness: curl-sys-abi handle_tests::a_multi_s_transfers_report_in_c_s_id_order
 --- old
-    const ROWS: u32 = 128;
+            MultiKind::Application => 128,
 --- new
-    const ROWS: u32 = 16;
+            MultiKind::Application => 16,
 
 === `curl_easy_perform`'s own multi keeps the TLS sessions of 25 peers
-file: crates/curl-sys-abi/src/multi.rs
+file: crates/curl-core/src/multi/mod.rs
 witness: curl-sys-abi tls_tests::a_perform_s_multi_keeps_fewer_tls_peers_than_a_multi
 --- old
-        core.keep_tls_sessions_of(Multi::<CHost>::PERFORM_TLS_PEERS);
+            MultiKind::HandleOwn => crate::tls::SessionCache::PERFORM_PEERS,
 --- new
-        // core.keep_tls_sessions_of(Multi::<CHost>::PERFORM_TLS_PEERS);
+            MultiKind::HandleOwn => crate::tls::SessionCache::PEERS,

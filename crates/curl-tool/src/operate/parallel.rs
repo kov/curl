@@ -8,11 +8,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
-use curl_core::conn::io::{SystemNet, Waker};
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{Handler, ProgressHandler, ProgressNow, ProgressVerdict};
-use curl_core::id::ArenaPolicy;
-use curl_core::multi::{Env, Multi, NoEvents, TransferCx, TransferId, WaitMode};
+use curl_core::multi::{Ids, Multi, MultiKind, NoEvents, TransferCx, TransferId, WaitMode};
 use curl_core::options::Progress;
 
 use super::{
@@ -61,24 +59,10 @@ pub(super) fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
 /// The multi the transfers run in: its own connections, at most
 /// `--parallel-max-host` to a host (`CURLMOPT_MAX_HOST_CONNECTIONS`).
 fn new_multi(line: &CommandLine<'_>) -> Result<Multi, OutOfMemory> {
-    // A waker, as every C multi has; without the descriptors for one, it
-    // goes without.
-    let waker = match Waker::new() {
-        Ok(w) => Some(TryArc::try_new(w)?),
-        Err(_) => None,
-    };
-    let net = try_box(
-        SystemNet::for_multi(curl_core::conn::threaded::Threads::MULTI).map_err(|_| OutOfMemory)?,
-    )?;
-    // C's tool makes its multi with `curl_multi_init`: a table of 128 rows
-    // whose row 0 holds the multi's own handle, so the transfers run and
-    // report in C's order as the ids wrap around.
-    let env = Env::new(
-        net,
-        ArenaPolicy::new(128, 1).expect("a valid policy"),
-        waker,
-    );
-    let mut multi = Multi::new(env)?;
+    // C's tool makes its multi with `curl_multi_init`, whose row 0 holds
+    // the multi's own handle, so the transfers run and report in C's order
+    // as the ids wrap around.
+    let mut multi = Multi::new(MultiKind::Application, Ids::AsC)?;
     multi.conn_limits_mut().max_host = line.global.parallel_host.map(NonZeroU32::from);
     multi.set_quick_exit(super::quick_exit());
     Ok(multi)

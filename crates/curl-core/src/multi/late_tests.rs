@@ -300,7 +300,7 @@ fn transfer_ending(
         }
     }
     let shared = Arc::new(Lock::new(net));
-    let mut m = Multi::new(Env {
+    let mut m = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(SharedNet(shared.clone())),
         arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -810,7 +810,7 @@ fn ftp_over_a_library(
         made: made.clone(),
         sockets: Lock::new(sockets),
     }));
-    let mut m = Multi::new(Env {
+    let mut m = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -1028,7 +1028,7 @@ fn a_late_resolve_lives_on_through_a_redial_for_the_proxy_s_407() {
             &late,
         )
         .with_v4_first();
-    let mut m = Multi::new(Env {
+    let mut m = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -1162,7 +1162,7 @@ fn lost_to_the_second(config: &[u8], by_events: bool) -> (Vec<String>, u64) {
     let h3: &'static crate::http3::fake::FakeHttp3 =
         Box::leak(Box::new(crate::http3::fake::FakeHttp3::new(script)));
     let tls: &'static fake::FakeTls = Box::leak(Box::new(fake::FakeTls::agreeing().unwrap()));
-    let mut m: Multi = Multi::new(Env {
+    let mut m: Multi = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -1345,7 +1345,7 @@ fn first_failed_once_dialed(answers: bool) -> (Vec<String>, bool) {
     let h3: &'static crate::http3::fake::FakeHttp3 =
         Box::leak(Box::new(crate::http3::fake::FakeHttp3::new(script)));
     let tls: &'static fake::FakeTls = Box::leak(Box::new(fake::FakeTls::agreeing().unwrap()));
-    let mut m: Multi = Multi::new(Env {
+    let mut m: Multi = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -1505,7 +1505,7 @@ fn a_resolve_failing_beside_a_dialed_connection_fails_it_at_once() {
     let fail = Arc::new(AtomicBool::new(false));
     let lib: &'static Failing = Box::leak(Box::new(Failing(fail.clone())));
     let tls: &'static fake::FakeTls = Box::leak(Box::new(fake::FakeTls::agreeing().unwrap()));
-    let mut m: Multi = Multi::new(Env {
+    let mut m: Multi = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),

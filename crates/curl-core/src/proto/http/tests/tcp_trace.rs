@@ -98,7 +98,7 @@ fn named(name: &str, peers: &[(IpAddr, Peer)], talk: &Conversation) -> Multi {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 fn v4(last: u8) -> IpAddr {
@@ -425,7 +425,7 @@ fn hooked(peer: Peer, hooks: impl FnOnce(&mut Hooks)) -> Hooked {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let (set, closed) = (Arc::default(), Arc::default());
     let mut h = Hooks {
         net: net.clone(),
@@ -687,7 +687,7 @@ fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let told = Told::default();
     let ran = get_with(&mut m, tracing_tcp(), "/", talk, |o| {
         let url = format!("http://both.example:{PORT}/");

@@ -40,7 +40,7 @@ fn over(at: &Remote, peer: Peer, set: impl FnOnce(&mut Options)) -> (Ran, Conver
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let Remote::Unix(u) = at else {
         panic!("a Unix socket");
     };

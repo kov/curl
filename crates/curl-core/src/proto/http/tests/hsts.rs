@@ -59,7 +59,7 @@ fn named_server(replies: &[&[u8]]) -> (Multi, Conversation) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talk)
+    (Multi::with_env(env).unwrap(), talk)
 }
 
 /// An `http` URL to a host the cache names goes as `https`, the URL read

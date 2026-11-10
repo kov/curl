@@ -279,7 +279,7 @@ fn scenario() -> Result<Outcome, OutOfMemory> {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: Some(waker),
     };
-    let mut m: Multi = Multi::new(env)?;
+    let mut m: Multi = Multi::with_env(env)?;
     match m.wait(&mut [], Duration::ZERO, WaitMode::Poll, &mut NoEvents) {
         Ok(0) | Err(MultiErrorKind::OutOfMemory) => {}
         other => panic!("an idle wait got {other:?}"),
@@ -444,7 +444,7 @@ fn pause_scenario() -> Result<Paused, OutOfMemory> {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env)?;
+    let mut m: Multi = Multi::with_env(env)?;
     let mut easy = Easy::new();
     easy.options_mut().set_url(Some(b"script://a"))?;
     easy.options_mut().output.include_header = true;
@@ -671,7 +671,7 @@ fn get_over(
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env)?;
+    let mut m: Multi = Multi::with_env(env)?;
     let mut easy = Easy::new();
     easy.set_libraries(wire.libraries);
     if wire.trace_all {
@@ -741,7 +741,7 @@ fn refused_scenario() -> Result<Result<(), ErrorKind>, OutOfMemory> {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env)?;
+    let mut m: Multi = Multi::with_env(env)?;
     let mut easy = Easy::new();
     let o = easy.options_mut();
     o.set_url(Some(URL))?;
@@ -1058,7 +1058,7 @@ fn a_tls_identity_is_made_once_per_connection() {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).expect("memory");
+    let mut m: Multi = Multi::with_env(env).expect("memory");
     let mut made = Vec::new();
     for _ in 0..2 {
         let mut easy = Easy::new();
@@ -1108,7 +1108,7 @@ fn a_waiting_transfer_s_new_ip_version_takes_no_refusal_for_success() {
             arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env)?;
+        let mut m: Multi = Multi::with_env(env)?;
         m.conn_limits_mut().max_host = std::num::NonZeroU32::new(1);
         let mut ids = [None, None];
         for slot in &mut ids {
@@ -1195,7 +1195,7 @@ fn wait_allocations(sockets: usize) -> u64 {
             arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
             waker: None,
         };
-        let mut m = Multi::new(env).expect("memory");
+        let mut m = Multi::with_env(env).expect("memory");
         for _ in 0..sockets {
             let mut easy = Easy::new();
             easy.options_mut().set_url(Some(URL)).expect("memory");
@@ -1406,7 +1406,7 @@ fn an_ftp_data_connect_s_wait_allocates_nothing_per_pass() {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).expect("memory");
+    let mut m: Multi = Multi::with_env(env).expect("memory");
     let mut easy = Easy::new();
     let traced = TryArc::try_new(Traced::default()).expect("memory");
     let o = easy.options_mut();
@@ -1490,7 +1490,7 @@ fn an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass() {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).expect("memory");
+    let mut m: Multi = Multi::with_env(env).expect("memory");
     let mut easy = Easy::new();
     let o = easy.options_mut();
     o.set_url(Some(b"ftp://127.0.0.1:8021/f")).expect("memory");
@@ -1600,7 +1600,7 @@ fn shared_scenario() -> Result<[Result<(), ErrorKind>; 2], OutOfMemory> {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env)?;
+    let mut m: Multi = Multi::with_env(env)?;
     let mut results = [Ok(()), Ok(())];
     for result in &mut results {
         let mut easy = Easy::new();
@@ -1715,7 +1715,7 @@ fn push_scenario() -> Result<PushRun, OutOfMemory> {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env)?;
+    let mut m: Multi = Multi::with_env(env)?;
     let mut ev = Pushing {
         took: TryArc::try_new(Took::default())?,
         added: 0,
@@ -1920,7 +1920,7 @@ fn a_lost_trailer_line_fails_the_request() {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).expect("a multi");
+    let mut m: Multi = Multi::with_env(env).expect("a multi");
     let mut easy = Easy::new();
     let o = easy.options_mut();
     o.set_url(Some(URL)).expect("a URL");
@@ -2424,7 +2424,7 @@ fn two_h3_tunnels_scenario() -> Result<bool, OutOfMemory> {
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env)?;
+    let mut m: Multi = Multi::with_env(env)?;
     let mut fine = true;
     type Set = fn(&mut Options) -> Result<(), OutOfMemory>;
     let gets: [(&[u8], Set); 2] = [
@@ -2579,7 +2579,7 @@ fn quit_run(
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).map_err(|_| ())?;
+    let mut m: Multi = Multi::with_env(env).map_err(|_| ())?;
     let sink = Handler::text(Internal(traced.clone())).map_err(|_| ())?;
     m.trace_internally_to(components, sink);
     let mut easy = Easy::new();

@@ -252,34 +252,93 @@ pub struct NoEvents;
 
 impl<H: Host> MultiEvents<H> for NoEvents {}
 
-/// How a multi is made: its network, the ids it hands out, and the waker
-/// other threads use to interrupt its waits. Without a waker, nothing can
-/// (C always makes one; the shim does too). It reads the system's clock,
-/// as C does; only a test gives it another.
+/// Which of C's two multis a multi is. The kind decides its sizes and
+/// whose it is together, so that no multi has the sizes of one and the
+/// ways of the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiKind {
+    /// One an application makes (`curl_multi_init`): a transfer table of
+    /// 128 rows (`CURL_XFER_TABLE_SIZE`), a resolver of up to 20 threads
+    /// idling 2 s, and the TLS sessions of 25 peers
+    /// (`Curl_multi_handle`'s defaults).
+    Application,
+    /// One handle's own, which `Easy::perform` runs it in (C's
+    /// `multi_easy`, easy.c's `Curl_multi_handle(16, 1, 3, 7, 3)`): 16
+    /// rows, 2 threads idling 10 ms and the TLS sessions of 3 peers. A
+    /// handle that only connected keeps its connection as it comes out,
+    /// and its next transfer here closes it if the handle used it.
+    HandleOwn,
+}
+
+impl MultiKind {
+    /// The rows the transfer table starts with.
+    fn rows(self) -> u32 {
+        match self {
+            MultiKind::Application => 128,
+            MultiKind::HandleOwn => 16,
+        }
+    }
+
+    /// The resolver's pool, in a build with the threaded resolver.
+    fn threads(self) -> crate::conn::threaded::Threads {
+        match self {
+            MultiKind::Application => crate::conn::threaded::Threads::MULTI,
+            MultiKind::HandleOwn => crate::conn::threaded::Threads::EASY,
+        }
+    }
+
+    /// The TLS peers whose sessions it keeps.
+    fn tls_peers(self) -> usize {
+        match self {
+            MultiKind::Application => crate::tls::SessionCache::PEERS,
+            MultiKind::HandleOwn => crate::tls::SessionCache::PERFORM_PEERS,
+        }
+    }
+}
+
+/// Where a multi's transfer ids start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ids {
+    /// At row 0.
+    FromZero,
+    /// At row 1, as C's do: its multi's own handle holds row 0, so ids,
+    /// and the order in which transfers that finish together are reported
+    /// as the ids wrap around, are C's.
+    AsC,
+}
+
+impl Ids {
+    fn reserved(self) -> u32 {
+        match self {
+            Ids::FromZero => 0,
+            Ids::AsC => 1,
+        }
+    }
+}
+
+/// A test's multi: its clock, network, ids and waker, each the test's
+/// own. Without a waker, nothing can interrupt its waits. It has the
+/// application's kind in all else (`MultiKind::Application`).
+#[cfg(any(test, feature = "test-util"))]
 pub struct Env {
-    /// The multi's time, a test's own. Every multi using one share reads
-    /// one clock, clones of one `ManualClock` say, as the share's names
-    /// and connections carry their instants: the debug build panics at a
+    /// The multi's time. Every multi using one share reads one clock,
+    /// clones of one `ManualClock` say, as the share's names and
+    /// connections carry their instants: the debug build panics at a
     /// share's use under a second.
-    #[cfg(any(test, feature = "test-util"))]
     pub clock: Box<dyn Clock>,
     pub net: Box<dyn Net + Send>,
     pub arena: ArenaPolicy,
     pub waker: Option<TryArc<Waker>>,
 }
 
-impl Env {
-    /// A multi on the system's clock, with `net`, `arena` and `waker`.
-    pub fn new(net: Box<dyn Net + Send>, arena: ArenaPolicy, waker: Option<TryArc<Waker>>) -> Env {
-        Env {
-            #[cfg(any(test, feature = "test-util"))]
-            clock: curl_alloc::try_box(crate::time::SystemClock::new())
-                .expect("a clock that holds nothing takes no memory"),
-            net,
-            arena,
-            waker,
-        }
-    }
+/// What a multi is made of.
+struct Parts {
+    #[cfg(any(test, feature = "test-util"))]
+    clock: Box<dyn Clock>,
+    net: Box<dyn Net + Send>,
+    arena: ArenaPolicy,
+    waker: Option<TryArc<Waker>>,
+    kind: MultiKind,
 }
 
 /// The multi's state after a callback's abort.
@@ -580,17 +639,77 @@ fn debug_max_total(given: &[u8]) -> Option<u32> {
 }
 
 impl<H: Host> Multi<H> {
-    /// The TLS peers whose sessions C's `curl_easy_perform` keeps for its
-    /// own multi, for `keep_tls_sessions_of`.
-    pub const PERFORM_TLS_PEERS: usize = crate::tls::SessionCache::PERFORM_PEERS;
+    /// A multi of `kind`, on the system's network and clock, its ids
+    /// starting as `ids` says, with a waker unless the system has no
+    /// descriptors for one (C always makes one). A resolver that cannot
+    /// be set up fails it as memory does (`Curl_multi_handle`'s
+    /// `goto error`).
+    pub fn new(kind: MultiKind, ids: Ids) -> Result<Self, OutOfMemory> {
+        Multi::of_kind(kind, ids, || {
+            let net =
+                crate::conn::io::SystemNet::for_multi(kind.threads()).map_err(|_| OutOfMemory)?;
+            Ok(curl_alloc::try_box(net)?)
+        })
+    }
 
-    /// A multi over `env`. On Windows its network and waker were made
+    /// As `new`, over `net`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_net(
+        kind: MultiKind,
+        ids: Ids,
+        net: Box<dyn Net + Send>,
+    ) -> Result<Self, OutOfMemory> {
+        Multi::of_kind(kind, ids, || Ok(net))
+    }
+
+    /// A test's multi, made as `env` says.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_env(env: Env) -> Result<Self, OutOfMemory> {
+        Multi::from_parts(Parts {
+            clock: env.clock,
+            net: env.net,
+            arena: env.arena,
+            waker: env.waker,
+            kind: MultiKind::Application,
+        })
+    }
+
+    /// A multi of `kind` over the network `net` makes, after the waker.
+    fn of_kind(
+        kind: MultiKind,
+        ids: Ids,
+        net: impl FnOnce() -> Result<Box<dyn Net + Send>, OutOfMemory>,
+    ) -> Result<Self, OutOfMemory> {
+        // Winsock, started while the waker and the network are made (on
+        // Windows the waker is a pair of loopback sockets), until the
+        // multi holds a start of its own; a refusal fails the sockets as
+        // they open.
+        let _winsock = curl_os::net::Winsock::start().ok();
+        // Without the descriptors for a waker, the multi goes without.
+        let waker = match Waker::new() {
+            Ok(w) => Some(TryArc::try_new(w)?),
+            Err(_) => None,
+        };
+        let net = net()?;
+        let arena = ArenaPolicy::new(kind.rows(), ids.reserved()).expect("a valid policy");
+        Multi::from_parts(Parts {
+            #[cfg(any(test, feature = "test-util"))]
+            clock: curl_alloc::try_box(crate::time::SystemClock::new())
+                .expect("a clock that holds nothing takes no memory"),
+            net,
+            arena,
+            waker,
+            kind,
+        })
+    }
+
+    /// A multi of `parts`. On Windows its network and waker were made
     /// while Winsock was started by whoever made them; the multi holds a
     /// start of its own from here.
-    pub fn new(env: Env) -> Result<Self, OutOfMemory> {
+    fn from_parts(env: Parts) -> Result<Self, OutOfMemory> {
         let winsock = curl_os::net::Winsock::start().ok();
         let slots = Slots::new(env.arena)?;
-        let caches = Caches::new()?;
+        let caches = Caches::new(env.kind.tls_peers())?;
         // As C's multi is made, after its waker (`Curl_multi_handle`).
         let mut net = env.net;
         let ipv6_works = net.probe_ipv6()?;
@@ -637,7 +756,7 @@ impl<H: Host> Multi<H> {
             ipv6_works,
             fail_ipv6,
             waker: env.waker,
-            handle_own: false,
+            handle_own: env.kind == MultiKind::HandleOwn,
             closed: false,
             alive,
             counts: Tally::default(),
@@ -674,14 +793,6 @@ impl<H: Host> Multi<H> {
             .trace_internally(crate::trace::Internal::to(components, sink));
     }
 
-    /// Keep the TLS sessions of `peers` peers, as many as C's
-    /// `curl_easy_perform` keeps for its own multi, in place of the 25 a
-    /// multi keeps (`Curl_multi_handle`'s `sesssize`). Only while none is
-    /// kept.
-    pub fn keep_tls_sessions_of(&mut self, peers: usize) {
-        self.caches.sessions = crate::tls::SessionCache::new(peers);
-    }
-
     /// Each connection set up from now on gets a layer whose shutdown
     /// waits as `how` says, for the tests of the connections shutting
     /// down; none with `None`.
@@ -696,10 +807,9 @@ impl<H: Host> Multi<H> {
         self.alive.set_resolve_threads_max(max);
     }
 
-    /// Make the multi one handle's own, which `perform` runs it in (C's
-    /// `multi_easy`): a handle that only connected keeps its connection as
-    /// it comes out, and its next transfer here closes it if the handle
-    /// used it.
+    /// Make a test's multi one handle's own, as `MultiKind::HandleOwn`
+    /// is in its connections, in its other sizes still the test's.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn make_handle_own(&mut self) {
         self.handle_own = true;
     }

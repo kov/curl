@@ -128,6 +128,12 @@ the TLS library: ECH is listed where the library has it (`version_with_tls`, C's
   and everything below receives that `now` as an argument. A normal build has no clock to
   choose, as C has none; under `test-util` a multi takes a `ManualClock`, so timeouts are
   deterministic under test, and the multis sharing one share read one clock.
+- **A multi is one of C's two kinds, named whole.** `MultiKind::Application`
+  (`curl_multi_init`'s) or `MultiKind::HandleOwn` (`curl_easy_perform`'s) decides together
+  its transfer table's rows, its resolver's threads, the TLS peers it keeps and whether it is a
+  handle's own; a caller says only the kind and where its ids start. Its network is the
+  system's: a multi made outside `test-util` has no network to choose, and under it
+  a test gives its own, as it gives its clock.
 - **Callbacks fire when C fires them.** The timer callback runs inside `add`, `remove` and
   `pause`; the socket callback inside `remove` and `pause`, including a pause made from a write
   callback; each transfer's pollset is assessed right after it runs. Ordering the application

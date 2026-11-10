@@ -312,7 +312,7 @@ fn run(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     let tls = tls.then(|| {
         let backend: &'static crate::tls::fake::FakeTls =

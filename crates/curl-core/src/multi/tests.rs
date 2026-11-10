@@ -36,7 +36,7 @@ fn multi() -> (Multi, ManualClock) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), clock)
+    (Multi::with_env(env).unwrap(), clock)
 }
 
 fn easy(url: &str) -> Easy {
@@ -299,7 +299,7 @@ fn lagging_multi() -> (Multi, std::sync::Arc<crate::test_cell::Cell<Duration>>) 
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), lag)
+    (Multi::with_env(env).unwrap(), lag)
 }
 
 fn stall_within(ms: u64) -> Easy {
@@ -921,7 +921,7 @@ fn multi_with_waker() -> (Multi, ManualClock, TryArc<Waker>) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: Some(waker.clone()),
     };
-    (Multi::new(env).unwrap(), clock, waker)
+    (Multi::with_env(env).unwrap(), clock, waker)
 }
 
 /// How far `f` moved the clock: how long a wait over `FakeNet` slept.
@@ -1026,7 +1026,7 @@ fn a_wait_takes_more_than_fit_on_the_stack() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let ev = &mut NoEvents;
     for _ in 0..11 {
         m.add(Box::new(easy("http://127.0.0.1:8999/")), (), ev)
@@ -1127,7 +1127,7 @@ fn a_failed_poll_is_unrecoverable() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     assert_eq!(
         m.wait(
             &mut [],
@@ -1524,7 +1524,7 @@ fn networked() -> (Multi, ManualClock) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), clock)
+    (Multi::with_env(env).unwrap(), clock)
 }
 
 /// A resolve the resolver answers later is waited for: the transfer
@@ -1551,7 +1551,7 @@ fn a_late_answer_is_waited_for() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let (e, lines) = traced("tcp://late.test:1/");
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..3 {
@@ -1608,7 +1608,7 @@ fn a_resolve_that_never_answers_times_out_as_resolving() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let (mut e, lines) = traced("tcp://never.test:1/");
     e.options_mut().limits.connect = TimeLimit::from_millis(1500);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -1648,7 +1648,7 @@ fn an_established_connection_forgets_the_next_attempt() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     m.add(Box::new(easy("http://localhost:7/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
@@ -1680,7 +1680,7 @@ fn events_drive_a_transfer_as_waits_do() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let mut e = easy("http://127.0.0.1:7/");
         e.options_mut().limits.total = TimeLimit::from_millis(1000);
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -1730,7 +1730,7 @@ fn transfers_read_in_the_multis_one_buffer() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let a = m
         .add(Box::new(easy("http://127.0.0.1:7/")), (), &mut NoEvents)
         .unwrap();
@@ -1840,7 +1840,7 @@ fn events_wait_for_a_socket_with_nothing_due() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let id = m
         .add(Box::new(easy("http://127.0.0.1:7/")), (), &mut NoEvents)
         .unwrap();
@@ -2580,7 +2580,7 @@ fn a_share_keeps_connections_across_handles() {
     let mut uses = Vec::new();
     let mut numbers = Vec::new();
     for _ in 0..2 {
-        let mut m: Multi = Multi::new(env()).unwrap();
+        let mut m: Multi = Multi::with_env(env()).unwrap();
         let mut e = easy("tcp://127.0.0.1:1/");
         e.set_share_watched(share.clone(), told.handler()).unwrap();
         e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
@@ -2603,8 +2603,11 @@ fn a_share_keeps_connections_across_handles() {
     let other = Share::new().unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
     e.set_share_watched(other, told.handler()).unwrap();
-    e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits)
-        .unwrap();
+    e.perform_in(
+        &mut Multi::with_env(env()).unwrap(),
+        crate::easy::Drive::Waits,
+    )
+    .unwrap();
     assert_eq!(e.report().connects(), 1);
     let numbers = (
         e.report().transfer_number().map(|n| n.get()),
@@ -2661,7 +2664,7 @@ fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
     let told_now = || std::mem::take(&mut *told.lock().unwrap());
     let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
     share.keep(Kind::Connections).unwrap();
-    let mut m: Multi = Multi::new(env()).unwrap();
+    let mut m: Multi = Multi::with_env(env()).unwrap();
     let mut e = made();
     e.set_share(Some(share.clone())).unwrap();
     e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
@@ -2670,7 +2673,7 @@ fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
     assert_eq!(told_now(), [], "the share keeps the connection");
     drop(share);
     assert_eq!(told_now(), [1001], "closed with the share");
-    let mut m: Multi = Multi::new(env()).unwrap();
+    let mut m: Multi = Multi::with_env(env()).unwrap();
     let mut e = made();
     e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
     assert_eq!(told_now(), [1000]);
@@ -2738,7 +2741,7 @@ fn a_share_s_sockets_close_out_of_its_lock() {
         e.options_mut().sockets.make_mut().unwrap().close = Some(closer);
         e
     };
-    let mut m: Multi = Multi::new(env()).unwrap();
+    let mut m: Multi = Multi::with_env(env()).unwrap();
     made(true)
         .perform_in(&mut m, crate::easy::Drive::Waits)
         .unwrap();
@@ -2804,7 +2807,7 @@ fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     m.make_handle_own();
     let mut e = easy("http://127.0.0.1:1/");
     e.options_mut().connect_only = ConnectOnly::Yes;
@@ -2854,7 +2857,7 @@ fn a_share_s_connection_not_kept_is_closed_at_once() {
     };
     let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
     share.keep(Kind::Connections).unwrap();
-    let mut m: Multi = Multi::new(env()).unwrap();
+    let mut m: Multi = Multi::with_env(env()).unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
     e.set_share(Some(share.clone())).unwrap();
     e.options_mut().limits.reuse.forbid = true;
@@ -2880,7 +2883,7 @@ fn a_multi_closes_its_idle_connections_when_dropped() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let id = m
         .add(Box::new(easy("tcp://127.0.0.1:1/")), (), &mut NoEvents)
         .unwrap();
@@ -3206,7 +3209,7 @@ fn an_a_answered_empty_before_aaaa_is_said_as_it_comes() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let (e, lines) = traced("tcp://v6only.test:1/");
     let e = tracing(e, b"dns");
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -3261,7 +3264,7 @@ fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     // Each name's answer comes after its first pass.
     let mut run = |url: &str, gate: &Late, v4: bool| {
         let (mut e, lines) = traced(url);
@@ -3335,7 +3338,7 @@ fn a_queued_resolve_s_answer_clears_the_name_timer() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     // Each name's answer comes after its first pass.
     let mut run = |url: &str, gate: &Late| {
         let (e, lines) = traced(url);
@@ -3953,7 +3956,7 @@ fn late_both(first: crate::conn::io::Family, late: &crate::conn::io::Late) -> (M
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), clock)
+    (Multi::with_env(env).unwrap(), clock)
 }
 
 /// The DNS lines of a transfer of `url` over `late_both`'s network, asked
@@ -4654,7 +4657,7 @@ fn a_bind_s_name_is_resolved_waiting_and_keeping_no_failure() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let (result, lines) = run(&mut m, "tcp://127.0.0.1:1/", b"host!latehost");
     assert_eq!(result, Some(Ok(())), "{lines:?}");
     let bound = "Name 'latehost' family 2 resolved to '127.0.0.7' family 2\n";
@@ -4673,7 +4676,7 @@ fn a_failure_without_a_reason_is_said_twice() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let (e, lines) = traced("tcp://nowhere.test:1/");
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     perform_and_connect(&mut m);
@@ -5124,7 +5127,7 @@ fn transfers_are_numbered_as_c_numbers_them() {
             arena: ArenaPolicy::new(16, reserved).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let (mut e, lines) = traced("null://x/");
         let components = crate::components::Components::new().unwrap();
         components.configure(b"multi");
@@ -5284,7 +5287,7 @@ fn a_transfer_reusing_a_connection_lets_the_next_look() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     m.conn_limits_mut().max_total = NonZeroU32::new(2);
     let mut add = |url: &str| {
         let (e, lines) = traced(url);
@@ -5686,7 +5689,7 @@ fn sockets_are_set_as_the_options_say() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let url = "tcp://127.0.0.1:3/";
     m.add(Box::new(easy(url)), (), &mut NoEvents).unwrap();
     let mut delaying = easy(url);
@@ -5751,7 +5754,7 @@ fn connections_are_numbered_in_their_traces() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let url = "tcp://127.0.0.1:4/";
     let (a, _) = traced(url);
     let (b, b_lines) = traced(url);
@@ -5823,7 +5826,7 @@ fn a_wake_ends_a_wait_on_a_transfer_s_socket() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: Some(waker.clone()),
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     m.add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
@@ -5866,7 +5869,7 @@ fn scoped_net() -> (Multi, std::num::NonZeroU32) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), lo)
+    (Multi::with_env(env).unwrap(), lo)
 }
 
 /// Run `e` alone on `m` to its end; its result and trace, without the
@@ -6295,7 +6298,7 @@ fn sent_through_a_tunnel(set: impl FnOnce(&mut Easy)) -> Vec<u8> {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = Easy::new();
     let o = e.options_mut();
     o.set_url(Some(b"http://origin.example/a")).unwrap();
@@ -6430,7 +6433,7 @@ fn dual_stack(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env), probes)
+    (Multi::with_env(env), probes)
 }
 
 /// The trace's line saying which address is tried first.
@@ -6556,7 +6559,7 @@ fn membership_reads_the_clock_only_when_the_multi_is_traced() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let (mut e, lines) = traced("null://x/");
         e.options_mut().output.verbose = verbose;
         if multi {

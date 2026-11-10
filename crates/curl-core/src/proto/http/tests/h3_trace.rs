@@ -128,7 +128,7 @@ fn quic_peer_reading(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talks)
+    (Multi::with_env(env).unwrap(), talks)
 }
 
 /// A clock that moves a millisecond on as each reading of it is taken,
@@ -469,7 +469,7 @@ fn a_paused_transfer_waits_on_nothing_while_its_connection_holds_packets() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut e = tracing(FakeTls::new().unwrap(), &script);
     let url = format!("https://127.0.0.1:{PORT}/");
     e.options_mut().set_url(Some(url.as_bytes())).unwrap();
@@ -1715,7 +1715,7 @@ fn racing_peer(quic: Peer, quic_talk: &Conversation, tcp: Peer, tcp_talk: &Conve
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// `racing_peer`, the TCP attempt's socket opened first, as a TCP first
@@ -1739,7 +1739,7 @@ fn tcp_first_peer(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    Multi::with_env(env).unwrap()
 }
 
 /// What the TCP attempt's peer says over TLS: an HTTP/1.1 response of
@@ -2568,7 +2568,7 @@ fn a_race_timed_out_closes_both_attempts() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://127.0.0.1:{PORT}/");
     let ran = get_with(&mut m, e, "/", tcp_talk.clone(), |o| {
@@ -3396,7 +3396,7 @@ fn a_request_not_tunnelled_goes_to_an_http3_proxy_over_tcp() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/p")).unwrap();
@@ -3594,7 +3594,7 @@ fn a_connect_udp_refused_fails_the_tunnel() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::new().unwrap(), &script);
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {
@@ -3635,7 +3635,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {
@@ -3896,7 +3896,7 @@ fn connect_udp_soft_timeout(first: &[u8]) -> Vec<String> {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {
@@ -3979,7 +3979,7 @@ fn http3_through_a_proxy_refusing_both_tunnels_fails() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", second, |o| {
@@ -4066,7 +4066,7 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::new().unwrap(), &script);
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
@@ -4171,7 +4171,7 @@ fn a_tunnelled_connection_says_goodbye_through_its_layers() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let components = crate::components::Components::new().unwrap();
     components.set(
         crate::components::Component::Http3,
@@ -4239,7 +4239,7 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let e = tracing(FakeTls::new().unwrap(), &script);
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
@@ -4827,7 +4827,7 @@ fn two_heads_on_quic(then: Vec<Told>) -> TwoOnQuic {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let mut ids = Vec::new();
     let mut seen = Vec::new();
     for (path, timed) in [("/a", true), ("/b", false)] {
@@ -5916,7 +5916,7 @@ fn a_datagram_s_ecn_mark_is_said_by_ngtcp2_s_filter_alone() {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        let mut m: Multi = Multi::new(env).unwrap();
+        let mut m: Multi = Multi::with_env(env).unwrap();
         let e = tracing(FakeTls::new().unwrap(), &script);
         let url = format!("https://127.0.0.1:{PORT}/");
         let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {

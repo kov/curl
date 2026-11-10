@@ -852,7 +852,7 @@ impl Default for SystemNet {
 impl SystemNet {
     /// The network a multi uses: in a build with the threaded resolver,
     /// with a pool of `threads`.
-    pub fn for_multi(threads: super::threaded::Threads) -> io::Result<SystemNet> {
+    pub(crate) fn for_multi(threads: super::threaded::Threads) -> io::Result<SystemNet> {
         let winsock = curl_os::net::Winsock::start().ok();
         #[cfg(feature = "threaded-resolver")]
         let threaded = {

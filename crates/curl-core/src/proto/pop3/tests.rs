@@ -202,7 +202,7 @@ mod over_the_wire {
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };
-        (Multi::new(env).unwrap(), clock)
+        (Multi::with_env(env).unwrap(), clock)
     }
 
     /// The fake TLS library's libraries.

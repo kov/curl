@@ -249,15 +249,15 @@ witness: curl-core proto::http::tests::wait_trace::a_request_s_waits_are_traced_
             let fds = wanted + extra.len();
 
 === a perform's own multi has no waker
-file: crates/curl-core/src/easy.rs
+file: crates/curl-core/src/multi/mod.rs
 witness: curl-core easy::tests::a_perform_s_multi_has_a_waker
 --- old
-                    Ok(w) => Some(TryArc::try_new(w).map_err(oom)?),
+            Ok(w) => Some(TryArc::try_new(w)?),
 --- new
-                    Ok(w) => {
-                        drop(w);
-                        None
-                    }
+            Ok(w) => {
+                drop(w);
+                None
+            }
 
 === a transfer's timers are traced in the order they were declared
 file: crates/curl-core/src/multi/timers.rs

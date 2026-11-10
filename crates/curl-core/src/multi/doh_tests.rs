@@ -18,7 +18,7 @@ fn at(port: u16) -> SocketAddr {
 }
 
 fn multi_over(net: FakeNet, clock: &ManualClock) -> Multi {
-    Multi::new(Env {
+    Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -432,7 +432,7 @@ fn a_hosts_value_for_a_probe_comes_back() {
     }
     let clock = ManualClock::new().unwrap();
     let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
-    let mut m: Multi<Named> = Multi::new(Env {
+    let mut m: Multi<Named> = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
@@ -1199,7 +1199,7 @@ fn no_call_reaches_a_probe() {
     }
     let clock = ManualClock::new().unwrap();
     let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
-    let mut m: Multi<Named> = Multi::new(Env {
+    let mut m: Multi<Named> = Multi::with_env(Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),

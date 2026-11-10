@@ -121,7 +121,7 @@ fn run(ops: &[Op]) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = Multi::with_env(env).unwrap();
     let mut ev = Events::default();
     let mut ids: Vec<TransferId> = Vec::new();
     let mut live: Vec<TransferId> = Vec::new();

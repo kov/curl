@@ -165,7 +165,7 @@ fn run_on(e: Easy, clock: ManualClock) -> (Result<(), ErrorKind>, Easy) {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     assert_eq!(m.perform(&mut NoEvents).unwrap(), 0, "over in one pass");
     let result = m.info_read().expect("a message").result;

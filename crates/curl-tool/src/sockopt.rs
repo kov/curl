@@ -126,7 +126,7 @@ mod tests {
                 arena: ArenaPolicy::new(16, 0).unwrap(),
                 waker: None,
             };
-            let mut m: Multi = Multi::new(env).unwrap();
+            let mut m: Multi = Multi::with_env(env).unwrap();
             let mut easy = Easy::new();
             let mut s = Setopt::new(&mut easy, None);
             let url = b"tcp://127.0.0.1:3/";

@@ -193,7 +193,7 @@ fn a_multi_marks_its_cache_only_for_an_export_from_it() {
         arena: crate::id::ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi<NoHost> = Multi::new(env).unwrap();
+    let mut m: Multi<NoHost> = Multi::with_env(env).unwrap();
     let (easy, share, _told) = kept_by_a_share();
     let shared = m.add(Box::new(easy), (), &mut NoEvents).unwrap();
     let own = m.add(Box::new(Easy::new()), (), &mut NoEvents).unwrap();

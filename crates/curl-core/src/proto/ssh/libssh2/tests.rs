@@ -829,7 +829,7 @@ fn run_over(
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::with_env(env).unwrap();
     let ssh: &'static FakeSsh2 = Box::leak(Box::new(FakeSsh2(w.clone())));
     let mut e = Easy::new();
     let components = crate::components::Components::new().unwrap();

@@ -27,6 +27,7 @@ import os
 import shutil
 import socket
 import subprocess
+import time
 from typing import Dict
 
 import pytest
@@ -86,6 +87,21 @@ class OsslServer:
         ], stderr=self.cerr, stdout=self.cerr, check=True)
         assert s.returncode == 0
 
+    def _wait_listening(self, timeout: float = 5.0) -> bool:
+        # s_server accepts only once it has loaded its credentials: wait for
+        # it to listen, or for it to exit (its port taken, say)
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self.sproc.poll() is not None:
+                return False
+            try:
+                with socket.create_connection(('127.0.0.1', self.port),
+                                              timeout=0.5):
+                    return True
+            except OSError:
+                time.sleep(0.05)
+        return False
+
     def startup(self):
         self.cerr = open(self.err_file, 'w')  # noqa: SIM115
         creds = self.env.get_credentials(self.domain)
@@ -139,6 +155,11 @@ class OsslServer:
                                           cwd=self.run_dir,
                                           stderr=self.cerr,
                                           stdout=self.cerr)
+            if not self._wait_listening():
+                self.sproc.kill()
+                self.sproc.wait()
+                self.sproc = None
+                return False
             self.env.update_ports(ports)
             return True
 

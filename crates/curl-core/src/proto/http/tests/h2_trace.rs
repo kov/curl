@@ -890,3 +890,29 @@ fn lines(seen: &Seen, what: &str) -> usize {
         .filter(|l| l.contains(&format!("[HTTP/2] [1] {what}")))
         .count()
 }
+
+/// A wait makes each transfer's pollset twice: once to count the
+/// sockets its trace says, once to poll them. An upload wanting to send
+/// asks the session for its two send windows each time its pollset is
+/// made (`cf_h2_adjust_pollset`), so one wait asks four.
+#[test]
+fn a_wait_makes_each_pollset_twice() {
+    let body = vec![b'.'; 300_000];
+    let settings: &[u8] = b"S 100 16384\n";
+    let talk = Conversation::replies(&[settings], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let mut m = serving_on(clock.clone(), Peer::Accepts, &[&talk]);
+    let (mut e, _) = upload_handle(&body, "/up");
+    // Unverbose: no pollset is made to be traced.
+    e.set_components(None);
+    e.options_mut().output.verbose = false;
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    let before = crate::http2::fake::calls().send_windows;
+    let poll = crate::multi::WaitMode::Poll;
+    m.wait(&mut [], Duration::from_secs(1), poll, &mut NoEvents)
+        .unwrap();
+    assert_eq!(crate::http2::fake::calls().send_windows - before, 4);
+}

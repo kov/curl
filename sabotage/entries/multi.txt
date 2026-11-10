@@ -1146,3 +1146,13 @@ witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_
             .filter(|conn| matches!(conn.use_, Use::Leased(n) if n.get() > 1))
 --- new
             .filter(|conn| matches!(conn.use_, Use::Leased(n) if n.get() >= 1))
+
+=== a wait makes the pollsets once more for nothing
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core proto::http::tests::h2_trace::a_wait_makes_each_pollset_twice
+--- old
+        drop(more_keys);
+--- new
+        drop(more_keys);
+        pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |_, _| {})
+            .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;

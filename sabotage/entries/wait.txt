@@ -119,16 +119,9 @@ witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
 --- old
-        pollsets(
-            &self.slots,
-            &self.caches.pool,
-            &self.shutdowns,
-            |s, events| {
-                first.get_or_insert((s, events));
-            },
-        )
-        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+            Some(few) => &mut few[..at],
 --- new
+            Some(few) => &mut few[..0],
 
 === fdset sets a writing socket in the read set
 file: crates/curl-sys-abi/src/multi.rs
@@ -199,9 +192,11 @@ file: crates/curl-core/src/multi/wait.rs
 witness: curl-sys-abi handle_tests::a_wait_allocates_nothing
 features: debug-hooks
 --- old
-            Some((s, events)) if n_sockets <= ON_STACK => {
+        if distinct > ON_STACK {
+            more_sockets.try_reserve_exact(distinct).map_err(oom)?;
 --- new
-            Some((s, events)) if n_sockets == usize::MAX => {
+        if true {
+            more_sockets.try_reserve_exact(distinct.max(1)).map_err(oom)?;
 
 === a wait allocates its descriptors
 file: crates/curl-core/src/multi/wait.rs
@@ -327,9 +322,9 @@ witness: curl-core multi::socket_tests::a_transfer_driven_by_events_polls_the_re
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::socket_tests::a_wait_beside_the_resolver_s_wake_counts_a_ready_socket_once
 --- old
-                &mut few_sockets[..at]
+            Some(few) => &mut few[..at],
 --- new
-                &mut few_sockets[..wanted]
+            Some(few) => &mut few[..wanted],
 
 === a wait polls a socket the transfers on one connection share once for each
 file: crates/curl-core/src/conn/io.rs
@@ -343,25 +338,25 @@ witness: curl-core proto::http::tests::h3_trace::a_wait_polls_a_shared_connectio
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core proto::http::tests::h3_trace::a_wait_polls_a_shared_connection_s_socket_once
 --- old
-            if !known.iter().rev().any(|&k| k == key) {
+            if known.iter().rev().any(|&k| k == key) {
 --- new
-            if !known.iter().rev().any(|&k| k == key && false) {
+            if known.iter().rev().any(|&k| k == key && false) {
 
 === a wait on as many sockets as fit on the stack allocates for them
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core a_wait_on_a_few_sockets_allocates_nothing
 --- old
-        if n_sockets > ON_STACK {
+            if distinct < ON_STACK {
 --- new
-        if n_sockets >= ON_STACK {
+            if distinct + 1 < ON_STACK {
 
 === a wait on more sockets than fit on the stack keeps only those seen twice
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_wait_takes_more_than_fit_on_the_stack
 --- old
-                        if !SocketPoll::fold(&mut more_sockets, s, events) {
+                    if !SocketPoll::fold(&mut more_sockets, s, events) {
 --- new
-                        if SocketPoll::fold(&mut more_sockets, s, events) {
+                    if SocketPoll::fold(&mut more_sockets, s, events) {
 
 === a pollset made at the wait leaves input a TLS session holds unmarked
 file: crates/curl-core/src/multi/mod.rs

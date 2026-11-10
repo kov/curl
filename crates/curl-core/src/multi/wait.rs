@@ -48,39 +48,51 @@ impl<H: Host> Multi<H> {
         let internal = self.multi_timeout(now, ev);
         let timeout = internal.map_or(max, |t| t.min(max));
         let oom = |_| MultiErrorKind::OutOfMemory;
-        let mut n_sockets = 0;
-        pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |_, _| {
-            n_sockets += 1
-        })
-        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // A socket two transfers wait on, as the transfers on one
         // connection do, is polled once for what either wants of it, as
-        // C folds it (`cpfds_add_sock`). A few entries are kept on the
+        // C folds it (`cpfds_add_sock`). The sockets are counted, for the
+        // trace, before the wait borrows them; the pollsets are made for
+        // each, then again to borrow the sockets. A few are kept on the
         // stack, more in memory of their own, as C's `a_few_on_stack`: a
-        // loop of waits allocates nothing.
+        // loop of waits on a few sockets allocates nothing.
         let mut few_keys = [SocketKey::BAD; ON_STACK];
         let mut more_keys = Vec::new();
-        if n_sockets > ON_STACK {
-            more_keys.try_reserve_exact(n_sockets).map_err(oom)?;
-        }
         let mut distinct = 0;
+        let mut refused = false;
         pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |s, _| {
             let key = s.key();
-            let known = if n_sockets <= ON_STACK {
+            let known = if more_keys.is_empty() {
                 &few_keys[..distinct]
             } else {
                 &more_keys[..]
             };
-            if !known.iter().rev().any(|&k| k == key) {
-                if n_sockets <= ON_STACK {
-                    few_keys[distinct] = key;
-                } else {
-                    more_keys.try_push(key).expect("reserved");
-                }
-                distinct += 1;
+            if known.iter().rev().any(|&k| k == key) {
+                return;
             }
+            if distinct < ON_STACK {
+                few_keys[distinct] = key;
+            } else {
+                if more_keys.is_empty() {
+                    // One more than the stack holds: all of them move.
+                    if more_keys.try_reserve_exact(2 * ON_STACK).is_err() {
+                        refused = true;
+                        return;
+                    }
+                    more_keys
+                        .try_extend_from_slice(&few_keys)
+                        .expect("reserved");
+                }
+                if more_keys.try_push(key).is_err() {
+                    refused = true;
+                    return;
+                }
+            }
+            distinct += 1;
         })
         .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+        if refused {
+            return Err(MultiErrorKind::OutOfMemory);
+        }
         drop(more_keys);
         // The resolver's wake, listened on while a transfer is alive, is
         // one of the multi's own (C's admin handle's pollset).
@@ -96,54 +108,37 @@ impl<H: Host> Multi<H> {
             let fds = wanted + usize::from(waker_watched) + extra.len();
             self.trace_wait(id, now, fds, timeout, internal, ev);
         }
-        let mut first = None;
+        let mut few_sockets: Option<[SocketPoll<'_>; ON_STACK]> = None;
+        let mut at = 0;
+        let mut more_sockets = Vec::new();
+        if distinct > ON_STACK {
+            more_sockets.try_reserve_exact(distinct).map_err(oom)?;
+        }
         pollsets(
             &self.slots,
             &self.caches.pool,
             &self.shutdowns,
             |s, events| {
-                first.get_or_insert((s, events));
+                if distinct > ON_STACK {
+                    if !SocketPoll::fold(&mut more_sockets, s, events) {
+                        more_sockets
+                            .try_push(SocketPoll::new(s, events))
+                            .expect("reserved");
+                    }
+                    return;
+                }
+                let few = few_sockets
+                    .get_or_insert_with(|| [(); ON_STACK].map(|()| SocketPoll::new(s, events)));
+                if !SocketPoll::fold(&mut few[..at], s, events) {
+                    few[at] = SocketPoll::new(s, events);
+                    at += 1;
+                }
             },
         )
         .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
-        let mut few_sockets;
-        let mut more_sockets = Vec::new();
-        let sockets: &mut [SocketPoll<'_>] = match first {
-            None => &mut [],
-            Some((s, events)) if n_sockets <= ON_STACK => {
-                few_sockets = [(); ON_STACK].map(|()| SocketPoll::new(s, events));
-                let mut at = 0;
-                pollsets(
-                    &self.slots,
-                    &self.caches.pool,
-                    &self.shutdowns,
-                    |s, events| {
-                        if !SocketPoll::fold(&mut few_sockets[..at], s, events) {
-                            few_sockets[at] = SocketPoll::new(s, events);
-                            at += 1;
-                        }
-                    },
-                )
-                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
-                &mut few_sockets[..at]
-            }
-            Some(_) => {
-                more_sockets.try_reserve_exact(distinct).map_err(oom)?;
-                pollsets(
-                    &self.slots,
-                    &self.caches.pool,
-                    &self.shutdowns,
-                    |s, events| {
-                        if !SocketPoll::fold(&mut more_sockets, s, events) {
-                            more_sockets
-                                .try_push(SocketPoll::new(s, events))
-                                .expect("reserved");
-                        }
-                    },
-                )
-                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
-                &mut more_sockets
-            }
+        let sockets: &mut [SocketPoll<'_>] = match &mut few_sockets {
+            Some(few) => &mut few[..at],
+            None => &mut more_sockets,
         };
         let waker = self
             .waker

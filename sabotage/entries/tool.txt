@@ -1134,17 +1134,17 @@ witness: curl-tool options::parse::tests::reads_the_trace_components_as_c
 file: crates/curl-tool/src/trace.rs
 witness: curl-tool trace::tests::ids_name_the_transfer_and_its_connection
 --- old
-            None => write!(text, "[{transfer}-x] "),
+            None => text.push(b"-x] "),
 --- new
-            None => write!(text, "[{transfer}-0] "),
+            None => text.push(b"-0] "),
 
 === the ids are not put after the time
 file: crates/curl-tool/src/trace.rs
 witness: curl-tool trace::tests::a_line_starts_with_the_time_then_the_ids
 --- old
-        let _ = std::io::Write::write_all(self, bytes);
+        let n = bytes.len().min(room.len());
 --- new
-        let _ = bytes;
+        let n = 0;
 
 === the start of a line has room to spare
 file: crates/curl-tool/src/trace.rs
@@ -1706,3 +1706,11 @@ witness: curl-tool trace::tests::asks_the_time_of_day_once_a_second
         Some((at, known)) if at == secs => known,
 --- new
         Some((at, known)) if at == secs => look_up(secs).unwrap_or(known),
+
+=== the trace stamp's fields are written without the zeros before them
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::stamps_each_field_at_its_width
+--- old
+        let at = at.min(digits.len().saturating_sub(width));
+--- new
+        let at = at.min(digits.len().saturating_sub(width.min(1)));

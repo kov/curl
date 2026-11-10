@@ -170,10 +170,16 @@ impl TransferIds {
         let transfer = self.transfer?;
         let mut text = Stamp::empty();
         // Two numbers of at most 20 digits fit.
-        let _ = match self.conn {
-            Some(conn) => write!(text, "[{transfer}-{conn}] "),
-            None => write!(text, "[{transfer}-x] "),
-        };
+        text.push(b"[");
+        text.push_decimal(transfer, 1);
+        match self.conn {
+            Some(conn) => {
+                text.push(b"-");
+                text.push_decimal(conn, 1);
+                text.push(b"] ");
+            }
+            None => text.push(b"-x] "),
+        }
         Some(text)
     }
 }
@@ -222,16 +228,21 @@ fn timestamp(day: &mut Option<(i64, TimeOfDay)>) -> Stamp {
         .unwrap_or_default();
     let secs = i64::try_from(now.as_secs()).unwrap_or(i64::MAX);
     let day = time_of_day(day, secs, local_time_of_day);
+    stamp_of(day, now.subsec_micros())
+}
+
+/// `HH:MM:SS.uuuuuu ` of `day` and `micros`, written digit by digit as
+/// C's `%02d:%02d:%02d` and `.%06ld ` write them, for every entry.
+fn stamp_of(day: TimeOfDay, micros: u32) -> Stamp {
     let mut stamp = Stamp::empty();
-    // Every field is in range, so the stamp fits.
-    let _ = write!(
-        stamp,
-        "{:02}:{:02}:{:02}.{:06} ",
-        day.hour,
-        day.minute,
-        day.second,
-        now.subsec_micros()
-    );
+    stamp.push_decimal(u64::from(day.hour), 2);
+    stamp.push(b":");
+    stamp.push_decimal(u64::from(day.minute), 2);
+    stamp.push(b":");
+    stamp.push_decimal(u64::from(day.second), 2);
+    stamp.push(b".");
+    stamp.push_decimal(u64::from(micros), 6);
+    stamp.push(b" ");
     stamp
 }
 
@@ -275,26 +286,34 @@ impl Stamp {
         }
     }
 
+    /// `bytes` added, as much of them as there is room for.
     fn push(&mut self, bytes: &[u8]) {
-        let _ = std::io::Write::write_all(self, bytes);
+        let room = &mut self.bytes[self.len..];
+        let n = bytes.len().min(room.len());
+        room[..n].copy_from_slice(&bytes[..n]);
+        self.len += n;
+    }
+
+    /// `n` in decimal, zeros before it to make at least `width` digits,
+    /// as C's `%0*d` writes it.
+    fn push_decimal(&mut self, mut n: u64, width: usize) {
+        // The 20 digits of the largest `u64`, filled from the end.
+        let mut digits = [b'0'; 20];
+        let mut at = digits.len();
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        let at = at.min(digits.len().saturating_sub(width));
+        self.push(&digits[at..]);
     }
 
     fn bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
-    }
-}
-
-impl std::io::Write for Stamp {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let room = &mut self.bytes[self.len..];
-        let n = buf.len().min(room.len());
-        room[..n].copy_from_slice(&buf[..n]);
-        self.len += n;
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 

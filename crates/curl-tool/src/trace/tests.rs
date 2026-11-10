@@ -127,6 +127,24 @@ fn stamps_the_time_of_day() {
     );
 }
 
+/// Each field is written at its width, zeros before it, as C's
+/// `%02d:%02d:%02d.%06ld `: a leap second's 60 too.
+#[test]
+fn stamps_each_field_at_its_width() {
+    let at = |hour, minute, second, micros| {
+        let day = TimeOfDay {
+            hour,
+            minute,
+            second,
+        };
+        String::from_utf8(stamp_of(day, micros).bytes().to_vec()).unwrap()
+    };
+    assert_eq!(at(0, 0, 0, 0), "00:00:00.000000 ");
+    assert_eq!(at(9, 5, 7, 42), "09:05:07.000042 ");
+    assert_eq!(at(10, 30, 59, 100_000), "10:30:59.100000 ");
+    assert_eq!(at(23, 59, 60, 999_999), "23:59:60.999999 ");
+}
+
 /// The time of day is asked of the system once a second, not once an
 /// entry; one it cannot tell is midnight, kept for its second as well
 /// (`hms_for_sec`).

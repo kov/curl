@@ -93,8 +93,11 @@ pub(crate) struct ssh_knownhosts_entry {
 }
 
 /// `mode_t` on Linux.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) type mode_t = c_uint;
+/// `mode_t` on macOS.
+#[cfg(target_os = "macos")]
+pub(crate) type mode_t = u16;
 /// `mode_t` as libssh's header declares it for MSVC.
 #[cfg(windows)]
 pub(crate) type mode_t = c_int;
@@ -160,15 +163,21 @@ pub(crate) const SSH_SCP_REQUEST_NEWFILE: c_int = 2;
 
 // `open(2)`'s flags, as `sftp_open` takes them: the C library's numbers,
 // which libssh was built with and reads them by (`<fcntl.h>`), glibc's on
-// Linux and the UCRT's on Windows.
+// Linux, macOS's and the UCRT's on Windows.
 pub(crate) const O_RDONLY: c_int = 0;
 pub(crate) const O_WRONLY: c_int = 1;
-#[cfg(not(windows))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) const O_CREAT: c_int = 0o100;
-#[cfg(not(windows))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) const O_TRUNC: c_int = 0o1000;
-#[cfg(not(windows))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) const O_APPEND: c_int = 0o2000;
+#[cfg(target_os = "macos")]
+pub(crate) const O_CREAT: c_int = 0x0200;
+#[cfg(target_os = "macos")]
+pub(crate) const O_TRUNC: c_int = 0x0400;
+#[cfg(target_os = "macos")]
+pub(crate) const O_APPEND: c_int = 0x0008;
 #[cfg(windows)]
 pub(crate) const O_CREAT: c_int = 0x0100;
 #[cfg(windows)]

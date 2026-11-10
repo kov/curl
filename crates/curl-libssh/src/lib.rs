@@ -204,10 +204,12 @@ impl Drop for Attributes {
 
 /// What libssh's `rc` says of a call that may wait.
 /// Permissions as libssh's `mode_t` has them: on Windows an `int`, C's
-/// cast wrapping them.
+/// cast wrapping them; on macOS 16 bits, C's cast cutting them.
 fn mode_t(mode: u32) -> sys::mode_t {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     return mode;
+    #[cfg(target_os = "macos")]
+    return mode as u16;
     #[cfg(windows)]
     return mode.cast_signed();
 }

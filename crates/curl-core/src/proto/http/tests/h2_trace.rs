@@ -831,3 +831,62 @@ fn a_body_a_full_buffer_takes_none_of_resumes_nothing() {
         "not resumed once taken"
     );
 }
+
+/// The windows a send's and a receive's last lines give are asked of
+/// the session only when the lines are traced, as C's `CURL_TRC_CF` asks
+/// for them: the same upload, untraced, asks for two send windows fewer
+/// (the stream's and the connection's) for each `cf_send` line the
+/// traced one wrote, and three receive windows fewer (the stream's two
+/// and the connection's) for each `cf_recv` line. What is left is what
+/// its pollsets ask (`cf_h2_adjust_pollset`).
+#[test]
+fn a_stream_s_windows_are_asked_only_to_trace_them() {
+    let asked = |traced: bool| {
+        let body = vec![b'.'; 300_000];
+        let settings: &[u8] = b"S 100 0\n";
+        let talk = Conversation::replies(&[settings], false).per_send();
+        let clock = ManualClock::new().unwrap();
+        let mut m = serving_on(clock.clone(), Peer::Accepts, &[&talk]);
+        let (mut e, seen) = upload_handle(&body, "/up");
+        if !traced {
+            e.set_components(None);
+        }
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..3 {
+            round(&mut m);
+        }
+        let calls = crate::http2::fake::calls;
+        let before = (calls(), lines(&seen, "cf_send("), lines(&seen, "cf_recv("));
+        for _ in 0..3 {
+            round(&mut m);
+        }
+        (
+            calls().send_windows - before.0.send_windows,
+            calls().recv_windows - before.0.recv_windows,
+            lines(&seen, "cf_send(") - before.1,
+            lines(&seen, "cf_recv(") - before.2,
+        )
+    };
+    let (send, recv, sends, recvs) = asked(true);
+    let untraced = asked(false);
+    assert_eq!((untraced.2, untraced.3), (0, 0));
+    assert!(sends > 0 && recvs > 0, "{sends} sends, {recvs} receives");
+    assert_eq!(
+        send - untraced.0,
+        2 * sends,
+        "{send} send windows traced, {untraced:?}"
+    );
+    assert_eq!(
+        recv - untraced.1,
+        3 * recvs,
+        "{recv} receive windows traced, {untraced:?}"
+    );
+}
+
+/// The filter's lines of stream 1 a run traced that start with `what`.
+fn lines(seen: &Seen, what: &str) -> usize {
+    seen.text()
+        .iter()
+        .filter(|l| l.contains(&format!("[HTTP/2] [1] {what}")))
+        .count()
+}

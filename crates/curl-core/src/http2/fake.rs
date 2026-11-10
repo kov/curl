@@ -38,8 +38,8 @@ use std::fmt::Write as _;
 use curl_alloc::OutOfMemory;
 
 use super::{
-    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Session, Setting,
-    StreamId, Took, Wants,
+    BodyRead, DataWindow, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Session,
+    Setting, StreamId, Took, Wants,
 };
 
 /// Run `f`, the fake's own bookkeeping, untracked: a library's memory is
@@ -50,18 +50,24 @@ fn own<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// How often this thread's sessions were asked to do what a test counts:
-/// to send, to resume a stream, and for a send window, the stream's or
-/// the connection's.
+/// to send, to resume a stream, for a send window, the stream's or the
+/// connection's, and for a receive window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Calls {
     pub send: usize,
     pub resume: usize,
     pub send_windows: usize,
+    pub recv_windows: usize,
 }
 
 thread_local! {
     static CALLS: std::cell::Cell<Calls> = const {
-        std::cell::Cell::new(Calls { send: 0, resume: 0, send_windows: 0 })
+        std::cell::Cell::new(Calls {
+            send: 0,
+            resume: 0,
+            send_windows: 0,
+            recv_windows: 0,
+        })
     };
 }
 
@@ -76,6 +82,11 @@ fn count(f: impl FnOnce(&mut Calls)) {
         f(&mut calls);
         c.set(calls);
     });
+}
+
+/// The window of a DATA frame told before it is read.
+fn no_window() -> (i32, i32) {
+    (0, 0)
 }
 
 /// The fake library.
@@ -247,7 +258,7 @@ fn described<'a>(frame: &[u8], goaway_debug: &'a [u8]) -> Frame<'a> {
             end(3),
             FrameKind::Data {
                 padlen: 0,
-                window: (0, 0),
+                window: DataWindow::new(&no_window),
             },
         ),
         "R" => (
@@ -541,12 +552,14 @@ impl FakeSession {
                     }))?;
                 }
                 let mut frame = described(&input[..nl], &[]);
+                let window = (
+                    self.stream_recv_length(StreamId(id)),
+                    self.stream_window(StreamId(id)),
+                );
+                let ask = move || window;
                 frame.kind = FrameKind::Data {
                     padlen: 0,
-                    window: (
-                        self.stream_recv_length(StreamId(id)),
-                        self.stream_window(StreamId(id)),
-                    ),
+                    window: DataWindow::new(&ask),
                 };
                 check(events(Event::Received(frame)))?;
                 if end {
@@ -804,6 +817,7 @@ impl Session for FakeSession {
     }
 
     fn stream_window(&self, stream: StreamId) -> i32 {
+        count(|c| c.recv_windows += 1);
         self.streams
             .iter()
             .find(|(i, s)| *i == stream.0 && !s.closed)
@@ -811,6 +825,7 @@ impl Session for FakeSession {
     }
 
     fn stream_recv_length(&self, stream: StreamId) -> i32 {
+        count(|c| c.recv_windows += 1);
         self.streams
             .iter()
             .find(|(i, s)| *i == stream.0 && !s.closed)
@@ -818,6 +833,7 @@ impl Session for FakeSession {
     }
 
     fn local_window(&self) -> i32 {
+        count(|c| c.recv_windows += 1);
         self.local_window
     }
 

@@ -238,7 +238,7 @@ fn frames_are_told_as_c_describes_them() {
                 Event::Received(Frame {
                     kind: FrameKind::Data { window, .. },
                     ..
-                }) => data_window = Some(window),
+                }) => data_window = Some(window.get()),
                 Event::Settings {
                     max_concurrent,
                     enable_push,

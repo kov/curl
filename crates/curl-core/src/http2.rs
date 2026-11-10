@@ -84,10 +84,8 @@ pub struct Frame<'a> {
 pub enum FrameKind<'a> {
     Data {
         padlen: usize,
-        /// The stream's receive window as the frame left it: what came
-        /// on it not given back yet, and its size; -1 for both on a
-        /// stream the session no longer knows.
-        window: (i32, i32),
+        /// The stream's receive window as the frame left it.
+        window: DataWindow<'a>,
     },
     Headers,
     Priority,
@@ -115,6 +113,40 @@ pub enum FrameKind<'a> {
 const FLAG_END_STREAM: u8 = 0x01;
 const FLAG_ACK: u8 = 0x01;
 const FLAG_END_HEADERS: u8 = 0x04;
+
+/// A DATA frame's stream receive window as the frame left it, asked of
+/// the session only when it is looked at, as C asks for it only to trace
+/// it (`on_stream_frame`'s `CURL_TRC_CF`).
+#[derive(Clone, Copy)]
+pub struct DataWindow<'a>(&'a dyn Fn() -> (i32, i32));
+
+impl<'a> DataWindow<'a> {
+    /// The window `ask` gives.
+    pub fn new(ask: &'a dyn Fn() -> (i32, i32)) -> DataWindow<'a> {
+        DataWindow(ask)
+    }
+
+    /// What came on the stream not given back yet, and the window's
+    /// size; -1 for both on a stream the session no longer knows.
+    pub fn get(&self) -> (i32, i32) {
+        (self.0)()
+    }
+}
+
+impl fmt::Debug for DataWindow<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("DataWindow").finish_non_exhaustive()
+    }
+}
+
+/// Two windows are equal when the session gives the same for both.
+impl PartialEq for DataWindow<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
+impl Eq for DataWindow<'_> {}
 
 impl Frame<'_> {
     /// It ends its stream: a DATA or HEADERS frame with END_STREAM set.

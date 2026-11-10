@@ -18,7 +18,8 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use curl_core::http2::Http2;
 pub use curl_core::http2::{
-    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Setting, StreamId, Took, Wants,
+    BodyRead, DataWindow, Event, Frame, FrameError, FrameKind, H2Error, Heard, Setting, StreamId,
+    Took, Wants,
 };
 
 /// The library, as the handles are given it.
@@ -661,31 +662,42 @@ unsafe fn tell(user: *mut c_void, event: Event<'_>) -> c_int {
     }
 }
 
-/// A frame as the trace describes it, borrowing its debug data; a DATA
-/// frame with its stream's receive window as `session` has it now.
+/// Stream `stream`'s receive window as `session` has it now: what came
+/// on it not given back yet, and its size.
 ///
 /// # Safety
 ///
-/// `session` is the library's session the frame is of, in a callback.
-unsafe fn describe(session: *mut sys::nghttp2_session, frame: &sys::nghttp2_frame) -> Frame<'_> {
+/// `session` is the library's session, in one of its callbacks.
+unsafe fn data_window(session: *mut sys::nghttp2_session, stream: i32) -> (i32, i32) {
+    // SAFETY: the session, as the caller guarantees, which a callback may
+    // ask.
+    let received =
+        unsafe { sys::nghttp2_session_get_stream_effective_recv_data_length(session, stream) };
+    // SAFETY: as above.
+    let size =
+        unsafe { sys::nghttp2_session_get_stream_effective_local_window_size(session, stream) };
+    (received, size)
+}
+
+/// A frame as the trace describes it, borrowing its debug data; a DATA
+/// frame with its stream's receive window as `window` asks for it.
+///
+/// # Safety
+///
+/// `frame` is the library's, in a callback.
+unsafe fn describe<'a>(
+    frame: &'a sys::nghttp2_frame,
+    window: &'a dyn Fn() -> (i32, i32),
+) -> Frame<'a> {
     // SAFETY: every frame starts with its header.
     let hd = unsafe { frame.hd };
     let kind = match hd.r#type {
         sys::NGHTTP2_DATA => {
             // SAFETY: a DATA frame, as its header says.
             let padlen = unsafe { frame.data }.padlen;
-            // SAFETY: the session, as the caller guarantees, which a
-            // callback may ask.
-            let received = unsafe {
-                sys::nghttp2_session_get_stream_effective_recv_data_length(session, hd.stream_id)
-            };
-            // SAFETY: as above.
-            let size = unsafe {
-                sys::nghttp2_session_get_stream_effective_local_window_size(session, hd.stream_id)
-            };
             FrameKind::Data {
                 padlen,
-                window: (received, size),
+                window: DataWindow::new(window),
             }
         }
         sys::NGHTTP2_HEADERS => FrameKind::Headers,
@@ -744,8 +756,13 @@ unsafe extern "C" fn on_frame_send(
 ) -> c_int {
     // SAFETY: the frame the library sent, valid for the call.
     let frame = unsafe { &*frame };
-    // SAFETY: the session the callback is of.
-    let frame = unsafe { describe(session, frame) };
+    // SAFETY: every frame starts with its header.
+    let stream = unsafe { frame.hd }.stream_id;
+    // SAFETY: the session the callback is of, asked only while the
+    // callback runs, which the closure does not outlive.
+    let window = move || unsafe { data_window(session, stream) };
+    // SAFETY: the library's frame, in its callback.
+    let frame = unsafe { describe(frame, &window) };
     // What a frame sent is told fails nothing: the library's own GOAWAY
     // has failed the session already.
     // SAFETY: the session's user data.
@@ -764,8 +781,13 @@ unsafe extern "C" fn on_frame_recv(
     // SAFETY: the frame the library read, valid for the call.
     let frame = unsafe { &*frame };
     // Told whole first, as C traces it before it acts on it.
-    // SAFETY: the session the callback is of.
-    let whole = unsafe { describe(session, frame) };
+    // SAFETY: every frame starts with its header.
+    let stream = unsafe { frame.hd }.stream_id;
+    // SAFETY: the session the callback is of, asked only while the
+    // callback runs, which the closure does not outlive.
+    let window = move || unsafe { data_window(session, stream) };
+    // SAFETY: the library's frame, in its callback.
+    let whole = unsafe { describe(frame, &window) };
     // SAFETY: the session's user data.
     let told = unsafe { tell(user, Event::Received(whole)) };
     if told != 0 {

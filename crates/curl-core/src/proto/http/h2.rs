@@ -656,7 +656,11 @@ impl Request {
         let mut n = 0;
         let sent = self.h2_send_on(cx, lease, end, eos, &mut n);
         // What the send came to, and the windows and buffers it left
-        // (`cf_h2_send`'s last line).
+        // (`cf_h2_send`'s last line), asked of the session only when it
+        // is traced, as C's `CURL_TRC_CF` asks.
+        if !trace::traces(cx, H2) {
+            return sent.map(|_| n);
+        }
         let stream = self.stream();
         let id = stream.id.map_or(-1, |s| s.0);
         let body_eos = u8::from(stream.body_eos);
@@ -1019,7 +1023,10 @@ impl Request {
             Ok(StreamRecv::Again) => AGAIN_NUMBER,
             Err(e) => e.number(),
         };
+        // The windows asked of the session only when the line is traced,
+        // as C's `CURL_TRC_CF` asks for them.
         if let Some(id) = self.stream().id
+            && trace::traces(cx, H2)
             && let Some(h2) = lease.conn().h2()
         {
             let (used, size) = h2.stream_windows(id);
@@ -1787,15 +1794,14 @@ impl Request {
             // The frame whole, for the stream's transfer (`on_stream_frame`).
             Event::Received(Frame {
                 stream,
-                kind:
-                    FrameKind::Data {
-                        window: (used, size),
-                        ..
-                    },
+                kind: FrameKind::Data { window, .. },
                 ..
             }) if ours(stream) => {
-                let id = stream.0;
-                trace::of(cx, H2, format_args!("[{id}] DATA, window={used}/{size}"));
+                if trace::traces(cx, H2) {
+                    let id = stream.0;
+                    let (used, size) = window.get();
+                    trace::of(cx, H2, format_args!("[{id}] DATA, window={used}/{size}"));
+                }
                 Heard::Fine
             }
             Event::DataEnd { stream } if ours(stream) => {

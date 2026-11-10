@@ -1306,3 +1306,21 @@ witness: curl-core proto::http::tests::h2_trace::a_body_a_full_buffer_takes_none
         if n == 0 && len > 0 {
 --- new
         if n == 0 && len > 0 && false {
+
+=== a send's last line asks the session for its windows untraced
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_stream_s_windows_are_asked_only_to_trace_them
+--- old
+        if !trace::traces(cx, H2) {
+            return sent.map(|_| n);
+        }
+--- new
+
+=== a receive's last line asks the session for its windows untraced
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_stream_s_windows_are_asked_only_to_trace_them
+--- old
+            && trace::traces(cx, H2)
+            && let Some(h2) = lease.conn().h2()
+--- new
+            && let Some(h2) = lease.conn().h2()

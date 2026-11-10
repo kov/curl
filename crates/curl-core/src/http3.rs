@@ -701,10 +701,13 @@ mod tests {
         }
     }
 
+    /// Named with no link in it: the system counts a name's length with
+    /// its links resolved, and macOS's temporary directory is under
+    /// `/var`, a link to `/private/var`.
     fn dir(name: &str) -> Dir {
         let d = std::env::temp_dir().join(format!("curl-core-qlog-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        Dir(d)
+        Dir(std::fs::canonicalize(&d).unwrap())
     }
 
     /// `QLOGDIR` unset or empty names no directory, as `curl_getenv`

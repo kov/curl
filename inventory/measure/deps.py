@@ -65,11 +65,20 @@ ECH and the rewrite's legs against them (`--ech`, or the oracle
 `baseline.py` builds with it). They are servers and tools only: no curl
 links them.
 
+h2o: not packaged on Fedora. The HTTP/3 proxy the tests/http cases of
+test_60_h3_proxy.py tunnel through, built at the commit http3-linux.yml
+pins, from the archive whose checksum it pins, as that CI builds it
+(`WITHOUT_LIBS`, the server alone), over the system OpenSSL: CI builds it
+over the OpenSSL 3.5 release it calls `OPENSSL_PREV`, which is the
+system's here. For every oracle's pytest run (`H2O` in baseline.py's
+CMAKE_ARGS) and the rewrite's legs over them.
+
 Everything goes under build/deps and is rebuilt only when a pinned version
 or the way it is built changes. Run directly, or through `baseline.py --run`.
 Builds run `DEPS_JOBS` jobs at once, the machine's processors by default.
 """
 
+import hashlib
 import os
 import pathlib
 import re
@@ -130,7 +139,8 @@ GNUGSS_CONFIGURE = ["--disable-dependency-tracking", "--enable-static",
 
 def pinned(name, workflow=WORKFLOW):
     """Return the version curl's CI pins for `name` in `workflow`."""
-    m = re.search(rf"^  {name}: (\S+)$", common.read(workflow), re.MULTILINE)
+    m = re.search(rf"^  {name}: (\S+)(?:\s+#.*)?$", common.read(workflow),
+                  re.MULTILINE)
     check(m is not None, f"{workflow} does not pin {name}")
     return m.group(1)
 
@@ -381,6 +391,54 @@ def build_fork(fork):
     return {"PKG_CONFIG_PATH": f"{ngtcp2}/lib/pkgconfig"}
 
 
+H2O = DEPS / "h2o"
+
+
+def h2o():
+    """The h2o server the HTTP/3 proxy cases run."""
+    return H2O / "bin" / "h2o"
+
+
+def build_h2o():
+    """Build h2o if it is missing; return the server."""
+    version = pinned("H2O_VERSION")
+    sha256 = pinned("H2O_SHA256")
+    built = f"{version} without-libs"
+    stamp = H2O / ".version"
+    if not (stamp.exists() and stamp.read_text().strip() == built):
+        src = DEPS / "src" / f"h2o-{version}"
+        if src.exists():
+            sh(["rm", "-rf", str(src)], cwd=DEPS)
+        src.parent.mkdir(parents=True, exist_ok=True)
+        tarball = src.parent / f"h2o-{version}.tar.gz"
+        sh(["curl", "--fail", "--silent", "--show-error", "--location",
+            "--output", str(tarball),
+            f"https://github.com/h2o/h2o/archive/{version}.tar.gz"],
+           cwd=src.parent)
+        got = hashlib.sha256(tarball.read_bytes()).hexdigest()
+        check(got == sha256, f"h2o's archive has sha256 {got}, want {sha256}")
+        sh(["tar", "-xzf", str(tarball)], cwd=src.parent)
+        tarball.unlink()
+        # Its build names the git commit it finds itself in, which for an
+        # archive unpacked here would be the curl tree's: git stops above
+        # it.
+        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(src.parent)}
+        for step in (["-S", str(src), "-B", str(src / "build"), "-G", "Ninja",
+                      "-DWITHOUT_LIBS=ON", f"-DCMAKE_INSTALL_PREFIX={H2O}"],
+                     ["--build", str(src / "build"), "-j", JOBS],
+                     ["--install", str(src / "build")]):
+            subprocess.run(["cmake", *step], cwd=src, env=env, check=True,
+                           stdout=subprocess.DEVNULL)
+        stamp.write_text(built + "\n")
+    # The positive control: the server runs and says its version, as the
+    # pytest harness asks of it before it uses one.
+    said = subprocess.run([str(h2o()), "--version"], check=True,
+                          capture_output=True, text=True).stdout
+    check(re.search(r"^h2o version \S+", said, re.MULTILINE) is not None,
+          f"{h2o()} says {said.strip()}")
+    return h2o()
+
+
 ECH = DEPS / "ech"
 
 
@@ -564,6 +622,8 @@ if __name__ == "__main__":
     for fork in FORKS:
         if f"--{fork}" in sys.argv[1:]:
             print(build_fork(fork))
+    if "--h2o" in sys.argv[1:]:
+        print(build_h2o())
     if "--ech" in sys.argv[1:]:
         print(build_ech_servers())
     if "--quiche" in sys.argv[1:]:

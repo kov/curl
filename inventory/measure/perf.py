@@ -92,8 +92,9 @@ def platform_cmake_args():
     return {"OPENSSL_ROOT_DIR": openssl,
             "CMAKE_PREFIX_PATH": f"{deps.NGTCP2};{openssl};{brew}",
             "CMAKE_BUILD_RPATH": f"{deps.NGTCP2 / 'lib'};{openssl}/lib",
-            # baseline's are Fedora's paths: CMake finds macOS's.
-            "DANTED": "", "SFTPD": "",
+            # baseline's are Fedora's paths, and deps.py's h2o is built
+            # on Linux alone: CMake finds macOS's.
+            "DANTED": "", "SFTPD": "", "H2O": "",
             "HTTPD_NGHTTPX": nghttpx}
 
 

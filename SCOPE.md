@@ -169,6 +169,8 @@ The machine also needs the following for the test servers, which the build does 
 
 - httpd with mod_ssl and httpd-devel (for `apxs`);
 - nghttpx, caddy, vsftpd, dante-server, sshd and stunnel;
+- h2o, the HTTP/3 proxy of `test_60_h3_proxy.py`, which is not packaged here:
+  `inventory/measure/deps.py` builds it at the commit curl's CI pins, for every leg;
 - tcpdump;
 - `::1 ip6-localhost` in `/etc/hosts`, which tests 241 and 1083 resolve.
 

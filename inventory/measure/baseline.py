@@ -67,8 +67,9 @@ The oracles with Encrypted Client Hello build it as curl's CI does
 need, which deps.py builds (`build_ech_servers`): the nghttpx that serves
 ECH in place of the system's, for runtests.pl's tests and pytest's alike,
 and the `openssl` command that makes its configurations (`OPENSSL`, which
-the pytest harness reads). The rewrite's leg against one runs over the
-same (score.py).
+the pytest harness reads). Every oracle runs its pytest over the h2o
+deps.py builds (`build_h2o`), the HTTP/3 proxy of the cases for it. The
+rewrite's leg against one runs over the same (score.py).
 
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
@@ -117,6 +118,8 @@ CMAKE_ARGS = {
     # look on Fedora: dante's daemon is sockd, sftp-server is under openssh.
     "DANTED": "/usr/bin/sockd",
     "SFTPD": "/usr/libexec/openssh/sftp-server",
+    # Not packaged: built by deps.py, as curl's CI builds it.
+    "H2O": str(deps.h2o()),
 }
 
 
@@ -314,6 +317,8 @@ def run(oracle):
     if oracle.rustls:
         dep_env = {"PKG_CONFIG_PATH": ":".join(
             e["PKG_CONFIG_PATH"] for e in (deps.build_rustls(), dep_env))}
+    # The HTTP/3 proxy every oracle's pytest runs over.
+    deps.build_h2o()
     if oracle.ech:
         deps.build_ech_servers()
     if oracle.quiche:

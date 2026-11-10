@@ -1,5 +1,5 @@
 {
- "c-commit": "c742c3c2819ed6cce8675982a6f88d0b42f7741d",
+ "c-commit": "bd3de3aede646e3c92ade95d624e9f82211e1c3a",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -38,7 +38,7 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2185,
+   "default_run_candidates": 2187,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
@@ -46,7 +46,7 @@
    "perf_programs": 10,
    "pytest_functions": 360,
    "server_keywords_mapped": 36,
-   "test_files": 2199,
+   "test_files": 2201,
    "tunit_programs": 6,
    "unit_programs": 81
   },
@@ -1042,8 +1042,8 @@
    "SELECT": 3,
    "SELECTOR": 1,
    "SESSION_ID": 2,
-   "SFTP": 51,
-   "SFTP put": 6,
+   "SFTP": 53,
+   "SFTP put": 8,
    "SHA-512/256": 1,
    "SHA256": 3,
    "SITE": 2,
@@ -1350,28 +1350,28 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2199
+   "testcases_listed": 2201
   },
   "part_counts": {
-   "client/command": 2089,
+   "client/command": 2091,
    "client/connectport": 1,
    "client/disable": 11,
    "client/features": 1066,
-   "client/file": 381,
+   "client/file": 383,
    "client/file1": 13,
-   "client/file2": 15,
+   "client/file2": 17,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 13,
-   "client/name": 2199,
+   "client/name": 2201,
    "client/precheck": 27,
-   "client/server": 1949,
+   "client/server": 1951,
    "client/setenv": 202,
    "client/stdin": 88,
    "client/stdout": 5,
    "client/tool": 114,
    "client/verify": 1,
-   "info/keywords": 2199,
+   "info/keywords": 2201,
    "reply/connect": 77,
    "reply/connect1": 2,
    "reply/connect1000": 3,
@@ -1421,7 +1421,7 @@
    "verify/data": 2,
    "verify/dns": 1,
    "verify/errorcode": 532,
-   "verify/file": 179,
+   "verify/file": 181,
    "verify/file1": 70,
    "verify/file2": 70,
    "verify/file3": 27,
@@ -26792,7 +26792,7 @@
    }
   },
   "runner_counts": {
-   "curl": 1686,
+   "curl": 1688,
    "libtest": 397,
    "perl-script": 28,
    "tunit": 6,
@@ -26834,7 +26834,7 @@
    "pop3s": 1,
    "rtsp": 13,
    "scp": 14,
-   "sftp": 50,
+   "sftp": 52,
    "smtp": 91,
    "smtps": 1,
    "socks4": 6,
@@ -107478,6 +107478,110 @@
     ]
    },
    {
+    "attr_values": [],
+    "bytes": 723,
+    "command": "--key %LOGDIR/server/curl_client_key --pubkey %LOGDIR/server/curl_client_key.pub -u %USER: -T %LOGDIR/file%TESTNUMBER.txt sftp://%HOSTIP:%SSHPORT%SFTP_PWD/%LOGDIR/upload.%TESTNUMBER --insecure",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "SFTP",
+     "SFTP put"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "SFTP upload over a longer file",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3632,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/file2",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/file"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "sftp"
+    ],
+    "servers": [
+     "sftp"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "LOGDIR",
+     "SFTP_PWD",
+     "SSHPORT",
+     "TESTNUMBER",
+     "USER"
+    ]
+   },
+   {
+    "attr_values": [],
+    "bytes": 723,
+    "command": "--key %LOGDIR/server/curl_client_key --pubkey %LOGDIR/server/curl_client_key.pub -u %USER: -T %LOGDIR/file%TESTNUMBER.txt --append sftp://%HOSTIP:%SSHPORT%SFTP_PWD/%LOGDIR/upload.%TESTNUMBER --insecure",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "SFTP",
+     "SFTP put"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "SFTP upload appended to a file",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3633,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/file2",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/file"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "sftp"
+    ],
+    "servers": [
+     "sftp"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "LOGDIR",
+     "SFTP_PWD",
+     "SSHPORT",
+     "TESTNUMBER",
+     "USER"
+    ]
+   },
+   {
     "attr_values": [
      "crlf=headers"
     ],
@@ -149544,7 +149648,7 @@
    "GTT": 1,
    "H2CVER": 2,
    "HOST6IP": 22,
-   "HOSTIP": 1888,
+   "HOSTIP": 1890,
    "HTTP2PORT": 5,
    "HTTP2TLSPORT": 6,
    "HTTP3PORT": 4,
@@ -149557,7 +149661,7 @@
    "IMAPPORT": 72,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 668,
+   "LOGDIR": 670,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -149577,14 +149681,14 @@
    "RESOLVE": 3,
    "RTSPPORT": 13,
    "SCP_PWD": 15,
-   "SFTP_PWD": 50,
+   "SFTP_PWD": 52,
    "SMTPPORT": 91,
    "SMTPSPORT": 1,
    "SOCKSPORT": 29,
    "SOCKSUNIXPATH": 3,
    "SRCDIR": 98,
    "SSHKEYALGO": 1,
-   "SSHPORT": 64,
+   "SSHPORT": 66,
    "SSHSRVMD5": 2,
    "SSHSRVSHA256": 3,
    "TAB0": 6,
@@ -149595,7 +149699,7 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1864,
+   "TESTNUMBER": 1866,
    "TESTNUMBER000": 1,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
@@ -149618,7 +149722,7 @@
    "TESTNUMBER1002": 2,
    "TESTNUMBERMMM": 3,
    "TFTPPORT": 18,
-   "USER": 60,
+   "USER": 62,
    "VALUE2": 2,
    "VERSION": 911
   }
@@ -151075,6 +151179,8 @@
   "tests/data/test363",
   "tests/data/test3630",
   "tests/data/test3631",
+  "tests/data/test3632",
+  "tests/data/test3633",
   "tests/data/test364",
   "tests/data/test365",
   "tests/data/test3650",

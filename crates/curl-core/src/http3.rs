@@ -353,11 +353,15 @@ impl QlogDir {
     /// enough.
     pub fn from_env(mode: crate::options::FileMode) -> Option<QlogDir> {
         let mut buf = [0u8; QLOG_NAME_MAX];
-        let dir = curl_os::env::var_into(b"QLOGDIR", &mut buf)?;
-        if dir.is_empty() {
-            return None;
+        QlogDir::from_value(curl_os::env::var_into(b"QLOGDIR", &mut buf), mode)
+    }
+
+    /// The directory `QLOGDIR`'s value `value` names, as `from_env`.
+    fn from_value(value: Option<&[u8]>, mode: crate::options::FileMode) -> Option<QlogDir> {
+        match value {
+            None | Some([]) => None,
+            Some(dir) => QlogDir::new(dir, mode),
         }
-        QlogDir::new(dir, mode)
     }
 
     /// The directory `dir`, not checked: none if no file in it has a
@@ -701,6 +705,18 @@ mod tests {
         let d = std::env::temp_dir().join(format!("curl-core-qlog-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         Dir(d)
+    }
+
+    /// `QLOGDIR` unset or empty names no directory, as `curl_getenv`
+    /// gives neither; any other value names one.
+    #[test]
+    fn qlogdir_unset_or_empty_names_none() {
+        let mode = FileMode::default();
+        assert!(QlogDir::from_value(None, mode).is_none());
+        assert!(QlogDir::from_value(Some(b""), mode).is_none());
+        let dir = QlogDir::from_value(Some(b"/q"), mode).unwrap();
+        assert_eq!(&dir.name[..dir.len], b"/q/");
+        assert_eq!(format!("{dir:?}"), "QlogDir(/q/)");
     }
 
     /// The file is `<dir>/<source id in lower-case hex>.sqlog`, as

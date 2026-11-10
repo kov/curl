@@ -1486,3 +1486,11 @@ witness: curl-core conn::quic::tests::quiche_times_a_receive_by_its_call_and_ngt
         let mut first = (self.flavour == Flavour::Quiche).then(|| self.clock.now());
 --- new
         let mut first = None;
+
+=== an empty QLOGDIR names the root directory for qlogs
+file: crates/curl-core/src/http3.rs
+witness: curl-core http3::tests::qlogdir_unset_or_empty_names_none
+--- old
+            None | Some([]) => None,
+--- new
+            None => None,

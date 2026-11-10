@@ -704,10 +704,11 @@ exclude_re = [
     # The fake's window of a DATA frame the client sends: only a received
     # frame's trace asks for its window.
     'curl-core/src/http2/fake\.rs:.*: replace no_window -> \(i32, i32\) with ',
-    # Only frames of the transfer's own stream reach its events: the read
-    # traces another stream's as of no transfer, or hands it to the
-    # sibling whose stream it is (`h2_feed`).
-    'curl-core/src/proto/http/h2\.rs:.*: replace match guard ours\(stream\) with true in Request::h2_event$',
+    # The DATA frame traced with its window: a traced frame of a stream
+    # not the transfer's is the reading transfer's only when that stream
+    # has no transfer, and the read traces it so and goes no further
+    # (`h2_feed`). The other guards' columns differ, and are not excluded.
+    'curl-core/src/proto/http/h2\.rs:\d+:19: replace match guard ours\(stream\) with true in Request::h2_event$',
     # A head's fields and its end are read together, so either wakes the
     # transfer for it: the fake reads a header block whole, and a field
     # nghttp2 tells before its block's end needs the block split across

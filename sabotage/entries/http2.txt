@@ -1298,3 +1298,11 @@ witness: curl-core proto::http::tests::h2_trace::a_session_that_wants_to_write_n
         while !blocked && session.wants().write {
 --- new
         for _ in 0..1 {
+
+=== a body the stream's full buffer takes none of resumes the stream
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_body_a_full_buffer_takes_none_of_resumes_nothing
+--- old
+        if n == 0 && len > 0 {
+--- new
+        if n == 0 && len > 0 && false {

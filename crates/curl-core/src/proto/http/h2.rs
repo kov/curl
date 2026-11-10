@@ -849,6 +849,12 @@ impl Request {
         let n = stream
             .buffer(&out[range])
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        if n == 0 && len > 0 {
+            // A buffer with no room for any of it, which C's
+            // `Curl_bufq_write` says is `CURLE_AGAIN`: `cf_h2_body_send`
+            // returns before it resumes the stream.
+            return Ok(0);
+        }
         if eos && n == len {
             stream.body_eos = true;
         }

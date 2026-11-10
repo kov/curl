@@ -788,3 +788,46 @@ fn a_session_that_wants_to_write_nothing_is_not_asked_to_send() {
         "not asked once the window opened"
     );
 }
+
+/// A body its stream's full buffer takes none of resumes nothing: C's
+/// `cf_h2_body_send` returns the buffer's `CURLE_AGAIN` before it calls
+/// `nghttp2_session_resume_data`. A part of it the buffer took does.
+#[test]
+fn a_body_a_full_buffer_takes_none_of_resumes_nothing() {
+    let body = vec![b'.'; 300_000];
+    let settings: &[u8] = b"S 100 0\n";
+    let update: &[u8] = b"U 1 1000000\n";
+    let talk = Conversation::replies(&[settings, update], false)
+        .per_send()
+        .held();
+    talk.allow(1);
+    let clock = ManualClock::new().unwrap();
+    let (mut m, _, seen) = h2_upload_on(&clock, &body, &talk);
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    let full = |s: &Seen| {
+        s.text()
+            .iter()
+            .filter(|l| l.contains("cf_body_send(len=65536) -> 81, 0,"))
+            .count()
+    };
+    let (before, fulls) = (crate::http2::fake::calls().resume, full(&seen));
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    assert!(full(&seen) > fulls, "{:#?}", seen.text());
+    assert_eq!(
+        crate::http2::fake::calls().resume,
+        before,
+        "resumed with none taken"
+    );
+    talk.allow(2);
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    assert!(
+        crate::http2::fake::calls().resume > before,
+        "not resumed once taken"
+    );
+}

@@ -751,3 +751,40 @@ fn a_window_update_read_by_a_sibling_wakes_no_one_with_a_body_held() {
         .count();
     assert!(framed > 4, "the stream was not resumed: {framed} frames");
 }
+
+/// A session with nothing it wants to write is not asked to: C sends
+/// only while `nghttp2_session_want_write` says so (`h2_progress_egress`).
+/// With the stream's window shut and its buffer full, each pass's
+/// sends and reads ask nothing of the session; once the update opens
+/// the window, it is asked again.
+#[test]
+fn a_session_that_wants_to_write_nothing_is_not_asked_to_send() {
+    let body = vec![b'.'; 300_000];
+    let settings: &[u8] = b"S 100 0\n";
+    let update: &[u8] = b"U 1 1000000\n";
+    let talk = Conversation::replies(&[settings, update], false)
+        .per_send()
+        .held();
+    talk.allow(1);
+    let clock = ManualClock::new().unwrap();
+    let (mut m, _, seen) = h2_upload_on(&clock, &body, &talk);
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    assert!(shut_sends(&seen) > 0, "{:#?}", seen.text());
+    let before = crate::http2::fake::calls().send;
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    assert_eq!(
+        crate::http2::fake::calls().send,
+        before,
+        "asked with nothing to write"
+    );
+    talk.allow(2);
+    round(&mut m);
+    assert!(
+        crate::http2::fake::calls().send > before,
+        "not asked once the window opened"
+    );
+}

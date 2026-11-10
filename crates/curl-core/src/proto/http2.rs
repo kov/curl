@@ -524,65 +524,70 @@ impl H2Conn {
         let mut blocked = false;
         let mut failed = None;
         let with = std::cell::RefCell::new(&mut *with);
-        let sent = session.send(
-            &mut |bytes| {
-                let mut with = with.borrow_mut();
-                let cx = with.layer_cx();
-                let put = match io.as_deref_mut() {
-                    Some(io) => out.write_pass(bytes, Some(&mut |b| to_conn(cx, io, b))),
-                    None => out.write_pass(bytes, None),
-                };
-                match put {
-                    Ok(n) => std::num::NonZeroUsize::new(n).map_or_else(
-                        || {
-                            blocked = true;
-                            Took::Blocked
-                        },
-                        Took::Bytes,
-                    ),
-                    Err(e) => {
-                        if let EgressFailed::Send = e {
-                            // Said, as C's `failf` says it; the failure is
-                            // the send's.
-                            let _said = cx.fails(
-                                ErrorKind::SendError,
-                                format_args!("Failed sending HTTP2 data"),
-                            );
+        // Asked to send only while it wants to and the connection takes
+        // what it gives, as C asks it (`h2_progress_egress`).
+        while !blocked && session.wants().write {
+            let sent = session.send(
+                &mut |bytes| {
+                    let mut with = with.borrow_mut();
+                    let cx = with.layer_cx();
+                    let put = match io.as_deref_mut() {
+                        Some(io) => out.write_pass(bytes, Some(&mut |b| to_conn(cx, io, b))),
+                        None => out.write_pass(bytes, None),
+                    };
+                    match put {
+                        Ok(n) => std::num::NonZeroUsize::new(n).map_or_else(
+                            || {
+                                blocked = true;
+                                Took::Blocked
+                            },
+                            Took::Bytes,
+                        ),
+                        Err(e) => {
+                            if let EgressFailed::Send = e {
+                                // Said, as C's `failf` says it; the failure is
+                                // the send's.
+                                let _said = cx.fails(
+                                    ErrorKind::SendError,
+                                    format_args!("Failed sending HTTP2 data"),
+                                );
+                            }
+                            failed = Some(e);
+                            Took::Failed
                         }
-                        failed = Some(e);
-                        Took::Failed
                     }
+                },
+                &mut |stream, room| {
+                    with.borrow_mut()
+                        .body(stream, routes.route_of(stream), room)
+                },
+                &mut |event| {
+                    let mut with = with.borrow_mut();
+                    if let Event::Sent(frame) = &event {
+                        sent(with.layer_cx(), *library, frame, sent_goaway);
+                        return Heard::Fine;
+                    }
+                    let to = event.stream().and_then(|s| routes.route_of(s));
+                    with.event(event, to)
+                },
+            );
+            match (sent, failed.take()) {
+                (Err(e), Some(EgressFailed::Send)) => {
+                    // The session fails with its callback, as C traces it
+                    // (`h2_progress_egress`).
+                    let (text, code) = (e.text, e.code);
+                    with.borrow_mut().layer_cx().of(
+                        Component::Http2,
+                        format_args!("nghttp2_session_send error ({text}){code}"),
+                    );
+                    return Err(EgressFailed::Send);
                 }
-            },
-            &mut |stream, room| {
-                with.borrow_mut()
-                    .body(stream, routes.route_of(stream), room)
-            },
-            &mut |event| {
-                let mut with = with.borrow_mut();
-                if let Event::Sent(frame) = &event {
-                    sent(with.layer_cx(), *library, frame, sent_goaway);
-                    return Heard::Fine;
-                }
-                let to = event.stream().and_then(|s| routes.route_of(s));
-                with.event(event, to)
-            },
-        );
-        match (sent, failed) {
-            (Err(e), Some(EgressFailed::Send)) => {
-                // The session fails with its callback, as C traces it
-                // (`h2_progress_egress`).
-                let (text, code) = (e.text, e.code);
-                with.borrow_mut().layer_cx().of(
-                    Component::Http2,
-                    format_args!("nghttp2_session_send error ({text}){code}"),
-                );
-                Err(EgressFailed::Send)
+                (_, Some(failed)) => return Err(failed),
+                (Err(e), None) => return Err(EgressFailed::Session(e)),
+                (Ok(()), None) => {}
             }
-            (_, Some(failed)) => Err(failed),
-            (Err(e), None) => Err(EgressFailed::Session(e)),
-            (Ok(()), None) => Ok(blocked),
         }
+        Ok(blocked)
     }
 
     /// Have the session frame what it starts with, its SETTINGS, kept to

@@ -49,6 +49,35 @@ fn own<R>(f: impl FnOnce() -> R) -> R {
     curl_alloc::track::untracked(f)
 }
 
+/// How often this thread's sessions were asked to do what a test counts:
+/// to send, to resume a stream, and for a send window, the stream's or
+/// the connection's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Calls {
+    pub send: usize,
+    pub resume: usize,
+    pub send_windows: usize,
+}
+
+thread_local! {
+    static CALLS: std::cell::Cell<Calls> = const {
+        std::cell::Cell::new(Calls { send: 0, resume: 0, send_windows: 0 })
+    };
+}
+
+/// The calls this thread's sessions were asked so far.
+pub fn calls() -> Calls {
+    CALLS.with(std::cell::Cell::get)
+}
+
+fn count(f: impl FnOnce(&mut Calls)) {
+    CALLS.with(|c| {
+        let mut calls = c.get();
+        f(&mut calls);
+        c.set(calls);
+    });
+}
+
 /// The fake library.
 #[derive(Debug, Default)]
 pub struct FakeH2;
@@ -660,6 +689,7 @@ impl Session for FakeSession {
         body: &mut dyn FnMut(StreamId, &mut [u8]) -> BodyRead,
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<(), FrameError> {
+        count(|c| c.send += 1);
         // A stream the client reset closes as its RST_STREAM goes, as
         // nghttp2 tells it.
         for (id, error) in std::mem::take(&mut self.resets) {
@@ -798,10 +828,12 @@ impl Session for FakeSession {
     /// The fake keeps no connection send window: the peer always has
     /// room.
     fn remote_window(&self) -> i32 {
+        count(|c| c.send_windows += 1);
         i32::MAX
     }
 
     fn stream_remote_window(&self, stream: StreamId) -> i32 {
+        count(|c| c.send_windows += 1);
         self.streams
             .iter()
             .find(|(i, s)| *i == stream.0 && !s.closed)
@@ -820,6 +852,7 @@ impl Session for FakeSession {
     }
 
     fn resume(&mut self, stream: StreamId) -> Result<(), FrameError> {
+        count(|c| c.resume += 1);
         if let Some(s) = self.stream(stream.0) {
             s.deferred = false;
         }

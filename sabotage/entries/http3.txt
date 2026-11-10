@@ -216,10 +216,12 @@ witness: curl-core conn::quic::tests::idle_past_the_peer_s_timeout_or_shut_down_
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::idle_past_the_peer_s_timeout_or_shut_down_is_unusable
 --- old
-        if r.is_ok() && total > 0 {
-            self.state.last_io = self.clock.now();
+            self.state.last_io = at;
         }
+        if total > 0 || r.is_err() {
 --- new
+        }
+        if total > 0 || r.is_err() {
 
 === an HTTP/3 connection closes without saying goodbye
 file: crates/curl-core/src/proto/http3.rs
@@ -632,7 +634,7 @@ witness: curl-core conn::quic::tests::a_tunnel_gives_a_datagram_at_a_time
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_tunnel_gives_a_datagram_at_a_time
 --- old
-            self.state.first_byte_at.get_or_insert(now);
+            self.state.first_byte_at.get_or_insert(read_at);
 --- new
 
 === a tunnelled QUIC connection leaves the capsules held below unsent
@@ -1454,3 +1456,33 @@ witness: curl-core http3::tests::a_qlog_name_too_long_opens_none
         if at + 2 * scid.len() + EXT.len() >= QLOG_NAME_MAX {
 --- new
         if at + 2 * scid.len() + EXT.len() > QLOG_NAME_MAX {
+
+=== a QUIC receive's last I/O is the clock's after its datagrams, not its first datagram's
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_receive_is_timed_by_its_first_datagram
+--- old
+            self.state.last_io = at;
+        }
+        if total > 0 || r.is_err() {
+--- new
+            self.state.last_io = self.clock.now();
+        }
+        if total > 0 || r.is_err() {
+
+=== a QUIC receive of nothing leaves the last I/O where it was
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::an_empty_receive_on_a_socket_keeps_the_connection_from_idling
+--- old
+        if r.is_ok() {
+            let at = first
+--- new
+        if r.is_ok() && total > 0 {
+            let at = first
+
+=== quiche's receive is timed by its first datagram, not by its call
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::quiche_times_a_receive_by_its_call_and_ngtcp2_by_its_first_datagram
+--- old
+        let mut first = (self.flavour == Flavour::Quiche).then(|| self.clock.now());
+--- new
+        let mut first = None;

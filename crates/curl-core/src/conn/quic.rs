@@ -1735,9 +1735,11 @@ impl Quic {
             };
             let read_at = *at.get_or_insert_with(|| self.clock.now());
             self.read_datagram(cx, &d, &buf[..n], read_at)?;
-            let now = self.clock.now();
-            self.state.first_byte_at.get_or_insert(now);
-            self.state.last_io = now;
+            // The call's time, its first datagram's, as C sets both to
+            // `last_op` after each datagram; a call that reads nothing
+            // sets neither.
+            self.state.first_byte_at.get_or_insert(read_at);
+            self.state.last_io = read_at;
         }
         Ok(())
     }
@@ -1747,7 +1749,11 @@ impl Quic {
     fn recv_packets(&mut self, cx: &mut dyn SocketIo, room: &mut [u8]) -> Result<(), ErrorKind> {
         let mut got = [Datagram::default(); BATCH];
         let (mut total, mut packets, mut calls) = (0usize, 0usize, 0usize);
-        let mut first = None;
+        // The time C's `last_op` holds: quiche's filter takes it as its
+        // call starts (`Curl_vquic_ctx_update_time`) and not again for
+        // the packets; ngtcp2's at the call's first datagram
+        // (`cf_ngtcp2_recv_pkts`), its time then every one's.
+        let mut first = (self.flavour == Flavour::Quiche).then(|| self.clock.now());
         let r = loop {
             if packets >= MAX_PACKETS {
                 break Ok(());
@@ -1805,13 +1811,17 @@ impl Quic {
                 break Err(kind);
             }
         };
-        // Time of the first datagram ever read: the connect's
-        // (`Curl_vquic_recv_packets`).
-        if r.is_ok() && total > 0 && self.state.first_byte_at.is_none() {
-            self.state.first_byte_at = first;
-        }
-        if r.is_ok() && total > 0 {
-            self.state.last_io = self.clock.now();
+        // The first datagram ever read's time is the connect's, and any
+        // receive that did not fail, one of nothing too, is I/O
+        // (`Curl_vquic_recv_packets`). With nothing read, C's `last_op`
+        // is the time its call last took, which a receive just made
+        // stands for.
+        if r.is_ok() {
+            let at = first.unwrap_or_else(|| self.clock.now());
+            if total > 0 {
+                self.state.first_byte_at.get_or_insert(at);
+            }
+            self.state.last_io = at;
         }
         if total > 0 || r.is_err() {
             let code = Code(r);
@@ -1978,6 +1988,9 @@ pub(crate) mod tests {
         /// as `recvmmsg` does; one if unset.
         #[cfg(unix)]
         pub(crate) batch: Lock<Option<usize>>,
+        /// A clock moved this much forward as each datagram is taken, as
+        /// time passes while the kernel hands them over.
+        pub(crate) tick: Lock<Option<(ManualClock, Duration)>>,
     }
 
     impl Scripted {
@@ -1998,6 +2011,9 @@ pub(crate) mod tests {
 
         /// The next datagram queued, into `buf`: its length.
         fn take_datagram(&self, buf: &mut [u8]) -> io::Result<usize> {
+            if let Some((clock, d)) = &*self.tick.lock().unwrap() {
+                clock.advance(*d);
+            }
             match self.datagrams.lock().unwrap().pop_front() {
                 None => Err(io::ErrorKind::WouldBlock.into()),
                 Some(Err(errno)) => Err(io::Error::from_raw_os_error(errno)),
@@ -2268,6 +2284,11 @@ pub(crate) mod tests {
     /// `quic`, its context with layers its datagrams go through if
     /// `layered`.
     fn quic_over(script: &Arc<Lock<Script>>, layered: bool) -> (Quic, Cx) {
+        quic_as(script, layered, Flavour::Ngtcp2)
+    }
+
+    /// `quic_over`, spoken through `flavour`'s filter.
+    fn quic_as(script: &Arc<Lock<Script>>, layered: bool, flavour: Flavour) -> (Quic, Cx) {
         let clock = ManualClock::new().unwrap();
         let remote = SocketAddr::from(([127, 0, 0, 1], 443));
         let setup = ClientSetup {
@@ -2300,15 +2321,7 @@ pub(crate) mod tests {
         };
         let shared = SharedClock::new(Box::new(clock)).unwrap();
         (
-            Quic::new(
-                conn,
-                peer,
-                remote,
-                shared,
-                Component::Http3,
-                Flavour::Ngtcp2,
-            )
-            .unwrap(),
+            Quic::new(conn, peer, remote, shared, Component::Http3, flavour).unwrap(),
             cx,
         )
     }
@@ -2972,6 +2985,87 @@ pub(crate) mod tests {
                 [start, start, start, later],
                 "{layered}"
             );
+        }
+    }
+
+    /// A receive's time is its first datagram's, the time the library is
+    /// handed every one of them, not the clock's once it has read them:
+    /// the first byte's, and the last I/O's the idle check counts from
+    /// (`Curl_vquic_recv_packets`, `cf_ngtcp2_recv_pkts`). Through a
+    /// tunnel as on a socket.
+    #[test]
+    fn a_receive_is_timed_by_its_first_datagram() {
+        for layered in [false, true] {
+            let script = Script::new();
+            script.lock().unwrap().idle = Some(Duration::from_secs(30));
+            let (mut q, mut cx) = quic_over(&script, layered);
+            let tick = Duration::from_millis(3);
+            script.lock().unwrap().tick = Some((cx.clock.clone(), tick));
+            cx.clock.advance(Duration::from_secs(1));
+            let start = cx.clock.now();
+            let datagrams = [b"one".to_vec(), b"two".to_vec(), b"six".to_vec()];
+            match cx.below.as_mut() {
+                Some(below) => below.datagrams.extend(datagrams.map(Ok)),
+                None => cx
+                    .socket
+                    .datagrams
+                    .lock()
+                    .unwrap()
+                    .extend(datagrams.map(Ok)),
+            }
+            q.ingress(&mut cx).unwrap();
+            assert_eq!(cx.clock.now(), start.after(tick * 3), "{layered}");
+            assert_eq!(q.first_byte_at(), Some(start), "{layered}");
+            // Idle 30 s since the first datagram, though not since the last.
+            cx.clock.advance(Duration::from_millis(30_001) - tick * 3);
+            assert!(!q.usable(), "{layered}");
+        }
+    }
+
+    /// quiche's filter times a receive by its call, as C's takes the
+    /// time as the call starts (`Curl_vquic_ctx_update_time`) and not
+    /// again for its packets; ngtcp2's by its first datagram, taken once
+    /// the socket gave it (`cf_ngtcp2_recv_pkts`).
+    #[test]
+    fn quiche_times_a_receive_by_its_call_and_ngtcp2_by_its_first_datagram() {
+        for flavour in [Flavour::Quiche, Flavour::Ngtcp2] {
+            let script = Script::new();
+            let (mut q, mut cx) = quic_as(&script, false, flavour);
+            let tick = Duration::from_millis(5);
+            *cx.socket.tick.lock().unwrap() = Some((cx.clock.clone(), tick));
+            cx.clock.advance(Duration::from_secs(1));
+            let start = cx.clock.now();
+            let datagrams = [b"one".to_vec(), b"two".to_vec()];
+            cx.socket
+                .datagrams
+                .lock()
+                .unwrap()
+                .extend(datagrams.map(Ok));
+            q.ingress(&mut cx).unwrap();
+            let first = match flavour {
+                Flavour::Quiche => start,
+                Flavour::Ngtcp2 => start.after(tick),
+            };
+            assert_eq!(q.first_byte_at(), Some(first), "{flavour:?}");
+        }
+    }
+
+    /// A receive that finds nothing is I/O all the same, as C's sets the
+    /// last I/O whenever its receive does not fail: a connection polled
+    /// does not go idle (`Curl_vquic_recv_packets`). One through a
+    /// tunnel that finds nothing is not, as C's tunnelled branch returns
+    /// before it.
+    #[test]
+    fn an_empty_receive_on_a_socket_keeps_the_connection_from_idling() {
+        for layered in [false, true] {
+            let script = Script::new();
+            script.lock().unwrap().idle = Some(Duration::from_secs(30));
+            let (mut q, mut cx) = quic_over(&script, layered);
+            cx.clock.advance(Duration::from_millis(30_001));
+            assert!(!q.usable(), "{layered}");
+            q.ingress(&mut cx).unwrap();
+            assert_eq!(q.usable(), !layered, "{layered}");
+            assert_eq!(q.first_byte_at(), None, "nothing came: {layered}");
         }
     }
 

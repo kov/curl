@@ -418,7 +418,12 @@ fn number(r: Result<(), Stop>) -> u16 {
 /// sent as datagrams of `gso` bytes each, the first `split` of them, if
 /// set, as datagrams of their own size.
 struct Out {
+    /// The packets collected, then the room earlier packets made: room
+    /// is zeroed as it is first made, not again for each packet the
+    /// library writes into it.
     bytes: Vec<u8>,
+    /// How much of `bytes` is packets.
+    filled: usize,
     sent: usize,
     gso: usize,
     split: Option<(usize, usize)>,
@@ -429,11 +434,30 @@ struct Out {
 
 impl Out {
     fn unsent(&self) -> &[u8] {
-        &self.bytes[self.sent..]
+        &self.bytes[self.sent..self.filled]
     }
 
     fn is_empty(&self) -> bool {
-        self.sent == self.bytes.len()
+        self.sent == self.filled
+    }
+
+    /// Room for a packet of up to `max` bytes behind those collected,
+    /// which [`Out::add`] then says the length of.
+    fn room(&mut self, max: usize) -> Result<&mut [u8], curl_alloc::OutOfMemory> {
+        let end = self.filled + max;
+        if self.bytes.len() < end {
+            self.bytes.try_resize(end, 0)?;
+        }
+        Ok(&mut self.bytes[self.filled..end])
+    }
+
+    /// The first `n` bytes of the room behind the packets are a packet.
+    fn add(&mut self, n: usize) {
+        assert!(
+            self.filled + n <= self.bytes.len(),
+            "a packet is written into room made for it"
+        );
+        self.filled += n;
     }
 
     /// `n` of the unsent went.
@@ -443,7 +467,7 @@ impl Out {
             self.split = (len > n).then(|| (len - n, gso));
         }
         if self.is_empty() {
-            self.bytes.clear();
+            self.filled = 0;
             self.sent = 0;
         }
     }
@@ -555,6 +579,7 @@ impl Quic {
             remote,
             out: Out {
                 bytes,
+                filled: 0,
                 sent: 0,
                 gso: 0,
                 split: None,
@@ -1165,7 +1190,11 @@ impl Quic {
             if let Ok(n) = written
                 && n > 0
             {
-                if self.out.bytes.try_extend_from_slice(&packet[..n]).is_err() {
+                let added = self
+                    .out
+                    .room(n)
+                    .map(|room| room.copy_from_slice(&packet[..n]));
+                if added.is_err() {
                     let oom = ErrorKind::OutOfMemory.number();
                     cx.of(
                         h3,
@@ -1175,6 +1204,7 @@ impl Quic {
                     );
                     return false;
                 }
+                self.out.add(n);
                 self.out.no_gso = true;
                 self.out.gso = n;
                 self.out.split = None;
@@ -1380,10 +1410,6 @@ impl Quic {
         max: usize,
         now: Instant,
     ) -> Result<Option<usize>, ErrorKind> {
-        let at = self.out.bytes.len();
-        if self.out.bytes.try_resize(at + max, 0).is_err() {
-            return Err(ErrorKind::OutOfMemory);
-        }
         self.state.now = now;
         let wrote = {
             let flavour = self.flavour;
@@ -1394,22 +1420,21 @@ impl Quic {
                 out,
                 ..
             } = self;
+            let Ok(room) = out.room(max) else {
+                return Err(ErrorKind::OutOfMemory);
+            };
             let mut tcx = TlsCx::new(cx, state.component, peer);
-            conn.write_packet(&mut tcx, now, &mut out.bytes[at..], &mut |tcx, e| {
+            conn.write_packet(&mut tcx, now, room, &mut |tcx, e| {
                 state.heard(tcx, flavour, e)
             })
         };
         match wrote {
             Ok(Some(n)) => {
-                self.out.bytes.truncate(at + n);
+                self.out.add(n);
                 Ok(Some(n))
             }
-            Ok(None) => {
-                self.out.bytes.truncate(at);
-                Ok(None)
-            }
+            Ok(None) => Ok(None),
             Err(error) => {
-                self.out.bytes.truncate(at);
                 let (call, why, code) = (error.call, error.text, error.code);
                 match self.flavour {
                     Flavour::Ngtcp2 => cx.fails(

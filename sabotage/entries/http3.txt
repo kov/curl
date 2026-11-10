@@ -1424,14 +1424,12 @@ witness: curl-core conn::quic::tests::the_packets_of_one_ingress_are_read_at_one
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::the_packets_of_one_egress_are_written_at_one_time
 --- old
-            return Err(ErrorKind::OutOfMemory);
-        }
         self.state.now = now;
+        let wrote = {
 --- new
-            return Err(ErrorKind::OutOfMemory);
-        }
         let now = self.clock.now();
         self.state.now = now;
+        let wrote = {
 
 === the datagrams of one receive are all read from its first slot
 file: crates/curl-core/src/conn/quic.rs
@@ -1514,3 +1512,24 @@ witness: curl-ngtcp2 another_library_s_session_is_refused
         let ctx = of_crypto(ctx)?;
 --- new
         let ctx = ctx;
+
+=== the room behind the packets collected is sent with them
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_smaller_packet_ends_the_run
+--- old
+        &self.bytes[self.sent..self.filled]
+--- new
+        &self.bytes[self.sent..]
+
+=== packets sent stay collected, and go again with the next
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_larger_packet_splits_the_run_before_it
+--- old
+        if self.is_empty() {
+            self.filled = 0;
+            self.sent = 0;
+        }
+--- new
+        if self.is_empty() {
+            self.sent = 0;
+        }

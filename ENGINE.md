@@ -2275,8 +2275,8 @@ library's setup of the library's object at the point C calls it (`QuicContextSet
 `Http3::setup_tls_context`: OpenSSL's context, GnuTLS's session,
 `ngtcp2_crypto_gnutls_configure_client_session`, wolfSSL's context,
 `ngtcp2_crypto_wolfssl_configure_client_context`), then the ALPN `h3` and a resumed ticket.
-`curl-ngtcp2` is built for one TLS library (its `openssl`, `gnutls` or `wolfssl` feature, which the shim's and
-the tool's TLS feature names) and links that library's
+`curl-ngtcp2` is built for one TLS library (its `openssl`, `gnutls` or `wolfssl` feature, which
+`curl-backends`' TLS feature names) and links that library's
 `ngtcp2_crypto_*`, which finds the connection through the library's own pointer on the session
 (OpenSSL's and wolfSSL's application data, GnuTLS's session pointer): curl-ngtcp2 sets it, and
 the TLS crate never uses it for a QUIC session. The records are the QUIC library's: a QUIC

@@ -46,7 +46,10 @@ fn curl(dir: &Scratch, args: &[&str]) -> Run {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
     let source = dir.0.join("source.c");
     let _ = std::fs::remove_file(&source);
+    // Without the CA path cargo hands its children (`SSL_CERT_DIR`): a
+    // library without CA paths warns of it, as C's tool does.
     let out = Command::new(tool)
+        .env_remove("SSL_CERT_DIR")
         .arg("-q")
         .args(args)
         .args(["--libcurl", "source.c", "--proto", "=file", URL])

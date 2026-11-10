@@ -27,8 +27,15 @@
 //! - `PP <id> <promised>\n` then `name: value\n` per field and `\n`: a
 //!   PUSH_PROMISE on stream `<id>`, which the client cannot have closed.
 //!
-//! A server's line that is no frame: `XW <id>\n`, the next setting of
-//! stream `<id>`'s receive window fails, as nghttp2's fails out of memory.
+//! A server's lines that are no frames:
+//!
+//! - `XW <id>\n`: the next setting of stream `<id>`'s receive window
+//!   fails, as nghttp2's fails out of memory.
+//! - `XF\n`: from here on, a header block's fields are told as their
+//!   lines come, before the block's end has, as nghttp2 tells the fields
+//!   of a block split across reads (a HEADERS frame and its CONTINUATION,
+//!   or one frame cut by the transport). Until then a block is told only
+//!   once it is whole, its fields and its end in the same read.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -153,6 +160,14 @@ fn block(rest: &[u8]) -> Option<(Vec<&[u8]>, usize)> {
     }
 }
 
+/// The whole lines of a block not yet whole: the fields come so far.
+fn whole_lines(rest: &[u8]) -> Vec<&[u8]> {
+    let mut lines: Vec<&[u8]> = rest.split(|&b| b == b'\n').collect();
+    // What follows the last line's end is a line still coming.
+    lines.pop();
+    lines
+}
+
 /// A field's name and value; a pseudo-header's name starts with its colon.
 fn split_field(field: &[u8]) -> Option<(&[u8], &[u8])> {
     let colon = field.iter().position(|&b| b == b':')?;
@@ -217,6 +232,11 @@ pub struct FakeSession {
     unsent: Option<Unsent>,
     /// The send window each stream starts with, once the server said one.
     send_window: Option<i64>,
+    /// A header block's fields are told as their lines come (`XF`).
+    fields_as_they_come: bool,
+    /// The fields already told of the header block at the front of the
+    /// input, not yet whole.
+    fields_told: usize,
 }
 
 /// A frame the connection took only some of: from `at` on, and the
@@ -455,6 +475,10 @@ impl FakeSession {
                 check(events(Event::Received(described(&input[..nl], &[]))))?;
                 Ok(Some(nl + 1))
             }
+            "XF" => {
+                self.fields_as_they_come = true;
+                Ok(Some(nl + 1))
+            }
             "XW" => {
                 let id = num(1)? as i32;
                 if let Some(s) = self.stream(id) {
@@ -512,9 +536,21 @@ impl FakeSession {
                 let id = num(1)? as i32;
                 let end = num(2)? == 1;
                 let Some((fields, at)) = own(|| block(&input[nl + 1..])) else {
+                    if self.fields_as_they_come {
+                        let lines = own(|| whole_lines(&input[nl + 1..]));
+                        for field in &lines[self.fields_told..] {
+                            let (name, value) = split_field(field).ok_or(bad)?;
+                            check(events(Event::Header {
+                                stream: StreamId(id),
+                                name,
+                                value,
+                            }))?;
+                        }
+                        self.fields_told = lines.len();
+                    }
                     return Ok(None);
                 };
-                for field in fields {
+                for field in &fields[std::mem::take(&mut self.fields_told)..] {
                     let (name, value) = split_field(field).ok_or(bad)?;
                     check(events(Event::Header {
                         stream: StreamId(id),
@@ -918,5 +954,50 @@ impl Session for FakeSession {
             read: !self.goaway || self.streams.iter().any(|(_, s)| !s.closed),
             write: !self.queued.is_empty() || body || self.unsent.is_some(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The events of each read of `reads`, in order, as the trace names
+    /// them: a field by its name, a block's end, a frame as read.
+    fn told(reads: &[&[u8]]) -> Vec<Vec<String>> {
+        let mut session = FakeSession::default();
+        reads
+            .iter()
+            .map(|bytes| {
+                let mut seen = Vec::new();
+                session
+                    .recv(bytes, &mut |event| {
+                        seen.push(match event {
+                            Event::Header { name, .. } => String::from_utf8(name.to_vec()).unwrap(),
+                            Event::HeadersDone { .. } => "done".to_owned(),
+                            Event::Received(_) => "frame".to_owned(),
+                            other => format!("{other:?}"),
+                        });
+                        Heard::Fine
+                    })
+                    .unwrap();
+                seen
+            })
+            .collect()
+    }
+
+    /// A header block cut across reads is told once it is whole, unless
+    /// `XF` said its fields are told as they come; each field once, the
+    /// block's end only when it comes.
+    #[test]
+    fn a_block_s_fields_are_told_as_they_come_only_after_xf() {
+        let whole = told(&[b"H 1 0\n:status: 200\nfoo: ", b"bar\n", b"\n"]);
+        assert_eq!(
+            whole,
+            [vec![], vec![], vec![":status", "foo", "frame", "done"]]
+        );
+        let split = told(&[b"XF\nH 1 0\n:status: 200\nfoo: ", b"bar\n", b"\n"]);
+        assert_eq!(split, [vec![":status"], vec!["foo"], vec!["frame", "done"]]);
+        let at_once = told(&[b"XF\nH 1 0\n:status: 200\n\n"]);
+        assert_eq!(at_once, [vec![":status", "frame", "done"]]);
     }
 }

@@ -961,3 +961,105 @@ fn a_head_read_by_a_sibling_wakes_its_transfer() {
         sb.text()
     );
 }
+
+/// Two uploads on one connection, the first under way when the second
+/// joins, told header fields as they come (`XF`). Each reply the server
+/// has ready is read by the second transfer to look for it, the first to
+/// look finding it not there yet: the first runs first in each pass, so
+/// the second reads it after the first ran. The tenth, let go once the
+/// second joins, opens the second's window and holds the first field of
+/// the first's response's head; the eleventh, held until the test lets
+/// it go, the head's end.
+fn siblings_split_head() -> (Multi, Conversation, Seen, Seen) {
+    let body = vec![b'.'; 300_000];
+    let up: &[u8] = b"U 1 16384\n";
+    let start: [&[u8]; 3] = [b"S 100 16384\nXF\n", b"", b""];
+    let mut replies: Vec<&[u8]> = start.into_iter().chain([up; 8]).collect();
+    replies[9] = b"U 3 1000000\nH 1 0\n:status: 200\n";
+    replies[10] = b"\n";
+    let talk = Conversation::replies(&replies, false)
+        .per_send()
+        .late_replies()
+        .held();
+    talk.allow(3);
+    let clock = ManualClock::new().unwrap();
+    let mut m = serving_on(clock.clone(), Peer::Accepts, &[&talk]);
+    let (a, sa) = upload_handle(&body, "/a");
+    m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    let (b, sb) = upload_handle(&body, "/b");
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
+    talk.allow(10);
+    (m, talk, sa, sb)
+}
+
+/// How many lines `seen` traced holding `what`.
+fn traced(seen: &Seen, what: &str) -> usize {
+    seen.text().iter().filter(|l| l.contains(what)).count()
+}
+
+/// Rounds until the first field of stream 1's head is read, by the
+/// second's step, the head's end not yet; panics if it is not.
+fn read_split_field(m: &mut Multi, sa: &Seen, sb: &Seen) {
+    for _ in 0..10 {
+        round(m);
+        if traced(sa, "[1] status: HTTP/2 200") > 0 {
+            // The field came with the second's window update, which the
+            // second's step read; the session is whole, the head's
+            // frame not yet read.
+            assert_eq!(traced(sb, "[3] <- FRAME[WINDOW_UPDATE"), 1);
+            for seen in [sa, sb] {
+                assert_eq!(traced(seen, "[1] <- FRAME[HEADERS"), 0);
+                assert_eq!(traced(seen, "recv error"), 0, "{:#?}", seen.text());
+            }
+            return;
+        }
+        assert_eq!(traced(sb, "[3] <- FRAME[WINDOW_UPDATE"), 0);
+    }
+    panic!("the field was not read: {:#?}\n{:#?}", sa.text(), sb.text());
+}
+
+/// A field of the response's head for a stream, read by a sibling's
+/// step before the head's end has come, marks the stream's transfer to
+/// run again, as C's `on_header` does for each field of a head another
+/// transfer reads (`Curl_multi_mark_dirty`): nghttp2 tells a block's
+/// fields as they come, ahead of its end when the block is split across
+/// reads. The first transfer ran earlier in the pass, so the multi's next
+/// wait returns at once for it to take the field.
+#[test]
+fn a_head_s_field_read_by_a_sibling_wakes_its_transfer() {
+    let (mut m, _talk, sa, sb) = siblings_split_head();
+    read_split_field(&mut m, &sa, &sb);
+    assert_eq!(
+        m.timeout(),
+        Some(Duration::ZERO),
+        "a head's field read by a sibling left its transfer waiting"
+    );
+}
+
+/// The end of the response's head for a stream, read by a sibling's
+/// step after its fields were read and taken, marks the stream's
+/// transfer to run again, as C's `on_stream_frame` does for a HEADERS
+/// frame that ends a head (`Curl_multi_mark_dirty`): the head is done
+/// only at its end, the stream not yet ended. The first transfer ran
+/// earlier in the pass, so the multi's next wait returns at once for it
+/// to take the head's end.
+#[test]
+fn a_head_s_end_read_by_a_sibling_wakes_its_transfer() {
+    let (mut m, talk, sa, sb) = siblings_split_head();
+    read_split_field(&mut m, &sa, &sb);
+    // The end comes in the next pass, the first running in it for the
+    // field and taking it before the second reads the end.
+    talk.allow(11);
+    round(&mut m);
+    assert_eq!(traced(&sa, "[1] status: HTTP/2 200"), 1);
+    assert_eq!(traced(&sa, "[1] <- FRAME[HEADERS"), 0, "{:#?}", sa.text());
+    assert_eq!(traced(&sb, "[1] <- FRAME[HEADERS"), 1, "{:#?}", sb.text());
+    assert_eq!(
+        m.timeout(),
+        Some(Duration::ZERO),
+        "a head's end read by a sibling left its transfer waiting"
+    );
+}

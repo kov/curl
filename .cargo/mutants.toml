@@ -709,11 +709,6 @@ exclude_re = [
     # has no transfer, and the read traces it so and goes no further
     # (`h2_feed`). The other guards' columns differ, and are not excluded.
     'curl-core/src/proto/http/h2\.rs:\d+:19: replace match guard ours\(stream\) with true in Request::h2_event$',
-    # A head's fields and its end are read together, so either wakes the
-    # transfer for it: the fake reads a header block whole, and a field
-    # nghttp2 tells before its block's end needs the block split across
-    # two reads.
-    'curl-core/src/proto/http/h2\.rs:.*: (delete ! |replace \|\| with && )in Request::h2_woken_by$',
     # A library traces its records only for a debug handler: without one,
     # SSL data is written nowhere (`Curl_debug`), so asking is a saving.
     'curl-core/src/tls\.rs:.*: replace TlsIo<.*>::debugs -> bool with true$',

@@ -1336,3 +1336,19 @@ witness: curl-core proto::http::tests::h2_trace::a_head_read_by_a_sibling_wakes_
                             if woken && false {
                                 cx.wake(to);
                             }
+
+=== a field of a head a sibling's read hands a transfer does not wake it
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_head_s_field_read_by_a_sibling_wakes_its_transfer
+--- old
+            Event::Header { .. } => !s.body_started,
+--- new
+            Event::Header { .. } => false,
+
+=== the end of a head a sibling's read hands a transfer does not wake it
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_head_s_end_read_by_a_sibling_wakes_its_transfer
+--- old
+            Event::HeadersDone { end_stream, .. } => *end_stream || !s.body_started,
+--- new
+            Event::HeadersDone { end_stream, .. } => *end_stream,

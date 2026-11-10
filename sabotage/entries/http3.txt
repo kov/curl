@@ -173,11 +173,9 @@ witness: curl-core proto::http::tests::h3_trace::a_stream_closed_before_its_head
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::received_packets_are_handed_over_at_the_connection_s_time
 --- old
-        let from = d.from.unwrap_or(self.remote);
-        let now = self.clock.now();
+            let read_at = *at.get_or_insert_with(|| self.clock.now());
 --- new
-        let from = d.from.unwrap_or(self.remote);
-        let now = cx.now();
+            let read_at = *at.get_or_insert_with(|| cx.now());
 
 === a transfer that may speak HTTP/3 alone never multiplexes
 file: crates/curl-core/src/multi/state/leg.rs
@@ -1408,3 +1406,27 @@ witness: curl-core conn::h3proxy::tests::a_tunnel_s_flow_is_blocked_as_its_strea
                     *flow_blocked = *event == StreamEvent::Blocked;
 --- new
                     *flow_blocked = *event != StreamEvent::Blocked;
+
+=== each datagram of one ingress is read at a time of its own, not the call's first datagram's
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::the_packets_of_one_ingress_are_read_at_one_time
+--- old
+        let from = d.from.unwrap_or(self.remote);
+        self.state.now = now;
+--- new
+        let from = d.from.unwrap_or(self.remote);
+        let now = self.clock.now();
+        self.state.now = now;
+
+=== each packet of one egress is written at a time of its own, not the call's start
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::the_packets_of_one_egress_are_written_at_one_time
+--- old
+            return Err(ErrorKind::OutOfMemory);
+        }
+        self.state.now = now;
+--- new
+            return Err(ErrorKind::OutOfMemory);
+        }
+        let now = self.clock.now();
+        self.state.now = now;

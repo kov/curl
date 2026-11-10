@@ -119,6 +119,12 @@ pub struct Script {
     /// The latest time it was handed, which none after may be before, as
     /// ngtcp2 asserts (`conn_update_timestamp`).
     pub last_ts: Option<Instant>,
+    /// The time each packet it read was handed with, and each it wrote.
+    pub read_at: Vec<Instant>,
+    pub written_at: Vec<Instant>,
+    /// A clock moved this much forward as each packet is read or written,
+    /// as time passes while the library works.
+    pub tick: Option<(crate::time::ManualClock, Duration)>,
     /// The failures it was told, and the close it then says.
     pub failed: Vec<QuicError>,
     pub close: Option<CloseError>,
@@ -206,6 +212,19 @@ impl Script {
             assert!(last <= now, "the time went back from {last:?} to {now:?}");
         }
         self.last_ts = Some(now);
+    }
+
+    /// The time passes as a packet is read or written at `now`.
+    fn packet_at(&mut self, now: Instant, written: bool) {
+        let at = if written {
+            &mut self.written_at
+        } else {
+            &mut self.read_at
+        };
+        own(|| at.push(now));
+        if let Some((clock, d)) = &self.tick {
+            clock.advance(*d);
+        }
     }
 
     pub fn new() -> Arc<Lock<Script>> {
@@ -481,6 +500,7 @@ impl Connection for FakeConnection {
                 let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
                 s.at(now);
                 own(|| s.read.push((packet.to_vec(), ecn)));
+                s.packet_at(now, false);
                 if let Some(code) = s.read_fails {
                     return Err(quic_error("ngtcp2_conn_read_pkt", code));
                 }
@@ -544,6 +564,7 @@ impl Connection for FakeConnection {
                 };
                 let len = packet.len().min(buf.len());
                 buf[..len].copy_from_slice(&packet[..len]);
+                s.packet_at(now, true);
                 return Ok(Some(len));
             }
         }
@@ -554,6 +575,7 @@ impl Connection for FakeConnection {
         };
         assert!(packet.len() <= buf.len(), "a scripted packet fits");
         buf[..packet.len()].copy_from_slice(&packet);
+        s.packet_at(now, true);
         Ok(Some(packet.len()))
     }
 

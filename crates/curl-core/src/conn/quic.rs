@@ -1224,6 +1224,9 @@ impl Quic {
     /// Send what waits, then collect what the library has to send and
     /// send it, in runs of packets of one size (`progress_egress`).
     pub(crate) fn egress(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+        // The time the call starts at is every packet's it collects, as
+        // C's `Curl_cf_ngtcp2_progress_egress` takes it once for them.
+        let at = self.clock.now();
         // What the tunnel's layers hold goes first, as C flushes the
         // filters before it drives them (`Curl_conn_needs_flush`).
         if let Via::Layers(below) = cx.via() {
@@ -1238,8 +1241,8 @@ impl Quic {
             Err(Stop::Failed(kind)) => return Err(kind),
         }
         match self.flavour {
-            Flavour::Ngtcp2 => self.egress_run(cx)?,
-            Flavour::Quiche => self.egress_bursts(cx)?,
+            Flavour::Ngtcp2 => self.egress_run(cx, at)?,
+            Flavour::Quiche => self.egress_bursts(cx, at)?,
         }
         let now = self.clock.now();
         self.state.now = now;
@@ -1263,7 +1266,7 @@ impl Quic {
     /// A packet larger than those before may be the library finding the
     /// path's MTU, which the network may refuse: what is collected before
     /// it goes first, so that what follows is not refused with it.
-    fn egress_run(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+    fn egress_run(&mut self, cx: &mut dyn QuicIo, at: Instant) -> Result<(), ErrorKind> {
         let ngtcp2 = self.flavour == Flavour::Ngtcp2;
         let max = self.conn.max_payload();
         let path_max = self.conn.path_max_payload();
@@ -1275,7 +1278,7 @@ impl Quic {
             );
         }
         let (mut packets, mut gso) = (0usize, 0usize);
-        while let Some(n) = self.collect(cx, max)? {
+        while let Some(n) = self.collect(cx, max, at)? {
             let len = self.out.unsent().len();
             if len >= quantum || len + gso >= SEND_ROOM {
                 break;
@@ -1327,11 +1330,11 @@ impl Quic {
     /// to ten packets, each burst ended early by a packet shorter than
     /// the largest the library sends, which is every burst's segment size
     /// (quiche's `cf_flush_egress`).
-    fn egress_bursts(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+    fn egress_bursts(&mut self, cx: &mut dyn QuicIo, at: Instant) -> Result<(), ErrorKind> {
         let max = self.conn.max_payload();
         let mut packets = 0;
         loop {
-            let collected = self.collect(cx, max)?;
+            let collected = self.collect(cx, max, at)?;
             if let Some(n) = collected {
                 packets += 1;
                 if n == max && packets < BURST {
@@ -1356,15 +1359,19 @@ impl Quic {
         }
     }
 
-    /// The library's next packet, of at most `max` bytes, added to those
-    /// collected: its length, or none if it has none
-    /// (`read_pkt_to_send`).
-    fn collect(&mut self, cx: &mut dyn QuicIo, max: usize) -> Result<Option<usize>, ErrorKind> {
+    /// The library's next packet, of at most `max` bytes, written at
+    /// `now` and added to those collected: its length, or none if it has
+    /// none (`read_pkt_to_send`).
+    fn collect(
+        &mut self,
+        cx: &mut dyn QuicIo,
+        max: usize,
+        now: Instant,
+    ) -> Result<Option<usize>, ErrorKind> {
         let at = self.out.bytes.len();
         if self.out.bytes.try_resize(at + max, 0).is_err() {
             return Err(ErrorKind::OutOfMemory);
         }
-        let now = self.clock.now();
         self.state.now = now;
         let wrote = {
             let flavour = self.flavour;
@@ -1703,6 +1710,9 @@ impl Quic {
     /// `MAX_PACKETS` of them, read into `buf` and handed to the library
     /// (`Curl_cf_ngtcp2_progress_ingress`'s tunnelled branch).
     fn recv_through(&mut self, cx: &mut dyn LayersIo, buf: &mut [u8]) -> Result<(), ErrorKind> {
+        // The time of its first datagram is every one's, as C's
+        // `cf_ngtcp2_recv_pkts` takes it once for the call.
+        let mut at = None;
         for _ in 0..MAX_PACKETS {
             let n = match cx.recv_below(buf) {
                 Ok(Recv::Data(n)) => n.get(),
@@ -1723,7 +1733,8 @@ impl Quic {
                 ecn: 0,
                 from: None,
             };
-            self.read_datagram(cx, &d, &buf[..n])?;
+            let read_at = *at.get_or_insert_with(|| self.clock.now());
+            self.read_datagram(cx, &d, &buf[..n], read_at)?;
             let now = self.clock.now();
             self.state.first_byte_at.get_or_insert(now);
             self.state.last_io = now;
@@ -1780,9 +1791,11 @@ impl Quic {
                     continue;
                 }
                 total += d.len;
-                first.get_or_insert_with(|| self.clock.now());
+                // The time of the call's first datagram is every one's, as
+                // C's `cf_ngtcp2_recv_pkts` takes it once for the call.
+                let at = *first.get_or_insert_with(|| self.clock.now());
                 let bytes = &room[i * SLOT..i * SLOT + d.len];
-                if let Err(kind) = self.read_datagram(cx, d, bytes) {
+                if let Err(kind) = self.read_datagram(cx, d, bytes, at) {
                     failed = Some(kind);
                     break;
                 }
@@ -1813,12 +1826,13 @@ impl Quic {
     }
 
     /// The packets of datagram `d`, `bytes`, handed to the library one by
-    /// one (`cf_ngtcp2_recv_pkts`).
+    /// one as received at `now` (`cf_ngtcp2_recv_pkts`).
     fn read_datagram(
         &mut self,
         cx: &mut dyn QuicIo,
         d: &Datagram,
         bytes: &[u8],
+        now: Instant,
     ) -> Result<(), ErrorKind> {
         if d.ecn != 0 && self.flavour == Flavour::Ngtcp2 {
             let (len, gso, ecn) = (d.len, d.segment, d.ecn);
@@ -1828,7 +1842,6 @@ impl Quic {
             );
         }
         let from = d.from.unwrap_or(self.remote);
-        let now = self.clock.now();
         self.state.now = now;
         // Its packets in one call: what the libraries' callbacks reach is
         // set up once for them all.
@@ -2886,6 +2899,71 @@ pub(crate) mod tests {
         cx.below = Some(below);
         q.ingress(&mut cx).unwrap();
         assert_eq!(script.lock().unwrap().last_ts, Some(own.now()));
+    }
+
+    /// Every packet one ingress reads is handed to the library at one
+    /// time, its first datagram's, however long the library takes over
+    /// them (`cf_ngtcp2_recv_pkts` updates the time at the call's first
+    /// packet only): on a socket, across its receives, and through a
+    /// tunnel.
+    #[test]
+    fn the_packets_of_one_ingress_are_read_at_one_time() {
+        for layered in [false, true] {
+            let script = Script::new();
+            let (mut q, mut cx) = quic_over(&script, layered);
+            let tick = Duration::from_millis(3);
+            script.lock().unwrap().tick = Some((cx.clock.clone(), tick));
+            cx.clock.advance(Duration::from_secs(1));
+            let start = cx.clock.now();
+            match cx.below.as_mut() {
+                Some(below) => {
+                    for d in [b"one", b"two", b"six"] {
+                        below.datagrams.push_back(Ok(d.to_vec()));
+                    }
+                }
+                None => {
+                    let mut queued = cx.socket.datagrams.lock().unwrap();
+                    for d in [b"one", b"two", b"six"] {
+                        queued.push_back(Ok(d.to_vec()));
+                    }
+                }
+            }
+            q.ingress(&mut cx).unwrap();
+            assert_eq!(script.lock().unwrap().read_at, [start; 3], "{layered}");
+            // The next ingress reads at its own time.
+            match cx.below.as_mut() {
+                Some(below) => below.datagrams.push_back(Ok(b"ten".to_vec())),
+                None => {
+                    let mut queued = cx.socket.datagrams.lock().unwrap();
+                    queued.push_back(Ok(b"ten".to_vec()));
+                }
+            }
+            q.ingress(&mut cx).unwrap();
+            let later = start.after(tick * 3);
+            assert_eq!(
+                script.lock().unwrap().read_at,
+                [start, start, start, later],
+                "{layered}"
+            );
+        }
+    }
+
+    /// Every packet one egress collects is written at the time it
+    /// started, and the run is told sent at the time it went
+    /// (`Curl_cf_ngtcp2_progress_egress`).
+    #[test]
+    fn the_packets_of_one_egress_are_written_at_one_time() {
+        let script = Script::new();
+        packets(&script, &[1200, 1200, 1200]);
+        let (mut q, mut cx) = quic(&script);
+        let tick = Duration::from_millis(3);
+        script.lock().unwrap().tick = Some((cx.clock.clone(), tick));
+        cx.clock.advance(Duration::from_secs(1));
+        let start = cx.clock.now();
+        q.egress(&mut cx).unwrap();
+        let s = script.lock().unwrap();
+        assert_eq!(s.written_at, [start; 3]);
+        assert_eq!(s.sent_at, [start.after(tick * 3)]);
     }
 
     /// A connection through a tunnel receives in a room of its own, C's

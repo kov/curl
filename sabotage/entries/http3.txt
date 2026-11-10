@@ -1430,3 +1430,11 @@ witness: curl-core conn::quic::tests::the_packets_of_one_egress_are_written_at_o
         }
         let now = self.clock.now();
         self.state.now = now;
+
+=== the datagrams of one receive are all read from its first slot
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::the_packets_of_one_ingress_are_read_at_one_time
+--- old
+                let bytes = &room[i * SLOT..i * SLOT + d.len];
+--- new
+                let bytes = &room[..d.len];

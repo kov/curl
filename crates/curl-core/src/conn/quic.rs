@@ -1974,6 +1974,10 @@ pub(crate) mod tests {
         /// (GRO), if it did.
         #[cfg(unix)]
         pub(crate) segment: Lock<Option<usize>>,
+        /// The most datagrams one receive gives, each into its own slot,
+        /// as `recvmmsg` does; one if unset.
+        #[cfg(unix)]
+        pub(crate) batch: Lock<Option<usize>>,
     }
 
     impl Scripted {
@@ -2071,15 +2075,27 @@ pub(crate) mod tests {
             slot: usize,
             out: &mut [Datagram],
         ) -> io::Result<usize> {
-            let len = self.take_datagram(buf)?;
-            assert!(len <= slot);
-            out[0] = Datagram {
-                len,
-                segment: self.segment.lock().unwrap().unwrap_or(len),
-                ecn: 0,
-                from: None,
-            };
-            Ok(1)
+            let most = self.batch.lock().unwrap().unwrap_or(1).min(out.len());
+            let mut n = 0;
+            // A batch ends at what is not a datagram, which the next
+            // receive gives.
+            while n < most
+                && (n == 0 || matches!(self.datagrams.lock().unwrap().front(), Some(Ok(_))))
+            {
+                let len = match self.take_datagram(&mut buf[n * slot..(n + 1) * slot]) {
+                    Ok(len) => len,
+                    Err(e) if n == 0 => return Err(e),
+                    Err(_) => break,
+                };
+                out[n] = Datagram {
+                    len,
+                    segment: self.segment.lock().unwrap().unwrap_or(len),
+                    ecn: 0,
+                    from: None,
+                };
+                n += 1;
+            }
+            Ok(n)
         }
         fn release(self: Box<Self>) -> SocketKey {
             self.key()
@@ -2922,6 +2938,12 @@ pub(crate) mod tests {
                     }
                 }
                 None => {
+                    // Two in one receive, each in its slot, the third in
+                    // the next.
+                    #[cfg(unix)]
+                    {
+                        *cx.socket.batch.lock().unwrap() = Some(2);
+                    }
                     let mut queued = cx.socket.datagrams.lock().unwrap();
                     for d in [b"one", b"two", b"six"] {
                         queued.push_back(Ok(d.to_vec()));
@@ -2929,7 +2951,11 @@ pub(crate) mod tests {
                 }
             }
             q.ingress(&mut cx).unwrap();
-            assert_eq!(script.lock().unwrap().read_at, [start; 3], "{layered}");
+            let s = script.lock().unwrap();
+            let read: Vec<&[u8]> = s.read.iter().map(|(p, _)| &p[..]).collect();
+            assert_eq!(read, [b"one", b"two", b"six"], "{layered}");
+            assert_eq!(s.read_at, [start; 3], "{layered}");
+            drop(s);
             // The next ingress reads at its own time.
             match cx.below.as_mut() {
                 Some(below) => below.datagrams.push_back(Ok(b"ten".to_vec())),

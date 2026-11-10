@@ -84,6 +84,10 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # `QLOGDIR` read from the environment, which the test binaries, running
+    # threads, do not set: what its value names is `QlogDir::from_value`'s,
+    # tested; the read itself is checked end to end with the tool.
+    "QlogDir::from_env",
     # The race's attempt beside the lead holds a resolve of its own only
     # dialed to a SOCKS proxy whose destination is still being resolved,
     # and no race goes through a SOCKS proxy (HTTP/3 is refused over one):

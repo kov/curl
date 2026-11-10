@@ -1,5 +1,5 @@
 {
- "c-commit": "2e84c0de2b3b686331132739e3726e28519c6b5e",
+ "c-commit": "c742c3c2819ed6cce8675982a6f88d0b42f7741d",
  "data": {
   "backends": {
    "all": [
@@ -8159,7 +8159,7 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1072,
+   "test-feature-blocks": 1073,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8578,7 +8578,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 18
+     "tests": 19
     },
     {
      "name": "form-api",
@@ -8991,7 +8991,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1066,
+   "test-files-with-features": 1067,
    "tool-added-features": [
     {
      "bit": null,

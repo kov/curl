@@ -1,5 +1,5 @@
 {
- "c-commit": "2e84c0de2b3b686331132739e3726e28519c6b5e",
+ "c-commit": "c742c3c2819ed6cce8675982a6f88d0b42f7741d",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -12,7 +12,7 @@
    "nonewline=yes": 168,
    "option=binary-trace": 30,
    "option=force-output": 1,
-   "option=no-include": 42,
+   "option=no-include": 43,
    "option=no-output": 48,
    "option=no-output no-include": 6,
    "option=no-output,no-include": 94,
@@ -25,7 +25,7 @@
   "command_option_counts": {
    "binary-trace": 30,
    "force-output": 1,
-   "no-include": 42,
+   "no-include": 43,
    "no-output": 48,
    "no-output no-include": 6,
    "no-output,no-include": 94,
@@ -38,7 +38,7 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2184,
+   "default_run_candidates": 2185,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
@@ -46,7 +46,7 @@
    "perf_programs": 10,
    "pytest_functions": 360,
    "server_keywords_mapped": 36,
-   "test_files": 2198,
+   "test_files": 2199,
    "tunit_programs": 6,
    "unit_programs": 81
   },
@@ -467,7 +467,7 @@
    "crypto": 107,
    "dict": 3,
    "digest": 86,
-   "file": 18,
+   "file": 19,
    "form-api": 10,
    "ftp": 22,
    "getrlimit": 3,
@@ -895,7 +895,7 @@
    "Early Hints": 1,
    "Expect: 100-continue": 4,
    "FETCH": 18,
-   "FILE": 46,
+   "FILE": 47,
    "FLUSH": 1,
    "FORM": 8,
    "FTP": 296,
@@ -1229,7 +1229,7 @@
    "oauth2-bearer": 2,
    "options": 1,
    "options-in-versions": 1,
-   "parallel": 8,
+   "parallel": 9,
    "persistent connection": 3,
    "post-quote": 14,
    "pre-quote": 7,
@@ -1350,20 +1350,20 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2198
+   "testcases_listed": 2199
   },
   "part_counts": {
-   "client/command": 2088,
+   "client/command": 2089,
    "client/connectport": 1,
    "client/disable": 11,
-   "client/features": 1065,
-   "client/file": 380,
+   "client/features": 1066,
+   "client/file": 381,
    "client/file1": 13,
    "client/file2": 15,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 13,
-   "client/name": 2198,
+   "client/name": 2199,
    "client/precheck": 27,
    "client/server": 1949,
    "client/setenv": 202,
@@ -1371,7 +1371,7 @@
    "client/stdout": 5,
    "client/tool": 114,
    "client/verify": 1,
-   "info/keywords": 2198,
+   "info/keywords": 2199,
    "reply/connect": 77,
    "reply/connect1": 2,
    "reply/connect1000": 3,
@@ -1425,14 +1425,14 @@
    "verify/file1": 70,
    "verify/file2": 70,
    "verify/file3": 27,
-   "verify/limits": 31,
+   "verify/limits": 32,
    "verify/notexists": 44,
    "verify/postcheck": 27,
    "verify/protocol": 1658,
    "verify/proxy": 42,
    "verify/socks": 5,
    "verify/stderr": 67,
-   "verify/stdout": 275,
+   "verify/stdout": 276,
    "verify/strip": 117,
    "verify/stripfile": 51,
    "verify/stripfile2": 24,
@@ -26792,7 +26792,7 @@
    }
   },
   "runner_counts": {
-   "curl": 1685,
+   "curl": 1686,
    "libtest": 397,
    "perl-script": 28,
    "tunit": 6,
@@ -104841,6 +104841,55 @@
     ]
    },
    {
+    "attr_values": [
+     "option=no-include"
+    ],
+    "bytes": 1236,
+    "command": "-Z --parallel-max 3 -s -w \"%{url.query}\\n\" \"file://%FILE_PWD/%LOGDIR/test%TESTNUMBER.txt?[1-130]\"",
+    "command_option": "no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "file"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "FILE",
+     "parallel"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--parallel transfers report in their multi's id order as the ids wrap",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3314,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/file",
+     "client/name",
+     "info/keywords",
+     "verify/limits",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "FILE_PWD",
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
     "attr_values": [],
     "bytes": 574,
     "command": "tftp://%HOSTIP:%TFTPPORT//%TESTNUMBER --tftp-blksize 400",
@@ -149433,7 +149482,7 @@
     ]
    }
   ],
-  "tests_without_server_section": 250,
+  "tests_without_server_section": 251,
   "variable_counts": {
    "A1": 2,
    "A2": 3,
@@ -149478,7 +149527,7 @@
    "F7": 1,
    "FA": 1,
    "FD": 1,
-   "FILE_PWD": 42,
+   "FILE_PWD": 43,
    "FTP6PORT": 6,
    "FTPPORT": 269,
    "FTPSPORT": 9,
@@ -149508,7 +149557,7 @@
    "IMAPPORT": 72,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 667,
+   "LOGDIR": 668,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -149546,7 +149595,7 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1863,
+   "TESTNUMBER": 1864,
    "TESTNUMBER000": 1,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
@@ -150978,6 +151027,7 @@
   "tests/data/test3311",
   "tests/data/test3312",
   "tests/data/test3313",
+  "tests/data/test3314",
   "tests/data/test332",
   "tests/data/test3320",
   "tests/data/test3321",

@@ -1,5 +1,5 @@
 {
- "c-commit": "53d04f946243b9fe0535e377467c56e5d00ab9ac",
+ "c-commit": "2e84c0de2b3b686331132739e3726e28519c6b5e",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -215,8 +215,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-10T14:53:29Z",
-   "started": "2026-11-10T14:50:41Z"
+   "finished": "2026-11-10T17:04:45Z",
+   "started": "2026-11-10T17:02:28Z"
   },
   "protocols": [
    "dict",
@@ -2884,8 +2884,8 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-none-none]": {
-     "message": "AssertionError: should succeed, server=0303, curl=[0303, 0304], allowed=[771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  11:52:48.041576 [0-x] * !!! WARNING !!!\n  11:52:48.041717 [0-x] * This is a debug build of libc",
-     "outcome": "failed"
+     "message": null,
+     "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1-1.0]": {
      "message": null,
@@ -3676,8 +3676,8 @@
      "outcome": "skipped"
     },
     "test_24_ocsp::test_24_01_verify_status[False-True-None]": {
-     "message": "AssertionError: expected exit code 0, got 7\n  >>--stdout ----------------------------------------------\n  {\"certs\":\"\",\"conn_id\":0,\"content_type\":null,\"errormsg\":\"Failed to connect to one.http.curl.se:55787 after 0 ms: Could not connect to server\",\"exitcode\":7,\"filename_effective\":\"download_#1.data\",",
-     "outcome": "failed"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-None]": {
      "message": null,
@@ -3692,8 +3692,8 @@
      "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-trylater]": {
-     "message": "AssertionError: expected exit code 91, got 7\n  >>--stdout ----------------------------------------------\n  {\"certs\":\"\",\"conn_id\":0,\"content_type\":null,\"errormsg\":\"Failed to connect to one.http.curl.se:44309 after 0 ms: Could not connect to server\",\"exitcode\":7,\"filename_effective\":\"download_#1.data\"",
-     "outcome": "failed"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[True-False-unauth]": {
      "message": null,
@@ -4289,11 +4289,10 @@
     }
    },
    "counts": {
-    "failed": 3,
-    "passed": 947,
+    "passed": 950,
     "skipped": 58
    },
-   "exit-status": 1,
+   "exit-status": 0,
    "functions-without-cases": []
   },
   "results": {

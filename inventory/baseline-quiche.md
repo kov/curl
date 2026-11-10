@@ -2,22 +2,22 @@
 
 # C quiche baseline
 
-What the C build in `build/c-quiche` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-10T18:25:42Z to 2026-11-10T18:28:16Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
+What the C build in `build/c-quiche` does on the C test suite: the floor the rewrite is scored against. Measured 2026-11-10T22:19:35Z to 2026-11-10T22:21:37Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
 
 ```
 curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV BoringSSL zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 quiche/0.30.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
 Release-Date: [unreleased]
 Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss
-Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
+Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
 ```
 
 |  | tests |
 |---|---|
 | considered | 2201 |
-| ran | 2108 |
-| ok | 2108 |
+| ran | 2111 |
+| ok | 2111 |
 | failed | 0 |
-| skipped | 93 |
+| skipped | 90 |
 
 ## Built library
 
@@ -33,7 +33,6 @@ None.
 |---|---|---|---|
 | configured as DISABLED | disabled | 14 | 594, 836, 882, 938, 1182, 1184, 1209, 1211, 1307, 1316, 1512, 1801, 2043, 4656 |
 | openssl engine not supported | environment | 1 | 307 |
-| curl lacks ECH support | feature missing from build | 3 | 2117, 4000, 4001 |
 | curl lacks Schannel support | feature missing from build | 7 | 2033, 2070, 2079, 2087, 3023, 3024, 4782 |
 | curl lacks Unicode support | feature missing from build | 2 | 472, 1703 |
 | curl lacks asyn-rr support | feature missing from build | 1 | 464 |
@@ -51,37 +50,37 @@ None.
 | outcome | cases |
 |---|---|
 | failed | 24 |
-| passed | 796 |
-| skipped | 188 |
+| passed | 819 |
+| skipped | 165 |
 
 ### Not passed
 
 | case | outcome | message |
 |---|---|---|
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.0] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:57.764669 [0-x] * !!! WARNING !!!   15:27:57.764734 [0-x] * This is a debug build of libcurl,  |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.0] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:57.842573 [0-x] * !!! WARNING !!!   15:27:57.842609 [0-x] * This is a debug build of libcurl,  |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.1] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:57.857626 [0-x] * !!! WARNING !!!   15:27:57.857667 [0-x] * This is a debug build of libc |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.2] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:57.872872 [0-x] * !!! WARNING !!!   15:27:57.872942 [0-x] * This is a debug build of |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.3] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:57.888137 [0-x] * !!! WARNING !!!   15:27:57.888204 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-none] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:57.827452 [0-x] * !!! WARNING !!!   15:27:57.827516 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.0] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.749848 [0-x] * !!! WARNING !!!   15:27:55.749894 [0-x] * This is a debug build of libcurl,  |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.1] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.764849 [0-x] * !!! WARNING !!!   15:27:55.764913 [0-x] * This is a debug build of libc |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.2] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.779602 [0-x] * !!! WARNING !!!   15:27:55.779662 [0-x] * This is a debug build of |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.3] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.795147 [0-x] * !!! WARNING !!!   15:27:55.795211 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-none] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.726998 [0-x] * !!! WARNING !!!   15:27:55.727045 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.832174 [0-x] * !!! WARNING !!!   15:27:55.832219 [0-x] * This is a debug build of libcurl,  |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.870591 [0-x] * !!! WARNING !!!   15:27:55.870642 [0-x] * This is a debug build of libc |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.2] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.887153 [0-x] * !!! WARNING !!!   15:27:55.887194 [0-x] * This is a debug build of |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.3] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.903783 [0-x] * !!! WARNING !!!   15:27:55.903869 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-none] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.872033 [0-x] * !!! WARNING !!!   15:27:55.872066 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.947900 [0-x] * !!! WARNING !!!   15:27:55.947957 [0-x] * This is a debug build of libc |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.2] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.964623 [0-x] * !!! WARNING !!!   15:27:55.964671 [0-x] * This is a debug build of |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.3] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.979877 [0-x] * !!! WARNING !!!   15:27:55.979932 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-none] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.921063 [0-x] * !!! WARNING !!!   15:27:55.921114 [0-x] * This is a debug bui |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.905678 [0-x] * !!! WARNING !!!   15:27:55.905727 [0-x] * This is a debug build of libcurl,  |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.2] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0303], allowed=[770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.922785 [0-x] * !!! WARNING !!!   15:27:55.922819 [0-x] * This is a debug build of libc |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.3] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.940103 [0-x] * !!! WARNING !!!   15:27:55.940139 [0-x] * This is a debug build of |
-| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-none] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   15:27:55.994889 [0-x] * !!! WARNING !!!   15:27:55.994948 [0-x] * This is a debug build of |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.0] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.737660 [0-x] * !!! WARNING !!!   19:21:18.737705 [0-x] * This is a debug build of libcurl,  |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.0] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.855852 [0-x] * !!! WARNING !!!   19:21:18.855916 [0-x] * This is a debug build of libcurl,  |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.1] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.884937 [0-x] * !!! WARNING !!!   19:21:18.884997 [0-x] * This is a debug build of libc |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.2] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.914182 [0-x] * !!! WARNING !!!   19:21:18.914236 [0-x] * This is a debug build of |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.3] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.940602 [0-x] * !!! WARNING !!!   19:21:18.940634 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-none] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.821138 [0-x] * !!! WARNING !!!   19:21:18.821202 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.0] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.788156 [0-x] * !!! WARNING !!!   19:21:18.788210 [0-x] * This is a debug build of libcurl,  |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.1] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.816045 [0-x] * !!! WARNING !!!   19:21:18.816085 [0-x] * This is a debug build of libc |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.2] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.838259 [0-x] * !!! WARNING !!!   19:21:18.838311 [0-x] * This is a debug build of |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.3] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.855842 [0-x] * !!! WARNING !!!   19:21:18.855927 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-none] | failed | AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.760366 [0-x] * !!! WARNING !!!   19:21:18.760410 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:19.032566 [0-x] * !!! WARNING !!!   19:21:19.032607 [0-x] * This is a debug build of libcurl,  |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.938004 [0-x] * !!! WARNING !!!   19:21:18.938035 [0-x] * This is a debug build of libc |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.2] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.968107 [0-x] * !!! WARNING !!!   19:21:18.968161 [0-x] * This is a debug build of |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.3] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.984045 [0-x] * !!! WARNING !!!   19:21:18.984101 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-none] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:19.077045 [0-x] * !!! WARNING !!!   19:21:19.077095 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:19.027477 [0-x] * !!! WARNING !!!   19:21:19.027524 [0-x] * This is a debug build of libc |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.2] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:19.045524 [0-x] * !!! WARNING !!!   19:21:19.045593 [0-x] * This is a debug build of |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.3] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:19.061799 [0-x] * !!! WARNING !!!   19:21:19.061845 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-none] | failed | AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:19.000247 [0-x] * !!! WARNING !!!   19:21:19.000288 [0-x] * This is a debug bui |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.1] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.954305 [0-x] * !!! WARNING !!!   19:21:18.954358 [0-x] * This is a debug build of libcurl,  |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.2] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0303], allowed=[770, 771]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.972175 [0-x] * !!! WARNING !!!   19:21:18.972227 [0-x] * This is a debug build of libc |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.3] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:18.987743 [0-x] * !!! WARNING !!!   19:21:18.987794 [0-x] * This is a debug build of |
+| test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-none] | failed | AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   19:21:19.078274 [0-x] * !!! WARNING !!!   19:21:19.078316 [0-x] * This is a debug build of |
 
 ### Skip reasons
 
@@ -89,7 +88,6 @@ None.
 |---|---|
 | BoringSSL does not support setting TLSv1.3 ciphers | 60 |
 | curl lacks experimental HTTP/3 proxy support | 26 |
-| no nghttpx ECH support | 23 |
 | curl not build with GnuTLS | 17 |
 | TLS earlydata not implemented | 13 |
 | curl built without digest | 8 |
@@ -102,8 +100,8 @@ None.
 | only supported with nghttp3 | 3 |
 | quiche has problems with large requests | 2 |
 | quiche has CWND issues with large requests | 1 |
-| QUIC session reuse not implemented | 1 |
 | precise h3 rate limits only with ngtcp2 | 1 |
+| QUIC session reuse not implemented | 1 |
 | requires ngtcp2 packet handling | 1 |
 | system does not blackhole 0100::/64 | 1 |
 

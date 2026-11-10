@@ -17,10 +17,12 @@
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
    "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
+   "HTTPD_NGHTTPX": "/home/kov/Projects/curl/build/deps/ech/bin/nghttpx",
    "OPENSSL_ROOT_DIR": "/home/kov/Projects/curl/build/deps/quiche/boringssl",
    "OPENSSL_USE_STATIC_LIBS": "ON",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
-   "USE_ECH": "OFF",
+   "TEST_NGHTTPX": "/home/kov/Projects/curl/build/deps/ech/bin/nghttpx",
+   "USE_ECH": "ON",
    "USE_HTTPSRR": "ON",
    "USE_LIBIDN2": "ON",
    "USE_NGHTTP2": "ON",
@@ -33,21 +35,22 @@
   "counts": {
    "considered": 2201,
    "failed": 0,
-   "ok": 2108,
-   "ran": 2108,
-   "skipped": 93
+   "ok": 2111,
+   "ran": 2111,
+   "skipped": 90
   },
   "curl-version": [
    "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV BoringSSL zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 quiche/0.30.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "Release-Date: [unreleased]",
    "Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
+   "Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
   ],
   "features": [
    "alt-svc",
    "AsynchDNS",
    "brotli",
    "Debug",
+   "ECH",
    "GSS-API",
    "HSTS",
    "HTTP2",
@@ -336,8 +339,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-10T18:28:16Z",
-   "started": "2026-11-10T18:25:42Z"
+   "finished": "2026-11-10T22:21:37Z",
+   "started": "2026-11-10T22:19:35Z"
   },
   "protocols": [
    "dict",
@@ -2749,7 +2752,7 @@
      "outcome": "skipped"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.0]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:57.764669 [0-x] * !!! WARNING !!!\n  15:27:57.764734 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.737660 [0-x] * !!! WARNING !!!\n  19:21:18.737705 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.1]": {
@@ -2769,43 +2772,43 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.0]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:57.842573 [0-x] * !!! WARNING !!!\n  15:27:57.842609 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.855852 [0-x] * !!! WARNING !!!\n  19:21:18.855916 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.1]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:57.857626 [0-x] * !!! WARNING !!!\n  15:27:57.857667 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.884937 [0-x] * !!! WARNING !!!\n  19:21:18.884997 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.2]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:57.872872 [0-x] * !!! WARNING !!!\n  15:27:57.872942 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.914182 [0-x] * !!! WARNING !!!\n  19:21:18.914236 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.3]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:57.888137 [0-x] * !!! WARNING !!!\n  15:27:57.888204 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.940602 [0-x] * !!! WARNING !!!\n  19:21:18.940634 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-none]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:57.827452 [0-x] * !!! WARNING !!!\n  15:27:57.827516 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.821138 [0-x] * !!! WARNING !!!\n  19:21:18.821202 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.0]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.749848 [0-x] * !!! WARNING !!!\n  15:27:55.749894 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0301], allowed=[769]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.788156 [0-x] * !!! WARNING !!!\n  19:21:18.788210 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.1]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.764849 [0-x] * !!! WARNING !!!\n  15:27:55.764913 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.816045 [0-x] * !!! WARNING !!!\n  19:21:18.816085 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.2]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.779602 [0-x] * !!! WARNING !!!\n  15:27:55.779662 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.838259 [0-x] * !!! WARNING !!!\n  19:21:18.838311 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.3]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.795147 [0-x] * !!! WARNING !!!\n  15:27:55.795211 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.855842 [0-x] * !!! WARNING !!!\n  19:21:18.855927 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-none]": {
-     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.726998 [0-x] * !!! WARNING !!!\n  15:27:55.727045 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0301, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.760366 [0-x] * !!! WARNING !!!\n  19:21:18.760410 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.1-1.0]": {
@@ -2873,7 +2876,7 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.832174 [0-x] * !!! WARNING !!!\n  15:27:55.832219 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:19.032566 [0-x] * !!! WARNING !!!\n  19:21:19.032607 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.2]": {
@@ -2893,19 +2896,19 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.870591 [0-x] * !!! WARNING !!!\n  15:27:55.870642 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.938004 [0-x] * !!! WARNING !!!\n  19:21:18.938035 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.2]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.887153 [0-x] * !!! WARNING !!!\n  15:27:55.887194 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.968107 [0-x] * !!! WARNING !!!\n  19:21:18.968161 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.3]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.903783 [0-x] * !!! WARNING !!!\n  15:27:55.903869 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.984045 [0-x] * !!! WARNING !!!\n  19:21:18.984101 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-none]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.872033 [0-x] * !!! WARNING !!!\n  15:27:55.872066 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:19.077045 [0-x] * !!! WARNING !!!\n  19:21:19.077095 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.0]": {
@@ -2913,19 +2916,19 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.947900 [0-x] * !!! WARNING !!!\n  15:27:55.947957 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0302], allowed=[769, 770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:19.027477 [0-x] * !!! WARNING !!!\n  19:21:19.027524 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.2]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.964623 [0-x] * !!! WARNING !!!\n  15:27:55.964671 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0303], allowed=[769, 770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:19.045524 [0-x] * !!! WARNING !!!\n  19:21:19.045593 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.3]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.979877 [0-x] * !!! WARNING !!!\n  15:27:55.979932 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:19.061799 [0-x] * !!! WARNING !!!\n  19:21:19.061845 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-none]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.921063 [0-x] * !!! WARNING !!!\n  15:27:55.921114 [0-x] * This is a debug bui",
+     "message": "AssertionError: should succeed, server=0302, curl=[0301, 0304], allowed=[769, 770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:19.000247 [0-x] * !!! WARNING !!!\n  19:21:19.000288 [0-x] * This is a debug bui",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.0]": {
@@ -2933,19 +2936,19 @@
      "outcome": "passed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.1]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.905678 [0-x] * !!! WARNING !!!\n  15:27:55.905727 [0-x] * This is a debug build of libcurl, ",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0302], allowed=[770]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.954305 [0-x] * !!! WARNING !!!\n  19:21:18.954358 [0-x] * This is a debug build of libcurl, ",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.2]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0303], allowed=[770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.922785 [0-x] * !!! WARNING !!!\n  15:27:55.922819 [0-x] * This is a debug build of libc",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0303], allowed=[770, 771]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.972175 [0-x] * !!! WARNING !!!\n  19:21:18.972227 [0-x] * This is a debug build of libc",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.3]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.940103 [0-x] * !!! WARNING !!!\n  15:27:55.940139 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:18.987743 [0-x] * !!! WARNING !!!\n  19:21:18.987794 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-none]": {
-     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  15:27:55.994889 [0-x] * !!! WARNING !!!\n  15:27:55.994948 [0-x] * This is a debug build of",
+     "message": "AssertionError: should succeed, server=0302, curl=[0302, 0304], allowed=[770, 771, 772]\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  19:21:19.078274 [0-x] * !!! WARNING !!!\n  19:21:19.078316 [0-x] * This is a debug build of",
      "outcome": "failed"
     },
     "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.2-1.0]": {
@@ -3693,52 +3696,52 @@
      "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[false-None-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[grease-sent GREASE-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[hard-None-35]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[true-not configured-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[false-None-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[grease-sent GREASE-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[hard-succeeded-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_02_ech_good_config[true-succeeded-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[false-None-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[grease-sent GREASE-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[hard-rejected-101]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_03_ech_bad_config[true-rejected-101]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_04_ech_outer[hard-succeeded-innocent.invalid]": {
      "message": "needs OpenSSL",
@@ -3749,52 +3752,52 @@
      "outcome": "skipped"
     },
     "test_23_ech::test_23_05_ech_conn_ech_reuse": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_06_ech_conn_ech_config_reuse": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_07_ech_conn_ech_pub_reuse": {
      "message": "needs OpenSSL",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[bad-hard-60]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[bad-true-60]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[good-hard-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[good-true-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[none-hard-35]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[none-true-0]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[silent-hard-28]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_08_ech_h3_record_coming[silent-true-28]": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_23_ech::test_23_09_ech_tcp_record_coming": {
-     "message": "no nghttpx ECH support",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_24_ocsp::test_24_01_verify_status[False-True-None]": {
      "message": "no cert-status in curl",
@@ -4411,8 +4414,8 @@
    },
    "counts": {
     "failed": 24,
-    "passed": 796,
-    "skipped": 188
+    "passed": 819,
+    "skipped": 165
    },
    "exit-status": 1,
    "functions-without-cases": []
@@ -7614,9 +7617,7 @@
     "result": "ok"
    },
    "2117": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "2118": {
     "result": "ok"
@@ -9026,14 +9027,10 @@
     "result": "ok"
    },
    "4000": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "4001": {
-    "class": "feature missing from build",
-    "reason": "curl lacks ECH support",
-    "result": "skipped"
+    "result": "ok"
    },
    "401": {
     "result": "ok"
@@ -11218,7 +11215,7 @@
    "* curl 8.23.1-DEV (Linux) ",
    "* libcurl/8.23.1-DEV BoringSSL zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 quiche/0.30.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "* Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "* Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
+   "* Features: alt-svc AsynchDNS brotli Debug ECH GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
    "* Disabled: resolv-threaded, win32-ca-searchpath, win32-ca-search-safe, cert-status",
    "* Host: banana",
    "* System: Linux banana 7.2.9-201.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Oct  9 15:04:46 UTC 2026 x86_64 GNU/Linux",

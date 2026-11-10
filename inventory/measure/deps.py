@@ -61,9 +61,10 @@ The ECH test servers: tests/http's Encrypted Client Hello cases need an
 that serves them (nghttp2 1.70 over that OpenSSL), which Fedora's are not.
 Both are built at the versions http3-linux.yml pins, into build/deps/ech,
 OpenSSL's libraries found through its run path, for the oracles built with
-ECH and the rewrite's legs against them (`--ech`, or the oracle
-`baseline.py` builds with it). They are servers and tools only: no curl
-links them.
+ECH and the rewrite's legs against them; the `openssl` command for every
+oracle's pytest as well, whose OCSP cases ask for one that makes ECH
+configurations (`--ech`, or any `baseline.py --run`). They are servers and
+tools only: no curl links them.
 
 h2o: not packaged on Fedora. The HTTP/3 proxy the tests/http cases of
 test_60_h3_proxy.py tunnel through, built at the commit http3-linux.yml

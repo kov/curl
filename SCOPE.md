@@ -181,7 +181,8 @@ library: wolfSSL, Rustls, AWS-LC and BoringSSL, each measured on its leg above. 
 (`test_23_ech.py`) need an `openssl` command that makes ECH configurations (OpenSSL 4) and an
 nghttpx that serves ECH; neither is packaged here, so `inventory/measure/deps.py` builds both at
 the versions curl's CI pins (OpenSSL with its command-line tool, which CI's build leaves out), and
-the legs with ECH run their pytest over them, C's and the rewrite's alike.
+the legs with ECH run their pytest over them, C's and the rewrite's alike. The OCSP cases
+(`test_24_ocsp.py`) ask for the same `openssl` command, so every leg runs its pytest over it.
 
 ## Performance
 

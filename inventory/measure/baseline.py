@@ -63,13 +63,14 @@ which C does not sign with Rustls, and with Encrypted Client Hello:
 build/c-rustls, inventory/baseline-rustls.{json,md}.
 
 The oracles with Encrypted Client Hello build it as curl's CI does
-(`USE_ECH`), and run their suites over the test servers its pytest cases
-need, which deps.py builds (`build_ech_servers`): the nghttpx that serves
-ECH in place of the system's, for runtests.pl's tests and pytest's alike,
-and the `openssl` command that makes its configurations (`OPENSSL`, which
-the pytest harness reads). Every oracle runs its pytest over the h2o
-deps.py builds (`build_h2o`), the HTTP/3 proxy of the cases for it. The
-rewrite's leg against one runs over the same (score.py).
+(`USE_ECH`), and run their suites over the nghttpx that serves ECH in
+place of the system's, for runtests.pl's tests and pytest's alike, which
+deps.py builds (`build_ech_servers`). Every oracle runs its suites over
+the `openssl` command built with it, which makes ECH configurations and
+serves the OCSP cases (`OPENSSL`, which the pytest harness reads), and
+over the h2o deps.py builds (`build_h2o`), the HTTP/3 proxy of the
+pytest cases for it. The rewrite's leg against one runs over the same
+(score.py).
 
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
@@ -161,8 +162,13 @@ class Oracle:
 
     @property
     def suite_env(self):
-        """What the suites' environment has besides the process's."""
-        return {"OPENSSL": str(deps.ech_openssl())} if self.ech else {}
+        """
+        What the suites' environment has besides the process's: the
+        `openssl` command deps.py builds, which makes ECH configurations,
+        as the pytest harness asks of the command before it runs its ECH
+        cases and its OCSP cases (`test_24_ocsp.py`) alike.
+        """
+        return {"OPENSSL": str(deps.ech_openssl())}
 
     @property
     def results(self):
@@ -317,10 +323,10 @@ def run(oracle):
     if oracle.rustls:
         dep_env = {"PKG_CONFIG_PATH": ":".join(
             e["PKG_CONFIG_PATH"] for e in (deps.build_rustls(), dep_env))}
-    # The HTTP/3 proxy every oracle's pytest runs over.
+    # The test servers every oracle's pytest runs over: h2o, and the
+    # `openssl` command of the ECH servers (`suite_env`).
     deps.build_h2o()
-    if oracle.ech:
-        deps.build_ech_servers()
+    deps.build_ech_servers()
     if oracle.quiche:
         dep_env = {"PKG_CONFIG_PATH": ":".join(
             e["PKG_CONFIG_PATH"] for e in (deps.build_quiche(), dep_env))}

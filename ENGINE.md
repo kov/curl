@@ -128,41 +128,10 @@ numbers are those of `SCOPE.md`.
 
 ### 2.1 Crates
 
-```
-curl-alloc    fallible Box, Vec and String growth, TryRc and TryArc; the debug build's tracker
-curl-os       the OS interfaces as safe functions: the command line, the environment, the
-              terminal, local time, users, random bytes; sockets, poll(2), the system's
-              resolver and the waker (feature "net"); files (feature "fs")
-curl-core     #![forbid(unsafe_code)]; depends on curl-alloc and curl-os ("net", "fs")
-curl-psl      libpsl, the public suffixes cookies are checked against
-curl-zlib     zlib's inflate, curl-brotli brotli's decoder, curl-zstd zstd's decoder: the
-              content codings, behind `curl_core::coding::Decoder`
-curl-openssl  OpenSSL 3.0 or later through openssl-sys's declarations: Ed25519 for HTTP
-              signatures, behind `curl_core::libraries::Ed25519`; the TLS backend behind
-              `curl_core::tls` (§4.9)
-curl-schannel Schannel through SSPI and CryptoAPI (Windows): the TLS backend a build takes
-              in OpenSSL's place (the `schannel` feature of the shim and the tool), its
-              credential kept per peer in the session cache, its CA file's store per multi
-curl-gnutls   GnuTLS 3.6.5 or later: the TLS backend a build takes in OpenSSL's place (the
-              `gnutls` feature), its credentials kept per multi by CA file, and Ed25519
-              from its nettle; the session's logic safe code over a `Gnutls` trait, which
-              `gnutls.rs` implements and the tests script
-curl-mbedtls  mbedTLS 3.2 or later, before 4.0: the TLS backend a build takes in OpenSSL's
-              place (the `mbedtls` feature), its random number generator the backend
-              value's; the session's logic safe code over an `Mbedtls` trait, which
-              `mbedtls.rs` implements and the tests script
-curl-wolfssl  wolfSSL 5.0 or later, the copy deps.py builds: the TLS backend a build takes
-              in OpenSSL's place (the `wolfssl` feature), its BIO method the backend
-              value's, its trust store kept per multi by CA file, and Ed25519 from its
-              wolfCrypt; the session's logic safe code over a `Wolfssl` trait, which
-              `wolfssl.rs` implements and the tests script
-curl-rustls   the rustls crate, at the version rustls-ffi 0.15.5 pins: the TLS backend a
-              build takes in OpenSSL's place (the `rustls` feature); the session's logic
-              safe code over a `Rustls` trait, which `rustls.rs` implements as rustls-ffi
-              calls rustls and the tests script
-curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
-curl-tool     drives transfers through the Rust API
-```
+The crates, what each binds and where each may use unsafe are in DESIGN.md's
+[Crates](DESIGN.md#crates) table. `curl-core` forbids unsafe and depends on `curl-alloc` and
+`curl-os` (its `net` and `fs` features); every C library is bound by a crate of its own,
+which the shim and the tool hand to a handle.
 
 `curl-os` exposes safe functions; it does not implement `curl-core` traits (that would be a
 dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net` trait in safe
@@ -173,8 +142,8 @@ the tool. The decoders, the signer, the TLS library and the security library com
 `Components`: the shim's are statics (`SharedLibraries::of_static`), the C ABI's one owned root;
 the tool's are made by `main` and shared with its handles (`SharedLibraries::new`, the TLS
 library owned by them, `Library::Owned`), so it keeps no static. A handle given none has
-`Libraries::NONE`. The TLS library is OpenSSL's (`curl_openssl::OpenSsl`); the security library
-(`Libraries.security`) is MIT krb5's GSS-API (`curl_gssapi::GSSAPI`, behind
+`Libraries::NONE`. The TLS library is the backend the build's features choose (DESIGN.md),
+OpenSSL's by default (`curl_openssl::OpenSsl`); the security library (`Libraries.security`) is MIT krb5's GSS-API (`curl_gssapi::GSSAPI`, behind
 `curl_core::gss::Gss`), with C's debug stub under `debug-hooks`, chosen per context by
 `CURL_STUB_GSS_CREDS` as C's wrappers choose per call; on Windows it is SSPI
 (`curl_sspi::SSPI`, behind `curl_core::sspi::Sspi`), as C's `USE_WINDOWS_SSPI`. The core
@@ -182,9 +151,9 @@ decides what C decides with either, and only the calls differ: SPNEGO's context,
 GSS-API method, and, with SSPI, HTTP Digest and SASL DIGEST-MD5, which the package makes in
 place of the core's own. The shim and the tool each have a second static without it and hand a
 handle the one the build's Kerberos claim picks (`HAVE_GSSAPI` is C's library being linked):
-unclaimed, SOCKS5 offers no GSS-API, as a C build without it. Each initialises OpenSSL as C's
-global init does (`OPENSSL_init_ssl` with the configuration and the built-in engines): the shim
-at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
+unclaimed, SOCKS5 offers no GSS-API, as a C build without it. With the OpenSSL backend, each
+initialises OpenSSL as C's global init does (`OPENSSL_init_ssl` with the configuration and the
+built-in engines): the shim at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
 program that never called `curl_global_init` signs the same.
 
 ### 2.2 `curl-core` modules

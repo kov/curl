@@ -95,7 +95,7 @@ that sets a field the library lacks, to anything but its default, has the transf
 transfer never gets the option: one check (`TlsSupport::asked_by` against the handle's
 library, or `TlsSupport::NONE` without one) covers every connection the transfer makes or
 reuses, STARTTLS and QUIC included. An HTTPS proxy is refused, as C's `parse_proxy` refuses it,
-where the library cannot speak to one or there is none (both libraries built here can). The
+where the library cannot speak to one or there is none (every TLS library bound here can). The
 features `curl_version_info` and `curl -V` list follow the same declaration where C's depend on
 the TLS library: ECH is listed where the library has it (`version_with_tls`, C's
 `ech_present`).
@@ -420,7 +420,8 @@ A `debug-hooks` feature provides it, on `curl-alloc`, `curl-sys-abi` and `curl-t
   made, so a block made before tracking started is never reported as a bad free. Being
   Rust's global allocator, it is process-wide by definition. It and the command line
   `curl-os` captures for the tool, written once before `main`, are the only globals outside
-  the shim's root. It also counts allocations per thread, for the budget tests, and holds a
+  the shim's root besides the C libraries' own one-time setups (c-ares's, libssh2's, ngtcp2's
+  crypto's, OpenSSL's), which the bindings run once per process and never undo. It also counts allocations per thread, for the budget tests, and holds a
   thread's limit of its own apart from the process's, so tests refused an allocation each on
   harness threads side by side do not spend each other's.
 - **`curl-sys-abi`** installs that allocator and adds:

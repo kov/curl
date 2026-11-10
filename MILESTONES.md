@@ -1442,7 +1442,7 @@ through SSPI; MIT krb5 stays Unix-only.
 
 ## Milestone 10: the other backends
 
-Status: **to do**. The backends C builds with that the rewrite does not bind yet, each behind
+Status: **in progress**. The backends C builds with that the rewrite does not bind yet, each behind
 its category's interface and scored on a C leg built with it, on Linux and, where C supports
 it there, Windows.
 

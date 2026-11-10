@@ -700,6 +700,19 @@ exclude_re = [
     'curl-core/src/tls\.rs:.*: replace <impl fmt::Debug for dyn TlsBackend>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     'curl-core/src/conn/tls\.rs:.*: replace <impl fmt::Debug for TlsLayer>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     'curl-core/src/tls/fake\.rs:.*: replace <impl fmt::Debug for FakeSession>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    'curl-core/src/http2\.rs:.*: replace <impl fmt::Debug for DataWindow<.*>>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    # The fake's window of a DATA frame the client sends: only a received
+    # frame's trace asks for its window.
+    'curl-core/src/http2/fake\.rs:.*: replace no_window -> \(i32, i32\) with ',
+    # Only frames of the transfer's own stream reach its events: the read
+    # traces another stream's as of no transfer, or hands it to the
+    # sibling whose stream it is (`h2_feed`).
+    'curl-core/src/proto/http/h2\.rs:.*: replace match guard ours\(stream\) with true in Request::h2_event$',
+    # A head's fields and its end are read together, so either wakes the
+    # transfer for it: the fake reads a header block whole, and a field
+    # nghttp2 tells before its block's end needs the block split across
+    # two reads.
+    'curl-core/src/proto/http/h2\.rs:.*: (delete ! |replace \|\| with && )in Request::h2_woken_by$',
     # A library traces its records only for a debug handler: without one,
     # SSL data is written nowhere (`Curl_debug`), so asking is a saving.
     'curl-core/src/tls\.rs:.*: replace TlsIo<.*>::debugs -> bool with true$',

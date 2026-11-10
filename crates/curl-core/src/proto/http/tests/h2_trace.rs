@@ -916,3 +916,48 @@ fn a_wait_makes_each_pollset_twice() {
         .unwrap();
     assert_eq!(crate::http2::fake::calls().send_windows - before, 4);
 }
+
+/// The response's head for a stream, read by a sibling's step, marks
+/// the stream's transfer to run again, as C's `on_header` and
+/// `on_stream_frame` do (`Curl_multi_mark_dirty`): the first transfer
+/// ran earlier in the pass, so the multi's next wait returns at once for
+/// it to take its response.
+#[test]
+fn a_head_read_by_a_sibling_wakes_its_transfer() {
+    let body = vec![b'.'; 300_000];
+    let up: &[u8] = b"U 1 16384\n";
+    let head: &[u8] = b"H 1 0\n:status: 200\n\n";
+    // As in the test above, the first's later sends bring replies the
+    // second's step reads; the head comes with one of them.
+    let start: [&[u8]; 3] = [b"S 100 16384\n", b"", b""];
+    let mut replies: Vec<&[u8]> = start.into_iter().chain([up; 8]).collect();
+    replies[9] = head;
+    let talk = Conversation::replies(&replies, false).per_send().held();
+    talk.allow(3);
+    let clock = ManualClock::new().unwrap();
+    let mut m = serving_on(clock.clone(), Peer::Accepts, &[&talk]);
+    let (a, sa) = upload_handle(&body, "/a");
+    m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    for _ in 0..3 {
+        round(&mut m);
+    }
+    let (b, sb) = upload_handle(&body, "/b");
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
+    talk.allow(11);
+    for _ in 0..4 {
+        round(&mut m);
+        if sb.text().iter().any(|l| l.contains("[1] <- FRAME[HEADERS")) {
+            assert_eq!(
+                m.timeout(),
+                Some(Duration::ZERO),
+                "a head read by a sibling left its transfer waiting"
+            );
+            return;
+        }
+    }
+    panic!(
+        "the second did not read the head: {:#?}\n{:#?}",
+        sa.text(),
+        sb.text()
+    );
+}

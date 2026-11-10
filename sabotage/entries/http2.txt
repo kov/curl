@@ -1324,3 +1324,15 @@ witness: curl-core proto::http::tests::h2_trace::a_stream_s_windows_are_asked_on
             && let Some(h2) = lease.conn().h2()
 --- new
             && let Some(h2) = lease.conn().h2()
+
+=== nothing a sibling's read hands a transfer wakes it
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_head_read_by_a_sibling_wakes_its_transfer
+--- old
+                            if woken {
+                                cx.wake(to);
+                            }
+--- new
+                            if woken && false {
+                                cx.wake(to);
+                            }

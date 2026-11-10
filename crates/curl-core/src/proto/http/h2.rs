@@ -1624,7 +1624,9 @@ impl Request {
     /// WINDOW_UPDATE). Its body's bytes, its trailers, a promise's fields
     /// and room opened for a body it holds, which the session is told to
     /// resume instead, do not: C writes or keeps them where the transfer
-    /// finds them when it next runs.
+    /// finds them when it next runs. A frame as read, told only to trace
+    /// it, does not either: the event the frame makes after it (a head's
+    /// or a stream's end, a reset) is the one that does.
     fn h2_woken_by(&self, event: &Event<'_>) -> bool {
         let sending = self.sending();
         let Some(s) = self.wire.h2() else {
@@ -1633,9 +1635,8 @@ impl Request {
         match event {
             Event::Header { .. } => !s.body_started,
             Event::HeadersDone { end_stream, .. } => *end_stream || !s.body_started,
-            Event::Data { .. } | Event::PushField { .. } => false,
+            Event::Data { .. } | Event::PushField { .. } | Event::Received(_) => false,
             Event::WindowUpdate { .. } => sending && s.sendbuf.is_empty(),
-            Event::Received(f) => f.ends_stream() || matches!(f.kind, FrameKind::RstStream { .. }),
             Event::DataEnd { .. }
             | Event::Closed { .. }
             | Event::Reset { .. }

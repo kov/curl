@@ -14,7 +14,7 @@ use curl_alloc::OutOfMemory;
 pub struct StreamId(pub i32);
 
 /// What the session read, as it read it.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Event<'a> {
     /// A field of a header block of `stream`: the response's head, an
     /// interim response's, or the trailers.
@@ -68,7 +68,7 @@ pub enum Event<'a> {
 }
 
 /// A frame as the trace describes it (`Curl_nghttp2_fr_print`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Frame<'a> {
     /// The stream it is on; 0 for the connection's own.
     pub stream: StreamId,
@@ -80,7 +80,7 @@ pub struct Frame<'a> {
 }
 
 /// What a frame is, with what its description tells of its payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub enum FrameKind<'a> {
     Data {
         padlen: usize,
@@ -136,23 +136,6 @@ impl<'a> DataWindow<'a> {
 impl fmt::Debug for DataWindow<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("DataWindow").finish_non_exhaustive()
-    }
-}
-
-/// Two windows are equal when the session gives the same for both.
-impl PartialEq for DataWindow<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.get() == other.get()
-    }
-}
-
-impl Eq for DataWindow<'_> {}
-
-impl Frame<'_> {
-    /// It ends its stream: a DATA or HEADERS frame with END_STREAM set.
-    pub fn ends_stream(&self) -> bool {
-        matches!(self.kind, FrameKind::Data { .. } | FrameKind::Headers)
-            && self.flags & FLAG_END_STREAM != 0
     }
 }
 

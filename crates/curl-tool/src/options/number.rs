@@ -18,6 +18,11 @@ pub(crate) fn leading_number(s: &[u8], max: u64) -> Option<(u64, &[u8])> {
 /// siblings read them; `Err` once the value would pass `max`, before any
 /// digit after.
 fn digits_up_to(s: &[u8], base: u8, max: u64) -> Result<(u64, usize), ()> {
+    let wide = u64::from(base);
+    // Up to here any digit still fits, as C's `cutoff` has it: the one
+    // division of a number whose digits stay below it. A `max` below the
+    // base's largest digit has no such value.
+    let cutoff = max.checked_sub(wide - 1).map(|room| room / wide);
     let mut n: u64 = 0;
     for (i, &b) in s.iter().enumerate() {
         let d = match b {
@@ -30,11 +35,12 @@ fn digits_up_to(s: &[u8], base: u8, max: u64) -> Result<(u64, usize), ()> {
             return Ok((n, i));
         }
         let d = u64::from(d);
-        // As C checks it: what the next digit adds must still fit.
-        if max < d || n > (max - d) / u64::from(base) {
+        // As C checks it past the cutoff: what the next digit adds must
+        // still fit.
+        if cutoff.is_none_or(|cutoff| n > cutoff) && (max < d || n > (max - d) / wide) {
             return Err(());
         }
-        n = n * u64::from(base) + d;
+        n = n * wide + d;
     }
     Ok((n, s.len()))
 }

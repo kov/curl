@@ -1553,6 +1553,14 @@ witness: curl-tool options::number::tests::reads_digits_as_c_against_every_max
 --- new
         if d > base {
 
+=== a number one past where every digit fits takes its next digit unchecked
+file: crates/curl-tool/src/options/number.rs
+witness: curl-tool options::number::tests::reads_digits_as_c_against_every_max
+--- old
+    let cutoff = max.checked_sub(wide - 1).map(|room| room / wide);
+--- new
+    let cutoff = max.checked_sub(wide - 1).map(|room| room / wide + 1);
+
 === an output that could not be named is passed over without its error or --write-out
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool a_transfer_with_no_output_name_ends_as_a_failure

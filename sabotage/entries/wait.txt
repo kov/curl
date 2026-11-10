@@ -377,3 +377,11 @@ witness: curl-core proto::http::tests::wait_trace::input_held_is_marked_as_event
             let now = self.clock.now();
             self.trace_pollset_now(id, now, ev)
                 .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+
+=== a wait on more sockets than fit on the stack reserves only what the stack held
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core a_wait_on_more_sockets_allocates_once_for_each_pass
+--- old
+                    if more_keys.try_reserve_exact(2 * ON_STACK).is_err() {
+--- new
+                    if more_keys.try_reserve_exact(ON_STACK).is_err() {

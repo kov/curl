@@ -92,6 +92,10 @@ fn main() {
             a_wait_on_a_few_sockets_allocates_nothing,
         ),
         (
+            "a_wait_on_more_sockets_allocates_once_for_each_pass",
+            a_wait_on_more_sockets_allocates_once_for_each_pass,
+        ),
+        (
             "an_https_get_survives_every_allocation_failing",
             an_https_get_survives_every_allocation_failing,
         ),
@@ -1175,16 +1179,14 @@ fn a_share_stays_within_its_allocation_budget() {
     );
 }
 
-/// A wait on as many transfers' sockets as fit on the stack, ten, keeps
-/// them all there, as C's `a_few_on_stack`: an application's loop of
-/// waits allocates nothing.
-fn a_wait_on_a_few_sockets_allocates_nothing() {
-    const SOCKETS: usize = 10;
+/// The allocations of a wait with `sockets` connections to watch, each
+/// a transfer's.
+fn wait_allocations(sockets: usize) -> u64 {
     let mut m: Multi = track::untracked(|| {
         let clock = ManualClock::new().expect("a clock");
         let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
         let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
-        for _ in 0..SOCKETS {
+        for _ in 0..sockets {
             net = net.with_conversation(at, Conversation::new(b"", false));
         }
         let env = Env {
@@ -1194,7 +1196,7 @@ fn a_wait_on_a_few_sockets_allocates_nothing() {
             waker: None,
         };
         let mut m = Multi::new(env).expect("memory");
-        for _ in 0..SOCKETS {
+        for _ in 0..sockets {
             let mut easy = Easy::new();
             easy.options_mut().set_url(Some(URL)).expect("memory");
             m.add(Box::new(easy), (), &mut NoEvents).expect("added");
@@ -1208,11 +1210,28 @@ fn a_wait_on_a_few_sockets_allocates_nothing() {
         track::count_allocations(|| m.wait(&mut [], Duration::ZERO, WaitMode::Wait, &mut NoEvents));
     track::untracked(|| {
         assert_eq!(waited, Ok(0));
-        assert_eq!(n, 0, "a wait on {SOCKETS} sockets made {n} allocations");
         let census = m.census();
-        assert_eq!((census.working(), census.pending), (SOCKETS as u32, 0));
+        assert_eq!((census.working(), census.pending), (sockets as u32, 0));
         drop(m);
     });
+    n
+}
+
+/// A wait on as many transfers' sockets as fit on the stack, ten, keeps
+/// them all there, as C's `a_few_on_stack`: an application's loop of
+/// waits allocates nothing.
+fn a_wait_on_a_few_sockets_allocates_nothing() {
+    let n = wait_allocations(10);
+    assert_eq!(n, 0, "a wait on 10 sockets made {n} allocations");
+}
+
+/// A wait on more sockets than fit on the stack allocates once for the
+/// sockets it found and once for those it polls: the first pass's room
+/// is taken for twice the stack's count when the stack overflows, so
+/// twenty sockets need no more.
+fn a_wait_on_more_sockets_allocates_once_for_each_pass() {
+    let n = wait_allocations(20);
+    assert_eq!(n, 2, "a wait on 20 sockets made {n} allocations");
 }
 
 /// A plain GET from a handle with a TLS library makes the same

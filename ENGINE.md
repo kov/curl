@@ -399,7 +399,8 @@ network for the kind, and fails as memory does when the resolver cannot be set u
 
 Under `test-util` a test chooses each part itself: `Multi::with_env(Env { clock, net, arena,
 waker })` is an `Application` multi in all else, `make_handle_own` makes it one handle's own,
-and `Multi::with_net(kind, ids, net)` is `new` over the test's network.
+`Multi::with_net(kind, ids, net)` is `new` over the test's network, and `Share::with_net(net)`
+is a share over it (`Share::new`'s is the system's).
 
 `ConnId` folds C's `(last_cpid, last_conn_id)` pair into one value. CONNECT_ONLY's "last
 connection" (`ACTIVESOCKET`, `curl_easy_send`/`recv`) is an ordinary lookup that fails on its

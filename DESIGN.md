@@ -132,7 +132,7 @@ the TLS library: ECH is listed where the library has it (`version_with_tls`, C's
   (`curl_multi_init`'s) or `MultiKind::HandleOwn` (`curl_easy_perform`'s) decides together
   its transfer table's rows, its resolver's threads, the TLS peers it keeps and whether it is a
   handle's own; a caller says only the kind and where its ids start. Its network is the
-  system's: a multi made outside `test-util` has no network to choose, and under it
+  system's: a multi or a share made outside `test-util` has no network to choose, and under it
   a test gives its own, as it gives its clock.
 - **Callbacks fire when C fires them.** The timer callback runs inside `add`, `remove` and
   `pause`; the socket callback inside `remove` and `pause`, including a pause made from a write

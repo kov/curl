@@ -133,11 +133,16 @@ pub struct InUse;
 impl Share {
     /// A share keeping nothing yet, whose connections are the system's.
     pub fn new() -> Result<Share, OutOfMemory> {
-        Share::with_net(try_box(SystemNet::default())?)
+        Share::over(try_box(SystemNet::default())?)
     }
 
-    /// A share keeping nothing yet, whose connections are `net`'s.
+    /// A test's share keeping nothing yet, whose connections are `net`'s.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn with_net(net: Box<dyn Net + Send>) -> Result<Share, OutOfMemory> {
+        Share::over(net)
+    }
+
+    fn over(net: Box<dyn Net + Send>) -> Result<Share, OutOfMemory> {
         Ok(Share(TryArc::try_new(Inner {
             keeps: AtomicU8::new(0),
             pool: Lock::new(Pool::new()?),

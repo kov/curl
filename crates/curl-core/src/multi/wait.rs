@@ -72,15 +72,10 @@ impl<H: Host> Multi<H> {
             if distinct < ON_STACK {
                 few_keys[distinct] = key;
             } else {
-                if more_keys.is_empty() {
-                    // One more than the stack holds: all of them move.
-                    if more_keys.try_reserve_exact(2 * ON_STACK).is_err() {
-                        refused = true;
-                        return;
-                    }
-                    more_keys
-                        .try_extend_from_slice(&few_keys)
-                        .expect("reserved");
+                // One more than the stack holds: all of them move.
+                if more_keys.is_empty() && more_keys.try_extend_from_slice(&few_keys).is_err() {
+                    refused = true;
+                    return;
                 }
                 if more_keys.try_push(key).is_err() {
                     refused = true;

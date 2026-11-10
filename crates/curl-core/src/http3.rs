@@ -308,7 +308,7 @@ pub enum EarlyStart {
 }
 
 /// How a client connection is set up (`quic_settings`, `cf_connect_start`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct ClientSetup {
     /// The socket's two ends.
     pub local: SocketAddr,
@@ -322,6 +322,90 @@ pub struct ClientSetup {
     pub stream_window: u64,
     /// The streams the peer may open of each kind.
     pub max_streams: u64,
+    /// Where the connection writes its qlog, if anywhere.
+    pub qlog: Option<QlogDir>,
+}
+
+/// The longest name of a qlog file, its zero byte included
+/// (`DYN_QLOG_NAME`).
+const QLOG_NAME_MAX: usize = 1024;
+
+/// The directory each connection writes a qlog to, as `QLOGDIR` names
+/// it, and the permissions a file is created with
+/// (`CURLOPT_NEW_FILE_PERMS`): the file a connection's library writes
+/// is named after the connection's source id (`Curl_qlogdir`).
+pub struct QlogDir {
+    /// The directory and a `/` after it, in its first `len` bytes.
+    name: [u8; QLOG_NAME_MAX],
+    len: usize,
+    mode: crate::options::FileMode,
+}
+
+impl fmt::Debug for QlogDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "QlogDir({})", self.name[..self.len].escape_ascii())
+    }
+}
+
+impl QlogDir {
+    /// The directory `QLOGDIR` names: none if it is unset or empty, as
+    /// `curl_getenv` gives neither, or if no file in it has a name short
+    /// enough.
+    pub fn from_env(mode: crate::options::FileMode) -> Option<QlogDir> {
+        let mut buf = [0u8; QLOG_NAME_MAX];
+        let dir = curl_os::env::var_into(b"QLOGDIR", &mut buf)?;
+        if dir.is_empty() {
+            return None;
+        }
+        QlogDir::new(dir, mode)
+    }
+
+    /// The directory `dir`, not checked: none if no file in it has a
+    /// name short enough. A directory that is not there is only found
+    /// as a file in it is opened.
+    pub fn new(dir: &[u8], mode: crate::options::FileMode) -> Option<QlogDir> {
+        let mut name = [0u8; QLOG_NAME_MAX];
+        let len = dir.len() + 1;
+        // Room for at least the extension and the zero byte.
+        if len + b".sqlog".len() >= QLOG_NAME_MAX {
+            return None;
+        }
+        name[..dir.len()].copy_from_slice(dir);
+        name[dir.len()] = b'/';
+        Some(QlogDir { name, len, mode })
+    }
+
+    /// Create the qlog of the connection of source id `scid`, to write
+    /// it from its start: `<dir>/<scid in hex>.sqlog`. None if the name
+    /// is too long or the file will not open, which leaves the
+    /// connection without one and says nothing.
+    ///
+    /// C opens the file to write without cutting it (`O_WRONLY |
+    /// O_CREAT`); it is opened here to write anew, which differs only for
+    /// a file there already, which a source id of random bytes does not
+    /// name.
+    pub fn open(&self, scid: &[u8]) -> Option<std::fs::File> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        const EXT: &[u8] = b".sqlog";
+        let mut name = self.name;
+        let mut at = self.len;
+        // The name and its zero byte must fit, as C's buffer's limit says.
+        if at + 2 * scid.len() + EXT.len() >= QLOG_NAME_MAX {
+            return None;
+        }
+        for &b in scid {
+            name[at] = HEX[usize::from(b >> 4)];
+            name[at + 1] = HEX[usize::from(b & 0xf)];
+            at += 2;
+        }
+        name[at..at + EXT.len()].copy_from_slice(EXT);
+        at += EXT.len();
+        let mode = u32::from(self.mode.bits());
+        curl_os::fs::with_c_name(&name[..at], |c| {
+            curl_os::fs::open_write(c, curl_os::fs::Keep::Nothing, mode)
+        })
+        .ok()
+    }
 }
 
 /// When a connection wants to be called again (`ngtcp2_conn_get_expiry`).
@@ -596,3 +680,90 @@ pub const BODY_HELD: usize = 10 * 64 * 1024;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod fake;
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_macros, clippy::disallowed_methods)]
+
+    use super::QlogDir;
+    use crate::options::FileMode;
+
+    /// A directory of the test's own, removed as it goes.
+    struct Dir(std::path::PathBuf);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn dir(name: &str) -> Dir {
+        let d = std::env::temp_dir().join(format!("curl-core-qlog-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        Dir(d)
+    }
+
+    /// The file is `<dir>/<source id in lower-case hex>.sqlog`, as
+    /// `Curl_qlogdir` names it.
+    #[test]
+    fn a_qlog_is_named_after_the_source_id_in_hex() {
+        let d = dir("name");
+        let qlog = QlogDir::new(d.0.as_os_str().as_encoded_bytes(), FileMode::default()).unwrap();
+        assert!(qlog.open(&[0x00, 0x0a, 0xb1, 0xff]).is_some());
+        let names: Vec<_> = std::fs::read_dir(&d.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["000ab1ff.sqlog"]);
+    }
+
+    /// A file is created with the handle's permissions, before the umask.
+    #[cfg(unix)]
+    #[test]
+    fn a_qlog_is_created_with_the_permissions_given() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = dir("mode");
+        let mode = FileMode::new(0o600).unwrap();
+        let qlog = QlogDir::new(d.0.as_os_str().as_encoded_bytes(), mode).unwrap();
+        let file = qlog.open(&[0x42]).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    /// A name longer than C's buffer for it holds opens no file
+    /// (`DYN_QLOG_NAME`): the longest is 1023 bytes.
+    #[test]
+    fn a_qlog_name_too_long_opens_none() {
+        let d = dir("long");
+        let base = d.0.as_os_str().as_encoded_bytes();
+        // `<base>/x...x` with a 1-byte source id: `/`, 2 digits, `.sqlog`.
+        let fill = |total: usize| {
+            let mut dir = base.to_vec();
+            dir.push(b'/');
+            dir.resize(total - (1 + 2 + 6), b'x');
+            dir
+        };
+        // Made as a chain of directories no longer than the system's
+        // longest component.
+        let made: Vec<u8> = fill(1023)
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| {
+                if i > base.len() && i % 200 == 0 {
+                    b'/'
+                } else {
+                    b
+                }
+            })
+            .collect();
+        std::fs::create_dir_all(String::from_utf8(made.clone()).unwrap()).unwrap();
+        let fits = QlogDir::new(&made, FileMode::default()).unwrap();
+        assert!(fits.open(&[0x01]).is_some());
+        assert!(fits.open(&[0x01, 0x02]).is_none());
+        // One byte more, in a directory that is there.
+        let mut over = made.clone();
+        over.push(b'x');
+        std::fs::create_dir_all(String::from_utf8(over.clone()).unwrap()).unwrap();
+        let over = QlogDir::new(&over, FileMode::default()).unwrap();
+        assert!(over.open(&[0x01]).is_none());
+    }
+}

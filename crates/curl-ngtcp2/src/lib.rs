@@ -457,6 +457,10 @@ struct Inner {
     local: Addr,
     /// Early data is sent (`use_earlydata`).
     early: bool,
+    /// The file ngtcp2 writes the connection's qlog to (`qlogfd`), until
+    /// a write to it fails. Reached by the qlog callback alone, which
+    /// every call into ngtcp2 may fire, its making and freeing included.
+    qlog: Option<std::fs::File>,
 }
 
 /// What a call into the libraries lends their callbacks.
@@ -561,10 +565,15 @@ impl fmt::Debug for Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        // SAFETY: dropped once, here, as C frees the session first
-        // (`Curl_cf_ngtcp2_ctx_cleanup`); nothing calls it after.
-        unsafe { ManuallyDrop::drop(&mut self.tls) };
         let inner = self.inner.ptr();
+        // The qlog closed first, as C closes it before anything is freed
+        // (`Curl_cf_ngtcp2_ctx_cleanup`): what freeing the connection
+        // writes of it is not written.
+        // SAFETY: the state, between calls.
+        drop(unsafe { (*inner).qlog.take() });
+        // SAFETY: dropped once, here, as C frees the session next; nothing
+        // calls it after.
+        unsafe { ManuallyDrop::drop(&mut self.tls) };
         // SAFETY: the state, alive until `inner` goes after this.
         let h3 = unsafe { (*inner).h3 };
         let conn = self.conn();
@@ -688,6 +697,12 @@ impl Connection {
             )
         };
         settings.log_printf = None;
+        // The qlog, named after the source id (`Curl_qlogdir`), written
+        // as the library gives it if the file opened (`qlog_callback`).
+        let qlog = setup.qlog.as_ref().and_then(|dir| dir.open(&scid.data));
+        if qlog.is_some() {
+            settings.qlog_write = Some(qlog_write);
+        }
         settings.initial_ts = ts(setup.now);
         settings.handshake_timeout = nanos(setup.handshake_timeout);
         settings.max_window = setup.max_window;
@@ -719,6 +734,7 @@ impl Connection {
             last_error: unsafe { core::mem::zeroed() },
             local: Addr::new(setup.local),
             early: false,
+            qlog,
         })?;
         let inner = UserData(NonNull::from(Box::leak(inner)));
         let p = inner.ptr();
@@ -1629,6 +1645,31 @@ unsafe extern "C" fn rand(dest: *mut u8, destlen: usize, _rand_ctx: *const sys::
     let out = unsafe { core::slice::from_raw_parts_mut(dest, destlen) };
     if curl_os::random::fill(out).is_err() {
         out.fill(0);
+    }
+}
+
+/// Write what the library gives of the qlog, with one write as C's
+/// (`qlog_callback`); a write that fails closes the file, and nothing
+/// more is written.
+unsafe extern "C" fn qlog_write(
+    user_data: *mut c_void,
+    _flags: u32,
+    data: *const c_void,
+    datalen: usize,
+) {
+    let inner = inner_of(user_data);
+    // SAFETY: the state's file alone, which nothing else reaches: no
+    // reference into the state covers it, as no other code but
+    // `Connection`'s drop, outside any call, touches it.
+    let qlog = unsafe { &mut (*inner).qlog };
+    let Some(file) = qlog else {
+        return;
+    };
+    // SAFETY: the library's `datalen` bytes, alive for the call.
+    let bytes = unsafe { bytes(data.cast(), datalen) };
+    // One write, its count not looked at, as C's `write`.
+    if let Err(_failed) = std::io::Write::write(&mut &*file, bytes) {
+        *qlog = None;
     }
 }
 

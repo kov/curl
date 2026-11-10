@@ -13,10 +13,10 @@ use std::time::{Duration, Instant as StdInstant};
 use curl_alloc::TryArc;
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    ClientSetup, ConnEvent, Connection, EarlyStart, Event, Expiry, Heard, Http3, Layer, QuicError,
-    StreamEvent, StreamId,
+    ClientSetup, ConnEvent, Connection, EarlyStart, Event, Expiry, Heard, Http3, Layer, QlogDir,
+    QuicError, StreamEvent, StreamId,
 };
-use curl_core::options::{CaSetting, ColdGroup as _, TlsOptions};
+use curl_core::options::{CaSetting, ColdGroup as _, FileMode, TlsOptions};
 use curl_core::time::SystemClock;
 use curl_core::tls::{
     CaDefaults, Kept, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind,
@@ -373,6 +373,16 @@ fn with_conn<R>(
     ca: &str,
     f: impl FnOnce(&mut dyn Connection, &mut TlsCx<'_>, &Over<'_>, SocketAddr) -> R,
 ) -> (R, Vec<String>) {
+    with_conn_qlog(test, ca, None, f)
+}
+
+/// `with_conn`, the connection writing its qlog to `qlog` if given.
+fn with_conn_qlog<R>(
+    test: &str,
+    ca: &str,
+    qlog: Option<&Path>,
+    f: impl FnOnce(&mut dyn Connection, &mut TlsCx<'_>, &Over<'_>, SocketAddr) -> R,
+) -> (R, Vec<String>) {
     let dir = Dir(std::env::temp_dir().join(format!("curl-ngtcp2-{test}-{}", std::process::id())));
     std::fs::create_dir_all(&dir.0).unwrap();
     certs(&dir.0);
@@ -417,6 +427,10 @@ fn with_conn<R>(
             max_window: 100 * 10 * 1024 * 1024,
             stream_window: 32 * 1024,
             max_streams: 256 * 1024,
+            qlog: qlog.map(|d| {
+                let dir = d.as_os_str().as_encoded_bytes();
+                QlogDir::new(dir, FileMode::default()).unwrap()
+            }),
         };
         let mut conn = NGTCP2.client(&setup, tls).unwrap();
         let over = Over {
@@ -470,6 +484,62 @@ fn a_get_over_http3_is_answered() {
     );
     assert_eq!(told.body, BODY);
     assert!(notes.iter().any(|n| n.contains(VERIFIED)), "{notes:?}");
+}
+
+/// With a directory for qlogs, the connection writes ngtcp2's qlog of
+/// itself to a file in it named after its source id, in hex, as C's
+/// `Curl_qlogdir` names it: the trace's start, then the packets.
+#[test]
+fn a_connection_writes_its_qlog_to_the_directory_given() {
+    let qlogs = Dir(std::env::temp_dir().join(format!("curl-ngtcp2-qlogs-{}", std::process::id())));
+    std::fs::create_dir_all(&qlogs.0).unwrap();
+    let ((), _) = with_conn_qlog("qlog", "ca.pem", Some(&qlogs.0), |conn, cx, over, _| {
+        let mut told = Told::default();
+        run(conn, cx, over, &mut told, |t| t.checked.is_some()).unwrap();
+        assert_eq!(told.checked, Some(Ok(())));
+    });
+    let files: Vec<_> = std::fs::read_dir(&qlogs.0)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    let name = files[0].file_name().unwrap().to_str().unwrap();
+    let id = name
+        .strip_suffix(".sqlog")
+        .unwrap_or_else(|| panic!("{name}"));
+    assert_eq!(id.len(), 40, "{name}");
+    assert!(
+        id.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{name}"
+    );
+    let qlog = std::fs::read(&files[0]).unwrap();
+    let start = b"\x1e{\"qlog_format\":\"JSON-SEQ\",\"qlog_version\":\"0.3\",";
+    assert!(qlog.starts_with(start), "{}", qlog.escape_ascii());
+    let has = |what: &[u8]| qlog.windows(what.len()).any(|w| w == what);
+    assert!(
+        has(b"\"name\":\"transport:packet_sent\""),
+        "{}",
+        qlog.escape_ascii()
+    );
+    assert!(
+        has(b"\"name\":\"transport:packet_received\""),
+        "{}",
+        qlog.escape_ascii()
+    );
+}
+
+/// A directory for qlogs that is not there leaves the connection without
+/// one, and the handshake goes on, as C's goes on without its file.
+#[test]
+fn a_qlog_directory_not_there_writes_none_and_connects() {
+    let qlogs = std::env::temp_dir().join(format!("curl-ngtcp2-no-qlogs-{}", std::process::id()));
+    let ((), _) = with_conn_qlog("noqlog", "ca.pem", Some(&qlogs), |conn, cx, over, _| {
+        let mut told = Told::default();
+        run(conn, cx, over, &mut told, |t| t.checked.is_some()).unwrap();
+        assert_eq!(told.checked, Some(Ok(())));
+    });
+    assert!(!qlogs.exists());
 }
 
 /// A peer whose certificate the CA trusted did not sign fails the
@@ -765,6 +835,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
                 max_window: 100 * 10 * 1024 * 1024,
                 stream_window: 32 * 1024,
                 max_streams: 256 * 1024,
+                qlog: None,
             };
             let mut conn = NGTCP2.client(&setup, tls).unwrap();
             let over = Over {

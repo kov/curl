@@ -422,6 +422,9 @@ pub(crate) struct QuicMaking {
     /// The transfer makes requests over it, which early data may carry
     /// (not `bits.connect_only`).
     pub(crate) requests: bool,
+    /// What a file the connection writes is created with
+    /// (`CURLOPT_NEW_FILE_PERMS`): its qlog.
+    pub(crate) file_mode: crate::options::FileMode,
 }
 
 /// A socket opened for an attempt, or why none was, and whether the
@@ -2149,6 +2152,9 @@ impl ConnectMachine {
             max_window: H3_CONN_WINDOW_SIZE_MAX,
             stream_window: crate::conn::quic::STREAM_WINDOW_INITIAL,
             max_streams: QUIC_MAX_STREAMS,
+            // Read as each connection starts, as C reads it
+            // (`Curl_qlogdir`).
+            qlog: crate::http3::QlogDir::from_env(making.file_mode),
         };
         let conn = match h3.client(&setup, tls) {
             Ok(conn) => conn,

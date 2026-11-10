@@ -166,10 +166,14 @@ pub(crate) struct ngtcp2_transport_params {
     pub(crate) version_info_present: u8,
 }
 
+/// `ngtcp2_qlog_write`: `datalen` bytes of the qlog at `data` to write.
+pub(crate) type ngtcp2_qlog_write =
+    unsafe extern "C" fn(user_data: *mut c_void, flags: u32, data: *const c_void, datalen: usize);
+
 /// At `NGTCP2_SETTINGS_V4`.
 #[repr(C)]
 pub(crate) struct ngtcp2_settings {
-    pub(crate) qlog_write: Option<unsafe extern "C" fn()>,
+    pub(crate) qlog_write: Option<ngtcp2_qlog_write>,
     pub(crate) cc_algo: c_int,
     pub(crate) initial_ts: ngtcp2_tstamp,
     pub(crate) initial_rtt: ngtcp2_duration,

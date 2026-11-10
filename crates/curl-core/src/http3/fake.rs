@@ -295,7 +295,17 @@ impl FakeHttp3 {
                 .pop_front(),
         }
         .unwrap_or_else(|| self.script.clone());
-        setups.push(*setup);
+        // Without the qlog's directory, which no fake writes to.
+        setups.push(ClientSetup {
+            local: setup.local,
+            remote: setup.remote,
+            now: setup.now,
+            handshake_timeout: setup.handshake_timeout,
+            max_window: setup.max_window,
+            stream_window: setup.stream_window,
+            max_streams: setup.max_streams,
+            qlog: None,
+        });
         {
             let mut s = script.lock().unwrap_or_else(PoisonError::into_inner);
             s.at(setup.now);

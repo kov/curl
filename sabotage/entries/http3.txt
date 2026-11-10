@@ -1438,3 +1438,19 @@ witness: curl-core conn::quic::tests::the_packets_of_one_ingress_are_read_at_one
                 let bytes = &room[i * SLOT..i * SLOT + d.len];
 --- new
                 let bytes = &room[..d.len];
+
+=== a connection given a qlog directory never hands ngtcp2 the callback that writes it
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 a_connection_writes_its_qlog_to_the_directory_given
+--- old
+            settings.qlog_write = Some(qlog_write);
+--- new
+            settings.qlog_write = None;
+
+=== a qlog name one byte past C's buffer for it is opened
+file: crates/curl-core/src/http3.rs
+witness: curl-core http3::tests::a_qlog_name_too_long_opens_none
+--- old
+        if at + 2 * scid.len() + EXT.len() >= QLOG_NAME_MAX {
+--- new
+        if at + 2 * scid.len() + EXT.len() > QLOG_NAME_MAX {

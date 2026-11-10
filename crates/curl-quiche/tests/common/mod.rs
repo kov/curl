@@ -329,6 +329,7 @@ pub fn with_client<R>(
             max_window: 100 * 10 * 1024 * 1024,
             stream_window: 32 * 1024,
             max_streams: 256 * 1024,
+            qlog: None,
         };
         let mut conn = QUICHE.client(&setup, tls).unwrap();
         let over = Over {

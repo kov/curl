@@ -469,6 +469,7 @@ fn proxy(script: &Arc<Lock<Script>>) -> (H3Proxy, ManualClock) {
         max_window: 1 << 20,
         stream_window: 1 << 15,
         max_streams: 100,
+        qlog: None,
     };
     let conn = FakeHttp3::new(script.clone())
         .client(&setup, crate::tls::fake::quic_session().unwrap())

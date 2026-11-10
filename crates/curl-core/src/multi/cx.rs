@@ -493,6 +493,7 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
             handshake_timeout,
             clock: self.step.rest.clock.clone(),
             requests: !self.step.easy().options().connect_only.reserves(),
+            file_mode: self.step.easy().options().new_file_mode,
         }))
     }
 

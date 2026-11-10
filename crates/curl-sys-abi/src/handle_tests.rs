@@ -10856,3 +10856,62 @@ fn a_copy_s_adapters_are_its_own() {
     // SAFETY: as above.
     unsafe { curl_easy_cleanup(copy) };
 }
+
+/// A `curl_multi_init` multi hands its transfers the ids C's does, from a
+/// table of 128 rows whose row 0 is the multi's own handle: after 13
+/// handles came and went, three added together take ids 14, 15 and 16,
+/// and are run and reported in that order. On the 16 rows of
+/// `curl_easy_perform`'s multi the third would wrap around to id 1 and
+/// report first. The order is the C build's, from the same calls.
+#[test]
+fn a_multi_s_transfers_report_in_c_s_id_order() {
+    let (path, url) = file("id-order", b"");
+    let multi = curl_multi_init();
+    let churn = curl_easy_init();
+    let added: [*mut CURL; 3] = core::array::from_fn(|_| curl_easy_init());
+    // SAFETY: a live multi and live handles, with options of their
+    // types, each handle removed before the multi and it are cleaned up.
+    unsafe {
+        assert_eq!(
+            curl_easy_setopt(churn, ffi::CURLOPT_URL, url.as_ptr()),
+            CURLE_OK
+        );
+        for _ in 0..13 {
+            assert_eq!(curl_multi_add_handle(multi, churn), CURLM_OK);
+            assert_eq!(curl_multi_remove_handle(multi, churn), CURLM_OK);
+        }
+        for &c in &added {
+            assert_eq!(
+                curl_easy_setopt(c, ffi::CURLOPT_URL, url.as_ptr()),
+                CURLE_OK
+            );
+            assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+        }
+        let mut done = Vec::new();
+        let mut running = 1;
+        let mut rounds = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(multi, &raw mut running), CURLM_OK);
+            let mut queued = 0;
+            loop {
+                let msg = curl_multi_info_read(multi, &raw mut queued);
+                if msg.is_null() {
+                    break;
+                }
+                assert_eq!((*msg).data.result, CURLE_OK);
+                let which = added.iter().position(|&c| c == (*msg).easy_handle);
+                done.push(which.expect("one of the three"));
+            }
+            rounds += 1;
+            assert!(rounds < 100, "the transfers never end");
+        }
+        assert_eq!(done, [0, 1, 2]);
+        for c in added {
+            assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+            curl_easy_cleanup(c);
+        }
+        assert_eq!(curl_multi_cleanup(multi), CURLM_OK);
+        curl_easy_cleanup(churn);
+    }
+    std::fs::remove_file(path).unwrap();
+}

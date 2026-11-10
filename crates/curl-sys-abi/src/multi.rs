@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 use curl_core::conn::io::{BorrowedSocket, Events, Net, PollFd, SocketKey, SystemNet, Waker};
+use curl_core::conn::threaded::Threads;
 use curl_core::easy::Easy;
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
@@ -93,23 +94,30 @@ pub(crate) struct ShimMulti {
 }
 
 impl ShimMulti {
-    /// A multi with the system's network. Without a waker, which
-    /// takes a descriptor, `curl_multi_wakeup` fails, as in C.
-    fn new() -> Result<ShimMulti, OutOfMemory> {
+    /// The rows of `curl_multi_init`'s transfer table
+    /// (`CURL_XFER_TABLE_SIZE`), and of `curl_easy_perform`'s own multi's
+    /// (easy.c's `Curl_multi_handle(16, ...)`).
+    const ROWS: u32 = 128;
+    const PERFORM_ROWS: u32 = 16;
+
+    /// A multi with the system's network, its resolver answering from
+    /// `threads` and its transfer table starting at `rows`. Without a
+    /// waker, which takes a descriptor, `curl_multi_wakeup` fails, as in
+    /// C.
+    fn new(threads: Threads, rows: u32) -> Result<ShimMulti, OutOfMemory> {
         // A multi whose resolver cannot be set up is not made
         // (`Curl_multi_handle`'s `goto error`).
-        let net = SystemNet::for_multi(curl_core::conn::threaded::Threads::MULTI)
-            .map_err(|_| OutOfMemory)?;
-        ShimMulti::with_net(try_box(net)?)
+        let net = SystemNet::for_multi(threads).map_err(|_| OutOfMemory)?;
+        ShimMulti::with_net(try_box(net)?, rows)
     }
 
-    fn with_net(net: Box<dyn Net + Send>) -> Result<ShimMulti, OutOfMemory> {
+    fn with_net(net: Box<dyn Net + Send>, rows: u32) -> Result<ShimMulti, OutOfMemory> {
         let waker = match Waker::new() {
             Ok(w) => Some(TryArc::try_new(w)?),
             Err(_) => None,
         };
         // Row 0 is C's admin handle's, so ids equal C's.
-        let arena = ArenaPolicy::new(16, 1).expect("a valid policy");
+        let arena = ArenaPolicy::new(rows, 1).expect("a valid policy");
         let env = Env::new(net, arena, waker.clone());
         Ok(ShimMulti {
             magic: AtomicU32::new(MAGIC),
@@ -131,8 +139,12 @@ impl ShimMulti {
         })
     }
 
+    /// The multi `curl_multi_init` makes: a table of 128 rows, a resolver
+    /// of 20 threads idling 2 s, and the TLS sessions of 25 peers
+    /// (`Curl_multi_handle`'s defaults).
     fn boxed() -> Result<NonNull<ShimMulti>, OutOfMemory> {
-        Ok(NonNull::from(Box::leak(try_box(ShimMulti::new()?)?)))
+        let multi = ShimMulti::new(Threads::MULTI, ShimMulti::ROWS)?;
+        Ok(NonNull::from(Box::leak(try_box(multi)?)))
     }
 
     /// As `curl_multi_init`, over `net`.
@@ -140,17 +152,19 @@ impl ShimMulti {
     pub(crate) fn boxed_with(net: Box<dyn Net + Send>) -> Result<NonNull<ShimMulti>, OutOfMemory> {
         Ok(NonNull::from(Box::leak(try_box(ShimMulti::with_net(
             net,
+            ShimMulti::ROWS,
         )?)?)))
     }
 
-    /// The multi `curl_easy_perform` runs a handle in.
+    /// The multi `curl_easy_perform` runs a handle in: a table of 16
+    /// rows, a resolver of 2 threads idling 10 ms, and the TLS sessions
+    /// of 3 peers (easy.c's `Curl_multi_handle(16, 1, 3, 7, 3)`).
     pub(crate) fn private() -> Result<NonNull<ShimMulti>, OutOfMemory> {
-        let multi = ShimMulti::boxed()?;
-        // SAFETY: just made, and not freed.
-        let m = unsafe { multi.as_ref() };
-        // SAFETY: nothing runs on it.
-        unsafe { m.core_mut() }.make_handle_own();
-        Ok(multi)
+        let mut multi = ShimMulti::new(Threads::EASY, ShimMulti::PERFORM_ROWS)?;
+        let core = multi.core.get_mut();
+        core.keep_tls_sessions_of(Multi::<CHost>::PERFORM_TLS_PEERS);
+        core.make_handle_own();
+        Ok(NonNull::from(Box::leak(try_box(multi)?)))
     }
 
     /// Free a multi with no transfers in it.

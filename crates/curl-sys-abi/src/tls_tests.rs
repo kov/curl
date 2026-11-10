@@ -1050,3 +1050,74 @@ fn a_probe_s_handle_is_freed_when_it_goes() {
     assert_eq!(m.bytes, 0, "a multi's probes leave nothing");
     drop(heard);
 }
+
+/// `curl_easy_perform`'s own multi keeps the TLS sessions of 3 peers, a
+/// `curl_multi_init` multi those of 25 (easy.c's and multi.c's
+/// `Curl_multi_handle`), as the session cache's trace says of each
+/// lookup: the C build's lines for the same transfers.
+#[test]
+fn a_perform_s_multi_keeps_fewer_tls_peers_than_a_multi() {
+    let (port, server) = serve_n(2);
+    let url = std::ffi::CString::new(format!("https://localhost:{port}/")).unwrap();
+    let c = curl_easy_init();
+    let components = curl_core::components::Components::new().unwrap();
+    components.configure(b"ssls");
+    // SAFETY: a live handle.
+    let easy = unsafe { crate::easy::handle(c) }.unwrap();
+    let set = easy.with_home(|e| match e {
+        crate::easy::HomeRef::Detached(e) => e.set_components(Some(components)),
+        _ => unreachable!("in no multi"),
+    });
+    assert!(set.is_ok());
+    let sink = discard as unsafe extern "C" fn(*mut c_char, usize, usize, *mut c_void) -> usize;
+    // SAFETY: a stream of the C library's, closed by `drain`.
+    let performed = unsafe { libc::tmpfile() };
+    // SAFETY: as above.
+    let multied = unsafe { libc::tmpfile() };
+    assert!(!performed.is_null() && !multied.is_null());
+    // SAFETY: a live handle and multi, options of their types, and
+    // streams that outlive the transfers.
+    unsafe {
+        curl_easy_setopt(c, ffi::CURLOPT_URL, url.as_ptr());
+        curl_easy_setopt(c, ffi::CURLOPT_SSL_VERIFYPEER, 0 as c_long);
+        curl_easy_setopt(c, ffi::CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+        curl_easy_setopt(c, ffi::CURLOPT_WRITEFUNCTION, sink);
+        curl_easy_setopt(c, ffi::CURLOPT_VERBOSE, 1 as c_long);
+        curl_easy_setopt(c, ffi::CURLOPT_STDERR, performed);
+        assert_eq!(crate::easy::curl_easy_perform(c), CURLE_OK);
+        curl_easy_setopt(c, ffi::CURLOPT_STDERR, multied);
+        let m = curl_multi_init();
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        let mut running = 1;
+        let mut rounds = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+            assert_eq!(
+                curl_multi_wait(m, ptr::null_mut(), 0, 10, ptr::null_mut()),
+                CURLM_OK
+            );
+            rounds += 1;
+            assert!(rounds < 1000, "the transfer never ends");
+        }
+        let mut queued = 0;
+        let msg = curl_multi_info_read(m, &raw mut queued);
+        assert!(!msg.is_null());
+        assert_eq!((*msg).data.result, CURLE_OK);
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+        curl_easy_cleanup(c);
+    }
+    server.join().unwrap();
+    let lookups = |said: &str, slots: &str| {
+        let lines: Vec<&str> = said
+            .lines()
+            .filter(|l| l.starts_with("* [SSLS] find peer slot for "))
+            .collect();
+        assert!(!lines.is_empty(), "{said}");
+        for l in lines {
+            assert!(l.ends_with(slots), "{l}");
+        }
+    };
+    lookups(&drain(performed), " among 3 slots");
+    lookups(&drain(multied), " among 25 slots");
+}

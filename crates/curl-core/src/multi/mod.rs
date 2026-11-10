@@ -580,6 +580,10 @@ fn debug_max_total(given: &[u8]) -> Option<u32> {
 }
 
 impl<H: Host> Multi<H> {
+    /// The TLS peers whose sessions C's `curl_easy_perform` keeps for its
+    /// own multi, for `keep_tls_sessions_of`.
+    pub const PERFORM_TLS_PEERS: usize = crate::tls::SessionCache::PERFORM_PEERS;
+
     /// A multi over `env`. On Windows its network and waker were made
     /// while Winsock was started by whoever made them; the multi holds a
     /// start of its own from here.
@@ -674,7 +678,7 @@ impl<H: Host> Multi<H> {
     /// `curl_easy_perform` keeps for its own multi, in place of the 25 a
     /// multi keeps (`Curl_multi_handle`'s `sesssize`). Only while none is
     /// kept.
-    pub(crate) fn keep_tls_sessions_of(&mut self, peers: usize) {
+    pub fn keep_tls_sessions_of(&mut self, peers: usize) {
         self.caches.sessions = crate::tls::SessionCache::new(peers);
     }
 

@@ -374,6 +374,9 @@ The policy is a value, not constants in the core:
 - the shim passes `ArenaPolicy::new(128, 1)` for `curl_multi_init` and `new(16, 1)` for the
   private multi of `curl_easy_perform` (multi.c:53, easy.c:805). Row 0 stays unused only so
   that indices equal C's mids, where the admin easy holds mid 0; the core has no admin easy.
+  The private multi is also C's in its other sizes: a resolver of `Threads::EASY` (2 threads
+  idling 10 ms, against `Threads::MULTI`'s 20 idling 2 s) and the TLS sessions of
+  `Multi::PERFORM_TLS_PEERS` (3) peers through `keep_tls_sessions_of`, against 25.
 - the Rust API's default is `new(16, 0)`.
 
 `ConnId` folds C's `(last_cpid, last_conn_id)` pair into one value. CONNECT_ONLY's "last

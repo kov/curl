@@ -555,10 +555,21 @@ impl<S: Sink> Out<'_, S> {
         if n == bytes.len() { Ok(()) } else { Err(Stop) }
     }
 
+    /// `num` copies of `byte`, none for a count of nothing or less: most
+    /// conversions ask for none, which is decided where they ask.
+    #[inline]
     fn pad(&mut self, byte: u8, num: i32) -> Result<(), Stop> {
+        if num <= 0 {
+            return Ok(());
+        }
+        self.pad_some(byte, num as usize)
+    }
+
+    /// `left` copies of `byte`, at least one.
+    #[inline(never)]
+    fn pad_some(&mut self, byte: u8, mut left: usize) -> Result<(), Stop> {
         const RUN: usize = 16;
         let src = [byte; RUN];
-        let mut left = num.max(0) as usize;
         while left > RUN {
             self.run(&src)?;
             left -= RUN;

@@ -1,5 +1,5 @@
 {
- "c-commit": "a15a72a571fcfa54a73ae7e14725aa84e642ecda",
+ "c-commit": "bd3de3aede646e3c92ade95d624e9f82211e1c3a",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -17,6 +17,7 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
+   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
    "USE_ECH": "OFF",
    "USE_HTTPSRR": "ON",
@@ -28,10 +29,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2198,
-   "failed": 2,
-   "ok": 2065,
-   "ran": 2067,
+   "considered": 2201,
+   "failed": 1,
+   "ok": 2069,
+   "ran": 2070,
    "skipped": 131
   },
   "curl-version": [
@@ -211,8 +212,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-07T03:11:47Z",
-   "started": "2026-11-07T03:09:20Z"
+   "finished": "2026-11-10T17:56:19Z",
+   "started": "2026-11-10T17:54:19Z"
   },
   "protocols": [
    "dict",
@@ -3080,51 +3081,51 @@
      "outcome": "passed"
     },
     "test_23_ech::test_23_01_ech_no_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_01_ech_no_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_01_ech_no_config[hard-None-35]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_01_ech_no_config[true-not configured-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[hard-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_02_ech_good_config[true-succeeded-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[false-None-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[grease-sent GREASE-0]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[hard-rejected-101]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_03_ech_bad_config[true-rejected-101]": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_04_ech_outer[hard-succeeded-innocent.invalid]": {
@@ -3136,15 +3137,51 @@
      "outcome": "skipped"
     },
     "test_23_ech::test_23_05_ech_conn_ech_reuse": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_06_ech_conn_ech_config_reuse": {
-     "message": "no openssl cmd ECH support",
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_23_ech::test_23_07_ech_conn_ech_pub_reuse": {
      "message": "needs OpenSSL",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[bad-hard-60]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[bad-true-60]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[good-hard-0]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[good-true-0]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[none-hard-35]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[none-true-0]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[silent-hard-28]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_08_ech_h3_record_coming[silent-true-28]": {
+     "message": "missing HTTP/3 support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_09_ech_tcp_record_coming": {
+     "message": "no nghttpx ECH support",
      "outcome": "skipped"
     },
     "test_24_ocsp::test_24_01_verify_status[False-True-None]": {
@@ -3636,23 +3673,23 @@
      "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h1_over_h3_proxytunnel]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h2_over_h3_proxytunnel]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h1_proxytunnel]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h2_proxytunnel]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h3_proxytunnel]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h1_over_h3_proxytunnel]": {
@@ -3684,47 +3721,47 @@
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_05_graceful_shutdown": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_06_proxy_drop_mid_transfer": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_07_large_download": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_08_large_upload": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_09_parallel_downloads": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_10_proxy_basic_auth": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_11_connection_reuse": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_12_quic_session_resumption": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-10m-10485760]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1400-1400]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1m-1048576]": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_14_udp_tunnel_capsule_absent": {
@@ -3732,29 +3769,29 @@
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_16_h2_uses_connect_tcp_not_udp": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_17_happy_eyeballs_filter_present": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_18_happy_eyeballs_ipv4_all_proto": {
-     "message": "no h2o available",
+     "message": "curl lacks experimental HTTP/3 proxy support",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_19_http3_races_through_a_proxy[h2o]": {
-     "message": "no h2o available",
+     "message": "only supported with nghttp3",
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_19_http3_races_through_a_proxy[nghttpx]": {
-     "message": "no h2o available",
+     "message": "only supported with nghttp3",
      "outcome": "skipped"
     }
    },
    "counts": {
     "passed": 749,
-    "skipped": 126
+    "skipped": 135
    },
    "exit-status": 0,
    "functions-without-cases": []
@@ -4700,10 +4737,7 @@
     "result": "ok"
    },
    "1275": {
-    "failed-parts": [
-     "exit"
-    ],
-    "result": "failed"
+    "result": "ok"
    },
    "1276": {
     "result": "ok"
@@ -8080,6 +8114,9 @@
    "3313": {
     "result": "ok"
    },
+   "3314": {
+    "result": "ok"
+   },
    "332": {
     "result": "ok"
    },
@@ -8224,6 +8261,12 @@
     "class": "feature missing from build",
     "reason": "curl lacks libssh support",
     "result": "skipped"
+   },
+   "3632": {
+    "result": "ok"
+   },
+   "3633": {
+    "result": "ok"
    },
    "364": {
     "result": "ok"

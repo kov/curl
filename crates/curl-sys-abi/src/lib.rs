@@ -21,7 +21,6 @@ mod debug;
 #[cfg(feature = "debug-hooks")]
 #[global_allocator]
 static ALLOCATOR: curl_alloc::track::Tracker = curl_alloc::track::Tracker;
-mod ares;
 mod callbacks;
 mod certinfo;
 mod date;
@@ -44,7 +43,6 @@ mod root;
 mod setopt;
 mod share;
 mod sockets;
-mod sshlib;
 mod ssls;
 mod strerror;
 mod strings;

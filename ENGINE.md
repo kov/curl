@@ -139,9 +139,14 @@ code. The libraries the core does not depend on (libpsl, the decoders, the Ed255
 TLS library and the security library) are handed to a handle by whoever builds it: the shim and
 the tool. The decoders, the signer, the TLS library and the security library come as one
 `Libraries` (`curl_core::libraries`), which a handle holds as `SharedLibraries`, as it holds its
-`Components`: the shim's are statics (`SharedLibraries::of_static`), the C ABI's one owned root;
-the tool's are made by `main` and shared with its handles (`SharedLibraries::new`, the TLS
-library owned by them, `Library::Owned`), so it keeps no static. A handle given none has
+`Components`. `curl-backends` makes it (`curl_backends::libraries`), pairing the TLS library its
+features chose with the HTTP/3 library and Ed25519 signer that go with it; what differs between
+the two callers is how the TLS library is held (`curl_backends::tls`). The shim's are statics
+(`SharedLibraries::of_static`), the C ABI's one owned root, over a static library logging to the
+root's key log (`tls::logging_keys_to`, `Library::Static`); the tool's are made by `main` and
+shared with its handles (`SharedLibraries::new`), each over a library made from the tool's
+static of the library's process-wide state and logging to the tool's own key log (`tls::owned`,
+`Library::Owned`). A handle given none has
 `Libraries::NONE`. The TLS library is the backend the build's features choose (DESIGN.md),
 OpenSSL's by default (`curl_openssl::OpenSsl`); the security library (`Libraries.security`) is MIT krb5's GSS-API (`curl_gssapi::GSSAPI`, behind
 `curl_core::gss::Gss`), with C's debug stub under `debug-hooks`, chosen per context by

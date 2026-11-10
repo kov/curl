@@ -14,53 +14,45 @@ path = "src/main.rs"
 # Answers names by c-ares (C's `--enable-ares`), unless the threaded resolver
 # is chosen; one or the other is needed.
 default = ["c-ares", "libssh", "openssl"]
-# One TLS library, chosen as the library is built: OpenSSL, with HTTP/3
-# over ngtcp2, the HTTP/3 proxy and Ed25519 for message signatures, or
-# (`quiche`) with HTTP/3 over quiche and no HTTP/3 proxy, over the
-# BoringSSL quiche's build makes (C's CMake: "quiche requires BoringSSL");
-# GnuTLS, with HTTP/3 over ngtcp2's GnuTLS crypto, no HTTP/3 proxy (C's
-# is OpenSSL's alone) and Ed25519 from its nettle; wolfSSL, with HTTP/3
-# over ngtcp2's wolfSSL crypto, no HTTP/3 proxy and Ed25519 from its
-# wolfCrypt; or mbedTLS, Rustls or Schannel (Windows), with neither,
-# as C's builds with them.
-openssl = ["openssl-tls", "dep:curl-ngtcp2", "curl-ngtcp2/openssl", "curl-core/proxy-http3"]
-quiche = ["openssl-tls", "dep:curl-quiche", "curl-core/quic"]
+# One TLS library, chosen as the library is built, with the HTTP/3
+# library and the Ed25519 that go with it: curl-backends' features, which
+# say what each means.
+openssl = ["openssl-tls", "curl-backends/openssl"]
+quiche = ["openssl-tls", "curl-backends/quiche"]
 # The OpenSSL library, which `openssl` and `quiche` both mean.
-openssl-tls = ["dep:curl-openssl", "curl-core/httpsig"]
-gnutls = ["dep:curl-gnutls", "dep:curl-ngtcp2", "curl-ngtcp2/gnutls", "curl-core/quic", "curl-core/httpsig"]
-mbedtls = ["dep:curl-mbedtls"]
-rustls = ["dep:curl-rustls"]
-wolfssl = ["dep:curl-wolfssl", "dep:curl-ngtcp2", "curl-ngtcp2/wolfssl", "curl-core/quic", "curl-core/httpsig"]
-schannel = ["dep:curl-schannel"]
-c-ares = ["dep:curl-ares"]
-# One SSH library for SCP and SFTP, chosen as the library is built: libssh
-# (C's `CURL_USE_LIBSSH`), as distributions build it, or libssh2 (C's
-# `CURL_USE_LIBSSH2`), as the reference build has it.
-libssh = ["dep:curl-libssh"]
-libssh2 = ["dep:curl-libssh2"]
+openssl-tls = ["curl-backends/openssl-tls"]
+gnutls = ["curl-backends/gnutls"]
+mbedtls = ["curl-backends/mbedtls"]
+rustls = ["curl-backends/rustls"]
+wolfssl = ["curl-backends/wolfssl"]
+schannel = ["curl-backends/schannel"]
+c-ares = ["curl-backends/c-ares"]
+# One SSH library for SCP and SFTP: libssh or libssh2.
+libssh = ["curl-backends/libssh"]
+libssh2 = ["curl-backends/libssh2"]
 # GNU GSS in place of MIT krb5 for Kerberos and SPNEGO (C's
 # `HAVE_GSSGNU`).
-gnu-gss = ["curl-gssapi/gnu-gss"]
+gnu-gss = ["curl-backends/gnu-gss"]
 # The debug test build: track allocations as the C tool's debug build does.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks", "curl-os/debug-hooks", "curl-mbedtls?/debug-hooks", "curl-quiche?/debug-hooks", "curl-rustls?/debug-hooks", "curl-wolfssl?/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-backends/debug-hooks", "curl-core/debug-hooks", "curl-os/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`).
-threaded-resolver = ["curl-core/threaded-resolver"]
+threaded-resolver = ["curl-backends/threaded-resolver"]
 # Host names converted by Apple's ICU in place of libidn2 (C's
 # `USE_APPLE_IDN`).
-apple-idn = ["curl-idn2/apple-idn"]
+apple-idn = ["curl-backends/apple-idn"]
 # Host names converted by Windows' IdnToAscii and IdnToUnicode in place
 # of libidn2 (C's `USE_WIN32_IDN`): on Windows without asking, as both
 # reference Windows builds have them; refused elsewhere.
-win-idn = ["curl-idn2/win-idn"]
+win-idn = ["curl-backends/win-idn"]
 # Host names converted by libidn2 on Windows, in place of its own
 # conversions (C's Windows build with `USE_LIBIDN2`).
-libidn2 = ["curl-idn2/libidn2"]
+libidn2 = ["curl-backends/libidn2"]
 # Peers verified by Apple's SecTrust where OpenSSL cannot (C's
 # `USE_APPLE_SECTRUST`).
-apple-sectrust = ["curl-openssl?/apple-sectrust"]
+apple-sectrust = ["curl-backends/apple-sectrust"]
 # The system's own store of certificates is the default trust store where
 # a transfer names none (C's `CURL_CA_NATIVE`).
-native-ca = ["curl-core/native-ca", "curl-openssl?/native-ca", "curl-gnutls?/native-ca"]
+native-ca = ["curl-backends/native-ca"]
 # Windows' Unicode build (C's `ENABLE_UNICODE`): the command line and the
 # names of files in UTF-8, through the system's UTF-16 calls.
 unicode = ["curl-core/unicode"]
@@ -75,24 +67,14 @@ required-features = ["debug-hooks"]
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
-curl-ares = { path = "../curl-ares", optional = true }
 curl-core = { path = "../curl-core" }
+# The libraries the build is linked with, which the features above choose.
+curl-backends = { path = "../curl-backends", default-features = false }
 curl-os = { path = "../curl-os", features = ["args", "fs", "net"] }
-curl-openssl = { path = "../curl-openssl", optional = true }
-curl-schannel = { path = "../curl-schannel", optional = true }
-curl-gnutls = { path = "../curl-gnutls", optional = true }
-curl-mbedtls = { path = "../curl-mbedtls", optional = true }
-curl-rustls = { path = "../curl-rustls", optional = true }
-curl-wolfssl = { path = "../curl-wolfssl", optional = true }
 curl-psl = { path = "../curl-psl" }
 curl-idn2 = { path = "../curl-idn2" }
-curl-libssh = { path = "../curl-libssh", optional = true }
-curl-libssh2 = { path = "../curl-libssh2", optional = true }
 curl-ldap = { path = "../curl-ldap" }
 curl-nghttp2 = { path = "../curl-nghttp2" }
-# Its crypto for the TLS library chosen, which that library's feature names.
-curl-ngtcp2 = { path = "../curl-ngtcp2", optional = true, default-features = false }
-curl-quiche = { path = "../curl-quiche", optional = true }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 # C's `errno` values, which the tool's messages are chosen by.

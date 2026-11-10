@@ -52,9 +52,20 @@ pub struct GnuTls {
 }
 
 /// GnuTLS, logging no secrets.
-pub static GNUTLS: GnuTls = GnuTls { keylog: None };
+pub static GNUTLS: GnuTls = GnuTls::new();
+
+impl Default for GnuTls {
+    fn default() -> GnuTls {
+        GnuTls::new()
+    }
+}
 
 impl GnuTls {
+    /// GnuTLS logging no secrets.
+    pub const fn new() -> GnuTls {
+        GnuTls { keylog: None }
+    }
+
     /// GnuTLS logging the secrets of its connections to `keylog`
     /// (`SSLKEYLOGFILE`) while it is open.
     pub const fn logging_keys_to(keylog: SharedKeyLog) -> GnuTls {

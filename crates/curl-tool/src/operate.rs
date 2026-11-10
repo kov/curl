@@ -4314,15 +4314,6 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
     })
 }
 
-/// Kerberos and SPNEGO by MIT krb5's GSS-API, or on Windows by SSPI, as
-/// every C build for Windows has them.
-#[cfg(not(windows))]
-const SECURITY: curl_core::libraries::Security =
-    curl_core::libraries::Security::Gss(&curl_gssapi::GSSAPI);
-#[cfg(windows)]
-const SECURITY: curl_core::libraries::Security =
-    curl_core::libraries::Security::Sspi(&curl_sspi::SSPI);
-
 /// What the libraries this build is linked with do for the tool's
 /// handles, as C's: the content codings they undo, the signatures they
 /// make, the TLS they speak and, where the build claims Kerberos
@@ -4356,29 +4347,15 @@ impl Linked {
                 Ok(None)
             };
         let with = |security| -> Result<SharedLibraries, OutOfMemory> {
-            use curl_core::coding::{Coding, Decoders};
             let tls = crate::tlslib::tls(&keylog)?;
-            SharedLibraries::new(curl_core::libraries::Libraries {
-                decoders: Decoders::none()
-                    .with(Coding::Deflate, curl_zlib::deflate)
-                    .with(Coding::Gzip, curl_zlib::gzip)
-                    .with(Coding::Brotli, curl_brotli::decoder)
-                    .with(Coding::Zstd, curl_zstd::decoder),
-                ed25519: crate::tlslib::ED25519,
-                tls: Some(Library::Owned(tls)),
+            SharedLibraries::new(curl_backends::libraries(
+                Library::Owned(tls),
                 security,
-                dns: crate::ares::LIBRARY,
-                idn: Some(curl_idn2::IDN),
-                h2: Some(&curl_nghttp2::NGHTTP2),
-                h3: crate::tlslib::H3,
-                ssh: Some(crate::sshlib::LIBRARY),
-                ldap: curl_ldap::library(),
-                psl: Some(&curl_psl::LIBPSL),
-                random: random()?,
-            })
+                random()?,
+            ))
         };
         Ok(Linked {
-            with_gss: with(Some(SECURITY))?,
+            with_gss: with(Some(curl_backends::SECURITY))?,
             without_gss: with(None)?,
             keylog,
         })

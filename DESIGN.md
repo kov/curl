@@ -11,6 +11,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-core` | The Rust API: handles, protocols, caches, the transfer engine. | forbidden |
 | `curl-sys-abi` | The C ABI over `curl-core`, built as `libcurl.so.4`. | yes: it is the shim |
 | `curl-tool` | The `curl` binary, written against the Rust API, not the C ABI. | forbidden |
+| `curl-backends` | The build's C libraries, chosen once by its features (one TLS library with the QUIC library and crypto that go with it, one SSH library, the resolver, IDN and GSS-API), and the core's `Libraries` made of them; the shim's and the tool's features pass through to its. | forbidden |
 | `curl-alloc` | Fallible allocation; the debug build's memory tracker. | in named modules |
 | `curl-os` | Operating-system interfaces: the command line, the environment, the terminal, error texts, the user database, random bytes, files, sockets, polling and the system's resolver. | in named modules |
 | `curl-psl` | libpsl's public suffix list, behind `curl_core::psl::SuffixLibrary`. | yes: it is a binding |
@@ -56,8 +57,9 @@ peer) and `TlsSession` (one connection's handshake, records and shutdown, over t
 below), which the core's own layer drives; the core names no TLS library's types, and the
 application's hands on the library (`CURLOPT_SSL_CTX_FUNCTION`, `CURLINFO_TLS_SSL_PTR`) reach it
 as an opaque `TlsNative`, the untyped context and session objects the backend hands out, which
-the shim passes on as C's `SSL_CTX *` and `SSL *`. A build has one backend, chosen by the shim's
-and the tool's Cargo features, which exclude each other: `openssl` (the default, the reference
+the shim passes on as C's `SSL_CTX *` and `SSL *`. A build has one backend, chosen by
+`curl-backends`' Cargo features, which exclude each other and which the shim's and the tool's
+pass through: `openssl` (the default, the reference
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never
 openssl-sys's `vendored` copy, checked at build and at init; or, as C builds the same backend
 over them, LibreSSL, or AWS-LC or BoringSSL as `deps.py` builds them, named by openssl-sys's

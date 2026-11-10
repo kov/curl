@@ -200,6 +200,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-backends"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-ares",
+ "curl-brotli",
+ "curl-core",
+ "curl-gnutls",
+ "curl-gssapi",
+ "curl-idn2",
+ "curl-ldap",
+ "curl-libssh",
+ "curl-libssh2",
+ "curl-mbedtls",
+ "curl-nghttp2",
+ "curl-ngtcp2",
+ "curl-openssl",
+ "curl-psl",
+ "curl-quiche",
+ "curl-rustls",
+ "curl-schannel",
+ "curl-sspi",
+ "curl-wolfssl",
+ "curl-zlib",
+ "curl-zstd",
+]
+
+[[package]]
 name = "curl-brotli"
 version = "0.1.0"
 dependencies = [
@@ -421,26 +449,16 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "curl-alloc",
- "curl-ares",
+ "curl-backends",
  "curl-brotli",
  "curl-core",
- "curl-gnutls",
  "curl-gssapi",
  "curl-idn2",
  "curl-ldap",
- "curl-libssh",
- "curl-libssh2",
- "curl-mbedtls",
  "curl-nghttp2",
- "curl-ngtcp2",
- "curl-openssl",
  "curl-os",
  "curl-psl",
- "curl-quiche",
- "curl-rustls",
- "curl-schannel",
  "curl-sspi",
- "curl-wolfssl",
  "curl-zlib",
  "curl-zstd",
  "libc",
@@ -454,26 +472,16 @@ name = "curl-tool"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
- "curl-ares",
+ "curl-backends",
  "curl-brotli",
  "curl-core",
- "curl-gnutls",
  "curl-gssapi",
  "curl-idn2",
  "curl-ldap",
- "curl-libssh",
- "curl-libssh2",
- "curl-mbedtls",
  "curl-nghttp2",
- "curl-ngtcp2",
- "curl-openssl",
  "curl-os",
  "curl-psl",
- "curl-quiche",
- "curl-rustls",
- "curl-schannel",
  "curl-sspi",
- "curl-wolfssl",
  "curl-zlib",
  "curl-zstd",
  "libc",

@@ -1,288 +1,48 @@
-//! The TLS library this build has, one of six chosen as it is built:
-//! OpenSSL (the `openssl` feature), with HTTP/3 over ngtcp2 and Ed25519
-//! for message signatures, or over quiche (`quiche`, both meaning
-//! `openssl-tls`); GnuTLS (`gnutls`) or wolfSSL (`wolfssl`), with
-//! HTTP/3 over ngtcp2 and Ed25519; or mbedTLS (`mbedtls`), Rustls
-//! (`rustls`) or Schannel (`schannel`, Windows only), with neither, as
-//! C's builds with them have.
+//! The TLS library this build has, as curl-backends' features chose it,
+//! held as the process's: a static logging to the root's key log. What
+//! is the C ABI's alone is here too: the library's id and name, as
+//! `curl_global_sslset` and `CURLINFO_TLS_SSL_PTR` give them.
 
 use core::ffi::CStr;
-use core::fmt;
+
+use curl_backends::tls;
+use curl_core::tls::TlsKind;
 
 use crate::ffi;
 
-#[cfg(any(
-    all(feature = "openssl", feature = "quiche"),
-    all(feature = "openssl-tls", feature = "gnutls"),
-    all(feature = "openssl-tls", feature = "mbedtls"),
-    all(feature = "openssl-tls", feature = "wolfssl"),
-    all(feature = "openssl-tls", feature = "schannel"),
-    all(feature = "openssl-tls", feature = "rustls"),
-    all(feature = "gnutls", feature = "mbedtls"),
-    all(feature = "gnutls", feature = "wolfssl"),
-    all(feature = "gnutls", feature = "schannel"),
-    all(feature = "gnutls", feature = "rustls"),
-    all(feature = "mbedtls", feature = "wolfssl"),
-    all(feature = "mbedtls", feature = "schannel"),
-    all(feature = "mbedtls", feature = "rustls"),
-    all(feature = "wolfssl", feature = "schannel"),
-    all(feature = "wolfssl", feature = "rustls"),
-    all(feature = "schannel", feature = "rustls")
-))]
-compile_error!(
-    "one TLS library: the `openssl` (or `quiche`), `gnutls`, `mbedtls`, `wolfssl`, `rustls` \
-     and `schannel` features exclude each other"
-);
-#[cfg(not(any(
-    feature = "openssl-tls",
-    feature = "gnutls",
-    feature = "mbedtls",
-    feature = "wolfssl",
-    feature = "schannel",
-    feature = "rustls"
-)))]
-compile_error!(
-    "a TLS library: the `openssl`, `gnutls`, `mbedtls`, `wolfssl`, `rustls` or `schannel` \
-     feature"
-);
+/// The library, logging secrets to the root's key log.
+pub(crate) static TLS: tls::Tls = tls::logging_keys_to(&crate::root::KEYLOG);
 
-#[cfg(feature = "openssl-tls")]
-mod library {
-    use super::*;
+/// Its id and name, as C names them.
+pub(crate) const ID: ffi::curl_sslbackend = c_names(tls::KIND).0;
+pub(crate) const NAME: &CStr = c_names(tls::KIND).1;
 
-    /// OpenSSL, logging secrets to the root's key log.
-    pub(crate) static TLS: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(
-        curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
-    );
+/// The id and name C gives each library's backend.
+const fn c_names(kind: TlsKind) -> (ffi::curl_sslbackend, &'static CStr) {
+    match kind {
+        TlsKind::OpenSsl => (ffi::CURLSSLBACKEND_OPENSSL, c"openssl"),
+        TlsKind::GnuTls => (ffi::CURLSSLBACKEND_GNUTLS, c"gnutls"),
+        TlsKind::MbedTls => (ffi::CURLSSLBACKEND_MBEDTLS, c"mbedtls"),
+        TlsKind::WolfSsl => (ffi::CURLSSLBACKEND_WOLFSSL, c"wolfssl"),
+        TlsKind::Rustls => (ffi::CURLSSLBACKEND_RUSTLS, c"rustls"),
+        TlsKind::Schannel => (ffi::CURLSSLBACKEND_SCHANNEL, c"schannel"),
+        TlsKind::Other => panic!("a build links one of the libraries C has a backend for"),
+    }
+}
 
-    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
-        Some(&curl_openssl::ED25519);
-    /// HTTP/3 over ngtcp2, or over quiche.
-    #[cfg(feature = "openssl")]
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = Some(&curl_ngtcp2::NGTCP2);
-    #[cfg(feature = "quiche")]
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = Some(&curl_quiche::QUICHE);
-
-    /// Its id and name, as `curl_global_sslset` and
-    /// `CURLINFO_TLS_SSL_PTR` give them.
-    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_OPENSSL;
-    pub(crate) const NAME: &CStr = c"openssl";
-
-    /// Read its configuration and open the key log, as C's global init
-    /// does (`ossl_init`): whether it could.
-    pub(crate) fn init() -> bool {
-        curl_openssl::init();
+/// The key log opened where C's global init opens it (`ossl_init`,
+/// `wssl_init`), then the library initialised: whether it could be.
+pub(crate) fn init() -> bool {
+    if tls::KEYLOG_AT_INIT {
         crate::root::KEYLOG.open();
-        true
     }
-
-    /// Nothing to let go of but the key log, which the root closes.
-    pub(crate) fn cleanup() {}
-
-    /// Its version as the version string names it: `OpenSSL/3.5.9`.
-    pub(crate) fn version() -> impl fmt::Display {
-        curl_openssl::version()
-    }
-
-    /// The QUIC libraries, as `quic_version` names them.
-    #[cfg(feature = "openssl")]
-    pub(crate) fn quic() -> Option<impl fmt::Display> {
-        Some(curl_ngtcp2::version())
-    }
-
-    /// quiche, as the version string names it.
-    #[cfg(feature = "quiche")]
-    pub(crate) fn quic() -> Option<impl fmt::Display> {
-        Some(curl_quiche::version())
-    }
+    tls::init(&TLS)
 }
 
-#[cfg(feature = "gnutls")]
-mod library {
-    use super::*;
-
-    /// GnuTLS, logging secrets to the root's key log, which its sessions
-    /// open as they are made (`Curl_gtls_ctx_init`).
-    pub(crate) static TLS: curl_gnutls::GnuTls = curl_gnutls::GnuTls::logging_keys_to(
-        curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
-    );
-
-    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
-        Some(&curl_gnutls::ED25519);
-    /// HTTP/3 over ngtcp2's GnuTLS crypto.
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = Some(&curl_ngtcp2::NGTCP2);
-
-    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_GNUTLS;
-    pub(crate) const NAME: &CStr = c"gnutls";
-
-    /// The library initialised, as C's global init does (`gtls_init`):
-    /// whether it could.
-    pub(crate) fn init() -> bool {
-        curl_gnutls::init()
-    }
-
-    /// The library let go, as C's last cleanup does (`gtls_cleanup`).
-    pub(crate) fn cleanup() {
-        curl_gnutls::cleanup();
-    }
-
-    /// Its version as the version string names it: `GnuTLS/3.8.13`.
-    pub(crate) fn version() -> impl fmt::Display {
-        curl_gnutls::version()
-    }
-
-    /// The QUIC libraries, as `quic_version` names them.
-    pub(crate) fn quic() -> Option<impl fmt::Display> {
-        Some(curl_ngtcp2::version())
-    }
+/// The library let go, as C's last cleanup does; the root closes the key
+/// log.
+pub(crate) fn cleanup() {
+    tls::cleanup(&TLS);
 }
 
-#[cfg(feature = "mbedtls")]
-mod library {
-    use super::*;
-
-    /// mbedTLS, which logs no secrets (C's build never opens the log).
-    pub(crate) static TLS: &curl_mbedtls::MbedTls = &MBEDTLS;
-    static MBEDTLS: curl_mbedtls::MbedTls = curl_mbedtls::MbedTls::new();
-
-    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> = None;
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
-
-    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_MBEDTLS;
-    pub(crate) const NAME: &CStr = c"mbedtls";
-
-    /// The library and its random number generator initialised, as C's
-    /// global init does (`mbedtls_init`): whether it could.
-    pub(crate) fn init() -> bool {
-        MBEDTLS.init()
-    }
-
-    /// The library let go, as C's last cleanup does (`mbedtls_cleanup`).
-    pub(crate) fn cleanup() {
-        MBEDTLS.cleanup();
-    }
-
-    /// Its version as the version string names it: `mbedTLS/3.6.7`.
-    pub(crate) fn version() -> impl fmt::Display {
-        curl_mbedtls::version()
-    }
-
-    /// None: no QUIC over mbedTLS.
-    pub(crate) fn quic() -> Option<&'static str> {
-        None
-    }
-}
-
-#[cfg(feature = "wolfssl")]
-mod library {
-    use super::*;
-
-    /// wolfSSL, logging secrets to the root's key log, which its global
-    /// init opens (`wssl_init`).
-    pub(crate) static TLS: curl_wolfssl::WolfSsl = curl_wolfssl::WolfSsl::logging_keys_to(
-        curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
-    );
-
-    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> =
-        Some(&curl_wolfssl::ED25519);
-    /// HTTP/3 over ngtcp2's wolfSSL crypto.
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = Some(&curl_ngtcp2::NGTCP2);
-
-    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_WOLFSSL;
-    pub(crate) const NAME: &CStr = c"wolfssl";
-
-    /// The key log opened, then the library and its BIO method
-    /// initialised, as C's global init does (`wssl_init`): whether it
-    /// could.
-    pub(crate) fn init() -> bool {
-        crate::root::KEYLOG.open();
-        TLS.init()
-    }
-
-    /// The library let go, as C's last cleanup does (`wssl_cleanup`); the
-    /// root closes the key log.
-    pub(crate) fn cleanup() {
-        TLS.cleanup();
-    }
-
-    /// Its version as the version string names it: `wolfSSL/5.9.4`.
-    pub(crate) fn version() -> impl fmt::Display {
-        curl_wolfssl::version()
-    }
-
-    /// The QUIC libraries, as `quic_version` names them.
-    pub(crate) fn quic() -> Option<impl fmt::Display> {
-        Some(curl_ngtcp2::version())
-    }
-}
-
-#[cfg(feature = "rustls")]
-mod library {
-    use super::*;
-
-    /// Rustls, logging secrets to the root's key log, which each
-    /// connection opens as its configuration is built
-    /// (`init_config_builder_keylog`).
-    pub(crate) static TLS: curl_rustls::Rustls = curl_rustls::Rustls::logging_keys_to(
-        curl_core::tls::SharedKeyLog::of_static(&crate::root::KEYLOG),
-    );
-
-    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> = None;
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
-
-    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_RUSTLS;
-    pub(crate) const NAME: &CStr = c"rustls";
-
-    /// Nothing to set up: C's has no init.
-    pub(crate) fn init() -> bool {
-        true
-    }
-
-    /// Nothing to let go of but the key log, which the root closes
-    /// (`cr_cleanup`).
-    pub(crate) fn cleanup() {}
-
-    /// Its version as the version string names it:
-    /// `rustls-ffi/0.15.5/rustls/0.23.46/aws-lc-rs`.
-    pub(crate) fn version() -> impl fmt::Display {
-        curl_rustls::version()
-    }
-
-    /// None: no QUIC over Rustls.
-    pub(crate) fn quic() -> Option<&'static str> {
-        None
-    }
-}
-
-#[cfg(feature = "schannel")]
-mod library {
-    use super::*;
-
-    pub(crate) static TLS: curl_schannel::Schannel = curl_schannel::Schannel;
-
-    pub(crate) const ED25519: Option<&'static dyn curl_core::libraries::Ed25519> = None;
-    pub(crate) const H3: Option<&'static dyn curl_core::http3::Http3> = None;
-
-    pub(crate) const ID: ffi::curl_sslbackend = ffi::CURLSSLBACKEND_SCHANNEL;
-    pub(crate) const NAME: &CStr = c"schannel";
-
-    /// Nothing: Schannel is the system's, and logs no keys.
-    pub(crate) fn init() -> bool {
-        true
-    }
-
-    /// Nothing.
-    pub(crate) fn cleanup() {}
-
-    /// `Schannel`, as C's `schannel_version` says it.
-    pub(crate) fn version() -> impl fmt::Display {
-        "Schannel"
-    }
-
-    /// None: no QUIC.
-    pub(crate) fn quic() -> Option<&'static str> {
-        None
-    }
-}
-
-pub(crate) use library::*;
+pub(crate) use tls::{quic_version as quic, version};

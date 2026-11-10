@@ -576,6 +576,25 @@ pub trait BindingNotes {
     fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind;
 }
 
+/// Which TLS library a backend is, as far as anything bound beside it
+/// tells them apart: the C ABI's backend ids, and the QUIC libraries,
+/// whose crypto is built for one library and reads that library's
+/// objects alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsKind {
+    /// OpenSSL, or one of its forks the crate builds over (LibreSSL,
+    /// BoringSSL, AWS-LC): one kind, as one build links one of them.
+    OpenSsl,
+    GnuTls,
+    WolfSsl,
+    MbedTls,
+    Rustls,
+    Schannel,
+    /// A library none of the above: one of an application's own, or the
+    /// tests' fake. No QUIC library drives its sessions.
+    Other,
+}
+
 /// A TLS library's own objects for one connection, which an application
 /// using that library itself may be handed (`CURLINFO_TLS_SSL_PTR`,
 /// `CURLINFO_TLS_SESSION`, `CURLOPT_SSL_CTX_FUNCTION`): the context the

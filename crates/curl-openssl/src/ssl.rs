@@ -45,9 +45,20 @@ pub struct OpenSsl {
 }
 
 /// OpenSSL, logging no secrets.
-pub static OPENSSL: OpenSsl = OpenSsl { keylog: None };
+pub static OPENSSL: OpenSsl = OpenSsl::new();
+
+impl Default for OpenSsl {
+    fn default() -> OpenSsl {
+        OpenSsl::new()
+    }
+}
 
 impl OpenSsl {
+    /// OpenSSL logging no secrets.
+    pub const fn new() -> OpenSsl {
+        OpenSsl { keylog: None }
+    }
+
     /// OpenSSL logging the secrets of its connections to `keylog`
     /// (`SSLKEYLOGFILE`) while it is open.
     pub const fn logging_keys_to(keylog: SharedKeyLog) -> OpenSsl {

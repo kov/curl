@@ -1594,7 +1594,7 @@ witness: curl-tool options_the_library_lacks_are_not_written
     if s.tls_has(|t| t.ech) {
 
 === OpenSSL's build claims no message signatures
-file: crates/curl-tool/Cargo.toml
+file: crates/curl-backends/Cargo.toml
 witness: curl-tool tests::message_signatures_are_reported_as_the_tls_library_has_them
 --- old
 openssl-tls = ["dep:curl-openssl", "curl-core/httpsig"]

@@ -7561,7 +7561,7 @@ fn openssl_configured() {
     assert_eq!(crate::root::curl_global_init(0), CURLE_OK);
     std::fs::write(&path, "").unwrap();
     assert_eq!(
-        curl_openssl::ED25519.sign(&[1; 32], b"message"),
+        curl_backends::curl_openssl::ED25519.sign(&[1; 32], b"message"),
         Err(Ed25519Error::Failed)
     );
     crate::root::curl_global_cleanup();
@@ -7576,7 +7576,11 @@ fn openssl_configured() {
 fn openssl_configured() {
     use curl_core::libraries::Ed25519;
     assert_eq!(crate::root::curl_global_init(0), CURLE_OK);
-    assert!(curl_openssl::ED25519.sign(&[1; 32], b"message").is_ok());
+    assert!(
+        curl_backends::curl_openssl::ED25519
+            .sign(&[1; 32], b"message")
+            .is_ok()
+    );
     crate::root::curl_global_cleanup();
 }
 

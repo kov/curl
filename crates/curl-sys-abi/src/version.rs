@@ -189,8 +189,8 @@ fn info() -> &'static curl_version_info_data {
     let libssh = LIBSSH.get_or_init(|| {
         cbuf(format_args!(
             "{}/{}",
-            crate::sshlib::NAME,
-            crate::sshlib::version()
+            curl_backends::ssh::NAME,
+            curl_backends::ssh::version()
         ))
     });
     &INFO
@@ -211,13 +211,13 @@ fn info() -> &'static curl_version_info_data {
                 ares: if cfg!(feature = "threaded-resolver") {
                     ptr::null()
                 } else {
-                    ARES.get_or_init(|| cbuf(format_args!("{}", crate::ares::version())))
+                    ARES.get_or_init(|| cbuf(format_args!("{}", curl_backends::dns::version())))
                         .as_ptr()
                 },
                 ares_num: if cfg!(feature = "threaded-resolver") {
                     0
                 } else {
-                    crate::ares::version_number() as _
+                    curl_backends::dns::version_number() as _
                 },
                 libidn: curl_idn2::version_c().map_or(ptr::null(), CStr::as_ptr),
                 iconv_ver_num: 0,
@@ -249,10 +249,10 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let zlib = Library("zlib", curl_zlib::version());
             let brotli = Library("brotli", curl_brotli::version());
             let zstd = Library("zstd", curl_zstd::version());
-            let ares = Library("c-ares", crate::ares::version());
+            let ares = Library("c-ares", curl_backends::dns::version());
             let idn = curl_idn2::Shown;
             let psl = Library("libpsl", curl_psl::version());
-            let ssh = Library(crate::sshlib::NAME, crate::sshlib::version());
+            let ssh = Library(curl_backends::ssh::NAME, curl_backends::ssh::version());
             let h2 = Library("nghttp2", curl_nghttp2::version());
             // A build without QUIC names no QUIC library.
             let h3 = crate::tlslib::quic();
@@ -364,7 +364,7 @@ mod tests {
         if cfg!(feature = "threaded-resolver") {
             String::new()
         } else {
-            format!(" c-ares/{}", crate::ares::version())
+            format!(" c-ares/{}", curl_backends::dns::version())
         }
     }
 
@@ -374,13 +374,13 @@ mod tests {
     fn quic_shown() -> String {
         format!(
             "ngtcp2/{} nghttp3/{}",
-            curl_ngtcp2::ngtcp2_version(),
-            curl_ngtcp2::nghttp3_version()
+            curl_backends::curl_ngtcp2::ngtcp2_version(),
+            curl_backends::curl_ngtcp2::nghttp3_version()
         )
     }
     #[cfg(feature = "quiche")]
     fn quic_shown() -> String {
-        format!("quiche/{}", curl_quiche::quiche_version())
+        format!("quiche/{}", curl_backends::curl_quiche::quiche_version())
     }
 
     #[cfg(feature = "openssl-tls")]
@@ -391,15 +391,15 @@ mod tests {
         let want = format!(
             "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} {}{}{}",
             version().version,
-            curl_openssl::version(),
+            curl_backends::curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
             ares_shown(),
             curl_idn2::Shown,
             curl_psl::version(),
-            crate::sshlib::NAME,
-            crate::sshlib::version(),
+            curl_backends::ssh::NAME,
+            curl_backends::ssh::version(),
             curl_nghttp2::version(),
             quic_shown(),
             gss_shown(),
@@ -442,8 +442,8 @@ mod tests {
             ares_shown(),
             curl_idn2::Shown,
             curl_psl::version(),
-            crate::sshlib::NAME,
-            crate::sshlib::version(),
+            curl_backends::ssh::NAME,
+            curl_backends::ssh::version(),
             curl_nghttp2::version(),
             quic.as_ref().map_or_else(String::new, |q| format!(" {q}")),
             gss_shown(),
@@ -505,8 +505,8 @@ mod tests {
             .unwrap();
         let want = format!(
             "ngtcp2/{} nghttp3/{}",
-            curl_ngtcp2::ngtcp2_version(),
-            curl_ngtcp2::nghttp3_version()
+            curl_backends::curl_ngtcp2::ngtcp2_version(),
+            curl_backends::curl_ngtcp2::nghttp3_version()
         );
         assert_eq!(quic, want);
     }
@@ -519,7 +519,10 @@ mod tests {
         let quic = unsafe { CStr::from_ptr(info().quic_version) }
             .to_str()
             .unwrap();
-        assert_eq!(quic, format!("quiche/{}", curl_quiche::quiche_version()));
+        assert_eq!(
+            quic,
+            format!("quiche/{}", curl_backends::curl_quiche::quiche_version())
+        );
     }
 
     /// The features the core reports reach the C struct as bits and as

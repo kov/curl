@@ -10,7 +10,6 @@ use crate::tlslib::version_info as version;
 use curl_alloc::OutOfMemory;
 use curl_core::error::ErrorKind;
 
-mod ares;
 mod bar;
 mod config;
 mod easysrc;
@@ -28,7 +27,6 @@ mod output;
 mod sanitize;
 mod slurp;
 mod sockopt;
-mod sshlib;
 mod stderr;
 mod stdio;
 mod stdout;
@@ -273,10 +271,10 @@ impl std::fmt::Display for CurlVersion {
         let zlib = Library("zlib", curl_zlib::version());
         let brotli = Library("brotli", curl_brotli::version());
         let zstd = Library("zstd", curl_zstd::version());
-        let ares = Library("c-ares", ares::version());
+        let ares = Library("c-ares", curl_backends::dns::version());
         let idn = curl_idn2::Shown;
         let psl = Library("libpsl", curl_psl::version());
-        let ssh = Library(sshlib::NAME, sshlib::version());
+        let ssh = Library(curl_backends::ssh::NAME, curl_backends::ssh::version());
         let h2 = Library("nghttp2", curl_nghttp2::version());
         // A build without QUIC names no QUIC library.
         let h3 = tlslib::quic();
@@ -439,13 +437,13 @@ mod tests {
     fn quic_shown() -> String {
         format!(
             "ngtcp2/{} nghttp3/{}",
-            curl_ngtcp2::ngtcp2_version(),
-            curl_ngtcp2::nghttp3_version()
+            curl_backends::curl_ngtcp2::ngtcp2_version(),
+            curl_backends::curl_ngtcp2::nghttp3_version()
         )
     }
     #[cfg(feature = "quiche")]
     fn quic_shown() -> String {
-        format!("quiche/{}", curl_quiche::quiche_version())
+        format!("quiche/{}", curl_backends::curl_quiche::quiche_version())
     }
 
     /// `curl -V` lists the libraries after libcurl as C's does: in its
@@ -456,19 +454,19 @@ mod tests {
         let want = format!(
             "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} {} libpsl/{} {}/{} nghttp2/{} {}{}{}",
             version().version,
-            curl_openssl::version(),
+            curl_backends::curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
             if cfg!(feature = "threaded-resolver") {
                 String::new()
             } else {
-                format!(" c-ares/{}", ares::version())
+                format!(" c-ares/{}", curl_backends::dns::version())
             },
             curl_idn2::Shown,
             curl_psl::version(),
-            sshlib::NAME,
-            sshlib::version(),
+            curl_backends::ssh::NAME,
+            curl_backends::ssh::version(),
             curl_nghttp2::version(),
             quic_shown(),
             gss_shown(),
@@ -504,12 +502,12 @@ mod tests {
             if cfg!(feature = "threaded-resolver") {
                 String::new()
             } else {
-                format!(" c-ares/{}", ares::version())
+                format!(" c-ares/{}", curl_backends::dns::version())
             },
             curl_idn2::Shown,
             curl_psl::version(),
-            sshlib::NAME,
-            sshlib::version(),
+            curl_backends::ssh::NAME,
+            curl_backends::ssh::version(),
             curl_nghttp2::version(),
             quic,
             gss_shown(),

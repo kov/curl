@@ -838,40 +838,17 @@ pub(crate) fn libraries(kerberos: bool) -> &'static curl_core::libraries::Librar
     if kerberos { &LIBRARIES } else { &WITHOUT_GSS }
 }
 
-static LIBRARIES: curl_core::libraries::Libraries = libraries_with(Some(SECURITY));
+static LIBRARIES: curl_core::libraries::Libraries = libraries_with(Some(curl_backends::SECURITY));
 static WITHOUT_GSS: curl_core::libraries::Libraries = libraries_with(None);
-
-/// Kerberos and SPNEGO by MIT krb5's GSS-API, or on Windows by SSPI, as
-/// every C build for Windows has them.
-#[cfg(not(windows))]
-const SECURITY: curl_core::libraries::Security =
-    curl_core::libraries::Security::Gss(&curl_gssapi::GSSAPI);
-#[cfg(windows)]
-const SECURITY: curl_core::libraries::Security =
-    curl_core::libraries::Security::Sspi(&curl_sspi::SSPI);
 
 const fn libraries_with(
     security: Option<curl_core::libraries::Security>,
 ) -> curl_core::libraries::Libraries {
-    use curl_core::coding::{Coding, Decoders};
-    curl_core::libraries::Libraries {
-        decoders: Decoders::none()
-            .with(Coding::Deflate, curl_zlib::deflate)
-            .with(Coding::Gzip, curl_zlib::gzip)
-            .with(Coding::Brotli, curl_brotli::decoder)
-            .with(Coding::Zstd, curl_zstd::decoder),
-        ed25519: crate::tlslib::ED25519,
-        tls: Some(curl_core::libraries::Library::Static(&crate::tlslib::TLS)),
+    curl_backends::libraries(
+        curl_core::libraries::Library::Static(&crate::tlslib::TLS),
         security,
-        dns: crate::ares::LIBRARY,
-        idn: Some(IDN),
-        h2: Some(&curl_nghttp2::NGHTTP2),
-        h3: crate::tlslib::H3,
-        ssh: Some(crate::sshlib::LIBRARY),
-        ldap: curl_ldap::library(),
-        psl: Some(&curl_psl::LIBPSL),
-        random: RANDOM,
-    }
+        RANDOM,
+    )
 }
 
 /// The debug build's random numbers, `CURL_ENTROPY`'s when it is set.
@@ -883,7 +860,7 @@ const RANDOM: Option<curl_core::libraries::Library<dyn curl_core::libraries::Ran
 const RANDOM: Option<curl_core::libraries::Library<dyn curl_core::libraries::Random>> = None;
 
 /// What converts host names, for the handles and the URL API alike.
-pub(crate) const IDN: &dyn curl_core::idn::Idn = curl_idn2::IDN;
+pub(crate) const IDN: &dyn curl_core::idn::Idn = curl_backends::IDN;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_easy_init() -> *mut CURL {

@@ -10,18 +10,18 @@ compile_error!("an SSH library is needed: the `libssh` or the `libssh2` feature"
 
 /// The library SCP and SFTP go through.
 #[cfg(feature = "libssh")]
-pub(crate) const LIBRARY: SshLibrary = SshLibrary::Libssh(&curl_libssh::LIBSSH);
+pub const LIBRARY: SshLibrary = SshLibrary::Libssh(&curl_libssh::LIBSSH);
 #[cfg(feature = "libssh2")]
-pub(crate) const LIBRARY: SshLibrary = SshLibrary::Libssh2(&curl_libssh2::LIBSSH2);
+pub const LIBRARY: SshLibrary = SshLibrary::Libssh2(&curl_libssh2::LIBSSH2);
 
-/// Its name, as `curl -V` gives it before its version.
+/// Its name, as curl's version gives it before its version.
 #[cfg(feature = "libssh")]
-pub(crate) const NAME: &str = "libssh";
+pub const NAME: &str = "libssh";
 #[cfg(feature = "libssh2")]
-pub(crate) const NAME: &str = "libssh2";
+pub const NAME: &str = "libssh2";
 
-/// Its version, as `curl -V` gives it after its name.
+/// Its version, as curl's version gives it after its name.
 #[cfg(feature = "libssh")]
-pub(crate) use curl_libssh::version;
+pub use curl_libssh::version;
 #[cfg(feature = "libssh2")]
-pub(crate) use curl_libssh2::version;
+pub use curl_libssh2::version;

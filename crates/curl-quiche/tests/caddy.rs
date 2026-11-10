@@ -13,7 +13,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant as StdInstant};
 
-use common::{Dir, Over, Told, UNTRUSTED, VERIFIED, certs, run, with_client};
+use common::{Dir, Over, Told, UNTRUSTED, VERIFIED, certs, run, with_client, with_client_qlog};
 use curl_core::error::ErrorKind;
 use curl_core::http3::{Connection, H3Error, StreamId};
 use curl_core::tls::TlsCx;
@@ -167,6 +167,54 @@ fn get(test: &str, path: &str) -> (Told, Vec<String>) {
         run(conn, cx, over, &mut told, |t| t.closed).unwrap();
         told
     })
+}
+
+/// With a directory for qlogs, the connection has quiche write its qlog
+/// to a file in it named after its source id, in hex, under C's title
+/// and description (`Curl_qlogdir`, `quiche_conn_set_qlog_fd`).
+#[test]
+fn a_connection_writes_its_qlog_to_the_directory_given() {
+    let qlogs = Dir::new("qlogs");
+    let dir = Dir::new("qlog");
+    certs(&dir.0);
+    let (_server, addr) = caddy(&dir.0);
+    let ((), _) = with_client_qlog(
+        &dir.0,
+        "ca.pem",
+        addr,
+        Some(&qlogs.0),
+        |conn, cx, over, _| {
+            let mut told = Told::default();
+            run(conn, cx, over, &mut told, |t| t.checked.is_some()).unwrap();
+            assert_eq!(told.checked, Some(Ok(())));
+        },
+    );
+    let files: Vec<_> = std::fs::read_dir(&qlogs.0)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    let name = files[0].file_name().unwrap().to_str().unwrap();
+    let id = name
+        .strip_suffix(".sqlog")
+        .unwrap_or_else(|| panic!("{name}"));
+    assert_eq!(id.len(), 40, "{name}");
+    assert!(
+        id.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{name}"
+    );
+    let qlog = std::fs::read(&files[0]).unwrap();
+    let has = |what: &[u8]| qlog.windows(what.len()).any(|w| w == what);
+    assert!(qlog.starts_with(b"\x1e{"), "{}", qlog.escape_ascii());
+    assert!(has(b"\"title\":\"qlog title\""), "{}", qlog.escape_ascii());
+    assert!(
+        has(b"\"description\":\"curl qlog id="),
+        "{}",
+        qlog.escape_ascii()
+    );
+    assert!(has(b"packet_sent"), "{}", qlog.escape_ascii());
+    assert!(has(b"packet_received"), "{}", qlog.escape_ascii());
 }
 
 /// A connection's handshake with caddy completes with its certificate

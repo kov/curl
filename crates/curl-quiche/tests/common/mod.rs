@@ -12,10 +12,10 @@ use std::time::{Duration, Instant as StdInstant};
 use curl_alloc::TryArc;
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    ClientSetup, ConnEvent, Connection, Event, Expiry, Heard, Http3, QuicError, StreamEvent,
-    StreamId,
+    ClientSetup, ConnEvent, Connection, Event, Expiry, Heard, Http3, QlogDir, QuicError,
+    StreamEvent, StreamId,
 };
-use curl_core::options::{CaSetting, ColdGroup as _, TlsOptions};
+use curl_core::options::{CaSetting, ColdGroup as _, FileMode, TlsOptions};
 use curl_core::time::SystemClock;
 use curl_core::tls::{CaDefaults, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind};
 use curl_quiche::QUICHE;
@@ -288,6 +288,17 @@ pub fn with_client<R>(
     addr: SocketAddr,
     f: impl FnOnce(&mut dyn Connection, &mut TlsCx<'_>, &Over<'_>, SocketAddr) -> R,
 ) -> (R, Vec<String>) {
+    with_client_qlog(dir, ca, addr, None, f)
+}
+
+/// `with_client`, the connection writing its qlog to `qlog` if given.
+pub fn with_client_qlog<R>(
+    dir: &Path,
+    ca: &str,
+    addr: SocketAddr,
+    qlog: Option<&Path>,
+    f: impl FnOnce(&mut dyn Connection, &mut TlsCx<'_>, &Over<'_>, SocketAddr) -> R,
+) -> (R, Vec<String>) {
     let ca = dir.join(ca).into_os_string().into_encoded_bytes();
     let identity = TryArc::try_new(TlsIdentity {
         verify_peer: true,
@@ -329,7 +340,10 @@ pub fn with_client<R>(
             max_window: 100 * 10 * 1024 * 1024,
             stream_window: 32 * 1024,
             max_streams: 256 * 1024,
-            qlog: None,
+            qlog: qlog.map(|d| {
+                let dir = d.as_os_str().as_encoded_bytes();
+                QlogDir::new(dir, FileMode::default()).unwrap()
+            }),
         };
         let mut conn = QUICHE.client(&setup, tls).unwrap();
         let over = Over {

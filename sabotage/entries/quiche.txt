@@ -230,3 +230,12 @@ features: test-util
 --- new
         if self.flavour != Flavour::Ngtcp2
             && matches!(step, Err(ErrorKind::RecvError | ErrorKind::SendError))
+
+=== a quiche connection given a qlog directory never hands quiche the file
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche a_connection_writes_its_qlog_to_the_directory_given
+openssl-fork: quiche
+--- old
+            set_qlog(&mut quic, file);
+--- new
+            drop(file);

@@ -329,8 +329,15 @@ impl Connection {
         let mut packet = Vec::new();
         packet.try_resize(PACKET, 0)?;
         let ssl = tls.give_up_session();
-        let quic = quiet(|| tls::connect(&scid, setup.local, setup.remote, &config, ssl))
+        let mut quic = quiet(|| tls::connect(&scid, setup.local, setup.remote, &config, ssl))
             .ok_or(ConnectFailed::OutOfMemory)?;
+        // The qlog, named after the source id (`Curl_qlogdir`), handed to
+        // quiche if the file opened, as `quiche_conn_set_qlog_fd` hands
+        // it; not on Windows, where C's says it does not work.
+        #[cfg(not(windows))]
+        if let Some(file) = setup.qlog.as_ref().and_then(|dir| dir.open(&scid)) {
+            set_qlog(&mut quic, file);
+        }
         Ok(Connection {
             h3: None,
             quic,
@@ -348,6 +355,27 @@ impl Connection {
             read_any: false,
         })
     }
+}
+
+/// Have quiche write the qlog of `quic` to `file`, buffered, under the
+/// title and description C's filter gives it (`quiche_conn_set_qlog_fd`,
+/// which adds the connection's trace id). Memory short for the two
+/// leaves it without one, as C's `Curl_qlogdir` does for its name.
+#[cfg(not(windows))]
+fn set_qlog(quic: &mut quiche::Connection, file: std::fs::File) {
+    let title = curl_alloc::try_format(format_args!("qlog title"));
+    let description = curl_alloc::try_format(format_args!("curl qlog id={}", quic.trace_id()));
+    let (Ok(title), Ok(description)) = (title, description) else {
+        return;
+    };
+    // The writer and what quiche makes of it are quiche's, as when its
+    // own C call makes them.
+    quiet(|| {
+        let writer = std::io::BufWriter::new(file);
+        if let Ok(writer) = try_box(writer) {
+            quic.set_qlog(writer, title, description);
+        }
+    });
 }
 
 /// The streams the connection opened and quiche has not ended, and those

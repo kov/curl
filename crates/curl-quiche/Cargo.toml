@@ -18,8 +18,9 @@ libc = "0.2"
 # quiche itself, without its `boring` crate: its TLS is the BoringSSL the
 # OpenSSL backend links (`OPENSSL_DIR`), the one copy in the program.
 # `ffi` for the one call that hands quiche an SSL made elsewhere,
-# `quiche_conn_new_with_tls`, which its Rust API lacks.
-quiche = { version = "=0.30.0", default-features = false, features = ["ffi"] }
+# `quiche_conn_new_with_tls`, which its Rust API lacks; `qlog` for the
+# qlog a connection writes, as C's libquiche is built with it.
+quiche = { version = "=0.30.0", default-features = false, features = ["ffi", "qlog"] }
 # The library found, which says whether it is BoringSSL
 # (`DEP_OPENSSL_BORINGSSL`), as quiche needs; and linked, as
 # `curl-openssl` links it.

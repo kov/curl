@@ -2258,8 +2258,13 @@ is told as a `Result<(), QuicError>`, printed as C prints its return; a close's 
 from the copy `inventory/measure/deps.py` builds, the version the C oracle uses. The connection
 is made over a TLS session already made (`TlsBackend::quic_session`, a `QuicTls`), which it
 keeps. The binding of ngtcp2 owns the session and frees it first, as C frees its TLS before ngtcp2.
-The quiche library takes the session's SSL itself and frees it as its connection drops: the session gives it
-up (`QuicTls::give_up_session`, curl-openssl's `Held::Given`, which never frees it) and keeps
+Each binding refuses a session of a library its crypto does not read (`ConnectFailed::Crypto`)
+before reading any of it: the session's objects carry the kind of library that made them
+(`TlsNative::kind`, a `TlsKind` each backend gives them), checked against ngtcp2's crypto as the
+context is set up and the connection made, and against OpenSSL's family by quiche, which also
+needs the session to be one that can be handed over (`QuicTls::quiche`, a `QuicheTls`, which only
+OpenSSL's session is). The quiche library takes the session's SSL itself and frees it as its connection drops: the session gives it
+up (`QuicheTls::give_up_session`, curl-openssl's `Held::Given`, which never frees it) and keeps
 the context, callbacks and BIO method the SSL uses, and the binding drops quiche's connection
 before the session (its fields' order). The core feeds it one datagram at a time and
 asks it for one packet at a time; batching, GSO and the socket are the core's.
@@ -3174,6 +3179,7 @@ pub trait TlsSession: Send {                       // one connection's TLS, neve
     fn chosen(&self) -> Option<Chosen>;           // what the peer chose by ALPN, once done
 }
 #[derive(Clone, Copy)] pub struct TlsNative {     // opaque to the core, which passes it on
+    kind: TlsKind,                                 // the library that made them
     context: NonNull<c_void>, session: Option<NonNull<c_void>>,  // SSL_CTX *, SSL *
 }
 pub struct TlsIo<'a> { /* Below<'a>, &'a mut dyn LayerCx, the early bytes; private */ }
@@ -3622,7 +3628,7 @@ OpenSSL's; this build of it has no TLS 1.3 secret callback, so only a TLS 1.2 se
 
 **The application's hands on the library.** A library's objects reach the application as a
 `TlsNative`: two pointers the core never looks through, the context and, once made, the
-session's own object. `CURLOPT_SSL_CTX_FUNCTION` is a transfer call-out (api.c's
+session's own object, with the kind of library that made them. `CURLOPT_SSL_CTX_FUNCTION` is a transfer call-out (api.c's
 `easy_fsslctx`), so it is a `TlsContextHandler` in the TLS options' cold group (the handle's:
 the identity a connection keeps holds none), called through the transfer's context
 (`TlsIo::configure_context`, `LayerCalls::configure_tls`) with the context alone; its error fails

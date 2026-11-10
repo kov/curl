@@ -34,7 +34,7 @@ use curl_core::http3::{
     SubmitFailed,
 };
 use curl_core::time::Instant;
-use curl_core::tls::{DriveCall, QuicTls, TlsCx, TlsNative};
+use curl_core::tls::{DriveCall, QuicTls, TlsCx, TlsKind, TlsNative};
 use quiche::h3::NameValue as _;
 
 /// Run `f`, a call into quiche, its allocations kept from the debug
@@ -55,6 +55,9 @@ pub static QUICHE: Quiche = Quiche;
 /// quiche, as a library the core speaks HTTP/3 through.
 #[derive(Debug)]
 pub struct Quiche;
+
+/// Why a session of a library quiche does not run over is refused.
+const OTHER_LIBRARY: &str = "quiche runs over OpenSSL's TLS alone";
 
 impl Http3 for Quiche {
     fn client(
@@ -305,6 +308,11 @@ impl Connection {
     /// comes of its making.
     fn client(setup: &ClientSetup, mut tls: Box<dyn QuicTls>) -> Result<Connection, ConnectFailed> {
         let crypto = |why| ConnectFailed::Crypto { why };
+        // quiche runs over OpenSSL's family alone: a session of another
+        // library is refused before any of it is read.
+        if tls.native().kind() != TlsKind::OpenSsl || tls.quiche().is_none() {
+            return Err(crypto(OTHER_LIBRARY));
+        }
         let mut config = quiet(|| quiche::Config::new(quiche::PROTOCOL_VERSION))
             .map_err(|_| crypto("cannot create quiche config"))?;
         config.enable_pacing(false);
@@ -328,7 +336,10 @@ impl Connection {
         curl_os::random::fill(&mut scid).map_err(|_| ConnectFailed::Refused)?;
         let mut packet = Vec::new();
         packet.try_resize(PACKET, 0)?;
-        let ssl = tls.give_up_session();
+        let ssl = tls
+            .quiche()
+            .expect("checked as it was handed")
+            .give_up_session();
         let mut quic = quiet(|| tls::connect(&scid, setup.local, setup.remote, &config, ssl))
             .ok_or(ConnectFailed::OutOfMemory)?;
         // The qlog, named after the source id (`Curl_qlogdir`), handed to
@@ -465,7 +476,7 @@ impl Parts<'_> {
         *self.established = true;
         let ms = now.ms_since(self.started);
         trace(call, format_args!("handshake complete after {ms}ms"));
-        let checked = call.check_peer();
+        let checked = call.handshake_done();
         let event = ConnEvent::HandshakeDone {
             checked,
             max_udp_payload: 0,
@@ -732,7 +743,7 @@ impl curl_core::http3::Connection for Connection {
             Read::Failed(error) => Err(error),
             // A peer the TLS library's own check failed, said so; else
             // the handshake failed otherwise (`cf_quiche_recv_pkts`).
-            Read::Tls => match tls.unverified(cx) {
+            Read::Tls => match tls.quiche().expect("checked at connect").unverified(cx) {
                 Some(_) => Err(quic_error(
                     Layer::Crypto,
                     "quiche_conn_recv",

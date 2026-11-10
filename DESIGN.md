@@ -57,7 +57,8 @@ peer) and `TlsSession` (one connection's handshake, records and shutdown, over t
 below), which the core's own layer drives; the core names no TLS library's types, and the
 application's hands on the library (`CURLOPT_SSL_CTX_FUNCTION`, `CURLINFO_TLS_SSL_PTR`) reach it
 as an opaque `TlsNative`, the untyped context and session objects the backend hands out, which
-the shim passes on as C's `SSL_CTX *` and `SSL *`. A build has one backend, chosen by
+the shim passes on as C's `SSL_CTX *` and `SSL *`, tagged with the kind of library that made
+them (`TlsKind`), which a QUIC library checks before its crypto reads them. A build has one backend, chosen by
 `curl-backends`' Cargo features, which exclude each other and which the shim's and the tool's
 pass through: `openssl` (the default, the reference
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never

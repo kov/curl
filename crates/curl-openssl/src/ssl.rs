@@ -18,8 +18,9 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
     Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicContextSetup,
-    QuicTls, RecordWait, SharedKeyLog, SystemStore, TlsBackend, TlsCx, TlsIdentity, TlsIo,
-    TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
+    QuicTls, QuicheTls, RecordWait, SharedKeyLog, SystemStore, TlsBackend, TlsCx, TlsIdentity,
+    TlsIo, TlsKind, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsSupport, TlsTicket,
+    TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -576,7 +577,7 @@ impl Session {
         };
         self.ctx = Some(Ctx(ctx));
         if let Some(setup) = setup
-            && let Err(why) = setup(TlsNative::new(ctx.cast(), None))
+            && let Err(why) = setup(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None))
         {
             return Err(io.fail(ErrorKind::FailedInit, format_args!("{why}")));
         }
@@ -738,7 +739,7 @@ impl Session {
                 x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
                 self.flags.store_ready = true;
             }
-            io.configure_context(TlsNative::new(ctx.cast(), None))?;
+            io.configure_context(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None))?;
         }
         // The SSL (`ossl_init_ssl`).
         // SAFETY: the context.
@@ -1783,7 +1784,7 @@ impl TlsSession for Session {
     fn native(&self) -> Option<TlsNative> {
         let ctx = self.ctx.as_ref()?.0;
         let ssl = self.ssl.as_ref().map(|s| s.ptr().cast());
-        Some(TlsNative::new(ctx.cast(), ssl))
+        Some(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), ssl))
     }
 
     /// The binding of the peer's certificate, none before the session is
@@ -1871,6 +1872,8 @@ impl QuicTls for QuicSession {
         };
         let mut check = Check {
             ssl,
+            // Given up to quiche, whose filter reports no handshake.
+            report: matches!(s.ssl, Some(Held::Own(_))),
             identity,
             host: &s.host,
             kind: s.kind,
@@ -1884,6 +1887,12 @@ impl QuicTls for QuicSession {
         });
     }
 
+    fn quiche(&mut self) -> Option<&mut dyn QuicheTls> {
+        Some(self)
+    }
+}
+
+impl QuicheTls for QuicSession {
     /// The SSL, never freed here from now on: quiche frees it, its BIO
     /// with it, as its connection drops, before this session and the
     /// BIO's method (`quiche_conn_new_with_tls`).
@@ -1922,6 +1931,9 @@ impl QuicTls for QuicSession {
 /// of the call under way.
 struct Check<'s> {
     ssl: NonNull<SSL>,
+    /// Whether the handshake is reported as the peer is checked: not once
+    /// the SSL is given up to quiche.
+    report: bool,
     identity: &'s TlsIdentity,
     host: &'s [u8],
     kind: TlsPeerKind,
@@ -1933,33 +1945,14 @@ struct Check<'s> {
 }
 
 impl DriveCall for Check<'_> {
-    /// The handshake reported, then the peer checked as a stream
-    /// session's is, the peer's sessions forgotten if it fails
+    /// The handshake reported, unless the SSL is quiche's
+    /// (`cf_quiche_connect`), then the peer checked as a stream session's
+    /// is, the peer's sessions forgotten if it fails
     /// (`cb_ngtcp2_handshake_completed`).
     fn handshake_done(&mut self) -> Result<(), ErrorKind> {
-        self.check(true)
-    }
-
-    /// The peer checked, the handshake not reported (`cf_quiche_connect`).
-    fn check_peer(&mut self) -> Result<(), ErrorKind> {
-        self.check(false)
-    }
-
-    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
-        let slot = self.slot.expect("lent as the call starts");
-        // SAFETY: as above: inside `drive`'s call, which lent the slot,
-        // not inside one of this crate's callbacks, which the QUIC
-        // library's never are.
-        unsafe { slot.with_cx(f) }
-    }
-}
-
-impl Check<'_> {
-    /// The handshake reported if `report`, then the peer checked, the
-    /// peer's sessions forgotten if it fails.
-    fn check(&mut self, report: bool) -> Result<(), ErrorKind> {
         let Check {
             ssl,
+            report,
             identity,
             host,
             kind,
@@ -1992,6 +1985,14 @@ impl Check<'_> {
         // SAFETY: as above, the check's borrow of the slot over.
         unsafe { bio::set_sectrust(ssl, sectrust) };
         Ok(())
+    }
+
+    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
+        let slot = self.slot.expect("lent as the call starts");
+        // SAFETY: as above: inside `drive`'s call, which lent the slot,
+        // not inside one of this crate's callbacks, which the QUIC
+        // library's never are.
+        unsafe { slot.with_cx(f) }
     }
 }
 

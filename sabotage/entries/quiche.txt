@@ -74,7 +74,7 @@ file: crates/curl-quiche/src/lib.rs
 witness: curl-quiche an_untrusted_peer_fails_its_check_once_established
 openssl-fork: quiche
 --- old
-        let checked = call.check_peer();
+        let checked = call.handshake_done();
 --- new
         let checked = Ok(());
 
@@ -239,3 +239,21 @@ openssl-fork: quiche
             set_qlog(&mut quic, file);
 --- new
             drop(file);
+
+=== quiche takes over a QUIC session of a TLS library it does not run over
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche another_library_s_session_is_refused
+openssl-fork: quiche
+--- old
+        if tls.native().kind() != TlsKind::OpenSsl || tls.quiche().is_none() {
+--- new
+        if tls.quiche().is_none() {
+
+=== quiche takes over a QUIC session that cannot be handed over
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche another_library_s_session_is_refused
+openssl-fork: quiche
+--- old
+        if tls.native().kind() != TlsKind::OpenSsl || tls.quiche().is_none() {
+--- new
+        if tls.native().kind() != TlsKind::OpenSsl {

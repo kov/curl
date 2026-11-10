@@ -78,7 +78,9 @@ fn sockaddr(addr: SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
 /// if it makes none. None if it made none.
 ///
 /// `ssl` is an OpenSSL-family SSL the TLS session gave up
-/// (`QuicTls::give_up_session`), whose session outlives the connection.
+/// (`QuicheTls::give_up_session`), whose session outlives the connection:
+/// only OpenSSL's sessions are handed over, their kind checked as the
+/// connection is made (`Connection::client`).
 pub(crate) fn connect(
     scid: &[u8],
     local: SocketAddr,
@@ -90,8 +92,9 @@ pub(crate) fn connect(
     let (peer, peer_len) = sockaddr(peer);
     // SAFETY: the id and the addresses are alive for the call, each of
     // the length given; quiche copies them. `config` is a live
-    // `quiche::Config`, which quiche reads. `ssl` is an SSL no one else
-    // frees: the session gave it up, and keeps the context, callbacks
+    // `quiche::Config`, which quiche reads. `ssl` is an OpenSSL-family
+    // SSL, as the kind its library gave the session says, which no one
+    // else frees: the session gave it up, and keeps the context, callbacks
     // and BIO method it uses alive until after the connection is
     // dropped (the caller holds both, the connection dropped first).
     let conn = unsafe {

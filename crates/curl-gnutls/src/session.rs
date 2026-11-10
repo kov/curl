@@ -19,7 +19,7 @@ use curl_core::options::TlsMaxVersion;
 use curl_core::time::Instant;
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, SharedKeyLog, TlsCx, TlsIdentity,
-    TlsIo, TlsNative, TlsPeer, TlsSession, TlsShared, TlsTicket, TlsWait,
+    TlsIo, TlsKind, TlsNative, TlsPeer, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 
 use crate::library::{
@@ -1061,7 +1061,7 @@ impl<G: Gnutls> Session<G> {
     /// context.
     pub(crate) fn native_objects(&self) -> Option<TlsNative> {
         let s = self.gs.as_ref()?.native();
-        Some(TlsNative::new(s, Some(s)))
+        Some(TlsNative::new(TlsKind::GnuTls, s, Some(s)))
     }
 
     /// The steps of `gtls_connect_common`.

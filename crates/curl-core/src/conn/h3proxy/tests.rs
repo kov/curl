@@ -418,7 +418,11 @@ fn a_call_into_the_proxy_s_connection_is_the_transfer_s() {
         // The proxy's connection receives in the transfer's room.
         assert_eq!(over.recv_room().is_some(), yes);
         assert!(std::ptr::eq(over.certinfo_report().unwrap(), report));
-        let native = crate::tls::TlsNative::new(std::ptr::NonNull::dangling(), None);
+        let native = crate::tls::TlsNative::new(
+            crate::tls::TlsKind::Other,
+            std::ptr::NonNull::dangling(),
+            None,
+        );
         assert_eq!(
             over.configure_tls(native),
             Err(ErrorKind::SslEngineInitfailed)

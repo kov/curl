@@ -18,8 +18,8 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::time::Instant;
 use curl_core::tls::{
-    Alpn, BindingNotes, Chosen, Goodbye, Handshake, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer,
-    TlsPeerKind, TlsSession, TlsShared, TlsWait,
+    Alpn, BindingNotes, Chosen, Goodbye, Handshake, TlsCx, TlsIdentity, TlsIo, TlsKind, TlsNative,
+    TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsWait,
 };
 use curl_os::error::ErrorText;
 
@@ -1289,7 +1289,7 @@ impl TlsSession for Session {
     /// (`schannel_get_internals`).
     fn native(&self) -> Option<TlsNative> {
         let h = self.ctx.as_ref()?.handle_ptr();
-        Some(TlsNative::new(h, Some(h)))
+        Some(TlsNative::new(TlsKind::Schannel, h, Some(h)))
     }
 
     /// C's Schannel has no `get_channel_binding`.

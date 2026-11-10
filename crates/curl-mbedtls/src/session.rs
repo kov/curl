@@ -13,8 +13,8 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, BindingNotes, Chosen, Goodbye, Handshake, Text, TlsCx, TlsIdentity, TlsIo, TlsNative,
-    TlsPeer, TlsPeerKind, TlsSession, TlsTicket, TlsWait,
+    Alpn, BindingNotes, Chosen, Goodbye, Handshake, Text, TlsCx, TlsIdentity, TlsIo, TlsKind,
+    TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsTicket, TlsWait,
 };
 
 use crate::library::{
@@ -447,7 +447,7 @@ impl<G: Mbedtls> Session<G> {
         // The application's turn at the configuration (`ssl_fsslctx`).
         if io.configures_context() {
             let conn = self.conn();
-            let native = TlsNative::new(conn.config(), Some(conn.native()));
+            let native = TlsNative::new(TlsKind::MbedTls, conn.config(), Some(conn.native()));
             io.configure_context(native)?;
         }
         Ok(())
@@ -836,7 +836,7 @@ where
     /// and the context (`mbedtls_get_internals`).
     fn native(&self) -> Option<TlsNative> {
         let s = self.conn.as_ref()?.native();
-        Some(TlsNative::new(s, Some(s)))
+        Some(TlsNative::new(TlsKind::MbedTls, s, Some(s)))
     }
 
     /// None: C's mbedTLS build makes no channel binding

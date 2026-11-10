@@ -521,45 +521,44 @@ pub trait QuicTls: Send {
         call: &mut dyn FnMut(&mut dyn DriveCall),
     );
 
-    /// Give the QUIC library the session's own object
-    /// (`native().session()`), which the library frees with its
-    /// connection (quiche's `quiche_conn_new_with_tls`): from then on the
-    /// session never frees it. The context and the callbacks the object
-    /// uses stay the session's, which is dropped after the library's
-    /// connection. Asked once, of a library quiche runs over (OpenSSL's
-    /// family); any other is never asked.
-    fn give_up_session(&mut self) -> NonNull<c_void> {
-        unreachable!("only quiche takes a session's object, and only OpenSSL's")
-    }
-
-    /// The QUIC library says the handshake's TLS failed: whether the TLS
-    /// library's own check of the peer's chain failed, said to `cx` as C
-    /// says it ("SSL certificate problem: ...", `SSL_get_verify_result`
-    /// in `cf_quiche_recv_pkts`), its kind if so. Asked by quiche's
-    /// binding alone.
-    fn unverified(&mut self, cx: &mut TlsCx<'_>) -> Option<ErrorKind> {
-        let _ = cx;
+    /// The session as quiche takes it over, if its library is one quiche
+    /// runs over (OpenSSL's family): none for any other, which quiche
+    /// refuses.
+    fn quiche(&mut self) -> Option<&mut dyn QuicheTls> {
         None
     }
+}
+
+/// A QUIC session whose own object quiche takes over and frees with its
+/// connection (`quiche_conn_new_with_tls`): OpenSSL's, the one library
+/// quiche runs over. Its check of the peer runs at `handshake_done`
+/// once quiche's connection is established, unreported once the object
+/// is given up, as quiche's filter checks it (`Curl_vquic_tls_verify_peer`
+/// with no `Curl_vquic_report_handshake`).
+pub trait QuicheTls: QuicTls {
+    /// Give quiche the session's own object (`native().session()`): from
+    /// then on the session never frees it. The context and the callbacks
+    /// the object uses stay the session's, which is dropped after quiche's
+    /// connection. Asked once.
+    fn give_up_session(&mut self) -> NonNull<c_void>;
+
+    /// quiche says the handshake's TLS failed: whether the TLS library's
+    /// own check of the peer's chain failed, said to `cx` as C says it
+    /// ("SSL certificate problem: ...", `SSL_get_verify_result` in
+    /// `cf_quiche_recv_pkts`), its kind if so.
+    fn unverified(&mut self, cx: &mut TlsCx<'_>) -> Option<ErrorKind>;
 }
 
 /// What a QUIC library's callbacks reach during a call `QuicTls::drive`
 /// runs. Neither method may be called from inside the other.
 pub trait DriveCall {
     /// The QUIC library says the handshake is done
-    /// (`cb_ngtcp2_handshake_completed`): the handshake reported, and the
-    /// peer's certificate checked as a stream session's is, the peer's
-    /// sessions forgotten if it fails (`Curl_vquic_tls_verify_peer`).
+    /// (`cb_ngtcp2_handshake_completed`; quiche's connection established):
+    /// the handshake reported, and the peer's certificate checked as a
+    /// stream session's is, the peer's sessions forgotten if it fails
+    /// (`Curl_vquic_tls_verify_peer`). A session given up to quiche
+    /// (`QuicheTls`) checks without reporting.
     fn handshake_done(&mut self) -> Result<(), ErrorKind>;
-
-    /// The QUIC library says the connection is established, the peer
-    /// checked as by `handshake_done` but the handshake not reported, as
-    /// quiche's filter checks it (`Curl_vquic_tls_verify_peer` once
-    /// `quiche_conn_is_established`, and no `Curl_vquic_report_handshake`).
-    /// Asked by quiche's binding alone, over OpenSSL's family.
-    fn check_peer(&mut self) -> Result<(), ErrorKind> {
-        unreachable!("only quiche checks the peer apart, and only over OpenSSL's")
-    }
 
     /// Run `f` with the transfer the call reaches.
     fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>));
@@ -601,16 +600,35 @@ pub enum TlsKind {
 /// session is made from, and the session's own object once it is made.
 /// The core passes them on and never looks through them: what they are
 /// is the library's to say, and they live while the connection does,
-/// which a transfer reaches only while it holds it.
+/// which a transfer reaches only while it holds it. They carry the kind
+/// of library that made them, which a QUIC library whose crypto reads
+/// them checks before it looks through them: one built for another
+/// library refuses them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TlsNative {
+    kind: TlsKind,
     context: NonNull<c_void>,
     session: Option<NonNull<c_void>>,
 }
 
 impl TlsNative {
-    pub fn new(context: NonNull<c_void>, session: Option<NonNull<c_void>>) -> TlsNative {
-        TlsNative { context, session }
+    /// The objects of a library of `kind`, which only that library's
+    /// backend makes.
+    pub fn new(
+        kind: TlsKind,
+        context: NonNull<c_void>,
+        session: Option<NonNull<c_void>>,
+    ) -> TlsNative {
+        TlsNative {
+            kind,
+            context,
+            session,
+        }
+    }
+
+    /// The kind of library that made them.
+    pub fn kind(self) -> TlsKind {
+        self.kind
     }
 
     /// The context the session is made from (OpenSSL's `SSL_CTX`).

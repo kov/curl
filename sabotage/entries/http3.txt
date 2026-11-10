@@ -1494,3 +1494,23 @@ witness: curl-core http3::tests::qlogdir_unset_or_empty_names_none
             None | Some([]) => None,
 --- new
             None => None,
+
+=== ngtcp2 reads a QUIC session of a TLS library its crypto is not built for
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 another_library_s_session_is_refused
+--- old
+        let ssl = of_crypto(tls.native())
+            .map_err(|why| ConnectFailed::Crypto { why })?
+            .session()
+--- new
+        let ssl = tls
+            .native()
+            .session()
+
+=== ngtcp2 sets up the context of a TLS library its crypto is not built for
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 another_library_s_session_is_refused
+--- old
+        let ctx = of_crypto(ctx)?;
+--- new
+        let ctx = ctx;

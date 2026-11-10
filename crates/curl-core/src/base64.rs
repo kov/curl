@@ -105,7 +105,10 @@ pub(crate) fn decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
     let Some(n) = group_bits(&last[..4 - padding]) else {
         return Ok(None);
     };
-    out.try_extend_from_slice(&n.to_be_bytes()[1..4 - padding])?;
+    // One by one: a copy of a length known only here is a call.
+    for &b in &n.to_be_bytes()[1..4 - padding] {
+        out.try_push(b)?;
+    }
     Ok(Some(out))
 }
 

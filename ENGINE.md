@@ -2258,8 +2258,8 @@ is told as a `Result<(), QuicError>`, printed as C prints its return; a close's 
 `SubmitFailed::Closing`. The ngtcp2 library is linked statically
 from the copy `inventory/measure/deps.py` builds, the version the C oracle uses. The connection
 is made over a TLS session already made (`TlsBackend::quic_session`, a `QuicTls`), which it
-keeps. ngtcp2's binding owns the session and frees it first, as C frees its TLS before ngtcp2.
-quiche takes the session's SSL itself and frees it as its connection drops: the session gives it
+keeps. The binding of ngtcp2 owns the session and frees it first, as C frees its TLS before ngtcp2.
+The quiche library takes the session's SSL itself and frees it as its connection drops: the session gives it
 up (`QuicTls::give_up_session`, curl-openssl's `Held::Given`, which never frees it) and keeps
 the context, callbacks and BIO method the SSL uses, and the binding drops quiche's connection
 before the session (its fields' order). The core feeds it one datagram at a time and
@@ -2290,15 +2290,15 @@ way, so the core is told which (`Http3::flavour`, a `Flavour`) and speaks it: it
 burst of up to ten packets sent as one shorter than the largest comes, that largest its segment
 size, until quiche has none), a stream held back as `H3_ERR_STREAM_BLOCKED` made again as the
 transfer next sends, a draining connection failing the connect as a weird reply and a receive
-as `CURLE_HTTP3`, and its close (the application's, no error, its packet not sent). quiche has
+as `CURLE_HTTP3`, and its close (the application's, no error, its packet not sent). The quiche library has
 no callbacks: what it read is polled once all the call's datagrams were read
 (`Connection::ingress_done`, `cf_poll_events`), and the connection is found established after
 the connect call's flush (`Connection::egress_done`), the handshake said complete before the
 peer is checked; both run inside `QuicTls::drive`, as every quiche call that may move the
-handshake on does. quiche opens its windows itself, holds a body's bytes as it takes them and
+handshake on does. The quiche library opens its windows itself, holds a body's bytes as it takes them and
 has no early data: C's filter passes its TLS no session callbacks, so a connection over it
 keeps no session the peer gives, but looks one up and resumes one kept already
-(`SessionPeer::keeping_none`). quiche runs over BoringSSL alone: the `quiche` feature is the
+(`SessionPeer::keeping_none`). The quiche library runs over BoringSSL alone: the `quiche` feature is the
 OpenSSL backend over the BoringSSL quiche's build makes, the quiche crate built without its own
 (no `boring` crate), so the program holds one copy, and C's CMake builds no HTTP/3 proxy with
 it. In the debug build quiche's allocations go untracked, as C's quiche makes them in its own

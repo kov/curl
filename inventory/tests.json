@@ -1,5 +1,5 @@
 {
- "c-commit": "53d04f946243b9fe0535e377467c56e5d00ab9ac",
+ "c-commit": "2e84c0de2b3b686331132739e3726e28519c6b5e",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -25019,7 +25019,7 @@
           "exp_ok",
           "ocsp_case"
          ],
-         "line": 185,
+         "line": 206,
          "name": "test_24_01_verify_status"
         }
        ]

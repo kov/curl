@@ -1698,3 +1698,11 @@ witness: curl-tool glob::tests::measures_each_url_as_it_comes_out
                 .max(*pad),
 --- new
                 .map_or(1, |d| d as usize + 1),
+
+=== the trace asks the system for the time of day at every entry, not once a second
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::asks_the_time_of_day_once_a_second
+--- old
+        Some((at, known)) if at == secs => known,
+--- new
+        Some((at, known)) if at == secs => look_up(secs).unwrap_or(known),

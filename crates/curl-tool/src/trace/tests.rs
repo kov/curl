@@ -52,6 +52,7 @@ fn state() -> State {
     State {
         kind: Trace::Plain,
         time: false,
+        day: None,
         ids: false,
         sink: Sink::Stderr,
         mid_line: false,
@@ -116,7 +117,7 @@ fn tempfile() -> File {
 /// `HH:MM:SS.uuuuuu `.
 #[test]
 fn stamps_the_time_of_day() {
-    let stamp = String::from_utf8(timestamp().bytes().to_vec()).unwrap();
+    let stamp = String::from_utf8(timestamp(&mut None).bytes().to_vec()).unwrap();
     assert_eq!(stamp.len(), 16, "{stamp:?}");
     let b = stamp.as_bytes();
     assert_eq!(
@@ -124,6 +125,38 @@ fn stamps_the_time_of_day() {
         (b':', b':', b'.', b' '),
         "{stamp:?}"
     );
+}
+
+/// The time of day is asked of the system once a second, not once an
+/// entry; one it cannot tell is midnight, kept for its second as well
+/// (`hms_for_sec`).
+#[test]
+fn asks_the_time_of_day_once_a_second() {
+    let mut day = None;
+    let mut asked = Vec::new();
+    let mut at = |secs: i64, told: Option<TimeOfDay>| {
+        time_of_day(&mut day, secs, |s| {
+            asked.push(s);
+            told
+        })
+    };
+    let noon = TimeOfDay {
+        hour: 12,
+        minute: 0,
+        second: 5,
+    };
+    let later = TimeOfDay { second: 6, ..noon };
+    let midnight = TimeOfDay {
+        hour: 0,
+        minute: 0,
+        second: 0,
+    };
+    assert_eq!(at(5, Some(noon)), noon);
+    assert_eq!(at(5, Some(later)), noon);
+    assert_eq!(at(6, Some(later)), later);
+    assert_eq!(at(7, None), midnight);
+    assert_eq!(at(7, Some(later)), midnight);
+    assert_eq!(asked, [5, 6, 7]);
 }
 
 /// `--trace-ids`: the transfer's number and its connection's, `x` for no
@@ -147,7 +180,10 @@ fn ids_name_the_transfer_and_its_connection() {
 #[test]
 fn a_line_starts_with_the_time_then_the_ids() {
     let ids = |transfer, conn| TransferIds { transfer, conn }.text();
-    let start = line_start(Some(timestamp()), ids(Some(u64::MAX), Some(u64::MAX)));
+    let start = line_start(
+        Some(timestamp(&mut None)),
+        ids(Some(u64::MAX), Some(u64::MAX)),
+    );
     let text = String::from_utf8(start.bytes().to_vec()).unwrap();
     let max = u64::MAX;
     assert!(text.ends_with(&format!(" [{max}-{max}] ")), "{text:?}");

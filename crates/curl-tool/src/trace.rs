@@ -10,7 +10,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec};
 use curl_core::handler::{DebugHandler, DebugKind, Handler};
 use curl_core::multi::TransferCx;
 use curl_os::fs::{self, Keep};
-use curl_os::time::local_time_of_day;
+use curl_os::time::{TimeOfDay, local_time_of_day};
 
 use crate::options::{Global, Trace};
 use crate::stdout::Stdout;
@@ -29,6 +29,9 @@ pub(crate) struct Tracer(TryArc<Lock<State>>);
 struct State {
     kind: Trace,
     time: bool,
+    /// The local time of day of the second the last stamp fell in, which
+    /// the system is asked for once a second (`hms_for_sec`).
+    day: Option<(i64, TimeOfDay)>,
     /// `--trace-ids`.
     ids: bool,
     sink: Sink,
@@ -74,6 +77,7 @@ impl Tracer {
         let state = State {
             kind: global.trace,
             time: global.trace_time,
+            day: None,
             ids: global.trace_ids,
             sink,
             mid_line: false,
@@ -117,10 +121,8 @@ impl Tracer {
         state.sink.open();
         let mut out = std::mem::take(&mut state.scratch);
         out.clear();
-        let start = line_start(
-            state.time.then(timestamp),
-            state.ids.then(|| ids.text()).flatten(),
-        );
+        let time = state.time.then(|| timestamp(&mut state.day));
+        let start = line_start(time, state.ids.then(|| ids.text()).flatten());
         let stamp = start.bytes();
         let written = match state.kind {
             Trace::Plain => plain(&mut state, &mut out, stamp, kind, data, terminal),
@@ -213,18 +215,13 @@ impl Sink {
     }
 }
 
-/// `HH:MM:SS.uuuuuu `, the local time of day: midnight where it cannot be
-/// told, as C zeroes its `struct tm`.
-fn timestamp() -> Stamp {
+/// `HH:MM:SS.uuuuuu `, the local time of day, its second's kept in `day`.
+fn timestamp(day: &mut Option<(i64, TimeOfDay)>) -> Stamp {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let secs = i64::try_from(now.as_secs()).unwrap_or(i64::MAX);
-    let day = local_time_of_day(secs).unwrap_or(curl_os::time::TimeOfDay {
-        hour: 0,
-        minute: 0,
-        second: 0,
-    });
+    let day = time_of_day(day, secs, local_time_of_day);
     let mut stamp = Stamp::empty();
     // Every field is in range, so the stamp fits.
     let _ = write!(
@@ -236,6 +233,29 @@ fn timestamp() -> Stamp {
         now.subsec_micros()
     );
     stamp
+}
+
+/// The local time of day `secs` after the epoch, as `look_up` tells it:
+/// midnight where it cannot be told, as C zeroes its `struct tm`. It is
+/// asked only for a second other than the one `day` holds, which then
+/// holds this one (`hms_for_sec`).
+fn time_of_day(
+    day: &mut Option<(i64, TimeOfDay)>,
+    secs: i64,
+    look_up: impl FnOnce(i64) -> Option<TimeOfDay>,
+) -> TimeOfDay {
+    match *day {
+        Some((at, known)) if at == secs => known,
+        _ => {
+            let told = look_up(secs).unwrap_or(TimeOfDay {
+                hour: 0,
+                minute: 0,
+                second: 0,
+            });
+            *day = Some((secs, told));
+            told
+        }
+    }
 }
 
 /// A timestamp or the ids, or both, on the stack.

@@ -309,6 +309,9 @@ impl FakeHttp3 {
         {
             let mut s = script.lock().unwrap_or_else(PoisonError::into_inner);
             s.at(setup.now);
+            // A script serving another connection: its handshake starts
+            // over.
+            s.handshake_done = false;
             if s.refuse_client {
                 return Err(ConnectFailed::Refused);
             }

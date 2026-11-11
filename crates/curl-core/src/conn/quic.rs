@@ -484,6 +484,16 @@ impl Out {
     }
 }
 
+/// Where the check of a connection's peer is: not reported yet, which
+/// only a handshake under way may be; passed; or failed, which fails
+/// every use after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeerCheck {
+    Unchecked,
+    Checked,
+    Failed(ErrorKind),
+}
+
 /// What the connection keeps of itself as it reads, apart from the QUIC
 /// library's, which is lent out while it reads.
 #[derive(Debug)]
@@ -492,8 +502,9 @@ struct State {
     started: Instant,
     /// The handshake completed (`handshake_at`).
     handshake_at: Option<Instant>,
-    /// What the check of the peer said (`tls_vrfy_result`).
-    verified: Result<(), ErrorKind>,
+    /// What the check of the peer said (`tls_vrfy_result`), once the
+    /// library reported it.
+    peer: PeerCheck,
     /// The peer's limit on the streams opened (`max_bidi_streams`).
     max_bidi: u64,
     /// The streams opened (`used_bidi_streams`).
@@ -600,7 +611,7 @@ impl Quic {
             state: State {
                 started: now,
                 handshake_at: None,
-                verified: Ok(()),
+                peer: PeerCheck::Unchecked,
                 max_bidi: 0,
                 used_bidi: 0,
                 shutdown_started: false,
@@ -784,7 +795,13 @@ impl Quic {
             self.ingress(cx)?;
             self.egress(cx)?;
             if self.conn.handshake_done() {
-                self.state.verified?;
+                if self.state.peer == PeerCheck::Unchecked {
+                    cx.of(
+                        self.state.component,
+                        format_args!("peer check never reported"),
+                    );
+                }
+                self.verified()?;
                 cx.of(self.state.component, format_args!("peer verified"));
                 self.state.connected = true;
                 return Ok(true);
@@ -809,7 +826,7 @@ impl Quic {
         step: Result<bool, ErrorKind>,
     ) -> Result<bool, ErrorKind> {
         let mut step = step;
-        if let Err(kind) = self.state.verified {
+        if let Err(kind) = self.verified() {
             step = Err(kind);
         }
         if self.flavour == Flavour::Ngtcp2
@@ -893,7 +910,7 @@ impl Quic {
             let moved = self.ingress(cx).and_then(|()| self.egress(cx));
             if let Err(kind) = moved {
                 // A failed check of the peer wins over what else failed.
-                return Err(self.state.verified.err().unwrap_or(kind));
+                return Err(self.verified().err().unwrap_or(kind));
             }
             expiry = self.conn.expiry(self.clock.now());
         }
@@ -945,9 +962,19 @@ impl Quic {
     }
 
     /// What the check of the peer said (`tls_vrfy_result`): a failure
-    /// denies every send and receive after.
+    /// denies every send and receive after. Unreported, the peer is
+    /// unchecked, which only a handshake still under way may be, as a
+    /// connection sending early data uses it: once the library says the
+    /// handshake is done, an unreported check fails it.
     pub(crate) fn verified(&self) -> Result<(), ErrorKind> {
-        self.state.verified
+        match self.state.peer {
+            PeerCheck::Checked => Ok(()),
+            PeerCheck::Failed(kind) => Err(kind),
+            PeerCheck::Unchecked if self.conn.handshake_done() => {
+                Err(ErrorKind::PeerFailedVerification)
+            }
+            PeerCheck::Unchecked => Ok(()),
+        }
     }
 
     /// The packet that closes it was made: no stream opens on it, and
@@ -1956,7 +1983,10 @@ impl State {
             } => {
                 let now = self.now;
                 self.handshake_at = Some(now);
-                self.verified = checked;
+                self.peer = match checked {
+                    Ok(()) => PeerCheck::Checked,
+                    Err(kind) => PeerCheck::Failed(kind),
+                };
                 let ms = now.ms_since(self.started);
                 match flavour {
                     Flavour::Ngtcp2 if checked.is_ok() => cx.trace(format_args!(
@@ -2818,6 +2848,61 @@ pub(crate) mod tests {
         assert_eq!(q.first_byte_at(), Some(cx.clock.now()));
         assert_eq!(q.handshake_at(), Some(cx.clock.now()));
         assert!(cx.lines.contains(&"peer verified".to_owned()));
+    }
+
+    /// A handshake the library says is done, with no word of the peer's
+    /// check, does not connect: the peer is not taken as checked.
+    #[test]
+    fn a_quic_connection_never_told_its_check_does_not_connect() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        assert_eq!(q.verified(), Ok(()), "unchecked while it shakes hands");
+        script.lock().unwrap().handshake_done = true;
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(b"flight".to_vec()));
+        assert_eq!(q.connect(&mut cx), Err(ErrorKind::PeerFailedVerification));
+        assert!(
+            cx.lines.contains(&"peer check never reported".to_owned()),
+            "{:#?}",
+            cx.lines
+        );
+        assert!(!cx.lines.contains(&"peer verified".to_owned()));
+        assert_eq!(q.verified(), Err(ErrorKind::PeerFailedVerification));
+    }
+
+    /// A connection sending early data is connected before its handshake,
+    /// and used while it goes on; once the library says it is done with
+    /// no word of the peer's check, each use after fails.
+    #[test]
+    fn an_early_data_connection_never_told_its_check_stops_once_done() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        q.state.early = Some(0);
+        assert_eq!(q.start(&mut cx), Ok(true), "connected for early data");
+        assert_eq!(q.verified(), Ok(()), "used while it shakes hands");
+        script.lock().unwrap().handshake_done = true;
+        assert_eq!(q.verified(), Err(ErrorKind::PeerFailedVerification));
+        // Told, it is checked.
+        let script = Script::new();
+        script
+            .lock()
+            .unwrap()
+            .on_read
+            .push_back(vec![Told::HandshakeDone]);
+        let (mut q, mut cx) = quic(&script);
+        q.state.early = Some(0);
+        assert_eq!(q.start(&mut cx), Ok(true));
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(b"flight".to_vec()));
+        q.ingress(&mut cx).unwrap();
+        assert!(script.lock().unwrap().handshake_done);
+        assert_eq!(q.verified(), Ok(()));
     }
 
     /// A connection is usable until it is idle past the time the peer

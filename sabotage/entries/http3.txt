@@ -90,9 +90,9 @@ witness: curl-core conn::quic::tests::the_timer_rounds_up_and_runs_when_due
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core proto::http::tests::h3_trace::an_unverified_peer_fails_each_attempt_and_the_setup
 --- old
-        if let Err(kind) = self.state.verified {
+        if let Err(kind) = self.verified() {
 --- new
-        if let Err(kind) = self.state.verified.and(Err(ErrorKind::RecvError)).or(Ok(())) {
+        if let Err(kind) = self.verified().and(Err(ErrorKind::RecvError)).or(Ok(())) {
 
 === a QUIC attempt whose handshake is done never wins
 file: crates/curl-core/src/conn/connect.rs
@@ -1545,3 +1545,19 @@ witness: curl-core conn::quic::tests::empty_datagrams_spend_the_packet_budget
     if d.len == 0 {
         0
     } else {
+
+=== a QUIC handshake done with its peer's check never reported connects
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_quic_connection_never_told_its_check_does_not_connect
+--- old
+            PeerCheck::Unchecked if self.conn.handshake_done() => {
+--- new
+            PeerCheck::Unchecked if self.conn.handshake_done() && self.state.closing => {
+
+=== a QUIC connection sending early data is used past its handshake with no check reported
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::an_early_data_connection_never_told_its_check_stops_once_done
+--- old
+            PeerCheck::Unchecked if self.conn.handshake_done() => {
+--- new
+            PeerCheck::Unchecked if self.conn.handshake_done() && self.state.closing => {

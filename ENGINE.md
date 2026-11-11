@@ -2302,7 +2302,11 @@ the TLS crate never uses it for a QUIC session. The records are the QUIC library
 session never reads or writes the connection. The session keeps the peer's tickets with the
 transport parameters, as C's per-library new-session callbacks do, only where the transfer keeps
 sessions; the peer is checked, by the backend's own check, inside the handshake's end, and a
-failed check forgets the peer's kept sessions. The HTTP/3 proxy is OpenSSL's alone, as C's
+failed check forgets the peer's kept sessions. The connection keeps the check's word as a
+`PeerCheck` (`conn/quic.rs`): `Unchecked` until the `HandshakeDone` event reports it, then
+`Checked` or `Failed`. `Unchecked` is usable only while the library says the handshake is under
+way, as a connection sending early data uses it: once the handshake is done, an unreported
+check fails the connect and every send and receive after (`Quic::verified`). The HTTP/3 proxy is OpenSSL's alone, as C's
 CMake has `USE_PROXY_HTTP3` only with OpenSSL: the `proxy-http3` feature, which only the
 `openssl` features take, claims it, and without it `CURLPROXY_HTTPS3` is `CURLE_NOT_BUILT_IN`
 and `--proxy-http3` the tool's unsupported option.

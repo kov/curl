@@ -62,3 +62,27 @@ witness: curl-core tls::x509::tests::the_validity_ends_with_its_not_after
     if not_after.whole.len() != after.len() {
 --- new
     if not_after.whole.len() + 2 < after.len() {
+
+=== an alternative dNSName holding a zero byte is passed over
+file: crates/curl-core/src/tls/x509.rs
+witness: curl-core tls::x509::tests::a_host_name_holding_a_zero_is_found
+--- old
+            if name.class == 2 && name.tag == 2 && !name.constructed && name.content.contains(&0) {
+--- new
+            if name.class == 2 && name.tag == 1 && !name.constructed && name.content.contains(&0) {
+
+=== a common name holding a zero byte is passed over
+file: crates/curl-core/src/tls/x509.rs
+witness: curl-core tls::x509::tests::a_host_name_holding_a_zero_is_found
+--- old
+            if oid.tag == 6 && oid.content == COMMON_NAME && has_zero_char(&element(value)?.0) {
+--- new
+            if oid.tag == 6 && oid.content == ALT_NAMES && has_zero_char(&element(value)?.0) {
+
+=== a two-byte string's zero bytes are taken for zero characters
+file: crates/curl-core/src/tls/x509.rs
+witness: curl-core tls::x509::tests::a_host_name_holding_a_zero_is_found
+--- old
+        0x1e => 2,
+--- new
+        0x1e => 1,

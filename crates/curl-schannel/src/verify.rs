@@ -19,7 +19,7 @@ use curl_core::time::Instant;
 use curl_core::tls::{TlsCx, TlsIdentity, TlsShared, hostcheck, x509};
 use curl_os::error::ErrorText;
 
-use crate::crypt::{self, AltNames, CertStore, ChainEngine, PemStage, trust};
+use crate::crypt::{self, AltNames, CertStore, ChainEngine, NameList, PemStage, trust};
 use crate::sspi::Context;
 use crate::text::Text;
 
@@ -186,9 +186,38 @@ pub(crate) fn host(io: &mut TlsCx<'_>, ctx: &Context, host: &[u8]) -> Result<(),
         // C says nothing more of an address no name matched.
         return Err(fail);
     }
-    let names = cert
-        .dns_names()
-        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    let names = match cert.dns_names() {
+        Ok(names) => names,
+        Err(NameList::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+        Err(NameList::None) => {
+            return Err(io.fail(
+                fail,
+                format_args!(
+                    "schannel: CertGetNameString() returned no certificate name information"
+                ),
+            ));
+        }
+        Err(NameList::Size) => {
+            return Err(io.fail(
+                fail,
+                format_args!(
+                    "schannel: CertGetNameString() returned certificate name information of unexpected size"
+                ),
+            ));
+        }
+    };
+    // The system lists names apart at their zero bytes: a name holding
+    // one is never matched in part, and the certificate is refused.
+    if cert
+        .der()
+        .and_then(curl_core::tls::x509::host_name_holds_zero)
+        .unwrap_or(false)
+    {
+        return Err(io.fail(
+            fail,
+            format_args!("schannel: a certificate name holds a zero byte"),
+        ));
+    }
     for name in &names {
         if hostcheck::names(name, host) {
             io.info(format_args!(

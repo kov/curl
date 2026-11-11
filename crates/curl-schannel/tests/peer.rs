@@ -27,14 +27,14 @@ use curl_core::libraries::{Libraries, Library, SharedLibraries};
 use curl_core::multi::{Env, Multi, NoEvents, TransferCx};
 use curl_core::options::{IpVersion, Method, UploadSource};
 use curl_core::time::SystemClock;
-use openssl::asn1::Asn1Time;
+use openssl::asn1::{Asn1Object, Asn1OctetString, Asn1Time};
 use openssl::bn::BigNum;
 use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::ssl::{SslAcceptor, SslMethod};
-use openssl::x509::{X509, X509Name};
+use openssl::x509::{X509, X509Extension, X509Name};
 
 static LIBRARIES: Libraries = Libraries {
     tls: Some(Library::Static(&curl_schannel::SCHANNEL)),
@@ -171,6 +171,12 @@ impl Net for Choppy {
 /// a request and its body of `Content-Length` bytes, answers `ok`, and
 /// gives back what it read.
 fn serve() -> (SocketAddr, JoinHandle<Vec<u8>>) {
+    serve_named(None)
+}
+
+/// As `serve`, the certificate's subject alternative names, if any, the
+/// DER of a `GeneralNames` sequence.
+fn serve_named(alt_names: Option<&[u8]>) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
     let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
     let mut name = X509Name::builder().unwrap();
@@ -188,6 +194,12 @@ fn serve() -> (SocketAddr, JoinHandle<Vec<u8>>) {
         .unwrap();
     cert.set_not_after(&Asn1Time::days_from_now(2).unwrap())
         .unwrap();
+    if let Some(der) = alt_names {
+        let oid = Asn1Object::from_str("2.5.29.17").unwrap();
+        let value = Asn1OctetString::new_from_bytes(der).unwrap();
+        cert.append_extension(X509Extension::new_from_der(&oid, false, &value).unwrap())
+            .unwrap();
+    }
     cert.sign(&key, MessageDigest::sha256()).unwrap();
     let cert = cert.build();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -290,4 +302,53 @@ fn a_record_half_sent_is_waited_for_by_the_multi() {
     let spun = seen.spun.load(Ordering::Relaxed);
     assert!(waits > 0, "no record was left half sent");
     assert!(spun < waits, "{spun} of {waits} waits tried again in place");
+}
+
+/// The host is checked against the certificate's names, a name with a
+/// zero byte in it matched in no part: its certificate, whose common name
+/// is the host's and whose alternative name is `localhost`, a zero byte
+/// and more, fails the check, while one whose alternative name is
+/// `localhost` passes. The peer itself is not verified, so the names are
+/// checked on their own.
+#[test]
+fn a_name_holding_a_zero_byte_matches_nothing() {
+    for (name, ok) in [
+        (&b"localhost"[..], true),
+        (&b"localhost\0.evil.example"[..], false),
+    ] {
+        let mut der = vec![0x30, u8::try_from(name.len() + 2).unwrap(), 0x82];
+        der.push(u8::try_from(name.len()).unwrap());
+        der.extend_from_slice(name);
+        let (at, server) = serve_named(Some(&der));
+        let env = Env {
+            clock: try_box(SystemClock::new()).unwrap(),
+            net: try_box(SystemNet::default()).unwrap(),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::with_env(env).unwrap();
+        let body = Arc::new(Lock::new(Vec::new()));
+        let mut easy = Easy::new();
+        easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
+        let o = easy.options_mut();
+        let url = format!("https://localhost:{}/", at.port());
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.ip_version = IpVersion::V4;
+        o.tls.verify_peer = false;
+        o.tls.verify_host = true;
+        o.callbacks.write = Some(Handler::write(Body(body.clone())).unwrap());
+        let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();
+        let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let easy = m.remove(id, &mut NoEvents).unwrap().easy;
+        let failure =
+            String::from_utf8_lossy(easy.report().failure().unwrap_or_default()).into_owned();
+        server.join().unwrap();
+        if ok {
+            assert_eq!(result, Ok::<(), ErrorKind>(()), "{failure}");
+            assert_eq!(&*body.lock().unwrap(), b"ok");
+        } else {
+            assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{failure}");
+            assert_eq!(failure, "schannel: a certificate name holds a zero byte");
+        }
+    }
 }

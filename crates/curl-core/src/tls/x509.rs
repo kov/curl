@@ -202,6 +202,83 @@ pub fn parse(der: &[u8]) -> Option<Certificate<'_>> {
     })
 }
 
+/// The elements one after another in `content`, as far as they read.
+fn elements(mut content: &[u8]) -> impl Iterator<Item = Option<Element<'_>>> {
+    core::iter::from_fn(move || {
+        if content.is_empty() {
+            return None;
+        }
+        match element(content) {
+            Some((e, rest)) => {
+                content = rest;
+                Some(Some(e))
+            }
+            None => {
+                content = &[];
+                Some(None)
+            }
+        }
+    })
+}
+
+/// The common name's identifier, 2.5.4.3.
+const COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
+/// The subject alternative names' identifier, 2.5.29.17.
+const ALT_NAMES: &[u8] = &[0x55, 0x1d, 0x11];
+
+/// Whether a string's characters include a zero: a two-byte one in a
+/// `BMPString`, a four-byte one in a `UniversalString`, a byte in the
+/// others.
+fn has_zero_char(e: &Element<'_>) -> bool {
+    let width = match e.tag {
+        0x1e => 2,
+        0x1c => 4,
+        _ => 1,
+    };
+    e.content.chunks(width).any(|c| c.iter().all(|&b| b == 0))
+}
+
+/// Whether a name the certificate `der` gives its host by holds a zero
+/// character: a `dNSName` among its subject alternative names, or a common
+/// name of its subject. Such a name is not one a host can have, and is
+/// never to be matched in part. None if the certificate does not read.
+pub fn host_name_holds_zero(der: &[u8]) -> Option<bool> {
+    let cert = parse(der)?;
+    for rdn in elements(cert.subject.content) {
+        for attribute in elements(rdn?.content) {
+            let attribute = attribute?;
+            let (oid, value) = element(attribute.content)?;
+            if oid.tag == 6 && oid.content == COMMON_NAME && has_zero_char(&element(value)?.0) {
+                return Some(true);
+            }
+        }
+    }
+    let Some(extensions) = cert.extensions else {
+        return Some(false);
+    };
+    for extension in elements(extensions.content) {
+        let mut parts = elements(extension?.content);
+        let oid = parts.next()??;
+        if oid.tag != 6 || oid.content != ALT_NAMES {
+            continue;
+        }
+        // An optional `critical` flag, then the value.
+        let mut value = parts.next()??;
+        if value.tag == 1 {
+            value = parts.next()??;
+        }
+        let (names, _) = element(value.content)?;
+        for name in elements(names.content) {
+            let name = name?;
+            // `dNSName`, `[2] IMPLICIT IA5String`.
+            if name.class == 2 && name.tag == 2 && !name.constructed && name.content.contains(&0) {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +392,135 @@ mod tests {
         let (_, after) = element(validity.content).unwrap();
         assert!(element(after).unwrap().1.is_empty());
         assert!(parse(&indefinite).is_none());
+    }
+
+    /// One element: `tag`, a short length, `content`.
+    fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+        let mut e = vec![tag, u8::try_from(content.len()).unwrap()];
+        e.extend_from_slice(content);
+        e
+    }
+
+    /// A certificate whose subject is one attribute, `oid` of `value`
+    /// (an element), and whose extensions, if any, are `extensions`.
+    fn cert_with(oid: &[u8], value: &[u8], extensions: &[Vec<u8>]) -> Vec<u8> {
+        let attribute = tlv(0x30, &[tlv(0x06, oid), value.to_vec()].concat());
+        let subject = tlv(0x30, &tlv(0x31, &attribute));
+        let mut tbs = vec![0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01, 0x30, 0x00];
+        tbs.extend_from_slice(&[0x30, 0x00, 0x30, 0x04, 0x17, 0x00, 0x17, 0x00]);
+        tbs.extend_from_slice(&subject);
+        tbs.extend_from_slice(&[
+            0x30, 0x09, 0x30, 0x03, 0x06, 0x01, 0x2a, 0x03, 0x02, 0x00, 0x01,
+        ]);
+        if !extensions.is_empty() {
+            tbs.extend_from_slice(&tlv(0xa3, &tlv(0x30, &extensions.concat())));
+        }
+        let cert = tlv(
+            0x30,
+            &[tlv(0x30, &tbs), vec![0x30, 0x00, 0x03, 0x01, 0x00]].concat(),
+        );
+        assert!(parse(&cert).is_some());
+        cert
+    }
+
+    /// A subject alternative names extension of `names` (each an
+    /// element), marked critical if `critical`.
+    fn alt_names(names: &[Vec<u8>], critical: bool) -> Vec<u8> {
+        let flag = if critical {
+            vec![0x01, 0x01, 0xff]
+        } else {
+            vec![]
+        };
+        let value = tlv(0x04, &tlv(0x30, &names.concat()));
+        tlv(
+            0x30,
+            &[tlv(0x06, &[0x55, 0x1d, 0x11]), flag, value].concat(),
+        )
+    }
+
+    /// A host name with a zero byte in it, in a subject alternative
+    /// `dNSName` or a common name, is found, whichever string type the
+    /// name is written in; a zero in an address or another kind of name,
+    /// or another attribute, is not a host name's.
+    #[test]
+    fn a_host_name_holding_a_zero_is_found() {
+        let cn = [0x55, 0x04, 0x03];
+        let org = [0x55, 0x04, 0x0a];
+        let utf8 = |s: &[u8]| tlv(0x0c, s);
+        let dns = |s: &[u8]| tlv(0x82, s);
+        let plain = utf8(b"localhost");
+        for (cert, zero) in [
+            (cert_with(&cn, &plain, &[]), false),
+            (
+                cert_with(&cn, &utf8(b"localhost\0.evil.example"), &[]),
+                true,
+            ),
+            (cert_with(&cn, &tlv(0x13, b"local\0host"), &[]), true),
+            (cert_with(&cn, &tlv(0x1e, &[0, b'l', 0, b'o']), &[]), false),
+            (
+                cert_with(&cn, &tlv(0x1e, &[0, b'l', 0, 0, 0, b'o']), &[]),
+                true,
+            ),
+            (cert_with(&cn, &tlv(0x1c, &[0, 0, 0, b'l']), &[]), false),
+            (
+                cert_with(&cn, &tlv(0x1c, &[0, 0, 0, b'l', 0, 0, 0, 0]), &[]),
+                true,
+            ),
+            (cert_with(&org, &utf8(b"org\0anisation"), &[]), false),
+            (
+                cert_with(&cn, &plain, &[alt_names(&[dns(b"localhost")], false)]),
+                false,
+            ),
+            (
+                cert_with(
+                    &cn,
+                    &plain,
+                    &[alt_names(&[dns(b"localhost\0.evil.example")], false)],
+                ),
+                true,
+            ),
+            (
+                cert_with(
+                    &cn,
+                    &plain,
+                    &[alt_names(
+                        &[dns(b"a.example"), dns(b"localhost\0.evil")],
+                        true,
+                    )],
+                ),
+                true,
+            ),
+            (
+                cert_with(
+                    &cn,
+                    &plain,
+                    &[alt_names(&[tlv(0x87, &[127, 0, 0, 1])], false)],
+                ),
+                false,
+            ),
+            (
+                cert_with(
+                    &cn,
+                    &plain,
+                    &[alt_names(&[tlv(0x81, b"a\0@example")], false)],
+                ),
+                false,
+            ),
+            (
+                cert_with(
+                    &cn,
+                    &plain,
+                    &[tlv(
+                        0x30,
+                        &[tlv(0x06, &[0x55, 0x1d, 0x13]), tlv(0x04, &[0x30, 0x00])].concat(),
+                    )],
+                ),
+                false,
+            ),
+        ] {
+            assert_eq!(host_name_holds_zero(&cert), Some(zero), "{cert:02x?}");
+        }
+        assert_eq!(host_name_holds_zero(&[0x30, 0x00]), None);
     }
 
     fn hex(text: &str) -> Vec<u8> {

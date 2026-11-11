@@ -311,8 +311,9 @@ impl CertContext {
     /// The DNS names the certificate gives, as `CertGetNameString` lists
     /// them with `CERT_NAME_SEARCH_ALL_NAMES_FLAG` (`cert_get_name_string`
     /// on Windows 8 and later): each as UTF-8, a name that is not left as
-    /// the system's replacement. None if it lists none.
-    pub(crate) fn dns_names(&self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
+    /// the system's replacement. The list is refused if the system gives
+    /// none, not even its end, or a second call gives it another length.
+    pub(crate) fn dns_names(&self) -> Result<Vec<Vec<u8>>, NameList> {
         let flags = wc::CERT_NAME_DISABLE_IE4_UTF8_FLAG | wc::CERT_NAME_SEARCH_ALL_NAMES_FLAG;
         // SAFETY: the context, asked for the length of its names.
         let len = unsafe {
@@ -325,6 +326,9 @@ impl CertContext {
                 0,
             )
         };
+        if len == 0 {
+            return Err(NameList::None);
+        }
         let mut wide: Vec<u16> = Vec::new();
         let n = usize::try_from(len).expect("a u32 fits");
         wide.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
@@ -342,9 +346,11 @@ impl CertContext {
                 len,
             )
         };
-        let got = usize::try_from(got).expect("a u32 fits").min(n);
+        if got != len {
+            return Err(NameList::Size);
+        }
         let mut names = Vec::new();
-        for name in wide[..got].split(|&c| c == 0).take_while(|n| !n.is_empty()) {
+        for name in wide.split(|&c| c == 0).take_while(|n| !n.is_empty()) {
             let mut utf8 = Vec::new();
             for c in char::decode_utf16(name.iter().copied()) {
                 let c = c.unwrap_or(char::REPLACEMENT_CHARACTER);
@@ -439,6 +445,22 @@ impl CertContext {
             return Err(AltNames::OutOfMemory);
         }
         Ok(out)
+    }
+}
+
+/// Why a certificate's DNS names could not be listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NameList {
+    /// The system gave no list, not even its end.
+    None,
+    /// The list it gave was not as long as it said it would be.
+    Size,
+    OutOfMemory,
+}
+
+impl From<OutOfMemory> for NameList {
+    fn from(OutOfMemory: OutOfMemory) -> Self {
+        NameList::OutOfMemory
     }
 }
 

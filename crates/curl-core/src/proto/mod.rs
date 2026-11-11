@@ -972,7 +972,18 @@ impl ProtoState {
             ProtoState::Ssh(r) => r.take_login(),
             ProtoState::Ldap(r) => r.take_login(),
             ProtoState::Http(r) => r.rtsp_login()?,
-            _ => None,
+            // Each named, so that a protocol added says whether its
+            // connection is logged in once.
+            // A connection of its own, never kept (`PROTOPT_CONN_REUSE`
+            // unset): no other transfer takes it.
+            ProtoState::LdapLocal(_) | ProtoState::Mqtt(_) | ProtoState::Telnet(_) => None,
+            // No login.
+            ProtoState::File(_)
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_)
+            | ProtoState::Tftp(_) => None,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
         })
     }
 

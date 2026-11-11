@@ -18,3 +18,37 @@ witness: curl-core auth::creds::tests::a_part_given_empty_still_makes_credential
 --- new
         [user, bearer, service, authzid]
             .iter()
+
+=== credentials differing only in case are the same
+file: crates/curl-core/src/auth/creds.rs
+witness: curl-core auth::creds::tests::credentials_are_the_same_only_byte_for_byte
+--- old
+        same_secret(user, other.user)
+            & same_secret(password, other.password)
+--- new
+        user.eq_ignore_ascii_case(other.user)
+            & password.eq_ignore_ascii_case(other.password)
+
+=== credentials with another token are the same
+file: crates/curl-core/src/auth/creds.rs
+witness: curl-core auth::creds::tests::credentials_are_the_same_only_byte_for_byte
+--- old
+            & same_secret(bearer, other.bearer)
+--- new
+            & (same_secret(bearer, other.bearer) | true)
+
+=== credentials for another service are the same
+file: crates/curl-core/src/auth/creds.rs
+witness: curl-core auth::creds::tests::credentials_are_the_same_only_byte_for_byte
+--- old
+            & same_secret(service, other.service)
+--- new
+            & (same_secret(service, other.service) | true)
+
+=== credentials acting for another identity are the same
+file: crates/curl-core/src/auth/creds.rs
+witness: curl-core auth::creds::tests::credentials_are_the_same_only_byte_for_byte
+--- old
+            & same_secret(authzid, other.authzid)
+--- new
+            & (same_secret(authzid, other.authzid) | true)

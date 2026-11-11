@@ -346,11 +346,21 @@ impl Credentials {
     /// time: the user, the password, the token, the identity acted for
     /// and the service (`Curl_creds_same`).
     pub(crate) fn same(&self, other: &Credentials) -> bool {
-        same_secret(&self.user, &other.user)
-            & same_secret(&self.password, &other.password)
-            & same_secret(&self.bearer, &other.bearer)
-            & same_secret(&self.authzid, &other.authzid)
-            & same_secret(&self.service, &other.service)
+        // Every field by name, so that one added does not compile until
+        // it is compared, in `Secret::same`, or said why not.
+        let Credentials {
+            user: _,
+            password: _,
+            bearer: _,
+            service: _,
+            authzid: _,
+            // Where they came from, and the leave to send them, decide
+            // where they go, not who they are: C's `Curl_creds_same`
+            // compares neither.
+            source: _,
+            trusted: _,
+        } = self;
+        self.secret().same(&other.secret())
     }
 
     pub(crate) fn user(&self) -> &[u8] {
@@ -516,11 +526,40 @@ impl<'a> Secret<'a> {
     /// Whether these are those `answered` kept (`Curl_creds_same`, whose
     /// comparisons take the same time whatever the bytes).
     pub(crate) fn answers_as(&self, answered: &Answered) -> bool {
-        same_secret(self.user, &answered.user)
-            & same_secret(self.password, &answered.password)
-            & same_secret(self.bearer, &answered.bearer)
-            & same_secret(self.service, &answered.service)
-            & same_secret(self.authzid, &answered.authzid)
+        let Answered {
+            user,
+            password,
+            bearer,
+            service,
+            authzid,
+        } = answered;
+        self.same(&Secret {
+            user,
+            password,
+            bearer,
+            service,
+            authzid,
+        })
+    }
+
+    /// Whether these are `other` (`Curl_creds_same`): every part the
+    /// same bytes, case and all, each compared in the same time whatever
+    /// the bytes and all of them compared whatever the first says.
+    pub(crate) fn same(&self, other: &Secret<'_>) -> bool {
+        // Every field by name, so that one added does not compile until
+        // it is compared here.
+        let Secret {
+            user,
+            password,
+            bearer,
+            service,
+            authzid,
+        } = self;
+        same_secret(user, other.user)
+            & same_secret(password, other.password)
+            & same_secret(bearer, other.bearer)
+            & same_secret(service, other.service)
+            & same_secret(authzid, other.authzid)
     }
 
     /// `user:password` in base64, what `Authorization: Basic` carries;
@@ -808,6 +847,76 @@ mod tests {
         );
         assert_eq!(bearer(false, "http://h/"), None);
         assert_eq!(bearer(false, "http://u@h/"), Some((b"u".to_vec(), vec![])));
+    }
+
+    /// Credentials are the same only when every part is the same bytes:
+    /// a user or password differing only in case is another login
+    /// (CVE-2016-8616), and so is another token, service or identity
+    /// acted for (CVE-2022-22576, CVE-2026-8458). Both comparisons, of
+    /// a connection's login and of what a Digest challenge was answered
+    /// with, say so.
+    #[test]
+    fn credentials_are_the_same_only_byte_for_byte() {
+        let url = Url::parse(b"pop3://h/", ParseOptions::NONE).unwrap();
+        let make = |login: Login| {
+            Credentials::for_request(&login, Some(Trusted::own_url()), &url, Takes::ControlBytes)
+                .unwrap()
+                .expect("credentials")
+        };
+        let base = || Login {
+            user: Some(b"u".to_vec()),
+            password: Some(b"Secret".to_vec()),
+            bearer: Some(b"t".to_vec()),
+            service: Some(b"s".to_vec()),
+            authzid: Some(b"z".to_vec()),
+            ..Login::default()
+        };
+        let a = make(base());
+        let kept = a.secret().answered().unwrap();
+        assert!(a.same(&make(base())));
+        assert!(make(base()).secret().answers_as(&kept));
+        for (part, other) in [
+            (
+                "password",
+                Login {
+                    password: Some(b"secret".to_vec()),
+                    ..base()
+                },
+            ),
+            (
+                "user",
+                Login {
+                    user: Some(b"U".to_vec()),
+                    ..base()
+                },
+            ),
+            (
+                "bearer",
+                Login {
+                    bearer: Some(b"T".to_vec()),
+                    ..base()
+                },
+            ),
+            (
+                "service",
+                Login {
+                    service: Some(b"S".to_vec()),
+                    ..base()
+                },
+            ),
+            (
+                "authzid",
+                Login {
+                    authzid: Some(b"Z".to_vec()),
+                    ..base()
+                },
+            ),
+        ] {
+            let b = make(other);
+            assert!(!a.same(&b), "{part}");
+            assert!(!b.same(&a), "{part}");
+            assert!(!b.secret().answers_as(&kept), "{part}");
+        }
     }
 
     /// As C's `url_set_data_creds_netrc` decides: never over the

@@ -80,7 +80,15 @@ impl Keys {
     /// Whether a connection that found `self` serves a transfer that
     /// finds `other`: the same files (`ssh_config_matches`).
     pub(crate) fn same(&self, other: &Keys) -> bool {
-        self.private == other.private && self.public == other.public
+        // Every field by name, so that one added does not compile until
+        // it is compared here or said why not.
+        let Keys {
+            private,
+            public,
+            // C's `ssh_config_matches` compares the files only.
+            passphrase: _,
+        } = self;
+        *private == other.private && *public == other.public
     }
 
     /// The transfer's, as its options and the files at hand say.

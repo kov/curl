@@ -114,9 +114,9 @@ file: crates/curl-core/src/proto/http/negotiate.rs
 witness: curl-core proto::http::tests::negotiate::a_connection_negotiating_with_its_proxy_serves_only_its_own
 features: test-util
 --- old
-        if self.proxy.state != State::None && !wants.proxy {
+        if proxy.state != State::None && !wants_proxy {
 --- new
-        if self.proxy.state != State::None && !wants.proxy && false {
+        if proxy.state != State::None && !wants_proxy && false {
 
 === a forwarding proxy's connection closing mid-handshake goes unsaid
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -209,3 +209,32 @@ witness: curl-core proto::http::tests::h2::a_challenge_on_a_connection_bound_to_
             if bound.origin != *request.peer || !same {
 --- new
             if bound.origin != *request.peer && !same {
+
+=== a connection negotiating with one origin serves a transfer for another
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::negotiate::serves_tests::a_negotiating_connection_serves_only_a_transfer_negotiating_as_it_does
+--- old
+                negotiate && same && same_origin
+--- new
+                negotiate && same
+
+=== a connection negotiating serves a transfer that does not negotiate
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::negotiate::serves_tests::a_negotiating_connection_serves_only_a_transfer_negotiating_as_it_does
+--- old
+                negotiate && same && same_origin
+--- new
+                same && same_origin
+
+=== a connection bound to ambient credentials serves a transfer negotiating with its own
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::negotiate::serves_tests::a_negotiating_connection_serves_only_a_transfer_negotiating_as_it_does
+--- old
+        (None, None) => true,
+        (Some(a), Some(s)) => s.answers_as(a),
+        _ => false,
+--- new
+        (None, None) => true,
+        (Some(a), Some(s)) => s.answers_as(a),
+        (None, Some(_)) => true,
+        _ => false,

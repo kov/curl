@@ -150,9 +150,18 @@ impl Negotiate {
     /// far as Negotiate goes (`url_match_auth`'s credentials,
     /// `url_match_auth_nego`).
     pub(crate) fn serves(&self, wants: &Wants<'_>) -> bool {
-        let bound = self.bound.as_ref();
+        // Every field by name, of the connection's and of the transfer's,
+        // so that one added does not compile until it is decided here.
+        let Negotiate { host, proxy, bound } = self;
+        let Wants {
+            negotiate,
+            credentials: wanted,
+            origin,
+            proxy: wants_proxy,
+        } = *wants;
+        let bound = bound.as_ref();
         let credentials = bound.and_then(|b| b.credentials.as_ref());
-        let same = same_credentials(credentials, wants.credentials);
+        let same = same_credentials(credentials, wanted);
         // Bound to credentials, it serves only a transfer with the same,
         // negotiating or not (`url_match_auth`).
         if credentials.is_some() && !same {
@@ -161,17 +170,18 @@ impl Negotiate {
         // Negotiating with the proxy, it serves only a transfer
         // negotiating with it, as the same credentials: the route's are
         // the proxy's, compared already.
-        if self.proxy.state != State::None && !wants.proxy {
+        if proxy.state != State::None && !wants_proxy {
             return false;
         }
-        let same_origin = bound.is_some_and(|b| wants.origin == Some(&b.origin));
-        if self.host.state != State::None {
+        let same_origin = bound.is_some_and(|b| origin == Some(&b.origin));
+        match host.state {
             // Negotiating, it serves only a transfer negotiating as it
             // does.
-            wants.negotiate && same && same_origin
-        } else {
+            State::Recv | State::Sent | State::Done | State::Succ => {
+                negotiate && same && same_origin
+            }
             // A transfer negotiating is not served by one bound to others.
-            !(wants.negotiate && bound.is_some() && !(same && same_origin))
+            State::None => !(negotiate && bound.is_some() && !(same && same_origin)),
         }
     }
 }
@@ -722,4 +732,69 @@ fn logged<H: Host>(
     let fits = gss.describe(status, Style::Log, &mut |part| text.push_clipped(part));
     assert!(fits.is_ok(), "the log's layout is never too long");
     trace::info_with(cx, &[prefix.as_bytes(), text.bytes()]);
+}
+
+#[cfg(test)]
+mod serves_tests {
+    use super::*;
+
+    fn peer(name: &[u8]) -> Peer {
+        Peer::new(crate::proto::http::HTTP, name.to_vec(), 80, None)
+    }
+
+    fn wants<'w>(negotiate: bool, credentials: Option<Secret<'w>>, origin: &'w Peer) -> Wants<'w> {
+        Wants {
+            negotiate,
+            credentials,
+            origin: Some(origin),
+            proxy: false,
+        }
+    }
+
+    /// A connection negotiating with its origin serves only a transfer
+    /// negotiating with the same origin as the same credentials
+    /// (`url_match_auth_nego`, CVE-2026-1965, CVE-2026-87861); one bound
+    /// to credentials and done negotiating serves no transfer with others
+    /// (CVE-2015-3143), and one bound to ambient credentials none with
+    /// its own (CVE-2026-19931).
+    #[test]
+    fn a_negotiating_connection_serves_only_a_transfer_negotiating_as_it_does() {
+        let (a, b) = (peer(b"a"), peer(b"b"));
+        let u = Secret::new(b"u", b"p", b"");
+        let v = Secret::new(b"v", b"p", b"");
+        let bound = |credentials: Option<Secret<'_>>, state| Negotiate {
+            host: Peering {
+                state,
+                ..Peering::default()
+            },
+            proxy: Peering::default(),
+            bound: Some(Bound {
+                origin: peer(b"a"),
+                credentials: credentials.map(|c| c.answered().unwrap()),
+            }),
+        };
+        let nego = bound(Some(u), State::Succ);
+        assert!(nego.serves(&wants(true, Some(u), &a)));
+        assert!(!nego.serves(&wants(true, Some(u), &b)), "another origin");
+        assert!(!nego.serves(&wants(false, Some(u), &a)), "not negotiating");
+        assert!(!nego.serves(&wants(true, Some(v), &a)), "other credentials");
+        assert!(!nego.serves(&wants(false, None, &a)), "no credentials");
+        // Ambient credentials bind it to none.
+        let ambient = bound(None, State::Succ);
+        assert!(ambient.serves(&wants(true, None, &a)));
+        assert!(!ambient.serves(&wants(true, Some(u), &a)), "explicit");
+        assert!(
+            !ambient.serves(&wants(false, Some(u), &a)),
+            "explicit, not negotiating"
+        );
+        assert!(!ambient.serves(&wants(true, None, &b)), "another origin");
+        // Bound, but not negotiating now: a transfer negotiating with
+        // another origin is not served; one not negotiating is.
+        let idle = bound(None, State::None);
+        assert!(!idle.serves(&wants(true, None, &b)), "another origin");
+        assert!(idle.serves(&wants(false, None, &b)), "not negotiating");
+        // Never negotiated, it serves any.
+        let fresh = Negotiate::default();
+        assert!(fresh.serves(&wants(true, Some(u), &b)));
+    }
 }

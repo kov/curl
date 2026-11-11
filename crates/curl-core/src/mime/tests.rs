@@ -993,6 +993,37 @@ fn a_tree_s_depth_counts_its_levels() {
     assert_eq!(top.depth(), 3);
 }
 
+/// A tree nested far deeper than any is sent is measured only as far as a
+/// check against `MAX_LEVELS` needs, and dropped without recursing
+/// through it, as `curl_mime_free` frees one (the CVE-2026-92391 class):
+/// on a stack a walk per level would overflow.
+#[test]
+#[cfg_attr(miri, ignore = "a hundred thousand trees")]
+fn a_tree_of_any_depth_is_measured_and_dropped_without_recursing() {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            // Each level has parts of its own on either side of the
+            // next, which all go with it.
+            let shared = TryArc::try_new(b"x".to_vec()).unwrap();
+            let mut deep = tree([]);
+            for _ in 0..100_000 {
+                deep = tree([
+                    named("a", Content::Bytes(shared.clone())),
+                    named("s", Content::Parts(deep)),
+                    named("b", Content::Bytes(shared.clone())),
+                ]);
+            }
+            assert_eq!(deep.depth(), MAX_LEVELS + 1);
+            assert_eq!(TryArc::count(&shared), 200_001);
+            drop(deep);
+            assert_eq!(TryArc::count(&shared), 1, "every part dropped");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 /// The encoders are named as `Content-Transfer-Encoding` names them, in
 /// any case.
 #[test]

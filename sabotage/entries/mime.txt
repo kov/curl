@@ -159,9 +159,9 @@ witness: curl-sys-abi mime::tests::a_tree_is_attached_once
 file: crates/curl-sys-abi/src/mime.rs
 witness: curl-sys-abi mime::tests::a_copied_handle_posts_a_copy_of_the_tree
 --- old
-    if 1 + depth(tree) > MAX_LEVELS {
+    if deeper_than(tree, MAX_LEVELS - 1) {
 --- new
-    if depth(tree) > MAX_LEVELS {
+    if deeper_than(tree, MAX_LEVELS) {
 
 === a part never reached is sought
 file: crates/curl-sys-abi/src/mime.rs
@@ -288,3 +288,40 @@ witness: curl-core mime::tests::unit3227_line_breaks_in_part_names
     if escaping == Escape::Backslash && (breaks(part.name) || breaks(part.filename)) {
 --- new
     if escaping == Escape::Backslash && breaks(part.name) {
+
+=== a handle's tree is walked to its bottom before a copy is refused as too deep
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::a_tree_too_deep_to_walk_is_not_copied_and_is_freed
+--- old
+    let Some(below) = levels.checked_sub(1) else {
+        return true;
+    };
+--- new
+    let below = levels.saturating_sub(1);
+
+=== a tree's depth is counted to its bottom
+file: crates/curl-core/src/mime/mod.rs
+witness: curl-core mime::tests::a_tree_of_any_depth_is_measured_and_dropped_without_recursing
+--- old
+        if most <= 1 {
+            return 1;
+        }
+--- new
+
+=== a tree is dropped recursing once per level
+file: crates/curl-core/src/mime/mod.rs
+witness: curl-core mime::tests::a_tree_of_any_depth_is_measured_and_dropped_without_recursing
+--- old
+        let mut list = std::mem::take(&mut self.parts);
+--- new
+        let mut list: Vec<Part> = Vec::new();
+
+=== dropping a deep tree keeps an empty list in a part, and goes round without end
+file: crates/curl-core/src/mime/mod.rs
+witness: curl-core mime::tests::a_tree_of_any_depth_is_measured_and_dropped_without_recursing
+--- old
+            if list.is_empty() {
+                list = below;
+                continue;
+            }
+--- new

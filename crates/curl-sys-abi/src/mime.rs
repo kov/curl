@@ -673,21 +673,21 @@ pub(crate) fn detach(shim: &ShimEasy) {
     }
 }
 
-/// How deep a tree's parts nest, its own counted as 1.
-fn depth(mime: &ShimMime) -> usize {
-    1 + mime
-        .parts
-        .iter()
-        .map(|p| {
-            // SAFETY: a tree's parts live as long as it does.
-            match &unsafe { p.as_ref() }.content {
-                // SAFETY: as above.
-                PartContent::Subparts(sub) => depth(unsafe { sub.as_ref() }),
-                _ => 0,
-            }
-        })
-        .max()
-        .unwrap_or(0)
+/// Whether a tree's parts nest more than `levels` deep, its own counted
+/// as 1: looked at no deeper than that, so a tree of any depth is told
+/// without recursing through it (`mime_is_too_deep`).
+fn deeper_than(mime: &ShimMime, levels: usize) -> bool {
+    let Some(below) = levels.checked_sub(1) else {
+        return true;
+    };
+    mime.parts.iter().any(|p| {
+        // SAFETY: a tree's parts live as long as it does.
+        match &unsafe { p.as_ref() }.content {
+            // SAFETY: as above.
+            PartContent::Subparts(sub) => deeper_than(unsafe { sub.as_ref() }, below),
+            _ => false,
+        }
+    })
 }
 
 /// Why a handle's tree could not be copied.
@@ -706,7 +706,7 @@ pub(crate) fn duplicate(from: &ShimEasy, to: NonNull<ShimEasy>) -> Result<(), Du
     // SAFETY: a tree a handle posts is live.
     let tree = unsafe { m.as_ref() };
     // The handle's part above the tree is a level of its own.
-    if 1 + depth(tree) > MAX_LEVELS {
+    if deeper_than(tree, MAX_LEVELS - 1) {
         return Err(DupError::TooDeep);
     }
     // SAFETY: the copy is live.
@@ -1518,6 +1518,32 @@ mod tests {
             }
             below
         }
+    }
+
+    /// A handle posting a tree nested far deeper than a copy is made of
+    /// is refused by `curl_easy_duphandle`, the tree looked at no deeper
+    /// than the limit, and the tree is freed, neither recursing through
+    /// it (`mime_is_too_deep`, the CVE-2026-92391 class): on a stack a
+    /// walk per level would overflow.
+    #[test]
+    #[cfg_attr(miri, ignore = "a hundred thousand trees")]
+    fn a_tree_too_deep_to_walk_is_not_copied_and_is_freed() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let c = curl_easy_init();
+                let deep = nested(100_000);
+                // SAFETY: a live handle and tree, each freed once.
+                unsafe {
+                    assert_eq!(post(c, deep), CURLE_OK);
+                    assert!(curl_easy_duphandle(c).is_null(), "too deep to copy");
+                    curl_easy_cleanup(c);
+                    curl_mime_free(deep);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     /// A tree as deep as the core sends is made whole: 40 trees, the

@@ -109,17 +109,63 @@ impl Mime {
         self.parts.try_push(part)
     }
 
-    /// How deep the tree nests: 1 for parts without subparts.
+    /// How deep the tree nests: 1 for parts without subparts. Counted
+    /// no deeper than one past `MAX_LEVELS`, all a check against it
+    /// needs, so that a tree of any depth is told without recursing
+    /// through it (`mime_is_too_deep`).
     pub fn depth(&self) -> usize {
+        self.depth_upto(MAX_LEVELS + 1)
+    }
+
+    /// How deep the tree nests, or `most` if deeper (`most` at least 1).
+    fn depth_upto(&self, most: usize) -> usize {
+        if most <= 1 {
+            return 1;
+        }
         1 + self
             .parts
             .iter()
             .map(|p| match &p.content {
-                Content::Parts(m) => m.depth(),
+                Content::Parts(m) => m.depth_upto(most - 1),
                 _ => 0,
             })
             .max()
             .unwrap_or(0)
+    }
+}
+
+/// A tree is dropped without recursing, however deep its subparts nest,
+/// as `curl_mime_free` frees one: the parts of each tree of subparts are
+/// taken in turn as the list still to drop. What is left of the list, if
+/// anything, is kept in the part they came from, put in their first
+/// part's place, which is taken out to drop next; that part, popped last
+/// from its list, is popped with nothing left beside it, so it keeps no
+/// list in turn and each part with subparts makes at most one. Nothing
+/// is allocated.
+impl Drop for Mime {
+    fn drop(&mut self) {
+        let mut list = std::mem::take(&mut self.parts);
+        let mut held: Option<Part> = None;
+        while let Some(mut part) = held.take().or_else(|| list.pop()) {
+            // Any other content is dropped here, with nothing below it.
+            let Content::Parts(mut sub) = std::mem::take(&mut part.content) else {
+                continue;
+            };
+            let mut below = std::mem::take(&mut sub.parts);
+            if list.is_empty() {
+                list = below;
+                continue;
+            }
+            let Some(first) = below.first_mut() else {
+                continue;
+            };
+            part.content = Content::Parts(Mime {
+                boundary: sub.boundary,
+                parts: std::mem::take(&mut list),
+            });
+            held = Some(std::mem::replace(first, part));
+            list = below;
+        }
     }
 }
 

@@ -1320,10 +1320,17 @@ unsafe fn wait(
         unsafe { core::slice::from_raw_parts_mut(extra, n as usize) }
     };
     let polled = extra.iter().map(|e| {
+        let events = wait_events(e.events);
+        // One listed as none is passed over, as `Curl_poll` skips it; it
+        // is no socket to borrow.
+        if e.fd == ffi::CURL_SOCKET_BAD {
+            return PollFd::absent(events);
+        }
         // SAFETY: the application keeps its descriptors open for the
-        // call.
+        // call, and this one is not `CURL_SOCKET_BAD`, the value no
+        // borrowed socket holds.
         let fd = unsafe { BorrowedSocket::borrow_raw(e.fd) };
-        PollFd::new(fd, wait_events(e.events))
+        PollFd::new(fd, events)
     });
     // A few on the stack, as C's `a_few_on_stack`, so a loop of waits
     // allocates nothing.

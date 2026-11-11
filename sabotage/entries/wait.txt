@@ -385,3 +385,12 @@ witness: curl-core a_wait_on_more_sockets_allocates_once_for_each_pass
                     if more_keys.try_reserve_exact(2 * ON_STACK).is_err() {
 --- new
                     if more_keys.try_reserve_exact(ON_STACK).is_err() {
+
+=== an application's entry listed as no socket is borrowed as one
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_wait_reports_the_application_s_descriptors
+--- old
+        if e.fd == ffi::CURL_SOCKET_BAD {
+            return PollFd::absent(events);
+        }
+--- new

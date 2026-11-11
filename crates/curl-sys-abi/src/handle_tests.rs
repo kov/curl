@@ -4509,8 +4509,9 @@ fn a_sibling_may_not_perform_inside_a_callback() {
     std::fs::remove_file(path).unwrap();
 }
 
-/// A wait polls the application's descriptors and reports what C reports.
-/// Unix only: the descriptors are a Unix socket pair's.
+/// A wait polls the application's descriptors and reports what C reports,
+/// passing over one listed as `CURL_SOCKET_BAD`. Unix only: the descriptors
+/// are a Unix socket pair's.
 #[cfg(unix)]
 #[test]
 fn a_wait_reports_the_application_s_descriptors() {
@@ -4530,17 +4531,24 @@ fn a_wait_reports_the_application_s_descriptors() {
             events: ffi::CURL_WAIT_POLLOUT as i16,
             revents: 0,
         },
+        // One listed as no socket is passed over, as `Curl_poll` skips it.
+        ffi::curl_waitfd {
+            fd: ffi::CURL_SOCKET_BAD,
+            events: ffi::CURL_WAIT_POLLIN as i16,
+            revents: 7,
+        },
     ];
     let mut ret = -1;
-    // SAFETY: a live multi and two entries.
+    // SAFETY: a live multi and three entries.
     unsafe {
         assert_eq!(
-            curl_multi_wait(m, fds.as_mut_ptr(), 2, 1000, &raw mut ret),
+            curl_multi_wait(m, fds.as_mut_ptr(), 3, 1000, &raw mut ret),
             CURLM_OK
         );
         assert_eq!(ret, 2);
         assert_eq!(fds[0].revents, ffi::CURL_WAIT_POLLIN as i16);
         assert_eq!(fds[1].revents, ffi::CURL_WAIT_POLLOUT as i16);
+        assert_eq!(fds[2].revents, 0);
         assert_eq!(
             curl_multi_wait(m, fds.as_mut_ptr(), 2, -1, &raw mut ret),
             ffi::CURLM_BAD_FUNCTION_ARGUMENT

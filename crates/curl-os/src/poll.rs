@@ -111,6 +111,20 @@ impl<'a> PollFd<'a> {
         }
     }
 
+    /// An entry with no descriptor, as one an application lists as
+    /// `CURL_SOCKET_BAD`: `poll` passes over it and reports nothing of it,
+    /// as the kernel does a negative descriptor.
+    pub fn absent(events: Events) -> Self {
+        PollFd {
+            raw: libc::pollfd {
+                fd: -1,
+                events: events.0,
+                revents: 0,
+            },
+            _fd: PhantomData,
+        }
+    }
+
     /// What the last `poll` reported for this descriptor.
     pub fn revents(&self) -> Events {
         Events(self.raw.revents)
@@ -173,6 +187,18 @@ impl<'a> PollFd<'a> {
     pub fn new(fd: BorrowedSocket<'a>, events: Events) -> Self {
         PollFd {
             socket: fd.as_raw_socket() as ws::SOCKET,
+            events: events.0,
+            revents: 0,
+            _fd: PhantomData,
+        }
+    }
+
+    /// An entry with no socket, as one an application lists as
+    /// `CURL_SOCKET_BAD`: `poll` passes over it and reports nothing of it,
+    /// as `Curl_poll` skips it.
+    pub fn absent(events: Events) -> Self {
+        PollFd {
+            socket: ws::INVALID_SOCKET,
             events: events.0,
             revents: 0,
             _fd: PhantomData,
@@ -268,7 +294,8 @@ pub fn poll(fds: &mut [PollFd<'_>], timeout: Duration) -> io::Result<u32> {
         heap_e = zeroed_slots(room)?;
         (FdSet(&mut heap_r), FdSet(&mut heap_w), FdSet(&mut heap_e))
     };
-    for fd in fds.iter() {
+    // One with no socket is passed over (`Curl_poll`'s `CURL_SOCKET_BAD`).
+    for fd in fds.iter().filter(|fd| fd.socket != ws::INVALID_SOCKET) {
         let asked = Events(fd.events);
         if asked.intersects(Events::RDNORM | Events::IN) {
             read.add(fd.socket);

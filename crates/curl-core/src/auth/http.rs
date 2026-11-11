@@ -457,17 +457,18 @@ impl PeerAuth {
                 return Ok(Some(value));
             }
         };
-        let mut failed = false;
-        let value = digest.response(
-            credentials.user(),
-            credentials.password(),
-            request.method,
-            request.uri,
-            |bytes| failed = random(bytes).is_err(),
-        )?;
-        if failed {
-            return Err(OutputError::Random);
-        }
+        let value = digest
+            .response(
+                credentials.user(),
+                credentials.password(),
+                request.method,
+                request.uri,
+                random,
+            )
+            .map_err(|e| match e {
+                super::digest::Unmade::OutOfMemory => OutputError::OutOfMemory,
+                super::digest::Unmade::Random => OutputError::Random,
+            })?;
         Ok(Some(value))
     }
 

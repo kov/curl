@@ -81,6 +81,20 @@ pub(crate) fn skip_blanks(s: &[u8]) -> &[u8] {
 /// A pair's name, its value unquoted, and what follows it.
 pub(crate) type Pair<'a> = (&'a [u8], Vec<u8>, &'a [u8]);
 
+/// Why a Digest response was not made.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Unmade {
+    OutOfMemory,
+    /// No random bytes for the client nonce.
+    Random,
+}
+
+impl From<OutOfMemory> for Unmade {
+    fn from(_: OutOfMemory) -> Self {
+        Unmade::OutOfMemory
+    }
+}
+
 /// A `name=value` pair at the start of `s`, the value quoted or not, and
 /// what follows it (`Curl_auth_digest_get_pair`). None where it is
 /// malformed: no `=`, a quote unclosed by the line's end or inside a bare
@@ -230,16 +244,17 @@ impl Digest {
 
     /// The `Authorization: Digest` value for a request with `method` to
     /// `uri`, as `user` with `password` (`auth_create_digest_http_message`):
-    /// the client nonce made once from `random`, the count moved on. Too
-    /// long a value is out of memory, as C's bounded buffers say.
+    /// the client nonce made once from `random`, kept only if it drew the
+    /// bytes, the count moved on. Too long a value is out of memory, as
+    /// C's bounded buffers say.
     pub(crate) fn response(
         &mut self,
         user: &[u8],
         password: &[u8],
         method: &[u8],
         uri: &[u8],
-        random: impl FnOnce(&mut [u8; 12]),
-    ) -> Result<Vec<u8>, OutOfMemory> {
+        random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
+    ) -> Result<Vec<u8>, Unmade> {
         match self.algo.unwrap_or(Algorithm::Md5) {
             Algorithm::Md5 => self.response_with::<Md5>(user, password, method, uri, random),
             Algorithm::Sha256 => self.response_with::<Sha256>(user, password, method, uri, random),
@@ -255,16 +270,20 @@ impl Digest {
         password: &[u8],
         method: &[u8],
         uri: &[u8],
-        random: impl FnOnce(&mut [u8; 12]),
-    ) -> Result<Vec<u8>, OutOfMemory> {
+        random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
+    ) -> Result<Vec<u8>, Unmade> {
         if self.nc == 0 {
             self.nc = 1;
         }
         if self.cnonce.is_none() {
             let mut bytes = [0u8; 12];
-            random(&mut bytes);
+            // None kept without the bytes drawn: the next response draws
+            // again (`Curl_rand_bytes` failing before `digest->cnonce`).
+            random(&mut bytes).map_err(|()| Unmade::Random)?;
             let mut cnonce = Vec::new();
-            cnonce.try_reserve_exact(16)?;
+            cnonce
+                .try_reserve_exact(16)
+                .map_err(|_| Unmade::OutOfMemory)?;
             crate::base64::encode(&bytes, &mut cnonce)?;
             self.cnonce = Some(cnonce);
         }
@@ -432,7 +451,10 @@ mod tests {
                 password.as_bytes(),
                 method.as_bytes(),
                 uri.as_bytes(),
-                |bytes| bytes.fill(b'x'),
+                |bytes| {
+                    bytes.fill(b'x');
+                    Ok(())
+                },
             )
             .unwrap();
         String::from_utf8(out).unwrap()
@@ -500,7 +522,7 @@ mod tests {
             )
         );
         let again = d
-            .response(b"Mufasa", b"Circle of Life", b"GET", b"/", |_| {})
+            .response(b"Mufasa", b"Circle of Life", b"GET", b"/", |_| Ok(()))
             .unwrap();
         assert!(
             String::from_utf8(again)
@@ -510,7 +532,30 @@ mod tests {
         // A client nonce made: twelve bytes in base64.
         let mut d = decoded("nonce=\"n\", qop=auth").unwrap();
         let out = d
-            .response(b"u", b"p", b"GET", b"/", |b| b.fill(0xff))
+            .response(b"u", b"p", b"GET", b"/", |b| {
+                b.fill(0xff);
+                Ok(())
+            })
+            .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("cnonce=\"////////////////\""), "{out}");
+    }
+
+    /// A client nonce whose random bytes could not be drawn is not kept:
+    /// the response fails, and the next draws again, rather than sending
+    /// a nonce of zeros from then on (`auth_create_digest_http_message`,
+    /// the CVE-2016-9594 class).
+    #[test]
+    fn a_failed_draw_keeps_no_client_nonce() {
+        let mut d = decoded("nonce=\"n\", qop=auth").unwrap();
+        let failed = d.response(b"u", b"p", b"GET", b"/", |_| Err(()));
+        assert_eq!(failed, Err(Unmade::Random));
+        assert_eq!(d.cnonce, None);
+        let out = d
+            .response(b"u", b"p", b"GET", b"/", |b| {
+                b.fill(0xff);
+                Ok(())
+            })
             .unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("cnonce=\"////////////////\""), "{out}");
@@ -588,7 +633,7 @@ mod tests {
         let long = "/".repeat(MAX_QUOTED + 1);
         let mut d = decoded("nonce=\"n\"").unwrap();
         assert!(
-            d.response(b"u", b"p", b"GET", long.as_bytes(), |_| {})
+            d.response(b"u", b"p", b"GET", long.as_bytes(), |_| Ok(()))
                 .is_err()
         );
     }
@@ -628,7 +673,7 @@ mod tests {
         assert_eq!(qop(0), None, "so does an empty one");
         let uri = |n: usize| {
             let mut d = decoded("nonce=\"n\"").unwrap();
-            d.response(b"u", b"p", b"GET", "/".repeat(n).as_bytes(), |_| {})
+            d.response(b"u", b"p", b"GET", "/".repeat(n).as_bytes(), |_| Ok(()))
         };
         assert!(uri(2047).is_ok());
         assert!(uri(2048).is_err());
@@ -642,7 +687,7 @@ mod tests {
                 b"p",
                 b"GET",
                 uri.as_bytes(),
-                |_| {},
+                |_| Ok(()),
             )
             .map(|r| r.len())
         };
@@ -673,7 +718,7 @@ mod tests {
     fn counts_nonces_in_hex() {
         let mut d = decoded("nonce=\"n\", qop=auth").unwrap();
         d.nc = 0x1234abcd;
-        let out = d.response(b"u", b"p", b"GET", b"/", |_| {}).unwrap();
+        let out = d.response(b"u", b"p", b"GET", b"/", |_| Ok(())).unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains(", nc=1234abcd, "), "{out}");
     }
@@ -731,7 +776,10 @@ mod tests {
             parts[which] = &long;
             // As `answer_digest` asks: only a nonce is answered.
             if d.has_nonce()
-                && let Ok(out) = d.response(parts[0], parts[1], parts[2], parts[3], |b| b.fill(7))
+                && let Ok(out) = d.response(parts[0], parts[1], parts[2], parts[3], |b| {
+                    b.fill(7);
+                    Ok(())
+                })
             {
                 proptest::prop_assert!(out.len() <= MAX_RESPONSE);
             }

@@ -1206,6 +1206,14 @@ witness: curl-core auth::digest::tests::quotes_and_hashes_the_user
 --- new
                 b'\\' => &[b'\\', b],
 
+=== a client nonce is kept though its random bytes were not drawn
+file: crates/curl-core/src/auth/digest.rs
+witness: curl-core auth::digest::tests::a_failed_draw_keeps_no_client_nonce
+--- old
+            random(&mut bytes).map_err(|()| Unmade::Random)?;
+--- new
+            let _ = random(&mut bytes);
+
 === Last-Modified is read though the file time is not asked for
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::last_modified_gives_the_file_time_when_asked

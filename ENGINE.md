@@ -4696,7 +4696,8 @@ file (`Options::netrc`) is read last, per request, for the request's own host: n
 login, over the URL's only to complete them, or, when required, to replace their password
 (`netrc_lookup`); an entry found replaces the user and password and goes to its host wherever
 the transfer started. `netrc.rs` is the file's parser, a port of `lib/netrc.c` bounded as C's
-is. Unlike C, the entry is not written into the request's URL: the next leg looks it up again.
+is. As in C, an entry found is written, URL-encoded, into the URL a redirect is resolved against
+(`multi/state/leg.rs`), so that a redirect to the same origin carries it as the URL's own.
 Each request reads the file once, by the origin's name. A request that keeps credentials reads
 it as it is made; one whose protocol sends none, and a URL no request is made for (a protocol
 not built, or one `CURLOPT_PROTOCOLS_STR` refuses), read it through `proto::netrc_unkept`, as C

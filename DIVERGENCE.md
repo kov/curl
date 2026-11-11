@@ -4,7 +4,8 @@ The rewrite does what the C does, except where the C's behaviour is a clear bug 
 `CLAUDE.md`), is undefined by its API, or hands out something the rewrite does not have. Each
 such difference is deliberate and permanent, and is listed here with the test that pins it: the
 test asserts the rewrite's behaviour and its comment says what C does. Behaviour not built yet is
-not a difference: it is tracked in `MILESTONES.md`.
+not a difference: it is tracked in `MILESTONES.md`. The last two sections are the exception, and
+say so: differences found and not yet brought to C's, and weaknesses kept because C has them.
 
 ## Failures C reports as success
 
@@ -848,3 +849,54 @@ not a difference: it is tracked in `MILESTONES.md`.
   and an application matching on it finds what it would in C's. Pinned by
   `the_version_names_the_rustls_linked` (`crates/curl-rustls/src/tests/real.rs`), which also
   ties the rustls named to the one in `Cargo.lock`.
+
+## Differences not yet brought to C's
+
+Unlike the rest of this file, these are not deliberate: found by reading both sides, and by the
+rule of `CLAUDE.md` each is to be brought to C's behaviour, with a test, and then removed from
+here. They are listed so that none is read as C's behaviour meanwhile; none has a test that pins
+it.
+
+- **A proxy changed by `CURLOPT_PROXY` keeps the method picked for the old one.** C's `setproxy`
+  and `CURLOPT_PROXYPORT` call `changeproxy` (`lib/setopt.c`), which forgets the picked proxy
+  method and the proxy's Digest state. The shim sets the URL alone (`CURLOPT_PROXY`,
+  `crates/curl-sys-abi/src/setopt/mod.rs`), so with `CURLOPT_PROXYAUTH` of Basic and another
+  method, Basic picked against the first proxy is sent at once to the next, where C asks first.
+  Digest sends nothing, its state being kept for its own peer. No test.
+- **A clear connection made under `CURLOPT_USE_SSL` serves another HTTP transfer under it.** C
+  refuses a connection without TLS to any transfer requiring TLS, HTTP's too
+  (`url_match_ssl_use`, `lib/url.c`); `Conn::tls_serves` (`crates/curl-core/src/conn/mod.rs`)
+  lets HTTP's through when the route's settings match. A connection made without `USE_SSL` is
+  refused as in C. Pinned for POP3 only (`a_connection_is_reused_only_by_the_same_login_and_tls`);
+  for HTTP, no test.
+- **A cookie file has no line limit.** C stops loading a file at a line longer than its line
+  buffer (`DYN_APRINTF`, about 8 MB, `lib/curl_get_line.c`) and fails the transfer with
+  `CURLE_TOO_LARGE`; the rewrite reads the file whole and splits it by line
+  (`crates/curl-core/src/cookie.rs`). Both pass over a single cookie line past 5000 bytes. No
+  test.
+- **An indefinite-length `notAfter` that ends a certificate's validity is read.** C requires the
+  date to end where the validity's content ends (`lib/vtls/x509asn1.c`), which an
+  indefinite-length date with its end-of-contents octets does not; the core's reader
+  (`crates/curl-core/src/tls/x509.rs`) only requires that nothing follows it. The reader serves
+  wolfSSL's key pinning, Schannel's checks and certificate info. No test.
+- **`curl_easy_cleanup` keeps a handle its multi failed to remove.** When `curl_multi_remove_handle`
+  fails inside it (a timer callback refusing, or a call from inside a callback), cleanup returns
+  without freeing the handle, so its cookie jar, HSTS and alt-svc files are not written
+  (`crates/curl-sys-abi/src/easy.rs`); C's `Curl_close` frees it regardless. No test.
+
+## Residuals shared with C
+
+Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a
+deliberate difference and is the owner's call.
+
+- **OpenSSL's configuration file is always loaded.** `init_ssl`
+  (`crates/curl-openssl/src/sys.rs`) asks OpenSSL to load its configuration, as C's default
+  does; C's opt-out for CVE-2019-5443, `CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG`, has no
+  counterpart. A build against an OpenSSL whose configuration directory a user can write loads
+  a file planted there. The OpenSSL this project builds with on Windows (vcpkg's
+  `libcrypto-3-x64.dll`) names `C:\Program Files\Common Files\SSL`, which users can only read.
+  No test.
+- **Saving a cache empties it before the new contents exist.** `save::replace` opens the target
+  for writing, truncating it, before the temporary file is made, as `Curl_fopen` does: an
+  unwritable directory or a full disk leaves an empty HSTS, alt-svc or cookie file. The tests in
+  `crates/curl-core/src/save.rs` cover success only; no test pins the failure.

@@ -1,5 +1,5 @@
 {
- "c-commit": "bd3de3aede646e3c92ade95d624e9f82211e1c3a",
+ "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -31,10 +31,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2201,
+   "considered": 2202,
    "failed": 1,
-   "ok": 2102,
-   "ran": 2103,
+   "ok": 2103,
+   "ran": 2104,
    "skipped": 98
   },
   "curl-version": [
@@ -217,8 +217,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-10T17:58:29Z",
-   "started": "2026-11-10T17:56:31Z"
+   "finished": "2026-11-11T18:23:41Z",
+   "started": "2026-11-11T18:21:05Z"
   },
   "protocols": [
    "dict",
@@ -8809,6 +8809,9 @@
     "result": "ok"
    },
    "3702": {
+    "result": "ok"
+   },
+   "3703": {
     "result": "ok"
    },
    "371": {

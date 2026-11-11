@@ -787,6 +787,14 @@ so: weaknesses kept because C has them.
   application's `curl_global_init_mem` malloc, so a malloc callback calling `curl_url_*` on the
   same handle deadlocks. Pinned by `calls_cost_what_c_s_do` (`crates/curl-sys-abi/src/url.rs`).
 
+## Lengths SSPI cannot count
+
+- **Text or a buffer longer than SSPI's `u32` counts is refused as out of memory.** C casts such
+  a length down to the `unsigned long` SSPI takes, so SSPI would be told of fewer bytes than the
+  buffer holds; `Text::new` and `counted` (`crates/curl-sspi/src/sys.rs`) fail the call instead,
+  `CURLE_OUT_OF_MEMORY`. Reaching it takes a user name, password, token or message of 4 GiB.
+  No test: a buffer of that size cannot be made in a test run.
+
 ## TLS sessions from outside
 
 - **A session of no ticket is exported, not an abort.** A file or blob holding a version byte and

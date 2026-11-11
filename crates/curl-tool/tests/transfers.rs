@@ -1899,7 +1899,9 @@ fn parallel_skipped_transfers_end_last() {
 /// Parallel transfers report in the order of their ids in the multi, as
 /// C's `curl_multi_init` hands them out: from a table of 128 rows whose
 /// row 0 is the multi's own handle. Three at a time, transfers 127, 128
-/// and 129 take rows 127, 1 and 2, so 127 reports last (test 3314).
+/// and 129 take rows 127, 1 and 2, so 127 reports last (test 3314). The
+/// bodies go to standard output, which makes it binary: the lines end in
+/// `\n` on Windows too, as C's do.
 #[test]
 fn parallel_transfers_report_in_c_s_id_order() {
     let s = Scratch::new("parallelorder");
@@ -1919,7 +1921,7 @@ fn parallel_transfers_report_in_c_s_id_order() {
     let mut order: Vec<u32> = (1..=130).collect();
     order[126..129].copy_from_slice(&[128, 129, 127]);
     let want: String = order.iter().map(|n| format!("{n}\n")).collect();
-    assert_eq!(r.stdout, as_text(want.as_bytes()));
+    assert_eq!(r.stdout, want.as_bytes());
 }
 
 /// The parallel meter: its header, then lines, the last ending in a

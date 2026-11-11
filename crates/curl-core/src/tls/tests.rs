@@ -1,20 +1,17 @@
 use super::*;
+use crate::auth::gate::SameOrigin;
 use crate::options::{
     CaSetting, ColdGroup as _, Ech, EchMode, EchWord, SslOptions, TlsMaxVersion, TlsMinVersion,
 };
 
 pub(super) fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TlsIdentity {
-    let mut id = TlsIdentity {
-        verify_peer: true,
-        verify_host: true,
-        options: TlsOptions::NONE,
-        ca_defaults: CaDefaults {
-            file: Some("/default/ca.pem"),
-            path: None,
-            system: SystemStore::Asked,
-        },
-        origin: crate::tls::TlsOrigin::First,
+    let ca_defaults = CaDefaults {
+        file: Some("/default/ca.pem"),
+        path: None,
+        system: SystemStore::Asked,
     };
+    let first = crate::tls::TlsOrigin::First;
+    let mut id = TlsIdentity::for_tests(true, true, TlsOptions::NONE, ca_defaults, first);
     change(&mut id);
     id
 }
@@ -160,13 +157,13 @@ fn a_transfer_s_settings_compare_as_the_identity_made_of_them() {
         })
         .collect();
     for (name, id, tls) in &handles {
-        let view = TlsView::of(tls, id.ca_defaults);
+        let view = TlsView::of(tls, id.ca_defaults).first(SameOrigin::testing());
         let made = view.made().expect("memory");
         assert_eq!(*made, *id, "{name}: made as the handle has it");
         assert!(made.view().same(&view), "{name}: made, then seen");
         assert!(view.same(&made.view()), "{name}: seen, then made");
         for (other, other_id, other_tls) in &handles {
-            let theirs = TlsView::of(other_tls, other_id.ca_defaults);
+            let theirs = TlsView::of(other_tls, other_id.ca_defaults).first(SameOrigin::testing());
             assert_eq!(view.same(&theirs), name == other, "{name} against {other}");
             assert_eq!(
                 made.view().same(&theirs),
@@ -258,13 +255,14 @@ const FIRST_ORIGIN_S: [&str; 11] = [
 fn another_origin_s_tls_has_none_of_the_client_s_identity() {
     let base_id = identity(|_| {});
     let base_tls = handle(&base_id);
-    let base = TlsView::of(&base_tls, base_id.ca_defaults).to(TlsOrigin::Other);
+    // Made without the gate's word, a view is another origin's.
+    let base = TlsView::of(&base_tls, base_id.ca_defaults);
     assert!(base.same(&base.made().expect("memory").view()));
     for (name, change) in every_change() {
         let id = identity(change);
         let tls = handle(&id);
-        let first = TlsView::of(&tls, id.ca_defaults);
-        let view = first.to(TlsOrigin::Other);
+        let view = TlsView::of(&tls, id.ca_defaults);
+        let first = view.first(SameOrigin::testing());
         let made = view.made().expect("memory");
         assert_eq!(made.origin, TlsOrigin::Other, "{name}");
         assert!(made.view().same(&view), "{name}: made, then seen");
@@ -287,8 +285,8 @@ fn another_origin_s_tls_has_none_of_the_client_s_identity() {
     }
     let auto = identity(|i| i.options.ssl_options = SslOptions::AUTO_CLIENT_CERT);
     let auto_tls = handle(&auto);
-    let first = TlsView::of(&auto_tls, auto.ca_defaults);
-    let other = first.to(TlsOrigin::Other);
+    let other = TlsView::of(&auto_tls, auto.ca_defaults);
+    let first = other.first(SameOrigin::testing());
     assert!(first.made().expect("memory").auto_client_cert());
     let made = other.made().expect("memory");
     assert!(!made.auto_client_cert(), "not to another origin");

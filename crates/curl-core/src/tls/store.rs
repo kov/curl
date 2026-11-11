@@ -82,13 +82,13 @@ mod tests {
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
     fn identity(set: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
-        let mut i = TlsIdentity {
-            verify_peer: true,
-            verify_host: true,
-            options: TlsOptions::default(),
-            ca_defaults: crate::tls::CaDefaults::NONE,
-            origin: crate::tls::TlsOrigin::First,
-        };
+        let mut i = TlsIdentity::for_tests(
+            true,
+            true,
+            TlsOptions::default(),
+            crate::tls::CaDefaults::NONE,
+            crate::tls::TlsOrigin::First,
+        );
         i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
         set(&mut i);
         TryArc::try_new(i).unwrap()

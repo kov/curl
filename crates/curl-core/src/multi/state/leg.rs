@@ -2,8 +2,8 @@
 //! route and proxy, and the connection it gets for them.
 
 use super::*;
+use crate::auth::gate::CredentialGate;
 use crate::conn::{OriginTls, RouteTls};
-use crate::tls::TlsOrigin;
 
 /// C's pretransfer, once per transfer: the option's URL parsed for the
 /// first request.
@@ -723,14 +723,6 @@ pub(super) fn start_leg<H: Host>(
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
     run.first.record(&origin);
-    // Only the origin the transfer started at is given the client's own
-    // TLS identity, whatever the application lets credentials follow
-    // (`Curl_peer_equal(initial_origin, origin)`).
-    let tls_origin = if run.first.is(&origin) {
-        TlsOrigin::First
-    } else {
-        TlsOrigin::Other
-    };
     // A Unix socket is connected to in place of the origin's host, and
     // of any connect-to entry, and no proxy is gone through
     // (`url_set_conn_origin_etc`).
@@ -842,19 +834,15 @@ pub(super) fn start_leg<H: Host>(
         "a secured scheme is one a TLS library speaks"
     );
     let reuses_tls = proto.scheme().is_some_and(crate::conn::Scheme::reuses_tls);
-    // The request's gate, decided for its own peer, must say the same of
-    // the first origin as the comparison above.
-    if let Some(gate) = proto.gate() {
-        assert_eq!(
-            gate.same_origin().is_some(),
-            tls_origin == TlsOrigin::First,
-            "the gate and the leg disagree on whether {origin:?} is the first origin"
-        );
-    }
+    // Only the origin the transfer started at is given the client's own
+    // TLS identity, whatever the application lets credentials follow
+    // (`Curl_peer_equal(initial_origin, origin)`): the request's gate says
+    // which it is, for the peer it keeps.
+    let first = proto.gate().and_then(CredentialGate::same_origin);
     let tls = if secured {
-        Some(OriginTls::Start(RouteTls::Wanted(tls_origin)))
+        Some(OriginTls::Start(RouteTls::Wanted(first)))
     } else if has_tls && (reuses_tls || cx.easy().options().line.use_ssl.may()) {
-        Some(OriginTls::Upgrade(RouteTls::Wanted(tls_origin)))
+        Some(OriginTls::Upgrade(RouteTls::Wanted(first)))
     } else {
         None
     };

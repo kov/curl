@@ -25,13 +25,13 @@ mod result;
 const HOST: &[u8] = b"example.com";
 
 fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
-    let mut id = TlsIdentity {
-        verify_peer: true,
-        verify_host: true,
-        options: TlsOptions::NONE,
-        ca_defaults: CaDefaults::NONE,
-        origin: curl_core::tls::TlsOrigin::First,
-    };
+    let mut id = TlsIdentity::for_tests(
+        true,
+        true,
+        TlsOptions::NONE,
+        CaDefaults::NONE,
+        curl_core::tls::TlsOrigin::First,
+    );
     // A peer is checked against certificates of a blob, unless a test
     // says otherwise: a file would be read.
     id.options.ca_blob = CaSetting::Given(b"CA".to_vec());

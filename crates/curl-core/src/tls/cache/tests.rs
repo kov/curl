@@ -7,17 +7,13 @@ use crate::tls::CaDefaults;
 const CA: &str = "/home/kov/Projects/curl/build/c/tests/certs/test-ca.cacert";
 
 fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
-    let mut id = TlsIdentity {
-        verify_peer: true,
-        verify_host: true,
-        options: TlsOptions::NONE,
-        ca_defaults: CaDefaults {
-            file: Some("/etc/ssl/certs/ca-certificates.crt"),
-            path: None,
-            system: crate::tls::SystemStore::Asked,
-        },
-        origin: crate::tls::TlsOrigin::First,
+    let ca_defaults = CaDefaults {
+        file: Some("/etc/ssl/certs/ca-certificates.crt"),
+        path: None,
+        system: crate::tls::SystemStore::Asked,
     };
+    let first = crate::tls::TlsOrigin::First;
+    let mut id = TlsIdentity::for_tests(true, true, TlsOptions::NONE, ca_defaults, first);
     id.options.ca_file = CaSetting::Given(CA.as_bytes().to_vec());
     change(&mut id);
     TryArc::try_new(id).unwrap()
@@ -231,13 +227,13 @@ fn unit3304_client_settings_in_the_key() {
         o.key_type = Some(b"PEM".to_vec());
     };
     let make = |change: &dyn Fn(&mut TlsOptions)| {
-        let mut id = TlsIdentity {
-            verify_peer: true,
-            verify_host: true,
-            options: TlsOptions::NONE,
-            ca_defaults: CaDefaults::NONE,
-            origin: crate::tls::TlsOrigin::First,
-        };
+        let mut id = TlsIdentity::for_tests(
+            true,
+            true,
+            TlsOptions::NONE,
+            CaDefaults::NONE,
+            crate::tls::TlsOrigin::First,
+        );
         base(&mut id.options);
         change(&mut id.options);
         let id = TryArc::try_new(id).unwrap();

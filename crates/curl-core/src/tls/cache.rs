@@ -1099,6 +1099,8 @@ fn write_key(
         ca_defaults: _,
         // What an origin not the first leaves out is out of `options`.
         origin: _,
+        // Says only who made it.
+        made: _,
     } = identity;
     let TlsOptions {
         min_version,

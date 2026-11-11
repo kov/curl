@@ -2231,13 +2231,13 @@ mod tests {
     use super::*;
 
     fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
-        let mut id = TlsIdentity {
-            verify_peer: true,
-            verify_host: true,
-            options: TlsOptions::NONE,
-            ca_defaults: CaDefaults::NONE,
-            origin: curl_core::tls::TlsOrigin::First,
-        };
+        let mut id = TlsIdentity::for_tests(
+            true,
+            true,
+            TlsOptions::NONE,
+            CaDefaults::NONE,
+            curl_core::tls::TlsOrigin::First,
+        );
         change(&mut id);
         TryArc::try_new(id).unwrap()
     }

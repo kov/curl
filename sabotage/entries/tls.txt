@@ -560,9 +560,11 @@ witness: curl-core proto::http::tests::tls::an_https_proxy_s_connection_is_reuse
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::a_route_is_made_with_the_transfer_s_settings
 --- old
-            *t = RouteTls::Made(wants().origin.to(origin).made()?);
+                Some(same) => wants().origin.first(same),
+                None => wants().origin,
 --- new
-            *t = RouteTls::Made(wants().proxy.to(origin).made()?);
+                Some(_) => wants().proxy,
+                None => wants().proxy,
 
 === a transfer wanting TLS to upgrade to is served whatever settings it would upgrade with
 file: crates/curl-core/src/conn/mod.rs
@@ -596,22 +598,28 @@ witness: curl-tls-native tests::a_claim_of_no_library_is_refused
 --- new
 
 === a redirect to another origin makes its TLS as the first origin's, the client's identity and all
-file: crates/curl-core/src/multi/state/leg.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::tls::a_redirect_elsewhere_makes_its_tls_without_the_client_s_identity
 --- old
-    } else {
-        TlsOrigin::Other
-    };
+        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        Request::credentialed(url, scheme, base, target, before, cx)
 --- new
-    } else {
-        TlsOrigin::First
-    };
+        let base = RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), Pipeline::collecting());
+        Request::credentialed(url, scheme, base, target, before, cx)
+
+=== a redirect back to the first origin makes its TLS as another's
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::tls::a_redirect_back_to_the_first_origin_keeps_the_client_s_identity
+--- old
+    let first = proto.gate().and_then(CredentialGate::same_origin);
+--- new
+    let first = proto.gate().and_then(CredentialGate::same_origin).filter(|_| false);
 
 === another origin's TLS identity is made with the client's certificate and key
 file: crates/curl-core/src/tls.rs
 witness: curl-core tls::tests::another_origin_s_tls_has_none_of_the_client_s_identity
 --- old
-        if self.to == TlsOrigin::Other {
+        if !self.to.has_client_identity() {
             options.cert = None;
 --- new
         if false {
@@ -621,16 +629,28 @@ witness: curl-core tls::tests::another_origin_s_tls_has_none_of_the_client_s_ide
 file: crates/curl-core/src/tls.rs
 witness: curl-core tls::tests::another_origin_s_tls_has_none_of_the_client_s_identity
 --- old
-            TlsOrigin::Other => None,
+        if self.to.has_client_identity() {
+            setting
 --- new
-            TlsOrigin::Other => setting,
+        if true {
+            setting
 
 === a certificate the system picks is presented to another origin
 file: crates/curl-core/src/tls.rs
 witness: curl-core tls::tests::another_origin_s_tls_has_none_of_the_client_s_identity
 --- old
-        self.to == TlsOrigin::First
+        self.to.has_client_identity()
             && self
 --- new
         true
             && self
+
+=== a TLS view made without the gate's word is the first origin's
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::another_origin_s_tls_has_none_of_the_client_s_identity
+--- old
+            ca_defaults,
+            to: Party::OtherOrigin,
+--- new
+            ca_defaults,
+            to: Party::FirstOrigin,

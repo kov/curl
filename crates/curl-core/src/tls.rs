@@ -1660,12 +1660,55 @@ pub enum TlsOrigin {
     Other,
 }
 
+/// Who a view's TLS goes to: the origin the request's gate says is the
+/// first, another origin, or an HTTPS proxy. Only the request's gate
+/// makes the first (`TlsView::first`); a view made any other way goes to
+/// another, and is given none of the client's own identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Party {
+    FirstOrigin,
+    OtherOrigin,
+    Proxy,
+}
+
+impl Party {
+    /// What the party is given of the client's own identity: all of it,
+    /// but at an origin not the first.
+    fn has_client_identity(self) -> bool {
+        match self {
+            Party::FirstOrigin | Party::Proxy => true,
+            Party::OtherOrigin => false,
+        }
+    }
+}
+
+/// What only `TlsView::made`, and the tests' own constructor, put in a
+/// `TlsIdentity`: none is built by a literal outside this module.
+#[derive(Debug)]
+struct Made(());
+
 /// Every setting a connection's TLS handshake was made with that a
 /// transfer must share to reuse the connection (C's `ssl_filter_config`,
 /// compared by `match_ssl_primary_config`): made of a transfer's settings
 /// (`TlsView::made`) as a connection is set up, and kept by it. A
 /// transfer looking for a connection compares its settings where they
 /// are, unmade (`TlsView`).
+///
+/// Only `TlsView::made` makes one, and says in it which origin it is for
+/// as the request's gate decided: none is built by a literal, which would
+/// say so by itself.
+///
+/// ```compile_fail
+/// use curl_core::options::TlsOptions;
+/// use curl_core::tls::{CaDefaults, TlsIdentity, TlsOrigin};
+/// let _ = TlsIdentity {
+///     verify_peer: true,
+///     verify_host: true,
+///     options: TlsOptions::default(),
+///     ca_defaults: CaDefaults::NONE,
+///     origin: TlsOrigin::First,
+/// };
+/// ```
 #[derive(Debug)]
 pub struct TlsIdentity {
     /// The peer's certificate must verify.
@@ -1679,17 +1722,43 @@ pub struct TlsIdentity {
     pub ca_defaults: CaDefaults,
     /// The origin it was made for, the first or another.
     pub origin: TlsOrigin,
+    /// Never read: it keeps the struct from being built by a literal.
+    #[expect(dead_code, reason = "a seal, not a value")]
+    made: Made,
 }
 
 impl TlsIdentity {
-    /// The identity the options `tls` make, with the library's defaults
-    /// where the options keep them (`TlsView::of`, made).
+    /// The identity the options `tls` make for the first origin, with
+    /// the library's defaults where the options keep them (`TlsView::of`,
+    /// made for the first).
     #[cfg(test)]
     pub(crate) fn of(
         tls: &Tls,
         ca_defaults: CaDefaults,
     ) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
-        TlsView::of(tls, ca_defaults).made()
+        TlsView::of(tls, ca_defaults)
+            .first(crate::auth::gate::SameOrigin::testing())
+            .made()
+    }
+
+    /// An identity of the fields given, for the tests of the backends,
+    /// which are handed identities as a connection makes them.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn for_tests(
+        verify_peer: bool,
+        verify_host: bool,
+        options: TlsOptions,
+        ca_defaults: CaDefaults,
+        origin: TlsOrigin,
+    ) -> TlsIdentity {
+        TlsIdentity {
+            verify_peer,
+            verify_host,
+            options,
+            ca_defaults,
+            origin,
+            made: Made(()),
+        }
     }
 
     /// The identity an HTTPS proxy's TLS is made with (`TlsView::proxy`,
@@ -1714,7 +1783,10 @@ impl TlsIdentity {
             // options are what that view reads.
             origin: None,
             ca_defaults: self.ca_defaults,
-            to: self.origin,
+            to: match self.origin {
+                TlsOrigin::First => Party::FirstOrigin,
+                TlsOrigin::Other => Party::OtherOrigin,
+            },
         }
     }
 
@@ -1765,9 +1837,9 @@ pub(crate) struct TlsView<'a> {
     /// signature algorithms and ECH are none, as read through this view.
     origin: Option<&'a TlsOptions>,
     ca_defaults: CaDefaults,
-    /// The origin the TLS goes to: another than the first is given none
-    /// of the client's own identity, as read through this view.
-    to: TlsOrigin,
+    /// Who the TLS goes to: an origin not the first is given none of the
+    /// client's own identity, as read through this view.
+    to: Party,
 }
 
 /// What a proxy's TLS tries of ECH: nothing.
@@ -1775,7 +1847,9 @@ static NO_ECH: crate::options::Ech = crate::options::Ech::NONE;
 
 impl<'a> TlsView<'a> {
     /// The settings the options `tls` give an origin's TLS, with the
-    /// library's defaults `ca_defaults` where they keep them.
+    /// library's defaults `ca_defaults` where they keep them: for an
+    /// origin not the first, until the request's gate says it is
+    /// (`first`).
     pub(crate) fn of(tls: &'a Tls, ca_defaults: CaDefaults) -> TlsView<'a> {
         TlsView {
             verify_peer: tls.verify_peer,
@@ -1783,21 +1857,27 @@ impl<'a> TlsView<'a> {
             options: &tls.options,
             origin: None,
             ca_defaults,
-            to: TlsOrigin::First,
+            to: Party::OtherOrigin,
         }
     }
 
-    /// The same settings, for the TLS to `origin`.
-    pub(crate) fn to(self, origin: TlsOrigin) -> TlsView<'a> {
-        TlsView { to: origin, ..self }
+    /// The same settings, for the TLS to the first origin, as the
+    /// request's gate found it.
+    pub(crate) fn first(self, _: crate::auth::gate::SameOrigin) -> TlsView<'a> {
+        assert!(self.origin.is_none(), "a proxy's TLS is no origin's");
+        TlsView {
+            to: Party::FirstOrigin,
+            ..self
+        }
     }
 
     /// A setting of the client's own identity, which only the first
-    /// origin is given: none for another.
+    /// origin and a proxy are given: none for another origin.
     fn first_only<T: ?Sized>(&self, setting: Option<&'a T>) -> Option<&'a T> {
-        match self.to {
-            TlsOrigin::First => setting,
-            TlsOrigin::Other => None,
+        if self.to.has_client_identity() {
+            setting
+        } else {
+            None
         }
     }
 
@@ -1806,7 +1886,7 @@ impl<'a> TlsView<'a> {
     /// first origin alone (`auto_client_cert`). The option itself stays
     /// in `ssl_options`, which a connection is matched by whole.
     pub(crate) fn auto_client_cert(&self) -> bool {
-        self.to == TlsOrigin::First
+        self.to.has_client_identity()
             && self
                 .options
                 .ssl_options
@@ -1827,6 +1907,7 @@ impl<'a> TlsView<'a> {
     ) -> TlsView<'a> {
         TlsView {
             origin: Some(origin),
+            to: Party::Proxy,
             ..TlsView::of(proxy, ca_defaults)
         }
     }
@@ -1850,9 +1931,9 @@ impl<'a> TlsView<'a> {
     /// What is tried of ECH: nothing for a proxy's, nor for an origin
     /// not the first.
     fn ech(&self) -> &'a crate::options::Ech {
-        match (self.origin, self.to) {
-            (Some(_), _) | (None, TlsOrigin::Other) => &NO_ECH,
-            (None, TlsOrigin::First) => &self.options.ech,
+        match self.to {
+            Party::Proxy | Party::OtherOrigin => &NO_ECH,
+            Party::FirstOrigin => &self.options.ech,
         }
     }
 
@@ -1899,7 +1980,7 @@ impl<'a> TlsView<'a> {
     pub(crate) fn made(&self) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
         let mut options = self.options.try_clone()?;
         options.context = None;
-        if self.to == TlsOrigin::Other {
+        if !self.to.has_client_identity() {
             options.cert = None;
             options.cert_blob = None;
             options.cert_type = None;
@@ -1932,7 +2013,11 @@ impl<'a> TlsView<'a> {
             verify_host: self.verify_host,
             options,
             ca_defaults: self.ca_defaults,
-            origin: self.to,
+            origin: match self.to {
+                Party::FirstOrigin | Party::Proxy => TlsOrigin::First,
+                Party::OtherOrigin => TlsOrigin::Other,
+            },
+            made: Made(()),
         })
     }
 

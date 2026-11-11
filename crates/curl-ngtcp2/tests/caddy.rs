@@ -410,16 +410,16 @@ fn with_conn_qlog<R>(
     certs(&dir.0);
     let (_server, addr) = caddy(&dir.0);
     let ca = dir.0.join(ca).into_os_string().into_encoded_bytes();
-    let identity = TryArc::try_new(TlsIdentity {
-        verify_peer: true,
-        verify_host: true,
-        options: TlsOptions {
+    let identity = TryArc::try_new(TlsIdentity::for_tests(
+        true,
+        true,
+        TlsOptions {
             ca_file: CaSetting::Given(ca),
             ..TlsOptions::NONE
         },
-        ca_defaults: CaDefaults::NONE,
-        origin: curl_core::tls::TlsOrigin::First,
-    })
+        CaDefaults::NONE,
+        curl_core::tls::TlsOrigin::First,
+    ))
     .unwrap();
     let peer = TlsPeer {
         name: b"localhost",
@@ -810,16 +810,16 @@ fn a_resumed_session_sends_its_get_as_early_data() {
     certs(&dir.0);
     let (_server, addr) = caddy(&dir.0);
     let ca = dir.0.join("ca.pem").into_os_string().into_encoded_bytes();
-    let identity = TryArc::try_new(TlsIdentity {
-        verify_peer: true,
-        verify_host: true,
-        options: TlsOptions {
+    let identity = TryArc::try_new(TlsIdentity::for_tests(
+        true,
+        true,
+        TlsOptions {
             ca_file: CaSetting::Given(ca),
             ..TlsOptions::NONE
         },
-        ca_defaults: CaDefaults::NONE,
-        origin: curl_core::tls::TlsOrigin::First,
-    })
+        CaDefaults::NONE,
+        curl_core::tls::TlsOrigin::First,
+    ))
     .unwrap();
     let peer = TlsPeer {
         name: b"localhost",

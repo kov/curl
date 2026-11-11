@@ -47,11 +47,6 @@ impl FirstOrigin {
             unrestricted,
         }
     }
-
-    /// Whether `peer` is the first origin.
-    pub(crate) fn is(&self, peer: &Peer) -> bool {
-        self.0.as_deref() == Some(peer)
-    }
 }
 
 /// The first origin as a request is lent it (`Before`): it answers only
@@ -129,6 +124,14 @@ impl CredentialGate {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SameOrigin(());
 
+impl SameOrigin {
+    /// A test's own first origin.
+    #[cfg(test)]
+    pub(crate) fn testing() -> SameOrigin {
+        SameOrigin(())
+    }
+}
+
 /// The gate lets what the application said go to the request's origin
 /// (`Curl_auth_allowed_to_host`): its login and token, its custom
 /// Authorization and Cookie, Negotiate's ambient identity, a signature.
@@ -197,7 +200,6 @@ mod tests {
         assert!(open.same_origin().is_some() && open.trusted().is_some());
         first.record(&TryArc::try_new(peer(b"here.example", 80)).unwrap());
         first.record(&TryArc::try_new(peer(b"there.example", 80)).unwrap());
-        assert!(first.is(&here) && !first.is(&there));
         let same = first.origins(false).gate(&here, key());
         assert!(same.same_origin().is_some() && same.trusted().is_some());
         let other = first.origins(false).gate(&there, key());

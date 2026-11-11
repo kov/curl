@@ -986,13 +986,13 @@ mod tests {
         use curl_core::tls::{
             Alpn, CaDefaults, TlsBackend as _, TlsIdentity, TlsPeer, TlsPeerKind, TlsShared,
         };
-        let id = TryArc::try_new(TlsIdentity {
-            verify_peer: true,
-            verify_host: true,
-            options: TlsOptions::NONE,
-            ca_defaults: CaDefaults::NONE,
-            origin: curl_core::tls::TlsOrigin::First,
-        })
+        let id = TryArc::try_new(TlsIdentity::for_tests(
+            true,
+            true,
+            TlsOptions::NONE,
+            CaDefaults::NONE,
+            curl_core::tls::TlsOrigin::First,
+        ))
         .unwrap();
         let peer = TlsPeer {
             name: b"example.com",

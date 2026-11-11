@@ -576,11 +576,12 @@ impl RouteCold {
 /// compares its options with the connection's identity where they are,
 /// and builds none (`TlsWants`).
 ///
-/// Wanted, it says which origin the TLS goes to: the first, or another
-/// that is given none of the client's own identity (`TlsOrigin`).
+/// Wanted, it carries the request's gate's word that its origin is the
+/// first, if it is: without it the TLS is given none of the client's own
+/// identity (`TlsView::first`).
 #[derive(Clone, Debug)]
 pub(crate) enum RouteTls {
-    Wanted(crate::tls::TlsOrigin),
+    Wanted(Option<crate::auth::gate::SameOrigin>),
     Made(TryArc<TlsIdentity>),
 }
 
@@ -598,9 +599,14 @@ impl RouteTls {
     fn view<'a>(&'a self, wanted: Option<TlsView<'a>>) -> TlsView<'a> {
         match self {
             RouteTls::Made(identity) => identity.view(),
-            RouteTls::Wanted(origin) => wanted
-                .expect("a transfer's TLS settings are at hand where it wants TLS")
-                .to(*origin),
+            RouteTls::Wanted(same) => {
+                let wanted =
+                    wanted.expect("a transfer's TLS settings are at hand where it wants TLS");
+                match *same {
+                    Some(same) => wanted.first(same),
+                    None => wanted,
+                }
+            }
         }
     }
 }
@@ -817,9 +823,13 @@ impl NetRoute {
     pub(crate) fn made(mut self, tls: Option<TlsWants<'_>>) -> Result<NetRoute, OutOfMemory> {
         let wants = || tls.expect("a transfer's TLS settings are at hand where it wants TLS");
         if let Some(OriginTls::Start(t) | OriginTls::Upgrade(t)) = &mut self.tls
-            && let RouteTls::Wanted(origin) = *t
+            && let RouteTls::Wanted(same) = *t
         {
-            *t = RouteTls::Made(wants().origin.to(origin).made()?);
+            let view = match same {
+                Some(same) => wants().origin.first(same),
+                None => wants().origin,
+            };
+            *t = RouteTls::Made(view.made()?);
         }
         if let Some(proxy) = self.proxy.take() {
             self.proxy = Some(if proxy.https() && proxy.made_tls().is_none() {
@@ -2995,11 +3005,13 @@ mod tests {
         for upgrade in [false, true] {
             for (i, have) in handles.iter().enumerate() {
                 let made = TlsView::of(have, crate::tls::CaDefaults::NONE)
+                    .first(crate::auth::gate::SameOrigin::testing())
                     .made()
                     .unwrap();
                 let conn = tls_route(upgrade, false, RouteTls::Made(made));
                 for (j, want) in handles.iter().enumerate() {
                     let theirs = TlsView::of(want, crate::tls::CaDefaults::NONE)
+                        .first(crate::auth::gate::SameOrigin::testing())
                         .made()
                         .unwrap();
                     let by_made =
@@ -3007,7 +3019,7 @@ mod tests {
                     let wanted = tls_route(
                         upgrade,
                         false,
-                        RouteTls::Wanted(crate::tls::TlsOrigin::First),
+                        RouteTls::Wanted(Some(crate::auth::gate::SameOrigin::testing())),
                     );
                     let by_view = conn.serves(&wanted, Some(wants(want, &plain)));
                     assert_eq!(by_view, by_made, "upgrade {upgrade}: {i} for {j}");
@@ -3021,6 +3033,7 @@ mod tests {
                 .made()
                 .unwrap();
             let origin = TlsView::of(&plain, crate::tls::CaDefaults::NONE)
+                .first(crate::auth::gate::SameOrigin::testing())
                 .made()
                 .unwrap();
             let Route::Net(mut conn) = tls_route(false, true, RouteTls::Made(origin)) else {
@@ -3029,7 +3042,11 @@ mod tests {
             conn.proxy = Some(conn.proxy.take().unwrap().secured(made).unwrap());
             let conn = Route::Net(conn);
             for (j, want) in handles.iter().enumerate() {
-                let wanted = tls_route(false, true, RouteTls::Wanted(crate::tls::TlsOrigin::First));
+                let wanted = tls_route(
+                    false,
+                    true,
+                    RouteTls::Wanted(Some(crate::auth::gate::SameOrigin::testing())),
+                );
                 let served = conn.serves(&wanted, Some(wants(&plain, want)));
                 // A proxy's TLS has no curves and no ECH: those settings
                 // tell no two proxies apart.
@@ -3053,7 +3070,7 @@ mod tests {
             let Route::Net(wanted) = tls_route(
                 upgrade,
                 true,
-                RouteTls::Wanted(crate::tls::TlsOrigin::First),
+                RouteTls::Wanted(Some(crate::auth::gate::SameOrigin::testing())),
             ) else {
                 unreachable!()
             };
@@ -3062,12 +3079,13 @@ mod tests {
             let Route::Net(origin_only) = tls_route(
                 upgrade,
                 false,
-                RouteTls::Wanted(crate::tls::TlsOrigin::First),
+                RouteTls::Wanted(Some(crate::auth::gate::SameOrigin::testing())),
             ) else {
                 unreachable!()
             };
             assert!(!origin_only.is_made());
             let identity = TlsView::of(tls, crate::tls::CaDefaults::NONE)
+                .first(crate::auth::gate::SameOrigin::testing())
                 .made()
                 .unwrap();
             let Route::Net(proxy_only) = tls_route(upgrade, true, RouteTls::Made(identity)) else {
@@ -3079,9 +3097,10 @@ mod tests {
             let identity = made.start_tls().or(made.upgrade()).unwrap();
             assert_eq!(made.start_tls().is_some(), !upgrade);
             assert!(
-                identity
-                    .view()
-                    .same(&TlsView::of(tls, crate::tls::CaDefaults::NONE))
+                identity.view().same(
+                    &TlsView::of(tls, crate::tls::CaDefaults::NONE)
+                        .first(crate::auth::gate::SameOrigin::testing())
+                )
             );
             let proxy_identity = made.proxy_tls().unwrap();
             assert!(proxy_identity.view().same(&TlsView::proxy(

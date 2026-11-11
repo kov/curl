@@ -45,13 +45,13 @@ mod tests {
     use super::*;
 
     fn identity(set: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
-        let mut i = TlsIdentity {
-            verify_peer: true,
-            verify_host: true,
-            options: TlsOptions::default(),
-            ca_defaults: curl_core::tls::CaDefaults::NONE,
-            origin: curl_core::tls::TlsOrigin::First,
-        };
+        let mut i = TlsIdentity::for_tests(
+            true,
+            true,
+            TlsOptions::default(),
+            curl_core::tls::CaDefaults::NONE,
+            curl_core::tls::TlsOrigin::First,
+        );
         i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
         set(&mut i);
         TryArc::try_new(i).unwrap()

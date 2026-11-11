@@ -53,12 +53,7 @@ impl DnsLibrary for Ares {
         ask: DnsAsk<'_>,
         say: &mut DnsSay<'_>,
     ) -> Result<Box<dyn DnsResolve>, DnsRefused> {
-        static INIT: Once = Once::new();
-        // SAFETY: called once, before any channel; a failure shows as the
-        // channel's own.
-        INIT.call_once(|| unsafe {
-            sys::ares_library_init(sys::LIB_INIT_ALL);
-        });
+        library_init();
         let resolving = Resolving::new(ask.closed)?;
         let mut boxed = try_box(resolving).map_err(|OutOfMemory| DnsRefused::OutOfMemory)?;
         boxed.configure(&ask)?;
@@ -67,6 +62,17 @@ impl DnsLibrary for Ares {
         boxed.refresh();
         Ok(boxed)
     }
+}
+
+/// c-ares's own start, once, before its first channel: on Windows a
+/// channel made before it fails to start.
+fn library_init() {
+    static INIT: Once = Once::new();
+    // SAFETY: called once, before any channel; a failure shows as the
+    // channel's own.
+    INIT.call_once(|| unsafe {
+        sys::ares_library_init(sys::LIB_INIT_ALL);
+    });
 }
 
 /// What the callbacks fill in. Boxed, so the address they hold stays.
@@ -826,6 +832,7 @@ mod tests {
 
     #[test]
     fn a_socket_with_nothing_to_wait_for_is_told_to_close() {
+        library_init();
         let closed = SocketsClosed::new().unwrap();
         let mut r = Resolving::new(&closed).unwrap();
         let arg: *mut core::ffi::c_void = (&raw mut *r.answers).cast();
@@ -840,6 +847,7 @@ mod tests {
 
     #[test]
     fn the_responses_are_named_as_c_names_them() {
+        library_init();
         let closed = SocketsClosed::new().unwrap();
         let mut r = Resolving::new(&closed).unwrap();
         for (a, aaaa, named) in [

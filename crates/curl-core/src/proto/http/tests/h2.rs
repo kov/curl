@@ -1650,6 +1650,67 @@ const WINDOW_SENT: &[u8] = b"";
 
 const SECOND: &[u8] = b"H 3 0\n:status: 201\n\nD 3 2 0\nb1D 1 2 1\naaD 3 1 1\nc";
 
+/// Two transfers negotiating as other users share one HTTP/2 connection
+/// that no token has bound: the first's library made none, so its
+/// request went without, and the second, joining, binds the connection
+/// with its own. A challenge the server answers the first with, taken
+/// with the second's context, finds the connection bound to other
+/// credentials. C refuses the challenge there (`CURLE_FAILED_INIT`,
+/// `Curl_input_negotiate`) and the 401 is the first's response; the
+/// process goes on.
+#[test]
+fn a_challenge_on_a_connection_bound_to_others_is_refused() {
+    static FAKE: FakeH2 = FakeH2;
+    let gss = crate::gss::testing::Scripted::leaked();
+    gss.then(crate::gss::testing::Answer::Fails(crate::gss::GssFailure {
+        call: crate::gss::GssCall::InitSecContext,
+        kind: crate::gss::GssFailureKind::EmptyToken,
+    }))
+    .then_token(b"two")
+    .then_token(b"three");
+    let libraries = SharedLibraries::new(Libraries {
+        h2: Some(&FAKE),
+        security: Some(crate::libraries::Security::Gss(gss)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let answers: &[u8] = b"H 1 1\n:status: 401\nwww-authenticate: Negotiate Y2g=\n\n\
+        H 3 1\n:status: 200\n\n";
+    let ([(a, sa), (b, sb)], sent) = h2_pair_of(
+        &[&[b"S\n", WINDOW_SENT, answers, b"", b"", b""]],
+        false,
+        |_| {},
+        |i, o| {
+            o.http.auth = crate::options::HttpAuth(AuthMethods::NEGOTIATE);
+            let login = o.login.make_mut().unwrap();
+            login.user = Some(if i == 0 {
+                b"one".to_vec()
+            } else {
+                b"two".to_vec()
+            });
+            login.password = Some(b"p".to_vec());
+        },
+        |e| e.set_libraries(libraries.clone()),
+    );
+    let sent = &sent[0];
+    let text = sa.text();
+    assert_eq!(
+        (a, b),
+        (Ok(()), Ok(())),
+        "{text:#?}\n{:#?}\n{sent}",
+        sb.text()
+    );
+    // The second's token went, on the one connection, and the first's
+    // request with none.
+    assert!(sent.contains("authorization: Negotiate dHdv\n"), "{sent}");
+    assert_eq!(sent.matches("authorization").count(), 1, "{sent}");
+    assert_eq!(sa.of("header")[0], b"HTTP/2 401 \r\n");
+    assert!(
+        !text.iter().any(|l| l.starts_with("Issue another request")),
+        "{text:#?}"
+    );
+}
+
 /// A second transfer to the origin joins the first's HTTP/2 connection,
 /// on a stream of its own: what the session reads for either stream goes
 /// to its own transfer, as it is read, whichever transfer read it

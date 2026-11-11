@@ -201,3 +201,11 @@ witness: curl-core proto::http::tests::negotiate::a_handshake_of_rounds_persists
         State::Recv if side.challenged => side.rounds = true,
 --- new
         State::Recv if false => side.rounds = true,
+
+=== a challenge on a connection bound to other credentials is taken with their context
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::h2::a_challenge_on_a_connection_bound_to_others_is_refused
+--- old
+            if bound.origin != *request.peer || !same {
+--- new
+            if bound.origin != *request.peer && !same {

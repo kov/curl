@@ -411,11 +411,14 @@ fn input<H: Host>(
     }
     match &nego.bound {
         Some(bound) => {
+            // Two transfers on one multiplexed connection, joined before
+            // either bound it, can each take its Negotiate as their own:
+            // the challenge of one is refused, as C refuses it, once the
+            // other has bound the connection.
             let same = same_credentials(bound.credentials.as_ref(), request.credentials);
-            assert!(
-                bound.origin == *request.peer && same,
-                "a connection negotiating for one origin and credentials serves only them"
-            );
+            if bound.origin != *request.peer || !same {
+                return Err(ErrorKind::FailedInit);
+            }
         }
         None => {
             let oom = |OutOfMemory| ErrorKind::OutOfMemory;

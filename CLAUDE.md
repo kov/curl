@@ -36,6 +36,10 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-alloc/src/lock.rs`: the lock that never allocates, std's `RwLock` taken only for
   writing, made `Sync` for a value that is `Send` alone, as a `Mutex` is.
 - `crates/curl-alloc/src/track.rs`: the debug test build's global allocator and memory tracker.
+- `crates/curl-tls-native/src/lib.rs`: the claim that two pointers are a named TLS library's
+  objects: `TlsNative::new`, the one unsafe declaration; no unsafe blocks.
+- `crates/curl-ngtcp2/tests/kind.rs` and `crates/curl-quiche/tests/kind.rs`: a false such claim
+  on dangling pointers, which the QUIC library under test must refuse before reading them.
 - `crates/curl-psl/src/lib.rs`: libpsl, the public suffix list cookies are checked against.
 - `crates/curl-zlib/src/lib.rs`: zlib's inflate, undoing the `deflate` and `gzip` codings.
 - `crates/curl-brotli/src/lib.rs`: brotli's decoder, undoing the `br` coding.

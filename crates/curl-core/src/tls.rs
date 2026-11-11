@@ -575,72 +575,7 @@ pub trait BindingNotes {
     fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind;
 }
 
-/// Which TLS library a backend is, as far as anything bound beside it
-/// tells them apart: the C ABI's backend ids, and the QUIC libraries,
-/// whose crypto is built for one library and reads that library's
-/// objects alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TlsKind {
-    /// OpenSSL, or one of its forks the crate builds over (LibreSSL,
-    /// BoringSSL, AWS-LC): one kind, as one build links one of them.
-    OpenSsl,
-    GnuTls,
-    WolfSsl,
-    MbedTls,
-    Rustls,
-    Schannel,
-    /// A library none of the above: one of an application's own, or the
-    /// tests' fake. No QUIC library drives its sessions.
-    Other,
-}
-
-/// A TLS library's own objects for one connection, which an application
-/// using that library itself may be handed (`CURLINFO_TLS_SSL_PTR`,
-/// `CURLINFO_TLS_SESSION`, `CURLOPT_SSL_CTX_FUNCTION`): the context the
-/// session is made from, and the session's own object once it is made.
-/// The core passes them on and never looks through them: what they are
-/// is the library's to say, and they live while the connection does,
-/// which a transfer reaches only while it holds it. They carry the kind
-/// of library that made them, which a QUIC library whose crypto reads
-/// them checks before it looks through them: one built for another
-/// library refuses them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TlsNative {
-    kind: TlsKind,
-    context: NonNull<c_void>,
-    session: Option<NonNull<c_void>>,
-}
-
-impl TlsNative {
-    /// The objects of a library of `kind`, which only that library's
-    /// backend makes.
-    pub fn new(
-        kind: TlsKind,
-        context: NonNull<c_void>,
-        session: Option<NonNull<c_void>>,
-    ) -> TlsNative {
-        TlsNative {
-            kind,
-            context,
-            session,
-        }
-    }
-
-    /// The kind of library that made them.
-    pub fn kind(self) -> TlsKind {
-        self.kind
-    }
-
-    /// The context the session is made from (OpenSSL's `SSL_CTX`).
-    pub fn context(self) -> NonNull<c_void> {
-        self.context
-    }
-
-    /// The session's own object (OpenSSL's `SSL`), once it is made.
-    pub fn session(self) -> Option<NonNull<c_void>> {
-        self.session
-    }
-}
+pub use curl_tls_native::{TlsKind, TlsNative};
 
 /// What the QUIC library does to a QUIC session's objects (C's
 /// `cb_setup`, `cf_ngtcp2_tls_ctx_setup`): handed the context once it is

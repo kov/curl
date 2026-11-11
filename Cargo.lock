@@ -251,6 +251,7 @@ dependencies = [
  "curl-build",
  "curl-core",
  "curl-os",
+ "curl-tls-native",
  "mutants",
  "proptest",
 ]
@@ -466,6 +467,10 @@ dependencies = [
  "openssl-sys",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "curl-tls-native"
+version = "0.1.0"
 
 [[package]]
 name = "curl-tool"

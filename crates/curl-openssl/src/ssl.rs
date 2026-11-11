@@ -272,6 +272,19 @@ impl Held {
     }
 }
 
+impl Ctx {
+    /// The context, and `ssl` once made of it, as the application and
+    /// the QUIC library are handed them.
+    fn native(&self, ssl: Option<&Held>) -> TlsNative {
+        // SAFETY: an `SSL_CTX` and an `SSL` this crate's OpenSSL made,
+        // the library `OpenSsl` names (its forks included, one linked by
+        // a build). The session holds both while its connection lives:
+        // the context in `ctx`, the SSL in `ssl`, or the QUIC library
+        // does, whose connection is dropped before the session.
+        unsafe { TlsNative::new(TlsKind::OpenSsl, self.0.cast(), ssl.map(|s| s.ptr().cast())) }
+    }
+}
+
 // SAFETY: OpenSSL lets an SSL and its context be used from any thread,
 // one thread at a time, which a session's `&mut self` ensures; the
 // session moves between threads only whole.
@@ -577,7 +590,7 @@ impl Session {
         };
         self.ctx = Some(Ctx(ctx));
         if let Some(setup) = setup
-            && let Err(why) = setup(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None))
+            && let Err(why) = setup(self.ctx.as_ref().expect("made above").native(None))
         {
             return Err(io.fail(ErrorKind::FailedInit, format_args!("{why}")));
         }
@@ -739,7 +752,7 @@ impl Session {
                 x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
                 self.flags.store_ready = true;
             }
-            io.configure_context(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None))?;
+            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
         }
         // The SSL (`ossl_init_ssl`).
         // SAFETY: the context.
@@ -1782,9 +1795,7 @@ impl TlsSession for Session {
 
     /// The `SSL_CTX`, and the `SSL` once made, as C hands them out.
     fn native(&self) -> Option<TlsNative> {
-        let ctx = self.ctx.as_ref()?.0;
-        let ssl = self.ssl.as_ref().map(|s| s.ptr().cast());
-        Some(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), ssl))
+        Some(self.ctx.as_ref()?.native(self.ssl.as_ref()))
     }
 
     /// The binding of the peer's certificate, none before the session is

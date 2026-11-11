@@ -28,9 +28,18 @@ fn others() -> [TlsKind; 2] {
     [TlsKind::Other, real]
 }
 
-/// Objects no library made, which nothing may read.
+/// Objects no library made, which nothing may read, claimed to be
+/// `kind`'s.
+#[allow(unsafe_code)]
 fn unreadable(kind: TlsKind) -> TlsNative {
-    TlsNative::new(kind, NonNull::dangling(), Some(NonNull::dangling()))
+    let (context, session) = (NonNull::dangling(), Some(NonNull::dangling()));
+    if kind == TlsKind::Other {
+        return TlsNative::other(context, session);
+    }
+    // SAFETY: broken on purpose: these are no library's objects, claimed
+    // to be `kind`'s, and what is under test is that the QUIC library
+    // refuses them before it reads either. Nothing else is handed them.
+    unsafe { TlsNative::new(kind, context, session) }
 }
 
 /// A QUIC session claiming to be of `kind`, with objects nothing may read.

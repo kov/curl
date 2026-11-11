@@ -491,8 +491,9 @@ impl library::Session for FakeSession {
         w.call("stapled_status".into());
         w.stapled
     }
-    fn native(&self) -> core::ptr::NonNull<core::ffi::c_void> {
-        core::ptr::NonNull::dangling()
+    fn native(&self) -> curl_core::tls::TlsNative {
+        let s = core::ptr::NonNull::dangling();
+        curl_core::tls::TlsNative::other(s, Some(s))
     }
 }
 

@@ -8,10 +8,10 @@
 
 #![allow(unsafe_code)]
 
-use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
 use curl_alloc::OutOfMemory;
+use curl_core::tls::{TlsKind, TlsNative};
 pub(crate) use curl_sspi::handle::Token;
 use curl_sspi::handle::{CredHandle, CtxtHandle, buffer, desc, empty, kind};
 use windows_sys::Win32::Security::Authentication::Identity as id;
@@ -276,12 +276,17 @@ pub(crate) struct Next {
 }
 
 impl Context {
-    /// The handle, where it lives as long as the context: what C hands
-    /// an application (`CURLINFO_TLS_SSL_PTR`).
-    pub(crate) fn handle_ptr(&self) -> NonNull<c_void> {
-        NonNull::new(self.handle.as_ptr().cast_mut())
+    /// The handle, where it lives as long as the context, as both the
+    /// session and the context: what C hands an application
+    /// (`CURLINFO_TLS_SSL_PTR`, `CURLINFO_TLS_SESSION`).
+    pub(crate) fn native(&self) -> TlsNative {
+        let h = NonNull::new(self.handle.as_ptr().cast_mut())
             .expect("a boxed handle")
-            .cast()
+            .cast();
+        // SAFETY: a `CtxtHandle` of Schannel's security context, the
+        // library `Schannel` names, boxed in the context, which the
+        // backend's session holds while its connection lives.
+        unsafe { TlsNative::new(TlsKind::Schannel, h, Some(h)) }
     }
 
     /// Move the handshake on with `input` (`InitializeSecurityContext`

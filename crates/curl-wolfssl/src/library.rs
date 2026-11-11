@@ -15,9 +15,8 @@
 //! The callbacks find the call through the session's BIO, never its
 //! application data, which over QUIC is ngtcp2's crypto's.
 
-use core::ffi::{CStr, c_void};
+use core::ffi::CStr;
 use core::fmt;
-use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::conn::io::{Recv, Sent};
@@ -190,9 +189,10 @@ pub(crate) trait Ctx: Send {
     /// takes this reference over.
     fn set_store(&mut self, store: Self::Store);
 
-    /// The context, for the application (`CURLOPT_SSL_CTX_FUNCTION`,
-    /// `CURLINFO_TLS_SESSION`).
-    fn native(&self) -> NonNull<c_void>;
+    /// The context, and `ssl` once made of it, for the application
+    /// (`CURLOPT_SSL_CTX_FUNCTION`, `CURLINFO_TLS_SESSION`,
+    /// `CURLINFO_TLS_SSL_PTR`) and the QUIC library.
+    fn native(&self, ssl: Option<&Self::Ssl>) -> curl_core::tls::TlsNative;
 
     /// The session's object (`wolfSSL_new`); none out of memory. Its
     /// callbacks reach the call under way once it has its BIO
@@ -336,9 +336,6 @@ pub(crate) trait Ssl: Send {
     fn check_host(&self, name: &[u8]) -> Option<Rc>;
     /// `wolfSSL_ALPN_GetProtocol`.
     fn alpn_selected(&self) -> AlpnGot;
-
-    /// The session's object, for the application (`CURLINFO_TLS_SSL_PTR`).
-    fn native(&self) -> NonNull<c_void>;
 }
 
 /// What the last read or write below came to (C's `io_result`).

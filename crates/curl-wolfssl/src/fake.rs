@@ -5,7 +5,7 @@
 //! socket carries what it writes and reads.
 
 use curl_alloc::{Lock, LockGuard};
-use std::ffi::{CStr, c_void};
+use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -343,8 +343,9 @@ impl library::Ctx for FakeCtx {
         self.store = store.0;
     }
 
-    fn native(&self) -> NonNull<c_void> {
-        NonNull::<u64>::dangling().cast()
+    fn native(&self, ssl: Option<&FakeSsl>) -> curl_core::tls::TlsNative {
+        let ssl = ssl.map(|_| NonNull::<u32>::dangling().cast());
+        curl_core::tls::TlsNative::other(NonNull::<u64>::dangling().cast(), ssl)
     }
 
     fn ssl(&mut self) -> Result<FakeSsl, OutOfMemory> {
@@ -606,9 +607,5 @@ impl library::Ssl for FakeSsl {
 
     fn alpn_selected(&self) -> AlpnGot {
         self.w().alpn.clone()
-    }
-
-    fn native(&self) -> NonNull<c_void> {
-        NonNull::<u32>::dangling().cast()
     }
 }

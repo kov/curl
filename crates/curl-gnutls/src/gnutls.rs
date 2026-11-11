@@ -19,7 +19,7 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::TryVec as _;
 use curl_core::error::ErrorKind;
-use curl_core::tls::{DriveCall, TlsCx};
+use curl_core::tls::{DriveCall, TlsCx, TlsKind, TlsNative};
 
 use crate::library::{self, Call, Format, Moved, Rc, Stapled};
 use crate::sys;
@@ -841,8 +841,12 @@ impl library::Session for Session {
         Stapled::Status(status)
     }
 
-    fn native(&self) -> NonNull<c_void> {
-        self.0.cast()
+    fn native(&self) -> TlsNative {
+        let s = self.0.cast();
+        // SAFETY: a `gnutls_session_t` GnuTLS made, the library `GnuTls`
+        // names, which the backend's session holds while its connection
+        // lives and frees as it drops.
+        unsafe { TlsNative::new(TlsKind::GnuTls, s, Some(s)) }
     }
 }
 

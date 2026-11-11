@@ -2267,7 +2267,8 @@ is made over a TLS session already made (`TlsBackend::quic_session`, a `QuicTls`
 keeps. The binding of ngtcp2 owns the session and frees it first, as C frees its TLS before ngtcp2.
 Each binding refuses a session of a library its crypto does not read (`ConnectFailed::Crypto`)
 before reading any of it: the session's objects carry the kind of library that made them
-(`TlsNative::kind`, a `TlsKind` each backend gives them), checked against ngtcp2's crypto as the
+(`TlsNative::kind`, a `TlsKind` each backend gives them in its unsafe module, as
+`TlsNative::new` is unsafe; `TlsNative::other` makes those of no library a QUIC library reads), checked against ngtcp2's crypto as the
 context is set up and the connection made, and against OpenSSL's family by quiche, which also
 needs the session to be one that can be handed over (`QuicTls::quiche`, a `QuicheTls`, which only
 OpenSSL's session is). The quiche library takes the session's SSL itself and frees it as its connection drops: the session gives it
@@ -3193,6 +3194,10 @@ pub trait TlsSession: Send {                       // one connection's TLS, neve
 #[derive(Clone, Copy)] pub struct TlsNative {     // opaque to the core, which passes it on
     kind: TlsKind,                                 // the library that made them
     context: NonNull<c_void>, session: Option<NonNull<c_void>>,  // SSL_CTX *, SSL *
+}                                                  // in curl-tls-native, re-exported
+impl TlsNative {
+    pub unsafe fn new(kind, context, session) -> TlsNative;  // live objects of kind's library
+    pub fn other(context, session) -> TlsNative;   // TlsKind::Other: of no library named
 }
 pub struct TlsIo<'a> { /* Below<'a>, &'a mut dyn LayerCx, the early bytes; private */ }
 impl TlsIo<'_> {                                   // what a library's BIO and callbacks reach

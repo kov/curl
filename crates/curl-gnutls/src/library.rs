@@ -173,9 +173,9 @@ pub(crate) trait Session: Send {
     /// The stapled status checked for `cert` (`gtls_verify_ocsp_status`'s
     /// calls).
     fn stapled_status(&self, cert: &Self::Cert) -> Stapled;
-    /// The session's own object, for the application
-    /// (`CURLINFO_TLS_SSL_PTR`).
-    fn native(&self) -> core::ptr::NonNull<core::ffi::c_void>;
+    /// The session's own object, as both the session and the context,
+    /// for the application (`CURLINFO_TLS_SSL_PTR`) and the QUIC library.
+    fn native(&self) -> curl_core::tls::TlsNative;
 }
 
 /// What the peer's stapled status came to, at each step C says it fails

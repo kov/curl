@@ -17,8 +17,8 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{EchMode, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, QuicContextSetup, SharedKeyLog, Text,
-    TlsCx, TlsIdentity, TlsIo, TlsKind, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared,
-    TlsTicket, TlsWait,
+    TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket,
+    TlsWait,
 };
 
 use crate::library::{
@@ -342,7 +342,7 @@ impl<W: Wolfssl> Session<W> {
             self.ctx().tell_sessions();
         }
         if let Some(setup) = setup {
-            let native = TlsNative::new(TlsKind::WolfSsl, self.ctx().native(), None);
+            let native = self.ctx().native(None);
             if let Err(why) = setup(native) {
                 return Err(io.fail(ErrorKind::FailedInit, format_args!("{why}")));
             }
@@ -358,7 +358,7 @@ impl<W: Wolfssl> Session<W> {
             if !self.state.store_ready {
                 self.setup_store(io)?;
             }
-            let native = TlsNative::new(TlsKind::WolfSsl, self.ctx().native(), None);
+            let native = self.ctx().native(None);
             io.configure_context(native)?;
         }
         self.init_ssl_handle(io)?;
@@ -1349,12 +1349,7 @@ impl<W: Wolfssl> TlsSession for Session<W> {
     /// `CURLINFO_TLS_SESSION` and `CURLINFO_TLS_SSL_PTR`
     /// (`wssl_get_internals`).
     fn native(&self) -> Option<TlsNative> {
-        let ctx = self.ctx.as_ref()?.native();
-        Some(TlsNative::new(
-            TlsKind::WolfSsl,
-            ctx,
-            self.ssl.as_ref().map(crate::library::Ssl::native),
-        ))
+        Some(self.ctx.as_ref()?.native(self.ssl.as_ref()))
     }
 
     /// None: C's wolfSSL build makes no channel binding

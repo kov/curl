@@ -14,6 +14,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-backends` | The build's C libraries, chosen once by its features (one TLS library with the QUIC library and crypto that go with it, one SSH library, the resolver, IDN and GSS-API), and the core's `Libraries` made of them; the shim's and the tool's features pass through to its. | forbidden |
 | `curl-alloc` | Fallible allocation; the debug build's memory tracker. | in named modules |
 | `curl-os` | Operating-system interfaces: the command line, the environment, the terminal, error texts, the user database, random bytes, files, sockets, polling and the system's resolver. | in named modules |
+| `curl-tls-native` | `TlsNative` and `TlsKind`, re-exported by `curl_core::tls`: a TLS library's own objects, tagged with the library that made them. | in `TlsNative::new`'s declaration alone: claiming the objects are a named library's is unsafe, as a QUIC library casts them on its word |
 | `curl-psl` | libpsl's public suffix list, behind `curl_core::psl::SuffixLibrary`. | yes: it is a binding |
 | `curl-zlib` | zlib's inflate, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
@@ -58,7 +59,9 @@ below), which the core's own layer drives; the core names no TLS library's types
 application's hands on the library (`CURLOPT_SSL_CTX_FUNCTION`, `CURLINFO_TLS_SSL_PTR`) reach it
 as an opaque `TlsNative`, the untyped context and session objects the backend hands out, which
 the shim passes on as C's `SSL_CTX *` and `SSL *`, tagged with the kind of library that made
-them (`TlsKind`), which a QUIC library checks before its crypto reads them. A build has one backend, chosen by
+them (`TlsKind`), which a QUIC library checks before its crypto reads them. Tagging them with a
+named library is unsafe (`TlsNative::new`), done in the backend's unsafe module that made them;
+the objects of no library a QUIC library reads are `TlsNative::other`'s. A build has one backend, chosen by
 `curl-backends`' Cargo features, which exclude each other and which the shim's and the tool's
 pass through: `openssl` (the default, the reference
 build's: OpenSSL 3.0 or later, the system's library, linked as the reference links it, never

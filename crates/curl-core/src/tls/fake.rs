@@ -34,8 +34,8 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
     Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, QuicContextSetup, QuicTls,
-    SystemStore, TLS1_3, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsKind, TlsNative, TlsPeer,
-    TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    SystemStore, TLS1_3, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
+    TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -755,11 +755,7 @@ impl TlsSession for FakeSession {
     fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
         if !self.made {
             if io.configures_context() {
-                io.configure_context(TlsNative::new(
-                    TlsKind::Other,
-                    NonNull::from(&self.out).cast(),
-                    None,
-                ))?;
+                io.configure_context(TlsNative::other(NonNull::from(&self.out).cast(), None))?;
             }
             // A session given, its control connection's, is resumed
             // before the cache's, as OpenSSL's is.
@@ -858,11 +854,7 @@ impl TlsSession for FakeSession {
 
     fn native(&self) -> Option<TlsNative> {
         let session = self.made.then(|| NonNull::from(&self.body).cast());
-        Some(TlsNative::new(
-            TlsKind::Other,
-            NonNull::from(&self.out).cast(),
-            session,
-        ))
+        Some(TlsNative::other(NonNull::from(&self.out).cast(), session))
     }
 }
 
@@ -1223,11 +1215,7 @@ impl FakeQuicSession {
 
 impl QuicTls for FakeQuicSession {
     fn native(&self) -> TlsNative {
-        TlsNative::new(
-            TlsKind::Other,
-            NonNull::dangling(),
-            Some(NonNull::dangling()),
-        )
+        TlsNative::other(NonNull::dangling(), Some(NonNull::dangling()))
     }
 
     fn early_data(&self) -> Option<&TlsTicket> {

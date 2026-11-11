@@ -325,25 +325,25 @@ witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_
                 x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
                 self.flags.store_ready = true;
             }
-            io.configure_context(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None))?;
+            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
 --- new
-            io.configure_context(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None))?;
+            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
 
 === the application's context handler's error lets the handshake go on
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl the_context_handler_s_error_fails_the_handshake_before_it_starts
 --- old
-            io.configure_context(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None))?;
+            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
 --- new
-            let _ = io.configure_context(TlsNative::new(TlsKind::OpenSsl, ctx.cast(), None));
+            let _ = io.configure_context(self.ctx.as_ref().expect("made above").native(None));
 
 === a transfer's handlers reach no SSL of its OpenSSL connection
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_set_up
 --- old
-        let ssl = self.ssl.as_ref().map(|s| s.ptr().cast());
+        unsafe { TlsNative::new(TlsKind::OpenSsl, self.0.cast(), ssl.map(|s| s.ptr().cast())) }
 --- new
-        let ssl = self.ssl.as_ref().map(|_| self.ctx.as_ref().expect("made").0.cast());
+        unsafe { TlsNative::new(TlsKind::OpenSsl, self.0.cast(), ssl.map(|_| self.0.cast())) }
 
 === CURLSSLOPT_ALLOW_BEAST is ignored, the empty fragment sent regardless
 file: crates/curl-openssl/src/ssl.rs

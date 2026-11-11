@@ -579,3 +579,18 @@ witness: curl-core conn::tests::a_route_is_made_with_the_transfer_s_settings
         origin && proxy
 --- new
         origin || proxy
+
+=== the objects of no library are claimed to be OpenSSL's
+file: crates/curl-tls-native/src/lib.rs
+witness: curl-tls-native tests::other_s_objects_are_of_no_library
+--- old
+            kind: TlsKind::Other,
+--- new
+            kind: TlsKind::OpenSsl,
+
+=== a library's objects are made of no library's kind
+file: crates/curl-tls-native/src/lib.rs
+witness: curl-tls-native tests::a_claim_of_no_library_is_refused
+--- old
+        assert_ne!(kind, TlsKind::Other, "an unnamed library's are other()'s");
+--- new

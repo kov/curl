@@ -9,9 +9,8 @@
 //! send and receive (C's `mbedtls_bio_cf_write`, `mbedtls_bio_cf_read`)
 //! and the verify callback (`mbed_verify_cb`).
 
-use core::ffi::{CStr, c_void};
+use core::ffi::CStr;
 use core::fmt;
-use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::conn::io::{Recv, Sent};
@@ -221,10 +220,12 @@ pub(crate) trait Conn: Send {
     /// `mbedtls_ssl_conf_alpn_protocols` of `names`, which the connection
     /// keeps, as the library does not copy them.
     fn alpn(&mut self, names: &[&[u8]]) -> Result<Rc, OutOfMemory>;
-    /// The configuration, for the application (`CURLOPT_SSL_CTX_FUNCTION`).
-    fn config(&self) -> NonNull<c_void>;
-    /// The context, for the application (`CURLINFO_TLS_SSL_PTR`).
-    fn native(&self) -> NonNull<c_void>;
+    /// The configuration and the context, for the application's turn
+    /// at them (`CURLOPT_SSL_CTX_FUNCTION`).
+    fn configured(&self) -> curl_core::tls::TlsNative;
+    /// The context, as both the session and the context, for the
+    /// application (`CURLINFO_TLS_SSL_PTR`).
+    fn native(&self) -> curl_core::tls::TlsNative;
 
     /// `mbedtls_ssl_handshake`.
     fn handshake(&mut self, call: &mut Call<'_, '_>) -> Rc;

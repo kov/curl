@@ -23,6 +23,7 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_zeroed};
+use curl_core::tls::{TlsKind, TlsNative};
 
 use crate::library::{self, Call, Chain, KeyCopy, Rc, Resume, Saved, Words};
 use crate::sys::{self, Field, Layout, Object, Opaque};
@@ -804,12 +805,19 @@ impl library::Conn for Conn {
         })
     }
 
-    fn config(&self) -> NonNull<c_void> {
-        self.o.config.ptr.cast()
+    fn configured(&self) -> TlsNative {
+        let (config, ssl) = (self.o.config.ptr.cast(), self.o.ssl.ptr.cast());
+        // SAFETY: an `mbedtls_ssl_config` and an `mbedtls_ssl_context`,
+        // mbedTLS's, the library `MbedTls` names, initialised as the
+        // connection is made and held in its room until it drops, which
+        // the backend's session holds while its connection lives.
+        unsafe { TlsNative::new(TlsKind::MbedTls, config, Some(ssl)) }
     }
 
-    fn native(&self) -> NonNull<c_void> {
-        self.o.ssl.ptr.cast()
+    fn native(&self) -> TlsNative {
+        let ssl = self.o.ssl.ptr.cast();
+        // SAFETY: the `mbedtls_ssl_context`, as above.
+        unsafe { TlsNative::new(TlsKind::MbedTls, ssl, Some(ssl)) }
     }
 
     fn handshake(&mut self, call: &mut Call<'_, '_>) -> Rc {

@@ -12,7 +12,7 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{DriveCall, TlsCx};
+use curl_core::tls::{DriveCall, TlsCx, TlsKind, TlsNative};
 
 use crate::library::{
     self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerCert, Rc, Resume, Tls12Keys, Words,
@@ -376,8 +376,12 @@ impl library::Ctx for Ctx {
         unsafe { sys::wolfSSL_CTX_set_cert_store(self.p(), store.0.as_ptr()) };
     }
 
-    fn native(&self) -> NonNull<c_void> {
-        self.ctx.cast()
+    fn native(&self, ssl: Option<&Ssl>) -> TlsNative {
+        let ssl = ssl.map(|s| s.ssl.cast());
+        // SAFETY: a `WOLFSSL_CTX` and a `WOLFSSL` wolfSSL made, the
+        // library `WolfSsl` names, freed as they drop, which the
+        // backend's session holds while its connection lives.
+        unsafe { TlsNative::new(TlsKind::WolfSsl, self.ctx.cast(), ssl) }
     }
 
     fn ssl(&mut self) -> Result<Ssl, OutOfMemory> {
@@ -1042,9 +1046,5 @@ impl library::Ssl for Ssl {
         } else {
             AlpnGot::Failed(rc)
         }
-    }
-
-    fn native(&self) -> NonNull<c_void> {
-        self.ssl.cast()
     }
 }

@@ -5,7 +5,7 @@
 //! A scripted socket carries what it writes and reads.
 
 use curl_alloc::{Lock, LockGuard};
-use std::ffi::{CStr, c_void};
+use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -402,12 +402,14 @@ impl library::Conn for FakeConn {
         Ok(self.answer("alpn", format!("alpn({})", names.join(","))))
     }
 
-    fn config(&self) -> NonNull<c_void> {
-        NonNull::<u64>::dangling().cast()
+    fn configured(&self) -> curl_core::tls::TlsNative {
+        let ssl = NonNull::<u32>::dangling().cast();
+        curl_core::tls::TlsNative::other(NonNull::<u64>::dangling().cast(), Some(ssl))
     }
 
-    fn native(&self) -> NonNull<c_void> {
-        NonNull::<u32>::dangling().cast()
+    fn native(&self) -> curl_core::tls::TlsNative {
+        let ssl = NonNull::<u32>::dangling().cast();
+        curl_core::tls::TlsNative::other(ssl, Some(ssl))
     }
 
     fn handshake(&mut self, call: &mut Call<'_, '_>) -> Rc {

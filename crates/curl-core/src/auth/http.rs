@@ -11,7 +11,7 @@ use super::creds::{Answered, Secret, Trusted, copy};
 use super::digest::{Digest, DigestError};
 use super::digest_sspi::{self, Refused, SspiDigest, SspiDigestNote};
 use crate::conn::Peer;
-use crate::options::AuthMethods;
+use crate::options::{AuthMethods, ProxyGeneration};
 use crate::sspi::Sspi;
 
 /// Authenticating over a handle's transfers, with the origin and with the
@@ -21,6 +21,9 @@ use crate::sspi::Sspi;
 pub(crate) struct Auth {
     host: PeerAuth,
     proxy: PeerAuth,
+    /// The proxy setting `proxy` belongs to: what was picked for one
+    /// proxy is not for the next.
+    proxy_generation: ProxyGeneration,
     /// The credentials were refused, or none fit the challenge.
     problem: bool,
 }
@@ -34,9 +37,22 @@ pub(crate) enum Side {
 
 impl Auth {
     /// A transfer starts, wanting `host` of the origin and `proxy` of the
-    /// proxy (`Curl_pretransfer`).
-    pub(crate) fn start(&mut self, host: AuthMethods, proxy: AuthMethods) {
+    /// proxy (`Curl_pretransfer`), under the proxy setting `generation`:
+    /// under another than the last transfer's, the proxy's method and
+    /// Digest state are forgotten, as C's `changeproxy` forgets them when
+    /// the proxy is set, so no credentials go to a new proxy before it
+    /// asks.
+    pub(crate) fn start(
+        &mut self,
+        host: AuthMethods,
+        proxy: AuthMethods,
+        generation: ProxyGeneration,
+    ) {
         self.problem = false;
+        if generation != self.proxy_generation {
+            self.proxy = PeerAuth::default();
+            self.proxy_generation = generation;
+        }
         self.host.start(host);
         // A signature is never a proxy's: asked of one, it is as a method
         // not implemented (`output_auth_headers`).
@@ -1591,7 +1607,11 @@ mod tests {
     fn keeps_the_handle_s_state() {
         let peer = Peer::new(HTTP, b"h".to_vec(), 80, None);
         let mut auth = Auth::default();
-        auth.start(AuthMethods::ANY, AuthMethods::ANY);
+        auth.start(
+            AuthMethods::ANY,
+            AuthMethods::ANY,
+            ProxyGeneration::default(),
+        );
         assert!(!auth.problem());
         let problem = AuthAct {
             problem: true,
@@ -1600,7 +1620,11 @@ mod tests {
         auth.apply(&problem, Offered::default(), &peer, &peer, None)
             .unwrap();
         assert!(auth.problem());
-        auth.start(AuthMethods::ANY, AuthMethods::ANY);
+        auth.start(
+            AuthMethods::ANY,
+            AuthMethods::ANY,
+            ProxyGeneration::default(),
+        );
         assert!(!auth.problem(), "until the next transfer");
         assert!(!auth.proxy_offers(&Challenges::default()));
         assert!(auth.proxy_offers(&offered(AuthMethods::BASIC)));
@@ -1637,7 +1661,11 @@ mod tests {
         let (none, b, br) = (AuthMethods::NONE, AuthMethods::BASIC, AuthMethods::BEARER);
         let pick = |secret: Secret<'_>, methods| {
             let mut auth = Auth::default();
-            auth.start(AuthMethods::ANY, AuthMethods::NONE);
+            auth.start(
+                AuthMethods::ANY,
+                AuthMethods::NONE,
+                ProxyGeneration::default(),
+            );
             let asked = auth.asked((Some(secret), &peer), (None, &peer), false, true, false);
             let offered = Offered {
                 host: offered(methods),
@@ -1692,7 +1720,7 @@ mod tests {
         };
         let sigv4 = AuthMethods::AWS_SIGV4;
         let mut auth = Auth::default();
-        auth.start(sigv4, sigv4);
+        auth.start(sigv4, sigv4, ProxyGeneration::default());
         let secret = || Some(Secret::new(b"u", b"p", b""));
         let mut output = |side| {
             let out = auth
@@ -1733,7 +1761,7 @@ mod tests {
                 trusted: trusted.then(Trusted::own_url),
             };
             let mut auth = Auth::default();
-            auth.start(sig, sig);
+            auth.start(sig, sig, ProxyGeneration::default());
             let mut output = |side| {
                 let out = auth
                     .side(side)

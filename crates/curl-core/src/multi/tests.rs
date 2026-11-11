@@ -2128,7 +2128,7 @@ fn a_transfer_that_never_connects_shows_no_progress() {
             o.limits.connect = TimeLimit::from_millis(700);
             o.limits.total = TimeLimit::from_millis(1500);
             if let Some(p) = proxy {
-                o.proxy.make_mut().unwrap().url = Some(p.as_bytes().to_vec());
+                o.set_proxy_url(Some(p.as_bytes().to_vec())).unwrap();
             }
             if with_meter {
                 o.progress = Progress::Meter;
@@ -2241,7 +2241,7 @@ fn through_proxies(
     let (mut m, _clock) = networked();
     let (mut e, lines) = traced(url);
     let o = e.options_mut();
-    o.proxy.make_mut().unwrap().url = Some(proxy.as_bytes().to_vec());
+    o.set_proxy_url(Some(proxy.as_bytes().to_vec())).unwrap();
     o.proxy.make_mut().unwrap().pre_proxy = pre.map(|p| p.as_bytes().to_vec());
     o.proxy.make_mut().unwrap().tunnel = tunnel;
     if let Some(to) = connect_to {
@@ -6302,8 +6302,8 @@ fn sent_through_a_tunnel(set: impl FnOnce(&mut Easy)) -> Vec<u8> {
     let mut e = Easy::new();
     let o = e.options_mut();
     o.set_url(Some(b"http://origin.example/a")).unwrap();
+    o.set_proxy_url(Some(b"127.0.0.1:3128".to_vec())).unwrap();
     let proxy = o.proxy.make_mut().unwrap();
-    proxy.url = Some(b"127.0.0.1:3128".to_vec());
     proxy.tunnel = true;
     set(&mut e);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();

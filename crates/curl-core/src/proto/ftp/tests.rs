@@ -1404,8 +1404,9 @@ fn a_data_connection_s_tunnel_waits_on_its_socket() {
         .held();
     let mut m = proxied(&talk, &file);
     let (id, body, text) = added(&mut m, URL, |o| {
+        o.set_proxy_url(Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
     });
     for _ in 0..30 {
@@ -1433,8 +1434,9 @@ fn the_data_connection_tunnels_through_the_proxy() {
     let file = Conversation::replies(&[&[TUNNELED, b"hello"].concat()], true).per_send();
     let mut m = proxied(&talk, &file);
     let (id, body, text) = added(&mut m, URL, |o| {
+        o.set_proxy_url(Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
         let line: &[u8] = b"Authorization: Bearer tunnel";
         proxy.headers = crate::options::UserHeaders::new([line]).unwrap();
@@ -1497,8 +1499,9 @@ fn tunnels_after_a_redirect_to_another_host_s_ftp_send_no_credentials() {
     let mut m = Multi::with_env(env).unwrap();
     let (id, body, text) = added(&mut m, "http://first.example/", |o| {
         o.http.follow = crate::options::Follow::All;
+        o.set_proxy_url(Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
         let lines: [&[u8]; 2] = [b"Authorization: Bearer tunnel", b"Cookie: crumb=1"];
         proxy.headers = crate::options::UserHeaders::new(lines).unwrap();
@@ -1551,8 +1554,11 @@ fn a_silent_data_address_gives_way_after_the_eyeballs_delay() {
     };
     let mut m = Multi::with_env(env).unwrap();
     let (id, body, text) = added_tracing(&mut m, URL, Easy::new(), b"timer", |o| {
+        o.set_proxy_url(Some(
+            format!("http://pxy.example:{PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://pxy.example:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
     });
     let silent_tried = "  Trying 127.0.0.2:8080...\n";
@@ -1608,8 +1614,10 @@ fn the_data_connection_goes_through_the_socks_proxy() {
     let mut e = Easy::new();
     e.set_share(Some(share)).unwrap();
     let (id, body, text) = added_tracing(&mut m, URL, e, b"all", |o| {
-        o.proxy.make_mut().unwrap().url =
-            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();
@@ -1663,8 +1671,10 @@ fn a_data_connection_its_socks_proxy_refuses_is_closed() {
     };
     let mut m = Multi::with_env(env).unwrap();
     let (id, _body, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |o| {
-        o.proxy.make_mut().unwrap().url =
-            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();
@@ -5566,8 +5576,10 @@ fn a_socks_target_s_entry_is_let_go_as_its_filter_goes() {
                 Some(Handler::debug(text.clone()).unwrap()),
             )
             .unwrap();
-        o.proxy.make_mut().unwrap().url =
-            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();
@@ -5619,8 +5631,10 @@ fn a_refused_socks_connect_lets_go_of_both_filters_entries() {
                 Some(Handler::debug(text.clone()).unwrap()),
             )
             .unwrap();
-        o.proxy.make_mut().unwrap().url =
-            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();

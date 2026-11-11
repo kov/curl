@@ -5507,9 +5507,9 @@ fn proxy_options_are_checked_as_in_c() {
     );
     assert_eq!(long(c, ffi::CURLOPT_HTTPPROXYTUNNEL, 2), CURLE_OK);
     options(c, |o| {
-        assert_eq!(o.proxy.url.as_deref(), Some(&b"http://p:1"[..]));
+        assert_eq!(o.proxy.url(), Some(&b"http://p:1"[..]));
         assert_eq!(o.proxy.no_proxy.as_deref(), Some(&b"a,b"[..]));
-        assert_eq!(o.proxy.port.map(|p| p.get()), Some(3128));
+        assert_eq!(o.proxy.port().map(|p| p.get()), Some(3128));
         assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Socks5Hostname);
         assert!(o.proxy.tunnel);
     });
@@ -5556,7 +5556,7 @@ fn proxy_options_are_checked_as_in_c() {
         CURLE_OK
     );
     options(c, |o| {
-        assert_eq!((o.proxy.url.as_deref(), o.proxy.port), (None, None));
+        assert_eq!((o.proxy.url(), o.proxy.port()), (None, None));
         assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Socks5Hostname);
     });
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_USED_PROXY), 0);
@@ -7330,7 +7330,7 @@ fn clearing_an_option_makes_no_group() {
         assert!(options(c, |o| o.proxy.haproxy));
         pointer(c, ffi::CURLOPT_PROXY, ptr::null_mut::<c_char>());
         pointer(c, ffi::CURLOPT_HAPROXY_CLIENT_IP, ptr::null_mut::<c_char>());
-        assert_eq!(options(c, |o| o.proxy.url.clone()), None);
+        assert_eq!(options(c, |o| o.proxy.url().map(<[u8]>::to_vec)), None);
         assert_eq!(options(c, |o| o.proxy.haproxy_client_ip.clone()), None);
         assert!(!options(c, |o| o.proxy.haproxy), "the protocol is off");
         // SAFETY: a live handle, not used again.

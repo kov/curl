@@ -470,13 +470,31 @@ pub struct Delegation {
     pub always: bool,
 }
 
+/// Which proxy setting of a handle's is in force, a new one each time the
+/// proxy or its port is set to another, so a value kept from one setting
+/// matches no later one: only 2^32 changes between two transfers could
+/// come round to it, and 32 bits fit where the handle's authentication
+/// state had room to spare. A reset starts the options over, and that
+/// state with them (`Easy::reset`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProxyGeneration(u32);
+
+impl ProxyGeneration {
+    fn next(self) -> ProxyGeneration {
+        ProxyGeneration(self.0.wrapping_add(1))
+    }
+}
+
 /// The proxy transfers go through, and which go direct.
 #[derive(Debug)]
 pub struct Proxy {
     /// The proxy, as a URL whose scheme may name its type
     /// (`CURLOPT_PROXY`): none to look for one in the environment, an
-    /// empty one for none at all.
-    pub url: Option<Vec<u8>>,
+    /// empty one for none at all. Set through `Options::set_proxy_url`.
+    url: Option<Vec<u8>>,
+    /// Which setting of the URL and port is in force, moved on by their
+    /// setters.
+    generation: ProxyGeneration,
     /// Its type where the URL names none (`CURLOPT_PROXYTYPE`).
     pub kind: ProxyType,
     /// The SOCKS proxy it is reached through, as a URL whose scheme may
@@ -485,8 +503,8 @@ pub struct Proxy {
     /// unread.
     pub pre_proxy: Option<Vec<u8>>,
     /// Its port where the URL names none (`CURLOPT_PROXYPORT`); none for
-    /// its scheme's.
-    pub port: Option<NonZeroU16>,
+    /// its scheme's. Set through `Options::set_proxy_port`.
+    port: Option<NonZeroU16>,
     /// The hosts reached without it, a comma-separated list
     /// (`CURLOPT_NOPROXY`): none to look in the environment.
     pub no_proxy: Option<Vec<u8>>,
@@ -573,9 +591,27 @@ pub enum ProxyUserError {
 }
 
 impl Proxy {
+    /// The proxy as a URL (`CURLOPT_PROXY`).
+    pub fn url(&self) -> Option<&[u8]> {
+        self.url.as_deref()
+    }
+
+    /// Its port where the URL names none (`CURLOPT_PROXYPORT`).
+    pub fn port(&self) -> Option<NonZeroU16> {
+        self.port
+    }
+
+    /// Which setting of the URL and port is in force: what a transfer
+    /// picked to authenticate with the proxy holds only for the
+    /// generation it was picked in.
+    pub(crate) fn generation(&self) -> ProxyGeneration {
+        self.generation
+    }
+
     fn try_clone(&self) -> Result<Proxy, OutOfMemory> {
         Ok(Proxy {
             url: self.url.as_deref().map(copy).transpose()?,
+            generation: self.generation,
             kind: self.kind,
             pre_proxy: self.pre_proxy.as_deref().map(copy).transpose()?,
             port: self.port,
@@ -784,6 +820,38 @@ impl Options {
 
     pub fn set_default_protocol(&mut self, scheme: Option<&[u8]>) -> Result<(), OutOfMemory> {
         self.default_protocol = scheme.map(copy).transpose()?;
+        Ok(())
+    }
+
+    /// Set the proxy (`CURLOPT_PROXY`). Another one, or none over none,
+    /// starts a new proxy generation, as C's `setproxy` calls
+    /// `changeproxy` unless the old and the new are the same string.
+    /// None over a group never made makes nothing: with none of the
+    /// proxy's options set, only Basic is wanted of a proxy, and nothing
+    /// picked differs from it.
+    pub fn set_proxy_url(&mut self, url: Option<Vec<u8>>) -> Result<(), OutOfMemory> {
+        if url.is_none() && self.proxy.made_mut().is_none() {
+            return Ok(());
+        }
+        let proxy = self.proxy.make_mut()?;
+        let same = matches!((proxy.url(), url.as_deref()), (Some(old), Some(new)) if old == new);
+        if !same {
+            proxy.generation = proxy.generation.next();
+        }
+        proxy.url = url;
+        Ok(())
+    }
+
+    /// Set the proxy's port where its URL names none
+    /// (`CURLOPT_PROXYPORT`). Another one starts a new proxy generation,
+    /// as C's `changeproxy` is called for it.
+    pub fn set_proxy_port(&mut self, port: Option<NonZeroU16>) -> Result<(), OutOfMemory> {
+        if port == self.proxy.port() {
+            return Ok(());
+        }
+        let proxy = self.proxy.make_mut()?;
+        proxy.generation = proxy.generation.next();
+        proxy.port = port;
         Ok(())
     }
 
@@ -998,6 +1066,7 @@ impl ColdGroup for Proxy {
     const UNSET: &'static Proxy = &Proxy::NONE;
     const NONE: Proxy = Proxy {
         url: None,
+        generation: ProxyGeneration(0),
         kind: ProxyType::Http,
         pre_proxy: None,
         port: None,
@@ -3717,21 +3786,54 @@ mod tests {
         assert_eq!(copy.line.mail_auth.as_deref(), Some(&b"u@d"[..]));
     }
 
+    /// The proxy's generation moves on where C's `setproxy` and
+    /// `CURLOPT_PROXYPORT` call `changeproxy`: another URL, none over
+    /// none, another port; never for the same URL or port again.
+    #[test]
+    fn the_proxy_s_generation_moves_as_c_s_changeproxy_is_called() {
+        let mut o = Options::default();
+        let mut last = o.proxy.generation();
+        let mut moved = |o: &Options| {
+            let now = o.proxy.generation();
+            let moved = now != last;
+            last = now;
+            moved
+        };
+        o.set_proxy_url(None).unwrap();
+        assert!(!moved(&o), "nothing set, nothing made");
+        o.set_proxy_url(Some(b"a:1".to_vec())).unwrap();
+        assert!(moved(&o));
+        o.set_proxy_url(Some(b"a:1".to_vec())).unwrap();
+        assert!(!moved(&o), "the same string");
+        o.set_proxy_url(Some(b"http://a:1".to_vec())).unwrap();
+        assert!(moved(&o), "another string for the same proxy");
+        o.set_proxy_url(None).unwrap();
+        assert!(moved(&o));
+        o.set_proxy_url(None).unwrap();
+        assert!(moved(&o), "none over none");
+        o.set_proxy_port(NonZeroU16::new(8080)).unwrap();
+        assert!(moved(&o));
+        o.set_proxy_port(NonZeroU16::new(8080)).unwrap();
+        assert!(!moved(&o), "the same port");
+        o.set_proxy_port(None).unwrap();
+        assert!(moved(&o));
+        let copy = o.try_clone().unwrap();
+        assert_eq!(copy.proxy.generation(), o.proxy.generation());
+    }
+
     /// A copy keeps the proxy, the login and the cookies' options.
     #[test]
     fn a_copy_keeps_the_proxy_login_and_cookies() {
         let mut o = Options::default();
-        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.set_proxy_url(Some(b"http://proxy.example:3128".to_vec()))
+            .unwrap();
         o.proxy.make_mut().unwrap().user = Some(b"pu".to_vec());
         o.login.make_mut().unwrap().user = Some(b"lu".to_vec());
         o.login.make_mut().unwrap().bearer = Some(b"t".to_vec());
         o.http.cookies.make_mut().unwrap().send = Some(b"a=1".to_vec());
         o.http.cookies.make_mut().unwrap().new_session = true;
         let copy = o.try_clone().unwrap();
-        assert_eq!(
-            copy.proxy.url.as_deref(),
-            Some(&b"http://proxy.example:3128"[..])
-        );
+        assert_eq!(copy.proxy.url(), Some(&b"http://proxy.example:3128"[..]));
         assert_eq!(copy.proxy.user.as_deref(), Some(&b"pu"[..]));
         assert_eq!(copy.login.user.as_deref(), Some(&b"lu"[..]));
         assert_eq!(copy.login.bearer.as_deref(), Some(&b"t"[..]));

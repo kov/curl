@@ -316,7 +316,8 @@ fn a_probe_inherits_only_cs_list() {
     o.doh.make_mut().unwrap().verify_peer = false;
     o.doh.make_mut().unwrap().verify_host = false;
     o.doh.make_mut().unwrap().verify_status = true;
-    o.proxy.make_mut().unwrap().url = Some(b"http://proxy.test/".to_vec());
+    o.set_proxy_url(Some(b"http://proxy.test/".to_vec()))
+        .unwrap();
     o.http.user_agent = Some(b"agent".to_vec());
     let t = o.tls.options.make_mut().unwrap();
     t.ca_blob = crate::options::CaSetting::Given(b"blob".to_vec());
@@ -331,7 +332,7 @@ fn a_probe_inherits_only_cs_list() {
     let p = probe.options();
     assert_eq!(p.url(), Some(&b"https://dns.test/"[..]));
     assert_eq!(p.default_protocol(), Some(&b"https"[..]));
-    assert!(p.proxy.url.is_none(), "not the proxy");
+    assert!(p.proxy.url().is_none(), "not the proxy");
     assert!(p.http.user_agent.is_none(), "not the agent");
     assert_eq!(p.http.version, crate::options::HttpVersion::Http2Tls);
     assert!(p.http.pipewait);
@@ -620,7 +621,9 @@ fn a_socks_destination_goes_over_doh() {
         .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
     let mut m = multi_over(net, &clock);
     let mut easy = asking("http://foo.test/x");
-    easy.options_mut().proxy.make_mut().unwrap().url = Some(b"socks4://127.0.0.1:1080".to_vec());
+    easy.options_mut()
+        .set_proxy_url(Some(b"socks4://127.0.0.1:1080".to_vec()))
+        .unwrap();
     m.add(easy, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();

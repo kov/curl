@@ -857,12 +857,6 @@ rule of `CLAUDE.md` each is to be brought to C's behaviour, with a test, and the
 here. They are listed so that none is read as C's behaviour meanwhile; none has a test that pins
 it.
 
-- **A proxy changed by `CURLOPT_PROXY` keeps the method picked for the old one.** C's `setproxy`
-  and `CURLOPT_PROXYPORT` call `changeproxy` (`lib/setopt.c`), which forgets the picked proxy
-  method and the proxy's Digest state. The shim sets the URL alone (`CURLOPT_PROXY`,
-  `crates/curl-sys-abi/src/setopt/mod.rs`), so with `CURLOPT_PROXYAUTH` of Basic and another
-  method, Basic picked against the first proxy is sent at once to the next, where C asks first.
-  Digest sends nothing, its state being kept for its own peer. No test.
 - **A clear connection made under `CURLOPT_USE_SSL` serves another HTTP transfer under it.** C
   refuses a connection without TLS to any transfer requiring TLS, HTTP's too
   (`url_match_ssl_use`, `lib/url.c`); `Conn::tls_serves` (`crates/curl-core/src/conn/mod.rs`)

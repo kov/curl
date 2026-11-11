@@ -2765,7 +2765,8 @@ fn mail_auth_and_sasl(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), Erro
 fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, claims: Claims) -> Result<(), ErrorKind> {
     if let Some(proxy) = op.proxy {
         s.str("CURLOPT_PROXY", Some(proxy), |o| {
-            o.proxy.make_mut().map_err(oom)?.url = Some(copy(proxy).map_err(oom)?);
+            o.set_proxy_url(Some(copy(proxy).map_err(oom)?))
+                .map_err(oom)?;
             Ok(())
         })?;
         s.enumerated(

@@ -31,7 +31,8 @@ fn a_host_in_unicode_is_sent_in_ascii() {
         let ran = get_with(&mut m, e, "/", talk, |o| {
             o.set_url(Some("http://www.åäö.se/page".as_bytes()))
                 .unwrap();
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
         });
         assert_eq!(ran.result, Ok(()));
         let want = format!("GET http://{host}/page HTTP/1.1\r\nHost: {host}\r\n");
@@ -58,7 +59,8 @@ fn only_a_host_name_is_converted() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get_with(&mut m, converting(), "/", talk, |o| {
         o.set_url(Some(b"http://[::1]:8080/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let want = b"GET http://[::1]:8080/a HTTP/1.1\r\nHost: [::1]:8080\r\n";
@@ -77,7 +79,8 @@ fn a_name_that_does_not_convert_fails_the_transfer() {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get_with(&mut m, converting(), "/", talk, |o| {
             o.set_url(Some(url.as_bytes())).unwrap();
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
         });
         assert_eq!(ran.result, Err(ErrorKind::UrlMalformat), "{url}");
         assert!(ran.request.is_empty(), "{url}");
@@ -94,7 +97,8 @@ fn a_proxy_and_a_connect_to_host_are_looked_up_in_ascii() {
     for set in [
         (|o: &mut Options| {
             o.set_url(Some(b"http://origin.example/")).unwrap();
-            o.proxy.make_mut().unwrap().url = Some(format!("åäö.test:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("åäö.test:{PORT}").into_bytes()))
+                .unwrap();
         }) as fn(&mut Options),
         |o: &mut Options| {
             o.set_url(Some(format!("http://origin.example:{PORT}/").as_bytes()))
@@ -131,7 +135,8 @@ fn a_netrc_entry_names_a_host_in_unicode_in_ascii() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get_with(&mut m, converting(), "/", talk, |o| {
         o.set_url(Some("http://www.åäö.se/".as_bytes())).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.netrc.make_mut().unwrap().mode = NetrcMode::Optional;
         o.netrc.make_mut().unwrap().file = Some(file);
     });
@@ -152,7 +157,8 @@ fn a_tunnel_names_a_host_in_unicode_in_ascii() {
     let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
     let ran = get_with(&mut m, converting(), "/", talk, |o| {
         o.set_url(Some("http://www.åäö.se/a".as_bytes())).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().tunnel = true;
     });
     assert_eq!(ran.result, Ok(()));

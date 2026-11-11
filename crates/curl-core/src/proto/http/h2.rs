@@ -2081,7 +2081,8 @@ impl Request {
         let mut request = Request::uncredentialed(url, of, before, cx)?;
         let options = cx.easy().options();
         let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
-        cx.easy_mut().auth.start(want, proxy_want);
+        let generation = options.proxy.generation();
+        cx.easy_mut().auth.start(want, proxy_want, generation);
         let sspi = cx.easy().libraries().sspi().is_some();
         let peer = &request.base.peer;
         let auth = cx

@@ -1170,8 +1170,8 @@ fn proxied_get(scheme: &str, proxy: SocketAddr, ca: &[u8]) -> (Got, u64) {
     track::count_allocations(|| {
         get_scheme("http", "localhost", proxy, |o| {
             counted(o, &ca);
+            o.set_proxy_url(Some(url)).unwrap();
             let p = o.proxy.make_mut().unwrap();
-            p.url = Some(url);
             p.no_proxy = Some(Vec::new());
             p.tls.options.make_mut().unwrap().ca_file = CaSetting::Given(ca);
         })

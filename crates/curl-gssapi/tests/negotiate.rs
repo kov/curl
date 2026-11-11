@@ -422,8 +422,9 @@ fn second_request_in_a_child() {
 /// empty credentials of `-U :` for it.
 fn via_proxy(o: &mut Options, tunnel: bool) {
     o.set_url(Some(b"http://origin.example/x")).unwrap();
+    o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+        .unwrap();
     let proxy = o.proxy.make_mut().unwrap();
-    proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
     proxy.tunnel = tunnel;
     proxy.auth = HttpAuth(AuthMethods::ANY);
     proxy.user = Some(Vec::new());

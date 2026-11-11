@@ -1216,8 +1216,9 @@ fn ssh_goes_through_an_https_proxy_s_tls() {
     let library = crate::libraries::Library::Static(backend as &dyn crate::tls::TlsBackend);
     let url = "sftp://u@127.0.0.1:PORT/~/f";
     let (result, body, text) = run_over(&w, url, PROXY_PORT, &talk, Some(library), |o| {
+        o.set_proxy_url(Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
     });
     let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
@@ -1276,8 +1277,9 @@ fn the_goodbye_goes_out_through_an_https_proxy_s_tls() {
                 backend as &dyn crate::tls::TlsBackend,
             )),
             |o| {
+                o.set_proxy_url(Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes()))
+                    .unwrap();
                 let proxy = o.proxy.make_mut().unwrap();
-                proxy.url = Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes());
                 proxy.tunnel = true;
             },
         );

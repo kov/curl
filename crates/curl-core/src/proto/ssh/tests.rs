@@ -1225,8 +1225,9 @@ fn the_socket_is_handed_over_past_a_tunnel() {
     let w = world(&[("/home/u/f", "tunneled")]);
     let mut m = serving(PROXY_PORT, &talk);
     let (id, body, text) = added(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.set_proxy_url(Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -1260,8 +1261,9 @@ fn the_socket_is_not_handed_over_under_a_proxy_s_tls() {
     let library = crate::libraries::Library::Static(backend as &dyn crate::tls::TlsBackend);
     let url = "sftp://u@127.0.0.1:PORT/~/f";
     let (id, body, text) = added_with_tls(&mut m, &w, url, Some(library), |o| {
+        o.set_proxy_url(Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -1292,8 +1294,10 @@ fn the_socket_is_handed_over_past_a_socks_grant() {
     let w = world(&[("/home/u/f", "via socks")]);
     let mut m = serving(PROXY_PORT, &talk);
     let (id, body, text) = added(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
-        o.proxy.make_mut().unwrap().url =
-            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();

@@ -1025,7 +1025,7 @@ fn apply(
         (ffi::CURLOPT_PROXY, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             let value = unsafe { owned(p) }?;
-            options.proxy.set(|g| &mut g.url, value)?;
+            options.set_proxy_url(value)?;
         }
         (ffi::CURLOPT_PROXYUSERPWD, Ptr(p)) => {
             use curl_core::options::ProxyUserError;
@@ -1075,9 +1075,7 @@ fn apply(
         }
         (ffi::CURLOPT_PROXYPORT, Long(n)) => {
             let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
-            options
-                .proxy
-                .assign(|g| &mut g.port, NonZeroU16::new(port))?;
+            options.set_proxy_port(NonZeroU16::new(port))?;
         }
         (ffi::CURLOPT_PROXYTYPE, Long(n)) => {
             let value = match n {

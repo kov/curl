@@ -847,7 +847,7 @@ fn a_tunneled_get_takes_no_refusal_for_success() {
             b"http://origin.example/1?q",
             request,
             |o| {
-                o.proxy.make_mut()?.url = Some(b"127.0.0.1:80".to_vec_fallible()?);
+                o.set_proxy_url(Some(b"127.0.0.1:80".to_vec_fallible()?))?;
                 o.proxy.make_mut()?.tunnel = true;
                 Ok(())
             },
@@ -1498,9 +1498,9 @@ fn an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass() {
     let mut easy = Easy::new();
     let o = easy.options_mut();
     o.set_url(Some(b"ftp://127.0.0.1:8021/f")).expect("memory");
-    let proxy = o.proxy.make_mut().expect("memory");
-    proxy.url = Some(b"http://127.0.0.1:8080".to_vec());
-    proxy.tunnel = true;
+    o.set_proxy_url(Some(b"http://127.0.0.1:8080".to_vec()))
+        .expect("memory");
+    o.proxy.make_mut().expect("memory").tunnel = true;
     let took = TryArc::try_new(Took::default()).expect("memory");
     o.callbacks.write = Some(Handler::write(Taker(took.clone())).expect("memory"));
     let id = m
@@ -2357,8 +2357,8 @@ fn h3_connect_answer() -> Vec<Told> {
 
 /// Through the tunnel the HTTP/3 proxy at 127.0.0.1:443 makes, traced.
 fn h3_proxy(o: &mut Options) -> Result<(), OutOfMemory> {
+    o.set_proxy_url(Some(b"https://127.0.0.1:443".to_vec_fallible()?))?;
     let proxy = o.proxy.make_mut()?;
-    proxy.url = Some(b"https://127.0.0.1:443".to_vec_fallible()?);
     proxy.kind = curl_core::options::ProxyType::Https3;
     proxy.tunnel = true;
     traced(o)
@@ -2505,7 +2505,7 @@ fn http3_through_an_http3_proxy_takes_no_refusal_for_success() {
 /// Through the tunnel the HTTP/3 proxy at 127.0.0.2:443 makes.
 fn other_h3_proxy(o: &mut Options) -> Result<(), OutOfMemory> {
     h3_proxy(o)?;
-    o.proxy.make_mut()?.url = Some(b"https://127.0.0.2:443".to_vec_fallible()?);
+    o.set_proxy_url(Some(b"https://127.0.0.2:443".to_vec_fallible()?))?;
     Ok(())
 }
 

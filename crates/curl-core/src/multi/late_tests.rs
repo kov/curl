@@ -1039,8 +1039,8 @@ fn a_late_resolve_lives_on_through_a_redial_for_the_proxy_s_407() {
     let lines = Lines::default();
     let o = easy.options_mut();
     o.set_url(Some(b"http://origin.example/a")).unwrap();
+    o.set_proxy_url(Some(b"proxy.test:8080".to_vec())).unwrap();
     let proxy = o.proxy.make_mut().unwrap();
-    proxy.url = Some(b"proxy.test:8080".to_vec());
     proxy.tunnel = true;
     proxy.user = Some(b"u".to_vec());
     proxy.password = Some(b"p".to_vec());

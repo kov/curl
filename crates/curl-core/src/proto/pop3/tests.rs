@@ -1304,7 +1304,8 @@ mod over_the_wire {
         let mut m = serving(&[&talk]);
         let url = format!("pop3://u:p@pop.example:{PORT}/1");
         let ran = transfer(&mut m, &plain(), &url, |o| {
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
         });
         assert_eq!(ran.result, Ok(()), "{}", ran.text);
         assert_eq!(ran.body, b"hello\r\n.dot\r\n");

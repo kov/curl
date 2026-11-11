@@ -386,7 +386,10 @@ fn http3_alone_is_refused_where_it_cannot_be() {
         ),
         (
             "https",
-            |o| o.proxy.make_mut().unwrap().url = Some(b"socks5://127.0.0.1:1080".to_vec()),
+            |o| {
+                o.set_proxy_url(Some(b"socks5://127.0.0.1:1080".to_vec()))
+                    .unwrap()
+            },
             ErrorKind::UrlMalformat,
             "HTTP/3 is not supported over a SOCKS proxy",
         ),
@@ -2714,7 +2717,7 @@ fn http3_through_a_proxy_is_weighed_as_c_weighs_it() {
             o.set_url(Some(url.as_bytes())).unwrap();
             o.http.version = crate::options::HttpVersion::Http3;
             let to = format!("{proxy}://127.0.0.1:{PORT}");
-            o.proxy.make_mut().unwrap().url = Some(to.into_bytes());
+            o.set_proxy_url(Some(to.into_bytes())).unwrap();
         });
         assert_eq!(ran.result, Err(ErrorKind::CouldntConnect), "{proxy}");
         let got = race_lines(&ran);
@@ -3076,8 +3079,9 @@ fn through_h3_proxy_over(m: &mut Multi, e: Easy, ip: IpVersion) -> Ran {
     get_with(m, e, "/", Conversation::replies(&[], false), move |o| {
         o.set_url(Some(b"http://origin.example/p")).unwrap();
         o.ip_version = ip;
+        o.set_proxy_url(Some(format!("https://localhost:{PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
         proxy.tunnel = true;
     })
@@ -3251,8 +3255,9 @@ fn a_tunnel_s_input_taken_in_as_the_body_goes_is_read() {
     };
     let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
         o.set_url(Some(b"http://origin.example/p")).unwrap();
+        o.set_proxy_url(Some(format!("https://localhost:{PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
         proxy.tunnel = true;
         o.method = Method::Post;
@@ -3400,8 +3405,9 @@ fn a_request_not_tunnelled_goes_to_an_http3_proxy_over_tcp() {
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/p")).unwrap();
+        o.set_proxy_url(Some(format!("https://127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://127.0.0.1:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
@@ -3600,8 +3606,10 @@ fn a_connect_udp_refused_fails_the_tunnel() {
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.http.version = crate::options::HttpVersion::Http3Only;
-        let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     assert_eq!(
@@ -3641,8 +3649,10 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.http.version = crate::options::HttpVersion::Http3;
-        let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"hello");
@@ -3902,8 +3912,10 @@ fn connect_udp_soft_timeout(first: &[u8]) -> Vec<String> {
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.http.version = crate::options::HttpVersion::Http3;
-        let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"hello");
@@ -3985,8 +3997,10 @@ fn http3_through_a_proxy_refusing_both_tunnels_fails() {
     let ran = get_with(&mut m, e, "/", second, |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.http.version = crate::options::HttpVersion::Http3;
-        let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     assert_eq!(*closed.lock().unwrap(), [1000, 1001]);
@@ -4072,8 +4086,10 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.http.version = crate::options::HttpVersion::Http3Only;
-        let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"123456789");
@@ -4188,8 +4204,10 @@ fn a_tunnelled_connection_says_goodbye_through_its_layers() {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.http.version = crate::options::HttpVersion::Http3Only;
         o.limits.reuse.forbid = true;
-        let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert!(
@@ -4247,8 +4265,10 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
         o.http.version = crate::options::HttpVersion::Http3Only;
         o.method = Method::Post;
         o.upload = bytes(&body);
-        let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+        o.set_proxy_url(Some(
+            format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes(),
+        ))
+        .unwrap();
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     let said: Vec<String> = ran
@@ -4339,8 +4359,9 @@ fn h3_through_h3_proxy_over(m: &mut Multi, e: Easy, ip: IpVersion) -> Ran {
         o.set_url(Some(b"https://origin.example/p")).unwrap();
         o.http.version = crate::options::HttpVersion::Http3Only;
         o.ip_version = ip;
+        o.set_proxy_url(Some(format!("https://localhost:{PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
         proxy.tunnel = true;
     })
@@ -4527,8 +4548,9 @@ fn early_data_goes_to_an_origin_through_an_http3_proxy() {
         o.set_url(Some(b"https://origin.example/p")).unwrap();
         o.http.version = crate::options::HttpVersion::Http3Only;
         o.tls.options.make_mut().unwrap().ssl_options = crate::options::SslOptions::EARLYDATA;
+        o.set_proxy_url(Some(format!("https://localhost:{PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
         proxy.tunnel = true;
     });
@@ -4577,8 +4599,9 @@ fn through_h3_proxy_early(early: crate::options::SslOptions, before: i64) -> Ran
             o.set_url(Some(b"http://origin.example/p")).unwrap();
             // One address to try, so one attempt.
             o.ip_version = IpVersion::V6;
+            o.set_proxy_url(Some(format!("https://localhost:{PORT}").into_bytes()))
+                .unwrap();
             let proxy = o.proxy.make_mut().unwrap();
-            proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
             proxy.kind = crate::options::ProxyType::Https3;
             proxy.tunnel = true;
             proxy.tls.options.make_mut().unwrap().ssl_options = early;
@@ -4763,8 +4786,9 @@ fn an_http3_proxy_connect_names_its_host_as_its_bytes() {
     let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
         o.set_url(Some(b"http://caf\xe9.example/p")).unwrap();
         o.ip_version = IpVersion::Any;
+        o.set_proxy_url(Some(format!("https://localhost:{PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
         proxy.tunnel = true;
     });

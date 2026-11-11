@@ -108,7 +108,8 @@ fn through_proxy(replies: &[&[u8]], set: impl FnOnce(&mut Options)) -> Ran {
     let seen = Seen::default();
     let o = e.options_mut();
     o.set_url(Some(b"http://origin.example/a")).unwrap();
-    o.proxy.make_mut().unwrap().url = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+    o.set_proxy_url(Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes()))
+        .unwrap();
     o.output.verbose = true;
     o.limits.total = TimeLimit::from_millis(10_000);
     o.callbacks

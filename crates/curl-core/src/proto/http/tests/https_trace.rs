@@ -889,7 +889,7 @@ fn through_https_proxy(
     e.set_components(Some(c));
     let ran = https_get(&mut m, e, url, |o| {
         let proxy = format!("https://127.0.0.1:{PORT}");
-        o.proxy.make_mut().unwrap().url = Some(proxy.into_bytes());
+        o.set_proxy_url(Some(proxy.into_bytes())).unwrap();
         set(o);
     });
     assert_eq!(ran.result, Ok(()));
@@ -1206,7 +1206,8 @@ fn a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket() {
     let url = format!("https://origin.example:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("socks5h://localhost{path}").into_bytes());
+        o.set_proxy_url(Some(format!("socks5h://localhost{path}").into_bytes()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     let got = lines(

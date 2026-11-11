@@ -1545,8 +1545,9 @@ fn a_library_s_resolve_is_run_again_when_it_says() {
         let mut e = easy(url);
         e.set_libraries(libraries);
         if case == Case::Socks {
-            e.options_mut().proxy.make_mut().unwrap().url =
-                Some(b"socks4://127.0.0.1:1080".to_vec());
+            e.options_mut()
+                .set_proxy_url(Some(b"socks4://127.0.0.1:1080".to_vec()))
+                .unwrap();
         }
         m.add(Box::new(e), (), &mut ev).unwrap();
         m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();

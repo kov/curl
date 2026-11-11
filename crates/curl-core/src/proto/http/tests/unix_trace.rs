@@ -258,7 +258,8 @@ fn a_unix_socket_refused_fails_over_it() {
 fn a_proxy_is_not_gone_through_over_a_unix_socket() {
     let at = unix_at("/tmp/t.sock", false);
     let (ran, _) = over(&at, Peer::Accepts, |o| {
-        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.set_proxy_url(Some(b"http://proxy.example:3128".to_vec()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.request, request_of("/"));

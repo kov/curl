@@ -45,7 +45,8 @@ pub(super) fn pretransfer<H: Host>(
     run.http = Inherited::new(cx.easy().options().http.version);
     let options = cx.easy().options();
     let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
-    cx.easy_mut().auth.start(want, proxy_want);
+    let generation = options.proxy.generation();
+    cx.easy_mut().auth.start(want, proxy_want, generation);
     // The application's referer, until a redirect gives another.
     if let Some(given) = &cx.easy().options().http.custom.referer {
         let mut referer = Vec::new();
@@ -1025,10 +1026,10 @@ fn choose_proxy<H: Host>(
     let options = &cx.easy().options().proxy;
     // An empty one is none, and turns the environment's off too.
     let given = |text: Option<&[u8]>| text.filter(|t| !t.is_empty()).map(copied).transpose();
-    let detect = !matches!(options.url.as_deref(), Some([]))
-        && !matches!(options.pre_proxy.as_deref(), Some([]));
+    let detect =
+        !matches!(options.url(), Some([])) && !matches!(options.pre_proxy.as_deref(), Some([]));
     let pre = given(options.pre_proxy.as_deref())?;
-    let text = match given(options.url.as_deref())? {
+    let text = match given(options.url())? {
         Some(text) => Some(text),
         None if pre.is_some() || !detect => None,
         None => match proxy::detect(scheme, &mut getenv).map_err(|_| ErrorKind::OutOfMemory)? {
@@ -1113,7 +1114,7 @@ fn parse_proxy<H: Host>(
         .tls
         .as_deref()
         .is_some_and(|tls| tls.support().https_proxy);
-    let parsed = match proxy::parse(text, kind, options.port, tls) {
+    let parsed = match proxy::parse(text, kind, options.port(), tls) {
         Ok(parsed) => parsed,
         Err(Refused::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(Refused::Syntax(e)) => {

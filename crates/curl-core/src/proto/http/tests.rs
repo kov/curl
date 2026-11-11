@@ -4539,7 +4539,8 @@ fn a_forwarding_proxy_gets_the_whole_url() {
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://user:pw@origin.example:80/a?b#c"))
             .unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -4593,7 +4594,8 @@ fn a_forwarded_ftp_url_carries_its_credentials() {
                 login.user = Some(user.to_vec());
                 login.password = Some(b"c".to_vec());
             }
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
         });
         assert_eq!(ran.result, Ok(()));
         let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -4609,7 +4611,8 @@ fn a_forwarded_transfer_speaks_the_proxy_s_scheme() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"ftp://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
@@ -4629,7 +4632,8 @@ fn a_connect_to_entry_tunnels_through_a_proxy() {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
         let entry = format!("origin.example:80:127.0.0.1:{PORT}");
         o.connect_to.set([entry.as_bytes()]).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
     let sent = String::from_utf8_lossy(&talk.received()).into_owned();
@@ -4649,7 +4653,8 @@ fn a_proxy_is_answered_with_its_own_credentials() {
     let (mut m, talk, _) = server(&[PROXY_CHALLENGE, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
         o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
         o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::ANY);
@@ -4694,8 +4699,9 @@ fn a_proxy_url_s_user_alone_is_its_login() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.set_proxy_url(Some(format!("http://a@127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         let proxy = o.proxy.make_mut().unwrap();
-        proxy.url = Some(format!("http://a@127.0.0.1:{PORT}").into_bytes());
         proxy.user = Some(b"u".to_vec());
         proxy.password = Some(b"p".to_vec());
         proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
@@ -4716,7 +4722,8 @@ fn a_custom_proxy_authorization_goes_beside_the_proxy_s() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
         o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
         o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::BASIC);
@@ -4741,7 +4748,8 @@ fn the_proxy_s_own_proxy_authorization_replaces_the_library_s() {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get(&mut m, "/", talk, |o| {
             o.set_url(Some(b"http://origin.example/a")).unwrap();
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
             o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
             o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
             o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::BASIC);
@@ -4781,7 +4789,8 @@ fn a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s() {
     let proxied = get_with(&mut m, direct.easy, "/", talk, |o| {
         creds(o);
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
     });
     assert_eq!(proxied.result, Ok(()));
     let text = String::from_utf8_lossy(&proxied.request).into_owned();
@@ -4792,7 +4801,8 @@ fn a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s() {
 /// `url`.
 fn through_socks(o: &mut Options, kind: &str, url: &[u8]) {
     o.set_url(Some(url)).unwrap();
-    o.proxy.make_mut().unwrap().url = Some(format!("{kind}://127.0.0.1:{PORT}").into_bytes());
+    o.set_proxy_url(Some(format!("{kind}://127.0.0.1:{PORT}").into_bytes()))
+        .unwrap();
 }
 
 const SOCKS5_GRANTED: &[u8] = b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50";
@@ -4856,7 +4866,8 @@ fn a_proxy_service_alone_makes_the_proxy_s_credentials() {
         let proxy = o.proxy.make_mut().unwrap();
         proxy.pre_proxy = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
         proxy.service = Some(b"rcmd2".to_vec());
-        proxy.url = Some(b"http://proxy.example:3128".to_vec());
+        o.set_proxy_url(Some(b"http://proxy.example:3128".to_vec()))
+            .unwrap();
     });
     assert!(
         ran.request.starts_with(b"\x05\x01\x00\x05\x01\x00"),
@@ -5004,7 +5015,8 @@ fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
     let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().tunnel = true;
         o.proxy.make_mut().unwrap().haproxy = true;
     });
@@ -5042,7 +5054,8 @@ fn the_proxy_protocol_s_line_follows_every_proxy_s_handshake() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().haproxy = true;
     });
     assert_eq!(ran.result, Ok(()));
@@ -5060,7 +5073,8 @@ fn the_proxy_protocol_s_line_follows_every_proxy_s_handshake() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.set_proxy_url(Some(b"http://proxy.example:3128".to_vec()))
+            .unwrap();
         o.proxy.make_mut().unwrap().tunnel = true;
         o.proxy.make_mut().unwrap().pre_proxy =
             Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
@@ -5139,7 +5153,8 @@ fn a_pre_proxy_reaches_the_http_proxy_that_forwards() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.set_proxy_url(Some(b"http://proxy.example:3128".to_vec()))
+            .unwrap();
         o.proxy.make_mut().unwrap().pre_proxy =
             Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
         o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
@@ -5175,7 +5190,8 @@ fn a_pre_proxy_reaches_the_http_proxy_that_tunnels() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.set_proxy_url(Some(b"http://proxy.example:3128".to_vec()))
+            .unwrap();
         o.proxy.make_mut().unwrap().tunnel = true;
         o.proxy.make_mut().unwrap().pre_proxy =
             Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
@@ -5224,7 +5240,8 @@ fn a_pre_proxy_alone_is_the_socks_proxy_and_only_socks() {
     ] {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get(&mut m, "/", talk, |o| {
-            o.proxy.make_mut().unwrap().url = proxy.map(|p| p.as_bytes().to_vec());
+            o.set_proxy_url(proxy.map(|p| p.as_bytes().to_vec()))
+                .unwrap();
             o.proxy.make_mut().unwrap().pre_proxy = Some(pre.as_bytes().to_vec());
         });
         assert_eq!(ran.result, Err(ErrorKind::CouldntResolveProxy));
@@ -5242,8 +5259,8 @@ fn a_pre_proxy_alone_is_the_socks_proxy_and_only_socks() {
 fn a_proxy_user_that_does_not_decode_is_a_bad_url() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get(&mut m, "/", talk.clone(), |o| {
-        o.proxy.make_mut().unwrap().url =
-            Some(format!("http://u%01@127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("http://u%01@127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
     });
     assert_eq!(ran.result, Err(ErrorKind::UrlMalformat));
     let said = ran.seen.text();
@@ -5276,7 +5293,8 @@ fn a_tunnel_answers_a_407_over_the_same_connection() {
     let (mut m, talk, _) = server(&[challenge, TUNNEL_UP, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().tunnel = true;
         o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
         o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
@@ -5314,7 +5332,8 @@ fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
     let mut m = serving(Peer::Accepts, &[&first, &second]);
     let ran = get(&mut m, "/", second.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().tunnel = true;
         o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
         o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
@@ -5355,7 +5374,8 @@ fn a_redial_through_a_socks_proxy_keeps_its_target_s_addresses() {
     e.set_components(Some(components));
     let ran = get_with(&mut m, e, "/", second.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(b"http://127.0.0.1:3128".to_vec());
+        o.set_proxy_url(Some(b"http://127.0.0.1:3128".to_vec()))
+            .unwrap();
         o.proxy.make_mut().unwrap().pre_proxy =
             Some(format!("socks5://127.0.0.1:{PORT}").into_bytes());
         o.proxy.make_mut().unwrap().tunnel = true;
@@ -5394,7 +5414,8 @@ fn a_socks_target_found_in_the_cache_is_said_once() {
     let mut m = serving(Peer::Accepts, &[&first, &second]);
     let set = |o: &mut Options| {
         o.set_url(Some(b"http://localhost/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("socks5://127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("socks5://127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.limits.reuse.fresh = true;
     };
     let ran = get(&mut m, "/", first.clone(), set);
@@ -5420,7 +5441,8 @@ fn suppressed_connect_headers_are_kept_and_not_delivered() {
         let (mut m, talk, _) = server(&[up, OK], false);
         let ran = get(&mut m, "/", talk, |o| {
             o.set_url(Some(b"http://origin.example/a")).unwrap();
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
             o.proxy.make_mut().unwrap().tunnel = true;
             o.proxy.make_mut().unwrap().suppress_connect_headers = suppress;
             o.output.include_header = true;
@@ -5451,7 +5473,8 @@ fn suppressed_connect_headers_are_kept_and_not_delivered() {
 /// Through a tunnel at `PORT` to `http://origin.example/a`.
 fn tunneled(o: &mut Options) {
     o.set_url(Some(b"http://origin.example/a")).unwrap();
-    o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+        .unwrap();
     o.proxy.make_mut().unwrap().tunnel = true;
 }
 
@@ -5679,7 +5702,8 @@ fn a_proxy_s_name_is_the_one_found_in_the_cache() {
     let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         tunneled(o);
-        o.proxy.make_mut().unwrap().url = Some(format!("proxy.test:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("proxy.test:{PORT}").into_bytes()))
+            .unwrap();
         let entry = format!("proxy.test:{PORT}:127.0.0.1");
         o.resolve.set([entry.as_bytes()]).unwrap();
     });
@@ -5690,6 +5714,65 @@ fn a_proxy_s_name_is_the_one_found_in_the_cache() {
             .any(|l| l == "Hostname proxy.test was found in DNS cache\n"),
         "{said:?}"
     );
+}
+
+/// The requests a peer was sent, each head whole.
+fn heads(talk: &Conversation) -> Vec<String> {
+    let all = String::from_utf8(talk.received()).unwrap();
+    all.split_inclusive("\r\n\r\n").map(str::to_owned).collect()
+}
+
+/// Basic, picked against one proxy of Basic and Digest, goes to that
+/// proxy at once on the handle's next transfer, the proxy set again as
+/// the same string; set to another, the method picked is forgotten and
+/// the new proxy is asked first, as C's `changeproxy` (`lib/setopt.c`)
+/// forgets it (test 1588 has it for Digest). The C build, driven by a
+/// program doing the same three transfers on one handle, sends the same
+/// heads.
+#[test]
+fn a_new_proxy_is_not_sent_the_basic_picked_for_the_old() {
+    const BASIC_407: &[u8] = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Basic realm=\"r\"\r\nContent-Length: 0\r\n\r\n";
+    let clock = ManualClock::new().unwrap();
+    let (a, b) = (PORT, PORT + 1);
+    let at = |port| SocketAddr::from(([127, 0, 0, 1], port));
+    let old = Conversation::replies(&[BASIC_407, OK, OK], false);
+    let new = Conversation::replies(&[BASIC_407, OK], false);
+    let net = records_as_built(FakeNet::new(clock.clone()))
+        .with_peer(at(a), Peer::Accepts)
+        .with_conversation(at(a), old.clone())
+        .with_peer(at(b), Peer::Accepts)
+        .with_conversation(at(b), new.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::with_env(env).unwrap();
+    let through = |port: u16| {
+        move |o: &mut Options| {
+            o.set_url(Some(b"http://origin.example/a")).unwrap();
+            o.set_proxy_url(Some(format!("127.0.0.1:{port}").into_bytes()))
+                .unwrap();
+            let proxy = o.proxy.make_mut().unwrap();
+            proxy.user = Some(b"u".to_vec());
+            proxy.password = Some(b"p".to_vec());
+            proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC | AuthMethods::DIGEST);
+        }
+    };
+    let basic = "Proxy-Authorization: Basic dTpw\r\n";
+    let one = get_with(&mut m, Easy::new(), "/", old.clone(), through(a));
+    let two = get_with(&mut m, one.easy, "/", old.clone(), through(a));
+    let three = get_with(&mut m, two.easy, "/", new.clone(), through(b));
+    assert_eq!(
+        (one.result, two.result, three.result),
+        (Ok(()), Ok(()), Ok(()))
+    );
+    let sent: Vec<bool> = heads(&old).iter().map(|h| h.contains(basic)).collect();
+    assert_eq!(sent, [false, true, true], "{:#?}", heads(&old));
+    let sent: Vec<bool> = heads(&new).iter().map(|h| h.contains(basic)).collect();
+    assert_eq!(sent, [false, true], "{:#?}", heads(&new));
 }
 
 /// Digest is the proxy's method from the first request, before it has a
@@ -5965,7 +6048,8 @@ fn an_origin_s_digest_is_answered_through_a_proxy() {
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
@@ -6056,7 +6140,8 @@ fn proxy_connection_counts_only_through_a_proxy() {
         let ran = get(&mut m, "/", talk, |o| {
             if proxied {
                 o.set_url(Some(b"http://origin.example/")).unwrap();
-                o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+                o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                    .unwrap();
             }
         });
         assert_eq!(ran.result, Ok(()));
@@ -6102,7 +6187,8 @@ fn a_challenge_with_nothing_to_pick_keeps_the_method_used() {
     let (mut m, talk, _) = server(&[proxy], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
         o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
     });
@@ -6541,7 +6627,7 @@ fn proxy_from_the_environment() {
         let uses = format!("Uses proxy env variable http_proxy == 'http://127.0.0.1:{PORT}'\n");
         assert!(said.contains(&uses), "{said:?}");
         let off: [fn(&mut Options); 2] = [
-            |o| o.proxy.make_mut().unwrap().url = Some(Vec::new()),
+            |o| o.set_proxy_url(Some(Vec::new())).unwrap(),
             |o| o.proxy.make_mut().unwrap().pre_proxy = Some(Vec::new()),
         ];
         for set in off {
@@ -8018,7 +8104,8 @@ fn a_proxy_asked_for_a_signature_picks_from_the_rest() {
     let (mut m, talk, _) = server(&[challenge, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
         o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
         o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
         o.proxy.make_mut().unwrap().auth =
@@ -8248,7 +8335,8 @@ fn a_forwarded_ftp_url_says_its_type() {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get(&mut m, "/", talk, |o| {
             o.set_url(Some(url)).unwrap();
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
             o.proxy.make_mut().unwrap().transfer_mode = true;
             o.line.make_mut().unwrap().ftp.ascii = ascii;
         });

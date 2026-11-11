@@ -256,7 +256,8 @@ fn a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get_with(&mut m, tracing_setup(), "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.make_mut().unwrap().url = Some(b"http://127.0.0.2:3128".to_vec());
+        o.set_proxy_url(Some(b"http://127.0.0.2:3128".to_vec()))
+            .unwrap();
         o.proxy.make_mut().unwrap().tunnel = true;
         o.proxy.make_mut().unwrap().pre_proxy =
             Some(format!("socks5://127.0.0.1:{PORT}").into_bytes());

@@ -679,7 +679,7 @@ fn https_through_a_proxy_reads_what_followed_its_answer_first() {
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         o.set_url(Some(b"https://origin.example/p")).unwrap();
         let proxy = format!("http://127.0.0.1:{PORT}");
-        o.proxy.make_mut().unwrap().url = Some(proxy.into_bytes());
+        o.set_proxy_url(Some(proxy.into_bytes())).unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.body(), b"ok\n");
@@ -699,7 +699,7 @@ fn https_through_a_proxy_reads_what_followed_its_answer_first() {
 fn https_proxy(o: &mut Options, url: &[u8]) {
     o.set_url(Some(url)).unwrap();
     let proxy = format!("https://127.0.0.1:{PORT}");
-    o.proxy.make_mut().unwrap().url = Some(proxy.into_bytes());
+    o.set_proxy_url(Some(proxy.into_bytes())).unwrap();
 }
 
 /// Plain HTTP through an HTTPS proxy is forwarded over TLS made with the
@@ -2949,7 +2949,8 @@ fn an_option_the_tls_library_lacks_fails_the_transfer_before_it_connects() {
 #[test]
 fn an_https_proxy_the_tls_library_cannot_speak_to_is_not_built_in() {
     let set: Setting = |o| {
-        o.proxy.make_mut().unwrap().url = Some(b"https://127.0.0.1:3128".to_vec());
+        o.set_proxy_url(Some(b"https://127.0.0.1:3128".to_vec()))
+            .unwrap();
     };
     let mut lacking = fake::SUPPORT;
     lacking.https_proxy = false;

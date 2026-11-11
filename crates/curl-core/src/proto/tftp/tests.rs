@@ -406,7 +406,8 @@ mod over_the_wire {
     /// `answer`.
     fn through_proxy(answer: &[u8]) -> (Vec<u8>, Ran) {
         fetch(&[answer], |o| {
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
         })
     }
 
@@ -479,7 +480,8 @@ mod over_the_wire {
         let mut m: Multi = Multi::with_env(env).unwrap();
         let url = format!("tftp://127.0.0.1:{PORT}/f");
         let ran = crate::proto::raw::wire::transfer(&mut m, &url, |o| {
-            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
             o.sockets.make_mut().unwrap().local = bind;
         });
         drop(m);
@@ -538,8 +540,8 @@ mod over_the_wire {
     #[test]
     fn a_socks_proxy_is_spoken_to_over_tcp() {
         let (said, ran) = fetch(&[b"\x05\xff"], |o| {
-            o.proxy.make_mut().unwrap().url =
-                Some(format!("socks5://127.0.0.1:{PORT}").into_bytes());
+            o.set_proxy_url(Some(format!("socks5://127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
         });
         assert_eq!(ran.result, Some(Err(ErrorKind::Proxy)), "{}", ran.text);
         assert_eq!(said[0], 5, "the SOCKS5 greeting: {said:?}");

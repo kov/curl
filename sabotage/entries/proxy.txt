@@ -868,3 +868,85 @@ witness: curl-core options::tests::the_proxy_s_generation_moves_as_c_s_changepro
 --- new
         if true {
             proxy.generation = proxy.generation.next();
+
+=== a DICT request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Dict(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Dict(_) => CredentialGate::FIRST.trusted(),
+
+=== a Gopher request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Gopher(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Gopher(_) => CredentialGate::FIRST.trusted(),
+
+=== an IMAP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Imap(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Imap(_) => CredentialGate::FIRST.trusted(),
+
+=== a POP3 request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Pop3(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Pop3(_) => CredentialGate::FIRST.trusted(),
+
+=== an SMTP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Smtp(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Smtp(_) => CredentialGate::FIRST.trusted(),
+
+=== a TELNET request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Telnet(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Telnet(_) => CredentialGate::FIRST.trusted(),
+
+=== an MQTT request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Mqtt(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Mqtt(_) => CredentialGate::FIRST.trusted(),
+
+=== an RTSP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+    pub(crate) fn trusted(&self) -> Option<Trusted> {
+        self.base.gate.trusted()
+--- new
+    pub(crate) fn trusted(&self) -> Option<Trusted> {
+        crate::auth::creds::CredentialGate::FIRST.trusted()
+
+=== an SCP or SFTP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::ssh::tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Ssh(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Ssh(_) => CredentialGate::FIRST.trusted(),
+
+=== an LDAP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::ldap::tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Ldap(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Ldap(_) => CredentialGate::FIRST.trusted(),

@@ -1678,6 +1678,9 @@ impl ProtoState {
 }
 
 #[cfg(test)]
+mod gate_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::url::ParseOptions;

@@ -1633,3 +1633,21 @@ fn after_starttls_sasl_asks_for_the_mechanisms() {
         ]
     );
 }
+
+/// After a redirect from HTTP to another host's LDAP, the tunnel's
+/// `CONNECT` carries none of the first host's `Authorization:` and
+/// `Cookie:` lines (`Curl_auth_allowed_to_host`), as the C tool sends it.
+#[test]
+fn a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines() {
+    let ldap: &'static FakeLdap = Box::leak(Box::new(FakeLdap(Arc::default())));
+    let libraries = SharedLibraries::new(Libraries {
+        ldap: Some(LdapLibrary::Fd(ldap)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    crate::proto::gate_tests::a_redirect_s_tunnel_is_gated(
+        "ldap://other.example:3389/dc=x",
+        "other.example:3389",
+        Some(libraries),
+    );
+}

@@ -2484,3 +2484,23 @@ fn a_copy_of_the_keys_has_each_file() {
     assert_eq!(copy.passphrase.as_deref(), Some(&b"secret"[..]));
     assert!(copy.same(&keys));
 }
+
+/// After a redirect from HTTP to another host's SCP or SFTP, the tunnel's
+/// `CONNECT` carries none of the first host's `Authorization:` and
+/// `Cookie:` lines (`Curl_auth_allowed_to_host`), as the C tool sends it.
+#[test]
+fn a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines() {
+    for to in ["scp://other.example:2222/f", "sftp://other.example:2222/f"] {
+        let ssh: &'static FakeSsh = Box::leak(Box::new(FakeSsh(world(&[]))));
+        let libraries = SharedLibraries::new(Libraries {
+            ssh: Some(crate::ssh::SshLibrary::Libssh(ssh)),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        crate::proto::gate_tests::a_redirect_s_tunnel_is_gated(
+            to,
+            "other.example:2222",
+            Some(libraries),
+        );
+    }
+}

@@ -151,8 +151,11 @@ pub fn parse(der: &[u8]) -> Option<Certificate<'_>> {
     let (issuer, rest) = element(rest)?;
     let (validity, rest) = element(rest)?;
     let (not_before, after) = element(validity.content)?;
-    let (not_after, left) = element(after)?;
-    if !left.is_empty() {
+    // The two dates end where the validity does: `notAfter` ends at its
+    // content's end, which an unspecified length's end-of-contents
+    // octets follow (`elem.end != cert->notAfter.end`).
+    let (not_after, _) = element(after)?;
+    if not_after.whole.len() != after.len() {
         return None;
     }
     let (subject, rest) = element(rest)?;
@@ -266,6 +269,59 @@ mod tests {
         assert!(c.extensions.is_none());
         // Cut short, it reads as none.
         assert!(parse(&der[..der.len() - 1]).is_none());
+    }
+
+    /// The validity's dates must end where it ends: a `notAfter` of
+    /// unspecified length, its end-of-contents octets after it, does not,
+    /// and the certificate is refused (`elem.end != cert->notAfter.end`),
+    /// as one with a definite `notAfter` is read. C's `Curl_parseX509`
+    /// gives 0 and -1 for these same two certificates.
+    #[test]
+    fn the_validity_ends_with_its_not_after() {
+        let cert = |validity: &[u8]| {
+            let mut tbs = vec![0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01, 0x30, 0x00];
+            tbs.extend_from_slice(&[0x30, 0x00]);
+            tbs.extend_from_slice(validity);
+            tbs.extend_from_slice(&[0x30, 0x00]);
+            tbs.extend_from_slice(&[
+                0x30, 0x09, 0x30, 0x03, 0x06, 0x01, 0x2a, 0x03, 0x02, 0x00, 0x01,
+            ]);
+            let mut cert = vec![0x30, u8::try_from(tbs.len()).unwrap()];
+            cert.extend_from_slice(&tbs);
+            cert.extend_from_slice(&[0x30, 0x00, 0x03, 0x01, 0x00]);
+            let mut der = vec![0x30, u8::try_from(cert.len()).unwrap()];
+            der.extend_from_slice(&cert);
+            der
+        };
+        let definite = cert(&[0x30, 0x04, 0x17, 0x00, 0x17, 0x00]);
+        assert_eq!(
+            definite,
+            hex("3026301fa0030201020201013000300030041700170030003009300306012a030200013000030100")
+        );
+        assert!(parse(&definite).is_some());
+        // A constructed UTCTime of unspecified length, holding an empty
+        // octet string, then its end-of-contents.
+        let indefinite = cert(&[0x30, 0x08, 0x17, 0x00, 0x37, 0x80, 0x04, 0x00, 0x00, 0x00]);
+        assert_eq!(
+            indefinite,
+            hex(
+                "302a3023a003020102020101300030003008170037800400000030003009300306012a030200013000030100"
+            )
+        );
+        // Nothing follows the date in the validity: only its
+        // end-of-contents octets stand between them.
+        let (validity, _) = element(&indefinite[16..]).unwrap();
+        assert_eq!(validity.tag, 0x10);
+        let (_, after) = element(validity.content).unwrap();
+        assert!(element(after).unwrap().1.is_empty());
+        assert!(parse(&indefinite).is_none());
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// An element of unspecified length runs to its end-of-contents; a

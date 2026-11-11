@@ -54,3 +54,11 @@ witness: curl-core tls::x509::tests::unit1657_nesting_and_certificates
 const DEEPEST: usize = 16;
 --- new
 const DEEPEST: usize = 17;
+
+=== a notAfter of unspecified length ends the validity
+file: crates/curl-core/src/tls/x509.rs
+witness: curl-core tls::x509::tests::the_validity_ends_with_its_not_after
+--- old
+    if not_after.whole.len() != after.len() {
+--- new
+    if not_after.whole.len() + 2 < after.len() {

@@ -857,11 +857,6 @@ rule of `CLAUDE.md` each is to be brought to C's behaviour, with a test, and the
 here. They are listed so that none is read as C's behaviour meanwhile; none has a test that pins
 it.
 
-- **An indefinite-length `notAfter` that ends a certificate's validity is read.** C requires the
-  date to end where the validity's content ends (`lib/vtls/x509asn1.c`), which an
-  indefinite-length date with its end-of-contents octets does not; the core's reader
-  (`crates/curl-core/src/tls/x509.rs`) only requires that nothing follows it. The reader serves
-  wolfSSL's key pinning, Schannel's checks and certificate info. No test.
 - **`curl_easy_cleanup` keeps a handle its multi failed to remove.** When `curl_multi_remove_handle`
   fails inside it (a timer callback refusing, or a call from inside a callback), cleanup returns
   without freeing the handle, so its cookie jar, HSTS and alt-svc files are not written

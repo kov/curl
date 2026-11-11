@@ -132,6 +132,11 @@ pub(crate) enum Send {
     Cancel,
 }
 
+/// The exchange ended in the server's word that the login succeeded:
+/// made only here, as a step reads it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Authenticated(());
+
 /// Where the exchange is after a step (`saslprogress`).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Progress {
@@ -141,7 +146,7 @@ pub(crate) enum Progress {
     /// went with `Sasl::sent` (`SASL_INPROGRESS`).
     Sends(Send),
     /// The exchange is over: logged in (`SASL_DONE`).
-    Done,
+    Done(Authenticated),
 }
 
 /// Why a step failed.
@@ -571,7 +576,7 @@ impl Sasl {
         if self.state == State::Final {
             self.set_state(cx, State::Stop);
             return if code == Code::Final {
-                Ok(Progress::Done)
+                Ok(Progress::Done(Authenticated(())))
             } else {
                 Err(SaslError::Denied)
             };
@@ -585,7 +590,7 @@ impl Sasl {
         // `None` is a challenge that cannot be read: the exchange is
         // cancelled (`CURLE_BAD_CONTENT_ENCODING`).
         let resp: Option<Vec<u8>> = match self.state {
-            State::Stop => return Ok(Progress::Done),
+            State::Stop => return Ok(Progress::Done(Authenticated(()))),
             State::Plain => Some(plain(cx)?),
             State::Login => {
                 next = State::LoginPasswd;
@@ -635,7 +640,7 @@ impl Sasl {
             State::OAuth2Resp => match code {
                 Code::Final => {
                     self.set_state(cx, State::Stop);
-                    return Ok(Progress::Done);
+                    return Ok(Progress::Done(Authenticated(())));
                 }
                 // Acknowledged with a byte of 1.
                 Code::Continue => Some(copy(b"\x01")?),

@@ -859,7 +859,7 @@ impl Request {
                 set_state(cx, pc, State::Auth);
                 Ok(())
             }
-            Progress::Idle | Progress::Done => {
+            Progress::Idle | Progress::Done(_) => {
                 sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
                     sasl.blocked(sx)
                 });
@@ -923,7 +923,7 @@ impl Request {
             sasl.step(sx, step, &copied)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
-            Progress::Done => {
+            Progress::Done(_authenticated) => {
                 set_state(cx, pc, State::Stop);
                 Ok(())
             }

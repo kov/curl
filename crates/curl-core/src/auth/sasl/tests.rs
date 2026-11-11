@@ -122,7 +122,7 @@ fn cram_md5_answers_an_empty_challenge() {
         );
         assert_eq!(
             sasl.step_sent(cx, Code::Final, b"").unwrap(),
-            Progress::Done
+            Progress::Done(Authenticated(()))
         );
     });
 }
@@ -177,7 +177,7 @@ fn digest_md5_answers_as_c_s_debug_build_does() {
         );
         assert_eq!(
             sasl.step_sent(cx, Code::Final, b"").unwrap(),
-            Progress::Done
+            Progress::Done(Authenticated(()))
         );
     });
 }
@@ -344,7 +344,7 @@ fn an_initial_response_is_each_mechanism_s_first_message() {
     let pw = Secret::new(b"user", b"secret", b"");
     let owned = Secret::new(b"user", b"secret", b"").with_authzid(b"boss");
     let bearer = Secret::new(b"user", b"", b"").with_bearer(b"tok");
-    let done = || Ok(Progress::Done);
+    let done = || Ok(Progress::Done(Authenticated(())));
     assert_eq!(
         ir(owned, Mechs::PLAIN, true, false),
         (auth("PLAIN", Some(b"boss\0user\0secret")), done())
@@ -444,7 +444,7 @@ fn login_answers_the_user_then_the_password() {
         );
         assert_eq!(
             sasl.step_sent(cx, Code::Final, b"").unwrap(),
-            Progress::Done
+            Progress::Done(Authenticated(()))
         );
     });
 }
@@ -464,7 +464,7 @@ fn external_answers_with_the_user() {
         );
         assert_eq!(
             sasl.step_sent(cx, Code::Final, b"").unwrap(),
-            Progress::Done
+            Progress::Done(Authenticated(()))
         );
     });
 }
@@ -485,7 +485,7 @@ fn the_bearer_s_mechanisms_answer_their_prompts() {
         );
         assert_eq!(
             sasl.step_sent(cx, Code::Final, b"").unwrap(),
-            Progress::Done
+            Progress::Done(Authenticated(()))
         );
     });
     let msg: &[u8] = b"n,a=user,\x01host=127.0.0.1\x01auth=Bearer tok\x01\x01";
@@ -511,7 +511,7 @@ fn the_bearer_s_mechanisms_answer_their_prompts() {
         sasl.step_sent(cx, Code::Continue, b"").unwrap();
         assert_eq!(
             sasl.step_sent(cx, Code::Final, b"").unwrap(),
-            Progress::Done
+            Progress::Done(Authenticated(()))
         );
     });
 }

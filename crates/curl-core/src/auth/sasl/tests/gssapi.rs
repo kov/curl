@@ -154,7 +154,7 @@ fn gssapi_logs_in_by_the_user_s_token_then_the_layer() {
     let (p, _) = with_sspi(sspi, Some(creds), false, |cx| {
         sasl.step_sent(cx, Code::Final, b"")
     });
-    assert_eq!(p, Ok(Progress::Done));
+    assert_eq!(p, Ok(Progress::Done(Authenticated(()))));
     drop(sasl);
     assert_eq!(sspi.asked(), [Asked::Dropped]);
     assert_eq!(sspi.unused(), 0);

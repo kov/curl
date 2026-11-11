@@ -127,3 +127,20 @@ witness: curl-ldap openldap::tests::a_session_over_a_wire_reads_and_writes_throu
         Scope::Subtree => sys::LDAP_SCOPE_SUBTREE,
 --- new
         Scope::Subtree => sys::LDAP_SCOPE_BASE,
+
+=== an LDAP SASL bind cancelled with no mechanism left is taken as bound
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::a_cancelled_sasl_bind_with_no_mechanism_left_fails_the_login
+features: test-util
+--- old
+            Progress::Idle => Err(trace::fail(
+                cx,
+                ErrorKind::LoginDenied,
+                format_args!("Authentication cancelled"),
+            )),
+--- new
+            Progress::Idle => {
+                let (lc, _) = ldap_of(lease);
+                Self::to(cx, lc, State::Stop);
+                Ok(())
+            }

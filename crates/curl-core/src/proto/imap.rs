@@ -828,7 +828,7 @@ impl Request {
                 set_state(cx, pc, State::Authenticate);
                 Ok(())
             }
-            Progress::Idle | Progress::Done => {
+            Progress::Idle | Progress::Done(_) => {
                 if !pc.login_disabled && pc.preferred.has(AuthTypes::CLEARTEXT) {
                     self.login(cx, pc, carrier)
                 } else {
@@ -933,7 +933,7 @@ impl Request {
             sasl.step(sx, code, &copied)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
-            Progress::Done => {
+            Progress::Done(_authenticated) => {
                 set_state(cx, pc, State::Stop);
                 Ok(())
             }

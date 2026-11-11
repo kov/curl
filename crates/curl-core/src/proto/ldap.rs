@@ -598,7 +598,7 @@ impl Request {
                 sends = true;
                 self.sasl_send(cx, lease, send)
             }
-            Ok(Progress::Idle | Progress::Done) => Ok(()),
+            Ok(Progress::Idle | Progress::Done(_)) => Ok(()),
         };
         let (lc, _) = ldap_of(lease);
         Self::to(cx, lc, State::Sasl);
@@ -962,7 +962,7 @@ impl Request {
         let message = servercred.unwrap_or_default();
         let progress = self.with_sasl(cx, lease, |sasl, sx| sasl.step(sx, said, &message));
         match progress.map_err(|e| sasl_failed(cx, e))? {
-            Progress::Done => {
+            Progress::Done(_authenticated) => {
                 let (lc, _) = ldap_of(lease);
                 Self::to(cx, lc, State::Stop);
                 Ok(())

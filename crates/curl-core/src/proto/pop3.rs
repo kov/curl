@@ -744,7 +744,7 @@ impl Request {
                     return Ok(());
                 }
                 Progress::Idle => {}
-                Progress::Done => return Ok(()),
+                Progress::Done(_authenticated) => return Ok(()),
             }
         }
         self.fallback(cx, pc, carrier, false)
@@ -883,7 +883,7 @@ impl Request {
             sasl.step(sx, code, &copied)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
-            Progress::Done => {
+            Progress::Done(_authenticated) => {
                 set_state(cx, pc, State::Stop);
                 Ok(())
             }

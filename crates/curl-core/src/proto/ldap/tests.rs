@@ -1110,6 +1110,38 @@ fn a_sasl_challenge_is_answered_in_another_bind() {
     assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply));
 }
 
+/// A challenge the mechanism cannot answer cancels it; with no other
+/// mechanism left, the login fails and nothing is searched.
+#[test]
+fn a_cancelled_sasl_bind_with_no_mechanism_left_fails_the_login() {
+    let ran = run(
+        URL,
+        |w| {
+            one_entry(w);
+            w.mechs = vec![b"DIGEST-MD5".to_vec()];
+            w.sasl = [(Code::SASL_BIND_IN_PROGRESS, Some(b"x".to_vec()))].into();
+        },
+        |o| {
+            credentials(o, b"u:p");
+            login_options(o, b"AUTH=DIGEST-MD5")
+        },
+    );
+    assert_eq!(ran.result, Err(ErrorKind::LoginDenied), "{}", ran.said);
+    assert!(
+        ran.said.contains("Authentication cancelled"),
+        "{}",
+        ran.said
+    );
+    assert!(
+        ran.calls.iter().any(|c| c.starts_with("bind - null")),
+        "{:?}",
+        ran.calls
+    );
+    // Only the search for the mechanisms, none for the URL.
+    let searches = ran.calls.iter().filter(|c| c.starts_with("search")).count();
+    assert_eq!(searches, 1, "{:?}", ran.calls);
+}
+
 /// A SASL bind refused is the login's failure, and no version 2 bind
 /// follows a protocol error.
 #[test]

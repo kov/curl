@@ -703,10 +703,14 @@ mod tests {
 
     /// Named with no link in it: the system counts a name's length with
     /// its links resolved, and macOS's temporary directory is under
-    /// `/var`, a link to `/private/var`.
+    /// `/var`, a link to `/private/var`. Not on Windows, whose canonical
+    /// name is marked `\\?\`, under which `/` is no separator.
     fn dir(name: &str) -> Dir {
         let d = std::env::temp_dir().join(format!("curl-core-qlog-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
+        if cfg!(windows) {
+            return Dir(d);
+        }
         Dir(std::fs::canonicalize(&d).unwrap())
     }
 

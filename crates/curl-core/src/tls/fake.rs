@@ -181,6 +181,26 @@ pub struct FakeLog {
     pub ech_configs: Option<(u8, usize)>,
     /// How many of the QUIC sessions made were handed ECH configurations.
     pub quic_ech_offered: usize,
+    /// Whether the last session was given any of the client's own
+    /// identity: a certificate or key, the key's password, a pinned
+    /// public key, ECH, or a certificate the system picks.
+    pub client_identity: bool,
+}
+
+/// Whether `identity` holds any of the client's own identity
+/// (`FakeLog::client_identity`).
+fn client_identity(identity: &TlsIdentity) -> bool {
+    let o = &identity.options;
+    o.cert.is_some()
+        || o.cert_blob.is_some()
+        || o.cert_type.is_some()
+        || o.key.is_some()
+        || o.key_blob.is_some()
+        || o.key_type.is_some()
+        || o.key_password.is_some()
+        || o.pinned_key.is_some()
+        || o.ech != crate::options::Ech::NONE
+        || identity.auto_client_cert()
 }
 
 /// What the fake keeps for a multi: its number, and the log it notes
@@ -246,6 +266,7 @@ impl FakeTls {
             early_decisions: 0,
             ech_configs: None,
             quic_ech_offered: 0,
+            client_identity: false,
         };
         Ok(FakeTls {
             log: TryArc::try_new(Lock::new(log))?,
@@ -450,6 +471,7 @@ impl TlsBackend for FakeTls {
             log.port = peer.port;
             log.kind = Some(peer.kind);
             log.verify_peer = identity.verify_peer;
+            log.client_identity = client_identity(identity);
             log.alpn = Some(Alpn::H3);
             log.ech_configs = peer
                 .ech_configs
@@ -522,6 +544,7 @@ impl TlsBackend for FakeTls {
             log.port = peer.port;
             log.kind = Some(peer.kind);
             log.verify_peer = identity.verify_peer;
+            log.client_identity = client_identity(identity);
             log.alpn = Some(alpn);
             log.ech_configs = peer
                 .ech_configs

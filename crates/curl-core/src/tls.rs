@@ -1647,6 +1647,19 @@ impl<'a> TlsCx<'a> {
     }
 }
 
+/// Which origin a transfer's TLS goes to: the one its first request went
+/// to, or another a redirect took it to. Only the first is given the
+/// client's own identity: its certificate and key, the key's password,
+/// the pinned public key, ECH, and a certificate the system picks
+/// (`Curl_peer_equal(initial_origin, origin)` in
+/// `Curl_ssl_filter_config_tmp_init`). A proxy's TLS is always the
+/// first's, as C's has no initial origin to differ from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsOrigin {
+    First,
+    Other,
+}
+
 /// Every setting a connection's TLS handshake was made with that a
 /// transfer must share to reuse the connection (C's `ssl_filter_config`,
 /// compared by `match_ssl_primary_config`): made of a transfer's settings
@@ -1659,9 +1672,13 @@ pub struct TlsIdentity {
     pub verify_peer: bool,
     /// The certificate must name the host.
     pub verify_host: bool,
+    /// What the options leave out for an origin not the first are left
+    /// out of them.
     pub options: TlsOptions,
     /// What the library trusts when the options name nothing.
     pub ca_defaults: CaDefaults,
+    /// The origin it was made for, the first or another.
+    pub origin: TlsOrigin,
 }
 
 impl TlsIdentity {
@@ -1697,7 +1714,14 @@ impl TlsIdentity {
             // options are what that view reads.
             origin: None,
             ca_defaults: self.ca_defaults,
+            to: self.origin,
         }
+    }
+
+    /// The client presents a certificate the system picks
+    /// (`TlsView::auto_client_cert`).
+    pub fn auto_client_cert(&self) -> bool {
+        self.view().auto_client_cert()
     }
 
     /// The file of certificates to trust: the transfer's, or the
@@ -1741,6 +1765,9 @@ pub(crate) struct TlsView<'a> {
     /// signature algorithms and ECH are none, as read through this view.
     origin: Option<&'a TlsOptions>,
     ca_defaults: CaDefaults,
+    /// The origin the TLS goes to: another than the first is given none
+    /// of the client's own identity, as read through this view.
+    to: TlsOrigin,
 }
 
 /// What a proxy's TLS tries of ECH: nothing.
@@ -1756,7 +1783,34 @@ impl<'a> TlsView<'a> {
             options: &tls.options,
             origin: None,
             ca_defaults,
+            to: TlsOrigin::First,
         }
+    }
+
+    /// The same settings, for the TLS to `origin`.
+    pub(crate) fn to(self, origin: TlsOrigin) -> TlsView<'a> {
+        TlsView { to: origin, ..self }
+    }
+
+    /// A setting of the client's own identity, which only the first
+    /// origin is given: none for another.
+    fn first_only<T: ?Sized>(&self, setting: Option<&'a T>) -> Option<&'a T> {
+        match self.to {
+            TlsOrigin::First => setting,
+            TlsOrigin::Other => None,
+        }
+    }
+
+    /// The client presents a certificate the system picks
+    /// (`CURLSSLOPT_AUTO_CLIENT_CERT`, Schannel's): asked for, and to the
+    /// first origin alone (`auto_client_cert`). The option itself stays
+    /// in `ssl_options`, which a connection is matched by whole.
+    pub(crate) fn auto_client_cert(&self) -> bool {
+        self.to == TlsOrigin::First
+            && self
+                .options
+                .ssl_options
+                .contains(SslOptions::AUTO_CLIENT_CERT)
     }
 
     /// The settings an HTTPS proxy's TLS is made with: the proxy's
@@ -1793,11 +1847,12 @@ impl<'a> TlsView<'a> {
         }
     }
 
-    /// What is tried of ECH: nothing for a proxy's.
+    /// What is tried of ECH: nothing for a proxy's, nor for an origin
+    /// not the first.
     fn ech(&self) -> &'a crate::options::Ech {
-        match self.origin {
-            Some(_) => &NO_ECH,
-            None => &self.options.ech,
+        match (self.origin, self.to) {
+            (Some(_), _) | (None, TlsOrigin::Other) => &NO_ECH,
+            (None, TlsOrigin::First) => &self.options.ech,
         }
     }
 
@@ -1839,10 +1894,22 @@ impl<'a> TlsView<'a> {
     /// handle's context handler, which a connection does not keep (it is
     /// called through the transfer that makes the connection); a proxy's
     /// with what it takes of the origin's, and without what it never
-    /// has. Seen again (`TlsIdentity::view`), it is the same as these.
+    /// has; for an origin not the first, without the client's own
+    /// identity. Seen again (`TlsIdentity::view`), it is the same as these.
     pub(crate) fn made(&self) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
         let mut options = self.options.try_clone()?;
         options.context = None;
+        if self.to == TlsOrigin::Other {
+            options.cert = None;
+            options.cert_blob = None;
+            options.cert_type = None;
+            options.key = None;
+            options.key_blob = None;
+            options.key_type = None;
+            options.key_password = None;
+            options.pinned_key = None;
+            options.ech = crate::options::Ech::NONE;
+        }
         if let Some(origin) = self.origin {
             options.curves = None;
             options.signature_algorithms = None;
@@ -1865,6 +1932,7 @@ impl<'a> TlsView<'a> {
             verify_host: self.verify_host,
             options,
             ca_defaults: self.ca_defaults,
+            origin: self.to,
         })
     }
 
@@ -1888,6 +1956,9 @@ impl<'a> TlsView<'a> {
             // as C, which copies the default in, finds them; the system's
             // store as it resolves (`native_ca_store`).
             ca_defaults: _,
+            // Compared as what it leaves out of the client's identity,
+            // below (`first_only`, `ech`, `auto_client_cert`).
+            to: _,
         } = self;
         let TlsOptions {
             min_version,
@@ -1947,18 +2018,28 @@ impl<'a> TlsView<'a> {
             && *crl_file == o.crl_file
             && *issuer_cert == o.issuer_cert
             && *issuer_cert_blob == o.issuer_cert_blob
-            && *cert == o.cert
-            && *cert_blob == o.cert_blob
-            && same_name(cert_type.as_deref(), o.cert_type.as_deref())
-            && *key == o.key
-            && *key_blob == o.key_blob
-            && same_name(key_type.as_deref(), o.key_type.as_deref())
-            && same_secret(key_password.as_deref(), o.key_password.as_deref())
+            && self.auto_client_cert() == other.auto_client_cert()
+            && self.first_only(cert.as_deref()) == other.first_only(o.cert.as_deref())
+            && self.first_only(cert_blob.as_deref()) == other.first_only(o.cert_blob.as_deref())
+            && same_name(
+                self.first_only(cert_type.as_deref()),
+                other.first_only(o.cert_type.as_deref()),
+            )
+            && self.first_only(key.as_deref()) == other.first_only(o.key.as_deref())
+            && self.first_only(key_blob.as_deref()) == other.first_only(o.key_blob.as_deref())
+            && same_name(
+                self.first_only(key_type.as_deref()),
+                other.first_only(o.key_type.as_deref()),
+            )
+            && same_secret(
+                self.first_only(key_password.as_deref()),
+                other.first_only(o.key_password.as_deref()),
+            )
             && same_name(ciphers.as_deref(), o.ciphers.as_deref())
             && same_name(tls13_ciphers.as_deref(), o.tls13_ciphers.as_deref())
             && same_name(self.curves(), other.curves())
             && same_name(self.signature_algorithms(), other.signature_algorithms())
-            && *pinned_key == o.pinned_key
+            && self.first_only(pinned_key.as_deref()) == other.first_only(o.pinned_key.as_deref())
             // The mode, and the configuration and name exactly, kept or
             // not (`Curl_safecmp`).
             && self.ech() == other.ech()

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::conn::{OriginTls, RouteTls};
+use crate::tls::TlsOrigin;
 
 /// C's pretransfer, once per transfer: the option's URL parsed for the
 /// first request.
@@ -718,6 +719,13 @@ pub(super) fn start_leg<H: Host>(
     if run.first.is_none() {
         run.first = Some(origin.clone());
     }
+    // Only the origin the transfer started at is given the client's own
+    // TLS identity, whatever the application lets credentials follow
+    // (`Curl_peer_equal(initial_origin, origin)`).
+    let tls_origin = match run.first.as_deref() {
+        Some(first) if *first == *origin => TlsOrigin::First,
+        _ => TlsOrigin::Other,
+    };
     // A Unix socket is connected to in place of the origin's host, and
     // of any connect-to entry, and no proxy is gone through
     // (`url_set_conn_origin_etc`).
@@ -833,9 +841,9 @@ pub(super) fn start_leg<H: Host>(
     );
     let reuses_tls = proto.scheme().is_some_and(crate::conn::Scheme::reuses_tls);
     let tls = if secured {
-        Some(OriginTls::Start(RouteTls::Wanted))
+        Some(OriginTls::Start(RouteTls::Wanted(tls_origin)))
     } else if has_tls && (reuses_tls || cx.easy().options().line.use_ssl.may()) {
-        Some(OriginTls::Upgrade(RouteTls::Wanted))
+        Some(OriginTls::Upgrade(RouteTls::Wanted(tls_origin)))
     } else {
         None
     };

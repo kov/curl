@@ -16,6 +16,7 @@ fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
             path: None,
             system: crate::tls::SystemStore::Asked,
         },
+        origin: crate::tls::TlsOrigin::First,
     };
     id.options.ca_file = CaSetting::Given(CA.as_bytes().to_vec());
     change(&mut id);
@@ -235,6 +236,7 @@ fn unit3304_client_settings_in_the_key() {
             verify_host: true,
             options: TlsOptions::NONE,
             ca_defaults: CaDefaults::NONE,
+            origin: crate::tls::TlsOrigin::First,
         };
         base(&mut id.options);
         change(&mut id.options);

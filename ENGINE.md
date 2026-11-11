@@ -3517,7 +3517,11 @@ compares (versions, the options bits, the status check, CA file, path and blob, 
 issuer, the client certificate and key with their formats and password, the cipher lists,
 curves, signature algorithms, the pinned key, ECH), but not the handle's context handler. It is
 made only as a connection is set up (`Curl_ssl_conn_config_init`): a transfer's route holds
-`RouteTls::Wanted`, and the pool's `add`, once there is room, makes the route
+`RouteTls::Wanted(TlsOrigin)`, which the leg sets from `Run::first`: `Other` for an origin not
+the transfer's first, whose view and identity leave out the client's certificate and key with
+their formats and password, the pinned key, ECH, and a certificate the system picks
+(`Curl_peer_equal(initial_origin, origin)` in `Curl_ssl_filter_config_tmp_init`;
+`CURLOPT_UNRESTRICTED_AUTH` does not bring them back); and the pool's `add`, once there is room, makes the route
 (`NetRoute::made`), whose identities the connection, its setup's stages and the session
 cache's key (`SessionPeer`) then take; `ConnectMachine` refuses a route not made. A transfer
 looking for a connection compares the connection's identity with its own settings where its

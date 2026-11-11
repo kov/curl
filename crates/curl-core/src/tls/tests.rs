@@ -13,6 +13,7 @@ pub(super) fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TlsIdentity {
             path: None,
             system: SystemStore::Asked,
         },
+        origin: crate::tls::TlsOrigin::First,
     };
     change(&mut id);
     id
@@ -229,6 +230,71 @@ fn a_proxy_s_settings_compare_as_its_identity_but_for_what_it_never_has() {
         assert_eq!(made.options.engine_default, theirs.engine_default, "{name}");
         assert_eq!(made.options.session_cache, theirs.session_cache, "{name}");
     }
+}
+
+/// The settings of the client's own identity, which only the first
+/// origin is given (`Curl_ssl_filter_config_tmp_init`).
+const FIRST_ORIGIN_S: [&str; 11] = [
+    "cert",
+    "cert_blob",
+    "cert_type",
+    "key",
+    "key_blob",
+    "key_type",
+    "key_password",
+    "pinned_key",
+    "ech mode",
+    "ech config",
+    "ech public name",
+];
+
+/// The TLS to an origin not the first compares as the identity made for
+/// it, which has none of the client's own identity: a change to one of
+/// those tells two such apart no more, and the first origin's, which has
+/// them, from neither; the rest of the settings still do. A certificate
+/// the system picks is asked for to the first origin alone, the option
+/// itself compared whole as C compares `ssl_options`.
+#[test]
+fn another_origin_s_tls_has_none_of_the_client_s_identity() {
+    let base_id = identity(|_| {});
+    let base_tls = handle(&base_id);
+    let base = TlsView::of(&base_tls, base_id.ca_defaults).to(TlsOrigin::Other);
+    assert!(base.same(&base.made().expect("memory").view()));
+    for (name, change) in every_change() {
+        let id = identity(change);
+        let tls = handle(&id);
+        let first = TlsView::of(&tls, id.ca_defaults);
+        let view = first.to(TlsOrigin::Other);
+        let made = view.made().expect("memory");
+        assert_eq!(made.origin, TlsOrigin::Other, "{name}");
+        assert!(made.view().same(&view), "{name}: made, then seen");
+        assert!(view.same(&made.view()), "{name}: seen, then made");
+        let left_out = FIRST_ORIGIN_S.contains(name);
+        assert_eq!(view.same(&base), left_out, "{name}");
+        assert_eq!(made.view().same(&base), left_out, "{name} made");
+        assert_eq!(first.same(&view), !left_out, "{name}: the first's");
+        // Made without them: what a library is handed has none.
+        let o = &made.options;
+        assert_eq!(o.cert, None, "{name}");
+        assert_eq!(o.cert_blob, None, "{name}");
+        assert_eq!(o.cert_type, None, "{name}");
+        assert_eq!(o.key, None, "{name}");
+        assert_eq!(o.key_blob, None, "{name}");
+        assert_eq!(o.key_type, None, "{name}");
+        assert_eq!(o.key_password, None, "{name}");
+        assert_eq!(o.pinned_key, None, "{name}");
+        assert_eq!(o.ech, Ech::NONE, "{name}");
+    }
+    let auto = identity(|i| i.options.ssl_options = SslOptions::AUTO_CLIENT_CERT);
+    let auto_tls = handle(&auto);
+    let first = TlsView::of(&auto_tls, auto.ca_defaults);
+    let other = first.to(TlsOrigin::Other);
+    assert!(first.made().expect("memory").auto_client_cert());
+    let made = other.made().expect("memory");
+    assert!(!made.auto_client_cert(), "not to another origin");
+    assert_eq!(made.options.ssl_options, SslOptions::AUTO_CLIENT_CERT);
+    assert!(!first.same(&other), "the first's asks for it");
+    assert!(!other.same(&base), "the option compared whole");
 }
 
 /// The lists and the formats match in any case (`curl_strequal`); the

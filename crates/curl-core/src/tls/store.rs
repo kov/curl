@@ -87,6 +87,7 @@ mod tests {
             verify_host: true,
             options: TlsOptions::default(),
             ca_defaults: crate::tls::CaDefaults::NONE,
+            origin: crate::tls::TlsOrigin::First,
         };
         i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
         set(&mut i);

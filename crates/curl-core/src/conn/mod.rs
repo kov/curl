@@ -559,9 +559,12 @@ impl RouteCold {
 /// (`Curl_ssl_conn_config_init`). A transfer looking for a connection
 /// compares its options with the connection's identity where they are,
 /// and builds none (`TlsWants`).
+///
+/// Wanted, it says which origin the TLS goes to: the first, or another
+/// that is given none of the client's own identity (`TlsOrigin`).
 #[derive(Clone, Debug)]
 pub(crate) enum RouteTls {
-    Wanted,
+    Wanted(crate::tls::TlsOrigin),
     Made(TryArc<TlsIdentity>),
 }
 
@@ -570,7 +573,7 @@ impl RouteTls {
     pub(crate) fn made(&self) -> &TryArc<TlsIdentity> {
         match self {
             RouteTls::Made(identity) => identity,
-            RouteTls::Wanted => panic!("a connection's TLS is made as it is set up"),
+            RouteTls::Wanted(_) => panic!("a connection's TLS is made as it is set up"),
         }
     }
 
@@ -579,9 +582,9 @@ impl RouteTls {
     fn view<'a>(&'a self, wanted: Option<TlsView<'a>>) -> TlsView<'a> {
         match self {
             RouteTls::Made(identity) => identity.view(),
-            RouteTls::Wanted => {
-                wanted.expect("a transfer's TLS settings are at hand where it wants TLS")
-            }
+            RouteTls::Wanted(origin) => wanted
+                .expect("a transfer's TLS settings are at hand where it wants TLS")
+                .to(*origin),
         }
     }
 }
@@ -798,9 +801,9 @@ impl NetRoute {
     pub(crate) fn made(mut self, tls: Option<TlsWants<'_>>) -> Result<NetRoute, OutOfMemory> {
         let wants = || tls.expect("a transfer's TLS settings are at hand where it wants TLS");
         if let Some(OriginTls::Start(t) | OriginTls::Upgrade(t)) = &mut self.tls
-            && let RouteTls::Wanted = t
+            && let RouteTls::Wanted(origin) = *t
         {
-            *t = RouteTls::Made(wants().origin.made()?);
+            *t = RouteTls::Made(wants().origin.to(origin).made()?);
         }
         if let Some(proxy) = self.proxy.take() {
             self.proxy = Some(if proxy.https() && proxy.made_tls().is_none() {
@@ -2980,7 +2983,11 @@ mod tests {
                         .unwrap();
                     let by_made =
                         conn.serves(&tls_route(upgrade, false, RouteTls::Made(theirs)), None);
-                    let wanted = tls_route(upgrade, false, RouteTls::Wanted);
+                    let wanted = tls_route(
+                        upgrade,
+                        false,
+                        RouteTls::Wanted(crate::tls::TlsOrigin::First),
+                    );
                     let by_view = conn.serves(&wanted, Some(wants(want, &plain)));
                     assert_eq!(by_view, by_made, "upgrade {upgrade}: {i} for {j}");
                     assert_eq!(by_view, i == j, "upgrade {upgrade}: {i} for {j}");
@@ -3001,7 +3008,7 @@ mod tests {
             conn.proxy = Some(conn.proxy.take().unwrap().secured(made).unwrap());
             let conn = Route::Net(conn);
             for (j, want) in handles.iter().enumerate() {
-                let wanted = tls_route(false, true, RouteTls::Wanted);
+                let wanted = tls_route(false, true, RouteTls::Wanted(crate::tls::TlsOrigin::First));
                 let served = conn.serves(&wanted, Some(wants(&plain, want)));
                 // A proxy's TLS has no curves and no ECH: those settings
                 // tell no two proxies apart.
@@ -3022,12 +3029,20 @@ mod tests {
         for upgrade in [false, true] {
             let tls = &handles[4];
             let proxy = &handles[1];
-            let Route::Net(wanted) = tls_route(upgrade, true, RouteTls::Wanted) else {
+            let Route::Net(wanted) = tls_route(
+                upgrade,
+                true,
+                RouteTls::Wanted(crate::tls::TlsOrigin::First),
+            ) else {
                 unreachable!()
             };
             assert!(!wanted.is_made());
             // Either one unmade leaves the route unmade.
-            let Route::Net(origin_only) = tls_route(upgrade, false, RouteTls::Wanted) else {
+            let Route::Net(origin_only) = tls_route(
+                upgrade,
+                false,
+                RouteTls::Wanted(crate::tls::TlsOrigin::First),
+            ) else {
                 unreachable!()
             };
             assert!(!origin_only.is_made());

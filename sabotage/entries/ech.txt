@@ -10,9 +10,11 @@ witness: curl-core tls::tests::every_setting_tells_two_identities_apart
 file: crates/curl-core/src/tls.rs
 witness: curl-core tls::tests::an_https_proxy_tries_no_ech
 --- old
-        options.ech = crate::options::Ech::NONE;
+            options.signature_algorithms = None;
+            options.ech = crate::options::Ech::NONE;
 --- new
-        options.ech.mode = options.ech.mode;
+            options.signature_algorithms = None;
+            options.ech.mode = options.ech.mode;
 
 === an ECHConfigList given while ECH is off leaves it off
 file: crates/curl-core/src/options/mod.rs

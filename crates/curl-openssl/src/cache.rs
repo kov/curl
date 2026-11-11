@@ -50,6 +50,7 @@ mod tests {
             verify_host: true,
             options: TlsOptions::default(),
             ca_defaults: curl_core::tls::CaDefaults::NONE,
+            origin: curl_core::tls::TlsOrigin::First,
         };
         i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
         set(&mut i);

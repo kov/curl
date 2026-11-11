@@ -2236,6 +2236,7 @@ mod tests {
             verify_host: true,
             options: TlsOptions::NONE,
             ca_defaults: CaDefaults::NONE,
+            origin: curl_core::tls::TlsOrigin::First,
         };
         change(&mut id);
         TryArc::try_new(id).unwrap()

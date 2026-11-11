@@ -30,6 +30,7 @@ fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
         verify_host: true,
         options: TlsOptions::NONE,
         ca_defaults: CaDefaults::NONE,
+        origin: curl_core::tls::TlsOrigin::First,
     };
     // A peer is checked against certificates of a blob, unless a test
     // says otherwise: a file would be read.

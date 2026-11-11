@@ -308,6 +308,7 @@ pub fn with_client_qlog<R>(
             ..TlsOptions::NONE
         },
         ca_defaults: CaDefaults::NONE,
+        origin: curl_core::tls::TlsOrigin::First,
     })
     .unwrap();
     let peer = TlsPeer {

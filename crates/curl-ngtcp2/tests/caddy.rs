@@ -418,6 +418,7 @@ fn with_conn_qlog<R>(
             ..TlsOptions::NONE
         },
         ca_defaults: CaDefaults::NONE,
+        origin: curl_core::tls::TlsOrigin::First,
     })
     .unwrap();
     let peer = TlsPeer {
@@ -817,6 +818,7 @@ fn a_resumed_session_sends_its_get_as_early_data() {
             ..TlsOptions::NONE
         },
         ca_defaults: CaDefaults::NONE,
+        origin: curl_core::tls::TlsOrigin::First,
     })
     .unwrap();
     let peer = TlsPeer {

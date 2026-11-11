@@ -362,7 +362,8 @@ impl Session {
                 ),
             );
         }
-        if !o.ssl_options.contains(SslOptions::AUTO_CLIENT_CERT) {
+        // To the first origin alone (`auto_client_cert`).
+        if !identity.auto_client_cert() {
             flags &= !cred::USE_DEFAULT_CREDS;
             flags |= cred::NO_DEFAULT_CREDS;
             io.info(format_args!(
@@ -507,12 +508,7 @@ impl Session {
             | req::CONFIDENTIALITY
             | req::ALLOCATE_MEMORY
             | req::STREAM
-            | if self
-                .identity
-                .options
-                .ssl_options
-                .contains(SslOptions::AUTO_CLIENT_CERT)
-            {
+            | if self.identity.auto_client_cert() {
                 0
             } else {
                 req::USE_SUPPLIED_CREDS

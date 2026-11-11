@@ -343,6 +343,52 @@ fn an_https_connection_is_reused_only_with_the_same_tls() {
     assert_eq!(backend.log().sessions, 2);
 }
 
+/// The client's certificate, key, its password, the pinned key and ECH
+/// go only to the origin the transfer started at: a redirect to another
+/// makes its TLS without them, credentials allowed to follow or not
+/// (`Curl_ssl_filter_config_tmp_init`); and a connection made so serves
+/// no transfer that starts there and gives them.
+#[test]
+fn a_redirect_elsewhere_makes_its_tls_without_the_client_s_identity() {
+    let (backend, libraries) = tls();
+    let moved = moved(&format!("https://localhost:{PORT}/b"), false);
+    let first = Conversation::replies(&[WELCOME, &fake::records(&moved).unwrap()], false);
+    let [welcome, response] = served(OK);
+    let other = Conversation::replies(&[&welcome, &response], false);
+    let again = Conversation::replies(&[&welcome, &response], false);
+    let mut m = serving(Peer::Accepts, &[&first, &other, &again]);
+    let identity = |o: &mut Options| {
+        let t = o.tls.options.make_mut().unwrap();
+        t.cert = Some(b"client.pem".to_vec());
+        t.key = Some(b"client.key".to_vec());
+        t.key_password = Some(b"secret".to_vec());
+        t.pinned_key = Some(b"sha256//AAAA".to_vec());
+    };
+    let ran = get_tls(&mut m, &libraries, "/a", first.clone(), |o| {
+        identity(o);
+        o.http.follow = Follow::All;
+        o.http.unrestricted_auth = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let log = backend.log();
+    assert_eq!(log.sessions, 2);
+    assert_eq!(log.name(), b"localhost");
+    assert!(!log.client_identity, "the redirect's TLS");
+    // Started at the other origin, the identity goes, on a connection of
+    // its own.
+    let ran = get_tls(&mut m, &libraries, "/c", again.clone(), |o| {
+        identity(o);
+        o.set_url(Some(format!("https://localhost:{PORT}/c").as_bytes()))
+            .unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let log = backend.log();
+    assert_eq!(log.sessions, 3);
+    assert!(log.client_identity, "the first origin's TLS");
+    let asked = String::from_utf8(sent(&again)).unwrap();
+    assert!(asked.contains("GET /c HTTP/1.1\r\n"), "{asked}");
+}
+
 /// A multi hands each session the one state the library keeps for it,
 /// made with its first session and dropped with the multi; another multi
 /// keeps its own.

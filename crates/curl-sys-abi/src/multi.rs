@@ -136,19 +136,20 @@ impl ShimMulti {
         Ok(NonNull::from(Box::leak(try_box(ShimMulti::around(core)?)?)))
     }
 
-    /// The multi `curl_easy_perform` runs a handle in (C's `multi_easy`).
-    pub(crate) fn private() -> Result<NonNull<ShimMulti>, OutOfMemory> {
+    /// The multi `curl_easy_perform` runs a handle in (C's `multi_easy`),
+    /// the handle's to own.
+    pub(crate) fn private() -> Result<OwnedMulti, OutOfMemory> {
         let multi = ShimMulti::new(MultiKind::HandleOwn)?;
-        Ok(NonNull::from(Box::leak(try_box(multi)?)))
+        Ok(OwnedMulti(NonNull::from(Box::leak(try_box(multi)?))))
     }
 
-    /// Free a multi with no transfers in it.
-    ///
-    /// # Safety
-    ///
-    /// `multi` came from `boxed` and is not used again.
-    pub(crate) unsafe fn free(multi: NonNull<ShimMulti>) {
-        // SAFETY: as the caller guarantees.
+    /// Free a multi with no transfers in it, through the pointer it was
+    /// made with, which its owner gives up.
+    fn free(owned: OwnedMulti) {
+        let multi = owned.0;
+        std::mem::forget(owned);
+        // SAFETY: an owner's pointer is the one the multi was made with,
+        // live until this, its one free.
         let m = unsafe { multi.as_ref() };
         // SAFETY: nothing runs on a multi being freed, so nothing else
         // borrows its core.
@@ -159,7 +160,8 @@ impl ShimMulti {
             core.close_connections(table);
         }
         m.magic.store(0, Ordering::Relaxed);
-        // SAFETY: as the caller guarantees.
+        // SAFETY: made by `Box::leak` and given up by its owner, so not
+        // used again; the pointer has the box's own provenance.
         drop(unsafe { Box::from_raw(multi.as_ptr()) });
     }
 
@@ -190,6 +192,35 @@ impl ShimMulti {
 
     pub(crate) fn as_c(&self) -> *mut CURLM {
         ptr::from_ref(self).cast_mut().cast()
+    }
+}
+
+/// A multi's owner: the pointer it was made with, whose drop frees it
+/// (`ShimMulti::free`). Only the multi's making and the application's
+/// pointer to it, given up to `curl_multi_cleanup`, make one, so a
+/// reference to the multi is never turned back into its owner.
+pub(crate) struct OwnedMulti(NonNull<ShimMulti>);
+
+impl OwnedMulti {
+    /// The owner of the multi the application's `m` points to, which it
+    /// gives up.
+    ///
+    /// # Safety
+    ///
+    /// `m` is a pointer `curl_multi_init` returned, not used again.
+    unsafe fn from_c(m: *mut CURLM) -> OwnedMulti {
+        OwnedMulti(NonNull::new(m.cast::<ShimMulti>()).expect("a live multi is not NULL"))
+    }
+
+    /// The multi, to reach for as long as its owner lives.
+    pub(crate) fn as_ptr(&self) -> NonNull<ShimMulti> {
+        self.0
+    }
+}
+
+impl Drop for OwnedMulti {
+    fn drop(&mut self) {
+        ShimMulti::free(OwnedMulti(self.0));
     }
 }
 
@@ -601,8 +632,9 @@ pub unsafe extern "C" fn curl_multi_cleanup(m: *mut CURLM) -> CURLMcode {
     // the multi's own (`Curl_cpool_destroy`, `Curl_cshutdn_destroy`).
     core.close_connections(&mut ev);
     drop(entry);
-    // SAFETY: made by `boxed`; the caller does not use it again.
-    unsafe { ShimMulti::free(NonNull::from(multi)) };
+    // SAFETY: `m` is the pointer `curl_multi_init` returned (the gate
+    // admitted it), which the caller does not use again.
+    drop(unsafe { OwnedMulti::from_c(m) });
     CURLM_OK
 }
 const _: ffi::proto::curl_multi_cleanup = curl_multi_cleanup;

@@ -4467,6 +4467,32 @@ fn the_multi_s_callbacks_run_with_their_frames() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// A handle that performed holds its own multi until its cleanup, which
+/// frees it with everything else the handle held: a perform and cleanup
+/// leave nothing held, and a reset or a second perform reuse the multi.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_handle_s_own_multi_goes_with_it() {
+    use curl_alloc::track::measure;
+    let (path, url) = file("own-multi", b"hello");
+    let run = || {
+        let c = curl_easy_init();
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+        function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+        // SAFETY: a live handle until its cleanup.
+        unsafe {
+            assert_eq!(curl_easy_perform(c), CURLE_OK);
+            assert_eq!(curl_easy_perform(c), CURLE_OK);
+            curl_easy_cleanup(c);
+        }
+    };
+    // Once for what the process makes the first time only.
+    run();
+    let ((), held) = measure(run);
+    assert_eq!(held.bytes, 0, "{held:?}");
+    std::fs::remove_file(path).unwrap();
+}
+
 /// What a notification asked of the multi it was told of: each call's
 /// code.
 #[derive(Default)]

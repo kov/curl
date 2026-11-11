@@ -617,3 +617,12 @@ witness: curl-sys-abi tls_tests::a_perform_s_multi_keeps_fewer_tls_peers_than_a_
             MultiKind::HandleOwn => crate::tls::SessionCache::PERFORM_PEERS,
 --- new
             MultiKind::HandleOwn => crate::tls::SessionCache::PEERS,
+
+=== a handle's own multi outlives the handle
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_handle_s_own_multi_goes_with_it
+features: debug-hooks
+--- old
+        ShimMulti::free(OwnedMulti(self.0));
+--- new
+        std::mem::forget(OwnedMulti(self.0));

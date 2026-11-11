@@ -32,7 +32,7 @@ use crate::ffi::{
     CURLE_RECURSIVE_API_CALL, CURLcode,
 };
 use crate::gate::{EasyCall, EasyStack, Frame, MultiCall, MultiStack, Reach, Recursive};
-use crate::multi::{CHost, ShimEvents, ShimMulti};
+use crate::multi::{CHost, OwnedMulti, ShimEvents, ShimMulti};
 use crate::share::ShimShare;
 use crate::sockets::CSockets;
 use crate::tls::CTls;
@@ -88,7 +88,7 @@ pub(crate) struct ShimEasy {
     /// transfer holds; set only by `share::set` and `share::unlink`.
     pub(crate) share: Cell<Option<NonNull<ShimShare>>>,
     /// The multi `curl_easy_perform` runs in, between performs.
-    private: Cell<Option<NonNull<ShimMulti>>>,
+    private: Cell<Option<OwnedMulti>>,
     /// What `curl_multi_info_read` points to.
     pub(crate) msg: UnsafeCell<ffi::CURLMsg>,
     /// What the string infos point to, made the first time one is asked
@@ -937,10 +937,8 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     // SAFETY: the handle came from `Box::leak` in `ShimEasy::boxed`, and
     // the caller does not use it again.
     drop(unsafe { Box::from_raw(curl.cast::<ShimEasy>()) });
-    if let Some(private) = private {
-        // SAFETY: made by `ShimMulti::private`, owned by the handle alone.
-        unsafe { ShimMulti::free(private) };
-    }
+    // Its private multi last, as C's `Curl_close` frees `multi_easy`.
+    drop(private);
 }
 const _: ffi::proto::curl_easy_cleanup = curl_easy_cleanup;
 
@@ -1192,14 +1190,15 @@ enum Drive {
 
 /// Run the handle's transfer to its end in its own multi (`easy_perform`).
 fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
-    let multi = match easy.private.take() {
-        Some(multi) => multi,
+    let owned = match easy.private.take() {
+        Some(owned) => owned,
         None => match ShimMulti::private() {
-            Ok(multi) => multi,
+            Ok(owned) => owned,
             Err(OutOfMemory) => return CURLE_OUT_OF_MEMORY,
         },
     };
-    easy.private.set(Some(multi));
+    let multi = owned.as_ptr();
+    easy.private.set(Some(owned));
     // SAFETY: the handle owns its private multi.
     let m = unsafe { multi.as_ref() };
     // The handle's limit is its multi's (`easy_perform`).
@@ -1297,7 +1296,10 @@ impl ShimEasy {
 
     /// The multi `curl_easy_perform` runs the handle in, once made.
     pub(crate) fn private_multi(&self) -> Option<NonNull<ShimMulti>> {
-        self.private.get()
+        let owned = self.private.take();
+        let multi = owned.as_ref().map(OwnedMulti::as_ptr);
+        self.private.set(owned);
+        multi
     }
 
     /// Let go of what the handle keeps of its resolves, each said through
@@ -1339,10 +1341,7 @@ impl ShimEasy {
 
     /// Drop the private multi, as adding the handle to another does.
     pub(crate) fn drop_private(&self) {
-        if let Some(private) = self.private.take() {
-            // SAFETY: made by `ShimMulti::private`, owned by the handle.
-            unsafe { ShimMulti::free(private) };
-        }
+        drop(self.private.take());
     }
 
     pub(crate) fn as_c(&self) -> *mut CURL {

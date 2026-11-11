@@ -1855,6 +1855,45 @@ fn a_wildcard_download_tells_the_application_of_each_file() {
     assert!(received(&talk).ends_with("LIST\r\nEPSV\r\nTYPE I\r\nRETR c%.txt\r\n"));
 }
 
+/// A listing of many files the application passes over each is walked
+/// through in a loop, not a call for each (CVE-2020-8285): 50,000 of them
+/// on a test thread's stack.
+#[test]
+fn a_wildcard_download_passes_over_any_number_of_files() {
+    use crate::handler::{ChunkBegin, ChunkBeginHandler, FileInfo};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Clone, Default)]
+    struct Passes(Arc<AtomicUsize>);
+    impl ChunkBeginHandler for Passes {
+        fn begin(&self, _: &mut TransferCx<'_>, _: &FileInfo<'_>, _: usize) -> ChunkBegin {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            ChunkBegin::Skip
+        }
+    }
+    let passes = Passes::default();
+    let mut listing = Vec::new();
+    for n in 0..50_000 {
+        let line = format!("-rw-r--r--    1 u g       5 Jan 17 11:01 f{n}.txt\r\n");
+        listing.extend_from_slice(line.as_bytes());
+    }
+    let talk = listing_server(0);
+    let list = data(&listing);
+    let mut m = serving(&[&talk], &[&list]);
+    let (id, body, text) = added(&mut m, WILDCARD, |o| {
+        let ftp = &mut o.line.make_mut().unwrap().ftp;
+        ftp.wildcard = true;
+        ftp.chunk_begin = Some(Handler::chunk_begin(passes.clone()).unwrap());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"");
+    assert_eq!(
+        passes.0.load(Ordering::Relaxed),
+        50_000,
+        "each file passed over"
+    );
+}
+
 /// A wildcard download whose files the application all passes over ends
 /// as its next request finds nothing left to get: straight from DO to
 /// COMPLETED, its connection let go with no DONE, as the C build's trace

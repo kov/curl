@@ -736,3 +736,23 @@ witness: curl-core proto::ftp::tests::an_answer_a_layer_holds_in_doing_more_is_r
         TransferState::DoingMore(x) => (x, Some(Waiting::More)),
 --- new
         TransferState::DoingMore(_) => return None,
+
+=== a wildcard download calls itself again for each file passed over
+file: crates/curl-core/src/proto/ftp/wildcard.rs
+witness: curl-core proto::ftp::tests::a_wildcard_download_passes_over_any_number_of_files
+features: test-util debug-hooks
+--- old
+                    w.state = if matching.listing.files().is_empty() {
+                        WcState::Clean
+                    } else {
+                        WcState::Downloading
+                    };
+                }
+--- new
+                    w.state = if matching.listing.files().is_empty() {
+                        WcState::Clean
+                    } else {
+                        WcState::Downloading
+                    };
+                    return self.wildcard_step(cx, pc, reused, w);
+                }

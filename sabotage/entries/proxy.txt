@@ -950,3 +950,11 @@ witness: curl-core proto::ldap::tests::a_tunnel_to_a_redirected_to_host_carries_
             ProtoState::Ldap(r) => r.base.gate.trusted(),
 --- new
             ProtoState::Ldap(_) => CredentialGate::FIRST.trusted(),
+
+=== a TFTP request's UDP tunnel after a redirect to another host sends the first host's Authorization and Cookie
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::gate_tests::a_udp_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
+--- old
+            ProtoState::Tftp(r) => r.base.gate.trusted(),
+--- new
+            ProtoState::Tftp(_) => CredentialGate::FIRST.trusted(),

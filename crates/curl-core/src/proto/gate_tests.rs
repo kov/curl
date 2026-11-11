@@ -113,3 +113,21 @@ fn a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines() {
         a_redirect_s_tunnel_is_gated(to, authority, None);
     }
 }
+
+/// TFTP's tunnel is asked for with HTTP/1.1's `CONNECT-UDP` upgrade, as
+/// test 3700 has it, gated as a `CONNECT` is: the C tool's request for
+/// it carries none of the first host's lines either.
+#[test]
+fn a_udp_tunnel_to_a_redirected_to_host_carries_no_first_host_lines() {
+    let [first, second] = connects_redirected_to("tftp://other.example:6969/f", None);
+    assert!(first.starts_with("CONNECT first.example:80 "), "{first}");
+    let asked = format!(
+        "GET http://127.0.0.1:{PROXY_PORT}/.well-known/masque/udp/other.example/6969/ HTTP/1.1\r\n"
+    );
+    assert!(second.starts_with(&asked), "{second}");
+    assert!(second.contains("\r\nUpgrade: connect-udp"), "{second}");
+    for line in ["\r\nAuthorization: Bearer tunnel", "\r\nCookie: crumb=1"] {
+        assert!(first.contains(line), "to the first host: {first}");
+        assert!(!second.contains(line), "to the second: {second}");
+    }
+}

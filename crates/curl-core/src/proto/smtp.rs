@@ -14,7 +14,7 @@ use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::smtp::{Smtp, SmtpReply};
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
-use crate::auth::creds::{CredentialGate, Credentials, Takes};
+use crate::auth::creds::{Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
 use crate::components::Component;
 use crate::conn::io::Events;
@@ -354,16 +354,11 @@ impl Request {
         let scope = cx.easy().options().address_scope;
         let idn = cx.easy().libraries().idn;
         let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
-        let gate = match before.first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
+        let pipeline = Pipeline::new(Reach::Network);
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
         let takes = Takes::of(Some(scheme));
-        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
@@ -379,12 +374,7 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         };
         Ok(Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials,
-                gate,
-            },
+            base,
             path,
             url_options,
             custom: None,
@@ -621,7 +611,7 @@ impl Request {
             let shaken = crate::multi::state::tls::upgrade(
                 carrier,
                 &identity,
-                &self.base.peer,
+                self.base.peer(),
                 &self.in_place,
                 crate::multi::state::tls::Blocks::No,
                 cx,
@@ -853,14 +843,14 @@ impl Request {
         pc: &mut SmtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        let can = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let can = sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.can_authenticate(sx)
         });
         if !pc.auth_offered || !can {
             set_state(cx, pc, State::Stop);
             return Ok(());
         }
-        let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let progress = sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.start(sx, false)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
@@ -870,7 +860,7 @@ impl Request {
                 Ok(())
             }
             Progress::Idle | Progress::Done => {
-                sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+                sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
                     sasl.blocked(sx)
                 });
                 Err(ErrorKind::LoginDenied)
@@ -905,7 +895,7 @@ impl Request {
             sasl::Send::Cancel => drive::send(cx, &mut pc.pp, carrier, None, &[b"*"]),
         };
         // The exchange moves on once its command is sent.
-        sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.sent(sx, sent.is_ok())
         });
         sent
@@ -929,7 +919,7 @@ impl Request {
         copied
             .try_extend_from_slice(message)
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let progress = sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.step(sx, step, &copied)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {

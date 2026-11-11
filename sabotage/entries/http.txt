@@ -670,30 +670,30 @@ witness: curl-sys-abi handle_tests::scheme_options_reach_the_transfer
             let _ = set;
 
 === every request is the first origin's
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-                CredentialGate::new(first, &peer, other_hosts)
+                let same = first == peer;
 --- new
-                CredentialGate::new(&peer, &peer, other_hosts)
+                let same = true;
 
 === the first origin is each request's own
-file: crates/curl-core/src/multi/state/leg.rs
+file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-    if run.first.is_none() {
-        run.first = Some(origin.clone());
-    }
+        if self.0.is_none() {
+            self.0 = Some(origin.clone());
+        }
 --- new
-    run.first = Some(origin.clone());
+        self.0 = Some(origin.clone());
 
 === unrestricted auth is ignored
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-        let other_hosts = cx.easy().options().http.unrestricted_auth;
+                    trusted: same || self.unrestricted,
 --- new
-        let other_hosts = false;
+                    trusted: same,
 
 === a 301 turns a POST into a GET whatever POSTREDIR says
 file: crates/curl-core/src/proto/http1/follow.rs
@@ -1170,9 +1170,9 @@ witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::digest_goes_beside_the_application_s_authorization
 --- old
-                Some(Authorization::alongside("Digest", value, c.trusted()))
+                Some(Authorization::alongside("Digest", value, c.leave()))
 --- new
-                Authorization::new("Digest", value, c.trusted(), &http.headers)
+                Authorization::new("Digest", value, c.leave(), &http.headers)
 
 === a request counts what the one before it moved
 file: crates/curl-core/src/multi/state/leg.rs
@@ -1436,7 +1436,11 @@ witness: curl-core proto::http::tests::the_wait_for_a_100_starts_once_a_pause_en
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
 --- old
-        Ok(None) => crate::proto::netrc_unkept(&url, run.first.as_deref(), cx).map(|()| None),
+        Ok(None) => {
+            let unrestricted = cx.easy().options().http.unrestricted_auth;
+            let origins = run.first.origins(unrestricted);
+            crate::proto::netrc_unkept(&url, origins, cx).map(|()| None)
+        }
 --- new
         Ok(None) => Ok(None),
 
@@ -1566,10 +1570,10 @@ features: test-util
 file: crates/curl-core/src/proto/ldap.rs
 witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_once
 --- old
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
 --- new
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
 
 === a netrc read twice for a request spoken through HTTP's
 file: crates/curl-core/src/proto/http.rs
@@ -1585,7 +1589,7 @@ file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_once
 --- old
             b"gophers" if cx.easy().libraries().tls.is_some() => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
 --- new
             b"gophers" if cx.easy().libraries().tls.is_some() => {
 

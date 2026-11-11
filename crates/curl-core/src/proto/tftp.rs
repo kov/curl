@@ -15,8 +15,9 @@ use curl_os::error::ErrorText;
 
 use super::base::peer_of;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
+use crate::auth::gate::Origins;
+use crate::conn::ConnLease;
 use crate::conn::io::{Events, Remote};
-use crate::conn::{ConnLease, Peer};
 use crate::deliver::{Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::multi::Host;
@@ -334,11 +335,12 @@ impl Request {
     /// taken off (`tftp_setup_connection`).
     pub(crate) fn new<H: Host>(
         url: &Url,
-        first: Option<&Peer>,
+        origins: Origins<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
         let peer = peer_of(url, b"tftp", cx)?;
-        let gate = super::base::gate_of(first, &peer, cx);
+        let pipeline = Pipeline::new(Reach::Network);
+        let base = super::base::RequestBase::new(peer, origins, pipeline);
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
@@ -355,12 +357,7 @@ impl Request {
         }
         let upload = options.method == Method::Upload;
         Ok(Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials: None,
-                gate,
-            },
+            base,
             path,
             ascii,
             upload,

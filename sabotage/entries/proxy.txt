@@ -414,13 +414,11 @@ witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_f
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_tunnel_after_a_redirect_elsewhere_sends_no_cookie
 --- old
-    fn trusted(&self) -> Option<Trusted> {
-        Request::trusted(self)
-    }
+        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        Request::credentialed(url, scheme, base, target, before, cx)
 --- new
-    fn trusted(&self) -> Option<Trusted> {
-        CredentialGate::FIRST.trusted()
-    }
+        let base = RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), Pipeline::collecting());
+        Request::credentialed(url, scheme, base, target, before, cx)
 
 === a proxy closing on the credentials is asked again over the same connection
 file: crates/curl-core/src/multi/state/tunnel.rs
@@ -870,102 +868,100 @@ witness: curl-core options::tests::the_proxy_s_generation_moves_as_c_s_changepro
             proxy.generation = proxy.generation.next();
 
 === a DICT request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/dict.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Dict(r) => r.base.gate.trusted(),
+        let base = super::base::RequestBase::new(peer, origins, pipeline);
 --- new
-            ProtoState::Dict(_) => CredentialGate::FIRST.trusted(),
+        let base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === a Gopher request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/gopher.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Gopher(r) => r.base.gate.trusted(),
+        let base = super::base::RequestBase::new(peer, origins, pipeline);
 --- new
-            ProtoState::Gopher(_) => CredentialGate::FIRST.trusted(),
+        let base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === an IMAP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/imap.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Imap(r) => r.base.gate.trusted(),
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-            ProtoState::Imap(_) => CredentialGate::FIRST.trusted(),
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === a POP3 request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/pop3.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Pop3(r) => r.base.gate.trusted(),
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-            ProtoState::Pop3(_) => CredentialGate::FIRST.trusted(),
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === an SMTP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/smtp.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Smtp(r) => r.base.gate.trusted(),
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-            ProtoState::Smtp(_) => CredentialGate::FIRST.trusted(),
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === a TELNET request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/telnet.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Telnet(r) => r.base.gate.trusted(),
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-            ProtoState::Telnet(_) => CredentialGate::FIRST.trusted(),
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === an MQTT request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/mqtt.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Mqtt(r) => r.base.gate.trusted(),
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-            ProtoState::Mqtt(_) => CredentialGate::FIRST.trusted(),
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === an RTSP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-    pub(crate) fn trusted(&self) -> Option<Trusted> {
-        self.base.gate.trusted()
+        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        Request::credentialed(url, scheme, base, target, before, cx)
 --- new
-    pub(crate) fn trusted(&self) -> Option<Trusted> {
-        crate::auth::creds::CredentialGate::FIRST.trusted()
+        let base = RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), Pipeline::collecting());
+        Request::credentialed(url, scheme, base, target, before, cx)
 
 === an SCP or SFTP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Ssh(r) => r.base.gate.trusted(),
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-            ProtoState::Ssh(_) => CredentialGate::FIRST.trusted(),
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === an LDAP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/ldap.rs
 witness: curl-core proto::ldap::tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Ldap(r) => r.base.gate.trusted(),
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-            ProtoState::Ldap(_) => CredentialGate::FIRST.trusted(),
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === a TFTP request's UDP tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/proto/tftp.rs
 witness: curl-core proto::gate_tests::a_udp_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-            ProtoState::Tftp(r) => r.base.gate.trusted(),
+        let base = super::base::RequestBase::new(peer, origins, pipeline);
 --- new
-            ProtoState::Tftp(_) => CredentialGate::FIRST.trusted(),
+        let base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === a forwarded FTP request's gate is decided for the HTTP peer it is addressed as
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_forwarded_ftp_url_after_http_on_its_port_carries_no_credentials
 --- old
-        let (peer, target, _) = Request::addressed(url, HTTP, before, cx)?;
-        Request::credentialed(url, HTTP, (peer, target, gate), before, cx)
+        let base = base.forwarded(peer, Pipeline::collecting());
 --- new
-        let _ = gate;
-        let addressed = Request::addressed(url, HTTP, before, cx)?;
-        Request::credentialed(url, HTTP, addressed, before, cx)
+        let _ = base;
+        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());

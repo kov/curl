@@ -23,7 +23,7 @@ use curl_alloc::TryVec as _;
 use super::base::peer_of;
 use super::raw::{Got, xfer_recv, xfer_send};
 use super::{Before, Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::auth::creds::{CredentialGate, Credentials, Takes};
+use crate::auth::creds::{Credentials, Takes};
 use crate::conn::ConnLease;
 use crate::conn::io::Events;
 use crate::deliver::{Pipeline, Reach};
@@ -883,22 +883,12 @@ impl Request {
         let takes = Takes::of(Some(peer.scheme()));
         // The application's login goes to a redirect's other host only
         // as HTTP's does (`Curl_auth_allowed_to_host`).
-        let gate = match before.first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
-        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let pipeline = Pipeline::new(Reach::Network);
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+        let credentials = super::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
         Ok(Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials,
-                gate,
-            },
+            base,
             telnet: None,
             unsent: Vec::new(),
             poll_since: None,

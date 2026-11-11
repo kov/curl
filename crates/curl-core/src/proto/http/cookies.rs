@@ -10,7 +10,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::auth::creds::SameOrigin;
+use crate::auth::gate::SameOrigin;
 use crate::cookie::{Jar, LoadError, Source, SuffixCheck};
 use crate::easy::Easy;
 use crate::error::ErrorKind;

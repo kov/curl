@@ -148,10 +148,10 @@ witness: curl-core proto::ssh::tests::the_ssh_trace_says_what_its_pollset_waits_
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::the_credentials_are_said_once_as_the_handle_s_before
 --- old
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
 --- new
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
 
 === a post-quote `pwd` expects the path the transfer has already dropped
 file: crates/curl-core/src/proto/ssh/mod.rs

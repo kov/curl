@@ -182,13 +182,11 @@ fn a_custom_fetch_of_many_messages_is_a_listing() {
 fn request() -> Request {
     let url = Url::parse(b"imap://h/", crate::url::ParseOptions::NONE).unwrap();
     let scheme = Scheme::named(b"imap").unwrap();
+    let peer = super::super::url_peer((scheme, b"h".to_vec(), 143), &url, None, None).unwrap();
+    let first = crate::auth::gate::FirstOrigin::fresh();
+    let pipeline = Pipeline::new(Reach::Network);
     Request {
-        base: crate::proto::base::RequestBase {
-            pipeline: Pipeline::new(Reach::Network),
-            peer: super::super::url_peer((scheme, b"h".to_vec(), 143), &url, None, None).unwrap(),
-            credentials: None,
-            gate: crate::auth::creds::CredentialGate::FIRST,
-        },
+        base: crate::proto::base::RequestBase::new(peer, first.origins(false), pipeline),
         path: Vec::new(),
         query: None,
         url_options: None,

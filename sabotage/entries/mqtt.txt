@@ -58,6 +58,6 @@ witness: curl-core proto::mqtt::tests::a_post_ends_once_its_disconnect_has_gone
 file: crates/curl-core/src/proto/mqtt.rs
 witness: curl-core proto::mqtt::tests::the_application_s_login_stays_with_the_first_host
 --- old
-        let gate = match before.first {
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-        let gate = match before.first.filter(|_| false) {
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);

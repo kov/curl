@@ -79,9 +79,9 @@ witness: curl-core proto::telnet::tests::an_exchange_stalls_no_other_transfer
 file: crates/curl-core/src/proto/telnet.rs
 witness: curl-core proto::telnet::tests::the_application_s_user_stays_with_the_first_host
 --- old
-        let gate = match before.first {
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-        let gate = match before.first.filter(|_| false) {
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === the input is read before C's poll has seen the server or waited its interval
 file: crates/curl-core/src/proto/telnet.rs

@@ -206,9 +206,11 @@ curl-core/src/
                              fake.rs: FakeTls (test-util)
   hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
   base64.rs                  base64 both ways and base64url (curlx/base64.c)
-  auth.rs, auth/             authenticating, as lib/vauth and its callers: creds.rs, who a
-                             request authenticates as (Credentials, Secret) and the gate
-                             (CredentialGate, Trusted, SameOrigin); digest.rs, Digest's
+  auth.rs, auth/             authenticating, as lib/vauth and its callers: gate.rs, the
+                             first origin and every request's gate (FirstOrigin, Origins,
+                             CredentialGate, SameOrigin, OriginTrusted, OwnLeave, Leave);
+                             creds.rs, who a request authenticates as (Credentials,
+                             Secret); digest.rs, Digest's
                              challenge and response; http.rs, how HTTP picks a method from a
                              peer's challenges (Auth, PeerAuth, Challenges, AuthAct), sans-IO,
                              which HTTP/1's head parser reads into
@@ -884,7 +886,7 @@ pub(crate) struct Run {              // created at add, dropped at removal
     deadlines: Deadlines,
     url: Vec<u8>,                    // the request's URL read back whole (C's state.url)
     retries: u8,                     // fresh connections tried this transfer (retrycount)
-    first: Option<Origin>,           // the first request's origin (state.initial_origin)
+    first: FirstOrigin,              // the first request's origin (state.initial_origin)
     method: Method,                  // the method, as a redirect changed it (state.httpreq)
     allow_port: bool,                // CURLOPT_PORT still applies (state.allow_port)
     http: follow::Inherited,         // what HTTP's next request takes, HTTP's alone: HTTP/1.0
@@ -4534,14 +4536,24 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   `Authorization :` is still an Authorization. A custom Host is `Host:` plus the bytes after the
   name (1121, 1292), and `Host:` alone removes it (461); every other duplicate goes in order.
   Connection is assembled last: the first with a value, trimmed, then the rest as given.
-- **One credential gate.** `CredentialGate::new(initial, now, other_hosts)` compares the origins
-  once per request (`Curl_peer_equal`). A custom Host is reached only through
+- **One credential gate.** `auth::gate` owns the run's first origin (`FirstOrigin`, which only
+  a fresh run has none of) and is the one place a gate is decided: `Origins::gate` compares
+  the first origin with the request's (`Curl_peer_equal`) and adds `CURLOPT_UNRESTRICTED_AUTH`,
+  and needs a `GateKey` only `proto/base.rs` makes, so the only gate a request gets is the one
+  `RequestBase::new` decides for the peer it keeps. `CredentialGate` is neither `Copy` nor
+  `Clone`, and has no always-open constant. A custom Host is reached only through
   `UserHeaders::host(SameOrigin)`, and Authorization and Cookie lines only through
-  `UserHeaders::sendable(Option<Trusted>)`, where `Trusted` is the same origin or
-  `CURLOPT_UNRESTRICTED_AUTH`: a new emit site cannot skip the gate. Every network protocol's
-  request holds its gate in its `RequestBase`, which a tunnel's `CONNECT` sends by
-  (`SetupLend::trusted`, FTP's data connection's too), so a redirect from HTTP to another
-  host's FTP, DICT or any other scheme sends the proxy none of the first host's.
+  `UserHeaders::sendable(Option<OriginTrusted>)`: a new emit site cannot skip the gate.
+  Credentials the request's own URL or a `.netrc` entry carry go by `OwnLeave`, which is no
+  `OriginTrusted`. Every network protocol's request holds its gate in its `RequestBase`,
+  which a tunnel's `CONNECT` sends by (`SetupLend::trusted`, FTP's data connection's too, which
+  borrows the base). `file:`, which has no origin to keep a login from, is given the
+  application's by a gate always open (`Origins::local`) and keeps none; it and the tests' own
+  protocols hold no gate, and a tunnel made for them trusts nothing. The HTTP
+  request a forwarding proxy is sent for FTP takes the FTP request's base
+  (`RequestBase::forwarded`), its gate decided for the FTP origin, as C's origin stays the
+  URL's. A fence test in `curl-sys-abi` keeps the calls of `FirstOrigin::fresh` and
+  `OwnLeave::given` where they belong.
 - **One rendered request for every version.** HTTP/2 makes its request as C does, rendered in
   HTTP/1's form, traced as sent, and read back into the stream's fields (`fields_of`, C's
   `Curl_h1_req_parse_read`, §4.4); HTTP/3 is to read it back the same way, as C's does (`cf-ngtcp2.c`'s `h3_stream_open`).
@@ -4686,12 +4698,13 @@ That leg's URL replaces `Run::url` whole (C's `state.url`). Every leg's scheme m
 `Options::schemes.allowed` (`CURLOPT_PROTOCOLS_STR`, all unless set), and a redirect's in
 `Options::schemes.redirect` too (`CURLOPT_REDIR_PROTOCOLS_STR`, C's `CURLPROTO_REDIR` unless set:
 HTTP, HTTPS, FTP, FTPS), checked as the leg starts (`url_set_conn_scheme`). `Run::first` holds the first leg's origin (`state.initial_origin`):
-each request's `CredentialGate` is fixed when the request is made, from that origin and its own.
-The gate holds back what the application said; credentials in the request's own URL go to its
-origin regardless (`Trusted::own_url`), as C takes them per leg in `url_set_data_creds`. Each
-request composes its `Credentials` so (`for_request`): the application's `Login`, if the gate
-trusts the origin; the URL's parts in place of the login's unless the login named a user. The
-`Trusted` leave travels inside them, so no credentials reach a header without it. A `.netrc`
+each request's `CredentialGate` is fixed when the request is made, from that origin and its own
+(`RequestBase::new`). The gate holds back what the application said; credentials in the
+request's own URL go to its origin regardless (`OwnLeave`), as C takes them per leg in
+`url_set_data_creds`. Each request composes its `Credentials` so (`for_request`): the
+application's `Login`, if the gate trusts the origin; the URL's parts in place of the login's
+unless the login named a user. Their `Leave`, the gate's or their own, travels inside them, so
+no credentials reach a header without it. A `.netrc`
 file (`Options::netrc`) is read last, per request, for the request's own host: never over the
 login, over the URL's only to complete them, or, when required, to replace their password
 (`netrc_lookup`); an entry found replaces the user and password and goes to its host wherever

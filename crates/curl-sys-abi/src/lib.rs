@@ -228,4 +228,48 @@ mod tests {
         // A positive control: the walk must find the entries.
         assert!(checked >= 60, "found only {checked} entries");
     }
+
+    /// The credential gate's openers are called only where `curl-core`'s
+    /// `auth::gate` says. The tokens' fields are private to it, so the
+    /// compiler keeps their literals there; what it cannot keep is who
+    /// calls the two constructors a sibling module may reach: a fresh
+    /// first origin, which opens every gate, made only for a new run (a
+    /// transfer's, a pushed stream's) and a test's request; and
+    /// credentials' own leave, given only where `auth::creds` takes them
+    /// from the URL or a `.netrc`.
+    #[test]
+    fn the_gate_s_openers_are_called_only_where_they_may_be() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../curl-core/src");
+        let mut files = Vec::new();
+        rust_files(&src, &mut files);
+        let fences: [(&str, &[&str]); 2] = [
+            (
+                "FirstOrigin::fresh(",
+                &[
+                    "auth/gate.rs",
+                    "multi/state.rs",
+                    "proto/http/h2.rs",
+                    "proto/imap/tests.rs",
+                ],
+            ),
+            ("OwnLeave::given(", &["auth/gate.rs", "auth/creds.rs"]),
+        ];
+        let mut seen = vec![0; fences.len()];
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            let name = file.strip_prefix(&src).unwrap().to_string_lossy();
+            let name = name.replace('\\', "/");
+            for (i, (needle, allowed)) in fences.iter().enumerate() {
+                if text.contains(needle) {
+                    seen[i] += 1;
+                    assert!(
+                        allowed.contains(&name.as_str()),
+                        "{name} makes `{needle}`, which only {allowed:?} may"
+                    );
+                }
+            }
+        }
+        // A positive control: each is found where it is called.
+        assert!(seen.iter().all(|&n| n > 0), "found {seen:?}");
+    }
 }

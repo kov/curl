@@ -4,7 +4,7 @@
 use super::{
     Accepted, Asks, Authorization, Conditional, Out, UserHeaders, accept_encoding, decimal,
 };
-use crate::auth::creds::Trusted;
+use crate::auth::gate::OriginTrusted;
 use crate::error::ErrorKind;
 use crate::options::{Ranged, Resume};
 use crate::text::Text;
@@ -48,7 +48,7 @@ pub(crate) struct RtspHead<'o> {
     pub(crate) probe: bool,
     pub(crate) headers: &'o UserHeaders,
     /// Which of the application's headers may go to the origin.
-    pub(crate) trusted: Option<Trusted>,
+    pub(crate) trusted: Option<OriginTrusted>,
 }
 
 /// What an RTSP head says of its body (`rtsp_setup_body`).

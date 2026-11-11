@@ -1,5 +1,5 @@
 use super::*;
-use crate::auth::creds::CredentialGate;
+use crate::auth::gate::OriginTrusted;
 use crate::auth::http::{Challenges, PeerAsked};
 
 /// Every line `input` gives out, each applied, until the answer ends or
@@ -37,7 +37,7 @@ fn renders_connect_as_c() {
         proxy_authorization: Some(("Basic", b"eW91YXJlOnlvdXJzZWxm")),
         user_agent: Some(b""),
         headers: &UserHeaders::default(),
-        trusted: CredentialGate::FIRST.trusted(),
+        trusted: Some(OriginTrusted::testing()),
         udp: None,
     };
     request.render(&mut out).unwrap();
@@ -54,7 +54,7 @@ fn renders_connect_as_c() {
         proxy_authorization: None,
         user_agent: Some(b"curl/test"),
         headers: &UserHeaders::default(),
-        trusted: CredentialGate::FIRST.trusted(),
+        trusted: Some(OriginTrusted::testing()),
         udp: None,
     };
     request.render(&mut out).unwrap();
@@ -94,7 +94,7 @@ fn the_proxy_s_lines_replace_the_library_s_and_follow() {
         udp: None,
     };
     let mut out = Vec::new();
-    request(CredentialGate::FIRST.trusted())
+    request(Some(OriginTrusted::testing()))
         .render(&mut out)
         .unwrap();
     assert_eq!(

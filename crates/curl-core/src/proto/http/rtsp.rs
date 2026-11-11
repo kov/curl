@@ -17,6 +17,7 @@ use super::{
     AfterHead, Authorization, Body, Reading, Request, Sending, Stage, auth_trace, made, random,
 };
 use crate::auth::creds::Credentials;
+use crate::auth::gate::Leave;
 use crate::auth::http::{AuthRequest, Side};
 use crate::coding::AcceptEncoding;
 use crate::conn::line::LineConn;
@@ -601,11 +602,11 @@ impl Request {
         auth_state.side(Side::Proxy).finish();
         let request = AuthRequest {
             side: Side::Host,
-            origin: &self.base.peer,
+            origin: self.base.peer(),
             method,
             uri: &stream_uri,
             get_or_head: true,
-            trusted: self.base.gate.trusted(),
+            trusted: self.base.gate().trusted(),
         };
         let custom = options.http.headers.replaces(b"Authorization");
         let mut said = crate::auth::http::DigestSaid::default();
@@ -623,8 +624,8 @@ impl Request {
         let probe = auth.probe;
         let sspi = cx.easy().libraries().sspi().is_some();
         let auth_asked = cx.easy().auth.asked(
-            (credentials, &self.base.peer),
-            (None, &self.base.peer),
+            (credentials, self.base.peer()),
+            (None, self.base.peer()),
             probe,
             true,
             sspi,
@@ -647,7 +648,7 @@ impl Request {
         let session = small.rtsp_session.as_ref().filter(|s| {
             s.origin
                 .as_ref()
-                .is_none_or(|origin| origin == &self.base.peer)
+                .is_none_or(|origin| origin == self.base.peer())
                 || options.http.unrestricted_auth
         });
         if headers.replaces(b"CSeq") {
@@ -736,19 +737,17 @@ impl Request {
         };
         let authorization = match (&self.base.credentials, &auth.header) {
             (Some(c), Some((AuthMethods::DIGEST, value))) => {
-                Some(Authorization::alongside("Digest", value, c.trusted()))
+                Some(Authorization::alongside("Digest", value, c.leave()))
             }
             (_, Some((AuthMethods::NEGOTIATE, value))) => {
                 let trusted = self
                     .base
-                    .gate
+                    .gate()
                     .trusted()
                     .expect("Negotiate goes only where trusted");
-                Authorization::new("Negotiate", value, trusted, headers)
+                Authorization::new("Negotiate", value, Leave::of(trusted), headers)
             }
-            (Some(c), Some((m, value))) => {
-                Authorization::new(m.name(), value, c.trusted(), headers)
-            }
+            (Some(c), Some((m, value))) => Authorization::new(m.name(), value, c.leave(), headers),
             _ => None,
         };
         let head = RtspHead {
@@ -768,7 +767,7 @@ impl Request {
             content,
             probe,
             headers,
-            trusted: self.base.gate.trusted(),
+            trusted: self.base.gate().trusted(),
         };
         let mut out = render_rtsp(&head)?;
         let rtsp = self.rtsp.as_mut().expect("an RTSP request");

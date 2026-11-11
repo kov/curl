@@ -39,7 +39,7 @@ pub(super) fn pretransfer<H: Host>(
         copy
     });
     run.retries = 0;
-    run.first = None;
+    run.first.reset();
     run.method = cx.easy().options().method;
     run.course = Course::START;
     run.http = Inherited::new(cx.easy().options().http.version);
@@ -643,8 +643,9 @@ pub(super) fn start_leg<H: Host>(
     let started = if refused {
         Ok(None)
     } else {
+        let unrestricted = cx.easy().options().http.unrestricted_auth;
         let before = Before {
-            first: run.first.as_deref(),
+            origins: run.first.origins(unrestricted),
             method: run.method,
             http: &run.http,
         };
@@ -654,7 +655,11 @@ pub(super) fn start_leg<H: Host>(
     // read it all the same, before it checks the protocol is built and
     // allowed.
     let started = match started {
-        Ok(None) => crate::proto::netrc_unkept(&url, run.first.as_deref(), cx).map(|()| None),
+        Ok(None) => {
+            let unrestricted = cx.easy().options().http.unrestricted_auth;
+            let origins = run.first.origins(unrestricted);
+            crate::proto::netrc_unkept(&url, origins, cx).map(|()| None)
+        }
         started => started,
     };
     // Out of the queue once the request knows its origin and its
@@ -717,15 +722,14 @@ pub(super) fn start_leg<H: Host>(
     let Ok(origin) = TryArc::try_new(target) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    if run.first.is_none() {
-        run.first = Some(origin.clone());
-    }
+    run.first.record(&origin);
     // Only the origin the transfer started at is given the client's own
     // TLS identity, whatever the application lets credentials follow
     // (`Curl_peer_equal(initial_origin, origin)`).
-    let tls_origin = match run.first.as_deref() {
-        Some(first) if *first == *origin => TlsOrigin::First,
-        _ => TlsOrigin::Other,
+    let tls_origin = if run.first.is(&origin) {
+        TlsOrigin::First
+    } else {
+        TlsOrigin::Other
     };
     // A Unix socket is connected to in place of the origin's host, and
     // of any connect-to entry, and no proxy is gone through
@@ -804,14 +808,16 @@ pub(super) fn start_leg<H: Host>(
                 }
             });
             if ftp {
+                let unrestricted = cx.easy().options().http.unrestricted_auth;
                 let before = Before {
-                    first: run.first.as_deref(),
+                    origins: run.first.origins(unrestricted),
                     method: run.method,
                     http: &run.http,
                 };
-                if let Err(e) = proto.forward_ftp(&url, before, cx) {
-                    return TransferState::Init.fail(e);
-                }
+                proto = match proto.forward_ftp(&url, before, cx) {
+                    Ok(proto) => proto,
+                    Err(e) => return TransferState::Init.fail(e),
+                };
             }
             if let Err(e) = proto.forward(&url, ftp_type) {
                 return TransferState::Init.fail(e);

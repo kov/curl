@@ -100,7 +100,7 @@ pub(crate) struct Run {
     retries: u8,
     /// Where the first request went (`state.initial_origin`): what the
     /// application said for it goes nowhere else.
-    first: Option<Origin>,
+    first: crate::auth::gate::FirstOrigin,
     /// The method, which a redirect may have turned into a GET
     /// (`state.httpreq`).
     method: Method,
@@ -136,7 +136,7 @@ impl Run {
             deadlines: Deadlines::new(None, None),
             url: Vec::new(),
             retries: 0,
-            first: None,
+            first: crate::auth::gate::FirstOrigin::fresh(),
             method: Method::Get,
             course: Course::START,
             http: Inherited::new(crate::options::HttpVersion::Any),

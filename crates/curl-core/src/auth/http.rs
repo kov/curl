@@ -7,9 +7,10 @@
 
 use curl_alloc::{OutOfMemory, try_box};
 
-use super::creds::{Answered, Secret, Trusted, copy};
+use super::creds::{Answered, Secret, copy};
 use super::digest::{Digest, DigestError};
 use super::digest_sspi::{self, Refused, SspiDigest, SspiDigestNote};
+use super::gate::OriginTrusted;
 use crate::conn::Peer;
 use crate::options::{AuthMethods, ProxyGeneration};
 use crate::sspi::Sspi;
@@ -229,7 +230,7 @@ pub(crate) struct AuthRequest<'r> {
     pub(crate) get_or_head: bool,
     /// What the application set for the first origin may go to this
     /// one (`Curl_auth_allowed_to_host`).
-    pub(crate) trusted: Option<Trusted>,
+    pub(crate) trusted: Option<OriginTrusted>,
 }
 
 /// What a request sends to authenticate.
@@ -1539,7 +1540,7 @@ mod tests {
                 method: b"GET",
                 uri: b"/",
                 get_or_head: true,
-                trusted: Some(Trusted::own_url()),
+                trusted: Some(OriginTrusted::testing()),
             };
             let out = auth
                 .output(
@@ -1685,7 +1686,7 @@ mod tests {
             method: b"GET",
             uri: b"/",
             get_or_head: true,
-            trusted: Some(Trusted::own_url()),
+            trusted: Some(OriginTrusted::testing()),
         };
         let send = |c: &Credentials, custom| {
             let mut side = PeerAuth::default();
@@ -1716,7 +1717,7 @@ mod tests {
             method: b"GET",
             uri: b"/",
             get_or_head: true,
-            trusted: Some(Trusted::own_url()),
+            trusted: Some(OriginTrusted::testing()),
         };
         let sigv4 = AuthMethods::AWS_SIGV4;
         let mut auth = Auth::default();
@@ -1758,7 +1759,7 @@ mod tests {
                 method: b"GET",
                 uri: b"/",
                 get_or_head: true,
-                trusted: trusted.then(Trusted::own_url),
+                trusted: trusted.then(OriginTrusted::testing),
             };
             let mut auth = Auth::default();
             auth.start(sig, sig, ProxyGeneration::default());

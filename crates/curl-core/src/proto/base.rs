@@ -6,7 +6,8 @@ use std::num::NonZeroU32;
 use curl_alloc::TryVec as _;
 
 use super::url_peer;
-use crate::auth::creds::{CredentialGate, Credentials};
+use crate::auth::creds::Credentials;
+use crate::auth::gate::{CredentialGate, OriginTrusted, Origins};
 use crate::conn::{Peer, Scheme};
 use crate::deliver::Pipeline;
 use crate::error::{ErrorKind, url_error};
@@ -15,13 +16,26 @@ use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::url::{GetOptions, Part, Url};
 
+/// What `auth::gate` decides a gate with: made here alone, so a request's
+/// gate is decided only by `RequestBase::new`, for the peer it keeps.
+#[derive(Debug)]
+pub(crate) struct GateKey(());
+
+#[cfg(test)]
+impl GateKey {
+    /// A test's own key, to decide a gate apart from a request.
+    pub(crate) fn testing() -> GateKey {
+        GateKey(())
+    }
+}
+
 /// The fields a network protocol's `Request` has in common, which
 /// `ProtoState` answers its questions of the request from.
 #[derive(Debug)]
 pub(crate) struct RequestBase {
     /// The scheme, the host as the URL names it, and the port the request
     /// goes to.
-    pub(super) peer: Peer,
+    peer: Peer,
     /// The body on its way to the application.
     pub(super) pipeline: Pipeline,
     /// What the URL and the application say to log in with, until its
@@ -31,11 +45,51 @@ pub(crate) struct RequestBase {
     /// Whether what the application said for the first origin may go to
     /// this one: its credentials, and the custom `Authorization:` and
     /// `Cookie:` a tunnel's `CONNECT` sends (`Curl_auth_allowed_to_host`),
-    /// fixed as the request is made.
-    pub(super) gate: CredentialGate,
+    /// decided for `peer` as the request is made.
+    gate: CredentialGate,
 }
 
 impl RequestBase {
+    /// A request to `peer`, its gate decided for it by `origins`, with no
+    /// credentials yet.
+    pub(super) fn new(peer: Peer, origins: Origins<'_>, pipeline: Pipeline) -> RequestBase {
+        let gate = origins.gate(&peer, GateKey(()));
+        RequestBase {
+            peer,
+            pipeline,
+            credentials: None,
+            gate,
+        }
+    }
+
+    /// The request a forwarding proxy is sent to `peer` in place of this
+    /// one (FTP's, made as HTTP's): the gate moves with it, decided for
+    /// the URL's origin, which stays the transfer's; a pipeline of its own
+    /// and no credentials, which it reads again.
+    pub(super) fn forwarded(self, peer: Peer, pipeline: Pipeline) -> RequestBase {
+        RequestBase {
+            peer,
+            pipeline,
+            credentials: None,
+            gate: self.gate,
+        }
+    }
+
+    /// The peer the request is for.
+    pub(super) fn peer(&self) -> &Peer {
+        &self.peer
+    }
+
+    /// What may go to it.
+    pub(super) fn gate(&self) -> &CredentialGate {
+        &self.gate
+    }
+
+    /// The pipeline and the credentials, each to change, beside the peer.
+    pub(super) fn parts_mut(&mut self) -> (&mut Pipeline, &mut Option<Credentials>, &Peer) {
+        (&mut self.pipeline, &mut self.credentials, &self.peer)
+    }
+
     /// The peer the request connects to, named again for `url`.
     pub(super) fn network(
         &self,
@@ -59,19 +113,16 @@ impl RequestBase {
     }
 }
 
-/// The gate of a request to `peer` in a transfer whose first request
-/// went to `first`, none if this is it: shut where the origin is
-/// another, unless the application lets credentials follow
-/// (`Curl_auth_allowed_to_host`).
-pub(super) fn gate_of<H: Host>(
-    first: Option<&Peer>,
-    peer: &Peer,
-    cx: &mut StepCx<'_, H>,
-) -> CredentialGate {
-    match first {
-        None => CredentialGate::FIRST,
-        Some(first) => CredentialGate::new(first, peer, cx.easy().options().http.unrestricted_auth),
-    }
+/// Whether what the application said may go to `peer` by `origins`, for
+/// a request that keeps no base (C's `.netrc` step of a protocol that
+/// sends no credentials): the gate a request to it would have.
+pub(super) fn trusted_at(origins: Origins<'_>, peer: &Peer) -> Option<OriginTrusted> {
+    origins.gate(peer, GateKey(())).trusted()
+}
+
+/// The same for a request that goes over no network (`file:`).
+pub(super) fn trusted_locally(origins: Origins<'_>) -> Option<OriginTrusted> {
+    origins.local(GateKey(())).trusted()
 }
 
 /// The peer of `url`, a URL of `scheme`, at its port or the scheme's.

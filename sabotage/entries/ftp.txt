@@ -467,8 +467,12 @@ file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::the_data_connection_tunnels_through_the_proxy
 features: test-util debug-hooks
 --- old
-        self.base.gate.trusted()
+impl crate::multi::state::SetupLend for Request {
+    fn trusted(&self) -> Option<crate::auth::gate::OriginTrusted> {
+        self.base.gate().trusted()
 --- new
+impl crate::multi::state::SetupLend for Request {
+    fn trusted(&self) -> Option<crate::auth::gate::OriginTrusted> {
         None
 
 === the data connection's CONNECT drops the application's Authorization for the proxy
@@ -476,25 +480,21 @@ file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::the_data_connection_tunnels_through_the_proxy
 features: test-util debug-hooks
 --- old
-        self.gate.trusted()
+impl crate::multi::state::SetupLend for Lent<'_> {
+    fn trusted(&self) -> Option<crate::auth::gate::OriginTrusted> {
+        self.base.gate().trusted()
 --- new
+impl crate::multi::state::SetupLend for Lent<'_> {
+    fn trusted(&self) -> Option<crate::auth::gate::OriginTrusted> {
         None
 
 === the control connection's CONNECT after a redirect to another host sends the first host's Authorization and Cookie
 file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::tunnels_after_a_redirect_to_another_host_s_ftp_send_no_credentials
 --- old
-        self.base.gate.trusted()
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-        CredentialGate::FIRST.trusted()
-
-=== the data connection's CONNECT after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/ftp.rs
-witness: curl-core proto::ftp::tests::tunnels_after_a_redirect_to_another_host_s_ftp_send_no_credentials
---- old
-        self.gate.trusted()
---- new
-        CredentialGate::FIRST.trusted()
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === an accepted data connection is said to have a DNS filter connected
 file: crates/curl-core/src/multi/state/side.rs

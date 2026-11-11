@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use super::{base64, needs_base64};
-use crate::auth::creds::{CredentialGate, Takes};
+use crate::auth::creds::Takes;
 use crate::conn::ConnLease;
 use crate::conn::io::Events;
 use crate::deliver::{Pipeline, Reach};
@@ -65,16 +65,11 @@ impl Request {
     ) -> Result<Request, ErrorKind> {
         let name: &[u8] = if secured { b"ldaps" } else { b"ldap" };
         let peer = crate::proto::base::peer_of(url, name, cx)?;
-        let gate = match before.first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
-        let takes = Takes::of(Some(peer.scheme()));
-        let credentials = crate::proto::request_credentials(cx, gate.trusted(), url, takes)?;
-        let credentials = crate::proto::with_netrc(credentials, peer.name(), takes, cx)?;
+        let pipeline = Pipeline::new(Reach::Network);
+        let mut base = crate::proto::base::RequestBase::new(peer, before.origins, pipeline);
+        let takes = Takes::of(Some(base.peer().scheme()));
+        let credentials = crate::proto::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        base.credentials = crate::proto::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let url_text = url.get(Part::Url, GetOptions::NONE).map_err(url_error)?;
         let encoded = GetOptions {
             url_encode: true,
@@ -92,12 +87,7 @@ impl Request {
         };
         Ok(Request {
             library,
-            base: crate::proto::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials,
-                gate,
-            },
+            base,
             url_text,
             path,
             query,
@@ -167,7 +157,7 @@ impl Request {
             cx,
             format_args!("LDAP local: trying to establish {state} connection"),
         );
-        let peer = &self.base.peer;
+        let peer = self.base.peer();
         let made = match library.open(peer.name(), port, ssl) {
             Ok(made) => made,
             Err(Opened::OutOfMemory) => return Err(ErrorKind::OutOfMemory),

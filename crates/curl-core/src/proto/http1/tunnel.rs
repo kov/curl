@@ -14,7 +14,7 @@ use super::chunked::{ChunkDecoder, ChunkError};
 use super::fields::{self, BadLine};
 use super::framing::value_of;
 use super::request::UserHeaders;
-use crate::auth::creds::Trusted;
+use crate::auth::gate::OriginTrusted;
 
 /// The longest line of an answer (`DYN_PROXY_CONNECT_HEADERS`).
 const MAX_LINE: usize = 16384;
@@ -34,7 +34,7 @@ pub(crate) struct ConnectRequest<'a> {
     /// library's Host, User-Agent and Proxy-Connection and follow them.
     pub(crate) headers: &'a UserHeaders,
     /// Its Authorization and Cookie may go (`Curl_auth_allowed_to_host`).
-    pub(crate) trusted: Option<Trusted>,
+    pub(crate) trusted: Option<OriginTrusted>,
     /// A CONNECT-UDP's, which asks the proxy at `authority` to upgrade
     /// (RFC 9298), not a `CONNECT`.
     pub(crate) udp: Option<UdpTarget<'a>>,

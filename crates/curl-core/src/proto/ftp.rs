@@ -25,7 +25,7 @@ use super::pingpong::drive::{self, Read};
 use super::pingpong::ftp::Ftp as Ends;
 use super::xfer::{Receive, Sink, Source, write_end};
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
-use crate::auth::creds::{CredentialGate, Credentials, Takes};
+use crate::auth::creds::{Credentials, Takes};
 use crate::components::Component;
 use std::net::{IpAddr, SocketAddr};
 
@@ -413,16 +413,11 @@ impl Request {
         let scope = cx.easy().options().address_scope;
         let idn = cx.easy().libraries().idn;
         let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
-        let gate = match before.first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
+        let pipeline = Pipeline::new(Reach::Network);
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
         let takes = Takes::of(Some(scheme));
-        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
@@ -442,12 +437,7 @@ impl Request {
             None => {}
         }
         Ok(Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials,
-                gate,
-            },
+            base,
             encoded,
             parsed: None,
             prefer_ascii,
@@ -945,7 +935,7 @@ impl Request {
     /// How far the connection asks for TLS: an implicit TLS scheme asks
     /// for it on both connections (`ftp_use_ssl`).
     fn use_ssl(&self, pc: &FtpConn) -> UseSsl {
-        if pc.use_ssl == UseSsl::None && self.base.peer.scheme().over_tls() {
+        if pc.use_ssl == UseSsl::None && self.base.peer().scheme().over_tls() {
             UseSsl::All
         } else {
             pc.use_ssl
@@ -1032,7 +1022,7 @@ impl Request {
         let shaken = crate::multi::state::tls::upgrade(
             carrier,
             &identity,
-            &self.base.peer,
+            self.base.peer(),
             &self.in_place,
             crate::multi::state::tls::Blocks::Yes,
             cx,
@@ -1816,7 +1806,7 @@ impl Request {
             .as_ref()
             .expect("DO knows its control connection");
         if control.tunnels {
-            return copied(self.base.peer.shown());
+            return copied(self.base.peer().shown());
         }
         match control.remote.as_deref() {
             Some(remote) => copied(remote),
@@ -1845,8 +1835,7 @@ impl Request {
             .expect("DO knows its control connection");
         let host = control.route.destination().shown();
         let lent = &mut Lent {
-            pipeline: &mut self.base.pipeline,
-            gate: self.base.gate,
+            base: &mut self.base,
         };
         Some(data.connect(cx, host, lent))
     }
@@ -1900,7 +1889,7 @@ impl Request {
                             ))
                             .map_err(|_| ErrorKind::OutOfMemory)?
                             .as_bytes(),
-                            self.base.peer.name(),
+                            self.base.peer().name(),
                             b" instead",
                         ],
                     );
@@ -1949,7 +1938,7 @@ impl Request {
             return Err(ErrorKind::NotBuiltIn);
         }
         let mut route = control.route.clone();
-        let origin = Peer::new(self.base.peer.scheme(), host, port, None);
+        let origin = Peer::new(self.base.peer().scheme(), host, port, None);
         // A peer the control connection goes to in the origin's place,
         // the data connection does too, at the new port.
         route.via = match route.via.as_deref() {
@@ -3106,6 +3095,14 @@ impl Request {
     }
 }
 
+impl Request {
+    /// What the request has in common with others, for the HTTP request a
+    /// forwarding proxy is sent in its place.
+    pub(super) fn into_base(self: Box<Self>) -> super::base::RequestBase {
+        self.base
+    }
+}
+
 /// FTP connects over its connection by logging in, and makes its request
 /// in DO and DOING, the data connection made in DO_MORE (`ftp_connect`,
 /// `ftp_multi_statemach`, `ftp_do`, `ftp_doing`, `ftp_do_more`).
@@ -3114,8 +3111,8 @@ impl Request {
 /// its credentials go to a tunnel's `CONNECT` as its gate lets them, and
 /// it speaks no HTTP.
 impl crate::multi::state::SetupLend for Request {
-    fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
-        self.base.gate.trusted()
+    fn trusted(&self) -> Option<crate::auth::gate::OriginTrusted> {
+        self.base.gate().trusted()
     }
 
     fn pipeline(&mut self) -> &mut Pipeline {
@@ -3132,22 +3129,21 @@ impl crate::multi::state::SetupLend for Request {
 }
 
 /// What the request lends its data connection's setup, as it lends its
-/// control connection's: its pipeline, borrowed apart from the rest of
-/// it, beside which the setup borrows the control connection's host, and
-/// its gate, which the data connection's `CONNECT` sends by as the
-/// control connection's did.
+/// control connection's: its base, borrowed apart from the rest of it,
+/// beside which the setup borrows the control connection's host: its
+/// pipeline, and its gate, which the data connection's `CONNECT` sends by
+/// as the control connection's did.
 struct Lent<'a> {
-    pipeline: &'a mut Pipeline,
-    gate: CredentialGate,
+    base: &'a mut super::base::RequestBase,
 }
 
 impl crate::multi::state::SetupLend for Lent<'_> {
-    fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
-        self.gate.trusted()
+    fn trusted(&self) -> Option<crate::auth::gate::OriginTrusted> {
+        self.base.gate().trusted()
     }
 
     fn pipeline(&mut self) -> &mut Pipeline {
-        self.pipeline
+        &mut self.base.pipeline
     }
 
     fn negotiation(&self) -> Option<crate::proto::http::Negotiation> {

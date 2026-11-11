@@ -3,7 +3,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::auth::creds::{CredentialGate, SameOrigin, Trusted};
+use crate::auth::gate::{CredentialGate, Leave, OriginTrusted, SameOrigin};
 use crate::coding::{Coding, Decoders};
 use crate::date::HttpDate;
 use crate::error::ErrorKind;
@@ -93,7 +93,7 @@ impl<'a> Authorization<'a> {
     pub(crate) fn new(
         method: &'static str,
         value: &'a [u8],
-        _: Trusted,
+        _: Leave,
         headers: &UserHeaders,
     ) -> Option<Authorization<'a>> {
         (!headers.replaces(b"Authorization")).then_some(Authorization { method, value })
@@ -106,11 +106,7 @@ impl<'a> Authorization<'a> {
     }
 
     /// A line that goes even beside the application's own Authorization.
-    pub(crate) fn alongside(
-        method: &'static str,
-        value: &'a [u8],
-        _: Trusted,
-    ) -> Authorization<'a> {
+    pub(crate) fn alongside(method: &'static str, value: &'a [u8], _: Leave) -> Authorization<'a> {
         Authorization { method, value }
     }
 }
@@ -272,7 +268,7 @@ impl UserHeaders {
     /// and so are an Authorization and a Cookie unless `trusted`.
     pub(crate) fn for_connect(
         &self,
-        trusted: Option<Trusted>,
+        trusted: Option<OriginTrusted>,
     ) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.lines.items().iter().filter_map(move |h| {
             let line = &h.line[..];
@@ -294,7 +290,7 @@ impl UserHeaders {
         })
     }
 
-    fn sendable(&self, trusted: Option<Trusted>) -> impl Iterator<Item = &UserHeader> {
+    fn sendable(&self, trusted: Option<OriginTrusted>) -> impl Iterator<Item = &UserHeader> {
         self.lines
             .items()
             .iter()
@@ -998,7 +994,12 @@ mod tests {
         };
         let here = peer(b"127.0.0.1");
         let mut out = Vec::new();
-        render_h1(&head, &CredentialGate::new(&here, &here, false), &mut out).unwrap();
+        render_h1(
+            &head,
+            &CredentialGate::testing(&here, &here, false),
+            &mut out,
+        )
+        .unwrap();
         out
     }
 
@@ -1073,7 +1074,12 @@ mod tests {
             };
             let here = peer(b"127.0.0.1");
             let mut out = Vec::new();
-            render_h1(&head, &CredentialGate::new(&here, &here, false), &mut out).unwrap();
+            render_h1(
+                &head,
+                &CredentialGate::testing(&here, &here, false),
+                &mut out,
+            )
+            .unwrap();
             String::from_utf8(out).unwrap()
         };
         assert_eq!(
@@ -1097,7 +1103,7 @@ mod tests {
     #[test]
     fn basic_credentials_follow_host() {
         let here = peer(b"h");
-        let gate = CredentialGate::new(&here, &here, false);
+        let gate = CredentialGate::testing(&here, &here, false);
         let send = |headers: &[&[u8]]| {
             let headers = UserHeaders::new(headers.iter().copied()).unwrap();
             let trusted = gate.trusted().unwrap();
@@ -1110,7 +1116,12 @@ mod tests {
                 user_agent: Some(b"ua/1"),
                 referer: None,
                 proxy_authorization: None,
-                authorization: Authorization::new("Basic", b"OmV4YW1wbGU=", trusted, &headers),
+                authorization: Authorization::new(
+                    "Basic",
+                    b"OmV4YW1wbGU=",
+                    Leave::of(trusted),
+                    &headers,
+                ),
                 signed: None,
                 range: None,
                 content: None,
@@ -1289,7 +1300,11 @@ mod tests {
         let at = |scheme, host: &[u8], port| Peer::new(scheme, host.to_vec(), port, None);
         let other = Scheme::HTTPS;
         let here = at(HTTP, b"Example.COM", 80);
-        let same = |p: &Peer| CredentialGate::new(&here, p, false).same_origin().is_some();
+        let same = |p: &Peer| {
+            CredentialGate::testing(&here, p, false)
+                .same_origin()
+                .is_some()
+        };
         assert!(same(&at(HTTP, b"example.com", 80)));
         assert!(!same(&at(HTTP, b"example.com", 81)));
         assert!(!same(&at(HTTP, b"example.org", 80)));
@@ -1348,7 +1363,7 @@ mod tests {
             headers: &headers,
         };
         let here = peer(b"h");
-        let gate = CredentialGate::new(&here, &here, false);
+        let gate = CredentialGate::testing(&here, &here, false);
         let mut out = Vec::new();
         render_h1(&head, &gate, &mut out).unwrap();
         assert_eq!(
@@ -1389,7 +1404,7 @@ mod tests {
             headers: &headers,
         };
         let here = peer(b"h");
-        let gate = CredentialGate::new(&here, &here, false);
+        let gate = CredentialGate::testing(&here, &here, false);
         let mut out = Vec::new();
         render_h1(&head, &gate, &mut out).unwrap();
         assert_eq!(
@@ -1431,7 +1446,7 @@ mod tests {
             headers: &headers,
         };
         let here = peer(b"origin");
-        let gate = CredentialGate::new(&here, &here, false);
+        let gate = CredentialGate::testing(&here, &here, false);
         let mut out = Vec::new();
         let apart = Forwarding {
             own_headers: Some(&own),
@@ -1490,19 +1505,29 @@ mod tests {
         let first = peer(b"127.0.0.1");
         let now = Peer::new(HTTP, b"[::1]".to_vec(), 80, None);
         let mut out = Vec::new();
-        render_h1(&head, &CredentialGate::new(&first, &now, false), &mut out).unwrap();
+        render_h1(
+            &head,
+            &CredentialGate::testing(&first, &now, false),
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out),
             "GET / HTTP/1.1\r\nHost: [::1]\r\nAccept: */*\r\nX-Other: 1\r\n\r\n"
         );
         out.clear();
-        render_h1(&head, &CredentialGate::new(&first, &now, true), &mut out).unwrap();
+        render_h1(
+            &head,
+            &CredentialGate::testing(&first, &now, true),
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out),
             "GET / HTTP/1.1\r\nHost: [::1]\r\nAccept: */*\r\n\
              Authorization : Basic eA==\r\nCookie: a=b\r\nX-Other: 1\r\n\r\n"
         );
-        let same = CredentialGate::new(&first, &peer(b"127.0.0.1"), false);
+        let same = CredentialGate::testing(&first, &peer(b"127.0.0.1"), false);
         out.clear();
         render_h1(&head, &same, &mut out).unwrap();
         assert!(out.starts_with(b"GET / HTTP/1.1\r\nHost: elsewhere\r\n"));
@@ -1543,8 +1568,12 @@ mod tests {
             };
             let here = peer(b"h");
             let mut out = Vec::new();
-            render_h1(&head, &CredentialGate::new(&here, &here, false), &mut out)
-                .map(|()| out.len())
+            render_h1(
+                &head,
+                &CredentialGate::testing(&here, &here, false),
+                &mut out,
+            )
+            .map(|()| out.len())
         };
         // The request line, Host, Accept, the header's name and both its
         // and the head's line ends: 50 bytes.

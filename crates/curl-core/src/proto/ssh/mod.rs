@@ -21,7 +21,7 @@ use std::fmt;
 use curl_alloc::{TryArc, TryVec as _};
 
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
-use crate::auth::creds::{CredentialGate, Credentials, Takes};
+use crate::auth::creds::{Credentials, Takes};
 use crate::components::Component;
 use crate::conn::io::{Events, Sent};
 use crate::conn::line::LineConn;
@@ -617,16 +617,11 @@ impl Request {
         let scope = cx.easy().options().address_scope;
         let idn = cx.easy().libraries().idn;
         let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
-        let gate = match before.first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
+        let pipeline = Pipeline::new(Reach::Network);
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
         let takes = Takes::of(Some(scheme));
-        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
@@ -650,12 +645,7 @@ impl Request {
             options.range.as_deref().map(copy).transpose()?
         };
         Ok(Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials,
-                gate,
-            },
+            base,
             keys: Some(Keys::find(cx)?),
             url_path,
             path: None,
@@ -2131,7 +2121,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
-        let sftp = self.base.peer.scheme() == Scheme::of("sftp");
+        let sftp = self.base.peer().scheme() == Scheme::of("sftp");
         cx.ssh(format_args!("myssh_connect"));
         let Some(crate::ssh::SshLibrary::Libssh(library)) = cx.easy().libraries().ssh else {
             return Err(ErrorKind::UnsupportedProtocol);
@@ -2145,10 +2135,10 @@ impl Request {
         };
         let cold = lease.conn().net_route().and_then(|r| r.cold.clone());
         // An IPv6 address in its brackets, else the name as looked up.
-        let host = if self.base.peer.ipv6() {
-            self.base.peer.shown()
+        let host = if self.base.peer().ipv6() {
+            self.base.peer().shown()
         } else {
-            self.base.peer.name()
+            self.base.peer().name()
         };
         if session.set_host(host).is_err() {
             return Err(trace::fail(
@@ -2202,7 +2192,7 @@ impl Request {
                 ));
             }
         }
-        if self.base.peer.port() != 0 && session.set_port(self.base.peer.port()).is_err() {
+        if self.base.peer().port() != 0 && session.set_port(self.base.peer().port()).is_err() {
             return Err(trace::fail(
                 cx,
                 ErrorKind::FailedInit,

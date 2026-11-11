@@ -110,7 +110,7 @@ impl ConnRank {
 /// chooses its attempts by.
 pub(crate) trait SetupLend {
     /// Whether credentials may go to the request's origin.
-    fn trusted(&self) -> Option<crate::auth::creds::Trusted>;
+    fn trusted(&self) -> Option<crate::auth::gate::OriginTrusted>;
 
     /// The pipeline the answer to a tunnel's `CONNECT` is delivered to.
     fn pipeline(&mut self) -> &mut Pipeline;

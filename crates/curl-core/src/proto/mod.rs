@@ -12,6 +12,7 @@
 //! URL's host and port and completes once connected.
 
 mod base;
+pub(crate) use base::GateKey;
 pub(crate) mod dict;
 pub(crate) mod file;
 pub(crate) mod ftp;
@@ -38,9 +39,8 @@ pub(crate) mod xfer;
 
 use std::num::NonZeroU32;
 
-use crate::auth::creds::{
-    CredentialGate, Credentials, CredentialsError, NetrcLookup, Takes, Trusted,
-};
+use crate::auth::creds::{Credentials, CredentialsError, NetrcLookup, Takes};
+use crate::auth::gate::{CredentialGate, OriginTrusted, Origins};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
@@ -86,9 +86,10 @@ pub(super) fn url_peer(
 /// What a transfer's next request takes from the ones before it.
 #[derive(Clone, Copy)]
 pub(crate) struct Before<'r> {
-    /// Where the first request went (`state.initial_origin`): what the
-    /// application said for it goes nowhere else.
-    pub(crate) first: Option<&'r Peer>,
+    /// Where the first request went (`state.initial_origin`), which a
+    /// request's gate is decided by: what the application said for it
+    /// goes nowhere else.
+    pub(crate) origins: Origins<'r>,
     /// The method, which a redirect may have turned into a GET
     /// (`state.httpreq`).
     pub(crate) method: Method,
@@ -533,11 +534,11 @@ fn set_out_with<H: Host>(
 /// The host is the origin's name, as a request that keeps them looks it
 /// up (`state.origin->hostname`), and what is wrong with the origin fails
 /// first; a scheme with no network, and a test's own, have none to check.
-/// The application's login counts only where `first` lets it go, as for
+/// The application's login counts only where `origins` let it go, as for
 /// any request.
 pub(crate) fn netrc_unkept<H: Host>(
     url: &Url,
-    first: Option<&Peer>,
+    origins: Origins<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
     let name = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
@@ -545,17 +546,11 @@ pub(crate) fn netrc_unkept<H: Host>(
     let takes = Takes::of(scheme);
     if let Some(scheme) = scheme.filter(|s| !s.no_network()) {
         let peer = base::peer_of(url, scheme.name().as_bytes(), cx)?;
-        let gate = match first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
-        let credentials = request_credentials(cx, gate.trusted(), url, takes)?;
+        let trusted = base::trusted_at(origins, &peer);
+        let credentials = request_credentials(cx, trusted, url, takes)?;
         return with_netrc(credentials, peer.name(), takes, cx).map(drop);
     }
-    let credentials = request_credentials(cx, Some(Trusted::own_url()), url, takes)?;
+    let credentials = request_credentials(cx, base::trusted_locally(origins), url, takes)?;
     let host = match url.get(Part::Host, GetOptions::NONE) {
         Ok(host) => host,
         Err(UrlErrorKind::NoHost) => Vec::new(),
@@ -570,7 +565,7 @@ pub(crate) fn netrc_unkept<H: Host>(
 /// (`url_set_data_creds`).
 pub(crate) fn request_credentials<H: Host>(
     cx: &mut StepCx<'_, H>,
-    trusted: Option<Trusted>,
+    trusted: Option<OriginTrusted>,
     url: &Url,
     takes: Takes,
 ) -> Result<Option<Credentials>, ErrorKind> {
@@ -600,27 +595,13 @@ const TEST_SCHEMES: [&[u8]; 4] = [b"null", b"stall", b"script", b"tcp"];
 /// the others' credentials go to a tunnel's `CONNECT` as their own gate
 /// lets them, and they speak no HTTP.
 impl SetupLend for ProtoState {
-    fn trusted(&self) -> Option<Trusted> {
+    fn trusted(&self) -> Option<OriginTrusted> {
         match self {
             ProtoState::Http(r) => SetupLend::trusted(&**r),
             ProtoState::Ftp(r) => SetupLend::trusted(&**r),
-            ProtoState::Pop3(r) => r.base.gate.trusted(),
-            ProtoState::Imap(r) => r.base.gate.trusted(),
-            ProtoState::Smtp(r) => r.base.gate.trusted(),
-            ProtoState::Ssh(r) => r.base.gate.trusted(),
-            ProtoState::Ldap(r) => r.base.gate.trusted(),
-            ProtoState::LdapLocal(r) => r.base.gate.trusted(),
-            ProtoState::Dict(r) => r.base.gate.trusted(),
-            ProtoState::Gopher(r) => r.base.gate.trusted(),
-            ProtoState::Mqtt(r) => r.base.gate.trusted(),
-            ProtoState::Telnet(r) => r.base.gate.trusted(),
-            ProtoState::Tftp(r) => r.base.gate.trusted(),
-            // It goes over no network, so through no tunnel.
-            ProtoState::File(_) => None,
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
-                CredentialGate::FIRST.trusted()
-            }
+            // `file:` goes over no network, so through no tunnel; a test
+            // protocol keeps no gate, and trusts nothing.
+            other => other.gate().and_then(CredentialGate::trusted),
         }
     }
 
@@ -715,7 +696,7 @@ impl ProtoState {
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
             b"file" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::File(
                     curl_alloc::try_box(file::Request::open(url, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -797,23 +778,23 @@ impl ProtoState {
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"dict" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Dict(
-                    curl_alloc::try_box(dict::Request::new(url, before.first, cx)?)
+                    curl_alloc::try_box(dict::Request::new(url, before.origins, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             b"gopher" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Gopher(
-                    curl_alloc::try_box(gopher::Request::new(url, false, before.first, cx)?)
+                    curl_alloc::try_box(gopher::Request::new(url, false, before.origins, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             b"gophers" if cx.easy().libraries().tls.is_some() => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Gopher(
-                    curl_alloc::try_box(gopher::Request::new(url, true, before.first, cx)?)
+                    curl_alloc::try_box(gopher::Request::new(url, true, before.origins, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
@@ -830,25 +811,25 @@ impl ProtoState {
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"tftp" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Tftp(
-                    curl_alloc::try_box(tftp::Request::new(url, before.first, cx)?)
+                    curl_alloc::try_box(tftp::Request::new(url, before.origins, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             #[cfg(any(test, feature = "test-util"))]
             b"null" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Null
             }
             #[cfg(any(test, feature = "test-util"))]
             b"stall" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Stall
             }
             #[cfg(any(test, feature = "test-util"))]
             b"script" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Script(
                     curl_alloc::try_box(script::Player::default())
                         .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -856,7 +837,7 @@ impl ProtoState {
             }
             #[cfg(any(test, feature = "test-util"))]
             b"tcp" => {
-                netrc_unkept(url, before.first, cx)?;
+                netrc_unkept(url, before.origins, cx)?;
                 ProtoState::Tcp
             }
             _ => return Ok(None),
@@ -1002,21 +983,29 @@ impl ProtoState {
     }
 
     /// An FTP request goes to a forwarding proxy as an HTTP one for `url`,
-    /// which takes its place: what the application said may go there as
-    /// the FTP request's own gate lets it, decided for the FTP origin, as
-    /// C's origin stays the URL's (`Curl_auth_allowed_to_host`). Any other
-    /// request is left as it is.
+    /// which takes its place and its base: what the application said may
+    /// go there as the FTP request's gate lets it, decided for the FTP
+    /// origin, as C's origin stays the URL's (`Curl_auth_allowed_to_host`).
+    /// Any other request is left as it is.
     pub(crate) fn forward_ftp<H: Host>(
-        &mut self,
+        self,
         url: &Url,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
-    ) -> Result<(), ErrorKind> {
-        if let ProtoState::Ftp(r) = self {
-            let http = http::Request::forwarding(url, r.base.gate, before, cx)?;
-            *self = ProtoState::Http(http.into());
+    ) -> Result<ProtoState, ErrorKind> {
+        match self {
+            ProtoState::Ftp(r) => {
+                let http = http::Request::forwarding(url, r.into_base(), before, cx)?;
+                Ok(ProtoState::Http(http.into()))
+            }
+            other => Ok(other),
         }
-        Ok(())
+    }
+
+    /// What may go to the request's origin, for a request over a network;
+    /// none for `file:` and the tests' own protocols.
+    pub(crate) fn gate(&self) -> Option<&CredentialGate> {
+        self.base().map(base::RequestBase::gate)
     }
 
     /// The request goes whole to a proxy that sends it on to `url`, an

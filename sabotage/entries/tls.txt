@@ -599,9 +599,13 @@ witness: curl-tls-native tests::a_claim_of_no_library_is_refused
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::tls::a_redirect_elsewhere_makes_its_tls_without_the_client_s_identity
 --- old
-        _ => TlsOrigin::Other,
+    } else {
+        TlsOrigin::Other
+    };
 --- new
-        _ => TlsOrigin::First,
+    } else {
+        TlsOrigin::First
+    };
 
 === another origin's TLS identity is made with the client's certificate and key
 file: crates/curl-core/src/tls.rs

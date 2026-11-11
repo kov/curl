@@ -869,7 +869,7 @@ impl Request {
         lease: &mut ConnLease,
         library: &'static dyn crate::ssh2::Ssh2,
     ) -> Result<(), ErrorKind> {
-        let sftp = self.base.peer.scheme() == crate::conn::Scheme::of("sftp");
+        let sftp = self.base.peer().scheme() == crate::conn::Scheme::of("sftp");
         let crypto = match library.crypto() {
             Crypto::Gcrypt => Some("libgcrypt"),
             Crypto::MbedTls => Some("mbedTLS"),
@@ -1409,8 +1409,8 @@ impl Request {
             return Ok(());
         }
         let file = copy(c_string(ssh.known_hosts.as_deref().unwrap_or_default()))?;
-        let host = copy(self.base.peer.name())?;
-        let port = self.base.peer.port();
+        let host = copy(self.base.peer().name())?;
+        let port = self.base.peer().port();
         let entries = sc
             .session()
             .knownhost_entries()
@@ -1640,8 +1640,8 @@ impl Request {
             return Ok(());
         };
         let file = copy(c_string(file))?;
-        let host = copy(self.base.peer.name())?;
-        let port = self.base.peer.port();
+        let host = copy(self.base.peer().name())?;
+        let port = self.base.peer().port();
         let handler = cx.easy().options().ssh.key_handler.clone();
         let mut check = Check::Failure;
         let mut keybit = None;

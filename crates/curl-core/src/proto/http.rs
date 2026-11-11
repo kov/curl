@@ -30,6 +30,7 @@ use crate::upload::chain;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
 
+use super::base::RequestBase;
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
 use super::http1::fields;
 use super::http1::follow::{self, Inherited};
@@ -38,8 +39,9 @@ use super::http1::request::{
     self, Accepted, Authorization, Conditional, Forwarding, RangeLine, RequestHead, SentIn, Typed,
 };
 use super::{Before, Ended, ProtoStep};
-use crate::auth::creds::{CredentialGate, Credentials, Secret, Takes, Trusted};
+use crate::auth::creds::{Credentials, Secret, Takes};
 use crate::auth::digest_sspi::SspiDigestNote;
+use crate::auth::gate::{Leave, OriginTrusted};
 use crate::auth::http::{AuthAct, AuthRequest, DigestSaid, Offered, Output, OutputError, Side};
 use crate::options::AuthMethods;
 use std::num::NonZeroUsize;
@@ -302,7 +304,7 @@ impl Wire {
 /// An HTTP request and its response.
 #[derive(Debug)]
 pub(crate) struct Request {
-    pub(super) base: super::base::RequestBase,
+    pub(super) base: RequestBase,
     /// The path and query the request asks for.
     target: Vec<u8>,
     /// The whole URL, the request's target when a proxy it goes to sends
@@ -628,7 +630,7 @@ enum Body {
 /// An HTTP request lends its own credentials' trust, its pipeline and
 /// what it may speak.
 impl crate::multi::state::SetupLend for Request {
-    fn trusted(&self) -> Option<Trusted> {
+    fn trusted(&self) -> Option<OriginTrusted> {
         Request::trusted(self)
     }
 
@@ -703,8 +705,8 @@ impl Request {
     }
 
     /// Credentials may go to the request's origin.
-    pub(crate) fn trusted(&self) -> Option<Trusted> {
-        self.base.gate.trusted()
+    pub(crate) fn trusted(&self) -> Option<OriginTrusted> {
+        self.base.gate().trusted()
     }
 
     /// A request for `url`, whose scheme is `http`, or `https` if
@@ -756,44 +758,48 @@ impl Request {
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
-        let (peer, target, gate) = Request::addressed(url, scheme, before, cx)?;
-        Request::credentialed(url, scheme, (peer, target, gate), before, cx)
+        let (peer, target) = Request::addressed(url, scheme, cx)?;
+        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        Request::credentialed(url, scheme, base, target, before, cx)
     }
 
     /// The HTTP request a forwarding proxy is sent for `url`, an FTP URL,
-    /// in place of the FTP request whose `gate` it takes: that gate was
+    /// in place of the FTP request whose `base` it takes: its gate was
     /// decided for the URL's origin, which stays the transfer's origin
     /// (`Curl_auth_allowed_to_host`), not for the HTTP peer the request
     /// is addressed as.
     pub(crate) fn forwarding<H: Host>(
         url: &Url,
-        gate: CredentialGate,
+        base: RequestBase,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
-        let (peer, target, _) = Request::addressed(url, HTTP, before, cx)?;
-        Request::credentialed(url, HTTP, (peer, target, gate), before, cx)
+        let (peer, target) = Request::addressed(url, HTTP, cx)?;
+        let base = base.forwarded(peer, Pipeline::collecting());
+        Request::credentialed(url, HTTP, base, target, before, cx)
     }
 
-    /// A request of `scheme` to `peer` for `target`, with the credentials
-    /// the options, the URL and a `.netrc` file give it where `gate` lets
+    /// A request of `scheme` on `base` for `target`, with the credentials
+    /// the options, the URL and a `.netrc` file give it where its gate lets
     /// it send them; boxed, as `new` says.
     fn credentialed<H: Host>(
         url: &Url,
         scheme: Scheme,
-        (peer, target, gate): (Peer, Vec<u8>, CredentialGate),
+        base: RequestBase,
+        target: Vec<u8>,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
-        let mut request = curl_alloc::try_box(Request::fresh(peer, target, gate, before))
+        let mut request = curl_alloc::try_box(Request::fresh(base, target, before))
             .map_err(|_| ErrorKind::OutOfMemory)?;
         // HTTP's user and password take control bytes
         // (`PROTOPT_USERPWDCTRL`), RTSP's not.
         let takes = Takes::of(Some(scheme));
-        let credentials = super::request_credentials(cx, request.base.gate.trusted(), url, takes)?;
+        let credentials =
+            super::request_credentials(cx, request.base.gate().trusted(), url, takes)?;
         // By the host's name: an IPv6 address without its brackets, a name
         // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
-        let name = request.base.peer.name();
+        let name = request.base.peer().name();
         request.base.credentials = super::with_netrc(credentials, name, takes, cx)?;
         Ok(request)
     }
@@ -805,18 +811,17 @@ impl Request {
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let (peer, target, gate) = Request::addressed(url, scheme, before, cx)?;
-        Ok(Request::fresh(peer, target, gate, before))
+        let (peer, target) = Request::addressed(url, scheme, cx)?;
+        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        Ok(Request::fresh(base, target, before))
     }
 
-    /// Who a request of `scheme` for `url` goes to, its target, and what
-    /// it may send them.
+    /// Who a request of `scheme` for `url` goes to, and its target.
     fn addressed<H: Host>(
         url: &Url,
         scheme: Scheme,
-        before: Before<'_>,
         cx: &mut StepCx<'_, H>,
-    ) -> Result<(Peer, Vec<u8>, CredentialGate), ErrorKind> {
+    ) -> Result<(Peer, Vec<u8>), ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
         let port = url
             .port_or_default()
@@ -825,27 +830,15 @@ impl Request {
         let scope = cx.easy().options().address_scope;
         let idn = cx.easy().libraries().idn;
         let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
-        let gate = match before.first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
-        Ok((peer, target, gate))
+        Ok((peer, target))
     }
 
-    /// A request to `peer` for `target` not begun, with no credentials:
+    /// A request on `base` for `target` not begun, with no credentials:
     /// made in place where it is to live, as it is large.
     #[inline(always)]
-    fn fresh(peer: Peer, target: Vec<u8>, gate: CredentialGate, before: Before<'_>) -> Request {
+    fn fresh(base: RequestBase, target: Vec<u8>, before: Before<'_>) -> Request {
         Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::collecting(),
-                credentials: None,
-                gate,
-            },
+            base,
             target,
             forward_target: None,
             alt_used: None,
@@ -883,8 +876,8 @@ impl Request {
     /// (`http_target`).
     pub(crate) fn forward(&mut self, url: &Url, ftp_type: Option<u8>) -> Result<(), ErrorKind> {
         let mut url = url.try_clone().map_err(url_error)?;
-        if self.base.peer.converted() {
-            let host = Some(self.base.peer.name());
+        if self.base.peer().converted() {
+            let host = Some(self.base.peer().name());
             url.set(Part::Host, host, SetOptions::NONE)
                 .map_err(url_error)?;
         }
@@ -982,7 +975,7 @@ impl Request {
 
     /// It goes over TLS: its scheme is `https` or `wss` (C's `PROTOPT_SSL`).
     pub(crate) fn secured(&self) -> bool {
-        self.base.peer.scheme().over_tls()
+        self.base.peer().scheme().over_tls()
     }
 
     /// The port its scheme means when a URL names none, which `Host:`
@@ -1012,7 +1005,7 @@ impl Request {
             offered: head.meta_mut().take_challenges(),
             act,
             code,
-            origin: &self.base.peer,
+            origin: self.base.peer(),
         })
     }
 
@@ -1182,7 +1175,7 @@ impl Request {
             Some(q) => (&self.target[..q], Some(&self.target[q + 1..])),
             None => (&self.target[..], None),
         };
-        let port = self.base.peer.port();
+        let port = self.base.peer().port();
         let request = sigv4::Request {
             params: options.http.signing.aws_sigv4.as_deref(),
             method,
@@ -1191,8 +1184,8 @@ impl Request {
                 Method::Post => sigv4::Kind::Post,
                 Method::Upload => sigv4::Kind::Put,
             },
-            hostname: self.base.peer.name(),
-            host: self.base.peer.request_host(),
+            hostname: self.base.peer().name(),
+            host: self.base.peer().request_host(),
             port: (port != self.default_port()).then_some(port),
             path,
             query,
@@ -1228,12 +1221,12 @@ impl Request {
         // `@authority` is what `Host` says: the application's, if it
         // gives one that says anything, else the library's
         // (`httpsig_authority`).
-        let port = self.base.peer.port();
+        let port = self.base.peer().port();
         let port = (port != self.default_port()).then_some(port);
         let mut authority = Vec::new();
         let custom = self
             .base
-            .gate
+            .gate()
             .same_origin()
             .and_then(|same| options.http.headers.host_value(same));
         let made = match custom {
@@ -1243,9 +1236,9 @@ impl Request {
                 // address's brackets; else what the library's `Host:`
                 // says.
                 let host = if given.is_some() {
-                    self.base.peer.name()
+                    self.base.peer().name()
                 } else {
-                    self.base.peer.request_host()
+                    self.base.peer().request_host()
                 };
                 with_port(&mut authority, host, port)
             }
@@ -1295,7 +1288,7 @@ impl Request {
         let (credentials, peer) = match (side, &forwarding) {
             (Side::Host, _) => (
                 self.base.credentials.as_ref().map(Credentials::secret),
-                &self.base.peer,
+                self.base.peer(),
             ),
             (Side::Proxy, Some((peer, creds))) => {
                 (creds.as_deref().map(ProxyCreds::secret), &**peer)
@@ -1337,9 +1330,10 @@ impl Request {
             .as_ref()
             .is_some_and(|p| p.http() && p.creds.is_some());
         negotiate::Wants {
-            negotiate: want.contains(AuthMethods::NEGOTIATE) && self.base.gate.trusted().is_some(),
+            negotiate: want.contains(AuthMethods::NEGOTIATE)
+                && self.base.gate().trusted().is_some(),
             credentials: self.base.credentials.as_ref().map(Credentials::secret),
-            origin: Some(&self.base.peer),
+            origin: Some(self.base.peer()),
             proxy: proxy_creds && proxy_want.contains(AuthMethods::NEGOTIATE),
         }
     }
@@ -1368,7 +1362,7 @@ impl Request {
             .reread_headers()
             .map_err(|_| ErrorKind::OutOfMemory)?;
         self.cookie_host =
-            cookies::custom_host(&options.http.headers, self.base.gate.same_origin())
+            cookies::custom_host(&options.http.headers, self.base.gate().same_origin())
                 .map_err(|_| ErrorKind::OutOfMemory)?;
         let reused = lease.conn().reused();
         // On a connection's first request, which finds what it speaks
@@ -1412,7 +1406,7 @@ impl Request {
         // as for its own peer.
         let (proxy_peer, proxy_secret) = match &forwarding {
             Some((peer, creds)) => (&**peer, creds.as_deref().map(ProxyCreds::secret)),
-            None => (&self.base.peer, None),
+            None => (self.base.peer(), None),
         };
         let now = cx.unix_time();
         let ed25519 = cx.easy().libraries().ed25519;
@@ -1467,11 +1461,11 @@ impl Request {
         let http = &options.http;
         let request = AuthRequest {
             side: Side::Host,
-            origin: &self.base.peer,
+            origin: self.base.peer(),
             method: self.method_line(http),
             uri: &self.target,
             get_or_head,
-            trusted: self.base.gate.trusted(),
+            trusted: self.base.gate().trusted(),
         };
         let custom = http.headers.replaces(b"Authorization");
         let mut said = DigestSaid::default();
@@ -1548,7 +1542,7 @@ impl Request {
         let probe = auth.probe || proxy_auth.probe;
         let sspi = cx.easy().libraries().sspi().is_some();
         let auth_asked = cx.easy().auth.asked(
-            (credentials, &self.base.peer),
+            (credentials, self.base.peer()),
             (proxy_secret, proxy_peer),
             probe,
             get_or_head,
@@ -1561,11 +1555,11 @@ impl Request {
         let http = &cx.easy().options().http;
         let application = http.cookies.send.is_some()
             && !http.headers.replaces(b"Cookie")
-            && self.base.gate.trusted().is_some();
+            && self.base.gate().trusted().is_some();
         // Without a jar or the application's own, there is no line to make
         // (`http_cookies`).
         let cookie = if cx.easy().jar.is_on() || application {
-            let site = cookie_site(&self.cookie_host, &self.target, &self.base.peer);
+            let site = cookie_site(&self.cookie_host, &self.target, self.base.peer());
             cookies::request_value(cx, &site, application)?
         } else {
             None
@@ -1704,23 +1698,23 @@ impl Request {
                 }
             },
         };
-        let port = self.base.peer.port();
+        let port = self.base.peer().port();
         let shown_port = (port != self.default_port()).then_some(port);
-        let gate = self.base.gate;
+        let gate = self.base.gate();
         let authorization = match (&self.base.credentials, &auth.header) {
             // Digest goes beside the application's own Authorization, as
             // C's does (`H1_HD_AUTH`).
             (Some(c), Some((AuthMethods::DIGEST, value))) => {
-                Some(Authorization::alongside("Digest", value, c.trusted()))
+                Some(Authorization::alongside("Digest", value, c.leave()))
             }
             // Negotiate goes with no credentials too, made only for an
             // origin the gate trusts and without the application's own.
             (_, Some((AuthMethods::NEGOTIATE, value))) => {
                 let trusted = gate.trusted().expect("Negotiate goes only where trusted");
-                Authorization::new("Negotiate", value, trusted, &http.headers)
+                Authorization::new("Negotiate", value, Leave::of(trusted), &http.headers)
             }
             (Some(c), Some((method, value))) => {
-                Authorization::new(method.name(), value, c.trusted(), &http.headers)
+                Authorization::new(method.name(), value, c.leave(), &http.headers)
             }
             _ => None,
         };
@@ -1762,7 +1756,7 @@ impl Request {
                     .unwrap_or(&self.target),
             },
             version: self.version,
-            host: self.base.peer.request_host(),
+            host: self.base.peer().request_host(),
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: cx.easy().report().referer(),
@@ -1795,7 +1789,7 @@ impl Request {
             headers: &http.headers,
         };
         let mut out = Vec::new();
-        request::render_h1(&head, &gate, &mut out)?;
+        request::render_h1(&head, gate, &mut out)?;
         let exchange = Exchange {
             sent: match self.version {
                 SentIn::Http10 => response::HttpVersion::Http10,
@@ -2596,13 +2590,7 @@ impl Request {
         whole: bool,
     ) -> Result<&'i [u8], ErrorKind> {
         let Request {
-            base:
-                super::base::RequestBase {
-                    pipeline,
-                    credentials,
-                    peer,
-                    gate: _,
-                },
+            base,
             head,
             interim,
             body,
@@ -2613,6 +2601,7 @@ impl Request {
             rtsp,
             ..
         } = self;
+        let (pipeline, credentials, peer) = base.parts_mut();
         let state = |side| lease.conn().negotiate().map(|n| n.state(side));
         let (host, proxy) = (state(Side::Host), state(Side::Proxy));
         let started =
@@ -2732,7 +2721,7 @@ impl Request {
                 Some((
                     Side::Host,
                     credentials.as_ref().map(Credentials::secret),
-                    &*peer,
+                    peer,
                 ))
             } else if code == Some(407)
                 && cx.easy().auth.proxy_picks_negotiate()

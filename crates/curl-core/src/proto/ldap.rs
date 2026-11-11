@@ -12,7 +12,7 @@
 use curl_alloc::TryVec as _;
 
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
-use crate::auth::creds::{CredentialGate, Credentials, Takes};
+use crate::auth::creds::{Credentials, Takes};
 use crate::auth::sasl::{self, Mechs, Progress, Sasl, SaslError};
 use crate::conn::io::{Events, Sent};
 use crate::conn::layer::LayerCx;
@@ -327,16 +327,11 @@ impl Request {
         };
         let name: &[u8] = if secured { b"ldaps" } else { b"ldap" };
         let peer = super::base::peer_of(url, name, cx)?;
-        let gate = match before.first {
-            None => CredentialGate::FIRST,
-            Some(first) => {
-                let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &peer, other_hosts)
-            }
-        };
-        let takes = Takes::of(Some(peer.scheme()));
-        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let pipeline = Pipeline::new(Reach::Network);
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+        let takes = Takes::of(Some(base.peer().scheme()));
+        let credentials = super::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let url_text = url.get(Part::Url, GetOptions::NONE).map_err(url_error)?;
         let decoded = GetOptions {
             url_decode: true,
@@ -349,7 +344,10 @@ impl Request {
         };
         // The library reads URLs with credentials or options badly, so
         // C refuses them unread (`oldap_url_parse`).
-        let from_url = credentials.as_ref().is_some_and(Credentials::given_in_url);
+        let from_url = base
+            .credentials
+            .as_ref()
+            .is_some_and(Credentials::given_in_url);
         let parsed = if from_url || url_options.is_some() {
             Err(UrlError::BAD_URL)
         } else {
@@ -371,12 +369,7 @@ impl Request {
             }
         };
         Ok(Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials,
-                gate,
-            },
+            base,
             library,
             url_text,
             search,
@@ -439,14 +432,14 @@ impl Request {
             None => self.url_options.as_deref(),
         };
         parse_login_options(&mut sasl, options.unwrap_or_default())?;
-        let scheme = self.base.peer.scheme();
-        let host = if self.base.peer.ipv6() {
-            self.base.peer.shown()
+        let scheme = self.base.peer().scheme();
+        let host = if self.base.peer().ipv6() {
+            self.base.peer().shown()
         } else {
-            self.base.peer.name()
+            self.base.peer().name()
         };
         let mut hosturl = Vec::new();
-        let port = curl_alloc::try_format(format_args!(":{}", self.base.peer.port()))
+        let port = curl_alloc::try_format(format_args!(":{}", self.base.peer().port()))
             .map_err(|_| ErrorKind::OutOfMemory)?;
         let oom = |_| ErrorKind::OutOfMemory;
         hosturl
@@ -580,8 +573,8 @@ impl Request {
         let mut sx = sasl::Ctx {
             creds: login.map(Credentials::secret),
             sasl_ir,
-            host: self.base.peer.name(),
-            port: self.base.peer.port(),
+            host: self.base.peer().name(),
+            port: self.base.peer().port(),
             random: &mut random,
             security: libraries.security,
             delegation,
@@ -670,7 +663,7 @@ impl Request {
             let shaken = crate::multi::state::tls::upgrade(
                 &mut carrier,
                 &identity,
-                &self.base.peer,
+                self.base.peer(),
                 &in_place,
                 crate::multi::state::tls::Blocks::No,
                 cx,

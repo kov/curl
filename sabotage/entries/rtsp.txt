@@ -29,7 +29,7 @@ witness: curl-core proto::http::tests::rtsp::a_session_goes_only_to_the_origin_t
 --- old
             s.origin
                 .as_ref()
-                .is_none_or(|origin| origin == &self.base.peer)
+                .is_none_or(|origin| origin == self.base.peer())
 --- new
             true
 

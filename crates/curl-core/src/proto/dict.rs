@@ -7,8 +7,9 @@ use curl_alloc::TryVec as _;
 use super::raw::Outgoing;
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
+use crate::auth::gate::Origins;
+use crate::conn::ConnLease;
 use crate::conn::io::Events;
-use crate::conn::{ConnLease, Peer};
 use crate::deliver::{Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::handler::DebugKind;
@@ -138,23 +139,19 @@ impl Request {
     /// A transfer of `url`: its peer and its path.
     pub(crate) fn new<H: Host>(
         url: &Url,
-        first: Option<&Peer>,
+        origins: Origins<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
         let peer = super::base::peer_of(url, b"dict", cx)?;
-        let gate = super::base::gate_of(first, &peer, cx);
+        let pipeline = Pipeline::new(Reach::Network);
+        let base = super::base::RequestBase::new(peer, origins, pipeline);
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
         };
         let path = url.get(Part::Path, encoded).map_err(url_error)?;
         Ok(Request {
-            base: super::base::RequestBase {
-                peer,
-                pipeline: Pipeline::new(Reach::Network),
-                credentials: None,
-                gate,
-            },
+            base,
             path,
             out: Outgoing::default(),
             answer: Receive::default(),

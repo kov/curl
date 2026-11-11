@@ -6,65 +6,11 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::conn::Peer;
+use crate::auth::gate::{Leave, OriginTrusted, OwnLeave};
 use crate::error::UrlErrorKind;
 use crate::netrc::Found;
 use crate::options::{Login, NetrcMode};
 use crate::url::{GetOptions, Part, Url, decode_but_control, decode_but_zero};
-
-/// Whether what the application said for the first origin may go to the
-/// one the request is for: the only way to the tokens that let a custom
-/// Host, an Authorization or a Cookie into a request.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CredentialGate {
-    same: bool,
-    trusted: bool,
-}
-
-/// The request is for the origin the transfer started with.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SameOrigin(());
-
-/// Credentials may go to the request's origin (`Curl_auth_allowed_to_host`).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Trusted(());
-
-impl Trusted {
-    /// Credentials the request's own URL carries go to its origin, which
-    /// they were given for, wherever the transfer started
-    /// (`url_set_data_creds`); so do those a `.netrc` entry gives for
-    /// its host.
-    pub(crate) fn own_url() -> Trusted {
-        Trusted(())
-    }
-}
-
-impl CredentialGate {
-    /// The gate for the transfer's first request.
-    pub(crate) const FIRST: CredentialGate = CredentialGate {
-        same: true,
-        trusted: true,
-    };
-
-    /// The gate for a request to `now` in a transfer that started at
-    /// `initial`; `other_hosts` lets credentials follow it anywhere
-    /// (`CURLOPT_UNRESTRICTED_AUTH`).
-    pub(crate) fn new(initial: &Peer, now: &Peer, other_hosts: bool) -> CredentialGate {
-        let same = initial == now;
-        CredentialGate {
-            same,
-            trusted: same || other_hosts,
-        }
-    }
-
-    pub(crate) fn same_origin(&self) -> Option<SameOrigin> {
-        self.same.then_some(SameOrigin(()))
-    }
-
-    pub(crate) fn trusted(&self) -> Option<Trusted> {
-        self.trusted.then_some(Trusted(()))
-    }
-}
 
 /// Credentials kept to tell when a later request's are others
 /// (`Curl_creds_same`): those a Digest challenge was answered with, or
@@ -93,7 +39,8 @@ pub(crate) struct Credentials {
     /// (`sasl_authzid`).
     authzid: Vec<u8>,
     source: Source,
-    trusted: Trusted,
+    /// What lets them go to the request's origin.
+    leave: Leave,
 }
 
 /// Where credentials came from (`CREDS_*`): the last that gave any.
@@ -168,7 +115,7 @@ impl Credentials {
             service: copy(&self.service)?,
             authzid: copy(&self.authzid)?,
             source: self.source,
-            trusted: self.trusted,
+            leave: self.leave,
         })
     }
 
@@ -178,7 +125,7 @@ impl Credentials {
     /// each part it has replacing the login's.
     pub(crate) fn for_request(
         login: &Login,
-        trusted: Option<Trusted>,
+        trusted: Option<OriginTrusted>,
         url: &Url,
         takes: Takes,
     ) -> Result<Option<Credentials>, CredentialsError> {
@@ -223,7 +170,7 @@ impl Credentials {
                     service,
                     authzid,
                     source: Source::Options,
-                    trusted,
+                    leave: Leave::of(trusted),
                 }));
             }
         }
@@ -247,8 +194,9 @@ impl Credentials {
             service,
             authzid,
             source: Source::Url,
-            // A login gets this far only trusted; the URL's own always.
-            trusted: trusted.unwrap_or_else(Trusted::own_url),
+            // A login gets this far only trusted; the URL's own go to
+            // its origin by their own leave.
+            leave: trusted.map_or_else(|| Leave::own(OwnLeave::given()), Leave::of),
         }))
     }
 
@@ -262,7 +210,7 @@ impl Credentials {
             service: Vec::new(),
             authzid: Vec::new(),
             source: Source::Options,
-            trusted: Trusted::own_url(),
+            leave: Leave::of(OriginTrusted::testing()),
         }
     }
 
@@ -305,7 +253,7 @@ impl Credentials {
             service,
             authzid,
             source: Source::Netrc,
-            trusted: Trusted::own_url(),
+            leave: Leave::own(OwnLeave::given()),
         }
     }
 
@@ -358,7 +306,7 @@ impl Credentials {
             // where they go, not who they are: C's `Curl_creds_same`
             // compares neither.
             source: _,
-            trusted: _,
+            leave: _,
         } = self;
         self.secret().same(&other.secret())
     }
@@ -389,8 +337,8 @@ impl Credentials {
     }
 
     /// The leave to send these to the request's origin.
-    pub(crate) fn trusted(&self) -> Trusted {
-        self.trusted
+    pub(crate) fn leave(&self) -> Leave {
+        self.leave
     }
 }
 
@@ -614,7 +562,7 @@ mod tests {
         url: &str,
     ) -> Result<Option<(Vec<u8>, Vec<u8>, Source)>, CredentialsError> {
         let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
-        let trusted = trusted.then(Trusted::own_url);
+        let trusted = trusted.then(OriginTrusted::testing);
         Ok(
             Credentials::for_request(login, trusted, &url, Takes::ControlBytes)?
                 .map(|c| (c.user, c.password, c.source)),
@@ -628,7 +576,7 @@ mod tests {
     fn control_bytes_are_refused_where_the_scheme_takes_none() {
         let take = |login: &Login, url: &str, takes| {
             let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
-            Credentials::for_request(login, Some(Trusted::own_url()), &url, takes)
+            Credentials::for_request(login, Some(OriginTrusted::testing()), &url, takes)
                 .map(|c| c.is_some())
         };
         let cr = "pop3://us%0der:p@h/";
@@ -682,7 +630,7 @@ mod tests {
         for trusted in [false, true] {
             let given = Credentials::for_request(
                 &login,
-                trusted.then(Trusted::own_url),
+                trusted.then(OriginTrusted::testing),
                 &url,
                 Takes::NoControlBytes,
             )
@@ -720,7 +668,7 @@ mod tests {
         let url = Url::parse(b"pop3://kurt:x@h/", ParseOptions::NONE).unwrap();
         let c = Credentials::for_request(
             &login,
-            Some(Trusted::own_url()),
+            Some(OriginTrusted::testing()),
             &url,
             Takes::NoControlBytes,
         )
@@ -730,7 +678,7 @@ mod tests {
         let url = Url::parse(b"pop3://h/", ParseOptions::NONE).unwrap();
         let alone = Credentials::for_request(
             &login,
-            Some(Trusted::own_url()),
+            Some(OriginTrusted::testing()),
             &url,
             Takes::NoControlBytes,
         );
@@ -846,7 +794,7 @@ mod tests {
         assert!(url.has_login());
         let made = Credentials::for_request(
             &Login::default(),
-            Some(Trusted::own_url()),
+            Some(OriginTrusted::testing()),
             &url,
             Takes::ControlBytes,
         )
@@ -879,7 +827,7 @@ mod tests {
         };
         let bearer = |trusted: bool, url: &str| {
             let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
-            let trusted = trusted.then(Trusted::own_url);
+            let trusted = trusted.then(OriginTrusted::testing);
             Credentials::for_request(&token, trusted, &url, Takes::ControlBytes)
                 .unwrap()
                 .map(|c| (c.user, c.bearer))
@@ -903,9 +851,14 @@ mod tests {
     fn credentials_are_the_same_only_byte_for_byte() {
         let url = Url::parse(b"pop3://h/", ParseOptions::NONE).unwrap();
         let make = |login: Login| {
-            Credentials::for_request(&login, Some(Trusted::own_url()), &url, Takes::ControlBytes)
-                .unwrap()
-                .expect("credentials")
+            Credentials::for_request(
+                &login,
+                Some(OriginTrusted::testing()),
+                &url,
+                Takes::ControlBytes,
+            )
+            .unwrap()
+            .expect("credentials")
         };
         let base = || Login {
             user: Some(b"u".to_vec()),
@@ -975,7 +928,7 @@ mod tests {
             service: Vec::new(),
             authzid: Vec::new(),
             source,
-            trusted: Trusted::own_url(),
+            leave: Leave::of(OriginTrusted::testing()),
         };
         let (opt, req, ign) = (NetrcMode::Optional, NetrcMode::Required, NetrcMode::Ignored);
         fn look(c: Option<&Credentials>, mode: NetrcMode) -> NetrcLookup<'_> {
@@ -1005,10 +958,14 @@ mod tests {
             ..Login::default()
         };
         let url = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
-        let c =
-            Credentials::for_request(&login, Some(Trusted::own_url()), &url, Takes::ControlBytes)
-                .unwrap()
-                .expect("credentials");
+        let c = Credentials::for_request(
+            &login,
+            Some(OriginTrusted::testing()),
+            &url,
+            Takes::ControlBytes,
+        )
+        .unwrap()
+        .expect("credentials");
         assert_eq!(c.secret().service(), Some(&b"web"[..]));
         assert_eq!(c.secret().user(), b"");
         assert!(
@@ -1020,10 +977,14 @@ mod tests {
             service: Some(b"other".to_vec()),
             ..Login::default()
         };
-        let d =
-            Credentials::for_request(&other, Some(Trusted::own_url()), &url, Takes::ControlBytes)
-                .unwrap()
-                .unwrap();
+        let d = Credentials::for_request(
+            &other,
+            Some(OriginTrusted::testing()),
+            &url,
+            Takes::ControlBytes,
+        )
+        .unwrap()
+        .unwrap();
         assert!(!d.secret().answers_as(&c.secret().answered().unwrap()));
         assert!(c.secret().answers_as(&c.secret().answered().unwrap()));
         let found = Found {

@@ -1158,7 +1158,7 @@ fn open<H: Host>(
         quic.keep_alive(&mut *step.cx, 1);
     }
     let custom = step.req.custom_method(step.cx);
-    let scheme = step.req.base.peer.scheme().name().as_bytes();
+    let scheme = step.req.base.peer().scheme().name().as_bytes();
     let fields = fields_of(
         &step.req.out[start..start + head],
         custom.as_deref(),

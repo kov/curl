@@ -3,9 +3,9 @@ file: crates/curl-core/src/proto/imap.rs
 witness: curl-core proto::imap::tests::over_the_wire::the_application_s_login_stays_with_the_first_host
 features: test-util
 --- old
-        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
+        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
 --- new
-        let credentials = super::request_credentials(cx, Some(crate::auth::creds::Trusted::own_url()), url, takes)?;
+        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
 
 === a literal's body is read past its size, into the answer after it
 file: crates/curl-core/src/proto/xfer.rs

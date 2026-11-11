@@ -30,6 +30,13 @@ Entry format, one or more per file:
                                                      fork, as deps.py builds
                                                      it, in its own target
                                                      directory)
+  platform: windows                                 (optional: the witness
+                                                     runs only on Windows,
+                                                     where the fault is
+                                                     planted by hand; the
+                                                     sweep reports it as
+                                                     not run and counts it
+                                                     neither way)
   --- old
   <text, exactly as in the file, found exactly once>
   --- new
@@ -72,6 +79,9 @@ class Entry:
         self.fork = fields.get("openssl-fork")
         if self.fork not in (None, "awslc", "boringssl", "quiche"):
             sys.exit(f"{source}: entry '{name}' names no fork deps.py builds: {self.fork}")
+        self.platform = fields.get("platform")
+        if self.platform not in (None, "windows"):
+            sys.exit(f"{source}: entry '{name}' names an unknown platform: {self.platform}")
 
 
 def parse(path):
@@ -175,6 +185,15 @@ def main():
               if not names or any(n == e.source.stem or n in e.name for n in names)]
     if not chosen:
         sys.exit("no entry matches")
+    # A Windows witness cannot run where the sweep does (under systemd-run):
+    # its fault is planted by hand on Windows. Said, never counted as caught
+    # or as a hole.
+    elsewhere = [e for e in chosen if e.platform == "windows"]
+    for e in elsewhere:
+        print(f"NOT RUN   (windows only)  -- {e.name}", flush=True)
+    chosen = [e for e in chosen if e not in elsewhere]
+    if not chosen:
+        sys.exit(f"{len(elsewhere)} entries, all for another platform: none run")
     dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
                            cwd=ROOT, capture_output=True, text=True, check=True).stdout
     if dirty.strip():
@@ -225,7 +244,7 @@ def main():
         else:
             result, holes = "SURVIVED", holes + 1
         print(f"{result}  -- {e.name}", flush=True)
-    print(f"{len(chosen)} entries, {holes} holes")
+    print(f"{len(chosen)} entries, {holes} holes, {len(elsewhere)} not run here")
     sys.exit(1 if holes else 0)
 
 

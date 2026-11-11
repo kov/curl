@@ -300,7 +300,7 @@ fn in_pool_of<R>(
 
 /// What a call on a connection reaches beside its handle: the pool it may
 /// be in, the sessions of a handle in a multi, and the clock.
-struct Around<'a> {
+pub(crate) struct Around<'a> {
     pool: Option<&'a mut Pool>,
     sessions: Option<&'a mut crate::tls::SessionCache>,
     when: When,
@@ -503,12 +503,21 @@ impl<H: Host> Multi<H> {
     /// What a call by a handle not added reaches of this multi, which ran
     /// its transfers: its pool, not its sessions, C's `data->multi` being
     /// none once a perform is done.
-    fn around_for(&mut self) -> Around<'_> {
+    pub(crate) fn around_for(&mut self) -> Around<'_> {
         Around {
             pool: Some(&mut self.caches.pool),
             sessions: None,
             when: When::of(&self.clock),
         }
+    }
+
+    /// The connections this multi keeps.
+    pub(crate) fn kept_pool(&self) -> &Pool {
+        &self.caches.pool
+    }
+
+    pub(crate) fn kept_pool_mut(&mut self) -> &mut Pool {
+        &mut self.caches.pool
     }
 
     /// As `tls_native`, for `easy`, not added, whose transfers this multi
@@ -573,7 +582,7 @@ impl Easy {
     /// (`CURLINFO_TLS_SSL_PTR`).
     pub fn tls_native(&self) -> Option<crate::tls::TlsNative> {
         match &self.private {
-            Some(private) => private.multi.tls_native_for(self),
+            Some(private) => reserved_tls_native(Some(private.0.pool()), self),
             None => reserved_tls_native(None, self),
         }
     }
@@ -586,11 +595,7 @@ impl Easy {
     pub fn upkeep(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
         match self.private.take() {
             Some(mut private) => {
-                let crate::easy::Private { multi, events } = &mut *private;
-                let kept = match events {
-                    Some(table) => multi.upkeep_for(self, table),
-                    None => multi.upkeep_for(self, &mut super::NoEvents),
-                };
+                let kept = private.0.upkeep_for(self);
                 self.private = Some(private);
                 kept
             }
@@ -612,7 +617,7 @@ impl Easy {
     pub fn recv_raw(&mut self, buf: &mut [u8], notes: Notes<'_>) -> Result<RawIo, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let got = private.multi.recv_raw_for(self, buf, notes);
+                let got = raw(private.0.around(), self, Way::Recv(buf), notes);
                 self.private = Some(private);
                 got
             }
@@ -625,7 +630,7 @@ impl Easy {
     pub fn send_raw(&mut self, bytes: &[u8], notes: Notes<'_>) -> Result<RawIo, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let sent = private.multi.send_raw_for(self, bytes, notes);
+                let sent = raw(private.0.around(), self, Way::Send(bytes), notes);
                 self.private = Some(private);
                 sent
             }
@@ -638,7 +643,7 @@ impl Easy {
     pub fn active_socket(&mut self) -> Option<SocketKey> {
         match self.private.take() {
             Some(mut private) => {
-                let socket = private.multi.active_socket_for(self);
+                let socket = in_pool(Some(private.0.pool_mut()), self, pool_socket);
                 self.private = Some(private);
                 socket
             }
@@ -906,7 +911,7 @@ impl Easy {
     ) -> Result<crate::ws::Answer, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let done = private.multi.ws_for(self, call, notes);
+                let done = ws(private.0.around(), self, call, notes);
                 self.private = Some(private);
                 done
             }

@@ -795,8 +795,8 @@ constant of the core's.
 pub struct Easy {
     options: Options,              // typed groups; handlers are Option<Box<dyn …>> inside
     report: TransferReport,        // the current or last transfer's; replaced whole at Init
-    private: Option<Box<Multi>>,   // perform's multi, created on first perform with a waker
-                                   // as C's has one, kept after
+    private: Option<Box<Private>>, // perform's multi, created on first perform with a waker
+                                   // as C's has one, kept after; Private(Box<dyn OwnMulti>)
 }
 impl Easy {
     pub fn perform(&mut self) -> Result<(), Error>;
@@ -811,10 +811,19 @@ impl Easy {
 `perform` boxes `mem::take(self)`, which leaves an allocation-free default behind, runs
 `perform_boxed` on the box and writes the handle back into `*self`. `perform_boxed`, for a
 handle already in a box of its own (the tool's, from the moment it makes one):
-1. takes `self.private`, or creates it (`Multi::new(MultiKind::HandleOwn, Ids::FromZero)`, one
-   `try_box`);
+1. takes `self.private`, or creates it (`Multi::new(MultiKind::HandleOwn, Ids::FromZero)`, two
+   `try_box`es: the multi behind its trait object, and the fat pointer, so the field stays one
+   word);
 2. `multi.add(easy, (), &mut NoEvents)`, then `drive_to_completion`, then `remove`;
 3. puts the private multi into the handle and gives back the same box.
+
+The `Multi<NoHost>` is reached only through the crate-private `OwnMulti` trait (run, its pool
+and clock, upkeep), whose object only `perform` makes. A program that never calls
+`Easy::perform` (libcurl, whose `curl_easy_perform` runs a `Multi<CHost>` of the shim's) thus
+compiles no `NoHost` engine: the `Easy` type names none, so its drop glue and its calls on the
+kept connections (`recv_raw`, `ws`, `tls_native`, …) instantiate nothing for it. The calls on
+the kept connections are the handle's, written once against the pool and clock the trait
+hands out, so the trait's object carries no code a program that never makes them would keep.
 
 Connections and DNS persist in the private multi across performs (1512, 3208).
 `Multi::add` drops an added `Easy`'s private multi (C's `multi_easy` destruction at

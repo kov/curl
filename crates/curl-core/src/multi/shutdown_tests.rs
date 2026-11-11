@@ -770,7 +770,7 @@ fn a_handle_s_own_multi_says_its_cleanup_s_removes() {
     );
     m.remove(id, &mut NoEvents).unwrap();
     assert_eq!(m.shutdowns.len(), 1, "still closing");
-    drop(crate::easy::Private {
+    drop(crate::easy::Own {
         multi: m,
         events: Some(table),
     });

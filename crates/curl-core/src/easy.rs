@@ -11,11 +11,13 @@ use crate::auth::http::Auth;
 use crate::coding::Decoders;
 use crate::components::Components;
 use crate::conn::ConnId;
+use crate::conn::pool::Pool;
 use crate::cookie::{Jar, LoadError, NeverAsked, SuffixCheck};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::{Handler, WriteHandler};
 use crate::hsts::{Hsts, LoadError as CacheLoadError};
 use crate::libraries::{Libraries, SharedLibraries};
+use crate::multi::raw::Around;
 use crate::multi::{AddError, Ids, Multi, MultiKind, NoEvents, WaitMode};
 use crate::multi::{EventTable, TransferId, drive_by_events_with};
 use crate::options::{Lines, Options};
@@ -344,14 +346,13 @@ struct HostCaches {
     alt_svc: Option<AltSvc>,
 }
 
-/// A handle's own multi (C's `multi_easy`).
-pub(crate) struct Private {
-    pub(crate) multi: Multi,
-    /// What the multi last told the callbacks of a perform driven by
-    /// events, which stay set on it until it goes, as C's do: its
-    /// cleanup's changes are heard there.
-    pub(crate) events: Option<EventTable>,
-}
+/// A handle's own multi (C's `multi_easy`), reached through what a
+/// handle does with it. Only `perform` makes one, so only a program that
+/// performs a handle on its own compiles the engine for the multi's type:
+/// a library that runs each transfer in a multi of its own, the C ABI's,
+/// carries one engine, not two. The trait object is boxed once more to
+/// keep the handle's field one word.
+pub(crate) struct Private(pub(crate) Box<dyn OwnMulti>);
 
 impl fmt::Debug for Private {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -359,11 +360,80 @@ impl fmt::Debug for Private {
     }
 }
 
-impl Drop for Private {
+/// What a handle does with the multi it performs in: run its transfer
+/// there, and reach the connections the multi keeps for it after. The
+/// calls on those connections are the handle's own, compiled only into a
+/// program that makes them.
+pub(crate) trait OwnMulti: Send {
+    /// Run `easy`'s transfer to its end, waiting on the multi's sockets:
+    /// the handle, and the transfer's result.
+    fn run(&mut self, easy: Box<Easy>) -> (Box<Easy>, Result<(), Error>);
+    /// `run`, driven through `socket_action` by what the multi tells its
+    /// callbacks.
+    #[cfg(feature = "debug-hooks")]
+    fn run_by_events(&mut self, easy: Box<Easy>) -> (Box<Easy>, Result<(), Error>);
+    /// What a call on a connection reaches of the multi: its pool and
+    /// the time on its clock.
+    fn around(&mut self) -> Around<'_>;
+    /// The connections the multi keeps.
+    fn pool(&self) -> &Pool;
+    fn pool_mut(&mut self) -> &mut Pool;
+    /// Keep alive the connections of the multi's pool, as
+    /// `Easy::upkeep`.
+    fn upkeep_for(&mut self, easy: &Easy) -> Result<(), OutOfMemory>;
+    #[cfg(test)]
+    fn multi(&self) -> &Multi;
+}
+
+/// The multi `perform` makes, and what it last told the callbacks of a
+/// perform driven by events, which stay set on it until it goes, as C's
+/// do: its cleanup's changes are heard there.
+pub(crate) struct Own {
+    pub(crate) multi: Multi,
+    pub(crate) events: Option<EventTable>,
+}
+
+impl Drop for Own {
     fn drop(&mut self) {
         if let Some(table) = &mut self.events {
             self.multi.close_connections(table);
         }
+    }
+}
+
+impl OwnMulti for Own {
+    fn run(&mut self, easy: Box<Easy>) -> (Box<Easy>, Result<(), Error>) {
+        run_in(&mut self.multi, easy, Drive::Waits)
+    }
+
+    #[cfg(feature = "debug-hooks")]
+    fn run_by_events(&mut self, easy: Box<Easy>) -> (Box<Easy>, Result<(), Error>) {
+        let table = self.events.get_or_insert_with(EventTable::default);
+        run_in(&mut self.multi, easy, Drive::Events(table))
+    }
+
+    fn around(&mut self) -> Around<'_> {
+        self.multi.around_for()
+    }
+
+    fn pool(&self) -> &Pool {
+        self.multi.kept_pool()
+    }
+
+    fn pool_mut(&mut self) -> &mut Pool {
+        self.multi.kept_pool_mut()
+    }
+
+    fn upkeep_for(&mut self, easy: &Easy) -> Result<(), OutOfMemory> {
+        match &mut self.events {
+            Some(table) => self.multi.upkeep_for(easy, table),
+            None => self.multi.upkeep_for(easy, &mut NoEvents),
+        }
+    }
+
+    #[cfg(test)]
+    fn multi(&self) -> &Multi {
+        &self.multi
     }
 }
 
@@ -1386,13 +1456,11 @@ impl Easy {
             Ok(private) => private,
             Err(kind) => return (self, Err(kind.into())),
         };
-        let Private { multi, events } = &mut *private;
-        let drive = if by_events {
-            Drive::Events(events.get_or_insert_with(EventTable::default))
-        } else {
-            Drive::Waits
+        let (mut easy, result) = match by_events {
+            #[cfg(feature = "debug-hooks")]
+            true => private.0.run_by_events(self),
+            _ => private.0.run(self),
         };
-        let (mut easy, result) = run_in(multi, self, drive);
         easy.private = Some(private);
         (easy, result)
     }
@@ -1404,11 +1472,12 @@ impl Easy {
             Some(private) => private,
             None => {
                 let multi = Multi::new(MultiKind::HandleOwn, Ids::FromZero).map_err(oom)?;
-                try_box(Private {
+                let own: Box<dyn OwnMulti> = try_box(Own {
                     multi,
                     events: None,
                 })
-                .map_err(oom)?
+                .map_err(oom)?;
+                try_box(Private(own)).map_err(oom)?
             }
         };
         Ok(private)
@@ -1471,6 +1540,7 @@ pub(crate) enum Drive<'t> {
     Waits,
     /// Through `socket_action`, by what it tells its callbacks, watching
     /// what the table holds (`easy_events`).
+    #[cfg_attr(not(feature = "debug-hooks"), expect(dead_code))]
     Events(&'t mut EventTable),
 }
 
@@ -2028,10 +2098,10 @@ mod tests {
         std::fs::write(s.0.join("f"), b"x").unwrap();
         let (mut e, _) = easy(&s.url("f"));
         e.perform().unwrap();
-        let Some(Private { multi, .. }) = e.private.as_deref() else {
+        let Some(Private(own)) = e.private.as_deref() else {
             panic!("the multi is kept");
         };
-        assert!(multi.waker().is_some());
+        assert!(own.multi().waker().is_some());
     }
 
     #[test]

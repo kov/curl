@@ -214,7 +214,7 @@ features: test-util
         }
     }
 
-    /// As `tls_native`, for `easy`, not added, whose transfers this multi
+    /// The connections this multi keeps.
 --- new
             pool: Some(&mut self.caches.pool),
             sessions: Some(&mut self.caches.sessions),
@@ -222,7 +222,7 @@ features: test-util
         }
     }
 
-    /// As `tls_native`, for `easy`, not added, whose transfers this multi
+    /// The connections this multi keeps.
 
 === a ticket read out of a multi is not its share's
 file: crates/curl-core/src/multi/raw.rs

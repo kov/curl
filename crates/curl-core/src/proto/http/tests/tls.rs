@@ -389,6 +389,55 @@ fn a_redirect_elsewhere_makes_its_tls_without_the_client_s_identity() {
     assert!(asked.contains("GET /c HTTP/1.1\r\n"), "{asked}");
 }
 
+/// A redirect back to the origin the transfer started at makes its TLS
+/// with the client's own identity again, however the origin is named: an
+/// IPv6 address in the scope the application set, one with a zone in the
+/// URL, or a host in Unicode. The request's gate and its route decide
+/// alike that it is the first origin.
+#[test]
+fn a_redirect_back_to_the_first_origin_keeps_the_client_s_identity() {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        idn: Some(&crate::idn::FakeIdn),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    for (url, scope) in [
+        (
+            format!("https://[fe80::1]:{PORT}/a"),
+            std::num::NonZeroU32::new(3),
+        ),
+        (format!("https://[fe80::1%25eth0]:{PORT}/a"), None),
+        (format!("https://åäö.test:{PORT}/a"), None),
+    ] {
+        let sessions = backend.log().sessions;
+        let moved = moved("/b", true);
+        let first = Conversation::replies(&[WELCOME, &fake::records(&moved).unwrap()], false);
+        let [welcome, response] = served(OK);
+        let again = Conversation::replies(&[&welcome, &response], false);
+        let mut m = serving(Peer::Accepts, &[&first, &again]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries.clone());
+        let ran = get_with(&mut m, e, "/a", first.clone(), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.address_scope = scope;
+            let entry = format!("::127.0.0.1:{PORT}");
+            o.connect_to.set([entry.as_bytes()]).unwrap();
+            o.http.follow = Follow::All;
+            let t = o.tls.options.make_mut().unwrap();
+            t.cert = Some(b"client.pem".to_vec());
+            t.key = Some(b"client.key".to_vec());
+        });
+        assert_eq!(ran.result, Ok(()), "{url}");
+        let log = backend.log();
+        assert_eq!(log.sessions, sessions + 2, "{url}");
+        assert!(log.client_identity, "{url}: the redirect's TLS");
+        let asked = String::from_utf8(sent(&again)).unwrap();
+        assert!(asked.contains("GET /b HTTP/1.1\r\n"), "{url}: {asked}");
+    }
+}
+
 /// A multi hands each session the one state the library keeps for it,
 /// made with its first session and dropped with the multi; another multi
 /// keeps its own.

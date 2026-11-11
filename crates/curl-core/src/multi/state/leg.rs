@@ -842,6 +842,15 @@ pub(super) fn start_leg<H: Host>(
         "a secured scheme is one a TLS library speaks"
     );
     let reuses_tls = proto.scheme().is_some_and(crate::conn::Scheme::reuses_tls);
+    // The request's gate, decided for its own peer, must say the same of
+    // the first origin as the comparison above.
+    if let Some(gate) = proto.gate() {
+        assert_eq!(
+            gate.same_origin().is_some(),
+            tls_origin == TlsOrigin::First,
+            "the gate and the leg disagree on whether {origin:?} is the first origin"
+        );
+    }
     let tls = if secured {
         Some(OriginTls::Start(RouteTls::Wanted(tls_origin)))
     } else if has_tls && (reuses_tls || cx.easy().options().line.use_ssl.may()) {

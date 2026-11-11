@@ -258,6 +258,19 @@ def check_ngtcp2_link(messages):
           f"curl-ngtcp2 links from {paths}, not {want}")
 
 
+def check_one_engine(library):
+    """
+    Fail unless `library` carries the engine once, for the shim's host
+    alone: an engine for `NoHost` too doubles the code a release ships.
+    The shim's own instantiation is the positive control.
+    """
+    names = subprocess.run(["nm", "-C", str(library)], check=True,
+                           capture_output=True, text=True).stdout
+    check("CHost" in names, f"{library}: no engine for the shim's CHost")
+    check("curl_core::multi::NoHost" not in names,
+          f"{library} carries an engine for NoHost beside CHost's")
+
+
 def port_binaries(leg):
     """Build each PORTS test binary; return their paths by program."""
     out = {}
@@ -303,6 +316,7 @@ def build_rust(leg):
         codesign(library)
     else:
         shutil.copy2(out / "libcurl.so", library)
+    check_one_engine(library)
     for name in ("curl", "curlinfo"):
         shutil.copy2(out / name, leg.build / "src" / name)
     perf = leg.build / "tests/perf/perf"

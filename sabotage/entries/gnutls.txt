@@ -182,9 +182,10 @@ witness: curl-gnutls tests::a_quic_peer_s_pinned_key_is_checked_though_it_is_not
             };
 
 === a transfer checking the peer's status resumes a kept session
-file: crates/curl-gnutls/src/session.rs
+file: crates/curl-core/src/tls.rs
 witness: curl-gnutls tests::no_session_is_kept_or_resumed_without_the_cache_nor_resumed_under_verifystatus
 --- old
-        if !setup && o.session_cache && !o.verify_status {
+        if self.peer.identity().options.verify_status {
+            return None;
+        }
 --- new
-        if !setup && o.session_cache {

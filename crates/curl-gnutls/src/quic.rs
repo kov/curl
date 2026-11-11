@@ -36,7 +36,7 @@ impl<G: Gnutls> QuicSession<G> {
         let mut applied = false;
         let mut taken = None;
         let o = &identity.options;
-        if o.session_cache && !o.verify_status {
+        if o.session_cache {
             taken = cx.take_session();
             if let Some(ticket) = taken.as_ref() {
                 match s.apply_session(cx, ticket) {

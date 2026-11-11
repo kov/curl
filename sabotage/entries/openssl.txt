@@ -519,12 +519,13 @@ witness: curl-openssl a_good_status_passes_and_a_revoked_one_fails
     if identity.options.verify_status && !by_sectrust && !reused && by_sectrust {
 
 === a transfer checking the peer's status resumes a kept session
-file: crates/curl-openssl/src/ssl.rs
+file: crates/curl-core/src/tls.rs
 witness: curl-openssl a_transfer_checking_the_status_resumes_no_session
 --- old
-        if !self.reused && io.caches_sessions() && !options.verify_status {
+        if self.peer.identity().options.verify_status {
+            return None;
+        }
 --- new
-        if !self.reused && io.caches_sessions() {
 
 === OpenSSL's match of the peer's name is left out of its check
 file: crates/curl-openssl/src/x509.rs

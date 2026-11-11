@@ -1382,6 +1382,26 @@ fn the_next_connection_to_a_peer_resumes_a_session_its_multi_kept() {
     assert_eq!(run(&mut m, 4, &no_cache), 1, "keeping none: none taken");
 }
 
+/// A transfer checking its peer's stapled status resumes no session it
+/// kept, whatever its library: a resumed session's peer staples none
+/// (`ossl_init_session_and_alpns`, `gtls_client_init`).
+#[test]
+fn a_transfer_checking_the_peer_s_status_resumes_no_session() {
+    let (backend, libraries) = ticketing();
+    let talks = answering(3);
+    let refs: Vec<&Conversation> = talks.iter().collect();
+    let mut m = serving(Peer::Accepts, &refs);
+    let status = |o: &mut Options| o.tls.options.make_mut().unwrap().verify_status = true;
+    for (i, talk) in talks.iter().enumerate() {
+        let got = get_tls(&mut m, &libraries, "/", talk.clone(), |o| {
+            o.limits.reuse.fresh = true;
+            status(o);
+        });
+        assert_eq!(got.result, Ok(()), "transfer {i}");
+    }
+    assert_eq!(backend.log().resumed, 0, "kept, never resumed");
+}
+
 /// The cache traces what it does under `ssls`, as C traces it.
 #[test]
 fn the_session_cache_traces_its_uses() {

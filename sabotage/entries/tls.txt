@@ -723,3 +723,12 @@ witness: curl-core conn::quic::tests::a_quic_check_made_for_another_session_fail
                     Ok(checked) if checked.is_for_session(cx) => {
 --- new
                     Ok(checked) if checked.is_for_session(cx) || true => {
+
+=== the cache gives a session to resume to a transfer checking the peer's status
+file: crates/curl-core/src/tls.rs
+witness: curl-core proto::http::tests::tls::a_transfer_checking_the_peer_s_status_resumes_no_session
+--- old
+        if self.peer.identity().options.verify_status {
+            return None;
+        }
+--- new

@@ -250,7 +250,7 @@ impl<G: Gnutls> Session<G> {
         }
         let mut taken = None;
         let o = &self.identity.options;
-        if !setup && o.session_cache && !o.verify_status {
+        if !setup && o.session_cache {
             taken = io.take_session();
             if let Some(ticket) = taken.as_ref() {
                 match self.apply_session(io, ticket) {

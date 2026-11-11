@@ -1194,8 +1194,13 @@ impl TlsCx<'_> {
     }
 
     /// A session to resume, taken from the transfer's cache
-    /// (`Curl_ssl_scache_take`).
+    /// (`Curl_ssl_scache_take`). None where the peer's stapled status is
+    /// to be checked, as a resumed session's peer staples none
+    /// (`ossl_init_session_and_alpns`, `gtls_client_init`).
     pub fn take_session(&mut self) -> Option<TlsTicket> {
+        if self.peer.identity().options.verify_status {
+            return None;
+        }
         let now = self.cx.unix_time();
         let peer = self.peer;
         let mut taken = None;

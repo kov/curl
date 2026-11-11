@@ -206,13 +206,23 @@ impl<T: ?Sized, C: Count> Clone for Shared<T, C> {
 impl<T: ?Sized, C: Count> Drop for Shared<T, C> {
     fn drop(&mut self) {
         if self.inner().count.decrement() {
-            // SAFETY: the count reached zero, so this was the last handle
-            // and nothing else refers to the block, which came from
-            // `try_box` through `Box::leak`; a pointer to an unsized value
-            // carries the metadata its box had, which gives the layout it
-            // was allocated with.
-            drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
+            self.drop_last();
         }
+    }
+}
+
+impl<T: ?Sized, C: Count> Shared<T, C> {
+    /// Free the block, its count gone to zero. Out of line, as std's
+    /// `Arc::drop_slow`: most drops are not the last, and the value's drop
+    /// inlined at each would sit in the code around it.
+    #[inline(never)]
+    fn drop_last(&mut self) {
+        // SAFETY: the count reached zero, so this was the last handle
+        // and nothing else refers to the block, which came from
+        // `try_box` through `Box::leak`; a pointer to an unsized value
+        // carries the metadata its box had, which gives the layout it
+        // was allocated with.
+        drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
     }
 }
 

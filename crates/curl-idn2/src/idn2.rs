@@ -154,10 +154,15 @@ mod tests {
     /// locale it sets is the process's.
     #[test]
     fn names_convert_as_c_s_build_converts_them() {
+        // libidn2 reads a name in the locale's characters (`idn2_lookup_ul`),
+        // so the locale must be UTF-8's. The C library names it: glibc's
+        // and Apple's `C.UTF-8`, the UCRT's `.UTF-8`, which has no `C.UTF-8`
+        // and otherwise leaves libidn2 reading the ANSI code page.
+        let utf8 = if cfg!(windows) { c".UTF-8" } else { c"C.UTF-8" };
         // SAFETY: a C string naming a locale; no other test runs to read
         // the locale while it changes.
-        let set = unsafe { libc::setlocale(libc::LC_CTYPE, c"C.UTF-8".as_ptr()) };
-        assert!(!set.is_null(), "the system has C.UTF-8");
+        let set = unsafe { libc::setlocale(libc::LC_CTYPE, utf8.as_ptr()) };
+        assert!(!set.is_null(), "the system has {utf8:?}");
         assert_eq!(
             Idn2.to_ascii("www.åäö.se".as_bytes()),
             Ok(b"www.xn--4cab6c.se".to_vec())

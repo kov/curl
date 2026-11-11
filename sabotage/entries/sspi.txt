@@ -165,6 +165,15 @@ platform: windows
             a.try_push(0)?;
 --- new
 
+=== SSPI's wide text has no zero after it in the Unicode build
+file: crates/curl-sspi/src/sys.rs
+witness: curl-sspi imp::tests::text_is_the_builds
+features: curl-core/unicode
+platform: windows
+--- old
+            w.try_push(0)?;
+--- new
+
 === SSPI is asked to allocate a token it is given room for
 file: crates/curl-sspi/src/sys.rs
 witness: curl-sspi imp::tests::negotiate_with_ntlm_makes_a_token

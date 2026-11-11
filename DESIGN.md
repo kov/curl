@@ -106,6 +106,32 @@ features `curl_version_info` and `curl -V` list follow the same declaration wher
 the TLS library: ECH is listed where the library has it (`version_with_tls`, C's
 `ech_present`).
 
+## The release link
+
+The release profile is one codegen unit, optimised whole (`lto = "fat"`), with panics
+aborting. On Linux the release links of libcurl and of the tool also lay their hot functions
+out first in `.text`, so that a transfer's code shares fewer instruction-cache lines with
+cold code: our hot code per request is larger than C's, and on a core with a large L1i
+(aarch64) the misses that adds cost request rates more than the order does nothing.
+
+- **The lists name functions as code does, not as the linker does.** `hot.order` in
+  curl-sys-abi and curl-tool holds demangled paths without crate hashes, generic arguments
+  included (`<curl_core::conn::pool::Pool>::close_idle`); mangled names change with the
+  toolchain, the features and the profile, and a list of them would go stale silently.
+  `inventory/measure/order.py` writes them from callgrind runs of the scorecard's traffic.
+- **They are resolved at the link, against the link's own objects.** `.cargo/config.toml`
+  names `.cargo/link/cc` as the Linux linker: the system's `cc`, untouched, unless the build
+  script marked the link (release, the library or the `curl` binary). For a marked link,
+  `hot_order.py` asks the linker the link runs for its version and passes it the listed
+  functions it finds: GNU ld 2.43 and later `--section-ordering-file` (each function is its own
+  section), LLD `--symbol-ordering-file`. mold, gold and older GNU ld have no such option.
+- **Failing to order is loud, not fatal.** An unsupported linker, or a configured linker
+  other than the wrapper, warns in cargo's output and the build goes on unordered; a list of
+  which under 80% resolves warns that it is stale, and what does resolve is still laid out
+  first. `inventory/measure/perf.py` fails a measurement whose artefacts do not start with
+  the list.
+- macOS (ld64's `-order_file`) and Windows (`/ORDER`) link unordered.
+
 ## Execution model
 
 - **The application drives the I/O.** `curl_multi_socket_action` and the socket and timer

@@ -1,12 +1,16 @@
 //! Give the library the soname of the C build it replaces, build the C
 //! helper that reads `long double` arguments on stable Rust, and say
 //! whether the OpenSSL linked is LibreSSL (`cfg(libressl)`) or AWS-LC or
-//! BoringSSL (`cfg(boringssl_like)`), as openssl-sys reports it.
+//! BoringSSL (`cfg(boringssl_like)`), as openssl-sys reports it; and lay
+//! the release library's hot functions out first (`hot.order`).
 
 // A build script is no library: aborting on a failed allocation is fine.
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+include!("../../.cargo/link/hot_order.rs");
+
 fn main() {
+    hot_order("hot.order", "rustc-cdylib-link-arg=");
     println!("cargo::rerun-if-env-changed=DEP_OPENSSL_LIBRESSL_VERSION_NUMBER");
     println!("cargo::rustc-check-cfg=cfg(libressl)");
     if std::env::var_os("DEP_OPENSSL_LIBRESSL_VERSION_NUMBER").is_some() {

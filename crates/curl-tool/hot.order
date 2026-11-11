@@ -1,0 +1,527 @@
+# The hot functions of the release curl, in the order the link
+# lays them out (hot on more protocols first, densest first), by
+# demangled path without crate hashes: written by
+# inventory/measure/order.py, resolved at the link by
+# .cargo/link/hot_order.py.
+# Trained at c9b451d67a on aarch64: h1 downloads, h1 requests, h2 downloads, h2 requests, h3 downloads, h3 requests.
+<curl_core::deliver::Pipeline>::decoded::<curl_core::multi::NoHost>
+curl_core::proto::http1::fields::verify_line
+<alloc::raw_vec::RawVecInner>::finish_grow
+<curl_core::report::headers::HeaderStore>::push
+curl_os::time::monotonic
+<curl_core::deliver::ClientOut>::write::<curl_core::multi::NoHost>
+<curl_core::proto::http1::request::Out>::line
+<curl_core::progress::Speedometer>::take_stock
+<alloc::vec::Vec<u8> as curl_core::url::UrlSink>::write
+curl_core::progress::update::<curl_core::multi::NoHost>
+<curl_core::conn::Conn>::speaks_over
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost> as curl_core::conn::layer::Trace>::line
+core::fmt::write
+<curl_core::url::Url>::write_part
+curl_os::env::var
+curl_core::multi::put_back::<curl_core::multi::NoHost>
+<alloc::vec::Vec<u8> as curl_alloc::grow::TryVec<u8>>::try_extend_from_slice
+<std::sys::pal::unix::time::Timespec>::now
+curl_core::url::part_after
+<curl_core::conn::dns::Reading as core::iter::traits::iterator::Iterator>::next
+<curl_core::multi::state::TransferState>::tls_native
+curl_core::conn::dns::parse_entry
+<curl_core::deliver::BodyAccountant>::response_started::<curl_core::multi::NoHost>
+curl::options::parse::has_tls
+<[u8]>::eq_ignore_ascii_case_chunks::<16: usize>
+<curl_core::tls::TlsView>::same
+<curl_core::multi::sockets::Pollset>::add
+curl_core::multi::state::complete::<curl_core::multi::NoHost>
+curl_core::report::headers::span
+<curl_core::conn::pool::Pool>::check_in
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost>>::easy
+core::ptr::drop_glue::<curl_core::url::Url>
+curl_core::multi::insert::<curl_core::multi::NoHost>
+curl_core::url::host::check_name
+<core::net::parser::Parser>::read_ipv4_addr
+<curl_core::conn::pool::Pool>::check_out
+curl_core::multi::state::leg::read_entry::<curl_core::multi::NoHost>::{closure#2}
+curl_core::trace::info_with::<curl_core::multi::NoHost>
+<curl_core::tls::TlsSupport>::lacking
+curl_core::multi::state::leg::wake_pending::<curl_core::multi::NoHost>
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost>>::read_verbose
+<curl_core::conn::Route>::reaches
+<curl_core::url::Url>::port_for
+<curl_core::proto::ProtoState>::knows
+<curl::operate::parallel::Gauged as curl_core::handler::ProgressHandler>::progress
+curl_core::proto::url_peer
+<alloc::vec::Vec<curl_core::report::headers::Entry> as curl_alloc::grow::TryVec<curl_core::report::headers::Entry>>::try_push
+<curl_core::proto::ProtoState>::interest
+<i64 as core::fmt::Display>::fmt
+curl_core::multi::state::enter_did::<curl_core::multi::NoHost>
+curl_core::proto::http1::request::render_h1
+<curl_core::conn::dns::Dated>::prune
+curl::operate::next_text
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost>>::libraries_closed
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost> as curl_core::multi::cx::TransferCalls>::easy
+<curl_core::conn::pool::Pool>::slot_of
+curl::operate::ssh_setopts::{closure#1}::{closure#0}
+<curl_core::conn::dns::Seeded as core::hash::BuildHasher>::hash_one::<&dyn curl_core::conn::dns::Named>
+curl::operate::setopts::{closure#6}
+<curl_core::multi::state::leg::getenv as core::ops::function::FnMut<(&[u8],)>>::call_mut
+curl_core::proto::request_credentials::<curl_core::multi::NoHost>
+<curl_core::auth::http::Auth>::asked
+<curl::glob::Kind>::write
+<curl_core::tls::TlsSupport>::asked_by
+<curl_core::conn::Peer>::idn
+curl_core::url::decimal
+<curl_core::multi::Multi>::wait::{closure#7}
+curl::operate::setopts::{closure#44}
+curl_core::multi::state::leg::schedule_pending::<curl_core::multi::NoHost>
+<std::sys::pal::unix::time::Timespec>::sub_timespec
+curl::operate::setopts::{closure#13}
+<curl_core::multi::state::https::Choosing>::of::<curl_core::multi::NoHost>
+core::iter::adapters::chain::and_then_or_clear::<core::iter::adapters::flatten::FlatMap<core::option::IntoIter<&curl_core::conn::connect::ConnectMachine>, core::iter::adapters::chain::Chain<core::iter::adapters::map::Map<core::slice::iter::Iter<curl_core::conn::connect::Attempt>, <curl_core::conn::connect::ConnectMachine>::sockets::{closure#0}>, core::option::IntoIter<&dyn curl_core::conn::io::Socket>>, <curl_core::conn::connect::ConnectMachine>::sockets>, &dyn curl_core::conn::io::Socket, <core::iter::adapters::flatten::FlatMap<core::option::IntoIter<&curl_core::conn::connect::ConnectMachine>, core::iter::adapters::chain::Chain<core::iter::adapters::map::Map<core::slice::iter::Iter<curl_core::conn::connect::Attempt>, <curl_core::conn::connect::ConnectMachine>::sockets::{closure#0}>, core::option::IntoIter<&dyn curl_core::conn::io::Socket>>, <curl_core::conn::connect::ConnectMachine>::sockets> as core::iter::traits::iterator::Iterator>::next>
+<curl_core::easy::Easy>::set_share
+<curl_core::multi::sched::RowSet>::reserve
+<curl_core::url::Url>::whole_into::{closure#3}
+<curl_core::easy::Easy>::save_hsts::{closure#0}
+curl_core::conn::proxy::detect
+curl_core::progress::finish::<curl_core::multi::NoHost>
+<curl_core::conn::NetRoute as core::clone::Clone>::clone
+<curl_core::report::TransferReport>::set_url
+<curl_core::proto::http::Request>::upload_done::<curl_core::multi::NoHost>
+<curl_core::id::Vacancy<alloc::boxed::Box<curl_core::multi::Slot<curl_core::multi::NoHost>>, curl_core::multi::Transfer>>::fill
+<curl_core::url::Url>::request_target
+curl_core::multi::cx::announce_closing::<curl_core::multi::NoHost>
+curl_core::proto::http1::framing::content_type
+<curl_core::conn::Peer>::same_name
+curl_core::conn::proxy::lower_then_upper
+curl::operate::setopts::{closure#35}
+<alloc::raw_vec::RawVecInner>::try_reserve_exact
+<curl_core::auth::http::AuthAct>::of
+<curl_alloc::rc::Shared<curl_core::conn::Peer, core::sync::atomic::Atomic<usize>>>::try_new_unsize::<curl_core::conn::Peer, <curl_alloc::rc::Shared<curl_core::conn::Peer, core::sync::atomic::Atomic<usize>>>::try_new::{closure#0}>
+<curl_alloc::rc::Shared<dyn curl_core::hsts::HstsReader, core::sync::atomic::Atomic<usize>>>::drop_last
+<curl_core::multi::cx::Announcing<curl_core::multi::NoHost> as curl_core::conn::shutdown::SectionNet>::tls_wants
+<curl_core::multi::timers::TimerQueue<curl_core::multi::Transfer>>::update
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost>>::pause
+core::slice::memchr::memchr_aligned
+<curl_core::proto::ProtoState>::network
+<curl_core::report::TransferReport>::restart
+core::ptr::drop_glue::<core::option::Option<curl_core::proto::http1::response::HeadParser>>
+<curl::write_out::Value>::write
+<curl_core::auth::http::Auth>::apply
+<core::fmt::Formatter>::pad_integral::write_prefix
+curl_core::idn::lookup_name
+core::ptr::drop_glue::<alloc::boxed::Box<curl_core::proto::http::Request>>
+curl::operate::credentials_and_headers::{closure#12}
+<curl::write_out::Buffered as core::io::write::Write>::write_all
+curl_core::multi::state::names::let_go::<curl_core::multi::NoHost>
+curl::operate::input_setopts
+<curl::output::NullBody as curl_core::handler::WriteHandler>::write
+<hashbrown::map::HashMap<curl_core::conn::dns::Key, curl_core::conn::dns::Entry, curl_core::conn::dns::Seeded>>::get_mut::<dyn curl_core::conn::dns::Named>
+<&u16 as core::fmt::Display>::fmt
+curl::operate::copy
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost>>::report_mut
+<curl_core::conn::pool::ConnLease>::get
+<curl_core::proto::http::Request>::method_line
+core::ptr::drop_glue::<curl_core::report::TransferReport>
+<curl_os::net::TcpSocket as curl_core::conn::io::Socket>::key
+<curl_core::conn::Conn>::data_pending
+core::ptr::drop_glue::<curl::operate::PerTransfer>
+core::ptr::drop_glue::<curl_core::proto::http::Wire>
+<curl_core::multi::state::https::HttpsConnect>::heading
+curl_core::proto::http::hsts::load::<curl_core::multi::NoHost>
+core::ptr::drop_glue::<curl_core::conn::NetRoute>
+<dyn curl_core::conn::dns::Named as core::cmp::PartialEq>::eq
+curl_core::trace::info::<curl_core::multi::NoHost>
+curl_core::progress::check::<curl_core::multi::NoHost>
+core::ptr::drop_glue::<core::option::Option<curl_core::multi::state::Run>>
+<<curl::glob::Kind>::write::Appending as core::fmt::Write>::write_str
+core::ptr::drop_glue::<core::option::Option<curl_core::auth::creds::Credentials>>
+curl::operate::tls_versions
+<curl_alloc::rc::Shared<dyn curl_core::share::ShareLock, core::sync::atomic::Atomic<usize>>>::drop_last
+<curl_core::easy::Easy>::load_hsts_files
+<curl_core::multi::timers::TimerQueue<curl_core::multi::Transfer>>::remove
+<curl_core::proto::http1::follow::Inherited>::new
+<curl_alloc::rc::Shared<dyn curl_core::handler::WriteHandler, core::sync::atomic::Atomic<usize>>>::drop_last
+core::ptr::drop_glue::<curl_alloc::rc::SharedBlock<curl_alloc::lock::Lock<curl::output::Stream>, core::sync::atomic::Atomic<usize>>>
+<curl_alloc::rc::Shared<curl_core::conn::Peer, core::sync::atomic::Atomic<usize>>>::drop_last
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost> as curl_core::multi::cx::TransferCalls>::me
+<curl::output::Output>::stream
+curl_core::tls::same_name
+<curl_core::options::ResolveList>::shared
+<curl_core::multi::sched::RowSet>::insert
+<curl_core::easy::Easy>::save_cookies
+curl_core::multi::mstate::xfer_setup::<curl_core::multi::NoHost>
+core::ptr::drop_glue::<curl_alloc::lock::LockGuard<curl::output::Stream>>
+curl::operate::transfer_setopts::{closure#12}
+curl::operate::ssl_setopts::{closure#29}
+<curl::write_out::Buffered as core::io::write::Write>::write_fmt
+core::ptr::drop_glue::<curl_core::options::UploadSource>
+<curl_core::multi::state::https::Choosing>::first
+core::ptr::drop_glue::<curl::bar::Bar>
+core::ptr::drop_glue::<curl::output::Body>
+<core::io::write::default_write_fmt::Adapter<curl::write_out::Buffered> as core::fmt::Write>::write_str
+<curl_alloc::rc::Shared<curl_alloc::lock::Lock<curl::output::Stream>, core::sync::atomic::Atomic<usize>>>::drop_last
+<curl_core::proto::ProtoState>::http_versions
+core::ptr::drop_glue::<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+core::ptr::drop_glue::<core::option::Option<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<u8>)>>
+core::ptr::drop_glue::<curl::operate::parallel::Entry>
+<curl_core::easy::Easy>::save_alt_svc
+core::ptr::drop_glue::<curl::operate::UploadFile>
+core::ptr::drop_glue::<curl_core::easy::HstsUse>
+<core::iter::adapters::flatten::FlattenCompat<core::iter::adapters::map::Map<core::option::Iter<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<u8>)>, <curl_core::proto::http::Request>::do_it<curl_core::multi::NoHost>::{closure#20}>, core::slice::iter::Iter<alloc::vec::Vec<u8>>> as core::iter::traits::iterator::Iterator>::next
+<curl_core::easy::Easy>::watch_shared_jar
+<curl_core::proto::ProtoState>::holds_output
+<curl_core::proto::ProtoState>::sends_datagrams
+<curl_core::proto::ProtoState>::secured
+<curl_core::proto::http::Request>::closes
+core::ptr::drop_glue::<core::option::Option<curl::output::Dump>>
+core::ptr::drop_glue::<core::option::Option<curl::output::EtagSave>>
+core::ptr::drop_glue::<curl_core::multi::seat::Seat>
+<curl_core::proto::ProtoState>::scheme
+curl_core::proto::http::auth_trace::<curl_core::multi::NoHost>
+<curl_openssl::ssl::OpenSsl as curl_core::tls::TlsBackend>::ca_defaults
+<curl_openssl::ssl::OpenSsl as curl_core::tls::TlsBackend>::support
+core::ptr::drop_glue::<core::option::Option<(curl_alloc::rc::Shared<curl_core::conn::Peer, core::sync::atomic::Atomic<usize>>, core::option::Option<curl_alloc::rc::Shared<curl_core::conn::ProxyCreds, core::sync::atomic::Atomic<usize>>>)>>
+<curl_core::conn::Scheme>::proxies_as_http
+curl::operate::setopts::{closure#22}
+curl::operate::transfer_setopts::{closure#13}
+curl::operate::transfer_setopts::{closure#14}
+<curl_alloc::rc::Shared<curl_alloc::lock::Lock<core::option::Option<curl_core::multi::ssls::ThreadMark>>, core::sync::atomic::Atomic<usize>>>::drop_last
+<curl_core::conn::shutdown::WithSet as curl_core::conn::shutdown::Exits>::tls_wants
+<curl_core::proto::http1::request::UserHeaders>::asks_chunked
+curl::operate::http_setopts::{closure#16}
+curl::operate::setopts::{closure#42}
+curl::operate::setopts::{closure#52}
+<&i64 as core::fmt::Display>::fmt
+<curl::operate::ssh_setopts::{closure#8} as core::ops::function::FnOnce<(&mut curl_core::options::Ssh,)>>::call_once
+core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<curl_core::multi::Slot<curl_core::multi::NoHost>>>>
+core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<curl_core::multi::state::connecting::Race>>>
+core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<curl_core::proto::ftp::wildcard::Wildcard>>>
+<curl::operate::Transfers>::item
+<curl_core::conn::ConnSlot>::adjust_pollset
+<curl_core::proto::http::Request>::addressed::<curl_core::multi::NoHost>
+curl_core::multi::state::leg::route_cold::<curl_core::multi::NoHost>
+curl_core::upload::trace_reset::<curl_core::multi::NoHost>
+<curl_core::proto::ProtoState>::take_login
+<curl_core::conn::ConnSlot>::query
+curl::operate::setopts::{closure#26}
+<curl_core::multi::Multi>::wait::{closure#3}
+<curl_core::multi::sched::Tally>::posted
+curl::operate::gss_delegation
+curl_core::proto::http::cookies::read_files::<curl_core::multi::NoHost>
+curl_core::multi::mstate::enter::<curl_core::multi::NoHost>
+<curl_core::conn::NetRoute>::origin_tls
+<curl_core::conn::Conn>::serves
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost>>::mark_now
+<curl_core::deliver::Pipeline>::flush::<curl_core::multi::NoHost>
+core::ptr::drop_glue::<curl_core::multi::state::TransferState>
+<core::slice::iter::Iter<curl_core::proto::http1::request::UserHeader> as core::iter::traits::iterator::Iterator>::find::<&mut curl_core::proto::http1::request::connection::{closure#0}>
+curl_core::multi::mstate::trace::<curl_core::multi::NoHost>
+curl_core::multi::state::leg::exchanged::<curl_core::multi::NoHost>
+core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<curl_core::auth::http::DigestState>>>
+curl_core::multi::state::over_limit::<curl_core::multi::NoHost>
+curl_core::deliver::deliver::<curl_core::multi::NoHost>
+<core::iter::adapters::copied::Copied<core::slice::iter::Iter<core::net::ip_addr::IpAddr>> as core::iter::traits::iterator::Iterator>::eq_by::<&mut core::iter::adapters::map::Map<curl_core::conn::dns::Reading, <curl_core::conn::dns::EntryAddrs>::iter::{closure#0}>, <core::iter::adapters::copied::Copied<core::slice::iter::Iter<core::net::ip_addr::IpAddr>> as core::iter::traits::iterator::Iterator>::eq<&mut core::iter::adapters::map::Map<curl_core::conn::dns::Reading, <curl_core::conn::dns::EntryAddrs>::iter::{closure#0}>>::{closure#0}>
+<curl_core::conn::Peer>::request_host
+<curl_core::proto::http1::request::UserHeaders>::expects_continue
+curl_core::proto::set_out_with::<curl_core::multi::NoHost>
+<curl_core::options::LocalBind>::try_clone
+<curl_core::multi::state::TransferState>::pollset
+<curl_core::progress::rate::RateLimits>::drain
+curl::operate::setopts::{closure#45}
+<curl_core::report::Timings>::mark
+curl::operate::setopts::{closure#57}
+<curl_core::conn::Conn>::serves_auth
+<curl_core::multi::Multi>::trace_membership
+curl_core::upload::sent::<curl_core::multi::NoHost>
+<curl_core::proto::ProtoState>::retryable
+curl_core::multi::state::leg::acquire::<curl_core::multi::NoHost>
+<curl::operate::parallel::Parallel>::create_next
+<curl_core::multi::Multi>::reap
+curl_core::multi::mstate::trace_with::<curl_core::multi::NoHost>
+<curl_core::conn::pool::Pool>::find
+<curl_core::auth::http::PeerAuth>::apply
+core::ptr::drop_glue::<curl_core::easy::Easy>
+<curl_core::conn::pool::Pool>::take
+<curl_core::multi::state::TransferState>::due
+<curl_core::share::Share>::keeps
+<curl_core::url::Url>::whole_into
+curl_core::multi::state::leg::retry_request::<curl_core::multi::NoHost>
+<curl::output::Headers as curl_core::handler::HeaderHandler>::header
+<curl_core::proto::http::Request>::left_to_send
+core::str::converts::from_utf8
+core::ptr::drop_glue::<curl_core::deliver::Pipeline>
+curl::operate::transfer_setopts
+<curl_core::proto::http::Request>::flush_output::<curl_core::multi::NoHost>
+curl::operate::setopts::{closure#20}
+<curl_core::url::Url>::fill
+curl::operate::setopts::{closure#16}
+curl::operate::setopts::{closure#17}
+curl::operate::setopts::{closure#18}
+curl::operate::setopts::{closure#19}
+<curl_core::deliver::ClientOut>::replay::<curl_core::multi::NoHost>
+<curl_core::easy::Easy>::hsts_enabled
+curl_core::multi::state::leg::unix_peer::<curl_core::multi::NoHost>
+curl_core::multi::state::leg::parse_url
+<core::fmt::Formatter>::pad_integral
+<curl_core::deliver::ClientOut>::flush::<curl_core::multi::NoHost>
+curl::operate::ssh_setopts
+<i64>::from_ascii_bytes_radix_impl
+<curl_core::conn::pool::Pool>::release
+curl::operate::mail_auth_and_sasl
+<curl_core::easy::Easy>::save_hsts
+curl_core::multi::state::leg::choose_proxy::<curl_core::multi::NoHost>
+curl_core::proto::http1::request::write_h1
+<curl_core::proto::http1::response::HeadParser>::with_aliases
+core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<curl_core::options::TlsOptions>>>
+curl_core::multi::state::connecting::connect_once::<curl_core::multi::NoHost>
+<curl::operate::Transfers>::advance
+curl_core::proto::http::cookies::custom_host
+<curl_core::multi::Multi>::take_out
+<curl::stdout::Stdout>::fwrite
+curl_core::multi::state::leg::connect_to::<curl_core::multi::NoHost>
+curl_core::multi::number::<curl_core::multi::NoHost>
+<curl_core::options::Lines>::refill
+<curl_core::proto::http1::request::UserHeaders>::refill
+curl_core::multi::state::enter_do::<curl_core::multi::NoHost>
+curl_core::multi::state::multi_done::<curl_core::multi::NoHost>
+<curl_core::proto::ProtoState>::set_up_said::<curl_core::multi::NoHost>
+curl::operate::credentials_and_headers
+curl_core::multi::state::leg::start_leg::<curl_core::multi::NoHost>
+<curl_core::multi::Multi>::abandon
+curl::operate::settle
+<curl_core::proto::http::Request>::input::<curl_core::multi::NoHost>
+curl::operate::ssl_ca_setopts
+<curl_core::proto::http1::response::HeadParser>::line_out
+<curl_core::progress::rate::RateLimits>::verdict
+curl_core::proto::http::digest_said::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::do_it::<curl_core::multi::NoHost>
+curl::operate::ssl_setopts
+curl_core::multi::state::step_lent::<curl_core::multi::NoHost>
+<core::slice::iter::Iter<curl_core::proto::http1::request::UserHeader> as core::iter::traits::iterator::Iterator>::find::<&mut <curl_core::proto::http1::request::UserHeaders>::sendable::{closure#0}>
+<curl_core::conn::Route>::serves
+<curl_core::proto::http::Request>::send::<curl_core::multi::NoHost>
+curl_core::url::host::ipv4
+<curl_core::easy::Easy>::asyncs_let_go
+<curl_core::conn::Peer>::new
+<curl::operate::PerTransfer>::pre_transfer
+curl::operate::proxy_string_setopt
+<curl::operate::parallel::Parallel>::drive
+curl::operate::transfer_setopts::{closure#24}
+curl_core::deliver::verdict::<curl_core::multi::NoHost>
+curl::operate::string_setopt
+curl::write_out::value
+curl::operate::http_setopts
+curl_core::multi::state::leg::setup::<curl_core::multi::NoHost>
+<curl_core::proto::ProtoState>::start::<curl_core::multi::NoHost>
+<curl_core::auth::creds::Credentials>::for_request
+curl::operate::setopts::{closure#40}
+curl::operate::create
+curl::operate::setopts
+<curl::operate::PerTransfer>::end
+<curl_core::proto::ProtoState>::step::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::of_scheme::<curl_core::multi::NoHost>
+curl_core::multi::state::leg::read_entries::<curl_core::multi::NoHost>::{closure#0}
+<curl::operate::Retrying>::check
+<curl::operate::parallel::Parallel>::add_more
+curl_core::multi::state::leg::alt_svc::<curl_core::multi::NoHost>
+curl_core::proto::with_netrc::<curl_core::multi::NoHost>
+core::ptr::drop_glue::<curl_core::proto::ProtoState>
+<curl_core::auth::http::PeerAuth>::output::<curl_core::proto::http::random>
+<curl_core::proto::ProtoState>::make::<curl_core::multi::NoHost>
+<curl_core::conn::stream::Stream>::recv
+<curl_core::conn::layer::Below>::recv
+<curl_core::conn::tls::TlsLayer>::go_on
+<curl_core::deliver::Past<curl_core::multi::NoHost> as curl_core::deliver::decode::Onward>::take
+<curl_os::net::TcpSocket as curl_core::conn::io::Socket>::recv
+<curl_core::deliver::Pipeline>::header::<curl_core::multi::NoHost>
+<curl_core::conn::Conn>::recv
+<curl_core::conn::tls::TlsLayer as curl_core::conn::layer::Layer>::recv
+<curl_core::deliver::Pipeline>::head_line::<curl_core::multi::NoHost>
+<curl_core::conn::buf::XferBuf>::give
+<curl_core::conn::layer::Below>::send
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost> as curl_core::conn::layer::LayerCx>::trace
+<curl_openssl::ssl::Session as curl_core::tls::TlsSession>::native
+<curl_os::net::TcpSocket as curl_core::conn::io::Socket>::send
+<curl_core::conn::tls::TlsLayer as curl_core::conn::part::Part<curl_core::conn::layer::Below>>::adjust_pollset
+<curl_core::conn::tls::TlsLayer as curl_core::conn::part::Part<curl_core::conn::layer::Below>>::data_pending
+<curl_openssl::ssl::Session as curl_core::tls::TlsSession>::waits
+<curl_openssl::ssl::Session as curl_core::tls::TlsSession>::pending
+<curl_core::conn::tls::TlsLayer as curl_core::conn::part::Part<curl_core::conn::layer::Below>>::query
+curl_openssl::bio::in_read
+<curl_core::proto::http::Request>::body_start::<curl_core::multi::NoHost>
+<curl_core::conn::tls::TlsLayer as curl_core::conn::layer::Layer>::send
+<curl_core::conn::buf::RecvBuf>::hold
+<curl_core::conn::pool::ConnLease as curl_core::conn::buf::HoldsRx>::swap_rx
+curl_openssl::bio::out_write
+<curl_openssl::ssl::Session as curl_core::tls::TlsSession>::recv
+<curl_core::proto::http::Request>::head_input::<curl_core::multi::NoHost>
+<curl_openssl::ssl::Session as curl_core::tls::TlsSession>::send
+<curl_core::text::Clip<24: usize> as core::fmt::Write>::write_str
+curl_core::conn::io::poll_together
+<curl_core::proto::http1::response::HeadParser>::line
+<curl_core::proto::http2::Fields>::add
+<curl_core::conn::pool::Pool>::shared_mut
+<core::slice::iter::Iter<&[u8]> as core::iter::traits::iterator::Iterator>::any::<curl_core::proto::http2::fields_of::{closure#12}>
+<curl_core::proto::http2::Fields>::pairs
+curl_core::conn::pool::judged
+<curl_core::proto::http::Request>::stream_ended::<curl_core::multi::NoHost>
+<core::slice::iter::Iter<(&[u8], &[u8])> as core::iter::traits::iterator::Iterator>::find::<curl_core::proto::http2::fields_of::{closure#10}::{closure#0}>
+<curl_core::proto::http2::Fields>::with_room
+<curl_core::conn::mux::Session as curl_core::conn::mux::Mux>::max_concurrent
+core::ptr::drop_glue::<core::option::Option<curl_core::proto::http2::TargetUrl>>
+curl_core::proto::http2::fields_of
+curl_core::conn::pool::join_verdict
+<curl_core::deliver::Pipeline>::end::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::end::<curl_core::multi::NoHost>
+curl_core::multi::give_back_http::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::stream_read_some::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::read_some::<curl_core::multi::NoHost>::{closure#0}
+<alloc::raw_vec::RawVecInner>::grow_exact
+<curl_core::conn::Conn>::send
+<curl_core::tls::cache::Fill as curl_core::tls::cache::Sink>::bytes
+<curl_core::conn::layer::Below>::alive
+<curl_core::multi::state::connecting::Connecting>::attached
+<curl_core::id::Arena<curl_core::conn::pool::Place, curl_core::conn::ConnSlot>>::replace_with::<curl_core::conn::pool::Place, <curl_core::conn::pool::Pool>::take::{closure#2}>
+<curl_core::conn::pool::Pool>::take::{closure#1}
+<curl_core::conn::mux::Carrier as curl_core::conn::part::Lower>::alive
+<curl_os::net::TcpSocket as curl_core::conn::io::Socket>::readiness
+curl_core::proto::http1::response::read_status::{closure#1}
+core::ptr::drop_glue::<curl_core::multi::cx::DriveCx<curl_core::multi::NoHost>>
+<curl_core::conn::shutdown::WithSet as curl_core::conn::shutdown::Exits>::parts
+<curl_core::conn::NetRoute>::destination
+<curl_core::trace::InternalCx as curl_core::conn::layer::LayerCx>::trace
+<curl_core::multi::state::connecting::Connecting>::lead
+core::ptr::drop_glue::<curl_core::proto::http1::response::HeadError>
+<curl_core::conn::tls::TlsLayer as curl_core::conn::part::Part<curl_core::conn::layer::Below>>::is_alive
+<curl_core::proto::http1::response::HeadParser>::feed
+<curl_core::text::Clip<45: usize> as core::fmt::Write>::write_str
+<curl_core::proto::http1::response::HeadParser>::looks
+<curl_core::text::Clip<8: usize> as core::fmt::Write>::write_str
+<curl_core::text::Clip<2048: usize> as core::fmt::Write>::write_str
+<curl_core::text::Clip<48: usize> as core::fmt::Write>::write_str
+curl_core::multi::state::connecting::enter_setup::<curl_core::multi::NoHost>
+core::ptr::drop_glue::<curl_core::conn::pool::Place>
+curl_core::conn::pool::health
+<curl_core::conn::connect::Late>::poll
+<curl_alloc::grow::try_format::Out as core::fmt::Write>::write_str
+<curl_openssl::ssl::Session as curl_core::tls::TlsSession>::chosen
+<std::sys::net::connection::socket::TcpStream>::socket_addr
+curl_core::multi::state::connecting::say_established::<curl_core::multi::NoHost>
+curl_core::multi::state::connecting::tunnels_drive::<curl_core::multi::NoHost>
+curl_core::multi::state::connecting::up::<curl_core::multi::NoHost>
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost>>::lend_sibling::<(curl_core::http2::Heard, bool), <curl_core::proto::http::Request>::h2_feed<curl_core::multi::NoHost>::{closure#0}::{closure#0}::{closure#1}>
+<curl_nghttp2::Session as curl_core::http2::Session>::recv
+<curl_core::proto::http2::H2Conn>::recv::{closure#0}
+<curl_core::proto::http::Request>::h2_ingress::<curl_core::multi::NoHost>::{closure#1}
+<curl_nghttp2::Session as curl_core::http2::Session>::consume
+curl_nghttp2::on_frame_recv
+<curl_nghttp2::Session as curl_core::http2::Session>::wants
+<curl_core::proto::ssh::Request>::sftp_readdir::<curl_core::multi::NoHost>::{closure#2}
+curl_nghttp2::on_data
+<curl_core::proto::http::Request>::h2_head_line::<curl_core::multi::NoHost>
+curl_core::deliver::write_resp::<curl_core::multi::NoHost>
+curl_core::trace::traces::<curl_core::multi::NoHost>
+<curl_core::bufq::ChunkQueue>::write
+curl_nghttp2::on_header
+<curl_core::proto::http2::H2Conn>::egress
+<curl_core::proto::http::Request>::h2_event::<curl_core::multi::NoHost>::{closure#4}
+<curl_core::proto::http::Request>::h2_event::<curl_core::multi::NoHost>::{closure#6}
+<curl_core::proto::http::Request>::h2_body::<curl_core::multi::NoHost>
+<curl_nghttp2::Session as curl_core::http2::Session>::submit_request
+<curl_core::proto::http2::H2Conn>::frame
+<curl_core::proto::http2::H2Conn>::frame::{closure#2}
+<curl_nghttp2::Session as curl_core::http2::Session>::resume
+<curl_nghttp2::Session as curl_core::http2::Session>::send
+curl_nghttp2::on_frame_send
+<curl_core::bufq::ChunkQueue>::skip
+<curl_core::bufq::ChunkQueue>::write_pass::<curl_core::proto::http2::EgressFailed>
+curl_nghttp2::on_close
+<curl_core::proto::http2::H2Conn>::frame::{closure#0}
+<alloc::vec::Vec<(curl_core::http2::StreamId, i32, core::option::Option<bool>)> as curl_alloc::grow::TryVec<(curl_core::http2::StreamId, i32, core::option::Option<bool>)>>::try_push
+curl_core::proto::http2::to_conn
+<curl_nghttp2::Session as curl_core::http2::Session>::set_stream_window
+<curl_nghttp2::Session as curl_core::http2::Session>::submit_window_update
+curl_core::proto::http::h2::decode_status
+<curl_core::proto::http::Request>::h2_event::<curl_core::multi::NoHost>::{closure#3}
+core::ptr::drop_glue::<curl_core::proto::http2::Fields>
+curl_nghttp2::send_out
+<curl_core::proto::http::h2::Egressing<curl_core::multi::NoHost> as curl_core::proto::http2::Egress>::layer_cx
+curl_core::trace::of::<curl_core::multi::NoHost>
+<curl_nghttp2::Session as curl_core::http2::Session>::max_concurrent
+<curl_core::conn::pool::ConnLease>::conn
+<curl_core::proto::http::Request>::wanted_window::<curl_core::multi::NoHost>
+<curl_nghttp2::Session as curl_core::http2::Session>::stream_window
+<curl_core::proto::http::Request>::stream_recv::<curl_core::multi::NoHost>
+curl_core::proto::http::h2::trace_closed::<curl_core::multi::NoHost>
+curl_core::proto::http::h2::said_pause::<curl_core::multi::NoHost>
+curl_core::proto::http::h2::wanted_window::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::h2_feed::<curl_core::multi::NoHost>::{closure#0}::{closure#0}
+<curl_core::proto::http::Request>::paused_by_write::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::h2_send::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::stream_end::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::h2_egress::<curl_core::multi::NoHost>
+curl_core::proto::http::h2::field_line::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::h2_feed::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::h2_event::<curl_core::multi::NoHost>
+curl_ngtcp2::recv_stream_data
+curl_ngtcp2::h3_recv_data
+curl_ngtcp2::tell::{closure#0}
+<curl_openssl::ssl::QuicSession as curl_core::tls::QuicTls>::drive
+<curl_openssl::ssl::Check as curl_core::tls::DriveCall>::with_cx
+curl_ngtcp2::h3_recv_header
+<curl_core::multi::timers::TimerQueue<curl_core::multi::Transfer>>::take
+<curl_core::conn::quic::Quic>::set_expiry
+<curl_core::proto::http::Request>::h3_head_line::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::h2_event::<curl_core::multi::NoHost>::{closure#2}
+<curl_core::conn::quic::Quic>::read_datagram
+<curl_ngtcp2::Connection>::call::<core::result::Result<(), curl_core::http3::QuicError>, <curl_ngtcp2::Connection as curl_core::http3::Connection>::read_packets::{closure#0}>::{closure#1}
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::expiry
+<curl_core::conn::quic::Quic>::set_expiry::{closure#0}
+<curl_core::conn::quic::Quic>::collect
+<curl_core::proto::http::h3::H3Step<curl_core::multi::NoHost> as curl_core::conn::quic::QuicIo>::via
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::write_packet
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::read_packets
+<curl_core::proto::http::h3::H3Step<curl_core::multi::NoHost> as curl_core::conn::layer::LayerCx>::h3_streams
+<curl_core::conn::quic::Quic>::submit
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::extend_stream_window
+<curl_core::conn::quic::Quic>::flush
+<curl_core::multi::timers::TimerQueue<curl_core::multi::Transfer>>::swap
+<curl_core::proto::http::h3::H3Step<curl_core::multi::NoHost> as curl_core::conn::quic::SocketIo>::socket
+<curl_core::proto::http::h3::H3Step<curl_core::multi::NoHost> as curl_core::conn::layer::LayerCx>::trace
+curl_core::proto::http::h3::adjust_ideal::<curl_core::multi::NoHost>
+<curl_core::multi::state::cx::StepCx<curl_core::multi::NoHost> as curl_core::conn::layer::QuicTimer>::due_in
+<curl_os::net::UdpSocket as curl_core::conn::io::Socket>::send_segments
+<curl_openssl::ssl::QuicSession as curl_core::tls::QuicTls>::native
+curl_ngtcp2::acked_stream_data_offset
+curl_core::proto::ftp::copied
+curl_ngtcp2::extend_max_local_streams_bidi
+curl_core::multi::state::trace_max_concurrent::<curl_core::multi::NoHost>
+curl_ngtcp2::h3_stream_close
+<curl_core::proto::http::h3::H3Step<curl_core::multi::NoHost> as curl_core::conn::layer::LayerCx>::recv_room
+curl_ngtcp2::h3_end_headers
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::sent_at
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::tls_native
+<curl_openssl::ssl::QuicSession as curl_core::tls::QuicTls>::before_recv
+std::sys::io::error::unix::decode_error_kind
+<curl_core::proto::http::h3::H3Step<curl_core::multi::NoHost> as curl_core::conn::layer::LayerCx>::quic_timer
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::egress_done
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::max_payload
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::path_max_payload
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::send_quantum
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::body_in_flight
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::before_recv
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::ingress_done
+<curl_ngtcp2::Connection as curl_core::http3::Connection>::submit_request
+<curl_core::proto::http::h3::H3Step<curl_core::multi::NoHost> as curl_core::conn::layer::H3Streams>::heard
+<curl_core::conn::quic::State>::heard
+<curl_core::conn::quic::Quic>::ingress
+<curl_ngtcp2::Connection>::call::<core::result::Result<core::option::Option<usize>, curl_core::http3::QuicError>, <curl_ngtcp2::Connection as curl_core::http3::Connection>::write_packet::{closure#0}>::{closure#1}
+<curl_core::conn::quic::Quic>::send_run
+<curl_core::conn::quic::Out>::room
+curl_ngtcp2::stream_close2
+<curl_os::net::UdpSocket as curl_core::conn::io::Socket>::recv_batch
+<curl_core::proto::http::Request>::h3_event::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::rx_extend::<curl_core::multi::NoHost>
+curl_core::multi::state::leg::may_http3::<curl_core::multi::NoHost>
+<curl_core::proto::http::Request>::h3_other::<curl_core::multi::NoHost>
+curl_core::trace::of_with::<curl_core::multi::NoHost>
+<curl_core::conn::quic::Quic>::egress

@@ -1,0 +1,29 @@
+#!/bin/sh
+# The linker cargo runs on Linux (.cargo/config.toml): the system's `cc`,
+# unchanged, unless curl-sys-abi's or curl-tool's build script marked the
+# link with `--curl-hot-order=<list>` (release builds of libcurl and the
+# tool alone), when hot_order.py lays the listed functions out first.
+#
+# Named `cc` because rustc infers the linker's kind from the name: under
+# another, rustc on x86_64 Linux drops its own LLD (`-fuse-ld=lld`) and
+# links with the system's linker instead.
+here=$(dirname "$0")
+for a in "$@"; do
+    case $a in
+    --curl-hot-order=* | @*)
+        if command -v python3 > /dev/null 2>&1; then
+            exec python3 "$here/hot_order.py" link "$@"
+        fi
+        echo "curl hot-function order: no python3, linked unordered" >&2
+        for b in "$@"; do
+            shift
+            case $b in
+            --curl-hot-order=*) ;;
+            *) set -- "$@" "$b" ;;
+            esac
+        done
+        exec cc "$@"
+        ;;
+    esac
+done
+exec cc "$@"

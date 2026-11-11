@@ -1,3 +1,11 @@
 [build]
 # Keep build output under build/, which the C tree already ignores.
 target-dir = "build/target"
+
+# The system's `cc`, which lays out the hot functions of release builds of
+# libcurl and the tool first (link/hot_order.py).
+[target.aarch64-unknown-linux-gnu]
+linker = ".cargo/link/cc"
+
+[target.x86_64-unknown-linux-gnu]
+linker = ".cargo/link/cc"

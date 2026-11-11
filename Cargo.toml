@@ -28,6 +28,7 @@ panic = "abort"
 panic = "abort"
 # One unit, optimised whole across the crates: the transfer path spans
 # curl-core, the TLS backend and the tool or the C ABI, and split it
-# misses the instruction cache more than C's build does.
+# misses the instruction cache more than C's build does. On Linux the link
+# also lays the hot functions out first (DESIGN.md, "The release link").
 lto = "fat"
 codegen-units = 1

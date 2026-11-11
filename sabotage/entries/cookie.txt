@@ -341,3 +341,27 @@ witness: curl-core proto::http::tests::a_cookie_file_s_line_too_long_fails_the_t
     loaded.unwrap_or(Ok(())).map_err(load_failed)
 --- new
     loaded.unwrap_or(Ok(())).or(Ok(()))
+
+=== a tab before an attribute is part of its name
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::a_tab_before_an_attribute_is_a_blank
+--- old
+    b == b' ' || b == b'\t'
+--- new
+    b == b' '
+
+=== a request sends 151 cookies
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::caps_the_cookies_a_request_sends
+--- old
+            if cookies.len() >= MAX_SEND {
+--- new
+            if cookies.len() > MAX_SEND {
+
+=== a request's Cookie line reaches 8190 bytes
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::cookies::tests::the_line_holds_8190_bytes_with_its_name
+--- old
+        if len + add >= MAX_LINE {
+--- new
+        if len + add > MAX_LINE {

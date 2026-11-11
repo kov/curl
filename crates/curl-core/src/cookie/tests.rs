@@ -120,6 +120,26 @@ fn reads_attributes_as_c() {
     assert_eq!(said.as_deref(), Some("skipped cookie because not 'secure'"));
 }
 
+/// A tab before an attribute is a blank, as a space is: `;\tSecure` is
+/// the secure attribute (CVE-2026-80255).
+#[test]
+fn a_tab_before_an_attribute_is_a_blank() {
+    let mut jar = running();
+    let secure = Source::Server {
+        host: b"example.com",
+        path: b"/",
+        secure: true,
+    };
+    jar.set_by(b"a=1;\tSecure;\tHttpOnly", secure, None, NOW, &mut 0)
+        .unwrap();
+    assert_eq!(
+        lines(&jar),
+        ["#HttpOnly_example.com\tFALSE\t/\tTRUE\t0\ta\t1"]
+    );
+    let said = set(&mut jar, b"h.example.com", b"/", b"s=1;\tsecure");
+    assert_eq!(said.as_deref(), Some("skipped cookie because not 'secure'"));
+}
+
 #[test]
 fn drops_what_c_drops() {
     let mut jar = running();

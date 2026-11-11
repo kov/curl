@@ -391,15 +391,23 @@ pub fn initialize(
             )
         }
     };
+    // A failed call's output is no token: its length is not read, as C
+    // reads none (one SSPI allocated anyway is freed with `token`).
+    let ok = status >= 0;
     if let Some(room) = room {
-        let n = usize::try_from(outbuf[0].cbBuffer).expect("a u32 fits");
-        assert!(n <= room, "SSPI's token lies within the room it was given");
-        out.truncate(n);
+        if ok {
+            let n = usize::try_from(outbuf[0].cbBuffer).expect("a u32 fits");
+            assert!(n <= room, "SSPI's token lies within the room it was given");
+            out.truncate(n);
+        } else {
+            out.clear();
+        }
     } else if let Some(token) = {
         // SAFETY: the call was asked to allocate the token, which SSPI
         // then hands over.
         unsafe { Token::of(&outbuf[0]) }
-    } {
+    } && ok
+    {
         out.try_extend_from_slice(token.bytes())?;
     }
     if status >= 0
@@ -433,11 +441,15 @@ pub fn complete(handle: Completing<'_>, token: &mut Vec<u8>) -> i32 {
     // alive for the call; SSPI writes within the token.
     let status = unsafe { id::CompleteAuthToken(handle, &d) };
     let n = usize::try_from(b[0].cbBuffer).expect("a u32 fits");
-    assert!(
-        n <= token.len(),
-        "SSPI's token lies within the one it was given"
-    );
-    token.truncate(n);
+    if n <= token.len() {
+        // The token as SSPI leaves it, whatever the status: Digest's
+        // callers send it whether or not the call failed, as C does.
+        token.truncate(n);
+    } else {
+        // Past the token: never from a call that did not fail; from one
+        // that did, a length not believed, the token left as it was.
+        assert!(status < 0, "SSPI's token lies within the one it was given");
+    }
     status
 }
 

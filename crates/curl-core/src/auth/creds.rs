@@ -591,7 +591,7 @@ pub(crate) fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 
 /// Whether two secrets are the same, their bytes all compared whatever
 /// the first difference (`Curl_timestrcmp`).
-fn same_secret(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same_secret(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |d, (x, y)| d | (x ^ y)) == 0
 }
 

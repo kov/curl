@@ -350,7 +350,7 @@ pub(crate) struct RouteCold {
 
 /// What an FTP connection logged in and set up with, beyond its
 /// credentials.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct FtpSetup {
     /// The account it gave (`CURLOPT_FTP_ACCOUNT`).
     pub(crate) account: Option<Vec<u8>>,
@@ -381,8 +381,10 @@ impl FtpSetup {
     /// Whether a connection set up as `self` serves a transfer that
     /// would set one up as `want`, the first asking for TLS as `have_ssl`
     /// and the other as `want_ssl` (`Curl_ftp_conns_match`): the same
-    /// account, alternative and CCC; a transfer that only tries TLS takes
-    /// one that asked for any, else the asking must be the same.
+    /// account and alternative, each compared in the same time whatever
+    /// its bytes (`Curl_timestrcmp`), and the same CCC; a transfer that
+    /// only tries TLS takes one that asked for any, else the asking must
+    /// be the same.
     pub(crate) fn serves(
         &self,
         want: &FtpSetup,
@@ -390,7 +392,21 @@ impl FtpSetup {
         want_ssl: crate::options::UseSsl,
     ) -> bool {
         use crate::options::UseSsl;
-        self == want
+        // Every field by name, so that one added does not compile until
+        // it is compared here.
+        let FtpSetup {
+            account,
+            alternative_to_user,
+            ccc,
+        } = self;
+        let same = |a: &Option<Vec<u8>>, b: &Option<Vec<u8>>| match (a, b) {
+            (Some(a), Some(b)) => crate::auth::creds::same_secret(a, b),
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        };
+        (same(account, &want.account)
+            & same(alternative_to_user, &want.alternative_to_user)
+            & (*ccc == want.ccc))
             && match want_ssl {
                 UseSsl::Try => have_ssl != UseSsl::None,
                 _ => want_ssl == have_ssl,
@@ -2836,6 +2852,15 @@ mod tests {
             None
         ));
         assert!(!have.serves(&ftp(setup(None, None, Ccc::Passive), UseSsl::None), None));
+        // Each compared byte for byte, case and length and all.
+        let account = |a: &'static [u8]| ftp(setup(Some(a), Some(b"alt"), Ccc::None), UseSsl::None);
+        let alternative =
+            |a: &'static [u8]| ftp(setup(Some(b"acct"), Some(a), Ccc::None), UseSsl::None);
+        assert!(account(b"acct").serves(&account(b"acct"), None));
+        for other in [&b"ACCT"[..], b"acct2", b"acc", b""] {
+            assert!(!account(b"acct").serves(&account(other), None));
+            assert!(!alternative(b"acct").serves(&alternative(other), None));
+        }
         // TLS asked for alike, or only tried over a connection that asked.
         let all = ftp(plain(), UseSsl::All);
         assert!(all.serves(&ftp(plain(), UseSsl::Try), None));

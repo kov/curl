@@ -756,3 +756,19 @@ features: test-util debug-hooks
                     };
                     return self.wildcard_step(cx, pc, reused, w);
                 }
+
+=== an FTP connection serves a transfer with another account of the same length
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::ftp_connections_serve_transfers_set_up_alike
+--- old
+            (Some(a), Some(b)) => crate::auth::creds::same_secret(a, b),
+--- new
+            (Some(a), Some(b)) => a.len() == b.len(),
+
+=== an FTP connection serves a transfer with another alternative to USER
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::ftp_connections_serve_transfers_set_up_alike
+--- old
+            & same(alternative_to_user, &want.alternative_to_user)
+--- new
+            & true

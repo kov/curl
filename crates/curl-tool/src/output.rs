@@ -68,8 +68,6 @@ pub(crate) struct Stream {
     /// `--remote-header-name`: the file is named by the response, and the
     /// header lines to show wait until it is (`honor_cd_filename`).
     pub(crate) name_from_header: Option<FromHeader>,
-    /// The file's name came from the response (`is_cd_filename`).
-    server_named: bool,
     /// `--dump-header`: where header lines are written too.
     dump: Option<Dump>,
     /// `--etag-save`: where the ETag of a 2xx or 3xx response is written.
@@ -241,9 +239,34 @@ enum Target {
     /// A file, by name with a zero byte after it; opened when needed, and
     /// written through stdio's buffer as C's `fopen`ed one is.
     File {
-        name: Vec<u8>,
+        name: FileName,
         file: Option<Stdio<File>>,
     },
+}
+
+/// An output file's name, ended by a zero byte, and who gave it: the
+/// one value, so a name the response gives cannot be taken for the
+/// user's, whose file it may replace (`is_cd_filename`).
+enum FileName {
+    /// The user's, from the command line or the URL.
+    Given(Vec<u8>),
+    /// The response's (`--remote-header-name`), which replaces no file
+    /// unless `--clobber` says to.
+    FromServer(Vec<u8>),
+}
+
+impl FileName {
+    fn bytes(&self) -> &Vec<u8> {
+        match self {
+            FileName::Given(name) | FileName::FromServer(name) => name,
+        }
+    }
+
+    fn bytes_mut(&mut self) -> &mut Vec<u8> {
+        match self {
+            FileName::Given(name) | FileName::FromServer(name) => name,
+        }
+    }
 }
 
 impl Output {
@@ -264,7 +287,7 @@ impl Output {
         owned.try_push(0)?;
         Output::new(
             Target::File {
-                name: owned,
+                name: FileName::Given(owned),
                 file: None,
             },
             msgs,
@@ -283,7 +306,6 @@ impl Output {
             no_buffer: false,
             clobber: Clobber::Default,
             name_from_header: None,
-            server_named: false,
             dump: None,
             etag_save: None,
             num_headers: 0,
@@ -466,7 +488,7 @@ impl Stream {
     /// The output file's name, if the output is a file.
     pub(crate) fn file_name(&self) -> Option<&[u8]> {
         match &self.target {
-            Target::File { name, .. } => Some(&name[..name.len() - 1]),
+            Target::File { name, .. } => Some(&name.bytes()[..name.bytes().len() - 1]),
             Target::Stdout(_) | Target::Null => None,
         }
     }
@@ -481,6 +503,7 @@ impl Stream {
         let Target::File { name, file } = &mut self.target else {
             unreachable!("only a file is resumed");
         };
+        let name = name.bytes();
         match fs::open_write(Stream::c_name(name), Keep::Everything, NEW_FILE_MODE) {
             Ok(f) => {
                 // C takes the size it was told to resume from; it is the
@@ -514,16 +537,18 @@ impl Stream {
             unreachable!("only a file is opened");
         };
         let mut tried = None;
-        let opened = match self.clobber {
-            Clobber::Never => open_unclobbered(name, &mut tried),
+        let opened = match (self.clobber, &*name) {
+            (Clobber::Never, _) => open_unclobbered(name.bytes_mut(), &mut tried),
             // A name the server gives does not replace a file.
-            Clobber::Default if self.server_named => {
+            (Clobber::Default, FileName::FromServer(name)) => {
                 fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE)
             }
-            Clobber::Default | Clobber::Always => {
+            (Clobber::Default, FileName::Given(name))
+            | (Clobber::Always, FileName::Given(name) | FileName::FromServer(name)) => {
                 fs::open_write(Stream::c_name(name), Keep::Nothing, NEW_FILE_MODE)
             }
         };
+        let name = name.bytes_mut();
         match opened {
             Ok(f) => {
                 *file = Some(Stdio::new(f));
@@ -975,8 +1000,7 @@ impl Stream {
         if made.is_err() {
             return false;
         }
-        *current = full;
-        self.server_named = true;
+        *current = FileName::FromServer(full);
         true
     }
 

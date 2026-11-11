@@ -525,9 +525,11 @@ witness: curl-tool creates_the_output_directories
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::names_the_file_from_the_response
 --- old
-            Clobber::Default if self.server_named => {
+            (Clobber::Default, FileName::FromServer(name)) => {
+                fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE)
 --- new
-            Clobber::Default if false && self.server_named => {
+            (Clobber::Default, FileName::FromServer(name)) => {
+                fs::open_write(Stream::c_name(name), Keep::Nothing, NEW_FILE_MODE)
 
 === header lines are shown before the response names the file
 file: crates/curl-tool/src/output.rs

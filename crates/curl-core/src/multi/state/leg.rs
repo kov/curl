@@ -907,15 +907,40 @@ fn route_cold<H: Host>(
     let use_ssl = options.line.use_ssl;
     let ftp = match proto {
         ProtoState::Ftp(_) => {
-            let ftp = &options.line.ftp;
+            // Every option by name, so that one added does not compile
+            // until it is said to set the connection up, and is copied
+            // here to be compared (`Curl_ftp_conns_match`), or to be the
+            // transfer's alone.
+            let crate::options::Ftp {
+                account,
+                alternative_to_user,
+                ssl_ccc,
+                // Each transfer's own: how it opens its data connection,
+                // what it sends to get or put its file, and the
+                // application's handlers for a wildcard download.
+                method: _,
+                use_epsv: _,
+                use_eprt: _,
+                use_pret: _,
+                skip_pasv_ip: _,
+                port: _,
+                create_dirs: _,
+                accept_timeout: _,
+                append: _,
+                ascii: _,
+                wildcard: _,
+                chunk_begin: _,
+                chunk_end: _,
+                fnmatch: _,
+                // Read as TLS is asked for with `AUTH`, which the
+                // connection's TLS settings and `use_ssl` decide; C
+                // matches no connection by it either.
+                ssl_auth: _,
+            } = &options.line.ftp;
             Some(crate::conn::FtpSetup {
-                account: ftp.account.as_deref().map(copy_bytes).transpose()?,
-                alternative_to_user: ftp
-                    .alternative_to_user
-                    .as_deref()
-                    .map(copy_bytes)
-                    .transpose()?,
-                ccc: ftp.ssl_ccc,
+                account: account.as_deref().map(copy_bytes).transpose()?,
+                alternative_to_user: alternative_to_user.as_deref().map(copy_bytes).transpose()?,
+                ccc: *ssl_ccc,
             })
         }
         _ => None,

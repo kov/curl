@@ -1,5 +1,5 @@
 {
- "c-commit": "bd3de3aede646e3c92ade95d624e9f82211e1c3a",
+ "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -28,10 +28,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2201,
+   "considered": 2202,
    "failed": 0,
-   "ok": 2107,
-   "ran": 2107,
+   "ok": 2108,
+   "ran": 2108,
    "skipped": 94
   },
   "curl-version": [
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-10T18:47:38Z",
-   "started": "2026-11-10T18:44:13Z"
+   "finished": "2026-11-11T17:11:53Z",
+   "started": "2026-11-11T17:09:16Z"
   },
   "protocols": [
    "dict",
@@ -1043,8 +1043,8 @@
      "outcome": "passed"
     },
     "test_04_stuttered::test_04_02_100_100_10[h3]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: response #101 http_code: expected 200, got 502\n  json stat from curl:{\n    \"certs\": \"\",\n    \"conn_id\": 0,\n    \"content_type\": \"text/html; charset=UTF-8\",\n    \"errormsg\": null,\n    \"exitcode\": 0,\n    \"filename_effective\": \"download_13.data\",\n    \"ftp_entry_path\": null,\n    \"http_code\"",
+     "outcome": "failed"
     },
     "test_04_stuttered::test_04_03_1000_10_1[h2]": {
      "message": null,
@@ -3295,7 +3295,7 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '7 packets captured\\n', '50 packets received by filter\\n', '0 packe",
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '34 packets captured\\n', '218 packets received by filter\\n', '0 pac",
      "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {
@@ -4288,8 +4288,8 @@
     }
    },
    "counts": {
-    "failed": 1,
-    "passed": 949,
+    "failed": 2,
+    "passed": 948,
     "skipped": 58
    },
    "exit-status": 1,
@@ -8791,6 +8791,9 @@
     "result": "ok"
    },
    "3702": {
+    "result": "ok"
+   },
+   "3703": {
     "result": "ok"
    },
    "371": {

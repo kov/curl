@@ -30,9 +30,9 @@ file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_connection_is_reused_only_by_the_same_login_and_tls
 features: test-util
 --- old
-            !want.use_ssl().requires()
+            return !want.use_ssl().requires();
 --- new
-            true
+            return true;
 
 === a dot the server stuffed reaches the body
 file: crates/curl-core/src/proto/pop3.rs
@@ -119,11 +119,11 @@ file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::pop3::tests::over_the_wire::an_upgraded_connection_serves_a_transfer_not_asking_for_tls_alike
 features: test-util
 --- old
-            want.origin.scheme().reuses_tls()
-                && same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
+        want.origin.scheme().reuses_tls()
+            && same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
 --- new
-            want.origin.scheme().reuses_tls()
-                || same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
+        want.origin.scheme().reuses_tls()
+            || same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
 
 === a POP3 route keeps no TLS settings to upgrade with unless asked for TLS
 file: crates/curl-core/src/multi/state/leg.rs

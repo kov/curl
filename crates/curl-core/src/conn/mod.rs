@@ -2278,28 +2278,24 @@ impl Conn {
             && self.tls_serves(wanted, tls)
     }
 
-    /// Whether, as its layers are now, it serves a transfer of a scheme
-    /// that may upgrade to TLS (`url_match_ssl_use`): one upgraded is
-    /// reused with the settings it was upgraded with; one not is not
-    /// reused by a transfer that requires TLS.
+    /// Whether, as its layers are now, it serves a transfer
+    /// (`url_match_ssl_use`): one without TLS to the origin is not reused
+    /// by a transfer that requires TLS, of any scheme, HTTP's too; one
+    /// upgraded is reused with the settings it was upgraded with.
     fn tls_serves(&self, wanted: &Route, tls: Option<TlsWants<'_>>) -> bool {
         let (Route::Net(have), Route::Net(want)) = (&self.route, wanted) else {
             return true;
         };
-        if want.secured_from_start()
-            || have.secured_from_start()
-            || !want.origin.scheme().reuses_tls()
-        {
-            // Over TLS from the start, or never upgraded: the route's to
-            // say.
+        if want.secured_from_start() || have.secured_from_start() {
+            // Over TLS from the start: the route's to say.
             return true;
         }
-        if self.origin_tls() {
-            want.origin.scheme().reuses_tls()
-                && same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
-        } else {
-            !want.use_ssl().requires()
+        if !self.origin_tls() {
+            return !want.use_ssl().requires();
         }
+        // Upgraded, which only a scheme that may upgrade reuses.
+        want.origin.scheme().reuses_tls()
+            && same_tls(have.origin_tls(tls).upgrade, want.origin_tls(tls).upgrade)
     }
 
     /// HTTP Negotiate on it, if a request negotiated.

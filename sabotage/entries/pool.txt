@@ -905,3 +905,16 @@ witness: curl-core a_waiting_transfer_s_new_ip_version_takes_no_refusal_for_succ
                 _ if ip.is_err() => TransferState::Init.fail(ErrorKind::OutOfMemory),
 --- new
                 _ if false => TransferState::Init.fail(ErrorKind::OutOfMemory),
+
+=== a clear connection serves an HTTP transfer that requires TLS
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::a_clear_connection_serves_no_transfer_requiring_tls
+--- old
+        if want.secured_from_start() || have.secured_from_start() {
+            // Over TLS from the start: the route's to say.
+--- new
+        if want.secured_from_start()
+            || have.secured_from_start()
+            || !want.origin.scheme().reuses_tls()
+        {
+            // Over TLS from the start: the route's to say.

@@ -857,12 +857,6 @@ rule of `CLAUDE.md` each is to be brought to C's behaviour, with a test, and the
 here. They are listed so that none is read as C's behaviour meanwhile; none has a test that pins
 it.
 
-- **A clear connection made under `CURLOPT_USE_SSL` serves another HTTP transfer under it.** C
-  refuses a connection without TLS to any transfer requiring TLS, HTTP's too
-  (`url_match_ssl_use`, `lib/url.c`); `Conn::tls_serves` (`crates/curl-core/src/conn/mod.rs`)
-  lets HTTP's through when the route's settings match. A connection made without `USE_SSL` is
-  refused as in C. Pinned for POP3 only (`a_connection_is_reused_only_by_the_same_login_and_tls`);
-  for HTTP, no test.
 - **A cookie file has no line limit.** C stops loading a file at a line longer than its line
   buffer (`DYN_APRINTF`, about 8 MB, `lib/curl_get_line.c`) and fails the transfer with
   `CURLE_TOO_LARGE`; the rewrite reads the file whole and splits it by line

@@ -671,6 +671,32 @@ fn a_body_is_read_no_further_than_its_size() {
     assert!(ran.seen.text().last().unwrap().ends_with("left intact\n"));
 }
 
+/// A connection without TLS serves no later transfer requiring TLS
+/// (`CURLOPT_USE_SSL` of `CONTROL` or `ALL`), HTTP's too, as C's
+/// `url_match_ssl_use` refuses it (`require_tls`); trying TLS requires
+/// none. The C tool given two `http://` URLs makes one connection for
+/// both, and with `--ssl-reqd` one for each.
+#[test]
+fn a_clear_connection_serves_no_transfer_requiring_tls() {
+    use crate::options::UseSsl;
+    for (use_ssl, fresh) in [
+        (UseSsl::None, false),
+        (UseSsl::Try, false),
+        (UseSsl::Control, true),
+        (UseSsl::All, true),
+    ] {
+        let first = Conversation::replies(&[OK, OK], false);
+        let second = Conversation::replies(&[OK], false);
+        let mut m = serving(Peer::Accepts, &[&first, &second]);
+        let set = |o: &mut Options| o.line.make_mut().unwrap().use_ssl = use_ssl;
+        let one = get(&mut m, "/1", first.clone(), set);
+        let two = get(&mut m, "/2", first.clone(), set);
+        assert_eq!((one.result, two.result), (Ok(()), Ok(())), "{use_ssl:?}");
+        let made = !second.received().is_empty();
+        assert_eq!(made, fresh, "{use_ssl:?}: {:#?}", two.seen.text());
+    }
+}
+
 /// A second request goes over the connection the first left intact, which
 /// a reply that is no HTTP then cannot be HTTP/0.9 on (`Invalid status
 /// line`).

@@ -468,3 +468,27 @@ witness: curl-os net::room_tests::a_slot_taken_as_bytes_is_zeroed_once
             byte.write(1);
         }
         self.written[i] = slot;
+
+=== C's own matcher reads a bracket left open past the pattern's end
+file: crates/curl-os/src/fnmatch/own.rs
+witness: curl-os fnmatch::tests::unit1307_own_matcher
+--- old
+        let c = at(p, *i);
+        if c == 0 {
+            return false;
+        }
+        match state {
+--- new
+        let c = at(p, *i);
+        if c == 0 {
+            return true;
+        }
+        match state {
+
+=== the system matcher is given a pattern without its zero byte
+file: crates/curl-os/src/fnmatch.rs
+witness: curl-os fnmatch::tests::long_strings_match_as_short_ones
+--- old
+        return Ok(f(c(&buf[..=end])));
+--- new
+        return Ok(f(c(&buf[..end])));

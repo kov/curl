@@ -167,21 +167,28 @@ fn name(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
 /// a year, the first that applies and is not known yet (`datenum`). Where
 /// it ends.
 fn number(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
-    if w.dsecs.is_none()
-        && let Some((dsecs, end)) = time_of_day(date, at)
-    {
-        w.dsecs = Some(dsecs);
-        return Ok(at + end);
-    }
-    let digits = date[at..].iter().take_while(|b| b.is_ascii_digit()).count();
     // As `curlx_str_number` reads it: leading zeros are allowed, and a
-    // value over the limit fails.
+    // value over the limit fails. The digits are read once, for the
+    // number and for the hour a time of day starts with: a number over
+    // the limit has more digits than an hour.
     let mut val: u32 = 0;
-    for &d in &date[at..at + digits] {
+    let mut digits = 0;
+    for &d in &date[at..] {
+        if !d.is_ascii_digit() {
+            break;
+        }
         val = val * 10 + u32::from(d - b'0');
         if val > 99_999_999 {
             return Err(BadDate);
         }
+        digits += 1;
+    }
+    if w.dsecs.is_none()
+        && digits <= 2
+        && let Some((dsecs, end)) = time_of_day(date, at + digits, val)
+    {
+        w.dsecs = Some(dsecs);
+        return Ok(end);
     }
     let end = Ok(at + digits);
     let sign = at.checked_sub(1).map(|i| date[i]);
@@ -220,22 +227,21 @@ fn number(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
     Err(BadDate)
 }
 
-/// `HH:MM:SS` or `HH:MM` at `at`, each of one or two digits, and the
-/// length read (`match_time`). A leap second is allowed.
-fn time_of_day(date: &[u8], at: usize) -> Option<(u32, usize)> {
-    let s = &date[at..];
-    let (hh, mut p) = one_or_two_digits(s)?;
-    if hh >= 24 || s.get(p) != Some(&b':') {
+/// The rest of a time of day whose hour `hh`, of one or two digits, ends
+/// at `p`: `:MM:SS` or `:MM`, each of one or two digits, and where it
+/// ends (`match_time`). A leap second is allowed.
+fn time_of_day(date: &[u8], mut p: usize, hh: u32) -> Option<(u32, usize)> {
+    if hh >= 24 || date.get(p) != Some(&b':') {
         return None;
     }
-    let (mm, n) = one_or_two_digits(&s[p + 1..])?;
+    let (mm, n) = one_or_two_digits(&date[p + 1..])?;
     p += 1 + n;
     if mm >= 60 {
         return None;
     }
     let mut ss = 0;
-    if s.get(p) == Some(&b':')
-        && let Some((secs, n)) = one_or_two_digits(&s[p + 1..])
+    if date.get(p) == Some(&b':')
+        && let Some((secs, n)) = one_or_two_digits(&date[p + 1..])
     {
         if secs > 60 {
             return None;

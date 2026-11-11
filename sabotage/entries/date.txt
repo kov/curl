@@ -75,3 +75,11 @@ witness: curl-core date::tests::six_parts_are_read_and_the_rest_ignored
     for _ in 0..MAX_PARTS {
 --- new
     for _ in 0..usize::MAX {
+
+=== a number of three digits starts a time of day
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::lib517_dates
+--- old
+        && digits <= 2
+--- new
+        && digits <= 3

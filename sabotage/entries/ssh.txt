@@ -48,10 +48,10 @@ file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::the_password_logs_in_when_the_key_may_not
 --- old
     } else if m.has(Methods::PASSWORD) {
-        sc.to(cx, State::AuthPassInit);
+        sc.to(cx, State::AuthPassInit(hv));
 --- new
     } else if false {
-        sc.to(cx, State::AuthPassInit);
+        sc.to(cx, State::AuthPassInit(hv));
 
 === a listed link's target is left out
 file: crates/curl-core/src/proto/ssh/mod.rs
@@ -80,12 +80,14 @@ witness: curl-core proto::ssh::tests::missing_directories_are_made_once
             if missing && create_dirs && self.path().len() > 1 && sc.slash < 64 {
 
 === any MD5 fingerprint is taken
-file: crates/curl-core/src/proto/ssh/mod.rs
+file: crates/curl-core/src/proto/ssh/hostkey.rs
 witness: curl-core proto::ssh::tests::the_host_key_s_fingerprints_are_checked
 --- old
-            if !found.eq_ignore_ascii_case(&want) {
+        found
+            .eq_ignore_ascii_case(want)
+            .then_some(HostVerified(HostCheck::Md5))
 --- new
-            if found.is_empty() {
+        Some(HostVerified(HostCheck::Md5)).filter(|_| !found.is_empty() || want.is_empty())
 
 === a key the handler would add to the known-hosts file is not added
 file: crates/curl-core/src/proto/ssh/mod.rs
@@ -194,3 +196,47 @@ witness: curl-core proto::ssh::tests::a_download_that_ends_empty_on_a_reused_con
         !self.upload && !self.no_body && self.receiving && self.base.pipeline.bytecount() == 0
 --- new
         !self.upload && !self.no_body && self.base.pipeline.bytecount() == 0
+
+=== a key of another type in the known-hosts file reads as missing
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_known_hosts_file_and_the_key_handler_decide
+--- old
+            KnownHosts::Other | KnownHosts::Changed | KnownHosts::Unrecognised => {
+--- new
+            KnownHosts::Other => KeyMatch::Missing,
+            KnownHosts::Changed | KnownHosts::Unrecognised => {
+
+=== a known-hosts state libssh names that the binding does not reads as missing
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_known_hosts_file_and_the_key_handler_decide
+--- old
+            KnownHosts::Other | KnownHosts::Changed | KnownHosts::Unrecognised => {
+                KeyMatch::Mismatch
+--- new
+            KnownHosts::Unrecognised => KeyMatch::Missing,
+            KnownHosts::Other | KnownHosts::Changed => {
+                KeyMatch::Mismatch
+
+=== a key is taken unchecked though a known-hosts file is set
+file: crates/curl-core/src/proto/ssh/hostkey.rs
+witness: curl-core proto::ssh::hostkey::tests::a_key_is_taken_unchecked_only_where_no_check_is_asked
+--- old
+            || ssh.known_hosts.is_some();
+--- new
+            || ssh.known_hosts.is_none();
+
+=== a key is taken unchecked though a known-hosts file is set, end to end
+file: crates/curl-core/src/proto/ssh/hostkey.rs
+witness: curl-core proto::ssh::tests::the_known_hosts_file_and_the_key_handler_decide
+--- old
+            || ssh.known_hosts.is_some();
+--- new
+            || ssh.known_hosts.is_none();
+
+=== a SHA-256 fingerprint is taken whatever comes after its first bytes
+file: crates/curl-core/src/proto/ssh/hostkey.rs
+witness: curl-core proto::ssh::hostkey::tests::a_fingerprint_is_verified_only_where_it_is_the_one_given
+--- old
+        (w == f && want[..w] == found[..w]).then_some(HostVerified(HostCheck::Sha256))
+--- new
+        (w == f).then_some(HostVerified(HostCheck::Sha256))

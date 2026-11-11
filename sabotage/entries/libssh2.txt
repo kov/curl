@@ -29,9 +29,9 @@ witness: curl-core proto::ssh::libssh2::tests::chgrp_and_chown_take_an_id_past_3
 file: crates/curl-core/src/proto/ssh/libssh2.rs
 witness: curl-core proto::ssh::libssh2::tests::the_host_key_handler_decides_on_the_raw_key
 --- old
-            if !fine {
+            let fine = handler.check(&mut crate::multi::TransferCx::new(cx), key_type(kind), &key);
 --- new
-            if false {
+            let fine = handler.check(&mut crate::multi::TransferCx::new(cx), key_type(kind), &key) || true;
 
 === the session under an HTTPS proxy reads the socket, not its TLS
 file: crates/curl-core/src/proto/ssh/libssh2.rs

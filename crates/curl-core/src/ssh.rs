@@ -223,6 +223,9 @@ pub enum KnownHosts {
     NotFound,
     Unknown,
     Error,
+    /// A state the library names that this binding does not know: taken
+    /// as a mismatch, as `myssh_is_known` takes any state it does not name.
+    Unrecognised,
 }
 
 /// A known-hosts file's key for the server, as the session looked it up.

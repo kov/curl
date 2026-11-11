@@ -13,6 +13,7 @@
 //! from its channel's, only an SFTP file's reads and writes left
 //! nonblocking.
 
+mod hostkey;
 pub(crate) mod libssh2;
 mod path;
 
@@ -43,6 +44,7 @@ use crate::upload::Upload;
 use crate::upload::chain::Body;
 use crate::upload::sending::{Outlet, Sending};
 use crate::url::{GetOptions, Part, Url};
+use hostkey::HostVerified;
 use path::{Home, RangeError};
 
 /// The key files a connection logs in with, as its first transfer found
@@ -191,15 +193,15 @@ enum State {
     Init,
     SStartup,
     Hostkey,
-    Authlist,
-    AuthPkeyInit,
-    AuthPkey,
-    AuthPassInit,
-    AuthPass,
-    AuthGssapi,
-    AuthKeyInit,
-    AuthKey,
-    AuthDone,
+    Authlist(HostVerified),
+    AuthPkeyInit(HostVerified),
+    AuthPkey(HostVerified),
+    AuthPassInit(HostVerified),
+    AuthPass(HostVerified),
+    AuthGssapi(HostVerified),
+    AuthKeyInit(HostVerified),
+    AuthKey(HostVerified),
+    AuthDone(HostVerified),
     SftpInit,
     SftpRealpath,
     SftpQuoteInit,
@@ -248,15 +250,15 @@ impl State {
             State::Init => "SSH_INIT",
             State::SStartup => "SSH_S_STARTUP",
             State::Hostkey => "SSH_HOSTKEY",
-            State::Authlist => "SSH_AUTHLIST",
-            State::AuthPkeyInit => "SSH_AUTH_PKEY_INIT",
-            State::AuthPkey => "SSH_AUTH_PKEY",
-            State::AuthPassInit => "SSH_AUTH_PASS_INIT",
-            State::AuthPass => "SSH_AUTH_PASS",
-            State::AuthGssapi => "SSH_AUTH_GSSAPI",
-            State::AuthKeyInit => "SSH_AUTH_KEY_INIT",
-            State::AuthKey => "SSH_AUTH_KEY",
-            State::AuthDone => "SSH_AUTH_DONE",
+            State::Authlist(_) => "SSH_AUTHLIST",
+            State::AuthPkeyInit(_) => "SSH_AUTH_PKEY_INIT",
+            State::AuthPkey(_) => "SSH_AUTH_PKEY",
+            State::AuthPassInit(_) => "SSH_AUTH_PASS_INIT",
+            State::AuthPass(_) => "SSH_AUTH_PASS",
+            State::AuthGssapi(_) => "SSH_AUTH_GSSAPI",
+            State::AuthKeyInit(_) => "SSH_AUTH_KEY_INIT",
+            State::AuthKey(_) => "SSH_AUTH_KEY",
+            State::AuthDone(_) => "SSH_AUTH_DONE",
             State::SftpInit => "SSH_SFTP_INIT",
             State::SftpRealpath => "SSH_SFTP_REALPATH",
             State::SftpQuoteInit => "SSH_SFTP_QUOTE_INIT",
@@ -823,34 +825,33 @@ impl Request {
                     sc.to(cx, State::SStartup);
                 }
                 State::SStartup => flow = self.s_startup(cx, sc),
-                State::Hostkey => {
-                    if self.is_known(cx, sc) {
-                        sc.to(cx, State::Authlist);
-                    } else {
+                State::Hostkey => match self.is_known(cx, sc) {
+                    Some(hv) => sc.to(cx, State::Authlist(hv)),
+                    None => {
                         sc.goto_error(cx, ErrorKind::PeerFailedVerification);
                     }
-                }
-                State::Authlist => flow = authlist(cx, sc),
-                State::AuthPkeyInit => flow = auth_pkey_init(cx, sc),
-                State::AuthPkey => flow = auth_pkey(cx, sc),
-                State::AuthGssapi => flow = auth_gssapi(cx, sc),
-                State::AuthKeyInit => {
+                },
+                State::Authlist(hv) => flow = authlist(cx, sc, hv),
+                State::AuthPkeyInit(hv) => flow = auth_pkey_init(cx, sc, hv),
+                State::AuthPkey(hv) => flow = auth_pkey(cx, sc, hv),
+                State::AuthGssapi(hv) => flow = auth_gssapi(cx, sc, hv),
+                State::AuthKeyInit(hv) => {
                     if allows(cx, SshAuthTypes::KEYBOARD) {
-                        sc.to(cx, State::AuthKey);
+                        sc.to(cx, State::AuthKey(hv));
                     } else {
-                        to_passwd(cx, sc);
+                        to_passwd(cx, sc, hv);
                     }
                 }
-                State::AuthKey => flow = auth_key(cx, sc),
-                State::AuthPassInit => {
+                State::AuthKey(hv) => flow = auth_key(cx, sc, hv),
+                State::AuthPassInit(hv) => {
                     if allows(cx, SshAuthTypes::PASSWORD) {
-                        sc.to(cx, State::AuthPass);
+                        sc.to(cx, State::AuthPass(hv));
                     } else {
                         sc.goto_error(cx, ErrorKind::LoginDenied);
                     }
                 }
-                State::AuthPass => flow = auth_pass(cx, sc),
-                State::AuthDone => auth_done(cx, sc),
+                State::AuthPass(hv) => flow = auth_pass(cx, sc, hv),
+                State::AuthDone(_) => auth_done(cx, sc),
                 State::SftpInit => sftp_init(cx, sc),
                 State::SftpRealpath => sftp_realpath(cx, sc),
                 State::SftpQuoteInit => self.sftp_quote_init(cx, sc),
@@ -1094,16 +1095,15 @@ impl Request {
     /// Whether the server's key is the one expected: its SHA-256 or MD5
     /// fingerprint the one given, else as the known-hosts file and the
     /// application's key handler decide, else any (`myssh_is_known`).
-    fn is_known<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> bool {
-        let Some(key) = sc.session().host_key() else {
-            return false;
-        };
+    fn is_known<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        sc: &mut SshConn,
+    ) -> Option<HostVerified> {
+        let key = sc.session().host_key()?;
         let ssh = &cx.easy().options().ssh;
         if let Some(want) = ssh.host_key_sha256.as_deref() {
-            let want = match copy(c_string(want)) {
-                Ok(w) => w,
-                Err(_) => return false,
-            };
+            let want = copy(c_string(want)).ok()?;
             let Some(sha) = key.sha256 else {
                 trace::fail(
                     cx,
@@ -1112,17 +1112,13 @@ impl Request {
                         "Denied establishing ssh session: SHA256 fingerprint not available"
                     ),
                 );
-                return false;
+                return None;
             };
             let mut found = Vec::new();
-            if crate::base64::encode(&sha, &mut found).is_err() {
-                return false;
-            }
+            crate::base64::encode(&sha, &mut found).ok()?;
             trace::info_with(cx, &[b"SSH SHA256 fingerprint: ", &found]);
-            // The two compared up to their padding.
-            let unpadded = |s: &[u8]| s.iter().position(|&b| b == b'=').unwrap_or(s.len());
-            let (w, f) = (unpadded(&want), unpadded(&found));
-            if w != f || want[..w] != found[..w] {
+            let verified = HostVerified::sha256(&want, &found);
+            if verified.is_none() {
                 trace::fail_with(
                     cx,
                     ErrorKind::PeerFailedVerification,
@@ -1133,22 +1129,18 @@ impl Request {
                         &want,
                     ],
                 );
-                return false;
             }
-            return true;
+            return verified;
         }
         if let Some(want) = ssh.host_key_md5.as_deref() {
-            let want = match copy(c_string(want)) {
-                Ok(w) => w,
-                Err(_) => return false,
-            };
+            let want = copy(c_string(want)).ok()?;
             let Some(md5) = key.md5 else {
                 trace::fail(
                     cx,
                     ErrorKind::PeerFailedVerification,
                     format_args!("Denied establishing ssh session: MD5 fingerprint not available"),
                 );
-                return false;
+                return None;
             };
             let mut found = [0u8; 32];
             for (i, b) in md5.iter().enumerate() {
@@ -1157,7 +1149,8 @@ impl Request {
                 found[2 * i + 1] = HEX[usize::from(b & 0xf)];
             }
             trace::info_with(cx, &[b"SSH MD5 fingerprint: ", &found]);
-            if !found.eq_ignore_ascii_case(&want) {
+            let verified = HostVerified::md5(&want, &found);
+            if verified.is_none() {
                 trace::fail_with(
                     cx,
                     ErrorKind::PeerFailedVerification,
@@ -1168,37 +1161,36 @@ impl Request {
                         &want,
                     ],
                 );
-                return false;
             }
-            return true;
+            return verified;
         }
-        if ssh.known_hosts.is_none() {
-            return true;
+        if let Some(verified) = HostVerified::not_requested(ssh) {
+            return Some(verified);
         }
         let handler = ssh.key_handler.clone();
         let (state, entry) = sc.session().known_host();
         let known = match entry {
             None => None,
-            Some(Err(_)) => return false,
+            Some(Err(_)) => return None,
             Some(Ok(known)) => match known.base64 {
                 None => None,
                 Some(base64) if known.kind != KeyType::Other => Some((base64, known.kind)),
-                Some(_) => return false,
+                Some(_) => return None,
             },
         };
         let matched = match state {
             KnownHosts::Ok => KeyMatch::Ok,
             KnownHosts::NotFound | KnownHosts::Unknown | KnownHosts::Error => KeyMatch::Missing,
-            KnownHosts::Other | KnownHosts::Changed => KeyMatch::Mismatch,
+            KnownHosts::Other | KnownHosts::Changed | KnownHosts::Unrecognised => {
+                KeyMatch::Mismatch
+            }
         };
         let Some(handler) = handler else {
-            return matched == KeyMatch::Ok;
+            return HostVerified::by_known_hosts(matched == KeyMatch::Ok);
         };
-        let Some(found) = key.base64.as_deref() else {
-            return false;
-        };
+        let found = key.base64.as_deref()?;
         if key.kind == KeyType::Other {
-            return false;
+            return None;
         }
         let verdict = handler.check(
             &mut crate::multi::TransferCx::new(cx),
@@ -1214,11 +1206,12 @@ impl Request {
             },
             matched,
         );
-        match verdict {
+        let took = match verdict {
             KeyVerdict::FineAddToFile => sc.session().update_known_hosts() == Rc::Ok,
             KeyVerdict::Fine => true,
             KeyVerdict::Reject | KeyVerdict::Defer | KeyVerdict::FineReplace => false,
-        }
+        };
+        HostVerified::by_known_hosts(took)
     }
 
     /// `SSH_SFTP_QUOTE_INIT`: the request's path worked out, then the
@@ -2425,9 +2418,9 @@ fn keys(sc: &SshConn) -> Option<&Keys> {
 
 /// The password login, if the server offers it, else a failed one
 /// (`myssh_to_PASSWD_AUTH`).
-fn to_passwd<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn to_passwd<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     if sc.methods.has(Methods::PASSWORD) {
-        sc.to(cx, State::AuthPassInit);
+        sc.to(cx, State::AuthPassInit(hv));
         Flow::On
     } else {
         sc.goto_error(cx, ErrorKind::LoginDenied)
@@ -2435,35 +2428,35 @@ fn to_passwd<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
 }
 
 /// Keyboard-interactive, if offered, else on (`myssh_to_KEY_AUTH`).
-fn to_key_auth<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn to_key_auth<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     if sc.methods.has(Methods::INTERACTIVE) {
-        sc.to(cx, State::AuthKeyInit);
+        sc.to(cx, State::AuthKeyInit(hv));
         Flow::On
     } else {
-        to_passwd(cx, sc)
+        to_passwd(cx, sc, hv)
     }
 }
 
 /// GSS-API, if offered, else on (`myssh_to_GSSAPI_AUTH`).
-fn to_gssapi<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn to_gssapi<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     if sc.methods.has(Methods::GSSAPI_MIC) {
-        sc.to(cx, State::AuthGssapi);
+        sc.to(cx, State::AuthGssapi(hv));
         Flow::On
     } else {
-        to_key_auth(cx, sc)
+        to_key_auth(cx, sc, hv)
     }
 }
 
 /// `SSH_AUTHLIST`: no login tried first, then the ways the server offers
 /// read, and the first the transfer may use chosen.
-fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     sc.authed = false;
     match sc.session().auth_none() {
         Auth::Again => return Flow::Again,
         Auth::Success => {
             sc.authed = true;
             trace::info(cx, format_args!("Authenticated with none"));
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             return Flow::On;
         }
         Auth::Error => return sc.goto_error(cx, ErrorKind::LoginDenied),
@@ -2503,14 +2496,14 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
         .and_then(Keys::private)
         .is_some_and(|k| !k.is_empty());
     if m.has(Methods::PUBLICKEY) && (private || allows(cx, SshAuthTypes::AGENT)) {
-        sc.to(cx, State::AuthPkeyInit);
+        sc.to(cx, State::AuthPkeyInit(hv));
         trace::info(cx, format_args!("Authentication using SSH public key file"));
     } else if m.has(Methods::GSSAPI_MIC) {
-        sc.to(cx, State::AuthGssapi);
+        sc.to(cx, State::AuthGssapi(hv));
     } else if m.has(Methods::INTERACTIVE) {
-        sc.to(cx, State::AuthKeyInit);
+        sc.to(cx, State::AuthKeyInit(hv));
     } else if m.has(Methods::PASSWORD) {
-        sc.to(cx, State::AuthPassInit);
+        sc.to(cx, State::AuthPassInit(hv));
     } else {
         return sc.goto_error(cx, ErrorKind::LoginDenied);
     }
@@ -2520,9 +2513,9 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
 /// `SSH_AUTH_PKEY_INIT`: the private key given, its public key offered
 /// first if given and no passphrase is, or else the agent's and the
 /// default keys.
-fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     if !allows(cx, SshAuthTypes::PUBLICKEY) {
-        return to_gssapi(cx, sc);
+        return to_gssapi(cx, sc, hv);
     }
     let (private, passphrase) = match keys(sc) {
         Some(k) => (
@@ -2543,7 +2536,7 @@ fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
                 match sc.session().try_publickey() {
                     Auth::Again => return Flow::Again,
                     Auth::Success => {}
-                    _ => return to_gssapi(cx, sc),
+                    _ => return to_gssapi(cx, sc, hv),
                 }
             }
             if sc
@@ -2558,7 +2551,7 @@ fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
                 );
                 return sc.goto_error(cx, kind);
             }
-            sc.to(cx, State::AuthPkey);
+            sc.to(cx, State::AuthPkey(hv));
             Flow::On
         }
         None => match sc.session().auth_publickey_auto(passphrase.as_deref()) {
@@ -2566,22 +2559,22 @@ fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
             Auth::Success => {
                 sc.authed = true;
                 trace::info(cx, format_args!("Completed public key authentication"));
-                sc.to(cx, State::AuthDone);
+                sc.to(cx, State::AuthDone(hv));
                 Flow::On
             }
-            _ => to_gssapi(cx, sc),
+            _ => to_gssapi(cx, sc, hv),
         },
     }
 }
 
 /// `SSH_AUTH_PKEY`: the private key's login.
-fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     match sc.session().auth_publickey() {
         Auth::Again => Flow::Again,
         Auth::Success => {
             sc.authed = true;
             trace::info(cx, format_args!("Completed public key authentication"));
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             Flow::On
         }
         rc => {
@@ -2590,30 +2583,30 @@ fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
                 cx,
                 format_args!("Failed public key authentication (rc: {n})"),
             );
-            to_gssapi(cx, sc)
+            to_gssapi(cx, sc, hv)
         }
     }
 }
 
 /// `SSH_AUTH_GSSAPI`: a GSS-API login, if the transfer may.
-fn auth_gssapi<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn auth_gssapi<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     if !allows(cx, SshAuthTypes::GSSAPI) {
-        return to_key_auth(cx, sc);
+        return to_key_auth(cx, sc, hv);
     }
     match sc.session().auth_gssapi() {
         Auth::Again => Flow::Again,
         Auth::Success => {
             sc.authed = true;
             trace::info(cx, format_args!("Completed gssapi authentication"));
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             Flow::On
         }
-        _ => to_key_auth(cx, sc),
+        _ => to_key_auth(cx, sc, hv),
     }
 }
 
 /// `SSH_AUTH_KEY`: the keyboard-interactive login.
-fn auth_key<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn auth_key<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     match interactive(sc) {
         Rc::Again => Flow::Again,
         Rc::Ok => {
@@ -2622,10 +2615,10 @@ fn auth_key<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
                 cx,
                 format_args!("completed keyboard interactive authentication"),
             );
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             Flow::On
         }
-        Rc::Error => to_passwd(cx, sc),
+        Rc::Error => to_passwd(cx, sc, hv),
     }
 }
 
@@ -2680,7 +2673,7 @@ fn interactive(sc: &mut SshConn) -> Rc {
 }
 
 /// `SSH_AUTH_PASS`: the password login.
-fn auth_pass<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
+fn auth_pass<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     let Ok(password) = password(sc) else {
         return sc.goto_error(cx, ErrorKind::OutOfMemory);
     };
@@ -2689,7 +2682,7 @@ fn auth_pass<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
         Auth::Success => {
             sc.authed = true;
             trace::info(cx, format_args!("Completed password authentication"));
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             Flow::On
         }
         _ => sc.goto_error(cx, ErrorKind::LoginDenied),

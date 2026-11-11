@@ -4385,7 +4385,10 @@ range and resume point, and the body read or sent.
 - **The connect** is the session's: the host key checked against the fingerprints, the
   known-hosts file and the key handler, then the logins in C's order of fallbacks, then
   SFTP's subsystem and home directory. A connection serves only a transfer with the same key
-  files (`RouteCold::ssh`, `ssh_config_matches`).
+  files (`RouteCold::ssh`, `ssh_config_matches`). Every login state holds a `HostVerified`,
+  which only `proto::ssh::hostkey` makes, each from one check's evidence: a fingerprint that
+  matched, the handler's or the file's acceptance, or none of the three asked for, where any
+  key is taken as C takes it.
 - **DO** runs SFTP's quote commands, then the transfer's setup: a listing (each entry's line
   written as it is read), a download (its size, range and resume point), or an upload (the
   directories made once if missing and asked for); SCP's channel is opened to read or write.

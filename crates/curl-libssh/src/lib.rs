@@ -516,7 +516,8 @@ impl Session for Libsession {
             sys::SSH_KNOWN_HOSTS_OTHER => KnownHosts::Other,
             sys::SSH_KNOWN_HOSTS_NOT_FOUND => KnownHosts::NotFound,
             sys::SSH_KNOWN_HOSTS_UNKNOWN => KnownHosts::Unknown,
-            _ => KnownHosts::Error,
+            sys::SSH_KNOWN_HOSTS_ERROR => KnownHosts::Error,
+            _ => KnownHosts::Unrecognised,
         };
         if entry.is_null() {
             return (known, None);

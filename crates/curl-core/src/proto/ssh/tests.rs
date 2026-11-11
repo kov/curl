@@ -1380,12 +1380,11 @@ impl crate::handler::SshKeyHandler for Decides {
     fn check(
         &self,
         _: &mut TransferCx<'_>,
-        known: Option<crate::handler::HostKey<'_>>,
+        _known: Option<crate::handler::HostKey<'_>>,
         found: crate::handler::HostKey<'_>,
         matched: KeyMatch,
     ) -> crate::handler::KeyVerdict {
         assert_eq!(found.key, b"AAAA");
-        assert_eq!(known.is_some(), matched != KeyMatch::Missing);
         self.1.lock().unwrap().push(matched);
         self.0
     }
@@ -1426,6 +1425,16 @@ fn the_known_hosts_file_and_the_key_handler_decide() {
         calls.contains(&"update_known_hosts".to_owned()),
         "{calls:?}"
     );
+    // A key of another type, or a state libssh names that the binding
+    // does not, is a mismatch, as C's `myssh_is_known` reads it; an
+    // error reading the file is a missing key.
+    let (result, said, _, seen) = checked(KnownHosts::Other, Some(V::Reject));
+    assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
+    assert_eq!(seen, [KeyMatch::Mismatch]);
+    let (_, said, _, seen) = checked(KnownHosts::Unrecognised, Some(V::Reject));
+    assert_eq!(seen, [KeyMatch::Mismatch], "{said}");
+    let (_, said, _, seen) = checked(KnownHosts::Error, Some(V::Reject));
+    assert_eq!(seen, [KeyMatch::Missing], "{said}");
 }
 
 /// The keyboard-interactive login answers its one question with the

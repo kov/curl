@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use curl_alloc::{TryArc, TryVec as _};
 
+use super::hostkey::HostVerified;
 use super::path::{self, Home, RangeError};
 use super::{Keys, Quotes, Request, S_IFLNK, S_IFMT, c_string, copy, quote_command};
 use crate::components::Component;
@@ -56,19 +57,19 @@ enum State {
     Init,
     SStartup,
     Hostkey,
-    Authlist,
-    AuthPkeyInit,
-    AuthPkey,
-    AuthPassInit,
-    AuthPass,
-    AuthAgentInit,
-    AuthAgentList,
-    AuthAgent,
-    AuthHostInit,
-    AuthHost,
-    AuthKeyInit,
-    AuthKey,
-    AuthDone,
+    Authlist(HostVerified),
+    AuthPkeyInit(HostVerified),
+    AuthPkey(HostVerified),
+    AuthPassInit(HostVerified),
+    AuthPass(HostVerified),
+    AuthAgentInit(HostVerified),
+    AuthAgentList(HostVerified),
+    AuthAgent(HostVerified),
+    AuthHostInit(HostVerified),
+    AuthHost(HostVerified),
+    AuthKeyInit(HostVerified),
+    AuthKey(HostVerified),
+    AuthDone(HostVerified),
     SftpInit,
     SftpRealpath,
     SftpQuoteInit,
@@ -119,19 +120,19 @@ impl State {
             State::Init => "SSH_INIT",
             State::SStartup => "SSH_S_STARTUP",
             State::Hostkey => "SSH_HOSTKEY",
-            State::Authlist => "SSH_AUTHLIST",
-            State::AuthPkeyInit => "SSH_AUTH_PKEY_INIT",
-            State::AuthPkey => "SSH_AUTH_PKEY",
-            State::AuthPassInit => "SSH_AUTH_PASS_INIT",
-            State::AuthPass => "SSH_AUTH_PASS",
-            State::AuthAgentInit => "SSH_AUTH_AGENT_INIT",
-            State::AuthAgentList => "SSH_AUTH_AGENT_LIST",
-            State::AuthAgent => "SSH_AUTH_AGENT",
-            State::AuthHostInit => "SSH_AUTH_HOST_INIT",
-            State::AuthHost => "SSH_AUTH_HOST",
-            State::AuthKeyInit => "SSH_AUTH_KEY_INIT",
-            State::AuthKey => "SSH_AUTH_KEY",
-            State::AuthDone => "SSH_AUTH_DONE",
+            State::Authlist(_) => "SSH_AUTHLIST",
+            State::AuthPkeyInit(_) => "SSH_AUTH_PKEY_INIT",
+            State::AuthPkey(_) => "SSH_AUTH_PKEY",
+            State::AuthPassInit(_) => "SSH_AUTH_PASS_INIT",
+            State::AuthPass(_) => "SSH_AUTH_PASS",
+            State::AuthAgentInit(_) => "SSH_AUTH_AGENT_INIT",
+            State::AuthAgentList(_) => "SSH_AUTH_AGENT_LIST",
+            State::AuthAgent(_) => "SSH_AUTH_AGENT",
+            State::AuthHostInit(_) => "SSH_AUTH_HOST_INIT",
+            State::AuthHost(_) => "SSH_AUTH_HOST",
+            State::AuthKeyInit(_) => "SSH_AUTH_KEY_INIT",
+            State::AuthKey(_) => "SSH_AUTH_KEY",
+            State::AuthDone(_) => "SSH_AUTH_DONE",
             State::SftpInit => "SSH_SFTP_INIT",
             State::SftpRealpath => "SSH_SFTP_REALPATH",
             State::SftpQuoteInit => "SSH_SFTP_QUOTE_INIT",
@@ -1029,56 +1030,56 @@ impl Request {
             State::Init => self.init(cx, sc),
             State::SStartup => startup(cx, sc, carrier),
             State::Hostkey => {
-                self.check_fingerprint(cx, sc)?;
-                sc.to(cx, State::Authlist);
+                let hv = self.check_fingerprint(cx, sc)?;
+                sc.to(cx, State::Authlist(hv));
                 Ok(())
             }
-            State::Authlist => authlist(cx, sc),
-            State::AuthPkeyInit => {
-                pkey_init(cx, sc);
+            State::Authlist(hv) => authlist(cx, sc, hv),
+            State::AuthPkeyInit(hv) => {
+                pkey_init(cx, sc, hv);
                 Ok(())
             }
-            State::AuthPkey => auth_pkey(cx, sc),
-            State::AuthPassInit => {
+            State::AuthPkey(hv) => auth_pkey(cx, sc, hv),
+            State::AuthPassInit(hv) => {
                 let next =
                     if allows(cx, SshAuthTypes::PASSWORD) && offers(&sc.authlist, b"password") {
-                        State::AuthPass
+                        State::AuthPass(hv)
                     } else {
-                        State::AuthHostInit
+                        State::AuthHostInit(hv)
                     };
                 sc.to(cx, next);
                 Ok(())
             }
-            State::AuthPass => auth_pass(cx, sc),
-            State::AuthHostInit => {
+            State::AuthPass(hv) => auth_pass(cx, sc, hv),
+            State::AuthHostInit(hv) => {
                 let next = if allows(cx, SshAuthTypes::HOST) && offers(&sc.authlist, b"hostbased") {
-                    State::AuthHost
+                    State::AuthHost(hv)
                 } else {
-                    State::AuthAgentInit
+                    State::AuthAgentInit(hv)
                 };
                 sc.to(cx, next);
                 Ok(())
             }
-            State::AuthHost => {
-                sc.to(cx, State::AuthAgentInit);
+            State::AuthHost(hv) => {
+                sc.to(cx, State::AuthAgentInit(hv));
                 Ok(())
             }
-            State::AuthAgentInit => agent_init(cx, sc),
-            State::AuthAgentList => agent_list(cx, sc),
-            State::AuthAgent => agent(cx, sc),
-            State::AuthKeyInit => {
+            State::AuthAgentInit(hv) => agent_init(cx, sc, hv),
+            State::AuthAgentList(hv) => agent_list(cx, sc, hv),
+            State::AuthAgent(hv) => agent(cx, sc, hv),
+            State::AuthKeyInit(hv) => {
                 let next = if allows(cx, SshAuthTypes::KEYBOARD)
                     && offers(&sc.authlist, b"keyboard-interactive")
                 {
-                    State::AuthKey
+                    State::AuthKey(hv)
                 } else {
-                    State::AuthDone
+                    State::AuthDone(hv)
                 };
                 sc.to(cx, next);
                 Ok(())
             }
-            State::AuthKey => auth_key(cx, sc),
-            State::AuthDone => auth_done(cx, sc),
+            State::AuthKey(hv) => auth_key(cx, sc, hv),
+            State::AuthDone(_) => auth_done(cx, sc),
             State::SftpInit => sftp_init(cx, sc),
             State::SftpRealpath => sftp_realpath(cx, sc),
             State::SftpQuoteInit => self.sftp_quote_init2(cx, sc),
@@ -1510,8 +1511,12 @@ impl Request {
 
     /// `SSH_HOSTKEY`: the server's key checked against the fingerprints
     /// given, else the application's host key handler, else the
-    /// known-hosts file (`ssh_check_fingerprint`).
-    fn check_fingerprint<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+    /// known-hosts file (`ssh_check_fingerprint`): how, once checked.
+    fn check_fingerprint<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        sc: &mut Ssh2Conn,
+    ) -> Result<HostVerified, Halt> {
         let ssh = &cx.easy().options().ssh;
         let sha256 = ssh
             .host_key_sha256
@@ -1527,6 +1532,7 @@ impl Request {
             sc.to(cx, State::SessionFree);
             Err(Halt::Fail(ErrorKind::PeerFailedVerification))
         };
+        let mut verified = None;
         if let Some(want) = sha256.as_deref() {
             trace::info_with(cx, &[b"SSH: SHA256 public key '", want, b"'"]);
             let Some(sha) = sc.session().host_key_sha256() else {
@@ -1544,10 +1550,8 @@ impl Request {
                 return denied(cx, sc);
             }
             trace::info_with(cx, &[b"SSH: SHA256 fingerprint '", &found, b"'"]);
-            // The two compared up to their padding.
-            let unpadded = |s: &[u8]| s.iter().position(|&b| b == b'=').unwrap_or(s.len());
-            let (w, f) = (unpadded(want), unpadded(&found));
-            if w != f || want[..w] != found[..w] {
+            verified = HostVerified::sha256(want, &found);
+            if verified.is_none() {
                 trace::fail_with(
                     cx,
                     ErrorKind::PeerFailedVerification,
@@ -1576,9 +1580,12 @@ impl Request {
             if let Some(hex) = hex.as_ref() {
                 trace::info_with(cx, &[b"SSH: MD5 fingerprint '", hex, b"'"]);
             }
-            match hex {
-                Some(hex) if hex.eq_ignore_ascii_case(want) => {}
-                Some(hex) => {
+            match hex.as_ref().map(|hex| HostVerified::md5(want, hex)) {
+                // The SHA-256 fingerprint's check, if one was made too, says
+                // how.
+                Some(Some(md5)) => verified = verified.or(Some(md5)),
+                Some(None) => {
+                    let hex = hex.unwrap_or_default();
                     trace::fail_with(
                         cx,
                         ErrorKind::PeerFailedVerification,
@@ -1604,9 +1611,9 @@ impl Request {
             }
             trace::info(cx, format_args!("SSH: MD5 checksum match"));
         }
-        if sha256.is_some() || md5.is_some() {
+        if let Some(verified) = verified {
             // As already matched, the known hosts are not checked.
-            return Ok(());
+            return Ok(verified);
         }
         if let Some(handler) = cx.easy().options().ssh.host_key_handler.clone() {
             let Some((key, kind)) = sc.session().host_key() else {
@@ -1614,16 +1621,16 @@ impl Request {
             };
             let key = copy(key)?;
             let fine = handler.check(&mut crate::multi::TransferCx::new(cx), key_type(kind), &key);
-            if !fine {
+            let Some(verified) = HostVerified::by_handler(fine) else {
                 sc.to(cx, State::SessionFree);
                 return Err(Halt::Fail(trace::fail(
                     cx,
                     ErrorKind::PeerFailedVerification,
                     format_args!("SSH: callback failed host public key verification"),
                 )));
-            }
+            };
             trace::info(cx, format_args!("SSH: verified public key via callback"));
-            return Ok(());
+            return Ok(verified);
         }
         cx.ssh(format_args!(
             "no host key checksum given, checking knownhosts"
@@ -1633,11 +1640,17 @@ impl Request {
 
     /// The server's key checked against the known-hosts file, the key
     /// handler deciding, or C's own, which takes a match alone
-    /// (`ssh_knownhost`).
-    fn knownhost<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
-        let Some(file) = cx.easy().options().ssh.known_hosts.as_deref() else {
+    /// (`ssh_knownhost`): how, once checked.
+    fn knownhost<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        sc: &mut Ssh2Conn,
+    ) -> Result<HostVerified, Halt> {
+        let ssh = &cx.easy().options().ssh;
+        let Some(file) = ssh.known_hosts.as_deref() else {
+            let verified = HostVerified::not_requested(ssh);
             trace::info(cx, format_args!("SSH: no knownhosts file configured"));
-            return Ok(());
+            return verified.ok_or(Halt::Fail(ErrorKind::PeerFailedVerification));
         };
         let file = copy(c_string(file))?;
         let host = copy(self.base.peer().name())?;
@@ -1722,9 +1735,11 @@ impl Request {
                 if verdict == KeyVerdict::FineReplace {
                     sc.session().knownhost_del_found();
                 }
+                let verified = HostVerified::by_known_hosts(true)
+                    .ok_or(Halt::Fail(ErrorKind::PeerFailedVerification))?;
                 if check == Check::Match {
                     trace::info(cx, format_args!("SSH: knownhost entry matches host key"));
-                    return Ok(());
+                    return Ok(verified);
                 }
                 let named = if port != PORT_SSH {
                     let mut h = Vec::new();
@@ -1753,7 +1768,7 @@ impl Request {
                 {
                     trace::info_with(cx, &[b"WARNING: writing ", &file, b" failed"]);
                 }
-                Ok(())
+                Ok(verified)
             }
         }
     }
@@ -2697,7 +2712,7 @@ fn startup<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, carrier: &Carrier
 
 /// `SSH_AUTHLIST`: the ways the server lets the user log in, or the user
 /// let in already.
-fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
     let (s, login) = sc.login();
     let list = s
         .userauth_list(login.user)
@@ -2709,7 +2724,7 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
                 cx,
                 format_args!("SSH: user accepted with no authentication"),
             );
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             return Ok(());
         }
         let rc = sc.session().last_errno();
@@ -2721,13 +2736,13 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
     };
     trace::info_with(cx, &[b"SSH: host offers authentication via: ", &list]);
     sc.authlist = list;
-    sc.to(cx, State::AuthPkeyInit);
+    sc.to(cx, State::AuthPkeyInit(hv));
     Ok(())
 }
 
 /// `SSH_AUTH_PKEY_INIT`: the key files tried first, if the user may and
 /// the server offers it.
-fn pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) {
+fn pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) {
     sc.authed = false;
     if allows(cx, SshAuthTypes::PUBLICKEY) && offers(&sc.authlist, b"publickey") {
         let keys = sc.keys();
@@ -2740,14 +2755,14 @@ fn pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) {
         if let Ok(private) = private {
             trace::info_with(cx, &[b"SSH: trying private key file '", &private, b"'"]);
         }
-        sc.to(cx, State::AuthPkey);
+        sc.to(cx, State::AuthPkey(hv));
     } else {
-        sc.to(cx, State::AuthPassInit);
+        sc.to(cx, State::AuthPassInit(hv));
     }
 }
 
 /// `SSH_AUTH_PKEY`: the key files' login.
-fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
     let (s, login) = sc.login();
     let keys = login.keys;
     let public = keys.and_then(|k| k.public.as_deref()).map(c_string);
@@ -2761,7 +2776,7 @@ fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
         Ok(()) => {
             sc.authed = true;
             trace::info(cx, format_args!("SSH: authenticated via publickey"));
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             Ok(())
         }
         Err(rc) => {
@@ -2772,25 +2787,25 @@ fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
                 sc.error_text()
             };
             trace::info_with(cx, &[b"SSH: publickey authentication denied: ", &text]);
-            sc.to(cx, State::AuthPassInit);
+            sc.to(cx, State::AuthPassInit(hv));
             Ok(())
         }
     }
 }
 
 /// `SSH_AUTH_PASS`: the password login.
-fn auth_pass<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+fn auth_pass<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
     let (s, login) = sc.login();
     match s.auth_password(login.user, login.password) {
         Err(rc) if rc.again() => Err(Halt::Again),
         Ok(()) => {
             sc.authed = true;
             trace::info(cx, format_args!("SSH: initialized password authentication"));
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             Ok(())
         }
         Err(_) => {
-            sc.to(cx, State::AuthHostInit);
+            sc.to(cx, State::AuthHostInit(hv));
             Ok(())
         }
     }
@@ -2798,9 +2813,9 @@ fn auth_pass<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
 
 /// `SSH_AUTH_AGENT_INIT`: the agent connected to, if the user may and
 /// the server takes public keys.
-fn agent_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+fn agent_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
     if !(allows(cx, SshAuthTypes::AGENT) && offers(&sc.authlist, b"publickey")) {
-        sc.to(cx, State::AuthKeyInit);
+        sc.to(cx, State::AuthKeyInit(hv));
         return Ok(());
     }
     trace::info(
@@ -2809,25 +2824,25 @@ fn agent_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
     );
     if !sc.session().has_agent() && sc.session().agent_init().is_err() {
         trace::info(cx, format_args!("SSH: could not create agent object"));
-        sc.to(cx, State::AuthKeyInit);
+        sc.to(cx, State::AuthKeyInit(hv));
         return Ok(());
     }
     match sc.session().agent_connect() {
         Err(rc) if rc.again() => Err(Halt::Again),
         Err(_) => {
             trace::info(cx, format_args!("SSH: failure connecting to agent"));
-            sc.to(cx, State::AuthKeyInit);
+            sc.to(cx, State::AuthKeyInit(hv));
             Ok(())
         }
         Ok(()) => {
-            sc.to(cx, State::AuthAgentList);
+            sc.to(cx, State::AuthAgentList(hv));
             Ok(())
         }
     }
 }
 
 /// `SSH_AUTH_AGENT_LIST`: the agent's identities asked for.
-fn agent_list<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+fn agent_list<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
     match sc.session().agent_list_identities() {
         Err(rc) if rc.again() => Err(Halt::Again),
         Err(_) => {
@@ -2835,11 +2850,11 @@ fn agent_list<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
                 cx,
                 format_args!("SSH: failure requesting identities to agent"),
             );
-            sc.to(cx, State::AuthKeyInit);
+            sc.to(cx, State::AuthKeyInit(hv));
             Ok(())
         }
         Ok(()) => {
-            sc.to(cx, State::AuthAgent);
+            sc.to(cx, State::AuthAgent(hv));
             sc.session().agent_rewind();
             Ok(())
         }
@@ -2847,7 +2862,7 @@ fn agent_list<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
 }
 
 /// `SSH_AUTH_AGENT`: the agent's identities tried one at a time.
-fn agent<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+fn agent<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
     let (s, login) = sc.login();
     let got = match s.agent_get_identity() {
         Err(rc) if rc.again() => return Err(Halt::Again),
@@ -2890,16 +2905,16 @@ fn agent<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
             ],
         );
         sc.authed = true;
-        sc.to(cx, State::AuthDone);
+        sc.to(cx, State::AuthDone(hv));
     } else {
-        sc.to(cx, State::AuthKeyInit);
+        sc.to(cx, State::AuthKeyInit(hv));
     }
     Ok(())
 }
 
 /// `SSH_AUTH_KEY`: the keyboard-interactive login, its question answered
 /// with the password.
-fn auth_key<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
+fn auth_key<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
     let (s, login) = sc.login();
     match s.auth_keyboard_interactive(login.user, login.password) {
         Err(rc) if rc.again() => Err(Halt::Again),
@@ -2909,7 +2924,7 @@ fn auth_key<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
                 cx,
                 format_args!("SSH: initialized keyboard interactive authentication"),
             );
-            sc.to(cx, State::AuthDone);
+            sc.to(cx, State::AuthDone(hv));
             Ok(())
         }
         Err(_) => Err(Halt::Fail(ErrorKind::LoginDenied)),

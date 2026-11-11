@@ -15,6 +15,10 @@ apple-sectrust = ["curl-core/apple-sectrust"]
 # a transfer names none (C's `CURL_CA_NATIVE`): Windows' read in, and no
 # CA bundle or directory looked for at build.
 native-ca = ["curl-core/native-ca"]
+# OpenSSL's configuration file is never read, by the library's
+# initialisation or into a provider's library context (C's
+# `CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG`).
+disable-openssl-auto-load-config = []
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }

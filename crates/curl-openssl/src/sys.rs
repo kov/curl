@@ -14,6 +14,26 @@ const LOAD_CONFIG: u64 = 0x0000_0002;
 #[cfg(boringssl_like)]
 const LOAD_CONFIG: u64 = openssl_sys::OPENSSL_INIT_LOAD_CONFIG as u64;
 
+/// `OPENSSL_INIT_NO_LOAD_CONFIG`: read no configuration file, then or
+/// when the library initialises itself later.
+#[cfg(ossl3)]
+const NO_LOAD_CONFIG: u64 = 0x0000_0080;
+/// LibreSSL's.
+#[cfg(libressl)]
+const NO_LOAD_CONFIG: u64 = 0x0000_0001;
+/// The forks', as their headers define it (0: they read no file).
+#[cfg(boringssl_like)]
+const NO_LOAD_CONFIG: u64 = 0;
+
+/// What the library is told of its configuration file: read it, or, in a
+/// build that turns that off (C's `CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG`,
+/// against a configuration a user may plant), never read it.
+const CONFIG: u64 = if cfg!(feature = "disable-openssl-auto-load-config") {
+    NO_LOAD_CONFIG
+} else {
+    LOAD_CONFIG
+};
+
 /// `OPENSSL_INIT_ENGINE_ALL_BUILTIN`: the built-in engines, rdrand,
 /// dynamic, cryptodev, capi and padlock, as `crypto.h` defines it.
 #[cfg(ossl3)]
@@ -48,7 +68,8 @@ const OLDEST: c_ulong = 0x3000_0000;
 pub(crate) struct TooOld;
 
 /// Initialise the library as C's global init does (`ossl_init`), its
-/// configuration read and its built-in engines loaded. A library older
+/// configuration read (unless the build turns that off) and its built-in
+/// engines loaded. A library older
 /// than this build needs is left alone: it is one the build does not
 /// have, and what would use it refuses.
 pub fn init() {
@@ -70,7 +91,7 @@ fn init_ssl() {
     // what is asked of it next.
     // SAFETY: the flags are the library's own, and NULL asks for its
     // default settings; any thread may call it, any number of times.
-    unsafe { crate::ffi::OPENSSL_init_ssl(LOAD_CONFIG | ENGINE_ALL_BUILTIN, core::ptr::null()) };
+    unsafe { crate::ffi::OPENSSL_init_ssl(CONFIG | ENGINE_ALL_BUILTIN, core::ptr::null()) };
 }
 
 /// AWS-LC's: the version its headers say, as C prints it
@@ -383,7 +404,9 @@ pub(crate) mod tests {
     /// `init` reads the configuration `OPENSSL_CONF` names then, not when
     /// the library is first used: the file is emptied after `init`, and
     /// what it said still holds. OpenSSL 3's: LibreSSL's configuration has
-    /// no algorithm section to refuse with.
+    /// no algorithm section to refuse with. A build that turns the
+    /// reading off reads the file neither then nor later: what it says
+    /// never holds.
     #[cfg(ossl3)]
     #[test]
     fn init_reads_the_configuration() {
@@ -398,11 +421,16 @@ pub(crate) mod tests {
     fn configured_at_init() {
         let path = std::env::var_os("OPENSSL_CONF").unwrap();
         init();
+        let read = crate::ED25519.sign(&[1; 32], b"message");
         std::fs::write(&path, "").unwrap();
-        assert_eq!(
-            crate::ED25519.sign(&[1; 32], b"message"),
-            Err(Ed25519Error::Failed)
-        );
+        let after = crate::ED25519.sign(&[1; 32], b"message");
+        match cfg!(feature = "disable-openssl-auto-load-config") {
+            false => assert_eq!(
+                (read, after),
+                (Err(Ed25519Error::Failed), Err(Ed25519Error::Failed))
+            ),
+            true => assert!(read.is_ok() && after.is_ok(), "{read:?} {after:?}"),
+        }
     }
 
     /// Without `init`, the configuration is read at the first signing:
@@ -423,21 +451,27 @@ pub(crate) mod tests {
     }
 
     /// The flags are those C passes, as `crypto.h` defines them: the
-    /// configuration read, and every built-in engine, including those
-    /// this platform's library has none of (cryptodev, capi, padlock);
-    /// LibreSSL's, whose engine flag does nothing; the forks', both 0.
+    /// configuration read (or never read, in a build that turns that
+    /// off), and every built-in engine, including those this platform's
+    /// library has none of (cryptodev, capi, padlock); LibreSSL's, whose
+    /// engine flag does nothing; the forks', all 0.
     #[test]
     fn the_flags_are_c_s() {
         if cfg!(boringssl_like) {
-            assert_eq!(LOAD_CONFIG, 0);
+            assert_eq!((LOAD_CONFIG, NO_LOAD_CONFIG), (0, 0));
             assert_eq!(ENGINE_ALL_BUILTIN, 0);
         } else if cfg!(libressl) {
-            assert_eq!(LOAD_CONFIG, 0x02);
+            assert_eq!((LOAD_CONFIG, NO_LOAD_CONFIG), (0x02, 0x01));
             assert_eq!(ENGINE_ALL_BUILTIN, 0x8000_0000);
         } else {
-            assert_eq!(LOAD_CONFIG, 0x40);
+            assert_eq!((LOAD_CONFIG, NO_LOAD_CONFIG), (0x40, 0x80));
             assert_eq!(ENGINE_ALL_BUILTIN, 0x7600);
         }
+        let config = match cfg!(feature = "disable-openssl-auto-load-config") {
+            true => NO_LOAD_CONFIG,
+            false => LOAD_CONFIG,
+        };
+        assert_eq!(CONFIG, config);
     }
 
     /// The version line names the library as C's `Curl_ossl_version`

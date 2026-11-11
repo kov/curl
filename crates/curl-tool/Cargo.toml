@@ -53,6 +53,9 @@ apple-sectrust = ["curl-backends/apple-sectrust"]
 # The system's own store of certificates is the default trust store where
 # a transfer names none (C's `CURL_CA_NATIVE`).
 native-ca = ["curl-backends/native-ca"]
+# OpenSSL's configuration file is never read (C's
+# `CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG`).
+disable-openssl-auto-load-config = ["curl-backends/disable-openssl-auto-load-config"]
 # Windows' Unicode build (C's `ENABLE_UNICODE`): the command line and the
 # names of files in UTF-8, through the system's UTF-16 calls.
 unicode = ["curl-core/unicode"]

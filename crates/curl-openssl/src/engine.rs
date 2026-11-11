@@ -206,8 +206,11 @@ impl Crypto {
         let libctx = libctx.ok_or(ErrorKind::OutOfMemory)?;
         crypto.libctx = Some(libctx);
         let l = libctx.as_ptr();
+        // A build that reads no configuration file reads none into the
+        // context either.
+        let configure = !cfg!(feature = "disable-openssl-auto-load-config");
         // SAFETY: the context; no file names the library's default.
-        if unsafe { OSSL_LIB_CTX_load_config(l, ptr::null()) } == 0 {
+        if configure && unsafe { OSSL_LIB_CTX_load_config(l, ptr::null()) } == 0 {
             io.info(format_args!(
                 "Failed to load default openssl config. Proceeding."
             ));

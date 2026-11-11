@@ -479,3 +479,14 @@ witness: curl-openssl tests::a_transfer_frees_what_it_made_of_openssl_s
             unsafe { openssl_sys::OSSL_LIB_CTX_free(l.as_ptr()) };
 --- new
             let _ = l;
+
+=== a build that turns the configuration file off still reads it
+file: crates/curl-openssl/src/sys.rs
+witness: curl-openssl sys::tests::init_reads_the_configuration
+features: disable-openssl-auto-load-config
+--- old
+const CONFIG: u64 = if cfg!(feature = "disable-openssl-auto-load-config") {
+    NO_LOAD_CONFIG
+--- new
+const CONFIG: u64 = if cfg!(feature = "disable-openssl-auto-load-config") {
+    0

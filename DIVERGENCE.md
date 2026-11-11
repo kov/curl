@@ -855,13 +855,19 @@ so: weaknesses kept because C has them.
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a
 deliberate difference and is the owner's call.
 
-- **OpenSSL's configuration file is always loaded.** `init_ssl`
+- **OpenSSL's configuration file is loaded by default.** `init_ssl`
   (`crates/curl-openssl/src/sys.rs`) asks OpenSSL to load its configuration, as C's default
-  does; C's opt-out for CVE-2019-5443, `CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG`, has no
-  counterpart. A build against an OpenSSL whose configuration directory a user can write loads
-  a file planted there. The OpenSSL this project builds with on Windows (vcpkg's
+  does: a build against an OpenSSL whose configuration directory a user can write loads a file
+  planted there (CVE-2019-5443). The OpenSSL this project builds with on Windows (vcpkg's
   `libcrypto-3-x64.dll`) names `C:\Program Files\Common Files\SSL`, which users can only read.
-  No test.
+  C's opt-out, `CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG`, is the `disable-openssl-auto-load-config`
+  feature of `curl-openssl`, `curl-backends`, `curl-sys-abi` and `curl-tool`: OpenSSL is told
+  never to read the file (`OPENSSL_INIT_NO_LOAD_CONFIG`), nor is it read into a provider's
+  library context. Pinned by `init_reads_the_configuration` (`crates/curl-openssl/src/sys.rs`)
+  and `the_global_init_reads_openssl_s_configuration`
+  (`crates/curl-sys-abi/src/handle_tests.rs`), which assert either build's behaviour; a build
+  with the feature is not part of the regular runs, only of the sabotage entry for it. The
+  provider's context is not tested.
 - **Saving a cache empties it before the new contents exist.** `save::replace` opens the target
   for writing, truncating it, before the temporary file is made, as `Curl_fopen` does: an
   unwritable directory or a full disk leaves an empty HSTS, alt-svc or cookie file. The tests in

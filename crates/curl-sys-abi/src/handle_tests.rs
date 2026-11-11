@@ -7582,8 +7582,9 @@ fn curl_debug_applied() {
 /// lets the library fetch no algorithm, is emptied after the call, and
 /// signing still fails. LibreSSL reads its configuration from its own
 /// directory alone, never `OPENSSL_CONF`, and C's build over it no more:
-/// the object the file names stays unknown. Checked in a process of its
-/// own.
+/// the object the file names stays unknown. A build with
+/// `disable-openssl-auto-load-config` reads no file: signing works.
+/// Checked in a process of its own.
 #[test]
 fn the_global_init_reads_openssl_s_configuration() {
     let path = std::env::temp_dir().join(format!("curl-sys-abi-{}.cnf", std::process::id()));
@@ -7619,10 +7620,13 @@ fn openssl_configured() {
     let path = std::env::var_os("OPENSSL_CONF").unwrap();
     assert_eq!(crate::root::curl_global_init(0), CURLE_OK);
     std::fs::write(&path, "").unwrap();
-    assert_eq!(
-        curl_backends::curl_openssl::ED25519.sign(&[1; 32], b"message"),
-        Err(Ed25519Error::Failed)
-    );
+    let signed = curl_backends::curl_openssl::ED25519.sign(&[1; 32], b"message");
+    // A build that turns the reading off never reads the file (C's
+    // `CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG`).
+    match cfg!(feature = "disable-openssl-auto-load-config") {
+        false => assert_eq!(signed, Err(Ed25519Error::Failed)),
+        true => assert!(signed.is_ok(), "{signed:?}"),
+    }
     crate::root::curl_global_cleanup();
 }
 

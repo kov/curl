@@ -544,8 +544,15 @@ impl HeadParser {
         let mut first = Ok(());
         let mut bad_code = false;
         let mut switched_late = false;
-        let kind = if is_newline(self.line[0]) {
-            let status = self.status.expect("a head ends after its status line");
+        let kind = if is_newline(self.line[0]) && self.status.is_none() {
+            // A head ending before any status line, a blank first line
+            // an alias that is empty took for one: its code is C's none,
+            // 0, which no response has (`http_on_response`).
+            self.phase = Phase::Done;
+            bad_code = true;
+            LineKind::End { interim: false }
+        } else if is_newline(self.line[0]) {
+            let status = self.status.expect("checked above");
             // Below 100 is no response C knows (`http_on_response`).
             bad_code = status.code < 100;
             // A 101 nothing was asked to upgrade to is the final response,

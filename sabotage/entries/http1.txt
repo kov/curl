@@ -411,3 +411,11 @@ witness: curl-core a_get_stays_within_its_allocation_budget
             self.line.try_reserve_exact(len.max(FIRST_LINE_ROOM))?;
 --- new
             self.line.try_reserve_exact(len)?;
+
+=== a head ending before any status line is taken to have one
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::a_blank_first_line_an_empty_alias_takes_fails_the_response
+--- old
+        let kind = if is_newline(self.line[0]) && self.status.is_none() {
+--- new
+        let kind = if false {

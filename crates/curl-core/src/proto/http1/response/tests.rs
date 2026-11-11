@@ -266,6 +266,23 @@ fn a_reply_without_a_status_line_is_http_0_9() {
     ));
 }
 
+/// An empty alias matches any first line, a blank one too: the head then
+/// ends with no status line, and fails as C fails it, its code none
+/// (`Unsupported response code in HTTP response`), rather than aborting
+/// on what a server sent.
+#[test]
+fn a_blank_first_line_an_empty_alias_takes_fails_the_response() {
+    let mut aliases = crate::options::Lines::NONE;
+    aliases.set([&b""[..]]).unwrap();
+    for reply in [&b"\r\n\r\n"[..], b"\r\nHTTP/1.1 200 OK\r\n\r\n", b"\n"] {
+        let make = || HeadParser::with_aliases(PLAIN, &aliases).unwrap();
+        let got = run(make(), &[reply], Unsent::default(), &mut 0);
+        assert_eq!(got.error, Some(HeadError::BadCode), "{reply:?}");
+        let kinds: Vec<LineKind> = got.lines.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, [LineKind::End { interim: false }], "{reply:?}");
+    }
+}
+
 /// A first line starting as an alias does, in any case, is a status
 /// line read as `HTTP/1.0 200`; `HTTP/` stays one, and anything else is
 /// no HTTP (`CURLOPT_HTTP200ALIASES`, `checkhttpprefix`).

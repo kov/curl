@@ -235,6 +235,48 @@ fn passes_over_session_cookies_in_a_new_session() {
     assert_eq!(jar.len(), 3);
 }
 
+/// A file's line fits what C reads it into up to 8000001 bytes with its
+/// newline, the last line counted with the newline C adds to it; a
+/// longer one stops the file with `TooLarge`, the cookies before it
+/// kept, those after it never read, and the jar started all the same
+/// (`cookie_load`, `Curl_get_line`; measured on the C build with
+/// `curl -b`: exit 100 and the jar written with the first cookie alone).
+#[test]
+fn a_file_s_line_too_long_stops_it() {
+    const FIT: usize = 8_000_001;
+    let first = b"example.com\tFALSE\t/\tFALSE\t0\tone\t1\n";
+    let after = b"example.com\tFALSE\t/\tFALSE\t0\ttwo\t2\n";
+    for (len, last, ok) in [
+        (FIT, false, true),
+        (FIT + 1, false, false),
+        (FIT - 1, true, true),
+        (FIT, true, false),
+    ] {
+        // A comment of `len` bytes, its newline counted unless last.
+        let mut file = first.to_vec();
+        file.push(b'#');
+        file.resize(file.len() + len - 1 - usize::from(!last), b'x');
+        if !last {
+            file.push(b'\n');
+            file.extend_from_slice(after);
+        }
+        let mut jar = Jar::default();
+        let loaded = jar.load(&file, false, false, None, NOW, &mut 0, |_| {});
+        let want: &[&str] = match ok {
+            true => {
+                assert_eq!(loaded, Ok(()), "{len} bytes, last {last}");
+                &["one", "two"][..1 + usize::from(!last)]
+            }
+            false => {
+                assert_eq!(loaded, Err(LoadError::TooLarge), "{len} bytes, last {last}");
+                &["one"]
+            }
+        };
+        assert!(jar.running(), "{len} bytes, last {last}");
+        assert_eq!(names(&jar), want, "{len} bytes, last {last}");
+    }
+}
+
 #[test]
 fn replaces_in_place_of_time_and_keeps_live_cookies() {
     let mut jar = Jar::default();

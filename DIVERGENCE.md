@@ -857,11 +857,6 @@ rule of `CLAUDE.md` each is to be brought to C's behaviour, with a test, and the
 here. They are listed so that none is read as C's behaviour meanwhile; none has a test that pins
 it.
 
-- **A cookie file has no line limit.** C stops loading a file at a line longer than its line
-  buffer (`DYN_APRINTF`, about 8 MB, `lib/curl_get_line.c`) and fails the transfer with
-  `CURLE_TOO_LARGE`; the rewrite reads the file whole and splits it by line
-  (`crates/curl-core/src/cookie.rs`). Both pass over a single cookie line past 5000 bytes. No
-  test.
 - **An indefinite-length `notAfter` that ends a certificate's validity is read.** C requires the
   date to end where the validity's content ends (`lib/vtls/x509asn1.c`), which an
   indefinite-length date with its end-of-contents octets does not; the core's reader

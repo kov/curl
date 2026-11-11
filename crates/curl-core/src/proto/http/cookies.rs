@@ -163,7 +163,7 @@ fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKi
     told.map_err(oom)?;
     // The jar is off only if the debug handler turned it off while an
     // earlier file was traced: there is nothing to read into.
-    loaded.unwrap_or(Ok(())).map_err(oom)
+    loaded.unwrap_or(Ok(())).map_err(load_failed)
 }
 
 /// Tell the application its share's cookies are in use, if the share
@@ -278,6 +278,7 @@ fn load_failed(e: LoadError) -> ErrorKind {
     match e {
         LoadError::OutOfMemory => ErrorKind::OutOfMemory,
         LoadError::Read => ErrorKind::ReadError,
+        LoadError::TooLarge => ErrorKind::TooLarge,
     }
 }
 

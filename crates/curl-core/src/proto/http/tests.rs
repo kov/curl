@@ -4141,6 +4141,42 @@ fn cookie_files_are_read_as_a_transfer_starts() {
     }
 }
 
+/// A cookie file with a line longer than C reads one fails the transfer
+/// before its request, `CURLE_TOO_LARGE`, and the files after it are not
+/// read; the cookies before that line stay in the jar (`cookie_load`,
+/// `Curl_cookie_loadfiles`; measured on the C build with `curl -b`).
+#[test]
+fn a_cookie_file_s_line_too_long_fails_the_transfer() {
+    let dir = std::env::temp_dir().join(format!("curl-cookie-long-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let long = dir.join("long");
+    let mut text = b"127.0.0.1\tFALSE\t/\tFALSE\t0\tone\t1\n#".to_vec();
+    text.resize(text.len() + 8_000_001, b'x');
+    text.extend_from_slice(b"\n127.0.0.1\tFALSE\t/\tFALSE\t0\ttwo\t2\n");
+    std::fs::write(&long, &text).unwrap();
+    let next = dir.join("next");
+    std::fs::write(&next, b"127.0.0.1\tFALSE\t/\tFALSE\t0\tthree\t3\n").unwrap();
+    let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
+    let mut ran = run("/", OK, false, |o| {
+        for p in [&long, &next] {
+            o.http
+                .cookies
+                .make_mut()
+                .unwrap()
+                .files
+                .push(&name(p))
+                .unwrap();
+        }
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(ran.result, Err(ErrorKind::TooLarge));
+    assert!(ran.request.is_empty(), "{:?}", ran.request);
+    assert_eq!(
+        ran.easy.cookie_list().unwrap(),
+        [b"127.0.0.1\tFALSE\t/\tFALSE\t0\tone\t1".to_vec()]
+    );
+}
+
 /// Each cookie file is read into the jar as it is reached: what its
 /// lines say is traced before the next file is opened, between the
 /// warnings of those that cannot be, as C's `cookie_load` traces them.

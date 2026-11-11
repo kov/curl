@@ -19,11 +19,23 @@ pub enum LoadError {
     OutOfMemory,
     /// A file that opened could not be read (`CURLE_READ_ERROR`).
     Read,
+    /// A line is longer than C reads one (`CURLE_TOO_LARGE`).
+    TooLarge,
 }
 
 impl From<OutOfMemory> for LoadError {
     fn from(_: OutOfMemory) -> Self {
         LoadError::OutOfMemory
+    }
+}
+
+impl From<crate::hsts::LoadError> for LoadError {
+    fn from(e: crate::hsts::LoadError) -> Self {
+        match e {
+            crate::hsts::LoadError::OutOfMemory => LoadError::OutOfMemory,
+            crate::hsts::LoadError::Read => LoadError::Read,
+            crate::hsts::LoadError::TooLarge => LoadError::TooLarge,
+        }
     }
 }
 
@@ -36,6 +48,11 @@ const BUCKETS: usize = 63;
 /// The longest `Set-Cookie:` value read; longer lines are passed over
 /// (`MAX_COOKIE_LINE`).
 const MAX_LINE: usize = 5000;
+
+/// What `cookie_load` reads a file's line into holds this much, its
+/// newline and the zero that ends its string counted (`DYN_APRINTF + 2`):
+/// a longer line stops the file.
+const FILE_LINE_LIMIT: usize = 8_000_000 + 2;
 
 /// The most a cookie's name and value may hold together (`MAX_NAME`).
 const MAX_NAME: usize = 4096;
@@ -445,6 +462,10 @@ impl Jar {
     /// swept after, and then started. `set` counts the `Set-Cookie:`
     /// lines stored since the request started, the file's with them.
     /// `said` hears what each line says, in turn.
+    ///
+    /// A line longer than C reads one stops the file, `TooLarge`: the
+    /// lines before it stay stored, and the jar is swept and started all
+    /// the same, as `cookie_load` leaves it.
     #[expect(clippy::too_many_arguments, reason = "`Curl_cookie_add`'s own")]
     pub(crate) fn load(
         &mut self,
@@ -455,10 +476,18 @@ impl Jar {
         now: i64,
         set: &mut u8,
         mut said: impl FnMut(&Said<'_>),
-    ) -> Result<(), OutOfMemory> {
+    ) -> Result<(), LoadError> {
         self.new_session = new_session;
         self.running = false;
-        for line in text.split_inclusive(|&b| b == b'\n') {
+        let mut result = Ok(());
+        for line in crate::hsts::file_lines(text, FILE_LINE_LIMIT) {
+            let line = match line {
+                Ok(line) => line,
+                Err(e) => {
+                    result = Err(e.into());
+                    break;
+                }
+            };
             let line = match strip_prefix_ignore_case(line, b"Set-Cookie:") {
                 Some(rest) => Line::Header(trim_start(rest)),
                 None => Line::Netscape(line),
@@ -469,7 +498,7 @@ impl Jar {
         }
         self.sweep(now);
         self.running = true;
-        Ok(())
+        result
     }
 
     /// Store a line the application gives (`CURLOPT_COOKIELIST`): a

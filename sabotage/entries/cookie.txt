@@ -325,3 +325,19 @@ witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_
         let cookie = if cx.easy().jar.is_on() || application {
 --- new
         let cookie = if true || cx.easy().jar.is_on() || application {
+
+=== a cookie file's line of any length is read
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::a_file_s_line_too_long_stops_it
+--- old
+const FILE_LINE_LIMIT: usize = 8_000_000 + 2;
+--- new
+const FILE_LINE_LIMIT: usize = 8_000_000 + 3;
+
+=== a transfer whose cookie file has a line too long goes on
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::a_cookie_file_s_line_too_long_fails_the_transfer
+--- old
+    loaded.unwrap_or(Ok(())).map_err(load_failed)
+--- new
+    loaded.unwrap_or(Ok(())).or(Ok(()))

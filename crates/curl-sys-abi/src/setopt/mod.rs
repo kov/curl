@@ -2373,6 +2373,7 @@ fn cookie_command(
         easy.reload_cookies(note).map_err(|e| match e {
             LoadError::OutOfMemory => ErrorKind::OutOfMemory,
             LoadError::Read => ErrorKind::ReadError,
+            LoadError::TooLarge => ErrorKind::TooLarge,
         })
     } else {
         easy.add_cookie(command, note).map_err(oom)

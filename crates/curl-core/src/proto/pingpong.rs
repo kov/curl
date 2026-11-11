@@ -75,6 +75,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::error::ErrorKind;
 use crate::multi::timers::TimeLeft;
+use crate::options::UseSsl;
 use crate::time::{Instant, TimeLimit};
 
 /// The most either buffer holds, its zero byte included
@@ -132,6 +133,54 @@ pub(crate) trait Ends {
 
     fn ends(&self, line: &[u8]) -> Option<Self::Reply>;
 }
+
+/// The connection may carry a login as the transfer asks of TLS
+/// (`use_ssl`): over TLS, or in the clear where TLS is not required.
+/// Made only by [`tls_gate`] and [`upgrade_refused`], and taken by each
+/// protocol's login.
+#[derive(Debug)]
+pub(crate) struct ClearOrTls(());
+
+/// What a protocol does about TLS before it logs in.
+#[derive(Debug)]
+pub(crate) enum TlsGate {
+    /// Ask the server to upgrade the connection (`STARTTLS`, `STLS`,
+    /// `AUTH TLS`).
+    Upgrade,
+    /// Log in on the connection as it is.
+    Proceed(ClearOrTls),
+    /// TLS is required, and the server does not offer it.
+    Refuse,
+}
+
+/// What the transfer's `use_ssl` makes of a connection over TLS or not,
+/// whose server offers an upgrade or not (`imap_perform_upgrade_tls`'s
+/// callers, `pop3_state_capa_resp`, `smtp_state_ehlo_resp`,
+/// `ftp_state_user`'s): only a connection over TLS, or one where TLS is
+/// only tried and not offered, logs in without an upgrade.
+pub(crate) fn tls_gate(use_ssl: UseSsl, over_tls: bool, offered: bool) -> TlsGate {
+    if use_ssl == UseSsl::None || over_tls {
+        TlsGate::Proceed(ClearOrTls(()))
+    } else if offered {
+        TlsGate::Upgrade
+    } else if use_ssl == UseSsl::Try {
+        TlsGate::Proceed(ClearOrTls(()))
+    } else {
+        TlsGate::Refuse
+    }
+}
+
+/// The server refused to upgrade the connection: it logs in in the clear
+/// only where TLS was only tried.
+pub(crate) fn upgrade_refused(use_ssl: UseSsl) -> Option<ClearOrTls> {
+    (use_ssl == UseSsl::Try).then_some(ClearOrTls(()))
+}
+
+/// Nothing the server sent after its go-ahead to upgrade to TLS was read
+/// as if it came under TLS: made only by [`Pingpong::begin_upgrade`], and
+/// held by the state that upgrades the connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UpgradeReady(());
 
 /// What [`Pingpong::next`] found in the bytes held.
 #[derive(Debug, PartialEq, Eq)]
@@ -442,6 +491,18 @@ impl Pingpong {
         match self.scan {
             Scan::Reply(n) => Some(&self.recv[..n]),
             _ => None,
+        }
+    }
+
+    /// The server's go-ahead to `STARTTLS`, `STLS` or `AUTH TLS` (the
+    /// reply just given out) was all it sent: a connection may be
+    /// upgraded to TLS. Bytes after it were not sent under TLS and would
+    /// be read as if they were: the server is refused
+    /// (`WEIRD_SERVER_REPLY`, smtp.c:1177, ftp.c:3209).
+    pub(crate) fn begin_upgrade(&self) -> Result<UpgradeReady, ErrorKind> {
+        match self.after_reply() {
+            Some(after) if !after.is_empty() => Err(ErrorKind::WeirdServerReply),
+            _ => Ok(UpgradeReady(())),
         }
     }
 

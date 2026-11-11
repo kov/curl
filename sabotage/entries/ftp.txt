@@ -772,3 +772,21 @@ witness: curl-core conn::tests::ftp_connections_serve_transfers_set_up_alike
             & same(alternative_to_user, &want.alternative_to_user)
 --- new
             & true
+
+=== bytes after AUTH's go-ahead are taken as if under TLS
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::ftp::tests::a_refused_auth_is_asked_again_then_given_up_as_c_does
+features: test-util
+--- old
+            Some(after) if !after.is_empty() => Err(ErrorKind::WeirdServerReply),
+--- new
+            Some(after) if after.len() > 64 => Err(ErrorKind::WeirdServerReply),
+
+=== AUTH refused logs in in the clear where TLS is required
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::ftp::tests::a_refused_auth_is_asked_again_then_given_up_as_c_does
+features: test-util
+--- old
+    (use_ssl == UseSsl::Try).then_some(ClearOrTls(()))
+--- new
+    (use_ssl <= UseSsl::All).then_some(ClearOrTls(()))

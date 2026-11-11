@@ -126,12 +126,17 @@ fn the_login_options_choose_how_to_log_in() {
 /// The states are named as C's debug build names them.
 #[test]
 fn the_states_have_c_s_names() {
+    let ready = || {
+        Pingpong::new(crate::time::Instant::EPOCH)
+            .begin_upgrade()
+            .unwrap()
+    };
     let names = [
         (State::Stop, "STOP"),
         (State::ServerGreet, "SERVERGREET"),
         (State::Capa, "CAPA"),
         (State::StartTls, "STARTTLS"),
-        (State::UpgradeTls, "UPGRADETLS"),
+        (State::UpgradeTls(ready()), "UPGRADETLS"),
         (State::Auth, "AUTH"),
         (State::Apop, "APOP"),
         (State::User, "USER"),

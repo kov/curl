@@ -208,12 +208,17 @@ fn request() -> Request {
 /// code printed as C prints it.
 #[test]
 fn the_states_have_c_s_names() {
+    let ready = || {
+        Pingpong::new(crate::time::Instant::EPOCH)
+            .begin_upgrade()
+            .unwrap()
+    };
     let names = [
         (State::Stop, "STOP"),
         (State::ServerGreet, "SERVERGREET"),
         (State::Capability, "CAPABILITY"),
         (State::StartTls, "STARTTLS"),
-        (State::UpgradeTls, "UPGRADETLS"),
+        (State::UpgradeTls(ready()), "UPGRADETLS"),
         (State::Authenticate, "AUTHENTICATE"),
         (State::Login, "LOGIN"),
         (State::List, "LIST"),

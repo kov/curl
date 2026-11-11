@@ -1,11 +1,29 @@
 === bytes after the STLS go-ahead are taken as if under TLS
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/pingpong.rs
 witness: curl-core proto::pop3::tests::over_the_wire::bytes_after_the_stls_go_ahead_are_refused
 features: test-util
 --- old
-        if pc.pp.after_reply().is_some_and(|after| !after.is_empty()) {
+            Some(after) if !after.is_empty() => Err(ErrorKind::WeirdServerReply),
 --- new
-        if false {
+            Some(after) if after.len() > 64 => Err(ErrorKind::WeirdServerReply),
+
+=== POP3 logs in in the clear where TLS is required and STLS is not offered
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pop3::tests::over_the_wire::tls_tried_for_falls_back_and_tls_required_fails
+features: test-util
+--- old
+    } else if use_ssl == UseSsl::Try {
+--- new
+    } else if use_ssl <= UseSsl::All {
+
+=== POP3 logs in in the clear where TLS is required and STLS is refused
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pop3::tests::over_the_wire::tls_tried_for_falls_back_and_tls_required_fails
+features: test-util
+--- old
+    (use_ssl == UseSsl::Try).then_some(ClearOrTls(()))
+--- new
+    (use_ssl <= UseSsl::All).then_some(ClearOrTls(()))
 
 === a connection upgraded to TLS gets no TLS layer
 file: crates/curl-core/src/multi/state/tls.rs

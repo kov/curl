@@ -156,36 +156,45 @@ file: crates/curl-core/src/proto/smtp.rs
 witness: curl-core proto::smtp::tests::over_the_wire::helo_follows_a_refused_ehlo
 features: test-util
 --- old
-            if use_ssl <= UseSsl::Try || carrier.over_tls() {
+            return match tls_gate(use_ssl, carrier.over_tls(), false) {
 --- new
-            if use_ssl < UseSsl::Try {
+            return match tls_gate(use_ssl, carrier.over_tls(), true) {
 
 === a refused EHLO falls back to HELO where TLS is required
-file: crates/curl-core/src/proto/smtp.rs
+file: crates/curl-core/src/proto/pingpong.rs
 witness: curl-core proto::smtp::tests::over_the_wire::helo_follows_a_refused_ehlo
 features: test-util
 --- old
-            if use_ssl <= UseSsl::Try || carrier.over_tls() {
+    } else if use_ssl == UseSsl::Try {
 --- new
-            if use_ssl <= UseSsl::All || carrier.over_tls() {
+    } else if use_ssl <= UseSsl::All {
 
 === bytes after STARTTLS's go-ahead are read as if sent under TLS
-file: crates/curl-core/src/proto/smtp.rs
+file: crates/curl-core/src/proto/pingpong.rs
 witness: curl-core proto::smtp::tests::over_the_wire::bytes_after_the_starttls_go_ahead_are_refused
 features: test-util
 --- old
-        if pc.pp.after_reply().is_some_and(|after| !after.is_empty()) {
+            Some(after) if !after.is_empty() => Err(ErrorKind::WeirdServerReply),
 --- new
-        if pc.pp.after_reply().is_some_and(|after| after.len() > 64) {
+            Some(after) if after.len() > 64 => Err(ErrorKind::WeirdServerReply),
 
 === a STARTTLS refused fails though TLS is only tried
-file: crates/curl-core/src/proto/smtp.rs
+file: crates/curl-core/src/proto/pingpong.rs
 witness: curl-core proto::smtp::tests::over_the_wire::starttls_refused_or_not_offered
 features: test-util
 --- old
-            if cx.easy().options().line.use_ssl != UseSsl::Try {
+    (use_ssl == UseSsl::Try).then_some(ClearOrTls(()))
 --- new
-            if cx.easy().options().line.use_ssl != UseSsl::None {
+    (use_ssl == UseSsl::None).then_some(ClearOrTls(()))
+
+=== a STARTTLS refused logs in in the clear where TLS is required
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::smtp::tests::over_the_wire::starttls_refused_or_not_offered
+features: test-util
+--- old
+    (use_ssl == UseSsl::Try).then_some(ClearOrTls(()))
+--- new
+    (use_ssl <= UseSsl::All).then_some(ClearOrTls(()))
 
 === a connection closing says no QUIT
 file: crates/curl-core/src/proto/smtp.rs

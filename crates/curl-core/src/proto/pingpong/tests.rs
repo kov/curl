@@ -791,3 +791,45 @@ fn an_answer_is_pending_from_each_command_to_the_end_of_a_read() {
     pp.reads_ended();
     assert!(!pp.pending_resp());
 }
+
+/// A go-ahead to upgrade is taken only where nothing follows it.
+#[test]
+fn an_upgrade_begins_only_with_nothing_after_its_go_ahead() {
+    let mut pp = Pingpong::new(Instant::EPOCH);
+    pp.push(b"220 go\r\n").unwrap();
+    assert!(matches!(pp.next(&Ftp), Ok(Event::Reply { .. })));
+    assert!(pp.begin_upgrade().is_ok());
+    let mut pp = Pingpong::new(Instant::EPOCH);
+    pp.push(b"220 go\r\nx").unwrap();
+    assert!(matches!(pp.next(&Ftp), Ok(Event::Reply { .. })));
+    assert_eq!(pp.begin_upgrade(), Err(ErrorKind::WeirdServerReply));
+}
+
+/// Only a connection over TLS, or one where TLS is only tried and not
+/// offered, logs in without an upgrade; a refused upgrade goes on in the
+/// clear only where TLS is tried.
+#[test]
+fn a_login_without_tls_is_had_only_where_tls_is_not_required() {
+    use UseSsl::{All, Control, None as No, Try};
+    let gate = |use_ssl, over_tls, offered| match tls_gate(use_ssl, over_tls, offered) {
+        TlsGate::Upgrade => 'u',
+        TlsGate::Proceed(_) => 'p',
+        TlsGate::Refuse => 'r',
+    };
+    for offered in [false, true] {
+        for use_ssl in [No, Try, Control, All] {
+            assert_eq!(gate(use_ssl, true, offered), 'p', "{use_ssl:?}");
+        }
+        assert_eq!(gate(No, false, offered), 'p');
+    }
+    for use_ssl in [Try, Control, All] {
+        assert_eq!(gate(use_ssl, false, true), 'u', "{use_ssl:?}");
+    }
+    assert_eq!(gate(Try, false, false), 'p');
+    assert_eq!(gate(Control, false, false), 'r');
+    assert_eq!(gate(All, false, false), 'r');
+    assert!(upgrade_refused(Try).is_some());
+    for use_ssl in [No, Control, All] {
+        assert!(upgrade_refused(use_ssl).is_none(), "{use_ssl:?}");
+    }
+}

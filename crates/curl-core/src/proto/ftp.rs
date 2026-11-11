@@ -20,9 +20,9 @@ use curl_alloc::{TryArc, TryVec as _};
 
 use self::data::{DataConn, DataTls, Reached};
 use self::path::{Path, PathError, TypeCode};
-use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::ftp::Ftp as Ends;
+use super::pingpong::{ClearOrTls, Pingpong, TlsGate, UpgradeReady, tls_gate, upgrade_refused};
 use super::xfer::{Receive, Sink, Source, write_end};
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{Credentials, Takes};
@@ -293,8 +293,9 @@ pub(crate) struct Request {
     do_more: bool,
     /// The connection carried a transfer before this one (`bits.reuse`).
     reused: bool,
-    /// The control connection's TLS is being made, after `AUTH`.
-    upgrading: bool,
+    /// The control connection's TLS is being made, after `AUTH`, its
+    /// go-ahead all the server sent.
+    upgrading: Option<UpgradeReady>,
     /// The control connection's TLS is being shut down after `CCC`, until
     /// this instant at the latest.
     clearing: Option<Instant>,
@@ -452,7 +453,7 @@ impl Request {
             dont_check: false,
             do_more: false,
             reused: false,
-            upgrading: false,
+            upgrading: None,
             clearing: None,
             initiating: false,
             infilesize: None,
@@ -773,8 +774,8 @@ impl Request {
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        if self.upgrading {
-            return self.upgrade_tls(cx, pc, carrier);
+        if let Some(ready) = self.upgrading {
+            return self.upgrade_tls(cx, pc, carrier, ready);
         }
         if pc.pp.needs_flush() {
             return drive::flush(cx, &mut pc.pp, carrier);
@@ -953,7 +954,9 @@ impl Request {
         code: u32,
     ) -> Step {
         if code == 230 {
-            if pc.use_ssl <= UseSsl::Try || carrier.over_tls() {
+            // Logged in already: taken as the login, where it may be had
+            // without TLS.
+            if let TlsGate::Proceed(_gate) = tls_gate(pc.use_ssl, carrier.over_tls(), false) {
                 return self.user_resp(cx, pc, carrier, code);
             }
         } else if code != 220 {
@@ -963,17 +966,19 @@ impl Request {
                 format_args!("Got a {code:03} ftp-server response when 220 was expected"),
             ));
         }
-        if pc.use_ssl != UseSsl::None && !carrier.over_tls() {
-            self.auth_tries = 0;
-            (self.auth_at, self.auth_next) = match cx.easy().options().line.ftp.ssl_auth {
-                SslAuth::Default | SslAuth::Ssl => (0, true),
-                SslAuth::Tls => (1, false),
-            };
-            send(cx, pc, carrier, &[b"AUTH ", AUTHS[self.auth_at]])?;
-            set_state(cx, pc, State::Auth);
-            Ok(())
-        } else {
-            self.user(cx, pc, carrier)
+        // `AUTH` is always tried.
+        match tls_gate(pc.use_ssl, carrier.over_tls(), true) {
+            TlsGate::Upgrade | TlsGate::Refuse => {
+                self.auth_tries = 0;
+                (self.auth_at, self.auth_next) = match cx.easy().options().line.ftp.ssl_auth {
+                    SslAuth::Default | SslAuth::Ssl => (0, true),
+                    SslAuth::Tls => (1, false),
+                };
+                send(cx, pc, carrier, &[b"AUTH ", AUTHS[self.auth_at]])?;
+                set_state(cx, pc, State::Auth);
+                Ok(())
+            }
+            TlsGate::Proceed(gate) => self.user(cx, pc, carrier, gate),
         }
     }
 
@@ -988,33 +993,34 @@ impl Request {
         code: u32,
     ) -> Step {
         // What came after the answer was not under TLS: refused.
-        if pc.pp.after_reply().is_some_and(|a| !a.is_empty()) {
-            return Err(ErrorKind::WeirdServerReply);
-        }
+        let ready = pc.pp.begin_upgrade()?;
         if code == 234 || code == 334 {
             // TLS over the control connection, the data in the clear until
             // `PROT` says otherwise. C makes it blocking.
-            self.upgrading = true;
-            return self.upgrade_tls(cx, pc, carrier);
+            self.upgrading = Some(ready);
+            return self.upgrade_tls(cx, pc, carrier, ready);
         }
         if self.auth_tries < 1 {
             self.auth_tries += 1;
             self.auth_at = if self.auth_next { 1 } else { 0 };
             send(cx, pc, carrier, &[b"AUTH ", AUTHS[self.auth_at]])
-        } else if pc.use_ssl > UseSsl::Try {
-            Err(ErrorKind::UseSslFailed)
         } else {
-            self.user(cx, pc, carrier)
+            match upgrade_refused(pc.use_ssl) {
+                Some(gate) => self.user(cx, pc, carrier, gate),
+                // Not asked of TLS at all, it would not have asked.
+                None => Err(ErrorKind::UseSslFailed),
+            }
         }
     }
 
     /// Move the control connection's TLS handshake on, after `AUTH` was
-    /// taken; once made, the login.
+    /// taken with nothing after it; once made, the login.
     fn upgrade_tls<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
+        _ready: UpgradeReady,
     ) -> Step {
         let Some(identity) = pc.upgrade.clone() else {
             return Err(ErrorKind::UseSslFailed);
@@ -1030,9 +1036,12 @@ impl Request {
         if shaken == crate::tls::Handshake::Waiting {
             return Ok(());
         }
-        self.upgrading = false;
+        self.upgrading = None;
         pc.data_tls = false;
-        self.user(cx, pc, carrier)
+        match tls_gate(pc.use_ssl, carrier.over_tls(), false) {
+            TlsGate::Proceed(gate) => self.user(cx, pc, carrier, gate),
+            TlsGate::Upgrade | TlsGate::Refuse => Err(ErrorKind::UseSslFailed),
+        }
     }
 
     /// Move the control connection's TLS shutdown on after `CCC`, its
@@ -1098,6 +1107,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
+        _gate: ClearOrTls,
     ) -> Step {
         // With none given, the anonymous login's (`CURL_DEFAULT_USER`).
         let user = copied(login_of(&pc.cold).map_or(&b"anonymous"[..], Credentials::user))?;

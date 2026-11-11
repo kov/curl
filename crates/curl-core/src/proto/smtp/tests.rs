@@ -121,13 +121,18 @@ fn the_domain_is_the_url_s_path() {
 
 #[test]
 fn the_states_have_c_s_names() {
+    let ready = || {
+        Pingpong::new(crate::time::Instant::EPOCH)
+            .begin_upgrade()
+            .unwrap()
+    };
     let names = [
         (State::Stop, "STOP"),
         (State::ServerGreet, "SERVERGREET"),
         (State::Ehlo, "EHLO"),
         (State::Helo, "HELO"),
         (State::StartTls, "STARTTLS"),
-        (State::UpgradeTls, "UPGRADETLS"),
+        (State::UpgradeTls(ready()), "UPGRADETLS"),
         (State::Auth, "AUTH"),
         (State::Command, "COMMAND"),
         (State::Mail, "MAIL"),

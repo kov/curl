@@ -194,3 +194,27 @@ witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_furth
             true => self.answer_due.is_some(),
 --- new
             true => self.awaits_answer(&mut cx),
+
+=== an upgrade begins with bytes after its go-ahead
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::an_upgrade_begins_only_with_nothing_after_its_go_ahead
+--- old
+            Some(after) if !after.is_empty() => Err(ErrorKind::WeirdServerReply),
+--- new
+            Some(after) if after.len() > 1 => Err(ErrorKind::WeirdServerReply),
+
+=== a connection not over TLS logs in where TLS is required and not offered
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::a_login_without_tls_is_had_only_where_tls_is_not_required
+--- old
+    } else if use_ssl == UseSsl::Try {
+--- new
+    } else if use_ssl < UseSsl::All {
+
+=== a connection asks for an upgrade though it is over TLS
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::a_login_without_tls_is_had_only_where_tls_is_not_required
+--- old
+    if use_ssl == UseSsl::None || over_tls {
+--- new
+    if use_ssl == UseSsl::None {

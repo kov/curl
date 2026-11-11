@@ -11,9 +11,9 @@
 use curl_alloc::{TryArc, TryVec as _};
 
 use super::mail::{self, login_of, sasl_failed, sasl_step};
-use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::imap::{Continuations, Imap, ImapReply, Tag, Untagged, literal};
+use super::pingpong::{ClearOrTls, Pingpong, TlsGate, UpgradeReady, tls_gate, upgrade_refused};
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{Credentials, Takes};
@@ -26,7 +26,7 @@ use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::multi::Host;
 use crate::multi::state::StepCx;
-use crate::options::{Method, UploadFlags, UploadSource, UseSsl};
+use crate::options::{Method, UploadFlags, UploadSource};
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::chain::Body;
@@ -63,7 +63,7 @@ enum State {
     ServerGreet,
     Capability,
     StartTls,
-    UpgradeTls,
+    UpgradeTls(UpgradeReady),
     Authenticate,
     Login,
     List,
@@ -82,7 +82,7 @@ impl State {
             State::ServerGreet => "SERVERGREET",
             State::Capability => "CAPABILITY",
             State::StartTls => "STARTTLS",
-            State::UpgradeTls => "UPGRADETLS",
+            State::UpgradeTls(_) => "UPGRADETLS",
             State::Authenticate => "AUTHENTICATE",
             State::Login => "LOGIN",
             State::List => "LIST",
@@ -566,7 +566,7 @@ impl Request {
         pc: &mut ImapConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        if pc.state == State::UpgradeTls {
+        if matches!(pc.state, State::UpgradeTls(_)) {
             // All bytes are TLS's until its handshake is done
             // (`imap_perform_upgrade_tls`).
             let Some(identity) = pc.upgrade.clone() else {
@@ -648,7 +648,7 @@ impl Request {
                 State::Capability => self.capability_resp(cx, pc, carrier, code)?,
                 State::StartTls => {
                     self.starttls(cx, pc, carrier, code)?;
-                    if pc.state == State::UpgradeTls {
+                    if matches!(pc.state, State::UpgradeTls(_)) {
                         return self.machine(cx, pc, carrier);
                     }
                 }
@@ -679,7 +679,7 @@ impl Request {
                     }
                     set_state(cx, pc, State::Stop);
                 }
-                State::Stop | State::UpgradeTls => set_state(cx, pc, State::Stop),
+                State::Stop | State::UpgradeTls(_) => set_state(cx, pc, State::Stop),
             }
             if pc.state == State::Stop || !pc.pp.more_data() {
                 return Ok(());
@@ -756,23 +756,21 @@ impl Request {
             return Ok(());
         }
         let use_ssl = cx.easy().options().line.use_ssl;
-        if use_ssl == UseSsl::None || carrier.over_tls() {
-            return self.authenticate(cx, pc, carrier);
-        }
         // PREAUTH is not compatible with STARTTLS.
-        if code == ImapReply::Ok && pc.tls_offered && !pc.preauth {
-            let tag = pc.next_tag();
-            drive::send(cx, &mut pc.pp, carrier, Some(tag.bytes()), &[b"STARTTLS"])?;
-            set_state(cx, pc, State::StartTls);
-            Ok(())
-        } else if use_ssl <= UseSsl::Try {
-            self.authenticate(cx, pc, carrier)
-        } else {
-            Err(trace::fail(
+        let offered = code == ImapReply::Ok && pc.tls_offered && !pc.preauth;
+        match tls_gate(use_ssl, carrier.over_tls(), offered) {
+            TlsGate::Proceed(gate) => self.authenticate(cx, pc, carrier, gate),
+            TlsGate::Upgrade => {
+                let tag = pc.next_tag();
+                drive::send(cx, &mut pc.pp, carrier, Some(tag.bytes()), &[b"STARTTLS"])?;
+                set_state(cx, pc, State::StartTls);
+                Ok(())
+            }
+            TlsGate::Refuse => Err(trace::fail(
                 cx,
                 ErrorKind::UseSslFailed,
                 format_args!("STARTTLS not available."),
-            ))
+            )),
         }
     }
 
@@ -785,20 +783,18 @@ impl Request {
         carrier: &mut Carrier<'_>,
         code: ImapReply,
     ) -> Step {
-        if pc.pp.after_reply().is_some_and(|after| !after.is_empty()) {
-            return Err(ErrorKind::WeirdServerReply);
-        }
+        let ready = pc.pp.begin_upgrade()?;
         if code != ImapReply::Ok {
-            if cx.easy().options().line.use_ssl != UseSsl::Try {
+            let Some(gate) = upgrade_refused(cx.easy().options().line.use_ssl) else {
                 return Err(trace::fail(
                     cx,
                     ErrorKind::UseSslFailed,
                     format_args!("STARTTLS denied"),
                 ));
-            }
-            return self.authenticate(cx, pc, carrier);
+            };
+            return self.authenticate(cx, pc, carrier, gate);
         }
-        set_state(cx, pc, State::UpgradeTls);
+        set_state(cx, pc, State::UpgradeTls(ready));
         Ok(())
     }
 
@@ -810,6 +806,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         pc: &mut ImapConn,
         carrier: &mut Carrier<'_>,
+        _gate: ClearOrTls,
     ) -> Step {
         let can = sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.can_authenticate(sx)

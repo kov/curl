@@ -18,13 +18,31 @@ features: test-util
                     max
 
 === bytes after the STARTTLS go-ahead are taken as if under TLS
-file: crates/curl-core/src/proto/imap.rs
+file: crates/curl-core/src/proto/pingpong.rs
 witness: curl-core proto::imap::tests::over_the_wire::bytes_after_the_starttls_go_ahead_are_refused
 features: test-util
 --- old
-        if pc.pp.after_reply().is_some_and(|after| !after.is_empty()) {
+            Some(after) if !after.is_empty() => Err(ErrorKind::WeirdServerReply),
 --- new
-        if false {
+            Some(after) if after.len() > 64 => Err(ErrorKind::WeirdServerReply),
+
+=== IMAP logs in in the clear where TLS is required and STARTTLS is not offered
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::imap::tests::over_the_wire::starttls_not_offered
+features: test-util
+--- old
+    } else if use_ssl == UseSsl::Try {
+--- new
+    } else if use_ssl <= UseSsl::All {
+
+=== IMAP logs in in the clear where TLS is required and STARTTLS is refused
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::imap::tests::over_the_wire::starttls_refused
+features: test-util
+--- old
+    (use_ssl == UseSsl::Try).then_some(ClearOrTls(()))
+--- new
+    (use_ssl <= UseSsl::All).then_some(ClearOrTls(()))
 
 === a refused answer after a FETCH's body leaves the transfer a success
 file: crates/curl-core/src/proto/imap.rs

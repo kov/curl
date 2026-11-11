@@ -4289,7 +4289,8 @@ protocol's phases (the drive, below).
   whole is held, as C reads only with no `overflow`; a push otherwise is a bug, and panics.
 - **The reply's line stays until the next call** (`reply_line`, C's `nfinal`), and what was
   read past it is `after_reply` (C's `overflow` as the reply is found): STARTTLS, `STLS` and
-  `AUTH TLS` refuse a reply anything follows; an IMAP literal or a POP3 body is taken from it
+  `AUTH TLS` refuse a reply anything follows (`begin_upgrade`, which alone makes the
+  `UpgradeReady` the upgrading state holds); an IMAP literal or a POP3 body is taken from it
   (`consume_after_reply`), the rest read on as lines. `unscanned` is C's `overflow` as the
   step polls it: bytes held and not looked through, which run the step without waiting on the
   connection; a partial line looked through is not, though `more_data` counts it. FTP
@@ -4363,7 +4364,10 @@ protocol's phases (the drive, below).
 - **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made
   with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,
   and each call moves its handshake on; the protocol then asks for its capabilities again.
-  A reply anything follows is refused first (`WeirdServerReply`).
+  A reply anything follows is refused first (`WeirdServerReply`). Whether to upgrade, log in
+  as the connection is, or refuse is `pingpong::tls_gate`'s, and what a refused upgrade
+  leaves is `upgrade_refused`'s, for IMAP, POP3, SMTP and FTP alike: each protocol's login
+  takes the `ClearOrTls` only these make.
 
 ### 5.8 SCP and SFTP
 

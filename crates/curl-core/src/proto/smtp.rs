@@ -10,9 +10,9 @@
 use curl_alloc::{TryArc, TryVec as _};
 
 use super::mail::{self, sasl_failed, sasl_step};
-use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::smtp::{Smtp, SmtpReply};
+use super::pingpong::{ClearOrTls, Pingpong, TlsGate, UpgradeReady, tls_gate, upgrade_refused};
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
@@ -26,7 +26,7 @@ use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
-use crate::options::{ConnectOnly, Method, UploadSource, UseSsl};
+use crate::options::{ConnectOnly, Method, UploadSource};
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::chain::Body;
@@ -54,7 +54,7 @@ enum State {
     Ehlo,
     Helo,
     StartTls,
-    UpgradeTls,
+    UpgradeTls(UpgradeReady),
     Auth,
     Command,
     Mail,
@@ -71,7 +71,7 @@ impl State {
             State::Ehlo => "EHLO",
             State::Helo => "HELO",
             State::StartTls => "STARTTLS",
-            State::UpgradeTls => "UPGRADETLS",
+            State::UpgradeTls(_) => "UPGRADETLS",
             State::Auth => "AUTH",
             State::Command => "COMMAND",
             State::Mail => "MAIL",
@@ -602,7 +602,7 @@ impl Request {
         pc: &mut SmtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        if pc.state == State::UpgradeTls {
+        if matches!(pc.state, State::UpgradeTls(_)) {
             // All bytes are TLS's until its handshake is done
             // (`smtp_perform_upgrade_tls`).
             let Some(identity) = pc.upgrade.clone() else {
@@ -689,7 +689,7 @@ impl Request {
                 }
                 State::StartTls => {
                     self.starttls_resp(cx, pc, carrier, code)?;
-                    if pc.state == State::UpgradeTls {
+                    if matches!(pc.state, State::UpgradeTls(_)) {
                         return self.machine(cx, pc, carrier);
                     }
                 }
@@ -715,7 +715,7 @@ impl Request {
                         return Err(ErrorKind::WeirdServerReply);
                     }
                 }
-                State::Stop | State::UpgradeTls => set_state(cx, pc, State::Stop),
+                State::Stop | State::UpgradeTls(_) => set_state(cx, pc, State::Stop),
             }
             if pc.state == State::Stop || !pc.pp.more_data() {
                 return Ok(());
@@ -736,14 +736,15 @@ impl Request {
     ) -> Step {
         let use_ssl = cx.easy().options().line.use_ssl;
         if code / 100 != 2 && code != 1 {
-            if use_ssl <= UseSsl::Try || carrier.over_tls() {
-                return helo(cx, pc, carrier);
-            }
-            return Err(trace::fail(
-                cx,
-                ErrorKind::RemoteAccessDenied,
-                format_args!("Remote access denied: {code}"),
-            ));
+            // Without EHLO, no upgrade is offered.
+            return match tls_gate(use_ssl, carrier.over_tls(), false) {
+                TlsGate::Proceed(gate) => helo(cx, pc, carrier, gate),
+                TlsGate::Upgrade | TlsGate::Refuse => Err(trace::fail(
+                    cx,
+                    ErrorKind::RemoteAccessDenied,
+                    format_args!("Remote access denied: {code}"),
+                )),
+            };
         }
         let line = pc.pp.reply_line().expect("a reply was given out");
         let Some(line) = line.get(4..) else {
@@ -788,23 +789,18 @@ impl Request {
         if code == 1 {
             return Ok(());
         }
-        if use_ssl != UseSsl::None && !carrier.over_tls() {
-            // TLS is asked for and the connection is not over it yet.
-            if pc.tls_offered {
+        match tls_gate(use_ssl, carrier.over_tls(), pc.tls_offered) {
+            TlsGate::Proceed(gate) => self.authenticate(cx, pc, carrier, gate),
+            TlsGate::Upgrade => {
                 drive::send(cx, &mut pc.pp, carrier, None, &[b"STARTTLS"])?;
                 set_state(cx, pc, State::StartTls);
                 Ok(())
-            } else if use_ssl == UseSsl::Try {
-                self.authenticate(cx, pc, carrier)
-            } else {
-                Err(trace::fail(
-                    cx,
-                    ErrorKind::UseSslFailed,
-                    format_args!("STARTTLS not supported."),
-                ))
             }
-        } else {
-            self.authenticate(cx, pc, carrier)
+            TlsGate::Refuse => Err(trace::fail(
+                cx,
+                ErrorKind::UseSslFailed,
+                format_args!("STARTTLS not supported."),
+            )),
         }
     }
 
@@ -817,20 +813,18 @@ impl Request {
         carrier: &mut Carrier<'_>,
         code: u32,
     ) -> Step {
-        if pc.pp.after_reply().is_some_and(|after| !after.is_empty()) {
-            return Err(ErrorKind::WeirdServerReply);
-        }
+        let ready = pc.pp.begin_upgrade()?;
         if code != 220 {
-            if cx.easy().options().line.use_ssl != UseSsl::Try {
+            let Some(gate) = upgrade_refused(cx.easy().options().line.use_ssl) else {
                 return Err(trace::fail(
                     cx,
                     ErrorKind::UseSslFailed,
                     format_args!("STARTTLS denied, code {code}"),
                 ));
-            }
-            return self.authenticate(cx, pc, carrier);
+            };
+            return self.authenticate(cx, pc, carrier, gate);
         }
-        set_state(cx, pc, State::UpgradeTls);
+        set_state(cx, pc, State::UpgradeTls(ready));
         Ok(())
     }
 
@@ -842,6 +836,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         pc: &mut SmtpConn,
         carrier: &mut Carrier<'_>,
+        _gate: ClearOrTls,
     ) -> Step {
         let can = sasl_step(cx, self.base.peer(), &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.can_authenticate(sx)
@@ -1283,7 +1278,12 @@ fn ehlo<H: Host>(cx: &mut StepCx<'_, H>, pc: &mut SmtpConn, carrier: &mut Carrie
 }
 
 /// `HELO`, which logs in with no mechanism (`smtp_perform_helo`).
-fn helo<H: Host>(cx: &mut StepCx<'_, H>, pc: &mut SmtpConn, carrier: &mut Carrier<'_>) -> Step {
+fn helo<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    pc: &mut SmtpConn,
+    carrier: &mut Carrier<'_>,
+    _gate: ClearOrTls,
+) -> Step {
     pc.sasl.forget_used();
     let domain = core::mem::take(&mut pc.domain);
     let sent = drive::send(cx, &mut pc.pp, carrier, None, &[b"HELO ", &domain]);

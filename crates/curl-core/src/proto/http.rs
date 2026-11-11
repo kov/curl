@@ -10,7 +10,7 @@ use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{ConnLease, NetRoute, Peer, ProxyCreds, RecvFailed, Scheme};
 use crate::date::{HttpDate, OutOfRange};
-use crate::deliver::{self, Expect, Pause, Pipeline, WriteType};
+use crate::deliver::{self, Expect, MAX_CONTENT_CODINGS, Pause, Pipeline, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::libraries::Ed25519;
@@ -3415,7 +3415,7 @@ fn content_codings<H: Host>(
             write_trace_with(cx, &[b"decoder not requested, ignored: ", name]);
             return Ok(());
         }
-        if pipeline.decoders() >= MAX_CONTENT_CODINGS {
+        let Some(room) = pipeline.content_room() else {
             return Err(trace::fail(
                 cx,
                 ErrorKind::BadContentEncoding,
@@ -3423,7 +3423,7 @@ fn content_codings<H: Host>(
                     "Reject response exceeding limit of {MAX_CONTENT_CODINGS} content encodings"
                 ),
             ));
-        }
+        };
         let named = Named::of(name);
         let decoder = decoder_for(cx, named)?;
         let decoders = cx.easy().decoders();
@@ -3434,7 +3434,7 @@ fn content_codings<H: Host>(
                 decoder_name(Some(named), &decoders)
             ),
         );
-        pipeline.add_decoder(decoder)?;
+        room.add(decoder)?;
     }
     Ok(())
 }
@@ -3490,9 +3490,6 @@ fn decoder_for<H: Host>(cx: &StepCx<'_, H>, named: Named) -> Result<Box<dyn Deco
         Named::Unknown => try_box(Unrecognized).map_err(oom)?,
     })
 }
-
-/// The most content codings a response may stack (`MAX_ENCODE_STACK`).
-const MAX_CONTENT_CODINGS: usize = 5;
 
 fn strip_name<'a>(line: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
     (line.len() >= name.len() && line[..name.len()].eq_ignore_ascii_case(name))

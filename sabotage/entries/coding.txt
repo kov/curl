@@ -39,12 +39,12 @@ witness: curl-core proto::http::tests::coding::a_coded_body_is_undone_when_asked
         }
 
 === a response may stack six codings
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core proto::http::tests::coding::codings_that_cannot_be_undone_fail
 --- old
-        if pipeline.decoders() >= MAX_CONTENT_CODINGS {
+        (stacked < MAX_CONTENT_CODINGS).then_some(ContentRoom { pipeline: self })
 --- new
-        if pipeline.decoders() > MAX_CONTENT_CODINGS {
+        (stacked <= MAX_CONTENT_CODINGS).then_some(ContentRoom { pipeline: self })
 
 === a raw deflate body is not read again as raw
 file: crates/curl-zlib/src/lib.rs

@@ -1193,7 +1193,7 @@ fn a_decoder_learns_whether_the_transfer_s_time_is_up() {
                     p.add_transfer_decoder(Box::new(Clocked)).unwrap();
                 }
                 for _ in 0..content {
-                    p.add_decoder(Box::new(Clocked)).unwrap();
+                    p.content_room().unwrap().add(Box::new(Clocked)).unwrap();
                 }
                 p.body(cx, b"x").unwrap();
             }
@@ -1227,7 +1227,7 @@ fn no_bytes_reach_no_decoder() {
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut p = Pipeline::new(Reach::Network);
-        p.add_decoder(Box::new(Refuses)).unwrap();
+        p.content_room().unwrap().add(Box::new(Refuses)).unwrap();
         assert_eq!(p.body(cx, b""), Ok(()));
         assert_eq!(p.body(cx, b"x"), Err(ErrorKind::BadContentEncoding));
     });

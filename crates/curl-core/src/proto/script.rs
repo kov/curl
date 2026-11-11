@@ -174,7 +174,8 @@ impl Player {
                 Piece::Expand(n) => {
                     let decoder =
                         curl_alloc::try_box(Expand(*n)).map_err(|_| ErrorKind::OutOfMemory)?;
-                    self.pipeline.add_decoder(decoder)?;
+                    let room = self.pipeline.content_room();
+                    room.expect("a script stacks few codings").add(decoder)?;
                 }
                 Piece::Yield => {
                     self.next += 1;

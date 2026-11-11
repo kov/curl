@@ -58,6 +58,46 @@ pub(crate) struct Pipeline {
     include_all: bool,
 }
 
+/// The most content codings a response may stack (`MAX_ENCODE_STACK`).
+pub(crate) const MAX_CONTENT_CODINGS: usize = 5;
+
+/// The content codings stacked, never more than [`MAX_CONTENT_CODINGS`]:
+/// added only through a [`ContentRoom`], which a full stack gives none
+/// of.
+#[derive(Debug, Default)]
+struct ContentStack(Vec<Box<dyn Decoder>>);
+
+impl std::ops::Deref for ContentStack {
+    type Target = [Box<dyn Decoder>];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ContentStack {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Room for one more content coding in a request's output.
+pub(crate) struct ContentRoom<'p> {
+    pipeline: &'p mut Pipeline,
+}
+
+impl ContentRoom<'_> {
+    /// Undo a content coding, after those added before it.
+    pub(crate) fn add(self, decoder: Box<dyn Decoder>) -> Result<(), ErrorKind> {
+        let stack = &mut self.pipeline.codings_for(&*decoder)?.content.0;
+        assert!(
+            stack.len() < MAX_CONTENT_CODINGS,
+            "a room is given while there is room"
+        );
+        stack.try_push(decoder).map_err(|_| ErrorKind::OutOfMemory)
+    }
+}
+
 /// A response's codings to undo, in the order of the chain.
 #[derive(Debug, Default)]
 struct Codings {
@@ -70,7 +110,7 @@ struct Codings {
     gate: Option<Gate>,
     /// The content codings to undo, in the order the response gives them
     /// (`CURL_CW_CONTENT_DECODE`).
-    content: Vec<Box<dyn Decoder>>,
+    content: ContentStack,
     /// A WebSocket's frames to decode, before the content codings
     /// (`ws_cw_decode`).
     ws: Option<ws::WsStage>,
@@ -143,17 +183,11 @@ impl Pipeline {
         self.codings.as_ref().is_some_and(|c| c.ws.is_some())
     }
 
-    /// How many content codings are stacked.
-    pub(crate) fn decoders(&self) -> usize {
-        self.codings.as_ref().map_or(0, |c| c.content.len())
-    }
-
-    /// Undo a content coding, after those added before it.
-    pub(crate) fn add_decoder(&mut self, decoder: Box<dyn Decoder>) -> Result<(), ErrorKind> {
-        self.codings_for(&*decoder)?
-            .content
-            .try_push(decoder)
-            .map_err(|_| ErrorKind::OutOfMemory)
+    /// Room for one more content coding, if the stack is not full
+    /// (`MAX_ENCODE_STACK`): the only way to add one.
+    pub(crate) fn content_room(&mut self) -> Option<ContentRoom<'_>> {
+        let stacked = self.codings.as_ref().map_or(0, |c| c.content.0.len());
+        (stacked < MAX_CONTENT_CODINGS).then_some(ContentRoom { pipeline: self })
     }
 
     /// Whether the protocol can pause, its input and its output.
@@ -237,7 +271,7 @@ impl Pipeline {
     ) -> Result<(), ErrorKind> {
         let pausable = self.pausable();
         let (gate, decoders, ws) = match self.codings.as_deref_mut() {
-            Some(c) => (c.gate.as_mut(), &mut c.content[..], c.ws.as_mut()),
+            Some(c) => (c.gate.as_mut(), &mut c.content.0[..], c.ws.as_mut()),
             None => (None, &mut [][..], None),
         };
         let mut past = Past {

@@ -140,6 +140,36 @@ fn a_tab_before_an_attribute_is_a_blank() {
     assert_eq!(said.as_deref(), Some("skipped cookie because not 'secure'"));
 }
 
+/// A file's lines, sorted: the jar writes the newest first, which a
+/// file read back makes the oldest.
+fn sorted_lines(text: &[u8]) -> Vec<&[u8]> {
+    let mut lines: Vec<&[u8]> = text.split(|&b| b == b'\n').collect();
+    lines.sort_unstable();
+    lines
+}
+
+/// A jar written out is read back whole, a cookie as long as a cookie
+/// may be among the rest (CVE-2026-92386: C's writer made a line its
+/// reader stopped at, dropping every cookie after it).
+#[test]
+fn a_jar_written_is_read_back_whole() {
+    let mut jar = running();
+    let long = format!("long={}", "v".repeat(4000));
+    for value in [&b"before=1"[..], long.as_bytes(), b"after=1"] {
+        let said = set(&mut jar, b"example.com", b"/", value).unwrap_or_default();
+        assert!(said.starts_with("Added cookie"), "{said}");
+    }
+    let mut out = Vec::new();
+    jar.file(NOW, &mut out).unwrap();
+    let mut back = Jar::default();
+    back.load(&out, false, true, None, NOW, &mut 0, |_| {})
+        .unwrap();
+    assert_eq!(back.len(), 3);
+    let mut again = Vec::new();
+    back.file(NOW, &mut again).unwrap();
+    assert_eq!(sorted_lines(&again), sorted_lines(&out));
+}
+
 #[test]
 fn drops_what_c_drops() {
     let mut jar = running();
@@ -1202,6 +1232,12 @@ proptest! {
             prop_assert!(jar.listed().count() <= jar.len());
             let mut out = Vec::new();
             jar.file(now, &mut out).unwrap();
+            // What the jar writes, it reads back whole (CVE-2026-92386).
+            let mut back = Jar::default();
+            back.load(&out, false, true, suffixes, now, &mut 0, |s| drop(said_text(s))).unwrap();
+            let mut again = Vec::new();
+            back.file(now, &mut again).unwrap();
+            prop_assert_eq!(sorted_lines(&again), sorted_lines(&out));
         }
     }
 }

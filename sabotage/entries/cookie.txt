@@ -365,3 +365,16 @@ witness: curl-core proto::http::cookies::tests::the_line_holds_8190_bytes_with_i
         if len + add >= MAX_LINE {
 --- new
         if len + add > MAX_LINE {
+
+=== a cookie file's long line is passed over as it is read
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::a_jar_written_is_read_back_whole
+--- old
+        let mut line = until_zero(line);
+        let mut co = Cookie::empty();
+--- new
+        let mut line = until_zero(line);
+        if line.len() > 1024 {
+            return Ok(Parsed::Dropped(None));
+        }
+        let mut co = Cookie::empty();

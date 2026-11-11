@@ -265,7 +265,10 @@ impl MailEnd {
     /// line's starting dot.
     fn stuff(&mut self, read: &[u8]) -> Result<(), OutOfMemory> {
         self.compact();
-        let dots = read.iter().filter(|&&b| b == b'.').count();
+        // A dot at most for each in the read, and one more before its
+        // first byte where the last read ended on a line's starting dot.
+        let carried = usize::from(self.matched >= DOT_AT_START);
+        let dots = read.iter().filter(|&&b| b == b'.').count() + carried;
         self.buf
             .try_reserve(read.len() + dots)
             .map_err(|_| OutOfMemory)?;

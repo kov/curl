@@ -148,6 +148,10 @@ fn main() {
             a_lost_trailer_line_fails_the_request,
         ),
         (
+            "a_mail_s_dots_survive_every_allocation_failing",
+            a_mail_s_dots_survive_every_allocation_failing,
+        ),
+        (
             "a_cold_group_is_made_or_refused_at_its_first_set",
             a_cold_group_is_made_or_refused_at_its_first_set,
         ),
@@ -1942,6 +1946,106 @@ fn a_lost_trailer_line_fails_the_request() {
     let sent = talk.received();
     assert!(!sent.ends_with(b"Y: 2\r\n\r\n"), "no trailers went");
     m.remove(id, &mut NoEvents).expect("in the multi");
+}
+
+/// A mail body in two reads: the first ends on a line's starting dot and
+/// holds no other, so the dots stage reserves its 10 bytes and one dot,
+/// 11; the second, 10 bytes with one dot starting a line, needs 12 with
+/// the dot the first left to add, where its bytes and its own dot are the
+/// 11 the room already holds.
+const MAIL_READS: [&[u8]; 2] = [b"zzzzzzz\r\n.", b"yyyy\r\n.x\r\n"];
+
+/// Gives [`MAIL_READS`] one a read, then the end.
+struct MailReads(std::sync::atomic::AtomicUsize);
+
+impl curl_core::handler::ReadHandler for MailReads {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> curl_core::handler::Read {
+        use curl_core::handler::Read;
+        let i = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(piece) = MAIL_READS.get(i) else {
+            return Read::Eof;
+        };
+        buf[..piece.len()].copy_from_slice(piece);
+        Read::Data(std::num::NonZeroUsize::new(piece.len()).expect("a piece"))
+    }
+}
+
+/// An SMTP mail of [`MAIL_READS`] to a server that takes it. `Err` where
+/// setting up refused; the transfer itself may fail for memory, and
+/// nothing else, and when it succeeds it sent the body dotted.
+fn mail_scenario() -> Result<Result<(), ErrorKind>, OutOfMemory> {
+    use curl_core::options::Method;
+    let (clock, net, talk) = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 25));
+        let replies: [&[u8]; 6] = [
+            b"220 hi\r\n",
+            b"250 hi there\r\n",
+            b"250 ok\r\n",
+            b"250 ok\r\n",
+            b"354 go\r\n",
+            b"250 ok\r\n",
+        ];
+        let talk = Conversation::replies(&replies, false).greeting();
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        (clock, net, talk)
+    });
+    let env = Env {
+        net: try_box(net)?,
+        clock: try_box(clock)?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::with_env(env)?;
+    let mut easy = Easy::new();
+    let o = easy.options_mut();
+    o.set_url(Some(b"smtp://127.0.0.1/x"))?;
+    o.method = Method::Upload;
+    let line = o.line.make_mut()?;
+    line.mail_from = Some(b"f@a".to_vec_fallible()?);
+    line.mail_rcpt.set([&b"r@b"[..]])?;
+    o.upload = UploadSource::Read {
+        handler: Handler::read(MailReads(std::sync::atomic::AtomicUsize::new(0)))?,
+        rewind: None,
+        size: None,
+    };
+    let id = match m.add(try_box(easy)?, (), &mut NoEvents) {
+        Ok(id) => id,
+        Err(AddError {
+            kind: MultiErrorKind::OutOfMemory,
+            ..
+        }) => return Err(OutOfMemory),
+        Err(e) => panic!("add refused with {:?}, not for memory", e.kind),
+    };
+    let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+        .expect("the transfer is in the multi");
+    if !matches!(result, Ok(()) | Err(ErrorKind::OutOfMemory)) {
+        track::untracked(|| panic!("the mail ended with {result:?}"));
+    }
+    if result.is_ok() {
+        track::untracked(|| {
+            let sent = talk.received();
+            let data = sent
+                .windows(6)
+                .position(|w| w == b"DATA\r\n")
+                .expect("DATA")
+                + 6;
+            let want = b"zzzzzzz\r\n..yyyy\r\n..x\r\n.\r\n";
+            assert!(sent[data..].starts_with(want), "the body sent dotted");
+        });
+    }
+    m.remove(id, &mut NoEvents).expect("in the multi");
+    Ok(result)
+}
+
+/// A mail's dots stage reserves what each read needs before it pushes a
+/// byte, the dot a read before left to add among it: a refusal anywhere
+/// fails the mail for memory, never a push past what was reserved,
+/// which aborts.
+fn a_mail_s_dots_survive_every_allocation_failing() {
+    torture(mail_scenario, Ok(Ok(())));
 }
 
 /// A group of options few transfers set is made by the first set of one

@@ -405,3 +405,11 @@ witness: curl-core proto::smtp::tests::over_the_wire::quit_awaiting_its_answer_i
 --- new
     pub(crate) fn goodbye_wants(&self) -> Events {
         Events::NONE
+
+=== a mail body's read after one ending on a line's dot is reserved a byte short
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core a_mail_s_dots_survive_every_allocation_failing
+--- old
+        let carried = usize::from(self.matched >= DOT_AT_START);
+--- new
+        let carried = 0;

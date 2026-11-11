@@ -4749,7 +4749,10 @@ Authenticating is `Auth`, on the `Easy` as C keeps `state.authhost`, `state.auth
 `state.authproblem` on the handle: a `PeerAuth` for the origin and one for the proxy a request
 goes to whole, and one problem flag that stops both. Each side's method picked outlives the
 transfer, cut to the methods wanted as the next one starts (`start`; the proxy's are
-`Options::proxy.auth`). `Picked` tells a method not yet picked from a pick that found nothing
+`Options::proxy.auth`). The proxy's side belongs to the proxy setting it was picked under: the
+options' setters of the proxy's URL and port move a `ProxyGeneration` on where C's
+`changeproxy` runs, and a transfer started under another generation starts that side over,
+Digest state and all. `Picked` tells a method not yet picked from a pick that found nothing
 (C's `CURLAUTH_PICKNONE`), which sends nothing until the next transfer. Each request asks each side
 what to send (`output`, from a `Secret`: the request's `Credentials` for the origin, the
 route's `ProxyCreds` for the proxy, never a token; the method and the path): the proxy's

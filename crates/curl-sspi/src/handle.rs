@@ -135,6 +135,41 @@ impl Drop for CredHandle {
     }
 }
 
+/// Credentials and the context made with them, as one value: the context
+/// is continued only with the credentials it was made with, and deleted
+/// before they are freed.
+pub struct Credentialed {
+    /// Dropped first, as fields drop in order: a context before its
+    /// credentials.
+    context: Option<CtxtHandle>,
+    cred: CredHandle,
+}
+
+impl Credentialed {
+    /// The credentials, with no context made yet.
+    pub fn new(cred: CredHandle) -> Credentialed {
+        Credentialed {
+            context: None,
+            cred,
+        }
+    }
+
+    pub fn cred(&self) -> &CredHandle {
+        &self.cred
+    }
+
+    /// The context, once a call made it.
+    pub fn context(&self) -> Option<&CtxtHandle> {
+        self.context.as_ref()
+    }
+
+    /// The credentials, and the context a call with them continues or
+    /// replaces.
+    pub(crate) fn parts_mut(&mut self) -> (&CredHandle, &mut Option<CtxtHandle>) {
+        (&self.cred, &mut self.context)
+    }
+}
+
 /// A security context's handle, deleted as it goes. It stays at one
 /// place, which an application may be handed.
 pub struct CtxtHandle(Box<SecHandle>);

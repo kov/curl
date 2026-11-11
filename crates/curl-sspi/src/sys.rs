@@ -14,7 +14,7 @@ use windows_sys::Win32::Security::Authentication::Identity as id;
 use windows_sys::Win32::Security::Credentials::SecHandle;
 
 pub use crate::handle::kind;
-pub use crate::handle::{CredHandle, CtxtHandle};
+pub use crate::handle::{CredHandle, Credentialed, CtxtHandle};
 use crate::handle::{Token, buffer, desc, empty};
 
 /// `SECPKG_ATTR_SIZES`.
@@ -283,15 +283,15 @@ pub struct Call<'a> {
     pub room: Option<usize>,
 }
 
-/// `InitializeSecurityContext` with `cred` as `call` says, on `context`
-/// unless the call is fresh, in which case a new context replaces it;
-/// the token into `out`.
+/// `InitializeSecurityContext` with the session's credentials as `call`
+/// says, on its context unless the call is fresh, in which case a new
+/// context replaces it; the token into `out`.
 pub fn initialize(
-    cred: &CredHandle,
-    context: &mut Option<CtxtHandle>,
+    session: &mut Credentialed,
     call: &Call<'_>,
     out: &mut Vec<u8>,
 ) -> Result<Initialized, OutOfMemory> {
+    let (cred, context) = session.parts_mut();
     let Call {
         fresh,
         target,

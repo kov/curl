@@ -88,10 +88,7 @@ mod imp {
             };
             let cred = sys::acquire(&name, identity.as_ref())
                 .map_err(|s| SspiFailure::Status(status(s)))?;
-            Ok(try_box(Context {
-                cred,
-                context: None,
-            })?)
+            Ok(try_box(Context(sys::Credentialed::new(cred)))?)
         }
 
         fn describe(&self, status: SecStatus, out: &mut dyn FnMut(&[u8])) {
@@ -100,17 +97,7 @@ mod imp {
     }
 
     /// Credentials and the context made with them.
-    struct Context {
-        cred: sys::CredHandle,
-        /// Dropped first: a context before its credentials.
-        context: Option<sys::CtxtHandle>,
-    }
-
-    impl Drop for Context {
-        fn drop(&mut self) {
-            self.context = None;
-        }
-    }
+    struct Context(sys::Credentialed);
 
     /// `ISC_REQ_*` for what the core asks.
     fn req(r: curl_core::sspi::Req) -> u32 {
@@ -169,7 +156,7 @@ mod imp {
                 input: &input[..call.input.len()],
                 room,
             };
-            let done = sys::initialize(&self.cred, &mut self.context, &sys_call, out)?;
+            let done = sys::initialize(&mut self.0, &sys_call, out)?;
             Ok(Initialized {
                 status: status(done.status),
                 confidentiality: done.attrs & id::ISC_RET_CONFIDENTIALITY != 0,
@@ -179,8 +166,8 @@ mod imp {
 
         fn complete(&mut self, with: Completing, token: &mut Vec<u8>) -> SecStatus {
             let handle = match with {
-                Completing::Context => sys::Completing::Context(self.context.as_ref()),
-                Completing::Credentials => sys::Completing::Credentials(&self.cred),
+                Completing::Context => sys::Completing::Context(self.0.context()),
+                Completing::Credentials => sys::Completing::Credentials(self.0.cred()),
             };
             status(sys::complete(handle, token))
         }
@@ -192,12 +179,12 @@ mod imp {
             room: usize,
             out: &mut Vec<u8>,
         ) -> Result<(), SecStatus> {
-            let context = self.context.as_ref().expect("a context is made");
+            let context = self.0.context().expect("a context is made");
             sys::make_signature(context, method, uri, room, out).map_err(status)
         }
 
         fn sizes(&mut self) -> Result<Sizes, SecStatus> {
-            let context = self.context.as_ref().expect("a context is made");
+            let context = self.0.context().expect("a context is made");
             let (trailer, block) = sys::sizes(context).map_err(status)?;
             Ok(Sizes {
                 trailer: usize::try_from(trailer).expect("a u32 fits"),
@@ -211,13 +198,13 @@ mod imp {
             message: &[u8],
             out: &mut Vec<u8>,
         ) -> Result<(), SspiFailure> {
-            let context = self.context.as_ref().expect("a context is made");
+            let context = self.0.context().expect("a context is made");
             let n = |v: usize| u32::try_from(v).expect("sizes SSPI gave");
             sys::wrap(context, n(sizes.trailer), n(sizes.block), message, out).map_err(failed)
         }
 
         fn unwrap(&mut self, token: &[u8], out: &mut Vec<u8>) -> Result<(), SspiFailure> {
-            let context = self.context.as_ref().expect("a context is made");
+            let context = self.0.context().expect("a context is made");
             sys::unwrap(context, token, out).map_err(failed)
         }
 
@@ -225,7 +212,7 @@ mod imp {
         /// read as U+FFFD, as `WideCharToMultiByte` reads them.
         fn user_name(&mut self, out: &mut Vec<u8>) -> Result<(), SspiFailure> {
             out.clear();
-            match sys::user_name(&self.cred, curl_os::UNICODE).map_err(failed)? {
+            match sys::user_name(self.0.cred(), curl_os::UNICODE).map_err(failed)? {
                 sys::UserName::Ansi(bytes) => *out = bytes,
                 sys::UserName::Wide(units) => {
                     let mut buf = [0; 4];

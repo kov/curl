@@ -396,3 +396,22 @@ witness: curl-core proto::http::tests::tls::a_raw_read_over_a_session_traces_its
         options.callbacks.rare.debug.is_some() && options.output.verbose
 --- new
         false
+
+=== a handle's own multi keeps its connections alive
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::h2::a_handle_s_own_multi_keeps_its_connection_alive
+features: test-util
+--- old
+            Some(table) => self.multi.upkeep_for(easy, table),
+            None => self.multi.upkeep_for(easy, &mut NoEvents),
+--- new
+            Some(_) | None => Ok(()),
+
+=== a perform driven by events leaves its table on the handle's multi
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::performs_driven_by_events
+features: debug-hooks
+--- old
+            true => private.0.run_by_events(self),
+--- new
+            true => private.0.run(self),

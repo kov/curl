@@ -872,6 +872,32 @@ fn an_idle_connection_is_pinged_once_its_upkeep_interval_passed() {
     }
 }
 
+/// A handle that performed on its own keeps its connections alive through
+/// the multi it performed in (`curl_easy_upkeep` after
+/// `curl_easy_perform`): the idle HTTP/2 connection is sent its PING.
+#[test]
+fn a_handle_s_own_multi_keeps_its_connection_alive() {
+    let talk = Conversation::replies(&[RESPONSE], false).per_send();
+    let (mut m, clock) = clocked(&[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let request = talk.received().len();
+    let mut easy = ran.easy;
+    // The multi it ran in becomes its own, as `perform` keeps one.
+    let own = crate::easy::Own {
+        multi: m,
+        events: None,
+    };
+    easy.private = Some(Box::new(crate::easy::Private(Box::new(own))));
+    clock.advance(Duration::from_secs(60));
+    easy.upkeep().unwrap();
+    assert_eq!(&talk.received()[request..], b"P\n");
+}
+
 /// An idle HTTP/1 connection is sent nothing by the upkeep: it has no
 /// keep-alive of its own to send (`Curl_cf_def_conn_keep_alive`).
 #[test]

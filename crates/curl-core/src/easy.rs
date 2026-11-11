@@ -383,6 +383,9 @@ pub(crate) trait OwnMulti: Send {
     fn upkeep_for(&mut self, easy: &Easy) -> Result<(), OutOfMemory>;
     #[cfg(test)]
     fn multi(&self) -> &Multi;
+    /// Whether a perform driven by events left its table on the multi.
+    #[cfg(test)]
+    fn has_events(&self) -> bool;
 }
 
 /// The multi `perform` makes, and what it last told the callbacks of a
@@ -434,6 +437,11 @@ impl OwnMulti for Own {
     #[cfg(test)]
     fn multi(&self) -> &Multi {
         &self.multi
+    }
+
+    #[cfg(test)]
+    fn has_events(&self) -> bool {
+        self.events.is_some()
     }
 }
 
@@ -2271,6 +2279,13 @@ mod tests {
         let (mut e, body) = easy(&s.url("f"));
         assert_eq!(e.perform_ev(), Ok(()));
         assert_eq!(*body.0.lock().unwrap(), b"hello");
+        // The events drove it: their table stays with the handle's multi,
+        // which a wait leaves without one.
+        let has_events = |e: &Easy| e.private.as_deref().is_some_and(|p| p.0.has_events());
+        assert!(has_events(&e));
+        let (mut waited, _) = easy(&s.url("f"));
+        waited.perform().unwrap();
+        assert!(!has_events(&waited));
         let (mut e, _) = easy(&s.url("missing"));
         assert!(e.perform_ev().is_err());
         // Boxed, in the same box, its failure still the transfer's.

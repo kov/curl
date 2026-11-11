@@ -60,6 +60,17 @@ fn send_datagrams(socket: &dyn Socket, bytes: &[u8], _segment: usize) -> io::Res
     }
 }
 
+/// How many packets a datagram read counts for against [`MAX_PACKETS`]:
+/// those the kernel joined into it, and one for an empty one
+/// (`vquic.c`'s `++pkts`), so that no datagram is free.
+fn packets_in(d: &Datagram) -> usize {
+    if d.len == 0 {
+        1
+    } else {
+        d.len.div_ceil(d.segment)
+    }
+}
+
 /// Receive datagrams into slots of `room`, at most as many as `out`
 /// holds: how many came (on macOS one a call).
 #[cfg(unix)]
@@ -1832,21 +1843,22 @@ impl Quic {
             calls += 1;
             let mut failed = None;
             for (i, d) in got[..count].iter().enumerate() {
-                // An empty datagram is no QUIC packet.
-                if d.len == 0 {
-                    packets += 1;
-                    continue;
+                // An empty datagram is no QUIC packet, but is counted as
+                // one: every datagram read spends the budget, the empty
+                // ones too.
+                if d.len > 0 {
+                    total += d.len;
+                    // The time of the call's first datagram is every
+                    // one's, as C's `cf_ngtcp2_recv_pkts` takes it once
+                    // for the call.
+                    let at = *first.get_or_insert_with(|| self.clock.now());
+                    let bytes = room.datagram(i, d.len);
+                    if let Err(kind) = self.read_datagram(cx, d, bytes, at) {
+                        failed = Some(kind);
+                        break;
+                    }
                 }
-                total += d.len;
-                // The time of the call's first datagram is every one's, as
-                // C's `cf_ngtcp2_recv_pkts` takes it once for the call.
-                let at = *first.get_or_insert_with(|| self.clock.now());
-                let bytes = room.datagram(i, d.len);
-                if let Err(kind) = self.read_datagram(cx, d, bytes, at) {
-                    failed = Some(kind);
-                    break;
-                }
-                packets += d.len.div_ceil(d.segment);
+                packets += packets_in(d);
             }
             if let Some(kind) = failed {
                 break Err(kind);
@@ -2604,6 +2616,31 @@ pub(crate) mod tests {
         );
         let said = format!("vquic_{RECV_METHOD}(len=50, packets=3, calls=3) -> 0");
         assert!(cx.lines.contains(&said), "{:?}", cx.lines);
+    }
+
+    /// Empty datagrams count against a call's budget of packets as others
+    /// do, so a flood of them ends the call after `MAX_PACKETS`
+    /// (CVE-2026-11352), the rest left for the next.
+    #[test]
+    fn empty_datagrams_spend_the_packet_budget() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        #[cfg(unix)]
+        {
+            *cx.socket.batch.lock().unwrap() = Some(BATCH);
+        }
+        let flood = MAX_PACKETS + 500;
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .extend((0..flood).map(|_| Ok(Vec::new())));
+        q.ingress(&mut cx).unwrap();
+        assert_eq!(
+            cx.socket.datagrams.lock().unwrap().len(),
+            flood - MAX_PACKETS
+        );
+        assert!(script.lock().unwrap().read.is_empty(), "no packet is read");
     }
 
     /// The packets of a datagram the kernel joined (GRO) are each read, in

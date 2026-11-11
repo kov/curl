@@ -1533,3 +1533,15 @@ witness: curl-core conn::quic::tests::a_larger_packet_splits_the_run_before_it
         if self.is_empty() {
             self.sent = 0;
         }
+
+=== an empty datagram is read without spending the packet budget
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::empty_datagrams_spend_the_packet_budget
+--- old
+    if d.len == 0 {
+        1
+    } else {
+--- new
+    if d.len == 0 {
+        0
+    } else {

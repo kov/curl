@@ -515,6 +515,36 @@ fn the_system_s_store_is_the_default_where_the_build_says() {
     assert_eq!(crate::OPENSSL.ca_defaults().system, want);
 }
 
+/// What Apple's SecTrust checks of the peer's status: the revocation
+/// policy unless `CURLSSLOPT_NO_REVOKE`; with `CURLOPT_SSL_VERIFYSTATUS`
+/// on a new session, a positive answer from a response that must have
+/// been stapled, with or without `NO_REVOKE`; a resumed session's status
+/// is not checked again.
+#[test]
+fn sectrust_requires_a_stapled_status_when_asked() {
+    use crate::x509::{SecTrustStatus, sectrust_status};
+    let s = |revocation, require_positive, require_staple| SecTrustStatus {
+        revocation,
+        require_positive,
+        require_staple,
+    };
+    // (no_revoke, verify_status, reused)
+    for (given, want) in [
+        ((false, false, false), s(true, false, false)),
+        ((true, false, false), s(false, false, false)),
+        ((false, true, false), s(true, true, true)),
+        ((true, true, false), s(true, true, true)),
+        ((false, true, true), s(true, false, false)),
+        ((true, true, true), s(false, false, false)),
+    ] {
+        assert_eq!(
+            sectrust_status(given.0, given.1, given.2),
+            want,
+            "{given:?}"
+        );
+    }
+}
+
 /// `ossl_strerror`'s buffer of 256 bytes: the version and `: ` first if
 /// they fit, with at least the text's zero byte after them; the text in
 /// what is left.

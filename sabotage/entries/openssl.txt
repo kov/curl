@@ -490,3 +490,19 @@ const CONFIG: u64 = if cfg!(feature = "disable-openssl-auto-load-config") {
 --- new
 const CONFIG: u64 = if cfg!(feature = "disable-openssl-auto-load-config") {
     0
+
+=== SecTrust adds no revocation policy under NO_REVOKE though the status is asked for
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl tests::sectrust_requires_a_stapled_status_when_asked
+--- old
+        revocation: !no_revoke || required,
+--- new
+        revocation: !no_revoke,
+
+=== a peer SecTrust trusts passes the status check with nothing stapled
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl tests::sectrust_requires_a_stapled_status_when_asked
+--- old
+        require_staple: required,
+--- new
+        require_staple: false,

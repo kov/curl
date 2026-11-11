@@ -993,6 +993,43 @@ pub(crate) fn check_peer(
     Ok(by_sectrust)
 }
 
+/// What Apple's SecTrust is asked of a new session's peer's status.
+#[cfg_attr(
+    not(all(target_os = "macos", feature = "apple-sectrust")),
+    allow(dead_code, reason = "asked of SecTrust alone")
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SecTrustStatus {
+    /// The revocation policy is added.
+    pub(crate) revocation: bool,
+    /// It requires a positive answer.
+    pub(crate) require_positive: bool,
+    /// A response must have been stapled, or the handshake fails.
+    pub(crate) require_staple: bool,
+}
+
+/// What SecTrust checks of the peer's revocation: unless `no_revoke`,
+/// whatever it can find out; with the status asked for of a new session
+/// (`verify_status`), the stapled response, which must be there and say
+/// the certificate is good, `no_revoke` or not, as the OpenSSL check
+/// would require it.
+#[cfg_attr(
+    not(all(target_os = "macos", feature = "apple-sectrust")),
+    allow(dead_code, reason = "asked of SecTrust alone")
+)]
+pub(crate) fn sectrust_status(
+    no_revoke: bool,
+    verify_status: bool,
+    reused: bool,
+) -> SecTrustStatus {
+    let required = verify_status && !reused;
+    SecTrustStatus {
+        revocation: !no_revoke || required,
+        require_positive: required,
+        require_staple: required,
+    }
+}
+
 /// The peer as Apple's SecTrust finds it (`ossl_apple_verify`), named as
 /// the session named it to the peer if by name (`peer->sni`), else as the
 /// URL does, and only if the name is to be checked: `Ok(true)` if trusted;

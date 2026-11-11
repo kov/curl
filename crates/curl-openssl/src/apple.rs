@@ -129,7 +129,8 @@ unsafe fn der_at(stack: *mut openssl_sys::OPENSSL_STACK, i: usize) -> Result<Der
 
 /// What a session's peer came to by SecTrust (`ossl_apple_verify`): the
 /// peer's chain checked, its name too if `host`, its revocation unless
-/// `no_revoke`, with the status the server stapled. A resumed session has
+/// `no_revoke`, with the status the server stapled, which `verify_status`
+/// requires of a new session, `no_revoke` or not. A resumed session has
 /// no chain: its peer is trusted if its session came from one SecTrust
 /// verified (`from_verified`). `Ok(true)` if SecTrust trusts it.
 ///
@@ -180,10 +181,16 @@ pub(crate) unsafe fn verify(
         Ok(n) if n > 0 && !ocsp.is_null() => unsafe { core::slice::from_raw_parts(ocsp, n) },
         _ => &[],
     };
-    let require_ocsp = !reused && verify_status;
+    let status = crate::x509::sectrust_status(no_revoke, verify_status, reused);
     // SAFETY: the chain, `count` long, alive for the call.
-    let result = unsafe { evaluate(stack, count, host, no_revoke, ocsp, require_ocsp, io) };
+    let result = unsafe { evaluate(stack, count, host, status, ocsp, io) };
     match result {
+        // A peer SecTrust trusts without a stapled status, where one is
+        // required, fails as the OpenSSL check fails it.
+        Ok(()) if status.require_staple && ocsp.is_empty() => Err(io.fail(
+            ErrorKind::SslInvalidcertstatus,
+            format_args!("No OCSP response received"),
+        )),
         Ok(()) => Ok(true),
         Err(ErrorKind::PeerFailedVerification) => Ok(false),
         Err(kind) => Err(kind),
@@ -191,8 +198,8 @@ pub(crate) unsafe fn verify(
 }
 
 /// `Curl_vtls_apple_verify`: the chain's `count` certificates, the SSL
-/// policy for `host` (any name if none), the revocation policy unless
-/// `no_revoke`, the stapled `ocsp` response, and SecTrust's verdict.
+/// policy for `host` (any name if none), the revocation policy as
+/// `status` asks, the stapled `ocsp` response, and SecTrust's verdict.
 ///
 /// # Safety
 /// `stack` is a chain of at least `count` certificates, alive for the call.
@@ -200,9 +207,8 @@ unsafe fn evaluate(
     stack: *mut openssl_sys::OPENSSL_STACK,
     count: usize,
     host: Option<&[u8]>,
-    no_revoke: bool,
+    status: crate::x509::SecTrustStatus,
     ocsp: &[u8],
-    require_ocsp: bool,
     io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let oom = ErrorKind::OutOfMemory;
@@ -231,11 +237,11 @@ unsafe fn evaluate(
     // SAFETY: the array, which retains the policy added.
     unsafe { CFArrayAppendValue(policies.0.cast_mut(), ssl_policy.0) };
     drop(ssl_policy);
-    if !no_revoke {
+    if status.revocation {
         // trustd may also ask CRLs and OCSP whether a certificate is
         // revoked; one it already knows to be fails without this.
         let mut flags = REVOCATION_ANY;
-        if require_ocsp {
+        if status.require_positive {
             flags |= REVOCATION_REQUIRE_POSITIVE;
         }
         // SAFETY: flags of the revocation policy.

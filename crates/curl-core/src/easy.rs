@@ -384,7 +384,7 @@ pub(crate) trait OwnMulti: Send {
     #[cfg(test)]
     fn multi(&self) -> &Multi;
     /// Whether a perform driven by events left its table on the multi.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "debug-hooks"))]
     fn has_events(&self) -> bool;
 }
 
@@ -439,7 +439,7 @@ impl OwnMulti for Own {
         &self.multi
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "debug-hooks"))]
     fn has_events(&self) -> bool {
         self.events.is_some()
     }

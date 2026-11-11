@@ -939,13 +939,26 @@ fn an_attempt_dials_as_the_record_awaited_chooses() {
         .output()
         .unwrap();
     let said = String::from_utf8_lossy(&run.stderr);
-    assert_eq!(run.status.code(), Some(7), "{said}");
+    // The setup fails with its first attempt's error (`cf_hc_connect`).
     if said.contains("1st attempt uses h1 from HTTPS-RR") {
         // HTTP/3 is the second's, started once the first failed over TCP.
+        assert_eq!(run.status.code(), Some(7), "{said}");
         let quic = said.find("QUIC").unwrap_or(said.len());
         assert!(at(&said, "h1 baller failed, starting h3") < quic, "{said}");
     } else {
-        // A build that does not wait chooses before the record comes.
+        // A build that does not wait chooses before the record comes, and
+        // QUIC's is the error: the port's refusal, read from the UDP
+        // socket. Winsock gives it as WSAECONNRESET, not WSAECONNREFUSED,
+        // which C takes for a receive error, not a refused connection
+        // (`vquic.c`), and so does curl.exe of C's Windows build.
+        // The error's number, as the text is the system's language.
+        let (quic_refused, cause) = if cfg!(windows) {
+            (56, "errno=10054")
+        } else {
+            (7, "QUIC: connection to 127.0.0.1 port 1 refused")
+        };
+        assert_eq!(run.status.code(), Some(quic_refused), "{said}");
+        assert!(said.contains(cause), "{said}");
         assert!(
             said.contains("1st attempt uses h3 from wanted versions"),
             "{said}"

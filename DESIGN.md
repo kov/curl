@@ -124,7 +124,8 @@ cold code: our hot code per request is larger than C's, and on a core with a lar
   script marked the link (release, the library or the `curl` binary). For a marked link,
   `hot_order.py` asks the linker the link runs for its version and passes it the listed
   functions it finds: GNU ld 2.43 and later `--section-ordering-file` (each function is its own
-  section), LLD `--symbol-ordering-file`. mold, gold and older GNU ld have no such option.
+  section), LLD `--symbol-ordering-file`. Neither mold, gold nor an older GNU ld has such an
+  option.
 - **Failing to order is loud, not fatal.** An unsupported linker, or a configured linker
   other than the wrapper, warns in cargo's output and the build goes on unordered; a list of
   which under 80% resolves warns that it is stale, and what does resolve is still laid out

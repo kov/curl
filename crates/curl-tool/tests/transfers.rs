@@ -2636,15 +2636,11 @@ fn hsts_and_alt_svc_files_are_read_and_written() {
     );
 }
 
-/// HSTS one URL's response sets holds for the next URL of the same
-/// command line, the transfers sharing one cache (CVE-2023-23914), and
-/// the cache's file is written once with it (CVE-2023-23915). The debug
-/// build takes the header over plain HTTP (`CURL_HSTS_HTTP`).
+/// The tool run over two URLs, the first's server setting HSTS for
+/// localhost, with the cache file `hsts`: what it said.
 #[cfg(feature = "debug-hooks")]
-#[test]
-fn hsts_one_url_sets_holds_for_the_next() {
+fn hsts_over_two_urls(dir: &Scratch, hsts: &str) -> String {
     use std::io::{Read as _, Write as _};
-    let dir = Scratch::new("hsts-shared");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -2662,17 +2658,32 @@ fn hsts_one_url_sets_holds_for_the_next() {
         peer.write_all(reply).unwrap();
     });
     let first = format!("http://localhost:{port}/");
-    let hsts = dir.path("hsts");
     let run = curl_env(
-        &dir,
-        &["-v", "--hsts", &hsts, &first, "http://localhost:1/"],
+        dir,
+        &["-v", "--hsts", hsts, &first, "http://localhost:1/"],
         &[("CURL_HSTS_HTTP", "1")],
     );
     server.join().unwrap();
+    run.stderr
+}
+
+/// HSTS one URL's response sets holds for the next URL of the same
+/// command line, the transfers sharing one cache (CVE-2023-23914), even
+/// where the cache's file can be neither read nor written, and the file,
+/// where it can, is written with it (CVE-2023-23915). The debug build
+/// takes the header over plain HTTP (`CURL_HSTS_HTTP`).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn hsts_one_url_sets_holds_for_the_next() {
+    let dir = Scratch::new("hsts-shared");
     let switched = "Switched from HTTP to HTTPS due to HSTS => https://localhost:1/";
-    assert!(run.stderr.contains(switched), "{}", run.stderr);
+    let said = hsts_over_two_urls(&dir, &dir.path("hsts"));
+    assert!(said.contains(switched), "{said}");
     let saved = String::from_utf8(dir.read("hsts")).unwrap();
     assert!(saved.contains("\nlocalhost \""), "{saved}");
+    // Only the shared cache can carry it from one URL to the next.
+    let said = hsts_over_two_urls(&dir, &dir.path("missing/hsts"));
+    assert!(said.contains(switched), "{said}");
 }
 
 /// A POP3 server that offers `STLS` and refuses it, agreeing to all else

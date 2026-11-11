@@ -494,9 +494,8 @@ witness: curl-tool glob::tests::expands_every_combination
 file: crates/curl-tool/src/glob.rs
 witness: curl-tool glob::tests::expands_every_combination
 --- old
-                write!(Appending(out), "{at:0pad$}").map_err(|fmt::Error| OutOfMemory)
+                out.try_resize(out.len() + zeros, b'0')?;
 --- new
-                write!(Appending(out), "{at}").map_err(|fmt::Error| OutOfMemory)
 
 === an output's #N names the pattern after
 file: crates/curl-tool/src/glob.rs
@@ -1722,3 +1721,21 @@ witness: curl-tool trace::tests::stamps_each_field_at_its_width
         let at = at.min(digits.len().saturating_sub(width));
 --- new
         let at = at.min(digits.len().saturating_sub(width.min(1)));
+
+=== a glob range's zeros are padded by the formatter, which aborts past 65535
+file: crates/curl-tool/src/glob.rs
+witness: curl-tool glob::tests::widths_past_65535_are_written_as_c_writes_them
+--- old
+                write!(Appending(out), "{at}").map_err(|fmt::Error| OutOfMemory)
+--- new
+                out.truncate(out.len() - zeros);
+                write!(Appending(out), "{at:0pad$}").map_err(|fmt::Error| OutOfMemory)
+
+=== a glob error's caret is padded by the formatter, which aborts past 65535
+file: crates/curl-tool/src/glob.rs
+witness: curl-tool glob::tests::widths_past_65535_are_written_as_c_writes_them
+--- old
+            let blanks = (self.pos - 1).clamp(1, TEXT_MAX);
+--- new
+            let _ = try_format(format_args!("{:>width$}", " ", width = self.pos - 1))?;
+            let blanks = (self.pos - 1).clamp(1, TEXT_MAX);

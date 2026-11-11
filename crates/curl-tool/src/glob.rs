@@ -102,9 +102,14 @@ impl GlobError {
             let head = try_format(format_args!(" in position {}:\n", self.pos))?;
             message.try_extend_from_slice(head.as_bytes())?;
             message.try_extend_from_slice(text)?;
-            // The caret under the column: C pads one blank to `pos - 1`.
-            let caret = try_format(format_args!("\n{:>width$}^", " ", width = self.pos - 1))?;
-            message.try_extend_from_slice(caret.as_bytes())?;
+            // The caret under the column: C pads one blank to `pos - 1`
+            // (`%*s`). Written by hand, as a width past 65535 is more than
+            // Rust's formatter takes; past what is kept of the message,
+            // none would show.
+            let blanks = (self.pos - 1).clamp(1, TEXT_MAX);
+            message.try_push(b'\n')?;
+            message.try_resize(message.len() + blanks, b' ')?;
+            message.try_push(b'^')?;
         }
         // C formats it into a buffer of `TEXT_MAX` bytes and its zero.
         message.truncate(TEXT_MAX);
@@ -398,7 +403,16 @@ impl Kind {
                             .map_err(|OutOfMemory| fmt::Error)
                     }
                 }
-                write!(Appending(out), "{at:0pad$}").map_err(|fmt::Error| OutOfMemory)
+                // Zeros put in by hand to `pad` digits (`%0*`), as a width
+                // past 65535 is more than Rust's formatter takes; a
+                // range's numbers are never negative.
+                let digits = at
+                    .unsigned_abs()
+                    .checked_ilog10()
+                    .map_or(1, |d| d as usize + 1);
+                let zeros = pad.saturating_sub(digits);
+                out.try_resize(out.len() + zeros, b'0')?;
+                write!(Appending(out), "{at}").map_err(|fmt::Error| OutOfMemory)
             }
         }
     }
@@ -649,6 +663,30 @@ mod tests {
     fn refused(url: &str) -> (Option<&'static str>, usize) {
         let e = Glob::parse(url.as_bytes()).err().unwrap();
         (e.what, e.pos)
+    }
+
+    /// Widths past what Rust's formatter takes (65535) are written as C
+    /// writes them, not aborted on: a range padded to 65536 digits, and
+    /// the caret under an error 70000 bytes in, the message cut at C's
+    /// buffer.
+    #[test]
+    fn widths_past_65535_are_written_as_c_writes_them() {
+        let zeros = "0".repeat(65_536);
+        let (urls, n) = all(&format!("h/[{zeros}-1]"));
+        assert_eq!(n, 2);
+        let one = format!("h/{}1", &zeros[1..]);
+        assert_eq!(urls, [format!("h/{zeros}"), one]);
+        let url = format!("h/{}[z-a]", "a".repeat(70_000));
+        let e = Glob::parse(url.as_bytes()).err().unwrap();
+        assert!(e.pos > 65_536, "{}", e.pos);
+        let said = crate::msgs::captured(|msgs| {
+            assert!(e.show(url.as_bytes(), &msgs));
+        });
+        assert!(
+            said.starts_with("curl: (3) bad range in position 70008:\nh/aaa"),
+            "{said:?}"
+        );
+        assert_eq!(said.len(), "curl: (3) ".len() + TEXT_MAX + 1, "{said:?}");
     }
 
     /// The rightmost pattern moves first; numbers keep their zeros.

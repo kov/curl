@@ -897,10 +897,12 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     if let Some((multi, _)) = easy.added() {
         // SAFETY: the handle's multi outlives its `Added`.
         let multi = unsafe { multi.as_ref() };
-        // Cleanup does not recurse: nothing runs on the multi.
-        if crate::multi::remove(multi, Reach::Direct, easy).is_err() {
-            return;
-        }
+        // Cleanup does not recurse: nothing runs on the multi. The removal
+        // fails only after the handle has left, its timer callback refusing
+        // or the waker failing, and the handle goes all the same, as
+        // `Curl_close` ignores what the removal returns.
+        let removed = crate::multi::remove(multi, Reach::Direct, easy);
+        assert!(easy.added().is_none(), "left its multi: {removed:?}");
     }
     // What it keeps of its resolves goes first, said through the debug
     // function while the handle is whole (`Curl_resolv_destroy_all`).

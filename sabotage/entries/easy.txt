@@ -119,3 +119,14 @@ witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and
         pushed.link_share(self.share.clone());
         pushed.share_watch = self.share_watch.clone();
 --- new
+
+=== curl_easy_cleanup keeps a handle whose removal from its multi failed
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::cleanup_goes_on_when_the_removal_fails
+--- old
+        let removed = crate::multi::remove(multi, Reach::Direct, easy);
+        assert!(easy.added().is_none(), "left its multi: {removed:?}");
+--- new
+        if crate::multi::remove(multi, Reach::Direct, easy).is_err() {
+            return;
+        }

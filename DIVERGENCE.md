@@ -4,8 +4,8 @@ The rewrite does what the C does, except where the C's behaviour is a clear bug 
 `CLAUDE.md`), is undefined by its API, or hands out something the rewrite does not have. Each
 such difference is deliberate and permanent, and is listed here with the test that pins it: the
 test asserts the rewrite's behaviour and its comment says what C does. Behaviour not built yet is
-not a difference: it is tracked in `MILESTONES.md`. The last two sections are the exception, and
-say so: differences found and not yet brought to C's, and weaknesses kept because C has them.
+not a difference: it is tracked in `MILESTONES.md`. The last section is the exception, and says
+so: weaknesses kept because C has them.
 
 ## Failures C reports as success
 
@@ -849,18 +849,6 @@ say so: differences found and not yet brought to C's, and weaknesses kept becaus
   and an application matching on it finds what it would in C's. Pinned by
   `the_version_names_the_rustls_linked` (`crates/curl-rustls/src/tests/real.rs`), which also
   ties the rustls named to the one in `Cargo.lock`.
-
-## Differences not yet brought to C's
-
-Unlike the rest of this file, these are not deliberate: found by reading both sides, and by the
-rule of `CLAUDE.md` each is to be brought to C's behaviour, with a test, and then removed from
-here. They are listed so that none is read as C's behaviour meanwhile; none has a test that pins
-it.
-
-- **`curl_easy_cleanup` keeps a handle its multi failed to remove.** When `curl_multi_remove_handle`
-  fails inside it (a timer callback refusing, or a call from inside a callback), cleanup returns
-  without freeing the handle, so its cookie jar, HSTS and alt-svc files are not written
-  (`crates/curl-sys-abi/src/easy.rs`); C's `Curl_close` frees it regardless. No test.
 
 ## Residuals shared with C
 

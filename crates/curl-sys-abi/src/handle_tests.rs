@@ -7482,6 +7482,65 @@ fn flushes_a_jar_named_long_without_copying_the_name() {
     assert_eq!(long, short, "a long name cost more allocations");
 }
 
+/// `curl_easy_cleanup` on a handle still in a multi removes it first, and
+/// goes on though the removal fails: the timer callback refusing what
+/// the removal tells it fails the removal after the handle has left, and
+/// the handle is cleaned up all the same, its jar written (`Curl_close`
+/// ignores what `Curl_multi_remove_handle` returns). C's build writes
+/// the jar for this same program.
+#[test]
+fn cleanup_goes_on_when_the_removal_fails() {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static REFUSE: AtomicBool = AtomicBool::new(false);
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "C" fn timer(_: *mut CURLM, _: c_long, _: *mut c_void) -> c_int {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        if REFUSE.load(Ordering::Relaxed) {
+            -1
+        } else {
+            0
+        }
+    }
+    let path = std::env::temp_dir().join(format!("curl-shim-{}-removal-jar", std::process::id()));
+    std::fs::remove_file(&path).ok();
+    let jar = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+    let m = curl_multi_init();
+    let t = timer as TimerFn as *mut c_void;
+    assert_eq!(
+        // SAFETY: the live multi and a timer callback.
+        unsafe { curl_multi_setopt(m, ffi::CURLMOPT_TIMERFUNCTION, t) },
+        CURLM_OK
+    );
+    let c = curl_easy_init();
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"http://127.0.0.1:1/".as_ptr().cast_mut(),
+    );
+    pointer(c, ffi::CURLOPT_COOKIEJAR, jar.as_ptr().cast_mut());
+    let cookie = c"example.com\tFALSE\t/\tFALSE\t0\ta\t1";
+    pointer(c, ffi::CURLOPT_COOKIELIST, cookie.as_ptr().cast_mut());
+    // A reload of no file starts the jar, as a transfer would.
+    pointer(c, ffi::CURLOPT_COOKIEFILE, c"".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_COOKIELIST, c"RELOAD".as_ptr().cast_mut());
+    // SAFETY: live handles.
+    assert_eq!(unsafe { curl_multi_add_handle(m, c) }, CURLM_OK);
+    assert_eq!(CALLS.load(Ordering::Relaxed), 1, "told of the new transfer");
+    REFUSE.store(true, Ordering::Relaxed);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(CALLS.load(Ordering::Relaxed), 2, "told of the removal");
+    REFUSE.store(false, Ordering::Relaxed);
+    // SAFETY: the live multi, which holds no handle now.
+    assert_eq!(unsafe { curl_multi_cleanup(m) }, CURLM_OK);
+    let written = std::fs::read_to_string(&path).unwrap_or_default();
+    std::fs::remove_file(&path).ok();
+    assert!(
+        written.contains("example.com\tFALSE\t/\tFALSE\t0\ta\t1"),
+        "{written:?}"
+    );
+}
+
 /// `curl_global_trace` changes what every handle traces, those made
 /// before it, their copies and those reset among them, as C's process-wide
 /// levels do. Tried on a component nothing traces yet, as the setting is

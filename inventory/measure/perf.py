@@ -68,6 +68,9 @@ import score
 import suite
 from common import ROOT, check
 
+sys.path.insert(0, str(ROOT / ".cargo" / "link"))
+import hot_order  # noqa: E402
+
 MACOS = sys.platform == "darwin"
 # The release library's name, as the C release build installs it, and the
 # glob that finds the file it names.
@@ -271,6 +274,21 @@ def check_one_engine(library):
           f"{library} carries an engine for NoHost beside CHost's")
 
 
+def check_hot_order(binary, order):
+    """
+    Fail unless `binary` starts its `.text` with the hot functions `order`
+    lists, in its order (hot_order.check, whose positive control is that
+    most of the list is in the binary at all). Linux only: on macOS the
+    link lays out none.
+    """
+    if MACOS:
+        return
+    try:
+        hot_order.check(order, binary)
+    except AssertionError as e:
+        check(False, f"hot-function order: {e}")
+
+
 def port_binaries(leg):
     """Build each PORTS test binary; return their paths by program."""
     out = {}
@@ -317,6 +335,8 @@ def build_rust(leg):
     else:
         shutil.copy2(out / "libcurl.so", library)
     check_one_engine(library)
+    check_hot_order(library, ROOT / "crates/curl-sys-abi/hot.order")
+    check_hot_order(out / "curl", ROOT / "crates/curl-tool/hot.order")
     for name in ("curl", "curlinfo"):
         shutil.copy2(out / name, leg.build / "src" / name)
     perf = leg.build / "tests/perf/perf"

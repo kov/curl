@@ -262,7 +262,7 @@ pub enum Style {
 pub(crate) mod testing {
     use curl_alloc::Lock;
     use std::collections::VecDeque;
-    use std::sync::Arc;
+    use std::sync::{Arc, PoisonError};
 
     use super::*;
 
@@ -420,7 +420,12 @@ pub(crate) mod testing {
 
     impl Drop for ScriptedContext {
         fn drop(&mut self) {
-            self.0.lock().unwrap().asked.push(Asked::Dropped);
+            // A step that panicked with the script locked left it
+            // poisoned, and the context is dropped as that panic unwinds:
+            // panicking again here would abort the test binary rather
+            // than fail the test with the first panic's message.
+            let mut script = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            script.asked.push(Asked::Dropped);
         }
     }
 

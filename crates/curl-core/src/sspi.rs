@@ -311,7 +311,7 @@ impl fmt::Debug for SecStatus {
 pub(crate) mod testing {
     use curl_alloc::Lock;
     use std::collections::VecDeque;
-    use std::sync::Arc;
+    use std::sync::{Arc, PoisonError};
 
     use super::*;
 
@@ -459,7 +459,10 @@ pub(crate) mod testing {
 
     impl Drop for Context {
         fn drop(&mut self) {
-            self.0.0.lock().unwrap().asked.push(Asked::Dropped);
+            // As the GSS-API script's: a step that panicked with the
+            // script locked must fail the test, not abort it here.
+            let mut script = self.0.0.lock().unwrap_or_else(PoisonError::into_inner);
+            script.asked.push(Asked::Dropped);
         }
     }
 

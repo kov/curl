@@ -159,11 +159,19 @@ unsafe impl Send for Session {}
 
 impl Session {
     /// Set `option` to what `value` points at, or is, as the option
-    /// takes it, the library's answer not looked at, as C does not.
-    fn set(&mut self, option: u32, value: *const c_void) {
+    /// takes it, the library's answer not looked at, as C does not. Each
+    /// option the session sets has a method of its own, which gives the
+    /// value of the option's type.
+    ///
+    /// # Safety
+    ///
+    /// `value` is what `option` takes: a pointer to a value of its type,
+    /// live across the call, or the value itself where the option takes
+    /// one in the pointer.
+    unsafe fn set_raw(&mut self, option: u32, value: *const c_void) {
         let option = i32::try_from(option).expect("the library's options are small");
-        // SAFETY: a live session; what the option reads, which lives
-        // across the call.
+        // SAFETY: a live session; what the option reads, as the caller
+        // guarantees.
         unsafe { sys::ldap_set_option(self.ld, option, value) };
     }
 }
@@ -187,12 +195,13 @@ impl LocalCalls for Session {
             Version::V2 => sys::LDAP_VERSION2 as i32,
             Version::V3 => sys::LDAP_VERSION3 as i32,
         };
-        self.set(sys::LDAP_OPT_PROTOCOL_VERSION, (&raw const v).cast());
+        // SAFETY: the option takes a pointer to an `int`, read in the call.
+        unsafe { self.set_raw(sys::LDAP_OPT_PROTOCOL_VERSION, (&raw const v).cast()) };
     }
 
     fn set_no_referrals(&mut self) {
-        // `LDAP_OPT_OFF`, a NULL pointer.
-        self.set(sys::LDAP_OPT_REFERRALS, ptr::null());
+        // SAFETY: the option takes `LDAP_OPT_OFF`, a NULL pointer.
+        unsafe { self.set_raw(sys::LDAP_OPT_REFERRALS, ptr::null()) };
     }
 
     fn search(&mut self, search: &Search) -> Result<(Code, Box<dyn Entries + '_>), Code> {
@@ -276,14 +285,16 @@ impl LocalCalls for Session {
 
 impl WinLdapSession for Session {
     fn set_ssl(&mut self) {
-        self.set(sys::LDAP_OPT_SSL, OPT_ON);
+        // SAFETY: the option takes `LDAP_OPT_ON` in the pointer.
+        unsafe { self.set_raw(sys::LDAP_OPT_SSL, OPT_ON) };
     }
 
     fn accept_any_cert(&mut self) {
         let callback: unsafe extern "system" fn(*mut sys::LDAP, *mut *mut CERT_CONTEXT) -> bool =
             bypass_cert_verify;
-        // The option takes the callback itself, as C hands it.
-        self.set(sys::LDAP_OPT_SERVER_CERTIFICATE, callback as *const c_void);
+        // SAFETY: the option takes the callback itself, of the type the
+        // library calls it as, as C hands it.
+        unsafe { self.set_raw(sys::LDAP_OPT_SERVER_CERTIFICATE, callback as *const c_void) };
     }
 
     fn bind(&mut self, how: WinBind<'_>) -> Code {

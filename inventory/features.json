@@ -1,5 +1,5 @@
 {
- "c-commit": "bd3de3aede646e3c92ade95d624e9f82211e1c3a",
+ "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
  "data": {
   "backends": {
    "all": [
@@ -8159,7 +8159,7 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1073,
+   "test-feature-blocks": 1074,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8807,7 +8807,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 275
+     "tests": 276
     },
     {
      "name": "python",
@@ -8991,7 +8991,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1067,
+   "test-files-with-features": 1068,
    "tool-added-features": [
     {
      "bit": null,

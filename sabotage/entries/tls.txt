@@ -654,3 +654,51 @@ witness: curl-core tls::tests::another_origin_s_tls_has_none_of_the_client_s_ide
 --- new
             ca_defaults,
             to: Party::FirstOrigin,
+
+=== a check takes a pin compared for another session's identity
+file: crates/curl-core/src/tls/checked.rs
+witness: curl-core tls::checked::tests::a_token_of_another_session_fails_closed
+--- old
+        let why = if !pin.is_for(&identity) {
+--- new
+        let why = if !pin.is_for(&identity) && pin.matched() {
+
+=== a check takes a name matched for another session's identity
+file: crates/curl-core/src/tls/checked.rs
+witness: curl-core tls::checked::tests::a_token_of_another_session_fails_closed
+--- old
+        } else if name.as_ref().is_some_and(|n| !n.is_for(&identity)) {
+--- new
+        } else if name.as_ref().is_some_and(|n| !n.is_for(&identity) && in_core && !in_core) {
+
+=== a check whose name curl-core matches is made without the name
+file: crates/curl-core/src/tls/checked.rs
+witness: curl-core tls::checked::tests::a_name_checked_in_core_cannot_be_left_out
+--- old
+        } else if in_core && identity.verify_host && name.is_none() {
+--- new
+        } else if in_core && identity.verify_host && identity.verify_peer && name.is_none() {
+
+=== a name checked only with the chain is no residual where the peer is not verified
+file: crates/curl-core/src/tls/checked.rs
+witness: curl-core tls::checked::tests::residuals_are_kept_where_they_weaken_the_check
+--- old
+        if identity.verify_host && !identity.verify_peer {
+--- new
+        if identity.verify_host && identity.verify_peer {
+
+=== the application's context handler leaves no residual
+file: crates/curl-core/src/tls/checked.rs
+witness: curl-core tls::checked::tests::residuals_are_kept_where_they_weaken_the_check
+--- old
+        let residuals = if io.configures_context() {
+--- new
+        let residuals = if io.configures_context() && residuals.has(Residual::Testing) {
+
+=== a DNS name matches a peer that is an address
+file: crates/curl-core/src/tls/hostcheck.rs
+witness: curl-core tls::checked::tests::the_name_matched_is_the_session_s_peer_s
+--- old
+        CertName::Dns(pattern) => kind == TlsPeerKind::Name && names(pattern, host),
+--- new
+        CertName::Dns(pattern) => names(pattern, host),

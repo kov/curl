@@ -4,6 +4,62 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use curl_alloc::TryArc;
+
+use super::{TlsCx, TlsIdentity, TlsPeerKind};
+
+/// A name a certificate gives, as a library reads it: an alternative
+/// DNS name, an alternative IP address (its bytes, four or sixteen), or a
+/// common name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CertName<'a> {
+    Dns(&'a [u8]),
+    Ip(&'a [u8]),
+    CommonName(&'a [u8]),
+}
+
+/// The certificate names the peer a session works for: made by
+/// [`check`] alone, which reads the peer's name from the session's own
+/// context, for that session's identity. `Checked` takes it.
+#[derive(Debug)]
+pub struct NameMatch {
+    identity: TryArc<TlsIdentity>,
+}
+
+impl NameMatch {
+    /// Made for `identity`.
+    pub(crate) fn is_for(&self, identity: &TryArc<TlsIdentity>) -> bool {
+        TryArc::ptr_eq(&self.identity, identity)
+    }
+}
+
+/// `name` names the peer the session `io` works for: a DNS name or a
+/// common name the host by RFC 6125, a wildcard never for an address; an
+/// IP address the peer's address, byte for byte, where the peer is one.
+/// A DNS name is no address's, nor an IP address a host name's.
+pub fn check(io: &TlsCx<'_>, name: CertName<'_>) -> Option<NameMatch> {
+    let (host, kind) = io.peer_name();
+    let matched = match name {
+        CertName::Dns(pattern) => kind == TlsPeerKind::Name && names(pattern, host),
+        CertName::CommonName(pattern) => names(pattern, host),
+        CertName::Ip(bytes) => {
+            let text = std::str::from_utf8(host).ok();
+            match kind {
+                TlsPeerKind::Name => false,
+                TlsPeerKind::Ipv4 => text
+                    .and_then(|t| t.parse::<Ipv4Addr>().ok())
+                    .is_some_and(|a| a.octets() == bytes),
+                TlsPeerKind::Ipv6 => text
+                    .and_then(|t| t.parse::<Ipv6Addr>().ok())
+                    .is_some_and(|a| a.octets() == bytes),
+            }
+        }
+    };
+    matched.then(|| NameMatch {
+        identity: io.identity().clone(),
+    })
+}
+
 /// The certificate's name `pattern` names `host` (`Curl_cert_hostcheck`).
 /// Neither is taken to end at a zero byte: a pattern with one inside
 /// names no host.

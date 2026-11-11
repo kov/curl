@@ -6,9 +6,9 @@
 
 use std::io::Read as _;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use super::{Text, TlsCx};
+use super::{Text, TlsCx, TlsIdentity};
 use crate::error::ErrorKind;
 use crate::hash::{Hash as _, Sha256};
 
@@ -43,6 +43,76 @@ pub fn pin_peer_pubkey(io: &mut TlsCx<'_>, pinned: &[u8], spki: &[u8]) -> Result
         Ok(())
     } else {
         Err(ErrorKind::SslPinnedpubkeynotmatch)
+    }
+}
+
+/// Whether a session's peer was held to a pinned key: made by this module
+/// alone, from the pin the session's own identity holds, for that
+/// identity. `Checked` takes it.
+#[derive(Debug)]
+pub struct Pinned {
+    identity: TryArc<TlsIdentity>,
+    matched: bool,
+}
+
+impl Pinned {
+    /// The peer's key matched the pin, which the identity holds; else the
+    /// identity pins none.
+    pub(crate) fn matched(&self) -> bool {
+        self.matched
+    }
+
+    /// Made for `identity`.
+    pub(crate) fn is_for(&self, identity: &TryArc<TlsIdentity>) -> bool {
+        TryArc::ptr_eq(&self.identity, identity)
+    }
+}
+
+/// What a session's identity asks of the peer's key: nothing, which is
+/// already the verdict, or a key to compare once the peer's is had.
+#[derive(Debug)]
+pub enum Pin {
+    NotAsked(Pinned),
+    Asked(PinAsk),
+}
+
+/// A pin to compare the peer's key with, the session's identity's.
+#[derive(Debug)]
+pub struct PinAsk {
+    identity: TryArc<TlsIdentity>,
+}
+
+/// What the identity of the session `io` works for pins
+/// (`CURLOPT_PINNEDPUBLICKEY`): read from the identity, never from the
+/// caller.
+pub fn of(io: &TlsCx<'_>) -> Pin {
+    let identity = io.identity().clone();
+    if identity.options.pinned_key.is_none() {
+        Pin::NotAsked(Pinned {
+            identity,
+            matched: false,
+        })
+    } else {
+        Pin::Asked(PinAsk { identity })
+    }
+}
+
+impl PinAsk {
+    /// The peer's key `spki` is the one pinned, as `Curl_pin_peer_pubkey`
+    /// decides: the lines it says on the way through `io`. A key that is
+    /// not is `SslPinnedpubkeynotmatch`, which the library says why for.
+    pub fn check(self, io: &mut TlsCx<'_>, spki: &[u8]) -> Result<Pinned, ErrorKind> {
+        let pinned = self
+            .identity
+            .options
+            .pinned_key
+            .as_deref()
+            .expect("asked of an identity that pins a key");
+        pin_peer_pubkey(io, pinned, spki)?;
+        Ok(Pinned {
+            identity: self.identity,
+            matched: true,
+        })
     }
 }
 

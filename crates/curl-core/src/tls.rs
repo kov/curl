@@ -34,14 +34,16 @@ pub use crate::conn::layer::Handshake;
 pub(crate) use cache::SessionCache;
 pub(crate) use cache::unpack as unpack_session;
 pub use cache::{SessionExport, SessionFor, SessionPeer, TLS1_3, TlsTicket};
+pub use checked::{Checked, Residual, Residuals};
 pub use keylog::{KeyLog, SharedKeyLog};
 pub use pin::pin_peer_pubkey;
 pub use store::StoreCache;
 
 pub(crate) mod cache;
+pub mod checked;
 pub mod hostcheck;
 mod keylog;
-mod pin;
+pub mod pin;
 mod store;
 pub mod suites;
 pub mod x509;
@@ -1091,6 +1093,17 @@ impl TlsCx<'_> {
     /// is the one or the other's.
     pub fn verified(&mut self, result: impl Into<i64>) {
         self.cx.tls_verified(self.component, result.into());
+    }
+
+    /// The identity the session was made with, as the connection keeps
+    /// it.
+    pub(crate) fn identity(&self) -> &TryArc<TlsIdentity> {
+        self.peer.identity()
+    }
+
+    /// The name of the peer the session works for, and what it is.
+    pub(crate) fn peer_name(&self) -> (&[u8], TlsPeerKind) {
+        self.peer.name()
     }
 
     /// The session is an HTTPS proxy's, not the origin's

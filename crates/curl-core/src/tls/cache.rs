@@ -189,6 +189,11 @@ pub struct SessionPeer {
     /// QUIC library that takes none (`Flavour::keeps_sessions`), which
     /// still resumes one kept already.
     keeps: bool,
+    /// The origin's name as the session sends and checks it (C's
+    /// `peer->hostname`), an IPv6 address without its brackets, and what
+    /// it is: a name or an address. Not a connect-to's.
+    name: Vec<u8>,
+    kind: super::TlsPeerKind,
 }
 
 impl SessionPeer {
@@ -204,10 +209,15 @@ impl SessionPeer {
         dial: Dial,
     ) -> Result<SessionPeer, OutOfMemory> {
         let key = peer_key(identity, origin, via, tls_id, dial)?;
+        let peer = super::TlsPeer::of(origin, false, None);
+        let mut name = Vec::new();
+        name.try_extend_from_slice(peer.name)?;
         Ok(SessionPeer {
             key,
             identity: identity.clone(),
             keeps: true,
+            name,
+            kind: peer.kind,
         })
     }
 
@@ -234,6 +244,16 @@ impl SessionPeer {
     /// The key, as the trace shows it.
     pub fn key(&self) -> &[u8] {
         &self.key
+    }
+
+    /// The identity the connection's TLS was made with.
+    pub(crate) fn identity(&self) -> &TryArc<TlsIdentity> {
+        &self.identity
+    }
+
+    /// The origin's name and what it is (`TlsPeer`'s).
+    pub(crate) fn name(&self) -> (&[u8], super::TlsPeerKind) {
+        (&self.name, self.kind)
     }
 
     /// The connection's sessions are kept (`CURLOPT_SSL_SESSIONID_CACHE`).

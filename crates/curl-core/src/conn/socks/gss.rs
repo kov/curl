@@ -711,7 +711,6 @@ fn sspi_step(
         target,
         flags: Req {
             mutual_auth: true,
-            allocate_memory: true,
             confidentiality: true,
             replay_detect: true,
             ..Req::default()

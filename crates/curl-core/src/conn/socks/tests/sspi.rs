@@ -63,7 +63,6 @@ fn step(status: SecStatus, token: &[u8]) -> Answer {
 fn kerberos_flags() -> Req {
     Req {
         mutual_auth: true,
-        allocate_memory: true,
         confidentiality: true,
         replay_detect: true,
         ..Req::default()

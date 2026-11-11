@@ -33,29 +33,9 @@ mod imp {
     /// SSPI.
     pub static SSPI: WindowsSspi = WindowsSspi;
 
-    /// `text` in the build's form, ended by a zero: as it is, or
-    /// converted from UTF-8 to UTF-16 in the Unicode build, where text
-    /// that is not UTF-8 does not convert, as C's
-    /// `curlx_convert_UTF8_to_tchar` fails on it.
+    /// `text` in the build's form, ended by a zero (`Text::new`).
     pub(crate) fn tchar(text: &[u8]) -> Result<Text, OutOfMemory> {
-        if curl_os::UNICODE {
-            let s = core::str::from_utf8(text).map_err(|_| OutOfMemory)?;
-            let mut w = Vec::new();
-            w.try_reserve_exact(s.encode_utf16().count() + 1)
-                .map_err(|_| OutOfMemory)?;
-            for unit in s.encode_utf16() {
-                w.try_push(unit)?;
-            }
-            w.try_push(0)?;
-            Ok(Text::Wide(w))
-        } else {
-            let mut a = Vec::new();
-            a.try_reserve_exact(text.len() + 1)
-                .map_err(|_| OutOfMemory)?;
-            a.try_extend_from_slice(text)?;
-            a.try_push(0)?;
-            Ok(Text::Ansi(a))
-        }
+        Text::new(text)
     }
 
     /// The name C gives `package` (`SP_NAME_*`).
@@ -141,7 +121,6 @@ mod imp {
             (r.mutual_auth, id::ISC_REQ_MUTUAL_AUTH),
             (r.replay_detect, id::ISC_REQ_REPLAY_DETECT),
             (r.confidentiality, id::ISC_REQ_CONFIDENTIALITY),
-            (r.allocate_memory, id::ISC_REQ_ALLOCATE_MEMORY),
             (r.use_http_style, id::ISC_REQ_USE_HTTP_STYLE),
         ] {
             if on {
@@ -177,12 +156,10 @@ mod imp {
                     },
                 };
             }
+            // The room chosen asks SSPI to allocate, or not.
             let room = match call.output {
                 Output::Room(n) => Some(n),
-                Output::Allocated => {
-                    assert!(call.flags.allocate_memory, "SSPI allocates when asked to");
-                    None
-                }
+                Output::Allocated => None,
             };
             let sys_call = sys::Call {
                 fresh: call.fresh,
@@ -277,13 +254,14 @@ mod imp {
         /// build, text that is not UTF-8 does not convert.
         #[test]
         fn text_is_the_builds() {
-            match (curl_os::UNICODE, tchar(b"HTTP/h\xc3\xa9").unwrap()) {
-                (true, Text::Wide(w)) => {
+            let t = tchar(b"HTTP/h\xc3\xa9").unwrap();
+            match (curl_os::UNICODE, t.ansi_bytes(), t.wide_units()) {
+                (true, None, Some(w)) => {
                     assert_eq!(w, [72, 84, 84, 80, 47, 104, 0xe9, 0]);
                     assert!(tchar(b"\xe9").is_err());
                 }
-                (false, Text::Ansi(a)) => assert_eq!(a, b"HTTP/h\xc3\xa9\0"),
-                (unicode, _) => panic!("not the text of a build with UNICODE {unicode}"),
+                (false, Some(a), None) => assert_eq!(a, b"HTTP/h\xc3\xa9\0"),
+                (unicode, ..) => panic!("not the text of a build with UNICODE {unicode}"),
             }
         }
 

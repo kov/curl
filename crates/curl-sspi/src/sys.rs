@@ -32,39 +32,98 @@ const NATIVE_DREP: u32 = 0x10;
 const WRAP_NO_ENCRYPT: u32 = 0x8000_0001;
 
 /// Text in the build's form, ended by a zero: the ANSI code page's bytes,
-/// or UTF-16.
-pub enum Text {
+/// or UTF-16 in the Unicode build. Made only by `Text::new`, so its form
+/// is the build's, it ends in its zero, and SSPI's `u32` counts it.
+pub struct Text {
+    form: Form,
+    /// Its length in characters, the zero not counted.
+    len: u32,
+}
+
+enum Form {
     Ansi(Vec<u8>),
     Wide(Vec<u16>),
 }
 
 impl Text {
+    /// `text` in the build's form, ended by a zero: as it is, or
+    /// converted from UTF-8 to UTF-16 in the Unicode build, where text
+    /// that is not UTF-8 does not convert, as C's
+    /// `curlx_convert_UTF8_to_tchar` fails on it. Text longer than a
+    /// `u32` counts is refused, not counted short.
+    pub fn new(text: &[u8]) -> Result<Text, OutOfMemory> {
+        let form = if curl_os::UNICODE {
+            let s = core::str::from_utf8(text).map_err(|_| OutOfMemory)?;
+            let mut w = Vec::new();
+            w.try_reserve_exact(s.encode_utf16().count() + 1)
+                .map_err(|_| OutOfMemory)?;
+            for unit in s.encode_utf16() {
+                w.try_push(unit)?;
+            }
+            w.try_push(0)?;
+            Form::Wide(w)
+        } else {
+            let mut a = Vec::new();
+            a.try_reserve_exact(text.len() + 1)
+                .map_err(|_| OutOfMemory)?;
+            a.try_extend_from_slice(text)?;
+            a.try_push(0)?;
+            Form::Ansi(a)
+        };
+        let n = match &form {
+            Form::Ansi(t) => t.len(),
+            Form::Wide(t) => t.len(),
+        };
+        let len = u32::try_from(n - 1).map_err(|_| OutOfMemory)?;
+        Ok(Text { form, len })
+    }
+
     /// Its length in characters, the zero not counted.
     fn len(&self) -> u32 {
-        let n = match self {
-            Text::Ansi(t) => t.len(),
-            Text::Wide(t) => t.len(),
-        };
-        u32::try_from(n - 1).unwrap_or(u32::MAX)
+        self.len
     }
 
     fn ansi(&self) -> *const u8 {
-        match self {
-            Text::Ansi(t) => t.as_ptr(),
-            Text::Wide(_) => unreachable!("the build's text is one form"),
+        match &self.form {
+            Form::Ansi(t) => t.as_ptr(),
+            Form::Wide(_) => unreachable!("the build's text is one form"),
         }
     }
 
     fn wide(&self) -> *const u16 {
-        match self {
-            Text::Wide(t) => t.as_ptr(),
-            Text::Ansi(_) => unreachable!("the build's text is one form"),
+        match &self.form {
+            Form::Wide(t) => t.as_ptr(),
+            Form::Ansi(_) => unreachable!("the build's text is one form"),
         }
     }
 
     fn is_wide(&self) -> bool {
-        matches!(self, Text::Wide(_))
+        matches!(self.form, Form::Wide(_))
     }
+
+    /// The bytes, ended by the zero, of the ANSI build's text.
+    #[cfg(test)]
+    pub(crate) fn ansi_bytes(&self) -> Option<&[u8]> {
+        match &self.form {
+            Form::Ansi(t) => Some(t),
+            Form::Wide(_) => None,
+        }
+    }
+
+    /// The units, ended by the zero, of the Unicode build's text.
+    #[cfg(test)]
+    pub(crate) fn wide_units(&self) -> Option<&[u16]> {
+        match &self.form {
+            Form::Wide(t) => Some(t),
+            Form::Ansi(_) => None,
+        }
+    }
+}
+
+/// `n` bytes as an SSPI buffer counts them, or out of memory for more
+/// than its `u32` counts: refused, never described as fewer.
+fn counted(n: usize) -> Result<u32, OutOfMemory> {
+    u32::try_from(n).map_err(|_| OutOfMemory)
 }
 
 /// The largest token `package` makes (`QuerySecurityPackageInfo`), or
@@ -219,7 +278,8 @@ pub struct Call<'a> {
     pub native: bool,
     /// None passes no description.
     pub input: &'a [In<'a>],
-    /// The output buffer's size; none for one SSPI allocates.
+    /// The output buffer's size; none for one SSPI allocates, which
+    /// alone asks for `ISC_REQ_ALLOCATE_MEMORY`.
     pub room: Option<usize>,
 }
 
@@ -250,33 +310,37 @@ pub fn initialize(
         } else {
             i.bytes.as_ptr().cast_mut().cast()
         };
-        *b = buffer(
-            i.kind,
-            data,
-            u32::try_from(i.bytes.len()).unwrap_or(u32::MAX),
-        );
+        *b = buffer(i.kind, data, counted(i.bytes.len())?);
     }
     let indesc = desc(&mut inbufs[..input.len()]);
-    let room_len = room.unwrap_or(0);
-    if room.is_some() {
-        *out = curl_alloc::try_zeroed(room_len)?;
-    }
-    let mut outbuf = [buffer(
-        kind::TOKEN,
-        if room.is_some() {
-            out.as_mut_ptr().cast()
-        } else {
-            ptr::null_mut()
-        },
-        u32::try_from(room_len).unwrap_or(u32::MAX),
-    )];
+    // The output's room, the caller's or SSPI's: the one choice says
+    // where the token goes and whether SSPI is asked to allocate it.
+    let (outbuf, req) = match room {
+        Some(n) => {
+            *out = curl_alloc::try_zeroed(n)?;
+            (
+                buffer(kind::TOKEN, out.as_mut_ptr().cast(), counted(n)?),
+                req & !id::ISC_REQ_ALLOCATE_MEMORY,
+            )
+        }
+        None => (
+            buffer(kind::TOKEN, ptr::null_mut(), 0),
+            req | id::ISC_REQ_ALLOCATE_MEMORY,
+        ),
+    };
+    let mut outbuf = [outbuf];
     let mut outdesc = desc(&mut outbuf);
     let mut attrs = 0u32;
     // The context goes on in place, or a new one is written to room of
     // its own, which replaces the old once it is made.
     let mut fresh_room = None;
     let (old, new): (*const SecHandle, *mut SecHandle) = match context {
-        Some(c) if !fresh => (c.as_ptr(), c.as_mut_ptr()),
+        // One pointer, read and written through: SSPI updates the handle
+        // in place.
+        Some(c) if !fresh => {
+            let p = c.as_mut_ptr();
+            (p.cast_const(), p)
+        }
         _ => {
             let r = fresh_room.insert(CtxtHandle::room()?);
             (ptr::null(), &mut **r)
@@ -327,9 +391,10 @@ pub fn initialize(
             )
         }
     };
-    if room.is_some() {
+    if let Some(room) = room {
         let n = usize::try_from(outbuf[0].cbBuffer).expect("a u32 fits");
-        out.truncate(n.min(room_len));
+        assert!(n <= room, "SSPI's token lies within the room it was given");
+        out.truncate(n);
     } else if let Some(token) = {
         // SAFETY: the call was asked to allocate the token, which SSPI
         // then hands over.
@@ -355,11 +420,10 @@ pub enum Completing<'a> {
 
 /// `CompleteAuthToken` with `handle` over `token`, which it may change.
 pub fn complete(handle: Completing<'_>, token: &mut Vec<u8>) -> i32 {
-    let mut b = [buffer(
-        kind::TOKEN,
-        token.as_mut_ptr().cast(),
-        u32::try_from(token.len()).unwrap_or(u32::MAX),
-    )];
+    let Ok(len) = counted(token.len()) else {
+        return windows_sys::Win32::Foundation::SEC_E_INSUFFICIENT_MEMORY;
+    };
+    let mut b = [buffer(kind::TOKEN, token.as_mut_ptr().cast(), len)];
     let d = desc(&mut b);
     let handle = match handle {
         Completing::Context(context) => context.map_or(ptr::null(), CtxtHandle::as_ptr),
@@ -369,6 +433,10 @@ pub fn complete(handle: Completing<'_>, token: &mut Vec<u8>) -> i32 {
     // alive for the call; SSPI writes within the token.
     let status = unsafe { id::CompleteAuthToken(handle, &d) };
     let n = usize::try_from(b[0].cbBuffer).expect("a u32 fits");
+    assert!(
+        n <= token.len(),
+        "SSPI's token lies within the one it was given"
+    );
     token.truncate(n);
     status
 }
@@ -382,24 +450,24 @@ pub fn make_signature(
     room: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), i32> {
-    *out = curl_alloc::try_zeroed(room)
-        .map_err(|OutOfMemory| windows_sys::Win32::Foundation::SEC_E_INSUFFICIENT_MEMORY)?;
-    let param = |bytes: &[u8]| {
-        buffer(
+    let oom = |OutOfMemory| windows_sys::Win32::Foundation::SEC_E_INSUFFICIENT_MEMORY;
+    *out = curl_alloc::try_zeroed(room).map_err(oom)?;
+    let param = |bytes: &[u8]| -> Result<id::SecBuffer, i32> {
+        Ok(buffer(
             kind::PKG_PARAMS,
             bytes.as_ptr().cast_mut().cast(),
-            u32::try_from(bytes.len()).unwrap_or(u32::MAX),
-        )
+            counted(bytes.len()).map_err(oom)?,
+        ))
     };
     let mut b = [
         buffer(kind::TOKEN, ptr::null_mut(), 0),
-        param(method),
-        param(uri),
+        param(method)?,
+        param(uri)?,
         buffer(kind::PKG_PARAMS, ptr::null_mut(), 0),
         buffer(
             kind::PADDING,
             out.as_mut_ptr().cast(),
-            u32::try_from(room).unwrap_or(u32::MAX),
+            counted(room).map_err(oom)?,
         ),
     ];
     let d = desc(&mut b);
@@ -411,7 +479,11 @@ pub fn make_signature(
         return Err(status);
     }
     let n = usize::try_from(b[4].cbBuffer).expect("a u32 fits");
-    out.truncate(n.min(room));
+    assert!(
+        n <= room,
+        "SSPI's response lies within the room it was given"
+    );
+    out.truncate(n);
     Ok(())
 }
 
@@ -457,7 +529,7 @@ pub fn wrap(
         buffer(
             kind::DATA,
             data.as_mut_ptr().cast(),
-            u32::try_from(data.len()).unwrap_or(u32::MAX),
+            counted(data.len()).map_err(oom)?,
         ),
         buffer(kind::PADDING, padding.as_mut_ptr().cast(), block),
     ];
@@ -471,8 +543,11 @@ pub fn wrap(
     out.clear();
     for (i, v) in [&token, &data, &padding].into_iter().enumerate() {
         let n = usize::try_from(b[i].cbBuffer).expect("a u32 fits");
-        out.try_extend_from_slice(&v[..n.min(v.len())])
-            .map_err(oom)?;
+        assert!(
+            n <= v.len(),
+            "SSPI's output lies within the buffer it was given"
+        );
+        out.try_extend_from_slice(&v[..n]).map_err(oom)?;
     }
     Ok(())
 }
@@ -490,7 +565,7 @@ pub fn unwrap(context: &CtxtHandle, token: &[u8], out: &mut Vec<u8>) -> Result<(
         buffer(
             kind::STREAM,
             base.cast(),
-            u32::try_from(len).unwrap_or(u32::MAX),
+            counted(len).map_err(|OutOfMemory| Failed::OutOfMemory)?,
         ),
         buffer(kind::DATA, ptr::null_mut(), 0),
     ];

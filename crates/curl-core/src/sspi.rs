@@ -220,7 +220,6 @@ pub struct Req {
     pub mutual_auth: bool,
     pub replay_detect: bool,
     pub confidentiality: bool,
-    pub allocate_memory: bool,
     pub use_http_style: bool,
 }
 

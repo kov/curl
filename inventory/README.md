@@ -15,7 +15,15 @@ Run `--check` after the C tree moves; a generator that fails its self-checks wri
 
 `perf` comes from `inventory/measure/perf.py` the same way (`--run`, about 15 minutes). Its figures
 hold for this machine only: compare builds measured here by the same script, never against
-numbers from elsewhere.
+numbers from elsewhere. Its release build checks that libcurl and the tool start their `.text`
+with the hot functions their `hot.order` lists (DESIGN.md, "The release link").
+
+`inventory/measure/order.py` writes those lists, `crates/curl-sys-abi/hot.order` and
+`crates/curl-tool/hot.order`, from callgrind runs of the release build on the scorecard's
+requests and downloads over HTTP/1.1, HTTP/2 and HTTP/3: the tool as itself, the library under
+C's `curl`. Rerun it when a release link warns that a list is stale, or after a change that
+moves the hot path, on a release build with the lists in place and `build/c-release` built
+(about three minutes).
 
 `baseline` comes from `inventory/measure/baseline.py`, which `all.py` does not run. `--run` configures and builds
 the C tree in `build/c`, runs `runtests.pl` and the `tests/http` pytest suite (about seven

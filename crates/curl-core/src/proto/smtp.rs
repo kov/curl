@@ -383,6 +383,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials,
+                gate,
             },
             path,
             url_options,

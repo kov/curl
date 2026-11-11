@@ -4538,7 +4538,10 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   once per request (`Curl_peer_equal`). A custom Host is reached only through
   `UserHeaders::host(SameOrigin)`, and Authorization and Cookie lines only through
   `UserHeaders::sendable(Option<Trusted>)`, where `Trusted` is the same origin or
-  `CURLOPT_UNRESTRICTED_AUTH`: a new emit site cannot skip the gate.
+  `CURLOPT_UNRESTRICTED_AUTH`: a new emit site cannot skip the gate. Every network protocol's
+  request holds its gate in its `RequestBase`, which a tunnel's `CONNECT` sends by
+  (`SetupLend::trusted`, FTP's data connection's too), so a redirect from HTTP to another
+  host's FTP, DICT or any other scheme sends the proxy none of the first host's.
 - **One rendered request for every version.** HTTP/2 makes its request as C does, rendered in
   HTTP/1's form, traced as sent, and read back into the stream's fields (`fields_of`, C's
   `Curl_h1_req_parse_read`, §4.4); HTTP/3 is to read it back the same way, as C's does (`cf-ngtcp2.c`'s `h3_stream_open`).

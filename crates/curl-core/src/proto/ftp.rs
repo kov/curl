@@ -446,6 +446,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials,
+                gate,
             },
             encoded,
             parsed: None,
@@ -1843,7 +1844,11 @@ impl Request {
             .as_ref()
             .expect("DO knows its control connection");
         let host = control.route.destination().shown();
-        Some(data.connect(cx, host, &mut Lent(&mut self.base.pipeline)))
+        let lent = &mut Lent {
+            pipeline: &mut self.base.pipeline,
+            gate: self.base.gate,
+        };
+        Some(data.connect(cx, host, lent))
     }
 
     /// The answer to `EPSV` or `PASV` (`ftp_state_pasv_resp`): the data
@@ -3106,11 +3111,11 @@ impl Request {
 /// `ftp_multi_statemach`, `ftp_do`, `ftp_doing`, `ftp_do_more`).
 /// An FTP request lends its pipeline, which the answer to its data
 /// connection's `CONNECT` goes through as its control connection's did;
-/// its credentials are trusted as a first request's, and it speaks no
-/// HTTP.
+/// its credentials go to a tunnel's `CONNECT` as its gate lets them, and
+/// it speaks no HTTP.
 impl crate::multi::state::SetupLend for Request {
     fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
-        Lent::credentials_trusted()
+        self.base.gate.trusted()
     }
 
     fn pipeline(&mut self) -> &mut Pipeline {
@@ -3127,25 +3132,22 @@ impl crate::multi::state::SetupLend for Request {
 }
 
 /// What the request lends its data connection's setup, as it lends its
-/// control connection's: its pipeline alone, borrowed apart from the
-/// rest of it, beside which the setup borrows the control connection's
-/// host.
-struct Lent<'a>(&'a mut Pipeline);
-
-impl Lent<'_> {
-    /// The credentials are trusted as a first request's.
-    fn credentials_trusted() -> Option<crate::auth::creds::Trusted> {
-        CredentialGate::FIRST.trusted()
-    }
+/// control connection's: its pipeline, borrowed apart from the rest of
+/// it, beside which the setup borrows the control connection's host, and
+/// its gate, which the data connection's `CONNECT` sends by as the
+/// control connection's did.
+struct Lent<'a> {
+    pipeline: &'a mut Pipeline,
+    gate: CredentialGate,
 }
 
 impl crate::multi::state::SetupLend for Lent<'_> {
     fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
-        Lent::credentials_trusted()
+        self.gate.trusted()
     }
 
     fn pipeline(&mut self) -> &mut Pipeline {
-        self.0
+        self.pipeline
     }
 
     fn negotiation(&self) -> Option<crate::proto::http::Negotiation> {

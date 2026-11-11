@@ -8,8 +8,8 @@ use super::base::peer_of;
 use super::raw::Outgoing;
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::conn::ConnLease;
 use crate::conn::io::Events;
+use crate::conn::{ConnLease, Peer};
 use crate::deliver::{Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::multi::Host;
@@ -75,10 +75,12 @@ impl Request {
     pub(crate) fn new<H: Host>(
         url: &Url,
         secured: bool,
+        first: Option<&Peer>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
         let name: &[u8] = if secured { b"gophers" } else { b"gopher" };
         let peer = peer_of(url, name, cx)?;
+        let gate = super::base::gate_of(first, &peer, cx);
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
@@ -94,6 +96,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials: None,
+                gate,
             },
             path,
             query,

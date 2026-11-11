@@ -1470,6 +1470,62 @@ fn the_data_connection_tunnels_through_the_proxy() {
     assert_eq!(removed.easy.report().connects(), 2);
 }
 
+/// After a redirect from HTTP to another host's FTP, neither the control
+/// connection's `CONNECT` nor the data connection's carries the custom
+/// `Authorization` or `Cookie` the first host's did
+/// (`Curl_auth_allowed_to_host` in `dynhds_add_custom`), as test 3703.
+#[test]
+fn tunnels_after_a_redirect_to_another_host_s_ftp_send_no_credentials() {
+    let moved: &[u8] =
+        b"HTTP/1.1 302 Moved\r\nLocation: ftp://other.example:8021/f\r\nContent-Length: 0\r\n\r\n";
+    let http = Conversation::replies(&[TUNNELED, moved], false).per_send();
+    let talk = through(&[], TUNNELED);
+    let file = Conversation::replies(&[&[TUNNELED, b"hello"].concat()], true).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Net::Accepts)
+        .with_conversation(at, http.clone())
+        .with_conversation(at, talk.clone())
+        .with_conversation(at, file.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(Counted(Arc::new(Lock::new(net)))),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::with_env(env).unwrap();
+    let (id, body, text) = added(&mut m, "http://first.example/", |o| {
+        o.http.follow = crate::options::Follow::All;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
+        proxy.tunnel = true;
+        let lines: [&[u8]; 2] = [b"Authorization: Bearer tunnel", b"Cookie: crumb=1"];
+        proxy.headers = crate::options::UserHeaders::new(lines).unwrap();
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let connect = |talk: &Conversation| {
+        let text = String::from_utf8_lossy(&talk.received()).into_owned();
+        text.split_once("\r\n\r\n").unwrap().0.to_owned()
+    };
+    let first = connect(&http);
+    assert!(first.starts_with("CONNECT first.example:80 "), "{first}");
+    let control = connect(&talk);
+    assert!(
+        control.starts_with("CONNECT other.example:8021 "),
+        "{control}"
+    );
+    let data = connect(&file);
+    assert!(data.starts_with("CONNECT other.example:8022 "), "{data}");
+    for line in ["\r\nAuthorization: Bearer tunnel", "\r\nCookie: crumb=1"] {
+        assert!(first.contains(line), "to the first host: {first}");
+        assert!(!control.contains(line), "not the control's: {control}");
+        assert!(!data.contains(line), "not the data's: {data}");
+    }
+}
+
 /// The data connection's name has two addresses, the first silent: the
 /// transfer's timer wakes it for the second after the happy eyeballs
 /// delay, and that race's end clears it, as the control connection's does

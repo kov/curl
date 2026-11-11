@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 use curl_alloc::TryVec as _;
 
 use super::url_peer;
-use crate::auth::creds::Credentials;
+use crate::auth::creds::{CredentialGate, Credentials};
 use crate::conn::{Peer, Scheme};
 use crate::deliver::Pipeline;
 use crate::error::{ErrorKind, url_error};
@@ -28,6 +28,11 @@ pub(crate) struct RequestBase {
     /// route or the protocol's own login takes it; none for a protocol
     /// that reads none (DICT, Gopher, TFTP).
     pub(super) credentials: Option<Credentials>,
+    /// Whether what the application said for the first origin may go to
+    /// this one: its credentials, and the custom `Authorization:` and
+    /// `Cookie:` a tunnel's `CONNECT` sends (`Curl_auth_allowed_to_host`),
+    /// fixed as the request is made.
+    pub(super) gate: CredentialGate,
 }
 
 impl RequestBase {
@@ -51,6 +56,21 @@ impl RequestBase {
 
     pub(super) fn scheme(&self) -> Scheme {
         self.peer.scheme()
+    }
+}
+
+/// The gate of a request to `peer` in a transfer whose first request
+/// went to `first`, none if this is it: shut where the origin is
+/// another, unless the application lets credentials follow
+/// (`Curl_auth_allowed_to_host`).
+pub(super) fn gate_of<H: Host>(
+    first: Option<&Peer>,
+    peer: &Peer,
+    cx: &mut StepCx<'_, H>,
+) -> CredentialGate {
+    match first {
+        None => CredentialGate::FIRST,
+        Some(first) => CredentialGate::new(first, peer, cx.easy().options().http.unrestricted_auth),
     }
 }
 

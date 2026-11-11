@@ -373,6 +373,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials,
+                gate,
             },
             path,
             id: Vec::new(),

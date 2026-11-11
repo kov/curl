@@ -311,8 +311,6 @@ pub(crate) struct Request {
     /// The alternative service the connection goes to, `host:port` with
     /// an IPv6 address bare, which `Alt-Used:` names (`altused`).
     alt_used: Option<Vec<u8>>,
-    /// What of the application's may go to the request's origin.
-    gate: CredentialGate,
     /// The method, as the requests before it left it.
     method: Method,
     /// The application's custom method is sent in its place.
@@ -706,7 +704,7 @@ impl Request {
 
     /// Credentials may go to the request's origin.
     pub(crate) fn trusted(&self) -> Option<Trusted> {
-        self.gate.trusted()
+        self.base.gate.trusted()
     }
 
     /// A request for `url`, whose scheme is `http`, or `https` if
@@ -764,7 +762,7 @@ impl Request {
         // HTTP's user and password take control bytes
         // (`PROTOPT_USERPWDCTRL`), RTSP's not.
         let takes = Takes::of(Some(scheme));
-        let credentials = super::request_credentials(cx, request.gate.trusted(), url, takes)?;
+        let credentials = super::request_credentials(cx, request.base.gate.trusted(), url, takes)?;
         // By the host's name: an IPv6 address without its brackets, a name
         // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
         let name = request.base.peer.name();
@@ -818,11 +816,11 @@ impl Request {
                 peer,
                 pipeline: Pipeline::collecting(),
                 credentials: None,
+                gate,
             },
             target,
             forward_target: None,
             alt_used: None,
-            gate,
             method: before.method,
             custom: !before.http.ignore_custom,
             no_expect: before.http.no_expect,
@@ -1206,6 +1204,7 @@ impl Request {
         let port = (port != self.default_port()).then_some(port);
         let mut authority = Vec::new();
         let custom = self
+            .base
             .gate
             .same_origin()
             .and_then(|same| options.http.headers.host_value(same));
@@ -1310,7 +1309,7 @@ impl Request {
             .as_ref()
             .is_some_and(|p| p.http() && p.creds.is_some());
         negotiate::Wants {
-            negotiate: want.contains(AuthMethods::NEGOTIATE) && self.gate.trusted().is_some(),
+            negotiate: want.contains(AuthMethods::NEGOTIATE) && self.base.gate.trusted().is_some(),
             credentials: self.base.credentials.as_ref().map(Credentials::secret),
             origin: Some(&self.base.peer),
             proxy: proxy_creds && proxy_want.contains(AuthMethods::NEGOTIATE),
@@ -1340,8 +1339,9 @@ impl Request {
         options
             .reread_headers()
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        self.cookie_host = cookies::custom_host(&options.http.headers, self.gate.same_origin())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
+        self.cookie_host =
+            cookies::custom_host(&options.http.headers, self.base.gate.same_origin())
+                .map_err(|_| ErrorKind::OutOfMemory)?;
         let reused = lease.conn().reused();
         // On a connection's first request, which finds what it speaks
         // (`http_check_new_conn`).
@@ -1443,7 +1443,7 @@ impl Request {
             method: self.method_line(http),
             uri: &self.target,
             get_or_head,
-            trusted: self.gate.trusted(),
+            trusted: self.base.gate.trusted(),
         };
         let custom = http.headers.replaces(b"Authorization");
         let mut said = DigestSaid::default();
@@ -1533,7 +1533,7 @@ impl Request {
         let http = &cx.easy().options().http;
         let application = http.cookies.send.is_some()
             && !http.headers.replaces(b"Cookie")
-            && self.gate.trusted().is_some();
+            && self.base.gate.trusted().is_some();
         // Without a jar or the application's own, there is no line to make
         // (`http_cookies`).
         let cookie = if cx.easy().jar.is_on() || application {
@@ -1678,7 +1678,7 @@ impl Request {
         };
         let port = self.base.peer.port();
         let shown_port = (port != self.default_port()).then_some(port);
-        let gate = self.gate;
+        let gate = self.base.gate;
         let authorization = match (&self.base.credentials, &auth.header) {
             // Digest goes beside the application's own Authorization, as
             // C's does (`H1_HD_AUTH`).
@@ -2573,6 +2573,7 @@ impl Request {
                     pipeline,
                     credentials,
                     peer,
+                    gate: _,
                 },
             head,
             interim,

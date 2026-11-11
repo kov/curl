@@ -605,7 +605,7 @@ impl Request {
             method,
             uri: &stream_uri,
             get_or_head: true,
-            trusted: self.gate.trusted(),
+            trusted: self.base.gate.trusted(),
         };
         let custom = options.http.headers.replaces(b"Authorization");
         let mut said = crate::auth::http::DigestSaid::default();
@@ -740,6 +740,7 @@ impl Request {
             }
             (_, Some((AuthMethods::NEGOTIATE, value))) => {
                 let trusted = self
+                    .base
                     .gate
                     .trusted()
                     .expect("Negotiate goes only where trusted");
@@ -767,7 +768,7 @@ impl Request {
             content,
             probe,
             headers,
-            trusted: self.gate.trusted(),
+            trusted: self.base.gate.trusted(),
         };
         let mut out = render_rtsp(&head)?;
         let rtsp = self.rtsp.as_mut().expect("an RTSP request");

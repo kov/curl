@@ -15,8 +15,8 @@ use curl_os::error::ErrorText;
 
 use super::base::peer_of;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::conn::ConnLease;
 use crate::conn::io::{Events, Remote};
+use crate::conn::{ConnLease, Peer};
 use crate::deliver::{Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::multi::Host;
@@ -332,8 +332,13 @@ pub(crate) struct Request {
 impl Request {
     /// A transfer of `url`: its peer, and its path with any `;mode=`
     /// taken off (`tftp_setup_connection`).
-    pub(crate) fn new<H: Host>(url: &Url, cx: &mut StepCx<'_, H>) -> Result<Request, ErrorKind> {
+    pub(crate) fn new<H: Host>(
+        url: &Url,
+        first: Option<&Peer>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<Request, ErrorKind> {
         let peer = peer_of(url, b"tftp", cx)?;
+        let gate = super::base::gate_of(first, &peer, cx);
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
@@ -354,6 +359,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials: None,
+                gate,
             },
             path,
             ascii,

@@ -375,6 +375,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials,
+                gate,
             },
             library,
             url_text,

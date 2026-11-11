@@ -597,25 +597,26 @@ pub(crate) fn request_credentials<H: Host>(
 const TEST_SCHEMES: [&[u8]; 4] = [b"null", b"stall", b"script", b"tcp"];
 
 /// Each request lends its own: HTTP's and FTP's by their own answers;
-/// the others' credentials are trusted as a first request's, and they
-/// speak no HTTP.
+/// the others' credentials go to a tunnel's `CONNECT` as their own gate
+/// lets them, and they speak no HTTP.
 impl SetupLend for ProtoState {
     fn trusted(&self) -> Option<Trusted> {
         match self {
             ProtoState::Http(r) => SetupLend::trusted(&**r),
             ProtoState::Ftp(r) => SetupLend::trusted(&**r),
-            ProtoState::File(_)
-            | ProtoState::Pop3(_)
-            | ProtoState::Imap(_)
-            | ProtoState::Smtp(_)
-            | ProtoState::Ssh(_)
-            | ProtoState::Ldap(_)
-            | ProtoState::LdapLocal(_)
-            | ProtoState::Dict(_)
-            | ProtoState::Gopher(_)
-            | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_)
-            | ProtoState::Tftp(_) => CredentialGate::FIRST.trusted(),
+            ProtoState::Pop3(r) => r.base.gate.trusted(),
+            ProtoState::Imap(r) => r.base.gate.trusted(),
+            ProtoState::Smtp(r) => r.base.gate.trusted(),
+            ProtoState::Ssh(r) => r.base.gate.trusted(),
+            ProtoState::Ldap(r) => r.base.gate.trusted(),
+            ProtoState::LdapLocal(r) => r.base.gate.trusted(),
+            ProtoState::Dict(r) => r.base.gate.trusted(),
+            ProtoState::Gopher(r) => r.base.gate.trusted(),
+            ProtoState::Mqtt(r) => r.base.gate.trusted(),
+            ProtoState::Telnet(r) => r.base.gate.trusted(),
+            ProtoState::Tftp(r) => r.base.gate.trusted(),
+            // It goes over no network, so through no tunnel.
+            ProtoState::File(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 CredentialGate::FIRST.trusted()
@@ -798,21 +799,21 @@ impl ProtoState {
             b"dict" => {
                 netrc_unkept(url, before.first, cx)?;
                 ProtoState::Dict(
-                    curl_alloc::try_box(dict::Request::new(url, cx)?)
+                    curl_alloc::try_box(dict::Request::new(url, before.first, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             b"gopher" => {
                 netrc_unkept(url, before.first, cx)?;
                 ProtoState::Gopher(
-                    curl_alloc::try_box(gopher::Request::new(url, false, cx)?)
+                    curl_alloc::try_box(gopher::Request::new(url, false, before.first, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             b"gophers" if cx.easy().libraries().tls.is_some() => {
                 netrc_unkept(url, before.first, cx)?;
                 ProtoState::Gopher(
-                    curl_alloc::try_box(gopher::Request::new(url, true, cx)?)
+                    curl_alloc::try_box(gopher::Request::new(url, true, before.first, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
@@ -831,7 +832,7 @@ impl ProtoState {
             b"tftp" => {
                 netrc_unkept(url, before.first, cx)?;
                 ProtoState::Tftp(
-                    curl_alloc::try_box(tftp::Request::new(url, cx)?)
+                    curl_alloc::try_box(tftp::Request::new(url, before.first, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }

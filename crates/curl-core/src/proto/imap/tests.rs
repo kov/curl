@@ -187,6 +187,7 @@ fn request() -> Request {
             pipeline: Pipeline::new(Reach::Network),
             peer: super::super::url_peer((scheme, b"h".to_vec(), 143), &url, None, None).unwrap(),
             credentials: None,
+            gate: crate::auth::creds::CredentialGate::FIRST,
         },
         path: Vec::new(),
         query: None,

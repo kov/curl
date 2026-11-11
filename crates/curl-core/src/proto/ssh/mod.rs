@@ -646,6 +646,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials,
+                gate,
             },
             keys: Some(Keys::find(cx)?),
             url_path,

@@ -897,6 +897,7 @@ impl Request {
                 peer,
                 pipeline: Pipeline::new(Reach::Network),
                 credentials,
+                gate,
             },
             telnet: None,
             unsent: Vec::new(),

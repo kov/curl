@@ -506,3 +506,45 @@ witness: curl-openssl tests::sectrust_requires_a_stapled_status_when_asked
         require_staple: required,
 --- new
         require_staple: false,
+
+=== a peer showing no certificate passes though a key is pinned
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_peer_without_a_certificate_passes_only_unchecked
+--- old
+        if !(identity.verify_peer || identity.verify_host) && identity.options.pinned_key.is_none()
+--- new
+        if !(identity.verify_peer || identity.verify_host)
+
+=== the peer's name is checked only where its chain is
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl the_name_is_checked_whether_or_not_the_chain_is
+--- old
+    if identity.verify_host {
+        verify_host(&cert, host, kind, io)?;
+--- new
+    if identity.verify_host && identity.verify_peer {
+        verify_host(&cert, host, kind, io)?;
+
+=== the stapled status is never checked
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_good_status_passes_and_a_revoked_one_fails
+--- old
+    if identity.options.verify_status && !by_sectrust && !reused {
+--- new
+    if identity.options.verify_status && !by_sectrust && !reused && by_sectrust {
+
+=== a transfer checking the peer's status resumes a kept session
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_transfer_checking_the_status_resumes_no_session
+--- old
+        if !self.reused && io.caches_sessions() && !options.verify_status {
+--- new
+        if !self.reused && io.caches_sessions() {
+
+=== a peer whose key is not the one pinned passes, and its session is kept
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_peer_failing_its_pin_leaves_no_session_to_resume
+--- old
+    if let Some(pinned) = &identity.options.pinned_key {
+--- new
+    if let Some(pinned) = identity.options.pinned_key.as_ref().filter(|_| false) {

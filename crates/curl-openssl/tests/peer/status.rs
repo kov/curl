@@ -22,6 +22,11 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_good_status_passes_and_a_revoked_one_fails",
         a_good_status_passes_and_a_revoked_one_fails,
     ),
+    #[cfg(not(any(no_ocsp, boringssl_like)))]
+    (
+        "a_transfer_checking_the_status_resumes_no_session",
+        a_transfer_checking_the_status_resumes_no_session,
+    ),
     (
         "the_issuer_named_must_have_issued_the_peer_s_certificate",
         the_issuer_named_must_have_issued_the_peer_s_certificate,
@@ -286,6 +291,48 @@ fn a_good_status_passes_and_a_revoked_one_fails() {
         assert_eq!(got.result, Err(ErrorKind::SslInvalidcertstatus));
         assert_eq!(got.failure, b"Error computing OCSP ID");
     }
+}
+
+/// A transfer checking the peer's status resumes no session, as a resumed
+/// one carries no status to check: its second connection, to a server
+/// that would resume the first's session and staples nothing this time,
+/// makes a new handshake and fails for want of a status.
+#[cfg(not(any(no_ocsp, boringssl_like)))]
+fn a_transfer_checking_the_status_resumes_no_session() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let certs = certs("status-resume", "localhost", &["localhost"]);
+    let good = response(&certs, "status-resume", (&certs.ca, &certs.ca_key), false);
+    let stapled = Arc::new(AtomicBool::new(false));
+    let once = stapled.clone();
+    let a = super::resume::acceptor(&certs, move |a| {
+        a.set_status_callback(move |ssl| {
+            if once.swap(true, Ordering::SeqCst) {
+                return Ok(false);
+            }
+            ssl.set_ocsp_status(&good).unwrap();
+            Ok(true)
+        })
+        .unwrap();
+    });
+    let (at, server) = super::resume::serve_each(vec![a.clone(), a]);
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let set = |o: &mut Options| {
+        trusting(&certs)(o);
+        o.tls.options.make_mut().unwrap().verify_status = true;
+    };
+    let one = get_in(&mut m, "https", "localhost", at, set, false);
+    let two = get_in(&mut m, "https", "localhost", at, set, false);
+    server.join().unwrap();
+    assert_eq!(one.result, Ok(()), "{:#?}", one.seen.lines);
+    assert!(stapled.load(Ordering::SeqCst));
+    assert!(!super::resume::resumed(&two), "{:#?}", two.seen.lines);
+    assert_eq!(
+        two.result,
+        Err(ErrorKind::SslInvalidcertstatus),
+        "{:#?}",
+        two.seen.lines
+    );
+    assert_eq!(two.failure, b"No OCSP response received");
 }
 
 /// `CURLOPT_ISSUERCERT` and its blob: the CA that issued the peer's

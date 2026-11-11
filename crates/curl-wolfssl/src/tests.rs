@@ -508,6 +508,48 @@ fn an_address_gets_no_sni_and_is_checked_after_the_handshake() {
     assert!(has(&notes, "fail: SslConnectError: Failed to set SNI"));
 }
 
+/// Each pair of `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST`: a
+/// host's name is handed to the library to check, and an address is
+/// checked after the handshake, wherever the name is to be checked, the
+/// chain checked or not; neither where it is not.
+#[test]
+fn the_name_is_checked_whether_or_not_the_chain_is() {
+    for (verify_peer, verify_host) in [(true, true), (true, false), (false, true), (false, false)] {
+        let id = identity(|i| {
+            i.verify_peer = verify_peer;
+            i.verify_host = verify_host;
+        });
+        let case = (verify_peer, verify_host);
+        let (r, notes, calls) = shake(World::default(), &id);
+        assert_eq!(r, Ok(Handshake::Done), "{case:?}: {notes:#?}");
+        assert_eq!(
+            calls.iter().any(|c| c == "check_domain(example.com)"),
+            verify_host,
+            "{case:?}: {calls:#?}"
+        );
+        let lib = Fake::new(World {
+            check_ip: Some(0),
+            ..World::default()
+        });
+        let shared = TlsShared::testing();
+        let to = peer(b"127.0.0.1", TlsPeerKind::Ipv4, false);
+        let mut s = session_to(lib, &id, &to, Alpn::None, &shared, None);
+        let mut kept = Kept::new();
+        let wire = Wire::default();
+        let r = TlsIo::testing(&id, b"127.0.0.1", &mut kept, &wire, |io| s.handshake(io));
+        if verify_host {
+            assert_eq!(r, Err(ErrorKind::PeerFailedVerification), "{case:?}");
+            assert!(has(
+                &kept.notes.0,
+                "fail: PeerFailedVerification:  subject alt name(s) or common name do not match \"127.0.0.1\""
+            ));
+        } else {
+            assert_eq!(r, Ok(Handshake::Done), "{case:?}");
+            assert!(lib.w().made("check_ip").is_empty(), "{case:?}");
+        }
+    }
+}
+
 #[test]
 fn the_handshake_waits_and_fails_as_c_s() {
     let detail = |rc: i32, detail: i32, id: &TryArc<TlsIdentity>| {

@@ -127,3 +127,64 @@ witness: curl-gnutls tests::a_quic_ticket_is_kept_for_h3_with_its_transport_para
         self.offer_alpn(io)
 --- new
         self.offer_alpn(io)
+
+=== a certificate's dates are never checked
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::a_certificate_out_of_its_dates_fails_a_verified_peer
+--- old
+    dates(&cert, identity, now, io)?;
+--- new
+    let _ = now;
+
+=== the stapled status is never checked
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::the_stapled_status_is_asked_for_and_checked_under_verifystatus
+--- old
+    if o.verify_status {
+        stapled(session, &cert, io)?;
+--- new
+    if o.verify_status && now == i64::MIN {
+        stapled(session, &cert, io)?;
+
+=== a stapled status that is neither good nor revoked passes
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::the_stapled_status_is_asked_for_and_checked_under_verifystatus
+--- old
+        Stapled::Status(s) if s == sys::GNUTLS_OCSP_CERT_GOOD as u32 => return Ok(()),
+--- new
+        Stapled::Status(s) if s != sys::GNUTLS_OCSP_CERT_REVOKED as u32 => return Ok(()),
+
+=== the issuer named is never checked against the peer's certificate
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::the_issuer_must_have_issued_the_certificate
+--- old
+        check_issuer(lib, &cert, issuer, io)?;
+--- new
+        let _ = issuer;
+
+=== the peer's name is checked only where its chain is
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::the_name_is_checked_whether_or_not_the_chain_is
+--- old
+    if !matched && identity.verify_host {
+--- new
+    if !matched && identity.verify_host && identity.verify_peer {
+
+=== a QUIC peer that is not verified is not checked at all, its pinned key neither
+file: crates/curl-gnutls/src/quic.rs
+witness: curl-gnutls tests::a_quic_peer_s_pinned_key_is_checked_though_it_is_not_verified
+--- old
+            let checked = session::check_peer(lib, gs, identity, names, cx);
+--- new
+            let checked = match identity.verify_peer {
+                true => session::check_peer(lib, gs, identity, names, cx),
+                false => Ok(()),
+            };
+
+=== a transfer checking the peer's status resumes a kept session
+file: crates/curl-gnutls/src/session.rs
+witness: curl-gnutls tests::no_session_is_kept_or_resumed_without_the_cache_nor_resumed_under_verifystatus
+--- old
+        if !setup && o.session_cache && !o.verify_status {
+--- new
+        if !setup && o.session_cache {

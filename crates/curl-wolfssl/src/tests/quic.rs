@@ -324,9 +324,10 @@ fn an_address_is_checked_as_one_and_an_unverified_host_not_at_all() {
         Some(Err(ErrorKind::PeerFailedVerification))
     );
     assert_eq!(lib.w().made("check_"), ["check_ip(::1)"]);
-    // Not verifying the host, neither is looked at; the pinned key still
-    // is.
+    // Not verifying the peer nor its host, neither is looked at; the
+    // pinned key still is.
     let lax = identity(|i| {
+        i.verify_peer = false;
         i.verify_host = false;
         i.options.pinned_key = Some(b"sha256//AAAA".to_vec());
     });

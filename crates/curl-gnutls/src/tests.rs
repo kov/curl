@@ -886,6 +886,50 @@ fn the_host_must_match_where_it_is_checked() {
     );
 }
 
+/// Each pair of `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST`: a
+/// certificate naming another host fails wherever the name is checked,
+/// the chain checked or not, and passes where it is not; one naming the
+/// host passes under all four. Unverified, the chain is one GnuTLS does
+/// not trust.
+#[test]
+fn the_name_is_checked_whether_or_not_the_chain_is() {
+    for (verify_peer, verify_host) in [(true, true), (true, false), (false, true), (false, false)] {
+        for named in [true, false] {
+            let status = if verify_peer {
+                0
+            } else {
+                sys::GNUTLS_CERT_INVALID | sys::GNUTLS_CERT_SIGNER_NOT_FOUND
+            };
+            let world = World {
+                status: Ok(status),
+                leaf: crate::fake::Leaf {
+                    host_ok: named,
+                    ..World::default().leaf
+                },
+                ..World::default()
+            };
+            let id = identity(|i| {
+                i.verify_peer = verify_peer;
+                i.verify_host = verify_host;
+            });
+            let (r, notes, _) = shake(world, &id);
+            let case = (verify_peer, verify_host, named);
+            if named || !verify_host {
+                assert_eq!(r, Ok(Handshake::Done), "{case:?}: {notes:#?}");
+            } else {
+                assert_eq!(r, Err(ErrorKind::PeerFailedVerification), "{case:?}");
+                assert!(
+                    has(
+                        &notes,
+                        "fail: PeerFailedVerification: SSL: certificate subject name (example.com) does not match target hostname 'example.com'"
+                    ),
+                    "{case:?}: {notes:#?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_pinned_key_must_be_the_certificate_s() {
     let pinned = |key: &[u8]| identity(|i| i.options.pinned_key = Some(key.to_vec()));
@@ -2213,6 +2257,36 @@ fn the_peer_is_reported_and_checked_as_the_quic_library_says_the_handshake_is_do
             .any(|n| n.starts_with("trace: find peer slot")),
         "{notes:#?}"
     );
+}
+
+/// A QUIC peer whose key is not the one pinned fails its check though
+/// the peer is not verified, as a stream session's does.
+#[test]
+fn a_quic_peer_s_pinned_key_is_checked_though_it_is_not_verified() {
+    let lib = Fake::new(World::default());
+    for (pinned, done) in [
+        (
+            &b"sha256//b+7MjBbFVR2f6z61934tp3O/aL2e+cUpJ86yyG5WiSs="[..],
+            Ok(()),
+        ),
+        (
+            b"sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            Err(ErrorKind::SslPinnedpubkeynotmatch),
+        ),
+    ] {
+        let id = identity(|i| {
+            i.verify_peer = false;
+            i.verify_host = false;
+            i.options.pinned_key = Some(pinned.to_vec());
+        });
+        let mut kept = Kept::new();
+        let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
+        let mut got = None;
+        drive(&mut s, &id, &mut kept, None, &mut |dc| {
+            got = Some(dc.handshake_done());
+        });
+        assert_eq!(got, Some(done), "{:#?}", kept.notes.0);
+    }
 }
 
 #[test]

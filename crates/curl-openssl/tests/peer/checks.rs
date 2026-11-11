@@ -132,7 +132,7 @@ fn a_crl_file_that_cannot_be_read_fails_as_a_bad_crl() {
 }
 
 /// The base64 of the SHA-256 of `der`.
-fn sha256_b64(der: &[u8]) -> String {
+pub(crate) fn sha256_b64(der: &[u8]) -> String {
     let digest = openssl::sha::sha256(der);
     openssl::base64::encode_block(&digest)
 }

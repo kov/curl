@@ -86,3 +86,11 @@ witness: curl-core tls::x509::tests::a_host_name_holding_a_zero_is_found
         0x1e => 2,
 --- new
         0x1e => 1,
+
+=== a wildcard names an address
+file: crates/curl-core/src/tls/hostcheck.rs
+witness: curl-core tls::hostcheck::tests::unit1397_host_checks
+--- old
+    if is_address(host) || host.first() == Some(&b'.') {
+--- new
+    if host.first() == Some(&b'.') {

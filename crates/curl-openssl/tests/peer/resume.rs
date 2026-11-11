@@ -26,6 +26,10 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         a_failed_check_forgets_the_peer_s_sessions,
     ),
     (
+        "a_peer_failing_its_pin_leaves_no_session_to_resume",
+        a_peer_failing_its_pin_leaves_no_session_to_resume,
+    ),
+    (
         "the_key_log_has_each_connection_s_secrets",
         the_key_log_has_each_connection_s_secrets,
     ),
@@ -53,7 +57,10 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
 ];
 
 /// A server's TLS, as `serve_configured` makes it.
-fn acceptor(certs: &Certs, configure: impl FnOnce(&mut SslAcceptorBuilder)) -> SslAcceptor {
+pub(crate) fn acceptor(
+    certs: &Certs,
+    configure: impl FnOnce(&mut SslAcceptorBuilder),
+) -> SslAcceptor {
     let mut a = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
     a.set_private_key(&certs.key).unwrap();
     a.set_certificate(&certs.cert).unwrap();
@@ -64,7 +71,7 @@ fn acceptor(certs: &Certs, configure: impl FnOnce(&mut SslAcceptorBuilder)) -> S
 /// A server answering one GET on each of its connections, the `n`th
 /// accepted with the `n`th of `acceptors`: one that is the same resumes
 /// the sessions it gave. A handshake that fails ends that connection.
-fn serve_each(acceptors: Vec<SslAcceptor>) -> (SocketAddr, JoinHandle<()>) {
+pub(crate) fn serve_each(acceptors: Vec<SslAcceptor>) -> (SocketAddr, JoinHandle<()>) {
     serve_each_after(acceptors, None)
 }
 
@@ -265,7 +272,7 @@ fn early_data_a_server_refuses_is_sent_again() {
     );
 }
 
-fn resumed(got: &Got) -> bool {
+pub(crate) fn resumed(got: &Got) -> bool {
     starts(got, "SSL reusing session with ALPN")
 }
 
@@ -402,6 +409,52 @@ fn a_failed_check_forgets_the_peer_s_sessions() {
     assert_eq!(two.result, Err(ErrorKind::PeerFailedVerification));
     assert_eq!(three.result, Ok(()), "{:#?}", three.seen.lines);
     assert!(!resumed(&three), "{:#?}", three.seen.lines);
+}
+
+/// A peer whose key is not the one pinned fails before any session of
+/// it is kept: the next connection to it, pinned alike, resumes nothing
+/// and fails again. A peer with the key pinned is resumed by the
+/// connection after it, which shows a session kept would be seen.
+fn a_peer_failing_its_pin_leaves_no_session_to_resume() {
+    let right = certs("pinned-right", "localhost", &["localhost"]);
+    let wrong = self::certs("pinned-wrong", "localhost", &["localhost"]);
+    let der = right
+        .cert
+        .public_key()
+        .unwrap()
+        .public_key_to_der()
+        .unwrap();
+    let pin = format!("sha256//{}", super::checks::sha256_b64(&der));
+    // Both CAs trusted, so that only the pin tells the servers apart.
+    let both = certs_dir().join("pinned-both-ca.pem");
+    let mut pem = right.ca.to_pem().unwrap();
+    pem.extend_from_slice(&wrong.ca.to_pem().unwrap());
+    std::fs::write(&both, pem).unwrap();
+    let w = acceptor(&wrong, |_| {});
+    let r = acceptor(&right, |_| {});
+    let (at, server) = serve_each(vec![w.clone(), w, r.clone(), r]);
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let set = |o: &mut Options| {
+        let t = o.tls.options.make_mut().unwrap();
+        t.ca_file = CaSetting::Given(both.to_str().unwrap().as_bytes().to_vec());
+        t.pinned_key = Some(pin.clone().into_bytes());
+    };
+    let gets: Vec<Got> = (0..4)
+        .map(|_| get_in(&mut m, "https", "localhost", at, set, false))
+        .collect();
+    server.join().unwrap();
+    for (i, got) in gets.iter().enumerate() {
+        let expected = if i < 2 {
+            Err(ErrorKind::SslPinnedpubkeynotmatch)
+        } else {
+            Ok(())
+        };
+        assert_eq!(got.result, expected, "{i}: {:#?}", got.seen.lines);
+    }
+    assert!(!resumed(&gets[1]), "{:#?}", gets[1].seen.lines);
+    // LibreSSL's server gives no TLS 1.3 ticket: nothing is resumed.
+    #[cfg(not(libressl))]
+    assert!(resumed(&gets[3]), "{:#?}", gets[3].seen.lines);
 }
 
 /// A session whose peer Apple's SecTrust verified is resumed on that word

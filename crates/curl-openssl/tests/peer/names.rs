@@ -25,6 +25,10 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_name_too_long_for_c_s_buffer_is_not_shown",
         a_name_too_long_for_c_s_buffer_is_not_shown,
     ),
+    (
+        "the_name_is_checked_whether_or_not_the_chain_is",
+        the_name_is_checked_whether_or_not_the_chain_is,
+    ),
 ];
 
 /// A certificate the CA of `certs` issued for `subject`, with the
@@ -255,4 +259,44 @@ fn a_name_too_long_for_c_s_buffer_is_not_shown() {
     });
     server.join().unwrap();
     assert_eq!(got.result, Ok(()));
+}
+
+/// Each pair of `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST`: a
+/// certificate naming another host fails wherever the name is checked,
+/// the chain checked or not, and passes where it is not; one naming the
+/// host passes under all four. Unverified, the chain is one the transfer
+/// does not trust.
+fn the_name_is_checked_whether_or_not_the_chain_is() {
+    let right = certs("pair-right", "localhost", &["localhost"]);
+    let wrong = self::certs("pair-wrong", "elsewhere.example", &["elsewhere.example"]);
+    let untrusted = self::certs("pair-untrusted", "x", &["x"]);
+    for (verify_peer, verify_host) in [(true, true), (true, false), (false, true), (false, false)] {
+        for (certs, named) in [(&right, true), (&wrong, false)] {
+            let (at, server) = serve(certs);
+            let got = get("localhost", at, |o| {
+                let trusted = if verify_peer { certs } else { &untrusted };
+                trusting(trusted)(o);
+                o.tls.verify_peer = verify_peer;
+                o.tls.verify_host = verify_host;
+            });
+            server.join().unwrap();
+            let case = (verify_peer, verify_host, named);
+            if named || !verify_host {
+                assert_eq!(got.result, Ok(()), "{case:?}: {:#?}", got.seen.lines);
+                assert_eq!(got.seen.body, BODY, "{case:?}");
+            } else {
+                assert_eq!(
+                    got.result,
+                    Err(ErrorKind::PeerFailedVerification),
+                    "{case:?}: {:#?}",
+                    got.seen.lines
+                );
+                assert_eq!(
+                    got.failure,
+                    b"SSL: no alternative certificate subject name matches target hostname 'localhost'",
+                    "{case:?}"
+                );
+            }
+        }
+    }
 }

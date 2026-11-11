@@ -292,3 +292,39 @@ default-features: no
             != 0
 --- new
         if (|| 0)() != 0
+
+=== a host's name is handed to the library to check only where the chain is checked
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
+--- old
+        if self.identity.verify_host
+            && let Some(sni) = self.sni()?
+--- new
+        if self.identity.verify_host
+            && self.identity.verify_peer
+            && let Some(sni) = self.sni()?
+
+=== an address is checked only where the chain is
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
+--- old
+        if ret == sys::WOLFSSL_SUCCESS && self.identity.verify_host && self.sni()?.is_none() {
+--- new
+        if ret == sys::WOLFSSL_SUCCESS
+            && self.identity.verify_host
+            && self.identity.verify_peer
+            && self.sni()?.is_none()
+        {
+
+=== a QUIC peer that is not verified has its pinned key unchecked
+file: crates/curl-wolfssl/src/quic.rs
+witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverified_host_not_at_all
+--- old
+    session::verify_pinned(ssl, identity, cx)
+}
+--- new
+    if !identity.verify_peer {
+        return Ok(());
+    }
+    session::verify_pinned(ssl, identity, cx)
+}

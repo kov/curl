@@ -302,6 +302,45 @@ fn a_server_not_vouched_for_fails_verification() {
     assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
 }
 
+/// Each pair of `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST`
+/// against a certificate the CA vouched for under another name: the name
+/// is checked with the chain, whatever the host option says, and neither
+/// is where the peer is not verified. One naming the host passes under
+/// all four.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn the_name_is_checked_with_the_chain() {
+    for (verify_peer, verify_host) in [(true, true), (true, false), (false, true), (false, false)] {
+        for (names, named) in [("localhost", true), ("example.org", false)] {
+            let pki = pki(&[names]);
+            let mut server = serve(&pki, &[]);
+            let ca = pki.ca.clone().into_bytes();
+            let id = identity(move |id| {
+                id.options.ca_blob = CaSetting::Given(ca);
+                id.verify_peer = verify_peer;
+                id.verify_host = verify_host;
+            });
+            let mut s = session(&id, b"localhost", Alpn::None);
+            let mut kept = Kept::new();
+            let wire = Wire::default();
+            let r = shake(&mut s, &id, &mut kept, &wire, &mut server);
+            let case = (verify_peer, verify_host, named);
+            if named || !verify_peer {
+                assert_eq!(r, Ok(Handshake::Done), "{case:?}: {:#?}", kept.notes.0);
+            } else {
+                assert_eq!(r, Err(ErrorKind::PeerFailedVerification), "{case:?}");
+                assert_eq!(
+                    lines(&kept.notes.0, "fail: "),
+                    [
+                        "fail: PeerFailedVerification: rustls_connection_process_new_packets: invalid peer certificate: NotValidForName"
+                    ],
+                    "{case:?}"
+                );
+            }
+        }
+    }
+}
+
 /// What the library makes of what it is handed, alone.
 #[test]
 #[cfg_attr(miri, ignore)]

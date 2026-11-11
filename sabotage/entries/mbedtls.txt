@@ -103,3 +103,11 @@ witness: curl-mbedtls tests::a_session_never_set_up_says_no_goodbye
         if !self.initialized || self.shut {
 --- new
         if self.shut {
+
+=== an address is not given to the library as the name to check
+file: crates/curl-mbedtls/src/session.rs
+witness: curl-mbedtls tests::the_host_name_is_set_and_its_failure_fails
+--- old
+        if self.conn().hostname(as_c(&name)) != 0 {
+--- new
+        if sni.is_some() && self.conn().hostname(as_c(&name)) != 0 {

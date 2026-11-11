@@ -16,6 +16,7 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{CaCache, SslOptions};
 use curl_core::report::CertInfo;
 use curl_core::time::Instant;
+use curl_core::tls::pin::{PinAsk, Pinned};
 use curl_core::tls::{TlsCx, TlsIdentity, TlsShared, hostcheck, x509};
 use curl_os::error::ErrorText;
 
@@ -111,9 +112,9 @@ fn peer_cert(io: &mut TlsCx<'_>, ctx: &Context) -> Result<crypt::CertContext, Er
     })
 }
 
-/// The peer's public key is the one `pinned` names
+/// The peer's public key is the one `ask` pins
 /// (`schannel_pkp_pin_peer_pubkey`).
-pub(crate) fn pin(io: &mut TlsCx<'_>, ctx: &Context, pinned: &[u8]) -> Result<(), ErrorKind> {
+pub(crate) fn pin(io: &mut TlsCx<'_>, ctx: &Context, ask: PinAsk) -> Result<Pinned, ErrorKind> {
     let cert = match ctx.peer_cert() {
         Ok(c) => c,
         Err(st) => {
@@ -135,7 +136,7 @@ pub(crate) fn pin(io: &mut TlsCx<'_>, ctx: &Context, pinned: &[u8]) -> Result<()
         return Err(ErrorKind::SslPinnedpubkeynotmatch);
     };
     let spki = parsed.public_key_info.whole;
-    curl_core::tls::pin_peer_pubkey(io, pinned, spki).inspect_err(|_| {
+    ask.check(io, spki).inspect_err(|_| {
         io.fail(
             ErrorKind::SslPinnedpubkeynotmatch,
             format_args!("SSL: public key does not match pinned public key"),

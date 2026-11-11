@@ -120,6 +120,7 @@ where
         let mut check = |gs: &mut G::Session, cx: &mut TlsCx<'_>| {
             session::report_handshake(gs, cx);
             let checked = session::check_peer(lib, gs, identity, names, cx);
+            let checked = checked.map(|_| ());
             if checked.is_err() {
                 // No session of a peer that fails its check is resumed.
                 cx.forget_sessions();

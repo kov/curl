@@ -12,10 +12,12 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{EchMode, TlsMaxVersion, TlsMinVersion};
 use curl_core::report::CertInfo;
+use curl_core::tls::pin::{self, Pin};
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Goodbye, Handshake, SharedKeyLog, Text, TlsIdentity, TlsIo,
     TlsNative, TlsPeer, TlsSession, TlsWait,
 };
+use curl_core::tls::{Checked, Residuals, TlsCx};
 
 use crate::files::{self, Read};
 use crate::library::{Call, Conn as _, Errno, Plain, Rustls, TLS1_2, TLS1_3};
@@ -782,6 +784,7 @@ impl<G: Rustls> Session<G> {
                     return Ok(Handshake::Waiting);
                 }
                 self.complete(io)?;
+                let _checked = checked(io)?;
                 self.state = State::Complete;
                 return Ok(Handshake::Done);
             }
@@ -889,6 +892,20 @@ fn copy_blob(
         (ErrorKind::OutOfMemory, "out of memory")
     };
     Err(io.fail(kind, format_args!("rustls: failed to copy {what} ({why})")))
+}
+
+/// The peer checked as its handshake ends: the library matched its name
+/// with its chain, or, verifying neither, neither. No key is pinned, which
+/// the library has no support for.
+fn checked(io: &mut TlsCx<'_>) -> Result<Checked, ErrorKind> {
+    let Pin::NotAsked(pin) = pin::of(io) else {
+        return Err(io.fail(
+            ErrorKind::NotBuiltIn,
+            format_args!("rustls: no pinned public key support"),
+        ));
+    };
+    let residuals = Residuals::NONE.host_check_follows_chain(io);
+    Checked::new(io, pin, residuals)
 }
 
 impl<G: Rustls> TlsSession for Session<G> {

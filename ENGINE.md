@@ -3468,9 +3468,21 @@ reset. With the peer unverified (`-k`) no CA is loaded, even one given (`SSL Tru
 verification disabled`), and the result is traced and ignored (`OpenSSL verify result: 14`,
 `SSL certificate verification failed, continuing anyway!`); a pinned key (`--pinnedpubkey`) is checked after, `-k` or not (90,
 `SSL: public key does not match pinned public key`): the library gives the DER of the peer's
-SubjectPublicKeyInfo and the core compares it (`tls::pin_peer_pubkey`, vtls.c's
+SubjectPublicKeyInfo and the core compares it (`tls::pin`, vtls.c's
 `Curl_pin_peer_pubkey`), by the base64 of its SHA-256 (`sha256//`, several `;` apart, ` public key
 hash:` said) or as a file of it in DER or PEM.
+
+**What a check of the peer gives** (`tls::checked`). Every backend ends its check in a
+`Checked`, which only the core can make, from tokens only the core can make: a `Pinned`, from
+`tls::pin::of(io)` (the session's own identity pins nothing) or a `PinAsk` compared against the
+peer's key; and, where the core matches the name (OpenSSL), a `NameMatch` from
+`hostcheck::check`, against the name and kind the connection's `SessionPeer` keeps.
+`Checked::named` takes the match and fails closed (`internal: the peer's name was not checked`)
+where the host is to be checked and none is given; `Checked::new` is for a library that matches
+the name itself. A token made for another session's identity fails closed too. What the check
+leaves weaker is said in `Residuals`: `host_check_follows_chain` where the library matches the
+name only with the chain and the chain is not verified (rustls; wolfSSL over TCP for a name),
+`AppHadContext` where the application's context handler could change the library's checks.
 
 **The client's certificate** (`cert.rs`, `client_cert`) is loaded into the context before the
 session is made, when a certificate, a blob or a type is set: PEM as a chain (from a file, or

@@ -15,11 +15,13 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{EchMode, TlsMaxVersion, TlsMinVersion};
+use curl_core::tls::pin::{self, Pin, Pinned};
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, QuicContextSetup, SharedKeyLog, Text,
     TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket,
     TlsWait,
 };
+use curl_core::tls::{Checked, Residuals};
 
 use crate::library::{
     AGAIN, AlpnGot, Call, Ctx as _, FileType, IoResult, IoState, NoCtx, PeerCert, Reach, Resume,
@@ -957,11 +959,18 @@ impl<W: Wolfssl> Session<W> {
         log.write_secret(b"CLIENT_RANDOM", random, &keys.master);
     }
 
-    /// The peer's public key is the pinned one, if one is
-    /// (`Curl_wssl_verify_pinned`).
-    fn verify_pinned(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+    /// The peer checked once the handshake is done: its public key is the
+    /// pinned one, if one is (`Curl_wssl_verify_pinned`); the library
+    /// matched its name, with the chain where it is a name, and the
+    /// handshake its address.
+    fn check_peer(&mut self, io: &mut TlsCx<'_>) -> Result<Checked, ErrorKind> {
         let ssl = self.ssl.as_ref().expect("made at the first step");
-        verify_pinned(ssl, &self.identity, io)
+        let pin = verify_pinned(ssl, io)?;
+        let residuals = match self.sni()? {
+            Some(_) => Residuals::NONE.host_check_follows_chain(io),
+            None => Residuals::NONE,
+        };
+        Checked::new(io, pin, residuals)
     }
 
     /// What the peer chose of the ALPN offer, if one was made
@@ -1022,7 +1031,7 @@ impl<W: Wolfssl> Session<W> {
         if let Step::Three(outcome) = self.step {
             // Once failed, the handshake fails the same on every call.
             outcome?;
-            let checked = self.verify_pinned(io).and_then(|()| self.negotiate(io));
+            let checked = self.check_peer(io).and_then(|_checked| self.negotiate(io));
             if let Err(kind) = checked {
                 self.step = Step::Three(Err(kind));
                 return Err(kind);
@@ -1106,15 +1115,12 @@ impl<W: Wolfssl> Session<W> {
     }
 }
 
-/// The peer's public key is the pinned one, if `identity` pins one
-/// (`Curl_wssl_verify_pinned`).
-pub(crate) fn verify_pinned<S: Ssl>(
-    ssl: &S,
-    identity: &TlsIdentity,
-    io: &mut TlsCx<'_>,
-) -> Result<(), ErrorKind> {
-    let Some(pinned) = identity.options.pinned_key.as_deref() else {
-        return Ok(());
+/// The peer's public key is the pinned one, if the session's identity
+/// pins one (`Curl_wssl_verify_pinned`).
+pub(crate) fn verify_pinned<S: Ssl>(ssl: &S, io: &mut TlsCx<'_>) -> Result<Pinned, ErrorKind> {
+    let ask = match pin::of(io) {
+        Pin::NotAsked(pin) => return Ok(pin),
+        Pin::Asked(ask) => ask,
     };
     let der = match ssl.peer_cert() {
         PeerCert::None => {
@@ -1142,7 +1148,7 @@ pub(crate) fn verify_pinned<S: Ssl>(
             format_args!("SSL: failed retrieving public key from server certificate"),
         ));
     }
-    curl_core::tls::pin_peer_pubkey(io, pinned, spki).map_err(|kind| {
+    ask.check(io, spki).map_err(|kind| {
         io.fail(
             kind,
             format_args!("SSL: public key does not match pinned public key"),

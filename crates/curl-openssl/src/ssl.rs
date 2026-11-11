@@ -1576,7 +1576,7 @@ impl TlsSession for Session {
             io,
         );
         match checked {
-            Ok(sectrust) => self.flags.sectrust_verified = sectrust,
+            Ok((_checked, sectrust)) => self.flags.sectrust_verified = sectrust,
             Err(kind) => {
                 // The sessions kept for the peer go with it.
                 io.forget_sessions();
@@ -1983,7 +1983,7 @@ impl DriveCall for Check<'_> {
                 unsafe { report_handshake(ssl, cx) };
             }
             match x509::check_peer(ssl, identity, host, kind, reused, from_sectrust, cx) {
-                Ok(sectrust) => Ok(sectrust),
+                Ok(checked) => Ok(checked),
                 Err(kind) => {
                     cx.forget_sessions();
                     Err(kind)
@@ -1992,7 +1992,7 @@ impl DriveCall for Check<'_> {
         };
         // SAFETY: a `Check` lives only inside `drive`'s call, whose slot
         // is the SSL's BIO's while it runs, on this thread.
-        let sectrust = unsafe { bio::with_cx(ssl, check) }?;
+        let (_checked, sectrust) = unsafe { bio::with_cx(ssl, check) }?;
         // SAFETY: as above, the check's borrow of the slot over.
         unsafe { bio::set_sectrust(ssl, sectrust) };
         Ok(())

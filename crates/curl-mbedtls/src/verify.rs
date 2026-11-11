@@ -6,6 +6,7 @@
 
 use curl_core::error::ErrorKind;
 use curl_core::report::CertInfo;
+use curl_core::tls::pin::{PinAsk, Pinned};
 use curl_core::tls::{Text, TlsCx};
 
 use crate::library::{Chain, KeyCopy, Mbedtls};
@@ -64,14 +65,14 @@ pub(crate) fn certinfo(io: &mut TlsCx<'_>, chain: &dyn Chain) {
     let _unreported: Result<(), ErrorKind> = io.set_certinfo(Some(info));
 }
 
-/// The peer's public key is the one `pinned` names (`mbed_connect_step2`):
+/// The peer's public key is the one `ask` pins (`mbed_connect_step2`):
 /// the key of the certificate it showed, said why if not.
 pub(crate) fn pinned_key<G: Mbedtls>(
     lib: &G,
     io: &mut TlsCx<'_>,
     peer: Option<&[u8]>,
-    pinned: &[u8],
-) -> Result<(), ErrorKind> {
+    ask: PinAsk,
+) -> Result<Pinned, ErrorKind> {
     let Some(der) = peer else {
         return Err(io.fail(
             ErrorKind::SslPinnedpubkeynotmatch,
@@ -94,5 +95,5 @@ pub(crate) fn pinned_key<G: Mbedtls>(
             ));
         }
     };
-    curl_core::tls::pin_peer_pubkey(io, pinned, &key)
+    ask.check(io, &key)
 }

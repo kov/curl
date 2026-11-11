@@ -183,16 +183,19 @@ impl fmt::Display for Alpn<'_> {
 /// key, and the settings its connection was made with, which a session
 /// found must also match.
 pub struct SessionPeer {
+    /// The key, then the origin's name, in one allocation.
     key: Vec<u8>,
+    /// Where the key ends and the name starts.
+    key_len: usize,
     identity: TryArc<TlsIdentity>,
     /// The connection's TLS keeps the sessions the peer gives; not over a
     /// QUIC library that takes none (`Flavour::keeps_sessions`), which
     /// still resumes one kept already.
     keeps: bool,
-    /// The origin's name as the session sends and checks it (C's
-    /// `peer->hostname`), an IPv6 address without its brackets, and what
-    /// it is: a name or an address. Not a connect-to's.
-    name: Vec<u8>,
+    /// What the origin's name, after the key, is: a name or an address.
+    /// The name is as the session sends and checks it (C's
+    /// `peer->hostname`), an IPv6 address without its brackets; not a
+    /// connect-to's.
     kind: super::TlsPeerKind,
 }
 
@@ -208,15 +211,13 @@ impl SessionPeer {
         tls_id: &dyn fmt::Display,
         dial: Dial,
     ) -> Result<SessionPeer, OutOfMemory> {
-        let key = peer_key(identity, origin, via, tls_id, dial)?;
         let peer = super::TlsPeer::of(origin, false, None);
-        let mut name = Vec::new();
-        name.try_extend_from_slice(peer.name)?;
+        let (key, key_len) = peer_key(identity, origin, via, tls_id, dial, peer.name)?;
         Ok(SessionPeer {
             key,
+            key_len,
             identity: identity.clone(),
             keeps: true,
-            name,
             kind: peer.kind,
         })
     }
@@ -243,7 +244,7 @@ impl SessionPeer {
 
     /// The key, as the trace shows it.
     pub fn key(&self) -> &[u8] {
-        &self.key
+        &self.key[..self.key_len]
     }
 
     /// The identity the connection's TLS was made with.
@@ -253,7 +254,7 @@ impl SessionPeer {
 
     /// The origin's name and what it is (`TlsPeer`'s).
     pub(crate) fn name(&self) -> (&[u8], super::TlsPeerKind) {
-        (&self.name, self.kind)
+        (&self.key[self.key_len..], self.kind)
     }
 
     /// The connection's sessions are kept (`CURLOPT_SSL_SESSIONID_CACHE`).
@@ -278,7 +279,7 @@ impl SessionPeer {
 
 impl fmt::Debug for SessionPeer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SessionPeer({})", Shown(&self.key))
+        write!(f, "SessionPeer({})", Shown(self.key()))
     }
 }
 
@@ -1052,14 +1053,16 @@ fn peer_key(
     via: Option<&Peer>,
     tls_id: &dyn fmt::Display,
     dial: Dial,
-) -> Result<Vec<u8>, OutOfMemory> {
+    tail: &[u8],
+) -> Result<(Vec<u8>, usize), OutOfMemory> {
     let mut count = Count(0);
     write_key(&mut count, identity, origin, via, tls_id, dial);
     let mut fill = Fill(Vec::new());
-    fill.0.try_reserve_exact(count.0)?;
+    fill.0.try_reserve_exact(count.0 + tail.len())?;
     write_key(&mut fill, identity, origin, via, tls_id, dial);
     debug_assert_eq!(fill.0.len(), count.0, "written as counted");
-    Ok(fill.0)
+    fill.0.try_extend_from_slice(tail)?;
+    Ok((fill.0, count.0))
 }
 
 fn write_key(

@@ -17,10 +17,12 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::time::Instant;
+use curl_core::tls::pin::{self, Pin};
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Goodbye, Handshake, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer,
     TlsPeerKind, TlsSession, TlsShared, TlsWait,
 };
+use curl_core::tls::{Checked, Residuals};
 use curl_os::error::ErrorText;
 
 use crate::client;
@@ -764,23 +766,30 @@ impl Session {
             self.step = Step::Three;
             Self::say_debug(io, format_args!("schannel: SSL/TLS handshake complete"));
         }
-        if let Some(pinned) = self.identity.options.pinned_key.as_deref() {
-            let ctx = self.ctx.as_ref().expect("checked above");
-            if let Err(kind) = verify::pin(io, ctx, pinned) {
-                io.fail(
-                    kind,
-                    format_args!("SSL: public key does not match pinned public key"),
-                );
-                return Err(kind);
+        let pin = match pin::of(io) {
+            Pin::NotAsked(pin) => pin,
+            Pin::Asked(ask) => {
+                let ctx = self.ctx.as_ref().expect("checked above");
+                match verify::pin(io, ctx, ask) {
+                    Ok(pin) => pin,
+                    Err(kind) => {
+                        io.fail(
+                            kind,
+                            format_args!("SSL: public key does not match pinned public key"),
+                        );
+                        return Err(kind);
+                    }
+                }
             }
-        }
+        };
         let ctx = self.ctx.as_ref().expect("checked above");
         if self.identity.verify_peer && self.manual {
-            return verify::certificate(io, ctx, &self.identity, &self.shared, &self.host, true);
+            verify::certificate(io, ctx, &self.identity, &self.shared, &self.host, true)?;
+        } else if !self.identity.verify_peer && self.identity.verify_host {
+            verify::host(io, ctx, &self.host)?;
         }
-        if !self.identity.verify_peer && self.identity.verify_host {
-            return verify::host(io, ctx, &self.host);
-        }
+        // SSPI's own check matched the name, or the manual one did.
+        let _checked = Checked::new(io, pin, Residuals::NONE)?;
         Ok(())
     }
 

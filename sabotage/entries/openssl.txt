@@ -16,18 +16,6 @@ witness: curl-openssl sys::tests::three_or_later_is_supported
 --- new
     if number <= OLDEST && cfg!(ossl3) {
 
-=== a verified peer's certificate is taken whatever names it holds
-file: crates/curl-openssl/src/x509.rs
-witness: curl-openssl a_name_the_certificate_lacks_fails_the_host_check
---- old
-    if identity.verify_host {
-        verify_host(&cert, host, kind, io)?;
-    }
---- new
-    if false && identity.verify_host {
-        verify_host(&cert, host, kind, io)?;
-    }
-
 === OpenSSL is told it read more than the layers below gave it
 file: crates/curl-openssl/src/bio.rs
 witness: curl-openssl the_library_reads_no_more_than_it_asks
@@ -161,9 +149,11 @@ witness: curl-openssl a_revoked_certificate_fails_the_verification
 file: crates/curl-openssl/src/x509.rs
 witness: curl-openssl another_pinned_key_fails_even_unverified
 --- old
-    if let Some(pinned) = &identity.options.pinned_key {
+        Pin::Asked(ask) => {
+            let spki = public_key_der(&cert);
 --- new
-    if let Some(pinned) = identity.options.pinned_key.as_ref().filter(|_| identity.verify_peer) {
+        Pin::Asked(ask) if identity.verify_peer => {
+            let spki = public_key_der(&cert);
 
 === a certificate given without a key is not taken as its own key
 file: crates/curl-openssl/src/cert.rs
@@ -511,19 +501,14 @@ witness: curl-openssl tests::sectrust_requires_a_stapled_status_when_asked
 file: crates/curl-openssl/src/x509.rs
 witness: curl-openssl a_peer_without_a_certificate_passes_only_unchecked
 --- old
-        if !(identity.verify_peer || identity.verify_host) && identity.options.pinned_key.is_none()
+            && let Pin::NotAsked(pin) = pin::of(io)
+        {
 --- new
-        if !(identity.verify_peer || identity.verify_host)
-
-=== the peer's name is checked only where its chain is
-file: crates/curl-openssl/src/x509.rs
-witness: curl-openssl the_name_is_checked_whether_or_not_the_chain_is
---- old
-    if identity.verify_host {
-        verify_host(&cert, host, kind, io)?;
---- new
-    if identity.verify_host && identity.verify_peer {
-        verify_host(&cert, host, kind, io)?;
+            && let pin = match pin::of(io) {
+                Pin::NotAsked(pin) => pin,
+                Pin::Asked(ask) => ask.check(io, b"")?,
+            }
+        {
 
 === the stapled status is never checked
 file: crates/curl-openssl/src/x509.rs
@@ -541,10 +526,10 @@ witness: curl-openssl a_transfer_checking_the_status_resumes_no_session
 --- new
         if !self.reused && io.caches_sessions() {
 
-=== a peer whose key is not the one pinned passes, and its session is kept
+=== OpenSSL's match of the peer's name is left out of its check
 file: crates/curl-openssl/src/x509.rs
-witness: curl-openssl a_peer_failing_its_pin_leaves_no_session_to_resume
+witness: curl-openssl a_verified_get_reads_the_body
 --- old
-    if let Some(pinned) = &identity.options.pinned_key {
+        name = Some(verify_host(&cert, host, kind, io)?);
 --- new
-    if let Some(pinned) = identity.options.pinned_key.as_ref().filter(|_| false) {
+        verify_host(&cert, host, kind, io)?;

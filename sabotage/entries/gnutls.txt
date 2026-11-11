@@ -177,7 +177,7 @@ witness: curl-gnutls tests::a_quic_peer_s_pinned_key_is_checked_though_it_is_not
             let checked = session::check_peer(lib, gs, identity, names, cx);
 --- new
             let checked = match identity.verify_peer {
-                true => session::check_peer(lib, gs, identity, names, cx),
+                true => session::check_peer(lib, gs, identity, names, cx).map(|_| ()),
                 false => Ok(()),
             };
 

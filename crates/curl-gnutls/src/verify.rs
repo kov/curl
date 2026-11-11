@@ -10,7 +10,8 @@ use curl_alloc::OutOfMemory;
 use curl_core::date::HttpDate;
 use curl_core::error::ErrorKind;
 use curl_core::report::CertInfo;
-use curl_core::tls::{TlsCx, TlsIdentity, x509};
+use curl_core::tls::pin::{self, Pin, PinAsk, Pinned};
+use curl_core::tls::{Checked, Residuals, TlsCx, TlsIdentity, x509};
 
 use crate::library::{Cert as _, Format, Gnutls, Session as _, Stapled, as_c, c_string, strerror};
 use crate::sys;
@@ -36,7 +37,8 @@ pub(crate) struct Peer<'a> {
 }
 
 /// Check the peer of `session`, its handshake done, as `identity` asks
-/// (`Curl_gtls_verifyserver`), at `now` in seconds since 1970.
+/// (`Curl_gtls_verifyserver`), at `now` in seconds since 1970: the check,
+/// GnuTLS matching the name.
 pub(crate) fn verify_server<G: Gnutls>(
     lib: &G,
     session: &G::Session,
@@ -44,7 +46,7 @@ pub(crate) fn verify_server<G: Gnutls>(
     peer: &Peer<'_>,
     now: i64,
     io: &mut TlsCx<'_>,
-) -> Result<(), ErrorKind> {
+) -> Result<Checked, ErrorKind> {
     let o = &identity.options;
     let chain = session.peers();
     let leaf = chain.clone().and_then(|mut c| c.next());
@@ -120,16 +122,21 @@ pub(crate) fn verify_server<G: Gnutls>(
     if !matched && identity.verify_host {
         return Err(ErrorKind::PeerFailedVerification);
     }
-    if let Some(pinned) = o.pinned_key.as_deref() {
-        pin(&cert, pinned, io).inspect_err(|_| {
-            io.fail(
-                ErrorKind::SslPinnedpubkeynotmatch,
-                format_args!("SSL: public key does not match pinned public key"),
-            );
-        })?;
-    }
+    let pin = match pin::of(io) {
+        Pin::NotAsked(pin) => pin,
+        Pin::Asked(ask) => match pin(&cert, ask, io) {
+            Ok(pin) => pin,
+            Err(_) => {
+                return Err(io.fail(
+                    ErrorKind::SslPinnedpubkeynotmatch,
+                    format_args!("SSL: public key does not match pinned public key"),
+                ));
+            }
+        },
+    };
+    let checked = Checked::new(io, pin, Residuals::NONE)?;
     describe(lib, &cert, io);
-    Ok(())
+    Ok(checked)
 }
 
 /// GnuTLS's verdict on the chain (`gtls_verify_cert`), its status bits
@@ -381,13 +388,13 @@ fn verify_result<G: Gnutls>(
 /// The certificate's key is the pinned one (`pkp_pin_peer_pubkey`).
 fn pin<C: crate::library::Cert>(
     cert: &C,
-    pinned: &[u8],
+    ask: PinAsk,
     io: &mut TlsCx<'_>,
-) -> Result<(), ErrorKind> {
+) -> Result<Pinned, ErrorKind> {
     let Some(spki) = cert.public_key() else {
         return Err(ErrorKind::SslPinnedpubkeynotmatch);
     };
-    curl_core::tls::pin_peer_pubkey(io, pinned, &spki)
+    ask.check(io, &spki)
 }
 
 /// The certificate described, for a verbose transfer (`gtls_infof_cert`).

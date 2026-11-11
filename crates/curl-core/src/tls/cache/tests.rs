@@ -481,7 +481,10 @@ fn a_session_serves_only_its_client() {
         });
         let mut p = SessionPeer::new(&id, &o, None, &"X", Dial::Stream).unwrap();
         // The same key for all, so the client alone tells them apart.
+        let name = p.key.split_off(p.key_len);
         p.key = b"same".to_vec();
+        p.key_len = p.key.len();
+        p.key.extend_from_slice(&name);
         p
     };
     let plain = with(None, None);

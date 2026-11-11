@@ -12,10 +12,12 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{TlsMaxVersion, TlsMinVersion};
+use curl_core::tls::pin::{self, Pin};
 use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Goodbye, Handshake, Text, TlsCx, TlsIdentity, TlsIo, TlsNative,
     TlsPeer, TlsPeerKind, TlsSession, TlsTicket, TlsWait,
 };
+use curl_core::tls::{Checked, Residuals};
 
 use crate::library::{
     AGAIN, Call, Conn as _, Hex, LowHex, Mbedtls, Rc, Resume, Saved, as_c, c_string,
@@ -535,11 +537,15 @@ impl<G: Mbedtls> Session<G> {
             Text(version),
             crate::suites::name(id, true)
         ));
-        let identity = self.identity.clone();
-        if let Some(pinned) = identity.options.pinned_key.as_deref() {
-            let conn = self.conn.as_ref().expect("made at the first step");
-            crate::verify::pinned_key(self.lib, io, conn.peer_cert(), pinned)?;
-        }
+        let pin = match pin::of(io) {
+            Pin::NotAsked(pin) => pin,
+            Pin::Asked(ask) => {
+                let conn = self.conn.as_ref().expect("made at the first step");
+                crate::verify::pinned_key(self.lib, io, conn.peer_cert(), ask)?
+            }
+        };
+        // The library matched the name, as its verify callback says.
+        let _checked = Checked::new(io, pin, Residuals::NONE)?;
         if self.alpn != Alpn::None {
             let conn = self.conn.as_ref().expect("made at the first step");
             let chosen = conn.alpn_selected().unwrap_or_default();

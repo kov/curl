@@ -29,7 +29,7 @@ enum Said<'a> {
 /// The peer's key `spki` is the one `pinned` names, as `Curl_pin_peer_pubkey`
 /// decides: the lines it says on the way through `io`. A key that is not
 /// is `SslPinnedpubkeynotmatch`, which the library says why for.
-pub fn pin_peer_pubkey(io: &mut TlsCx<'_>, pinned: &[u8], spki: &[u8]) -> Result<(), ErrorKind> {
+fn pin_peer_pubkey(io: &mut TlsCx<'_>, pinned: &[u8], spki: &[u8]) -> Result<(), ErrorKind> {
     let matched = matches(pinned, spki, &mut |said| match said {
         Said::Hash(hash) => io.info(format_args!(" public key hash: sha256//{}", Text(hash))),
         Said::Matches => io.debug_info(format_args!("public key hash matches pinned value")),

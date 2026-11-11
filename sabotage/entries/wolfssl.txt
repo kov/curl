@@ -224,10 +224,9 @@ witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverifie
 file: crates/curl-wolfssl/src/quic.rs
 witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverified_host_not_at_all
 --- old
-    session::verify_pinned(ssl, identity, cx)
+            let checked = check_peer(ssl, identity, host, kind, cx);
 --- new
-    let _ = (ssl, cx);
-    Ok(())
+            let checked: Result<(), ErrorKind> = Ok(());
 
 === a QUIC handshake is checked before it is reported
 file: crates/curl-wolfssl/src/quic.rs
@@ -320,11 +319,9 @@ witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
 file: crates/curl-wolfssl/src/quic.rs
 witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverified_host_not_at_all
 --- old
-    session::verify_pinned(ssl, identity, cx)
-}
+            let checked = check_peer(ssl, identity, host, kind, cx);
 --- new
-    if !identity.verify_peer {
-        return Ok(());
-    }
-    session::verify_pinned(ssl, identity, cx)
-}
+            let checked = match identity.verify_peer {
+                true => check_peer(ssl, identity, host, kind, cx).map(|_| ()),
+                false => Ok(()),
+            };

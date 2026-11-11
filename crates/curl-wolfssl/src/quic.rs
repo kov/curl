@@ -8,6 +8,7 @@
 //! is done (`Curl_vquic_report_handshake`, `Curl_vquic_tls_verify_peer`).
 
 use curl_core::error::ErrorKind;
+use curl_core::tls::{Checked, Residuals};
 use curl_core::tls::{
     Chosen, DriveCall, QuicContextSetup, QuicTls, TlsCx, TlsIdentity, TlsNative, TlsPeerKind,
     TlsTicket,
@@ -45,7 +46,7 @@ fn check_peer<S: Ssl>(
     host: &[u8],
     kind: TlsPeerKind,
     cx: &mut TlsCx<'_>,
-) -> Result<(), ErrorKind> {
+) -> Result<Checked, ErrorKind> {
     if identity.verify_host {
         let rc = match curl_core::tls::sni_unlowered(host, kind) {
             Some(name) => ssl.check_host(name),
@@ -61,7 +62,8 @@ fn check_peer<S: Ssl>(
             Some(_) => {}
         }
     }
-    session::verify_pinned(ssl, identity, cx)
+    let pin = session::verify_pinned(ssl, cx)?;
+    Checked::new(cx, pin, Residuals::NONE)
 }
 
 impl<W: Wolfssl> QuicTls for QuicSession<W> {
@@ -113,7 +115,7 @@ impl<W: Wolfssl> QuicTls for QuicSession<W> {
                 // No session of a peer that fails its check is resumed.
                 cx.forget_sessions();
             }
-            checked
+            checked.map(|_| ())
         };
         let ssl = s.ssl.as_mut().expect("made as the session is");
         ssl.drive(&mut wcall, &mut check, call);

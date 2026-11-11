@@ -179,7 +179,10 @@ impl Checked {
 
     /// It was made for the connection whose sessions `peer` names: the
     /// same identity, not one equal to it.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the TLS layer and QUIC take it next"))]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the TLS layer and QUIC take it next")
+    )]
     pub(crate) fn is_for(&self, peer: &SessionPeer) -> bool {
         TryArc::ptr_eq(&self.identity, peer.identity())
     }

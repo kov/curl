@@ -29,7 +29,7 @@ use crate::library::{
 use crate::sys;
 use crate::trust;
 use crate::verify;
-use curl_core::tls::Text;
+use curl_core::tls::{Checked, Text};
 
 /// The most early data a handshake holds to send (`CURL_SSL_EARLY_MAX`).
 const EARLY_MOST: usize = 64 * 1024;
@@ -666,7 +666,7 @@ impl<G: Gnutls> Session<G> {
     /// 1.3 gives later (`gtls_verifyserver`).
     fn verify_server(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let gs = self.gs.as_mut().expect("made at the first step");
-        check_peer(self.lib, gs, &self.identity, &self.names, io)?;
+        let _checked = check_peer(self.lib, gs, &self.identity, &self.names, io)?;
         if gs.version() < sys::GNUTLS_TLS1_3 && io.caches_sessions() {
             let data = gs.data()?;
             let (version, early) = (gs.version(), gs.max_early_data());
@@ -809,7 +809,7 @@ pub(crate) fn check_peer<G: Gnutls>(
     identity: &TlsIdentity,
     names: &Names,
     io: &mut TlsCx<'_>,
-) -> Result<(), ErrorKind> {
+) -> Result<Checked, ErrorKind> {
     let peer = verify::Peer {
         name: names.host(),
         sni: names.sni(),

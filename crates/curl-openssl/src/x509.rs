@@ -19,7 +19,9 @@ use openssl_sys::{BIO, SSL, SSL_CTX, X509, X509_STORE};
 use crate::cache::{self, StoreCache};
 use crate::ffi;
 use crate::sys::PACKAGE;
-use curl_core::tls::hostcheck;
+use curl_core::tls::hostcheck::{self, CertName, NameMatch};
+use curl_core::tls::pin::{self, Pin};
+use curl_core::tls::{Checked, Residuals};
 
 /// A certificate this crate holds a reference to, freed as it goes.
 pub(crate) struct Cert(NonNull<X509>);
@@ -674,40 +676,30 @@ const GEN_IPADD: c_int = 7;
 
 /// The certificate names the peer (`ossl_verifyhost`): a subject
 /// alternative name of the peer's kind, or without any, the last common
-/// name.
+/// name. Each is matched by curl-core against the session's peer, whose
+/// match it gives.
 fn verify_host(
     cert: &Cert,
     host: &[u8],
     kind: TlsPeerKind,
     io: &mut TlsCx<'_>,
-) -> Result<(), ErrorKind> {
-    let mut v4 = [0u8; 4];
-    let mut v6 = [0u8; 16];
+) -> Result<NameMatch, ErrorKind> {
+    // An address that does not read as one names nothing.
+    let text = std::str::from_utf8(host).ok();
     let target = match kind {
         TlsPeerKind::Ipv4 => {
-            let a: Ipv4Addr = std::str::from_utf8(host)
-                .ok()
-                .and_then(|h| h.parse().ok())
+            text.and_then(|h| h.parse::<Ipv4Addr>().ok())
                 .ok_or(ErrorKind::PeerFailedVerification)?;
-            v4 = a.octets();
             GEN_IPADD
         }
         TlsPeerKind::Ipv6 => {
-            let a: Ipv6Addr = std::str::from_utf8(host)
-                .ok()
-                .and_then(|h| h.parse().ok())
+            text.and_then(|h| h.parse::<Ipv6Addr>().ok())
                 .ok_or(ErrorKind::PeerFailedVerification)?;
-            v6 = a.octets();
             GEN_IPADD
         }
         TlsPeerKind::Name => GEN_DNS,
     };
-    let address: &[u8] = match kind {
-        TlsPeerKind::Ipv4 => &v4,
-        TlsPeerKind::Ipv6 => &v6,
-        TlsPeerKind::Name => &[],
-    };
-    let mut matched = false;
+    let mut matched = None;
     let mut dns_name = false;
     let mut ip_address = false;
     // SAFETY: the certificate; the names it gives, freed below.
@@ -724,7 +716,7 @@ fn verify_host(
         // SAFETY: a stack of `GENERAL_NAME`s.
         let n = unsafe { ffi::sk_num(stack) };
         let mut i = 0;
-        while i < n && !matched {
+        while i < n && matched.is_none() {
             // SAFETY: an entry of the stack, a `GENERAL_NAME`.
             let name = unsafe { ffi::sk_value(stack, i) };
             // SAFETY: as above, alive while the stack is, freed below.
@@ -743,8 +735,10 @@ fn verify_host(
             let alt = unsafe { asn1_bytes(ffi::general_name_string(name)) };
             match target {
                 GEN_DNS => {
-                    if !alt.contains(&0) && hostcheck::names(alt, host) {
-                        matched = true;
+                    if !alt.contains(&0) {
+                        matched = hostcheck::check(io, CertName::Dns(alt));
+                    }
+                    if matched.is_some() {
                         io.info(format_args!(
                             "  subjectAltName: \"{}\" matches cert's \"{}\"",
                             Shown(host, kind),
@@ -753,8 +747,8 @@ fn verify_host(
                     }
                 }
                 _ => {
-                    if alt == address {
-                        matched = true;
+                    matched = hostcheck::check(io, CertName::Ip(alt));
+                    if matched.is_some() {
                         io.info(format_args!(
                             "  subjectAltName: \"{}\" matches cert's IP address!",
                             Shown(host, kind)
@@ -766,8 +760,8 @@ fn verify_host(
         // SAFETY: the names the library gave, freed once.
         unsafe { ffi::GENERAL_NAMES_free(names.cast()) };
     }
-    if matched {
-        return Ok(());
+    if let Some(matched) = matched {
+        return Ok(matched);
     }
     if dns_name || ip_address {
         let what = match kind {
@@ -813,7 +807,7 @@ fn common_name(
     host: &[u8],
     kind: TlsPeerKind,
     io: &mut TlsCx<'_>,
-) -> Result<(), ErrorKind> {
+) -> Result<NameMatch, ErrorKind> {
     // SAFETY: the certificate's subject, its own.
     let name = unsafe { openssl_sys::X509_get_subject_name(cert.as_ptr()) };
     let mut last = -1;
@@ -831,7 +825,7 @@ fn common_name(
     }
     let mut owned: *mut u8 = ptr::null_mut();
     let mut cn: Option<&[u8]> = None;
-    let mut result = Ok(());
+    let mut result = Ok(None);
     if last >= 0 {
         // SAFETY: an entry of the name, the name's own.
         let entry = unsafe { openssl_sys::X509_NAME_get_entry(name, last) };
@@ -873,18 +867,20 @@ fn common_name(
                 ErrorKind::PeerFailedVerification,
                 format_args!("SSL: unable to obtain common name from peer certificate"),
             )),
-            Some(c) if !hostcheck::names(c, host) => Err(io.fail(
-                ErrorKind::PeerFailedVerification,
-                format_args!(
-                    "SSL: certificate subject name '{}' does not match target hostname '{}'",
-                    Text(c),
-                    Shown(host, kind)
-                ),
-            )),
-            Some(c) => {
-                io.info(format_args!(" common name: {} (matched)", Text(c)));
-                Ok(())
-            }
+            Some(c) => match hostcheck::check(io, CertName::CommonName(c)) {
+                None => Err(io.fail(
+                    ErrorKind::PeerFailedVerification,
+                    format_args!(
+                        "SSL: certificate subject name '{}' does not match target hostname '{}'",
+                        Text(c),
+                        Shown(host, kind)
+                    ),
+                )),
+                Some(matched) => {
+                    io.info(format_args!(" common name: {} (matched)", Text(c)));
+                    Ok(Some(matched))
+                }
+            },
         };
     }
     if !owned.is_null() {
@@ -892,7 +888,7 @@ fn common_name(
         // (`OPENSSL_free`).
         unsafe { openssl_sys::CRYPTO_free(owned.cast(), c"".as_ptr(), 0) };
     }
-    result
+    result.map(|matched| matched.expect("a common name matched where it passes"))
 }
 
 /// Check the peer's certificate once the handshake is done
@@ -901,7 +897,8 @@ fn common_name(
 /// fails the transfer only if the peer is to be verified; where OpenSSL
 /// did not verify it, Apple's SecTrust may (`sectrust`), a resumed
 /// session's peer trusted if its session's was (`from_sectrust`). Gives
-/// whether SecTrust verified it (`sectrust_verified`).
+/// the check, its name matched by curl-core, and whether SecTrust
+/// verified the peer (`sectrust_verified`).
 pub(crate) fn check_peer(
     ssl: NonNull<SSL>,
     identity: &TlsIdentity,
@@ -910,7 +907,7 @@ pub(crate) fn check_peer(
     reused: bool,
     from_sectrust: bool,
     io: &mut TlsCx<'_>,
-) -> Result<bool, ErrorKind> {
+) -> Result<(Checked, bool), ErrorKind> {
     // A resumed session's chain is not sent again.
     if !reused {
         crate::certinfo::report(ssl, io)?;
@@ -919,9 +916,10 @@ pub(crate) fn check_peer(
     // as `cert` goes.
     let cert = NonNull::new(unsafe { ffi::SSL_get1_peer_certificate(ssl.as_ptr()) });
     let Some(cert) = cert.map(Cert) else {
-        if !(identity.verify_peer || identity.verify_host) && identity.options.pinned_key.is_none()
+        if !(identity.verify_peer || identity.verify_host)
+            && let Pin::NotAsked(pin) = pin::of(io)
         {
-            return Ok(false);
+            return Ok((Checked::named(io, pin, None, Residuals::NONE)?, false));
         }
         return Err(io.fail(
             ErrorKind::PeerFailedVerification,
@@ -930,8 +928,9 @@ pub(crate) fn check_peer(
     };
     info_cert(&cert, io)?;
     info_chain(ssl, io);
+    let mut name = None;
     if identity.verify_host {
-        verify_host(&cert, host, kind, io)?;
+        name = Some(verify_host(&cert, host, kind, io)?);
     }
     // SAFETY: the session's SSL.
     let verified = unsafe { openssl_sys::SSL_get_verify_result(ssl.as_ptr()) };
@@ -979,18 +978,24 @@ pub(crate) fn check_peer(
         crate::ocsp::check(ssl, ctx.expect("an SSL's context"), io)?;
     }
     check_issuer(&cert, identity, io)?;
-    if let Some(pinned) = &identity.options.pinned_key {
-        // Checked whether the peer is verified or not
-        // (`ossl_check_pinned_key`).
-        let spki = public_key_der(&cert);
-        if let Err(kind) = curl_core::tls::pin_peer_pubkey(io, pinned, &spki) {
-            return Err(io.fail(
-                kind,
-                format_args!("SSL: public key does not match pinned public key"),
-            ));
+    // Checked whether the peer is verified or not (`ossl_check_pinned_key`).
+    let pin = match pin::of(io) {
+        Pin::NotAsked(pin) => pin,
+        Pin::Asked(ask) => {
+            let spki = public_key_der(&cert);
+            match ask.check(io, &spki) {
+                Ok(pin) => pin,
+                Err(kind) => {
+                    return Err(io.fail(
+                        kind,
+                        format_args!("SSL: public key does not match pinned public key"),
+                    ));
+                }
+            }
         }
-    }
-    Ok(by_sectrust)
+    };
+    let checked = Checked::named(io, pin, name, Residuals::NONE)?;
+    Ok((checked, by_sectrust))
 }
 
 /// What Apple's SecTrust is asked of a new session's peer's status.

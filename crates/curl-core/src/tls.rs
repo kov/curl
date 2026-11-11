@@ -36,7 +36,6 @@ pub(crate) use cache::unpack as unpack_session;
 pub use cache::{SessionExport, SessionFor, SessionPeer, TLS1_3, TlsTicket};
 pub use checked::{Checked, Residual, Residuals};
 pub use keylog::{KeyLog, SharedKeyLog};
-pub use pin::pin_peer_pubkey;
 pub use store::StoreCache;
 
 pub(crate) mod cache;

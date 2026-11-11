@@ -1,8 +1,9 @@
 # Windows' SSPI as C's Windows build routes authentication through it
 # (crates/curl-core/src/proto/http/negotiate.rs, auth/digest_sspi.rs,
 # auth/sasl.rs, auth/sasl/krb5.rs, conn/socks/gss.rs), over a scripted
-# SSPI. The binding itself (crates/curl-sspi) is Windows-only: its faults
-# are planted by hand on the guest.
+# SSPI. The binding itself (crates/curl-sspi) is Windows-only: its
+# entries say `platform: windows`, and their faults are planted by hand
+# on Windows.
 
 === SPNEGO over SSPI may settle on NTLM
 file: crates/curl-core/src/proto/http/negotiate.rs
@@ -155,3 +156,38 @@ witness: curl-core auth::sasl::tests::gssapi::a_step_that_fails_stops_the_exchan
         if progress.is_err() && !restarts {
 --- new
         if progress.is_err() && restarts {
+
+=== SSPI's ANSI text has no zero after it
+file: crates/curl-sspi/src/sys.rs
+witness: curl-sspi imp::tests::text_is_the_builds
+platform: windows
+--- old
+            a.try_push(0)?;
+--- new
+
+=== SSPI is asked to allocate a token it is given room for
+file: crates/curl-sspi/src/sys.rs
+witness: curl-sspi imp::tests::negotiate_with_ntlm_makes_a_token
+platform: windows
+--- old
+                req & !id::ISC_REQ_ALLOCATE_MEMORY,
+--- new
+                req | id::ISC_REQ_ALLOCATE_MEMORY,
+
+=== a context's next step starts a new context
+file: crates/curl-sspi/src/sys.rs
+witness: curl-sspi imp::tests::negotiate_with_ntlm_makes_a_token
+platform: windows
+--- old
+        Some(c) if !fresh => {
+--- new
+        Some(c) if false => {
+
+=== a failed InitializeSecurityContext's output is read as a token
+file: crates/curl-sspi/src/sys.rs
+witness: curl-sspi imp::tests::negotiate_without_a_domain_is_refused
+platform: windows
+--- old
+    let ok = status >= 0;
+--- new
+    let ok = true;

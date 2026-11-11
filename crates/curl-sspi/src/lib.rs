@@ -407,6 +407,8 @@ mod imp {
             };
             let mut out = Vec::new();
             let done = ctx.initialize(&call, &mut out).unwrap();
+            // A failed call leaves no token, as C reads none.
+            assert!(out.is_empty(), "{out:?}");
             let mut said = Vec::new();
             SSPI.describe(done.status, &mut |b| said.extend_from_slice(b));
             let said = String::from_utf8_lossy(&said);

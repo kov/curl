@@ -122,3 +122,15 @@ witness: curl-core hsts::tests::unit1674_most_entries_kept
             self.entries.remove(0);
 --- new
             self.entries.pop();
+
+=== the tool's transfers keep an HSTS cache each
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool hsts_one_url_sets_holds_for_the_next
+features: debug-hooks
+--- old
+        Kind::Psl,
+        Kind::Hsts,
+    ] {
+--- new
+        Kind::Psl,
+    ] {

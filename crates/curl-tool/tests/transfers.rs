@@ -2636,6 +2636,45 @@ fn hsts_and_alt_svc_files_are_read_and_written() {
     );
 }
 
+/// HSTS one URL's response sets holds for the next URL of the same
+/// command line, the transfers sharing one cache (CVE-2023-23914), and
+/// the cache's file is written once with it (CVE-2023-23915). The debug
+/// build takes the header over plain HTTP (`CURL_HSTS_HTTP`).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn hsts_one_url_sets_holds_for_the_next() {
+    use std::io::{Read as _, Write as _};
+    let dir = Scratch::new("hsts-shared");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
+        let mut got = Vec::new();
+        let mut buf = [0; 1024];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            match peer.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+        let reply = b"HTTP/1.1 200 OK\r\nStrict-Transport-Security: max-age=100000\r\n\
+                      Content-Length: 0\r\n\r\n";
+        peer.write_all(reply).unwrap();
+    });
+    let first = format!("http://localhost:{port}/");
+    let hsts = dir.path("hsts");
+    let run = curl_env(
+        &dir,
+        &["-v", "--hsts", &hsts, &first, "http://localhost:1/"],
+        &[("CURL_HSTS_HTTP", "1")],
+    );
+    server.join().unwrap();
+    let switched = "Switched from HTTP to HTTPS due to HSTS => https://localhost:1/";
+    assert!(run.stderr.contains(switched), "{}", run.stderr);
+    let saved = String::from_utf8(dir.read("hsts")).unwrap();
+    assert!(saved.contains("\nlocalhost \""), "{saved}");
+}
+
 /// A POP3 server that offers `STLS` and refuses it, agreeing to all else
 /// for as long as
 /// the test runs: what each connection was sent, a line each, in the

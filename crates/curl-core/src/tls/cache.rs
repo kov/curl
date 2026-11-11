@@ -1089,7 +1089,52 @@ fn write_key(
             w(out, format_args!("{b:02x}"));
         }
     };
-    let o: &TlsOptions = &identity.options;
+    // Every setting by name, so that one added does not compile until it
+    // is keyed here or said why not (`ssl_peer_key_build`).
+    let TlsIdentity {
+        verify_peer,
+        verify_host,
+        options,
+        // Keyed as the CA file and path they resolve, below.
+        ca_defaults: _,
+        // What an origin not the first leaves out is out of `options`.
+        origin: _,
+    } = identity;
+    let TlsOptions {
+        min_version,
+        max_version,
+        ssl_options,
+        verify_status,
+        // Keyed as they resolve, below.
+        ca_file: _,
+        ca_path: _,
+        ca_blob: _,
+        crl_file,
+        issuer_cert,
+        issuer_cert_blob,
+        cert,
+        cert_blob,
+        cert_type,
+        key,
+        key_blob,
+        key_type,
+        // Not keyed, as C keys it not: a session found is matched by it
+        // (`SessionPeer::auth`, `cf_ssl_scache_match_auth`).
+        key_password: _,
+        ciphers,
+        tls13_ciphers,
+        curves,
+        signature_algorithms,
+        pinned_key,
+        // The handle's, or none of a session's: C keys none of them.
+        alpn: _,
+        ca_cache: _,
+        engine: _,
+        engine_default: _,
+        session_cache: _,
+        context: _,
+        ech: _,
+    } = options;
     w(out, format_args!("{}:", origin.scheme().name()));
     out.bytes(origin.name());
     w(out, format_args!(":{}:KEY-V3", origin.port()));
@@ -1097,16 +1142,16 @@ fn write_key(
     if dial == Dial::Quic {
         out.bytes(b":QUIC");
     }
-    if !identity.verify_peer {
+    if !*verify_peer {
         out.bytes(b":NO-VRFY-PEER");
     }
-    if !identity.verify_host {
+    if !*verify_host {
         out.bytes(b":NO-VRFY-HOST");
     }
-    if o.verify_status {
+    if *verify_status {
         out.bytes(b":VRFY-STATUS");
     }
-    if (!identity.verify_peer || !identity.verify_host)
+    if (!*verify_peer || !*verify_host)
         && let Some(via) = via.filter(|v| **v != *origin)
     {
         text(out, "CHOST", via.name());
@@ -1117,40 +1162,40 @@ fn write_key(
         out,
         format_args!(
             ":TLSVER-{}-{}",
-            min_number(o.min_version),
-            max_number(o.max_version)
+            min_number(*min_version),
+            max_number(*max_version)
         ),
     );
-    let bits = o.ssl_options.bits();
+    let bits = ssl_options.bits();
     if bits != 0 {
         w(out, format_args!(":TLSOPT-{bits:x}"));
     }
     for (name, value) in [
-        ("CIPHER", &o.ciphers),
-        ("CIPHER13", &o.tls13_ciphers),
-        ("CURVES", &o.curves),
-        ("SIGALGS", &o.signature_algorithms),
+        ("CIPHER", ciphers),
+        ("CIPHER13", tls13_ciphers),
+        ("CURVES", curves),
+        ("SIGALGS", signature_algorithms),
     ] {
         if let Some(value) = value {
             text(out, name, value);
         }
     }
-    if identity.verify_peer {
+    if *verify_peer {
         path(out, "CA", identity.ca_file());
         path(out, "CApath", identity.ca_path());
-        path(out, "CRL", o.crl_file.as_deref());
-        path(out, "Issuer", o.issuer_cert.as_deref());
+        path(out, "CRL", crl_file.as_deref());
+        path(out, "Issuer", issuer_cert.as_deref());
         hash(out, "CAInfoBlob", identity.ca_blob());
-        hash(out, "IssuerBlob", o.issuer_cert_blob.as_deref());
+        hash(out, "IssuerBlob", issuer_cert_blob.as_deref());
     }
-    hash(out, "CertBlob", o.cert_blob.as_deref());
-    if let Some(pinned) = o.pinned_key.as_deref().filter(|p| !p.is_empty()) {
+    hash(out, "CertBlob", cert_blob.as_deref());
+    if let Some(pinned) = pinned_key.as_deref().filter(|p| !p.is_empty()) {
         text(out, "Pinned", pinned);
     }
-    path(out, "CCERT", o.cert.as_deref());
-    path(out, "KEY", o.key.as_deref());
-    hash(out, "KEYBlob", o.key_blob.as_deref());
-    for (name, value) in [("CT", &o.cert_type), ("KT", &o.key_type)] {
+    path(out, "CCERT", cert.as_deref());
+    path(out, "KEY", key.as_deref());
+    hash(out, "KEYBlob", key_blob.as_deref());
+    for (name, value) in [("CT", cert_type), ("KT", key_type)] {
         if let Some(value) = value.as_deref().filter(|v| !v.is_empty()) {
             w(out, format_args!(":{name}-{}:", value.len()));
             for b in value {

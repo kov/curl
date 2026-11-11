@@ -3,8 +3,8 @@ file: crates/curl-core/src/tls/cache.rs
 witness: curl-core tls::cache::tests::a_key_holds_every_setting_a_session_must_share
 --- old
             ":TLSVER-{}-{}",
-            min_number(o.min_version),
-            max_number(o.max_version)
+            min_number(*min_version),
+            max_number(*max_version)
 --- new
             ":TLSVER-{}-{}",
             6,
@@ -167,3 +167,11 @@ witness: curl-openssl the_next_connection_resumes_a_tls_1_2_session
         Ok(n) if alpn_known && n > 0 && !proto.is_null() => {
 --- new
         Ok(n) if n > 0 && !proto.is_null() => {
+
+=== a session made without verifying the peer is kept for one that verifies it
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_key_is_c_s_for_the_same_settings
+--- old
+        out.bytes(b":NO-VRFY-PEER");
+--- new
+        out.bytes(b"");

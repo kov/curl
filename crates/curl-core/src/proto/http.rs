@@ -757,6 +757,34 @@ impl Request {
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
         let (peer, target, gate) = Request::addressed(url, scheme, before, cx)?;
+        Request::credentialed(url, scheme, (peer, target, gate), before, cx)
+    }
+
+    /// The HTTP request a forwarding proxy is sent for `url`, an FTP URL,
+    /// in place of the FTP request whose `gate` it takes: that gate was
+    /// decided for the URL's origin, which stays the transfer's origin
+    /// (`Curl_auth_allowed_to_host`), not for the HTTP peer the request
+    /// is addressed as.
+    pub(crate) fn forwarding<H: Host>(
+        url: &Url,
+        gate: CredentialGate,
+        before: Before<'_>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<Box<Request>, ErrorKind> {
+        let (peer, target, _) = Request::addressed(url, HTTP, before, cx)?;
+        Request::credentialed(url, HTTP, (peer, target, gate), before, cx)
+    }
+
+    /// A request of `scheme` to `peer` for `target`, with the credentials
+    /// the options, the URL and a `.netrc` file give it where `gate` lets
+    /// it send them; boxed, as `new` says.
+    fn credentialed<H: Host>(
+        url: &Url,
+        scheme: Scheme,
+        (peer, target, gate): (Peer, Vec<u8>, CredentialGate),
+        before: Before<'_>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<Box<Request>, ErrorKind> {
         let mut request = curl_alloc::try_box(Request::fresh(peer, target, gate, before))
             .map_err(|_| ErrorKind::OutOfMemory)?;
         // HTTP's user and password take control bytes

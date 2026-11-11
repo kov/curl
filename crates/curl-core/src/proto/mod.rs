@@ -1001,6 +1001,24 @@ impl ProtoState {
         self.scheme().is_some_and(Scheme::over_tls)
     }
 
+    /// An FTP request goes to a forwarding proxy as an HTTP one for `url`,
+    /// which takes its place: what the application said may go there as
+    /// the FTP request's own gate lets it, decided for the FTP origin, as
+    /// C's origin stays the URL's (`Curl_auth_allowed_to_host`). Any other
+    /// request is left as it is.
+    pub(crate) fn forward_ftp<H: Host>(
+        &mut self,
+        url: &Url,
+        before: Before<'_>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<(), ErrorKind> {
+        if let ProtoState::Ftp(r) = self {
+            let http = http::Request::forwarding(url, r.base.gate, before, cx)?;
+            *self = ProtoState::Http(http.into());
+        }
+        Ok(())
+    }
+
     /// The request goes whole to a proxy that sends it on to `url`, an
     /// FTP URL's type code `ftp_type` added if asked for.
     pub(crate) fn forward(&mut self, url: &Url, ftp_type: Option<u8>) -> Result<(), ErrorKind> {

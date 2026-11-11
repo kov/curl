@@ -958,3 +958,14 @@ witness: curl-core proto::gate_tests::a_udp_tunnel_to_a_redirected_to_host_carri
             ProtoState::Tftp(r) => r.base.gate.trusted(),
 --- new
             ProtoState::Tftp(_) => CredentialGate::FIRST.trusted(),
+
+=== a forwarded FTP request's gate is decided for the HTTP peer it is addressed as
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_forwarded_ftp_url_after_http_on_its_port_carries_no_credentials
+--- old
+        let (peer, target, _) = Request::addressed(url, HTTP, before, cx)?;
+        Request::credentialed(url, HTTP, (peer, target, gate), before, cx)
+--- new
+        let _ = gate;
+        let addressed = Request::addressed(url, HTTP, before, cx)?;
+        Request::credentialed(url, HTTP, addressed, before, cx)

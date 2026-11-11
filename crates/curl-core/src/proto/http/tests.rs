@@ -4665,6 +4665,44 @@ fn a_forwarded_ftp_url_carries_its_credentials() {
     }
 }
 
+/// An FTP URL handed to a proxy after a redirect from HTTP on the FTP
+/// port of the same host is for another origin, an FTP one, whatever the
+/// HTTP request it goes as: it carries neither the application's login,
+/// in its URL or an `Authorization:`, nor its custom `Cookie:`
+/// (`Curl_auth_allowed_to_host`), as test 3704.
+#[test]
+fn a_forwarded_ftp_url_after_http_on_its_port_carries_no_credentials() {
+    let moved: &[u8] =
+        b"HTTP/1.1 302 Moved\r\nLocation: ftp://origin.example/b\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[moved, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example:21/a")).unwrap();
+        o.http.follow = Follow::All;
+        let login = o.login.make_mut().unwrap();
+        login.user = Some(b"user".to_vec());
+        login.password = Some(b"secret".to_vec());
+        o.http.headers = UserHeaders::new([&b"Cookie: crumb=1"[..]]).unwrap();
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let (first, second) = text.split_once("\r\n\r\n").unwrap();
+    assert!(
+        first.starts_with("GET http://origin.example:21/a HTTP/1.1\r\n"),
+        "{first}"
+    );
+    assert!(
+        second.starts_with("GET ftp://origin.example/b HTTP/1.1\r\n"),
+        "{second}"
+    );
+    for line in ["\r\nAuthorization: Basic ", "\r\nCookie: crumb=1"] {
+        assert!(first.contains(line), "to the first origin: {first}");
+        assert!(!second.contains(line), "not to the FTP origin: {second}");
+    }
+    assert!(!second.contains("user"), "{second}");
+}
+
 /// A transfer handed whole to a proxy says it spoke the proxy's scheme
 /// (`CURLINFO_SCHEME`, from `conn->scheme`), so an FTP URL asked of an
 /// HTTP proxy reports HTTP, whose headers the tool then shows (test 79).

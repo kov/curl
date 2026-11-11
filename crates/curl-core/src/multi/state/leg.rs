@@ -804,18 +804,13 @@ pub(super) fn start_leg<H: Host>(
                 }
             });
             if ftp {
-                // The transfer's first request is this one if its origin
-                // is the first one set, as the scheme's own request would
-                // have been made before it was.
-                let first = run.first.as_deref().filter(|f| !std::ptr::eq(*f, &*origin));
                 let before = Before {
-                    first,
+                    first: run.first.as_deref(),
                     method: run.method,
                     http: &run.http,
                 };
-                match crate::proto::http::Request::new(&url, false, before, cx) {
-                    Ok(http) => proto = ProtoState::Http(http.into()),
-                    Err(e) => return TransferState::Init.fail(e),
+                if let Err(e) = proto.forward_ftp(&url, before, cx) {
+                    return TransferState::Init.fail(e);
                 }
             }
             if let Err(e) = proto.forward(&url, ftp_type) {

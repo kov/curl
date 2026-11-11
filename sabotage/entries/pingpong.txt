@@ -131,9 +131,9 @@ file: crates/curl-core/src/proto/pingpong/drive.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_long_answer_is_read_ten_reads_a_pass
 features: test-util
 --- old
-            reads_left -= 1;
+    for _ in 0..super::MAX_READS {
 --- new
-            reads_left += 1;
+    for _ in 0..super::MAX_READS * 100 {
 
 === a short read of the answer leads to another read
 file: crates/curl-core/src/proto/pingpong/drive.rs
@@ -175,21 +175,17 @@ features: test-util
 file: crates/curl-core/src/proto/pingpong/drive.rs
 witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
 --- old
-        if pp.read_for_reply() >= GOODBYE_READ_MAX {
+    (pp.read_for_reply() >= GOODBYE_READ_MAX).then_some(Goodbye::Done)
 --- new
-        if pp.read_for_reply() >= usize::MAX {
+    (pp.read_for_reply() >= usize::MAX).then_some(Goodbye::Done)
 
 === a goodbye's answer is read without letting the others run
 file: crates/curl-core/src/proto/pingpong/drive.rs
 witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
 --- old
-        if reads == MAX_READS {
-            return Goodbye::Awaited { moved };
-        }
+    for _ in 0..MAX_READS {
 --- new
-        if reads == MAX_READS * 100 {
-            return Goodbye::Awaited { moved };
-        }
+    for _ in 0..MAX_READS * 100 {
 
 === a goodbye said reads its answer twice in one try
 file: crates/curl-core/src/conn/shutdown.rs

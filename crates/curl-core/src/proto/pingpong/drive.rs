@@ -91,43 +91,56 @@ pub(crate) fn read<H: Host, E: Ends>(
     counted: &mut u64,
     sent: bool,
 ) -> Result<Read<E::Reply>, ErrorKind> {
-    let mut reads_left = super::MAX_READS;
-    loop {
-        let mut got = 0;
-        if !pp.unscanned() {
-            // Don't get stuck.
-            if reads_left == 0 {
-                return Ok(Read::Waiting);
-            }
-            reads_left -= 1;
-            match recv(cx, pp, carrier)? {
-                Some(n) => got = n,
-                None => {
-                    pp.read_nothing();
-                    return Ok(Read::Waiting);
-                }
-            }
-            *counted += got as u64;
+    // What is held is looked through first, without a read: it ends a
+    // reply, or the step waits on the connection.
+    if pp.unscanned() {
+        if let Some(reply) = scan(cx, pp, ends, pipeline, sent)? {
+            return Ok(reply);
         }
-        loop {
-            let event = pp.next(ends).map_err(|e| read_failed(cx, e))?;
-            match event {
-                super::Event::NeedMore => break,
-                super::Event::Line(line) => {
-                    trace::bytes(cx, DebugKind::HeaderIn, line);
-                    pipeline.info(cx, line, sent)?;
-                }
-                super::Event::Reply { line, reply, size } => {
-                    trace::bytes(cx, DebugKind::HeaderIn, line);
-                    pipeline.info(cx, line, sent)?;
-                    pp.reads_ended();
-                    return Ok(Read::Reply(reply, size));
-                }
-            }
+        pp.reads_ended();
+        return Ok(Read::Waiting);
+    }
+    // Don't get stuck: the pass is this many reads, and no more.
+    for _ in 0..super::MAX_READS {
+        let Some(got) = recv(cx, pp, carrier)? else {
+            pp.read_nothing();
+            return Ok(Read::Waiting);
+        };
+        *counted += got as u64;
+        if let Some(reply) = scan(cx, pp, ends, pipeline, sent)? {
+            return Ok(reply);
         }
         if got != READ_SIZE {
             pp.reads_ended();
             return Ok(Read::Waiting);
+        }
+    }
+    Ok(Read::Waiting)
+}
+
+/// The lines held looked through to the end of what came, each traced
+/// and given to the header handler: the reply a line ends, if one does.
+fn scan<H: Host, E: Ends>(
+    cx: &mut StepCx<'_, H>,
+    pp: &mut Pingpong,
+    ends: &E,
+    pipeline: &mut Pipeline,
+    sent: bool,
+) -> Result<Option<Read<E::Reply>>, ErrorKind> {
+    loop {
+        let event = pp.next(ends).map_err(|e| read_failed(cx, e))?;
+        match event {
+            super::Event::NeedMore => return Ok(None),
+            super::Event::Line(line) => {
+                trace::bytes(cx, DebugKind::HeaderIn, line);
+                pipeline.info(cx, line, sent)?;
+            }
+            super::Event::Reply { line, reply, size } => {
+                trace::bytes(cx, DebugKind::HeaderIn, line);
+                pipeline.info(cx, line, sent)?;
+                pp.reads_ended();
+                return Ok(Some(Read::Reply(reply, size)));
+            }
         }
     }
 }
@@ -227,7 +240,6 @@ pub(crate) fn goodbye_answer<E: Ends>(
     ends: &E,
 ) -> Goodbye {
     let mut moved = false;
-    let mut reads = 0;
     if pp.needs_flush() {
         match carrier.send(cx, pp.unsent()) {
             Ok(Sent::Bytes(n)) => {
@@ -241,19 +253,10 @@ pub(crate) fn goodbye_answer<E: Ends>(
             return Goodbye::Awaited { moved };
         }
     }
-    loop {
-        match pp.next(ends) {
-            Ok(super::Event::NeedMore) => {}
-            Ok(super::Event::Line(_)) => continue,
-            Ok(super::Event::Reply { .. }) | Err(_) => return Goodbye::Done,
-        }
-        // A peer that sends on and on is let go unanswered, its rest
-        // unread, as C lets it go after the first byte.
-        if pp.read_for_reply() >= GOODBYE_READ_MAX {
-            return Goodbye::Done;
-        }
-        if reads == MAX_READS {
-            return Goodbye::Awaited { moved };
+    // The pass is this many reads, and no more, as C's `maxloops`.
+    for _ in 0..MAX_READS {
+        if let Some(done) = goodbye_scan(pp, ends) {
+            return done;
         }
         // Read in the multi's buffer, if the work has one, and pushed
         // from there.
@@ -274,7 +277,6 @@ pub(crate) fn goodbye_answer<E: Ends>(
         match got {
             Ok(Recv::WouldBlock) => return Goodbye::Awaited { moved },
             Ok(Recv::Data(_)) => {
-                reads += 1;
                 if pushed.expect("what came was pushed").is_err() {
                     return Goodbye::Done;
                 }
@@ -283,6 +285,23 @@ pub(crate) fn goodbye_answer<E: Ends>(
             Ok(Recv::Eof) | Err(_) => return Goodbye::Done,
         }
     }
+    goodbye_scan(pp, ends).unwrap_or(Goodbye::Awaited { moved })
+}
+
+/// A goodbye's answer held looked through: done once a reply ends or the
+/// answer fails, or once [`GOODBYE_READ_MAX`] bytes of it came with no
+/// end; nothing while more is to be read.
+fn goodbye_scan<E: Ends>(pp: &mut Pingpong, ends: &E) -> Option<Goodbye> {
+    loop {
+        match pp.next(ends) {
+            Ok(super::Event::NeedMore) => break,
+            Ok(super::Event::Line(_)) => {}
+            Ok(super::Event::Reply { .. }) | Err(_) => return Some(Goodbye::Done),
+        }
+    }
+    // A peer that sends on and on is let go unanswered, its rest
+    // unread, as C lets it go after the first byte.
+    (pp.read_for_reply() >= GOODBYE_READ_MAX).then_some(Goodbye::Done)
 }
 
 /// The most of a goodbye's answer read before the connection is let go

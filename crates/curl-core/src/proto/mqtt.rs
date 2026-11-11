@@ -282,7 +282,7 @@ impl Request {
         // as HTTP's does (`Curl_auth_allowed_to_host`).
         let pipeline = Pipeline::new(Reach::Network);
         let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
-        let credentials = super::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        let credentials = super::request_credentials(cx, base.gate(), url, takes)?;
         base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let encoded = GetOptions {
             url_encode: true,

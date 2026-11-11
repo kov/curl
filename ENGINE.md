@@ -4708,8 +4708,12 @@ each request's `CredentialGate` is fixed when the request is made, from that ori
 request's own URL go to its origin regardless (`OwnLeave`), as C takes them per leg in
 `url_set_data_creds`. Each request composes its `Credentials` so (`for_request`): the
 application's `Login`, if the gate trusts the origin; the URL's parts in place of the login's
-unless the login named a user. Their `Leave`, the gate's or their own, travels inside them, so
-no credentials reach a header without it. A `.netrc`
+unless the login named a user. Where they came from carries what lets them go (`Proof`: the
+login by the gate's `OriginTrusted`, the URL's by the gate's leave or their own, a `.netrc`
+entry's by its own), so the two are one value, read as their `Leave`; no credentials reach a
+header without it. The application's token, service and identity are `AppSecrets`, which only
+the gate's `OriginTrusted` makes: a request to an origin the gate shuts has none to carry, and
+a `.netrc` entry keeps those it is handed and makes none. A `.netrc`
 file (`Options::netrc`) is read last, per request, for the request's own host: never over the
 login, over the URL's only to complete them, or, when required, to replace their password
 (`netrc_lookup`); an entry found replaces the user and password and goes to its host wherever

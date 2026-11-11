@@ -7,7 +7,7 @@ use curl_alloc::TryVec as _;
 
 use super::url_peer;
 use crate::auth::creds::Credentials;
-use crate::auth::gate::{CredentialGate, OriginTrusted, Origins};
+use crate::auth::gate::{CredentialGate, Origins};
 use crate::conn::{Peer, Scheme};
 use crate::deliver::Pipeline;
 use crate::error::{ErrorKind, url_error};
@@ -113,16 +113,16 @@ impl RequestBase {
     }
 }
 
-/// Whether what the application said may go to `peer` by `origins`, for
-/// a request that keeps no base (C's `.netrc` step of a protocol that
-/// sends no credentials): the gate a request to it would have.
-pub(super) fn trusted_at(origins: Origins<'_>, peer: &Peer) -> Option<OriginTrusted> {
-    origins.gate(peer, GateKey(())).trusted()
+/// The gate a request to `peer` would have by `origins`, for a request
+/// that keeps no base (C's `.netrc` step of a protocol that sends no
+/// credentials).
+pub(super) fn gate_at(origins: Origins<'_>, peer: &Peer) -> CredentialGate {
+    origins.gate(peer, GateKey(()))
 }
 
 /// The same for a request that goes over no network (`file:`).
-pub(super) fn trusted_locally(origins: Origins<'_>) -> Option<OriginTrusted> {
-    origins.local(GateKey(())).trusted()
+pub(super) fn gate_locally(origins: Origins<'_>) -> CredentialGate {
+    origins.local(GateKey(()))
 }
 
 /// The peer of `url`, a URL of `scheme`, at its port or the scheme's.

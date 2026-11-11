@@ -6,7 +6,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::auth::gate::{Leave, OriginTrusted, OwnLeave};
+use crate::auth::gate::{CredentialGate, Leave, OriginTrusted, OwnLeave};
 use crate::error::UrlErrorKind;
 use crate::netrc::Found;
 use crate::options::{Login, NetrcMode};
@@ -25,22 +25,73 @@ pub(crate) struct Answered {
 }
 
 /// The user and password a request authenticates with, decoded (C's
-/// `struct Curl_creds`), and the leave to send them to its origin.
+/// `struct Curl_creds`), where they came from with the leave to send them
+/// to its origin, and what only the application gives.
 #[derive(Debug)]
 pub(crate) struct Credentials {
     user: Vec<u8>,
     password: Vec<u8>,
-    /// An OAuth 2.0 token, empty for none.
+    proof: Proof,
+    /// What only the application gives, there only where the request's
+    /// gate trusts its origin.
+    app: Option<AppSecrets>,
+}
+
+/// Where credentials came from, each with what lets them go to the
+/// request's origin: the application's login only through the gate; the
+/// URL's by the gate's leave where the login gave to them, else by their
+/// own; a `.netrc` entry's by its own.
+#[derive(Clone, Copy, Debug)]
+enum Proof {
+    Options(OriginTrusted),
+    Url(Leave),
+    Netrc(OwnLeave),
+}
+
+impl Proof {
+    fn source(self) -> Source {
+        match self {
+            Proof::Options(_) => Source::Options,
+            Proof::Url(_) => Source::Url,
+            Proof::Netrc(_) => Source::Netrc,
+        }
+    }
+}
+
+/// The application's OAuth 2.0 token, the service the origin is
+/// authenticated as and the identity a SASL login acts for, at least one
+/// of them given: made only for an origin the request's gate trusts.
+#[derive(Debug)]
+pub(crate) struct AppSecrets {
+    /// Empty for none.
     bearer: Vec<u8>,
-    /// The service the origin is authenticated as, empty for the
-    /// protocol's (`sasl_service`).
+    /// Empty for the protocol's (`sasl_service`).
     service: Vec<u8>,
-    /// The identity a SASL login acts for, empty for the user's own
-    /// (`sasl_authzid`).
+    /// Empty for the user's own (`sasl_authzid`).
     authzid: Vec<u8>,
-    source: Source,
-    /// What lets them go to the request's origin.
-    leave: Leave,
+}
+
+impl AppSecrets {
+    /// What `login` gives of them, for an origin the gate trusts; none if
+    /// it gives none.
+    fn of(login: &Login, _: OriginTrusted) -> Result<Option<AppSecrets>, OutOfMemory> {
+        let given = |v: &Option<Vec<u8>>| v.as_deref().map(copy).transpose();
+        let app = AppSecrets {
+            bearer: given(&login.bearer)?.unwrap_or_default(),
+            service: given(&login.service)?.unwrap_or_default(),
+            authzid: given(&login.authzid)?.unwrap_or_default(),
+        };
+        let none = app.bearer.is_empty() && app.service.is_empty() && app.authzid.is_empty();
+        Ok((!none).then_some(app))
+    }
+
+    fn try_clone(&self) -> Result<AppSecrets, OutOfMemory> {
+        Ok(AppSecrets {
+            bearer: copy(&self.bearer)?,
+            service: copy(&self.service)?,
+            authzid: copy(&self.authzid)?,
+        })
+    }
 }
 
 /// Where credentials came from (`CREDS_*`): the last that gave any.
@@ -111,11 +162,8 @@ impl Credentials {
         Ok(Credentials {
             user: copy(&self.user)?,
             password: copy(&self.password)?,
-            bearer: copy(&self.bearer)?,
-            service: copy(&self.service)?,
-            authzid: copy(&self.authzid)?,
-            source: self.source,
-            leave: self.leave,
+            proof: self.proof,
+            app: self.app.as_ref().map(AppSecrets::try_clone).transpose()?,
         })
     }
 
@@ -125,39 +173,21 @@ impl Credentials {
     /// each part it has replacing the login's.
     pub(crate) fn for_request(
         login: &Login,
-        trusted: Option<OriginTrusted>,
+        gate: &CredentialGate,
         url: &Url,
         takes: Takes,
     ) -> Result<Option<Credentials>, CredentialsError> {
-        // Nothing given either way, as most requests have it: none, and
-        // nothing to copy or decode.
+        // Nothing to take from either: none, without looking further.
         if login.gives_nothing() && !url.has_login() {
             return Ok(None);
         }
-        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
-        let (mut service, mut authzid) = (Vec::new(), Vec::new());
+        let trusted = gate.trusted();
+        let (mut user, mut password, mut app) = (None, None, None);
         if let Some(trusted) = trusted {
             user = login.user.as_deref().map(copy).transpose()?;
             password = login.password.as_deref().map(copy).transpose()?;
-            bearer = login
-                .bearer
-                .as_deref()
-                .map(copy)
-                .transpose()?
-                .unwrap_or_default();
-            service = login
-                .service
-                .as_deref()
-                .map(copy)
-                .transpose()?
-                .unwrap_or_default();
-            authzid = login
-                .authzid
-                .as_deref()
-                .map(copy)
-                .transpose()?
-                .unwrap_or_default();
-            // `url_set_data_creds`: the application's, checked whole.
+            app = AppSecrets::of(login, trusted)?;
+            // `Curl_creds_create`'s check of what the application gave.
             let given = [user.as_deref(), password.as_deref()];
             if !given.iter().flatten().all(|g| takes.allows(g)) {
                 return Err(CredentialsError::Control);
@@ -166,51 +196,42 @@ impl Credentials {
                 return Ok(Some(Credentials {
                     user,
                     password: password.unwrap_or_default(),
-                    bearer,
-                    service,
-                    authzid,
-                    source: Source::Options,
-                    leave: Leave::of(trusted),
+                    proof: Proof::Options(trusted),
+                    app,
                 }));
             }
         }
         if let Some((url_user, url_password)) = Self::of_url(url, takes)? {
             user = url_user.or(user);
             password = url_password.or(password);
-        } else if user.is_none()
-            && password.is_none()
-            && bearer.is_empty()
-            && service.is_empty()
-            && authzid.is_empty()
-        {
+        } else if user.is_none() && password.is_none() && app.is_none() {
             return Ok(None);
         }
-        // What the login left blank merged with the URL is the URL's,
-        // even where the URL had nothing (`Curl_creds_merge`).
+        // The URL's, the login's password under the URL's user if it gave
+        // one: by the gate's leave where the login gave to them, else by
+        // their own.
+        let leave = trusted.map_or_else(|| Leave::own(OwnLeave::given()), Leave::of);
         Ok(Some(Credentials {
             user: user.unwrap_or_default(),
             password: password.unwrap_or_default(),
-            bearer,
-            service,
-            authzid,
-            source: Source::Url,
-            // A login gets this far only trusted; the URL's own go to
-            // its origin by their own leave.
-            leave: trusted.map_or_else(|| Leave::own(OwnLeave::given()), Leave::of),
+            proof: Proof::Url(leave),
+            app,
         }))
     }
 
     /// A user, a password and a token, as the options give them.
     #[cfg(test)]
     pub(crate) fn of_options(user: &[u8], password: &[u8], bearer: &[u8]) -> Credentials {
-        Credentials {
-            user: user.to_vec(),
-            password: password.to_vec(),
+        let app = (!bearer.is_empty()).then(|| AppSecrets {
             bearer: bearer.to_vec(),
             service: Vec::new(),
             authzid: Vec::new(),
-            source: Source::Options,
-            leave: Leave::of(OriginTrusted::testing()),
+        });
+        Credentials {
+            user: user.to_vec(),
+            password: password.to_vec(),
+            proof: Proof::Options(OriginTrusted::testing()),
+            app,
         }
     }
 
@@ -228,7 +249,7 @@ impl Credentials {
         let Some(c) = credentials else {
             return NetrcLookup::For(None);
         };
-        match c.source {
+        match c.proof.source() {
             Source::Options => NetrcLookup::No,
             Source::Url
                 if mode == NetrcMode::Required || c.user.is_empty() || c.password.is_empty() =>
@@ -244,16 +265,13 @@ impl Credentials {
     /// of theirs, a token kept (`Curl_creds_merge`). The entry is for the
     /// request's own host, so goes there wherever the transfer started.
     pub(crate) fn with_netrc(credentials: Option<Credentials>, found: Found) -> Credentials {
-        let (bearer, service, authzid) =
-            credentials.map_or_else(Default::default, |c| (c.bearer, c.service, c.authzid));
         Credentials {
             user: found.user,
             password: found.password,
-            bearer,
-            service,
-            authzid,
-            source: Source::Netrc,
-            leave: Leave::own(OwnLeave::given()),
+            proof: Proof::Netrc(OwnLeave::given()),
+            // What the application gave the origin goes with the entry
+            // for its host.
+            app: credentials.and_then(|c| c.app),
         }
     }
 
@@ -299,14 +317,11 @@ impl Credentials {
         let Credentials {
             user: _,
             password: _,
-            bearer: _,
-            service: _,
-            authzid: _,
+            app: _,
             // Where they came from, and the leave to send them, decide
             // where they go, not who they are: C's `Curl_creds_same`
             // compares neither.
-            source: _,
-            leave: _,
+            proof: _,
         } = self;
         self.secret().same(&other.secret())
     }
@@ -317,28 +332,39 @@ impl Credentials {
 
     /// They are a `.netrc` file's.
     pub(crate) fn found_in_netrc(&self) -> bool {
-        self.source == Source::Netrc
+        matches!(self.proof, Proof::Netrc(_))
     }
 
     /// Whether they are the URL's own (`CREDS_URL`).
     pub(crate) fn given_in_url(&self) -> bool {
-        self.source == Source::Url
+        matches!(self.proof, Proof::Url(_))
     }
 
     /// What these authenticate with.
     pub(crate) fn secret(&self) -> Secret<'_> {
+        let app = |part: fn(&AppSecrets) -> &[u8]| self.app.as_ref().map_or(&[][..], part);
         Secret {
             user: &self.user,
             password: &self.password,
-            bearer: &self.bearer,
-            service: &self.service,
-            authzid: &self.authzid,
+            bearer: app(|a| &a.bearer),
+            service: app(|a| &a.service),
+            authzid: app(|a| &a.authzid),
         }
     }
 
     /// The leave to send these to the request's origin.
     pub(crate) fn leave(&self) -> Leave {
-        self.leave
+        match self.proof {
+            Proof::Options(trusted) => Leave::of(trusted),
+            Proof::Url(leave) => leave,
+            Proof::Netrc(own) => Leave::own(own),
+        }
+    }
+
+    /// Where they came from.
+    #[cfg(test)]
+    fn source(&self) -> Source {
+        self.proof.source()
     }
 }
 
@@ -359,9 +385,9 @@ impl Shown {
         Ok(Shown {
             user: copy(&c.user)?,
             password: !c.password.is_empty(),
-            authzid: copy(&c.authzid)?,
-            bearer: !c.bearer.is_empty(),
-            source: c.source,
+            authzid: copy(c.secret().authzid())?,
+            bearer: c.secret().has_bearer(),
+            source: c.proof.source(),
         })
     }
 
@@ -551,6 +577,20 @@ mod tests {
     /// A user and a password.
     type Pair = (Vec<u8>, Vec<u8>);
 
+    /// A gate that trusts the request's origin, or one that does not.
+    fn gate(trusted: bool) -> CredentialGate {
+        let peer = |host: &[u8]| {
+            crate::conn::Peer::new(crate::conn::Scheme::HTTP, host.to_vec(), 80, None)
+        };
+        let first = peer(b"first.example");
+        let now = if trusted {
+            peer(b"first.example")
+        } else {
+            peer(b"other.example")
+        };
+        CredentialGate::testing(&first, &now, false)
+    }
+
     fn creds(url: &str) -> Result<Option<Pair>, CredentialsError> {
         with(&Login::default(), true, url).map(|c| c.map(|(u, p, _)| (u, p)))
     }
@@ -562,10 +602,10 @@ mod tests {
         url: &str,
     ) -> Result<Option<(Vec<u8>, Vec<u8>, Source)>, CredentialsError> {
         let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
-        let trusted = trusted.then(OriginTrusted::testing);
         Ok(
-            Credentials::for_request(login, trusted, &url, Takes::ControlBytes)?
-                .map(|c| (c.user, c.password, c.source)),
+            Credentials::for_request(login, &gate(trusted), &url, Takes::ControlBytes)?
+                .map(|c| (c.source(), c.user, c.password))
+                .map(|(source, user, password)| (user, password, source)),
         )
     }
 
@@ -576,8 +616,7 @@ mod tests {
     fn control_bytes_are_refused_where_the_scheme_takes_none() {
         let take = |login: &Login, url: &str, takes| {
             let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
-            Credentials::for_request(login, Some(OriginTrusted::testing()), &url, takes)
-                .map(|c| c.is_some())
+            Credentials::for_request(login, &gate(true), &url, takes).map(|c| c.is_some())
         };
         let cr = "pop3://us%0der:p@h/";
         assert_eq!(
@@ -628,13 +667,9 @@ mod tests {
         };
         let url = Url::parse(b"imap://h/", ParseOptions::NONE).unwrap();
         for trusted in [false, true] {
-            let given = Credentials::for_request(
-                &login,
-                trusted.then(OriginTrusted::testing),
-                &url,
-                Takes::NoControlBytes,
-            )
-            .unwrap();
+            let given =
+                Credentials::for_request(&login, &gate(trusted), &url, Takes::NoControlBytes)
+                    .unwrap();
             let found = Found {
                 user: b"n".to_vec(),
                 password: b"p".to_vec(),
@@ -666,22 +701,12 @@ mod tests {
             ..Login::default()
         };
         let url = Url::parse(b"pop3://kurt:x@h/", ParseOptions::NONE).unwrap();
-        let c = Credentials::for_request(
-            &login,
-            Some(OriginTrusted::testing()),
-            &url,
-            Takes::NoControlBytes,
-        )
-        .unwrap()
-        .unwrap();
+        let c = Credentials::for_request(&login, &gate(true), &url, Takes::NoControlBytes)
+            .unwrap()
+            .unwrap();
         assert_eq!(c.secret().authzid(), b"ursel");
         let url = Url::parse(b"pop3://h/", ParseOptions::NONE).unwrap();
-        let alone = Credentials::for_request(
-            &login,
-            Some(OriginTrusted::testing()),
-            &url,
-            Takes::NoControlBytes,
-        );
+        let alone = Credentials::for_request(&login, &gate(true), &url, Takes::NoControlBytes);
         assert!(alone.unwrap().is_some());
     }
 
@@ -792,14 +817,10 @@ mod tests {
         url.set(Part::Password, Some(b"p"), crate::url::SetOptions::NONE)
             .unwrap();
         assert!(url.has_login());
-        let made = Credentials::for_request(
-            &Login::default(),
-            Some(OriginTrusted::testing()),
-            &url,
-            Takes::ControlBytes,
-        )
-        .unwrap()
-        .map(|c| (c.user, c.password));
+        let made =
+            Credentials::for_request(&Login::default(), &gate(true), &url, Takes::ControlBytes)
+                .unwrap()
+                .map(|c| (c.user, c.password));
         assert_eq!(made, Some((vec![], b"p".to_vec())));
     }
 
@@ -827,10 +848,9 @@ mod tests {
         };
         let bearer = |trusted: bool, url: &str| {
             let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
-            let trusted = trusted.then(OriginTrusted::testing);
-            Credentials::for_request(&token, trusted, &url, Takes::ControlBytes)
+            Credentials::for_request(&token, &gate(trusted), &url, Takes::ControlBytes)
                 .unwrap()
-                .map(|c| (c.user, c.bearer))
+                .map(|c| (c.user.clone(), c.secret().bearer().to_vec()))
         };
         assert_eq!(bearer(true, "http://h/"), Some((vec![], b"t".to_vec())));
         assert_eq!(
@@ -851,14 +871,9 @@ mod tests {
     fn credentials_are_the_same_only_byte_for_byte() {
         let url = Url::parse(b"pop3://h/", ParseOptions::NONE).unwrap();
         let make = |login: Login| {
-            Credentials::for_request(
-                &login,
-                Some(OriginTrusted::testing()),
-                &url,
-                Takes::ControlBytes,
-            )
-            .unwrap()
-            .expect("credentials")
+            Credentials::for_request(&login, &gate(true), &url, Takes::ControlBytes)
+                .unwrap()
+                .expect("credentials")
         };
         let base = || Login {
             user: Some(b"u".to_vec()),
@@ -924,11 +939,12 @@ mod tests {
         let creds = |user: &[u8], password: &[u8], source| Credentials {
             user: user.to_vec(),
             password: password.to_vec(),
-            bearer: Vec::new(),
-            service: Vec::new(),
-            authzid: Vec::new(),
-            source,
-            leave: Leave::of(OriginTrusted::testing()),
+            proof: match source {
+                Source::Options => Proof::Options(OriginTrusted::testing()),
+                Source::Url => Proof::Url(Leave::of(OriginTrusted::testing())),
+                Source::Netrc => Proof::Netrc(OwnLeave::given()),
+            },
+            app: None,
         };
         let (opt, req, ign) = (NetrcMode::Optional, NetrcMode::Required, NetrcMode::Ignored);
         fn look(c: Option<&Credentials>, mode: NetrcMode) -> NetrcLookup<'_> {
@@ -958,18 +974,13 @@ mod tests {
             ..Login::default()
         };
         let url = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
-        let c = Credentials::for_request(
-            &login,
-            Some(OriginTrusted::testing()),
-            &url,
-            Takes::ControlBytes,
-        )
-        .unwrap()
-        .expect("credentials");
+        let c = Credentials::for_request(&login, &gate(true), &url, Takes::ControlBytes)
+            .unwrap()
+            .expect("credentials");
         assert_eq!(c.secret().service(), Some(&b"web"[..]));
         assert_eq!(c.secret().user(), b"");
         assert!(
-            Credentials::for_request(&login, None, &url, Takes::ControlBytes)
+            Credentials::for_request(&login, &gate(false), &url, Takes::ControlBytes)
                 .unwrap()
                 .is_none()
         );
@@ -977,14 +988,9 @@ mod tests {
             service: Some(b"other".to_vec()),
             ..Login::default()
         };
-        let d = Credentials::for_request(
-            &other,
-            Some(OriginTrusted::testing()),
-            &url,
-            Takes::ControlBytes,
-        )
-        .unwrap()
-        .unwrap();
+        let d = Credentials::for_request(&other, &gate(true), &url, Takes::ControlBytes)
+            .unwrap()
+            .unwrap();
         assert!(!d.secret().answers_as(&c.secret().answered().unwrap()));
         assert!(c.secret().answers_as(&c.secret().answered().unwrap()));
         let found = Found {

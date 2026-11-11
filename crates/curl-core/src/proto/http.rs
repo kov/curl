@@ -795,8 +795,7 @@ impl Request {
         // HTTP's user and password take control bytes
         // (`PROTOPT_USERPWDCTRL`), RTSP's not.
         let takes = Takes::of(Some(scheme));
-        let credentials =
-            super::request_credentials(cx, request.base.gate().trusted(), url, takes)?;
+        let credentials = super::request_credentials(cx, request.base.gate(), url, takes)?;
         // By the host's name: an IPv6 address without its brackets, a name
         // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
         let name = request.base.peer().name();

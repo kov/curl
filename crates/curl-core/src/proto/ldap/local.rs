@@ -68,7 +68,7 @@ impl Request {
         let pipeline = Pipeline::new(Reach::Network);
         let mut base = crate::proto::base::RequestBase::new(peer, before.origins, pipeline);
         let takes = Takes::of(Some(base.peer().scheme()));
-        let credentials = crate::proto::request_credentials(cx, base.gate().trusted(), url, takes)?;
+        let credentials = crate::proto::request_credentials(cx, base.gate(), url, takes)?;
         base.credentials = crate::proto::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let url_text = url.get(Part::Url, GetOptions::NONE).map_err(url_error)?;
         let encoded = GetOptions {

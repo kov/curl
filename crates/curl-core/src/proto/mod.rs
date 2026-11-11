@@ -546,11 +546,11 @@ pub(crate) fn netrc_unkept<H: Host>(
     let takes = Takes::of(scheme);
     if let Some(scheme) = scheme.filter(|s| !s.no_network()) {
         let peer = base::peer_of(url, scheme.name().as_bytes(), cx)?;
-        let trusted = base::trusted_at(origins, &peer);
-        let credentials = request_credentials(cx, trusted, url, takes)?;
+        let gate = base::gate_at(origins, &peer);
+        let credentials = request_credentials(cx, &gate, url, takes)?;
         return with_netrc(credentials, peer.name(), takes, cx).map(drop);
     }
-    let credentials = request_credentials(cx, base::trusted_locally(origins), url, takes)?;
+    let credentials = request_credentials(cx, &base::gate_locally(origins), url, takes)?;
     let host = match url.get(Part::Host, GetOptions::NONE) {
         Ok(host) => host,
         Err(UrlErrorKind::NoHost) => Vec::new(),
@@ -560,17 +560,17 @@ pub(crate) fn netrc_unkept<H: Host>(
 }
 
 /// What a request to `url` authenticates with, as the application and
-/// the URL say, the application's if `trusted` lets them go there; failed
+/// the URL say, the application's if `gate` lets them go there; failed
 /// as C fails it where a byte the scheme `takes` not is in them
 /// (`url_set_data_creds`).
 pub(crate) fn request_credentials<H: Host>(
     cx: &mut StepCx<'_, H>,
-    trusted: Option<OriginTrusted>,
+    gate: &CredentialGate,
     url: &Url,
     takes: Takes,
 ) -> Result<Option<Credentials>, ErrorKind> {
     let login = &cx.easy().options().login;
-    match Credentials::for_request(login, trusted, url, takes) {
+    match Credentials::for_request(login, gate, url, takes) {
         Ok(credentials) => Ok(credentials),
         Err(CredentialsError::OutOfMemory) => Err(ErrorKind::OutOfMemory),
         Err(CredentialsError::Malformed) => Err(trace::fail(

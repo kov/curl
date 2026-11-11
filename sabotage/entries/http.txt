@@ -832,9 +832,9 @@ witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_ca
 file: crates/curl-core/src/auth/creds.rs
 witness: curl-core proto::http::tests::a_redirect_s_own_credentials_go_with_it
 --- old
-        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
+        let (mut user, mut password, mut app) = (None, None, None);
 --- new
-        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
+        let (mut user, mut password, mut app) = (None, None, None);
         if trusted.is_none() {
             return Ok(None);
         }
@@ -982,15 +982,6 @@ witness: curl-core auth::http::tests::acts_on_a_401_as_c
     let mut open = challenges.open(asked) & asked.want;
 --- new
     let mut open = challenges.open(asked);
-
-=== the application's token goes to any origin
-file: crates/curl-core/src/auth/creds.rs
-witness: curl-core auth::creds::tests::composes_a_token_with_the_rest
---- old
-        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
---- new
-        let (mut user, mut password, mut bearer) =
-            (None, None, login.bearer.clone().unwrap_or_default());
 
 === Basic is preferred to Bearer
 file: crates/curl-core/src/auth/http.rs
@@ -1547,7 +1538,7 @@ file: crates/curl-core/src/auth/creds.rs
 witness: curl-core proto::http::tests::multi_trace::a_request_says_the_credentials_the_last_one_set_out_with
 features: test-util
 --- old
-        self.source == Source::Netrc
+        matches!(self.proof, Proof::Netrc(_))
 --- new
         true
 

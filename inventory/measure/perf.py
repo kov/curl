@@ -5,7 +5,8 @@ Measure the performance of the rewrite's release build against C's.
 `--run` builds both sides in release form, measures them, and keeps the raw
 samples under each build directory's perf/; `--build` only builds them.
 Without either, the stored samples are summarised into
-inventory/perf.{json,md}, or inventory/perf-macos.{json,md} on macOS.
+inventory/<name>.{json,md}: perf on aarch64 Linux, perf-x86_64 on x86_64
+Linux and perf-macos on macOS.
 
 Two configurations, each a C leg and a Rust leg:
 
@@ -75,7 +76,8 @@ C_LIBRARY = "lib/libcurl.*.*.*.dylib" if MACOS else "lib/libcurl*.so.*.*.*"
 # The variable that puts a directory first on the library search path.
 LIBRARY_PATH = "DYLD_LIBRARY_PATH" if MACOS else "LD_LIBRARY_PATH"
 # Where the summary goes: inventory/<OUTPUT>.{json,md}.
-OUTPUT = "perf-macos" if MACOS else "perf"
+OUTPUT = ("perf-macos" if MACOS
+          else "perf-x86_64" if platform.machine() == "x86_64" else "perf")
 RELEASE = {"CMAKE_BUILD_TYPE": "Release", "ENABLE_DEBUG": "OFF"}
 
 
@@ -757,7 +759,7 @@ def main():
           f"## tests/perf ({meta['samples']} runs each, reference "
           "configuration)\n",
           ("A program marked *port* times a C internal on the C leg and its "
-           "Rust counterpart (`ports` in perf.json) on the Rust leg; the "
+           f"Rust counterpart (`ports` in {OUTPUT}.json) on the Rust leg; the "
            "others run the same C program against each library. Rust/C "
            "below 1 is faster.\n"),
           common.md_table(

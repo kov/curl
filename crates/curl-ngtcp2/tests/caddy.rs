@@ -221,37 +221,59 @@ fn caddy_once(dir: &Path) -> (Server, u16) {
 /// another process's on it does not count. False if it ends first.
 fn wait_bound(server: &mut Server, port: u16) -> bool {
     let deadline = StdInstant::now() + Duration::from_secs(20);
-    let needle = format!(":{port:04X}");
-    let fds = format!("/proc/{}/fd", server.0.id());
     while StdInstant::now() < deadline {
         if server.0.try_wait().unwrap().is_some() {
             return false;
         }
-        // The sockets bound to the port, by inode.
-        let mut inodes = Vec::new();
-        for table in ["/proc/net/udp", "/proc/net/udp6"] {
-            let udp = std::fs::read_to_string(table).unwrap_or_default();
-            for l in udp.lines() {
-                let cols: Vec<&str> = l.split_whitespace().collect();
-                if cols.get(1).is_some_and(|a| a.ends_with(&needle)) {
-                    inodes.extend(cols.get(9).map(|i| format!("socket:[{i}]")));
-                }
-            }
-        }
-        let owned = std::fs::read_dir(&fds)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .any(|fd| {
-                std::fs::read_link(fd.path())
-                    .is_ok_and(|link| inodes.iter().any(|i| link.as_os_str() == i.as_str()))
-            });
-        if owned {
+        if bound_by(server.0.id(), port) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     false
+}
+
+/// Whether process `pid` has a UDP socket bound to `port`: the kernel's
+/// tables of sockets, by inode, against the process's descriptors.
+#[cfg(not(windows))]
+fn bound_by(pid: u32, port: u16) -> bool {
+    let needle = format!(":{port:04X}");
+    let mut inodes = Vec::new();
+    for table in ["/proc/net/udp", "/proc/net/udp6"] {
+        let udp = std::fs::read_to_string(table).unwrap_or_default();
+        for l in udp.lines() {
+            let cols: Vec<&str> = l.split_whitespace().collect();
+            if cols.get(1).is_some_and(|a| a.ends_with(&needle)) {
+                inodes.extend(cols.get(9).map(|i| format!("socket:[{i}]")));
+            }
+        }
+    }
+    std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|fd| {
+            std::fs::read_link(fd.path())
+                .is_ok_and(|link| inodes.iter().any(|i| link.as_os_str() == i.as_str()))
+        })
+}
+
+/// Whether process `pid` has a UDP socket bound to `port`: Windows has no
+/// `/proc`, and netstat lists each UDP endpoint with its owner's id, as
+/// `UDP <address>:<port> *:* <pid>`, IPv4's and IPv6's alike.
+#[cfg(windows)]
+fn bound_by(pid: u32, port: u16) -> bool {
+    let out = Command::new("netstat")
+        .args(["-a", "-n", "-o"])
+        .output()
+        .expect("netstat, to list the UDP endpoints");
+    let (needle, owner) = (format!(":{port}"), pid.to_string());
+    String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+        let cols: Vec<&str> = l.split_whitespace().collect();
+        cols.first() == Some(&"UDP")
+            && cols.get(1).is_some_and(|a| a.ends_with(&needle))
+            && cols.last() == Some(&owner.as_str())
+    })
 }
 
 /// What a connection told.

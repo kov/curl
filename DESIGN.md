@@ -326,6 +326,15 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   list; the shim's walks the application's `curl_slist`, which it keeps as C does. A MIME
   tree (`CURLOPT_MIMEPOST`) is the same: a `MimeSource` the core asks for the tree at each
   request; the C-shaped `curl_mime` stays in the shim (ENGINE.md §5.4.1).
+- **A security check ends in a value only the check makes.** Code past a check holds proof of
+  it, so a path that skips the check does not compile: a TLS layer opens only on its own
+  session's `Checked`, made of the peer's pin and name tokens (ENGINE.md); an SSH login state
+  holds the `HostVerified` its host-key check made; an upgrade to TLS holds the
+  `UpgradeReady` that nothing followed the server's go-ahead, and a mail or FTP login the
+  `ClearOrTls` that `use_ssl` lets it go on. Each is made in one module, and a deliberate
+  acceptance without a check (no SSH host check asked, as C) is a named variant, not a
+  missing call. Weaker, a SASL exchange's success is reported only by the SASL module
+  (`Progress::Done(Authenticated)`); the protocols' moves to logged in do not take it yet.
 - **Strings handed to C belong to the shim.** It keeps NUL-terminated copies with the lifetime
   the C API promises (`CURLINFO_EFFECTIVE_URL` lives until the next transfer or cleanup), so
   the core never stores C-shaped strings.

@@ -268,6 +268,47 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The file written first is named by random letters alone, not
+    /// after the file it replaces, so a name as long as the file system
+    /// takes is replaced too (CVE-2023-46219, where C's temporary name
+    /// was the target's with a suffix, too long to make).
+    #[cfg(unix)]
+    #[test]
+    fn a_file_named_as_long_as_the_system_takes_is_replaced() {
+        let dir = scratch("long");
+        let path = dir.join("j".repeat(255));
+        std::fs::write(&path, b"old").unwrap();
+        replace(path.as_os_str().as_encoded_bytes(), b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A save that cannot make its file beside the target fails with the
+    /// target emptied, as C's `Curl_fopen` leaves it: it opens the target
+    /// for writing, which empties it, before it makes the new file. A
+    /// residual shared with C (`DIVERGENCE.md`).
+    #[cfg(unix)]
+    #[test]
+    fn a_save_that_cannot_make_its_file_leaves_the_target_emptied_as_c() {
+        let dir = scratch("readonly");
+        let path = dir.join("jar");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let saved = replace(path.as_os_str().as_encoded_bytes(), b"new");
+        let left = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        // A user the directory's mode does not bind writes it anyway.
+        if saved.is_ok() {
+            assert_eq!(left, b"new");
+            eprintln!("not run: the directory's mode does not bind this user");
+            return;
+        }
+        assert_eq!(saved, Err(SaveError::Write));
+        assert_eq!(left, b"");
+    }
+
     #[test]
     fn a_temporary_name_takes_every_letter_and_digit() {
         let mut seen = std::collections::HashSet::new();

@@ -1,0 +1,25 @@
+# Saving a cache's file (crates/curl-core/src/save.rs, C's `Curl_fopen`).
+
+=== a cache file's temporary name is made from the target's
+file: crates/curl-core/src/save.rs
+witness: curl-core save::tests::a_file_named_as_long_as_the_system_takes_is_replaced
+--- old
+    temp.try_extend_from_slice(&random)?;
+--- new
+    temp.try_extend_from_slice(&path[dir.len()..])?;
+
+=== a cache file replaced takes its mode whoever owns the new one
+file: crates/curl-core/src/save.rs
+witness: curl-core save::tests::the_mode_is_kept_only_where_the_group_is_the_same
+--- old
+    if new.uid() == was.uid() && new.gid() == was.gid() {
+--- new
+    if true {
+
+=== a cache file replaced is left with the new file's mode
+file: crates/curl-core/src/save.rs
+witness: curl-core save::tests::replaces_a_file_and_keeps_its_mode
+--- old
+        file.set_permissions(std::fs::Permissions::from_mode(was.mode()))?;
+--- new
+        let _ = was;

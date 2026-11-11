@@ -870,5 +870,5 @@ deliberate difference and is the owner's call.
   provider's context is not tested.
 - **Saving a cache empties it before the new contents exist.** `save::replace` opens the target
   for writing, truncating it, before the temporary file is made, as `Curl_fopen` does: an
-  unwritable directory or a full disk leaves an empty HSTS, alt-svc or cookie file. The tests in
-  `crates/curl-core/src/save.rs` cover success only; no test pins the failure.
+  unwritable directory or a full disk leaves an empty HSTS, alt-svc or cookie file. Pinned by
+  `a_save_that_cannot_make_its_file_leaves_the_target_emptied_as_c` (`crates/curl-core/src/save.rs`).

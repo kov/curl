@@ -150,7 +150,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   to and from UTF-16 in the ANSI code page, or as UTF-8 in the Unicode build.
 - `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, listening and
   accepting on one, adopting one the application opened, connecting with fast open on macOS
-  (`connectx`), and the machine's host name; on Windows through Winsock, and starting it
+  (`connectx`), the room a batch of datagrams is received into, left unwritten until the kernel
+  writes it, and the machine's host name; on Windows through Winsock, and starting it
   (`WSAStartup`).
 - `crates/curl-os/src/poll.rs`: `poll(2)`; Winsock's `select` on Windows.
 - `crates/curl-os/src/wake.rs`: the multi's waker, an eventfd; a pipe on macOS; a loopback TCP pair

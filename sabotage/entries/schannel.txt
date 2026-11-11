@@ -1,4 +1,6 @@
-# Schannel's pieces that run everywhere (crates/curl-schannel/src/close.rs).
+# Schannel's pieces that run everywhere (crates/curl-schannel/src/close.rs),
+# and, with `platform: windows`, those whose faults are planted by hand on
+# Windows.
 
 === the goodbye's rest is sent from its start again after a short send
 file: crates/curl-schannel/src/close.rs
@@ -9,3 +11,16 @@ witness: curl-schannel close::tests::unit4782_goodbye_resent_from_its_offset
 --- new
             Ok(Some(n)) if n < left.len() => {
                 let _ = n;
+
+=== a certificate whose alternative name holds a zero byte passes the host check
+file: crates/curl-schannel/src/verify.rs
+witness: curl-schannel a_name_holding_a_zero_byte_matches_nothing
+platform: windows
+--- old
+    if cert
+        .der()
+        .and_then(curl_core::tls::x509::host_name_holds_zero)
+--- new
+    if false && cert
+        .der()
+        .and_then(curl_core::tls::x509::host_name_holds_zero)

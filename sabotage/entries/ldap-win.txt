@@ -134,3 +134,12 @@ witness: curl-ldap strings::tests::text_converts_as_c_s_unicode_build_converts_i
 c.unwrap_or('\u{fffd}')
 --- new
 c.unwrap_or('?')
+
+=== WinLDAP set to version 3 speaks version 2
+file: crates/curl-ldap/src/win.rs
+witness: curl-ldap win::tests::a_session_binds_and_searches_on_a_connection_of_its_own
+platform: windows
+--- old
+            Version::V3 => sys::LDAP_VERSION3 as i32,
+--- new
+            Version::V3 => sys::LDAP_VERSION2 as i32,

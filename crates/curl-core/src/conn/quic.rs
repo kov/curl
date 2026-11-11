@@ -485,12 +485,12 @@ impl Out {
 }
 
 /// Where the check of a connection's peer is: not reported yet, which
-/// only a handshake under way may be; passed; or failed, which fails
-/// every use after.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// only a handshake under way may be; passed, as the check made for this
+/// connection says; or failed, which fails every use after.
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum PeerCheck {
     Unchecked,
-    Checked,
+    Checked(crate::tls::Checked),
     Failed(ErrorKind),
 }
 
@@ -968,7 +968,7 @@ impl Quic {
     /// handshake is done, an unreported check fails it.
     pub(crate) fn verified(&self) -> Result<(), ErrorKind> {
         match self.state.peer {
-            PeerCheck::Checked => Ok(()),
+            PeerCheck::Checked(_) => Ok(()),
             PeerCheck::Failed(kind) => Err(kind),
             PeerCheck::Unchecked if self.conn.handshake_done() => {
                 Err(ErrorKind::PeerFailedVerification)
@@ -1974,18 +1974,27 @@ impl State {
             Event::Connection(event) => event,
             Event::Stream(stream, event) => return cx.h3_event(*stream, event),
         };
-        match *event {
+        match event {
             ConnEvent::HandshakeDone {
                 checked,
                 max_udp_payload,
                 initial_max_data,
                 early_data,
             } => {
+                let (max_udp_payload, initial_max_data, early_data) =
+                    (*max_udp_payload, *initial_max_data, *early_data);
                 let now = self.now;
                 self.handshake_at = Some(now);
+                // A check made for another connection's session is none.
                 self.peer = match checked {
-                    Ok(()) => PeerCheck::Checked,
-                    Err(kind) => PeerCheck::Failed(kind),
+                    Ok(checked) if checked.is_for_session(cx) => {
+                        PeerCheck::Checked(checked.clone())
+                    }
+                    Ok(_) => PeerCheck::Failed(cx.fail(
+                        ErrorKind::PeerFailedVerification,
+                        format_args!("internal: a check made for another session"),
+                    )),
+                    Err(kind) => PeerCheck::Failed(*kind),
                 };
                 let ms = now.ms_since(self.started);
                 match flavour {
@@ -2021,6 +2030,7 @@ impl State {
                 Heard::Failed
             }
             ConnEvent::MaxBidiStreams(n) => {
+                let n = *n;
                 self.max_bidi = n;
                 let used = self.used_bidi;
                 if flavour == Flavour::Ngtcp2 {
@@ -2870,6 +2880,37 @@ pub(crate) mod tests {
             cx.lines
         );
         assert!(!cx.lines.contains(&"peer verified".to_owned()));
+        assert_eq!(q.verified(), Err(ErrorKind::PeerFailedVerification));
+    }
+
+    /// A check the library hands over made for another session's
+    /// identity is none: the peer fails, where its own check passes.
+    #[test]
+    fn a_quic_check_made_for_another_session_fails_the_peer() {
+        let told = |q: &mut Quic, cx: &mut Cx, checked| {
+            let event = ConnEvent::HandshakeDone {
+                checked: Ok(checked),
+                max_udp_payload: 1452,
+                initial_max_data: 786432,
+                early_data: None,
+            };
+            let Quic {
+                peer,
+                state,
+                flavour,
+                ..
+            } = q;
+            let mut tcx = TlsCx::new(cx, state.component, peer);
+            state.heard(&mut tcx, *flavour, &Event::Connection(event));
+        };
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        let own = crate::tls::Checked::testing_for(&q.peer);
+        told(&mut q, &mut cx, own);
+        assert_eq!(q.verified(), Ok(()), "its own check passes");
+        let (mut q, mut cx) = quic(&script);
+        let other = crate::tls::Checked::testing_for(&SessionPeer::testing());
+        told(&mut q, &mut cx, other);
         assert_eq!(q.verified(), Err(ErrorKind::PeerFailedVerification));
     }
 

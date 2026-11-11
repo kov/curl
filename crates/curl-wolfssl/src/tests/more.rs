@@ -23,7 +23,9 @@ fn the_context_callback_gets_the_store_set_up() {
             ..ContextHandler::default()
         });
         let wire = Wire::default();
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         let calls = lib.w().calls.clone();
         let handed = kept.context.as_ref().unwrap().handed;
         (r, kept.notes.0, calls, handed)
@@ -72,12 +74,14 @@ fn a_given_session_keeps_the_cache_s_untaken() {
         ],
     )];
     let mut s = session(lib, &id, Alpn::None, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     let given = TlsTicket::new(b"given".to_vec(), 0x0304, None, 0, 0);
     let mut s = session(lib, &id, Alpn::None, &shared);
     let r = TlsIo::testing_given(&id, HOST, &mut kept, &wire, Some(given), |io| {
-        s.handshake(io)
+        s.handshake(io).map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("resume("), ["resume(given)"]);
@@ -95,7 +99,7 @@ fn a_session_is_resumed_only_where_its_protocol_is_offered() {
         let wire = Wire::default();
         let mut s = session(lib, &id, alpn, &shared);
         let r = TlsIo::testing_given(&id, HOST, &mut kept, &wire, Some(ticket), |io| {
-            s.handshake(io)
+            s.handshake(io).map(|shaken| shaken.as_handshake())
         });
         assert_eq!(r, Ok(Handshake::Done));
         lib.w().made("resume(").len()
@@ -136,7 +140,9 @@ fn no_early_data_without_the_transfer_s_leave() {
     let id = plain();
     let mut s = session(lib, &id, Alpn::H2Http11, &shared);
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(s.deferred().is_none());
     assert!(lib.w().made("max_early_data").is_empty());
@@ -169,7 +175,9 @@ fn a_failed_handshake_s_secret_is_logged() {
     let mut s = session_to(lib, &id, &to, Alpn::Http11, &shared, Some(log.clone()));
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Err(ErrorKind::PeerFailedVerification));
     assert_eq!(lib.w().made("free_arrays").len(), 1);
     let written = std::fs::read_to_string(&file).unwrap();

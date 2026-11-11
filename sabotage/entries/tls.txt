@@ -152,8 +152,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             peer,
             own,
             filter,
-            deferral: Deferral::None,
-            connected: false,
+            peer_state: PeerState::Shaking,
         })?)
 --- new
         let spare = try_box(0u8)?;
@@ -164,8 +163,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             peer,
             own,
             filter,
-            deferral: Deferral::None,
-            connected: false,
+            peer_state: PeerState::Shaking,
         })?)
 
 === a TLS identity compares the CA file as set, so naming the default differs from keeping it
@@ -317,11 +315,9 @@ witness: curl-tool the_key_log_is_opened_at_start_as_the_library_opens_it
 file: crates/curl-core/src/conn/tls.rs
 witness: curl-core proto::http::tests::tls::a_request_goes_as_early_data_where_the_server_takes_it
 --- old
-                    *deferral = match n {
-                        0 => Deferral::None,
+                    (n > 0).then(|| (std::mem::take(bytes), 0))
 --- new
-                    *deferral = match n {
-                        _ => Deferral::None,
+                    (n > 0 && n == 0).then(|| (std::mem::take(bytes), 0))
 
 === more goes early than the session allows
 file: crates/curl-core/src/conn/tls.rs
@@ -343,9 +339,9 @@ witness: curl-core proto::http::tests::tls::early_data_the_server_refuses_is_sen
 file: crates/curl-core/src/conn/tls.rs
 witness: curl-core proto::http::tests::tls::a_handshake_put_off_that_fails_fails_the_transfer_with_its_error
 --- old
-                Deferral::Failed(kind) => Some(LayerAnswer::Failure(kind)),
+                PeerState::Failed(kind) => Some(LayerAnswer::Failure(kind)),
 --- new
-                Deferral::Failed(_) => None,
+                PeerState::Failed(_) => None,
 
 === a send that failed in a layer is the send's failure
 file: crates/curl-core/src/multi/state.rs
@@ -401,7 +397,7 @@ witness: curl-core proto::http::tests::tls::early_data_to_an_https_proxy_is_neit
 file: crates/curl-core/src/conn/tls.rs
 witness: curl-core conn::tls::tests::the_layer_says_what_its_session_holds_and_waits_for
 --- old
-        if !self.connected {
+        if !self.peer_state.connected() {
             return below.data_pending();
         }
 --- new
@@ -702,3 +698,28 @@ witness: curl-core tls::checked::tests::the_name_matched_is_the_session_s_peer_s
         CertName::Dns(pattern) => kind == TlsPeerKind::Name && names(pattern, host),
 --- new
         CertName::Dns(pattern) => names(pattern, host),
+
+=== a TLS layer opens on a check made for another session
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core conn::tls::tests::only_a_session_checked_for_its_own_peer_is_read_or_written
+--- old
+    if checked.is_for(peer) {
+--- new
+    if checked.is_for(peer) || !checked.is_for(peer) {
+
+=== a TLS session still shaking hands is read from and written to
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core conn::tls::tests::only_a_session_checked_for_its_own_peer_is_read_or_written
+--- old
+            PeerState::Failed(_) | PeerState::Shaking => return Err(io::ErrorKind::Other.into()),
+--- new
+            PeerState::Shaking => return Ok(true),
+            PeerState::Failed(_) => return Err(io::ErrorKind::Other.into()),
+
+=== a QUIC connection takes a check made for another session
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_quic_check_made_for_another_session_fails_the_peer
+--- old
+                    Ok(checked) if checked.is_for_session(cx) => {
+--- new
+                    Ok(checked) if checked.is_for_session(cx) || true => {

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::error::ErrorKind;
 pub(crate) use curl_core::tls::Wire;
-use curl_core::tls::{DriveCall, TlsCx};
+use curl_core::tls::{Checked, DriveCall, TlsCx};
 
 use crate::library::{
     self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerCert, Rc, Resume, Tls12Keys, Words,
@@ -363,11 +363,11 @@ impl library::Ctx for FakeCtx {
 struct Driving<'d, 's, 'a> {
     call: &'d mut Call<'s, 'a>,
     ssl: &'d mut FakeSsl,
-    check: &'d mut dyn FnMut(&mut FakeSsl, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+    check: &'d mut dyn FnMut(&mut FakeSsl, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
 }
 
 impl DriveCall for Driving<'_, '_, '_> {
-    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+    fn handshake_done(&mut self) -> Result<Checked, ErrorKind> {
         self.ssl.note("handshake_done".into());
         (self.check)(self.ssl, self.call.io.cx())
     }
@@ -520,7 +520,7 @@ impl library::Ssl for FakeSsl {
     fn drive(
         &mut self,
         call: &mut Call<'_, '_>,
-        check: &mut dyn FnMut(&mut FakeSsl, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        check: &mut dyn FnMut(&mut FakeSsl, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
         op: &mut dyn FnMut(&mut dyn DriveCall),
     ) {
         self.note("drive".into());

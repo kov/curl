@@ -1096,11 +1096,14 @@ impl crate::tls::TlsSession for SayingSession {
         Ok(None)
     }
 
-    fn handshake(&mut self, io: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn handshake(
+        &mut self,
+        io: &mut crate::tls::TlsIo<'_>,
+    ) -> Result<crate::tls::Shaken, ErrorKind> {
         io.info(format_args!("SAYING: connected"));
         io.trace(format_args!("handshake done"));
         SAYING_DEBUGS.set(Some(io.debugs()));
-        Ok(Handshake::Done)
+        Ok(crate::tls::Shaken::Done(crate::tls::Checked::testing(io)))
     }
 
     fn recv(&mut self, io: &mut crate::tls::TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {

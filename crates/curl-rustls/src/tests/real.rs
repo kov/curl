@@ -149,7 +149,9 @@ fn shake(
     server: &mut ServerConnection,
 ) -> Result<Handshake, ErrorKind> {
     for _ in 0..10 {
-        let r = TlsIo::testing(id, b"localhost", kept, wire, |io| s.handshake(io));
+        let r = TlsIo::testing(id, b"localhost", kept, wire, |io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         carry(wire, server);
         if r != Ok(Handshake::Waiting) {
             return r;
@@ -570,7 +572,9 @@ fn the_client_s_certificate_is_offered_to_a_server_asking() {
     let mut kept = Kept::new();
     let wire = Wire::default();
     for _ in 0..4 {
-        let r = TlsIo::testing(&id, b"localhost", &mut kept, &wire, |io| s.handshake(io));
+        let r = TlsIo::testing(&id, b"localhost", &mut kept, &wire, |io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         carry(&wire, &mut server);
         if r.is_err() {
             break;
@@ -634,7 +638,7 @@ fn the_socket_s_failures_and_end_are_said() {
         ..Wire::default()
     };
     let r = TlsIo::testing(&id, b"localhost", &mut kept, &refusing, |io| {
-        s.handshake(io)
+        s.handshake(io).map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Err(ErrorKind::SendError));
     assert_eq!(

@@ -12,7 +12,7 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{DriveCall, TlsCx, TlsKind, TlsNative};
+use curl_core::tls::{Checked, DriveCall, TlsCx, TlsKind, TlsNative};
 
 use crate::library::{
     self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerCert, Rc, Resume, Tls12Keys, Words,
@@ -471,11 +471,11 @@ impl Ssl {
 struct Driving<'d, 's, 'a> {
     call: *mut Call<'s, 'a>,
     ssl: *mut Ssl,
-    check: &'d mut dyn FnMut(&mut Ssl, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+    check: &'d mut dyn FnMut(&mut Ssl, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
 }
 
 impl DriveCall for Driving<'_, '_, '_> {
-    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+    fn handshake_done(&mut self) -> Result<Checked, ErrorKind> {
         // SAFETY: the call and the session outlive the QUIC library's
         // call, inside which alone this runs; the QUIC library tells of
         // the handshake's end outside any callback of wolfSSL's, so
@@ -893,7 +893,7 @@ impl library::Ssl for Ssl {
     fn drive(
         &mut self,
         call: &mut Call<'_, '_>,
-        check: &mut dyn FnMut(&mut Ssl, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        check: &mut dyn FnMut(&mut Ssl, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
         op: &mut dyn FnMut(&mut dyn DriveCall),
     ) {
         let p: *mut Call<'_, '_> = call;

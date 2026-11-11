@@ -18,7 +18,7 @@ use std::fmt;
 
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{Chosen, DriveCall, KeyLog, TlsCx, TlsIo, TlsTicket};
+use curl_core::tls::{Checked, Chosen, DriveCall, KeyLog, TlsCx, TlsIo, TlsTicket};
 
 use curl_core::tls::Text;
 
@@ -132,7 +132,7 @@ pub(crate) trait Session: Send {
     fn drive(
         &mut self,
         call: &mut Call<'_, '_, Self::Creds>,
-        check: &mut dyn FnMut(&mut Self, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        check: &mut dyn FnMut(&mut Self, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
         op: &mut dyn FnMut(&mut dyn DriveCall),
     );
 

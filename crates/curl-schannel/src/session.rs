@@ -22,7 +22,7 @@ use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Goodbye, Handshake, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer,
     TlsPeerKind, TlsSession, TlsShared, TlsWait,
 };
-use curl_core::tls::{Checked, Residuals};
+use curl_core::tls::{Checked, Residuals, Shaken};
 use curl_os::error::ErrorText;
 
 use crate::client;
@@ -61,13 +61,14 @@ enum Need {
     Send,
 }
 
-/// How far a handshake has come (`connecting_state`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How far a handshake has come (`connecting_state`): past the second
+/// step, its peer checked, as `Checked` says.
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
     One,
     Two,
-    Three,
-    Done,
+    Three(Checked),
+    Done(Checked),
 }
 
 /// What a receive came to so far (`result` in `schannel_recv`).
@@ -762,8 +763,8 @@ impl Session {
             self.need = Need::Recv;
             return Ok(());
         }
-        if st == status::OK {
-            self.step = Step::Three;
+        let complete = st == status::OK;
+        if complete {
             Self::say_debug(io, format_args!("schannel: SSL/TLS handshake complete"));
         }
         let pin = match pin::of(io) {
@@ -789,7 +790,10 @@ impl Session {
             verify::host(io, ctx, &self.host)?;
         }
         // SSPI's own check matched the name, or the manual one did.
-        let _checked = Checked::new(io, pin, Residuals::NONE)?;
+        let checked = Checked::new(io, pin, Residuals::NONE)?;
+        if complete {
+            self.step = Step::Three(checked);
+        }
         Ok(())
     }
 
@@ -865,7 +869,10 @@ impl Session {
             let ctx = self.ctx.as_ref().expect("made at the first step");
             verify::certinfo(io, ctx, MOST_CERTS)?;
         }
-        self.step = Step::Done;
+        self.step = match &self.step {
+            Step::Three(checked) => Step::Done(checked.clone()),
+            _ => unreachable!("the third step follows the second's check"),
+        };
         Ok(())
     }
 
@@ -892,10 +899,10 @@ impl Session {
         if self.step == Step::Two {
             self.step2(io)?;
         }
-        if self.step == Step::Three {
+        if matches!(self.step, Step::Three(_)) {
             self.step3(io)?;
         }
-        if self.step == Step::Done {
+        if matches!(self.step, Step::Done(_)) {
             let ctx = self.ctx.as_ref().expect("made at the first step");
             match ctx.stream_sizes() {
                 Ok(s) => self.sizes = s,
@@ -1173,10 +1180,13 @@ fn send_once(io: &mut TlsIo<'_>, bytes: &[u8]) -> Option<usize> {
 }
 
 impl TlsSession for Session {
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        match self.connect(io)? {
-            true => Ok(Handshake::Done),
-            false => Ok(Handshake::Waiting),
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+        if !self.connect(io)? {
+            return Ok(Shaken::Waiting);
+        }
+        match &self.step {
+            Step::Done(checked) => Ok(Shaken::Done(checked.clone())),
+            _ => unreachable!("complete once done"),
         }
     }
 

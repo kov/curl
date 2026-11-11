@@ -406,8 +406,10 @@ impl fmt::Debug for dyn TlsBackend {
 /// reads and writes the connection through `io` as it needs, and says
 /// what it waits for when it cannot go on.
 pub trait TlsSession: Send {
-    /// Move the handshake on: done, or waiting for what `waits` says.
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
+    /// Move the handshake on: done, its peer checked; put off for early
+    /// data; or waiting for what `waits` says. Once done, each call after
+    /// is done with the same check.
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind>;
 
     /// Read into `buf`, which is not empty, at most its length of what
     /// the peer sent.
@@ -436,22 +438,11 @@ pub trait TlsSession: Send {
         None
     }
 
-    /// The handshake was put off to send early data in it, as `handshake`
-    /// said it was done (`ssl_connection_deferred`): it waits for the
-    /// first bytes sent, as many as it allows going early.
-    fn deferred(&self) -> Option<Deferred> {
-        None
-    }
-
     /// Move a handshake put off on, `early`, at most as many as
-    /// `deferred` allowed and perhaps none, sent first as early data
-    /// (`ossl_send_earlydata`): as `handshake`, given the same bytes each
-    /// call until it is done.
-    fn handshake_early(
-        &mut self,
-        io: &mut TlsIo<'_>,
-        early: &[u8],
-    ) -> Result<Handshake, ErrorKind> {
+    /// `Shaken::Deferred` allowed and perhaps none, sent first as early
+    /// data (`ossl_send_earlydata`): as `handshake`, given the same bytes
+    /// each call until it is done. It is not put off again.
+    fn handshake_early(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Shaken, ErrorKind> {
         let _ = early;
         self.handshake(io)
     }
@@ -558,8 +549,8 @@ pub trait DriveCall {
     /// the handshake reported, and the peer's certificate checked as a
     /// stream session's is, the peer's sessions forgotten if it fails
     /// (`Curl_vquic_tls_verify_peer`). A session given up to quiche
-    /// (`QuicheTls`) checks without reporting.
-    fn handshake_done(&mut self) -> Result<(), ErrorKind>;
+    /// (`QuicheTls`) checks without reporting. The check, if it passed.
+    fn handshake_done(&mut self) -> Result<Checked, ErrorKind>;
 
     /// Run `f` with the transfer the call reaches.
     fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>));
@@ -868,6 +859,31 @@ pub fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// there, as C reads it.
 pub fn as_c(bytes: &[u8]) -> &std::ffi::CStr {
     std::ffi::CStr::from_bytes_until_nul(bytes).expect("made by `c_string`")
+}
+
+/// Where a session's handshake is, as a call moving it on leaves it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shaken {
+    /// It waits for what the session's `waits` says.
+    Waiting,
+    /// It is put off to send early data in it
+    /// (`ssl_connection_deferred`): done as far as the connection goes,
+    /// it goes on as the first bytes are sent, and its peer is checked
+    /// then.
+    Deferred(Deferred),
+    /// It is done and its peer checked.
+    Done(Checked),
+}
+
+impl Shaken {
+    /// How far the handshake is as the connection goes: done once put
+    /// off, as it is once over.
+    pub fn as_handshake(&self) -> Handshake {
+        match self {
+            Shaken::Waiting => Handshake::Waiting,
+            Shaken::Deferred(_) | Shaken::Done(_) => Handshake::Done,
+        }
+    }
 }
 
 /// A handshake a session put off to send early data in it (TLS 1.3's

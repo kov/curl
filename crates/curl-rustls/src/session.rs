@@ -17,7 +17,7 @@ use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Goodbye, Handshake, SharedKeyLog, Text, TlsIdentity, TlsIo,
     TlsNative, TlsPeer, TlsSession, TlsWait,
 };
-use curl_core::tls::{Checked, Residuals, TlsCx};
+use curl_core::tls::{Checked, Residuals, Shaken, TlsCx};
 
 use crate::files::{self, Read};
 use crate::library::{Call, Conn as _, Errno, Plain, Rustls, TLS1_2, TLS1_3};
@@ -765,7 +765,7 @@ impl<G: Rustls> Session<G> {
 
     /// Move the handshake on, until it is done or the socket would block
     /// (`cr_connect`).
-    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
         io.trace(format_args!("cr_connect, state={}", self.state as i32));
         if self.conn.is_none() {
             let r = self.init_backend(io);
@@ -781,12 +781,12 @@ impl<G: Rustls> Session<G> {
                 self.set_negotiated_alpn(io);
                 if self.send_plain(io, &[])?.0 == Flushed::Again {
                     self.waits = TlsWait::Send;
-                    return Ok(Handshake::Waiting);
+                    return Ok(Shaken::Waiting);
                 }
                 self.complete(io)?;
-                let _checked = checked(io)?;
+                let checked = checked(io)?;
                 self.state = State::Complete;
-                return Ok(Handshake::Done);
+                return Ok(Shaken::Done(checked));
             }
             let conn = self.conn();
             let wants_read = conn.wants_read();
@@ -800,7 +800,7 @@ impl<G: Rustls> Session<G> {
                 if self.send_plain(io, &[])?.0 == Flushed::Again {
                     io.trace(format_args!("writing would block"));
                     self.waits = TlsWait::Send;
-                    return Ok(Handshake::Waiting);
+                    return Ok(Shaken::Waiting);
                 }
             }
             if wants_read {
@@ -816,7 +816,7 @@ impl<G: Rustls> Session<G> {
                     Ok(None) => {
                         io.trace(format_args!("reading would block"));
                         self.waits = TlsWait::Recv;
-                        return Ok(Handshake::Waiting);
+                        return Ok(Shaken::Waiting);
                     }
                     Err(ErrorKind::RecvError) => return Err(ErrorKind::SslConnectError),
                     Err(kind) => return Err(kind),
@@ -909,9 +909,11 @@ fn checked(io: &mut TlsCx<'_>) -> Result<Checked, ErrorKind> {
 }
 
 impl<G: Rustls> TlsSession for Session<G> {
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    /// Once complete, the check made again is the same: it is the
+    /// session's settings, which do not change.
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
         if self.state == State::Complete {
-            return Ok(Handshake::Done);
+            return Ok(Shaken::Done(checked(io)?));
         }
         self.connect(io)
     }

@@ -22,7 +22,9 @@ fn ech_shake(
     let mut s = session_to(lib, &id, &to, Alpn::H2Http11, &shared, None);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     let calls = lib.w().calls.clone();
     (r, kept.notes.0, calls)
 }

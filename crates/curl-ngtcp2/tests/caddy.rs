@@ -292,11 +292,11 @@ impl Told {
     fn hear(&mut self, event: &Event<'_>) -> Heard {
         match *event {
             Event::Connection(ConnEvent::HandshakeDone {
-                checked,
+                ref checked,
                 early_data,
                 ..
             }) => {
-                self.checked = Some(checked);
+                self.checked = Some(checked.as_ref().map(|_| ()).map_err(|kind| *kind));
                 self.early = Some(early_data);
             }
             Event::Stream(

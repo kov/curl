@@ -477,6 +477,7 @@ impl Parts<'_> {
         let ms = now.ms_since(self.started);
         trace(call, format_args!("handshake complete after {ms}ms"));
         let checked = call.handshake_done();
+        let failed = checked.is_err();
         let event = ConnEvent::HandshakeDone {
             checked,
             max_udp_payload: 0,
@@ -488,7 +489,7 @@ impl Parts<'_> {
         if tell(call, events, Event::Connection(event)) == Heard::Failed {
             return Heard::Failed;
         }
-        if checked.is_err() {
+        if failed {
             return Heard::Fine;
         }
         match quiet(|| quiche::h3::Connection::with_transport(self.quic, self.h3_config)) {

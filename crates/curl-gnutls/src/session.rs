@@ -18,8 +18,8 @@ use curl_core::error::ErrorKind;
 use curl_core::options::TlsMaxVersion;
 use curl_core::time::Instant;
 use curl_core::tls::{
-    Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, SharedKeyLog, TlsCx, TlsIdentity,
-    TlsIo, TlsNative, TlsPeer, TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, BindingNotes, Chosen, Deferred, Goodbye, Handshake, Shaken, SharedKeyLog, TlsCx,
+    TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 
 use crate::library::{
@@ -39,7 +39,7 @@ const EARLY_MOST: usize = 64 * 1024;
 const EARLY_UNKNOWN: usize = 0xFFFF_FFFF;
 
 /// How far a session's handshake has come (`connecting_state`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
     /// Nothing made yet: the session is made at the first step.
     Init,
@@ -47,7 +47,14 @@ enum Step {
     Handshake,
     /// The handshake is done; the peer is to be checked.
     Check,
-    Done,
+    /// The peer is checked, as `Checked` says.
+    Done(Checked),
+}
+
+impl Step {
+    fn done(&self) -> bool {
+        matches!(self, Step::Done(_))
+    }
 }
 
 /// Where a handshake put off for early data is (`earlydata_state`).
@@ -664,15 +671,15 @@ impl<G: Gnutls> Session<G> {
 
     /// The peer checked, and before TLS 1.3 its session kept, which TLS
     /// 1.3 gives later (`gtls_verifyserver`).
-    fn verify_server(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+    fn verify_server(&mut self, io: &mut TlsCx<'_>) -> Result<Checked, ErrorKind> {
         let gs = self.gs.as_mut().expect("made at the first step");
-        let _checked = check_peer(self.lib, gs, &self.identity, &self.names, io)?;
+        let checked = check_peer(self.lib, gs, &self.identity, &self.names, io)?;
         if gs.version() < sys::GNUTLS_TLS1_3 && io.caches_sessions() {
             let data = gs.data()?;
             let (version, early) = (gs.version(), gs.max_early_data());
             library::keep_ticket(io, data, version, early, self.negotiated);
         }
-        Ok(())
+        Ok(checked)
     }
 
     /// What the peer chose of the ALPN offer (`Curl_alpn_set_negotiated`).
@@ -873,22 +880,23 @@ impl<G: Gnutls> TlsSession for Session<G>
 where
     G::Session: Send,
 {
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        if self.step == Step::Done {
-            return Ok(Handshake::Done);
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+        if let Step::Done(checked) = &self.step {
+            return Ok(Shaken::Done(checked.clone()));
         }
         self.waits = TlsWait::Nothing;
         let done = self.connect(io);
         match &done {
-            Ok(Handshake::Waiting) => {}
-            Ok(Handshake::Done) => io.trace(format_args!("gtls_connect_common() -> 0, done=1")),
+            Ok(Shaken::Waiting) => {}
+            Ok(Shaken::Done(_) | Shaken::Deferred(_)) => {
+                io.trace(format_args!("gtls_connect_common() -> 0, done=1"));
+            }
             Err(kind) => io.trace(format_args!(
                 "gtls_connect_common() -> {}, done=0",
                 kind.number()
             )),
         }
-        if matches!(done, Ok(Handshake::Done))
-            && self.step == Step::Done
+        if matches!(done, Ok(Shaken::Done(_)))
             && let Some(log) = &self.keylog
         {
             log.with_name(|name| {
@@ -987,7 +995,7 @@ where
     }
 
     fn shutdown(&mut self, io: &mut TlsIo<'_>, goodbye: Goodbye) -> Result<Handshake, ErrorKind> {
-        if self.gs.is_none() || self.shut || self.step != Step::Done {
+        if self.gs.is_none() || self.shut || !self.step.done() {
             return Ok(Handshake::Done);
         }
         self.waits = TlsWait::Nothing;
@@ -1017,15 +1025,7 @@ where
         self.negotiated
     }
 
-    fn deferred(&self) -> Option<Deferred> {
-        self.deferred.filter(|_| self.early == Early::None)
-    }
-
-    fn handshake_early(
-        &mut self,
-        io: &mut TlsIo<'_>,
-        early: &[u8],
-    ) -> Result<Handshake, ErrorKind> {
+    fn handshake_early(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Shaken, ErrorKind> {
         assert!(self.deferred.is_some(), "a handshake put off");
         self.waits = TlsWait::Nothing;
         if self.early == Early::None {
@@ -1034,7 +1034,7 @@ where
         if let Early::Sending(sent) = self.early
             && self.send_early(io, early, sent)? == Handshake::Waiting
         {
-            return Ok(Handshake::Waiting);
+            return Ok(Shaken::Waiting);
         }
         self.handshake(io)
     }
@@ -1057,6 +1057,12 @@ where
 }
 
 impl<G: Gnutls> Session<G> {
+    /// The handshake put off for early data, until the data is given.
+    #[cfg(test)]
+    pub(crate) fn deferred(&self) -> Option<Deferred> {
+        self.deferred.filter(|_| self.early == Early::None)
+    }
+
     /// The `gnutls_session_t`, once made, as both the session and the
     /// context.
     pub(crate) fn native_objects(&self) -> Option<TlsNative> {
@@ -1064,24 +1070,26 @@ impl<G: Gnutls> Session<G> {
     }
 
     /// The steps of `gtls_connect_common`.
-    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
         if self.step == Step::Init {
             self.step1(io)?;
             self.step = Step::Handshake;
         }
         if self.step == Step::Handshake {
             // Put off, it waits for its early data.
-            if self.deferred.is_some() && self.early == Early::None {
-                return Ok(Handshake::Done);
+            if let Some(deferred) = self.deferred
+                && self.early == Early::None
+            {
+                return Ok(Shaken::Deferred(deferred));
             }
             match self.handshake_step(io)? {
-                Handshake::Waiting => return Ok(Handshake::Waiting),
+                Handshake::Waiting => return Ok(Shaken::Waiting),
                 Handshake::Done => self.step = Step::Check,
             }
         }
         self.report_handshake(io);
-        self.verify_server(io)?;
-        self.step = Step::Done;
+        let checked = self.verify_server(io)?;
+        self.step = Step::Done(checked.clone());
         self.negotiate(io)?;
         if self.early == Early::Sent {
             let gs = self.gs.as_mut().expect("made at the first step");
@@ -1089,7 +1097,7 @@ impl<G: Gnutls> Session<G> {
                 accepted: gs.early_data_accepted(),
             };
         }
-        Ok(Handshake::Done)
+        Ok(Shaken::Done(checked))
     }
 }
 

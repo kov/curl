@@ -21,7 +21,7 @@ use core::fmt;
 use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{Chosen, DriveCall, Text, TlsCx, TlsIo, TlsTicket};
+use curl_core::tls::{Checked, Chosen, DriveCall, Text, TlsCx, TlsIo, TlsTicket};
 
 /// `CURLE_AGAIN`, as the trace numbers a call that would block.
 pub(crate) const AGAIN: u16 = 81;
@@ -300,7 +300,7 @@ pub(crate) trait Ssl: Send {
     fn drive(
         &mut self,
         call: &mut Call<'_, '_>,
-        check: &mut dyn FnMut(&mut Self, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        check: &mut dyn FnMut(&mut Self, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
         op: &mut dyn FnMut(&mut dyn DriveCall),
     );
 

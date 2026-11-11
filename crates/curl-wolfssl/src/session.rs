@@ -21,7 +21,7 @@ use curl_core::tls::{
     TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket,
     TlsWait,
 };
-use curl_core::tls::{Checked, Residuals};
+use curl_core::tls::{Checked, Residuals, Shaken};
 
 use crate::library::{
     AGAIN, AlpnGot, Call, Ctx as _, FileType, IoResult, IoState, NoCtx, PeerCert, Reach, Resume,
@@ -43,7 +43,7 @@ const TLS1_2: u16 = 0x0303;
 const TLS1_3: u16 = 0x0304;
 
 /// How far a session's handshake has come (`connecting_state`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
     /// Nothing made yet: the context and session are made at the first
     /// step.
@@ -53,7 +53,8 @@ enum Step {
     /// The handshake is over, this its outcome: the peer's key and ALPN
     /// are to be checked (`hs_result`).
     Three(Result<(), ErrorKind>),
-    Done,
+    /// The peer is checked, as `Checked` says.
+    Done(Checked),
 }
 
 /// Where a handshake put off for early data is (`earlydata_state`).
@@ -120,6 +121,12 @@ pub(crate) struct Session<W: Wolfssl> {
 }
 
 impl<W: Wolfssl> Session<W> {
+    /// The handshake put off for early data, until the data is given.
+    #[cfg(test)]
+    pub(crate) fn deferred(&self) -> Option<Deferred> {
+        self.deferred.filter(|_| self.early == Early::None)
+    }
+
     /// A session for one connection to `peer`, nothing of the library's
     /// made yet.
     pub(crate) fn new(
@@ -1009,7 +1016,7 @@ impl<W: Wolfssl> Session<W> {
     }
 
     /// The steps of `wssl_connect`.
-    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
         if self.step == Step::One {
             self.step1(io)?;
             self.step = Step::Two;
@@ -1017,26 +1024,33 @@ impl<W: Wolfssl> Session<W> {
         }
         if self.step == Step::Two {
             // Put off, it waits for its early data.
-            if self.deferred.is_some() && self.early == Early::None {
-                return Ok(Handshake::Done);
+            if let Some(deferred) = self.deferred
+                && self.early == Early::None
+            {
+                return Ok(Shaken::Deferred(deferred));
             }
             let outcome = match self.handshake_step(io) {
-                Ok(Handshake::Waiting) => return Ok(Handshake::Waiting),
+                Ok(Handshake::Waiting) => return Ok(Shaken::Waiting),
                 Ok(Handshake::Done) => Ok(()),
                 Err(kind) => Err(kind),
             };
             self.step = Step::Three(outcome);
             self.state.handshaking = false;
         }
-        if let Step::Three(outcome) = self.step {
+        if let Step::Three(outcome) = &self.step {
             // Once failed, the handshake fails the same on every call.
-            outcome?;
-            let checked = self.check_peer(io).and_then(|_checked| self.negotiate(io));
-            if let Err(kind) = checked {
-                self.step = Step::Three(Err(kind));
-                return Err(kind);
-            }
-            self.step = Step::Done;
+            (*outcome)?;
+            let checked = self
+                .check_peer(io)
+                .and_then(|checked| self.negotiate(io).map(|()| checked));
+            let checked = match checked {
+                Ok(checked) => checked,
+                Err(kind) => {
+                    self.step = Step::Three(Err(kind));
+                    return Err(kind);
+                }
+            };
+            self.step = Step::Done(checked);
             self.report_handshake(io);
             if self.early == Early::Sent {
                 let rejected = self.ssl().early_rejected();
@@ -1045,7 +1059,10 @@ impl<W: Wolfssl> Session<W> {
                 };
             }
         }
-        Ok(Handshake::Done)
+        match &self.step {
+            Step::Done(checked) => Ok(Shaken::Done(checked.clone())),
+            _ => unreachable!("done once checked"),
+        }
     }
 
     /// The goodbye (`wssl_shutdown`): `Ok(true)` once over.
@@ -1197,13 +1214,13 @@ fn errno() -> i32 {
 }
 
 impl<W: Wolfssl> TlsSession for Session<W> {
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        if self.step == Step::Done {
-            return Ok(Handshake::Done);
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+        if let Step::Done(checked) = &self.step {
+            return Ok(Shaken::Done(checked.clone()));
         }
         self.waits = TlsWait::Nothing;
         let done = self.connect(io);
-        if matches!(done, Ok(Handshake::Done))
+        if matches!(done, Ok(Shaken::Done(_) | Shaken::Deferred(_)))
             && let Some(log) = self.keylog()
         {
             // `cf_connect`'s, said by each library here.
@@ -1325,15 +1342,7 @@ impl<W: Wolfssl> TlsSession for Session<W> {
         self.negotiated
     }
 
-    fn deferred(&self) -> Option<Deferred> {
-        self.deferred.filter(|_| self.early == Early::None)
-    }
-
-    fn handshake_early(
-        &mut self,
-        io: &mut TlsIo<'_>,
-        early: &[u8],
-    ) -> Result<Handshake, ErrorKind> {
+    fn handshake_early(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Shaken, ErrorKind> {
         assert!(self.deferred.is_some(), "a handshake put off");
         self.waits = TlsWait::Nothing;
         if self.early == Early::None {
@@ -1342,7 +1351,7 @@ impl<W: Wolfssl> TlsSession for Session<W> {
         if let Early::Sending(sent) = self.early
             && self.send_early(io, early, sent)? == Handshake::Waiting
         {
-            return Ok(Handshake::Waiting);
+            return Ok(Shaken::Waiting);
         }
         self.handshake(io)
     }

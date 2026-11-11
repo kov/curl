@@ -348,9 +348,10 @@ impl FakeConnection {
                 let event_heard = match t {
                     Told::HandshakeDone => {
                         let checked = call.handshake_done();
+                        let passed = checked.as_ref().map(|_| ()).map_err(|kind| *kind);
                         let mut s = script.lock().unwrap_or_else(PoisonError::into_inner);
-                        own(|| s.checked.push(checked));
-                        s.handshake_done = checked.is_ok();
+                        own(|| s.checked.push(passed));
+                        s.handshake_done = passed.is_ok();
                         drop(s);
                         let early = script.lock().unwrap_or_else(PoisonError::into_inner).early;
                         let rejected = script
@@ -364,7 +365,7 @@ impl FakeConnection {
                             early_data: (early == Some(EarlyStart::Started)).then_some(!rejected),
                         };
                         let h = told_to(call, events, Event::Connection(event));
-                        if checked.is_err() { Heard::Failed } else { h }
+                        if passed.is_err() { Heard::Failed } else { h }
                     }
                     Told::ReadFails(_) => unreachable!("the read stops before it"),
                     Told::Drains => {

@@ -2304,7 +2304,8 @@ transport parameters, as C's per-library new-session callbacks do, only where th
 sessions; the peer is checked, by the backend's own check, inside the handshake's end, and a
 failed check forgets the peer's kept sessions. The connection keeps the check's word as a
 `PeerCheck` (`conn/quic.rs`): `Unchecked` until the `HandshakeDone` event reports it, then
-`Checked` or `Failed`. `Unchecked` is usable only while the library says the handshake is under
+`Checked`, holding the backend's `Checked` (`DriveCall::handshake_done` gives it), or `Failed`;
+a `Checked` made for another session's identity is `Failed`. `Unchecked` is usable only while the library says the handshake is under
 way, as a connection sending early data uses it: once the handshake is done, an unreported
 check fails the connect and every send and receive after (`Quic::verified`). The HTTP/3 proxy is OpenSSL's alone, as C's
 CMake has `USE_PROXY_HTTP3` only with OpenSSL: the `proxy-http3` feature, which only the
@@ -3196,8 +3197,10 @@ impl TlsShared {                                   // the library's per-multi st
     pub fn with<T: Any + Send, R>(&self, make: impl FnOnce() -> T, f: impl FnOnce(&mut T) -> R)
         -> Result<Option<R>, OutOfMemory>;         // none: another library's state is there
 }
+pub enum Shaken { Waiting, Deferred(Deferred), Done(Checked) }  // as a call leaves the handshake
 pub trait TlsSession: Send {                       // one connection's TLS, never Sync
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind>;
+    fn handshake_early(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Shaken, ErrorKind>;
     fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv>;
     fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent>;
     fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
@@ -3483,6 +3486,12 @@ the name itself. A token made for another session's identity fails closed too. W
 leaves weaker is said in `Residuals`: `host_check_follows_chain` where the library matches the
 name only with the chain and the chain is not verified (rustls; wolfSSL over TCP for a name),
 `AppHadContext` where the application's context handler could change the library's checks.
+The handshake hands the `Checked` over as it ends (`Shaken::Done`), and over QUIC as the
+library says it is done (`DriveCall::handshake_done`). The TLS layer's state
+(`conn::tls::PeerState`: `Shaking`, `Awaiting` and `Going` for a handshake put off, `Open`,
+`Failed`) is `Open` only with a `Checked` made for its own `SessionPeer`'s identity, and only an
+open session is read from or written to; one made for another fails the handshake
+(`PeerFailedVerification`, `internal: a check made for another session`).
 
 **The client's certificate** (`cert.rs`, `client_cert`) is loaded into the context before the
 session is made, when a certificate, a blob or a type is set: PEM as a chain (from a file, or
@@ -3631,9 +3640,9 @@ asks and makes requests (`TlsPeer::early_data`, not `bits.connect_only`) has Ope
 handshake off when it resumes a TLS 1.3 session that allows early data and agreed by ALPN to a
 protocol the transfer offers (`Curl_on_session_reuse`): only that protocol is offered, and the
 session answers it as agreed (`TlsSession::chosen`) until the peer agrees again or the handshake
-fails (`Curl_alpn_set_negotiated`'s confirmation). The handshake says it is done
-(`TlsSession::deferred`), so the connection is set up and the protocol starts; the TLS layer
-holds the deferral (`conn::tls::Deferral`, `ssl_cf_connect_deferred`). The first send gives it
+fails (`Curl_alpn_set_negotiated`'s confirmation). The handshake says it is put off
+(`Shaken::Deferred`), so the connection is set up and the protocol starts; the TLS layer
+holds the deferral (`conn::tls::PeerState`, `ssl_cf_connect_deferred`). The first send gives it
 its early data, as much of the bytes as the session allows (at most 64 KiB), which OpenSSL writes
 before going on (`TlsSession::handshake_early`); a receive first lets it go on with none. Until
 it is over each send and receive waits on it. Taken by the peer, the sends after skip the bytes

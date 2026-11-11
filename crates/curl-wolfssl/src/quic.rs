@@ -115,7 +115,7 @@ impl<W: Wolfssl> QuicTls for QuicSession<W> {
                 // No session of a peer that fails its check is resumed.
                 cx.forget_sessions();
             }
-            checked.map(|_| ())
+            checked
         };
         let ssl = s.ssl.as_mut().expect("made as the session is");
         ssl.drive(&mut wcall, &mut check, call);

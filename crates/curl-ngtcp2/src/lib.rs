@@ -1467,6 +1467,7 @@ unsafe extern "C" fn handshake_completed(
     let lent = unsafe { (*inner).lent }.expect("the handshake completes during a call");
     // SAFETY: as above; not inside its own `with_cx`.
     let checked = unsafe { &mut *lent.call }.handshake_done();
+    let failed = checked.is_err();
     // SAFETY: the connection; its peer's parameters, which a completed
     // handshake has.
     let rp = unsafe { sys::ngtcp2_conn_get_remote_transport_params(conn) };
@@ -1482,7 +1483,7 @@ unsafe extern "C" fn handshake_completed(
     };
     // SAFETY: inside the call, holding nothing of the state.
     let heard = unsafe { tell(inner, Event::Connection(event)) };
-    if checked.is_err() || heard == Heard::Failed {
+    if failed || heard == Heard::Failed {
         sys::NGTCP2_ERR_CALLBACK_FAILURE
     } else {
         0

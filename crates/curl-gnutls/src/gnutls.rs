@@ -19,7 +19,7 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::TryVec as _;
 use curl_core::error::ErrorKind;
-use curl_core::tls::{DriveCall, TlsCx, TlsKind, TlsNative};
+use curl_core::tls::{Checked, DriveCall, TlsCx, TlsKind, TlsNative};
 
 use crate::library::{self, Call, Format, Moved, Rc, Stapled};
 use crate::sys;
@@ -296,11 +296,11 @@ impl Session {
 struct Driving<'d, 'c, 's, 'a> {
     slot: *mut Slot<'c, 's, 'a>,
     session: *mut Session,
-    check: &'d mut dyn FnMut(&mut Session, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+    check: &'d mut dyn FnMut(&mut Session, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
 }
 
 impl DriveCall for Driving<'_, '_, '_, '_> {
-    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+    fn handshake_done(&mut self) -> Result<Checked, ErrorKind> {
         // SAFETY: the slot and the session outlive the QUIC library's
         // call, inside which alone this runs; the QUIC library tells of
         // the handshake's end outside any callback of GnuTLS's, so
@@ -636,7 +636,7 @@ impl library::Session for Session {
     fn drive(
         &mut self,
         call: &mut Call<'_, '_, Creds>,
-        check: &mut dyn FnMut(&mut Session, &mut TlsCx<'_>) -> Result<(), ErrorKind>,
+        check: &mut dyn FnMut(&mut Session, &mut TlsCx<'_>) -> Result<Checked, ErrorKind>,
         op: &mut dyn FnMut(&mut dyn DriveCall),
     ) {
         let s = self.s();

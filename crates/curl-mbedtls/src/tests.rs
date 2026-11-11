@@ -79,7 +79,9 @@ fn shake(
     let mut s = session(lib, id, Alpn::H2Http11);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     let calls = lib.w().calls.clone();
     (r, kept.notes.0, calls)
 }
@@ -327,7 +329,9 @@ fn the_cipher_lists_are_the_library_s_numbers() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().suites, [0x1302, 0xC02F, 0]);
     assert!(
@@ -371,7 +375,9 @@ fn the_host_name_is_set_and_its_failure_fails() {
     let mut s = session_to(lib, &id, b"127.0.0.1", TlsPeerKind::Ipv4, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(lib.w().calls.contains(&"hostname(127.0.0.1)".to_owned()));
     assert!(lib.w().made("alpn").is_empty());
@@ -398,11 +404,15 @@ fn the_handshake_waits_and_fails_as_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Waiting));
     assert_eq!(s.waits(), TlsWait::Recv);
     let wire = Wire::with(b"world");
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(wire.sent(), b"hello");
     assert_eq!(lib.w().pulled, b"world");
@@ -462,7 +472,9 @@ fn the_verify_callback_clears_what_is_off_and_says_what_is_left() {
         let mut kept = Kept::new();
         kept.verbose = true;
         let wire = Wire::default();
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Ok(Handshake::Done));
         let left = lib.w().flags_left[0];
         (left, kept.notes.0)
@@ -528,7 +540,9 @@ fn alpn_s_choice_is_taken() {
     let mut s = session(lib, &id, Alpn::H2Http11);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(s.chosen(), Chosen::named(b"h2"));
     assert!(has(&kept.notes.0, "info: ALPN: server accepted h2"));
@@ -546,11 +560,15 @@ fn sessions_are_kept_and_resumed() {
     let mut kept = Kept::new();
     let wire = Wire::default();
     let mut s = session(lib, &id, Alpn::None);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("saved").len(), 1);
     let mut s = session(lib, &id, Alpn::None);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("resume("), ["resume(saved)"]);
     assert!(has(&kept.notes.0, "info: SSL reusing session ID"));
@@ -576,7 +594,9 @@ fn sessions_are_kept_and_resumed() {
     });
     let mut kept = Kept::new();
     let mut s = session(lib, &id, Alpn::None);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(lib.w().made("saved").is_empty());
     let mut buf = [0u8; 16];
@@ -604,7 +624,9 @@ fn sessions_that_fail_say_so() {
     });
     for _ in 0..2 {
         let mut s = session(lib, &id, Alpn::None);
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Ok(Handshake::Done));
     }
     assert!(
@@ -668,7 +690,9 @@ fn connected(world: World) -> (Session<Fake>, &'static Fake, TryArc<TlsIdentity>
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     (s, lib, id)
 }

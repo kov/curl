@@ -17,7 +17,7 @@ use curl_core::tls::{
     Alpn, BindingNotes, Chosen, Goodbye, Handshake, Text, TlsCx, TlsIdentity, TlsIo, TlsNative,
     TlsPeer, TlsPeerKind, TlsSession, TlsTicket, TlsWait,
 };
-use curl_core::tls::{Checked, Residuals};
+use curl_core::tls::{Checked, Residuals, Shaken};
 
 use crate::library::{
     AGAIN, Call, Conn as _, Hex, LowHex, Mbedtls, Rc, Resume, Saved, as_c, c_string,
@@ -25,15 +25,17 @@ use crate::library::{
 use crate::sys;
 
 /// How far a session's handshake has come (`connecting_state`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
     /// Nothing made yet: the objects are set up at the first step.
     One,
     /// The handshake runs.
     Two,
-    /// The handshake is done; the session is to be kept.
-    Three,
-    Done,
+    /// The handshake is done and the peer checked, as `Checked` says; the
+    /// session is to be kept.
+    Three(Checked),
+    /// All is done.
+    Done(Checked),
 }
 
 /// One connection's mbedTLS, through the library `G`.
@@ -501,17 +503,17 @@ impl<G: Mbedtls> Session<G> {
     }
 
     /// Move the handshake on, then check the pinned key and take what the
-    /// peer chose (`mbed_connect_step2`).
-    fn step2(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    /// peer chose (`mbed_connect_step2`): the check, once done.
+    fn step2(&mut self, io: &mut TlsIo<'_>) -> Result<Option<Checked>, ErrorKind> {
         let rc = self.call(io, |c, call| c.handshake(call));
         match rc {
             sys::MBEDTLS_ERR_SSL_WANT_READ => {
                 self.waits = TlsWait::Recv;
-                return Ok(Handshake::Waiting);
+                return Ok(None);
             }
             sys::MBEDTLS_ERR_SSL_WANT_WRITE => {
                 self.waits = TlsWait::Send;
-                return Ok(Handshake::Waiting);
+                return Ok(None);
             }
             sys::MBEDTLS_ERR_X509_CERT_VERIFY_FAILED => {
                 return Err(io.fail(
@@ -545,7 +547,7 @@ impl<G: Mbedtls> Session<G> {
             }
         };
         // The library matched the name, as its verify callback says.
-        let _checked = Checked::new(io, pin, Residuals::NONE)?;
+        let checked = Checked::new(io, pin, Residuals::NONE)?;
         if self.alpn != Alpn::None {
             let conn = self.conn.as_ref().expect("made at the first step");
             let chosen = conn.alpn_selected().unwrap_or_default();
@@ -555,7 +557,7 @@ impl<G: Mbedtls> Session<G> {
             }
         }
         io.info(format_args!("SSL connected"));
-        Ok(Handshake::Done)
+        Ok(Some(checked))
     }
 
     /// Keep the connection's session in the transfer's cache, if it keeps
@@ -596,23 +598,27 @@ impl<G: Mbedtls> Session<G> {
     }
 
     /// The steps of `mbedtls_connect`.
-    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn connect(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
         if self.step == Step::One {
             self.step1(io)?;
             self.step = Step::Two;
         }
         if self.step == Step::Two {
-            if self.step2(io)? == Handshake::Waiting {
-                return Ok(Handshake::Waiting);
-            }
-            self.step = Step::Three;
+            let Some(checked) = self.step2(io)? else {
+                return Ok(Shaken::Waiting);
+            };
+            self.step = Step::Three(checked);
         }
         // TLS 1.3 tells of its sessions as they come.
         if self.conn().version() <= sys::MBEDTLS_SSL_VERSION_TLS1_2 {
             self.new_session(io)?;
         }
-        self.step = Step::Done;
-        Ok(Handshake::Done)
+        let checked = match &self.step {
+            Step::Three(checked) | Step::Done(checked) => checked.clone(),
+            Step::One | Step::Two => unreachable!("past the second step"),
+        };
+        self.step = Step::Done(checked.clone());
+        Ok(Shaken::Done(checked))
     }
 
     /// The goodbye (`mbedtls_shutdown`): `Ok(true)` once over.
@@ -691,9 +697,9 @@ impl<G: Mbedtls> TlsSession for Session<G>
 where
     G::Conn: Send,
 {
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        if self.step == Step::Done {
-            return Ok(Handshake::Done);
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+        if let Step::Done(checked) = &self.step {
+            return Ok(Shaken::Done(checked.clone()));
         }
         self.waits = TlsWait::Nothing;
         self.connect(io)

@@ -179,12 +179,13 @@ impl Checked {
 
     /// It was made for the connection whose sessions `peer` names: the
     /// same identity, not one equal to it.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the TLS layer and QUIC take it next")
-    )]
     pub(crate) fn is_for(&self, peer: &SessionPeer) -> bool {
         TryArc::ptr_eq(&self.identity, peer.identity())
+    }
+
+    /// It was made for the session `io` works for, as `is_for`.
+    pub(crate) fn is_for_session(&self, io: &TlsCx<'_>) -> bool {
+        TryArc::ptr_eq(&self.identity, io.identity())
     }
 
     /// One for the session `io` works for, of no check, its residuals
@@ -193,6 +194,18 @@ impl Checked {
     pub fn testing(io: &TlsCx<'_>) -> Checked {
         Checked {
             identity: io.identity().clone(),
+            pinned: false,
+            named_in_core: false,
+            residuals: Residuals::NONE.with(Residual::Testing),
+        }
+    }
+
+    /// One of no check for the session of `peer`, which need not be the
+    /// session it is given to: for the tests of a check made for another.
+    #[cfg(test)]
+    pub(crate) fn testing_for(peer: &SessionPeer) -> Checked {
+        Checked {
+            identity: peer.identity().clone(),
             pinned: false,
             named_in_core: false,
             residuals: Residuals::NONE.with(Residual::Testing),

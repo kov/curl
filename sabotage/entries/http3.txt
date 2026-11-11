@@ -58,7 +58,7 @@ witness: curl-ngtcp2 tests::an_acknowledged_chunk_goes_and_room_comes_back
 file: crates/curl-ngtcp2/src/lib.rs
 witness: curl-ngtcp2 an_untrusted_peer_fails_the_handshake_as_it_completes
 --- old
-    if checked.is_err() || heard == Heard::Failed {
+    if failed || heard == Heard::Failed {
 --- new
     if heard == Heard::Failed {
 

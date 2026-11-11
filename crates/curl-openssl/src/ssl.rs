@@ -17,10 +17,10 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicContextSetup,
-    QuicTls, QuicheTls, RecordWait, SharedKeyLog, SystemStore, TlsBackend, TlsCx, TlsIdentity,
-    TlsIo, TlsKind, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsSupport, TlsTicket,
-    TlsWait,
+    Alpn, CaDefaults, Checked, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog,
+    QuicContextSetup, QuicTls, QuicheTls, RecordWait, Shaken, SharedKeyLog, SystemStore,
+    TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsKind, TlsNative, TlsPeer, TlsPeerKind, TlsSession,
+    TlsShared, TlsSupport, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -329,7 +329,7 @@ enum Early {
 }
 
 /// How far a session's handshake has come (`connecting_state`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
     /// Nothing made yet: the context and SSL are made at the first step.
     Init,
@@ -337,7 +337,14 @@ enum Step {
     Handshake,
     /// The handshake is done; the peer's certificate is to be checked.
     Check,
-    Done,
+    /// The peer is checked, as `Checked` says.
+    Done(Checked),
+}
+
+impl Step {
+    fn done(&self) -> bool {
+        matches!(self, Step::Done(_))
+    }
 }
 
 /// One connection's OpenSSL.
@@ -1544,9 +1551,9 @@ fn set_bio(ssl: NonNull<SSL>, bio: NonNull<openssl_sys::BIO>) {
 }
 
 impl TlsSession for Session {
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        if self.step == Step::Done {
-            return Ok(Handshake::Done);
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+        if let Step::Done(checked) = &self.step {
+            return Ok(Shaken::Done(checked.clone()));
         }
         self.waits = TlsWait::Nothing;
         if self.step == Step::Init {
@@ -1557,11 +1564,13 @@ impl TlsSession for Session {
         if self.step == Step::Handshake {
             io.trace(format_args!("ossl_connect, step2"));
             // Put off, it waits for its early data.
-            if self.deferred.is_some() && self.early == Early::None {
-                return Ok(Handshake::Done);
+            if let Some(deferred) = self.deferred
+                && self.early == Early::None
+            {
+                return Ok(Shaken::Deferred(deferred));
             }
             match self.step2(io)? {
-                Handshake::Waiting => return Ok(Handshake::Waiting),
+                Handshake::Waiting => return Ok(Shaken::Waiting),
                 Handshake::Done => self.step = Step::Check,
             }
         }
@@ -1575,14 +1584,17 @@ impl TlsSession for Session {
             self.from_sectrust,
             io,
         );
-        match checked {
-            Ok((_checked, sectrust)) => self.flags.sectrust_verified = sectrust,
+        let checked = match checked {
+            Ok((checked, sectrust)) => {
+                self.flags.sectrust_verified = sectrust;
+                checked
+            }
             Err(kind) => {
                 // The sessions kept for the peer go with it.
                 io.forget_sessions();
                 return Err(kind);
             }
-        }
+        };
         // None is sent over the forks (`write_early`).
         #[cfg(not(boringssl_like))]
         if self.early == Early::Sent {
@@ -1592,7 +1604,7 @@ impl TlsSession for Session {
                 accepted: status == ffi::SSL_EARLY_DATA_ACCEPTED,
             };
         }
-        self.step = Step::Done;
+        self.step = Step::Done(checked.clone());
         io.trace(format_args!("ossl_connect, done"));
         if let Some(log) = &self.keylog {
             log.with_name(|name| {
@@ -1606,7 +1618,7 @@ impl TlsSession for Session {
                 ));
             });
         }
-        Ok(Handshake::Done)
+        Ok(Shaken::Done(checked))
     }
 
     fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {
@@ -1733,7 +1745,7 @@ impl TlsSession for Session {
     /// The goodbye (`ossl_shutdown`): only for a handshake that was
     /// done, once; the bytes it holds are given up as it waits or ends.
     fn shutdown(&mut self, io: &mut TlsIo<'_>, goodbye: Goodbye) -> Result<Handshake, ErrorKind> {
-        if self.step != Step::Done || self.shut {
+        if !self.step.done() || self.shut {
             return Ok(Handshake::Done);
         }
         self.waits = TlsWait::Nothing;
@@ -1762,20 +1774,12 @@ impl TlsSession for Session {
     fn chosen(&self) -> Option<Chosen> {
         self.ssl.as_ref()?;
         match self.deferred {
-            Some(d) if self.step != Step::Done => Some(d.alpn),
+            Some(d) if !self.step.done() => Some(d.alpn),
             _ => Chosen::named(self.selected()),
         }
     }
 
-    fn deferred(&self) -> Option<Deferred> {
-        self.deferred.filter(|_| self.early == Early::None)
-    }
-
-    fn handshake_early(
-        &mut self,
-        io: &mut TlsIo<'_>,
-        early: &[u8],
-    ) -> Result<Handshake, ErrorKind> {
+    fn handshake_early(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Shaken, ErrorKind> {
         assert!(self.deferred.is_some(), "a handshake put off");
         self.waits = TlsWait::Nothing;
         if self.early == Early::None {
@@ -1784,7 +1788,7 @@ impl TlsSession for Session {
         if let Early::Sending(sent) = self.early
             && self.write_early(io, early, sent)? == Handshake::Waiting
         {
-            return Ok(Handshake::Waiting);
+            return Ok(Shaken::Waiting);
         }
         self.handshake(io)
     }
@@ -1960,7 +1964,7 @@ impl DriveCall for Check<'_> {
     /// (`cf_quiche_connect`), then the peer checked as a stream session's
     /// is, the peer's sessions forgotten if it fails
     /// (`cb_ngtcp2_handshake_completed`).
-    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+    fn handshake_done(&mut self) -> Result<Checked, ErrorKind> {
         let Check {
             ssl,
             report,
@@ -1992,10 +1996,10 @@ impl DriveCall for Check<'_> {
         };
         // SAFETY: a `Check` lives only inside `drive`'s call, whose slot
         // is the SSL's BIO's while it runs, on this thread.
-        let (_checked, sectrust) = unsafe { bio::with_cx(ssl, check) }?;
+        let (checked, sectrust) = unsafe { bio::with_cx(ssl, check) }?;
         // SAFETY: as above, the check's borrow of the slot over.
         unsafe { bio::set_sectrust(ssl, sectrust) };
-        Ok(())
+        Ok(checked)
     }
 
     fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {

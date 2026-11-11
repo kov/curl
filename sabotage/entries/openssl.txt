@@ -281,9 +281,9 @@ witness: curl-openssl the_verify_result_is_reported_as_openssl_gives_it
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_kept_connection_says_goodbye_as_the_multi_goes
 --- old
-        if self.step != Step::Done || self.shut {
+        if !self.step.done() || self.shut {
 --- new
-        if true || self.step != Step::Done || self.shut {
+        if true || !self.step.done() || self.shut {
 
 === the peer's close_notify, its socket still open, goes unanswered
 file: crates/curl-openssl/src/ssl.rs

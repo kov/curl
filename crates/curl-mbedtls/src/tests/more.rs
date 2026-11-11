@@ -53,12 +53,14 @@ fn a_given_session_is_resumed_before_the_cache_s() {
     let wire = Wire::default();
     // A session in the cache first.
     let mut s = session(lib, &id, Alpn::None);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     let given = curl_core::tls::TlsTicket::new(b"given".to_vec(), 0x0304, None, 0, 0);
     let mut s = session(lib, &id, Alpn::None);
     let r = TlsIo::testing_given(&id, HOST, &mut kept, &wire, Some(given), |io| {
-        s.handshake(io)
+        s.handshake(io).map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("resume("), ["resume(given)"]);
@@ -184,7 +186,9 @@ fn the_cipher_lists_skip_what_the_library_lacks() {
         let mut s = session(lib, &id, Alpn::None);
         let mut kept = Kept::new();
         let wire = Wire::default();
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
         let suites = lib.w().suites.clone();
         let said: Vec<_> = kept

@@ -158,8 +158,8 @@ pub struct Told {
 impl Told {
     pub fn hear(&mut self, event: &Event<'_>) -> Heard {
         match *event {
-            Event::Connection(ConnEvent::HandshakeDone { checked, .. }) => {
-                self.checked = Some(checked);
+            Event::Connection(ConnEvent::HandshakeDone { ref checked, .. }) => {
+                self.checked = Some(checked.as_ref().map(|_| ()).map_err(|kind| *kind));
             }
             Event::Stream(
                 _,

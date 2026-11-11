@@ -102,7 +102,9 @@ fn shake(
     let mut s = session(lib, id, Alpn::H2Http11, &shared);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     let calls = lib.w().calls.clone();
     (r, kept.notes.0, calls)
 }
@@ -449,7 +451,9 @@ fn an_address_gets_no_sni_and_is_checked_after_the_handshake() {
         let mut s = session_to(lib, &id, &to, Alpn::None, &shared, None);
         let mut kept = Kept::new();
         let wire = Wire::default();
-        let r = TlsIo::testing(&id, b"127.0.0.1", &mut kept, &wire, |io| s.handshake(io));
+        let r = TlsIo::testing(&id, b"127.0.0.1", &mut kept, &wire, |io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         let calls = lib.w().calls.clone();
         (r, kept.notes.0, calls)
     };
@@ -488,7 +492,9 @@ fn an_address_gets_no_sni_and_is_checked_after_the_handshake() {
     let mut s = session_to(lib, &id, &to, Alpn::None, &shared, None);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = TlsIo::testing(&id, b"127.0.0.1", &mut kept, &wire, |io| s.handshake(io));
+    let r = TlsIo::testing(&id, b"127.0.0.1", &mut kept, &wire, |io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(lib.w().made("check_ip").is_empty());
     // A name the library will not check fails the setup.
@@ -536,7 +542,9 @@ fn the_name_is_checked_whether_or_not_the_chain_is() {
         let mut s = session_to(lib, &id, &to, Alpn::None, &shared, None);
         let mut kept = Kept::new();
         let wire = Wire::default();
-        let r = TlsIo::testing(&id, b"127.0.0.1", &mut kept, &wire, |io| s.handshake(io));
+        let r = TlsIo::testing(&id, b"127.0.0.1", &mut kept, &wire, |io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         if verify_host {
             assert_eq!(r, Err(ErrorKind::PeerFailedVerification), "{case:?}");
             assert!(has(
@@ -562,7 +570,9 @@ fn the_handshake_waits_and_fails_as_c_s() {
         let mut s = session(lib, id, Alpn::None, &shared);
         let mut kept = Kept::new();
         let wire = Wire::default();
-        let r = with_io(&mut s, id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         (r, s.waits(), kept.notes.0)
     };
     let id = plain();
@@ -622,7 +632,9 @@ fn the_handshake_waits_and_fails_as_c_s() {
     let mut kept = Kept::new();
     let wire = Wire::default();
     for _ in 0..2 {
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Err(ErrorKind::PeerFailedVerification));
     }
     assert_eq!(lib.w().made("connect").len(), 1);
@@ -642,7 +654,9 @@ fn a_failure_below_is_the_handshake_s() {
         let shared = TlsShared::testing();
         let mut s = session(lib, &id, Alpn::None, &shared);
         let mut kept = Kept::new();
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         (r, kept.notes.0)
     };
     let refusing = Wire {
@@ -808,7 +822,9 @@ fn the_store_is_set_up_at_the_handshake_s_first_read() {
     let mut s = session(lib, &id, Alpn::None, &shared);
     let mut kept = Kept::new();
     let wire = Wire::with(b"there");
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Waiting));
     let notes = &kept.notes.0;
     let wrote = at(notes, "trace: bio_write(len=5) -> 0, 5");
@@ -822,7 +838,9 @@ fn the_store_is_set_up_at_the_handshake_s_first_read() {
     // Set up once.
     lib.w().scripts = vec![("connect", vec![Act::Pull(5)])];
     let wire = Wire::with(b"more!");
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
     assert_eq!(lib.w().made("ca_locations").len(), 1);
     // A store failing in the read fails the handshake, with its trace.
@@ -836,7 +854,9 @@ fn the_store_is_set_up_at_the_handshake_s_first_read() {
     let mut s = session(lib, &id, Alpn::None, &shared);
     let mut kept = Kept::new();
     let wire = Wire::with(b"there");
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Err(ErrorKind::SslCacertBadfile), "{:#?}", kept.notes.0);
     assert!(has(
         &kept.notes.0,
@@ -855,7 +875,9 @@ fn the_multi_keeps_the_store_while_it_may() {
         let before = lib.w().calls.len();
         let mut s = session(lib, id, Alpn::None, &shared);
         let mut kept = Kept::new();
-        let r = with_io(&mut s, id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
         lib.w().calls[before..].to_vec()
     };
@@ -906,7 +928,9 @@ fn the_multi_keeps_the_store_while_it_may() {
     for _ in 0..2 {
         let mut s = session(lib, &id, Alpn::None, &shared);
         let mut kept = Kept::new();
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Ok(Handshake::Done));
     }
     assert_eq!(lib.w().made("ca_locations").len(), 2);
@@ -994,7 +1018,9 @@ fn alpn_s_choice_is_taken() {
     let mut s = session(lib, &id, Alpn::H2Http11, &shared);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(s.chosen().map(|c| c.name()), Some("h2"));
     assert!(has(&kept.notes.0, "info: ALPN: server accepted h2"));
@@ -1007,7 +1033,9 @@ fn alpn_s_choice_is_taken() {
     let mut s = session(lib, &id, Alpn::H2Http11, &shared);
     let mut kept = Kept::new();
     for _ in 0..2 {
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Err(ErrorKind::SslConnectError));
     }
     assert!(has(
@@ -1018,7 +1046,9 @@ fn alpn_s_choice_is_taken() {
     let lib = Fake::new(World::default());
     let mut s = session(lib, &id, Alpn::None, &shared);
     let mut kept = Kept::new();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(lib.w().made("alpn(").is_empty());
     assert!(said(&kept.notes.0, "info: ALPN").is_empty());
@@ -1055,7 +1085,9 @@ fn sessions_are_kept_and_resumed() {
     let mut kept = Kept::new();
     let wire = Wire::default();
     let mut s = session(lib, &id, Alpn::H2Http11, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     // TLS 1.3's ticket comes with a read, and is kept with what ALPN
     // agreed.
@@ -1070,7 +1102,9 @@ fn sessions_are_kept_and_resumed() {
     let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.recv(io, &mut buf));
     assert!(matches!(r, Ok(Recv::WouldBlock)), "{r:?}");
     let mut s = session(lib, &id, Alpn::H2Http11, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("resume("), ["resume(tick)"]);
     assert!(has(
@@ -1084,7 +1118,9 @@ fn sessions_are_kept_and_resumed() {
     assert_eq!(calls[resume + 1], "alpn(h2,http/1.1)");
     // Not offering what it agreed: not resumed.
     let mut s = session(lib, &id, Alpn::Http11, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("resume(").len(), 1);
 }
@@ -1097,7 +1133,9 @@ fn sessions_that_fail_say_so() {
     let keep = |lib: &'static Fake, kept: &mut Kept, made: NewSession| {
         lib.w().scripts = vec![("connect", vec![Act::Session(made), Act::Return(1, 0)])];
         let mut s = session(lib, &id, Alpn::None, &shared);
-        with_io(&mut s, &id, kept, &wire, |s, io| s.handshake(io))
+        with_io(&mut s, &id, kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        })
     };
     // Refused by the library: said, and dropped from the cache.
     let lib = Fake::new(World {
@@ -1113,14 +1151,18 @@ fn sessions_that_fail_say_so() {
     };
     assert_eq!(keep(lib, &mut kept, made(b"one")), Ok(Handshake::Done));
     let mut s = session(lib, &id, Alpn::None, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(has(
         &kept.notes.0,
         "info: cached session not accepted (-1), removing from cache"
     ));
     let mut s = session(lib, &id, Alpn::None, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("resume(").len(), 1);
     // Not decoded: a failure said, and the handshake goes on.
@@ -1131,7 +1173,9 @@ fn sessions_that_fail_say_so() {
     let mut kept = Kept::new();
     keep(lib, &mut kept, made(b"two")).unwrap();
     let mut s = session(lib, &id, Alpn::None, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(has(
         &kept.notes.0,
@@ -1165,7 +1209,9 @@ fn sessions_that_fail_say_so() {
         "fail: OutOfMemory: unable to allocate session buffer of 7 bytes"
     ));
     let mut s = session(lib, &id, Alpn::None, &shared);
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(lib.w().made("resume(").is_empty());
 }
@@ -1192,7 +1238,7 @@ fn a_given_session_is_resumed_before_the_cache_s() {
     let given = TlsTicket::new(b"given".to_vec(), 0x0304, None, 0, 0);
     let mut s = session(lib, &id, Alpn::None, &shared);
     let r = TlsIo::testing_given(&id, HOST, &mut kept, &wire, Some(given), |io| {
-        s.handshake(io)
+        s.handshake(io).map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("resume("), ["resume(given)"]);
@@ -1208,7 +1254,9 @@ fn keep_ticket(lib: &'static Fake, kept: &mut Kept, shared: &TlsShared, early: u
     let id = plain();
     let wire = Wire::default();
     let mut s = session(lib, &id, Alpn::H2Http11, shared);
-    let r = with_io(&mut s, &id, kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     lib.w().scripts = vec![(
         "read",
@@ -1238,7 +1286,9 @@ fn a_session_allowing_early_data_puts_the_handshake_off() {
     kept.notes.0.clear();
     let wire = Wire::default();
     let before = lib.w().calls.len();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     let deferred = s.deferred().expect("put off");
     assert_eq!((deferred.most, deferred.alpn.name()), (16384, "h2"));
@@ -1264,6 +1314,7 @@ fn a_session_allowing_early_data_puts_the_handshake_off() {
     // The early data goes, then the handshake.
     let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
         s.handshake_early(io, b"GET / HTTP/1.1\r\n")
+            .map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
     assert!(s.deferred().is_none());
@@ -1293,7 +1344,9 @@ fn early_data_waits_fails_and_is_rejected_as_c_s() {
         let to = peer(HOST, TlsPeerKind::Name, true);
         let mut s = session_to(lib, &id, &to, Alpn::H2Http11, &shared, None);
         let wire = Wire::default();
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Ok(Handshake::Done));
         assert!(s.deferred().is_some());
         (lib, s, kept, id)
@@ -1318,11 +1371,13 @@ fn early_data_waits_fails_and_is_rejected_as_c_s() {
     let wire = Wire::default();
     let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
         s.handshake_early(io, b"early")
+            .map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Ok(Handshake::Waiting));
     assert!(s.deferred().is_none());
     let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
         s.handshake_early(io, b"early")
+            .map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Ok(Handshake::Done), "{:#?}", kept.notes.0);
     assert_eq!(
@@ -1339,6 +1394,7 @@ fn early_data_waits_fails_and_is_rejected_as_c_s() {
     lib.w().scripts = vec![("write_early", vec![Act::Return(-1, SOCKET_ERROR_E)])];
     let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
         s.handshake_early(io, b"early")
+            .map(|shaken| shaken.as_handshake())
     });
     assert_eq!(r, Err(ErrorKind::SendError));
     assert!(has(
@@ -1370,7 +1426,9 @@ fn early_data_waits_fails_and_is_rejected_as_c_s() {
         let id = plain();
         let to = peer(HOST, TlsPeerKind::Name, true);
         let mut s = session_to(lib, &id, &to, Alpn::H2Http11, &shared, None);
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         assert_eq!(r, Ok(Handshake::Done));
         assert!(s.deferred().is_none());
         assert!(has(&kept.notes.0, line), "{:#?}", kept.notes.0);
@@ -1385,7 +1443,9 @@ fn connected(world: World) -> (Session<Fake>, &'static Fake, TryArc<TlsIdentity>
     let mut s = session(lib, &id, Alpn::None, &shared);
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     (s, lib, id)
 }
@@ -1658,7 +1718,9 @@ fn a_tls_1_2_secret_is_logged_while_the_key_log_is_open() {
     let mut s = session_to(lib, &id, &to, Alpn::Http11, &shared, Some(log.clone()));
     let mut kept = Kept::new();
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     let calls = lib.w().calls.clone();
     assert!(at(&calls, "keep_arrays") < at(&calls, "connect"));
@@ -1682,7 +1744,9 @@ fn a_tls_1_2_secret_is_logged_while_the_key_log_is_open() {
     };
     let lib = Fake::new(world);
     let mut s = session_to(lib, &id, &to, Alpn::Http11, &shared, Some(log.clone()));
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().made("free_arrays").len(), 1);
     let waiting = World {
@@ -1696,7 +1760,9 @@ fn a_tls_1_2_secret_is_logged_while_the_key_log_is_open() {
     };
     let lib = Fake::new(waiting);
     let mut s = session_to(lib, &id, &to, Alpn::Http11, &shared, Some(log.clone()));
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Waiting));
     assert!(lib.w().made("free_arrays").is_empty());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), want);

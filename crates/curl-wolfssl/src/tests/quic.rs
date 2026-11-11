@@ -64,7 +64,7 @@ fn done(
 ) -> Option<Result<(), ErrorKind>> {
     let mut done = None;
     drive(s, id, kept, name, None, &mut |dc| {
-        done = Some(dc.handshake_done());
+        done = Some(dc.handshake_done().map(|_| ()));
     });
     done
 }
@@ -259,7 +259,7 @@ fn the_peer_is_reported_and_checked_as_the_quic_library_says_the_handshake_is_do
     let mut checked = None;
     drive(&mut s, &id, &mut kept, HOST, None, &mut |dc| {
         dc.with_cx(&mut |cx| cx.trace(format_args!("the QUIC library's call")));
-        checked = Some(dc.handshake_done());
+        checked = Some(dc.handshake_done().map(|_| ()));
     });
     assert_eq!(checked, Some(Ok(())));
     let calls = lib.w().calls[before..].to_vec();

@@ -33,9 +33,9 @@ use std::ptr::NonNull;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, QuicContextSetup, QuicTls,
-    SystemStore, TLS1_3, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
-    TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, CaDefaults, Checked, Chosen, DriveCall, Goodbye, Handshake, QuicContextSetup, QuicTls,
+    Shaken, SystemStore, TLS1_3, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer,
+    TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -775,7 +775,7 @@ fn rot13(bytes: &mut [u8]) {
 }
 
 impl TlsSession for FakeSession {
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
         if !self.made {
             if io.configures_context() {
                 io.configure_context(TlsNative::other(NonNull::from(&self.out).cast(), None))?;
@@ -805,24 +805,16 @@ impl TlsSession for FakeSession {
             }
             self.made = true;
         }
-        if self.deferred.is_some() && !self.going {
-            return Ok(Handshake::Done);
+        if let Some(deferred) = self.deferred.filter(|_| !self.going) {
+            return Ok(Shaken::Deferred(deferred));
         }
-        self.shake(io, &[])
+        self.shaken(io, &[])
     }
 
-    fn deferred(&self) -> Option<crate::tls::Deferred> {
-        self.deferred.filter(|_| !self.going)
-    }
-
-    fn handshake_early(
-        &mut self,
-        io: &mut TlsIo<'_>,
-        early: &[u8],
-    ) -> Result<Handshake, ErrorKind> {
+    fn handshake_early(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Shaken, ErrorKind> {
         assert!(self.deferred.is_some(), "a handshake put off");
         self.going = true;
-        self.shake(io, early)
+        self.shaken(io, early)
     }
 
     fn early_accepted(&self) -> bool {
@@ -882,6 +874,15 @@ impl TlsSession for FakeSession {
 }
 
 impl FakeSession {
+    /// The handshake, as `shake` moves it on: done, its peer taken as
+    /// checked, as the fake's peer is never checked.
+    fn shaken(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Shaken, ErrorKind> {
+        Ok(match self.shake(io, early)? {
+            Handshake::Waiting => Shaken::Waiting,
+            Handshake::Done => Shaken::Done(Checked::testing(io)),
+        })
+    }
+
     /// The handshake, `early` sent after the hello where it was put off.
     fn shake(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Handshake, ErrorKind> {
         let failed = |_: io::Error| ErrorKind::SslConnectError;
@@ -1282,7 +1283,7 @@ struct FakeDrive<'d, 'a> {
 }
 
 impl DriveCall for FakeDrive<'_, '_> {
-    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+    fn handshake_done(&mut self) -> Result<Checked, ErrorKind> {
         self.session
             .log
             .lock()
@@ -1298,7 +1299,7 @@ impl DriveCall for FakeDrive<'_, '_> {
         }
         self.session.handshook = true;
         self.session.keep_ticket(self.cx, QuicTickets::AtHandshake);
-        Ok(())
+        Ok(Checked::testing(self.cx))
     }
 
     fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {

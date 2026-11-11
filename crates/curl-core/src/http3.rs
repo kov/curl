@@ -190,7 +190,7 @@ pub enum ConnEvent {
     /// `early_data` says, if early data was sent, whether the peer took
     /// it.
     HandshakeDone {
-        checked: Result<(), ErrorKind>,
+        checked: Result<crate::tls::Checked, ErrorKind>,
         max_udp_payload: u64,
         initial_max_data: u64,
         early_data: Option<bool>,

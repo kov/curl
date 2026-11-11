@@ -16,7 +16,9 @@ use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Pa
 use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
-use crate::tls::{OwnSessions, SessionPeer, TlsIo, TlsSession, TlsTicket, TlsWait};
+use crate::tls::{
+    Checked, OwnSessions, SessionPeer, Shaken, TlsIo, TlsSession, TlsTicket, TlsWait,
+};
 
 pub(crate) struct TlsLayer {
     session: Box<dyn TlsSession>,
@@ -31,29 +33,61 @@ pub(crate) struct TlsLayer {
     /// The filter C's chain holds for it: the origin's (`SSL`) or an
     /// HTTPS proxy's (`SSL-PROXY`).
     filter: Component,
-    deferral: Deferral,
-    /// Its handshake is done as far as the connection goes (C's
-    /// `cf->connected`).
-    connected: bool,
+    peer_state: PeerState,
 }
 
-/// Where a handshake put off for early data is (C's `earlydata_state`,
-/// with its `earlydata` and `earlydata_skip`).
+/// Where the session's handshake and the check of its peer are (C's
+/// `cf->connected` and `earlydata_state`, with its `earlydata` and
+/// `earlydata_skip`). Only an open session is read from or written to.
 #[derive(Debug)]
-enum Deferral {
-    /// None was put off, or it is over and nothing of it is left to skip.
-    None,
-    /// Put off until the first bytes are sent, of which `most` may go
-    /// early.
+enum PeerState {
+    /// The handshake goes on.
+    Shaking,
+    /// It is put off until the first bytes are sent, of which `most` may
+    /// go early: done as far as the connection goes.
     Awaiting { most: usize },
     /// It goes on, `early` going first as early data.
     Going { early: Vec<u8> },
-    /// It is over and the peer took the early data: the sends after
-    /// start again with `early[at..]`, which went already, and are taken
-    /// without sending them (`earlydata_skip`).
-    Skipping { early: Vec<u8>, at: usize },
+    /// It is done and the peer checked, as `checked` says. If the peer
+    /// took early data, the sends after start again with `early[at..]`,
+    /// which went already, and are taken without sending them
+    /// (`earlydata_skip`).
+    Open {
+        #[expect(
+            dead_code,
+            reason = "held as the proof the session is open; asked of nothing yet"
+        )]
+        checked: Checked,
+        skip: Option<(Vec<u8>, usize)>,
+    },
     /// It failed with `kind`: so does each send and receive after.
     Failed(ErrorKind),
+}
+
+impl PeerState {
+    /// The handshake is done as far as the connection goes (C's
+    /// `cf->connected`).
+    fn connected(&self) -> bool {
+        !matches!(self, PeerState::Shaking)
+    }
+}
+
+/// The handshake is done with `checked`, made for the session of
+/// `peer`: open, or failed if made for another (said to `cx`).
+fn opened(
+    cx: &mut dyn LayerCx,
+    peer: &SessionPeer,
+    checked: Checked,
+    skip: Option<(Vec<u8>, usize)>,
+) -> PeerState {
+    if checked.is_for(peer) {
+        return PeerState::Open { checked, skip };
+    }
+    let kind = cx.fails(
+        ErrorKind::PeerFailedVerification,
+        format_args!("internal: a check made for another session"),
+    );
+    PeerState::Failed(kind)
 }
 
 impl TlsLayer {
@@ -78,8 +112,7 @@ impl TlsLayer {
             peer,
             own,
             filter,
-            deferral: Deferral::None,
-            connected: false,
+            peer_state: PeerState::Shaking,
         })?)
     }
 
@@ -102,8 +135,9 @@ impl TlsLayer {
     }
 
     /// Move a handshake put off on, once it has its early data: whether
-    /// it is over, as a send or receive may go on. Over, the peer took the
-    /// early data or not, the origin's says so to the transfer.
+    /// the session is open, as a send or receive may go on. Over, the peer
+    /// took the early data or not, the origin's says so to the transfer.
+    /// A session not open nor going on is used by no send or receive.
     fn go_on(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> io::Result<bool> {
         let TlsLayer {
             session,
@@ -111,47 +145,52 @@ impl TlsLayer {
             peer,
             own,
             filter,
-            deferral,
-            ..
+            peer_state,
         } = self;
-        let bytes = match deferral {
-            Deferral::Going { early } => early,
-            Deferral::Failed(_) => return Err(io::ErrorKind::Other.into()),
-            Deferral::None | Deferral::Skipping { .. } => return Ok(true),
-            Deferral::Awaiting { .. } => unreachable!("given its early data first"),
+        let bytes = match peer_state {
+            PeerState::Going { early } => early,
+            PeerState::Open { .. } => return Ok(true),
+            PeerState::Failed(_) | PeerState::Shaking => return Err(io::ErrorKind::Other.into()),
+            PeerState::Awaiting { .. } => unreachable!("given its early data first"),
         };
         let mut io = TlsIo::new(below, cx, early, *filter, peer, own);
         let shaken = session.handshake_early(&mut io, bytes);
         match shaken {
-            Ok(Handshake::Waiting) => Ok(false),
-            Ok(Handshake::Done) => {
+            Ok(Shaken::Waiting) => Ok(false),
+            Ok(Shaken::Done(checked)) => {
                 let n = bytes.len();
                 let sent = i64::try_from(n).expect("at most what a session allows");
                 let origin = *filter == Component::Ssl;
-                if session.early_accepted() {
+                let skip = if session.early_accepted() {
                     cx.info(format_args!("Server accepted {n} bytes of TLS early data."));
                     if origin {
                         cx.early_done(sent);
                     }
-                    *deferral = match n {
-                        0 => Deferral::None,
-                        _ => Deferral::Skipping {
-                            early: std::mem::take(bytes),
-                            at: 0,
-                        },
-                    };
+                    (n > 0).then(|| (std::mem::take(bytes), 0))
                 } else {
                     // Refused, it is all sent again.
                     cx.info(format_args!("Server rejected TLS early data."));
                     if origin {
                         cx.early_done(-sent);
                     }
-                    *deferral = Deferral::None;
+                    None
+                };
+                *peer_state = opened(cx, peer, checked, skip);
+                match peer_state {
+                    PeerState::Open { .. } => Ok(true),
+                    _ => Err(io::ErrorKind::Other.into()),
                 }
-                Ok(true)
+            }
+            Ok(Shaken::Deferred(_)) => {
+                // Put off once only: a session putting it off again
+                // never checks its peer.
+                let kind = ErrorKind::SslConnectError;
+                let kind = cx.fails(kind, format_args!("internal: a handshake put off twice"));
+                *peer_state = PeerState::Failed(kind);
+                Err(io::ErrorKind::Other.into())
             }
             Err(kind) => {
-                *deferral = Deferral::Failed(kind);
+                *peer_state = PeerState::Failed(kind);
                 Err(io::ErrorKind::Other.into())
             }
         }
@@ -164,7 +203,7 @@ impl fmt::Debug for TlsLayer {
             .field("early", &self.early.len())
             .field("peer", &self.peer)
             .field("filter", &self.filter)
-            .field("deferral", &self.deferral)
+            .field("peer_state", &self.peer_state)
             .finish_non_exhaustive()
     }
 }
@@ -173,20 +212,30 @@ impl Part<Below<'_>> for TlsLayer {
     /// A handshake the session puts off is done as far as the connection
     /// goes: it goes on as the connection is used.
     fn connect(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
-        if let Deferral::Awaiting { .. } = self.deferral {
-            return Ok(Handshake::Done);
+        match self.peer_state {
+            PeerState::Shaking => {}
+            PeerState::Awaiting { .. } | PeerState::Going { .. } | PeerState::Open { .. } => {
+                return Ok(Handshake::Done);
+            }
+            PeerState::Failed(kind) => return Err(kind),
         }
         let (session, mut io) = self.parts(cx, below);
-        let shaken = session.handshake(&mut io)?;
-        if shaken == Handshake::Done {
-            self.connected = true;
-            if let Some(deferred) = self.session.deferred() {
-                self.deferral = Deferral::Awaiting {
+        match session.handshake(&mut io)? {
+            Shaken::Waiting => Ok(Handshake::Waiting),
+            Shaken::Deferred(deferred) => {
+                self.peer_state = PeerState::Awaiting {
                     most: deferred.most,
                 };
+                Ok(Handshake::Done)
+            }
+            Shaken::Done(checked) => {
+                self.peer_state = opened(cx, &self.peer, checked, None);
+                match self.peer_state {
+                    PeerState::Failed(kind) => Err(kind),
+                    _ => Ok(Handshake::Done),
+                }
             }
         }
-        Ok(shaken)
     }
 
     /// What the session waits for replaces what the transfer wants
@@ -215,7 +264,7 @@ impl Part<Below<'_>> for TlsLayer {
     /// (`Curl_conn_data_pending`): what its handshake fed the session is
     /// no input a read could give yet.
     fn data_pending(&self, below: Below<'_>) -> bool {
-        if !self.connected {
+        if !self.peer_state.connected() {
             return below.data_pending();
         }
         !self.early.is_empty() || self.session.pending() || below.data_pending()
@@ -250,15 +299,15 @@ impl Part<Below<'_>> for TlsLayer {
                 Some(LayerAnswer::TlsWaits(self.session.waits()))
             }
             LayerQuery::TlsWaits | LayerQuery::ProxyTlsWaits => None,
-            LayerQuery::TlsDeferred if origin => match self.deferral {
-                Deferral::Awaiting { .. } | Deferral::Going { .. } => {
+            LayerQuery::TlsDeferred if origin => match self.peer_state {
+                PeerState::Awaiting { .. } | PeerState::Going { .. } => {
                     Some(LayerAnswer::TlsDeferred)
                 }
-                Deferral::None | Deferral::Skipping { .. } | Deferral::Failed(_) => None,
+                PeerState::Shaking | PeerState::Open { .. } | PeerState::Failed(_) => None,
             },
             LayerQuery::TlsDeferred | LayerQuery::Tunnel => None,
-            LayerQuery::Failure => match self.deferral {
-                Deferral::Failed(kind) => Some(LayerAnswer::Failure(kind)),
+            LayerQuery::Failure => match self.peer_state {
+                PeerState::Failed(kind) => Some(LayerAnswer::Failure(kind)),
                 _ => None,
             },
         }
@@ -273,8 +322,8 @@ impl Layer for TlsLayer {
         mut below: Below<'_>,
         buf: &mut [u8],
     ) -> io::Result<Recv> {
-        if let Deferral::Awaiting { .. } = self.deferral {
-            self.deferral = Deferral::Going { early: Vec::new() };
+        if let PeerState::Awaiting { .. } = self.peer_state {
+            self.peer_state = PeerState::Going { early: Vec::new() };
         }
         if !self.go_on(cx, below.reborrow())? {
             return Ok(Recv::WouldBlock);
@@ -293,7 +342,7 @@ impl Layer for TlsLayer {
         mut below: Below<'_>,
         bytes: &[u8],
     ) -> io::Result<Sent> {
-        if let Deferral::Awaiting { most } = self.deferral {
+        if let PeerState::Awaiting { most } = self.peer_state {
             let n = bytes.len().min(most);
             let mut early = Vec::new();
             early
@@ -303,13 +352,15 @@ impl Layer for TlsLayer {
                 let line = format_args!("ssl_cf_set_earlydata(len={n}) -> {n}");
                 cx.of(self.filter, line);
             }
-            self.deferral = Deferral::Going { early };
+            self.peer_state = PeerState::Going { early };
         }
         if !self.go_on(cx, below.reborrow())? {
             return Ok(Sent::WouldBlock);
         }
         let mut skipped = 0;
-        if let Deferral::Skipping { early, at } = &mut self.deferral {
+        if let PeerState::Open { skip, .. } = &mut self.peer_state
+            && let Some((early, at)) = skip
+        {
             let left = &early[*at..];
             let n = left.len().min(bytes.len());
             assert!(
@@ -319,7 +370,7 @@ impl Layer for TlsLayer {
             *at += n;
             skipped = n;
             if *at == early.len() {
-                self.deferral = Deferral::None;
+                *skip = None;
             }
         }
         let skip = NonZeroUsize::new(skipped);
@@ -375,11 +426,14 @@ mod tests {
 
     /// A session that holds bytes, or not, waits as it is told, and has
     /// its handshake done or not.
-    struct Holding(bool, TlsWait, Handshake);
+    struct Holding(bool, TlsWait, bool);
 
     impl TlsSession for Holding {
-        fn handshake(&mut self, _: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-            Ok(self.2)
+        fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+            Ok(match self.2 {
+                true => Shaken::Done(Checked::testing(io)),
+                false => Shaken::Waiting,
+            })
         }
         fn recv(&mut self, _: &mut TlsIo<'_>, _: &mut [u8]) -> io::Result<Recv> {
             Ok(Recv::WouldBlock)
@@ -438,7 +492,7 @@ mod tests {
             assert!(shaken.is_ok());
             (before, top.data_pending(Below::new(rest, &*socket)))
         };
-        let done = Handshake::Done;
+        let done = true;
         assert_eq!(
             pending(Holding(false, TlsWait::Nothing, done), b""),
             (false, false)
@@ -451,12 +505,12 @@ mod tests {
             pending(Holding(false, TlsWait::Nothing, done), b"early"),
             (false, true)
         );
-        let shaking = Holding(true, TlsWait::Recv, Handshake::Waiting);
+        let shaking = Holding(true, TlsWait::Recv, false);
         assert_eq!(pending(shaking, b"early"), (false, false));
         let waits = |w| {
             let peer = crate::tls::SessionPeer::testing();
             let layer = TlsLayer::boxed(
-                try_box(Holding(false, w, Handshake::Done)).unwrap(),
+                try_box(Holding(false, w, true)).unwrap(),
                 Vec::new(),
                 peer,
                 crate::tls::OwnSessions::default(),
@@ -485,21 +539,18 @@ mod tests {
     }
 
     impl TlsSession for Deferring {
-        fn handshake(&mut self, _: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-            Ok(Handshake::Done)
-        }
-        fn deferred(&self) -> Option<crate::tls::Deferred> {
-            let alpn = crate::tls::Chosen::Http11;
-            (!self.going).then_some(crate::tls::Deferred {
+        fn handshake(&mut self, _: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+            assert!(!self.going, "a handshake put off goes on early");
+            Ok(Shaken::Deferred(crate::tls::Deferred {
                 most: self.most,
-                alpn,
-            })
+                alpn: crate::tls::Chosen::Http11,
+            }))
         }
         fn handshake_early(
             &mut self,
-            _: &mut TlsIo<'_>,
+            io: &mut TlsIo<'_>,
             early: &[u8],
-        ) -> Result<Handshake, ErrorKind> {
+        ) -> Result<Shaken, ErrorKind> {
             self.going = true;
             if let Some(given) = &self.given {
                 assert_eq!(given, early, "given the same bytes each call");
@@ -508,7 +559,7 @@ mod tests {
             if self.fails {
                 return Err(ErrorKind::SslConnectError);
             }
-            Ok(Handshake::Done)
+            Ok(Shaken::Done(Checked::testing(io)))
         }
         fn early_accepted(&self) -> bool {
             self.takes
@@ -711,5 +762,96 @@ mod tests {
             assert!(layer.recv(cx, below, &mut out).is_err());
             assert_eq!(cx.0, None, "nothing told of a handshake that failed");
         });
+    }
+
+    /// A session whose handshake is done with a check made for another
+    /// session than the layer's, or not done, and which reads and writes
+    /// as if open: neither may be read from or written to.
+    struct Unopened(Option<SessionPeer>);
+
+    impl TlsSession for Unopened {
+        fn handshake(&mut self, _: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+            Ok(match &self.0 {
+                Some(other) => Shaken::Done(Checked::testing_for(other)),
+                None => Shaken::Waiting,
+            })
+        }
+        fn recv(&mut self, _: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+            buf[0] = b'x';
+            Ok(Recv::Data(NonZeroUsize::MIN))
+        }
+        fn send(&mut self, _: &mut TlsIo<'_>, _: &[u8]) -> io::Result<Sent> {
+            Ok(Sent::Bytes(NonZeroUsize::MIN))
+        }
+        fn shutdown(
+            &mut self,
+            _: &mut TlsIo<'_>,
+            _: crate::tls::Goodbye,
+        ) -> Result<Handshake, ErrorKind> {
+            Ok(Handshake::Done)
+        }
+        fn waits(&self) -> TlsWait {
+            TlsWait::Nothing
+        }
+        fn pending(&self) -> bool {
+            false
+        }
+        fn channel_binding(
+            &self,
+            _: &mut dyn crate::tls::BindingNotes,
+        ) -> Result<Option<Vec<u8>>, ErrorKind> {
+            Ok(None)
+        }
+    }
+
+    /// Connect the layer over `session` once, then read and write
+    /// through it: what the connect gave, and whether the read or the
+    /// write reached the session.
+    fn used(session: Unopened) -> (Result<Handshake, ErrorKind>, bool, bool) {
+        let clock = ManualClock::new().unwrap();
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+        let mut net = FakeNet::new(clock)
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, Conversation::new(b"", false));
+        let socket = crate::conn::io::dial(&mut net, at);
+        let mut layers = [TlsLayer::boxed(
+            try_box(session).unwrap(),
+            Vec::new(),
+            SessionPeer::testing(),
+            OwnSessions::default(),
+            Component::Ssl,
+        )
+        .unwrap()];
+        let (top, rest) = layers.split_last_mut().unwrap();
+        let mut cx = Noting(None);
+        let shaken = top.connect(&mut cx, Below::new(rest, &*socket));
+        let mut out = [0u8; 4];
+        let read = top.recv(&mut cx, Below::new(rest, &*socket), &mut out);
+        let written = top.send(&mut cx, Below::new(rest, &*socket), b"ab");
+        (
+            shaken,
+            matches!(read, Ok(Recv::Data(_))),
+            matches!(written, Ok(Sent::Bytes(_))),
+        )
+    }
+
+    /// A check made for another session's identity fails the handshake
+    /// it ends, and the session is neither read from nor written to; nor
+    /// is one whose handshake is not done.
+    #[test]
+    fn only_a_session_checked_for_its_own_peer_is_read_or_written() {
+        let other = SessionPeer::testing();
+        let (shaken, read, written) = used(Unopened(Some(other)));
+        assert_eq!(shaken, Err(ErrorKind::PeerFailedVerification));
+        assert!(
+            !read && !written,
+            "a session checked for another is not used"
+        );
+        let (shaken, read, written) = used(Unopened(None));
+        assert_eq!(shaken, Ok(Handshake::Waiting));
+        assert!(
+            !read && !written,
+            "a session still shaking hands is not used"
+        );
     }
 }

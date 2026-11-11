@@ -89,7 +89,9 @@ fn shake_with(
     let mut s = session(lib, id, Alpn::H2Http11);
     let mut kept = Kept::new();
     let wire = Wire::with(reply);
-    let r = with_io(&mut s, id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     let calls = lib.w().calls.clone();
     (r, kept.notes.0, calls)
 }
@@ -127,7 +129,9 @@ fn a_handshake_goes_as_rustls_c_s() {
     let mut s = session(lib, &id, Alpn::H2Http11);
     let mut kept = Kept::new();
     let wire = Wire::with(b"server-hello");
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     let notes = &kept.notes.0;
     assert_eq!(r, Ok(Handshake::Done), "{notes:#?}");
     let calls = lib.w().calls.clone();
@@ -171,7 +175,9 @@ fn a_handshake_goes_as_rustls_c_s() {
     assert_eq!(lines(notes, "trace: "), traced, "{notes:#?}");
     assert_eq!(s.chosen(), Some(Chosen::H2));
     // Done, it stays done.
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(lib.w().calls.len(), want.len());
 }
@@ -665,7 +671,9 @@ fn the_configuration_and_the_connection_fail_as_c_s() {
     let mut s = session_to(lib, &id, b"::1", TlsPeerKind::Ipv6, Alpn::None, None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert!(lib.w().calls.contains(&"connect(::1)".to_owned()));
     // No offer, no ALPN set; what the peer chose is still said.
@@ -689,7 +697,9 @@ fn the_handshake_waits_and_fails_as_c_s() {
         room: Some(0),
         ..Wire::default()
     };
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Waiting));
     assert_eq!(s.waits(), TlsWait::Send);
     assert!(has(&kept.notes.0, "trace: cf_send: EAGAIN after 0 bytes"));
@@ -697,7 +707,9 @@ fn the_handshake_waits_and_fails_as_c_s() {
     assert!(has(&kept.notes.0, "trace: writing would block"));
     // Then the reply would.
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Waiting));
     assert_eq!(s.waits(), TlsWait::Recv);
     assert!(has(&kept.notes.0, "trace: cr_connect, state=2"));
@@ -713,11 +725,15 @@ fn the_handshake_waits_and_fails_as_c_s() {
         room: Some(0),
         ..Wire::with(b"reply")
     };
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Waiting));
     assert_eq!(s.waits(), TlsWait::Send);
     let wire = Wire::default();
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     assert_eq!(s.waits(), TlsWait::Nothing);
     assert_eq!(wire.sent(), b"finished");
@@ -741,7 +757,9 @@ fn the_handshake_s_failures_are_c_s() {
         let id = plain();
         let mut s = session(lib, &id, Alpn::None);
         let mut kept = Kept::new();
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         (
             r,
             lines(&kept.notes.0, "fail: ")
@@ -831,7 +849,9 @@ fn reads_are_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
     assert_eq!(r, Ok(Handshake::Done));
     // The records of the handshake left the library with plain text
     // pending, as C's flag says.
@@ -870,7 +890,10 @@ fn reads_are_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     lib.w().read_fails = Some(Plain::Empty);
     let closed = Wire {
         closed: true,
@@ -910,7 +933,10 @@ fn sends_are_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     let wire = Wire::default();
     let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"GET /"));
     assert_eq!(sent.unwrap(), Sent::Bytes(5.try_into().unwrap()));
@@ -994,7 +1020,10 @@ fn a_shorter_send_after_a_block_counts_what_was_taken() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     let blocked = Wire {
         room: Some(0),
         ..Wire::default()
@@ -1024,7 +1053,10 @@ fn the_goodbye_is_c_s() {
     });
     assert_eq!(r, Ok(Handshake::Done));
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     let blocked = Wire {
         room: Some(0),
         ..Wire::default()
@@ -1064,7 +1096,10 @@ fn the_goodbye_is_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     lib.w()
         .processes
         .push_back(vec![Ev::Plain(b"late"), Ev::CloseNotify]);
@@ -1087,7 +1122,10 @@ fn the_goodbye_is_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     lib.w().read_fails = Some(Plain::Failed(Code::Io));
     let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
         s.shutdown(io, Goodbye::Mutual)
@@ -1104,7 +1142,10 @@ fn the_goodbye_is_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     lib.w().plain = vec![b'z'; 20 * 1024];
     let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
         s.shutdown(io, Goodbye::Mutual)
@@ -1116,7 +1157,10 @@ fn the_goodbye_is_c_s() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     let refusing = Wire {
         refuses: true,
         ..Wire::default()
@@ -1147,7 +1191,10 @@ fn the_key_log_is_given_while_open() {
     );
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     // No `SSLKEYLOGFILE` in the tests' environment: it stays closed.
     assert!(lib.w().made("key_log").is_empty());
     let path = std::env::temp_dir().join(format!("curl-rustls-keylog-{}", std::process::id()));
@@ -1161,7 +1208,10 @@ fn the_key_log_is_given_while_open() {
         Alpn::None,
         Some(log.clone()),
     );
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     let w = lib.w();
     assert_eq!(w.made("key_log"), ["key_log"]);
     let given = w.key_log.as_ref().unwrap();
@@ -1182,7 +1232,10 @@ fn the_library_s_objects_are_not_handed_out() {
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
     assert_eq!(s.native(), None);
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     assert_eq!(s.native(), None);
 }
 
@@ -1321,7 +1374,10 @@ fn a_full_read_leaves_the_text_pending() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     lib.w().plain = b"abcd".to_vec();
     let mut buf = [0u8; 4];
     let got = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.recv(io, &mut buf));
@@ -1339,7 +1395,10 @@ fn a_send_blocked_part_way_counts_what_went() {
     let mut s = session(lib, &id, Alpn::None);
     let mut kept = Kept::new();
     let wire = Wire::with(b"x");
-    with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io)).unwrap();
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
     // Two records waiting, the second blocked.
     {
         let mut w = lib.w();
@@ -1417,7 +1476,9 @@ fn a_chain_past_c_s_most_fails() {
             ..ContextHandler::default()
         });
         let wire = Wire::with(b"x");
-        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.handshake(io));
+        let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
         let failed: Vec<String> = lines(&kept.notes.0, "fail: ")
             .iter()
             .map(|s| s.to_string())

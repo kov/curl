@@ -8,7 +8,19 @@ use crate::OutOfMemory;
 
 /// Move `value` to the heap, or fail if the allocation does.
 pub fn try_box<T>(value: T) -> Result<Box<T>, OutOfMemory> {
-    try_box_or_back(value).map_err(|_| OutOfMemory)
+    match try_box_or_back(value) {
+        Ok(boxed) => Ok(boxed),
+        Err(value) => Err(dropped(value)),
+    }
+}
+
+/// The value no allocation took, dropped. Cold and out of line, so that
+/// its drop, inlined, does not sit in the code around each box made.
+#[cold]
+#[inline(never)]
+fn dropped<T>(value: T) -> OutOfMemory {
+    drop(value);
+    OutOfMemory
 }
 
 /// Move `value` to the heap, or give it back if the allocation fails.

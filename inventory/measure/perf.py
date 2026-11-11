@@ -416,10 +416,31 @@ def machine():
     virt = subprocess.run(["systemd-detect-virt"], capture_output=True,
                           text=True, check=False).stdout.strip()
     return {"kernel": platform.release(), "machine": platform.machine(),
-            "cpus": os.cpu_count(), "virtualization": virt or None,
+            "cpus": os.cpu_count(),
+            "virtualization": None if virt in ("", "none") else virt,
             "memory": pathlib.Path("/proc/meminfo").read_text()
             .splitlines()[0],
             "loadavg-before": loadavg()}
+
+
+def fastest_cpus():
+    """On a processor whose cores differ in speed (a hybrid one, as
+    banana's Zen 5 and Zen 5c), the CPUs of the fastest kind, or None
+    when all are alike. A run left to the scheduler times each sample on
+    whichever kind it lands on, and its spread swamps the legs'
+    difference."""
+    if MACOS:
+        return None
+    speeds = {}
+    for cpu in os.sched_getaffinity(0):
+        f = pathlib.Path(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/"
+                         "cpuinfo_max_freq")
+        if f.exists():
+            speeds[cpu] = int(f.read_text())
+    if len(set(speeds.values())) < 2:
+        return None
+    top = max(speeds.values())
+    return sorted(cpu for cpu, speed in speeds.items() if speed == top)
 
 
 def parse_perf_output(text):
@@ -533,12 +554,17 @@ def run():
             shutil.rmtree(leg.results)
         leg.results.mkdir(parents=True)
     tests = json.loads((common.INVENTORY / "tests.json").read_text())["data"]
+    # The clients, the servers and the benchmarks all inherit this.
+    fast = fastest_cpus()
+    if fast:
+        os.sched_setaffinity(0, fast)
     meta = {"started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "machine": machine(), "samples": SAMPLES,
             "scorecard-runs": SCORECARD_RUNS,
             "scorecard-args": SCORECARD_ARGS,
             "url-dataset": {k: str(v) for k, v in URL_DATASET.items()},
-            "quic": quic(), "c-commit": commit, "commit": rust}
+            "quic": quic(), "c-commit": commit, "commit": rust,
+            "cpus-used": fast}
     measure_perf([leg for leg in LEGS if leg.config.perf],
                  sorted(tests["perf"]))
     measure_scorecard(LEGS)
@@ -724,6 +750,7 @@ def main():
                          "finished": meta["finished"]},
             "commit": meta["commit"],
             "machine": meta["machine"],
+            "cpus-used": meta.get("cpus-used"),
             "loadavg-after": meta["loadavg-after"],
             "configs": {c.name: {"cmake-args": c.cmake,
                                  "cargo-features": list(c.features),
@@ -745,6 +772,9 @@ def main():
             f"{m['cpus']}-CPU {m['machine']} "
             f"{m['virtualization'] or 'bare-metal'} machine (kernel "
             f"{m['kernel']})")
+    if meta.get("cpus-used"):
+        host += (", on its fastest CPUs alone ("
+                 + ", ".join(map(str, meta["cpus-used"])) + ")")
     md = ["# Performance: the rewrite against C\n",
           ("Release builds, measured "
            f"{meta['started']} to {meta['finished']} on a {host}, "

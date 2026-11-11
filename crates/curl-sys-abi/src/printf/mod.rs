@@ -525,9 +525,12 @@ fn snprintf_into(
     let mut n = f(&mut sink);
     if !sink.buf.is_empty() {
         if sink.len == sink.buf.len() {
-            // Full: the last byte becomes the NUL and is not counted.
+            // Full: the last byte becomes the NUL and is not counted,
+            // unless the count was too large for an `int` (-1).
             sink.buf[sink.len - 1] = 0;
-            n -= 1;
+            if n >= 0 {
+                n -= 1;
+            }
         } else {
             sink.buf[sink.len] = 0;
         }
@@ -747,6 +750,62 @@ mod tests {
                     .into()
             )
         );
+    }
+
+    /// A precision near `INT_MAX` takes the width below what an `int`
+    /// holds once the digits, sign and prefix are taken from it: the
+    /// width is spent, and the number written with the zeros the work buffer
+    /// holds, no padding.
+    #[test]
+    fn a_precision_near_int_max_spends_the_width() {
+        let zeros = "0".repeat(324);
+        assert_eq!(
+            snprintf!(c"%#.2147483647x", 1 as c_uint),
+            (327, format!("0x{zeros}1"))
+        );
+        assert_eq!(
+            snprintf!(c"%+.2147483647d", 7 as c_int),
+            (326, format!("+{zeros}7"))
+        );
+        assert_eq!(
+            snprintf!(c"%-#.2147483647xEND", 1 as c_uint),
+            (330, format!("0x{zeros}1END"))
+        );
+        assert_eq!(
+            snprintf!(c"% #.2147483647o|", 8 as c_uint),
+            (327, format!(" {}10|", "0".repeat(323)))
+        );
+    }
+
+    /// Output past `INT_MAX` bytes has a count no `int` holds: the call
+    /// returns -1 as standard C's `printf` returns a negative value then (POSIX's
+    /// `EOVERFLOW`), output stopping there.
+    #[cfg(unix)]
+    #[test]
+    fn output_past_int_max_counts_minus_one() {
+        // SAFETY: C strings.
+        let null = unsafe { libc::fopen(c"/dev/null".as_ptr(), c"w".as_ptr()) };
+        assert!(!null.is_null());
+        // SAFETY: an open stream, and a format the arguments match.
+        let n = unsafe {
+            curl_mfprintf(
+                null.cast(),
+                c"%2147483647d%2147483647d".as_ptr(),
+                1 as c_int,
+                2 as c_int,
+            )
+        };
+        // SAFETY: the stream opened above.
+        unsafe { libc::fclose(null) };
+        assert_eq!(n, -1);
+        // One width of `INT_MAX` is counted whole.
+        // SAFETY: as above.
+        let null = unsafe { libc::fopen(c"/dev/null".as_ptr(), c"w".as_ptr()) };
+        // SAFETY: as above.
+        let n = unsafe { curl_mfprintf(null.cast(), c"%2147483647d".as_ptr(), 1 as c_int) };
+        // SAFETY: as above.
+        unsafe { libc::fclose(null) };
+        assert_eq!(n, c_int::MAX);
     }
 
     /// Formats with more segments or arguments than the room tried

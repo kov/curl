@@ -536,10 +536,13 @@ pub(crate) trait Sink {
     }
 }
 
-/// Counts output, and stops at the first refused byte.
+/// Counts output, and stops at the first refused byte, or at the first
+/// that takes the count past `INT_MAX`.
 struct Out<'a, S: Sink> {
     sink: &'a mut S,
     done: i32,
+    /// The sink took more than an `int` counts.
+    overflowed: bool,
 }
 
 /// Formatting stopped because the sink refused output.
@@ -551,18 +554,24 @@ impl<S: Sink> Out<'_, S> {
             return Ok(());
         }
         let n = self.sink.write(bytes);
-        self.done += n as i32;
+        match i32::try_from(n).ok().and_then(|n| self.done.checked_add(n)) {
+            Some(done) => self.done = done,
+            None => {
+                self.overflowed = true;
+                return Err(Stop);
+            }
+        }
         if n == bytes.len() { Ok(()) } else { Err(Stop) }
     }
 
     /// `num` copies of `byte`, none for a count of nothing or less: most
     /// conversions ask for none, which is decided where they ask.
     #[inline]
-    fn pad(&mut self, byte: u8, num: i32) -> Result<(), Stop> {
-        if num <= 0 {
-            return Ok(());
+    fn pad(&mut self, byte: u8, num: i64) -> Result<(), Stop> {
+        match usize::try_from(num) {
+            Ok(0) | Err(_) => Ok(()),
+            Ok(num) => self.pad_some(byte, num),
         }
-        self.pad_some(byte, num as usize)
     }
 
     /// `left` copies of `byte`, at least one.
@@ -588,8 +597,10 @@ const NILSTR: &[u8] = b"(nil)";
 
 fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> Result<(), Stop> {
     let flags = p.flags;
-    let mut width = p.width;
-    let mut prec = p.prec;
+    // Wider than an `int`: a width or precision near `INT_MAX`, less the
+    // digits, sign and prefix, goes below `INT_MIN`.
+    let mut width = i64::from(p.width);
+    let mut prec = i64::from(p.prec);
     let alt = flags & ALT != 0;
 
     if flags & CHAR != 0 {
@@ -650,7 +661,7 @@ fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> R
             num /= base;
         }
     }
-    let ndigits = (work.len() - w) as i32;
+    let ndigits = (work.len() - w) as i64;
     width -= ndigits;
     prec -= ndigits;
     if alt && base == 8 && prec <= 0 {
@@ -661,7 +672,7 @@ fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> R
     let mut zeros = 0;
     if prec > 0 {
         width -= prec;
-        zeros = prec.min((WORK - (work.len() - w)) as i32);
+        zeros = prec.min((WORK - (work.len() - w)) as i64);
     }
     if alt && base == 16 {
         width -= 2;
@@ -697,7 +708,7 @@ fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> R
 
 fn out_string<S: Sink>(o: &mut Out<'_, S>, p: &Props, s: Option<&[u8]>) -> Result<(), Stop> {
     let mut flags = p.flags;
-    let mut width = p.width;
+    let mut width = i64::from(p.width);
     let (s, len) = match s {
         None if p.prec == -1 || p.prec >= NILSTR.len() as i32 => {
             // Quotes are not put around (nil).
@@ -710,7 +721,9 @@ fn out_string<S: Sink>(o: &mut Out<'_, S>, p: &Props, s: Option<&[u8]>) -> Resul
         Some(s) if p.prec != -1 => (s, p.prec as usize),
         Some(s) => (s, s.len()),
     };
-    width -= i32::try_from(len).unwrap_or(i32::MAX);
+    width -= i64::try_from(len)
+        .unwrap_or(i64::MAX)
+        .min(i64::from(i32::MAX));
     if flags & ALT != 0 {
         o.run(b"\"")?;
     }
@@ -735,7 +748,7 @@ fn out_pointer<S: Sink>(o: &mut Out<'_, S>, p: &mut Props, addr: u64) -> Result<
         return out_number(o, p, addr, 0);
     }
     // The padding goes on the side opposite to the usual one, as in C.
-    let mut width = p.width - NILSTR.len() as i32;
+    let mut width = i64::from(p.width) - NILSTR.len() as i64;
     if p.flags & LEFT != 0 {
         o.pad(b' ', width)?;
         width = 0;
@@ -834,17 +847,23 @@ fn out_double<S: Sink, A: Args>(
 }
 
 /// Render `parsed` (from `fmt`) with `args` into `sink`; returns the number
-/// of bytes written, as the C functions do.
+/// of bytes written, as the C functions do, or -1 once that is more than
+/// an `int` holds, as standard C's `printf` returns a negative value then (POSIX's
+/// `EOVERFLOW`); formatting stops there.
 pub(crate) fn render<const N: usize, A: Args, S: Sink>(
     fmt: &[u8],
     parsed: &Parsed<N>,
     args: &mut A,
     sink: &mut S,
 ) -> i32 {
-    let mut o = Out { sink, done: 0 };
+    let mut o = Out {
+        sink,
+        done: 0,
+        overflowed: false,
+    };
     // Output stops at the first refused byte; the count so far stands.
     let _stopped: Result<(), Stop> = render_into(fmt, parsed, args, &mut o);
-    o.done
+    if o.overflowed { -1 } else { o.done }
 }
 
 fn render_into<const N: usize, A: Args, S: Sink>(

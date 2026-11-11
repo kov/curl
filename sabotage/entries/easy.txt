@@ -124,9 +124,9 @@ witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and
 file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi handle_tests::cleanup_goes_on_when_the_removal_fails
 --- old
-        let removed = crate::multi::remove(multi, Reach::Direct, easy);
+        let removed = crate::multi::remove(multi, reach, easy);
         assert!(easy.added().is_none(), "left its multi: {removed:?}");
 --- new
-        if crate::multi::remove(multi, Reach::Direct, easy).is_err() {
+        if crate::multi::remove(multi, reach, easy).is_err() {
             return;
         }

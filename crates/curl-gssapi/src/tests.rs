@@ -459,8 +459,9 @@ fn cached_ticket_in_a_child() {
     let mut ctx = sys::Ctx::new();
     let init = ctx.init(None, &name, KRB5_OID, sys::GSS_C_REPLAY_FLAG, None, None);
     assert_eq!(init.major, sys::GSS_S_COMPLETE);
-    assert_eq!(ctx.mech_is(KRB5_OID), Ok(true));
-    assert_eq!(ctx.mech_is(NTLMSSP_OID), Ok(false));
+    let made = ctx.made().expect("a first step makes the context");
+    assert_eq!(made.mech_is(KRB5_OID), Ok(true));
+    assert_eq!(made.mech_is(NTLMSSP_OID), Ok(false));
     // SPNEGO sends Kerberos's token in its own, and not NTLM's.
     let mut context = GSSAPI
         .context(HTTP_AT_LOCALHOST, Mech::Spnego, MUTUAL)

@@ -7,7 +7,7 @@
 #![allow(unsafe_code)]
 
 use core::ffi::{c_int, c_void};
-use core::ptr;
+use core::ptr::{self, NonNull};
 
 /// `OM_uint32`.
 type OmUint32 = u32;
@@ -360,8 +360,9 @@ pub(crate) enum NameKind {
     Native,
 }
 
-/// An imported name, released with it.
-pub(crate) struct Name(*mut GssNameStruct);
+/// An imported name, released with it: one the library made, never
+/// `GSS_C_NO_NAME`.
+pub(crate) struct Name(NonNull<GssNameStruct>);
 
 // SAFETY: a name is the library's object, used by one owner at a time;
 // MIT krb5's names are not tied to the thread that made them.
@@ -382,10 +383,14 @@ impl Name {
         // which the library copies; `name` receives a new name or stays
         // NULL.
         let major = unsafe { gss_import_name(&mut minor, &mut buffer, kind, &mut name) };
-        if is_error(major) || name.is_null() {
-            return Err((major, minor));
+        match NonNull::new(name) {
+            Some(name) if !is_error(major) => Ok(Name(name)),
+            // One made anyway is released with it.
+            made => {
+                drop(made.map(Name));
+                Err((major, minor))
+            }
         }
-        Ok(Name(name))
     }
 
     /// The name as the library displays it (`gss_display_name`).
@@ -394,7 +399,8 @@ impl Name {
         let mut minor = 0;
         // SAFETY: `self.0` is a live name; `out` receives a buffer the
         // library allocates, released with `out`.
-        let major = unsafe { gss_display_name(&mut minor, self.0, &mut out.0, ptr::null_mut()) };
+        let major =
+            unsafe { gss_display_name(&mut minor, self.0.as_ptr(), &mut out.0, ptr::null_mut()) };
         if is_error(major) {
             return Err((major, minor));
         }
@@ -405,8 +411,9 @@ impl Name {
 impl Drop for Name {
     fn drop(&mut self) {
         let mut minor = 0;
+        let mut name = self.0.as_ptr();
         // SAFETY: `self.0` came from the library and is released once.
-        unsafe { gss_release_name(&mut minor, &mut self.0) };
+        unsafe { gss_release_name(&mut minor, &mut name) };
     }
 }
 
@@ -418,7 +425,7 @@ impl Drop for Name {
         reason = "acquired only where SPNEGO's mechanisms can be narrowed"
     )
 )]
-pub(crate) struct Cred(*mut GssCredIdStruct);
+pub(crate) struct Cred(NonNull<GssCredIdStruct>);
 
 // SAFETY: as for `Name`.
 unsafe impl Send for Cred {}
@@ -444,10 +451,14 @@ impl Cred {
                 ptr::null_mut(),
             )
         };
-        if is_error(major) || cred.is_null() {
-            return Err((major, minor));
+        match NonNull::new(cred) {
+            Some(cred) if !is_error(major) => Ok(Cred(cred)),
+            // Ones made anyway are released with them.
+            made => {
+                drop(made.map(Cred));
+                Err((major, minor))
+            }
         }
-        Ok(Cred(cred))
     }
 
     #[cfg(gss_set_neg_mechs)]
@@ -457,7 +468,7 @@ impl Cred {
         let mut minor = 0;
         // SAFETY: both are live objects of the library, which only reads
         // the set.
-        let major = unsafe { gss_set_neg_mechs(&mut minor, self.0, set.0) };
+        let major = unsafe { gss_set_neg_mechs(&mut minor, self.0.as_ptr(), set.0.as_ptr()) };
         if is_error(major) {
             return Err((major, minor));
         }
@@ -468,14 +479,15 @@ impl Cred {
 impl Drop for Cred {
     fn drop(&mut self) {
         let mut minor = 0;
+        let mut cred = self.0.as_ptr();
         // SAFETY: `self.0` came from the library and is released once.
-        unsafe { gss_release_cred(&mut minor, &mut self.0) };
+        unsafe { gss_release_cred(&mut minor, &mut cred) };
     }
 }
 
 #[cfg(gss_set_neg_mechs)]
 /// A set of OIDs the library made, released with it.
-pub(crate) struct OidSet(*mut GssOidSetDesc);
+pub(crate) struct OidSet(NonNull<GssOidSetDesc>);
 
 #[cfg(gss_set_neg_mechs)]
 impl OidSet {
@@ -485,10 +497,13 @@ impl OidSet {
         let mut minor = 0;
         // SAFETY: `set` receives a new set or stays NULL.
         let major = unsafe { gss_indicate_mechs(&mut minor, &mut set) };
-        if is_error(major) || set.is_null() {
-            return Err((major, minor));
+        match NonNull::new(set) {
+            Some(set) if !is_error(major) => Ok(OidSet(set)),
+            made => {
+                drop(made.map(OidSet));
+                Err((major, minor))
+            }
         }
-        Ok(OidSet(set))
     }
 
     /// A copy of the set without the OID `left_out`
@@ -498,19 +513,24 @@ impl OidSet {
         let mut minor = 0;
         // SAFETY: `set` receives a new empty set or stays NULL.
         let major = unsafe { gss_create_empty_oid_set(&mut minor, &mut set) };
-        if is_error(major) || set.is_null() {
-            return Err((major, minor));
-        }
-        let mut copy = OidSet(set);
+        let mut copy = match NonNull::new(set) {
+            Some(set) if !is_error(major) => OidSet(set),
+            made => {
+                drop(made.map(OidSet));
+                return Err((major, minor));
+            }
+        };
         for member in self.members() {
             if member.0 == left_out {
                 continue;
             }
             let mut minor = 0;
+            let mut set = copy.0.as_ptr();
             // SAFETY: `member.1` points into `self`'s live elements, which
             // the library copies into `copy`'s set, moving the set if it
             // must; a failure leaves the member out, as C ignores it.
-            unsafe { gss_add_oid_set_member(&mut minor, member.1, &mut copy.0) };
+            unsafe { gss_add_oid_set_member(&mut minor, member.1, &mut set) };
+            copy.0 = NonNull::new(set).expect("the library keeps a set it adds to");
         }
         Ok(copy)
     }
@@ -525,7 +545,7 @@ impl OidSet {
     fn members(&self) -> impl Iterator<Item = (&[u8], *mut GssOidDesc)> + '_ {
         // SAFETY: the set is the library's, live while `self` is:
         // `elements` points to `count` descriptors.
-        let set = unsafe { &*self.0 };
+        let set = unsafe { self.0.as_ref() };
         (0..set.count).map(move |i| {
             // SAFETY: `i` is below `count`.
             let desc = unsafe { set.elements.add(i) };
@@ -540,8 +560,9 @@ impl OidSet {
 impl Drop for OidSet {
     fn drop(&mut self) {
         let mut minor = 0;
+        let mut set = self.0.as_ptr();
         // SAFETY: `self.0` came from the library and is released once.
-        unsafe { gss_release_oid_set(&mut minor, &mut self.0) };
+        unsafe { gss_release_oid_set(&mut minor, &mut set) };
     }
 }
 
@@ -553,20 +574,25 @@ pub(crate) struct Init {
     pub(crate) flags: u32,
 }
 
-/// A security context, NULL until its first step makes one; deleted with
-/// it.
-pub(crate) struct Ctx(*mut GssCtxIdStruct);
+/// A security context: none until a step makes one, and then the one
+/// the library made, which the calls on a context take.
+pub(crate) struct Ctx(Option<MadeCtx>);
+
+/// A security context the library made, never `GSS_C_NO_CONTEXT`;
+/// deleted with it.
+pub(crate) struct MadeCtx(NonNull<GssCtxIdStruct>);
 
 // SAFETY: as for `Name`.
-unsafe impl Send for Ctx {}
+unsafe impl Send for MadeCtx {}
 
 impl Ctx {
     pub(crate) fn new() -> Ctx {
-        Ctx(ptr::null_mut())
+        Ctx(None)
     }
 
-    pub(crate) fn is_made(&self) -> bool {
-        !self.0.is_null()
+    /// The context, once a step made it.
+    pub(crate) fn made(&self) -> Option<&MadeCtx> {
+        self.0.as_ref()
     }
 
     /// One step (`gss_init_sec_context`), with `cred` or the default
@@ -593,7 +619,10 @@ impl Ctx {
         let mut out = Buffer::new();
         let mut minor = 0;
         let mut ret_flags = 0;
-        // SAFETY: the name and credentials are live; `self.0` is NULL or a
+        // The library updates a context in place, or makes one, or
+        // deletes one: what it leaves is the context from here on.
+        let mut ctx = self.0.take().map_or(ptr::null_mut(), MadeCtx::into_raw);
+        // SAFETY: the name and credentials are live; `ctx` is NULL or a
         // context the library made, which it updates in place; the OID,
         // the bindings and the input token point to memory that outlives
         // the call and that the library only reads; `out` receives a
@@ -601,9 +630,9 @@ impl Ctx {
         let major = unsafe {
             gss_init_sec_context(
                 &mut minor,
-                cred.map_or(ptr::null_mut(), |c| c.0),
-                &mut self.0,
-                name.0,
+                cred.map_or(ptr::null_mut(), |c| c.0.as_ptr()),
+                &mut ctx,
+                name.0.as_ptr(),
                 &mut mech,
                 flags,
                 0,
@@ -615,12 +644,22 @@ impl Ctx {
                 ptr::null_mut(),
             )
         };
+        self.0 = NonNull::new(ctx).map(MadeCtx);
         Init {
             major,
             minor,
             token: out,
             flags: ret_flags,
         }
+    }
+}
+
+impl MadeCtx {
+    /// The library's pointer, which the context gives up.
+    fn into_raw(self) -> *mut GssCtxIdStruct {
+        let raw = self.0.as_ptr();
+        core::mem::forget(self);
+        raw
     }
 
     /// Whether the context's mechanism is the OID `mech`
@@ -633,7 +672,7 @@ impl Ctx {
         let major = unsafe {
             gss_inquire_context(
                 &mut minor,
-                self.0,
+                self.0.as_ptr(),
                 ptr::null_mut(),
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -664,7 +703,7 @@ impl Ctx {
         let major = unsafe {
             gss_inquire_context(
                 &mut minor,
-                self.0,
+                self.0.as_ptr(),
                 &mut name,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -674,12 +713,14 @@ impl Ctx {
                 ptr::null_mut(),
             )
         };
-        let name = Name(name);
-        if is_error(major) || name.0.is_null() {
-            // A name made anyway is released with `name`.
-            return Err((major, minor));
+        match NonNull::new(name) {
+            Some(name) if !is_error(major) => Ok(Name(name)),
+            // A name made anyway is released with it.
+            made => {
+                drop(made.map(Name));
+                Err((major, minor))
+            }
         }
-        Ok(name)
     }
 
     /// `message` protected for integrity only (`gss_wrap`).
@@ -692,7 +733,7 @@ impl Ctx {
         let major = unsafe {
             gss_wrap(
                 &mut minor,
-                self.0,
+                self.0.as_ptr(),
                 0,
                 GSS_C_QOP_DEFAULT,
                 &mut message,
@@ -715,7 +756,7 @@ impl Ctx {
         let major = unsafe {
             gss_unwrap(
                 &mut minor,
-                self.0,
+                self.0.as_ptr(),
                 &mut token,
                 &mut out.0,
                 ptr::null_mut(),
@@ -729,14 +770,13 @@ impl Ctx {
     }
 }
 
-impl Drop for Ctx {
+impl Drop for MadeCtx {
     fn drop(&mut self) {
-        if !self.0.is_null() {
-            let mut minor = 0;
-            // SAFETY: `self.0` came from the library and is deleted once;
-            // no token is asked for.
-            unsafe { gss_delete_sec_context(&mut minor, &mut self.0, ptr::null_mut()) };
-        }
+        let mut minor = 0;
+        let mut ctx = self.0.as_ptr();
+        // SAFETY: `self.0` came from the library and is deleted once; no
+        // token is asked for.
+        unsafe { gss_delete_sec_context(&mut minor, &mut ctx, ptr::null_mut()) };
     }
 }
 

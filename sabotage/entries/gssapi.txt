@@ -99,3 +99,11 @@ witness: curl-tool operate::tests::writes_gss_options_as_c
             methods & !options::AuthMethods::NEGOTIATE
 --- new
             methods
+
+=== a step forgets the context the library made
+file: crates/curl-gssapi/src/sys.rs
+witness: curl-gssapi tests::the_library_s_contexts_from_a_cached_ticket
+--- old
+        self.0 = NonNull::new(ctx).map(MadeCtx);
+--- new
+        self.0 = NonNull::new(ctx).map(MadeCtx).filter(|_| false);

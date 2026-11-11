@@ -240,7 +240,10 @@ impl GssContext for Context {
                 if sys::is_error(out.major) {
                     return Err(init((out.major, out.minor)));
                 }
-                let ntlm = |ctx: &sys::Ctx| ctx.is_made() && ctx.mech_is(NTLMSSP_OID) == Ok(true);
+                let ntlm = |ctx: &sys::Ctx| {
+                    ctx.made()
+                        .is_some_and(|c| c.mech_is(NTLMSSP_OID) == Ok(true))
+                };
                 (out.major, out.flags, ntlm(ctx), Token::Library(out.token))
             }
             #[cfg(feature = "debug-hooks")]
@@ -323,9 +326,13 @@ impl Context {
     /// The library's context, for the calls the stub has no stand-in
     /// for: a stub's context fails them as one the library does not
     /// know.
-    fn library_ctx(&self, call: GssCall) -> Result<&sys::Ctx, GssFailure> {
+    fn library_ctx(&self, call: GssCall) -> Result<&sys::MadeCtx, GssFailure> {
+        if let Some(Backend::Library { ctx, .. }) = &self.backend
+            && let Some(made) = ctx.made()
+        {
+            return Ok(made);
+        }
         match &self.backend {
-            Some(Backend::Library { ctx, .. }) if ctx.is_made() => Ok(ctx),
             #[cfg(feature = "debug-hooks")]
             Some(Backend::Stub { .. }) => Err(GssFailure::status(
                 call,

@@ -4703,6 +4703,115 @@ fn a_forwarded_ftp_url_after_http_on_its_port_carries_no_credentials() {
     assert!(!second.contains("user"), "{second}");
 }
 
+/// A request handed to a proxy carries the proxy's own lines after the
+/// origin's, and after a redirect to another host leaves out the
+/// `Authorization:` and `Cookie:` among them as it does the origin's: the
+/// one gate decides for both lists (`Curl_add_custom_headers` with both
+/// lists, `Curl_auth_allowed_to_host`), as the C tool sends them with
+/// `-x --proxy-header ... -H ... -L`.
+#[test]
+fn a_forwarded_request_s_proxy_headers_pass_the_origin_s_gate() {
+    let moved: &[u8] =
+        b"HTTP/1.1 302 Moved\r\nLocation: http://second.example/b\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[moved, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://first.example/a")).unwrap();
+        o.http.follow = Follow::All;
+        o.http.headers = UserHeaders::new([&b"X-Origin: 1"[..]]).unwrap();
+        let lines: [&[u8]; 3] = [
+            b"Cookie: pcrumb=1",
+            b"Authorization: Bearer p",
+            b"X-Proxy: 1",
+        ];
+        o.proxy.make_mut().unwrap().headers = UserHeaders::new(lines).unwrap();
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let (first, second) = text.split_once("\r\n\r\n").unwrap();
+    assert!(
+        first.ends_with(
+            "\r\nX-Origin: 1\r\nCookie: pcrumb=1\r\nAuthorization: Bearer p\r\nX-Proxy: 1"
+        ),
+        "{first}"
+    );
+    assert!(
+        second.starts_with("GET http://second.example/b HTTP/1.1\r\n"),
+        "{second}"
+    );
+    assert!(
+        second.ends_with("\r\nX-Origin: 1\r\nX-Proxy: 1\r\n\r\n"),
+        "{second}"
+    );
+}
+
+/// A tunnel's `CONNECT` carries the proxy's own lines and none of the
+/// origin's, which go to the origin through the tunnel, unless the
+/// application unifies the two (`CURLHEADER_SEPARATE`, the default).
+#[test]
+fn a_default_connect_sends_no_origin_header() {
+    for unified in [false, true] {
+        let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(b"http://origin.example/a")).unwrap();
+            o.http.headers = UserHeaders::new([&b"X-Origin: 1"[..]]).unwrap();
+            let proxy = o.proxy.make_mut().unwrap();
+            proxy.tunnel = true;
+            proxy.unified_headers = unified;
+            proxy.headers = UserHeaders::new([&b"X-Proxy: 1"[..]]).unwrap();
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        let (connect, get) = text.split_once("\r\n\r\n").unwrap();
+        assert!(
+            connect.starts_with("CONNECT origin.example:80 "),
+            "{connect}"
+        );
+        assert_eq!(connect.contains("\r\nX-Origin: 1"), unified, "{connect}");
+        assert_eq!(connect.contains("\r\nX-Proxy: 1"), !unified, "{connect}");
+        assert!(get.contains("\r\nX-Origin: 1\r\n"), "{get}");
+        assert!(!get.contains("X-Proxy"), "{get}");
+    }
+}
+
+/// The proxy's credentials go in the tunnel's `CONNECT`, and the request
+/// through the tunnel, which is the origin's, carries no
+/// `Proxy-Authorization:` (CVE-2003-1605's rule); a forwarded request
+/// carries it, as it goes to the proxy.
+#[test]
+fn a_tunnelled_request_carries_no_proxy_authorization() {
+    for tunnel in [true, false] {
+        let replies: &[&[u8]] = if tunnel { &[TUNNEL_UP, OK] } else { &[OK] };
+        let (mut m, talk, _) = server(replies, false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(b"http://origin.example/a")).unwrap();
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
+            let proxy = o.proxy.make_mut().unwrap();
+            proxy.tunnel = tunnel;
+            proxy.user = Some(b"u".to_vec());
+            proxy.password = Some(b"p".to_vec());
+            proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        let line = "\r\nProxy-Authorization: Basic dTpw\r\n";
+        if tunnel {
+            let (connect, get) = text.split_once("\r\n\r\n").unwrap();
+            assert!(!get.contains("Proxy-Authorization"), "{get}");
+            assert!(connect.starts_with("CONNECT "), "{connect}");
+            assert!((connect.to_owned() + "\r\n").contains(line), "{connect}");
+            assert!(get.starts_with("GET /a HTTP/1.1\r\n"), "{get}");
+        } else {
+            assert!(text.starts_with("GET http://origin.example/a "), "{text}");
+            assert!(text.contains(line), "{text}");
+        }
+    }
+}
+
 /// A transfer handed whole to a proxy says it spoke the proxy's scheme
 /// (`CURLINFO_SCHEME`, from `conn->scheme`), so an FTP URL asked of an
 /// HTTP proxy reports HTTP, whose headers the tool then shows (test 79).
@@ -6701,6 +6810,11 @@ fn the_environment_names_a_proxy() {
         "exclude",
         &[("http_proxy", &proxy), ("NO_PROXY", "127.0.0.1")],
     );
+    in_child(
+        "proto::http::tests::proxy_from_the_environment",
+        "credentials",
+        &[("http_proxy", &proxy)],
+    );
 }
 
 /// The child half of `the_environment_names_a_proxy`; nothing outside a
@@ -6721,7 +6835,26 @@ fn proxy_from_the_environment() {
         (line, ran.seen.text())
     };
     let direct = format!("http://127.0.0.1:{PORT}/");
-    if mode == "detect" {
+    if mode == "credentials" {
+        // The options' proxy credentials go to the proxy the environment
+        // names as to one the options name (`CURLOPT_PROXYUSERPWD`).
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(b"http://origin.example/a")).unwrap();
+            o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+            o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+        });
+        assert_eq!(ran.result, Ok(()));
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        assert!(
+            text.starts_with("GET http://origin.example/a HTTP/1.1\r\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\r\nProxy-Authorization: Basic dTpw\r\n"),
+            "{text}"
+        );
+    } else if mode == "detect" {
         let (line, said) = fetch(b"http://origin.example/a", |_| {});
         assert_eq!(line, "GET http://origin.example/a HTTP/1.1\r\n");
         let uses = format!("Uses proxy env variable http_proxy == 'http://127.0.0.1:{PORT}'\n");

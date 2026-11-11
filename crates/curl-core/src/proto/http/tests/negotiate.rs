@@ -111,6 +111,23 @@ fn the_context_takes_the_service_and_the_delegation() {
     assert!(flags.mutual && flags.delegate_by_policy && !flags.delegate);
 }
 
+/// Unless the options ask for it, a context delegates nothing: neither
+/// always nor by policy (`CURLOPT_GSSAPI_DELEGATION` defaults to none,
+/// CVE-2011-2192's rule).
+#[test]
+fn no_delegation_is_asked_by_default() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"t");
+    let (mut m, talk, _) = server(&[OK_200], false);
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let Asked::Context { flags, .. } = &gss.asked()[0] else {
+        panic!("a context first");
+    };
+    assert!(flags.mutual, "{flags:?}");
+    assert!(!flags.delegate && !flags.delegate_by_policy, "{flags:?}");
+}
+
 /// A library that cannot make the first token leaves the request to go
 /// unauthenticated, said before the method is (tests 2077, 2078, 2057);
 /// one failing otherwise fails the request.
@@ -515,6 +532,75 @@ fn a_negotiated_connection_serves_only_its_own() {
     assert_eq!(ran.result, Ok(()));
     let ran = get_with(&mut m, negotiating(&libraries), "/b", talk.clone(), |_| {});
     assert!(text_has(&ran, reused));
+}
+
+/// A redirect to another host whose URL carries a user and a password
+/// takes no Negotiate token there: those credentials are the URL's own,
+/// which open no gate, and the ambient identity Negotiate sends goes only
+/// where the gate lets the application's go (`Curl_auth_allowed_to_host`
+/// in `output_auth_headers`, CVE-2026-94265's rule).
+#[test]
+fn a_redirect_to_userinfo_elsewhere_sends_no_negotiate() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"one").then_token(b"two");
+    let location = format!("http://u:p@other.test:{PORT}/b");
+    let first = Conversation::new(&moved(&location, true), true);
+    let second = Conversation::new(OK_200, false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let entry = format!("other.test:{PORT}:127.0.0.1");
+    let ran = get_with(&mut m, negotiating(&libraries), "/a", first.clone(), |o| {
+        o.http.follow = Follow::All;
+        o.resolve.set([entry.as_bytes()]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let first = String::from_utf8(first.received()).unwrap();
+    assert!(first.contains("\r\nAuthorization: Negotiate "), "{first}");
+    let second = String::from_utf8(second.received()).unwrap();
+    assert!(
+        second.starts_with("GET /b HTTP/1.1\r\nHost: other.test:"),
+        "{second}"
+    );
+    assert!(!second.contains("Authorization"), "{second}");
+    assert_eq!(gss.unused(), 1);
+}
+
+/// A connection Negotiate authenticated with a host serves no request a
+/// redirect from another host makes there: that request does not
+/// negotiate, its gate shut (`url_match_auth_nego` with
+/// `Curl_auth_allowed_to_host`, CVE-2026-86413's rule).
+#[test]
+fn a_redirect_elsewhere_reuses_no_negotiated_connection() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"one").then_token(b"two");
+    let other = format!("http://other.test:{PORT}");
+    let negotiated = Conversation::replies(&[OK_200, OK_200], false);
+    let first = Conversation::new(&moved(&format!("{other}/b"), true), true);
+    let fresh = Conversation::new(OK_200, false);
+    let mut m = serving(Peer::Accepts, &[&negotiated, &first, &fresh]);
+    let entry = format!("other.test:{PORT}:127.0.0.1");
+    // A transfer to the other host first, which negotiates there and
+    // keeps its connection.
+    let ran = get_with(
+        &mut m,
+        negotiating(&libraries),
+        "/a",
+        negotiated.clone(),
+        |o| {
+            o.set_url(Some(format!("{other}/a").as_bytes())).unwrap();
+            o.resolve.set([entry.as_bytes()]).unwrap();
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let ran = get_with(&mut m, negotiating(&libraries), "/a", first.clone(), |o| {
+        o.http.follow = Follow::All;
+        o.resolve.set([entry.as_bytes()]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let reused = String::from_utf8(negotiated.received()).unwrap();
+    assert_eq!(reused.matches("GET ").count(), 1, "{reused}");
+    let fresh = String::from_utf8(fresh.received()).unwrap();
+    assert!(fresh.starts_with("GET /b HTTP/1.1\r\n"), "{fresh}");
+    assert!(!fresh.contains("Authorization"), "{fresh}");
 }
 
 /// The application's own `Authorization` keeps Negotiate's out, the

@@ -3457,6 +3457,53 @@ fn the_entry_path_is_reported_after_reuse() {
     );
 }
 
+/// The FTP account is the server's that asks for it, whichever server
+/// that is: one a redirect from HTTP on another host leads to is sent it
+/// as the first server would be, though the login is not
+/// (`ftp_state_user_resp`).
+#[test]
+fn a_redirect_s_ftp_server_is_sent_the_account_it_asks_for() {
+    use crate::options::{Follow, Login, Protocols};
+    let moved = format!(
+        "HTTP/1.1 302 Moved\r\nLocation: ftp://other.test:{PORT}/f\r\nConnection: close\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let http = Conversation::new(moved.as_bytes(), true);
+    let replies: [&'static [u8]; 8] = [
+        b"220 hi\r\n",
+        b"331 password?\r\n",
+        b"332 account?\r\n",
+        b"230 in\r\n",
+        b"257 \"/\" is it\r\n",
+        b"200 binary\r\n",
+        b"213 5\r\n",
+        b"350 restarting\r\n",
+    ];
+    let control = Conversation::replies(&replies, false).greeting();
+    let mut m = serving(&[&http, &control], &[]);
+    let entry = format!("other.test:{PORT}:127.0.0.1");
+    let (id, _, text) = added(&mut m, "http://first.test:PORT/a", |o| {
+        o.method = crate::options::Method::Head;
+        o.http.follow = Follow::All;
+        o.schemes.make_mut().unwrap().redirect = Protocols::of(&["ftp"]).unwrap();
+        o.resolve
+            .set([
+                format!("first.test:{PORT}:127.0.0.1").as_bytes(),
+                entry.as_bytes(),
+            ])
+            .unwrap();
+        *o.login.make_mut().unwrap() = Login::from_pair(b"user:secret").unwrap();
+        o.line.make_mut().unwrap().ftp.account = Some(b"my acct".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    let sent = received(&control);
+    assert!(
+        sent.starts_with("USER anonymous\r\nPASS ftp@example.com\r\nACCT my acct\r\n"),
+        "{sent}"
+    );
+}
+
 /// The login's other ways: an account when the server asks for one, and
 /// the application's command in place of `USER` when it is refused; a
 /// control byte in either refused, as it would end the command

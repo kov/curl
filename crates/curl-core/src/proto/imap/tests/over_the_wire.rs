@@ -729,6 +729,59 @@ fn the_application_s_login_stays_with_the_first_host() {
     }
 }
 
+/// A redirect from HTTP to another host's IMAP takes the application's
+/// OAuth 2.0 token there only if it lets credentials go anywhere: the
+/// redirect's own user logs in without it (`Curl_auth_allowed_to_host`,
+/// test 2081's rule for SASL).
+#[test]
+fn a_redirect_from_http_sends_no_bearer() {
+    use crate::options::{Follow, Protocols};
+    for unrestricted in [false, true] {
+        let location = format!("imap://v@other.test:{PORT}/");
+        let moved = format!(
+            "HTTP/1.1 302 Moved\r\nLocation: {location}\r\nConnection: close\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        let http = Conversation::new(moved.as_bytes(), true);
+        let capability = b"* CAPABILITY IMAP4rev1 AUTH=OAUTHBEARER AUTH=PLAIN\r\nB001 OK\r\n";
+        let imap = Conversation::replies(
+            &[
+                GREETING,
+                capability,
+                b"+\r\n",
+                b"B002 OK\r\n",
+                b"B003 OK\r\n",
+            ],
+            false,
+        )
+        .greeting();
+        let mut m = serving(&[&http, &imap]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let ran = transfer(&mut m, &plain(), "http://127.0.0.1:PORT/a", |o| {
+            o.http.follow = Follow::All;
+            o.http.unrestricted_auth = unrestricted;
+            o.schemes.make_mut().unwrap().redirect = Protocols::of(&["imap"]).unwrap();
+            o.resolve.set([entry.as_bytes()]).unwrap();
+            o.login.make_mut().unwrap().bearer = Some(b"t0ken".to_vec());
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let said = String::from_utf8_lossy(&imap.received()).into_owned();
+        // Each line the client sent, base64 decoded where it is.
+        let decoded: Vec<u8> = said
+            .lines()
+            .filter_map(|l| crate::base64::decode(l.as_bytes()).ok().flatten())
+            .flatten()
+            .collect();
+        let sent_token = has(&decoded, b"t0ken");
+        assert_eq!(sent_token, unrestricted, "{unrestricted}: {said}");
+        if !unrestricted {
+            // The redirect's own user, without a password: PLAIN.
+            assert!(said.contains("AUTHENTICATE PLAIN"), "{said}");
+            assert!(said.contains("AHYA"), "{said}");
+        }
+    }
+}
+
 /// The server's time to answer is its own timer, `SERVER_RESPONSE`,
 /// set as the greeting is awaited and each time the back and forth is
 /// driven, and still armed as the transfer completes

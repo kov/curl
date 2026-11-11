@@ -742,6 +742,39 @@ fn http_through_an_https_proxy_goes_over_tls_to_the_proxy() {
     );
 }
 
+/// The HTTPS proxy's TLS is made with the client identity the options
+/// give the proxy, whichever origin the request is for: after a redirect
+/// to another host, the proxy connected to again is offered it as it
+/// was first (`CURLOPT_PROXY_SSLCERT`, the proxy's own `ssl_config`).
+#[test]
+fn an_https_proxy_s_tls_has_its_client_identity_after_a_redirect() {
+    let (backend, libraries) = tls();
+    let moved = moved("http://other.example/b", true);
+    let first = Conversation::replies(&[WELCOME, &fake::records(&moved).unwrap()], false);
+    let [welcome, response] = served(OK);
+    let second = Conversation::replies(&[&welcome, &response], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries.clone());
+    let ran = get_with(&mut m, e, "/", first.clone(), |o| {
+        https_proxy(o, b"http://first.example/a");
+        o.http.follow = Follow::All;
+        let t = proxy_tls(o);
+        t.cert = Some(b"client.pem".to_vec());
+        t.key = Some(b"client.key".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let asked = String::from_utf8(sent(&second)).unwrap();
+    assert!(
+        asked.contains("GET http://other.example/b HTTP/1.1\r\n"),
+        "{asked}"
+    );
+    let log = backend.log();
+    assert_eq!(log.sessions, 2);
+    assert_eq!(log.name(), b"127.0.0.1");
+    assert!(log.client_identity, "the proxy's TLS after the redirect");
+}
+
 /// Plain HTTP forwarded to an HTTPS proxy goes over TLS, so HTTP/2 is not
 /// asked for by an upgrade: the connection is TLS though the origin's
 /// part of it is not (`Curl_conn_is_ssl` seeing the proxy's filter).

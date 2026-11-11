@@ -665,6 +665,50 @@ mod tests {
         assert!(Takes::ControlBytes.allows(b"a\x1fb"));
     }
 
+    /// A `.netrc` entry for a host the gate shuts gives its own user and
+    /// password, and nothing the application said: its OAuth 2.0 token,
+    /// service and identity stay with the first origin, though the entry
+    /// goes wherever the transfer started (CVE-2026-3783's rule). Where
+    /// the gate lets them through, the entry keeps them.
+    #[test]
+    fn a_netrc_entry_does_not_trust_a_bearer() {
+        let login = Login {
+            bearer: Some(b"t0ken".to_vec()),
+            service: Some(b"svc".to_vec()),
+            authzid: Some(b"ursel".to_vec()),
+            ..Login::default()
+        };
+        let url = Url::parse(b"imap://h/", ParseOptions::NONE).unwrap();
+        for trusted in [false, true] {
+            let given = Credentials::for_request(
+                &login,
+                trusted.then(Trusted::own_url),
+                &url,
+                Takes::NoControlBytes,
+            )
+            .unwrap();
+            let found = Found {
+                user: b"n".to_vec(),
+                password: b"p".to_vec(),
+            };
+            let c = Credentials::with_netrc(given, found);
+            let secret = c.secret();
+            assert_eq!((secret.user(), secret.password()), (&b"n"[..], &b"p"[..]));
+            let kept: [&[u8]; 3] = [b"t0ken", b"svc", b"ursel"];
+            let none: [&[u8]; 3] = [b"", b"", b""];
+            let want = if trusted { kept } else { none };
+            assert_eq!(
+                [
+                    secret.bearer(),
+                    secret.service().unwrap_or_default(),
+                    secret.authzid()
+                ],
+                want,
+                "{trusted}"
+            );
+        }
+    }
+
     /// A SASL identity to act for comes with the application's
     /// credentials, and alone makes them.
     #[test]

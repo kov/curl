@@ -2504,3 +2504,49 @@ fn a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines() {
         );
     }
 }
+
+/// The key files the options name are the login of whichever SSH host
+/// the transfer reaches: one a redirect from HTTP on another host leads
+/// to logs in with them as the first would (`ssh_connect` reads
+/// `STRING_SSH_PRIVATE_KEY` for every connection).
+#[test]
+fn a_redirect_s_ssh_host_logs_in_with_the_key_files() {
+    use crate::options::{Follow, Protocols};
+    let w = world(&[("/home/u/f", "x")]);
+    let location = format!("sftp://u@other.test:{PORT}/~/f");
+    let moved = format!(
+        "HTTP/1.1 302 Moved\r\nLocation: {location}\r\nConnection: close\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let http = Conversation::new(moved.as_bytes(), true);
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Net::Accepts)
+        .with_conversation(at, http.clone())
+        .with_conversation(at, silent());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::with_env(env).unwrap();
+    let (id, body, text) = added(&mut m, &w, "http://first.test:PORT/a", |o| {
+        o.http.follow = Follow::All;
+        o.schemes.make_mut().unwrap().redirect = Protocols::of(&["sftp"]).unwrap();
+        let entries = [
+            format!("first.test:{PORT}:127.0.0.1"),
+            format!("other.test:{PORT}:127.0.0.1"),
+        ];
+        o.resolve.set(entries.iter().map(String::as_bytes)).unwrap();
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"x");
+    let calls = w.lock().unwrap().calls.clone();
+    assert!(
+        calls.iter().any(|c| c == "import_privkey_file /keys/id"),
+        "{calls:?}"
+    );
+}

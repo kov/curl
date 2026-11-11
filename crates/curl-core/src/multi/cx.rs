@@ -1555,6 +1555,28 @@ impl<H: Host> NotifyCx<'_, H> {
         self.multi.timeout()
     }
 
+    /// As `Multi::sockets`: `curl_multi_fdset` and `curl_multi_waitfds`
+    /// from a notification, which C runs there.
+    pub fn sockets(
+        &mut self,
+        ev: &mut dyn MultiEvents<H>,
+        f: impl FnMut(SocketKey, Events),
+    ) -> Result<(), crate::error::MultiErrorKind> {
+        self.multi.sockets(ev, f)
+    }
+
+    /// As `Multi::wait`: `curl_multi_wait` and `curl_multi_poll` from a
+    /// notification, which C runs there.
+    pub fn wait(
+        &mut self,
+        extra: &mut [PollFd<'_>],
+        max: Duration,
+        mode: super::wait::WaitMode,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<u32, crate::error::MultiErrorKind> {
+        self.multi.wait(extra, max, mode, ev)
+    }
+
     pub fn counts(&self) -> Counts {
         self.multi.counts()
     }

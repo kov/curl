@@ -522,7 +522,7 @@ impl ShimEasy {
                     // SAFETY: the handle owns its private multi.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: nothing runs on it once its perform is done.
-                    unsafe { m.core_mut() }.tls_native_for(e)
+                    unsafe { m.core_mut(m.between_performs()) }.tls_native_for(e)
                 }
                 None => e.tls_native(),
             });
@@ -533,7 +533,7 @@ impl ShimEasy {
         Ok(match multi.stack.reach()? {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
-            Reach::Direct => unsafe { multi.core_mut() }.tls_native(id),
+            Reach::Direct(direct) => unsafe { multi.core_mut(direct) }.tls_native(id),
             // SAFETY: the frame is the innermost lent, and the borrow
             // ends with this call, inside its callback.
             Reach::Frame(frame) => unsafe { frame.tls_native(id) },
@@ -665,7 +665,7 @@ impl ShimEasy {
         match multi.stack.reach() {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
-            Ok(Reach::Direct) => unsafe { multi.core_mut() }.holds_connection(id),
+            Ok(Reach::Direct(direct)) => unsafe { multi.core_mut(direct) }.holds_connection(id),
             Ok(Reach::Frame(_)) | Err(_) => false,
         }
     }
@@ -710,7 +710,7 @@ impl ShimEasy {
         Ok(match multi.stack.reach()? {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
-            Reach::Direct => f(HomeRef::Added(unsafe { multi.core_mut() }, id)),
+            Reach::Direct(direct) => f(HomeRef::Added(unsafe { multi.core_mut(direct) }, id)),
             Reach::Frame(frame) => f(HomeRef::Frame(frame, id)),
         })
     }
@@ -901,7 +901,10 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
         // fails only after the handle has left, its timer callback refusing
         // or the waker failing, and the handle goes all the same, as
         // `Curl_close` ignores what the removal returns.
-        let removed = crate::multi::remove(multi, Reach::Direct, easy);
+        let Ok(reach @ Reach::Direct(_)) = multi.stack.reach() else {
+            unreachable!("cleanup does not recurse");
+        };
+        let removed = crate::multi::remove(multi, reach, easy);
         assert!(easy.added().is_none(), "left its multi: {removed:?}");
     }
     // What it keeps of its resolves goes first, said through the debug
@@ -1023,14 +1026,14 @@ pub unsafe extern "C" fn curl_easy_upkeep(curl: *mut CURL) -> CURLcode {
     };
     let kept = match easy.added() {
         None => {
-            let private = easy.private.get();
+            let private = easy.private_multi();
             let kept = easy.with_detached(|e| match private {
                 Some(m) => {
                     // SAFETY: the handle owns its private multi.
                     let m = unsafe { m.as_ref() };
                     let mut ev = ShimEvents::new(m);
                     // SAFETY: nothing runs on it once its perform is done.
-                    unsafe { m.core_mut() }.upkeep_for(e, &mut ev)
+                    unsafe { m.core_mut(m.between_performs()) }.upkeep_for(e, &mut ev)
                 }
                 None => e.upkeep(),
             });
@@ -1042,12 +1045,12 @@ pub unsafe extern "C" fn curl_easy_upkeep(curl: *mut CURL) -> CURLcode {
         Some((multi, id)) => {
             // SAFETY: the handle's multi outlives its `Added`.
             let m = unsafe { multi.as_ref() };
-            let Ok(Reach::Direct) = m.stack.reach() else {
+            let Ok(Reach::Direct(direct)) = m.stack.reach() else {
                 return CURLE_RECURSIVE_API_CALL;
             };
             let mut ev = ShimEvents::new(m);
             // SAFETY: nothing runs on the multi.
-            let core = unsafe { m.core_mut() };
+            let core = unsafe { m.core_mut(direct) };
             core.upkeep(id, &mut ev)
                 .expect("an added handle is in its multi")
         }
@@ -1204,9 +1207,11 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
         .with_options(|o| o.limits.reuse.max_connects)
         .expect("perform is not called from a callback");
     // SAFETY: nothing else runs on the private multi.
-    unsafe { m.core_mut() }.conn_limits_mut().max_connects = Some(max);
+    unsafe { m.core_mut(m.between_performs()) }
+        .conn_limits_mut()
+        .max_connects = Some(max);
     // Nothing but this call runs on the private multi.
-    if let Err(e) = crate::multi::add(m, Reach::Direct, easy) {
+    if let Err(e) = crate::multi::add(m, Reach::Direct(m.between_performs()), easy) {
         return match e {
             MultiError::Core(MultiErrorKind::OutOfMemory) => CURLE_OUT_OF_MEMORY,
             _ => CURLE_FAILED_INIT,
@@ -1218,9 +1223,11 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
             .stack
             .enter(MultiCall::Perform)
             .expect("a private multi runs one call");
-        assert!(matches!(entry.reach, Reach::Direct));
+        let Reach::Direct(direct) = entry.reach else {
+            unreachable!("a private multi runs one call");
+        };
         // SAFETY: nothing else runs on the private multi.
-        let core = unsafe { m.core_mut() };
+        let core = unsafe { m.core_mut(direct) };
         match drive {
             Drive::Waits => drive_to_completion(core, id, &mut ShimEvents::new(m)),
             // A private multi has no callbacks of the application's; the
@@ -1238,7 +1245,7 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
         Err(_) => Err(ErrorKind::BadFunctionArgument),
     };
     // The handle has its transfer back for the next call.
-    let removed = crate::multi::remove(m, Reach::Direct, easy);
+    let removed = crate::multi::remove(m, Reach::Direct(m.between_performs()), easy);
     assert!(removed.is_ok(), "a private multi's handle comes out");
     match result {
         Ok(()) => CURLE_OK,
@@ -1369,8 +1376,10 @@ pub unsafe extern "C" fn curl_easy_pause(curl: *mut CURL, action: c_int) -> CURL
         return CURLE_RECURSIVE_API_CALL;
     };
     let paused = match reach {
-        // SAFETY: nothing runs on the multi.
-        Reach::Direct => unsafe { m.core_mut() }.pause(id, req, &mut ShimEvents::new(m)),
+        Reach::Direct(direct) => {
+            // SAFETY: nothing runs on the multi.
+            unsafe { m.core_mut(direct) }.pause(id, req, &mut ShimEvents::new(m))
+        }
         // SAFETY: the callback lent its context and does not use it until
         // it returns.
         Reach::Frame(Frame::Transfer(cx)) => unsafe { &mut *cx.as_ptr() }.pause(id, req),
@@ -1470,19 +1479,19 @@ unsafe fn raw(curl: *mut CURL, call: EasyCall, buffer: Raw, n: *mut usize) -> CU
     let notes = &mut |kind, bytes: &[u8]| held.note(kind, bytes);
     let got = match easy.added() {
         None => {
-            let private = easy.private.get();
+            let private = easy.private_multi();
             let got = easy.with_detached(|e| match (private, bytes) {
                 (Some(m), Bytes::In(buf)) => {
                     // SAFETY: the handle owns its private multi.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: nothing runs on it once its perform is done.
-                    unsafe { m.core_mut() }.recv_raw_for(e, buf, notes)
+                    unsafe { m.core_mut(m.between_performs()) }.recv_raw_for(e, buf, notes)
                 }
                 (Some(m), Bytes::Out(out)) => {
                     // SAFETY: as above.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: as above.
-                    unsafe { m.core_mut() }.send_raw_for(e, out, notes)
+                    unsafe { m.core_mut(m.between_performs()) }.send_raw_for(e, out, notes)
                 }
                 (None, Bytes::In(buf)) => e.recv_raw(buf, notes),
                 (None, Bytes::Out(out)) => e.send_raw(out, notes),
@@ -1495,11 +1504,11 @@ unsafe fn raw(curl: *mut CURL, call: EasyCall, buffer: Raw, n: *mut usize) -> CU
         Some((multi, id)) => {
             // SAFETY: the handle's multi outlives its `Added`.
             let m = unsafe { multi.as_ref() };
-            let Ok(Reach::Direct) = m.stack.reach() else {
+            let Ok(Reach::Direct(direct)) = m.stack.reach() else {
                 return CURLE_RECURSIVE_API_CALL;
             };
             // SAFETY: nothing runs on the multi.
-            let core = unsafe { m.core_mut() };
+            let core = unsafe { m.core_mut(direct) };
             let got = match bytes {
                 Bytes::In(buf) => core.recv_raw(id, buf, notes),
                 Bytes::Out(out) => core.send_raw(id, out, notes),

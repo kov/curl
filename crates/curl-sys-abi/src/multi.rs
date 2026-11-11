@@ -36,7 +36,7 @@ use crate::ffi::{
     CURLMSG_DONE, CURLMcode, CURLMinfo_offt, CURLMoption, CURLMsg, curl_multi_timer_callback,
     curl_notify_callback, curl_off_t, curl_socket_callback, curl_socket_t, curl_waitfd,
 };
-use crate::gate::{Frame, MultiCall, MultiEntry, MultiStack, Reach, Recursive};
+use crate::gate::{Direct, Frame, MultiCall, MultiEntry, MultiStack, Reach, Recursive};
 use crate::setopt::function;
 
 /// C's `CURL_MULTI_HANDLE`, which tells a live multi.
@@ -150,8 +150,9 @@ impl ShimMulti {
     pub(crate) unsafe fn free(multi: NonNull<ShimMulti>) {
         // SAFETY: as the caller guarantees.
         let m = unsafe { multi.as_ref() };
-        // SAFETY: nothing runs on a multi being freed.
-        let core = unsafe { m.core_mut() };
+        // SAFETY: nothing runs on a multi being freed, so nothing else
+        // borrows its core.
+        let core = unsafe { &mut *m.core.get() };
         assert!(core.next_transfer(None).is_none(), "a multi is freed empty");
         // A perform's callbacks hear its cleanup.
         if let Some(table) = m.events.borrow_mut().as_mut() {
@@ -162,14 +163,27 @@ impl ShimMulti {
         drop(unsafe { Box::from_raw(multi.as_ptr()) });
     }
 
-    /// The core, borrowed.
+    /// The witness that nothing runs on a handle's private multi, which
+    /// only `curl_easy_perform` drives: between its performs, nothing.
+    pub(crate) fn between_performs(&self) -> Direct {
+        match self.stack.reach() {
+            Ok(Reach::Direct(direct)) => direct,
+            Ok(Reach::Frame(_)) | Err(Recursive) => {
+                unreachable!("nothing runs on a private multi between its performs")
+            }
+        }
+    }
+
+    /// The core, borrowed, with the gate's witness that nothing runs on
+    /// the multi.
     ///
     /// # Safety
     ///
-    /// The gate's reach is `Direct`: no call on the multi is under way, so
-    /// nothing else borrows the core until this borrow ends.
+    /// The witness is of the call under way, which holds its entry while
+    /// the borrow lasts: no other call is under way, so nothing else
+    /// borrows the core until this borrow ends.
     #[expect(clippy::mut_from_ref, reason = "the gate keeps the borrow unique")]
-    pub(crate) unsafe fn core_mut(&self) -> &mut Multi<CHost> {
+    pub(crate) unsafe fn core_mut(&self, _direct: Direct) -> &mut Multi<CHost> {
         // SAFETY: as the caller guarantees.
         unsafe { &mut *self.core.get() }
     }
@@ -455,11 +469,37 @@ impl Core<'_> {
     fn of(multi: &ShimMulti, reach: Reach) -> Result<Core<'_>, Recursive> {
         match reach {
             // SAFETY: the reach is direct: nothing else borrows the core.
-            Reach::Direct => Ok(Core::Direct(unsafe { multi.core_mut() })),
+            Reach::Direct(direct) => Ok(Core::Direct(unsafe { multi.core_mut(direct) })),
             // SAFETY: the notification lent its context and does not use
             // it until its callback returns.
             Reach::Frame(Frame::Notify(cx)) => Ok(Core::Notify(unsafe { &mut *cx.as_ptr() })),
             Reach::Frame(Frame::Event(_) | Frame::Transfer(_)) => Err(Recursive),
+        }
+    }
+
+    /// Every socket the transfers wait on, as `Multi::sockets`.
+    fn sockets(
+        &mut self,
+        ev: &mut ShimEvents<'_>,
+        f: impl FnMut(SocketKey, Events),
+    ) -> Result<(), MultiErrorKind> {
+        match self {
+            Core::Direct(core) => core.sockets(ev, f),
+            Core::Notify(cx) => cx.sockets(ev, f),
+        }
+    }
+
+    /// Wait for the multi's sockets or `extra`, as `Multi::wait`.
+    fn wait(
+        &mut self,
+        extra: &mut [PollFd<'_>],
+        max: Duration,
+        mode: WaitMode,
+        ev: &mut ShimEvents<'_>,
+    ) -> Result<u32, MultiErrorKind> {
+        match self {
+            Core::Direct(core) => core.wait(extra, max, mode, ev),
+            Core::Notify(cx) => cx.wait(extra, max, mode, ev),
         }
     }
 }
@@ -543,8 +583,11 @@ pub unsafe extern "C" fn curl_multi_cleanup(m: *mut CURLM) -> CURLMcode {
     };
     // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
+    let Reach::Direct(direct) = entry.reach else {
+        unreachable!("cleanup does not recurse");
+    };
     // SAFETY: cleanup does not recurse, so nothing else runs on the multi.
-    let core = unsafe { multi.core_mut() };
+    let core = unsafe { multi.core_mut(direct) };
     // The handles stay the application's, on their own again; the timer
     // is not told (multi.c's cleanup removes nothing through it), but the
     // socket callback hears of each socket that closes.
@@ -641,14 +684,13 @@ pub unsafe extern "C" fn curl_multi_perform(
         Ok(entry) => entry,
         Err(code) => return code,
     };
-    assert!(
-        matches!(entry.reach, Reach::Direct),
-        "perform does not recurse"
-    );
+    let Reach::Direct(direct) = entry.reach else {
+        unreachable!("perform does not recurse");
+    };
     // SAFETY: admitted on `m`, which nothing else runs on.
     let multi = unsafe { multi(m) };
     // SAFETY: as above.
-    let result = unsafe { multi.core_mut() }.perform(&mut ShimEvents::new(multi));
+    let result = unsafe { multi.core_mut(direct) }.perform(&mut ShimEvents::new(multi));
     match result {
         Ok(n) => {
             // SAFETY: as the caller guarantees.
@@ -675,10 +717,9 @@ pub unsafe extern "C" fn curl_multi_socket_action(
         Ok(entry) => entry,
         Err(code) => return code,
     };
-    assert!(
-        matches!(entry.reach, Reach::Direct),
-        "socket_action does not recurse"
-    );
+    let Reach::Direct(direct) = entry.reach else {
+        unreachable!("socket_action does not recurse");
+    };
     let what = if s == CURL_SOCKET_TIMEOUT {
         SocketEvent::Timeout
     } else {
@@ -687,7 +728,7 @@ pub unsafe extern "C" fn curl_multi_socket_action(
     // SAFETY: admitted on `m`, which nothing else runs on.
     let multi = unsafe { multi(m) };
     // SAFETY: as above.
-    let core = unsafe { multi.core_mut() };
+    let core = unsafe { multi.core_mut(direct) };
     let result = core.socket_action(what, &mut ShimEvents::new(multi));
     // Told even when a callback aborted (`multi_socket`'s `out`).
     // SAFETY: as the caller guarantees.
@@ -749,14 +790,13 @@ unsafe fn socket_call(
         Ok(entry) => entry,
         Err(code) => return code,
     };
-    assert!(
-        matches!(entry.reach, Reach::Direct),
-        "socket calls do not recurse"
-    );
+    let Reach::Direct(direct) = entry.reach else {
+        unreachable!("socket calls do not recurse");
+    };
     // SAFETY: admitted on `m`, which nothing else runs on.
     let multi = unsafe { multi(m) };
     // SAFETY: as above.
-    let core = unsafe { multi.core_mut() };
+    let core = unsafe { multi.core_mut(direct) };
     let mut events = ShimEvents::new(multi);
     let result = match s {
         Some(CURL_SOCKET_TIMEOUT) => core
@@ -801,7 +841,7 @@ pub unsafe extern "C" fn curl_multi_get_handles(m: *mut CURLM) -> *mut *mut CURL
     };
     let gathered = match entry.reach {
         // SAFETY: the reach is direct.
-        Reach::Direct => gather(&mut unsafe { multi.core_mut() }.owners()),
+        Reach::Direct(direct) => gather(&mut unsafe { multi.core_mut(direct) }.owners()),
         // SAFETY: as in `curl_multi_info_read`.
         Reach::Frame(Frame::Event(cx)) => gather(&mut unsafe { &*cx.as_ptr() }.owners()),
         // SAFETY: as above.
@@ -843,11 +883,11 @@ pub unsafe extern "C" fn curl_multi_assign(
     let key = SocketKey::new(s);
     let value = (!socketp.is_null()).then_some(socketp);
     let assigned = match entry.reach {
-        Reach::Direct => {
+        Reach::Direct(direct) => {
             // SAFETY: admitted on `m`, which nothing else runs on.
             let multi = unsafe { multi(m) };
             // SAFETY: as above.
-            unsafe { multi.core_mut() }.assign(key, value)
+            unsafe { multi.core_mut(direct) }.assign(key, value)
         }
         // SAFETY: the callback lent its context and does not use it until
         // it returns.
@@ -904,8 +944,10 @@ pub unsafe extern "C" fn curl_multi_info_read(
         // SAFETY: admitted on `m`.
         let multi = unsafe { multi(m) };
         let msg = match entry.reach {
-            // SAFETY: the reach is direct.
-            Reach::Direct => message(unsafe { multi.core_mut() }.info_read(), &mut queued),
+            Reach::Direct(direct) => {
+                // SAFETY: the reach is direct.
+                message(unsafe { multi.core_mut(direct) }.info_read(), &mut queued)
+            }
             Reach::Frame(Frame::Event(cx)) => {
                 // SAFETY: the callback lent its context and does not use
                 // it until it returns.
@@ -940,8 +982,10 @@ pub unsafe extern "C" fn curl_multi_timeout(m: *mut CURLM, timeout_ms: *mut c_lo
     // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
     let due = match entry.reach {
-        // SAFETY: the reach is direct.
-        Reach::Direct => unsafe { multi.core_mut() }.timeout_traced(&mut ShimEvents::new(multi)),
+        Reach::Direct(direct) => {
+            // SAFETY: the reach is direct.
+            unsafe { multi.core_mut(direct) }.timeout_traced(&mut ShimEvents::new(multi))
+        }
         // SAFETY: as in `curl_multi_info_read`.
         Reach::Frame(Frame::Notify(cx)) => unsafe { &*cx.as_ptr() }.timeout(),
         Reach::Frame(Frame::Event(_) | Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
@@ -977,7 +1021,7 @@ pub unsafe extern "C" fn curl_multi_get_offt(
     let multi = unsafe { multi(m) };
     let census = match entry.reach {
         // SAFETY: the reach is direct.
-        Reach::Direct => unsafe { multi.core_mut() }.census(),
+        Reach::Direct(direct) => unsafe { multi.core_mut(direct) }.census(),
         // SAFETY: as in `curl_multi_info_read`.
         Reach::Frame(Frame::Event(cx)) => unsafe { &*cx.as_ptr() }.census(),
         // SAFETY: as above.
@@ -1029,7 +1073,7 @@ unsafe fn set_notify(m: *mut CURLM, call: MultiCall, n: c_uint, on: bool) -> CUR
     let multi = unsafe { multi(m) };
     match entry.reach {
         // SAFETY: the reach is direct.
-        Reach::Direct => unsafe { multi.core_mut() }.set_notify(kind, on),
+        Reach::Direct(direct) => unsafe { multi.core_mut(direct) }.set_notify(kind, on),
         // SAFETY: as in `curl_multi_info_read`.
         Reach::Frame(Frame::Event(cx)) => unsafe { &mut *cx.as_ptr() }.set_notify(kind, on),
         // SAFETY: as above.
@@ -1093,7 +1137,7 @@ pub unsafe extern "C" fn curl_multi_setopt(
         let n = unsafe { args.next_arg::<c_long>() };
         let limits = match entry.reach {
             // SAFETY: the reach is direct.
-            Reach::Direct => unsafe { multi.core_mut() }.conn_limits_mut(),
+            Reach::Direct(direct) => unsafe { multi.core_mut(direct) }.conn_limits_mut(),
             // SAFETY: as in `curl_multi_info_read`.
             Reach::Frame(Frame::Event(cx)) => unsafe { &mut *cx.as_ptr() }.conn_limits_mut(),
             // SAFETY: as above.
@@ -1153,7 +1197,7 @@ pub unsafe extern "C" fn curl_multi_setopt(
         }
         match entry.reach {
             // SAFETY: the reach is direct.
-            Reach::Direct => apply!(unsafe { multi.core_mut() }),
+            Reach::Direct(direct) => apply!(unsafe { multi.core_mut(direct) }),
             // SAFETY: as in `curl_multi_info_read`.
             Reach::Frame(Frame::Event(cx)) => apply!(unsafe { &mut *cx.as_ptr() }),
             // SAFETY: as above.
@@ -1306,10 +1350,6 @@ unsafe fn wait(
         Ok(entry) => entry,
         Err(code) => return code,
     };
-    assert!(
-        matches!(entry.reach, Reach::Direct),
-        "a wait does not recurse"
-    );
     let Ok(timeout) = u64::try_from(timeout_ms) else {
         return CURLM_BAD_FUNCTION_ARGUMENT;
     };
@@ -1356,10 +1396,14 @@ unsafe fn wait(
             &mut more
         }
     };
-    // SAFETY: admitted on `m`, which nothing else runs on.
+    // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
-    // SAFETY: as above.
-    let ready = unsafe { multi.core_mut() }.wait(
+    // Inside a notification too, as C waits there (`curl_multi_wait`
+    // is let in by `allow_ntfy_cb`).
+    let Ok(mut core) = Core::of(multi, entry.reach) else {
+        return CURLM_RECURSIVE_API_CALL;
+    };
+    let ready = core.wait(
         fds,
         Duration::from_millis(timeout),
         mode,
@@ -1460,14 +1504,18 @@ pub unsafe extern "C" fn curl_multi_fdset(
     max_fd: *mut c_int,
 ) -> CURLMcode {
     // SAFETY: as the caller guarantees.
-    if let Err(code) = unsafe { enter(m, MultiCall::Fdset) } {
-        return code;
-    }
-    // SAFETY: admitted on `m`, which nothing else runs on.
+    let entry = match unsafe { enter(m, MultiCall::Fdset) } {
+        Ok(entry) => entry,
+        Err(code) => return code,
+    };
+    // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
+    // Inside a notification too, as C walks the sockets there.
+    let Ok(mut core) = Core::of(multi, entry.reach) else {
+        return CURLM_RECURSIVE_API_CALL;
+    };
     let mut highest = -1;
-    // SAFETY: as above.
-    let walked = unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |key, events| {
+    let walked = core.sockets(&mut ShimEvents::new(multi), |key, events| {
         let fd = key.get();
         // One a set cannot hold is left out (`FDSET_SOCK`).
         if fd_set_holds(fd) {
@@ -1562,14 +1610,19 @@ pub unsafe extern "C" fn curl_multi_waitfds(
     fd_count: *mut c_uint,
 ) -> CURLMcode {
     // SAFETY: as the caller guarantees.
-    if let Err(code) = unsafe { enter(m, MultiCall::Waitfds) } {
-        return code;
-    }
+    let entry = match unsafe { enter(m, MultiCall::Waitfds) } {
+        Ok(entry) => entry,
+        Err(code) => return code,
+    };
     if ufds.is_null() && (size > 0 || fd_count.is_null()) {
         return CURLM_BAD_FUNCTION_ARGUMENT;
     }
-    // SAFETY: admitted on `m`, which nothing else runs on.
+    // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
+    // Inside a notification too, as C walks the sockets there.
+    let Ok(mut core) = Core::of(multi, entry.reach) else {
+        return CURLM_RECURSIVE_API_CALL;
+    };
     let mut wfds = WaitFds {
         // SAFETY: the caller gives `size` entries at `ufds`.
         wfds: (!ufds.is_null())
@@ -1577,8 +1630,7 @@ pub unsafe extern "C" fn curl_multi_waitfds(
         n: 0,
     };
     let mut need: c_uint = 0;
-    // SAFETY: as above.
-    let walked = unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |key, events| {
+    let walked = core.sockets(&mut ShimEvents::new(multi), |key, events| {
         // A pollset reads and writes, nothing else.
         let wanted = wait_revents(events);
         if wanted != 0 {

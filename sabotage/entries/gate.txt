@@ -106,3 +106,26 @@ witness: curl-sys-abi handle_tests::a_reset_from_the_transfer_s_own_callback_is_
             EasyCall::Reset => EasyRules { kills: false, recurse: false, not_in_event: false, no_scache_lock: false },
 --- new
             EasyCall::Reset => EasyRules { kills: false, recurse: true, not_in_event: false, no_scache_lock: false },
+
+=== a wait from a notification is refused
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_notification_walks_and_waits_on_the_multi_s_sockets
+--- old
+    // Inside a notification too, as C waits there (`curl_multi_wait`
+    // is let in by `allow_ntfy_cb`).
+    let Ok(mut core) = Core::of(multi, entry.reach) else {
+--- new
+    // Inside a notification too, as C waits there (`curl_multi_wait`
+    // is let in by `allow_ntfy_cb`).
+    let Ok(mut core @ Core::Direct(_)) = Core::of(multi, entry.reach) else {
+
+=== a socket walk from a notification is refused
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_notification_walks_and_waits_on_the_multi_s_sockets
+--- old
+    let mut highest = -1;
+--- new
+    if matches!(core, Core::Notify(_)) {
+        return CURLM_RECURSIVE_API_CALL;
+    }
+    let mut highest = -1;

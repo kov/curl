@@ -122,7 +122,7 @@ fn reach_noting(
                     // SAFETY: the handle owns its private multi.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: nothing runs on it once its perform is done.
-                    unsafe { m.core_mut() }.ws_for(e, call, notes)
+                    unsafe { m.core_mut(m.between_performs()) }.ws_for(e, call, notes)
                 }
                 None => e.ws(call, notes),
             });
@@ -133,7 +133,7 @@ fn reach_noting(
             let m = unsafe { multi.as_ref() };
             match m.stack.reach() {
                 // SAFETY: nothing runs on the multi.
-                Ok(Reach::Direct) => Ok(unsafe { m.core_mut() }
+                Ok(Reach::Direct(direct)) => Ok(unsafe { m.core_mut(direct) }
                     .ws(id, call, notes)
                     .expect("an added handle is in its multi")),
                 Ok(Reach::Frame(GateFrame::Transfer(cx))) => {

@@ -27,6 +27,7 @@ use crate::ffi::{
     CURLE_OK, CURLE_RECURSIVE_API_CALL, CURLE_UNKNOWN_OPTION, CURLINFO, CURLM, CURLM_OK, CURLcode,
     CURLoption, curl_header, curl_off_t,
 };
+use crate::gate::Direct;
 use crate::getinfo::curl_easy_getinfo;
 use crate::multi::{
     curl_multi_add_handle, curl_multi_cleanup, curl_multi_get_offt, curl_multi_info_read,
@@ -4317,7 +4318,9 @@ fn the_multi_s_callbacks_run_with_their_frames() {
                 ffi::CURLM_BAD_FUNCTION_ARGUMENT
             );
         }
-        let limits = *crate::multi::multi(m).core_mut().conn_limits_mut();
+        let limits = *crate::multi::multi(m)
+            .core_mut(Direct::assumed())
+            .conn_limits_mut();
         assert_eq!(limits.max_connects, core::num::NonZeroU32::new(1));
         assert_eq!(
             (limits.max_host, limits.max_total),
@@ -4330,7 +4333,9 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         );
         assert_eq!(curl_multi_setopt(m, host, 2 as c_long), CURLM_OK);
         assert_eq!(curl_multi_setopt(m, total, 3 as c_long), CURLM_OK);
-        let limits = *crate::multi::multi(m).core_mut().conn_limits_mut();
+        let limits = *crate::multi::multi(m)
+            .core_mut(Direct::assumed())
+            .conn_limits_mut();
         let n = core::num::NonZeroU32::new;
         assert_eq!((limits.max_host, limits.max_total), (n(2), n(3)));
         assert_eq!(
@@ -4340,7 +4345,11 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         // Multiplexing on or off, and the streams a server may open: none,
         // or more than an int holds, is 100; the dropped pipelining
         // options are taken.
-        let limits = |m| *crate::multi::multi(m).core_mut().conn_limits_mut();
+        let limits = |m| {
+            *crate::multi::multi(m)
+                .core_mut(Direct::assumed())
+                .conn_limits_mut()
+        };
         assert!(limits(m).multiplex, "on by default");
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_PIPELINING, 0 as c_long),
@@ -4452,6 +4461,98 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         e.timer_answer = -1;
         assert_eq!(curl_multi_add_handle(m, c), ffi::CURLM_ABORTED_BY_CALLBACK);
         assert_eq!(long(c, ffi::CURLOPT_TIMEOUT_MS, 5), CURLE_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+/// What a notification asked of the multi it was told of: each call's
+/// code.
+#[derive(Default)]
+struct AskedInNotify {
+    codes: Vec<(&'static str, ffi::CURLMcode)>,
+}
+
+unsafe extern "C" fn notify_asking(m: *mut CURLM, _: c_uint, _: *mut CURL, data: *mut c_void) {
+    // SAFETY: the test passes an `AskedInNotify`.
+    let a = unsafe { &mut *data.cast::<AskedInNotify>() };
+    let mut max_fd = -2;
+    // SAFETY: an `fd_set` is plain data, zeroed empty.
+    let mut read: ffi::fd_set = unsafe { core::mem::zeroed() };
+    // SAFETY: as above.
+    let mut write: ffi::fd_set = unsafe { core::mem::zeroed() };
+    let mut count = 0;
+    let mut ret = -1;
+    // SAFETY: the multi the callback was called for, and live arguments.
+    unsafe {
+        a.codes.push((
+            "fdset",
+            crate::multi::curl_multi_fdset(
+                m,
+                &raw mut read,
+                &raw mut write,
+                ptr::null_mut(),
+                &raw mut max_fd,
+            ),
+        ));
+        a.codes.push((
+            "waitfds",
+            crate::multi::curl_multi_waitfds(m, ptr::null_mut(), 0, &raw mut count),
+        ));
+        a.codes.push((
+            "wait",
+            curl_multi_wait(m, ptr::null_mut(), 0, 0, &raw mut ret),
+        ));
+        a.codes.push((
+            "poll",
+            crate::multi::curl_multi_poll(m, ptr::null_mut(), 0, 0, &raw mut ret),
+        ));
+    }
+}
+
+/// A notification may walk the multi's sockets and wait on them
+/// (`curl_multi_fdset`, `curl_multi_waitfds`, `curl_multi_wait`,
+/// `curl_multi_poll`), as C lets it (`allow_ntfy_cb`): each runs through
+/// what the notification was lent, and none borrows the multi a second
+/// time.
+#[test]
+fn a_notification_walks_and_waits_on_the_multi_s_sockets() {
+    let (path, url) = file("notify-waits", b"hello");
+    let mut a = AskedInNotify::default();
+    let m = curl_multi_init();
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    // SAFETY: live handles throughout, until their cleanups, and data
+    // that outlives them.
+    unsafe {
+        let n = notify_asking as NotifyFn as *mut c_void;
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_NOTIFYFUNCTION, n),
+            CURLM_OK
+        );
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_NOTIFYDATA, (&raw mut a).cast::<c_void>()),
+            CURLM_OK
+        );
+        let done = ffi::CURLMNOTIFY_EASY_DONE as c_uint;
+        assert_eq!(curl_multi_notify_enable(m, done), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        let mut running = 1;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+        }
+        assert_eq!(
+            a.codes,
+            [
+                ("fdset", CURLM_OK),
+                ("waitfds", CURLM_OK),
+                ("wait", CURLM_OK),
+                ("poll", CURLM_OK),
+            ]
+        );
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
         curl_easy_cleanup(c);
         assert_eq!(curl_multi_cleanup(m), CURLM_OK);
     }
@@ -4978,7 +5079,8 @@ fn a_closing_connection_s_socket_is_removed_by_the_internal_handle() {
         .with_conversation(at, talk);
     let shim = ShimMulti::boxed_with(Box::new(net)).unwrap();
     // SAFETY: the multi just made; no call is under way on it.
-    unsafe { shim.as_ref().core_mut() }.linger_connections(Some(Linger::UntilPeer));
+    unsafe { shim.as_ref().core_mut(Direct::assumed()) }
+        .linger_connections(Some(Linger::UntilPeer));
     let m: *mut CURLM = shim.as_ptr().cast();
     let mut log = SocketLog {
         m,

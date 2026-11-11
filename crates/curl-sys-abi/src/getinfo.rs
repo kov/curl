@@ -619,7 +619,7 @@ fn active_socket(easy: &ShimEasy) -> Result<Option<SocketKey>, Recursive> {
                     // SAFETY: the handle owns its private multi.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: nothing runs on it once its perform is done.
-                    unsafe { m.core_mut() }.active_socket_for(e)
+                    unsafe { m.core_mut(m.between_performs()) }.active_socket_for(e)
                 }
                 None => e.active_socket(),
             })
@@ -629,7 +629,7 @@ fn active_socket(easy: &ShimEasy) -> Result<Option<SocketKey>, Recursive> {
     let m = unsafe { multi.as_ref() };
     match m.stack.reach()? {
         // SAFETY: nothing runs on the multi.
-        Reach::Direct => Ok(unsafe { m.core_mut() }
+        Reach::Direct(direct) => Ok(unsafe { m.core_mut(direct) }
             .active_socket(id)
             .expect("an added handle is in its multi")),
         Reach::Frame(_) => Ok(None),

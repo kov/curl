@@ -341,10 +341,24 @@ pub(crate) struct MultiStack {
 /// How a call admitted by the gate reaches the multi.
 #[derive(Clone, Copy)]
 pub(crate) enum Reach {
-    /// Nothing runs: the core may be borrowed.
-    Direct,
+    /// Nothing runs: the core may be borrowed, with the witness.
+    Direct(Direct),
     /// Through the context a callback was lent.
     Frame(Frame),
+}
+
+/// The witness that nothing runs on a multi, which only the gate makes:
+/// the multi's core is borrowed only with one (`ShimMulti::core_mut`), so
+/// no call can take the core without matching how it was let in.
+#[derive(Clone, Copy)]
+pub(crate) struct Direct(());
+
+impl Direct {
+    /// One the tests make, as they drive the core with nothing running.
+    #[cfg(test)]
+    pub(crate) fn assumed() -> Direct {
+        Direct(())
+    }
 }
 
 /// An admitted multi call; leaving it pops the call.
@@ -390,7 +404,7 @@ impl MultiStack {
     pub(crate) fn reach(&self) -> Result<Reach, Recursive> {
         match self.frame.get() {
             Some(frame) => Ok(Reach::Frame(frame)),
-            None if self.depth.get() == 0 => Ok(Reach::Direct),
+            None if self.depth.get() == 0 => Ok(Reach::Direct(Direct(()))),
             None => Err(Recursive),
         }
     }
@@ -504,7 +518,7 @@ mod tests {
     fn admits_as_api_c() {
         let m = MultiStack::default();
         let entry = m.enter(MultiCall::Perform).unwrap();
-        assert!(matches!(entry.reach, Reach::Direct));
+        assert!(matches!(entry.reach, Reach::Direct(_)));
         // A call under way with no callback running: another thread.
         assert_eq!(m.enter(MultiCall::InfoRead).err(), Some(Recursive));
         m.lend(transfer_frame(), || {

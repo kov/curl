@@ -27,7 +27,7 @@ use crate::ffi::{
     CURLE_OK, CURLE_RECURSIVE_API_CALL, CURLE_UNKNOWN_OPTION, CURLINFO, CURLM, CURLM_OK, CURLcode,
     CURLoption, curl_header, curl_off_t,
 };
-use crate::gate::Direct;
+use crate::gate::Reach;
 use crate::getinfo::curl_easy_getinfo;
 use crate::multi::{
     curl_multi_add_handle, curl_multi_cleanup, curl_multi_get_offt, curl_multi_info_read,
@@ -47,6 +47,21 @@ fn long(c: *mut CURL, o: CURLoption, v: c_long) -> CURLcode {
 fn off(c: *mut CURL, o: CURLoption, v: curl_off_t) -> CURLcode {
     // SAFETY: a live handle and an offset option.
     unsafe { curl_easy_setopt(c, o, v) }
+}
+
+/// The core of `m`, which a test reaches between calls, with the gate's
+/// witness that nothing runs on it.
+#[expect(
+    clippy::mut_from_ref,
+    reason = "the gate's witness keeps the borrow unique"
+)]
+fn core_of(m: &crate::multi::ShimMulti) -> &mut curl_core::multi::Multi<crate::multi::CHost> {
+    let Ok(Reach::Direct(direct)) = m.stack.reach() else {
+        panic!("nothing runs on the multi between a test's calls");
+    };
+    // SAFETY: nothing runs on the multi, as the gate says, and the test
+    // makes no call on it while the borrow lasts.
+    unsafe { m.core_mut(direct) }
 }
 
 fn pointer<T>(c: *mut CURL, o: CURLoption, v: *mut T) -> CURLcode {
@@ -4318,9 +4333,7 @@ fn the_multi_s_callbacks_run_with_their_frames() {
                 ffi::CURLM_BAD_FUNCTION_ARGUMENT
             );
         }
-        let limits = *crate::multi::multi(m)
-            .core_mut(Direct::assumed())
-            .conn_limits_mut();
+        let limits = *core_of(crate::multi::multi(m)).conn_limits_mut();
         assert_eq!(limits.max_connects, core::num::NonZeroU32::new(1));
         assert_eq!(
             (limits.max_host, limits.max_total),
@@ -4333,9 +4346,7 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         );
         assert_eq!(curl_multi_setopt(m, host, 2 as c_long), CURLM_OK);
         assert_eq!(curl_multi_setopt(m, total, 3 as c_long), CURLM_OK);
-        let limits = *crate::multi::multi(m)
-            .core_mut(Direct::assumed())
-            .conn_limits_mut();
+        let limits = *core_of(crate::multi::multi(m)).conn_limits_mut();
         let n = core::num::NonZeroU32::new;
         assert_eq!((limits.max_host, limits.max_total), (n(2), n(3)));
         assert_eq!(
@@ -4345,11 +4356,7 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         // Multiplexing on or off, and the streams a server may open: none,
         // or more than an int holds, is 100; the dropped pipelining
         // options are taken.
-        let limits = |m| {
-            *crate::multi::multi(m)
-                .core_mut(Direct::assumed())
-                .conn_limits_mut()
-        };
+        let limits = |m| *core_of(crate::multi::multi(m)).conn_limits_mut();
         assert!(limits(m).multiplex, "on by default");
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_PIPELINING, 0 as c_long),
@@ -5104,9 +5111,8 @@ fn a_closing_connection_s_socket_is_removed_by_the_internal_handle() {
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, talk);
     let shim = ShimMulti::boxed_with(Box::new(net)).unwrap();
-    // SAFETY: the multi just made; no call is under way on it.
-    unsafe { shim.as_ref().core_mut(Direct::assumed()) }
-        .linger_connections(Some(Linger::UntilPeer));
+    // SAFETY: the multi just made, alive.
+    core_of(unsafe { shim.as_ref() }).linger_connections(Some(Linger::UntilPeer));
     let m: *mut CURLM = shim.as_ptr().cast();
     let mut log = SocketLog {
         m,

@@ -353,14 +353,6 @@ pub(crate) enum Reach {
 #[derive(Clone, Copy)]
 pub(crate) struct Direct(());
 
-impl Direct {
-    /// One the tests make, as they drive the core with nothing running.
-    #[cfg(test)]
-    pub(crate) fn assumed() -> Direct {
-        Direct(())
-    }
-}
-
 /// An admitted multi call; leaving it pops the call.
 pub(crate) struct MultiEntry<'a> {
     stack: &'a MultiStack,

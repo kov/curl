@@ -415,3 +415,25 @@ features: debug-hooks
             true => private.0.run_by_events(self),
 --- new
             true => private.0.run(self),
+
+=== more of a frame a full send buffer takes none of flushes and counts nothing sent
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::ws::tests::more_of_a_frame_a_full_buffer_takes_none_of_is_given_again
+--- old
+                if self.sendbuf_payload == 0 {
+                    return Err(Stop::Again);
+                }
+--- new
+                if self.sendbuf_payload == 0 && false {
+                    return Err(Stop::Again);
+                }
+
+=== a pong is added to a send buffer its chunk has no room left in
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::ws::tests::a_full_send_buffer_takes_no_pong
+--- old
+        if self.sendbuf.len() < self.sendbuf.chunk_size() {
+            match self.add_pending(wire) {
+--- new
+        if self.sendbuf.len() <= self.sendbuf.chunk_size() {
+            match self.add_pending(wire) {

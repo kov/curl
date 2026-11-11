@@ -1195,6 +1195,24 @@ fn a_send_blocked_after_its_head_is_given_again() {
     assert_eq!(sent, Ok(1));
 }
 
+/// More of a frame under way, given while the send buffer is full of
+/// what went before, is to be given again at once: none of it is
+/// buffered, and nothing is flushed for it (`ws_enc_send`'s
+/// `!ws->sendbuf_payload`, the end CVE-2025-5399's endless loop was
+/// given).
+#[test]
+fn more_of_a_frame_a_full_buffer_takes_none_of_is_given_again() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.sendbuf = ChunkQueue::new(8, 2);
+    ws.sendbuf.write(&[0; 16]).unwrap();
+    ws.enc.remain = 3;
+    let sent = ws.send(&mut rec, b"abc", FrameLen::These, text(), false);
+    assert_eq!(sent, Err(Stop::Again));
+    assert!(rec.sent.is_empty(), "nothing flushed: {:?}", rec.sent);
+    assert_eq!(ws.sendbuf.len(), 16);
+}
+
 /// A send that blocks says what of it went: none is a send to give again;
 /// some, gone before the block, is a count with the block to follow
 /// (`curl_ws_send` returning `CURLE_AGAIN` with its `sent` set).

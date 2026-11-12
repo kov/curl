@@ -193,7 +193,7 @@ features: test-util debug-hooks
             shaken = crate::multi::state::tls::upgrade(
                 carrier,
                 &identity,
-                &self.base.peer,
+                self.base.peer(),
                 &self.in_place,
                 crate::multi::state::tls::Blocks::Yes,
                 cx,

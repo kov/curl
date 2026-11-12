@@ -969,7 +969,7 @@ witness: curl-core proto::http::tests::a_forwarded_ftp_url_after_http_on_its_por
 
 === a forwarded request sends the proxy's lines though they are the origin's
 file: crates/curl-core/src/options/mod.rs
-witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_replaces_the_library_s
+witness: curl-core proto::http::tests::a_forwarded_request_sends_the_proxy_s_lines_only_kept_apart
 --- old
         (!self.unified_headers).then_some(ProxyHeaders(&self.headers))
 --- new

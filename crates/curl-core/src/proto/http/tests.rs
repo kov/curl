@@ -4777,6 +4777,34 @@ fn a_default_connect_sends_no_origin_header() {
     }
 }
 
+/// A request a proxy sends on carries the origin's lines, then the
+/// proxy's own where the two are kept apart (`CURLHEADER_SEPARATE`);
+/// where they are unified the origin's serve both, and the proxy's own
+/// are not sent (`CURLOPT_PROXYHEADER` ignored).
+#[test]
+fn a_forwarded_request_sends_the_proxy_s_lines_only_kept_apart() {
+    for unified in [false, true] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(b"http://origin.example/a")).unwrap();
+            o.http.headers = UserHeaders::new([&b"X-Origin: 1"[..]]).unwrap();
+            let proxy = o.proxy.make_mut().unwrap();
+            proxy.unified_headers = unified;
+            proxy.headers = UserHeaders::new([&b"X-Proxy: 1"[..]]).unwrap();
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        assert!(
+            text.starts_with("GET http://origin.example/a HTTP/1.1\r\n"),
+            "{text}"
+        );
+        assert_eq!(text.matches("\r\nX-Origin: 1\r\n").count(), 1, "{text}");
+        assert_eq!(text.contains("\r\nX-Proxy: 1\r\n"), !unified, "{text}");
+    }
+}
+
 /// The proxy's credentials go in the tunnel's `CONNECT`, and the request
 /// through the tunnel, which is the origin's, carries no
 /// `Proxy-Authorization:` (CVE-2003-1605's rule); a forwarded request

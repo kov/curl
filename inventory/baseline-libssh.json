@@ -1,9 +1,9 @@
 {
- "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
+ "c-commit": "687a4fbdc2c0cfaf398bdf552de3b0818a3651bd",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
-   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/deps/ngtcp2/lib",
+   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/p1b/build/deps/ngtcp2/lib",
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "OFF",
@@ -17,7 +17,7 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
-   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
+   "H2O": "/home/kov/Projects/curl/build/p1b/build/deps/h2o/bin/h2o",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
    "USE_ECH": "OFF",
    "USE_HTTPSRR": "ON",
@@ -29,10 +29,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2202,
+   "considered": 2203,
    "failed": 0,
-   "ok": 2109,
-   "ran": 2109,
+   "ok": 2110,
+   "ran": 2110,
    "skipped": 93
   },
   "curl-version": [
@@ -215,8 +215,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-11T18:21:17Z",
-   "started": "2026-11-11T18:18:44Z"
+   "finished": "2026-11-12T00:26:34Z",
+   "started": "2026-11-12T00:24:14Z"
   },
   "protocols": [
    "dict",
@@ -1044,8 +1044,8 @@
      "outcome": "passed"
     },
     "test_04_stuttered::test_04_02_100_100_10[h3]": {
-     "message": "AssertionError: response #107 http_code: expected 200, got 502\n  json stat from curl:{\n    \"certs\": \"\",\n    \"conn_id\": 0,\n    \"content_type\": \"text/html; charset=UTF-8\",\n    \"errormsg\": null,\n    \"exitcode\": 0,\n    \"filename_effective\": \"download_23.data\",\n    \"ftp_entry_path\": null,\n    \"http_code\"",
-     "outcome": "failed"
+     "message": null,
+     "outcome": "passed"
     },
     "test_04_stuttered::test_04_03_1000_10_1[h2]": {
      "message": null,
@@ -3296,8 +3296,8 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '26 packets captured\\n', '62 packets received by filter\\n', '0 pack",
+     "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {
      "message": null,
@@ -8787,6 +8787,9 @@
     "result": "ok"
    },
    "3703": {
+    "result": "ok"
+   },
+   "3704": {
     "result": "ok"
    },
    "371": {

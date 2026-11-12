@@ -44,6 +44,11 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_resumed_session_sends_the_request_as_early_data",
         a_resumed_session_sends_the_request_as_early_data,
     ),
+    #[cfg(not(any(libressl, boringssl_like)))]
+    (
+        "a_resumed_session_speaks_its_http2_as_early_data",
+        a_resumed_session_speaks_its_http2_as_early_data,
+    ),
     #[cfg(not(boringssl_like))]
     (
         "early_data_a_server_refuses_is_sent_again",
@@ -112,15 +117,144 @@ fn serve_each_after(
     (at, server)
 }
 
-/// A server's TLS taking `most` bytes of early data and agreeing to
-/// HTTP/1.1 by ALPN, so that its tickets allow early data.
+/// A server's connection.
 #[cfg(not(boringssl_like))]
-fn early_acceptor(certs: &Certs, most: u32) -> SslAcceptor {
+type Tls = openssl::ssl::SslStream<std::net::TcpStream>;
+
+/// What a server's connections speak once their handshake is done: the
+/// protocol it agrees to by ALPN, the libraries the client is given, and
+/// how a GET is read and answered, given what came early; it gives what
+/// came after the handshake.
+#[cfg(not(boringssl_like))]
+struct Speech {
+    alpn: &'static [u8],
+    libraries: &'static Libraries,
+    answer: fn(&mut Tls, &[u8]) -> Vec<u8>,
+}
+
+#[cfg(not(boringssl_like))]
+const HTTP1: Speech = Speech {
+    alpn: b"\x08http/1.1",
+    libraries: &LIBRARIES,
+    answer: answer_http1,
+};
+
+/// The client with nghttp2, offering HTTP/2 over TLS as C's default is
+/// with it built in.
+#[cfg(not(any(libressl, boringssl_like)))]
+const H2: Speech = Speech {
+    alpn: b"\x02h2",
+    libraries: &LIBRARIES_H2,
+    answer: answer_h2,
+};
+
+#[cfg(not(any(libressl, boringssl_like)))]
+static LIBRARIES_H2: Libraries = Libraries {
+    tls: Some(Library::Static(&curl_openssl::OPENSSL)),
+    h2: Some(&curl_nghttp2::NGHTTP2),
+    ..Libraries::NONE
+};
+
+/// A request's head read to its end, and answered with `BODY`.
+#[cfg(not(boringssl_like))]
+fn answer_http1(tls: &mut Tls, early: &[u8]) -> Vec<u8> {
+    let mut late = Vec::new();
+    let mut buf = [0u8; 4096];
+    while ![early, &late[..]]
+        .concat()
+        .windows(4)
+        .any(|w| w == b"\r\n\r\n")
+    {
+        match tls.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => late.extend_from_slice(&buf[..n]),
+        }
+    }
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len());
+    let _ = tls.write_all(head.as_bytes());
+    let _ = tls.write_all(BODY);
+    late
+}
+
+/// What an HTTP/2 client sends first (RFC 9113, section 3.4).
+#[cfg(not(any(libressl, boringssl_like)))]
+const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// One HTTP/2 frame.
+#[cfg(not(any(libressl, boringssl_like)))]
+fn frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+    let len = u32::try_from(payload.len()).unwrap().to_be_bytes();
+    let mut f = vec![len[1], len[2], len[3], kind, flags];
+    f.extend_from_slice(&stream.to_be_bytes());
+    f.extend_from_slice(payload);
+    f
+}
+
+/// Whether the whole frames at the start of `frames` include a HEADERS
+/// frame.
+#[cfg(not(any(libressl, boringssl_like)))]
+fn has_headers(mut frames: &[u8]) -> bool {
+    while frames.len() >= 9 {
+        let len =
+            usize::from(frames[0]) << 16 | usize::from(frames[1]) << 8 | usize::from(frames[2]);
+        if frames.len() < 9 + len {
+            return false;
+        }
+        if frames[3] == 1 {
+            return true;
+        }
+        frames = &frames[9 + len..];
+    }
+    false
+}
+
+/// The client's preface and a request's HEADERS read, and answered on
+/// stream 1 with `:status 200` and `BODY`, then a GOAWAY, so that the
+/// client closes the connection and nothing it sends is left unread. A
+/// client that does not begin with the preface is not answered at all.
+#[cfg(not(any(libressl, boringssl_like)))]
+fn answer_h2(tls: &mut Tls, early: &[u8]) -> Vec<u8> {
+    let mut late = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let all = [early, &late[..]].concat();
+        let n = all.len().min(PREFACE.len());
+        if all[..n] != PREFACE[..n] {
+            return late;
+        }
+        if n == PREFACE.len() && has_headers(&all[n..]) {
+            break;
+        }
+        match tls.read(&mut buf) {
+            Ok(0) | Err(_) => return late,
+            Ok(n) => late.extend_from_slice(&buf[..n]),
+        }
+    }
+    let answer = [
+        frame(4, 0, 0, &[]),
+        frame(4, 1, 0, &[]),
+        // `:status: 200`, the static table's eighth entry; END_HEADERS.
+        frame(1, 4, 1, &[0x88]),
+        // END_STREAM.
+        frame(0, 1, 1, BODY),
+        // The last stream 1, NO_ERROR.
+        frame(7, 0, 0, &[0, 0, 0, 1, 0, 0, 0, 0]),
+    ]
+    .concat();
+    let _ = tls.write_all(&answer);
+    while let Ok(1..) = tls.read(&mut buf) {}
+    late
+}
+
+/// A server's TLS taking `most` bytes of early data and agreeing to
+/// `speech`'s protocol by ALPN, so that its tickets allow early data.
+#[cfg(not(boringssl_like))]
+fn early_acceptor(certs: &Certs, most: u32, speech: &Speech) -> SslAcceptor {
+    let alpn = speech.alpn;
     acceptor(certs, |a| {
         a.set_max_early_data(most).unwrap();
-        a.set_alpn_select_callback(|_, offer| {
-            openssl::ssl::select_next_proto(b"\x08http/1.1", offer)
-                .ok_or(openssl::ssl::AlpnError::NOACK)
+        a.set_alpn_select_callback(move |_, offer| {
+            openssl::ssl::select_next_proto(alpn, offer).ok_or(openssl::ssl::AlpnError::NOACK)
         });
     })
 }
@@ -133,15 +267,20 @@ type EarlySeen = Vec<(Vec<u8>, Vec<u8>)>;
 type EarlyServer = JoinHandle<EarlySeen>;
 
 #[cfg(not(boringssl_like))]
-fn serve_early(acceptors: Vec<SslAcceptor>) -> (SocketAddr, EarlyServer) {
+fn serve_early(acceptors: Vec<SslAcceptor>, speech: &Speech) -> (SocketAddr, EarlyServer) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
+    let answer = speech.answer;
     let server = std::thread::spawn(move || {
         let mut seen = Vec::new();
         for acceptor in acceptors {
             let (tcp, _) = curl_core::test_server::accept(&listener);
+            // A client that never sends what is waited for fails the
+            // test, rather than hanging it.
+            tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
             let ssl = openssl::ssl::Ssl::new(acceptor.context()).unwrap();
-            let mut tls = openssl::ssl::SslStream::new(ssl, tcp).unwrap();
+            let mut tls = Tls::new(ssl, tcp).unwrap();
             let mut early = Vec::new();
             let mut buf = [0u8; 4096];
             loop {
@@ -152,20 +291,7 @@ fn serve_early(acceptors: Vec<SslAcceptor>) -> (SocketAddr, EarlyServer) {
                 }
             }
             tls.accept().unwrap();
-            let mut late = Vec::new();
-            while ![&early[..], &late[..]]
-                .concat()
-                .windows(4)
-                .any(|w| w == b"\r\n\r\n")
-            {
-                match tls.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => late.extend_from_slice(&buf[..n]),
-                }
-            }
-            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len());
-            let _ = tls.write_all(head.as_bytes());
-            let _ = tls.write_all(BODY);
+            let late = answer(&mut tls, &early);
             let _ = tls.shutdown();
             seen.push((early, late));
         }
@@ -175,21 +301,26 @@ fn serve_early(acceptors: Vec<SslAcceptor>) -> (SocketAddr, EarlyServer) {
 }
 
 /// Two GETs asking for early data, on connections of their own, the
-/// second to a server made by `second`: the server's, and the GETs'.
+/// second to a server made by `second`, both speaking `speech`: the
+/// server's, and the GETs'.
 #[cfg(not(boringssl_like))]
-fn early_pair(second: impl FnOnce(&SslAcceptor, &Certs) -> SslAcceptor) -> (EarlySeen, Got, Got) {
+fn early_pair(
+    speech: &Speech,
+    second: impl FnOnce(&SslAcceptor, &Certs) -> SslAcceptor,
+) -> (EarlySeen, Got, Got) {
     let certs = certs("early", "localhost", &["localhost"]);
-    let a = early_acceptor(&certs, 16384);
+    let a = early_acceptor(&certs, 16384, speech);
     let b = second(&a, &certs);
-    let (at, server) = serve_early(vec![a, b]);
+    let (at, server) = serve_early(vec![a, b], speech);
     let mut m = multi(try_box(SystemClock::new()).unwrap());
     let set = |o: &mut Options| {
         trusting(&certs)(o);
         o.limits.reuse.fresh = true;
         o.tls.options.make_mut().unwrap().ssl_options = SslOptions::EARLYDATA;
     };
-    let one = get_in(&mut m, "https", "localhost", at, set, false);
-    let two = get_in(&mut m, "https", "localhost", at, set, false);
+    let libraries = speech.libraries;
+    let one = get_using(&mut m, libraries, "https", "localhost", at, set, false);
+    let two = get_using(&mut m, libraries, "https", "localhost", at, set, false);
     let seen = server.join().unwrap();
     assert_eq!(one.result, Ok(()), "{:#?}", one.seen.lines);
     assert_eq!(two.result, Ok(()), "{:#?}", two.seen.lines);
@@ -218,13 +349,13 @@ fn no_early_data(seen: &EarlySeen, two: &Got) {
 
 #[cfg(libressl)]
 fn a_resumed_session_sends_the_request_as_early_data() {
-    let (seen, _, two) = early_pair(|a, _| a.clone());
+    let (seen, _, two) = early_pair(&HTTP1, |a, _| a.clone());
     no_early_data(&seen, &two);
 }
 
 #[cfg(libressl)]
 fn early_data_a_server_refuses_is_sent_again() {
-    let (seen, _, two) = early_pair(|_, certs| early_acceptor(certs, 16384));
+    let (seen, _, two) = early_pair(&HTTP1, |_, certs| early_acceptor(certs, 16384, &HTTP1));
     no_early_data(&seen, &two);
 }
 
@@ -233,20 +364,45 @@ fn early_data_a_server_refuses_is_sent_again() {
 /// sent again (`ossl_send_earlydata`, `ssl_cf_connect_deferred`).
 #[cfg(not(any(libressl, boringssl_like)))]
 fn a_resumed_session_sends_the_request_as_early_data() {
-    let (seen, _, two) = early_pair(|a, _| a.clone());
+    let (seen, _, two) = early_pair(&HTTP1, |a, _| a.clone());
+    sent_early(&seen, &two, "http/1.1", b"GET / HTTP/1.1\r\n");
+}
+
+/// As `a_resumed_session_sends_the_request_as_early_data`, the session's
+/// protocol HTTP/2: the early data is spoken in the protocol the session
+/// resumed had, before the server has agreed to it again, and so begins
+/// with HTTP/2's preface.
+#[cfg(not(any(libressl, boringssl_like)))]
+fn a_resumed_session_speaks_its_http2_as_early_data() {
+    let (seen, one, two) = early_pair(&H2, |a, _| a.clone());
+    let (early, _) = &seen[0];
+    assert!(early.is_empty(), "{early:?}");
+    assert!(
+        said(&one, "ALPN: server accepted h2"),
+        "{:#?}",
+        one.seen.lines
+    );
+    sent_early(&seen, &two, "h2", PREFACE);
+}
+
+/// The second of `seen`'s connections, `two`'s, sent all of its request
+/// early, beginning with `start`, in the protocol `alpn` the session it
+/// resumed had, and the server took it.
+#[cfg(not(any(libressl, boringssl_like)))]
+fn sent_early(seen: &EarlySeen, two: &Got, alpn: &str, start: &[u8]) {
     let (early, late) = &seen[1];
     let n = early.len();
-    assert!(early.starts_with(b"GET / HTTP/1.1\r\n"), "{early:?}");
+    assert!(early.starts_with(start), "{early:?}");
     assert!(late.is_empty(), "{late:?}");
     assert_eq!(two.early, n as i64);
     for line in [
-        "SSL session allows 16384 bytes of early data, reusing ALPN 'http/1.1'".to_owned(),
-        "ALPN: deferred handshake for early data using 'http/1.1'.".to_owned(),
+        format!("SSL session allows 16384 bytes of early data, reusing ALPN '{alpn}'"),
+        format!("ALPN: deferred handshake for early data using '{alpn}'."),
         format!("SSL sending {n} bytes of early data"),
-        "ALPN: server confirmed to use 'http/1.1'".to_owned(),
+        format!("ALPN: server confirmed to use '{alpn}'"),
         format!("Server accepted {n} bytes of TLS early data."),
     ] {
-        assert!(said(&two, &line), "no {line:?} in {:#?}", two.seen.lines);
+        assert!(said(two, &line), "no {line:?} in {:#?}", two.seen.lines);
     }
     assert!(
         !two.seen
@@ -260,7 +416,7 @@ fn a_resumed_session_sends_the_request_as_early_data() {
 /// request goes again after the handshake.
 #[cfg(not(any(libressl, boringssl_like)))]
 fn early_data_a_server_refuses_is_sent_again() {
-    let (seen, _, two) = early_pair(|_, certs| early_acceptor(certs, 16384));
+    let (seen, _, two) = early_pair(&HTTP1, |_, certs| early_acceptor(certs, 16384, &HTTP1));
     let (early, late) = &seen[1];
     assert!(early.is_empty(), "{early:?}");
     assert!(late.starts_with(b"GET / HTTP/1.1\r\n"), "{late:?}");

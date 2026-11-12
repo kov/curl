@@ -534,3 +534,11 @@ witness: curl-openssl a_verified_get_reads_the_body
         name = Some(verify_host(&cert, host, kind, io)?);
 --- new
         verify_host(&cert, host, kind, io)?;
+
+=== a handshake put off says the selected protocol, none yet, not the one it resumed
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_resumed_session_speaks_its_http2_as_early_data
+--- old
+            Some(d) if !self.step.done() => Some(d.alpn),
+--- new
+            Some(d) if false => Some(d.alpn),

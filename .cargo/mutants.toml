@@ -96,15 +96,8 @@ exclude_re = [
     # Once OpenSSL's handshake put off is done, the session is open only
     # where the server selected the protocol the resumed session had
     # (`alpn_negotiated` refuses any other), so `Chosen::named(selected)` is
-    # that protocol; before, the answer differs only where it is HTTP/2,
-    # which curl-openssl's tests do not build (no nghttp2), HTTP/1.1
-    # being spoken with or without it. And a session not done is said no
-    # goodbye: curl-core shuts down only an open layer
-    # (`conn::tls::tests::only_a_session_whose_handshake_is_done_is_said_goodbye`),
-    # and FTP's `CCC` clears only an open control connection's TLS.
-    'curl-openssl/src/ssl\.rs:\d+:9: replace Step::done -> bool with true$',
-    'curl-openssl/src/ssl\.rs:\d+:24: replace match guard !self\.step\.done\(\) with (true|false) in <impl TlsSession for Session>::chosen$',
-    'curl-openssl/src/ssl\.rs:\d+:24: delete ! in <impl TlsSession for Session>::chosen$',
+    # that protocol, and the resumed one answers the same.
+    'curl-openssl/src/ssl\.rs:\d+:24: replace match guard !self\.step\.done\(\) with true in <impl TlsSession for Session>::chosen$',
     # `QLOGDIR` read from the environment, which the test binaries, running
     # threads, do not set: what its value names is `QlogDir::from_value`'s,
     # tested; the read itself is checked end to end with the tool.

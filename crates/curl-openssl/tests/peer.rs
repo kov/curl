@@ -509,10 +509,23 @@ fn get_in(
     set: impl FnOnce(&mut Options),
     ssl: bool,
 ) -> Got {
+    get_using(m, &LIBRARIES, scheme, host, at, set, ssl)
+}
+
+/// As `get_in`, with `libraries`.
+fn get_using(
+    m: &mut Multi,
+    libraries: &'static Libraries,
+    scheme: &str,
+    host: &str,
+    at: SocketAddr,
+    set: impl FnOnce(&mut Options),
+    ssl: bool,
+) -> Got {
     let seen = track::untracked(|| Arc::new(Lock::new(Seen::default())));
     let (result, failure, chain, verify, early) = {
         let mut easy = Easy::new();
-        easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
+        easy.set_libraries(SharedLibraries::of_static(libraries));
         if ssl {
             let components = Components::new().unwrap();
             components.configure(b"ssl");

@@ -369,6 +369,7 @@ dependencies = [
  "curl-alloc",
  "curl-build",
  "curl-core",
+ "curl-nghttp2",
  "curl-os",
  "openssl",
  "openssl-sys",

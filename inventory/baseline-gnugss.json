@@ -1,9 +1,9 @@
 {
- "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
+ "c-commit": "687a4fbdc2c0cfaf398bdf552de3b0818a3651bd",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
-   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/deps/ngtcp2/lib;/home/kov/Projects/curl/build/deps/gnugss/lib",
+   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/deps/ngtcp2/lib;/srv/vm/work/p1-tree/build/deps/gnugss/lib",
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "OFF",
@@ -16,7 +16,7 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
-   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
+   "H2O": "/srv/vm/work/p1-tree/build/deps/h2o/bin/h2o",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
    "USE_ECH": "OFF",
    "USE_HTTPSRR": "ON",
@@ -28,10 +28,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2202,
+   "considered": 2203,
    "failed": 0,
-   "ok": 2109,
-   "ran": 2109,
+   "ok": 2110,
+   "ran": 2110,
    "skipped": 93
   },
   "curl-version": [
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-11T18:26:33Z",
-   "started": "2026-11-11T18:23:54Z"
+   "finished": "2026-11-12T00:20:02Z",
+   "started": "2026-11-12T00:16:59Z"
   },
   "protocols": [
    "dict",
@@ -8793,6 +8793,9 @@
     "result": "ok"
    },
    "3703": {
+    "result": "ok"
+   },
+   "3704": {
     "result": "ok"
    },
    "371": {

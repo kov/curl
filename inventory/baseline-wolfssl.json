@@ -1,5 +1,5 @@
 {
- "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
+ "c-commit": "687a4fbdc2c0cfaf398bdf552de3b0818a3651bd",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -17,10 +17,10 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
-   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
-   "HTTPD_NGHTTPX": "/home/kov/Projects/curl/build/deps/ech/bin/nghttpx",
+   "H2O": "/srv/vm/work/p1-tree/build/deps/h2o/bin/h2o",
+   "HTTPD_NGHTTPX": "/srv/vm/work/p1-tree/build/deps/ech/bin/nghttpx",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
-   "TEST_NGHTTPX": "/home/kov/Projects/curl/build/deps/ech/bin/nghttpx",
+   "TEST_NGHTTPX": "/srv/vm/work/p1-tree/build/deps/ech/bin/nghttpx",
    "USE_ECH": "ON",
    "USE_HTTPSRR": "ON",
    "USE_LIBIDN2": "ON",
@@ -31,10 +31,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2202,
+   "considered": 2203,
    "failed": 1,
-   "ok": 2103,
-   "ran": 2104,
+   "ok": 2104,
+   "ran": 2105,
    "skipped": 98
   },
   "curl-version": [
@@ -217,8 +217,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-11T18:23:41Z",
-   "started": "2026-11-11T18:21:05Z"
+   "finished": "2026-11-12T00:16:41Z",
+   "started": "2026-11-12T00:13:51Z"
   },
   "protocols": [
    "dict",
@@ -8812,6 +8812,9 @@
     "result": "ok"
    },
    "3703": {
+    "result": "ok"
+   },
+   "3704": {
     "result": "ok"
    },
    "371": {

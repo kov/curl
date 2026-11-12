@@ -1,5 +1,5 @@
 {
- "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
+ "c-commit": "687a4fbdc2c0cfaf398bdf552de3b0818a3651bd",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -17,7 +17,7 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
-   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
+   "H2O": "/srv/vm/work/p1-tree/build/deps/h2o/bin/h2o",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
    "USE_ECH": "OFF",
    "USE_HTTPSRR": "ON",
@@ -29,10 +29,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2202,
+   "considered": 2203,
    "failed": 1,
-   "ok": 2070,
-   "ran": 2071,
+   "ok": 2071,
+   "ran": 2072,
    "skipped": 131
   },
   "curl-version": [
@@ -212,8 +212,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-11T18:20:52Z",
-   "started": "2026-11-11T18:18:28Z"
+   "finished": "2026-11-12T00:13:34Z",
+   "started": "2026-11-12T00:11:19Z"
   },
   "protocols": [
    "dict",
@@ -8320,6 +8320,9 @@
     "result": "ok"
    },
    "3703": {
+    "result": "ok"
+   },
+   "3704": {
     "result": "ok"
    },
    "371": {

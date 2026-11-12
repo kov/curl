@@ -1,9 +1,9 @@
 {
- "c-commit": "39113544ae77a32926424bb7974a94dbca1c65c0",
+ "c-commit": "687a4fbdc2c0cfaf398bdf552de3b0818a3651bd",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
-   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/deps/rustls-ffi/lib",
+   "CMAKE_BUILD_RPATH": "/srv/vm/work/p1-tree/build/deps/rustls-ffi/lib",
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "ON",
@@ -17,10 +17,10 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
-   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
-   "HTTPD_NGHTTPX": "/home/kov/Projects/curl/build/deps/ech/bin/nghttpx",
+   "H2O": "/srv/vm/work/p1-tree/build/deps/h2o/bin/h2o",
+   "HTTPD_NGHTTPX": "/srv/vm/work/p1-tree/build/deps/ech/bin/nghttpx",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
-   "TEST_NGHTTPX": "/home/kov/Projects/curl/build/deps/ech/bin/nghttpx",
+   "TEST_NGHTTPX": "/srv/vm/work/p1-tree/build/deps/ech/bin/nghttpx",
    "USE_ECH": "ON",
    "USE_HTTPSRR": "ON",
    "USE_LIBIDN2": "ON",
@@ -31,10 +31,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2202,
+   "considered": 2203,
    "failed": 1,
-   "ok": 2067,
-   "ran": 2068,
+   "ok": 2068,
+   "ran": 2069,
    "skipped": 134
   },
   "curl-version": [
@@ -215,8 +215,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-11T19:06:13Z",
-   "started": "2026-11-11T19:03:45Z"
+   "finished": "2026-11-12T00:46:08Z",
+   "started": "2026-11-12T00:42:57Z"
   },
   "protocols": [
    "dict",
@@ -8336,6 +8336,9 @@
     "result": "ok"
    },
    "3703": {
+    "result": "ok"
+   },
+   "3704": {
     "result": "ok"
    },
    "371": {

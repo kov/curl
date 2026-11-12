@@ -243,3 +243,40 @@ fn test_util_is_enabled_only_for_tests() {
     }
     assert!(seen > 20, "the crates' manifests were read: {seen}");
 }
+
+/// Two checks are equal only where made for the same identity, the very
+/// one and not a copy of it, and saying the same in every part; and one
+/// shows what it says, not its identity.
+#[test]
+fn checks_are_equal_only_where_all_they_say_is() {
+    let id = identity(true, true, None);
+    let check = |id: &TryArc<TlsIdentity>, pinned, named_in_core, residuals| Checked {
+        identity: id.clone(),
+        pinned,
+        named_in_core,
+        residuals,
+    };
+    let none = Residuals::NONE;
+    let base = check(&id, false, false, none);
+    assert_eq!(base, check(&id, false, false, none));
+    let copy = identity(true, true, None);
+    assert_ne!(base, check(&copy, false, false, none));
+    assert_ne!(base, check(&id, true, false, none));
+    assert_ne!(base, check(&id, false, true, none));
+    let weak = none.with(Residual::AppHadContext);
+    assert_ne!(base, check(&id, false, false, weak));
+    assert_eq!(
+        format!("{:?}", check(&id, true, false, weak)),
+        "Checked { pinned: true, named_in_core: false, residuals: Residuals(2), .. }"
+    );
+}
+
+/// A residual kept twice is kept.
+#[test]
+fn a_residual_kept_twice_is_kept() {
+    let r = Residuals::NONE
+        .with(Residual::HostCheckFollowsChain)
+        .with(Residual::HostCheckFollowsChain);
+    assert!(r.has(Residual::HostCheckFollowsChain));
+    assert!(!r.has(Residual::AppHadContext));
+}

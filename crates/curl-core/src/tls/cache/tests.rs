@@ -843,3 +843,15 @@ fn an_export_stops_at_what_will_not_pack() {
     assert_eq!(out.tickets.len(), 1);
     assert_eq!(out.failed, Some(ExportStop::Packing(ErrorKind::TooLarge)));
 }
+
+/// A peer's key and the name after it are one allocation of their
+/// length, and the peer shows its key, not the name.
+#[test]
+fn a_peer_s_key_is_one_allocation_and_shown_alone() {
+    let p = SessionPeer::testing();
+    assert_eq!(p.key.capacity(), p.key.len());
+    assert!(p.key.len() > p.key_len, "the name follows the key");
+    let key = std::str::from_utf8(p.key()).unwrap();
+    assert!(key.ends_with(":G"), "{key}");
+    assert_eq!(format!("{p:?}"), format!("SessionPeer({key})"));
+}

@@ -4806,7 +4806,8 @@ stay open across responses and transfers until a pick, as C's `avail` does, so a
 challenge met while Digest is still open is a duplicate and not read (test 2027). The Digest
 challenge read is kept with the peer that sent it, the request's URL host for the origin's and
 the connection's for the proxy's, and the credentials first answering it; asked for by another
-peer or with other credentials it is not there. An answered 401
+peer or with other credentials it is not there. It is held in a `ForPeer`, whose fields only its
+module reads, so no reader reaches the challenge without naming the peer. An answered 401
 ends `Follow` to the request's own URL, counted as a redirect, keeping `Options::port`. Each
 request counts what it moves from nothing (`Sizes::new_request`, `Curl_pgrsReset`); heads and
 request bytes are counted over the transfer. The hashes Digest computes with (MD5, SHA-256,

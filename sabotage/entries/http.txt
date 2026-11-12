@@ -1113,9 +1113,9 @@ witness: curl-core proto::http::tests::a_probe_let_through_is_made_again_with_it
 file: crates/curl-core/src/auth/http.rs
 witness: curl-core auth::http::tests::keeps_digest_for_its_origin_and_credentials
 --- old
-            s.origin != *request.origin
+                kept.peer != *peer
 --- new
-            false
+                false
 
 === a Digest challenge answers with any credentials
 file: crates/curl-core/src/auth/http.rs
@@ -1649,3 +1649,11 @@ witness: curl-core proto::http1::response::tests::only_a_401_s_www_authenticate_
             Some(b'w') => (status.code == 401 && value_of(line, b"WWW-Authenticate:").is_some())
 --- new
             Some(b'w') => (status.code == 401 || value_of(line, b"WWW-Authenticate:").is_some())
+
+=== a Digest challenge kept for one origin is said to be there for another
+file: crates/curl-core/src/auth/http.rs
+witness: curl-core auth::http::tests::keeps_digest_for_its_origin_and_credentials
+--- old
+                .filter(|kept| kept.peer == *peer)
+--- new
+                .filter(|_| true)

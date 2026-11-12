@@ -5,9 +5,9 @@
 //! proxy a request goes through. Sans-IO: HTTP/1's head parser reads the
 //! challenges into it, and the driver asks it what to send.
 
-use curl_alloc::{OutOfMemory, try_box};
+use curl_alloc::OutOfMemory;
 
-use super::creds::{Answered, Secret, copy};
+use super::creds::{Secret, copy};
 use super::digest::{Digest, DigestError};
 use super::digest_sspi::{self, Refused, SspiDigest, SspiDigestNote};
 use super::gate::OriginTrusted;
@@ -160,7 +160,7 @@ pub(crate) struct PeerAuth {
     done: bool,
     /// The last Digest challenge read (C's `state.digest`), in memory of
     /// its own: made only where a server asks for Digest.
-    digest: Option<Box<DigestState>>,
+    digest: Option<Box<ForPeer<DigestKind>>>,
     /// The methods offered and not yet picked from (`avail`): a response
     /// whose challenges are not acted on leaves them for the next, of
     /// this transfer or a later one.
@@ -189,14 +189,72 @@ impl Picked {
     }
 }
 
-/// A Digest challenge, kept for the origin that sent it and the
-/// credentials it answers with (`digest_flush_stale`): asked of by any
-/// other origin it is not there, and other credentials start it over.
-#[derive(Debug)]
-struct DigestState {
-    origin: Peer,
-    answered: Option<Answered>,
-    digest: DigestKind,
+use keyed::ForPeer;
+
+/// What is kept for one peer, reached only by naming it.
+mod keyed {
+    use curl_alloc::{OutOfMemory, try_box};
+
+    use crate::auth::creds::{Answered, Secret};
+    use crate::conn::Peer;
+
+    /// A value kept for the peer that gave it and the credentials it was
+    /// last answered with (`digest_flush_stale`): asked of for any other
+    /// peer it is not there, and other credentials start it over. Its
+    /// fields are this module's, so no reader reaches the value without
+    /// naming its peer.
+    #[derive(Debug)]
+    pub(super) struct ForPeer<T> {
+        peer: Peer,
+        answered: Option<Answered>,
+        value: T,
+    }
+
+    impl<T> ForPeer<T> {
+        /// `value`, kept for `peer`, answered with nothing yet.
+        pub(super) fn new(peer: &Peer, value: T) -> Result<Box<ForPeer<T>>, OutOfMemory> {
+            try_box(ForPeer {
+                peer: peer.try_clone()?,
+                answered: None,
+                value,
+            })
+        }
+
+        /// The value in `slot`, to answer `peer` with `credentials`, which
+        /// it is then answered with: if it was kept for `peer` and not
+        /// answered with others; else it is forgotten.
+        pub(super) fn for_peer<'s>(
+            slot: &'s mut Option<Box<ForPeer<T>>>,
+            peer: &Peer,
+            credentials: Secret<'_>,
+        ) -> Result<Option<&'s mut T>, OutOfMemory> {
+            let stale = slot.as_ref().is_some_and(|kept| {
+                kept.peer != *peer
+                    || kept
+                        .answered
+                        .as_ref()
+                        .is_some_and(|a| !credentials.answers_as(a))
+            });
+            if stale {
+                *slot = None;
+            }
+            let Some(kept) = slot.as_mut() else {
+                return Ok(None);
+            };
+            kept.answered = Some(credentials.answered()?);
+            Ok(Some(&mut kept.value))
+        }
+
+        /// The value in `slot`, if it was kept for `peer`.
+        pub(super) fn holds_for<'s>(
+            slot: &'s Option<Box<ForPeer<T>>>,
+            peer: &Peer,
+        ) -> Option<&'s T> {
+            slot.as_ref()
+                .filter(|kept| kept.peer == *peer)
+                .map(|kept| &kept.value)
+        }
+    }
 }
 
 /// Digest, the core's or SSPI's.
@@ -445,23 +503,13 @@ impl PeerAuth {
         random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
         said: &mut DigestSaid,
     ) -> Result<Option<Vec<u8>>, OutputError> {
-        let stale = self.digest.as_ref().is_some_and(|s| {
-            s.origin != *request.origin
-                || s.answered
-                    .as_ref()
-                    .is_some_and(|a| !credentials.answers_as(a))
-        });
-        if stale {
-            self.digest = None;
-        }
-        let Some(state) = self.digest.as_mut() else {
+        let Some(kept) = ForPeer::for_peer(&mut self.digest, request.origin, credentials)? else {
             return Ok(None);
         };
-        state.answered = Some(credentials.answered()?);
-        if !state.digest.answerable() {
+        if !kept.answerable() {
             return Ok(None);
         }
-        let digest = match &mut state.digest {
+        let digest = match kept {
             DigestKind::Own(digest) => digest,
             DigestKind::Sspi(digest) => {
                 let value = digest_sspi::respond(
@@ -501,10 +549,8 @@ impl PeerAuth {
             bearer: credentials.is_some_and(|c| c.has_bearer()),
             done: self.done,
             avail: self.avail,
-            digest_nonce: self
-                .digest
-                .as_ref()
-                .is_some_and(|s| s.origin == *origin && s.digest.answerable()),
+            digest_nonce: ForPeer::holds_for(&self.digest, origin)
+                .is_some_and(DigestKind::answerable),
             sspi_digest: sspi,
         }
     }
@@ -542,11 +588,7 @@ impl PeerAuth {
                     challenge,
                 )),
             };
-            self.digest = Some(try_box(DigestState {
-                origin: origin.try_clone()?,
-                answered: None,
-                digest,
-            })?);
+            self.digest = Some(ForPeer::new(origin, digest)?);
         }
         Ok(())
     }

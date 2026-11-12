@@ -3490,8 +3490,9 @@ The handshake hands the `Checked` over as it ends (`Shaken::Done`), and over QUI
 library says it is done (`DriveCall::handshake_done`). The TLS layer's state
 (`conn::tls::PeerState`: `Shaking`, `Awaiting` and `Going` for a handshake put off, `Open`,
 `Failed`) is `Open` only with a `Checked` made for its own `SessionPeer`'s identity, and only an
-open session is read from or written to; one made for another fails the handshake
-(`PeerFailedVerification`, `internal: a check made for another session`).
+open session is read from, written to or said goodbye (`ssl_cf_shutdown`); one made for
+another fails the handshake (`PeerFailedVerification`, `internal: a check made for another
+session`).
 
 **The client's certificate** (`cert.rs`, `client_cert`) is loaded into the context before the
 session is made, when a certificate, a blob or a type is set: PEM as a chain (from a file, or

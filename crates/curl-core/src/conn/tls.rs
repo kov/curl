@@ -275,6 +275,12 @@ impl Part<Below<'_>> for TlsLayer {
     }
 
     fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
+        // Only a session whose handshake is done says goodbye; one still
+        // shaking, put off or failed is left as it is, unsaid
+        // (`ssl_cf_shutdown`).
+        if !matches!(self.peer_state, PeerState::Open { .. }) {
+            return Ok(Handshake::Done);
+        }
         let (session, mut io) = self.parts(cx, below);
         let r = session.shutdown(&mut io, crate::tls::Goodbye::Mutual);
         let (code, done) = match &r {
@@ -527,12 +533,17 @@ mod tests {
     /// A session whose handshake is put off for `most` bytes of early
     /// data: it notes what it was given early and what it sent, its
     /// peer taking the early data if `takes`, its handshake failing if
-    /// `fails`.
+    /// `fails`, waiting once before it is done if `waits`; sending
+    /// nothing after its early data if `quiet`, and never said goodbye
+    /// to if `unsaid`.
     #[derive(Debug, Default)]
     struct Deferring {
         most: usize,
         takes: bool,
         fails: bool,
+        waits: bool,
+        quiet: bool,
+        unsaid: bool,
         going: bool,
         given: Option<Vec<u8>>,
         sent: Vec<u8>,
@@ -559,6 +570,9 @@ mod tests {
             if self.fails {
                 return Err(ErrorKind::SslConnectError);
             }
+            if std::mem::take(&mut self.waits) {
+                return Ok(Shaken::Waiting);
+            }
             Ok(Shaken::Done(Checked::testing(io)))
         }
         fn early_accepted(&self) -> bool {
@@ -568,6 +582,7 @@ mod tests {
             Ok(Recv::WouldBlock)
         }
         fn send(&mut self, _: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent> {
+            assert!(!self.quiet, "{bytes:?} sent again after it went early");
             self.sent.extend_from_slice(bytes);
             Ok(Sent::Bytes(NonZeroUsize::new(bytes.len()).unwrap()))
         }
@@ -576,6 +591,7 @@ mod tests {
             _: &mut TlsIo<'_>,
             _: crate::tls::Goodbye,
         ) -> Result<Handshake, ErrorKind> {
+            assert!(!self.unsaid, "a goodbye said before the handshake is done");
             Ok(Handshake::Done)
         }
         fn waits(&self) -> TlsWait {
@@ -651,6 +667,15 @@ mod tests {
     /// Run `f` on a layer over `session`, connected, with the stream
     /// below it and a context noting what it is told.
     fn deferring(session: Deferring, f: impl FnOnce(&mut dyn Layer, Below<'_>, &mut Noting)) {
+        deferring_as(Component::Ssl, session, f);
+    }
+
+    /// As `deferring`, for the filter `filter`.
+    fn deferring_as(
+        filter: Component,
+        session: Deferring,
+        f: impl FnOnce(&mut dyn Layer, Below<'_>, &mut Noting),
+    ) {
         let clock = ManualClock::new().unwrap();
         let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(clock)
@@ -659,23 +684,89 @@ mod tests {
         let socket = crate::conn::io::dial(&mut net, at);
         let peer = crate::tls::SessionPeer::testing();
         let session = try_box(session).unwrap();
-        let mut layers = [TlsLayer::boxed(
-            session,
-            Vec::new(),
-            peer,
-            OwnSessions::default(),
-            Component::Ssl,
-        )
-        .unwrap()];
+        let mut layers =
+            [TlsLayer::boxed(session, Vec::new(), peer, OwnSessions::default(), filter).unwrap()];
         let (top, rest) = layers.split_last_mut().unwrap();
         let mut cx = Noting(None);
         let shaken = top.connect(&mut cx, Below::new(rest, &*socket));
         assert_eq!(shaken, Ok(Handshake::Done), "connected, put off");
-        assert_eq!(
-            top.query(LayerQuery::TlsDeferred),
-            Some(LayerAnswer::TlsDeferred)
-        );
         f(&mut **top, Below::new(rest, &*socket), &mut cx);
+    }
+
+    /// Only the origin's layer says its handshake is put off; a proxy's,
+    /// put off too, does not.
+    #[test]
+    fn only_the_origin_s_layer_says_its_handshake_is_put_off() {
+        let put_off = |filter| {
+            let mut answer = None;
+            let session = Deferring {
+                most: 4,
+                ..Deferring::default()
+            };
+            deferring_as(filter, session, |layer, _, _| {
+                answer = layer.query(LayerQuery::TlsDeferred);
+            });
+            answer
+        };
+        assert_eq!(put_off(Component::Ssl), Some(LayerAnswer::TlsDeferred));
+        assert_eq!(put_off(Component::SslProxy), None);
+    }
+
+    /// A session put off is said no goodbye, nor is one whose handshake
+    /// failed; once open, it is (`ssl_cf_shutdown`).
+    #[test]
+    fn only_a_session_whose_handshake_is_done_is_said_goodbye() {
+        let unsaid = Deferring {
+            most: 4,
+            unsaid: true,
+            ..Deferring::default()
+        };
+        deferring(unsaid, |layer, below, cx| {
+            assert_eq!(layer.shutdown(cx, below), Ok(Handshake::Done));
+        });
+        let failed = Deferring {
+            most: 4,
+            fails: true,
+            unsaid: true,
+            ..Deferring::default()
+        };
+        deferring(failed, |layer, mut below, cx| {
+            assert!(layer.send(cx, below.reborrow(), b"ab").is_err());
+            assert_eq!(layer.shutdown(cx, below), Ok(Handshake::Done));
+        });
+        let open = Deferring {
+            most: 4,
+            ..Deferring::default()
+        };
+        deferring(open, |layer, mut below, cx| {
+            layer.send(cx, below.reborrow(), b"ab").unwrap();
+            assert_eq!(layer.shutdown(cx, below), Ok(Handshake::Done));
+        });
+    }
+
+    /// Early data a handshake that waited took is skipped across the
+    /// sends after it, each given part of it again: none of it goes
+    /// twice.
+    #[test]
+    fn early_data_given_again_in_parts_is_not_sent_again() {
+        let session = Deferring {
+            most: 4,
+            takes: true,
+            waits: true,
+            quiet: true,
+            ..Deferring::default()
+        };
+        deferring(session, |layer, mut below, cx| {
+            let sent = layer.send(cx, below.reborrow(), b"abcd").unwrap();
+            assert_eq!(sent, Sent::WouldBlock, "the handshake waits");
+            let sent = layer.send(cx, below.reborrow(), b"ab").unwrap();
+            assert_eq!(sent, Sent::Bytes(NonZeroUsize::new(2).unwrap()));
+            assert_eq!(cx.0, Some(4));
+            let sent = layer.send(cx, below.reborrow(), b"c").unwrap();
+            assert_eq!(sent, Sent::Bytes(NonZeroUsize::new(1).unwrap()));
+            let sent = layer.send(cx, below, b"d").unwrap();
+            assert_eq!(sent, Sent::Bytes(NonZeroUsize::new(1).unwrap()));
+        });
     }
 
     /// The first send gives the handshake its early data, as much as the

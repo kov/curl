@@ -732,3 +732,11 @@ witness: curl-core proto::http::tests::tls::a_transfer_checking_the_peer_s_statu
             return None;
         }
 --- new
+
+=== a session whose handshake is not done is said goodbye
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core conn::tls::tests::only_a_session_whose_handshake_is_done_is_said_goodbye
+--- old
+        if !matches!(self.peer_state, PeerState::Open { .. }) {
+--- new
+        if matches!(self.peer_state, PeerState::Shaking) {

@@ -52,6 +52,7 @@ Witnesses run under a memory cap (systemd-run), as a planted fault can
 allocate without bound faster than the timeout fires.
 """
 
+import itertools
 import os
 import pathlib
 import re
@@ -64,6 +65,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 ENTRIES = ROOT / "sabotage" / "entries"
 CAP = ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=6G",
        "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue"]
+# Each witness's scope, named so that what its test started and left
+# behind (a server whose test aborted before dropping it) is stopped with
+# it.
+RUNS = itertools.count()
 
 
 class Entry:
@@ -141,7 +146,9 @@ def run(e, timeout):
         env.update(OPENSSL_DIR=str(ssl), OPENSSL_STATIC="1",
                    CURL_NGTCP2_DIR=str(deps / f"ngtcp2-{e.fork}"))
         features += ["--target-dir", str(ROOT / "build" / f"target-{e.fork}")]
-    cmd = CAP + ["cargo", "test", "-p", e.package, *features, "--", "--exact", e.test]
+    unit = f"sweep-{os.getpid()}-{next(RUNS)}.scope"
+    cmd = CAP + ["--unit", unit, "cargo", "test", "-p", e.package, *features,
+                 "--", "--exact", e.test]
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, start_new_session=True, env=env)
     try:
@@ -149,6 +156,11 @@ def run(e, timeout):
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
+        out = None
+    # Whatever the test started that outlived it, in its own process group
+    # or not, goes with the scope; a scope already gone is no error.
+    subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True)
+    if out is None:
         return "hung", ""
     # The cap kills the test binary; cargo says so and fails.
     if proc.returncode != 0 and re.search(r"\(signal: 9, SIGKILL", out):

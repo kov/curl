@@ -36,7 +36,8 @@ use super::http1::fields;
 use super::http1::follow::{self, Inherited};
 use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
-    self, Accepted, Authorization, Conditional, Forwarding, RangeLine, RequestHead, SentIn, Typed,
+    self, Accepted, Authorization, Conditional, Forwarding, ProxyAuthorization, RangeLine,
+    RequestHead, SentIn, Typed,
 };
 use super::{Before, Ended, ProtoStep};
 use crate::auth::creds::{Credentials, Secret, Takes};
@@ -1429,6 +1430,7 @@ impl Request {
             let proxy_custom = options
                 .proxy
                 .own_headers(http)
+                .lines()
                 .replaces(b"Proxy-Authorization");
             let side = auth_state.side(Side::Proxy);
             if forwarded {
@@ -1720,7 +1722,7 @@ impl Request {
         let proxy_authorization = proxy_auth
             .header
             .as_ref()
-            .map(|(method, value)| Authorization::to_proxy(method.name(), value));
+            .map(|(method, value)| ProxyAuthorization::new(method.name(), value));
         let authenticated = (!auth.used.is_empty()).then_some(auth.used);
         // A WebSocket's key: 16 random bytes in base64, drawn as its
         // header is made (`Curl_ws_request`).
@@ -1759,7 +1761,6 @@ impl Request {
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: cx.easy().report().referer(),
-            proxy_authorization,
             authorization,
             signed: signed.as_ref().map(|(_, lines)| &lines[..]),
             range,
@@ -1783,7 +1784,8 @@ impl Request {
                 .filter(|_| !http.headers.replaces(b"Alt-Used")),
             upgrade,
             forwarded: forwarded.then(|| Forwarding {
-                own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
+                own_headers: options.proxy.apart_headers(),
+                authorization: proxy_authorization,
             }),
             headers: &http.headers,
         };

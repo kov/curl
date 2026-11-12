@@ -24,6 +24,7 @@ use crate::progress;
 use crate::proto::http::negotiate;
 use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
+use crate::proto::http1::request::ProxyAuthorization;
 use crate::proto::http1::request::decimal;
 use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read, UdpTarget};
 use crate::text::Text;
@@ -286,6 +287,7 @@ pub(super) fn connect_head<H: Host>(
     let custom = options
         .proxy
         .own_headers(&options.http)
+        .lines()
         .replaces(b"Proxy-Authorization");
     let mut said = auth::DigestSaid::default();
     let output = cx
@@ -341,7 +343,10 @@ pub(super) fn connect_head<H: Host>(
             h2: !h1,
         }),
         http10,
-        proxy_authorization: output.header.as_ref().map(|(m, v)| (m.name(), &v[..])),
+        proxy_authorization: output
+            .header
+            .as_ref()
+            .map(|(m, v)| ProxyAuthorization::new(m.name(), v)),
         user_agent: options.http.user_agent.as_deref(),
         headers: options.proxy.own_headers(&options.http),
         trusted,

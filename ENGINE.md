@@ -4778,7 +4778,9 @@ Digest state and all. `Picked` tells a method not yet picked from a pick that fo
 (C's `CURLAUTH_PICKNONE`), which sends nothing until the next transfer. Each request asks each side
 what to send (`output`, from a `Secret`: the request's `Credentials` for the origin, the
 route's `ProxyCreds` for the proxy, never a token; the method and the path): the proxy's
-first, as `Proxy-Authorization`, and only to a proxy the request goes to whole. One method
+first, as `Proxy-Authorization`, and only to a proxy the request goes to whole: the line is a
+`ProxyAuthorization`, whose only place in a request's head is its `Forwarding`, and a CONNECT
+is given the proxy's lines as `ProxyHeaders`, which only `options::Proxy` makes. One method
 wanted is sent at once, more wait for a peer to choose. Basic and Bearer are done once sent;
 AWS SigV4, never a proxy's and never offered by a peer, is in use at once when it is the one
 method wanted and sends nothing itself: the request signs itself where it renders

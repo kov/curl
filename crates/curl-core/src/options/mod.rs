@@ -590,6 +590,24 @@ pub enum ProxyUserError {
     Malformed,
 }
 
+/// The header lines a proxy is sent, as `Proxy::own_headers` chose them:
+/// made nowhere else, so that what takes them is given only the proxy's.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProxyHeaders<'a>(&'a UserHeaders);
+
+impl<'a> ProxyHeaders<'a> {
+    /// The lines.
+    pub(crate) fn lines(self) -> &'a UserHeaders {
+        self.0
+    }
+
+    /// `lines` as a test's proxy's.
+    #[cfg(test)]
+    pub(crate) fn testing(lines: &'a UserHeaders) -> ProxyHeaders<'a> {
+        ProxyHeaders(lines)
+    }
+}
+
 impl Proxy {
     /// The proxy as a URL (`CURLOPT_PROXY`).
     pub fn url(&self) -> Option<&[u8]> {
@@ -636,12 +654,19 @@ impl Proxy {
     /// The header lines an HTTP proxy is sent of its own, which replace
     /// the library's to it (`Curl_checkProxyheaders`): the origin's where
     /// the two are unified.
-    pub(crate) fn own_headers<'a>(&'a self, http: &'a Http) -> &'a UserHeaders {
+    pub(crate) fn own_headers<'a>(&'a self, http: &'a Http) -> ProxyHeaders<'a> {
         if self.unified_headers {
-            &http.headers
+            ProxyHeaders(&http.headers)
         } else {
-            &self.headers
+            ProxyHeaders(&self.headers)
         }
+    }
+
+    /// The proxy's own lines where they are kept apart from the origin's,
+    /// sent after them in a request the proxy sends on; none where the
+    /// two are unified.
+    pub(crate) fn apart_headers(&self) -> Option<ProxyHeaders<'_>> {
+        (!self.unified_headers).then_some(ProxyHeaders(&self.headers))
     }
 
     /// The user and password from `user:password`, split at the first

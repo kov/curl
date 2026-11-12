@@ -36,7 +36,6 @@ pub(crate) struct RtspHead<'o> {
     pub(crate) range: Option<Ranged<'o>>,
     pub(crate) referer: Option<&'o [u8]>,
     pub(crate) user_agent: Option<&'o [u8]>,
-    pub(crate) proxy_authorization: Option<Authorization<'o>>,
     pub(crate) authorization: Option<Authorization<'o>>,
     /// A SETUP's or DESCRIBE's time condition, unless the application
     /// sends its own.
@@ -116,9 +115,6 @@ fn write_rtsp(head: &RtspHead<'_>, out: &mut Out<'_>) -> Result<(), ErrorKind> {
         && head.headers.replacing(b"User-Agent").is_none()
     {
         out.line(&[b"User-Agent: ", ua])?;
-    }
-    if let Some(Authorization { method, value }) = head.proxy_authorization {
-        out.line(&[b"Proxy-Authorization: ", method.as_bytes(), b" ", value])?;
     }
     if let Some(Authorization { method, value }) = head.authorization {
         out.line(&[b"Authorization: ", method.as_bytes(), b" ", value])?;

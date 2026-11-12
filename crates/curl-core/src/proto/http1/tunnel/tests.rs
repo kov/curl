@@ -1,6 +1,7 @@
 use super::*;
 use crate::auth::gate::OriginTrusted;
 use crate::auth::http::{Challenges, PeerAsked};
+use crate::proto::http1::request::UserHeaders;
 
 /// Every line `input` gives out, each applied, until the answer ends or
 /// the input runs out; the head's end with `auth_problem`.
@@ -30,13 +31,14 @@ fn lines(
 /// As test 80's proxy sees it.
 #[test]
 fn renders_connect_as_c() {
+    let none = UserHeaders::default();
     let mut out = Vec::new();
     let request = ConnectRequest {
         authority: b"test.80:8990",
         http10: true,
-        proxy_authorization: Some(("Basic", b"eW91YXJlOnlvdXJzZWxm")),
+        proxy_authorization: Some(ProxyAuthorization::new("Basic", b"eW91YXJlOnlvdXJzZWxm")),
         user_agent: Some(b""),
-        headers: &UserHeaders::default(),
+        headers: ProxyHeaders::testing(&none),
         trusted: Some(OriginTrusted::testing()),
         udp: None,
     };
@@ -53,7 +55,7 @@ fn renders_connect_as_c() {
         http10: false,
         proxy_authorization: None,
         user_agent: Some(b"curl/test"),
-        headers: &UserHeaders::default(),
+        headers: ProxyHeaders::testing(&none),
         trusted: Some(OriginTrusted::testing()),
         udp: None,
     };
@@ -89,7 +91,7 @@ fn the_proxy_s_lines_replace_the_library_s_and_follow() {
         http10: false,
         proxy_authorization: None,
         user_agent: Some(b"curl/test"),
-        headers: &headers,
+        headers: ProxyHeaders::testing(&headers),
         trusted,
         udp: None,
     };
@@ -109,7 +111,7 @@ fn the_proxy_s_lines_replace_the_library_s_and_follow() {
     let own = UserHeaders::new([&b"Proxy-Connection: close"[..]]).unwrap();
     out.clear();
     ConnectRequest {
-        headers: &own,
+        headers: ProxyHeaders::testing(&own),
         ..request(None)
     }
     .render(&mut out)

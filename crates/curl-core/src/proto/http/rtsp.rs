@@ -761,7 +761,6 @@ impl Request {
             range,
             referer: cx.easy().report().referer(),
             user_agent: http.user_agent.as_deref(),
-            proxy_authorization: None,
             authorization,
             conditional,
             content,

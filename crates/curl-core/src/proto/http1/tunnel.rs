@@ -13,8 +13,9 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::chunked::{ChunkDecoder, ChunkError};
 use super::fields::{self, BadLine};
 use super::framing::value_of;
-use super::request::UserHeaders;
+use super::request::ProxyAuthorization;
 use crate::auth::gate::OriginTrusted;
+use crate::options::ProxyHeaders;
 
 /// The longest line of an answer (`DYN_PROXY_CONNECT_HEADERS`).
 const MAX_LINE: usize = 16384;
@@ -26,13 +27,12 @@ pub(crate) struct ConnectRequest<'a> {
     pub(crate) authority: &'a [u8],
     /// Sent as HTTP/1.0 (`CURLPROXY_HTTP_1_0`).
     pub(crate) http10: bool,
-    /// The method and what follows its name in `Proxy-Authorization`.
-    pub(crate) proxy_authorization: Option<(&'static str, &'a [u8])>,
+    pub(crate) proxy_authorization: Option<ProxyAuthorization<'a>>,
     /// None, or an empty one, sends none.
     pub(crate) user_agent: Option<&'a [u8]>,
     /// The application's lines for the proxy, which replace the
     /// library's Host, User-Agent and Proxy-Connection and follow them.
-    pub(crate) headers: &'a UserHeaders,
+    pub(crate) headers: ProxyHeaders<'a>,
     /// Its Authorization and Cookie may go (`Curl_auth_allowed_to_host`).
     pub(crate) trusted: Option<OriginTrusted>,
     /// A CONNECT-UDP's, which asks the proxy at `authority` to upgrade
@@ -62,7 +62,7 @@ impl ConnectRequest<'_> {
             }
             out.try_extend_from_slice(b"\r\n")
         };
-        let theirs = |name: &[u8]| self.headers.replaces(name);
+        let theirs = |name: &[u8]| self.headers.lines().replaces(name);
         let h1 = !self.udp.is_some_and(|u| u.h2);
         match self.udp {
             Some(udp) => line(&[
@@ -79,8 +79,8 @@ impl ConnectRequest<'_> {
         if h1 && !theirs(b"Host") {
             line(&[b"Host: ", self.authority])?;
         }
-        if let Some((method, value)) = self.proxy_authorization {
-            line(&[b"Proxy-Authorization: ", method.as_bytes(), b" ", value])?;
+        if let Some(authorization) = self.proxy_authorization {
+            line(&authorization.line())?;
         }
         if let Some(ua) = self
             .user_agent
@@ -96,7 +96,7 @@ impl ConnectRequest<'_> {
             line(&[b"Upgrade: connect-udp"])?;
             line(&[b"Capsule-Protocol: ?1"])?;
         }
-        for (name, value) in self.headers.for_connect(self.trusted) {
+        for (name, value) in self.headers.lines().for_connect(self.trusted) {
             line(&[name, b": ", value])?;
         }
         line(&[])

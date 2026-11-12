@@ -8,7 +8,7 @@ use crate::coding::{Coding, Decoders};
 use crate::date::HttpDate;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, LineSource};
-use crate::options::{Item, Listed, Ranged, Resume};
+use crate::options::{Item, Listed, ProxyHeaders, Ranged, Resume};
 use crate::text::Text;
 use std::fmt::Write as _;
 
@@ -99,15 +99,33 @@ impl<'a> Authorization<'a> {
         (!headers.replaces(b"Authorization")).then_some(Authorization { method, value })
     }
 
-    /// A `Proxy-Authorization` line, for a proxy, which the gate does not
-    /// hold back.
-    pub(crate) fn to_proxy(method: &'static str, value: &'a [u8]) -> Authorization<'a> {
-        Authorization { method, value }
-    }
-
     /// A line that goes even beside the application's own Authorization.
     pub(crate) fn alongside(method: &'static str, value: &'a [u8], _: Leave) -> Authorization<'a> {
         Authorization { method, value }
+    }
+}
+
+/// The `Proxy-Authorization` line a method sends to a proxy, which the
+/// gate does not hold back: only a request to a proxy has a place for it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProxyAuthorization<'a> {
+    method: &'static str,
+    value: &'a [u8],
+}
+
+impl<'a> ProxyAuthorization<'a> {
+    pub(crate) fn new(method: &'static str, value: &'a [u8]) -> ProxyAuthorization<'a> {
+        ProxyAuthorization { method, value }
+    }
+
+    /// The line, without its end.
+    pub(crate) fn line(&self) -> [&'a [u8]; 4] {
+        [
+            b"Proxy-Authorization: ",
+            self.method.as_bytes(),
+            b" ",
+            self.value,
+        ]
     }
 }
 
@@ -415,7 +433,9 @@ impl Part {
 pub(crate) struct Forwarding<'o> {
     /// The proxy's own lines, sent after the application's for the
     /// origin, where the two are kept apart.
-    pub(crate) own_headers: Option<&'o UserHeaders>,
+    pub(crate) own_headers: Option<ProxyHeaders<'o>>,
+    /// The proxy's authorization.
+    pub(crate) authorization: Option<ProxyAuthorization<'o>>,
 }
 
 /// What a request says, for one origin.
@@ -431,7 +451,6 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) port: Option<u16>,
     pub(crate) user_agent: Option<&'o [u8]>,
     pub(crate) referer: Option<&'o [u8]>,
-    pub(crate) proxy_authorization: Option<Authorization<'o>>,
     pub(crate) authorization: Option<Authorization<'o>>,
     /// The lines a signature sends in Authorization's place, each ended
     /// by CRLF: AWS SigV4's `Authorization` and the headers it adds.
@@ -619,8 +638,8 @@ fn write_h1(
                 }
             },
             Part::ProxyAuthorization => {
-                if let Some(Authorization { method, value }) = head.proxy_authorization {
-                    out.line(&[b"Proxy-Authorization: ", method.as_bytes(), b" ", value])?;
+                if let Some(authorization) = head.forwarded.and_then(|f| f.authorization) {
+                    out.line(&authorization.line())?;
                 }
             }
             Part::Authorization => {
@@ -720,7 +739,7 @@ fn write_h1(
                     && !head.headers.replaces(b"Proxy-Connection")
                     && !f
                         .own_headers
-                        .is_some_and(|h| h.replaces(b"Proxy-Connection"))
+                        .is_some_and(|h| h.lines().replaces(b"Proxy-Connection"))
                 {
                     out.line(&[b"Proxy-Connection: Keep-Alive"])?;
                 }
@@ -839,6 +858,7 @@ fn custom(
     let proxy = head
         .forwarded
         .and_then(|f| f.own_headers)
+        .map(ProxyHeaders::lines)
         .into_iter()
         .flat_map(|h| h.sendable(gate.trusted()));
     for h in head.headers.sendable(gate.trusted()).chain(proxy) {
@@ -976,7 +996,6 @@ mod tests {
             port: Some(PORT),
             user_agent: Some(UA),
             referer: None,
-            proxy_authorization: None,
             authorization: None,
             signed: None,
             range: None,
@@ -1055,7 +1074,6 @@ mod tests {
                 port: Some(PORT),
                 user_agent: Some(b"ua/1"),
                 referer: Some(b"http://ref.example/x"),
-                proxy_authorization: None,
                 authorization: None,
                 signed: None,
                 range: None,
@@ -1115,7 +1133,6 @@ mod tests {
                 port: None,
                 user_agent: Some(b"ua/1"),
                 referer: None,
-                proxy_authorization: None,
                 authorization: Authorization::new(
                     "Basic",
                     b"OmV4YW1wbGU=",
@@ -1346,7 +1363,6 @@ mod tests {
             port: None,
             user_agent: None,
             referer: None,
-            proxy_authorization: None,
             authorization: None,
             signed: None,
             range: None,
@@ -1387,7 +1403,6 @@ mod tests {
             port: None,
             user_agent: None,
             referer: None,
-            proxy_authorization: None,
             authorization: None,
             signed: None,
             range: None,
@@ -1429,7 +1444,6 @@ mod tests {
             port: None,
             user_agent: None,
             referer: None,
-            proxy_authorization: None,
             authorization: None,
             signed: None,
             range: None,
@@ -1449,7 +1463,8 @@ mod tests {
         let gate = CredentialGate::testing(&here, &here, false);
         let mut out = Vec::new();
         let apart = Forwarding {
-            own_headers: Some(&own),
+            own_headers: Some(ProxyHeaders::testing(&own)),
+            authorization: None,
         };
         render_h1(&head(Some(apart)), &gate, &mut out).unwrap();
         assert_eq!(
@@ -1458,7 +1473,10 @@ mod tests {
              X-A: 1\r\nX-B: 2\r\nProxy-Connection: close\r\n\r\n"
         );
         out.clear();
-        let unified = Forwarding { own_headers: None };
+        let unified = Forwarding {
+            own_headers: None,
+            authorization: None,
+        };
         render_h1(&head(Some(unified)), &gate, &mut out).unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out),
@@ -1486,7 +1504,6 @@ mod tests {
             port: None,
             user_agent: None,
             referer: None,
-            proxy_authorization: None,
             authorization: None,
             signed: None,
             range: None,
@@ -1549,7 +1566,6 @@ mod tests {
                 port: None,
                 user_agent: None,
                 referer: None,
-                proxy_authorization: None,
                 authorization: None,
                 signed: None,
                 range: None,

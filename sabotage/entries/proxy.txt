@@ -40,7 +40,7 @@ witness: curl-core proto::http::tests::a_forwarding_proxy_gets_the_whole_url
 --- old
                 if let Some(f) = head.forwarded
 --- new
-                if let Some(f) = head.forwarded.xor(Some(Forwarding { own_headers: None }))
+                if let Some(f) = head.forwarded.xor(Some(Forwarding { own_headers: None, authorization: None }))
 
 === a proxy's Proxy-Connection: close is not heard
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -127,6 +127,7 @@ witness: curl-core proto::http::tests::a_custom_proxy_authorization_goes_beside_
             let proxy_custom = options
                 .proxy
                 .own_headers(http)
+                .lines()
                 .replaces(b"Proxy-Authorization");
 --- new
             let proxy_custom = http.headers.replaces(b"Proxy-Authorization");
@@ -272,9 +273,9 @@ witness: curl-core proto::http::tests::a_socks_refusal_fails_with_the_proxy_s_er
 file: crates/curl-core/src/proto/http1/tunnel.rs
 witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
 --- old
-        for (name, value) in self.headers.for_connect(self.trusted) {
+        for (name, value) in self.headers.lines().for_connect(self.trusted) {
 --- new
-        for (name, value) in self.headers.for_connect(self.trusted).take(0) {
+        for (name, value) in self.headers.lines().for_connect(self.trusted).take(0) {
 
 === the proxy's own Host does not replace the library's in CONNECT
 file: crates/curl-core/src/proto/http1/tunnel.rs
@@ -965,3 +966,11 @@ witness: curl-core proto::http::tests::a_forwarded_ftp_url_after_http_on_its_por
 --- new
         let _ = base;
         let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+
+=== a forwarded request sends the proxy's lines though they are the origin's
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_replaces_the_library_s
+--- old
+        (!self.unified_headers).then_some(ProxyHeaders(&self.headers))
+--- new
+        Some(ProxyHeaders(&self.headers))

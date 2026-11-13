@@ -855,3 +855,14 @@ fn a_peer_s_key_is_one_allocation_and_shown_alone() {
     assert!(key.ends_with(":G"), "{key}");
     assert_eq!(format!("{p:?}"), format!("SessionPeer({key})"));
 }
+
+/// Whether Apple's SecTrust verified a session's peer is kept with it,
+/// unset unless said, so a resumption knows how the peer was checked.
+#[test]
+fn a_ticket_keeps_whether_sectrust_verified_its_peer() {
+    let made = TlsTicket::new(b"s".to_vec(), TLS1_3, None, 0, 0);
+    assert!(!made.sectrust());
+    let marked = made.with_sectrust(true);
+    assert!(marked.sectrust());
+    assert!(!marked.with_sectrust(false).sectrust());
+}

@@ -350,6 +350,37 @@ fn an_https_connection_is_reused_only_with_the_same_tls() {
 /// no transfer that starts there and gives them.
 #[test]
 fn a_redirect_elsewhere_makes_its_tls_without_the_client_s_identity() {
+    use crate::options::{SslOptions, TlsOptions};
+    type Set = fn(&mut TlsOptions);
+    // All at once, then each alone, as the fake says only whether any is
+    // there; ECH the fake does not build, so it is not checked here.
+    let each: [(&str, Set); 10] = [
+        ("all", |t| {
+            t.cert = Some(b"client.pem".to_vec());
+            t.key = Some(b"client.key".to_vec());
+            t.key_password = Some(b"secret".to_vec());
+            t.pinned_key = Some(b"sha256//AAAA".to_vec());
+        }),
+        ("cert", |t| t.cert = Some(b"client.pem".to_vec())),
+        ("cert blob", |t| t.cert_blob = Some(b"-----BEGIN".to_vec())),
+        ("cert type", |t| t.cert_type = Some(b"PEM".to_vec())),
+        ("key", |t| t.key = Some(b"client.key".to_vec())),
+        ("key blob", |t| t.key_blob = Some(b"-----BEGIN".to_vec())),
+        ("key type", |t| t.key_type = Some(b"PEM".to_vec())),
+        ("password", |t| t.key_password = Some(b"secret".to_vec())),
+        ("pinned key", |t| {
+            t.pinned_key = Some(b"sha256//AAAA".to_vec())
+        }),
+        ("system's certificate", |t| {
+            t.ssl_options = t.ssl_options | SslOptions::AUTO_CLIENT_CERT;
+        }),
+    ];
+    for (what, set) in each {
+        a_redirect_elsewhere_leaves(what, set);
+    }
+}
+
+fn a_redirect_elsewhere_leaves(what: &str, set: fn(&mut crate::options::TlsOptions)) {
     let (backend, libraries) = tls();
     let moved = moved(&format!("https://localhost:{PORT}/b"), false);
     let first = Conversation::replies(&[WELCOME, &fake::records(&moved).unwrap()], false);
@@ -357,23 +388,17 @@ fn a_redirect_elsewhere_makes_its_tls_without_the_client_s_identity() {
     let other = Conversation::replies(&[&welcome, &response], false);
     let again = Conversation::replies(&[&welcome, &response], false);
     let mut m = serving(Peer::Accepts, &[&first, &other, &again]);
-    let identity = |o: &mut Options| {
-        let t = o.tls.options.make_mut().unwrap();
-        t.cert = Some(b"client.pem".to_vec());
-        t.key = Some(b"client.key".to_vec());
-        t.key_password = Some(b"secret".to_vec());
-        t.pinned_key = Some(b"sha256//AAAA".to_vec());
-    };
+    let identity = |o: &mut Options| set(o.tls.options.make_mut().unwrap());
     let ran = get_tls(&mut m, &libraries, "/a", first.clone(), |o| {
         identity(o);
         o.http.follow = Follow::All;
         o.http.unrestricted_auth = true;
     });
-    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.result, Ok(()), "{what}");
     let log = backend.log();
-    assert_eq!(log.sessions, 2);
+    assert_eq!(log.sessions, 2, "{what}");
     assert_eq!(log.name(), b"localhost");
-    assert!(!log.client_identity, "the redirect's TLS");
+    assert!(!log.client_identity, "{what}: the redirect's TLS");
     // Started at the other origin, the identity goes, on a connection of
     // its own.
     let ran = get_tls(&mut m, &libraries, "/c", again.clone(), |o| {
@@ -381,10 +406,10 @@ fn a_redirect_elsewhere_makes_its_tls_without_the_client_s_identity() {
         o.set_url(Some(format!("https://localhost:{PORT}/c").as_bytes()))
             .unwrap();
     });
-    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.result, Ok(()), "{what}");
     let log = backend.log();
-    assert_eq!(log.sessions, 3);
-    assert!(log.client_identity, "the first origin's TLS");
+    assert_eq!(log.sessions, 3, "{what}");
+    assert!(log.client_identity, "{what}: the first origin's TLS");
     let asked = String::from_utf8(sent(&again)).unwrap();
     assert!(asked.contains("GET /c HTTP/1.1\r\n"), "{asked}");
 }

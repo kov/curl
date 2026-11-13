@@ -191,6 +191,11 @@ pub struct FakeLog {
 /// (`FakeLog::client_identity`).
 fn client_identity(identity: &TlsIdentity) -> bool {
     let o = &identity.options;
+    // The fake supports no ECH: a transfer asking for it fails
+    // (`NotBuiltIn`) before a session is made, so none made has it.
+    if o.ech != crate::options::Ech::NONE {
+        return true;
+    }
     o.cert.is_some()
         || o.cert_blob.is_some()
         || o.cert_type.is_some()
@@ -199,7 +204,6 @@ fn client_identity(identity: &TlsIdentity) -> bool {
         || o.key_type.is_some()
         || o.key_password.is_some()
         || o.pinned_key.is_some()
-        || o.ech != crate::options::Ech::NONE
         || identity.auto_client_cert()
 }
 

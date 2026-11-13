@@ -104,6 +104,15 @@ fn the_version_is_libssh_s() {
     assert!(v.starts_with("0."), "{v}");
 }
 
+/// libssh failing to look the peer up (no host to look up) is its error,
+/// which C takes as a key missing, not a state it does not know, which C
+/// takes as a key mismatched.
+#[test]
+fn a_failed_known_hosts_lookup_is_an_error() {
+    let mut session = LIBSSH.session().expect("a session");
+    assert_eq!(session.known_host(), (KnownHosts::Error, None));
+}
+
 /// A setting with a NUL inside is refused before libssh is asked; one
 /// libssh takes is taken.
 #[test]

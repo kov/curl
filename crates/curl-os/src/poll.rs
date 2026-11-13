@@ -437,6 +437,22 @@ mod tests {
         assert!(fds[1].revents().is_empty());
     }
 
+    /// An absent entry names no descriptor at all, not one the process
+    /// has open (standard output is, and is writable or invalid, either
+    /// of which `poll` would report): nothing is reported of it.
+    #[test]
+    fn passes_over_an_absent_entry() {
+        let (mut a, b) = UnixStream::pair().unwrap();
+        a.write_all(b"x").unwrap();
+        let mut fds = [
+            PollFd::absent(Events::IN | Events::OUT | Events::PRI),
+            PollFd::new(b.as_fd(), Events::IN),
+        ];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        assert!(fds[0].revents().is_empty());
+        assert!(fds[1].revents().contains(Events::IN));
+    }
+
     #[test]
     fn waits_out_its_timeout_with_nothing_ready() {
         let (_a, b) = UnixStream::pair().unwrap();

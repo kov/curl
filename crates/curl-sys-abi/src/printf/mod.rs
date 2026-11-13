@@ -752,6 +752,22 @@ mod tests {
         );
     }
 
+    /// A string's width is padded past its length, or its precision's;
+    /// a NULL pointer is written `(nil)`, its padding on the side
+    /// opposite the usual one (each checked against libcurl's output).
+    #[test]
+    fn strings_and_null_pointers_are_padded_as_c_pads_them() {
+        let abc = c"abc".as_ptr();
+        let null = ptr::null::<core::ffi::c_void>();
+        assert_eq!(snprintf!(c"%10s|", abc), (11, "       abc|".to_owned()));
+        assert_eq!(snprintf!(c"%-10s|", abc), (11, "abc       |".to_owned()));
+        assert_eq!(snprintf!(c"%10.2s|", abc), (11, "        ab|".to_owned()));
+        assert_eq!(snprintf!(c"%p|", null), (6, "(nil)|".to_owned()));
+        assert_eq!(snprintf!(c"%10p|", null), (11, "(nil)     |".to_owned()));
+        assert_eq!(snprintf!(c"%-10p|", null), (11, "     (nil)|".to_owned()));
+        assert_eq!(snprintf!(c"%3p|", null), (6, "(nil)|".to_owned()));
+    }
+
     /// Output that fills the buffer is cut a byte short for its NUL, and
     /// the count is of the bytes left before it, as C's `curl_msnprintf`
     /// returns (checked against libcurl's output).

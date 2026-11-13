@@ -250,6 +250,18 @@ exclude_re = [
     # what was not reserved: only a string longer than the stack's copy
     # holds is copied there, so the size is never 0.
     'curl-os/src/fnmatch\.rs:.*: replace \+ with (-|\*) in with_c_string$',
+    # C's own matcher's shortcut for a star ending the pattern: without
+    # it the star is gone back to until the name runs out, and the
+    # pattern, at its end, matches the same.
+    'curl-os/src/fnmatch/own\.rs:.*: delete match arm 0 in matches$',
+    # The stars ending the pattern after the name ran out are one run,
+    # used up by the inner loop: the outer one goes round at most once,
+    # so its count, tested before it is spent, is never read again; and a
+    # `?` among them leaves the pattern unfinished, no match either way.
+    # (By column: the `-=` and the `b'?'` arm of that last loop; the main
+    # loop's are tested.)
+    'curl-os/src/fnmatch/own\.rs:\d+:20: replace -= with (\+=|/=) in matches$',
+    "curl-os/src/fnmatch/own\\.rs:\\d+:17: delete match arm b'\\?' in matches$",
     # Freeing what C allocated: only a leak checker sees it not freed, and
     # the tests run under none that sees C's heap (Miri cannot run FFI).
     # A successful `getaddrinfo` never leaves the list null.

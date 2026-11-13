@@ -199,6 +199,42 @@ mod tests {
         }
     }
 
+    /// Rows unit1307 lacks, each with the result of C's own matcher run
+    /// on it: an escape in a bracket expression, the bytes taken as they
+    /// are after a leading `]` or `][`, `?` after a star, a star gone
+    /// back to after the pattern ran out, and stars ending the pattern.
+    #[test]
+    fn the_own_matcher_agrees_with_c_on_more_rows() {
+        use Matched::{Match, NoMatch};
+        let rows: [(&[u8], &[u8], Matched); 16] = [
+            (b"[\\a]", b"\\", NoMatch),
+            (b"[\\a]", b"a", Match),
+            (b"[]a\\b]", b"\\", NoMatch),
+            (b"[]a\\b]", b"b", Match),
+            (b"[][\\a]", b"\\", Match),
+            (b"[][\\a]", b"a", Match),
+            (b"[]a-c]", b"b", NoMatch),
+            (b"[]a-c]", b"a", Match),
+            (b"[][a-c]", b"b", NoMatch),
+            (b"[][a-c]", b"a", Match),
+            (b"*??", b"a", NoMatch),
+            (b"*??", b"ab", Match),
+            (b"*a", b"aab", NoMatch),
+            (b"*a", b"aba", Match),
+            (b"*a", b"baa", Match),
+            (b"*a**", b"a", Match),
+        ];
+        for (pattern, name, want) in rows {
+            assert_eq!(
+                own::matches(pattern, name),
+                want,
+                "{} {}",
+                pattern.escape_ascii(),
+                name.escape_ascii()
+            );
+        }
+    }
+
     /// A zero byte ends either, as it ends C's string.
     #[test]
     fn a_zero_byte_ends_the_pattern_and_the_name() {

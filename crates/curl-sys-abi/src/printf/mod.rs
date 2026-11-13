@@ -752,6 +752,34 @@ mod tests {
         );
     }
 
+    /// Output that fills the buffer is cut a byte short for its NUL, and
+    /// the count is of the bytes left before it, as C's `curl_msnprintf`
+    /// returns (checked against libcurl's output).
+    #[test]
+    fn output_filling_the_buffer_ends_a_byte_short() {
+        for (size, n, text) in [
+            (1, 0, &b""[..]),
+            (4, 3, b"hel"),
+            (5, 4, b"hell"),
+            (6, 5, b"hello"),
+        ] {
+            let mut buf = [0xffu8; 8];
+            // SAFETY: a C format whose conversion the argument matches,
+            // and a buffer of at least the size given.
+            let got = unsafe {
+                curl_msnprintf(
+                    buf.as_mut_ptr().cast(),
+                    size,
+                    c"%s".as_ptr(),
+                    c"hello".as_ptr(),
+                )
+            };
+            assert_eq!(got, n, "{size}");
+            assert_eq!(&buf[..=text.len()], [text, b"\0"].concat(), "{size}");
+            assert!(buf[size..].iter().all(|&b| b == 0xff), "{size}");
+        }
+    }
+
     /// A precision near `INT_MAX` takes the width below what an `int`
     /// holds once the digits, sign and prefix are taken from it: the
     /// width is spent, and the number written with the zeros the work buffer

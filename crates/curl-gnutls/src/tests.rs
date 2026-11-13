@@ -1367,6 +1367,32 @@ fn no_session_is_kept_or_resumed_without_the_cache_nor_resumed_under_verifystatu
     assert!(lib.w().made("set_data").is_empty());
 }
 
+/// A session kept for the peer is not resumed by a transfer that has the
+/// cache off; one with it on resumes it.
+#[test]
+fn a_kept_session_is_not_resumed_with_the_cache_off() {
+    let world = World {
+        alpn: b"h2",
+        data: b"ticket-13",
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let shared = TlsShared::testing();
+    let on = identity(|i| i.options.session_cache = true);
+    let off = identity(|i| i.options.session_cache = false);
+    let mut kept = Kept::new();
+    ticket_13(lib, &on, &mut kept, &shared);
+    let wire = Wire::default();
+    for (id, resumed) in [(&off, false), (&on, true)] {
+        let mut s = session(lib, id, Alpn::H2Http11, &shared);
+        let r = with_io(&mut s, id, &mut kept, &wire, |s, io| {
+            s.handshake(io).map(|shaken| shaken.as_handshake())
+        });
+        assert_eq!(r, Ok(Handshake::Done));
+        assert_eq!(!lib.w().made("set_data").is_empty(), resumed);
+    }
+}
+
 /// A TLS 1.3 session the peer gave after the handshake, `h2` agreed,
 /// allowing `early` bytes of early data: kept in `kept`.
 fn ticket_13(lib: &'static Fake, id: &TryArc<TlsIdentity>, kept: &mut Kept, shared: &TlsShared) {
@@ -1631,6 +1657,31 @@ fn a_ticket_is_not_kept_where_sessions_are_not() {
         "{:#?}",
         kept.notes.0
     );
+}
+
+/// A session whose handshake is not done says no goodbye: only one
+/// done is shut down cleanly (`ssl_cf_shutdown`).
+#[test]
+fn no_goodbye_is_said_before_the_handshake_is_done() {
+    let world = World {
+        scripts: vec![("handshake", vec![Act::Return(-28)])],
+        ..World::default()
+    };
+    let lib = Fake::new(world);
+    let shared = TlsShared::testing();
+    let id = plain();
+    let mut s = session(lib, &id, Alpn::Http11, &shared);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    });
+    assert_eq!(r, Ok(Handshake::Waiting));
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.shutdown(io, Goodbye::Mutual)
+    });
+    assert_eq!(r, Ok(Handshake::Done));
+    assert!(lib.w().made("bye").is_empty(), "{:#?}", lib.w().calls);
 }
 
 #[test]

@@ -1599,11 +1599,11 @@ behaviour oracle only.
 108. **`curl-os` on macOS**, along C's Apple paths (sockets, waker, random, errno, xattr, argv).
      **Done.**
 109. **`curl-core`, the tool and the shim on macOS**, the C libraries linked. **Done.**
-     runtests on the Mac: 2088 of 2092 against C's 2093 of 2093; 96 and 558 are replaced, 1013
-     waits for LDAP (step 110) and 1560 is DIVERGENCE.md's "Allocations the platform makes".
+     runtests on the Mac, measured 2026-11-13 with libssh2 as C's build has it: 2101 of 2103
+     against C's 2103 of 2103, the two failures 96 and 558, which are replaced.
 110. **LDAP through `lib/ldap.c`'s path**: macOS's OpenLDAP 2.4 has no `ldap_init_fd`, so C's
      build takes the code WinLDAP takes; one port for both. **Done** on macOS
      (`Local`, a second LDAP library kind), WinLDAP since (step 100).
 111. **Apple SecTrust and AppleIDN**, compared against the shipped curl. **Done**
      (`apple-sectrust`, `apple-idn`): runtests against C's build with both on (`~/work/c-apple`,
-     2092 of 2092), the same failures as the plain build (96, 558, 1560).
+     2102 of 2102, measured 2026-11-13), the same failures as the plain build (96, 558).

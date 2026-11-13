@@ -517,6 +517,23 @@ mod tests {
                 ),
                 false,
             ),
+            // The issuer's alternative names are not the host's: a zero
+            // in one of their DNS names says nothing of it.
+            (
+                cert_with(
+                    &cn,
+                    &plain,
+                    &[tlv(
+                        0x30,
+                        &[
+                            tlv(0x06, &[0x55, 0x1d, 0x12]),
+                            tlv(0x04, &tlv(0x30, &tlv(0x82, b"a\0b.example"))),
+                        ]
+                        .concat(),
+                    )],
+                ),
+                false,
+            ),
         ] {
             assert_eq!(host_name_holds_zero(&cert), Some(zero), "{cert:02x?}");
         }

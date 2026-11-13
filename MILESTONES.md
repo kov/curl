@@ -1281,11 +1281,14 @@ Its performance scenarios use the threaded-resolver build and turn VERBOSE on, a
 Status: **in progress**. The application validation: a WebKit port built with its libcurl network
 backend (`inventory/references/webkit-curl/`) against our library, its own HTTP tests run
 against ours and C's, and its test browser in use. Performance against the C reference
-(SCOPE stage 8) is measured here, on the scorecard and on the browser's loads.
+(SCOPE stage 8) is measured here, on the scorecard and on the browser's loads. The scorecards
+are `inventory/perf.md` (Linux aarch64), `inventory/perf-x86_64.md` and
+`inventory/perf-macos.md`; what is left is the gaps they show, HTTP/3's parallel downloads on
+aarch64 the widest.
 
 ## Milestone 9: Windows
 
-Status: **in progress**. The library, the shim DLL and curl.exe built with MSVC, scored on
+Status: **done**. The library, the shim DLL and curl.exe built with MSVC, scored on
 the suite against two oracles: the curl.exe Windows ships (Schannel, SSPI, WinIDN, WinLDAP,
 `ENABLE_UNICODE`, the threaded resolver), the main one, and the curl.se build (LibreSSL,
 libssh2, HTTP/2 and HTTP/3, WinIDN, WinLDAP, native CA store, no Unicode). The TLS library is
@@ -1442,12 +1445,13 @@ through SSPI; MIT krb5 stays Unix-only.
 
 ## Milestone 10: the other backends
 
-Status: **in progress**. The backends C builds with that the rewrite does not bind yet, each behind
+Status: **done**, but for quictls (step 103) and what step 112 leaves. The backends C builds
+with that the rewrite did not bind, each behind
 its category's interface and scored on a C leg built with it, on Linux and, where C supports
 it there, Windows.
 
 103. **TLS**: GnuTLS, wolfSSL, mbedTLS, Rustls; the OpenSSL forks C supports (BoringSSL,
-     AWS-LC, LibreSSL, quictls) as variants of the OpenSSL backend. **In progress.**
+     AWS-LC, LibreSSL, quictls) as variants of the OpenSSL backend. **Done** but for quictls.
      GnuTLS is **done**: `curl-gnutls` behind the core's TLS seam as `lib/vtls/gtls.c` drives
      it, chosen by the `gnutls` feature in place of `openssl`, with Ed25519 from its nettle and
      HTTP/3 over ngtcp2's GnuTLS crypto (104). Scored with `score.py --gnutls` against C's
@@ -1584,7 +1588,8 @@ experimental Apple fast UDP. They go with the macOS port.
 
 ## Milestone 11: macOS
 
-Status: **in progress**. The library, the shim and the tool on aarch64-apple-darwin, scored on
+Status: **done**; Apple fast UDP, experimental in C, is not built. The library, the shim and
+the tool on aarch64-apple-darwin, scored on
 the suite against C's build from this tree with the Linux reference's options (`alface`,
 `~/work/c-ref`: 2082 of 2082). The curl macOS ships (8.7.1, SecureTransport and LibreSSL 3.3.6)
 cannot be built from this tree, which dropped SecureTransport and needs LibreSSL 3.4.1: it is a

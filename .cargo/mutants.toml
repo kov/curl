@@ -770,12 +770,6 @@ exclude_re = [
     # NULL from the start otherwise: the status and the handle agree on
     # every answer, so either test alone decides the same.
     "curl-gssapi/src/sys\\.rs:.*: replace match guard !is_error\\(major\\) with true in (Name::import|Cred::acquire|OidSet::mechanisms|OidSet::without|MadeCtx::initiator)$",
-    # A context handed back to the library for its next round: only a
-    # peer's real answer tells it from NULL, and no test runs an acceptor
-    # to answer (the library's contexts are tested from a cached ticket
-    # with no KDC, the suites' Negotiate and Kerberos over the stub). An
-    # answer that is none MIT krb5 refuses alike either way.
-    "curl-gssapi/src/sys\\.rs:.*: replace MadeCtx::into_raw -> \\*mut GssCtxIdStruct with Default::default\\(\\)$",
     # Credentials acquired for every mechanism hold SPNEGO's, whose
     # `gss_set_neg_mechs` only copies the set: it fails only for want of
     # memory, which no test can make the library run short of.

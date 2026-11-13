@@ -186,6 +186,19 @@ mod tests {
         assert_eq!(own::matches(b"*a*b*c", b"xaxbxc"), Matched::NoMatch);
     }
 
+    /// A range's end, escaped or not, is used up with it: a `-` after it
+    /// is a byte of its own, not the start of another range. (C's own
+    /// matcher, run on each pattern, gives the same results.)
+    #[test]
+    fn the_own_matcher_resumes_after_a_range_s_end() {
+        for pattern in [&b"[a-c-e]"[..], b"[a-\\c-e]"] {
+            assert_eq!(own::matches(pattern, b"d"), Matched::NoMatch);
+            assert_eq!(own::matches(pattern, b"-"), Matched::Match);
+            assert_eq!(own::matches(pattern, b"e"), Matched::Match);
+            assert_eq!(own::matches(pattern, b"b"), Matched::Match);
+        }
+    }
+
     /// A zero byte ends either, as it ends C's string.
     #[test]
     fn a_zero_byte_ends_the_pattern_and_the_name() {

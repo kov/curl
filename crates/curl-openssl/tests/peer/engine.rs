@@ -33,6 +33,11 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "an_engine_s_certificate_and_key_serve_the_client",
         an_engine_s_certificate_and_key_serve_the_client,
     ),
+    #[cfg(ossl3)]
+    (
+        "a_configuration_a_provider_cannot_load_is_said",
+        a_configuration_a_provider_cannot_load_is_said,
+    ),
 ];
 
 /// Engines that start but load neither a certificate nor a key: on Linux
@@ -78,6 +83,11 @@ fn a_configuration_loads() -> bool {
 /// runs, which runs `engine_child` alone; OpenSSL looks for engines it
 /// does not have in `OPENSSL_ENGINES`, read as each is looked for.
 pub(crate) const CHILD: &str = "CURL_OPENSSL_PEER_ENGINE_CHILD";
+
+/// Set in the child `a_configuration_a_provider_cannot_load_is_said`
+/// runs, which runs `conf_child` alone; OpenSSL reads `OPENSSL_CONF` as
+/// a context loads its configuration.
+pub(crate) const CONF_CHILD: &str = "CURL_OPENSSL_PEER_CONF_CHILD";
 
 type Set<'a> = Box<dyn Fn(&mut curl_core::options::TlsOptions) + 'a>;
 
@@ -368,6 +378,41 @@ fn an_engine_or_provider_that_cannot_be_had_fails_as_c_says() {
             got.seen.lines
         );
     }
+}
+
+/// A configuration file that is not there fails to load into a
+/// provider's context: that is said, and the provider serves the
+/// transfer all the same, as C's `ossl_set_provider` goes on.
+#[cfg(ossl3)]
+fn a_configuration_a_provider_cannot_load_is_said() {
+    let missing = certs_dir().join("no-such.cnf");
+    let ran = std::process::Command::new(std::env::current_exe().unwrap())
+        .env("OPENSSL_CONF", &missing)
+        .env(CONF_CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert_eq!(ran.stdout, b"conf_child ... ok\n");
+}
+
+/// The child's run: the default provider, loaded where `OPENSSL_CONF`
+/// names no file.
+#[cfg(ossl3)]
+pub(crate) fn conf_child() {
+    let certs = certs("conf", "localhost", &["localhost"]);
+    let got = with_named(&certs, b"default", false);
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert_eq!(got.seen.body, BODY);
+    assert!(
+        said(&got, "Failed to load default openssl config. Proceeding."),
+        "{:#?}",
+        got.seen.lines
+    );
 }
 
 /// LibreSSL has no provider to read a store with: naming one fails, and a

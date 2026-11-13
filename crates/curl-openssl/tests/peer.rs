@@ -103,6 +103,13 @@ fn main() {
         track::untracked(|| println!("ok"));
         return;
     }
+    #[cfg(ossl3)]
+    if std::env::var_os(engine::CONF_CHILD).is_some() {
+        track::untracked(|| print!("conf_child ... "));
+        engine::conf_child();
+        track::untracked(|| println!("ok"));
+        return;
+    }
     for (name, test) in [
         (
             "a_verified_get_reads_the_body",

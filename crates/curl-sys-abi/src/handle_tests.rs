@@ -4505,6 +4505,16 @@ fn a_handle_s_own_multi_goes_with_it() {
 #[derive(Default)]
 struct AskedInNotify {
     codes: Vec<(&'static str, ffi::CURLMcode)>,
+    /// A descriptor ready to read, given to the waits beside the
+    /// multi's own.
+    ready: c_int,
+    /// What the walks and waits reported: the highest descriptor
+    /// `curl_multi_fdset` set, the count `curl_multi_waitfds` gave, and
+    /// the counts of `curl_multi_wait` with nothing extra, then with
+    /// `ready`.
+    max_fd: c_int,
+    count: c_uint,
+    waited: [c_int; 2],
 }
 
 unsafe extern "C" fn notify_asking(m: *mut CURLM, _: c_uint, _: *mut CURL, data: *mut c_void) {
@@ -4537,23 +4547,51 @@ unsafe extern "C" fn notify_asking(m: *mut CURLM, _: c_uint, _: *mut CURL, data:
             "wait",
             curl_multi_wait(m, ptr::null_mut(), 0, 0, &raw mut ret),
         ));
+        a.waited[0] = ret;
+        let mut extra = [ffi::curl_waitfd {
+            fd: a.ready,
+            events: ffi::CURL_WAIT_POLLIN as i16,
+            revents: 0,
+        }];
+        a.codes.push((
+            "wait extra",
+            curl_multi_wait(m, extra.as_mut_ptr(), 1, 0, &raw mut ret),
+        ));
+        a.waited[1] = ret;
         a.codes.push((
             "poll",
             crate::multi::curl_multi_poll(m, ptr::null_mut(), 0, 0, &raw mut ret),
         ));
     }
+    a.max_fd = max_fd;
+    a.count = count;
 }
 
 /// A notification may walk the multi's sockets and wait on them
 /// (`curl_multi_fdset`, `curl_multi_waitfds`, `curl_multi_wait`,
 /// `curl_multi_poll`), as C lets it (`allow_ntfy_cb`): each runs through
 /// what the notification was lent, and none borrows the multi a second
-/// time.
+/// time. The walks see the socket of a transfer still waiting for its
+/// server, and the waits count a ready descriptor given them beside the
+/// multi's own.
 #[test]
 fn a_notification_walks_and_waits_on_the_multi_s_sockets() {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
     let (path, url) = file("notify-waits", b"hello");
-    let mut a = AskedInNotify::default();
+    let (ready, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    writer.write_all(b"x").unwrap();
+    let mut a = AskedInNotify {
+        ready: ready.as_raw_fd(),
+        ..AskedInNotify::default()
+    };
+    // A server that never answers: its transfer waits on its socket.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let silent = format!("http://{}/", listener.local_addr().unwrap());
+    let silent = std::ffi::CString::new(silent).unwrap();
     let m = curl_multi_init();
+    let waiting = curl_easy_init();
+    pointer(waiting, ffi::CURLOPT_URL, silent.as_ptr().cast_mut());
     let c = curl_easy_init();
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
@@ -4571,9 +4609,10 @@ fn a_notification_walks_and_waits_on_the_multi_s_sockets() {
         );
         let done = ffi::CURLMNOTIFY_EASY_DONE as c_uint;
         assert_eq!(curl_multi_notify_enable(m, done), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, waiting), CURLM_OK);
         assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
-        let mut running = 1;
-        while running > 0 {
+        let mut running = 2;
+        while running > 1 {
             assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
         }
         assert_eq!(
@@ -4582,11 +4621,19 @@ fn a_notification_walks_and_waits_on_the_multi_s_sockets() {
                 ("fdset", CURLM_OK),
                 ("waitfds", CURLM_OK),
                 ("wait", CURLM_OK),
+                ("wait extra", CURLM_OK),
                 ("poll", CURLM_OK),
             ]
         );
+        assert!(a.max_fd >= 0, "{}", a.max_fd);
+        assert!(a.count >= 1, "{}", a.count);
+        // The transfer's socket may be ready or not; the descriptor
+        // given is, and counts one more.
+        assert_eq!(a.waited[1], a.waited[0] + 1, "{:?}", a.waited);
         assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
         curl_easy_cleanup(c);
+        assert_eq!(curl_multi_remove_handle(m, waiting), CURLM_OK);
+        curl_easy_cleanup(waiting);
         assert_eq!(curl_multi_cleanup(m), CURLM_OK);
     }
     std::fs::remove_file(path).unwrap();

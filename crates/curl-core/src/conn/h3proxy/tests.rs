@@ -277,8 +277,9 @@ impl LayerCx for Asked {
     fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
         Some(self)
     }
-    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
-        Some(self)
+    fn h3_event(&mut self, stream: StreamId, _: &StreamEvent<'_>) -> Heard {
+        self.calls.push(format!("h3_event {}", stream.0));
+        Heard::Failed
     }
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         self.yes.then_some(&mut self.room)
@@ -375,13 +376,6 @@ impl crate::conn::layer::EarlyData for Asked {
 impl crate::conn::layer::QuicTimer for Asked {
     fn due_in(&mut self, wait: std::time::Duration) {
         self.calls.push(format!("quic_due {wait:?}"));
-    }
-}
-
-impl crate::conn::layer::H3Streams for Asked {
-    fn heard(&mut self, stream: StreamId, _: &StreamEvent<'_>) -> Heard {
-        self.calls.push(format!("h3_event {}", stream.0));
-        Heard::Failed
     }
 }
 

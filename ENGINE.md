@@ -1929,12 +1929,12 @@ pub(crate) trait LayerCx {           // each capability lent or not; no defaults
     fn tls_sessions(&mut self) -> Option<&mut dyn TlsSessions>;  // the share's or the multi's
     fn early_data(&mut self) -> Option<&mut dyn EarlyData>;      // Curl_pgrsEarlyData
     fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer>;      // EXPIRE_QUIC
-    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams>;      // a stream's transfer
+    fn h3_event(&mut self, stream: StreamId, event: &StreamEvent) -> Heard; // a stream's transfer
     fn recv_room(&mut self) -> Option<&mut RecvRoom>;            // xfer_sockbuf
     fn recv_buf(&mut self) -> Option<&mut XferBuf>;              // xfer_buf
 }
 pub(crate) trait LayerCalls: LayerCx { /* of, info, fails, socket_failed, bytes, quic_due,
-    h3_event, ...: each through its capability, nothing where none is lent */ }
+    ...: each through its capability, nothing where none is lent */ }
 ```
 
 Every piece of a connection is a `Part`, over what lies below it (`Lower`): its setup, what it
@@ -2343,8 +2343,9 @@ consumed; the connection's window as body data arrives) the binding does inside 
 C does; what C's filter traces or decides is told to the caller as an `http3::Event`, with the
 transfer: the connection's own (`ConnEvent`: the handshake's end, HTTP/3 failing to set up, the
 streams the peer allows), which `Quic` hears, or a stream's (`StreamEvent`, with its id), which
-`Quic` hands to who hears the call's streams (`LayerCx::h3_streams`), so that neither consumer has a case it
-cannot be told. Where C's callbacks act on the connection for the caller (a stream's receive window,
+`Quic` hands to who hears the call's streams (`LayerCx::h3_event`, one call per event: a
+packet's data is one), so that neither consumer has a case it cannot be told. Where C's
+callbacks act on the connection for the caller (a stream's receive window,
 `cf_ngtcp2_upd_rx_win`), the caller does it once the call returns, which changes nothing on the
 wire before the connection next writes.
 

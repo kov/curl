@@ -501,8 +501,12 @@ impl LayerCx for Plain<'_> {
         None
     }
 
-    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
-        None
+    fn h3_event(
+        &mut self,
+        _stream: crate::http3::StreamId,
+        _event: &crate::http3::StreamEvent<'_>,
+    ) -> crate::http3::Heard {
+        crate::http3::Heard::Fine
     }
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {

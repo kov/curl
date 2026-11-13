@@ -106,8 +106,8 @@ fn recv_datagrams(
     }
 }
 use super::layer::{
-    Below, EarlyData, Failures, ForTransfer, H3Streams, LayerCalls as _, LayerCx, QuicTimer,
-    TlsSessions, Trace,
+    Below, EarlyData, Failures, ForTransfer, LayerCalls as _, LayerCx, QuicTimer, TlsSessions,
+    Trace,
 };
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
@@ -296,8 +296,8 @@ impl LayerCx for Lone<'_> {
     }
 
     /// Every stream is one no transfer has.
-    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
-        Some(self)
+    fn h3_event(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
+        unrouted(&mut *self.cx, stream, event)
     }
 
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
@@ -306,12 +306,6 @@ impl LayerCx for Lone<'_> {
 
     fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
         self.cx.recv_buf()
-    }
-}
-
-impl H3Streams for Lone<'_> {
-    fn heard(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
-        unrouted(&mut *self.cx, stream, event)
     }
 }
 
@@ -353,8 +347,8 @@ impl<W> LayerCx for Over<'_, W> {
         self.cx.quic_timer()
     }
 
-    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
-        self.cx.h3_streams()
+    fn h3_event(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
+        self.cx.h3_event(stream, event)
     }
 
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
@@ -2262,8 +2256,12 @@ pub(crate) mod tests {
             Some(self)
         }
 
-        fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
-            None
+        fn h3_event(
+            &mut self,
+            _stream: crate::http3::StreamId,
+            _event: &crate::http3::StreamEvent<'_>,
+        ) -> crate::http3::Heard {
+            crate::http3::Heard::Fine
         }
 
         fn recv_room(&mut self) -> Option<&mut RecvRoom> {

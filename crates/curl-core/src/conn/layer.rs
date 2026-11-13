@@ -120,11 +120,16 @@ pub(crate) trait LayerCx {
     /// (`Curl_expire_set(EXPIRE_QUIC)`): the transfer's.
     fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer>;
 
-    /// Who hears what a QUIC connection's HTTP/3 library tells of its
-    /// streams, as it reads or writes for the work: a stream's transfer,
-    /// or a tunnel's. Work with no streams has none, and hears it as
-    /// nothing.
-    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams>;
+    /// What a QUIC connection's HTTP/3 library told of one of its
+    /// streams, as it reads or writes for the work (C's callbacks reach
+    /// the stream's transfer), handed to who hears it: a stream's
+    /// transfer, or a tunnel's. Work with no streams hears it as nothing.
+    /// One call per event, the hearer's own: a packet's data is one.
+    fn h3_event(
+        &mut self,
+        stream: crate::http3::StreamId,
+        event: &crate::http3::StreamEvent<'_>,
+    ) -> crate::http3::Heard;
 
     /// The multi's room a QUIC connection on a socket receives in, which
     /// the call lends (`Curl_multi_xfer_sockbuf_borrow`); none where the
@@ -259,17 +264,6 @@ pub(crate) trait EarlyData {
 pub(crate) trait QuicTimer {
     /// Call it again after `wait` from now, in whole milliseconds.
     fn due_in(&mut self, wait: Duration);
-}
-
-/// Who hears what a QUIC connection's HTTP/3 library tells of a stream.
-pub(crate) trait H3Streams {
-    /// The library told `event` of `stream` (C's callbacks reach the
-    /// stream's transfer).
-    fn heard(
-        &mut self,
-        stream: crate::http3::StreamId,
-        event: &crate::http3::StreamEvent<'_>,
-    ) -> crate::http3::Heard;
 }
 
 /// What a layer calls on its context, each through the capability it
@@ -433,20 +427,6 @@ pub(crate) trait LayerCalls: LayerCx {
             timer.due_in(wait);
         }
     }
-
-    /// What a QUIC connection's HTTP/3 library told of one of its
-    /// streams, handed to who hears it; work with no streams hears it as
-    /// nothing.
-    fn h3_event(
-        &mut self,
-        stream: crate::http3::StreamId,
-        event: &crate::http3::StreamEvent<'_>,
-    ) -> crate::http3::Heard {
-        match self.h3_streams() {
-            Some(streams) => streams.heard(stream, event),
-            None => crate::http3::Heard::Fine,
-        }
-    }
 }
 
 impl<T: LayerCx + ?Sized> LayerCalls for T {}
@@ -485,8 +465,12 @@ impl LayerCx for Silent {
         None
     }
 
-    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
-        None
+    fn h3_event(
+        &mut self,
+        _stream: crate::http3::StreamId,
+        _event: &crate::http3::StreamEvent<'_>,
+    ) -> crate::http3::Heard {
+        crate::http3::Heard::Fine
     }
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {

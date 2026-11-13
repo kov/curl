@@ -995,7 +995,7 @@ features: test-util,debug-hooks
     }
 }
 
-impl H3Streams for Lone<'_> {
+/// A call's context on what its datagrams go `on`: the socket an
 --- new
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         None
@@ -1006,7 +1006,7 @@ impl H3Streams for Lone<'_> {
     }
 }
 
-impl H3Streams for Lone<'_> {
+/// A call's context on what its datagrams go `on`: the socket an
 
 === a tunnelled QUIC connection receives in a room the multi's size, not C's tunnel's
 file: crates/curl-core/src/conn/quic.rs
@@ -1092,12 +1092,12 @@ features: test-util,debug-hooks
 file: crates/curl-core/src/conn/h3proxy.rs
 witness: curl-core conn::h3proxy::tests::a_call_into_the_proxy_s_connection_is_the_transfer_s
 --- old
-    fn h3_streams(&mut self) -> Option<&mut dyn super::layer::H3Streams> {
-        Some(self)
+    fn h3_event(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
+        self.tunnel.heard(&mut *self.cx, stream, event)
     }
 --- new
-    fn h3_streams(&mut self) -> Option<&mut dyn super::layer::H3Streams> {
-        self.cx.h3_streams()
+    fn h3_event(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
+        self.cx.h3_event(stream, event)
     }
 
 === a pooled QUIC connection's check or goodbye sets the transfer's QUIC timer

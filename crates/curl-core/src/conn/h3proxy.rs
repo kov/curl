@@ -383,8 +383,8 @@ impl LayerCx for Tunnelled<'_> {
     }
 
     /// The tunnel's: its stream is the one stream on the connection.
-    fn h3_streams(&mut self) -> Option<&mut dyn super::layer::H3Streams> {
-        Some(self)
+    fn h3_event(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
+        self.tunnel.heard(&mut *self.cx, stream, event)
     }
 
     /// The transfer's: the connection to the proxy is on a socket, and
@@ -396,12 +396,6 @@ impl LayerCx for Tunnelled<'_> {
 
     fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
         self.cx.recv_buf()
-    }
-}
-
-impl super::layer::H3Streams for Tunnelled<'_> {
-    fn heard(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
-        self.tunnel.heard(&mut *self.cx, stream, event)
     }
 }
 

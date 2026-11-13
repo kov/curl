@@ -199,25 +199,10 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
         LayerCx::quic_timer(&mut *self.cx)
     }
 
-    /// The streams' transfers.
-    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
-        Some(self)
-    }
-
-    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
-        LayerCx::recv_room(&mut *self.cx)
-    }
-
-    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
-        LayerCx::recv_buf(&mut *self.cx)
-    }
-}
-
-impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
     /// What the library told of a stream, handed to its transfer: the
     /// stepping one's own, a sibling's, or none, as C's callbacks find
     /// the stream's transfer by its user data.
-    fn heard(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
+    fn h3_event(&mut self, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
         // The packet's writer says so, whichever transfer the stream is
         // (`read_pkt_to_send`).
         if let StreamEvent::Blocked = *event
@@ -260,6 +245,14 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
             return Heard::Failed;
         }
         heard
+    }
+
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        LayerCx::recv_room(&mut *self.cx)
+    }
+
+    fn recv_buf(&mut self) -> Option<&mut crate::conn::buf::XferBuf> {
+        LayerCx::recv_buf(&mut *self.cx)
     }
 }
 

@@ -84,7 +84,7 @@ Built in release mode, the rewrite transfers data at about C's rate:
 | Platform | Rust's rate / C's | Notes |
 |---|---|---|
 | Linux x86_64 | 0.86–1.11 | most cases 0.97–1.04 |
-| Linux aarch64 | 0.80–1.18 | lowest case: 50 parallel HTTP/3 downloads (0.80 at 100 MB, 0.89 at 10 MB) |
+| Linux aarch64 | 0.81–1.11 | lowest case: 50 parallel HTTP/3 downloads (0.81 at 100 MB, 0.92 at 10 MB) |
 | macOS | 0.84–1.08 | |
 
 - With verbose tracing on, as WebKit runs it, the rewrite makes 1.05 to 2.8 times C's request

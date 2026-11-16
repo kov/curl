@@ -593,6 +593,10 @@ impl library::Ssl for FakeSsl {
         self.w().peer.clone()
     }
 
+    fn has_peer_cert(&self) -> bool {
+        !matches!(self.w().peer, PeerCert::None)
+    }
+
     fn check_ip(&self, ip: &CStr) -> Option<Rc> {
         let mut w = self.w();
         w.calls.push(format!("check_ip({})", text(ip)));

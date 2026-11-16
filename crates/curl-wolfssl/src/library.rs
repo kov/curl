@@ -328,6 +328,9 @@ pub(crate) trait Ssl: Send {
 
     /// The peer's certificate.
     fn peer_cert(&self) -> PeerCert;
+    /// The peer sent a certificate (`wolfSSL_get_peer_certificate` gives
+    /// one).
+    fn has_peer_cert(&self) -> bool;
     /// `wolfSSL_X509_check_ip_asc` of the peer's certificate and `ip`;
     /// none if it has no certificate.
     fn check_ip(&self, ip: &CStr) -> Option<Rc>;

@@ -1001,6 +1001,10 @@ impl library::Ssl for Ssl {
         .unwrap_or(PeerCert::None)
     }
 
+    fn has_peer_cert(&self) -> bool {
+        self.with_peer(|_| ()).is_some()
+    }
+
     fn check_ip(&self, ip: &CStr) -> Option<Rc> {
         self.with_peer(|x| {
             // SAFETY: the certificate, alive while this runs, and a C

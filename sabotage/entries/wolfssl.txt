@@ -325,3 +325,11 @@ witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverifie
                 true => check_peer(ssl, identity, host, kind, cx).map(|_| ()),
                 false => Ok(()),
             };
+
+=== a verified peer that sends no certificate is taken
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::a_peer_without_a_certificate_is_refused_when_verifying
+--- old
+            && !self.ssl().has_peer_cert()
+--- new
+            && false

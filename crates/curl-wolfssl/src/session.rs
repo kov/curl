@@ -851,6 +851,18 @@ impl<W: Wolfssl> Session<W> {
         }
         let mut detail = self.ssl().error(ret);
         io.trace(format_args!("wolfSSL_connect() -> {ret}, detail={detail}"));
+        // A peer to be verified must have sent a certificate: with an
+        // anonymous suite it sends none, and neither the chain's check nor
+        // the name's then has anything to check (`wssl_handshake`).
+        if ret == sys::WOLFSSL_SUCCESS
+            && (self.identity.verify_peer || self.identity.verify_host)
+            && !self.ssl().has_peer_cert()
+        {
+            return Err(io.fail(
+                ErrorKind::PeerFailedVerification,
+                format_args!("unable to get peer certificate"),
+            ));
+        }
         if ret == sys::WOLFSSL_SUCCESS && self.identity.verify_host && self.sni()?.is_none() {
             // An address, which the library's name check could not check.
             let ip = c_string(&self.host)?;

@@ -514,6 +514,40 @@ fn an_address_gets_no_sni_and_is_checked_after_the_handshake() {
     assert!(has(&notes, "fail: SslConnectError: Failed to set SNI"));
 }
 
+/// A peer that sends no certificate, as with an anonymous suite, is
+/// refused whenever the peer or its name is to be verified, a name as
+/// well as an address, and taken when neither is (`wssl_handshake`,
+/// upstream 51336038bf).
+#[test]
+fn a_peer_without_a_certificate_is_refused_when_verifying() {
+    for (verify_peer, verify_host) in [(true, true), (true, false), (false, true), (false, false)] {
+        let id = identity(|i| {
+            i.verify_peer = verify_peer;
+            i.verify_host = verify_host;
+        });
+        let case = (verify_peer, verify_host);
+        let (r, notes, _) = shake(
+            World {
+                peer: PeerCert::None,
+                ..World::default()
+            },
+            &id,
+        );
+        if verify_peer || verify_host {
+            assert_eq!(r, Err(ErrorKind::PeerFailedVerification), "{case:?}");
+            assert!(
+                has(
+                    &notes,
+                    "fail: PeerFailedVerification: unable to get peer certificate"
+                ),
+                "{case:?}: {notes:#?}"
+            );
+        } else {
+            assert_eq!(r, Ok(Handshake::Done), "{case:?}: {notes:#?}");
+        }
+    }
+}
+
 /// Each pair of `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST`: a
 /// host's name is handed to the library to check, and an address is
 /// checked after the handshake, wherever the name is to be checked, the
@@ -969,11 +1003,15 @@ fn credentials_are_kept_for_the_multi_only_where_they_may_be() {
     }
 }
 
+/// Unverified, as a verified peer without a certificate fails before
+/// its key is looked at (`a_peer_without_a_certificate_is_refused_when_verifying`).
 #[test]
 fn the_pinned_key_needs_the_peer_s_certificate() {
     let pinned = identity(|i| {
         i.options.pinned_key =
             Some(b"sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_vec());
+        i.verify_peer = false;
+        i.verify_host = false;
     });
     for (peer, line) in [
         (
@@ -1003,7 +1041,11 @@ fn the_pinned_key_needs_the_peer_s_certificate() {
         peer: PeerCert::None,
         ..World::default()
     };
-    assert_eq!(shake(world, &plain()).0, Ok(Handshake::Done));
+    let unverified = identity(|i| {
+        i.verify_peer = false;
+        i.verify_host = false;
+    });
+    assert_eq!(shake(world, &unverified).0, Ok(Handshake::Done));
 }
 
 #[test]

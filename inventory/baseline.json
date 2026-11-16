@@ -1,9 +1,9 @@
 {
- "c-commit": "687a4fbdc2c0cfaf398bdf552de3b0818a3651bd",
+ "c-commit": "7baa75d23e90e4c6a6d08d79f830851154b3a60c",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
-   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/p1b/build/deps/ngtcp2/lib",
+   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/deps/ngtcp2/lib",
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "OFF",
@@ -16,7 +16,7 @@
    "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
-   "H2O": "/home/kov/Projects/curl/build/p1b/build/deps/h2o/bin/h2o",
+   "H2O": "/home/kov/Projects/curl/build/deps/h2o/bin/h2o",
    "SFTPD": "/usr/libexec/openssh/sftp-server",
    "USE_ECH": "OFF",
    "USE_HTTPSRR": "ON",
@@ -28,14 +28,14 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2203,
-   "failed": 0,
-   "ok": 2109,
-   "ran": 2109,
-   "skipped": 94
+   "considered": 2180,
+   "failed": 4,
+   "ok": 2131,
+   "ran": 2135,
+   "skipped": 45
   },
   "curl-version": [
-   "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
+   "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.26.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "Release-Date: [unreleased]",
    "Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
    "Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-12T00:20:58Z",
-   "started": "2026-11-12T00:18:21Z"
+   "finished": "2026-11-16T17:09:20Z",
+   "started": "2026-11-16T17:06:26Z"
   },
   "protocols": [
    "dict",
@@ -1018,6 +1018,30 @@
      "message": null,
      "outcome": "passed"
     },
+    "test_02_download::test_02_38_trailers[0-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_38_trailers[0-h3]": {
+     "message": "nghttpx does not proxy trailers",
+     "outcome": "skipped"
+    },
+    "test_02_download::test_02_38_trailers[0-http/1.1]": {
+     "message": "httpd does not send the trailers on http/1.1",
+     "outcome": "skipped"
+    },
+    "test_02_download::test_02_38_trailers[100-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_38_trailers[100-h3]": {
+     "message": "nghttpx does not proxy trailers",
+     "outcome": "skipped"
+    },
+    "test_02_download::test_02_38_trailers[100-http/1.1]": {
+     "message": "httpd does not send the trailers on http/1.1",
+     "outcome": "skipped"
+    },
     "test_03_goaway::test_03_01_h2_goaway": {
      "message": null,
      "outcome": "passed"
@@ -1123,6 +1147,10 @@
      "outcome": "passed"
     },
     "test_05_errors::test_05_10_limits": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_11_pure_resp": {
      "message": null,
      "outcome": "passed"
     },
@@ -3418,6 +3446,14 @@
      "message": null,
      "outcome": "passed"
     },
+    "test_20_websockets::test_20_15_dl_10mb": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_16_meta_large_callback": {
+     "message": null,
+     "outcome": "passed"
+    },
     "test_21_resolve::test_21_01_resolv_invalid_one": {
      "message": null,
      "outcome": "passed"
@@ -3567,6 +3603,42 @@
      "outcome": "passed"
     },
     "test_22_httpsrr::test_22_06_httpsrr_proxy[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_07_httpsrr_cert_error[--http1.1-DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_07_httpsrr_cert_error[--http1.1-DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_07_httpsrr_cert_error[--http2-prior-knowledge-DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_07_httpsrr_cert_error[--http2-prior-knowledge-DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_08_httpsrr_tls_error[--http1.1-DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_08_httpsrr_tls_error[--http1.1-DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_08_httpsrr_tls_error[--http2-prior-knowledge-DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_08_httpsrr_tls_error[--http2-prior-knowledge-DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_09_httpsrr_h2_to_h1": {
      "message": null,
      "outcome": "passed"
     },
@@ -4122,6 +4194,10 @@
      "message": null,
      "outcome": "passed"
     },
+    "test_50_scp::test_50_23_ul_cut": {
+     "message": null,
+     "outcome": "passed"
+    },
     "test_51_sftp::test_51_01_insecure": {
      "message": null,
      "outcome": "passed"
@@ -4288,8 +4364,8 @@
     }
    },
    "counts": {
-    "passed": 950,
-    "skipped": 58
+    "passed": 965,
+    "skipped": 62
    },
    "exit-status": 0,
    "functions-without-cases": []
@@ -4327,11 +4403,6 @@
    },
    "1007": {
     "result": "ok"
-   },
-   "1008": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "1009": {
     "result": "ok"
@@ -4374,11 +4445,6 @@
    },
    "1020": {
     "result": "ok"
-   },
-   "1021": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "1022": {
     "result": "ok"
@@ -4626,11 +4692,6 @@
    "1096": {
     "result": "ok"
    },
-   "1097": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "1098": {
     "result": "ok"
    },
@@ -4642,11 +4703,6 @@
    },
    "110": {
     "result": "ok"
-   },
-   "1100": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "1101": {
     "result": "ok"
@@ -5033,11 +5089,6 @@
    },
    "1214": {
     "result": "ok"
-   },
-   "1215": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "1216": {
     "result": "ok"
@@ -5715,12 +5766,6 @@
    "1417": {
     "result": "ok"
    },
-   "1418": {
-    "result": "ok"
-   },
-   "1419": {
-    "result": "ok"
-   },
    "142": {
     "result": "ok"
    },
@@ -5992,11 +6037,6 @@
    "15": {
     "result": "ok"
    },
-   "150": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "1500": {
     "result": "ok"
    },
@@ -6161,11 +6201,6 @@
    "1549": {
     "result": "ok"
    },
-   "155": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "1550": {
     "result": "ok"
    },
@@ -6295,11 +6330,6 @@
    "1589": {
     "result": "ok"
    },
-   "159": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "1590": {
     "result": "ok"
    },
@@ -6336,11 +6366,6 @@
    "160": {
     "result": "ok"
    },
-   "1600": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "1601": {
     "result": "ok"
    },
@@ -6371,22 +6396,10 @@
    "161": {
     "result": "ok"
    },
-   "1610": {
-    "result": "ok"
-   },
-   "1611": {
-    "result": "ok"
-   },
-   "1612": {
-    "result": "ok"
-   },
    "1613": {
     "result": "ok"
    },
    "1614": {
-    "result": "ok"
-   },
-   "1615": {
     "result": "ok"
    },
    "1616": {
@@ -6400,11 +6413,6 @@
    },
    "1619": {
     "result": "ok"
-   },
-   "162": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "1620": {
     "result": "ok"
@@ -6634,11 +6642,6 @@
    "1689": {
     "result": "ok"
    },
-   "169": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "1690": {
     "result": "ok"
    },
@@ -6651,13 +6654,26 @@
    "1693": {
     "result": "ok"
    },
-   "17": {
+   "1694": {
     "result": "ok"
    },
-   "170": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
+   "1695": {
+    "result": "ok"
+   },
+   "1696": {
+    "result": "ok"
+   },
+   "1697": {
+    "result": "ok"
+   },
+   "1698": {
+    "result": "ok"
+   },
+   "1699": {
+    "result": "ok"
+   },
+   "17": {
+    "result": "ok"
    },
    "1700": {
     "result": "ok"
@@ -6715,6 +6731,15 @@
    "1716": {
     "result": "ok"
    },
+   "1717": {
+    "result": "ok"
+   },
+   "1718": {
+    "result": "ok"
+   },
+   "1719": {
+    "result": "ok"
+   },
    "172": {
     "result": "ok"
    },
@@ -6763,11 +6788,6 @@
    "175": {
     "result": "ok"
    },
-   "176": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "177": {
     "result": "ok"
    },
@@ -6781,6 +6801,9 @@
     "result": "ok"
    },
    "1791": {
+    "result": "ok"
+   },
+   "1792": {
     "result": "ok"
    },
    "18": {
@@ -6932,6 +6955,9 @@
    "1922": {
     "result": "ok"
    },
+   "1923": {
+    "result": "ok"
+   },
    "193": {
     "result": "ok"
    },
@@ -6984,6 +7010,9 @@
     "result": "ok"
    },
    "1948": {
+    "result": "ok"
+   },
+   "1949": {
     "result": "ok"
    },
    "195": {
@@ -7160,44 +7189,14 @@
    "2024": {
     "result": "ok"
    },
-   "2025": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "2026": {
     "result": "ok"
    },
    "2027": {
     "result": "ok"
    },
-   "2028": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
-   "2029": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "203": {
     "result": "ok"
-   },
-   "2030": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
-   "2031": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
-   "2032": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "2033": {
     "class": "feature missing from build",
@@ -7395,11 +7394,6 @@
    "2089": {
     "result": "ok"
    },
-   "209": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "2090": {
     "result": "ok"
    },
@@ -7505,12 +7499,16 @@
     "result": "ok"
    },
    "2120": {
+    "failed-parts": [
+     "stderr"
+    ],
+    "result": "failed"
+   },
+   "2121": {
     "result": "ok"
    },
-   "213": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
+   "2122": {
+    "result": "ok"
    },
    "214": {
     "result": "ok"
@@ -7659,6 +7657,9 @@
    "2311": {
     "result": "ok"
    },
+   "2312": {
+    "result": "ok"
+   },
    "2318": {
     "result": "ok"
    },
@@ -7691,11 +7692,6 @@
    },
    "2380": {
     "result": "ok"
-   },
-   "239": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "2397": {
     "result": "ok"
@@ -7765,11 +7761,6 @@
    },
    "2429": {
     "result": "ok"
-   },
-   "243": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "244": {
     "result": "ok"
@@ -7876,6 +7867,9 @@
    "2606": {
     "result": "ok"
    },
+   "2607": {
+    "result": "ok"
+   },
    "261": {
     "result": "ok"
    },
@@ -7891,18 +7885,16 @@
    "264": {
     "result": "ok"
    },
-   "265": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
+   "2640": {
+    "class": "feature missing from build",
+    "reason": "curl lacks rustls support",
     "result": "skipped"
+   },
+   "2641": {
+    "result": "ok"
    },
    "266": {
     "result": "ok"
-   },
-   "267": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "268": {
     "result": "ok"
@@ -7994,6 +7986,9 @@
    "2723": {
     "result": "ok"
    },
+   "2724": {
+    "result": "ok"
+   },
    "273": {
     "result": "ok"
    },
@@ -8082,6 +8077,9 @@
     "result": "ok"
    },
    "295": {
+    "result": "ok"
+   },
+   "2952": {
     "result": "ok"
    },
    "296": {
@@ -8240,7 +8238,13 @@
    "3038": {
     "result": "ok"
    },
+   "3039": {
+    "result": "ok"
+   },
    "304": {
+    "result": "ok"
+   },
+   "3040": {
     "result": "ok"
    },
    "305": {
@@ -8437,12 +8441,6 @@
    "3234": {
     "result": "ok"
    },
-   "3235": {
-    "result": "ok"
-   },
-   "3236": {
-    "result": "ok"
-   },
    "3237": {
     "result": "ok"
    },
@@ -8507,7 +8505,10 @@
     "result": "ok"
    },
    "3283": {
-    "result": "ok"
+    "failed-parts": [
+     "output (log/4/stderr3283)"
+    ],
+    "result": "failed"
    },
    "3284": {
     "result": "ok"
@@ -8570,6 +8571,9 @@
     "result": "ok"
    },
    "3306": {
+    "result": "ok"
+   },
+   "3307": {
     "result": "ok"
    },
    "331": {
@@ -8704,6 +8708,9 @@
    "3596": {
     "result": "ok"
    },
+   "3598": {
+    "result": "ok"
+   },
    "36": {
     "result": "ok"
    },
@@ -8717,6 +8724,9 @@
     "result": "ok"
    },
    "3612": {
+    "result": "ok"
+   },
+   "3613": {
     "class": "feature missing from build",
     "reason": "curl lacks libssh support",
     "result": "skipped"
@@ -8728,7 +8738,10 @@
     "result": "ok"
    },
    "3630": {
-    "result": "ok"
+    "failed-parts": [
+     "protocol"
+    ],
+    "result": "failed"
    },
    "3631": {
     "class": "feature missing from build",
@@ -8784,7 +8797,10 @@
     "result": "ok"
    },
    "3700": {
-    "result": "ok"
+    "failed-parts": [
+     "protocol"
+    ],
+    "result": "failed"
    },
    "3701": {
     "result": "ok"
@@ -8831,6 +8847,9 @@
     "result": "ok"
    },
    "381": {
+    "result": "ok"
+   },
+   "382": {
     "result": "ok"
    },
    "383": {
@@ -9011,6 +9030,18 @@
    "427": {
     "result": "ok"
    },
+   "4271": {
+    "result": "ok"
+   },
+   "4272": {
+    "result": "ok"
+   },
+   "4273": {
+    "result": "ok"
+   },
+   "4274": {
+    "result": "ok"
+   },
    "428": {
     "result": "ok"
    },
@@ -9139,6 +9170,9 @@
    "4644": {
     "result": "ok"
    },
+   "465": {
+    "result": "ok"
+   },
    "4656": {
     "class": "disabled",
     "reason": "configured as DISABLED",
@@ -9160,6 +9194,9 @@
     "result": "ok"
    },
    "470": {
+    "result": "ok"
+   },
+   "4702": {
     "result": "ok"
    },
    "471": {
@@ -9263,6 +9300,9 @@
     "result": "ok"
    },
    "499": {
+    "result": "ok"
+   },
+   "4997": {
     "result": "ok"
    },
    "5": {
@@ -9374,6 +9414,12 @@
     "result": "ok"
    },
    "5030": {
+    "result": "ok"
+   },
+   "5031": {
+    "result": "ok"
+   },
+   "5032": {
     "result": "ok"
    },
    "504": {
@@ -9521,16 +9567,6 @@
    "546": {
     "result": "ok"
    },
-   "547": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
-   "548": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "549": {
     "result": "ok"
    },
@@ -9551,11 +9587,6 @@
    },
    "554": {
     "result": "ok"
-   },
-   "555": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "556": {
     "result": "ok"
@@ -9670,11 +9701,6 @@
    },
    "59": {
     "result": "ok"
-   },
-   "590": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "591": {
     "result": "ok"
@@ -9939,11 +9965,6 @@
    "669": {
     "result": "ok"
    },
-   "67": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "670": {
     "result": "ok"
    },
@@ -9973,11 +9994,6 @@
    },
    "679": {
     "result": "ok"
-   },
-   "68": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "680": {
     "result": "ok"
@@ -10009,11 +10025,6 @@
    "689": {
     "result": "ok"
    },
-   "69": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "690": {
     "result": "ok"
    },
@@ -10027,9 +10038,7 @@
     "result": "ok"
    },
    "694": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
+    "result": "ok"
    },
    "695": {
     "result": "ok"
@@ -10249,11 +10258,6 @@
    "759": {
     "result": "ok"
    },
-   "76": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "760": {
     "result": "ok"
    },
@@ -10301,11 +10305,6 @@
    },
    "774": {
     "result": "ok"
-   },
-   "775": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "777": {
     "result": "ok"
@@ -10418,11 +10417,6 @@
    "809": {
     "result": "ok"
    },
-   "81": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "810": {
     "result": "ok"
    },
@@ -10453,19 +10447,11 @@
    "819": {
     "result": "ok"
    },
-   "82": {
-    "result": "ok"
-   },
    "820": {
     "result": "ok"
    },
    "821": {
     "result": "ok"
-   },
-   "822": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "823": {
     "result": "ok"
@@ -10479,11 +10465,6 @@
    "826": {
     "result": "ok"
    },
-   "827": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "828": {
     "result": "ok"
    },
@@ -10496,21 +10477,11 @@
    "830": {
     "result": "ok"
    },
-   "831": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "832": {
     "result": "ok"
    },
    "833": {
     "result": "ok"
-   },
-   "834": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "835": {
     "result": "ok"
@@ -10622,11 +10593,6 @@
    "867": {
     "result": "ok"
    },
-   "868": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "869": {
     "result": "ok"
    },
@@ -10642,11 +10608,6 @@
    "872": {
     "result": "ok"
    },
-   "873": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "874": {
     "result": "ok"
    },
@@ -10656,11 +10617,6 @@
    "876": {
     "result": "ok"
    },
-   "877": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "878": {
     "result": "ok"
    },
@@ -10669,11 +10625,6 @@
    },
    "88": {
     "result": "ok"
-   },
-   "880": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "881": {
     "result": "ok"
@@ -10703,11 +10654,6 @@
    },
    "889": {
     "result": "ok"
-   },
-   "89": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "890": {
     "result": "ok"
@@ -10742,11 +10688,6 @@
    "9": {
     "result": "ok"
    },
-   "90": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "900": {
     "result": "ok"
    },
@@ -10778,11 +10719,6 @@
    },
    "909": {
     "result": "ok"
-   },
-   "91": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "910": {
     "result": "ok"
@@ -10820,11 +10756,6 @@
    "920": {
     "result": "ok"
    },
-   "921": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "922": {
     "result": "ok"
    },
@@ -10861,21 +10792,11 @@
    "932": {
     "result": "ok"
    },
-   "933": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
-   },
    "934": {
     "result": "ok"
    },
    "935": {
     "result": "ok"
-   },
-   "936": {
-    "class": "out of scope",
-    "reason": "curl lacks NTLM support",
-    "result": "skipped"
    },
    "937": {
     "result": "ok"
@@ -11098,10 +11019,10 @@
    "-n",
    "-j8"
   ],
-  "runtests-exit-status": 0,
+  "runtests-exit-status": 1,
   "system": [
    "* curl 8.23.1-DEV (Linux) ",
-   "* libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
+   "* libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.26.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "* Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
    "* Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
    "* Disabled: resolv-threaded, win32-ca-searchpath, win32-ca-search-safe",
@@ -11112,7 +11033,7 @@
    "* Args: -a -n -j8",
    "* Jobs: 8",
    "* Env: nghttpx-h3 ",
-   "* Seed: 266688",
+   "* Seed: 234085",
    "* Servers: SSL HTTP-IPv6 HTTP-unix FTP-IPv6"
   ]
  },

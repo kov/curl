@@ -71,7 +71,8 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
-            let site = cookie_site(cookie_host, target, peer);
+            let proxied = cx.report_mut().used_proxy();
+            let site = cookie_site(cookie_host, target, peer, proxied);
             cookies::set_by_server(cx, value, &site)?;
         }
 

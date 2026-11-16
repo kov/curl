@@ -5,6 +5,8 @@
 //! implemented.
 
 #![forbid(unsafe_code)]
+// Tests may allocate infallibly; the non-test build is still checked.
+#![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 /// The tool's TLS library, which says what it can do; the rest of it is
 /// the tool's.

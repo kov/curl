@@ -712,8 +712,8 @@ milestone 2's review.
     - **f. SOCKS5 GSS-API,** before the flip, so the greeting changes with the claim. **Done.** C makes
       the socket blocking for the exchange; here it is states of the SOCKS handshake.
     - **g. The flip.** **Done.** `GSS-API`, `Kerberos` and `SPNEGO` claimed, `mit-krb5/` and
-      the library's version in `curl_version`; `crypto` opens. The stub cases 2096–2099, 2111
-      and 2112 run on the Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method
+      the library's version in `curl_version`; `crypto` opens. The stub cases 2097–2099, 2112,
+      2121 and 2122 run on the Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method
       1 offered; of the 107 tests needing `crypto`, the 86 that run pass, the other 21 skipping
       for POP3, SMTP and IMAP.
     - **h. Closing the step.** **Done.** The sabotage sweep catches every entry; the two

@@ -26,15 +26,15 @@
 /* The SSH key function: what it is given, then each of its answers in
    turn, over a known-hosts file that starts empty. */
 
-struct t3612_said {
+struct t3613_said {
   int answer;
 };
 
-static int t3612_keyfunc(CURL *curl, const struct curl_khkey *known,
+static int t3613_keyfunc(CURL *curl, const struct curl_khkey *known,
                          const struct curl_khkey *found,
                          enum curl_khmatch match, void *userp)
 {
-  struct t3612_said *said = (struct t3612_said *)userp;
+  struct t3613_said *said = (struct t3613_said *)userp;
   (void)curl;
   curl_mprintf("match %d, known %s", (int)match, known ? "given" : "none");
   if(known)
@@ -48,9 +48,9 @@ static int t3612_keyfunc(CURL *curl, const struct curl_khkey *known,
 }
 
 /* One transfer, the key function answering `answer`. */
-static CURLcode t3612_once(const char *URL, int answer)
+static CURLcode t3613_once(const char *URL, int answer)
 {
-  struct t3612_said said;
+  struct t3613_said said;
   CURLcode result = CURLE_OK;
   CURLcode performed;
   CURL *curl = NULL;
@@ -63,7 +63,7 @@ static CURLcode t3612_once(const char *URL, int answer)
   easy_setopt(curl, CURLOPT_USERPWD, libtest_arg3);
   easy_setopt(curl, CURLOPT_SSH_PUBLIC_KEYFILE, libtest_arg4);
   easy_setopt(curl, CURLOPT_SSH_PRIVATE_KEYFILE, libtest_arg5);
-  easy_setopt(curl, CURLOPT_SSH_KEYFUNCTION, t3612_keyfunc);
+  easy_setopt(curl, CURLOPT_SSH_KEYFUNCTION, t3613_keyfunc);
   easy_setopt(curl, CURLOPT_SSH_KEYDATA, &said);
   performed = curl_easy_perform(curl);
   curl_mprintf("result %d\n", (int)performed);
@@ -73,7 +73,7 @@ test_cleanup:
   return result;
 }
 
-static CURLcode test_lib3612(const char *URL)
+static CURLcode test_lib3613(const char *URL)
 {
   CURLcode result = CURLE_OK;
 
@@ -85,11 +85,11 @@ static CURLcode test_lib3612(const char *URL)
 
   global_init(CURL_GLOBAL_ALL);
 
-  result = t3612_once(URL, CURLKHSTAT_FINE_ADD_TO_FILE);
+  result = t3613_once(URL, CURLKHSTAT_FINE_ADD_TO_FILE);
   if(!result)
-    result = t3612_once(URL, CURLKHSTAT_FINE);
+    result = t3613_once(URL, CURLKHSTAT_FINE);
   if(!result)
-    result = t3612_once(URL, CURLKHSTAT_REJECT);
+    result = t3613_once(URL, CURLKHSTAT_REJECT);
 
   curl_global_cleanup();
   return result;

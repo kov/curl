@@ -224,3 +224,29 @@ witness: curl-core proto::http::tests::alt_svc::an_ipv6_alternative_is_reached_b
 --- new
         let address = if zone.is_some() { host } else { address };
         for part in [&b"["[..], address, b"]"] {
+
+=== an alternative from a header names any host
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::an_alternative_host_is_a_name_or_an_address
+features: test-util,debug-hooks
+--- old
+        if !valid_host(dst) {
+--- new
+        if false {
+
+=== an alternative read from a file names any host
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::unit1654_load_parse_save
+features: test-util,debug-hooks
+--- old
+            valid_host(dst_host).then_some(())?;
+--- new
+
+=== an IPv6 alternative is refused for not being a host name
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::an_alternative_host_is_a_name_or_an_address
+features: test-util,debug-hooks
+--- old
+        .is_some_and(|(address, _)| crate::url::pton6(address).is_some())
+--- new
+        .is_some_and(|_| false)

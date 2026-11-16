@@ -298,6 +298,7 @@ impl AltSvc {
             c.space()?;
             c.number(0)?;
             c.newline().then_some(())?;
+            valid_host(dst_host).then_some(())?;
             Some((
                 src_alpn, src_host, src_port, dst_alpn, dst_host, dst_port, date, persist,
             ))
@@ -505,6 +506,22 @@ fn push_host(out: &mut Vec<u8>, host: &[u8]) -> Result<(), OutOfMemory> {
     Ok(())
 }
 
+/// Whether an alternative's host, from a header or a file, is a host
+/// name or an IPv6 address, in brackets or not, and so safe to name a
+/// destination by (`altsvc_valid_host`).
+fn valid_host(host: &[u8]) -> bool {
+    let host = match host {
+        [b'[', inner @ .., b']'] if !inner.is_empty() => inner,
+        _ => host,
+    };
+    if crate::url::is_host_name(host) {
+        return true;
+    }
+    crate::conn::looks_like_ipv6(host)
+        .filter(|(address, _)| !address.is_empty() && address.len() < MAX_IPV6_LEN)
+        .is_some_and(|(address, _)| crate::url::pton6(address).is_some())
+}
+
 /// The alternative's quoted `host:port`, or `:port` for the origin's own
 /// `host` (`altsvc_parse_dest`).
 fn destination<'a>(
@@ -532,6 +549,10 @@ fn destination<'a>(
             address
         };
         if !c.single(b':') {
+            return None;
+        }
+        if !valid_host(dst) {
+            say(&[b"Bad alt-svc hostname, ignoring."]);
             return None;
         }
         dst

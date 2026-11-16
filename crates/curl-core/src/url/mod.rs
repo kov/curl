@@ -15,6 +15,13 @@ mod encode;
 pub(crate) use encode::{decode as decode_but_control, decode_but_zero};
 pub(crate) use host::{is_ip_address, pton4, pton6};
 mod host;
+
+/// Whether `name` may be a host name: none of the bytes a URL's host may
+/// not hold, and not `.` alone nor ending in two dots
+/// (`Curl_hostname_check`).
+pub(crate) fn is_host_name(name: &[u8]) -> bool {
+    host::check_name(name).is_ok()
+}
 mod path;
 #[rustfmt::skip]
 pub(crate) mod schemes;

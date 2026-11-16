@@ -59,6 +59,7 @@ fn unit1654_load_parse_save() {
           \th3 example.com 443 h3 shiny.example.com 8443 \"20231231 00:00:00\" 0 0\n\
           \x20   # also a comment\n\
           bad example.com 443 h3 shiny.example.com 8443 \"20191231 00:00:00\" 0 0\n\
+          h2 example.com 443 h3 ../../admin?x= 8443 \"20191231 00:00:00\" 0 0\n\
           rubbish\n",
     );
     let mut a = AltSvc::default();
@@ -243,6 +244,43 @@ fn a_lookup_finds_the_first_allowed_alternative() {
     // The origin's own host and port, by another version.
     parse(&mut a, "h2=\":80\"", "origin", 80, Alpn::H1);
     assert!(a.lookup((b"origin", 80, Alpn::H1), ALL, NOW).unwrap().same);
+}
+
+/// An alternative's host must be a host name or an IPv6 address: one
+/// that is neither, which would go into a `CONNECT-UDP` request's path,
+/// is said and passed over (`altsvc_valid_host`).
+#[test]
+fn an_alternative_host_is_a_name_or_an_address() {
+    let mut a = AltSvc::default();
+    let said = parse(
+        &mut a,
+        "h3=\"../../admin?x=:8443\"",
+        "example.org",
+        443,
+        Alpn::H2,
+    );
+    assert_eq!(said, ["Bad alt-svc hostname, ignoring."]);
+    let said = parse(&mut a, "h3=\"a b:8443\"", "example.org", 443, Alpn::H2);
+    assert_eq!(said, ["Bad alt-svc hostname, ignoring."]);
+    assert_eq!(a.len(), 0);
+    let said = parse(
+        &mut a,
+        "h3=\"[fe80::1%eth0]:8443\"",
+        "example.org",
+        443,
+        Alpn::H2,
+    );
+    assert_eq!(said, ["Added alt-svc: fe80::1%eth0:8443 over h3"]);
+    let said = parse(
+        &mut a,
+        "h3=\"alt.example.org:8443\"",
+        "example.org",
+        443,
+        Alpn::H2,
+    );
+    assert_eq!(said, ["Added alt-svc: alt.example.org:8443 over h3"]);
+    // The origin's second header replaces what its first added.
+    assert_eq!(a.len(), 1);
 }
 
 /// An IPv6 alternative is kept without its brackets and written with

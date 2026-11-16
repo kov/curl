@@ -32,8 +32,8 @@ use core::fmt;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, QuicContextSetup, QuicTls, RecordWait, SharedKeyLog, SystemStore, TlsBackend,
-    TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
+    Alpn, CaDefaults, Hashes, QuicContextSetup, QuicTls, RecordWait, SharedKeyLog, SystemStore,
+    TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
 };
 
 pub use sign::ED25519;
@@ -173,6 +173,17 @@ impl TlsBackend for GnuTls {
 
     fn support(&self) -> TlsSupport {
         SUPPORT
+    }
+
+    /// As C's build over it has them, from nettle (`USE_GNUTLS_MD5`,
+    /// `USE_GNUTLS_SHA256`, and `USE_GNUTLS_SHA512_256`, which every nettle
+    /// this build accepts has).
+    fn hashes(&self) -> Hashes {
+        Hashes {
+            md5: true,
+            sha256: true,
+            sha512_256: true,
+        }
     }
 
     /// It has no ECH: never said.

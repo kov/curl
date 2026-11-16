@@ -32,8 +32,8 @@ use curl_alloc::Lock;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, RecordWait, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession,
-    TlsShared, TlsSupport,
+    Alpn, CaDefaults, Hashes, RecordWait, SystemStore, TlsBackend, TlsIdentity, TlsPeer,
+    TlsSession, TlsShared, TlsSupport,
 };
 
 /// The CA bundle and path the build found (`build.rs`).
@@ -167,6 +167,18 @@ impl TlsBackend for MbedTls {
         SUPPORT
     }
 
+    /// As C's build over it has them: MD5 and SHA-256 through PSA, which
+    /// mbedTLS's own configuration enables (`USE_MBEDTLS_MD5`,
+    /// `USE_MBEDTLS_SHA256`), and no SHA-512/256, which C takes from no
+    /// mbedTLS.
+    fn hashes(&self) -> Hashes {
+        Hashes {
+            md5: true,
+            sha256: true,
+            sha512_256: false,
+        }
+    }
+
     /// It has no ECH: never said.
     fn record_wait(&self) -> RecordWait {
         RecordWait::Plain
@@ -196,6 +208,10 @@ impl TlsBackend for &'static MbedTls {
 
     fn support(&self) -> TlsSupport {
         (**self).support()
+    }
+
+    fn hashes(&self) -> Hashes {
+        (**self).hashes()
     }
 
     fn record_wait(&self) -> RecordWait {

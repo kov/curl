@@ -35,8 +35,8 @@ use curl_alloc::Lock;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, QuicContextSetup, QuicTls, RecordWait, SharedKeyLog, SystemStore, Text,
-    TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
+    Alpn, CaDefaults, Hashes, QuicContextSetup, QuicTls, RecordWait, SharedKeyLog, SystemStore,
+    Text, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsSession, TlsShared, TlsSupport,
 };
 
 pub use sign::ED25519;
@@ -229,6 +229,16 @@ impl TlsBackend for WolfSsl {
         SUPPORT
     }
 
+    /// As C's build over it has them: those its configure kept
+    /// (`USE_WOLFSSL_MD5` without `NO_MD5`, and the others).
+    fn hashes(&self) -> Hashes {
+        Hashes {
+            md5: !cfg!(no_md5),
+            sha256: !cfg!(no_sha256),
+            sha512_256: !cfg!(no_sha512_256),
+        }
+    }
+
     /// As `wssl_connect` says it.
     fn record_wait(&self) -> RecordWait {
         RecordWait::ForEch
@@ -269,6 +279,10 @@ impl TlsBackend for &'static WolfSsl {
 
     fn support(&self) -> TlsSupport {
         (**self).support()
+    }
+
+    fn hashes(&self) -> Hashes {
+        (**self).hashes()
     }
 
     fn record_wait(&self) -> RecordWait {

@@ -44,6 +44,9 @@ const TOGGLES: &[(&str, bool)] = &[
     // `time_t` and `curl_off_t` are 64 bits wide.
     ("large-time", true),
     ("large-size", true),
+    // Asked of the TLS library and the system: see `toggles`.
+    ("md5", true),
+    ("sha256", true),
     ("sha512-256", true),
     ("win32-ca-searchpath", false),
     ("win32-ca-search-safe", false),
@@ -55,9 +58,10 @@ const TOGGLES: &[(&str, bool)] = &[
     ("getrlimit", true),
 ];
 
-/// Each toggle, `httpsig` ON where the library signs messages,
-/// `cert-status` ON where the TLS library checks a stapled status,
-/// `resolv-threaded` ON when the library resolves with the
+/// Each toggle, `httpsig` ON where the library signs messages, `md5`,
+/// `sha256` and `sha512-256` where the build's TLS library or system has
+/// the hash, `cert-status` ON where the TLS library checks a stapled
+/// status, `resolv-threaded` ON when the library resolves with the
 /// threaded resolver, and `override-dns` where a debug build's c-ares takes
 /// `CURL_DNS_SERVER`. On Windows `wakeup` and `getrlimit` are OFF, as C's
 /// build there has no wakeup socket pair (`ENABLE_WAKEUP`, not under
@@ -76,6 +80,10 @@ fn toggles() -> impl Iterator<Item = (&'static str, bool)> {
         "httpsig" => (name, on && signs),
         // Schannel checks no stapled status, as C's build with it.
         "cert-status" => (name, on && tlslib::support().cert_status),
+        // C has a hash only where its TLS library or the system has one.
+        "md5" => (name, on && tlslib::hashes().md5),
+        "sha256" => (name, on && tlslib::hashes().sha256),
+        "sha512-256" => (name, on && tlslib::hashes().sha512_256),
         _ => (name, on),
     })
 }
@@ -119,6 +127,42 @@ mod tests {
         let on = toggles().find(|&(n, _)| n == "httpsig").map(|(_, on)| on);
         assert_eq!(
             on,
+            Some(cfg!(any(
+                feature = "openssl-tls",
+                feature = "gnutls",
+                feature = "wolfssl"
+            )))
+        );
+    }
+
+    /// Every toggle C's curlinfo prints is printed, in its order: one it
+    /// adds and this leaves out reads as OFF to the test suites, which
+    /// then skip the tests needing it on this build alone.
+    #[test]
+    fn the_toggles_are_c_s_in_c_s_order() {
+        let source = include_str!("../../../../src/curlinfo.c");
+        let c: Vec<&str> = source
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('"')?.strip_suffix(": \"")?.into())
+            .collect();
+        assert!(c.len() > 30, "{c:?}");
+        let ours: Vec<&str> = toggles().map(|(n, _)| n).collect();
+        assert_eq!(ours, c);
+    }
+
+    /// The hashes are reported as the build's TLS library and system have
+    /// them, as C's build with the same takes them: none from Rustls.
+    #[test]
+    fn the_hashes_are_reported_as_the_tls_library_has_them() {
+        let on = |name| toggles().find(|&(n, _)| n == name).map(|(_, on)| on);
+        let rustls = cfg!(feature = "rustls");
+        assert_eq!(on("md5"), Some(!rustls || cfg!(windows)));
+        assert_eq!(
+            on("sha256"),
+            Some(!rustls || cfg!(windows) || cfg!(target_vendor = "apple"))
+        );
+        assert_eq!(
+            on("sha512-256"),
             Some(cfg!(any(
                 feature = "openssl-tls",
                 feature = "gnutls",

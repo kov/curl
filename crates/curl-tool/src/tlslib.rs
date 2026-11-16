@@ -7,7 +7,7 @@ use core::fmt;
 
 use curl_alloc::OutOfMemory;
 use curl_backends::tls;
-use curl_core::tls::{CaDefaults, SharedKeyLog, TlsBackend, TlsSupport};
+use curl_core::tls::{CaDefaults, Hashes, SharedKeyLog, TlsBackend, TlsSupport};
 
 /// The library's process-wide state (mbedTLS's random number generator,
 /// wolfSSL's BIO method), which `init` makes.
@@ -46,6 +46,13 @@ pub(crate) fn quic() -> Option<impl fmt::Display> {
 /// What it can do past the handshake.
 pub(crate) fn support() -> TlsSupport {
     TLS.support()
+}
+
+/// The hashes the build has, its library's and the system's.
+// Read by curlinfo alone; the tool asks the library what it can do.
+#[allow(dead_code)]
+pub(crate) fn hashes() -> Hashes {
+    Hashes::of_build(TLS.hashes())
 }
 
 /// What it trusts where a transfer names nothing.

@@ -1106,6 +1106,10 @@ impl crate::tls::TlsBackend for Saying {
         crate::tls::fake::SUPPORT
     }
 
+    fn hashes(&self) -> crate::tls::Hashes {
+        crate::tls::fake::HASHES
+    }
+
     fn record_wait(&self) -> crate::tls::RecordWait {
         crate::tls::RecordWait::Plain
     }

@@ -14,6 +14,8 @@
 //!   (`OPENSSL_IS_BORINGSSL`), which AWS-LC's headers do not define; and
 //!   `boringssl_like` for either (`HAVE_BORINGSSL_LIKE`).
 //! - `no_ocsp`: the headers define `OPENSSL_NO_OCSP` (BoringSSL's do).
+//! - `no_md5`: the headers define `OPENSSL_NO_MD5`; `no_sha512_256`: a
+//!   LibreSSL before 3.8.0, which has no SHA-512/256.
 //! - `read_buffer_len`: `HAVE_SSL_CTX_SET_DEFAULT_READ_BUFFER_LEN`,
 //!   OpenSSL's and AWS-LC's since its headers define
 //!   `X509_V_ERR_EC_KEY_EXPLICIT_PARAMS` (1.61.0).
@@ -41,6 +43,8 @@ fn main() {
         "boringssl",
         "boringssl_like",
         "no_ocsp",
+        "no_md5",
+        "no_sha512_256",
         "read_buffer_len",
     ] {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
@@ -76,6 +80,10 @@ fn main() {
             panic!("LibreSSL {number:#x} is too old: this build needs 3.4.1 or later");
         }
         cfg("libressl");
+        // SHA-512/256 came in LibreSSL 3.8.0 (`USE_OPENSSL_SHA512_256`).
+        if number < 0x3080_000f {
+            cfg("no_sha512_256");
+        }
     } else {
         let number = std::env::var("DEP_OPENSSL_VERSION_NUMBER")
             .expect("openssl-sys reports the version of the OpenSSL it found");
@@ -97,6 +105,9 @@ fn main() {
     let conf = std::env::var("DEP_OPENSSL_CONF").unwrap_or_default();
     if conf.split(',').any(|c| c == "OPENSSL_NO_OCSP") {
         cfg("no_ocsp");
+    }
+    if conf.split(',').any(|c| c == "OPENSSL_NO_MD5") {
+        cfg("no_md5");
     }
     curl_build::write_ca_defaults();
 }

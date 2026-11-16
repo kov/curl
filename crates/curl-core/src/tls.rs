@@ -106,6 +106,11 @@ pub trait TlsBackend: Send + Sync {
     /// for what it lacks is not built in.
     fn support(&self) -> TlsSupport;
 
+    /// The hashes it computes, which C takes from the TLS library alone
+    /// (`CURL_HAVE_MD5` and the others); [`Hashes::of_build`] adds the
+    /// system's.
+    fn hashes(&self) -> Hashes;
+
     /// Its name and version, as a session's key in the cache names the
     /// library (`ssl_impl->version`): `OpenSSL/3.5.9`.
     fn id(&self) -> &dyn fmt::Display;
@@ -234,6 +239,42 @@ pub struct TlsSupport {
     /// Crypto engines or providers to use (C allows `CURLOPT_SSLENGINE`
     /// with OpenSSL alone).
     pub engines: bool,
+}
+
+/// The hashes a build has (C's `CURL_HAVE_MD5`, `CURL_HAVE_SHA256` and
+/// `CURL_HAVE_SHA512_256`). C has no hashes of its own: each comes from
+/// the TLS library, or from the system, and a build lacking one lacks
+/// what needs it (`curlinfo` says so). The rewrite computes all three
+/// itself; this is what C's build with the same libraries has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hashes {
+    pub md5: bool,
+    pub sha256: bool,
+    pub sha512_256: bool,
+}
+
+impl Hashes {
+    /// None: a build without a TLS library, on a system with none to lend.
+    pub const NONE: Hashes = Hashes {
+        md5: false,
+        sha256: false,
+        sha512_256: false,
+    };
+
+    /// The build's, those of its TLS library `tls` with the system's:
+    /// Windows' CryptoAPI has MD5 and SHA-256 (`USE_WIN32_CRYPTO`, every
+    /// desktop build), Apple's CommonCrypto SHA-256 (`USE_APPLE_SHA256`)
+    /// but MD5 only for systems before macOS 10.15 and iOS 13, which the
+    /// rewrite does not build for (`USE_APPLE_MD5`).
+    pub const fn of_build(tls: Hashes) -> Hashes {
+        let windows = cfg!(windows);
+        let apple = cfg!(target_vendor = "apple");
+        Hashes {
+            md5: tls.md5 || windows,
+            sha256: tls.sha256 || windows || apple,
+            sha512_256: tls.sha512_256,
+        }
+    }
 }
 
 impl TlsSupport {

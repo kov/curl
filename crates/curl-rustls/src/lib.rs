@@ -29,8 +29,8 @@ use core::fmt;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::tls::{
-    Alpn, CaDefaults, RecordWait, SharedKeyLog, SystemStore, TlsBackend, TlsIdentity, TlsPeer,
-    TlsSession, TlsShared, TlsSupport,
+    Alpn, CaDefaults, Hashes, RecordWait, SharedKeyLog, SystemStore, TlsBackend, TlsIdentity,
+    TlsPeer, TlsSession, TlsShared, TlsSupport,
 };
 
 /// The CA bundle and path the build found (`build.rs`).
@@ -136,6 +136,11 @@ impl TlsBackend for Rustls {
         SUPPORT
     }
 
+    /// None: C takes no hash from Rustls (`USE_RUSTLS`, "not supported").
+    fn hashes(&self) -> Hashes {
+        Hashes::NONE
+    }
+
     /// As `cr_connect` says it.
     fn record_wait(&self) -> RecordWait {
         RecordWait::ForEch
@@ -165,6 +170,10 @@ impl TlsBackend for &'static Rustls {
 
     fn support(&self) -> TlsSupport {
         (**self).support()
+    }
+
+    fn hashes(&self) -> Hashes {
+        (**self).hashes()
     }
 
     fn record_wait(&self) -> RecordWait {

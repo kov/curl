@@ -17,7 +17,7 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Checked, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog,
+    Alpn, CaDefaults, Checked, Chosen, Deferred, DriveCall, Goodbye, Handshake, Hashes, KeyLog,
     QuicContextSetup, QuicTls, QuicheTls, RecordWait, Shaken, SharedKeyLog, SystemStore,
     TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsKind, TlsNative, TlsPeer, TlsPeerKind, TlsSession,
     TlsShared, TlsSupport, TlsTicket, TlsWait,
@@ -175,6 +175,17 @@ impl TlsBackend for OpenSsl {
     /// as the connection is made.
     fn support(&self) -> TlsSupport {
         SUPPORT
+    }
+
+    /// As C's build over it has them (`USE_OPENSSL_MD5` unless the library
+    /// leaves MD5 out, `USE_OPENSSL_SHA256`, `USE_OPENSSL_SHA512_256` but
+    /// over a LibreSSL before 3.8).
+    fn hashes(&self) -> Hashes {
+        Hashes {
+            md5: !cfg!(no_md5),
+            sha256: true,
+            sha512_256: !cfg!(no_sha512_256),
+        }
     }
 
     /// As `ossl_connect` says it, for AWS-LC and BoringSSL too.

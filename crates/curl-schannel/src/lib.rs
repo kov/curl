@@ -31,8 +31,8 @@ mod backend {
     use curl_alloc::{OutOfMemory, TryArc, try_box};
     use curl_core::error::ErrorKind;
     use curl_core::tls::{
-        Alpn, CaDefaults, RecordWait, SystemStore, TlsBackend, TlsIdentity, TlsPeer, TlsSession,
-        TlsShared, TlsSupport,
+        Alpn, CaDefaults, Hashes, RecordWait, SystemStore, TlsBackend, TlsIdentity, TlsPeer,
+        TlsSession, TlsShared, TlsSupport,
     };
 
     use crate::session::Session;
@@ -77,6 +77,12 @@ mod backend {
         /// (`cert_status_request` is NULL) nor engines.
         fn support(&self) -> TlsSupport {
             SUPPORT
+        }
+
+        /// None of Schannel's own: Windows' CryptoAPI lends MD5 and SHA-256
+        /// to every build there ([`Hashes::of_build`]).
+        fn hashes(&self) -> Hashes {
+            Hashes::NONE
         }
 
         /// It has no ECH: never said.

@@ -1741,3 +1741,12 @@ witness: curl-tool glob::tests::widths_past_65535_are_written_as_c_writes_them
 --- new
             let _ = try_format(format_args!("{:>width$}", " ", width = self.pos - 1))?;
             let blanks = (self.pos - 1).clamp(1, TEXT_MAX);
+
+=== curlinfo leaves out a toggle C prints, which the test suites then read as OFF
+file: crates/curl-tool/src/bin/curlinfo.rs
+witness: curl-tool tests::the_toggles_are_c_s_in_c_s_order
+--- old
+    ("md5", true),
+    ("sha256", true),
+--- new
+    ("sha256", true),

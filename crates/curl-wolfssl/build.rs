@@ -39,6 +39,25 @@ fn main() {
     if major < 5 {
         panic!("wolfSSL {version}: this build needs 5.0.0 or later");
     }
+    // The hashes its configure left out, as C's build reads them
+    // (`curl_md5.h`, `curl_sha256.h`, `curl_sha512_256.h`).
+    let options = include.join("wolfssl/options.h");
+    println!("cargo::rerun-if-changed={}", options.display());
+    let options =
+        std::fs::read_to_string(&options).unwrap_or_else(|e| panic!("{}: {e}", options.display()));
+    for (define, cfg) in [
+        ("NO_MD5", "no_md5"),
+        ("NO_SHA256", "no_sha256"),
+        ("WOLFSSL_NOSHA512_256", "no_sha512_256"),
+    ] {
+        println!("cargo::rustc-check-cfg=cfg({cfg})");
+        if options
+            .lines()
+            .any(|l| l.split_whitespace().take(2).eq(["#define", define]))
+        {
+            println!("cargo::rustc-cfg={cfg}");
+        }
+    }
     let lib = dir.join("lib");
     println!(
         "cargo::rerun-if-changed={}",

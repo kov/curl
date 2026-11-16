@@ -422,6 +422,13 @@ impl FakeTls {
     }
 }
 
+/// The hashes it claims: every one, as the reference build's library has.
+pub const HASHES: crate::tls::Hashes = crate::tls::Hashes {
+    md5: true,
+    sha256: true,
+    sha512_256: true,
+};
+
 /// What the fake library can do: everything but Encrypted Client
 /// Hello, as OpenSSL's build, so that the core is given whatever a
 /// transfer sets.
@@ -452,6 +459,10 @@ impl TlsBackend for FakeTls {
 
     fn support(&self) -> crate::tls::TlsSupport {
         self.support
+    }
+
+    fn hashes(&self) -> crate::tls::Hashes {
+        crate::tls::fake::HASHES
     }
 
     fn record_wait(&self) -> crate::tls::RecordWait {

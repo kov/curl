@@ -846,8 +846,11 @@ impl Request {
                 }
             }
             StreamEvent::Header { name, value, .. } => {
+                // A field after the final response's head is a trailer.
+                let trailer = s.head_done;
                 let id = Text::<24>::clipped(format_args!("[{id}] ")).0;
-                trace::of_with(cx, h3, &[id.bytes(), b"header: ", name, b": ", value]);
+                let what: &[u8] = if trailer { b"trailer: " } else { b"header: " };
+                trace::of_with(cx, h3, &[id.bytes(), what, name, b": ", value]);
                 let mut line = Vec::new();
                 let made = line
                     .try_reserve_exact(name.len() + b": \r\n".len() + value.len())
@@ -857,6 +860,10 @@ impl Request {
                     .and_then(|()| line.try_extend_from_slice(value))
                     .and_then(|()| line.try_extend_from_slice(b"\r\n"));
                 match made {
+                    Ok(()) if trailer => {
+                        self.h3_trailer_line(cx, &line);
+                        Heard::Fine
+                    }
                     Ok(()) => {
                         self.h3_head_line(cx, lease, &line);
                         Heard::Fine
@@ -868,6 +875,11 @@ impl Request {
                 // quiche's filter says the head came before it ends it.
                 if !ngtcp2 {
                     trace::of(cx, h3, format_args!("[{id}] <- [HEADERS]"));
+                }
+                // The trailers' block, quiche's, ends no head
+                // (`resp_hds_complete`).
+                if self.h3_stream().head_done {
+                    return Heard::Fine;
                 }
                 self.h3_head_line(cx, lease, b"\r\n");
                 let s = self.h3_stream();
@@ -994,6 +1006,38 @@ impl Request {
                 cx,
                 Component::Http3,
                 format_args!("[{id}] error {code} writing {len} bytes of headers"),
+            );
+        }
+    }
+
+    /// Hand a trailer on as one, never taken in as a field of the head:
+    /// a `Set-Cookie` or a `Location` there does nothing
+    /// (`cf_h3_write_field`, `cf_quiche_write_trailer`). A failure fails
+    /// the stream, as a field of the head's does.
+    fn h3_trailer_line<H: Host>(&mut self, cx: &mut StepCx<'_, H>, line: &[u8]) {
+        if self.h3_stream().failed.is_some() {
+            return;
+        }
+        trace::bytes(cx, DebugKind::HeaderIn, line);
+        let mut handed = self.base.pipeline.header(cx, line, HeaderOrigin::Trailer);
+        if handed.is_ok() {
+            let head = self.head.as_mut().expect("made at DO");
+            let mut request_bytes = head.request_bytes();
+            handed = response::count_head(
+                line.len() as u64,
+                &mut request_bytes,
+                &mut cx.report_mut().sizes_mut().header,
+            )
+            .map_err(|e| head_failed(cx, &e));
+        }
+        if let Err(kind) = handed {
+            let s = self.h3_stream();
+            s.failed = Some(kind);
+            let (id, code, len) = (s.shown_id(), kind.number(), line.len());
+            trace::of(
+                cx,
+                Component::Http3,
+                format_args!("[{id}] error {code} writing {len} bytes of trailer"),
             );
         }
     }

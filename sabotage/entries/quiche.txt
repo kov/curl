@@ -6,8 +6,16 @@ features: test-util
                 if !ngtcp2 {
                     trace::of(cx, h3, format_args!("[{id}] <- [HEADERS]"));
                 }
+                // The trailers' block, quiche's, ends no head
+                // (`resp_hds_complete`).
+                if self.h3_stream().head_done {
+                    return Heard::Fine;
+                }
                 self.h3_head_line(cx, lease, b"\r\n");
 --- new
+                if self.h3_stream().head_done {
+                    return Heard::Fine;
+                }
                 self.h3_head_line(cx, lease, b"\r\n");
                 if !ngtcp2 {
                     trace::of(cx, h3, format_args!("[{id}] <- [HEADERS]"));

@@ -623,6 +623,61 @@ fn a_get_over_http3_is_answered() {
     assert_eq!(s.windows, [(0, 10452992), (0, 9)]);
 }
 
+/// Fields after the final response's body are trailers: handed on as
+/// trailers, traced as such, and never taken in as fields of the head, a
+/// `Set-Cookie` storing nothing and a `Location` naming no redirect
+/// (`cf_h3_write_field`, upstream c4334a57ec, #23805).
+#[test]
+fn trailers_over_http3_are_handed_on_and_not_taken_in() {
+    let script = get_script(b"12");
+    {
+        let mut s = script.lock().unwrap();
+        let header = |name: &[u8], value: &[u8]| Told::Header {
+            stream: 0,
+            name: name.to_vec(),
+            value: value.to_vec(),
+        };
+        let reply = s.on_read.back_mut().unwrap();
+        let closed = reply
+            .iter()
+            .position(|t| matches!(t, Told::Closed(..)))
+            .unwrap();
+        reply.splice(
+            closed..closed,
+            [
+                header(b"set-cookie", b"t=1"),
+                header(b"location", b"/elsewhere"),
+                Told::HeadersDone(0),
+            ],
+        );
+    }
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    let other = b"other.example\tFALSE\t/\tFALSE\t0\tz\t1";
+    e.add_cookie(other, |_| {}).unwrap();
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"12");
+    assert_eq!(
+        ran.seen.of("trailer"),
+        [
+            b"set-cookie: t=1\r\n".to_vec(),
+            b"location: /elsewhere\r\n".to_vec()
+        ]
+    );
+    let got = lines(&ran, &["[HTTP/3] [0] trailer"]);
+    assert_eq!(
+        got,
+        [
+            "[HTTP/3] [0] trailer: set-cookie: t=1",
+            "[HTTP/3] [0] trailer: location: /elsewhere"
+        ]
+    );
+    let mut easy = ran.easy;
+    assert_eq!(easy.report().redirect_url(), None);
+    assert_eq!(easy.cookie_list().unwrap(), [other.to_vec()]);
+}
+
 /// The request's packet goes unanswered: the transfer waits for the
 /// library's timer, which the multi runs as it comes due, and what the
 /// library then sends, its retransmission, has the response come.

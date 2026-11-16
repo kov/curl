@@ -722,10 +722,11 @@ witness: curl-core conn::h3proxy::tests::what_the_tunnel_read_is_let_go_of_while
 file: crates/curl-core/src/proto/http/h3.rs
 witness: curl-core proto::http::tests::h3_trace::an_http3_header_not_utf8_is_traced_as_its_bytes
 --- old
-                trace::of_with(cx, h3, &[id.bytes(), b"header: ", name, b": ", value]);
+                trace::of_with(cx, h3, &[id.bytes(), what, name, b": ", value]);
 --- new
                 let (n, v) = (curl_alloc::Lossy(name), curl_alloc::Lossy(value));
-                trace::of(cx, h3, format_args!("{}header: {n}: {v}", curl_alloc::Lossy(id.bytes())));
+                let w = curl_alloc::Lossy(what);
+                trace::of(cx, h3, format_args!("{}{w}{n}: {v}", curl_alloc::Lossy(id.bytes())));
 
 === an HTTP/3 proxy's header not UTF-8 is traced lossily, not as its bytes
 file: crates/curl-core/src/conn/h3proxy.rs
@@ -1561,3 +1562,25 @@ witness: curl-core conn::quic::tests::an_early_data_connection_never_told_its_ch
             PeerCheck::Unchecked if self.conn.handshake_done() => {
 --- new
             PeerCheck::Unchecked if self.conn.handshake_done() && self.state.closing => {
+
+=== a trailer over HTTP/3 is taken in as a field of the head
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::trailers_over_http3_are_handed_on_and_not_taken_in
+features: test-util,debug-hooks
+--- old
+                let trailer = s.head_done;
+--- new
+                let trailer = false && s.head_done;
+
+=== the trailers' block ends the head again
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::trailers_over_http3_are_handed_on_and_not_taken_in
+features: test-util,debug-hooks
+--- old
+                if self.h3_stream().head_done {
+                    return Heard::Fine;
+                }
+--- new
+                if false {
+                    return Heard::Fine;
+                }

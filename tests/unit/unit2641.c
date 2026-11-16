@@ -271,7 +271,7 @@ static CURLcode test_unit2641(const char *arg)
   connssl.ssl_impl = &Curl_ssl_openssl;
   cf.cft = &cft;
   cf.ctx = &connssl;
-  cf.conn = &connection;
+  cf.chain = &connection.chain;
   result = Curl_ssl_openssl.shut_down(&cf, easy, TRUE, &done);
   fail_unless(result == CURLE_OK, "best-effort shutdown after fatal read");
   fail_unless(t2641_read_failed, "broken record was delivered");

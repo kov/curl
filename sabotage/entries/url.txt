@@ -131,13 +131,14 @@ witness: curl-core url::host::tests::ipv6_as_c_prints_it
 --- new
     let best = best.filter(|b| b.1 >= 1);
 
-=== an encoded %25 before an IPv6 zone id is taken as part of the id
+=== an IPv6 zone id starting with 25 loses it
 file: crates/curl-core/src/url/host.rs
-witness: curl-core url::host::tests::ipv6_as_c_prints_it
+witness: curl-core url::host::tests::unit1675_ipv6_parse
 --- old
-        if z.starts_with(b"25") && z.get(2).is_some_and(|&b| b != b']') {
+        let z = &host[1 + len + 1..];
 --- new
-        if false {
+        let z = &host[1 + len + 1..];
+        let z = z.strip_prefix(b"25").filter(|r| r.first().is_some_and(|&b| b != b']')).unwrap_or(z);
 
 === an IPv6 zone id longer than C allows is accepted
 file: crates/curl-core/src/url/host.rs
@@ -523,3 +524,19 @@ witness: curl-core url::tests::a_refused_url_leaves_the_one_it_was_to_replace
 --- new
         if let Err(e) = self.fill(url, opts) {
             return Err(e);
+
+=== an IPv6 host set as encoded keeps its zone id beside the one held apart
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_set_parts
+--- old
+            return Ok(if encoded { host } else { addr });
+--- new
+            return Ok(host);
+
+=== a file: URL with no path prints none
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_set_parts
+--- old
+            out.put(self.path.as_deref().unwrap_or(b"/"))?;
+--- new
+            out.put(self.path.as_deref().unwrap_or(b""))?;

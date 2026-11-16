@@ -336,11 +336,9 @@ pub(super) fn ipv6(host: &mut Bytes) -> Result<Option<Bytes>, UrlErrorKind> {
         if host.get(1 + len) != Some(&b'%') {
             return Err(UrlErrorKind::BadIpv6);
         }
-        // A zone id, after its `%` or an encoded `%25`.
-        let mut z = &host[1 + len + 1..];
-        if z.starts_with(b"25") && z.get(2).is_some_and(|&b| b != b']') {
-            z = &z[2..];
-        }
+        // A zone id, after its `%`, taken as written: one starting with
+        // `25` keeps it, the host's encoding undone before this.
+        let z = &host[1 + len + 1..];
         let id = z
             .iter()
             .take_while(|&&b| !invalid_host_byte(b) && b != b']')
@@ -420,7 +418,7 @@ mod tests {
         assert_eq!(v6("[0:0:0:0:0:0:0d01:4403]").unwrap().0, "[::13.1.68.3]");
         assert_eq!(
             v6("[fe80::1%25eth0]").unwrap(),
-            ("[fe80::1]".into(), Some("eth0".into()))
+            ("[fe80::1]".into(), Some("25eth0".into()))
         );
         assert_eq!(v6("[1:0:0:2::3:0]").unwrap().0, "[1::2:0:0:3:0]");
         // A single zero word is not shortened.
@@ -468,7 +466,7 @@ mod tests {
         let rows = crate::c_source::table("tests/unit/unit1675.c", "ipv6_test tests[]", |c| {
             panic!("{c}")
         });
-        assert_eq!(rows.len(), 5, "the table was read");
+        assert_eq!(rows.len(), 7, "the table was read");
         let text =
             |v: &crate::c_source::Value| v.bytes().map(|b| String::from_utf8(b.to_vec()).unwrap());
         for row in rows {

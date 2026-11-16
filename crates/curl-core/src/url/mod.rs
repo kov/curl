@@ -971,7 +971,9 @@ impl Url {
         if plain.first() == Some(&b'[') {
             let mut addr = plain;
             self.zone_id = host::ipv6(&mut addr).map_err(bad)?;
-            return Ok(host);
+            // Set as encoded, it is held as checked: normalized, its zone id
+            // apart, as a parsed URL holds it (`url_sethost`).
+            return Ok(if encoded { host } else { addr });
         }
         host::check_name(&plain).map_err(bad)?;
         match host::ipv4(&plain) {
@@ -1265,8 +1267,9 @@ impl Url {
             sink.reserve(room(0)).map_err(sink_out_of_memory)?;
             let mut out = Whole { sink, written: 0 };
             out.put(b"file://")?;
-            // A path cleared or never set prints as C prints a NULL.
-            out.put(self.path.as_deref().unwrap_or(b"(nil)"))?;
+            // A path cleared or never set is `/`, as `CURLUPART_PATH` reads
+            // it (`file_url`).
+            out.put(self.path.as_deref().unwrap_or(b"/"))?;
             return tail(&mut out);
         }
         let host = self.host.as_deref().ok_or(UrlErrorKind::NoHost)?;
@@ -2060,10 +2063,10 @@ mod tests {
         u.set(Part::Host, Some(b"[fe80::20c:29ff:fe9c:409b%25eth0]"), none)
             .unwrap();
         assert_eq!(u.get(Part::ZoneId, g).unwrap(), b"eth0");
-        // The host keeps its text, zone and all, as C's does.
+        // The host is held without its zone, which goes once.
         assert_eq!(
             show(&u.get(Part::Url, g).unwrap()),
-            "https://[fe80::20c:29ff:fe9c:409b%25eth0%25eth0]/hello.html"
+            "https://[fe80::20c:29ff:fe9c:409b%25eth0]/hello.html"
         );
         u.set(Part::ZoneId, Some(b"clown"), none).unwrap();
         assert_eq!(u.get(Part::ZoneId, g).unwrap(), b"clown");
@@ -2133,10 +2136,10 @@ mod tests {
         assert_eq!(u.get(Part::Fragment, g).unwrap(), b"");
         assert_eq!(show(&u.get(Part::Url, g).unwrap()), "http://h/p#");
 
-        // A file: URL without a path prints C's NULL.
+        // A file: URL without a path has `/` for it.
         let mut u = Url::parse(b"http://h", ParseOptions::NONE).unwrap();
         u.set(Part::Scheme, Some(b"FILE"), none).unwrap();
-        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "file://(nil)");
+        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "file:///");
 
         // No IDN library: a conversion that would happen fails.
         let puny = GetOptions {

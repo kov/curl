@@ -1,5 +1,5 @@
 {
- "c-commit": "8f47ee1b6821932f6a40bcc5f3b227e1fd967d90",
+ "c-commit": "3c4cc98691f2b7817d47e81a1480e34330d3255e",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -9517,7 +9517,7 @@
      3596
     ]
    },
-   "lib3612": {
+   "lib3613": {
     "bytes": 3300,
     "curl_api_calls": [
      "curl_easy_cleanup",
@@ -9542,16 +9542,16 @@
      "CURL_GLOBAL_ALL"
     ],
     "entry": [
-     "test_lib3612"
+     "test_lib3613"
     ],
-    "file": "tests/libtest/lib3612.c",
+    "file": "tests/libtest/lib3613.c",
     "generated": false,
     "includes": [
      "first.h"
     ],
     "kind": "libtest",
     "tests": [
-     3612
+     3613
     ]
    },
    "lib464": {
@@ -83316,70 +83316,6 @@
     "attr_values": [
      "crlf=headers"
     ],
-    "bytes": 1646,
-    "command": "--anyauth -u : http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
-    "command_option": null,
-    "command_type": null,
-    "disable": [],
-    "eol": "lf",
-    "errorcode": null,
-    "features": [
-     "Debug",
-     "GSS-API"
-    ],
-    "has_command": true,
-    "has_precheck": false,
-    "keywords": [
-     "--anyauth",
-     "HTTP",
-     "HTTP GET",
-     "HTTP Negotiate auth (stub krb5)"
-    ],
-    "killserver": [],
-    "macros": [
-     "b64"
-    ],
-    "name": "HTTP Negotiate picked from a 401 by --anyauth (stub krb5)",
-    "non_ascii": false,
-    "nul": false,
-    "number": 2096,
-    "parts": [
-     "client/command",
-     "client/features",
-     "client/name",
-     "client/server",
-     "client/setenv",
-     "info/keywords",
-     "reply/data",
-     "reply/data1",
-     "reply/datacheck",
-     "verify/protocol"
-    ],
-    "postcheck": false,
-    "precheck": null,
-    "runner": "curl",
-    "server_names": [
-     "http"
-    ],
-    "servers": [
-     "http"
-    ],
-    "setenv": [
-     "CURL_STUB_GSS_CREDS"
-    ],
-    "tool": null,
-    "tool_name": null,
-    "variables": [
-     "HOSTIP",
-     "HTTPPORT",
-     "TESTNUMBER",
-     "VERSION"
-    ]
-   },
-   {
-    "attr_values": [
-     "crlf=headers"
-    ],
     "bytes": 1338,
     "command": "--negotiate http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
     "command_option": null,
@@ -84339,72 +84275,6 @@
     "attr_values": [
      "crlf=headers"
     ],
-    "bytes": 1813,
-    "command": "--proxy-anyauth -U : -x http://%HOSTIP:%HTTPPORT http://remote.example/%TESTNUMBER",
-    "command_option": null,
-    "command_type": null,
-    "disable": [],
-    "eol": "lf",
-    "errorcode": null,
-    "features": [
-     "Debug",
-     "GSS-API",
-     "proxy"
-    ],
-    "has_command": true,
-    "has_precheck": false,
-    "keywords": [
-     "--proxy-anyauth",
-     "HTTP",
-     "HTTP GET",
-     "HTTP proxy",
-     "HTTP proxy Negotiate auth (stub krb5)"
-    ],
-    "killserver": [],
-    "macros": [
-     "b64"
-    ],
-    "name": "HTTP proxy Negotiate picked from a 407 by --proxy-anyauth (stub krb5)",
-    "non_ascii": false,
-    "nul": false,
-    "number": 2111,
-    "parts": [
-     "client/command",
-     "client/features",
-     "client/name",
-     "client/server",
-     "client/setenv",
-     "info/keywords",
-     "reply/data",
-     "reply/data1",
-     "reply/datacheck",
-     "verify/protocol"
-    ],
-    "postcheck": false,
-    "precheck": null,
-    "runner": "curl",
-    "server_names": [
-     "http"
-    ],
-    "servers": [
-     "http"
-    ],
-    "setenv": [
-     "CURL_STUB_GSS_CREDS"
-    ],
-    "tool": null,
-    "tool_name": null,
-    "variables": [
-     "HOSTIP",
-     "HTTPPORT",
-     "TESTNUMBER",
-     "VERSION"
-    ]
-   },
-   {
-    "attr_values": [
-     "crlf=headers"
-    ],
     "bytes": 2106,
     "command": "http://test.remote.example.com.%TESTNUMBER:%HTTPPORT/path/%TESTNUMBER0002 --proxy http://%HOSTIP:%HTTPPORT --proxy-user : --proxy-anyauth --proxytunnel",
     "command_option": null,
@@ -84979,6 +84849,136 @@
      "CERTDIR",
      "HTTPSPORT",
      "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 1646,
+    "command": "--anyauth -u : http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--anyauth",
+     "HTTP",
+     "HTTP GET",
+     "HTTP Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP Negotiate picked from a 401 by --anyauth (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2121,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 1813,
+    "command": "--proxy-anyauth -U : -x http://%HOSTIP:%HTTPPORT http://remote.example/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API",
+     "proxy"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--proxy-anyauth",
+     "HTTP",
+     "HTTP GET",
+     "HTTP proxy",
+     "HTTP proxy Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP proxy Negotiate picked from a 407 by --proxy-anyauth (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2122,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
     ]
    },
    {
@@ -107208,7 +107208,7 @@
     "name": "SFTP key function: what it is given, and each answer",
     "non_ascii": false,
     "nul": false,
-    "number": 3612,
+    "number": 3613,
     "parts": [
      "client/command",
      "client/features",
@@ -107232,7 +107232,7 @@
     ],
     "setenv": [],
     "tool": null,
-    "tool_name": "lib3612",
+    "tool_name": "lib3613",
     "variables": [
      "HOSTIP",
      "LOGDIR",
@@ -150878,7 +150878,6 @@
   "tests/data/test2093",
   "tests/data/test2094",
   "tests/data/test2095",
-  "tests/data/test2096",
   "tests/data/test2097",
   "tests/data/test2098",
   "tests/data/test2099",
@@ -150896,7 +150895,6 @@
   "tests/data/test2109",
   "tests/data/test211",
   "tests/data/test2110",
-  "tests/data/test2111",
   "tests/data/test2112",
   "tests/data/test2113",
   "tests/data/test2114",
@@ -150907,6 +150905,8 @@
   "tests/data/test2119",
   "tests/data/test212",
   "tests/data/test2120",
+  "tests/data/test2121",
+  "tests/data/test2122",
   "tests/data/test213",
   "tests/data/test214",
   "tests/data/test215",
@@ -151304,7 +151304,7 @@
   "tests/data/test360",
   "tests/data/test361",
   "tests/data/test3611",
-  "tests/data/test3612",
+  "tests/data/test3613",
   "tests/data/test362",
   "tests/data/test363",
   "tests/data/test3630",
@@ -152303,7 +152303,7 @@
   "tests/libtest/lib3239.c",
   "tests/libtest/lib3595.c",
   "tests/libtest/lib3596.c",
-  "tests/libtest/lib3612.c",
+  "tests/libtest/lib3613.c",
   "tests/libtest/lib464.c",
   "tests/libtest/lib500.c",
   "tests/libtest/lib5000.c",

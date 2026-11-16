@@ -1,5 +1,5 @@
 {
- "c-commit": "7baa75d23e90e4c6a6d08d79f830851154b3a60c",
+ "c-commit": "d29795a77d98f3c4bc9bdf4d836d5fbc41c6c53b",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -29,8 +29,8 @@
   "compiler": "/usr/bin/cc",
   "counts": {
    "considered": 2180,
-   "failed": 4,
-   "ok": 2131,
+   "failed": 3,
+   "ok": 2132,
    "ran": 2135,
    "skipped": 45
   },
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-16T17:09:20Z",
-   "started": "2026-11-16T17:06:26Z"
+   "finished": "2026-11-16T19:07:23Z",
+   "started": "2026-11-16T19:04:54Z"
   },
   "protocols": [
    "dict",
@@ -1067,8 +1067,8 @@
      "outcome": "passed"
     },
     "test_04_stuttered::test_04_02_100_100_10[h3]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: response #102 http_code: expected 200, got 502\n  json stat from curl:{\n    \"certs\": \"\",\n    \"conn_id\": 0,\n    \"content_type\": \"text/html; charset=UTF-8\",\n    \"errormsg\": null,\n    \"exitcode\": 0,\n    \"filename_effective\": \"download_6.data\",\n    \"ftp_entry_path\": null,\n    \"http_code\":",
+     "outcome": "failed"
     },
     "test_04_stuttered::test_04_03_1000_10_1[h2]": {
      "message": null,
@@ -4364,10 +4364,11 @@
     }
    },
    "counts": {
-    "passed": 965,
+    "failed": 1,
+    "passed": 964,
     "skipped": 62
    },
-   "exit-status": 0,
+   "exit-status": 1,
    "functions-without-cases": []
   },
   "results": {
@@ -8738,10 +8739,7 @@
     "result": "ok"
    },
    "3630": {
-    "failed-parts": [
-     "protocol"
-    ],
-    "result": "failed"
+    "result": "ok"
    },
    "3631": {
     "class": "feature missing from build",

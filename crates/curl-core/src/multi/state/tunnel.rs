@@ -34,6 +34,11 @@ use crate::trace;
 /// The most one read takes.
 const READ_SIZE: usize = 16384;
 
+/// How much of the answer one pass reads before it gives the other
+/// transfers their turn, and the transfer its timeouts' check, coming
+/// back at once (`recv_CONNECT_resp`'s `taken`).
+const PASS_BUDGET: usize = 16384;
+
 /// A `CONNECT` under way.
 #[derive(Debug)]
 pub(crate) struct Tunnel {
@@ -447,6 +452,7 @@ fn run<H: Host>(
         .route
         .proxy_tls()
         .map(|_| s.machine.dialing().socket_component());
+    let mut taken = 0;
     loop {
         let t = tunnel(&mut s.handshake);
         if t.sent < t.request.len() {
@@ -486,6 +492,14 @@ fn run<H: Host>(
         // handed the socket, what follows the answer is the server's and
         // the library's to read, past any buffer of ours: SSH's banner
         // comes with the proxy's answer.
+        // A proxy that keeps sending keeps the socket readable: past the
+        // pass's budget the transfer is marked to run again at once, the
+        // multi's other transfers and its clock run first
+        // (`Curl_multi_mark_dirty`).
+        if taken >= PASS_BUDGET {
+            cx.rest.dirty.insert(cx.me.index());
+            return Ok(Ran::Idle);
+        }
         let hands_over = lent.route.target().scheme().hands_socket_over();
         let size = if lent.route.proxy_secured() || hands_over {
             1
@@ -514,6 +528,7 @@ fn run<H: Host>(
             Err(e) => return Err(refused(cx, e)),
         };
         dialed.consume(used);
+        taken += used;
         let looked = used + usize::from(t.answer.looked_ahead());
         let owed = looked
             .checked_sub(t.counted)

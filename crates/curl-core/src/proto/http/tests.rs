@@ -5599,6 +5599,30 @@ fn a_tunnel_answers_a_407_over_the_same_connection() {
     );
 }
 
+/// A 407 whose body keeps coming, the socket never drained, is read a
+/// pass at a time: the transfer's time limit still ends the tunnel
+/// (`recv_CONNECT_resp`'s `taken`, upstream 12938b611c, test 5032).
+#[test]
+fn a_tunnel_s_endless_407_body_still_times_out() {
+    let challenge = b"HTTP/1.1 407 Who\r\nContent-Length: 1000000000\r\n\r\n";
+    let (mut m, talk, _) = server(&[challenge], false);
+    let talk = talk.endless(std::time::Duration::from_millis(1));
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
+        o.proxy.make_mut().unwrap().tunnel = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(200);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    let said = ran.seen.text();
+    assert!(
+        said.iter()
+            .any(|l| l == "Proxy CONNECT aborted due to timeout\n"),
+        "{said:?}"
+    );
+}
+
 /// A proxy that closes the connection on its 407 is connected to again,
 /// and asked again with its credentials (`Connect me again please`).
 #[test]

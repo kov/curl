@@ -521,6 +521,13 @@ def parse_features(cm_features, protocols):
     check(n_blocks == n_tags and n_files > 1000,
           f"every <features> tag opens a well-formed block ({n_blocks}/{n_tags}) in {n_files} files")
 
+    # Names tests still require that no build sets any more: the tests
+    # requiring them always skip. Listed by hand, so that a name nothing
+    # sets is a decision, not a typo.
+    UNSET_FEATURES = {
+        "NTLM": "C dropped NTLM; tests 70 and 906 still require it",
+    }
+
     def origin(n):
         if n in rt_regex:
             r = rt_regex[n]
@@ -536,6 +543,8 @@ def parse_features(cm_features, protocols):
             return {"kind": "protocol-as-feature"}
         if n in all_printed:
             return {"kind": "printed-feature-name-used-directly"}
+        if n in UNSET_FEATURES:
+            return {"kind": "set-by-nothing", "why": UNSET_FEATURES[n]}
         return None
 
     vocab = []
@@ -860,7 +869,7 @@ BACKENDS = [
     ("tls-support", "tls-config", ["lib/vtls/vtls_config.c"], "none", "USE_SSL (ECH parts: USE_ECH)", "USE_ECH", "--enable-ech", "ECH is EXPERIMENTAL"),
     ("tls-support", "vtls-core", ["lib/vtls/vtls.c"], "none", "USE_SSL", "CURL_ENABLE_SSL", "--with-ssl", ""),
     # QUIC
-    ("quic", "ngtcp2+nghttp3", ["lib/vquic/cf-ngtcp2.c", "lib/vquic/cf-ngtcp2-cmn.c"], "ngtcp2 + nghttp3 (with a ngtcp2_crypto_* TLS glue: ossl/quictls/boringssl/gnutls/wolfssl)", "USE_NGTCP2 && USE_NGHTTP3", "USE_NGTCP2", "--with-ngtcp2", ""),
+    ("quic", "ngtcp2+nghttp3", ["lib/vquic/cf-ngtcp2.c", "lib/vquic/cf-ngtcp2-cmn.c", "lib/vquic/ngtcp2_shim.c"], "ngtcp2 + nghttp3 (with a ngtcp2_crypto_* TLS glue: ossl/quictls/boringssl/gnutls/wolfssl)", "USE_NGTCP2 && USE_NGHTTP3", "USE_NGTCP2", "--with-ngtcp2", ""),
     ("quic", "quiche", ["lib/vquic/cf-quiche.c"], "quiche (+ OpenSSL)", "USE_QUICHE", "USE_QUICHE", "--with-quiche", "EXPERIMENTAL"),
     ("quic", "vquic-core", ["lib/vquic/vquic.c"], "none", "USE_HTTP3", None, None, ""),
     ("quic", "vquic-tls", ["lib/vquic/vquic-tls.c"], "TLS backend glue for QUIC (OpenSSL, GnuTLS, wolfSSL)", "USE_HTTP3", None, None, ""),
@@ -878,8 +887,6 @@ BACKENDS = [
     ("auth", "gsasl", ["lib/vauth/gsasl.c"], "libgsasl", "USE_GSASL", "CURL_USE_GSASL", "--with-libgsasl", ""),
     ("auth", "kerberos-gssapi", ["lib/vauth/krb5_gssapi.c"], "GSS-API library (MIT Kerberos, GNU GSS, Apple GSS)", "HAVE_GSSAPI && USE_KERBEROS5", "CURL_USE_GSSAPI", "--with-gssapi", ""),
     ("auth", "kerberos-sspi", ["lib/vauth/krb5_sspi.c"], "Windows SSPI", "USE_WINDOWS_SSPI && USE_KERBEROS5", "CURL_WINDOWS_SSPI", None, ""),
-    ("auth", "ntlm", ["lib/vauth/ntlm.c", "lib/curl_ntlm_core.c"], "TLS/crypto library DES+MD (OpenSSL, GnuTLS, mbedTLS, wolfSSL, Win32 crypto)", "USE_NTLM && !USE_WINDOWS_SSPI", "CURL_ENABLE_NTLM", "--enable-ntlm", "DEPRECATE.md schedules NTLM removal"),
-    ("auth", "ntlm-sspi", ["lib/vauth/ntlm_sspi.c"], "Windows SSPI", "USE_WINDOWS_SSPI && USE_NTLM", "CURL_WINDOWS_SSPI", None, ""),
     ("auth", "oauth2", ["lib/vauth/oauth2.c"], "none", "!CURL_DISABLE_IMAP || !CURL_DISABLE_SMTP || ...", None, None, ""),
     ("auth", "spnego-gssapi", ["lib/vauth/spnego_gssapi.c"], "GSS-API library", "HAVE_GSSAPI && USE_SPNEGO", "CURL_USE_GSSAPI", "--with-gssapi", ""),
     ("auth", "spnego-sspi", ["lib/vauth/spnego_sspi.c"], "Windows SSPI", "USE_WINDOWS_SSPI && USE_SPNEGO", "CURL_WINDOWS_SSPI", None, ""),
@@ -914,12 +921,11 @@ BACKENDS = [
     ("ldap", "ldap-generic-and-winldap", ["lib/ldap.c"], "OpenLDAP-less LDAP: Windows wldap32 or a vendor ldap library", "!CURL_DISABLE_LDAP && !USE_OPENLDAP", "CURL_DISABLE_LDAP", "--enable-ldap", ""),
     ("ldap", "openldap", ["lib/openldap.c"], "OpenLDAP", "!CURL_DISABLE_LDAP && USE_OPENLDAP", "CURL_DISABLE_LDAP", "--with-ldap", ""),
     ("ldap", "win32-ldap", ["lib/ldap.c"], "Windows wldap32", "USE_WIN32_LDAP", "USE_WIN32_LDAP", None, ""),
-    # Local crypto
-    ("crypto", "md4", ["lib/md4.c"], "local or OpenSSL/wolfSSL/CommonCrypto/Win32", "USE_CURL_NTLM_CORE", None, None, "DEPRECATE.md schedules local crypto removal"),
-    ("crypto", "md5", ["lib/md5.c"], "local or OpenSSL/wolfSSL/mbedTLS/nettle", "...", None, None, "DEPRECATE.md schedules local crypto removal"),
-    ("crypto", "hmac", ["lib/hmac.c"], "local", "...", None, None, "DEPRECATE.md schedules local crypto removal"),
-    ("crypto", "sha256", ["lib/sha256.c"], "local or mbedTLS/OpenSSL/wolfSSL/nettle/PSA", "!CURL_DISABLE_AWS || !CURL_DISABLE_DIGEST_AUTH ...", None, None, "DEPRECATE.md schedules local crypto removal"),
-    ("crypto", "sha512-256", ["lib/curl_sha512_256.c"], "OpenSSL/wolfSSL/nettle or local", "!CURL_DISABLE_DIGEST_AUTH && !CURL_DISABLE_SHA512_256", "CURL_DISABLE_SHA512_256", None, "DEPRECATE.md schedules local crypto removal"),
+    # Hashes
+    ("crypto", "md5", ["lib/md5.c"], "the TLS library (OpenSSL, wolfSSL, nettle, mbedTLS) or CommonCrypto/Win32", "...", None, None, ""),
+    ("crypto", "hmac", ["lib/hmac.c"], "none (over md5/sha256)", "...", None, None, ""),
+    ("crypto", "sha256", ["lib/sha256.c"], "the TLS library (OpenSSL, wolfSSL, nettle, mbedTLS) or CommonCrypto/Win32", "!CURL_DISABLE_AWS || !CURL_DISABLE_DIGEST_AUTH ...", None, None, ""),
+    ("crypto", "sha512-256", ["lib/curl_sha512_256.c"], "OpenSSL/wolfSSL/nettle", "!CURL_DISABLE_DIGEST_AUTH && !CURL_DISABLE_SHA512_256", "CURL_DISABLE_SHA512_256", None, ""),
     ("crypto", "ed25519", ["lib/curl_ed25519.c"], "OpenSSL/wolfSSL/nettle", "!CURL_DISABLE_HTTP && !CURL_DISABLE_HTTPSIG", "CURL_DISABLE_HTTPSIG", None, "HTTP message signatures, EXPERIMENTAL"),
     # Platform glue
     ("platform", "amigaos", ["lib/amigaos.c"], "AmigaOS bsdsocket", "__AMIGA__", None, None, ""),
@@ -982,7 +988,7 @@ def backend_records(cmake_opts, cfg_opts, protocols_data):
     return sorted(recs, key=lambda r: (r["category"], r["name"]))
 
 
-DERIVED = ["USE_SSL", "USE_SSH", "USE_NTLM", "USE_CURL_NTLM_CORE", "USE_SPNEGO", "USE_KERBEROS5",
+DERIVED = ["USE_SSL", "USE_SSH", "USE_SPNEGO", "USE_KERBEROS5",
            "USE_HTTP2", "USE_HTTP3", "USE_THREADS", "USE_MUTEX", "USE_LIBIDN2", "CURLRES_IPV6",
            "CURLRES_IPV4", "CURLRES_ASYNCH", "CURLRES_SYNCH"]
 

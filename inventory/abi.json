@@ -1,115 +1,115 @@
 {
- "c-commit": "3c4cc98691f2b7817d47e81a1480e34330d3255e",
+ "c-commit": "7baa75d23e90e4c6a6d08d79f830851154b3a60c",
  "data": {
   "api-calls": {
    "cbapi": {
     "columns": [
-     "is_event_cb"
+     "set_readonly"
     ],
     "rows": [
      {
-      "is_event_cb": 0,
-      "name": "easy_chunk_bgn"
+      "name": "easy_chunk_bgn",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_chunk_end"
+      "name": "easy_chunk_end",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_closesocket"
+      "name": "easy_closesocket",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_cr_in_read"
+      "name": "easy_cr_in_read",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_cr_in_resume_from"
+      "name": "easy_cr_in_resume_from",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_cw_out_cb"
+      "name": "easy_cw_out_cb",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fdebug"
+      "name": "easy_fdebug",
+      "set_readonly": 1
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fnmatch_data"
+      "name": "easy_fnmatch_data",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fopensocket"
+      "name": "easy_fopensocket",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fprereq"
+      "name": "easy_fprereq",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fprogress"
+      "name": "easy_fprogress",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fread_func"
+      "name": "easy_fread_func",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fsockopt"
+      "name": "easy_fsockopt",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fsslctx"
+      "name": "easy_fsslctx",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fwrite_rtp"
+      "name": "easy_fwrite_rtp",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_fxferinfo"
+      "name": "easy_fxferinfo",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_ioctl_func"
+      "name": "easy_ioctl_func",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_resolver_start"
+      "name": "easy_resolver_start",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_seek_func"
+      "name": "easy_seek_func",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_ssh_hostkeyfunc"
+      "name": "easy_ssh_hostkeyfunc",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_ssh_keyfunc"
+      "name": "easy_ssh_keyfunc",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "easy_trailer_callback"
+      "name": "easy_trailer_callback",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "multi_ntfy_cb"
+      "name": "multi_ntfy_cb",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 0,
-      "name": "multi_push_cb"
+      "name": "multi_push_cb",
+      "set_readonly": 0
      },
      {
-      "is_event_cb": 1,
-      "name": "multi_socket_cb"
+      "name": "multi_socket_cb",
+      "set_readonly": 1
      },
      {
-      "is_event_cb": 1,
-      "name": "multi_timer_cb"
+      "name": "multi_timer_cb",
+      "set_readonly": 1
      }
     ]
    },
@@ -117,7 +117,7 @@
     "columns": [
      "data_is_killed",
      "recurse",
-     "no_event_cb",
+     "readonly",
      "no_scache_lock"
     ],
     "max-recursion": 7,
@@ -125,127 +125,127 @@
      {
       "data_is_killed": 1,
       "name": "easy_cleanup",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_duphandle",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 1,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "easy_getinfo",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 1,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "easy_header",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 1,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "easy_nextheader",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 1,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "easy_pause",
-      "no_event_cb": 1,
       "no_scache_lock": 0,
+      "readonly": 0,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "easy_perform_ev",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_perform",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_recv",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_reset",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_send",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_setopt",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 0,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "easy_ssls_export",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_ssls_import",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "easy_upkeep",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 0
      },
      {
       "data_is_killed": 0,
       "name": "ws_recv",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "ws_send",
-      "no_event_cb": 0,
       "no_scache_lock": 1,
+      "readonly": 0,
       "recurse": 1
      },
      {
       "data_is_killed": 0,
       "name": "ws_start_frame",
-      "no_event_cb": 0,
       "no_scache_lock": 0,
+      "readonly": 0,
       "recurse": 1
      }
     ]
@@ -13588,7 +13588,7 @@
      "protocol": [
       "All"
      ],
-     "return-value": "On success, returns **CURLE_OK** and stores the number of bytes actually\nsent into ***n**. Note that this may be less than the amount you wanted to\nsend.\n\nOn failure, returns the appropriate error code.\n\nThis function may return **CURLE_AGAIN**. In this case, use your operating\nsystem facilities to wait until the socket is writable, and retry.\n\nIf there is no socket available to use from the previous transfer, this\nfunction returns **CURLE_UNSUPPORTED_PROTOCOL**."
+     "return-value": "On success, returns **CURLE_OK** and stores the number of bytes actually\nsent into ***n**. Note that this may be less than the amount you wanted to\nsend.\n\nOn failure, returns the appropriate error code.\n\nThis function may return **CURLE_AGAIN**. In this case, use your operating\nsystem facilities to wait until the socket is writable, and retry.\nThe **buffer** passed to the retry call should hold the _same data_\nas the original one and **buflen** should be _no smaller_ than before.\n\nIf there is no socket available to use from the previous transfer, this\nfunction returns **CURLE_UNSUPPORTED_PROTOCOL**."
     },
     "header": "easy.h",
     "name": "curl_easy_send",
@@ -15312,7 +15312,7 @@
      "protocol": [
       "WS"
      ],
-     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned.\n\nInstead of blocking, the function returns **CURLE_AGAIN**. The correct\nbehavior is then to wait for the socket to signal readability before calling\nthis function again.\n\nAny other non-zero return value indicates an error. See the libcurl-errors(3)\nman page for the full list with descriptions."
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned.\n\nInstead of blocking, the function returns **CURLE_AGAIN**. The correct\nbehavior is then to wait until the socket is writable before calling\nthis function again. Retry with the same data and length.\n\nAny other non-zero return value indicates an error. See the libcurl-errors(3)\nman page for the full list with descriptions."
     },
     "header": "websockets.h",
     "name": "curl_ws_send",
@@ -15366,67 +15366,67 @@
   },
   "lib-defined-curl-functions-not-public-heuristic": {
    "curl_dbg_accept": [
-    "lib/memdebug.c:424"
+    "lib/memdebug.c:425"
    ],
    "curl_dbg_accept4": [
-    "lib/memdebug.c:441"
+    "lib/memdebug.c:442"
    ],
    "curl_dbg_calloc": [
-    "lib/memdebug.c:238"
+    "lib/memdebug.c:239"
    ],
    "curl_dbg_fclose": [
-    "lib/memdebug.c:509"
+    "lib/memdebug.c:510"
    ],
    "curl_dbg_fdopen": [
-    "lib/memdebug.c:499"
+    "lib/memdebug.c:500"
    ],
    "curl_dbg_fopen": [
-    "lib/memdebug.c:475"
+    "lib/memdebug.c:476"
    ],
    "curl_dbg_free": [
-    "lib/memdebug.c:364"
+    "lib/memdebug.c:365"
    ],
    "curl_dbg_freeaddrinfo": [
     "lib/curl_addrinfo.c:558"
    ],
    "curl_dbg_freopen": [
-    "lib/memdebug.c:487"
+    "lib/memdebug.c:488"
    ],
    "curl_dbg_getaddrinfo": [
     "lib/curl_addrinfo.c:589"
    ],
    "curl_dbg_log": [
-    "lib/memdebug.c:564"
+    "lib/memdebug.c:565"
    ],
    "curl_dbg_malloc": [
-    "lib/memdebug.c:211"
+    "lib/memdebug.c:212"
    ],
    "curl_dbg_mark_sclose": [
-    "lib/memdebug.c:460"
+    "lib/memdebug.c:461"
    ],
    "curl_dbg_memdebug": [
-    "lib/memdebug.c:151"
+    "lib/memdebug.c:152"
    ],
    "curl_dbg_memlimit": [
-    "lib/memdebug.c:177"
+    "lib/memdebug.c:178"
    ],
    "curl_dbg_realloc": [
-    "lib/memdebug.c:319"
+    "lib/memdebug.c:320"
    ],
    "curl_dbg_sclose": [
-    "lib/memdebug.c:468"
+    "lib/memdebug.c:469"
    ],
    "curl_dbg_socket": [
-    "lib/memdebug.c:389"
+    "lib/memdebug.c:390"
    ],
    "curl_dbg_socketpair": [
-    "lib/memdebug.c:408"
+    "lib/memdebug.c:409"
    ],
    "curl_dbg_strdup": [
-    "lib/memdebug.c:267"
+    "lib/memdebug.c:268"
    ],
    "curl_dbg_wcsdup": [
-    "lib/memdebug.c:292"
+    "lib/memdebug.c:293"
    ],
    "curl_easy_perform_ev": [
     "lib/easy.c:866"
@@ -17484,7 +17484,7 @@
     "name": "CURL_VERSION_MULTI_SSL"
    },
    {
-    "deprecated": null,
+    "deprecated": "8.23.0",
     "introduced": "7.10.6",
     "last": null,
     "name": "CURL_VERSION_NTLM"
@@ -17688,7 +17688,7 @@
     "name": "CURLAUTH_NONE"
    },
    {
-    "deprecated": null,
+    "deprecated": "8.23.0",
     "introduced": "7.10.6",
     "last": null,
     "name": "CURLAUTH_NTLM"

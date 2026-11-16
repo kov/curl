@@ -129,8 +129,14 @@ def deprecate_extras(recs, lines):
         a = re.search(r"release after (\d+\.\d+\.\d+)", body)
         pr = re.search(r"Pending PR: (\S+)", body)
         sentence = None
+        # A conditional removal ("we drop support for mbedTLS from curl in
+        # May 2027") runs over a line break.
+        flat = " ".join(body.split())
+        d = re.search(rf"[^.]*drop support for \S+ from curl in ((?:{MONTHS}) \d{{4}})[^.]*\.", flat)
         if m:
             sentence = re.search(rf"[^.\n]*(?:gets removed|removed) in (?:{MONTHS}) \d{{4}}[^.\n]*\.?", body).group(0).strip()
+        elif d:
+            m, sentence = d, d.group(0).strip()
         elif a:
             sentence = norm(re.search(r"In the release after.*?\.\s", body, re.DOTALL).group(0))
         r["scheduled"] = {"sentence": sentence, "removal-date": m.group(1) if m else None,
@@ -183,11 +189,11 @@ def main():
         records.extend(recs)
 
     by_title = {(r["path"], r["title"]): r for r in records if r["kind"] == "entry"}
-    check(("docs/DEPRECATE.md", "drop NTLM support") in by_title, "NTLM deprecation present")
+    check(("docs/DEPRECATE.md", "mbedTLS") in by_title, "mbedTLS deprecation present")
     check(by_title[("docs/KNOWN_BUGS.md", "IMAPS connection fails with Rustls error")]["section"] == "TLS",
           "Rustls IMAPS bug is in the TLS section")
-    ntlm = by_title[("docs/DEPRECATE.md", "drop NTLM support")]
-    check(ntlm["scheduled"]["removal-date"] == "September 2026", "NTLM removal date parsed")
+    mbedtls = by_title[("docs/DEPRECATE.md", "mbedTLS")]
+    check(mbedtls["scheduled"]["removal-date"] == "May 2027", "mbedTLS removal date parsed")
     exp = [r for r in records if r["path"] == "docs/EXPERIMENTAL.md" and r["kind"] == "entry"
            and r["title"] != "Graduation"]
     check(all(r["graduation-requirements"] for r in exp),
@@ -196,8 +202,11 @@ def main():
     tree_version = re.search(r'#define LIBCURL_VERSION "([^"]+)"', read("include/curl/curlver.h")).group(1)
     base = re.match(r"\d+\.\d+\.\d+", tree_version).group(0)
     newest_removal = max(version_tuple(p["version"]) for p in past)
-    check(newest_removal <= version_tuple(base),
-          f"no past removal is newer than the tree version {tree_version}")
+    # A development tree lists what its coming release removes: at most the
+    # next minor release.
+    major, minor, _ = version_tuple(base)
+    check(newest_removal <= (major, minor + 1, 0),
+          f"no past removal is newer than the release after {tree_version}")
 
     data = {
         "c-tree-version": tree_version,

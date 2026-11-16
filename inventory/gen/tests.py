@@ -726,8 +726,13 @@ def main():
                                 kind="tunit", generated=False)
     # perf: stand-alone benchmarks, not run by runtests.pl
     perf_listed = read_makefile_inc_list(TESTS / "perf" / "Makefile.inc")
+    # The bundle's entry point and shared helpers are not benchmarks.
+    perf_inc = (TESTS / "perf" / "Makefile.inc").read_text()
+    perf_support = set(re.findall(r"^(?:FIRST|UTILS)_C = (\S+)$", perf_inc,
+                                  re.MULTILINE))
+    check("first.c" in perf_support, "tests/perf/Makefile.inc names first.c")
     perf_files = sorted(p.name for p in (TESTS / "perf").glob("*.c")
-                        if p.name != "first.c")
+                        if p.name not in perf_support)
     discrepancies["perf_listed_without_file"] = sorted(set(perf_listed) - set(perf_files))
     discrepancies["perf_file_not_listed"] = sorted(set(perf_files) - set(perf_listed))
     check("base64enc.c" in perf_listed and "urlparser.c" in perf_listed,

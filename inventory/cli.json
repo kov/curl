@@ -1,5 +1,5 @@
 {
- "c-commit": "3c4cc98691f2b7817d47e81a1480e34330d3255e",
+ "c-commit": "7baa75d23e90e4c6a6d08d79f830851154b3a60c",
  "data": {
   "discrepancies": [
    {
@@ -2568,7 +2568,8 @@
     "arg": "<filename>",
     "category": [
      "http",
-     "ftp"
+     "ftp",
+     "file"
     ],
     "examples": [
      "--dump-header store.txt $URL",
@@ -2597,12 +2598,14 @@
     "mutexed": [],
     "protocols": [
      "HTTP",
-     "FTP"
+     "FTP",
+     "FILE"
     ],
     "requires": [],
     "scope": null,
     "see_also": [
-     "output"
+     "output",
+     "show-headers"
     ],
     "short": "D",
     "tags": []
@@ -9672,7 +9675,8 @@
      "verbose",
      "output",
      "http",
-     "ftp"
+     "ftp",
+     "file"
     ],
     "examples": [
      "-i $URL"
@@ -9699,7 +9703,8 @@
     "mutexed": [],
     "protocols": [
      "HTTP",
-     "FTP"
+     "FTP",
+     "FILE"
     ],
     "requires": [],
     "scope": null,
@@ -13692,7 +13697,7 @@
   ],
   "environment": {
    "comment_mentions_skipped": [
-    "src/var.c:398"
+    "src/var.c:405"
    ],
    "config_file_lookup": {
     "after_env": "getpwuid(geteuid())->pw_dir checked with the plain file name (no dot/underscore variants) when HAVE_GETPWUID && HAVE_GETEUID",
@@ -13874,7 +13879,7 @@
      "heading": "CURL_CA_BUNDLE <file>",
      "name": "CURL_CA_BUNDLE",
      "read_in_tool": [
-      "src/tool_operate.c:2273"
+      "src/tool_operate.c:2280"
      ],
      "string_literal_in_lib": [],
      "where": "tool"
@@ -13891,7 +13896,7 @@
      "name": "CURL_SSL_BACKEND",
      "read_in_tool": [],
      "string_literal_in_lib": [
-      "lib/vtls/vtls.c:775"
+      "lib/vtls/vtls.c:765"
      ],
      "where": "lib"
     },
@@ -13904,9 +13909,9 @@
      ],
      "string_literal_in_lib": [
       "lib/netrc.c:600",
-      "lib/vssh/libssh.c:1379",
-      "lib/vssh/libssh2.c:1787",
-      "lib/vssh/vssh.c:383"
+      "lib/vssh/libssh.c:1416",
+      "lib/vssh/libssh2.c:1798",
+      "lib/vssh/vssh.c:384"
      ],
      "where": "tool"
     },
@@ -13925,7 +13930,7 @@
      "name": "QLOGDIR",
      "read_in_tool": [],
      "string_literal_in_lib": [
-      "lib/vquic/vquic.c:1050"
+      "lib/vquic/vquic.c:1078"
      ],
      "where": "lib"
     },
@@ -13942,7 +13947,7 @@
      "heading": "SSL_CERT_DIR <directory>",
      "name": "SSL_CERT_DIR",
      "read_in_tool": [
-      "src/tool_operate.c:2281"
+      "src/tool_operate.c:2288"
      ],
      "string_literal_in_lib": [],
      "where": "tool"
@@ -13951,7 +13956,7 @@
      "heading": "SSL_CERT_FILE <path>",
      "name": "SSL_CERT_FILE",
      "read_in_tool": [
-      "src/tool_operate.c:2289"
+      "src/tool_operate.c:2296"
      ],
      "string_literal_in_lib": [],
      "where": "tool"
@@ -14147,7 +14152,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "getenv",
-     "line": 584,
+     "line": 585,
      "name": "CURL_DBG_TRUNCATE_FAIL"
     },
     {
@@ -14155,7 +14160,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "getenv",
-     "line": 1358,
+     "line": 1363,
      "name": "CURL_ISATTY"
     },
     {
@@ -14163,7 +14168,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "getenv",
-     "line": 1623,
+     "line": 1628,
      "name": "CURL_FORBID_REUSE"
     },
     {
@@ -14171,7 +14176,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "getenv",
-     "line": 2011,
+     "line": 2018,
      "name": "CURL_QUICK_EXIT"
     },
     {
@@ -14179,7 +14184,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "getenv",
-     "line": 2126,
+     "line": 2133,
      "name": "CURL_FORBID_REUSE"
     },
     {
@@ -14187,7 +14192,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "curl_getenv",
-     "line": 2273,
+     "line": 2280,
      "name": "CURL_CA_BUNDLE"
     },
     {
@@ -14195,7 +14200,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "curl_getenv",
-     "line": 2281,
+     "line": 2288,
      "name": "SSL_CERT_DIR"
     },
     {
@@ -14203,7 +14208,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "curl_getenv",
-     "line": 2289,
+     "line": 2296,
      "name": "SSL_CERT_FILE"
     },
     {
@@ -14244,7 +14249,7 @@
      "expr": "name",
      "file": "src/var.c",
      "helper": "getenv",
-     "line": 406,
+     "line": 413,
      "name": null
     }
    ],
@@ -15306,7 +15311,7 @@
      "PARAM_MANUAL_REQUESTED",
      "PARAM_VERSION_INFO_REQUESTED"
     ],
-    "source": "src/tool_operate.c:2456",
+    "source": "src/tool_operate.c:2466",
     "specific": [
      {
       "param": "PARAM_LIBCURL_UNSUPPORTED_PROTOCOL",
@@ -19057,6 +19062,7 @@
    },
    {
     "categories": [
+     "file",
      "ftp",
      "http"
     ],
@@ -20741,6 +20747,7 @@
    },
    {
     "categories": [
+     "file",
      "ftp",
      "http",
      "important",

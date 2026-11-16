@@ -285,6 +285,36 @@ fn passes_over_session_cookies_in_a_new_session() {
     assert_eq!(jar.len(), 3);
 }
 
+/// A `Set-Cookie:` line read from a file has no request to take a
+/// path from: without one of its own its path is `/`, so a cookie of
+/// the same name a server then sets without TLS may not overlay it when
+/// it is secure (`storecookie`, test 3612).
+#[test]
+fn a_file_s_set_cookie_line_without_a_path_has_the_root() {
+    let mut jar = Jar::default();
+    let file = b"Set-Cookie: nopath=import; domain=example.com; Secure;\n\
+        Set-Cookie: withpath=name; domain=example.com; Secure; path=\"/\";\n";
+    jar.load(file, false, false, None, NOW, &mut 0, |_| {})
+        .unwrap();
+    assert_eq!(
+        lines(&jar),
+        [
+            ".example.com\tTRUE\t/\tTRUE\t0\tnopath\timport",
+            ".example.com\tTRUE\t/\tTRUE\t0\twithpath\tname"
+        ]
+    );
+    set(
+        &mut jar,
+        b"example.com",
+        b"/",
+        b"nopath=update; domain=example.com;",
+    );
+    assert_eq!(
+        sent(&jar, b"example.com", b"/36120002", true),
+        ["withpath=name", "nopath=import"]
+    );
+}
+
 /// A file's line fits what C reads it into up to 8000001 bytes with its
 /// newline, the last line counted with the newline C adds to it; a
 /// longer one stops the file with `TooLarge`, the cookies before it

@@ -4076,7 +4076,7 @@ fn a_cookie_list_is_traced_as_it_is_set() {
         },
         "Added cookie second=\"y\" for domain b.com, path /, expire 0\n".to_string(),
         "Replaced cookie second=\"z\" for domain b.com, path /, expire 0\n".to_string(),
-        "Added cookie hy=\"2\" for domain b.com, path (nil), expire 0\n".to_string(),
+        "Added cookie hy=\"2\" for domain b.com, path /, expire 0\n".to_string(),
     ];
     let mut seen = Seen::default();
     let c = curl_easy_init();

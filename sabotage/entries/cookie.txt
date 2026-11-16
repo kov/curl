@@ -121,11 +121,13 @@ witness: curl-core cookie::tests::replaces_in_place_of_time_and_keeps_live_cooki
 file: crates/curl-core/src/cookie.rs
 witness: curl-core cookie::tests::matches_hosts_paths_and_security_as_c
 --- old
-    len(&b.path)
-        .cmp(&len(&a.path))
+    b.path
+        .len()
+        .cmp(&a.path.len())
 --- new
-    len(&a.path)
-        .cmp(&len(&b.path))
+    a.path
+        .len()
+        .cmp(&b.path.len())
 
 === a secure cookie goes over any connection
 file: crates/curl-core/src/cookie.rs
@@ -398,3 +400,11 @@ features: test-util,debug-hooks
             let site = cookie_site(cookie_host, target, peer, proxied);
 --- new
             let site = cookie_site(cookie_host, target, peer, false);
+
+=== a cookie with no path and no request to take one from has none
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::a_file_s_set_cookie_line_without_a_path_has_the_root
+--- old
+    co.path = sanitized_path(path)?;
+--- new
+    co.path = if path.is_empty() { Vec::new() } else { sanitized_path(path)? };

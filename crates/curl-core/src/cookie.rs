@@ -139,11 +139,11 @@ impl std::fmt::Debug for Suffixes {
 pub(crate) struct Cookie {
     name: Vec<u8>,
     value: Vec<u8>,
-    /// The paths it is sent for, without a trailing slash; none where it
-    /// was read from a `Set-Cookie:` line in a file that names none.
-    path: Option<Vec<u8>>,
-    /// The host it was set for, or the domain it names; none as with the
-    /// path.
+    /// The paths it is sent for, without a trailing slash: `/` where
+    /// nothing gives one, as for a `Set-Cookie:` line read from a file.
+    path: Vec<u8>,
+    /// The host it was set for, or the domain it names; none where it was
+    /// read from a `Set-Cookie:` line in a file that names none.
     domain: Option<Vec<u8>>,
     /// When it expires, in seconds since 1970; zero for a cookie that
     /// lasts the session.
@@ -213,7 +213,7 @@ impl Cookie {
         for (i, field) in [
             self.domain.as_deref().unwrap_or(b"unknown"),
             truth(self.tailmatch),
-            self.path.as_deref().unwrap_or(b"/"),
+            &self.path,
             truth(self.secure),
             signed(self.expires, &mut digits),
             &self.name,
@@ -380,7 +380,7 @@ impl Said<'_> {
                 b"\" for domain ",
                 cookie.domain.as_deref().unwrap_or(NIL),
                 b", path ",
-                cookie.path.as_deref().unwrap_or(NIL),
+                &cookie.path,
                 b", expire ",
                 signed(cookie.expires, &mut a),
             ]),
@@ -571,9 +571,7 @@ impl Jar {
                 problem,
             }));
         }
-        if co.prefix == Prefix::Host
-            && !(co.secure && co.path.as_deref() == Some(b"/") && !co.tailmatch)
-        {
+        if co.prefix == Prefix::Host && !(co.secure && co.path == b"/" && !co.tailmatch) {
             return Ok(None);
         }
         if !self.running && self.new_session && co.expires == 0 {
@@ -628,12 +626,8 @@ impl Jar {
             // A cookie from a connection that is not secure may not
             // overlay a secure one: for an existing cookie with path
             // `/login/en`, no new one whose path starts `/login`.
-            if overlapping
-                && old.secure
-                && !co.secure
-                && !secure
-                && let (Some(old_path), Some(path)) = (&old.path, &co.path)
-            {
+            if overlapping && old.secure && !co.secure && !secure {
+                let (old_path, path) = (&old.path, &co.path);
                 let first = old_path
                     .iter()
                     .skip(1)
@@ -702,7 +696,7 @@ impl Jar {
                 Some(d) if co.tailmatch && !is_ip => tailmatch(d, host),
                 Some(d) => host.eq_ignore_ascii_case(d),
             };
-            if !domain_matches || !co.path.as_deref().is_none_or(|p| path_matches(p, path)) {
+            if !domain_matches || !path_matches(&co.path, path) {
                 continue;
             }
             cookies.try_push(co)?;
@@ -787,11 +781,11 @@ impl Jar {
                 // The file may leave the path out: a field that reads as
                 // the next is taken for it.
                 if !(is_prefix_of(field, b"TRUE") || is_prefix_of(field, b"FALSE")) {
-                    co.path = Some(sanitized_path(field)?);
+                    co.path = sanitized_path(field)?;
                     fields += 1;
                     continue;
                 }
-                co.path = Some(copy(b"/")?);
+                co.path = copy(b"/")?;
                 fields += 1;
             }
             match fields {
@@ -858,7 +852,9 @@ impl Cookie {
         Cookie {
             name: Vec::new(),
             value: Vec::new(),
-            path: None,
+            // Set as the line's third field is read; a line without one
+            // is no cookie.
+            path: Vec::new(),
             domain: None,
             expires: 0,
             created: 0,
@@ -978,16 +974,17 @@ fn header_cookie<'a>(
     };
     co.name = copy(name)?;
     co.value = copy(val)?;
-    // Without a path, the request's, up to its last slash.
+    // Without a path, the request's, up to its last slash; without a
+    // request either, `/` (`storecookie`).
     let path = if !path.is_empty() {
-        Some(path)
+        path
     } else {
-        default_path.map(|p| match p.iter().rposition(|&b| b == b'/') {
+        default_path.map_or(&b""[..], |p| match p.iter().rposition(|&b| b == b'/') {
             Some(at) => &p[..=at],
             None => p,
         })
     };
-    co.path = path.map(sanitized_path).transpose()?;
+    co.path = sanitized_path(path)?;
     co.domain = if !domain.is_empty() {
         Some(copy(domain)?)
     } else {
@@ -1190,8 +1187,9 @@ fn path_matches(cookie_path: &[u8], path: &[u8]) -> bool {
 /// path first, then longest domain, then longest name, then newest.
 fn send_order(a: &Cookie, b: &Cookie) -> Ordering {
     let len = |v: &Option<Vec<u8>>| v.as_ref().map_or(0, Vec::len);
-    len(&b.path)
-        .cmp(&len(&a.path))
+    b.path
+        .len()
+        .cmp(&a.path.len())
         .then(len(&b.domain).cmp(&len(&a.domain)))
         .then(b.name.len().cmp(&a.name.len()))
         .then(b.created.cmp(&a.created))

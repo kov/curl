@@ -27,10 +27,8 @@
 #include <netinet/in.h>
 #endif
 
-#ifdef HAVE_LINUX_TCP_H
-#include <linux/tcp.h>
-#elif defined(HAVE_NETINET_TCP_H)
-#include <netinet/tcp.h>
+#ifdef HAVE_NETINET_TCP_H
+#include <netinet/tcp.h> /* for TCP_FASTOPEN_CONNECT */
 #endif
 
 #include "urldata.h"
@@ -224,9 +222,7 @@ static CURLcode httpauth(struct Curl_easy *data, bool proxy,
     }
 
     /* switch off bits we cannot support */
-#ifndef USE_NTLM
     auth &= ~CURLAUTH_NTLM; /* no NTLM support */
-#endif
 #ifndef USE_SPNEGO
     auth &= ~CURLAUTH_NEGOTIATE; /* no Negotiate (SPNEGO) auth without GSS-API
                                     or SSPI */
@@ -1231,6 +1227,7 @@ static CURLcode setopt_long_misc(struct Curl_easy *data, CURLoption option,
         if(!data->hsts)
           return CURLE_OUT_OF_MEMORY;
       }
+      data->hsts->flags = (unsigned int)arg;
     }
     else if(!data->share || !data->share->hsts) {
       /* throw away the HSTS cache unless shared */
@@ -1540,11 +1537,12 @@ static CURLcode cookielist(struct Curl_easy *data, const char *ptr)
       result = Curl_cookie_add(data, data->cookies, ptr + 11,
                                NULL, NULL,
                                COOKIE_HTTPHEADER | COOKIE_SECURE |
-                               COOKIE_NOPSL);
+                               COOKIE_NOPSL | COOKIE_LIVE);
     else
       /* Netscape format line */
       result = Curl_cookie_add(data, data->cookies, ptr, NULL,
-                               NULL, COOKIE_SECURE | COOKIE_NOPSL);
+                               NULL, COOKIE_SECURE | COOKIE_NOPSL |
+                               COOKIE_LIVE);
     Curl_share_unlock(data, CURL_LOCK_DATA_COOKIE);
   }
   return result;

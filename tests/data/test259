@@ -9,7 +9,6 @@ HTTP proxy Digest auth
 --proxy-anyauth
 </keywords>
 </info>
-# Server-side
 <reply>
 # The stupid test server does not response anything at all until the full
 # request has been sent, and then of course the full POST has already been
@@ -47,7 +46,6 @@ ok
 
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -58,6 +56,7 @@ Mime
 crypto
 proxy
 digest
+md5
 </features>
 <name>
 HTTP POST multipart with Expect: header using proxy anyauth (Digest)
@@ -73,7 +72,6 @@ bar
 </file>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <strip>
 ^(Content-Type: multipart/form-data;|------).*

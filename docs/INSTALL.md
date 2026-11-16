@@ -42,8 +42,8 @@ With both build tools, some features require Perl, and the pytest test suite
 requires Python.
 
 You can find live examples for both tools and build cases in curl's CI
-scripts: `.github/workflows/*.yml`, `.circleci/*.yml` and `appveyor.*` (in the
-Git repository). For CMake-specific instructions, see
+scripts: `.github/workflows/*.yml` and `appveyor.*` (in the Git repository).
+For CMake-specific instructions, see
 [INSTALL-CMAKE.md](https://github.com/curl/curl/blob/master/docs/INSTALL-CMAKE.md).
 
 ## Building using vcpkg
@@ -593,7 +593,6 @@ disabling support for some features (run `./configure --help` to see them all):
 - `--disable-http-auth` (all HTTP authentication)
 - `--disable-kerberos-auth` (cryptographic authentication)
 - `--disable-negotiate-auth` (cryptographic authentication)
-- `--disable-ntlm` (NTLM authentication)
 - `--disable-alt-svc` (HTTP Alt-Svc)
 - `--disable-ares` (the C-ARES DNS library)
 - `--disable-cookies` (HTTP cookies)

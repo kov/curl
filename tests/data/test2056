@@ -7,9 +7,8 @@ HTTP GET
 HTTP Negotiate auth (stub krb5)
 </keywords>
 </info>
-# Server-side
 <reply>
-<!-- First request, expect success in one shot -->
+# First request, expect success in one shot
 <data1>
 HTTP/1.1 200 Things are fine in server land
 Server: Microsoft-IIS/7.0
@@ -30,7 +29,6 @@ Nice auth sir!
 </datacheck>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -50,7 +48,6 @@ CURL_STUB_GSS_CREDS="KRB5_Alice"
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

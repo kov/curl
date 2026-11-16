@@ -37,7 +37,9 @@
 #include "progress.h"
 #include "curlx/win32-fopen.h"
 #include "curlx/dynbuf.h"
+#include "http.h"
 #include "http1.h"
+#include "sendf.h"
 #include "select.h"
 #include "transfer.h"
 #include "bufref.h"
@@ -60,9 +62,9 @@ static CURLcode cf_ngtcp2_adjust_pollset(struct Curl_cfilter *cf,
   bool want_recv, want_send;
   CURLcode result = CURLE_OK;
   curl_socket_t sock = (ctx->q.sockfd != CURL_SOCKET_BAD) ?
-   ctx->q.sockfd : Curl_conn_cf_get_socket(cf, data);
+   ctx->q.sockfd : cf->chain->sock;
 
-  if(!ctx->qconn || (sock == CURL_SOCKET_BAD))
+  if(!Curl_ngtcp2_conn(&ctx->qconn) || (sock == CURL_SOCKET_BAD))
     return CURLE_OK;
 
   Curl_pollset_check(data, ps, sock, &want_recv, &want_send);
@@ -75,8 +77,9 @@ static CURLcode cf_ngtcp2_adjust_pollset(struct Curl_cfilter *cf,
     bool c_exhaust, s_exhaust;
 
     CF_DATA_SAVE(save, cf, data);
-    c_exhaust = want_send && (!ngtcp2_conn_get_cwnd_left(ctx->qconn) ||
-                              !ngtcp2_conn_get_max_data_left(ctx->qconn));
+    c_exhaust = want_send && !Curl_ngtcp2_restricted(&ctx->qconn) &&
+      (!Curl_ngtcp2_conn_get_cwnd_left(&ctx->qconn) ||
+       !Curl_ngtcp2_conn_get_max_data_left(&ctx->qconn));
     s_exhaust = want_send && stream && stream->id >= 0 &&
                 (stream->quic_flow_blocked ||
                  stream->tx_in_flight_size >= stream->tx_in_flight_ideal);
@@ -86,6 +89,10 @@ static CURLcode cf_ngtcp2_adjust_pollset(struct Curl_cfilter *cf,
 
     result = Curl_pollset_set(data, ps, sock, want_recv, want_send);
     CF_DATA_RESTORE(cf, save);
+  }
+  else {
+    /* We always want to process server packets */
+    result = Curl_pollset_add_in(data, ps, sock);
   }
   return result;
 }
@@ -201,7 +208,8 @@ static void cf_ngtcp2_upd_rx_win(struct Curl_cfilter *cf,
       CURL_TRC_CF(data, cf, "[%" PRId64 "] rx window, extend by %" PRIu64
                   " bytes", stream->id, delta);
       stream->rx_offset_max += delta;
-      ngtcp2_conn_extend_max_stream_offset(ctx->qconn, stream->id, delta);
+      Curl_ngtcp2_conn_extend_max_stream_offset(&ctx->qconn, stream->id,
+                                                 delta);
     }
   }
 }
@@ -224,7 +232,7 @@ static int cb_h3_recv_data(nghttp3_conn *conn, int64_t stream3_id,
 
   h3_xfer_write_resp(cf, data, stream, (const char *)buf, buflen, FALSE);
 
-  ngtcp2_conn_extend_max_offset(ctx->qconn, buflen);
+  Curl_ngtcp2_conn_extend_max_offset(&ctx->qconn, buflen);
   stream->rx_offset += buflen;
   if(stream->rx_offset_max < stream->rx_offset)
     stream->rx_offset_max = stream->rx_offset;
@@ -246,8 +254,9 @@ static int cb_h3_deferred_consume(nghttp3_conn *conn, int64_t stream3_id,
 
   /* nghttp3 has consumed bytes on the QUIC stream and we need to
    * tell the QUIC connection to increase its flow control */
-  ngtcp2_conn_extend_max_stream_offset(ctx->qconn, stream3_id, consumed);
-  ngtcp2_conn_extend_max_offset(ctx->qconn, consumed);
+  Curl_ngtcp2_conn_extend_max_stream_offset(&ctx->qconn, stream3_id,
+                                             consumed);
+  Curl_ngtcp2_conn_extend_max_offset(&ctx->qconn, consumed);
 
   if(stream) {
     stream->rx_offset += consumed;
@@ -281,6 +290,50 @@ static int cb_h3_end_headers(nghttp3_conn *conn, int64_t stream_id,
   }
   Curl_multi_mark_dirty(data);
   return 0;
+}
+
+static void cf_h3_write_field(struct Curl_cfilter *cf,
+                              struct Curl_easy *data,
+                              struct h3_stream_ctx *stream,
+                              nghttp3_vec *name,
+                              nghttp3_vec *value,
+                              bool is_trailer)
+{
+  struct cf_ngtcp2_ctx *ctx = cf->ctx;
+
+  if(stream->xfer_result)
+    return;
+  curlx_dyn_reset(&ctx->scratch);
+  stream->xfer_result = curlx_dyn_addn(&ctx->scratch,
+                                       (const char *)name->base, name->len);
+  if(!stream->xfer_result)
+    stream->xfer_result = curlx_dyn_addn(&ctx->scratch, STRCONST(": "));
+  if(!stream->xfer_result)
+    stream->xfer_result = curlx_dyn_addn(
+      &ctx->scratch, (const char *)value->base, value->len);
+  if(!stream->xfer_result)
+    stream->xfer_result = curlx_dyn_addn(&ctx->scratch, STRCONST("\r\n"));
+  if(stream->xfer_result)
+    return;
+
+  CURL_TRC_CF(data, cf, "[%" PRId64 "] %s: %.*s: %.*s",
+              stream->id, is_trailer ? "trailer" : "header",
+              (int)name->len, name->base,
+              (int)value->len, value->base);
+  if(is_trailer) {
+    Curl_debug(data, CURLINFO_HEADER_IN, curlx_dyn_ptr(&ctx->scratch),
+               curlx_dyn_len(&ctx->scratch));
+    stream->xfer_result =
+      Curl_client_write(data, CLIENTWRITE_HEADER | CLIENTWRITE_TRAILER,
+                        curlx_dyn_ptr(&ctx->scratch),
+                        curlx_dyn_len(&ctx->scratch));
+    if(!stream->xfer_result)
+      stream->xfer_result =
+        Curl_bump_headersize(data, curlx_dyn_len(&ctx->scratch), FALSE);
+  }
+  else
+    h3_xfer_write_resp_hd(cf, data, stream, curlx_dyn_ptr(&ctx->scratch),
+                          curlx_dyn_len(&ctx->scratch), FALSE);
 }
 
 static int cb_h3_recv_header(nghttp3_conn *conn, int64_t stream_id,
@@ -330,23 +383,32 @@ static int cb_h3_recv_header(nghttp3_conn *conn, int64_t stream_id,
   }
   else {
     /* store as an HTTP1-style header */
-    CURL_TRC_CF(data, cf, "[%" PRId64 "] header: %.*s: %.*s",
-                stream_id, (int)h3name.len, h3name.base,
-                (int)h3val.len, h3val.base);
-    curlx_dyn_reset(&ctx->scratch);
-    result = curlx_dyn_addn(&ctx->scratch,
-                            (const char *)h3name.base, h3name.len);
-    if(!result)
-      result = curlx_dyn_addn(&ctx->scratch, STRCONST(": "));
-    if(!result)
-      result = curlx_dyn_addn(&ctx->scratch,
-                              (const char *)h3val.base, h3val.len);
-    if(!result)
-      result = curlx_dyn_addn(&ctx->scratch, STRCONST("\r\n"));
-    if(!result)
-      h3_xfer_write_resp_hd(cf, data, stream, curlx_dyn_ptr(&ctx->scratch),
-                            curlx_dyn_len(&ctx->scratch), FALSE);
+    cf_h3_write_field(cf, data, stream, &h3name, &h3val, FALSE);
   }
+  return 0;
+}
+
+static int cb_h3_recv_trailer(nghttp3_conn *conn, int64_t stream_id,
+                              int32_t token, nghttp3_rcbuf *name,
+                              nghttp3_rcbuf *value, uint8_t flags,
+                              void *user_data, void *stream_user_data)
+{
+  struct Curl_cfilter *cf = user_data;
+  nghttp3_vec h3name = nghttp3_rcbuf_get_buf(name);
+  nghttp3_vec h3val = nghttp3_rcbuf_get_buf(value);
+  struct h3_stream_ctx *stream;
+  struct Curl_easy *data =
+    Curl_cf_ngtcp2_get_xfer(cf, stream_user_data, &stream);
+
+  (void)conn;
+  (void)stream_id;
+  (void)token;
+  (void)flags;
+  /* we might have cleaned up this transfer already */
+  if(!stream || !data || stream->xfer_result)
+    return 0;
+
+  cf_h3_write_field(cf, data, stream, &h3name, &h3val, TRUE);
   return 0;
 }
 
@@ -360,8 +422,8 @@ static int cb_h3_stop_sending(nghttp3_conn *conn, int64_t stream_id,
   (void)conn;
   (void)stream_user_data;
 
-  rv = ngtcp2_conn_shutdown_stream_read(ctx->qconn, 0, stream_id,
-                                        app_error_code);
+  rv = Curl_ngtcp2_conn_shutdown_stream_read(&ctx->qconn, 0, stream_id,
+                                              app_error_code);
   if(rv && rv != NGTCP2_ERR_STREAM_NOT_FOUND) {
     return NGHTTP3_ERR_CALLBACK_FAILURE;
   }
@@ -379,8 +441,8 @@ static int cb_h3_reset_stream(nghttp3_conn *conn, int64_t stream_id,
   int rv;
   (void)conn;
 
-  rv = ngtcp2_conn_shutdown_stream_write(ctx->qconn, 0, stream_id,
-                                         app_error_code);
+  rv = Curl_ngtcp2_conn_shutdown_stream_write(&ctx->qconn, 0, stream_id,
+                                               app_error_code);
   if(data)
     CURL_TRC_CF(data, cf, "[%" PRId64 "] reset -> %d", stream_id, rv);
   if(rv && rv != NGTCP2_ERR_STREAM_NOT_FOUND) {
@@ -403,7 +465,7 @@ static nghttp3_callbacks ngh3_callbacks = {
   cb_h3_recv_header,
   cb_h3_end_headers,
   NULL, /* begin_trailers */
-  cb_h3_recv_header,
+  cb_h3_recv_trailer,
   NULL, /* end_trailers */
   cb_h3_stop_sending,
   NULL, /* end_stream */
@@ -432,7 +494,7 @@ static CURLcode init_ngh3_conn(struct Curl_cfilter *cf,
 {
   int rc;
 
-  if(ngtcp2_conn_get_streams_uni_left(ctx->qconn) < 3) {
+  if(Curl_ngtcp2_conn_get_streams_uni_left(&ctx->qconn) < 3) {
     failf(data, "QUIC connection lacks 3 uni streams to run HTTP/3");
     return CURLE_QUIC_CONNECT_ERROR;
   }
@@ -463,7 +525,7 @@ static CURLcode recv_closed_stream(struct Curl_cfilter *cf,
     if(stream->error3 == CURL_H3_ERR_REQUEST_REJECTED) {
       infof(data, "HTTP/3 stream %" PRId64 " refused by server, try again "
             "on a new connection", stream->id);
-      connclose(cf->conn); /* do not use this anymore */
+      connclose(CF_CONN(cf)); /* do not use this anymore */
       data->state.refused_stream = TRUE;
       return CURLE_RECV_ERROR; /* trigger Curl_retry_request() later */
     }
@@ -507,7 +569,7 @@ static CURLcode cf_ngtcp2_recv(struct Curl_cfilter *cf, struct Curl_easy *data,
   CF_DATA_SAVE(save, cf, data);
   DEBUGASSERT(cf->connected);
   DEBUGASSERT(ctx);
-  DEBUGASSERT(ctx->qconn);
+  DEBUGASSERT(Curl_ngtcp2_conn(&ctx->qconn));
   DEBUGASSERT(ctx->h3conn);
   *pnread = 0;
 
@@ -669,10 +731,9 @@ static CURLcode h3_stream_open(struct Curl_cfilter *cf,
   struct h3_stream_ctx *stream = NULL;
   int64_t sid;
   struct dynhds h2_headers;
-  size_t nheader;
   nghttp3_nv *nva = NULL;
   int rc = 0;
-  unsigned int i;
+  uint32_t i, nheader;
   nghttp3_data_reader reader;
   nghttp3_data_reader *preader = NULL;
   CURLcode result;
@@ -712,6 +773,8 @@ static CURLcode h3_stream_open(struct Curl_cfilter *cf,
 
   for(i = 0; i < nheader; ++i) {
     struct dynhds_entry *e = Curl_dynhds_getn(&h2_headers, i);
+    if(!e)
+      break;
     nva[i].name = (unsigned char *)e->name;
     nva[i].namelen = e->namelen;
     nva[i].value = (unsigned char *)e->value;
@@ -719,7 +782,7 @@ static CURLcode h3_stream_open(struct Curl_cfilter *cf,
     nva[i].flags = NGHTTP3_NV_FLAG_NONE;
   }
 
-  rc = ngtcp2_conn_open_bidi_stream(ctx->qconn, &sid, stream);
+  rc = Curl_ngtcp2_conn_open_bidi_stream(&ctx->qconn, &sid, stream);
   if(rc) {
     failf(data, "cannot open bidi streams");
     result = CURLE_SEND_ERROR;
@@ -784,7 +847,7 @@ static CURLcode h3_stream_open(struct Curl_cfilter *cf,
 
 out:
   curlx_free(nva);
-  Curl_dynhds_free(&h2_headers);
+  Curl_dynhds_cleanup(&h2_headers);
   return result;
 }
 
@@ -800,7 +863,7 @@ static CURLcode cf_ngtcp2_send(struct Curl_cfilter *cf, struct Curl_easy *data,
 
   CF_DATA_SAVE(save, cf, data);
   DEBUGASSERT(cf->connected);
-  DEBUGASSERT(ctx->qconn);
+  DEBUGASSERT(Curl_ngtcp2_conn(&ctx->qconn));
   DEBUGASSERT(ctx->h3conn);
   Curl_cf_ngtcp2_io_ctx_init(&pktx, cf, data);
   *pnwritten = 0;
@@ -953,10 +1016,8 @@ static CURLcode cf_ngtcp2_cntrl(struct Curl_cfilter *cf,
     break;
   }
   case CF_CTRL_CONN_INFO_UPDATE:
-    if(!cf->sockindex && cf->connected) {
-      cf->conn->httpversion_seen = 30;
-      Curl_conn_set_multiplex(cf->conn);
-    }
+    if(cf->connected)
+      Curl_conn_set_multiplex(cf->chain, 30);
     break;
   default:
     result = Curl_cf_ngtcp2_cmn_cntrl(cf, data, event, arg1, arg2);
@@ -972,7 +1033,7 @@ static void cf_ngtcp2_destroy(struct Curl_cfilter *cf, struct Curl_easy *data)
 
   CURL_TRC_CF(data, cf, "destroy");
   if(ctx) {
-    if(ctx->qconn) {
+    if(Curl_ngtcp2_conn(&ctx->qconn)) {
       struct cf_call_data save;
       CF_DATA_SAVE(save, cf, data);
       Curl_cf_ngtcp2_cmn_conn_close(cf, data);
@@ -1006,12 +1067,12 @@ static CURLcode cf_ngtcp2_query(struct Curl_cfilter *cf,
      * by callback. QUIC counts the number over the lifetime of the
      * connection, ever increasing.
      * We count the *open* transfers plus the budget for new ones. */
-    if(!ctx->qconn || ctx->shutdown_started) {
+    if(!Curl_ngtcp2_valid(&ctx->qconn) || ctx->shutdown_started) {
       *pres1 = 0;
     }
     else if(ctx->max_bidi_streams) {
       uint64_t avail_bidi_streams = 0;
-      uint64_t max_streams = cf->conn->attached_xfers;
+      uint64_t max_streams = CF_CONN(cf)->attached_xfers;
       if(ctx->max_bidi_streams > ctx->used_bidi_streams)
         avail_bidi_streams = ctx->max_bidi_streams - ctx->used_bidi_streams;
       max_streams += avail_bidi_streams;
@@ -1023,7 +1084,8 @@ static CURLcode cf_ngtcp2_query(struct Curl_cfilter *cf,
     }
     CURL_TRC_CF(data, cf, "query conn[%" FMT_OFF_T "]: "
                 "MAX_CONCURRENT -> %d (%u in use)",
-                cf->conn->connection_id, *pres1, cf->conn->attached_xfers);
+                CF_CONN(cf)->connection_id, *pres1,
+                CF_CONN(cf)->attached_xfers);
     CF_DATA_RESTORE(cf, save);
     return CURLE_OK;
   }
@@ -1052,7 +1114,8 @@ static CURLcode cf_ngtcp2_query(struct Curl_cfilter *cf,
 
 struct Curl_cftype Curl_cft_http3 = {
   "HTTP/3",
-  CF_TYPE_IP_CONNECT | CF_TYPE_SSL | CF_TYPE_MULTIPLEX | CF_TYPE_HTTP,
+  CF_TYPE_IP_CONNECT | CF_TYPE_SSL | CF_TYPE_MULTIPLEX | CF_TYPE_HTTP |
+  CF_TYPE_MAINTENANCE | CF_TYPE_SAFE_EOS,
   0,
   cf_ngtcp2_destroy,
   cf_ngtcp2_connect,
@@ -1067,16 +1130,20 @@ struct Curl_cftype Curl_cft_http3 = {
   cf_ngtcp2_query,
 };
 
-CURLcode Curl_cf_ngtcp2_create(struct Curl_cfilter **pcf,
+CURLcode Curl_cf_ngtcp2_create(struct Curl_cfchain *chain,
                                struct Curl_easy *data,
                                struct Curl_peer *origin,
                                struct Curl_peer *peer,
-                               struct connectdata *conn,
                                struct Curl_sockaddr_ex *addr)
 {
   struct cf_ngtcp2_ctx *ctx = NULL;
   struct Curl_cfilter *cf = NULL;
   CURLcode result;
+
+  result = Curl_cf_udp_create(chain, data, origin, peer,
+                              TRNSPRT_QUIC, addr, NULL, TRNSPRT_QUIC);
+  if(result)
+    goto out;
 
   ctx = curlx_calloc(1, sizeof(*ctx));
   if(!ctx) {
@@ -1084,29 +1151,21 @@ CURLcode Curl_cf_ngtcp2_create(struct Curl_cfilter **pcf,
     goto out;
   }
   result = Curl_cf_ngtcp2_ctx_init(ctx, origin, peer,
-                                   &conn->ssl_config, init_ngh3_conn);
+                                   &chain->conn->ssl_config, init_ngh3_conn);
   if(!result)
     result = Curl_cf_create(&cf, &Curl_cft_http3, ctx);
   if(result)
     goto out;
-  cf->conn = conn;
-
-  result = Curl_cf_udp_create(&cf->next, data, origin, peer, TRNSPRT_QUIC,
-                              conn, addr, NULL, TRNSPRT_QUIC);
-  if(result)
-    goto out;
-  cf->next->conn = cf->conn;
-  cf->next->sockindex = cf->sockindex;
+  Curl_cfchain_add(chain, cf);
+  cf = NULL;
+  ctx = NULL;
 
 out:
-  *pcf = (!result) ? cf : NULL;
-  if(result) {
-    if(cf)
-      Curl_conn_cf_discard_chain(&cf, data);
-    else if(ctx) {
-      Curl_cf_ngtcp2_ctx_cleanup(ctx);
-      curlx_free(ctx);
-    }
+  if(cf)
+    Curl_conn_cf_discard_chain(&chain->cf, data);
+  if(ctx) {
+    Curl_cf_ngtcp2_ctx_cleanup(ctx);
+    curlx_free(ctx);
   }
   return result;
 }
@@ -1126,7 +1185,8 @@ CURLcode Curl_cf_ngtcp2_insert_after(struct Curl_cfilter *cf_at,
     goto out;
   }
   result = Curl_cf_ngtcp2_ctx_init(ctx, origin, peer,
-                                   &cf_at->conn->ssl_config, init_ngh3_conn);
+                                   &CF_CONN(cf_at)->ssl_config,
+                                   init_ngh3_conn);
   if(!result)
     result = Curl_cf_create(&cf, &Curl_cft_http3, ctx);
   if(result)

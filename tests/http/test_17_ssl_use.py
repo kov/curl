@@ -435,7 +435,7 @@ class TestSSLUse:
         exp_trace = None
         match_trace = None
         if env.curl_uses_lib('openssl') or env.curl_uses_lib('quictls'):
-            exp_trace = r'.*SSL certificate OpenSSL verify result: certificate has expired.*$'
+            exp_trace = r'.*SSL certificate problem: certificate has expired*$'
         elif env.curl_uses_lib('gnutls'):
             exp_trace = r'.*SSL certificate verification failed: certificate has expired\..*'
         elif env.curl_uses_lib('wolfssl'):
@@ -458,6 +458,8 @@ class TestSSLUse:
         if env.curl_uses_lib('mbedtls') and \
            not env.curl_lib_version_at_least('mbedtls', '3.6.0'):
             pytest.skip('mbedtls TLSv1.3 session resume not working before 3.6.0')
+        if not env.curl_has_sha256():
+            pytest.skip(reason="curl built without SHA-256")
         run_env = os.environ.copy()
         run_env['CURL_DEBUG'] = 'ssl,ssls'
         # clean session file first, then reuse

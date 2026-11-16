@@ -58,6 +58,7 @@
 #include <nghttp3/nghttp3.h>
 
 #include "http1.h"
+#include "vquic/ngtcp2_shim.h"
 #include "u32_ptrset.h"
 #include "vtls/vtls.h"
 #include "vquic/vquic_int.h"
@@ -68,7 +69,11 @@ struct Curl_easy;
 struct cf_ngtcp2_ctx;
 struct cf_quic_ctx;
 
-#define QUIC_MAX_STREAMS       (256 * 1024)
+/* The max number of uni-directional streams the server is allowed
+ * to open to us. For HTTP/3, this is 3 for QPACK) */
+#define QUIC_UNI_STREAM_MAX         3
+#define QUIC_UNI_STREAM_WIN_SIZE   (64 * 1024)
+
 #define QUIC_HANDSHAKE_TIMEOUT (10 * NGTCP2_SECONDS)
 #define QUIC_TUNNEL_INBUF_SIZE (64 * 1024)
 
@@ -112,7 +117,7 @@ struct cf_ngtcp2_ctx {
   ngtcp2_crypto_ossl_ctx *ossl_ctx;
 #endif
   ngtcp2_path connected_path;
-  ngtcp2_conn *qconn;
+  struct curl_ngtcp2 qconn;
   ngtcp2_cid dcid;
   ngtcp2_cid scid;
   uint32_t version;

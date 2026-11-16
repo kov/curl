@@ -7,7 +7,6 @@ aws-sigv4
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 200 OK
@@ -25,7 +24,6 @@ Funny-head: yesyes
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -33,6 +31,7 @@ http
 <features>
 Debug
 aws
+sha256
 </features>
 <name>
 aws-sigv4 with CRLF in username
@@ -42,7 +41,6 @@ aws-sigv4 with CRLF in username
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET / HTTP/1.1

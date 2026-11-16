@@ -64,7 +64,6 @@ struct sws_httprequest {
   bool auth;      /* Authorization header present in the incoming request */
   size_t cl;      /* Content-Length of the incoming request */
   bool digest;    /* Authorization digest header found */
-  bool ntlm;      /* Authorization NTLM header found */
   int delay;      /* if non-zero, delay this number of msec after connect */
   int writedelay; /* if non-zero, delay this number of milliseconds between
                      writes in the response */
@@ -124,7 +123,7 @@ const char *cmdfile = "log/server.cmd";
 
 /* 'connection-monitor' outputs when a server/proxy connection gets
    disconnected as for some cases it is important that it gets done at the
-   proper point - like with NTLM */
+   proper point */
 #define CMD_CONNECTIONMONITOR "connection-monitor"
 
 /* upgrade to http2/websocket/xxxx */
@@ -662,23 +661,6 @@ static int sws_ProcessRequest(struct sws_httprequest *req)
     req->digest = TRUE; /* header found */
     logmsg("Received Digest request, sending back data %ld", req->partno);
   }
-  else if(!req->ntlm &&
-          strstr(req->reqbuf, "Authorization: NTLM TlRMTVNTUAAD")) {
-    /* If the client is passing this type-3 NTLM header */
-    req->partno += 1002;
-    req->ntlm = TRUE; /* NTLM found */
-    logmsg("Received NTLM type-3, sending back data %ld", req->partno);
-    if(req->cl) {
-      logmsg("  Expecting %lu POSTed bytes", (unsigned long)req->cl);
-    }
-  }
-  else if(!req->ntlm &&
-          strstr(req->reqbuf, "Authorization: NTLM TlRMTVNTUAAB")) {
-    /* If the client is passing this type-1 NTLM header */
-    req->partno += 1001;
-    req->ntlm = TRUE; /* NTLM found */
-    logmsg("Received NTLM type-1, sending back data %ld", req->partno);
-  }
   else if((req->partno >= 1000) &&
           strstr(req->reqbuf, "Authorization: Basic")) {
     /* If the client is passing this Basic-header and the part number is
@@ -753,19 +735,6 @@ static int sws_send_doc(curl_socket_t sock, struct sws_httprequest *req)
   default:
   case RCMD_NORMALREQ:
     break; /* continue with business as usual */
-  case RCMD_STREAM: {
-    static const char streamthis[] = "a string to stream 01234567890\n";
-    for(;;) {
-      written = swrite(sock, streamthis, CURL_CSTRLEN(streamthis));
-      if(got_exit_signal)
-        return -1;
-      if(written != (ssize_t)CURL_CSTRLEN(streamthis)) {
-        logmsg("Stopped streaming");
-        break;
-      }
-    }
-    return -1;
-  }
   case RCMD_IDLE:
     /* Do nothing. Sit idle. Pretend it rains. */
     return 0;
@@ -1008,6 +977,54 @@ retry:
   sws_prevtestno = req->testno;
   sws_prevpartno = req->partno;
 
+  if(req->rcmd == RCMD_STREAM) {
+    /* The response headers were sent above. Keep writing to the socket so
+       the client keeps reading a response body that never ends, until it
+       times out or the test harness stops us. Wait for the socket to become
+       writable first, so a peer that stops reading does not leave us blocked
+       in the write and the exit signal is still checked promptly. */
+    static const char streamthis[] = "a string to stream 01234567890\n";
+    size_t off = 0;
+
+    logmsg("streaming after the response");
+    while(!got_exit_signal) {
+      fd_set output;
+      struct timeval timeout;
+      int rc;
+
+      FD_ZERO(&output);
+      FD_SET(sock, &output);
+      timeout.tv_sec = 0;
+      timeout.tv_usec = 100000; /* 100ms */
+      do {
+        rc = select((int)sock + 1, NULL, &output, NULL, &timeout);
+      } while(rc < 0 && SOCKERRNO == SOCKEINTR && !got_exit_signal);
+      if(rc < 0) {
+        logmsg("Stopped streaming");
+        break;
+      }
+      if(!rc)
+        continue; /* timeout; re-check the exit signal */
+
+      written = swrite(sock, streamthis + off,
+                       CURL_CSTRLEN(streamthis) - off);
+      if(written < 0) {
+        if(SOCK_EAGAIN(SOCKERRNO))
+          continue;
+        logmsg("Stopped streaming");
+        break;
+      }
+      if(!written) {
+        logmsg("Stopped streaming");
+        break;
+      }
+      off += (size_t)written;
+      if(off >= CURL_CSTRLEN(streamthis))
+        off = 0;
+    }
+    return -1;
+  }
+
   return 0;
 }
 
@@ -1023,7 +1040,6 @@ static void init_httprequest(struct sws_httprequest *req)
   req->auth = FALSE;
   req->cl = 0;
   req->digest = FALSE;
-  req->ntlm = FALSE;
   req->skip = 0;
   req->skipall = FALSE;
   req->noexpect = FALSE;

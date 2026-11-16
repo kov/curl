@@ -9,7 +9,6 @@ HTTP Digest auth
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <servercmd>
 auth_required
@@ -82,7 +81,6 @@ This IS the real page!
 
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -91,6 +89,7 @@ http
 !SSPI
 crypto
 digest
+md5
 </features>
 <name>
 HTTP GET with --anyauth with two URLs (picking Digest)
@@ -100,7 +99,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -u testuser:testpass --anyauth http://%HOST
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

@@ -13,7 +13,6 @@ HTTP/1.0
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.0 401 Authorization Required swsclose
@@ -61,7 +60,6 @@ This IS the real page!
 
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -70,6 +68,7 @@ http
 !SSPI
 crypto
 digest
+md5
 </features>
 <name>
 Downgraded HTTP PUT to HTTP 1.0 with authorization
@@ -85,7 +84,6 @@ four is the number of lines
 </file>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 PUT /%TESTNUMBER HTTP/1.1

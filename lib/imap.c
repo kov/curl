@@ -397,6 +397,17 @@ static bool imap_endofresp(struct Curl_easy *data, struct connectdata *conn,
     return TRUE;
   }
 
+  if(imapc->state == IMAP_FETCH_FINAL && imap_find_literal(line, len)) {
+    /* FETCH_FINAL only waits for the tagged completion of the command. A
+       literal marker here means the server sent more response data (e.g.
+       another literal of a multi-section FETCH) than the transfer consumed.
+       Fail visibly instead of silently dropping the rest. */
+    failf(data, "Multiple literals in FETCH response, "
+          "only the first can be downloaded");
+    *resp = -1;
+    return TRUE;
+  }
+
   return FALSE; /* Nothing for us */
 }
 
@@ -538,9 +549,9 @@ static CURLcode imap_perform_upgrade_tls(struct Curl_easy *data,
   CURLcode result;
   bool ssldone = FALSE;
 
-  if(!Curl_conn_is_ssl(conn, FIRSTSOCKET)) {
+  if(!Curl_conn_is_ssl(conn)) {
     result = Curl_ssl_cfilter_add(
-      data, Curl_conn_get_origin(conn, FIRSTSOCKET), conn, FIRSTSOCKET);
+      data, Curl_conn_get_origin(conn), &conn->chain);
     if(result)
       goto out;
     /* Change the connection handler */
@@ -548,7 +559,7 @@ static CURLcode imap_perform_upgrade_tls(struct Curl_easy *data,
   }
 
   DEBUGASSERT(!imapc->ssldone);
-  result = Curl_conn_connect(data, FIRSTSOCKET, FALSE, &ssldone);
+  result = Curl_conn_connect(data, FALSE, &ssldone);
   DEBUGF(infof(data, "imap_perform_upgrade_tls, connect -> %d, %d",
                (int)result, ssldone));
   if(!result && ssldone) {
@@ -1063,7 +1074,7 @@ static CURLcode imap_state_capability_resp(struct Curl_easy *data,
       line += wordlen;
     }
   }
-  else if(data->set.use_ssl && !Curl_conn_is_ssl(data->conn, FIRSTSOCKET)) {
+  else if(data->set.use_ssl && !Curl_conn_is_ssl(data->conn)) {
     /* PREAUTH is not compatible with STARTTLS. */
     if(imapcode == IMAP_RESP_OK && imapc->tls_supported && !imapc->preauth) {
       /* Switch to TLS connection now */
@@ -1273,6 +1284,16 @@ static CURLcode imap_state_listsearch_resp(struct Curl_easy *data,
             /* Keep the data after the literal body */
             pp->overflow = after_header - chunk;
             curlx_dyn_tail(&pp->recvbuf, pp->overflow);
+
+            if(imap_find_literal(curlx_dyn_ptr(&pp->recvbuf), pp->overflow)) {
+              /* The buffered remainder contains another literal, meaning
+                 this FETCH response carries more body sections than the
+                 single transfer set up above can deliver. Fail visibly
+                 instead of silently dropping the rest. */
+              failf(data, "Multiple literals in FETCH response, "
+                    "only the first can be downloaded");
+              return CURLE_WEIRD_SERVER_REPLY;
+            }
           }
           else {
             pp->overflow = 0;
@@ -1302,7 +1323,7 @@ static CURLcode imap_state_listsearch_resp(struct Curl_easy *data,
              maxdownload and transfer size include both header line and
              literal body */
           data->req.maxdownload = size;
-          Curl_xfer_setup_recv(data, FIRSTSOCKET, size);
+          Curl_xfer_setup_recv(data, size);
         }
         /* End of DO phase */
         imap_state(data, imapc, IMAP_STOP);
@@ -1460,7 +1481,7 @@ static CURLcode imap_state_fetch_resp(struct Curl_easy *data,
     else {
       /* IMAP download */
       data->req.maxdownload = size;
-      Curl_xfer_setup_recv(data, FIRSTSOCKET, size);
+      Curl_xfer_setup_recv(data, size);
     }
   }
   else {
@@ -1511,7 +1532,7 @@ static CURLcode imap_state_append_resp(struct Curl_easy *data,
     Curl_pgrsSetUploadSize(data, data->state.infilesize);
 
     /* IMAP upload */
-    Curl_xfer_setup_send(data, FIRSTSOCKET);
+    Curl_xfer_setup_send(data);
 
     /* End of DO phase */
     imap_state(data, imapc, IMAP_STOP);
@@ -1566,7 +1587,7 @@ upgrade_tls:
 
   do {
     /* Read the response from the server */
-    result = Curl_pp_readresp(data, FIRSTSOCKET, pp, &imapcode, &nread);
+    result = Curl_pp_readresp(data, pp, &imapcode, &nread);
     if(result)
       return result;
 
@@ -1653,20 +1674,19 @@ static CURLcode imap_multi_statemach(struct Curl_easy *data, bool *done)
   *done = FALSE;
   if(!imapc)
     return CURLE_FAILED_INIT;
-  result = Curl_pp_statemach(data, &imapc->pp, FALSE, FALSE);
+  result = Curl_pp_statemach(data, &imapc->pp, FALSE);
   *done = (imapc->state == IMAP_STOP);
 
   return result;
 }
 
 static CURLcode imap_block_statemach(struct Curl_easy *data,
-                                     struct imap_conn *imapc,
-                                     bool disconnecting)
+                                     struct imap_conn *imapc)
 {
   CURLcode result = CURLE_OK;
 
   while(imapc->state != IMAP_STOP && !result)
-    result = Curl_pp_statemach(data, &imapc->pp, TRUE, disconnecting);
+    result = Curl_pp_statemach(data, &imapc->pp, TRUE);
 
   return result;
 }
@@ -2016,7 +2036,7 @@ static CURLcode imap_done(struct Curl_easy *data, CURLcode status,
 
     /* Run the state-machine */
     if(!result)
-      result = imap_block_statemach(data, imapc, FALSE);
+      result = imap_block_statemach(data, imapc);
   }
 
   imap_easy_reset(imap);
@@ -2088,7 +2108,7 @@ static CURLcode imap_perform(struct Curl_easy *data, bool *connected,
   /* Run the state-machine */
   result = imap_multi_statemach(data, dophase_done);
 
-  *connected = Curl_conn_is_connected(conn, FIRSTSOCKET);
+  *connected = Curl_conn_is_connected(conn);
 
   if(*dophase_done)
     DEBUGF(infof(data, "DO phase is complete"));
@@ -2194,7 +2214,7 @@ static CURLcode imap_disconnect(struct Curl_easy *data,
      !dead_connection && conn->bits.protoconnstart &&
      !Curl_pp_needs_flush(data, &imapc->pp) &&
      !imap_perform_logout(data, imapc))
-    (void)imap_block_statemach(data, imapc, TRUE); /* ignore errors */
+    (void)imap_block_statemach(data, imapc); /* ignore errors */
 
   return CURLE_OK;
 }
@@ -2289,6 +2309,7 @@ static CURLcode imap_setup_connection(struct Curl_easy *data,
  */
 const struct Curl_protocol Curl_protocol_imap = {
   imap_setup_connection,            /* setup_connection */
+  ZERO_NULL,                        /* setup_filters */
   imap_do,                          /* do_it */
   imap_done,                        /* done */
   ZERO_NULL,                        /* do_more */

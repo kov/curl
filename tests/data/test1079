@@ -8,7 +8,6 @@ HTTP Digest auth
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 401 Authorization Required swsclose
@@ -37,7 +36,6 @@ Content-Length: 26
 
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -46,6 +44,7 @@ http
 !SSPI
 crypto
 digest
+md5
 </features>
 <name>
 HTTP retry after closed connection and empty response
@@ -55,7 +54,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -u testuser:testpass --digest
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <errorcode>
 52

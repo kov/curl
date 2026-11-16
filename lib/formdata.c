@@ -232,6 +232,9 @@ static CURLFORMcode formadd_check(struct FormInfo *first_form,
        ((form->flags & HTTPPOST_FILENAME) &&
         (form->flags & HTTPPOST_PTRCONTENTS)) ||
 
+       ((form->flags & (HTTPPOST_FILENAME | HTTPPOST_READFILE)) &&
+        !Curl_bufref_ptr(&form->value)) ||
+
        (!form->buffer &&
         (form->flags & HTTPPOST_BUFFER) &&
         (form->flags & HTTPPOST_PTRBUFFER)) ||
@@ -560,7 +563,9 @@ static CURLFORMcode formadd(struct curl_httppost **httppost,
     case CURLFORM_FILENAME:
     case CURLFORM_BUFFER:
       avalue = form_ptr_arg(char *);
-      if(Curl_bufref_ptr(&curr->showfilename))
+      if(!avalue)
+        retval = CURL_FORMADD_NULL;
+      else if(Curl_bufref_ptr(&curr->showfilename))
         retval = CURL_FORMADD_OPTION_TWICE;
       else if(Curl_bufref_memdup0(&curr->showfilename, avalue, strlen(avalue)))
         retval = CURL_FORMADD_MEMORY;

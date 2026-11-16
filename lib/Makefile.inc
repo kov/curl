@@ -73,8 +73,6 @@ LIB_VAUTH_CFILES =      \
   vauth/gsasl.c         \
   vauth/krb5_gssapi.c   \
   vauth/krb5_sspi.c     \
-  vauth/ntlm.c          \
-  vauth/ntlm_sspi.c     \
   vauth/oauth2.c        \
   vauth/spnego_gssapi.c \
   vauth/spnego_sspi.c   \
@@ -148,6 +146,7 @@ LIB_VQUIC_CFILES =          \
   vquic/cf-ngtcp2-cmn.c     \
   vquic/cf-ngtcp2-proxy.c   \
   vquic/cf-quiche.c         \
+  vquic/ngtcp2_shim.c       \
   vquic/vquic.c             \
   vquic/vquic-tls.c
 
@@ -158,6 +157,7 @@ LIB_VQUIC_HFILES =          \
   vquic/cf-ngtcp2-cmn.h     \
   vquic/cf-ngtcp2-proxy.h   \
   vquic/cf-quiche.h         \
+  vquic/ngtcp2_shim.h       \
   vquic/vquic.h             \
   vquic/vquic_int.h         \
   vquic/vquic-tls.h
@@ -193,15 +193,14 @@ LIB_CFILES =         \
   creds.c            \
   cshutdn.c          \
   curl_addrinfo.c    \
-  curl_endian.c      \
   curl_fnmatch.c     \
   curl_fopen.c       \
   curl_get_line.c    \
   curl_gethostname.c \
   curl_gssapi.c      \
   curl_memrchr.c     \
-  curl_ntlm_core.c   \
   curl_range.c       \
+  curl_refcount.c    \
   curl_sasl.c        \
   curl_sha512_256.c  \
   curl_share.c       \
@@ -238,7 +237,6 @@ LIB_CFILES =         \
   http_chunks.c      \
   http_digest.c      \
   http_negotiate.c   \
-  http_ntlm.c        \
   http_proxy.c       \
   idn.c              \
   if2ip.c            \
@@ -246,7 +244,6 @@ LIB_CFILES =         \
   ldap.c             \
   llist.c            \
   macos.c            \
-  md4.c              \
   md5.c              \
   memdebug.c         \
   mime.c             \
@@ -256,6 +253,7 @@ LIB_CFILES =         \
   multi_ev.c         \
   multi_ntfy.c       \
   netrc.c            \
+  ngh2_shim.c        \
   openldap.c         \
   parsedate.c        \
   peer.c             \
@@ -323,7 +321,6 @@ LIB_HFILES =         \
   creds.h            \
   curl_addrinfo.h    \
   curl_ctype.h       \
-  curl_endian.h      \
   curl_fnmatch.h     \
   curl_fopen.h       \
   curl_get_line.h    \
@@ -331,12 +328,11 @@ LIB_HFILES =         \
   curl_gssapi.h      \
   curl_hmac.h        \
   curl_ldap.h        \
-  curl_md4.h         \
   curl_md5.h         \
   curl_memrchr.h     \
-  curl_ntlm_core.h   \
   curl_printf.h      \
   curl_range.h       \
+  curl_refcount.h    \
   curl_sasl.h        \
   curl_setup.h       \
   curl_sha256.h      \
@@ -375,7 +371,6 @@ LIB_HFILES =         \
   http_chunks.h      \
   http_digest.h      \
   http_negotiate.h   \
-  http_ntlm.h        \
   http_proxy.h       \
   idn.h              \
   if2ip.h            \
@@ -389,6 +384,7 @@ LIB_HFILES =         \
   multi_ntfy.h       \
   multiif.h          \
   netrc.h            \
+  ngh2_shim.h        \
   parsedate.h        \
   peer.h             \
   pingpong.h         \

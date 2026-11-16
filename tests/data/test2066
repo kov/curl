@@ -7,7 +7,6 @@ HTTP GET
 HTTP Digest auth
 </keywords>
 </info>
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 401 Authorization Required
@@ -47,7 +46,6 @@ This is not the real page either
 
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -56,6 +54,7 @@ http
 !SSPI
 crypto
 digest
+sha256
 </features>
 <name>
 HTTP with RFC7616 Digest, bad password, SHA-256 and userhash
@@ -65,7 +64,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -u testuser:test2pass --digest
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

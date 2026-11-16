@@ -492,17 +492,13 @@ CURLcode Curl_open(struct Curl_easy **curl)
 
 void Curl_conn_free(struct Curl_easy *data, struct connectdata *conn)
 {
-  int8_t i;
-
   DEBUGASSERT(conn);
 
   if(conn->scheme && conn->scheme->run->disconnect &&
      !conn->bits.shutdown_handler)
     conn->scheme->run->disconnect(data, conn, TRUE);
 
-  for(i = 0; i < (int8_t)CURL_ARRAYSIZE(conn->cfilter); ++i) {
-    Curl_conn_cf_discard_all(data, conn, i);
-  }
+  Curl_cfchain_cleanup(&conn->chain, data);
 
 #ifndef CURL_DISABLE_PROXY
   Curl_peer_unlink(&conn->http_proxy.peer);
@@ -588,8 +584,6 @@ struct url_conn_match {
   struct ssl_filter_config proxy_ssl_config;
 #endif
   BIT(may_multiplex);
-  BIT(want_ntlm_http);
-  BIT(want_proxy_ntlm_http);
   BIT(want_nego_http);
   BIT(want_proxy_nego_http);
   BIT(may_tls); /* May upgrade clear-text connection to TLS, can only reuse
@@ -650,8 +644,7 @@ static bool url_match_connect_config(struct connectdata *conn,
 static bool url_match_fully_connected(struct connectdata *conn,
                                       struct url_conn_match *m)
 {
-  if(!Curl_conn_is_connected(conn, FIRSTSOCKET) ||
-     conn->bits.upgrade_in_progress) {
+  if(!Curl_conn_is_connected(conn) || conn->bits.upgrade_in_progress) {
     /* Not yet connected, or a protocol upgrade is in progress. The later
      * happens for HTTP/2 Upgrade: requests that need a response. */
     if(m->may_multiplex) {
@@ -708,7 +701,7 @@ static bool url_match_multiplex_limits(struct connectdata *conn,
       return FALSE;
     }
     if(conn->attached_xfers >=
-       Curl_conn_get_max_concurrent(m->data, conn, FIRSTSOCKET)) {
+       Curl_conn_get_max_concurrent(m->data, conn)) {
       infof(m->data, "connection #%" FMT_OFF_T "reached "
             "MAX_CONCURRENT_STREAMS(%u), skip",
             conn->connection_id, conn->attached_xfers);
@@ -725,10 +718,10 @@ static bool url_match_ssl_use(struct connectdata *conn,
 {
   if(m->needle->scheme->flags & PROTOPT_SSL) {
     /* We are looking for SSL, if `conn` does not do it, not a match. */
-    if(!Curl_conn_is_ssl(conn, FIRSTSOCKET))
+    if(!Curl_conn_is_ssl(conn))
       return FALSE;
   }
-  else if(Curl_conn_is_ssl(conn, FIRSTSOCKET)) {
+  else if(Curl_conn_is_ssl(conn)) {
     /* If the protocol does not allow reuse of SSL connections OR
        is of another protocol family, not a match. */
     if(!(m->needle->scheme->flags & PROTOPT_SSL_REUSE) ||
@@ -860,7 +853,7 @@ static bool url_match_proto_config(struct connectdata *conn,
 #endif
 #ifndef CURL_DISABLE_FTP
   else if(get_protocol_family(m->needle->scheme) & PROTO_FAMILY_FTP) {
-    if(!Curl_ftp_conns_match(m->needle, conn))
+    if(!Curl_ftp_conn_matches(m->data, conn))
       return FALSE;
   }
 #endif
@@ -919,47 +912,6 @@ static bool url_match_ssl_config(struct connectdata *conn,
   }
   return TRUE;
 }
-
-#ifdef USE_NTLM
-static bool url_match_auth_ntlm(struct connectdata *conn,
-                                struct url_conn_match *m)
-{
-  if(conn->http_ntlm_state != NTLMSTATE_NONE) {
-    /* Connection is using NTLM. We cannot reuse if transfer
-     * has different Auth input parameters. */
-    if(!m->want_ntlm_http ||
-       !Curl_creds_same(conn->creds, m->data->state.creds) ||
-       !Curl_peer_equal(conn->creds_origin, m->data->state.origin))
-      return FALSE;
-  }
-  else if(m->want_ntlm_http) {
-    /* Transfer wants NTLM, connection is not using it.
-     * Do not reuse when connection credentials state is bound to an origin
-     * and it or creds differ. */
-    if(conn->creds_origin &&
-       (!Curl_creds_same(conn->creds, m->data->state.creds) ||
-        !Curl_peer_equal(conn->creds_origin, m->data->state.origin)))
-      return FALSE;
-  }
-
-#ifndef CURL_DISABLE_PROXY
-  /* Same for Proxy NTLM authentication */
-  if(conn->proxy_ntlm_state != NTLMSTATE_NONE) {
-    if(!m->want_proxy_ntlm_http ||
-       !Curl_creds_same(m->needle->http_proxy.creds, conn->http_proxy.creds))
-      return FALSE;
-  }
-  else if(m->want_proxy_ntlm_http) {
-    if(conn->http_proxy.creds &&
-       !Curl_creds_same(m->needle->http_proxy.creds, conn->http_proxy.creds))
-      return FALSE;
-  }
-#endif
-  return TRUE;
-}
-#else
-#define url_match_auth_ntlm(c, m) ((void)(c), (void)(m), TRUE)
-#endif
 
 #ifdef USE_SPNEGO
 static bool url_match_auth_nego(struct connectdata *conn,
@@ -1037,9 +989,6 @@ static cpool_match_result url_match_conn(struct connectdata *conn,
     return CPOOL_MATCH_CONT;
 
   if(!url_match_proto_config(conn, m))
-    return CPOOL_MATCH_CONT;
-
-  if(!url_match_auth_ntlm(conn, m))
     return CPOOL_MATCH_CONT;
 
   if(!url_match_auth_nego(conn, m))
@@ -1132,15 +1081,11 @@ static struct connectdata *allocate_conn(struct Curl_easy *data)
     return NULL;
 
   /* and we setup a few fields in case we end up actually using this struct */
-  conn->sock[FIRSTSOCKET] = CURL_SOCKET_BAD;     /* no file descriptor */
-  conn->sock[SECONDARYSOCKET] = CURL_SOCKET_BAD; /* no file descriptor */
-  conn->recv_idx = 0; /* default for receiving transfer data */
-  conn->send_idx = 0; /* default for sending transfer data */
+  Curl_cfchain_init(&conn->chain, conn, TRUE);
   conn->connection_id = -1;    /* no ID */
   conn->cpid = UINT32_MAX;  /* not in connection pool yet */
   conn->attached_xfers = 0;
-  conn->shutdown.start_ms[FIRSTSOCKET] =
-    conn->shutdown.start_ms[SECONDARYSOCKET] = -1;
+  conn->connect_start_ms = -1;
 
 #ifndef CURL_DISABLE_FTP
   conn->bits.ftp_use_epsv = data->set.ftp_use_epsv;
@@ -1541,7 +1486,7 @@ static CURLcode setup_connection_internals(struct Curl_easy *data,
   }
 
   /* Now create the destination name */
-  peer = Curl_conn_get_destination(conn, FIRSTSOCKET);
+  peer = Curl_conn_get_destination(conn);
   if(!peer)
     return CURLE_FAILED_INIT;
 
@@ -1566,7 +1511,7 @@ static CURLcode setup_connection_internals(struct Curl_easy *data,
   if(data->set.scope_id)
     conn->scope_id = data->set.scope_id;
   else {
-    peer = Curl_conn_get_first_peer(conn, FIRSTSOCKET);
+    peer = Curl_conn_get_first_peer(conn);
     if(!peer)
       return CURLE_FAILED_INIT;
     conn->scope_id = peer->scopeid;
@@ -2040,13 +1985,11 @@ static CURLcode url_create_needle(struct Curl_easy *data,
 
   if(network_scheme) {
     /* Setup callbacks for network connections */
-    needle->recv[FIRSTSOCKET] = Curl_cf_recv;
-    needle->send[FIRSTSOCKET] = Curl_cf_send;
-    needle->recv[SECONDARYSOCKET] = Curl_cf_recv;
-    needle->send[SECONDARYSOCKET] = Curl_cf_send;
+    needle->do_recv = Curl_cf_recv;
+    needle->do_send = Curl_cf_send;
     needle->bits.tcp_fastopen = data->set.tcp_fastopen;
 #ifdef USE_UNIX_SOCKETS
-    if(Curl_conn_get_first_peer(needle, FIRSTSOCKET)->unix_socket)
+    if(Curl_conn_get_first_peer(needle)->unix_socket)
       needle->transport_wanted = TRNSPRT_UNIX;
 #endif
   }
@@ -2224,19 +2167,6 @@ static CURLcode url_match_init(struct Curl_easy *data,
   m->now = *Curl_pgrs_now(data);
   m->may_multiplex = xfer_may_multiplex(data, needle);
 
-#ifdef USE_NTLM
-  m->want_ntlm_http =
-    (data->state.authhost.want & CURLAUTH_NTLM) &&
-    (needle->scheme->protocol & PROTO_FAMILY_HTTP) &&
-    Curl_auth_allowed_to_host(data);
-#ifndef CURL_DISABLE_PROXY
-  m->want_proxy_ntlm_http =
-    needle->http_proxy.creds &&
-    (data->state.authproxy.want & CURLAUTH_NTLM) &&
-    (needle->scheme->protocol & PROTO_FAMILY_HTTP);
-#endif
-#endif
-
 #if !defined(CURL_DISABLE_HTTP) && defined(USE_SPNEGO)
   m->want_nego_http =
     (data->state.authhost.want & CURLAUTH_NEGOTIATE) &&
@@ -2352,7 +2282,7 @@ static CURLcode url_find_or_create_conn(struct Curl_easy *data,
       struct connectdata *conn = data->conn;
       VERBOSE(bool tls_upgraded =
         (!(needle->origin->scheme->flags & PROTOPT_SSL) &&
-         Curl_conn_is_ssl(conn, FIRSTSOCKET)));
+         Curl_conn_is_ssl(conn)));
 
       DEBUGASSERT(conn);
       conn->bits.reuse = TRUE;
@@ -2416,25 +2346,6 @@ static CURLcode url_find_or_create_conn(struct Curl_easy *data,
       DEBUGF(infof(data, "Error: clone connection SSL config"));
       goto out;
     }
-
-#ifdef USE_NTLM
-    /* If NTLM is requested in a part of this connection, make sure we do not
-       assume the state is fine as this is a fresh connection and NTLM is
-       connection based. */
-    if((data->state.authhost.picked & CURLAUTH_NTLM) &&
-       data->state.authhost.done) {
-      infof(data, "NTLM picked AND auth done set, clear picked");
-      data->state.authhost.picked = CURLAUTH_NONE;
-      data->state.authhost.done = FALSE;
-    }
-
-    if((data->state.authproxy.picked & CURLAUTH_NTLM) &&
-       data->state.authproxy.done) {
-      infof(data, "NTLM-proxy picked AND auth done set, clear picked");
-      data->state.authproxy.picked = CURLAUTH_NONE;
-      data->state.authproxy.done = FALSE;
-    }
-#endif
   }
 
   /* COMMON setup code for reused and new connections from here on. */
@@ -2515,7 +2426,8 @@ CURLcode Curl_connect(struct Curl_easy *data, bool *pconnected)
     *pconnected = TRUE;
   }
   else {
-    result = Curl_conn_setup(data, conn, FIRSTSOCKET, CURL_CF_SSL_DEFAULT);
+    result = Curl_conn_setup(data, conn, &conn->chain,
+                             CURL_CF_SSL_DEFAULT);
     if(!result)
       result = Curl_headers_init(data);
     CURL_TRC_M(data, "Curl_conn_setup() -> %d", (int)result);
@@ -2526,10 +2438,12 @@ out:
     DEBUGASSERT(!conn);
 
   if(result && conn) {
-    /* We are not allowed to return failure with memory left allocated in the
-       connectdata struct, free those here */
+    /* Detach on error and close the connection if
+     * - it was not reused (meaning, ok before we picked it)
+     * - there are no other transfers attached to it */
     Curl_detach_connection(data);
-    Curl_conn_close(data, conn, TRUE);
+    if(!conn->bits.reuse && !CONN_INUSE(conn))
+      Curl_conn_close(data, conn, TRUE);
   }
 
   return result;

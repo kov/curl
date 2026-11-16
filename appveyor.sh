@@ -26,6 +26,12 @@
 # shellcheck disable=SC3040,SC2039
 set -eux; [ -n "${BASH:-}${ZSH_NAME:-}" ] && set -o pipefail
 
+# check for bad certs in certain known locations (slow)
+if [ -n "${CHKCERTS:-}" ]; then
+  .github/scripts/chkcerts.sh
+  exit 0
+fi
+
 export CURL_CI=appveyor
 verbose=''
 
@@ -121,7 +127,7 @@ fi
 
 # create artifact
 
-if [[ "${CREATE_ARTIFACT:-}" = 'true' ]]; then
+if [ -n "${CREATE_ARTIFACT:-}" ]; then
   cp -p /usr/ssl/certs/ca-bundle.crt curl-ca-bundle.crt
   echo 'Checking that https works'
   "${curl}" --disable --verbose --fail --silent --show-error --retry 6 --retry-all-errors --cacert curl-ca-bundle.crt --out-null https://curl.se/
@@ -165,8 +171,6 @@ if [ -n "${CMAKE_GENERATOR:-}" ] && [[ "${APPVEYOR_JOB_NAME}" = *'Build-tests'* 
     # run unit tests
 
     unset APPVEYOR_API_URL  # disable updating the 'Tests' counter via the API to save CI time
-    export CYGWIN=proc_retry:1
-    export MSYS=proc_retry:1
     if [ -n "${RUN_TESTS_VIA_CMAKE:-}" ]; then  # just to document the differences
       export TFLAGS="-j10 ${TFLAGS:-}"
       time cmake --build _bld --config "${PRJ_CFG}" --target test-ci

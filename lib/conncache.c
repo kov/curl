@@ -300,11 +300,6 @@ static struct cpool *cpool_get_instance(struct Curl_easy *data)
   return NULL;
 }
 
-struct cpool *Curl_cpool_get_instance(struct Curl_easy *data)
-{
-  return cpool_get_instance(data);
-}
-
 void Curl_cpool_xfer_init(struct Curl_easy *data)
 {
   struct cpool *cpool = cpool_get_instance(data);
@@ -407,10 +402,9 @@ static void cpool_conn_close(struct cpool *cpool,
   if(!cpool)
     return;
 
-  /* If this connection is not marked to force-close, leave it open if there
-   * are other users of it */
-  if(CONN_INUSE(conn) && !aborted) {
-    DEBUGASSERT(0); /* does this ever happen? */
+  /* If this connection is still used by transfers, we cannot close it. */
+  if(CONN_INUSE(conn)) {
+    DEBUGASSERT(0); /* we'd like to know when this happens */
     DEBUGF(infof(data, "conn terminate when inuse: %u", conn->attached_xfers));
     return;
   }
@@ -587,8 +581,7 @@ CURLcode Curl_cpool_add(struct Curl_easy *data,
 
   DEBUGASSERT(conn->cpid == UINT32_MAX);
   conn->created = *pnow;
-  conn->shutdown.start_ms[FIRSTSOCKET] =
-    conn->shutdown.start_ms[SECONDARYSOCKET] = -1;
+  conn->connect_start_ms = -1;
 
   CPOOL_LOCK(cpool, data);
   /* Find the bundle, should it exist, and check the limits */
@@ -1044,19 +1037,18 @@ bool Curl_cpool_conn_seems_healthy(struct connectdata *conn,
 {
   struct Curl_easy *admin;
   bool healthy = TRUE;
-  bool poll_input;
 
   DEBUGASSERT(!data->conn);
   if(cpool_conn_can_be_closed(conn) && cpool_conn_too_old(data, conn, pnow))
     return FALSE;
 
   /* An idle, non-multiplexed connection must not be reused when it has
-   * input pending (RFC 9112, section 9.2), so that is polled on every
-   * reuse. The once a second limit only applies to the other checks. */
-  poll_input = cpool_conn_can_be_closed(conn) &&
-    !Curl_conn_is_multiplex(conn, FIRSTSOCKET) &&
-    !conn->scheme->run->connection_is_dead;
-  if(!poll_input &&
+   * input pending (RFC 9112, section 9.2). Check this:
+   * - on a connection that is not in use
+   * - or a connection having its own "is dead" callback
+   * - or the last check was more than a second ago */
+  if(CONN_INUSE(conn) &&
+     !conn->scheme->run->connection_is_dead &&
      (curlx_ptimediff_ms(pnow, &conn->created) - conn->lastchecked_ms) < 1000)
     return TRUE;
 
@@ -1072,7 +1064,8 @@ bool Curl_cpool_conn_seems_healthy(struct connectdata *conn,
     Curl_attach_connection(admin, conn, FALSE);
     healthy = Curl_conn_is_alive(admin, conn, &input_pending);
     Curl_detach_connection(admin);
-    if(healthy && input_pending && poll_input) {
+    if(healthy && input_pending && !CONN_INUSE(conn) &&
+       !Curl_conn_is_multiplex(conn)) {
       /* Non-multiplexed connections without attached transfers should
        * not have input pending. The input might be a TLS Notify Close,
        * for all we know. */

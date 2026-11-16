@@ -9,10 +9,10 @@ timeout
 SLOWDOWNDATA
 flaky
 timing-dependent
+killserver
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <servercmd>
 SLOWDOWNDATA
@@ -27,7 +27,6 @@ REPLY TYPE 200 OK
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 ftp
@@ -43,7 +42,6 @@ ftp://%HOSTIP:%FTPPORT/%TESTNUMBER -m 5
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 # 28 is CURLE_OPERATION_TIMEDOUT
 <errorcode>

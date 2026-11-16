@@ -168,12 +168,6 @@ static ULONG ldap_win_bind_auth(LDAP *server, const char *user,
   }
   else
 #endif
-#ifdef USE_NTLM
-  if(authflags & CURLAUTH_NTLM) {
-    method = LDAP_AUTH_NTLM;
-  }
-  else
-#endif
 #ifndef CURL_DISABLE_DIGEST_AUTH
   if(authflags & CURLAUTH_DIGEST) {
     method = LDAP_AUTH_DIGEST;
@@ -363,12 +357,12 @@ static CURLcode ldap_do(struct Curl_easy *data, bool *done)
     goto quit;
   }
 
-  result = Curl_conn_get_ip_info(data, conn, FIRSTSOCKET, &is_ipv6, &ipquad);
+  result = Curl_conn_get_ip_info(data, conn, &is_ipv6, &ipquad);
   if(result)
     goto quit;
 
   /* Get the URL scheme (either ldap or ldaps) */
-  ldap_ssl = Curl_conn_is_ssl(conn, FIRSTSOCKET);
+  ldap_ssl = Curl_conn_is_ssl(conn);
   infof(data, "LDAP local: trying to establish %s connection",
         ldap_ssl ? "encrypted" : "cleartext");
 
@@ -947,12 +941,13 @@ void Curl_ldap_version(char *buf, size_t bufsz)
 {
 #ifdef USE_WIN32_LDAP
   curl_msnprintf(buf, bufsz, "WinLDAP");
-#else
-#ifdef LDAP_OPT_X_TLS_PASSPHRASE
-  static const char flavor[] = "/Apple";
+#elif defined(LDAP_OPT_X_TLS_PASSPHRASE)
+  /* Skip querying version for Apple's OpenLDAP fork. It was reported to make
+     DNS/network requests during the process, which in cases can take a long
+     time. The returned version is 2.4.28 in all known OS releases. */
+  curl_msnprintf(buf, bufsz, "AppleLDAP");
 #else
   static const char flavor[] = "";
-#endif
   LDAPAPIInfo api;
   api.ldapai_info_version = LDAP_API_INFO_VERSION;
 
@@ -985,6 +980,7 @@ void Curl_ldap_version(char *buf, size_t bufsz)
  */
 const struct Curl_protocol Curl_protocol_ldap = {
   ZERO_NULL,                            /* setup_connection */
+  ZERO_NULL,                            /* setup_filters */
   ldap_do,                              /* do_it */
   ZERO_NULL,                            /* done */
   ZERO_NULL,                            /* do_more */

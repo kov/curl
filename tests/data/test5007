@@ -9,7 +9,6 @@ RFC9421
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 200 OK
@@ -23,7 +22,6 @@ Content-Type: text/html
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -31,6 +29,7 @@ http
 <features>
 Debug
 httpsig
+sha256
 </features>
 <name>
 httpsig: POST method
@@ -40,7 +39,6 @@ httpsig: POST method
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers" nonewline="yes">
 POST /%TESTNUMBER/resource HTTP/1.1

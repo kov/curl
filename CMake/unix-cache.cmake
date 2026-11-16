@@ -69,6 +69,15 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
        CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
   set(HAVE_EVENTFD 1)
 endif()
+if(CYGWIN OR
+   CMAKE_SYSTEM_NAME STREQUAL "Linux" OR  # glibc 2.25+, MUSL 1.1.20+
+   CMAKE_SYSTEM_NAME STREQUAL "DragonFlyBSD" OR  # 5.6+
+   CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR  # 11 r272673+
+   CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")  # 5.5+
+  set(HAVE_EXPLICIT_BZERO 1)
+elseif(APPLE)
+  set(HAVE_EXPLICIT_BZERO 0)
+endif()
 if(ANDROID AND ANDROID_PLATFORM_LEVEL GREATER_EQUAL 34)
   set(HAVE_MEMSET_EXPLICIT 1)
 endif()
@@ -180,11 +189,6 @@ else()
   set(HAVE_IO_H 0)
 endif()
 set(HAVE_LIBGEN_H 1)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  # Requires Linux kernel userspace headers. Expected with glibc. May be missing by default with MUSL.
-else()
-  set(HAVE_LINUX_TCP_H 0)
-endif()
 set(HAVE_LOCALE_H 1)
 set(HAVE_LOCALTIME_R 1)
 if(APPLE)

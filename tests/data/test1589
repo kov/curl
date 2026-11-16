@@ -9,7 +9,6 @@ libtest
 </keywords>
 </info>
 
-# Server-side
 <reply>
 
 # this is returned first since we get no proxy-auth
@@ -52,18 +51,17 @@ Nice proxy auth sir!
 </datacheck>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
 http-proxy
 </server>
-# tool is what to use instead of 'curl'
 <features>
 !SSPI
 crypto
 proxy
 digest
+md5
 </features>
 <name>
 HTTP proxy auth Digest, then change proxy port and do it again
@@ -73,7 +71,6 @@ http://test.remote.example.com/path/%TESTNUMBER %HOSTIP %HTTPPORT %PROXYPORT sil
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET http://test.remote.example.com/path/%TESTNUMBER HTTP/1.1

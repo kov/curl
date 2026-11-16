@@ -7,7 +7,6 @@ HTTP GET
 HTTP Digest auth
 </keywords>
 </info>
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 401 Authorization Required swsclose
@@ -47,7 +46,6 @@ This IS the real page!
 
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -56,6 +54,7 @@ http
 !SSPI
 crypto
 digest
+md5
 </features>
 <name>
 HTTP with Digest authorization with username needing escape
@@ -65,7 +64,6 @@ http://%5cuser%22:password@%HOSTIP:%HTTPPORT/%TESTNUMBER --digest
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

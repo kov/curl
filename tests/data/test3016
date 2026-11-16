@@ -6,7 +6,6 @@ FILE
 </keywords>
 </info>
 
-# Client-side
 <client>
 <server>
 file
@@ -14,7 +13,7 @@ file
 <name>
 Get current directory using file://
 </name>
-<!-- does not work on win32, see #6379 -->
+# does not work on win32, see #6379
 <features>
 !win32
 </features>
@@ -23,7 +22,6 @@ file://%FILE_PWD/
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <errorcode>
 0

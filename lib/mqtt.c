@@ -182,9 +182,10 @@ static CURLcode mqtt_pollset(struct Curl_easy *data,
                              struct easy_pollset *ps)
 {
   struct MQTT *mq = Curl_meta_get(data, CURL_META_MQTT_EASY);
+  struct Curl_cfchain *chain = &data->conn->chain;
   if(mq && curlx_dyn_len(&mq->sendbuf))
-    return Curl_pollset_add_out(data, ps, data->conn->sock[FIRSTSOCKET]);
-  return Curl_pollset_add_in(data, ps, data->conn->sock[FIRSTSOCKET]);
+    return Curl_pollset_add_out(data, ps, chain->sock);
+  return Curl_pollset_add_in(data, ps, chain->sock);
 }
 
 static int mqtt_encode_len(char *buf, size_t len)
@@ -1016,7 +1017,7 @@ static CURLcode mqtts_connecting(struct Curl_easy *data, bool *done)
   struct connectdata *conn = data->conn;
   CURLcode result;
 
-  result = Curl_conn_connect(data, FIRSTSOCKET, TRUE, done);
+  result = Curl_conn_connect(data, TRUE, done);
   if(result)
     connclose(conn);
   return result;
@@ -1027,6 +1028,7 @@ static CURLcode mqtts_connecting(struct Curl_easy *data, bool *done)
  */
 const struct Curl_protocol Curl_protocol_mqtts = {
   mqtt_setup_conn,                    /* setup_connection */
+  ZERO_NULL,                          /* setup_filters */
   mqtt_do,                            /* do_it */
   mqtt_done,                          /* done */
   ZERO_NULL,                          /* do_more */
@@ -1052,6 +1054,7 @@ const struct Curl_protocol Curl_protocol_mqtts = {
  */
 const struct Curl_protocol Curl_protocol_mqtt = {
   mqtt_setup_conn,                    /* setup_connection */
+  ZERO_NULL,                          /* setup_filters */
   mqtt_do,                            /* do_it */
   mqtt_done,                          /* done */
   ZERO_NULL,                          /* do_more */

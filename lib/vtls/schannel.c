@@ -215,6 +215,12 @@ static CURLcode schannel_set_ssl_version_min_max(DWORD *enabled_protocols,
       }
     }
   }
+
+  if(!*enabled_protocols) {
+    failf(data, "schannel: no supported TLS version in the requested range");
+    return CURLE_SSL_CONNECT_ERROR;
+  }
+
   return CURLE_OK;
 }
 
@@ -887,14 +893,16 @@ static CURLcode schannel_connect_step1(struct Curl_cfilter *cf,
     Curl_ssl_scache_lock(data);
     old_cred = Curl_ssl_scache_get_obj(cf, data, connssl->peer.scache_key);
     if(old_cred) {
+      LONG updated_refcount;
       backend->cred = old_cred;
       DEBUGF(infof(data, "schannel: reusing existing credential handle"));
 
       /* increment the reference counter of the credential/session handle */
-      backend->cred->refcount++;
+      updated_refcount = InterlockedIncrement(&backend->cred->refcount);
+      (void)updated_refcount;
       DEBUGF(infof(data,
-                   "schannel: incremented credential handle refcount = %d",
-                   backend->cred->refcount));
+                   "schannel: incremented credential handle refcount = %ld",
+                   updated_refcount));
     }
     Curl_ssl_scache_unlock(data);
   }
@@ -1243,7 +1251,6 @@ static CURLcode schannel_connect_step2(struct Curl_cfilter *cf,
   SECURITY_STATUS sspi_status = SEC_E_OK;
   CURLcode result;
   bool doread;
-  const char *pubkey_ptr;
 
   DEBUGASSERT(backend);
 
@@ -1344,7 +1351,7 @@ static CURLcode schannel_connect_step2(struct Curl_cfilter *cf,
        InitializeSecurityContext to continue processing the received TLS
        records. This is because that function is not idempotent and we do not
        support partial save/resume sending replies of handshake tokens. */
-    if(!SOCKET_WRITABLE(Curl_conn_cf_get_socket(cf, data), 0)) {
+    if(!SOCKET_WRITABLE(cf->chain->sock, 0)) {
       SCH_DEV(infof(data, "schannel: handshake waiting for writable socket"));
       connssl->io_need = CURL_SSL_IO_NEED_SEND;
       curlx_free(inbuf[0].pvBuffer);
@@ -1463,15 +1470,8 @@ static CURLcode schannel_connect_step2(struct Curl_cfilter *cf,
     DEBUGF(infof(data, "schannel: SSL/TLS handshake complete"));
   }
 
-#ifndef CURL_DISABLE_PROXY
-  pubkey_ptr = Curl_ssl_cf_is_proxy(cf) ?
-    CURL_EASY_STR(data, STRING_SSL_PINNEDPUBLICKEY_PROXY) :
-    CURL_EASY_STR(data, STRING_SSL_PINNEDPUBLICKEY);
-#else
-  pubkey_ptr = CURL_EASY_STR(data, STRING_SSL_PINNEDPUBLICKEY);
-#endif
-  if(pubkey_ptr) {
-    result = schannel_pkp_pin_peer_pubkey(cf, data, pubkey_ptr);
+  if(conn_config->pinned_key) {
+    result = schannel_pkp_pin_peer_pubkey(cf, data, conn_config->pinned_key);
     if(result) {
       failf(data, "SSL: public key does not match pinned public key");
       return result;
@@ -1565,12 +1565,15 @@ static bool add_cert_to_certinfo(const CERT_CONTEXT *ccert_context,
 
 static void schannel_session_free(void *sessionid)
 {
-  /* this is expected to be called under sessionid lock */
+  /* The credential is shared between the session cache and all connections
+     using it, possibly from different threads. This is called both under the
+     session cache lock (from the cache) and without it (from a closing
+     connection by special admin handle which does not have the cache lock),
+     so the reference count is atomic and thread-safe via Interlocked. */
   struct Curl_schannel_cred *cred = sessionid;
 
   if(cred) {
-    cred->refcount--;
-    if(cred->refcount == 0) {
+    if(!InterlockedDecrement(&cred->refcount)) {
       Curl_pSecFn->FreeCredentialsHandle(&cred->cred_handle);
       curlx_free(cred->sni_hostname);
       if(cred->client_cert_store) {
@@ -1654,7 +1657,7 @@ static CURLcode schannel_connect_step3(struct Curl_cfilter *cf,
   if(Curl_ssl_scache_use(cf, data)) {
     Curl_ssl_scache_lock(data);
     /* Up ref count since call takes ownership */
-    backend->cred->refcount++;
+    InterlockedIncrement(&backend->cred->refcount);
     result = Curl_ssl_scache_add_obj(cf, data, connssl->peer.scache_key,
                                      backend->cred, schannel_session_free);
     Curl_ssl_scache_unlock(data);
@@ -1755,7 +1758,7 @@ static CURLcode schannel_connect(struct Curl_cfilter *cf,
      * binding to pass the IIS extended protection checks.
      * Available on Windows 7 or later.
      */
-    cf->conn->sslContext = &backend->ctxt->ctxt_handle;
+    CF_CONN(cf)->sslContext = &backend->ctxt->ctxt_handle;
 
     *done = TRUE;
   }
@@ -1802,7 +1805,7 @@ static CURLcode schannel_recv_renegotiate(
   else
     SCH_DEV(infof(data, "schannel: renegotiation caller is schannel_send"));
 
-  sockfd = Curl_conn_cf_get_socket(cf, data);
+  sockfd = cf->chain->sock;
 
   if(sockfd == CURL_SOCKET_BAD) {
     failf(data, "schannel: renegotiation missing socket");
@@ -1925,7 +1928,7 @@ static CURLcode schannel_recv_renegotiate(
                     ((writefd != CURL_SOCKET_BAD) ? " writable" : ""),
                     timeout_ms));
 
-      what = Curl_socket_check(readfd, CURL_SOCKET_BAD, writefd, timeout_ms);
+      what = Curl_socket_check(readfd, writefd, timeout_ms);
 
       if(what > 0 && (what & (CURL_CSELECT_IN | CURL_CSELECT_OUT))) {
         SCH_DEV(infof(data, "schannel: renegotiation socket %s%s",
@@ -2056,7 +2059,7 @@ static CURLcode schannel_send(struct Curl_cfilter *cf, struct Curl_easy *data,
       }
       else if(!timeout_ms)
         timeout_ms = TIMEDIFF_T_MAX;
-      what = SOCKET_WRITABLE(Curl_conn_cf_get_socket(cf, data), timeout_ms);
+      what = SOCKET_WRITABLE(cf->chain->sock, timeout_ms);
       if(what < 0) {
         /* fatal error */
         failf(data, "select/poll on SSL socket, errno: %d", SOCKERRNO);
@@ -2567,6 +2570,8 @@ static void schannel_close(struct Curl_cfilter *cf, struct Curl_easy *data)
   struct schannel_ssl_backend_data *backend =
     (struct schannel_ssl_backend_data *)connssl->backend;
 
+  (void)data;
+
   DEBUGASSERT(data);
   DEBUGASSERT(backend);
 
@@ -2577,8 +2582,8 @@ static void schannel_close(struct Curl_cfilter *cf, struct Curl_easy *data)
 
   /* free SSPI Schannel API security context handle */
   if(backend->ctxt) {
-    if(cf->conn->sslContext == &backend->ctxt->ctxt_handle)
-      cf->conn->sslContext = NULL;
+    if(CF_CONN(cf)->sslContext == &backend->ctxt->ctxt_handle)
+      CF_CONN(cf)->sslContext = NULL;
 
     DEBUGF(infof(data, "schannel: clear security context handle"));
     Curl_pSecFn->DeleteSecurityContext(&backend->ctxt->ctxt_handle);
@@ -2587,9 +2592,7 @@ static void schannel_close(struct Curl_cfilter *cf, struct Curl_easy *data)
 
   /* free SSPI Schannel API credential handle */
   if(backend->cred) {
-    Curl_ssl_scache_lock(data);
     schannel_session_free(backend->cred);
-    Curl_ssl_scache_unlock(data);
     backend->cred = NULL;
   }
 
@@ -2661,81 +2664,6 @@ static CURLcode schannel_random(struct Curl_easy *data,
   return curlx_win32_random(entropy, length);
 }
 
-static CURLcode schannel_checksum(const unsigned char *input,
-                                  size_t inputlen,
-                                  unsigned char *checksum,
-                                  size_t checksumlen,
-                                  DWORD provType,
-                                  const unsigned int algId)
-{
-  CURLcode result = CURLE_FAILED_INIT;
-
-  HCRYPTPROV hProv = 0;
-  HCRYPTHASH hHash = 0;
-
-  size_t off;
-
-  DWORD cbHashSize;
-  DWORD dwHashSizeLen;
-  DWORD dwChecksumLen;
-
-  /* since this can fail in multiple ways, zero memory first so we never
-   * return old data
-   */
-  memset(checksum, 0, checksumlen);
-
-  if(!CryptAcquireContext(&hProv, NULL, NULL, provType,
-                          CRYPT_VERIFYCONTEXT | CRYPT_SILENT))
-    goto out;
-
-  if(!CryptCreateHash(hProv, algId, 0, 0, &hHash))
-    goto out;
-
-  result = CURLE_BAD_FUNCTION_ARGUMENT;
-
-  off = 0;
-  while(off < inputlen) {
-    DWORD chunk = (DWORD)CURLMIN(inputlen - off, 0xffffffffUL);
-    if(!CryptHashData(hHash, input + off, chunk, 0))
-      goto out;
-    off += chunk;
-  }
-
-  /* get hash size */
-  cbHashSize = 0;
-  dwHashSizeLen = (DWORD)sizeof(cbHashSize);
-  if(!CryptGetHashParam(hHash, HP_HASHSIZE, (BYTE *)&cbHashSize,
-                        &dwHashSizeLen, 0))
-    goto out;
-
-  /* check if hash fits into the return buffer */
-  if(checksumlen < cbHashSize)
-    goto out;
-
-  dwChecksumLen = (DWORD)checksumlen;
-  if(CryptGetHashParam(hHash, HP_HASHVAL, checksum, &dwChecksumLen, 0) &&
-     dwChecksumLen == cbHashSize)
-    result = CURLE_OK;
-
-out:
-  if(hHash)
-    CryptDestroyHash(hHash);
-
-  if(hProv)
-    CryptReleaseContext(hProv, 0);
-
-  return result;
-}
-
-static CURLcode schannel_sha256sum(const unsigned char *input,
-                                   size_t inputlen,
-                                   unsigned char *sha256sum,
-                                   size_t sha256len)
-{
-  return schannel_checksum(input, inputlen, sha256sum, sha256len,
-                           PROV_RSA_AES, CALG_SHA_256);
-}
-
 static void *schannel_get_internals(struct ssl_connect_data *connssl,
                                     CURLINFO info)
 {
@@ -2754,7 +2682,7 @@ HCERTSTORE Curl_schannel_get_cached_cert_store(struct Curl_cfilter *cf,
   const struct curl_blob *ca_info_blob = conn_config->ca_info_blob;
   struct schannel_cert_share *share;
   timediff_t timeout_ms;
-  unsigned char info_blob_digest[CURL_SHA256_DIGEST_LENGTH];
+  uint8_t info_blob_digest[CURL_SHA256_DIGEST_LENGTH];
 
   DEBUGASSERT(multi);
 
@@ -2790,10 +2718,7 @@ HCERTSTORE Curl_schannel_get_cached_cert_store(struct Curl_cfilter *cf,
     if(share->CAinfo_blob_size != ca_info_blob->len) {
       return NULL;
     }
-    if(schannel_sha256sum((const unsigned char *)ca_info_blob->data,
-                          ca_info_blob->len,
-                          info_blob_digest,
-                          CURL_SHA256_DIGEST_LENGTH))
+    if(Curl_sha256it(info_blob_digest, ca_info_blob->data, ca_info_blob->len))
       return NULL;
     if(memcmp(share->CAinfo_blob_digest, info_blob_digest,
               CURL_SHA256_DIGEST_LENGTH)) {
@@ -2832,7 +2757,7 @@ bool Curl_schannel_set_cached_cert_store(struct Curl_cfilter *cf,
   struct Curl_multi *multi = data->multi;
   const struct curl_blob *ca_info_blob = conn_config->ca_info_blob;
   struct schannel_cert_share *share;
-  unsigned char digest[CURL_SHA256_DIGEST_LENGTH];
+  uint8_t digest[CURL_SHA256_DIGEST_LENGTH];
   char *CAfile = NULL;
 
   DEBUGASSERT(multi);
@@ -2842,8 +2767,7 @@ bool Curl_schannel_set_cached_cert_store(struct Curl_cfilter *cf,
   }
 
   if(ca_info_blob) {
-    if(schannel_sha256sum((const unsigned char *)ca_info_blob->data,
-                          ca_info_blob->len, digest, sizeof(digest))) {
+    if(Curl_sha256it(digest, ca_info_blob->data, ca_info_blob->len)) {
       return FALSE;
     }
   }
@@ -2917,7 +2841,6 @@ const struct Curl_ssl Curl_ssl_schannel = {
   schannel_close,                    /* close_one */
   NULL,                              /* close_all */
   NULL,                              /* engines_list */
-  schannel_sha256sum,                /* sha256sum */
   schannel_recv,                     /* recv decrypted data */
   schannel_send,                     /* send data to encrypt */
   NULL,                              /* get_channel_binding */

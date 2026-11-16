@@ -6,14 +6,12 @@ netrc
 FTP
 </keywords>
 </info>
-# Server-side
 <reply>
 <data>
 content
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 ftp
@@ -41,7 +39,6 @@ EPSV
 TYPE I
 SIZE %TESTNUMBER
 RETR %TESTNUMBER
-QUIT
 </protocol>
 </verify>
 </testcase>

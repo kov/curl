@@ -249,7 +249,6 @@ target_link_libraries(my_target PRIVATE CURL::libcurl)
 ## Enabling features
 
 - `CURL_ENABLE_APPLE_FAST_UDP`:             Use Apple fast UDP (experimental). Default: `OFF`
-- `CURL_ENABLE_NTLM`:                       Enable NTLM support. Default: `OFF`
 - `CURL_ENABLE_SSL`:                        Enable SSL support. Default: `ON`
 - `CURL_WINDOWS_SSPI`:                      Enable SSPI on Windows. Default: =`CURL_USE_SCHANNEL`
 - `ENABLE_IPV6`:                            Enable IPv6 support. Default: `ON` if target supports IPv6.
@@ -541,7 +540,6 @@ Available variables:
 - `HAVE_WOLFSSL_SET_QUIC_USE_LEGACY_CODEPOINT`:
                                             `wolfSSL_set_quic_use_legacy_codepoint` present in wolfSSL.
 - `HAVE_WOLFSSL_USEALPN`:                   `wolfSSL_UseALPN` present in wolfSSL.
-- `HAVE_WC_DES_ECBENCRYPT`:                 `wc_Des_EcbEncrypt` present in wolfSSL.
 
 For each of the above variables, if the variable is *defined* (either to `ON`
 or `OFF`), the symbol detection is skipped. If the variable is *not defined*,

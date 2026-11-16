@@ -465,6 +465,7 @@ UNITTEST CURLUcode ipv6_parse(struct Curl_URL *u, char *hostname,
                               size_t hlen) /* length of hostname */
 {
   size_t len;
+  char *hp;
   DEBUGASSERT(*hostname == '[');
   if(hlen < 4) /* '[::]' is the shortest possible valid string */
     return CURLUE_BAD_IPV6;
@@ -472,25 +473,24 @@ UNITTEST CURLUcode ipv6_parse(struct Curl_URL *u, char *hostname,
   hlen -= 2;
 
   /* only valid IPv6 letters are ok */
-  len = strspn(hostname, "0123456789abcdefABCDEF:.");
+  for(hp = hostname, len = 0;
+      ISXDIGIT(*hp) || (*hp == ':') || (*hp == '.');
+      len++, hp++)
+    ;
 
   if(hlen != len) {
-    hlen = len;
     if(hostname[len] == '%') {
       /* this could now be '%[zone id]' */
-      char zoneid[MAX_ZONEID_LEN];
       int i = 0;
-      char *h = &hostname[len + 1];
-      /* pass '25' if present and is a URL encoded percent sign */
-      if(!strncmp(h, "25", 2) && h[2] && (h[2] != ']'))
-        h += 2;
-      while(!invalid_host_char[(unsigned char)*h] && (*h != ']') &&
-            (i < (MAX_ZONEID_LEN - 1)))
-        zoneid[i++] = *h++;
-      if(!i || (']' != *h))
+      hp = &hostname[len + 1];
+      while(!invalid_host_char[(unsigned char)*hp] && (*hp != ']') &&
+            (i < (MAX_ZONEID_LEN - 1))) {
+        i++;
+        hp++;
+      }
+      if(!i || (']' != *hp))
         return CURLUE_BAD_IPV6;
-      zoneid[i] = 0;
-      u->zoneid = curlx_strdup(zoneid);
+      u->zoneid = curlx_memdup0(&hostname[len + 1], i);
       if(!u->zoneid)
         return CURLUE_OUT_OF_MEMORY;
       hostname[len] = ']'; /* insert end bracket */
@@ -499,6 +499,7 @@ UNITTEST CURLUcode ipv6_parse(struct Curl_URL *u, char *hostname,
     else
       return CURLUE_BAD_IPV6;
     /* hostname is fine */
+    hlen = len;
   }
 
   /* Normalize the IPv6 address */
@@ -517,7 +518,7 @@ UNITTEST CURLUcode ipv6_parse(struct Curl_URL *u, char *hostname,
 }
 
 /* the input is a confirmed hostname, never an IPv6 address */
-static CURLUcode hostname_check(char *hostname, size_t hlen)
+CURLUcode Curl_hostname_check(const char *hostname, size_t hlen)
 {
   size_t i;
   for(i = 0; i < hlen; i++) {
@@ -536,7 +537,7 @@ static CURLUcode hostname_check(char *hostname, size_t hlen)
 
 /* the input is a hostname or perhaps an IPv6 address */
 static CURLUcode hostname_check6(struct Curl_URL *u, char *hostname,
-                                size_t hlen) /* length of hostname */
+                                 size_t hlen) /* length of hostname */
 {
   DEBUGASSERT(hostname);
 
@@ -545,7 +546,7 @@ static CURLUcode hostname_check6(struct Curl_URL *u, char *hostname,
   else if(hostname[0] == '[')
     return ipv6_parse(u, hostname, hlen);
 
-  return hostname_check(hostname, hlen);
+  return Curl_hostname_check(hostname, hlen);
 }
 
 /*
@@ -738,7 +739,7 @@ static CURLUcode parse_authority(struct Curl_URL *u,
     int type = ipv4_normalize(host);
 
     if(type == HOST_NAME)
-      uc = hostname_check(curlx_dyn_ptr(host), curlx_dyn_len(host));
+      uc = Curl_hostname_check(curlx_dyn_ptr(host), curlx_dyn_len(host));
     else if(type == HOST_ERROR)
       uc = CURLUE_OUT_OF_MEMORY;
   }
@@ -871,6 +872,8 @@ UNITTEST int dedotdotify(const char *input, size_t clen, char **outp)
   }
 
   while(clen && !result) { /* until end of path content */
+    const char *next;
+    size_t seglen;
     if(ISSLASH(*input)) {
       const char *p = &input[1];
       size_t blen = clen - 1;
@@ -919,9 +922,11 @@ UNITTEST int dedotdotify(const char *input, size_t clen, char **outp)
        subsequent characters up to, but not including, the next "/" character
        or the end of the input buffer. */
 
-    result = curlx_dyn_addn(&out, input, 1);
-    input++;
-    clen--;
+    next = memchr(input + 1, '/', clen - 1);
+    seglen = next ? (size_t)(next - input) : clen;
+    result = curlx_dyn_addn(&out, input, seglen);
+    input += seglen;
+    clen -= seglen;
   }
 end:
   if(!result) {
@@ -1520,7 +1525,7 @@ static CURLUcode urlget_format(const CURLU *u, CURLUPart what,
     part = decoded;
     partlen = dlen;
   }
-  if(urlencode) {
+  if(urlencode && partlen) {
     struct dynbuf enc;
     curlx_dyn_init(&enc, CURL_MAX_INPUT_LENGTH);
     uc = urlencode_str(&enc, part, partlen, TRUE, what == CURLUPART_QUERY ?
@@ -1537,6 +1542,11 @@ static CURLUcode urlget_format(const CURLU *u, CURLUPart what,
       curlx_free(part);
       if(uc)
         return uc;
+      uc = Curl_hostname_check(punyversion, strlen(punyversion));
+      if(uc) {
+        curlx_free(punyversion);
+        return uc;
+      }
       part = punyversion;
     }
   }
@@ -1557,7 +1567,8 @@ static CURLUcode file_url(const CURLU *u, char **part,
                           const char *querysep)
 {
   char *url = curl_maprintf("file://%s%s%s%s%s",
-                            u->path, querysep, u->query ? u->query : "",
+                            u->path ? u->path : "/",
+                            querysep, u->query ? u->query : "",
                             fragmentsep, u->fragment ? u->fragment : "");
   if(!url)
     return CURLUE_OUT_OF_MEMORY;
@@ -1638,8 +1649,12 @@ static CURLUcode urlget_url(const CURLU *u, char **part, unsigned int flags)
     else if(flags & CURLU_PUNYCODE) {
       if(!Curl_is_ASCII_name(u->host)) {
         CURLUcode ret = host_decode(u->host, &allochost);
-        if(ret)
+        if(!ret)
+          ret = Curl_hostname_check(allochost, strlen(allochost));
+        if(ret) {
+          curlx_safefree(allochost);
           return ret;
+        }
       }
     }
     else if(flags & CURLU_PUNY2IDN) {
@@ -2062,6 +2077,12 @@ static CURLUcode url_sethost(CURLU *u, struct dynbuf *encp,
     CURLcode result = Curl_urldecode(newp, n, &decoded, &dlen, REJECT_CTRL);
     if(result || hostname_check6(u, decoded, dlen))
       bad = TRUE;
+    else if(decoded[0] == '[') {
+      /* store the normalized IPv6 address, the zone id is kept separately */
+      curlx_dyn_reset(encp);
+      if(curlx_dyn_add(encp, decoded))
+        bad = TRUE;
+    }
     else {
       struct dynbuf dbuf;
       curlx_dyn_init(&dbuf, CURL_MAX_INPUT_LENGTH);

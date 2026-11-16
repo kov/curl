@@ -8,7 +8,6 @@ HTTP Digest auth
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 100 Continue
@@ -54,7 +53,6 @@ ok
 
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -63,6 +61,7 @@ http
 !SSPI
 crypto
 digest
+md5
 </features>
 <name>
 HTTP POST --digest with server doing a 100 before 401 response
@@ -72,7 +71,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -u auser:apasswd --digest -d "junkelijunk"
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="yes" nonewline="yes">
 POST /%TESTNUMBER HTTP/1.1

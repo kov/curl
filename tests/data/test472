@@ -7,7 +7,6 @@ aws-sigv4
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 200 OK
@@ -25,7 +24,6 @@ Funny-head: yesyes
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -34,6 +32,7 @@ http
 Debug
 Unicode
 aws
+sha256
 </features>
 <name>
 aws-sigv4 with query using unicode
@@ -43,7 +42,6 @@ aws-sigv4 with query using unicode
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER/a=%E3%81%82 HTTP/1.1

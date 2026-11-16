@@ -83,3 +83,36 @@ witness: curl-core date::tests::lib517_dates
         && digits <= 2
 --- new
         && digits <= 3
+
+=== a ninth digit is read as part of the number
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::lib517_dates
+--- old
+        if digits == 8 {
+            return Err(BadDate);
+        }
+--- new
+        if digits == 9 {
+            return Err(BadDate);
+        }
+
+=== eight digits after a part of the date is known are read as a day or a year
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::a_time_and_a_compact_date_are_read_as_c_reads_them
+--- old
+        if w.year.is_some() || w.mon.is_some() || w.mday.is_some() {
+            return Err(BadDate);
+        }
+--- new
+        if w.year.is_some() || w.mon.is_some() || w.mday.is_some() {
+        }
+
+=== a second colon with no digit after it ends the time of day before it
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::a_time_and_a_compact_date_are_read_as_c_reads_them
+--- old
+        let (secs, n) = one_or_two_digits(&date[p + 1..])?;
+--- new
+        let Some((secs, n)) = one_or_two_digits(&date[p + 1..]) else {
+            return Some((hh * 3600 + mm * 60, p));
+        };

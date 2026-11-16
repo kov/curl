@@ -73,7 +73,7 @@ pub fn parse(date: &[u8]) -> Result<i64, BadDate> {
     }
     let seconds = to_epoch(year, mon, mday, w.dsecs.unwrap_or(0));
     // A zone ahead of UTC is subtracted. A time past the latest is the
-    // latest, as C caps it, though no year of eight digits comes near.
+    // latest, as C caps it, though no year of seven digits comes near.
     let zone = i64::from(w.zone.unwrap_or(0));
     Ok(seconds.saturating_add(zone))
 }
@@ -167,20 +167,19 @@ fn name(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
 /// a year, the first that applies and is not known yet (`datenum`). Where
 /// it ends.
 fn number(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
-    // As `curlx_str_number` reads it: leading zeros are allowed, and a
-    // value over the limit fails. The digits are read once, for the
-    // number and for the hour a time of day starts with: a number over
-    // the limit has more digits than an hour.
+    // At most eight digits, leading zeros counted: a ninth fails. The
+    // digits are read once, for the number and for the hour a time of
+    // day starts with: a number of more digits than an hour is none.
     let mut val: u32 = 0;
     let mut digits = 0;
     for &d in &date[at..] {
         if !d.is_ascii_digit() {
             break;
         }
-        val = val * 10 + u32::from(d - b'0');
-        if val > 99_999_999 {
+        if digits == 8 {
             return Err(BadDate);
         }
+        val = val * 10 + u32::from(d - b'0');
         digits += 1;
     }
     if w.dsecs.is_none()
@@ -198,9 +197,13 @@ fn number(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
         w.zone = Some(if sign == Some(b'+') { -offset } else { offset });
         return end;
     }
-    if digits == 8 && w.year.is_none() && w.mon.is_none() && w.mday.is_none() {
-        // YYYYMMDD. A month of 00 leaves the month unknown, as C's -1
-        // does: a later name may still give it.
+    if digits == 8 {
+        // YYYYMMDD, only before any of its parts is known. A month of 00
+        // leaves the month unknown, as C's -1 does: a later name may
+        // still give it.
+        if w.year.is_some() || w.mon.is_some() || w.mday.is_some() {
+            return Err(BadDate);
+        }
         let mon = (val % 10_000) / 100;
         if mon > 12 {
             return Err(BadDate);
@@ -229,7 +232,8 @@ fn number(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
 
 /// The rest of a time of day whose hour `hh`, of one or two digits, ends
 /// at `p`: `:MM:SS` or `:MM`, each of one or two digits, and where it
-/// ends (`match_time`). A leap second is allowed.
+/// ends (`match_time`). A leap second is allowed; a second `:` with no
+/// digit after it makes no time of day.
 fn time_of_day(date: &[u8], mut p: usize, hh: u32) -> Option<(u32, usize)> {
     if hh >= 24 || date.get(p) != Some(&b':') {
         return None;
@@ -240,9 +244,8 @@ fn time_of_day(date: &[u8], mut p: usize, hh: u32) -> Option<(u32, usize)> {
         return None;
     }
     let mut ss = 0;
-    if date.get(p) == Some(&b':')
-        && let Some((secs, n)) = one_or_two_digits(&date[p + 1..])
-    {
+    if date.get(p) == Some(&b':') {
+        let (secs, n) = one_or_two_digits(&date[p + 1..])?;
         if secs > 60 {
             return None;
         }
@@ -590,6 +593,23 @@ mod tests {
         }
     }
 
+    /// What C's `curl_getdate` gives where its tests have no row: a
+    /// second `:` needs its seconds, and eight digits are a whole date
+    /// only before any part of one is known, else nothing.
+    #[test]
+    fn a_time_and_a_compact_date_are_read_as_c_reads_them() {
+        for (input, want) in [
+            ("Sun, 06 Nov 1994 08:49: GMT", Err(BadDate)),
+            ("Sun, 06 Nov 1994 08:49 GMT", Ok(784111740)),
+            ("Sun, 06 Nov 1994 08:49:3 GMT", Ok(784111743)),
+            ("Nov 6 19941106", Err(BadDate)),
+            ("19941106 Nov", Err(BadDate)),
+            ("6 Nov 00001994", Err(BadDate)),
+        ] {
+            assert_eq!(parse(input.as_bytes()), want, "{input}");
+        }
+    }
+
     /// unit4781: the names of days, months and zones.
     #[test]
     fn unit4781_names() {
@@ -637,13 +657,16 @@ mod tests {
         assert_eq!(parse(b"Sun 06 Nov 1994 08:49:37 junk"), Err(BadDate));
     }
 
+    /// Eight digits after a day are no year but a refused `YYYYMMDD`, as
+    /// C's `curl_getdate` gives them.
     #[test]
-    fn the_latest_year_has_eight_digits() {
+    fn the_latest_year_has_seven_digits() {
         // In a zone behind UTC, and still far from the latest time.
         assert_eq!(
-            parse(b"31 Dec 99999999 23:59:59 -1400"),
-            Ok(3_155_633_032_831_199)
+            parse(b"31 Dec 9999999 23:59:59 -1400"),
+            Ok(315_507_352_831_199)
         );
+        assert_eq!(parse(b"31 Dec 99999999 23:59:59 -1400"), Err(BadDate));
         assert_eq!(parse(b"1 Jan 999999999"), Err(BadDate));
     }
 

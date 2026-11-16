@@ -130,9 +130,9 @@ file: crates/curl-core/src/proto/http/cookies.rs
 witness: curl-core proto::http::tests::tls::secure_cookies_go_over_tls
 --- old
         self.secured
-            || self.host.eq_ignore_ascii_case(b"localhost")
+            || (!self.proxied
 --- new
-        self.host.eq_ignore_ascii_case(b"localhost")
+        (!self.proxied
 
 === bytes a TLS session holds are not pending
 file: crates/curl-core/src/conn/tls.rs

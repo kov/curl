@@ -144,3 +144,19 @@ features: test-util
                 Self::to(cx, lc, State::Stop);
                 Ok(())
             }
+
+=== the unbind is sent over TLS after a send that blocked
+file: crates/curl-ldap/src/openldap.rs
+witness: curl-ldap openldap::tests::an_unbind_after_a_blocked_send_is_not_sent
+--- old
+        if self.slot.send_blocked.get() {
+--- new
+        if false {
+
+=== a blocked send over the layers is not remembered
+file: crates/curl-ldap/src/openldap.rs
+witness: curl-ldap openldap::tests::an_unbind_after_a_blocked_send_is_not_sent
+--- old
+        slot.send_blocked.set(blocked);
+--- new
+        slot.send_blocked.set(false);

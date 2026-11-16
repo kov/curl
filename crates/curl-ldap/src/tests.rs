@@ -32,6 +32,8 @@ struct Bytes {
     reads: usize,
     /// It says it holds input it does not.
     claims: bool,
+    /// Its sends would block.
+    blocks: bool,
 }
 
 impl Wire for Bytes {
@@ -47,6 +49,9 @@ impl Wire for Bytes {
     }
 
     fn send(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.blocks {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
         self.sent.extend_from_slice(bytes);
         Ok(bytes.len())
     }
@@ -151,6 +156,44 @@ fn a_session_over_a_wire_reads_and_writes_through_it() {
     let mut rest = Vec::new();
     theirs.read_to_end(&mut rest).unwrap();
     assert!(rest.is_empty(), "{rest:?}");
+}
+
+/// After a send over the layers that would block, the unbind is not
+/// sent: the TLS below takes nothing but the blocked bytes again; one
+/// whose sends went says its unbind (`oldap_disconnect`, upstream
+/// 19216baa04).
+#[test]
+fn an_unbind_after_a_blocked_send_is_not_sent() {
+    for blocked in [true, false] {
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let mut session = LIBLDAP
+            .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
+            .unwrap();
+        drop(ours);
+        session.set_version(Version::V3);
+        assert_eq!(session.use_wire(), Ok(()));
+        let mut wire = Bytes {
+            blocks: blocked,
+            ..Bytes::default()
+        };
+        // Blocked, the bind is held to be sent again or fails; what it
+        // says then does not matter here, only that its send blocked.
+        let bound = session.bind(&mut wire, Some(b"cn=me"), Mech::Simple, Some(b"pw"));
+        if !blocked {
+            bound.expect("a bind whose send went");
+        }
+        let mut wire = Bytes::default();
+        session.unbind(&mut wire);
+        if blocked {
+            assert_eq!(wire.sent, b"", "nothing after a blocked send");
+        } else {
+            assert!(
+                wire.sent.windows(2).any(|w| w == [0x42, 0x00]),
+                "the unbind: {:02x?}",
+                wire.sent
+            );
+        }
+    }
 }
 
 /// A session over its socket reads and writes the socket itself; a

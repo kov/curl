@@ -57,6 +57,7 @@ impl Ldap for Libldap {
         };
         let slot = match curl_alloc::try_box(Slot {
             wire: Cell::new(None),
+            send_blocked: Cell::new(false),
         }) {
             Ok(slot) => slot,
             Err(OutOfMemory) => return nomem,
@@ -102,6 +103,10 @@ impl Ldap for Libldap {
 /// its address, the layer's private pointer, stays put.
 struct Slot {
     wire: Cell<Option<*mut (dyn Wire + 'static)>>,
+    /// The layer's last send would have blocked: the TLS below must be
+    /// given those bytes again, whole, before any other
+    /// (`li->send_blocked`).
+    send_blocked: Cell<bool>,
 }
 
 /// A session: C's `ldapconninfo`'s `ld`.
@@ -372,6 +377,13 @@ impl Session for Libsession {
         if self.unbound {
             return;
         }
+        // After a send that blocked, the TLS below takes nothing but
+        // those bytes again: the shorter unbind is not sent, the session
+        // freed without it, its layer finding no wire (`oldap_disconnect`).
+        if self.slot.send_blocked.get() {
+            self.unbind_now();
+            return;
+        }
         let wire: *mut (dyn Wire + '_) = wire;
         // SAFETY: only the lifetime is erased; the pointer leaves the
         // slot before `wire`'s borrow ends, below.
@@ -574,16 +586,24 @@ fn failing(e: c_int) -> sys::ber_slen_t {
 /// `sbiod` is the library's descriptor of the layer, its private
 /// pointer the slot `use_wire` gave it.
 unsafe fn wire_of<'a>(sbiod: *mut sys::Sockbuf_IO_Desc) -> Option<&'a mut dyn Wire> {
-    // SAFETY: the library's descriptor, as the caller says.
-    let slot = unsafe { (*sbiod).sbiod_pvt }.cast::<Slot>();
-    if slot.is_null() {
-        return None;
-    }
-    // SAFETY: the slot the session owns, which outlives its layer.
-    let wire = unsafe { &*slot }.wire.get()?;
+    // SAFETY: as the caller says.
+    let wire = unsafe { slot_of(sbiod) }?.wire.get()?;
     // SAFETY: the call's wire, set for the length of the library's call
     // the layer is called within, and used by nothing else meanwhile.
     Some(unsafe { &mut *wire })
+}
+
+/// The slot of the session the layer is on, if it is on.
+///
+/// # Safety
+///
+/// As `wire_of`'s.
+unsafe fn slot_of<'a>(sbiod: *mut sys::Sockbuf_IO_Desc) -> Option<&'a Slot> {
+    // SAFETY: the library's descriptor, as the caller says.
+    let slot = unsafe { (*sbiod).sbiod_pvt }.cast::<Slot>();
+    // SAFETY: null, or the slot the session owns, which outlives its
+    // layer.
+    unsafe { slot.as_ref() }
 }
 
 unsafe extern "C" fn layer_setup(sbiod: *mut sys::Sockbuf_IO_Desc, arg: *mut c_void) -> c_int {
@@ -650,7 +670,14 @@ unsafe extern "C" fn layer_write(
     let len = usize::try_from(len).expect("a length in memory");
     // SAFETY: the library's `len` bytes to send, for the call.
     let bytes = unsafe { core::slice::from_raw_parts(buf.cast::<u8>().cast_const(), len) };
-    match wire.send(bytes) {
+    let sent = wire.send(bytes);
+    let blocked = matches!(&sent, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock);
+    // SAFETY: the library's descriptor of this layer, whose wire was
+    // found above.
+    if let Some(slot) = unsafe { slot_of(sbiod) } {
+        slot.send_blocked.set(blocked);
+    }
+    match sent {
         Ok(n) => sys::ber_slen_t::try_from(n).expect("no more than given"),
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => failing(EWOULDBLOCK),
         Err(_) => -1,

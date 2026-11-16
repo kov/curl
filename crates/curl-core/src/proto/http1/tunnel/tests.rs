@@ -192,8 +192,8 @@ fn drops_a_407_s_body() {
     assert!(a.done(), "no length: the connection ends it");
 }
 
-/// A 407 saying both a length and chunks is decoded as chunks, though
-/// the note names the length (test 1715).
+/// A 407 saying both a length and chunks is decoded as chunks, and the
+/// note says so (test 1715, upstream 0613e0ec32).
 #[test]
 fn decodes_chunks_over_a_length() {
     let input = b"HTTP/1.1 407 Who\r\nContent-Length: 13\r\n\
@@ -213,11 +213,67 @@ fn decodes_chunks_over_a_length() {
             Err(e) => break e,
         }
     };
-    assert_eq!(notes, [Some(Note::IgnoreBytes(13))]);
+    assert_eq!(notes, [Some(Note::IgnoreChunked)]);
     assert_eq!(
         failed.said().map(|s| s.to_string()).as_deref(),
         Some("chunk hex-length char not a hex digit: 0x73")
     );
+}
+
+/// The head of `input`, applied: the notes at its end, and whether the
+/// connection then closes.
+fn head(input: &[u8]) -> (Option<Note>, bool) {
+    let mut a = Answer::new();
+    let mut at = 0;
+    loop {
+        let (used, read) = a.read(&input[at..]).unwrap();
+        at += used;
+        assert!(matches!(read, Read::Line), "{read:?}");
+        if a.apply().unwrap() == Applied::End {
+            let note = a.end_head(false);
+            return (note, a.closes());
+        }
+    }
+}
+
+/// A `Transfer-Encoding` alone frames the body: a length said before or
+/// after it is not read, not even to refuse it; an encoding that does not
+/// end in chunks ends the body as the connection closes, which is then
+/// not asked again over, whatever the code (`on_resp_header`,
+/// `single_header`, test 2824).
+#[test]
+fn an_encoding_frames_the_body_alone() {
+    let cases: [(&[u8], Option<Note>, bool); 5] = [
+        (
+            b"HTTP/1.1 407 Who\r\nTransfer-Encoding: chunked\r\nContent-Length: 13\r\n\r\n",
+            Some(Note::IgnoreChunked),
+            false,
+        ),
+        (
+            b"HTTP/1.1 407 Who\r\nTransfer-Encoding: chunked\r\nContent-Length: x\r\n\r\n",
+            Some(Note::IgnoreChunked),
+            false,
+        ),
+        (
+            b"HTTP/1.1 407 Who\r\nContent-Length: 0\r\nTransfer-Encoding: gzip\r\n\
+              Transfer-Encoding: chunked\r\n\r\n",
+            Some(Note::IgnoreChunked),
+            false,
+        ),
+        (
+            b"HTTP/1.1 407 Who\r\nTransfer-Encoding: identity\r\nContent-Length: 0\r\n\r\n",
+            None,
+            true,
+        ),
+        (
+            b"HTTP/1.1 500 No\r\nContent-Length: 5\r\nTransfer-Encoding: gzip\r\n\r\n",
+            None,
+            true,
+        ),
+    ];
+    for (input, note, closes) in cases {
+        assert_eq!(head(input), (note, closes), "{}", input.escape_ascii());
+    }
 }
 
 /// What C refuses, and how it says so.

@@ -144,19 +144,22 @@ witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_conn
 file: crates/curl-core/src/proto/http1/tunnel.rs
 witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection
 --- old
-            self.body = Body::Ignore(self.length);
+                self.body = Body::Ignore(length);
 --- new
-            self.body = Body::Done;
+                self.body = Body::Done;
 
 === a 407 saying a length and chunks is dropped by its length
 file: crates/curl-core/src/proto/http1/tunnel.rs
 witness: curl-core proto::http1::tunnel::tests::decodes_chunks_over_a_length
 --- old
-        if self.chunked {
-            self.body = Body::Chunked(ChunkDecoder::new(true, 0, 0));
+            self.framing = Framing::Encoded {
 --- new
-        if self.chunked && self.length == 0 {
-            self.body = Body::Chunked(ChunkDecoder::new(true, 0, 0));
+            if self.framing == Framing::Length(0) {
+                self.framing = Framing::Encoded {
+                    chunked: fields::header_says(line, b"Transfer-Encoding:", b"chunked"),
+                };
+            }
+            let _unused = Framing::Encoded {
 
 === an answer to CONNECT that ended is waited on for more
 file: crates/curl-core/src/multi/state/tunnel.rs
@@ -974,3 +977,22 @@ witness: curl-core proto::http::tests::a_forwarded_request_sends_the_proxy_s_lin
         (!self.unified_headers).then_some(ProxyHeaders(&self.headers))
 --- new
         Some(ProxyHeaders(&self.headers))
+
+=== a length after an encoding frames the CONNECT answer
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http1::tunnel::tests::an_encoding_frames_the_body_alone
+features: test-util,debug-hooks
+--- old
+            if let Framing::Length(_) = self.framing {
+--- new
+            if true {
+
+=== a CONNECT answer whose body ends at the close is asked again over its connection
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http1::tunnel::tests::an_encoding_frames_the_body_alone
+features: test-util,debug-hooks
+--- old
+        if self.framing == (Framing::Encoded { chunked: false }) {
+            self.close = true;
+        }
+--- new

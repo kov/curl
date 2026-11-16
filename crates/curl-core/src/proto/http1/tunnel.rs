@@ -115,9 +115,9 @@ pub(crate) struct Answer {
     /// Lines given out, the status line first (`headerlines`).
     lines: u32,
     code: Option<u16>,
-    /// `Content-Length` of a body not wanted (`cl`).
-    length: u64,
-    chunked: bool,
+    /// What frames the body (`cl`, `has_transfer_encoding`,
+    /// `chunked_encoding`).
+    framing: Framing,
     /// The proxy closes the connection after the answer
     /// (`close_connection`).
     close: bool,
@@ -132,6 +132,19 @@ pub(crate) struct Answer {
     body: Body,
     /// A dropped chunked body was read to its end.
     chunks_read: bool,
+}
+
+/// What frames an answer's body: its `Content-Length`, unless a
+/// `Transfer-Encoding` is said, which then frames it alone, whatever the
+/// length says before or after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Framing {
+    Length(u64),
+    /// Chunked if the last encoding said ends in `chunked`; else the body
+    /// ends as the connection closes.
+    Encoded {
+        chunked: bool,
+    },
 }
 
 /// Where the answer is (C's `keepon`).
@@ -268,8 +281,7 @@ impl Answer {
             applied: false,
             lines: 0,
             code: None,
-            length: 0,
-            chunked: false,
+            framing: Framing::Length(0),
             close: false,
             folded: false,
             looked_ahead: false,
@@ -462,7 +474,9 @@ impl Answer {
                 }
                 return Ok(Applied::Note(Note::IgnoringLength(code)));
             }
-            self.length = number(rest).ok_or(AnswerError::BadLength)?;
+            if let Framing::Length(_) = self.framing {
+                self.framing = Framing::Length(number(rest).ok_or(AnswerError::BadLength)?);
+            }
         } else if fields::header_says(line, b"Connection:", b"close") {
             self.close = true;
         } else if value_of(line, b"Transfer-Encoding:").is_some() {
@@ -472,9 +486,9 @@ impl Answer {
                 }
                 return Ok(Applied::Note(Note::IgnoringEncoding(code)));
             }
-            if fields::header_says(line, b"Transfer-Encoding:", b"chunked") {
-                self.chunked = true;
-            }
+            self.framing = Framing::Encoded {
+                chunked: fields::header_says(line, b"Transfer-Encoding:", b"chunked"),
+            };
         } else if fields::header_says(line, b"Proxy-Connection:", b"close") {
             self.close = true;
         }
@@ -483,26 +497,28 @@ impl Answer {
 
     /// The head ended: a 407's body is read and dropped, to keep the
     /// connection, unless authenticating went wrong; one with no length
-    /// leaves the connection to end it, and is not read. Chunks are
-    /// decoded where both are said, though the note names the length,
-    /// as C has it.
+    /// leaves the connection to end it, and is not read. A body encoded
+    /// but not chunked ends as the connection closes, so the connection
+    /// is not asked again over, whatever the code (`single_header`).
     pub(crate) fn end_head(&mut self, auth_problem: bool) -> Option<Note> {
         assert!(matches!(self.body, Body::HeadEnded), "the head ended");
         self.body = Body::Done;
+        if self.framing == (Framing::Encoded { chunked: false }) {
+            self.close = true;
+        }
         if self.code != Some(407) || auth_problem {
             return None;
         }
-        if self.chunked {
-            self.body = Body::Chunked(ChunkDecoder::new(true, 0, 0));
-        } else if self.length > 0 {
-            self.body = Body::Ignore(self.length);
-        }
-        if self.length > 0 {
-            Some(Note::IgnoreBytes(self.length))
-        } else if self.chunked {
-            Some(Note::IgnoreChunked)
-        } else {
-            None
+        match self.framing {
+            Framing::Encoded { chunked: true } => {
+                self.body = Body::Chunked(ChunkDecoder::new(true, 0, 0));
+                Some(Note::IgnoreChunked)
+            }
+            Framing::Length(length) if length > 0 => {
+                self.body = Body::Ignore(length);
+                Some(Note::IgnoreBytes(length))
+            }
+            Framing::Length(_) | Framing::Encoded { chunked: false } => None,
         }
     }
 

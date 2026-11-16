@@ -740,3 +740,14 @@ witness: curl-core conn::tls::tests::only_a_session_whose_handshake_is_done_is_s
         if !matches!(self.peer_state, PeerState::Open { .. }) {
 --- new
         if matches!(self.peer_state, PeerState::Shaking) {
+
+=== a certificate name with a trailing dot names the host without it
+file: crates/curl-core/src/tls/hostcheck.rs
+witness: curl-core tls::hostcheck::tests::unit1397_host_checks
+--- old
+    let host = host.strip_suffix(b".").unwrap_or(host);
+    if pattern.len() > 2
+--- new
+    let host = host.strip_suffix(b".").unwrap_or(host);
+    let pattern = pattern.strip_suffix(b".").unwrap_or(pattern);
+    if pattern.len() > 2

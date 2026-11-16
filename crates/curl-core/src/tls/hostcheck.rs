@@ -67,10 +67,12 @@ pub fn names(pattern: &[u8], host: &[u8]) -> bool {
     !pattern.is_empty() && !host.is_empty() && host_matches(host, pattern)
 }
 
-/// `hostmatch`.
+/// `hostmatch`. A trailing dot is dropped from the host, not from the
+/// certificate's name: the TLS library checked the chain's name
+/// constraints against that name as encoded, which one with a dot would
+/// escape while still naming the host without it.
 fn host_matches(host: &[u8], pattern: &[u8]) -> bool {
     let host = host.strip_suffix(b".").unwrap_or(host);
-    let pattern = pattern.strip_suffix(b".").unwrap_or(pattern);
     if pattern.len() > 2 && !pattern.starts_with(b"*.") {
         return same(host, pattern);
     }

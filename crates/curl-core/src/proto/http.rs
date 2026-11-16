@@ -1562,7 +1562,8 @@ impl Request {
         // Without a jar or the application's own, there is no line to make
         // (`http_cookies`).
         let cookie = if cx.easy().jar.is_on() || application {
-            let site = cookie_site(&self.cookie_host, &self.target, self.base.peer());
+            let proxied = cx.report_mut().used_proxy();
+            let site = cookie_site(&self.cookie_host, &self.target, self.base.peer(), proxied);
             cookies::request_value(cx, &site, application)?
         } else {
             None
@@ -2768,7 +2769,8 @@ impl Request {
         if letter == Some(b's')
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
-            let site = cookie_site(cookie_host, target, peer);
+            let proxied = cx.report_mut().used_proxy();
+            let site = cookie_site(cookie_host, target, peer, proxied);
             cookies::set_by_server(cx, value, &site)?;
         }
         // As is a host's HSTS, from a response over HTTPS (`http_header_s`).
@@ -3404,11 +3406,13 @@ fn cookie_site<'a>(
     custom_host: &'a Option<Vec<u8>>,
     target: &'a [u8],
     peer: &'a Peer,
+    proxied: bool,
 ) -> cookies::Site<'a> {
     cookies::Site {
         host: custom_host.as_deref().unwrap_or(peer.name()),
         path: target.split(|&b| b == b'?').next().unwrap_or_default(),
         secured: peer.scheme().over_tls(),
+        proxied,
     }
 }
 

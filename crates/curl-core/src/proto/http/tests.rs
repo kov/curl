@@ -4066,6 +4066,35 @@ fn no_jar_keeps_no_cookies() {
     assert_eq!(ran.easy.cookie_list().unwrap(), Vec::<Vec<u8>>::new());
 }
 
+/// A `Secure` cookie from `localhost` over plain HTTP is kept when the
+/// transfer goes to it directly, and refused when a proxy carries it,
+/// however the proxy was set (`Curl_secure_context`, tests 382 and 392).
+#[test]
+fn a_secure_cookie_from_localhost_is_kept_only_without_a_proxy() {
+    let reply = b"HTTP/1.1 200 OK\r\nSet-Cookie: s=1; Secure\r\nContent-Length: 0\r\n\r\n";
+    for proxied in [false, true] {
+        let (mut m, talk, _) = server(&[reply], false);
+        let mut ran = get(&mut m, "/", talk, |o| {
+            o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
+            if proxied {
+                o.set_url(Some(b"http://localhost/")).unwrap();
+                o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                    .unwrap();
+            } else {
+                o.set_url(Some(format!("http://localhost:{PORT}/").as_bytes()))
+                    .unwrap();
+            }
+        });
+        assert_eq!(ran.result, Ok(()), "{proxied}");
+        let kept = ran.easy.cookie_list().unwrap();
+        if proxied {
+            assert_eq!(kept, Vec::<Vec<u8>>::new());
+        } else {
+            assert_eq!(kept, [b"localhost\tFALSE\t/\tTRUE\t0\ts\t1".to_vec()]);
+        }
+    }
+}
+
 /// A custom `Host:` names the cookies' host, without its port
 /// (`req.cookiehost`).
 #[test]

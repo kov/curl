@@ -33,16 +33,20 @@ pub(super) struct Site<'a> {
     pub(super) path: &'a [u8],
     /// The request goes over TLS.
     pub(super) secured: bool,
+    /// The transfer went through a proxy, however it was set.
+    pub(super) proxied: bool,
 }
 
 impl Site<'_> {
     /// Whether secure cookies go and may be set: over a secure
-    /// connection, or to this host (`Curl_secure_context`).
+    /// connection, or to this host when no proxy carries them
+    /// (`Curl_secure_context`).
     fn secure(&self) -> bool {
         self.secured
-            || self.host.eq_ignore_ascii_case(b"localhost")
-            || self.host == b"127.0.0.1"
-            || self.host == b"::1"
+            || (!self.proxied
+                && (self.host.eq_ignore_ascii_case(b"localhost")
+                    || self.host == b"127.0.0.1"
+                    || self.host == b"::1"))
     }
 }
 
@@ -452,8 +456,22 @@ mod tests {
                 host,
                 path: b"/",
                 secured: false,
+                proxied: false,
             };
             assert_eq!(site.secure(), secure, "{}", host.escape_ascii());
+            // Through a proxy only TLS makes it secure.
+            let proxied = Site {
+                proxied: true,
+                ..site
+            };
+            assert!(!proxied.secure(), "{}", host.escape_ascii());
+            assert!(
+                Site {
+                    secured: true,
+                    ..proxied
+                }
+                .secure()
+            );
             let site = Site {
                 secured: true,
                 ..site
@@ -485,6 +503,7 @@ mod tests {
             host: b"example.com",
             path: b"/",
             secured: false,
+            proxied: false,
         };
         let mut held = held();
         let (mut value, mut count, mut full) = (Vec::new(), 0, false);

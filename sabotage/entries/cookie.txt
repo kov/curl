@@ -378,3 +378,21 @@ witness: curl-core cookie::tests::a_jar_written_is_read_back_whole
             return Ok(Parsed::Dropped(None));
         }
         let mut co = Cookie::empty();
+
+=== localhost counts as secure for cookies through a proxy
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::cookies::tests::this_host_is_secure
+features: test-util,debug-hooks
+--- old
+            || (!self.proxied
+--- new
+            || (true
+
+=== a proxy set from anywhere but the options is not seen by the cookies
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_secure_cookie_from_localhost_is_kept_only_without_a_proxy
+features: test-util,debug-hooks
+--- old
+            let site = cookie_site(cookie_host, target, peer, proxied);
+--- new
+            let site = cookie_site(cookie_host, target, peer, false);

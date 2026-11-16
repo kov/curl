@@ -137,7 +137,7 @@ pub(crate) fn rate(s: &[u8], bad: &mut dyn FnMut(&[u8])) -> Result<u64, ParamErr
 }
 
 /// A number of seconds with an optional fraction, in milliseconds, as
-/// `secs2ms` reads it. Anything after the number is ignored, as in C.
+/// `secs2ms` reads it: nothing may follow it.
 pub(crate) fn seconds_as_millis(s: &[u8]) -> Result<u64, ParamError> {
     const DIGITS: [u64; 9] = [
         1,
@@ -152,15 +152,22 @@ pub(crate) fn seconds_as_millis(s: &[u8]) -> Result<u64, ParamError> {
     ];
     let (secs, rest) = leading_number(s, LONG_MAX / 1000 - 1).ok_or(ParamError::BadNumeric)?;
     let mut millis = 0;
+    let mut rest = rest;
     if let Some(fraction) = rest.strip_prefix(b".") {
-        let (mut fracs, after) =
-            leading_number(fraction, LONG_MAX).ok_or(ParamError::NumberTooLarge)?;
-        let mut len = fraction.len() - after.len();
+        let (mut fracs, mut len) =
+            digits_up_to(fraction, 10, LONG_MAX).map_err(|()| ParamError::NumberTooLarge)?;
+        if len == 0 {
+            return Err(ParamError::BadNumeric);
+        }
+        rest = &fraction[len..];
         while len > DIGITS.len() || fracs > LONG_MAX / 100 {
             fracs /= 10;
             len -= 1;
         }
         millis = fracs * 100 / DIGITS[len - 1];
+    }
+    if !rest.is_empty() {
+        return Err(ParamError::BadNumeric);
     }
     Ok(secs * 1000 + millis)
 }
@@ -236,16 +243,19 @@ mod tests {
         }
     }
 
-    /// Tool unit test 1623's cases, read from its source.
-    #[test]
-    fn tool1623_size() {
+    /// The cases of tool unit test 1623's table named `table`, read from
+    /// its source: each input, and what it reads as.
+    fn tool1623_cases(table: &str) -> Vec<(String, Result<u64, ParamError>)> {
         let source = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/tunit/tool1623.c"
         ))
         .unwrap();
-        let mut checked = 0;
-        for line in source.lines().map(str::trim) {
+        let start = source.find(&format!("{table}[] = {{")).expect(table);
+        let body = &source[start..];
+        let body = &body[..body.find("};").unwrap()];
+        let mut cases = Vec::new();
+        for line in body.lines().map(str::trim) {
             let Some(case) = line
                 .strip_prefix("{ \"")
                 .and_then(|l| l.strip_suffix(" },"))
@@ -261,10 +271,30 @@ mod tests {
                 "PARAM_NUMBER_TOO_LARGE" => Err(ParamError::NumberTooLarge),
                 other => panic!("{other}"),
             };
-            assert_eq!(size(input.as_bytes()), want, "{input}");
-            checked += 1;
+            cases.push((input.to_owned(), want));
         }
-        assert!(checked > 50, "the cases were read");
+        cases
+    }
+
+    /// Tool unit test 1623's `secs2ms` cases (the ones under
+    /// `SIZEOF_LONG > 4` too: `long` is 64 bits wide here).
+    #[test]
+    fn tool1623_seconds() {
+        let cases = tool1623_cases("secs");
+        assert!(cases.len() > 10, "the cases were read");
+        for (input, want) in cases {
+            assert_eq!(seconds_as_millis(input.as_bytes()), want, "{input}");
+        }
+    }
+
+    /// Tool unit test 1623's `GetSizeParameter` cases.
+    #[test]
+    fn tool1623_size() {
+        let cases = tool1623_cases("check");
+        assert!(cases.len() > 50, "the cases were read");
+        for (input, want) in cases {
+            assert_eq!(size(input.as_bytes()), want, "{input}");
+        }
         // A fraction as long as the unit's digits is cut by one: the C
         // tool takes `1.1234k` as 1149 bytes, as `1.123k`.
         assert_eq!(size(b"1.1234k"), Ok(1149));
@@ -591,10 +621,10 @@ mod tests {
         assert_eq!(seconds_as_millis(b"2.5"), Ok(2500));
         assert_eq!(seconds_as_millis(b"0.05"), Ok(50));
         assert_eq!(seconds_as_millis(b"1.123456789123"), Ok(1123));
-        assert_eq!(seconds_as_millis(b"2abc"), Ok(2000));
+        assert_eq!(seconds_as_millis(b"2abc"), Err(ParamError::BadNumeric));
         assert_eq!(seconds_as_millis(b"abc"), Err(ParamError::BadNumeric));
         assert_eq!(seconds_as_millis(b"-1"), Err(ParamError::BadNumeric));
-        assert_eq!(seconds_as_millis(b"1."), Err(ParamError::NumberTooLarge));
+        assert_eq!(seconds_as_millis(b"1."), Err(ParamError::BadNumeric));
         // Test 746: 22222242222222222 seconds is more than C allows.
         assert_eq!(
             seconds_as_millis(b"22222242222222222"),

@@ -1750,3 +1750,26 @@ witness: curl-tool tests::the_toggles_are_c_s_in_c_s_order
     ("sha256", true),
 --- new
     ("sha256", true),
+
+=== a number of seconds is read with text after it
+file: crates/curl-tool/src/options/number.rs
+witness: curl-tool options::number::tests::tool1623_seconds
+--- old
+    if !rest.is_empty() {
+        return Err(ParamError::BadNumeric);
+    }
+    Ok(secs * 1000 + millis)
+--- new
+    Ok(secs * 1000 + millis)
+
+=== a point with no digits after it is too large a number of seconds
+file: crates/curl-tool/src/options/number.rs
+witness: curl-tool options::number::tests::tool1623_seconds
+--- old
+        if len == 0 {
+            return Err(ParamError::BadNumeric);
+        }
+--- new
+        if len == 0 {
+            return Err(ParamError::NumberTooLarge);
+        }

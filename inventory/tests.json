@@ -1,5 +1,5 @@
 {
- "c-commit": "7baa75d23e90e4c6a6d08d79f830851154b3a60c",
+ "c-commit": "d29795a77d98f3c4bc9bdf4d836d5fbc41c6c53b",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -107528,7 +107528,7 @@
     "attr_values": [
      "crlf=yes"
     ],
-    "bytes": 539,
+    "bytes": 534,
     "command": "ftp://%HOSTIP:%FTPPORT/%TESTNUMBER -T %LOGDIR/upload%TESTNUMBER -C 60",
     "command_option": null,
     "command_type": null,

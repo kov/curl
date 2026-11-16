@@ -33,7 +33,7 @@ struct Cleared {
 
 /// An implicit FTPS server for one connection: the login in TLS, `CCC`
 /// answered and its close_notify said, then each command read and
-/// answered in clear until `QUIT`. With `hold`, the close_notify is sent
+/// answered in clear until the client closes. With `hold`, the close_notify is sent
 /// while the client's receive after the answer is held.
 fn serve_ccc(certs: &Certs, hold: Option<Arc<Hold>>) -> (SocketAddr, JoinHandle<Cleared>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -107,11 +107,10 @@ fn serve_ccc(certs: &Certs, hold: Option<Arc<Hold>>) -> (SocketAddr, JoinHandle<
             commands.push_str(&command);
             let answer: &[u8] = match command.trim_end() {
                 "WD" | "PWD" => b"257 \"/\" is it\r\n",
-                "QUIT" => b"221 bye\r\n",
                 "" => break,
                 _ => b"200 ok\r\n",
             };
-            if tcp.write_all(answer).is_err() || command.starts_with("QUIT") {
+            if tcp.write_all(answer).is_err() {
                 break;
             }
         }
@@ -159,11 +158,8 @@ fn a_passive_ccc_answers_no_close_notify() {
         "{}",
         cleared.commands
     );
-    assert!(
-        cleared.commands.ends_with("QUIT\r\n"),
-        "{}",
-        cleared.commands
-    );
+    // The connection closes in clear, saying nothing (`ftp_disconnect`).
+    assert!(!cleared.commands.contains("QUIT"), "{}", cleared.commands);
 }
 
 /// Passive, the server's close_notify coming between the shutdown's

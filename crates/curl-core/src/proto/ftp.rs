@@ -31,7 +31,6 @@ use std::net::{IpAddr, SocketAddr};
 
 use crate::conn::io::{Closer, Events, InterfaceAddress, Remote, Sock, Socket};
 use crate::conn::layer::{LayerAnswer, LayerQuery, Lower as _};
-use crate::conn::line::Goodbye;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, Held, NetRoute, Peer, RouteCold, Scheme};
@@ -87,7 +86,6 @@ enum State {
     List,
     Retr,
     Stor,
-    Quit,
 }
 
 impl State {
@@ -128,7 +126,6 @@ impl State {
             State::List => "LIST",
             State::Retr => "RETR",
             State::Stor => "STOR",
-            State::Quit => "QUIT",
         }
     }
 }
@@ -167,8 +164,7 @@ pub(crate) struct FtpConn {
     prev_path: Option<Vec<u8>>,
     /// The server's system, once asked (`server_os`).
     server_os: Option<Vec<u8>>,
-    /// The control connection is in a state to say `QUIT` in
-    /// (`ctl_valid`).
+    /// The control connection is in a state to go on with (`ctl_valid`).
     ctl_valid: bool,
     /// Passive data connections are asked for with `EPSV`
     /// (`bits.ftp_use_epsv`).
@@ -190,46 +186,6 @@ pub(crate) struct FtpConn {
 /// The credentials a connection logs in with, as its route holds them.
 fn login_of(cold: &Option<TryArc<RouteCold>>) -> Option<&Credentials> {
     cold.as_deref().and_then(|c| c.login.as_ref())
-}
-
-impl FtpConn {
-    /// Say `QUIT` as the connection shuts down, unless it is `dead`, a
-    /// command waits half sent or the control connection is not in a
-    /// state for it (`ftp_disconnect`, `ftp_quit`). `Waiting` while what
-    /// the connection did not take of it waits to go, or its answer is
-    /// awaited, which [`goodbye_answer`](Self::goodbye_answer) moves on.
-    pub(crate) fn goodbye(
-        &mut self,
-        cx: &mut dyn crate::conn::layer::LayerCx,
-        mut below: Carrier<'_>,
-        dead: bool,
-    ) -> Goodbye {
-        if dead || self.pp.needs_flush() || !self.ctl_valid {
-            return Goodbye::Done;
-        }
-        self.state = State::Quit;
-        drive::goodbye(cx, &mut self.pp, &mut below, &Ends, None, b"QUIT")
-    }
-
-    /// Send the rest of `QUIT`, then read on the answer it awaits,
-    /// whichever reply comes first (`ftp_block_statemach` in
-    /// `FTP_QUIT`). That is often the answer to an `ABOR` sent as a range
-    /// was cut short, which nothing read: a connection closed with it
-    /// unread, or before it comes, is reset, and Windows then drops what
-    /// the server had not read of it yet, the `QUIT` among it.
-    pub(crate) fn goodbye_answer(
-        &mut self,
-        cx: &mut dyn crate::conn::layer::LayerCx,
-        mut below: Carrier<'_>,
-    ) -> Goodbye {
-        drive::goodbye_answer(cx, &mut self.pp, &mut below, &Ends)
-    }
-
-    /// What the goodbye waits on: to send the rest of `QUIT`, or its
-    /// answer.
-    pub(crate) fn goodbye_wants(&self) -> crate::conn::io::Events {
-        drive::waits(&self.pp)
-    }
 }
 
 /// What a transfer knows of its control connection, for the data
@@ -926,7 +882,7 @@ impl Request {
                 self.get_resp(cx, pc, carrier, code, state)
             }
             State::Stor => self.stor_resp(cx, pc, carrier, code),
-            State::Quit | State::Stop => {
+            State::Stop => {
                 set_state(cx, pc, State::Stop);
                 Ok(())
             }

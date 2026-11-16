@@ -181,46 +181,44 @@ so: weaknesses kept because C has them.
   blocking connect: an AAAA answered meanwhile is not taken, and goes with the filter as the
   chain connects. Ours takes it and says it (`Host ... was resolved.`), as C does over c-ares;
   `a_data_connection_s_late_resolve_lasts_through_its_tls` pins it.
-  The same holds for the goodbye on a closing connection: FTP's, POP3's and SMTP's `QUIT` and
-  IMAP's `LOGOUT` await a reply as C's do, but in the shutdown set, the other transfers going
-  on meanwhile. So an application driving the multi by its socket callback may be told to
-  watch a plain control connection for input while it waits, and hears its removal later,
-  where C closes it before DONE ends. Both give up after a second with nothing more of the
-  answer, and within the shutdown's 2 s. What ends the wait differs: C's FTP, SMTP and IMAP
-  waits end at the first byte that can be read, which they leave unread (their state machines
-  fail without the transfer's state, `FAILED_INIT`), where ours read a whole reply, IMAP's the
-  tagged one after its `BYE`; C's POP3 reads a whole reply, as ours does. A whole reply is read
-  no further than 64 KB, as much as C holds of one (`DYN_PINGPPONG_CMD`): past that the
-  connection closes with the rest unread, as C's does after the first byte. Measured against
-  the C build: a silent server is let go after 1.03 s, a partial reply at once by C's FTP,
-  SMTP and IMAP, and a reply streamed without end after its first byte. A connection awaiting
-  its answer stays in the set past the set's cap, which C's never meets, up to twice the cap;
-  past that, and where there is no set or no memory to grow it, the answer is waited for in
-  place, blocking the multi as C does. A new connection that needs the room such a connection
-  holds under `CURLMOPT_MAX_TOTAL_CONNECTIONS` or the host limit waits for the answer where C
-  blocks for it: measured with a limit of 1 and a server answering `QUIT` half a second late,
-  C connects to the next host just after the answer, as ours does, but its multi is blocked
-  meanwhile. Pinned by
+  The same holds for the goodbye on a closing connection: POP3's and SMTP's `QUIT` and IMAP's
+  `LOGOUT` await a reply as C's do, but in the shutdown set, the other transfers going on
+  meanwhile; FTP's connection, as C's, says no goodbye. So an application driving the multi by
+  its socket callback may be told to watch a plain connection for input while it waits, and
+  hears its removal later, where C closes it before DONE ends. Both give up after a second
+  with nothing more of the answer, and within the shutdown's 2 s. What ends the wait differs:
+  C's SMTP and IMAP waits end at the first byte that can be read, which they leave unread
+  (their state machines fail without the transfer's state, `FAILED_INIT`), where ours read a
+  whole reply, IMAP's the tagged one after its `BYE`; C's POP3 reads a whole reply, as ours
+  does. A whole reply is read no further than 64 KB, as much as C holds of one
+  (`DYN_PINGPPONG_CMD`): past that the connection closes with the rest unread, as C's SMTP and
+  IMAP do after the first byte. Measured against the C build: a silent server is let go after
+  1.03 s, and a partial reply at once by C's SMTP and IMAP. A connection awaiting its answer
+  stays in the set past the set's cap, which C's never meets, up to twice the cap; past that,
+  and where there is no set or no memory to grow it, the answer is waited for in place,
+  blocking the multi as C does. A new connection that needs the room such a connection holds
+  under `CURLMOPT_MAX_TOTAL_CONNECTIONS` or the host limit waits for the answer where C's
+  disconnect blocks for it (`pop3_disconnect` and the others): C, too, connects to the next
+  host only after the answer, but its multi is blocked meanwhile. Pinned by
   `a_transfer_needing_room_waits_for_the_answer_to_quit`,
-  `an_endless_answer_to_quit_is_read_no_further_than_64_kb`
-  (`crates/curl-core/src/proto/ftp/tests.rs`),
+  `an_endless_answer_to_quit_is_read_no_further_than_64_kb`,
+  `quit_waits_a_second_for_its_answer`,
+  `quit_waits_for_an_answer_no_longer_than_a_second_of_silence` and
+  `quit_awaiting_its_answer_stalls_no_other_transfer`
+  (`crates/curl-core/src/proto/pop3/tests.rs`),
   `a_full_set_keeps_those_awaiting_an_answer_to_twice_its_cap`,
   `room_held_by_a_goodbye_awaiting_its_answer_is_waited_for`
-  (`crates/curl-core/src/multi/shutdown_tests.rs`), and
+  (`crates/curl-core/src/multi/shutdown_tests.rs`),
   `quit_waits_a_second_for_its_answer`
-  (`crates/curl-core/src/proto/pop3/tests.rs`,
-  `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs`),
+  (`crates/curl-core/src/proto/smtp/tests/over_the_wire.rs`),
   `logout_waits_for_its_tagged_answer_past_its_bye`
-  (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`),
-  `quit_waits_for_an_answer_no_longer_than_a_second_of_silence`
-  (`crates/curl-core/src/proto/ftp/tests.rs`), and by
+  (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`), and by
   `an_answer_awaited_in_done_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`,
   `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs` and
   `crates/curl-core/src/proto/ftp/tests.rs`), and by
-  `a_handshake_after_auth_stalls_no_other_transfer`,
-  `a_data_connection_s_handshake_stalls_no_other_transfer` and
-  `quit_awaiting_its_answer_stalls_no_other_transfer`
+  `a_handshake_after_auth_stalls_no_other_transfer` and
+  `a_data_connection_s_handshake_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/ftp/tests.rs`).
 
 - **A TELNET exchange leaves the multi's other transfers moving.** C runs the whole exchange
@@ -250,8 +248,8 @@ so: weaknesses kept because C has them.
   the shutdown waits for, the others going on meanwhile. The commands that follow and the
   result are C's. Measured 2026-11-01 with `curl -Z`, active `CCC` and a server whose
   close_notify comes a second after its answer, beside an HTTP server that answers in 0.3 s:
-  the HTTP transfer took 1.007 s on C's build, 0.303 s here, both downloads then sending `PWD`,
-  `EPSV`, `PASV`, `QUIT` and exiting 13. Pinned by `a_ccc_s_shutdown_stalls_no_other_transfer`
+  the HTTP transfer took 1.007 s on C's build, 0.303 s here, both downloads then sending the
+  same commands and exiting 13. Pinned by `a_ccc_s_shutdown_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/ftp/tests.rs`).
 
 ## Bodies C cannot send again

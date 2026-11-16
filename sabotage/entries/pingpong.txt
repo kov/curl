@@ -173,7 +173,8 @@ features: test-util
 
 === a goodbye's answer is read on without end
 file: crates/curl-core/src/proto/pingpong/drive.rs
-witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+witness: curl-core proto::pop3::tests::over_the_wire::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+features: test-util
 --- old
     (pp.read_for_reply() >= GOODBYE_READ_MAX).then_some(Goodbye::Done)
 --- new
@@ -181,7 +182,8 @@ witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_furth
 
 === a goodbye's answer is read without letting the others run
 file: crates/curl-core/src/proto/pingpong/drive.rs
-witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+witness: curl-core proto::pop3::tests::over_the_wire::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+features: test-util
 --- old
     for _ in 0..MAX_READS {
 --- new
@@ -189,7 +191,8 @@ witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_furth
 
 === a goodbye said reads its answer twice in one try
 file: crates/curl-core/src/conn/shutdown.rs
-witness: curl-core proto::ftp::tests::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+witness: curl-core proto::pop3::tests::over_the_wire::an_endless_answer_to_quit_is_read_no_further_than_64_kb
+features: test-util
 --- old
             true => self.answer_due.is_some(),
 --- new
@@ -218,3 +221,15 @@ witness: curl-core proto::pingpong::tests::a_login_without_tls_is_had_only_where
     if use_ssl == UseSsl::None || over_tls {
 --- new
     if use_ssl == UseSsl::None {
+
+=== a goodbye the socket took only part of is left unfinished
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_sent_in_parts_is_finished_and_answered
+features: test-util
+--- old
+    if pp.needs_flush() {
+        match carrier.send(cx, pp.unsent()) {
+--- new
+    if pp.needs_flush() {
+        return Goodbye::Done;
+        match carrier.send(cx, pp.unsent()) {

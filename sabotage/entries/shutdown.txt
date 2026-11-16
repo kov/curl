@@ -452,9 +452,10 @@ witness: curl-core multi::shutdown_tests::room_held_by_a_goodbye_awaiting_its_an
 --- new
             let goes = to.is_none_or
 
-=== an FTP transfer needing room closes the connection whose QUIT awaits its answer
+=== a transfer needing room closes the connection whose goodbye awaits its answer
 file: crates/curl-core/src/conn/shutdown.rs
-witness: curl-core proto::ftp::tests::a_transfer_needing_room_waits_for_the_answer_to_quit
+witness: curl-core proto::pop3::tests::over_the_wire::a_transfer_needing_room_waits_for_the_answer_to_quit
+features: test-util
 --- old
             let goes = !shutting.awaits()
                 && to.is_none_or
@@ -540,9 +541,58 @@ witness: curl-core multi::shutdown_tests::a_share_s_evicted_connection_waits_in_
 
 === a goodbye's answer is waited for past the shutdown's time
 file: crates/curl-core/src/conn/shutdown.rs
-witness: curl-core proto::ftp::tests::a_share_waits_for_a_trickling_answer_to_quit_no_longer_than_the_shutdown
-features: test-util debug-hooks
+witness: curl-core proto::pop3::tests::over_the_wire::a_share_waits_for_a_trickling_answer_to_quit_no_longer_than_the_shutdown
+features: test-util
 --- old
             if self.left_ms(now) < 0 || !self.awaits_answer(&mut cx) {
 --- new
             if !self.awaits_answer(&mut cx) {
+
+=== the socket closes before the goodbye's reply is read
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_waits_for_its_answer_before_the_socket_closes
+features: test-util
+--- old
+        if awaits {
+            return Tried::Waiting;
+        }
+--- new
+        if awaits {
+            self.answer_due = None;
+        }
+
+=== a multi's cleanup closes a connection whose goodbye still awaits its answer
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_waits_for_an_answer_no_longer_than_a_second_of_silence
+features: test-util
+--- old
+            if spent_ms >= limit_ms && answer.is_none() {
+--- new
+            if spent_ms >= limit_ms {
+
+=== a goodbye's answer is given up on at once, not after a second of silence
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_s_answer_is_awaited_through_a_silence_under_a_second
+features: test-util
+--- old
+            Goodbye::Awaited { moved: false } => (now < due).then_some(due),
+--- new
+            Goodbye::Awaited { moved: false } => None,
+
+=== a goodbye's answer is waited on for the shutdown's whole time
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_waits_for_an_answer_no_longer_than_a_second_of_silence
+features: test-util
+--- old
+            Goodbye::Awaited { moved: false } => (now < due).then_some(due),
+--- new
+            Goodbye::Awaited { moved: false } => Some(due.after(BLOCKING_POLL)),
+
+=== a goodbye's second of silence is counted from the goodbye, whatever comes of its answer
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_s_answer_in_parts_restarts_its_second_with_each
+features: test-util
+--- old
+            Goodbye::Awaited { moved: true } => Some(now.after(BLOCKING_POLL)),
+--- new
+            Goodbye::Awaited { moved: true } => (now < due).then_some(due),

@@ -418,3 +418,29 @@ features: test-util
         TransferState::Do(x) | TransferState::Doing(x) => (x, Some(Waiting::Doing)),
 --- new
         TransferState::Do(x) => (x, Some(Waiting::Doing)),
+
+=== a POP3 connection known dead says QUIT
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_transfer_out_of_time_says_no_quit
+features: test-util
+--- old
+        if dead || self.pp.needs_flush() {
+            return Goodbye::Done;
+        }
+        drive::goodbye(
+--- new
+        if self.pp.needs_flush() {
+            return Goodbye::Done;
+        }
+        drive::goodbye(
+
+=== POP3's QUIT awaiting its answer is not waited on beside other transfers
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::quit_awaiting_its_answer_stalls_no_other_transfer
+features: test-util
+--- old
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        drive::waits(&self.pp)
+--- new
+    pub(crate) fn goodbye_wants(&self) -> Events {
+        Events::NONE

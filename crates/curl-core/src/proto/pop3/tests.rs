@@ -270,6 +270,17 @@ mod over_the_wire {
     ) -> Ran {
         let mut e = Easy::new();
         e.set_libraries(libraries.clone());
+        running(m, e, url, components, set)
+    }
+
+    /// The same, made of `e`.
+    fn running(
+        m: &mut Multi,
+        mut e: Easy,
+        url: &str,
+        components: &[u8],
+        set: impl FnOnce(&mut Options),
+    ) -> Ran {
         let traced = crate::components::Components::new().unwrap();
         traced.configure(components);
         e.set_components(Some(traced));
@@ -1836,5 +1847,335 @@ mod over_the_wire {
         assert_eq!(ready, Ok(1));
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(talk.answered(), 6);
+    }
+
+    /// `pop3://u:p@127.0.0.<host>:PORT/1`.
+    fn message_at(host: u8) -> String {
+        format!("pop3://u:p@127.0.0.{host}:{PORT}/1")
+    }
+
+    /// A server that logs the user in in the clear, gives message 1, then
+    /// answers `QUIT` with `bye`, a reply each.
+    fn saying_bye(bye: &[&'static [u8]]) -> Conversation {
+        let mut replies = vec![GREETING, CAPA, OK, OK, MESSAGE];
+        replies.extend_from_slice(bye);
+        Conversation::replies(&replies, false).greeting()
+    }
+
+    /// The replies `in_the_clear` gives before the answer to `QUIT`: the
+    /// greeting, `CAPA`'s, `USER`'s, `PASS`'s and `RETR`'s.
+    const BEFORE_QUIT: usize = 5;
+
+    /// A network shared with the test, which counts its open sockets.
+    type Counted = Arc<Lock<FakeNet>>;
+
+    /// A multi over `net`, on `clock`, and the network, counted.
+    fn over(net: FakeNet, clock: &ManualClock) -> (Multi, Counted) {
+        let net = Arc::new(Lock::new(net));
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(crate::conn::io::SharedNet(net.clone())),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        (Multi::with_env(env).unwrap(), net)
+    }
+
+    /// `clocked`'s multi and clock, and its network, counted.
+    fn counted(conversations: &[&Conversation]) -> (Multi, Counted, ManualClock) {
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
+        for c in conversations {
+            net = net.with_conversation(at, (*c).clone());
+        }
+        let (m, net) = over(net, &clock);
+        (m, net, clock)
+    }
+
+    /// The sockets open on `net`.
+    fn open(net: &Counted) -> usize {
+        net.lock().unwrap().open_sockets()
+    }
+
+    /// The `QUIT` the connection says as it closes waits for its answer
+    /// before the socket closes, the answer coming only after the `QUIT`
+    /// was sent and found nothing: a socket closed with a reply unread, or
+    /// before it comes, is reset.
+    #[test]
+    fn quit_waits_for_its_answer_before_the_socket_closes() {
+        let talk = saying_bye(&[b"+OK bye\r\n"]).held();
+        talk.allow(BEFORE_QUIT);
+        let (mut m, net, _) = counted(&[&talk]);
+        let ran = transfer(&mut m, &plain(), &message_at(1), |o| {
+            o.limits.reuse.forbid = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(open(&net), 1, "the socket stays open for the answer");
+        talk.allow(BEFORE_QUIT + 1);
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(talk.answered(), BEFORE_QUIT + 1);
+        assert_eq!(open(&net), 0, "closed once answered");
+    }
+
+    /// A `QUIT` whose answer never comes is waited on for a second, even
+    /// by a multi's cleanup that gives its shutdowns no time: C waits
+    /// inside its disconnect, whatever the cleanup gives the layers after
+    /// it, and gives up on a poll of a second that found nothing
+    /// (`pop3_block_statemach`, `Curl_pp_statemach` disconnecting); the
+    /// connection then finishes its shutdown.
+    #[test]
+    fn quit_waits_for_an_answer_no_longer_than_a_second_of_silence() {
+        use crate::time::Clock as _;
+        let talk = in_the_clear();
+        let (mut m, net, clock) = counted(&[&talk]);
+        let components = crate::components::Components::new().unwrap();
+        components.set(
+            crate::components::Component::Multi,
+            crate::components::Level::Info,
+        );
+        let internal = Drawn::default();
+        m.trace_internally_to(components, Handler::text(internal.clone()).unwrap());
+        let ran = transfer(&mut m, &plain(), &message_at(1), |_| {});
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let released = clock.now();
+        drop(m);
+        assert_eq!(open(&net), 0);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        // A second, counted from the `QUIT`.
+        assert_eq!(
+            clock.now().since(released),
+            std::time::Duration::from_secs(1)
+        );
+        // The cleanup waits for the answer before it ends, and the
+        // connection then finishes its shutdown, as C's disconnect blocks
+        // inside the pass.
+        let said = String::from_utf8(internal.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            said.contains("[SHUTDOWN] shutdown finished cleanly")
+                && !said.contains("force closing"),
+            "{said}"
+        );
+    }
+
+    /// An answer to `QUIT` that goes on without end, line after line, is
+    /// read ten reads a pass, as C's `maxloops` lets the others run, and
+    /// no more than 64 KB of it in all (`DYN_PINGPPONG_CMD`): then the
+    /// connection closes with the rest unread. Here the clock stands
+    /// still, so no time limit ends it.
+    #[test]
+    fn an_endless_answer_to_quit_is_read_no_further_than_64_kb() {
+        use crate::proto::pingpong::{MAX_READS, READ_SIZE};
+        use crate::time::Clock as _;
+        // Lines none of which ends a POP3 reply.
+        let talk = saying_bye(&[b"going\r\n"])
+            .endless(std::time::Duration::ZERO)
+            .endless_lines(b"still going\r\n");
+        let (mut m, net, clock) = counted(&[&talk]);
+        let ran = transfer(&mut m, &plain(), &message_at(1), |o| {
+            o.limits.reuse.forbid = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let at = clock.now();
+        let first = talk.endless_reads();
+        assert!(first <= MAX_READS as usize, "{first} reads in one pass");
+        assert_eq!(open(&net), 1, "the answer is still read on");
+        for _ in 0..100 {
+            if open(&net) == 0 {
+                break;
+            }
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert_eq!(open(&net), 0, "let go unanswered");
+        let reads = talk.endless_reads();
+        // 64 KB in reads of at most `READ_SIZE`, the last one past it.
+        let least = (64 * 1024usize).div_ceil(READ_SIZE);
+        assert!(
+            (least..=least + 1).contains(&reads),
+            "{reads} reads of the endless answer"
+        );
+        assert_eq!(clock.now(), at, "no time limit ended it");
+    }
+
+    /// A share's last connection, closed as the share goes, waits for the
+    /// answer to its `QUIT` no longer than the shutdown's time, however
+    /// long the answer keeps coming: here a line each tenth of a second,
+    /// which never leaves a second of silence and would take 7 s to reach
+    /// 64 KB.
+    #[test]
+    fn a_share_waits_for_a_trickling_answer_to_quit_no_longer_than_the_shutdown() {
+        use crate::share::{Kind, Share};
+        use crate::time::Clock as _;
+        let talk = saying_bye(&[b"going\r\n"])
+            .endless(std::time::Duration::from_millis(100))
+            .endless_lines(b"still going\r\n");
+        let (mut m, net, clock) = counted(&[&talk]);
+        let share = Share::with_net(Box::new(crate::conn::io::SharedNet(net.clone()))).unwrap();
+        share.keep(Kind::Connections).unwrap();
+        let mut e = Easy::new();
+        e.set_libraries(plain());
+        e.set_share(Some(share.clone())).unwrap();
+        let ran = running(&mut m, e, &message_at(1), b"", |_| {});
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        drop(m);
+        assert_eq!(open(&net), 1, "kept by the share");
+        let at = clock.now();
+        drop(share);
+        assert_eq!(open(&net), 0);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        let reads = talk.endless_reads();
+        assert!((1..30).contains(&reads), "{reads} reads of the answer");
+        // The 2 s, and the last pass of ten reads that crossed it.
+        let spent = clock.now().since(at);
+        assert!(
+            spent <= std::time::Duration::from_secs(3),
+            "waited {spent:?}"
+        );
+    }
+
+    /// A transfer that needs room under the total limit waits while the
+    /// connection it would close for room awaits the answer to its `QUIT`,
+    /// and connects once the answer came and that connection closed: the
+    /// order on the wire is C's, whose disconnect blocks the multi for the
+    /// answer before the new connection is made.
+    #[test]
+    fn a_transfer_needing_room_waits_for_the_answer_to_quit() {
+        let first = saying_bye(&[b"+OK bye\r\n"]).held();
+        first.allow(BEFORE_QUIT);
+        let second = in_the_clear();
+        let clock = ManualClock::new().unwrap();
+        let mut net = FakeNet::new(clock.clone());
+        for (host, talk) in [(1, &first), (2, &second)] {
+            let at = SocketAddr::from(([127, 0, 0, host], PORT));
+            net = net
+                .with_peer(at, Net::Accepts)
+                .with_conversation(at, talk.clone());
+        }
+        let (mut m, net) = over(net, &clock);
+        m.conn_limits_mut().max_total = std::num::NonZeroU32::new(1);
+        let ran = transfer(&mut m, &plain(), &message_at(1), |_| {});
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert_eq!(open(&net), 1, "the first's connection kept");
+        let body = Arc::new(Lock::new(Vec::new()));
+        let (b, _) = added(&mut m, &plain(), b"", Body(body.clone()), |o| {
+            o.set_url(Some(message_at(2).as_bytes())).unwrap();
+        });
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert!(first.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        assert_eq!(first.answered(), BEFORE_QUIT, "QUIT not answered yet");
+        assert_eq!(second.received(), b"", "the second host waits");
+        assert_eq!(open(&net), 1);
+        first.allow(BEFORE_QUIT + 1);
+        let result = drive_to_completion(&mut m, b, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()));
+        assert_eq!(*body.lock().unwrap(), b"hello\r\n.dot\r\n");
+        assert_eq!(first.answered(), BEFORE_QUIT + 1, "QUIT answered");
+        assert!(!second.received().is_empty());
+    }
+
+    /// A `QUIT` the socket takes only part of is sent whole before its
+    /// answer is read, as C flushes it in its wait (`Curl_pp_statemach`).
+    #[test]
+    fn quit_sent_in_parts_is_finished_and_answered() {
+        let talk = saying_bye(&[b"+OK bye\r\n"]).taking(std::num::NonZeroUsize::new(3).unwrap());
+        let mut m = serving(&[&talk]);
+        let ran = transfer(&mut m, &plain(), &message_at(1), |_| {});
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        drop(m);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        // Its answer read too: every reply was.
+        assert_eq!(talk.answered(), BEFORE_QUIT + 1);
+    }
+
+    /// The answer to `QUIT` is awaited without stalling the multi's other
+    /// transfers, where C blocks for it in its disconnect (DIVERGENCE.md):
+    /// the connection waits in the multi's shutdown set, its socket open
+    /// and waited on.
+    #[test]
+    fn quit_awaiting_its_answer_stalls_no_other_transfer() {
+        let first = saying_bye(&[b"+OK bye\r\n"]).held();
+        first.allow(BEFORE_QUIT);
+        let second = in_the_clear();
+        let (mut m, net, _) = counted(&[&first, &second]);
+        let ran = transfer(&mut m, &plain(), &message_at(1), |o| {
+            o.limits.reuse.forbid = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert!(first.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        assert_eq!(open(&net), 1, "the first connection awaits");
+        let ran = transfer(&mut m, &plain(), &message_at(1), |_| {});
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert_eq!(ran.body, b"hello\r\n.dot\r\n");
+        // The second's connection kept, the first's still waiting.
+        assert_eq!(open(&net), 2);
+        assert_eq!(first.answered(), BEFORE_QUIT);
+        first.allow(BEFORE_QUIT + 1);
+        // Its socket is waited on for the answer.
+        let max = std::time::Duration::from_secs(1);
+        let ready = m.wait(&mut [], max, crate::multi::WaitMode::Wait, &mut NoEvents);
+        assert_eq!(ready, Ok(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(open(&net), 1, "the first closed once answered");
+        assert_eq!(first.answered(), BEFORE_QUIT + 1);
+    }
+
+    /// The answer a `QUIT` awaits is waited on through a silence shorter
+    /// than a second, as C's blocking poll of a second waits for it
+    /// (`Curl_pp_statemach`): here a pass 0.5 s after the `QUIT` finds
+    /// nothing and the connection stays, and the answer, come at 0.8 s,
+    /// is read whole before it closes.
+    #[test]
+    fn quit_s_answer_is_awaited_through_a_silence_under_a_second() {
+        let talk = saying_bye(&[b"+OK bye\r\n"]).held();
+        talk.allow(BEFORE_QUIT);
+        let (mut m, net, clock) = counted(&[&talk]);
+        let ran = transfer(&mut m, &plain(), &message_at(1), |o| {
+            o.limits.reuse.forbid = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        clock.advance(std::time::Duration::from_millis(500));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(open(&net), 1, "still awaited after a silent pass");
+        clock.advance(std::time::Duration::from_millis(300));
+        talk.allow(BEFORE_QUIT + 1);
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(open(&net), 0, "closed once answered");
+        assert_eq!(talk.answered(), BEFORE_QUIT + 1);
+    }
+
+    /// Each part of the answer a `QUIT` awaits gives it another second, as
+    /// each of C's polls that finds some lasts a second again
+    /// (`Curl_pp_statemach`): here an answer whose first line, which ends
+    /// no reply, comes 0.8 s after the `QUIT`, is still awaited 1.6 s
+    /// after it, and read whole once its last line comes.
+    #[test]
+    fn quit_s_answer_in_parts_restarts_its_second_with_each() {
+        let talk = saying_bye(&[b"wait\r\n", b"+OK bye\r\n"])
+            .volunteering(1)
+            .held();
+        talk.allow(BEFORE_QUIT);
+        let (mut m, net, clock) = counted(&[&talk]);
+        let ran = transfer(&mut m, &plain(), &message_at(1), |o| {
+            o.limits.reuse.forbid = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert!(talk.received().ends_with(b"RETR 1\r\nQUIT\r\n"));
+        assert_eq!(open(&net), 1, "the connection awaits");
+        let step = std::time::Duration::from_millis(800);
+        clock.advance(step);
+        talk.allow(BEFORE_QUIT + 1);
+        m.perform(&mut NoEvents).unwrap();
+        clock.advance(step);
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(open(&net), 1, "still awaited after its first part");
+        talk.allow(BEFORE_QUIT + 2);
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(open(&net), 0, "closed once answered");
+        assert_eq!(talk.answered(), BEFORE_QUIT + 2);
     }
 }

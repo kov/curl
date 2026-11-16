@@ -343,10 +343,6 @@ fn upload_server() -> (u16, JoinHandle<Stored>) {
                     stored = Some((command, got));
                     "226 stored\r\n".to_owned()
                 }
-                "QUIT" => {
-                    out.write_all(b"221 bye\r\n").unwrap();
-                    break;
-                }
                 _ => "500 what\r\n".to_owned(),
             };
             out.write_all(answer.as_bytes()).unwrap();

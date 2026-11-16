@@ -2620,32 +2620,31 @@ impl curl_core::handler::TextSink for Internal {
 struct Quit {
     /// The server was sent `QUIT`.
     said: bool,
-    /// Its answer was read from the socket.
+    /// Its answer was read from the socket, as every command's before it
+    /// was.
     answered: bool,
     /// The set could not take the connection in for want of memory.
     not_added: bool,
 }
 
-/// The FTP server's answers to a request for a file's size alone, and to
-/// the `QUIT` after it.
-const QUIT_REPLIES: [&[u8]; 8] = [
-    b"220 hi\r\n",
-    b"331 password?\r\n",
-    b"230 in\r\n",
-    b"257 \"/\" is it\r\n",
-    b"200 binary\r\n",
-    b"213 5\r\n",
-    b"350 restarting\r\n",
-    b"221 bye\r\n",
+/// The POP3 server's answers to a login and a message deleted, and to the
+/// `QUIT` after it.
+const QUIT_REPLIES: [&[u8]; 6] = [
+    b"+OK ready\r\n",
+    b"+OK\r\nUSER\r\n.\r\n",
+    b"+OK\r\n",
+    b"+OK\r\n",
+    b"+OK deleted\r\n",
+    b"+OK bye\r\n",
 ];
 
-/// An FTP request for a file's size alone over a connection closed once
-/// it is done, so that it says `QUIT`, whose answer the server gives a
-/// poll later; run from a new multi to its cleanup.
+/// A POP3 message deleted over a connection closed once it is done, so
+/// that it says `QUIT`, whose answer the server gives a poll later; run
+/// from a new multi to its cleanup.
 fn quit_scenario() -> Quit {
     let (clock, net, talk, traced, components) = track::untracked(|| {
         let clock = ManualClock::new().expect("a clock");
-        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 8021));
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 8110));
         let talk = Conversation::replies(&QUIT_REPLIES, false)
             .per_send()
             .greeting()
@@ -2667,9 +2666,12 @@ fn quit_scenario() -> Quit {
         let sent = talk.received();
         let text = traced.0.lock().unwrap();
         let needle = b"adding failed";
+        // The greeting, and a reply to each command, the `QUIT` among
+        // them: a refusal may have cut the commands before it short.
+        let commands = sent.windows(2).filter(|w| w == b"\r\n").count();
         Quit {
             said: sent.ends_with(b"QUIT\r\n"),
-            answered: talk.answered() == QUIT_REPLIES.len(),
+            answered: talk.answered() == commands + 1,
             not_added: text.windows(needle.len()).any(|w| w == needle),
         }
     })
@@ -2693,8 +2695,12 @@ fn quit_run(
     m.trace_internally_to(components, sink);
     let mut easy = Easy::new();
     let o = easy.options_mut();
-    o.set_url(Some(b"ftp://127.0.0.1:8021/f")).map_err(|_| ())?;
-    o.method = curl_core::options::Method::Head;
+    o.set_url(Some(b"pop3://u:p@127.0.0.1:8110/1"))
+        .map_err(|_| ())?;
+    let mut dele = Vec::new();
+    dele.try_reserve(4).map_err(|_| ())?;
+    dele.extend_from_slice(b"DELE");
+    o.http.custom.make_mut().map_err(|_| ())?.method = Some(dele);
     o.limits.reuse.forbid = true;
     let id = m
         .add(try_box(easy).map_err(|_| ())?, (), &mut NoEvents)

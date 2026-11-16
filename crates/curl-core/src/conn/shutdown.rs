@@ -1,6 +1,6 @@
 //! Connections shutting down (`lib/cshutdn.c`): those whose layers say
 //! goodbye to the peer over more than one pass, as TLS's close_notify may,
-//! or whose protocol's goodbye awaits an answer, as FTP's `QUIT` does.
+//! or whose protocol's goodbye awaits an answer, as POP3's `QUIT` does.
 //! The multi's `ShutdownSet` is the one owner of each until it is closed,
 //! whichever pool it left, a share's included: the releasing transfer's
 //! multi takes it (conncache.c:242).
@@ -81,7 +81,7 @@ pub(crate) struct Shutting {
     /// (`bits.shutdown_handler`): asked once, whatever comes after.
     said: bool,
     /// Its protocol's goodbye awaits an answer, which C's blocking
-    /// disconnect waits for before the layers shut down (`ftp_quit`):
+    /// disconnect waits for before the layers shut down (`pop3_disconnect`):
     /// the shutdown waits for it, in its own time, until this instant
     /// unless more of it comes (`BLOCKING_POLL`).
     answer_due: Option<Instant>,
@@ -487,8 +487,8 @@ pub(crate) struct ShutdownSet {
 /// How many times its cap (`max_shutdowns`) a set may hold, for the
 /// connections in it whose protocol's goodbye awaits an answer. C reads
 /// that answer before a connection joins its set, blocking the multi
-/// (`ftp_quit` and the others, in the first `Curl_cshutdn_try_once`), so
-/// its set never holds one; here such a connection waits in the set, and
+/// (`pop3_disconnect` and the others, in the first
+/// `Curl_cshutdn_try_once`), so its set never holds one; here such a connection waits in the set, and
 /// C's cap closes the oldest that awaits nothing instead. Past this
 /// bound, the oldest is closed after all, its answer read first by
 /// blocking as C does: a server that holds its answers back can make the

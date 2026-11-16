@@ -201,8 +201,8 @@ fn recv<H: Host>(
 /// Say a goodbye, `command` after `prefix` if one is given, as a
 /// connection shuts down, and read on its answer as far as the connection
 /// lets that now (`goodbye_answer`). A command that cannot be built or
-/// sent ends it, as a failed `Curl_pp_sendf` ends C's `ftp_quit` and the
-/// others' disconnects.
+/// sent ends it, as a failed `Curl_pp_sendf` ends C's `pop3_perform_quit`
+/// and the others' disconnects.
 pub(crate) fn goodbye<E: Ends>(
     cx: &mut dyn crate::conn::layer::LayerCx,
     pp: &mut Pingpong,
@@ -225,7 +225,7 @@ pub(crate) fn goodbye<E: Ends>(
 
 /// Send the rest of a goodbye and read on its answer as a connection
 /// shuts down, as far as it lets that now (C's blocking
-/// `Curl_pp_statemach` in `ftp_quit` and the others' disconnects): done
+/// `Curl_pp_statemach` in `pop3_disconnect` and the others'): done
 /// once a whole reply is read, or the connection fails or closes, or
 /// [`GOODBYE_READ_MAX`] bytes of it came with no end; awaited while it
 /// would block, or after [`MAX_READS`] reads in one call, as C's

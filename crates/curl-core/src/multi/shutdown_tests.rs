@@ -1686,7 +1686,7 @@ fn answering(peers: &[(u16, &[Conversation])]) -> (Multi, Wire, ManualClock) {
 }
 
 /// A `tcp:` transfer to `port` whose protocol says `BYE` as its
-/// connection shuts down and awaits a line in answer, as FTP's `QUIT`
+/// connection shuts down and awaits a line in answer, as POP3's `QUIT`
 /// does; its connection closed once it is done.
 fn awaiting_goodbye(port: u16) -> Box<Easy> {
     use crate::options::script::{Piece, Script};

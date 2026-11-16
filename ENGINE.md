@@ -3831,12 +3831,12 @@ HTTP/3 proxy.
 **A protocol's goodbye.** A connection a protocol keeps state on (`Speaks::Line`) says the
 protocol's goodbye as its shutdown starts, once (`Shutting::said`, C's
 `bits.shutdown_handler`), before its session and layers say theirs, which go on try by try
-(`cshutdn_run_once`). It is sent as the connection takes it then. FTP's, POP3's and SMTP's
-`QUIT` and IMAP's `LOGOUT` then await a reply before the layers start (`Shutting::answer_due`,
-`line::Goodbye`; C's disconnects block for it): FTP's any reply, IMAP's its tagged one. FTP's
-first is often the answer to an `ABOR` nothing read, and a socket closed with it unread, or
-before it comes, is reset, which on Windows drops the `QUIT` the server had not read yet. The
-wait polls the socket for input, holds the connection in the set, and gives up once a second
+(`cshutdn_run_once`). It is sent as the connection takes it then. POP3's and SMTP's `QUIT`
+and IMAP's `LOGOUT` then await a reply before the layers start (`Shutting::answer_due`,
+`line::Goodbye`; C's disconnects block for it), IMAP's its tagged one; a socket closed with
+a reply unread, or before it comes, is reset. FTP says no goodbye (`ftp_disconnect`): its
+control connection closes with whatever the server still says unread, an `ABOR`'s answer
+among it. The wait polls the socket for input, holds the connection in the set, and gives up once a second
 passes with nothing more of it (`drive::BLOCKING_POLL`, C's `Curl_pp_statemach` disconnecting) or
 the shutdown's 2 s are spent; a multi's cleanup waits for it whatever time that gives the
 rest, as C's blocks inside the disconnect. Each try reads at most `MAX_READS` (C's

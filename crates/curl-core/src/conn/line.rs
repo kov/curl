@@ -56,10 +56,9 @@ impl LineConn {
 
     /// Say goodbye to the peer as the connection shuts down, asked once
     /// whatever the shutdown does after (`cshutdn_run_conn_handler`):
-    /// sent as the connection takes it now. FTP's `QUIT`, POP3's and
-    /// SMTP's, and IMAP's `LOGOUT` await an answer, as C's blocking waits
-    /// do (`ftp_quit`, `pop3_block_statemach` and the others):
-    /// [`Goodbye::Awaited`] while it has not come, which
+    /// sent as the connection takes it now. POP3's and SMTP's `QUIT`, and
+    /// IMAP's `LOGOUT` await an answer, as C's blocking waits do
+    /// (`pop3_block_statemach` and the others): [`Goodbye::Awaited`] while it has not come, which
     /// [`goodbye_answer`](Self::goodbye_answer) reads on. A connection
     /// `dead`, whose state no one knows (a transfer on it aborted), is
     /// told so and says nothing (`dead_connection`). One that blocks
@@ -72,7 +71,9 @@ impl LineConn {
         dead: bool,
     ) -> Goodbye {
         match *self {
-            LineConn::Ftp(ref mut p) => return p.goodbye(cx, below, dead),
+            // FTP closes without a word: C's disconnect says no `QUIT`
+            // (`ftp_disconnect`).
+            LineConn::Ftp(_) => {}
             LineConn::Pop3(ref mut p) => return p.goodbye(cx, below, dead),
             LineConn::Imap(ref mut p) => return p.goodbye(cx, below, dead),
             LineConn::Smtp(ref mut p) => return p.goodbye(cx, below, dead),
@@ -93,7 +94,6 @@ impl LineConn {
     /// or closed.
     pub(crate) fn goodbye_answer(&mut self, cx: &mut dyn LayerCx, below: Carrier<'_>) -> Goodbye {
         match *self {
-            LineConn::Ftp(ref mut p) => p.goodbye_answer(cx, below),
             LineConn::Pop3(ref mut p) => p.goodbye_answer(cx, below),
             LineConn::Imap(ref mut p) => p.goodbye_answer(cx, below),
             LineConn::Smtp(ref mut p) => p.goodbye_answer(cx, below),
@@ -107,7 +107,6 @@ impl LineConn {
     /// the rest of it, or the answer.
     pub(crate) fn goodbye_wants(&self) -> super::io::Events {
         match *self {
-            LineConn::Ftp(ref p) => p.goodbye_wants(),
             LineConn::Pop3(ref p) => p.goodbye_wants(),
             LineConn::Imap(ref p) => p.goodbye_wants(),
             LineConn::Smtp(ref p) => p.goodbye_wants(),

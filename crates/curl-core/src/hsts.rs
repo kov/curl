@@ -255,7 +255,11 @@ impl Hsts {
     /// with the longest name, at `now`; those expired go as they are
     /// passed (`hsts_check`).
     fn check(&mut self, host: &[u8], subdomain: bool, now: i64) -> Option<usize> {
-        if host.is_empty() || host.len() > MAX_HOST_LEN {
+        // No length limit: that is for names from a file or a callback,
+        // which are refused as they are read. A live host of any length
+        // is looked up, so a long one under an entry that includes
+        // subdomains is still upgraded.
+        if host.is_empty() {
             return None;
         }
         let host = undotted(host);
@@ -686,6 +690,25 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// A live host longer than a file's or a callback's name may be is
+    /// still looked up: under an entry that includes subdomains it goes
+    /// over HTTPS, and its own header updates its one entry rather than
+    /// adding another (`hsts_check`, upstream 9f8e42c7bb).
+    #[test]
+    fn a_long_host_is_looked_up() {
+        let mut long = vec![b'a'; MAX_HOST_LEN + 10];
+        long.extend_from_slice(b".example.com");
+        let mut h = Hsts::default();
+        h.parse(b"example.com", b"max-age=1000; includeSubDomains", NOW)
+            .unwrap();
+        assert!(h.applies(&long, NOW));
+        h.parse(&long, b"max-age=1000", NOW).unwrap();
+        h.parse(&long, b"max-age=2000", NOW).unwrap();
+        assert_eq!(h.entries.len(), 2);
+        h.parse(&long, b"max-age=0", NOW).unwrap();
+        assert_eq!(names(&h).len(), 1);
     }
 
     /// What the application's reader gives is kept (`hsts_pull`).

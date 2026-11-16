@@ -134,3 +134,13 @@ features: debug-hooks
 --- new
         Kind::Psl,
     ] {
+
+=== a live host longer than a file name may be is never looked up
+file: crates/curl-core/src/hsts.rs
+witness: curl-core hsts::tests::a_long_host_is_looked_up
+--- old
+        // subdomains is still upgraded.
+        if host.is_empty() {
+--- new
+        // subdomains is still upgraded.
+        if host.is_empty() || host.len() > MAX_HOST_LEN {

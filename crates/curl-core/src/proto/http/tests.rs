@@ -240,26 +240,39 @@ fn a_get_is_sent_and_its_response_delivered() {
     assert_eq!((sizes.download(), sizes.download_expected()), (6, Some(6)));
 }
 
-/// A line ending the head is whatever runs from a CR or LF to the LF:
-/// stray bytes before it are delivered with it, as C delivers them, and
-/// the body follows.
+/// A line starting with CR or LF ends the head only as exactly CR LF or
+/// LF: one with bytes after its CR, a NUL among them or not, fails the
+/// transfer before it is delivered (`http_rw_hd`, tests 2111).
 #[test]
-fn a_long_line_ending_the_head_is_delivered_whole() {
+fn a_line_ending_the_head_is_only_crlf_or_lf() {
+    for reply in [
+        &b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\rX\r\nabc"[..],
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\0\r\nabc",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\r\nabc",
+    ] {
+        let ran = run("/", reply, false, |_| {});
+        assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply), "{reply:?}");
+        assert_eq!(
+            ran.seen.of("header"),
+            [&b"HTTP/1.1 200 OK\r\n"[..], b"Content-Length: 3\r\n"],
+            "{reply:?}"
+        );
+        assert!(
+            ran.seen
+                .text()
+                .iter()
+                .any(|l| l == "Invalid header termination\n"),
+            "{reply:?}"
+        );
+        assert!(ran.seen.body().is_empty(), "{reply:?}");
+    }
     let ran = run(
         "/",
-        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\rX\r\nabc",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\n\nabc",
         false,
         |_| {},
     );
     assert_eq!(ran.result, Ok(()));
-    assert_eq!(
-        ran.seen.of("header"),
-        [
-            &b"HTTP/1.1 200 OK\r\n"[..],
-            b"Content-Length: 3\r\n",
-            b"\rX\r\n"
-        ]
-    );
     assert_eq!(ran.seen.body(), b"abc");
 }
 

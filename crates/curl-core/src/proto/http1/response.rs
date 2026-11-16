@@ -111,6 +111,9 @@ pub(crate) enum HeadError {
         max: u64,
     },
     BadCode,
+    /// A line taken for the end of the head, starting with CR or LF, that
+    /// is not exactly CR LF or LF.
+    BadTerminator,
     /// A 101 answering a request not sent as HTTP/1.1.
     SwitchedNotHttp11,
     /// What a header says of the body is refused.
@@ -126,6 +129,7 @@ impl HeadError {
             | HeadError::BadRtspStatus
             | HeadError::VersionMismatch { .. }
             | HeadError::SwitchedNotHttp11
+            | HeadError::BadTerminator
             | HeadError::BadLine(_) => ErrorKind::WeirdServerReply,
             HeadError::Http09NotAllowed
             | HeadError::BadSubversion
@@ -170,6 +174,7 @@ impl fmt::Display for HeadError {
             HeadError::LineTooLong | HeadError::BadRtspStatus | HeadError::OutOfMemory => Ok(()),
             HeadError::Framing(ref e) => e.fmt(f),
             HeadError::InvalidStatusLine => f.write_str("Invalid status line"),
+            HeadError::BadTerminator => f.write_str("Invalid header termination"),
             HeadError::Http09NotAllowed => f.write_str("Received HTTP/0.9 when not allowed"),
             HeadError::BadSubversion => f.write_str("Unsupported HTTP/1 subversion in response"),
             HeadError::UnknownVersion => f.write_str("Unsupported HTTP version in response"),
@@ -544,6 +549,12 @@ impl HeadParser {
         let mut first = Ok(());
         let mut bad_code = false;
         let mut switched_late = false;
+        // A line starting with CR or LF ends the head only as exactly
+        // CR LF or LF: anything after the CR is refused before the line
+        // goes anywhere (`http_rw_hd`).
+        if is_newline(self.line[0]) && self.line != b"\n" && self.line != b"\r\n" {
+            return Err(HeadError::BadTerminator);
+        }
         let kind = if is_newline(self.line[0]) && self.status.is_none() {
             // A head ending before any status line, a blank first line
             // an alias that is empty took for one: its code is C's none,

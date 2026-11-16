@@ -318,19 +318,13 @@ witness: curl-core proto::http::tests::the_report_s_url_has_no_credentials
 --- new
         self.whole_into(opts, true, None, &mut out)?;
 
-=== the line ending a head is assumed to fit in two bytes
-file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::a_long_line_ending_the_head_is_delivered_whole
+=== a line starting with CR is taken for the end of the head whatever follows the CR
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http::tests::a_line_ending_the_head_is_only_crlf_or_lf
 --- old
-                    None => {
-                        long = copied(line.bytes)?;
-                        &long
-                    }
+        if is_newline(self.line[0]) && self.line != b"\n" && self.line != b"\r\n" {
 --- new
-                    None => {
-                        long = copied(&line.bytes[..2])?;
-                        &long
-                    }
+        if is_newline(self.line[0]) && self.line.len() < 2 && self.line != b"\n" {
 
 === a request completes with its last output held
 file: crates/curl-core/src/multi/state.rs

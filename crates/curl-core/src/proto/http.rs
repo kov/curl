@@ -2830,20 +2830,13 @@ impl Request {
                 // What the body comes to is known before the blank line is
                 // delivered (`http_size`, then the last header), so the
                 // header handler reads it there.
-                // The line borrows the parser `body_start` reads, so it is
-                // copied: CRLF on the stack, anything longer a server sent
-                // (stray CRs before the LF, which C delivers whole) not.
-                let mut short = [0u8; 2];
-                let long;
-                let blank: &[u8] = match short.get_mut(..line.bytes.len()) {
-                    Some(short) => {
-                        short.copy_from_slice(line.bytes);
-                        short
-                    }
-                    None => {
-                        long = copied(line.bytes)?;
-                        &long
-                    }
+                // The line borrows the parser `body_start` reads: it is one
+                // of the two the parser lets end a head
+                // (`HeadError::BadTerminator`), named here without it.
+                let blank: &'static [u8] = match line.bytes {
+                    b"\r\n" => b"\r\n",
+                    b"\n" => b"\n",
+                    other => unreachable!("a head ends in CR LF or LF, not {other:?}"),
                 };
                 // A 101 to an upgrade switches the connection, its head
                 // written first (`http_on_101_upgrade`): to HTTP/2, which

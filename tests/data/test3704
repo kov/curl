@@ -10,7 +10,6 @@ followlocation
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data>
 HTTP/1.1 302 Moved
@@ -36,7 +35,6 @@ hello
 </datacheck>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -53,7 +51,6 @@ http://ftp.%TESTNUMBER:21/%TESTNUMBER -x %HOSTIP:%HTTPPORT -u user:secret -H "Co
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET http://ftp.%TESTNUMBER:21/%TESTNUMBER HTTP/1.1

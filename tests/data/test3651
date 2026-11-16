@@ -7,11 +7,9 @@ post-quote
 </keywords>
 </info>
 
-# Server-side
 <reply>
 </reply>
 
-# Client-side
 <client>
 <server>
 sftp
@@ -31,7 +29,6 @@ for ssh test
 </file>
 </client>
 
-# Verify data after the test has been "shot"
 # The second URL names a directory: it opens, but its read fails. On the
 # reused connection that is a retry on a fresh one, which fails the same,
 # its post-quote skipped both times.

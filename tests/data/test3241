@@ -6,7 +6,6 @@ HSTS
 </keywords>
 </info>
 
-# Client-side
 <client>
 <name>
 HSTS cache file with a line one byte too long for the line buffer

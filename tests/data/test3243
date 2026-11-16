@@ -18,7 +18,6 @@ hello
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http

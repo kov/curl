@@ -8,11 +8,9 @@ connect to non-listen
 progress
 </keywords>
 </info>
-# Server-side
 <reply>
 </reply>
 
-# Client-side
 <client>
 <features>
 http
@@ -28,7 +26,6 @@ no progress meter for a proxy refusing the connect
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <errorcode>
 7

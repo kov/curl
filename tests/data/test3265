@@ -8,7 +8,6 @@ cookies
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers">
 HTTP/1.1 200 OK
@@ -19,7 +18,6 @@ Set-Cookie: here=1
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -35,7 +33,6 @@ HTTP GET with raw and lowercase-encoded bytes in the path and query
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 # The path is encoded, its lowercase hex made uppercase; the query is sent
 # as it was given.
 <verify>

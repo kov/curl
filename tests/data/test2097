@@ -7,10 +7,9 @@ HTTP GET
 HTTP Negotiate auth (stub krb5)
 </keywords>
 </info>
-# Server-side
 <reply>
-<!-- The token is refused: the server asks to continue, which the stub
-     cannot for a Kerberos context, so the 401 is the response -->
+# The token is refused: the server asks to continue, which the stub
+# cannot for a Kerberos context, so the 401 is the response
 <data1>
 HTTP/1.1 401 Authorization Required
 Server: Microsoft-IIS/7.0
@@ -29,7 +28,6 @@ Who are you, sir?
 </datacheck>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -49,7 +47,6 @@ CURL_STUB_GSS_CREDS="KRB5_Alice"
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

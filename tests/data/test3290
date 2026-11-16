@@ -8,7 +8,6 @@ parallel
 </keywords>
 </info>
 
-# Client-side
 <client>
 <server>
 file
@@ -24,7 +23,6 @@ file://localhost%FILE_PWD/%LOGDIR/nonexistent%TESTNUMBER -Z --test-event -w "%{h
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <stdout>
 000

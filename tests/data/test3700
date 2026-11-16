@@ -8,11 +8,9 @@ CONNECT-UDP
 </keywords>
 </info>
 
-# Server-side
 <reply>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -29,7 +27,6 @@ tftp
 </features>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET http://%HOSTIP:%HTTPPORT/.well-known/masque/udp/%HOSTIP/%NOLISTENPORT/ HTTP/1.1

@@ -8,7 +8,6 @@ followlocation
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data nocheck="yes">
 hello
@@ -22,7 +21,6 @@ Connection: close
 </data2>
 </reply>
 
-# Client-side
 <client>
 <features>
 mqtt
@@ -39,7 +37,6 @@ MQTT redirect to another host without the application's login
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 # HTTP's own request is not what is checked. The CONNECT's length and its
 # flags are: they would say a user and a password.

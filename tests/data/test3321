@@ -7,7 +7,6 @@ FILE
 </keywords>
 </info>
 
-# Client-side
 <client>
 <server>
 file
@@ -25,7 +24,6 @@ three
 </file>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <file name="%LOGDIR/result%TESTNUMBER.txt" crlf="yes">
 one

@@ -7,13 +7,11 @@ libtest
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data>
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 sftp
@@ -34,7 +32,6 @@ data
 </file2>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <stdout>
 match 2, known none, found type 2, length its text's, answer 0

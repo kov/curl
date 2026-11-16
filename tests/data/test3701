@@ -7,7 +7,6 @@ URL
 </keywords>
 </info>
 
-# Client-side
 <client>
 <name>
 A socks5 URL is not for transfers
@@ -20,7 +19,6 @@ proxy
 </features>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <errorcode>
 1

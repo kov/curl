@@ -9,7 +9,6 @@ parallel
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <servercmd>
 writedelay: 1000
@@ -22,7 +21,6 @@ Content-Length: 1201
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -35,7 +33,6 @@ file://%FILE_PWD/%LOGDIR/nosuch%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER 
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 # 37 == CURLE_FILE_COULDNT_READ_FILE, the first failure; the transfer
 # running is stopped with 42 == CURLE_ABORTED_BY_CALLBACK
 <verify>

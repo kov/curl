@@ -7,9 +7,8 @@ HTTP GET
 HTTP Negotiate auth (stub krb5)
 </keywords>
 </info>
-# Server-side
 <reply>
-<!-- First request, with the token: authentication persists -->
+# First request, with the token: authentication persists
 <data1 nocheck="yes">
 HTTP/1.1 200 Things are fine in server land
 Server: Microsoft-IIS/7.0
@@ -18,7 +17,7 @@ Content-Length: 15
 
 Nice auth sir!
 </data1>
-<!-- Second request, on the same connection, without a token -->
+# Second request, on the same connection, without a token
 <data nocheck="yes">
 HTTP/1.1 200 Still fine
 Server: Microsoft-IIS/7.0
@@ -28,7 +27,6 @@ Still nice
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -48,7 +46,6 @@ CURL_STUB_GSS_CREDS="KRB5_Alice"
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <stdout>
 HTTP/1.1 200 Things are fine in server land

@@ -8,7 +8,6 @@ followlocation
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data>
 HTTP/1.1 301 Moved Permanently
@@ -24,7 +23,6 @@ hello
 </data2>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -41,7 +39,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -L --proto-redir -all,+file --proto all -sS
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

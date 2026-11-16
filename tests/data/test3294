@@ -9,7 +9,6 @@ timeout
 </keywords>
 </info>
 
-# Server-side
 <reply>
 # Written 20 bytes at a time, 200 ms after each: the redirect is read
 # by 400 ms and the server answers the second request from 600 ms, its
@@ -32,7 +31,6 @@ writedelay: 200
 </servercmd>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -45,7 +43,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -L -m 1
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

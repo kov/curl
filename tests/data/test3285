@@ -8,7 +8,6 @@ progress
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data nocheck="yes">
 HTTP/1.1 200 OK
@@ -24,7 +23,6 @@ second
 </data2>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -37,7 +35,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER0002 -Z
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 # The lines drawn before the last end in a carriage return, and the last
 # in four blanks and a newline. Its times and speed depend on how fast the
 # transfers were, so the line is cut after the transfers running.

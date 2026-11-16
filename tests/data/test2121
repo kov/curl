@@ -8,9 +8,8 @@ HTTP Negotiate auth (stub krb5)
 --anyauth
 </keywords>
 </info>
-# Server-side
 <reply>
-<!-- First request, no credentials sent: Negotiate offered -->
+# First request, no credentials sent: Negotiate offered
 <data>
 HTTP/1.1 401 Authorization Required
 Server: Microsoft-IIS/7.0
@@ -19,7 +18,7 @@ Content-Length: 18
 
 Who are you, sir?
 </data>
-<!-- Second request, with the stub's token -->
+# Second request, with the stub's token
 <data1>
 HTTP/1.1 200 Things are fine in server land
 Server: Microsoft-IIS/7.0
@@ -43,7 +42,6 @@ Nice auth sir!
 </datacheck>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -63,7 +61,6 @@ CURL_STUB_GSS_CREDS="KRB5_Alice"
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER HTTP/1.1

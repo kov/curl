@@ -9,9 +9,8 @@ HTTP proxy Negotiate auth (stub krb5)
 --proxy-anyauth
 </keywords>
 </info>
-# Server-side
 <reply>
-<!-- First request, no credentials sent: the proxy offers Negotiate -->
+# First request, no credentials sent: the proxy offers Negotiate
 <data>
 HTTP/1.1 407 Proxy Authentication Required
 Server: Microsoft-IIS/7.0
@@ -20,7 +19,7 @@ Content-Length: 18
 
 Who are you, sir?
 </data>
-<!-- Second request, with the stub's token for the proxy -->
+# Second request, with the stub's token for the proxy
 <data1>
 HTTP/1.1 200 Things are fine in proxy land
 Server: Microsoft-IIS/7.0
@@ -42,7 +41,6 @@ Nice auth sir!
 </datacheck>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -63,7 +61,6 @@ CURL_STUB_GSS_CREDS="KRB5_Alice"
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET http://remote.example/%TESTNUMBER HTTP/1.1

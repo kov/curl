@@ -8,7 +8,6 @@ RFC9421
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data crlf="headers" nocheck="yes">
 HTTP/1.1 301 OK
@@ -26,7 +25,6 @@ Content-Type: text/html
 </data2>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -43,7 +41,6 @@ httpsig: HMAC-SHA256 sent to a trusted redirect's origin
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="headers">
 GET /%TESTNUMBER/resource?a=1 HTTP/1.1

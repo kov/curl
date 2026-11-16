@@ -8,7 +8,6 @@ HTTP PUT
 chunked Transfer-Encoding
 </keywords>
 </info>
-# Server-side
 <reply>
 <data>
 HTTP/1.1 200 OK
@@ -19,7 +18,6 @@ ok
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -38,7 +36,6 @@ three
 </file>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <protocol crlf="yes">
 PUT /%TESTNUMBER HTTP/1.1

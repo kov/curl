@@ -7,7 +7,6 @@ parallel
 </keywords>
 </info>
 
-# Client-side
 <client>
 <features>
 file
@@ -22,7 +21,6 @@ file
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 # Three transfers at a time, each done in the pass that adds it, report in
 # the order of their ids in the multi: a table of 128 rows whose row 0 is
 # the multi's own handle. Transfers 127, 128 and 129 take rows 127, 1 and

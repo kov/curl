@@ -9,7 +9,6 @@ timeout
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data nocheck="yes">
 HTTP/1.1 200 OK
@@ -22,7 +21,6 @@ idle
 </servercmd>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -35,7 +33,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER --speed-time 1 -m 10 -sS
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 # The server sends nothing: the low speed check fails the transfer after
 # a second, well before the overall timeout.
 <verify>

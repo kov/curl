@@ -7,7 +7,6 @@ FILE
 </keywords>
 </info>
 
-# Client-side
 <client>
 <server>
 file
@@ -23,7 +22,6 @@ data
 </file>
 </client>
 
-# Verify data after the test has been "shot"
 # 0640 is left as it is by the usual umasks, and differs from the default
 # 0644.
 <verify>

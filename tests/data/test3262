@@ -9,7 +9,6 @@ timeout
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data nocheck="yes">
 HTTP/1.1 200 OK
@@ -20,7 +19,6 @@ Content-Type: text/plain
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -33,7 +31,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER --limit-rate 1000 -m 2
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 # 5000 bytes at 1000 a second take about five seconds: two steps of
 # 1237 bytes, as the limit is tuned for the size, come in two seconds.
 <verify>

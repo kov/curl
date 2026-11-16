@@ -8,7 +8,6 @@ parallel
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data nocheck="yes">
 HTTP/1.1 503 BAD swsbounce
@@ -24,7 +23,6 @@ ok
 </data1>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -37,7 +35,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -Z --retry 1 --retry-delay 1 -s -o %LOGDIR/
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <stdout>
 1 0

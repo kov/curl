@@ -8,7 +8,6 @@ HTTP GET
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data nocheck="yes">
 HTTP/1.1 200 OK swsclose
@@ -19,7 +18,6 @@ Connection: close
 </data>
 </reply>
 
-# Client-side
 <client>
 <server>
 http
@@ -32,7 +30,6 @@ http://%HOSTIP:%HTTPPORT/%TESTNUMBER -o %LOGDIR/save-%TESTNUMBER http://%HOSTIP:
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <errorcode>
 18

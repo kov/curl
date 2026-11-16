@@ -10,7 +10,6 @@ libtest
 </keywords>
 </info>
 
-# Server-side
 <reply>
 <data nocheck="yes">
 HTTP/1.1 200 OK
@@ -20,7 +19,6 @@ Set-Cookie: a=1
 </data>
 </reply>
 
-# Client-side
 <client>
 <features>
 cookies
@@ -31,15 +29,11 @@ http
 <name>
 CURLOPT_COOKIEJAR does not bring back a jar that has gone
 </name>
-<tool>
-lib%TESTNUMBER
-</tool>
 <command>
 http://%HOSTIP:%HTTPPORT/%TESTNUMBER %LOGDIR/jar%TESTNUMBER-
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <stdout>
 named: 1 cookies, written

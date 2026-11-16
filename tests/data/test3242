@@ -6,7 +6,6 @@ Alt-Svc
 </keywords>
 </info>
 
-# Client-side
 <client>
 <name>
 alt-svc cache file ending in a line too long once its newline is added

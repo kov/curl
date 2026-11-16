@@ -7,11 +7,9 @@ HTTP GET
 </keywords>
 </info>
 
-# Server-side
 <reply>
 </reply>
 
-# Client-side
 <client>
 <features>
 SSL
@@ -28,7 +26,6 @@ HTTPS with a peer that fails verification says where to learn more
 </command>
 </client>
 
-# Verify data after the test has been "shot"
 <verify>
 <errorcode>
 60

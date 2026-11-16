@@ -2008,20 +2008,20 @@ fn a_lent_connection_to_the_origin_says_the_server_multiplexes() {
     assert!(matches!(found, Found::Nothing), "{found:?}");
 }
 
-/// unit2606's first chain, the connection's own: up and not shutting
-/// down, its layers are asked what to wait for only if the transfer
-/// wants anything of it; shutting down, as the connection's shutdown
-/// polls it, they are asked with nothing wanted. A connection still being
-/// set up (`c0_connected` false) has no counterpart here: its sockets are
-/// its attempts' and handshake's, always polled (`attempt_pollset`). The
-/// second chain's cases are `unit2606_second_chain`'s.
+/// unit2606's chain, as the connection's own: up and not shutting down,
+/// its layers are asked what to wait for only if the transfer wants
+/// anything of it; shutting down, as the connection's shutdown polls it,
+/// they are asked with nothing wanted. A connection still being set up
+/// (`connected` false) has no counterpart here: its sockets are its
+/// attempts' and handshake's, always polled (`attempt_pollset`). The same
+/// cases as the FTP data connection's are `unit2606_second_chain`'s.
 #[test]
 fn unit2606_first_chain() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let cases =
         crate::c_source::table("tests/unit/unit2606.c", "TEST_CASES[] =", |c| panic!("{c}"));
-    assert_eq!(cases.len(), 9);
+    assert_eq!(cases.len(), 5);
     let (mut net, clock) = net();
     let now = clock.now();
     let mut pool = Pool::new().unwrap();
@@ -2050,8 +2050,8 @@ fn unit2606_first_chain() {
             other => panic!("{other}"),
         };
         let id = v[0].int();
-        let (c0_connected, c0_shutdown, xfer_io) = (flag(2), flag(4), flag(6));
-        let want = usize::try_from(v[8].int()).unwrap();
+        let (c0_connected, c0_shutdown, xfer_io) = (flag(1), flag(2), flag(3));
+        let want = usize::try_from(v[5].int()).unwrap();
         if !c0_connected {
             assert_eq!(want, 1, "case {id}");
             continue;
@@ -2074,7 +2074,7 @@ fn unit2606_first_chain() {
         }
         ported += 1;
     }
-    assert_eq!(ported, 7);
+    assert_eq!(ported, 3);
     pool.release(
         &Home::Multi,
         lease,

@@ -695,20 +695,19 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// unit2606's second chain, the data connection (`SECONDARYSOCKET`):
-    /// up and not shutting down, its layers are asked what to wait for
-    /// only if the transfer wants anything of its connections, whatever
-    /// the first chain is doing or adds; shutting down, they are asked
+    /// unit2606's chain, as the FTP data connection: up and not shutting
+    /// down, its layers are asked what to wait for only if the transfer
+    /// wants anything of its connections; shutting down, they are asked
     /// whatever the transfer wants. A data connection still being set up
-    /// (`c1_connected` false) has no counterpart here: its sockets are its
+    /// (`connected` false) has no counterpart here: its sockets are its
     /// setup's attempts and handshake, always polled
-    /// (`SideSetup::pollset`). The first chain's cases are
-    /// `unit2606_first_chain`'s.
+    /// (`SideSetup::pollset`). The same cases as the connection's own
+    /// chain are `unit2606_first_chain`'s.
     #[test]
     fn unit2606_second_chain() {
         let cases =
             crate::c_source::table("tests/unit/unit2606.c", "TEST_CASES[] =", |c| panic!("{c}"));
-        assert_eq!(cases.len(), 9);
+        assert_eq!(cases.len(), 5);
         let clock = ManualClock::new().unwrap();
         let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(clock.clone())
@@ -723,10 +722,10 @@ mod tests {
                 other => panic!("{other}"),
             };
             let id = v[0].int();
-            let (has_c1, c1_connected, c1_shutdown, xfer_io) = (flag(1), flag(3), flag(5), flag(6));
-            let want = usize::try_from(v[9].int()).unwrap();
-            if !has_c1 || !c1_connected {
-                assert_eq!(want, usize::from(has_c1), "case {id}");
+            let (connected, shutdown, xfer_io) = (flag(1), flag(2), flag(3));
+            let want = usize::try_from(v[5].int()).unwrap();
+            if !connected {
+                assert_eq!(want, 1, "case {id}");
                 continue;
             }
             let calls = Arc::new(AtomicUsize::new(0));
@@ -746,7 +745,7 @@ mod tests {
                 name: DataName::default(),
                 tls: None,
                 socket: Component::Tcp,
-                shut: c1_shutdown.then_some(0),
+                shut: shutdown.then_some(0),
             };
             // The transfer's own wants, before any chain adds to them.
             let transfer = if xfer_io { Events::IN } else { Events::NONE };
@@ -760,6 +759,6 @@ mod tests {
             }
             ported += 1;
         }
-        assert_eq!(ported, 6);
+        assert_eq!(ported, 3);
     }
 }

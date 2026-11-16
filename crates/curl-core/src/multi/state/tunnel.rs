@@ -652,7 +652,8 @@ fn challenged<H: Host>(s: &mut SetupMut<'_>, lent: &mut Lent<'_>, cx: &mut StepC
     let value = fields::header_value(t.answer.line()).unwrap_or(&[]);
     let mut answered = None;
     for challenge in auth::negotiate_challenges(value) {
-        let taken = negotiate::challenged(cx, lent.negotiate, &request, challenge);
+        let (taken, closing) = negotiate::challenged(cx, lent.negotiate, &request, challenge);
+        closing.hold(lent.negotiate);
         let (any, _) = answered.unwrap_or((false, true));
         answered = Some((any || taken, taken));
     }
@@ -688,7 +689,9 @@ fn negotiate<H: Host>(
         // The origin's TLS has no peer yet while the tunnel is set up.
         tls: None,
     };
-    let (header, done) = negotiate::output(cx, kept, &request)?;
+    let (made, closing) = negotiate::output(cx, kept, &request);
+    closing.hold(kept);
+    let (header, done) = made?;
     Ok(cx
         .easy_mut()
         .auth
@@ -744,8 +747,12 @@ fn finish<H: Host>(
             .auth
             .asked((None, peer), (secret, peer), false, true, sspi)
     };
+    // A Negotiate with the proxy that failed after its token went marks
+    // the connection to close, which the next `CONNECT` then goes over a
+    // new one for, as C's does on `conn->bits.close`.
+    let failed = negotiate::Negotiate::closing(lent.negotiate) == negotiate::Closing::Close;
     let t = tunnel(&mut s.handshake);
-    let closes = t.answer.closes() || t.closed;
+    let closes = t.answer.closes() || t.closed || failed;
     let offered = Offered {
         host: Challenges::default(),
         proxy: std::mem::take(&mut t.challenges),

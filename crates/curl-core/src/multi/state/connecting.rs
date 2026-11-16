@@ -1988,8 +1988,13 @@ pub(super) fn up<H: Host>(
     preface: bool,
     lost: Option<ConnectMachine>,
 ) -> (TransferState, Wake) {
-    // What its tunnel negotiated is the connection's from now on.
+    // What its tunnel negotiated is the connection's from now on, and a
+    // Negotiate that failed after its token went closes it.
+    let closing = c.negotiate.as_deref_mut().map(|n| n.take_closing());
     *c.lease.get().negotiate_mut() = c.negotiate.take();
+    if let Some(closing) = closing {
+        closing.apply(c.lease.get());
+    }
     let mut head = head_of(&c);
     if c.https.is_some() {
         // The winner's chain is asked whether HTTP/2 was agreed

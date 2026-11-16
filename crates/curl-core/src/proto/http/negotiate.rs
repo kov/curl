@@ -41,6 +41,10 @@ pub(crate) struct Negotiate {
     /// The credentials and the origin the context with the origin started
     /// with: the connection's from then on.
     bound: Option<Bound>,
+    /// What a failure with the proxy a tunnel is set up through left of
+    /// the connection, before there is one to close: done to it as it
+    /// comes up and takes this ([`Negotiate::take_closing`]).
+    closing: Closing,
 }
 
 /// Where Negotiate with one peer is (`CURL_NEGO_AUTH_*`).
@@ -152,7 +156,18 @@ impl Negotiate {
     pub(crate) fn serves(&self, wants: &Wants<'_>) -> bool {
         // Every field by name, of the connection's and of the transfer's,
         // so that one added does not compile until it is decided here.
-        let Negotiate { host, proxy, bound } = self;
+        let Negotiate {
+            host,
+            proxy,
+            bound,
+            closing,
+        } = self;
+        // Taken as the connection came up, which a failure then closed.
+        assert_eq!(
+            *closing,
+            Closing::Keep,
+            "a pooled connection's closing is taken"
+        );
         let Wants {
             negotiate,
             credentials: wanted,
@@ -237,6 +252,61 @@ pub(crate) struct Request<'r> {
     pub(crate) tls: Option<&'r crate::conn::Stream>,
 }
 
+/// What a failed Negotiate leaves of its connection.
+#[must_use]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Closing {
+    /// Nothing was sent: the connection is as it was.
+    #[default]
+    Keep,
+    /// A token went, or the connection was authenticated before Negotiate
+    /// started over: the server may hold the connection itself as
+    /// authenticated whatever it answered, so no other request may have
+    /// it (`http_auth_nego_fail`).
+    Close,
+}
+
+impl Closing {
+    /// Done to the connection the Negotiate failed on.
+    pub(crate) fn apply(self, conn: &mut Conn) {
+        if self == Closing::Close {
+            conn.mark_close();
+        }
+    }
+
+    /// Kept in `kept`, the Negotiate of a connection a tunnel is still
+    /// being set up for, until the connection is up to close.
+    pub(crate) fn hold(self, kept: &mut Option<Box<Negotiate>>) {
+        if self == Closing::Close {
+            kept.as_deref_mut()
+                .expect("a Negotiate that failed was made")
+                .closing = Closing::Close;
+        }
+    }
+}
+
+impl Negotiate {
+    /// What its failures while the connection is set up left of the
+    /// connection so far, kept for it.
+    pub(crate) fn closing(kept: &Option<Box<Negotiate>>) -> Closing {
+        kept.as_deref().map_or(Closing::Keep, |n| n.closing)
+    }
+
+    /// What its failures while the connection was set up left of the
+    /// connection, which is now up to take it.
+    pub(crate) fn take_closing(&mut self) -> Closing {
+        core::mem::take(&mut self.closing)
+    }
+}
+
+/// A Negotiate that failed: its error, and what it leaves of the
+/// connection.
+pub(crate) type Failed = (ErrorKind, Closing);
+
+/// What a request sends to negotiate: the header's value, if one goes, and
+/// whether authenticating is done.
+pub(crate) type Made = Result<(Option<Vec<u8>>, bool), ErrorKind>;
+
 /// The connection's Negotiate, kept in `kept` and made the first time it
 /// is needed (`Curl_auth_nego_get`).
 fn of(kept: &mut Option<Box<Negotiate>>) -> Result<&mut Negotiate, ErrorKind> {
@@ -250,13 +320,18 @@ fn of(kept: &mut Option<Box<Negotiate>>) -> Result<&mut Negotiate, ErrorKind> {
 /// (`Curl_output_negotiate`), over the connection whose Negotiate is
 /// `kept`: the value of its `Authorization: Negotiate`, or of its
 /// `Proxy-Authorization: Negotiate`, if one goes, and whether
-/// authenticating is done.
+/// authenticating is done; and what a failure on the way leaves of the
+/// connection, which can close even as the request goes on.
 pub(crate) fn output<H: Host>(
     cx: &mut StepCx<'_, H>,
     kept: &mut Option<Box<Negotiate>>,
     request: &Request<'_>,
-) -> Result<(Option<Vec<u8>>, bool), ErrorKind> {
-    let nego = of(kept)?;
+) -> (Made, Closing) {
+    let keep = |e| (Err(e), Closing::Keep);
+    let nego = match of(kept) {
+        Ok(nego) => nego,
+        Err(e) => return keep(e),
+    };
     let side = nego.with(request.side);
     match side.state {
         State::Recv if side.challenged => side.rounds = true,
@@ -265,7 +340,8 @@ pub(crate) fn output<H: Host>(
     }
     let mut header = None;
     if side.no_persist || !matches!(side.state, State::Done | State::Succ) {
-        if side.no_persist && side.state == State::Succ {
+        let reauth = side.no_persist && side.state == State::Succ;
+        if reauth {
             trace::info(
                 cx,
                 format_args!(
@@ -276,17 +352,26 @@ pub(crate) fn output<H: Host>(
         }
         if nego.with(request.side).context.is_none() {
             match input(cx, nego, request, b"") {
+                // The connection was authenticated before the context was
+                // cleaned up: it closes, as one a token went on does.
+                Err((e, _)) if reauth => {
+                    trace::info(
+                        cx,
+                        format_args!("Negotiate re-authentication failed, closing connection"),
+                    );
+                    return (Err(e), Closing::Close);
+                }
                 // Without a context, the request goes unauthenticated, as
                 // before curl 7.64.1.
-                Err(ErrorKind::AuthError) => return Ok((None, true)),
-                Err(e) => return Err(e),
+                Err((ErrorKind::AuthError, closing)) => return (Ok((None, true)), closing),
+                Err((e, closing)) => return (Err(e), closing),
                 Ok(()) => {}
             }
         }
         let side = nego.with(request.side);
         // `Curl_auth_create_spnego_message`.
         if side.token.is_empty() {
-            return Err(ErrorKind::RemoteAccessDenied);
+            return keep(ErrorKind::RemoteAccessDenied);
         }
         let mut value = Vec::new();
         let made = value
@@ -295,7 +380,7 @@ pub(crate) fn output<H: Host>(
             .and_then(|()| crate::base64::encode(&side.token, &mut value));
         if made.is_err() {
             side.token = Vec::new();
-            return Err(ErrorKind::OutOfMemory);
+            return keep(ErrorKind::OutOfMemory);
         }
         header = Some(value);
         side.state = match side.progress {
@@ -306,27 +391,30 @@ pub(crate) fn output<H: Host>(
     let side = nego.with(request.side);
     let done = matches!(side.state, State::Done | State::Succ);
     side.challenged = false;
-    Ok((header, done))
+    (Ok((header, done)), Closing::Keep)
 }
 
 /// A 401's or a 407's `Negotiate` challenge, `challenge` what follows its
 /// name, taken into the context with the peer `request` names
 /// (`auth_spnego`): whether it was, the connection then waiting for the
-/// request to go again.
+/// request to go again, and what a challenge refused leaves of the
+/// connection.
 pub(crate) fn challenged<H: Host>(
     cx: &mut StepCx<'_, H>,
     kept: &mut Option<Box<Negotiate>>,
     request: &Request<'_>,
     challenge: &[u8],
-) -> bool {
+) -> (bool, Closing) {
     let Ok(nego) = of(kept) else {
-        return false;
+        return (false, Closing::Keep);
     };
-    let taken = input(cx, nego, request, challenge).is_ok();
-    if taken {
-        nego.with(request.side).state = State::Recv;
+    match input(cx, nego, request, challenge) {
+        Ok(()) => {
+            nego.with(request.side).state = State::Recv;
+            (true, Closing::Keep)
+        }
+        Err((_, closing)) => (false, closing),
     }
-    taken
 }
 
 /// `Persistent-Auth: <value>` from the origin, Negotiate in use: whether
@@ -369,13 +457,14 @@ pub(crate) fn responded(conn: &mut Conn, code: u16) {
 /// token, taken into the context with the peer `request` names, which is
 /// made if there is none; a connection negotiating with the origin bound
 /// to the request's credentials and origin. Any failure starts Negotiate
-/// with that peer over.
+/// with that peer over, and one after a token went closes the connection
+/// ([`Closing`]).
 fn input<H: Host>(
     cx: &mut StepCx<'_, H>,
     nego: &mut Negotiate,
     request: &Request<'_>,
     challenge: &[u8],
-) -> Result<(), ErrorKind> {
+) -> Result<(), Failed> {
     let side = request.side;
     let peering = nego.with(side);
     let state = peering.state;
@@ -386,8 +475,7 @@ fn input<H: Host>(
             nego.reset(side);
         } else if state != State::None {
             // The server refused the token and offers nothing more.
-            nego.reset(side);
-            return Err(ErrorKind::LoginDenied);
+            return Err(fail(cx, nego, side, state, ErrorKind::LoginDenied));
         }
     }
     let stepped = match request.security {
@@ -395,10 +483,7 @@ fn input<H: Host>(
             let binding = match request.tls.and_then(|s| s.channel_binding(&mut Notes(cx))) {
                 None => None,
                 Some(Ok(binding)) => binding,
-                Some(Err(e)) => {
-                    nego.reset(side);
-                    return Err(e);
-                }
+                Some(Err(e)) => return Err(fail(cx, nego, side, state, e)),
             };
             step(
                 cx,
@@ -412,8 +497,7 @@ fn input<H: Host>(
         Security::Sspi(sspi) => sspi_step(cx, nego.with(side), request, sspi, challenge),
     };
     if let Err(e) = stepped {
-        nego.reset(side);
-        return Err(e);
+        return Err(fail(cx, nego, side, state, e));
     }
     // Only the origin's binds the connection.
     if side == Side::Proxy {
@@ -427,11 +511,11 @@ fn input<H: Host>(
             // other has bound the connection.
             let same = same_credentials(bound.credentials.as_ref(), request.credentials);
             if bound.origin != *request.peer || !same {
-                return Err(ErrorKind::FailedInit);
+                return Err((ErrorKind::FailedInit, Closing::Keep));
             }
         }
         None => {
-            let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+            let oom = |OutOfMemory| (ErrorKind::OutOfMemory, Closing::Keep);
             nego.bound = Some(Bound {
                 origin: request.peer.try_clone().map_err(oom)?,
                 credentials: request
@@ -443,6 +527,29 @@ fn input<H: Host>(
         }
     }
     Ok(())
+}
+
+/// Negotiate with `side` failed with `error`, its state `state` before:
+/// started over, and once a token went, the connection closes
+/// (`http_auth_nego_fail`).
+fn fail<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    nego: &mut Negotiate,
+    side: Side,
+    state: State,
+    error: ErrorKind,
+) -> Failed {
+    let closing = if state == State::None {
+        Closing::Keep
+    } else {
+        trace::info(
+            cx,
+            format_args!("Negotiate failed after a token was sent, closing connection"),
+        );
+        Closing::Close
+    };
+    nego.reset(side);
+    (error, closing)
 }
 
 /// The context made if there is none, and stepped with the challenge
@@ -772,6 +879,7 @@ mod serves_tests {
                 origin: peer(b"a"),
                 credentials: credentials.map(|c| c.answered().unwrap()),
             }),
+            closing: Closing::Keep,
         };
         let nego = bound(Some(u), State::Succ);
         assert!(nego.serves(&wants(true, Some(u), &a)));

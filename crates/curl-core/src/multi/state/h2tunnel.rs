@@ -288,7 +288,9 @@ pub(super) fn challenged<H: Host>(
     };
     let mut taken = false;
     for challenge in auth::negotiate_challenges(&value) {
-        taken |= negotiate::challenged(cx, lent.negotiate, &request, challenge);
+        let (took, closing) = negotiate::challenged(cx, lent.negotiate, &request, challenge);
+        closing.hold(lent.negotiate);
+        taken |= took;
     }
     Ok(taken)
 }

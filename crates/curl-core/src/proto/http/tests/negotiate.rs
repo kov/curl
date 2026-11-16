@@ -317,8 +317,13 @@ fn a_challenge_refused_ends_with_the_401() {
             lines[said - 1].starts_with(b"HTTP/1.1 401"),
             "after the status line"
         );
+        // A token went: the connection closes (`http_auth_nego_fail`).
+        assert_eq!(
+            lines[said + 1],
+            b"Negotiate failed after a token was sent, closing connection\n"
+        );
         assert!(
-            lines[said + 1].starts_with(b"WWW-Authenticate"),
+            lines[said + 2].starts_with(b"WWW-Authenticate"),
             "before its line"
         );
         assert_eq!(gss.asked().last(), Some(&Asked::Dropped), "started over");
@@ -779,6 +784,46 @@ fn the_library_s_failures_are_said_as_c_says_them() {
     );
 }
 
+/// A connection authenticated with Negotiate, told it does not persist,
+/// whose next request cannot make its token: the request fails, not sent
+/// unauthenticated as a first token not made is, and the connection
+/// closes, the server holding it as authenticated still
+/// (`Curl_output_negotiate`'s re-authentication).
+#[test]
+fn a_reauthentication_not_made_fails_and_closes_the_connection() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"one")
+        .then(Answer::Fails(GssFailure::status(
+            GssCall::InitSecContext,
+            GssStatus::new(13 << 16, 0),
+        )));
+    let first = b"HTTP/1.1 200 OK\r\nPersistent-Auth: false\r\nContent-Length: 3\r\n\r\nok\n";
+    let talk = Conversation::replies(&[first], false);
+    let other = Conversation::replies(&[OK_200], false);
+    let mut m = serving(Peer::Accepts, &[&talk, &other]);
+    let ran = get_with(&mut m, negotiating(&libraries), "/a", talk.clone(), |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let ran = get_with(&mut m, negotiating(&libraries), "/b", talk.clone(), |_| {});
+    assert!(ran.result.is_err(), "{:?}", ran.seen.text());
+    assert!(text_has(
+        &ran,
+        "Negotiate re-authentication failed, closing connection\n"
+    ));
+    assert_eq!(
+        String::from_utf8(talk.received()).unwrap(),
+        negotiated_get("/a", b"one")
+    );
+    // The next transfer is not given it.
+    let mut e = Easy::new();
+    e.set_libraries(libraries.clone());
+    let ran = get_with(&mut m, e, "/c", talk.clone(), |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(other.received()).unwrap(),
+        plain_get("/c")
+    );
+}
+
 /// `Persistent-Auth: false` has each request authenticate again, even
 /// after a context that took more than one round, read whatever its
 /// case and whatever follows `false`; with Negotiate not in use it is
@@ -1060,8 +1105,12 @@ fn a_forwarding_proxy_s_challenge_is_taken() {
         .iter()
         .position(|l| l == b"gss_init_sec_context() failed: status 851968.0. \n")
         .expect("said");
+    assert_eq!(
+        lines[said + 1],
+        b"Negotiate failed after a token was sent, closing connection\n"
+    );
     assert!(
-        lines[said + 1].starts_with(b"Proxy-Authenticate"),
+        lines[said + 2].starts_with(b"Proxy-Authenticate"),
         "before its line"
     );
     assert_eq!(gss.asked().last(), Some(&Asked::Dropped), "started over");
@@ -1621,11 +1670,12 @@ fn second_reuses(
     served
 }
 
-/// A refused Negotiate starts over with the origin unbound: the
-/// connection then serves a transfer negotiating as anyone
-/// (`http_auth_nego_reset`, `url_match_auth_nego`).
+/// A Negotiate refused after its token went closes the connection: the
+/// server may hold it as authenticated whatever it answered, so it serves
+/// no other transfer, negotiating as anyone or not at all
+/// (`http_auth_nego_fail`).
 #[test]
-fn a_refused_negotiation_unbinds_the_connection() {
+fn a_negotiation_refused_after_its_token_closes_the_connection() {
     let refused: &[u8] =
         b"HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate\r\nContent-Length: 0\r\n\r\n";
     let script = |gss: &Scripted| {
@@ -1633,14 +1683,22 @@ fn a_refused_negotiation_unbinds_the_connection() {
     };
     let as_u = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"u".to_vec());
     let as_v = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"v".to_vec());
-    assert!(second_reuses(script, &[refused], as_u, Ok(()), as_v, true));
-    assert!(second_reuses(
+    assert!(!second_reuses(script, &[refused], as_u, Ok(()), as_v, true));
+    assert!(!second_reuses(
         script,
         &[refused],
         as_u,
         Ok(()),
         |_| {},
         true
+    ));
+    assert!(!second_reuses(
+        script,
+        &[refused],
+        as_u,
+        Ok(()),
+        |_| {},
+        false
     ));
 }
 

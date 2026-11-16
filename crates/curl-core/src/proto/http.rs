@@ -1307,7 +1307,9 @@ impl Request {
             delegation,
             tls,
         };
-        let (header, done) = negotiate::output(cx, kept, &request)?;
+        let (made, closing) = negotiate::output(cx, kept, &request);
+        closing.apply(lease.get());
+        let (header, done) = made?;
         Ok(cx
             .easy_mut()
             .auth
@@ -2749,7 +2751,8 @@ impl Request {
                         delegation,
                         tls,
                     };
-                    let taken = negotiate::challenged(cx, kept, &request, challenge);
+                    let (taken, closing) = negotiate::challenged(cx, kept, &request, challenge);
+                    closing.apply(lease.get());
                     let (any, _) = negotiated.map_or((false, true), |(_, any, last)| (any, last));
                     negotiated = Some((side, any || taken, taken));
                 }

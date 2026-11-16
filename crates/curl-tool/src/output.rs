@@ -933,8 +933,11 @@ impl Stream {
     }
 
     /// The `filename=` of a `Content-Disposition:` line, if it has one
-    /// that names a file (encoded ones, `filename*=`, are not read); the
-    /// file is made either way. Whether all went well.
+    /// that names a file (encoded ones, `filename*=`, are not read), which
+    /// makes the file. A line naming none makes nothing: a later one may
+    /// still name it, and the name from the URL made now would empty a
+    /// file that `-J` leaves alone. The file is made as the body comes or
+    /// the transfer ends (`content_disposition`). Whether all went well.
     fn disposition(&mut self, line: &[u8]) -> Result<bool, OutOfMemory> {
         let mut at = 20;
         loop {
@@ -968,7 +971,14 @@ impl Stream {
             }
             break;
         }
-        Ok(self.create() && self.write_held().is_ok())
+        Ok(true)
+    }
+
+    /// Make the file at the transfer's end if nothing made it, with the
+    /// header lines held for a name the server never gave written to it
+    /// (`post_output_handling`). Whether all went well.
+    pub(crate) fn create_at_end(&mut self) -> bool {
+        self.create() && self.write_held().is_ok()
     }
 
     /// Name the file `name`, in the output directory if one is given,
@@ -1515,6 +1525,75 @@ mod tests {
             Write::Fail
         );
         assert_eq!(std::fs::read(&final_path).unwrap(), written);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A `Content-Disposition:` naming no file makes none: a file of the
+    /// URL's name is left as it is, a later line still names the file,
+    /// and a transfer that ends without a body makes the URL's file then,
+    /// with the lines held written to it (`content_disposition`,
+    /// `post_output_handling`, CVE-2026-111951, test 1718).
+    #[test]
+    fn a_disposition_naming_no_file_makes_none() {
+        let dir = scratch("cd-unnamed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("url-name");
+        std::fs::write(&path, b"precious").unwrap();
+        let http = Some(Protocol::Http);
+        let setup = || {
+            let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+            {
+                let mut s = out.stream();
+                s.show_headers = true;
+                s.name_from_header =
+                    Some(FromHeader::new(Some(dir.as_os_str().as_encoded_bytes())).unwrap());
+            }
+            out
+        };
+        let out = setup();
+        for line in [
+            &b"HTTP/1.1 200 OK\r\n"[..],
+            b"Content-Disposition: inline\r\n",
+        ] {
+            assert_eq!(
+                out.stream().header(line, http, Some(200), None),
+                Write::Accepted
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), b"precious");
+        let line = b"Content-Disposition: attachment; filename=other\r\n";
+        assert_eq!(
+            out.stream().header(line, http, Some(200), None),
+            Write::Accepted
+        );
+        assert_eq!(out.stream().body(b"body"), Write::Accepted);
+        drop(out);
+        assert_eq!(std::fs::read(&path).unwrap(), b"precious");
+        assert_eq!(
+            std::fs::read(dir.join("other")).unwrap(),
+            b"HTTP/1.1 200 OK\r\nContent-Disposition: inline\r\n\
+              Content-Disposition: attachment; filename=other\r\nbody"
+        );
+        // No body and no name: the URL's file at the end, with the lines.
+        std::fs::remove_file(&path).unwrap();
+        let out = setup();
+        for line in [
+            &b"HTTP/1.1 200 OK\r\n"[..],
+            b"Content-Disposition: inline\r\n",
+            b"\r\n",
+        ] {
+            assert_eq!(
+                out.stream().header(line, http, Some(200), None),
+                Write::Accepted
+            );
+        }
+        assert!(!path.exists());
+        assert!(out.stream().create_at_end());
+        drop(out);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"HTTP/1.1 200 OK\r\nContent-Disposition: inline\r\n\r\n"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

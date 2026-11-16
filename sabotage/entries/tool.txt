@@ -5,9 +5,9 @@
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool an_empty_download_leaves_an_empty_file
 --- old
-    if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
+    if result.is_ok() && !easy.report().condition_unmet() && !stream.create_at_end() {
 --- new
-    if false && !stream.create() {
+    if false && !stream.create_at_end() {
 
 === `-C -` resumes from the start, not the output file's end
 file: crates/curl-tool/src/operate.rs
@@ -1773,3 +1773,17 @@ witness: curl-tool options::number::tests::tool1623_seconds
         if len == 0 {
             return Err(ParamError::NumberTooLarge);
         }
+
+=== a disposition naming no file makes the file of the URL's name
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::a_disposition_naming_no_file_makes_none
+--- old
+        Ok(true)
+    }
+
+    /// Make the file at the transfer's end
+--- new
+        Ok(self.create() && self.write_held().is_ok())
+    }
+
+    /// Make the file at the transfer's end

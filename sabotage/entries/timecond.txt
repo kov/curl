@@ -80,6 +80,6 @@ witness: curl-tool options::parse::tests::reads_time_conditions_as_c
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool an_unmet_time_condition_leaves_the_output_alone
 --- old
-    if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
+    if result.is_ok() && !easy.report().condition_unmet() && !stream.create_at_end() {
 --- new
-    if result.is_ok() && !stream.create() {
+    if result.is_ok() && !stream.create_at_end() {

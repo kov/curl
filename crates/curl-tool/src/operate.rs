@@ -3817,7 +3817,7 @@ fn settle(
     // A successful transfer that wrote nothing still leaves its output
     // file, empty, unless a time condition kept the file from coming or
     // the server answered 304: then the file is not even replaced.
-    if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
+    if result.is_ok() && !easy.report().condition_unmet() && !stream.create_at_end() {
         result = Err(ErrorKind::WriteError);
     }
     // Standard output is flushed here; a file, when it is closed.

@@ -479,6 +479,20 @@ fn said(errno: i32) -> io::Error {
     }
 }
 
+/// How many of the `given` bytes the library is to write, after a write
+/// of `blocked` bytes that could not finish: those again, as the library
+/// wants a blocked write made again whole. Fewer given is the caller's
+/// bug, and is refused, the blocked length kept so that a retry made
+/// right still goes, as C's build without debug checks refuses it
+/// (`ossl_send`): a connection's user must not abort the process.
+pub(crate) fn write_len(blocked: Option<c_int>, given: c_int) -> Option<c_int> {
+    match blocked {
+        Some(blocked) if blocked > given => None,
+        Some(blocked) => Some(blocked),
+        None => Some(given),
+    }
+}
+
 /// The error number of the socket's last failure below, if it failed
 /// (C reads `errno` there).
 fn errno_of(below: Below) -> i32 {
@@ -1665,13 +1679,15 @@ impl TlsSession for Session {
         // SAFETY: the thread's error queue.
         unsafe { openssl_sys::ERR_clear_error() };
         self.waits = TlsWait::Nothing;
-        let mut len = c_int::try_from(bytes.len()).unwrap_or(c_int::MAX);
-        if let Some(blocked) = self.blocked_write.take() {
-            // The library is given the write it could not finish again,
-            // which the transfer never sends less of.
-            assert!(blocked <= len, "a blocked write is sent again whole");
-            len = blocked;
-        }
+        let given = c_int::try_from(bytes.len()).unwrap_or(c_int::MAX);
+        let Some(len) = write_len(self.blocked_write, given) else {
+            io.fail(
+                ErrorKind::BadFunctionArgument,
+                format_args!("re-send data shorter than previously"),
+            );
+            return Err(said(0));
+        };
+        self.blocked_write = None;
         let from = bytes.as_ptr();
         // SAFETY: the SSL, and `len` bytes at `from`, the caller's.
         let (n, below) = self.call(io, |ssl| unsafe {

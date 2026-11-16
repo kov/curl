@@ -564,3 +564,16 @@ fn an_error_s_text_has_what_c_s_buffer_leaves_it() {
     assert_eq!(no_text(0), b"No error");
     assert_eq!(no_text(0x0A00_045C), b"Unknown error");
 }
+
+/// A write that could not finish is made again whole, with as many
+/// bytes given or more; fewer is refused, not aborted on, and the
+/// blocked length is kept for the retry (`ossl_send`).
+#[test]
+fn a_blocked_write_is_made_again_whole_and_a_shorter_one_refused() {
+    use crate::ssl::write_len;
+    assert_eq!(write_len(None, 5), Some(5));
+    assert_eq!(write_len(Some(5), 5), Some(5));
+    assert_eq!(write_len(Some(5), 9), Some(5));
+    assert_eq!(write_len(Some(5), 4), None);
+    assert_eq!(write_len(Some(5), 0), None);
+}

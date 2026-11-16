@@ -542,3 +542,11 @@ witness: curl-openssl a_resumed_session_speaks_its_http2_as_early_data
             Some(d) if !self.step.done() => Some(d.alpn),
 --- new
             Some(d) if false => Some(d.alpn),
+
+=== a write shorter than the blocked one is made
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl tests::a_blocked_write_is_made_again_whole_and_a_shorter_one_refused
+--- old
+        Some(blocked) if blocked > given => None,
+--- new
+        Some(blocked) if blocked > given => Some(given),

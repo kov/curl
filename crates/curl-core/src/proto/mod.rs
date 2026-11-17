@@ -46,7 +46,7 @@ use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
 use crate::error::ErrorKind;
 use crate::error::{UrlErrorKind, url_error};
-use crate::idn::{Idn, IdnFailure};
+use crate::idn::{Idn, NameRefused};
 use crate::ldap::LdapLibrary;
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, SetupLend, StepCx};
@@ -59,6 +59,39 @@ use crate::url::{GetOptions, Part, Url};
 use curl_alloc::TryVec as _;
 use std::ffi::CStr;
 
+/// Why a URL names no peer.
+#[derive(Debug)]
+pub(super) enum PeerRefused {
+    Kind(ErrorKind),
+    Name(NameRefused),
+}
+
+impl From<ErrorKind> for PeerRefused {
+    fn from(kind: ErrorKind) -> Self {
+        PeerRefused::Kind(kind)
+    }
+}
+
+impl PeerRefused {
+    /// The transfer's error, said as C says it.
+    pub(super) fn fail<H: Host>(self, cx: &mut StepCx<'_, H>) -> ErrorKind {
+        match self {
+            PeerRefused::Kind(kind) => kind,
+            PeerRefused::Name(name) => name.fail(cx),
+        }
+    }
+
+    /// The transfer's error, for a peer whose name was said when the
+    /// request was made, as the same name is refused the same way.
+    pub(super) fn kind(self) -> ErrorKind {
+        match self {
+            PeerRefused::Kind(kind) => kind,
+            PeerRefused::Name(NameRefused::Convert(e)) => e.kind(),
+            PeerRefused::Name(NameRefused::Illegal(_)) => ErrorKind::UrlMalformat,
+        }
+    }
+}
+
 /// The peer `url` names, at `host` and `port`: in the IPv6 scope
 /// `scope` if the application sets one (`CURLOPT_ADDRESS_SCOPE`), the
 /// URL's zone then not read, or else in the zone's; a name in Unicode
@@ -68,19 +101,31 @@ pub(super) fn url_peer(
     url: &Url,
     scope: Option<NonZeroU32>,
     idn: Option<&dyn Idn>,
-) -> Result<Peer, ErrorKind> {
+) -> Result<Peer, PeerRefused> {
     let peer = match scope {
         Some(scope) => Peer::scoped(scheme, host, port, scope),
         None => {
             let zone = match url.get(Part::ZoneId, GetOptions::NONE) {
                 Ok(zone) => Some(zone),
                 Err(UrlErrorKind::NoZoneid) => None,
-                Err(e) => return Err(url_error(e)),
+                Err(e) => return Err(url_error(e).into()),
             };
             Peer::new(scheme, host, port, zone)
         }
     };
-    peer.idn(idn).map_err(IdnFailure::kind)
+    peer.idn(idn).map_err(PeerRefused::Name)
+}
+
+/// [`url_peer`] in the scope and with the IDN library of the transfer
+/// `cx` steps, its refusal said.
+pub(super) fn transfer_peer<H: Host>(
+    target: (Scheme, Vec<u8>, u16),
+    url: &Url,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Peer, ErrorKind> {
+    let scope = cx.easy().options().address_scope;
+    let idn = cx.easy().libraries().idn;
+    url_peer(target, url, scope, idn).map_err(|e| e.fail(cx))
 }
 
 /// What a transfer's next request takes from the ones before it.
@@ -893,7 +938,9 @@ impl ProtoState {
                     .and_then(|p| p.parse().ok())
                     .ok_or(ErrorKind::UrlMalformat)?;
                 let scheme = Scheme::own(&crate::conn::TCP_SCHEME);
-                Ok(Some(url_peer((scheme, host, port), url, scope, idn)?))
+                Ok(Some(
+                    url_peer((scheme, host, port), url, scope, idn).map_err(PeerRefused::kind)?,
+                ))
             }
             _ => unreachable!("every other protocol has a base"),
         }

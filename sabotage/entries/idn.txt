@@ -21,7 +21,7 @@ file: crates/curl-core/src/idn.rs
 witness: curl-core idn::tests::a_name_is_looked_up_by_its_ascii_form
 --- old
     if ascii.is_empty() {
-        return Err(IdnFailure::Malformed);
+        return Err(IdnFailure::Malformed.into());
     }
 --- new
 
@@ -30,10 +30,10 @@ file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::idn::a_proxy_and_a_connect_to_host_are_looked_up_in_ascii
 --- old
         .idn(cx.easy().libraries().idn)
-        .map_err(crate::idn::IdnFailure::kind)?;
+        .map_err(|e| e.fail(cx))?;
 --- new
         .idn(None)
-        .map_err(crate::idn::IdnFailure::kind)?;
+        .map_err(|e| e.fail(cx))?;
 
 === a connect-to host named in Unicode is looked up as the entry has it
 file: crates/curl-core/src/multi/state/leg.rs
@@ -50,3 +50,42 @@ witness: curl-core proto::http::tests::idn::a_tunnel_names_a_host_in_unicode_in_
         authority.try_extend_from_slice(target.request_host())?;
 --- new
         authority.try_extend_from_slice(target.shown())?;
+
+=== a name that converts to one no host may have is looked up as it converted
+file: crates/curl-core/src/idn.rs
+witness: curl-core idn::tests::a_name_converted_to_a_delimiter_is_refused
+--- old
+    if !crate::url::is_host_name(&ascii) {
+--- new
+    if false {
+
+=== a URL's punycode is shown although it is no host name
+file: crates/curl-core/src/idn.rs
+witness: curl-core url::tests::sets_parts_as_c_does
+--- old
+    if !crate::url::is_host_name(&ascii) {
+--- new
+    if !crate::url::is_host_name(&ascii) && false {
+
+=== a peer whose name converts to no host name is refused without saying why
+file: crates/curl-core/src/idn.rs
+witness: curl-core proto::http::tests::idn::a_name_converted_to_a_delimiter_fails_the_transfer
+--- old
+            NameRefused::Illegal(name) => crate::trace::fail_with(
+                cx,
+                crate::error::ErrorKind::UrlMalformat,
+                &[b"Illegal hostname: ", &name],
+            ),
+--- new
+            NameRefused::Illegal(_) => crate::error::ErrorKind::UrlMalformat,
+
+=== a mailbox's host goes in the punycode that ends its address
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::a_mailbox_s_host_is_converted_where_it_can_be
+--- old
+            Ok(Some(ascii)) => (Some(ascii), true),
+            Ok(None) | Err(_) => (Some(copy(name)?), false),
+--- new
+            Ok(Some(ascii)) => (Some(ascii), true),
+            Err(crate::idn::NameRefused::Illegal(ascii)) => (Some(ascii), true),
+            Ok(None) | Err(_) => (Some(copy(name)?), false),

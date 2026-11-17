@@ -827,9 +827,7 @@ impl Request {
             .port_or_default()
             .ok_or(url_error(UrlErrorKind::NoPort))?;
         let target = url.request_target().map_err(url_error)?;
-        let scope = cx.easy().options().address_scope;
-        let idn = cx.easy().libraries().idn;
-        let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
+        let peer = super::transfer_peer((scheme, host, port), url, cx)?;
         Ok((peer, target))
     }
 

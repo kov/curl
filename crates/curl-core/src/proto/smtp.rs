@@ -237,7 +237,8 @@ fn mailbox(given: &[u8], idn: Option<&dyn Idn>) -> Result<Mailbox, AddressError>
     let (host, converted) = match host {
         None => (None, false),
         // A host that cannot be converted goes in UTF-8, whatever kept it
-        // from converting (`(void)Curl_idnconvert_hostname`).
+        // from converting (`(void)Curl_idnconvert_hostname`); so does one
+        // that converts to a name no host may have.
         Some(name) => match crate::idn::lookup_name(idn, name) {
             Ok(Some(ascii)) => (Some(ascii), true),
             Ok(None) | Err(_) => (Some(copy(name)?), false),
@@ -351,9 +352,7 @@ impl Request {
             .ok_or(ErrorKind::UrlMalformat)?;
         let name: &[u8] = if secured { b"smtps" } else { b"smtp" };
         let scheme = Scheme::named(name).expect("libcurl knows SMTP");
-        let scope = cx.easy().options().address_scope;
-        let idn = cx.easy().libraries().idn;
-        let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
+        let peer = super::transfer_peer((scheme, host, port), url, cx)?;
         let pipeline = Pipeline::new(Reach::Network);
         let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
         let takes = Takes::of(Some(scheme));

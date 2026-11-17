@@ -338,9 +338,7 @@ impl Request {
             .ok_or(ErrorKind::UrlMalformat)?;
         let name: &[u8] = if secured { b"pop3s" } else { b"pop3" };
         let scheme = Scheme::named(name).expect("libcurl knows POP3");
-        let scope = cx.easy().options().address_scope;
-        let idn = cx.easy().libraries().idn;
-        let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
+        let peer = super::transfer_peer((scheme, host, port), url, cx)?;
         // The application's login goes to a redirect's other host only
         // as HTTP's does (`Curl_auth_allowed_to_host`).
         let pipeline = Pipeline::new(Reach::Network);

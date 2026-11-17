@@ -42,8 +42,9 @@ fn a_mailbox_is_read_as_c_reads_it() {
     }
 }
 
-/// A host in Unicode goes in ASCII where the IDN library converts it, and
-/// as it is where it cannot; either way the mailbox is in UTF-8.
+/// A host in Unicode goes in ASCII where the IDN library converts it to a
+/// host name, and as it is where it cannot; either way the mailbox is in
+/// UTF-8.
 #[test]
 fn a_mailbox_s_host_is_converted_where_it_can_be() {
     let idn = crate::idn::FakeIdn;
@@ -56,6 +57,10 @@ fn a_mailbox_s_host_is_converted_where_it_can_be() {
     assert_eq!(m.host.as_deref(), Some("ünknown.test".as_bytes()));
     assert!(!m.converted && m.in_utf8());
     let m = mailbox("u@åäö.test".as_bytes(), None).unwrap();
+    assert!(!m.converted && m.in_utf8());
+    // One whose ASCII form ends the address early goes as it is too.
+    let m = mailbox("u@a\u{ff0f}host.example".as_bytes(), idn).unwrap();
+    assert_eq!(m.host.as_deref(), Some("a\u{ff0f}host.example".as_bytes()));
     assert!(!m.converted && m.in_utf8());
     let m = mailbox("ü@b".as_bytes(), idn).unwrap();
     assert!(m.in_utf8());

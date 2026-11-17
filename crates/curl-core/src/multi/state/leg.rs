@@ -507,7 +507,7 @@ fn hsts_upgrade<H: Host>(
         .and_then(|h| h.strip_suffix(b"]"))
         .unwrap_or(&host);
     let idn = cx.easy().libraries().idn;
-    let ascii = crate::idn::lookup_name(idn, bare).map_err(crate::idn::IdnFailure::kind)?;
+    let ascii = crate::idn::lookup_name(idn, bare).map_err(|e| e.fail(cx))?;
     let name = ascii.as_deref().unwrap_or(bare);
     if crate::proto::http::hsts::upgrade(url, name, cx)? {
         run.url = url.get(Part::Url, GetOptions::NONE).map_err(url_error)?;
@@ -1181,7 +1181,7 @@ fn parse_proxy<H: Host>(
     parsed.peer = parsed
         .peer
         .idn(cx.easy().libraries().idn)
-        .map_err(crate::idn::IdnFailure::kind)?;
+        .map_err(|e| e.fail(cx))?;
     // The URL's user and password, else the options' (`proxy_parse`);
     // either goes with the service the options name, which makes
     // credentials alone for a proxy that is not a pre-proxy.
@@ -1430,7 +1430,7 @@ fn connect_to<H: Host>(
             // A name in Unicode is looked up by its ASCII form, as the
             // origin's (`Curl_peer_from_connect_to`).
             let via = via.idn(cx.easy().libraries().idn);
-            let via = via.map_err(crate::idn::IdnFailure::kind)?;
+            let via = via.map_err(|e| e.fail(cx))?;
             return TryArc::try_new(via)
                 .map(Some)
                 .map_err(|OutOfMemory| ErrorKind::OutOfMemory);
@@ -1525,7 +1525,7 @@ fn alt_svc<H: Host>(
     // A name in Unicode is looked up by its ASCII form, as the origin's
     // (`Curl_peer_create`).
     let via = via.idn(cx.easy().libraries().idn);
-    let via = via.map_err(crate::idn::IdnFailure::kind)?;
+    let via = via.map_err(|e| e.fail(cx))?;
     let mut line = trace::Line::new();
     line.text(format_args!("Alt-svc connecting from [{}]", src.name()));
     line.raw(origin.name());

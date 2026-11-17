@@ -87,6 +87,39 @@ fn a_name_that_does_not_convert_fails_the_transfer() {
     }
 }
 
+/// A name that converts to one no host may have, as a fullwidth `@` to
+/// `@` (test 2952), is a malformed URL's, said with the name it became,
+/// whether the URL, the proxy or a connect-to entry names it
+/// (`peer_parse_host`); nothing is connected.
+#[test]
+fn a_name_converted_to_a_delimiter_fails_the_transfer() {
+    let bad = "trusted.example\u{ff20}evil.example";
+    for set in [
+        (|o: &mut Options, bad: &str| {
+            o.set_url(Some(format!("http://{bad}/").as_bytes()))
+                .unwrap();
+            o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
+                .unwrap();
+            o.proxy.make_mut().unwrap().tunnel = true;
+        }) as fn(&mut Options, &str),
+        |o: &mut Options, bad: &str| {
+            o.set_proxy_url(Some(format!("{bad}:{PORT}").into_bytes()))
+                .unwrap();
+        },
+        |o: &mut Options, bad: &str| {
+            let entry = format!("127.0.0.1:{PORT}:{bad}:{PORT}");
+            o.connect_to.set([entry.as_bytes()]).unwrap();
+        },
+    ] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get_with(&mut m, converting(), "/", talk, |o| set(o, bad));
+        assert_eq!(ran.result, Err(ErrorKind::UrlMalformat));
+        assert!(ran.request.is_empty());
+        let said = "Illegal hostname: trusted.example@evil.example\n".to_string();
+        assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+    }
+}
+
 /// A proxy and a connect-to entry named in Unicode are looked up by
 /// their ASCII names, as the origin is (`Curl_peer_from_proxy_url`,
 /// `Curl_peer_from_connect_to`).

@@ -51,7 +51,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use crate::idn::{Idn, IdnFailure};
+use crate::idn::{Idn, NameRefused};
 use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
 use crate::tls::{TlsIdentity, TlsView};
@@ -1468,8 +1468,9 @@ impl Peer {
 
     /// The same peer, its host looked up by its ASCII form where the URL
     /// names it in Unicode and `idn` converts it (`peer_parse_host`); a
-    /// name that does not convert, or converts to nothing, is refused.
-    pub(crate) fn idn(mut self, idn: Option<&dyn Idn>) -> Result<Peer, IdnFailure> {
+    /// name that does not convert, converts to nothing or to a name no
+    /// host may have, is refused.
+    pub(crate) fn idn(mut self, idn: Option<&dyn Idn>) -> Result<Peer, NameRefused> {
         if self.at == PeerAt::Network && !self.ipv6() {
             self.ascii = crate::idn::lookup_name(idn, &self.host)?;
         }

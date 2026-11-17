@@ -45,22 +45,67 @@ impl From<OutOfMemory> for IdnFailure {
     }
 }
 
+/// Why a name in Unicode is not looked up.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NameRefused {
+    /// The library did not convert it, or converted it to nothing.
+    Convert(IdnFailure),
+    /// It converted to this, which holds a byte no host name may hold or
+    /// ends as none may (`Curl_hostname_check`): a character that IDNA
+    /// maps to `@`, `/` or another of a URL's delimiters.
+    Illegal(Vec<u8>),
+}
+
+impl From<IdnFailure> for NameRefused {
+    fn from(e: IdnFailure) -> Self {
+        NameRefused::Convert(e)
+    }
+}
+
+impl NameRefused {
+    /// The transfer's error, said as `peer_parse_host` says it.
+    pub(crate) fn fail<H: crate::multi::Host>(
+        self,
+        cx: &mut crate::multi::state::StepCx<'_, H>,
+    ) -> crate::error::ErrorKind {
+        match self {
+            NameRefused::Convert(e) => e.kind(),
+            NameRefused::Illegal(name) => crate::trace::fail_with(
+                cx,
+                crate::error::ErrorKind::UrlMalformat,
+                &[b"Illegal hostname: ", &name],
+            ),
+        }
+    }
+}
+
+/// The ASCII form `idn` makes of `name`, which is neither empty nor a
+/// name a host may not have (`Curl_idn_decode`, then
+/// `Curl_hostname_check`). The one caller of [`Idn::to_ascii`]: a
+/// library's output is never used unchecked.
+pub(crate) fn ascii_form(idn: &dyn Idn, name: &[u8]) -> Result<Vec<u8>, NameRefused> {
+    let ascii = idn.to_ascii(name)?;
+    if ascii.is_empty() {
+        return Err(IdnFailure::Malformed.into());
+    }
+    if !crate::url::is_host_name(&ascii) {
+        return Err(NameRefused::Illegal(ascii));
+    }
+    Ok(ascii)
+}
+
 /// The name `name` is looked up by: itself if in ASCII, else its ASCII
-/// form, which an empty one is not (`Curl_idn_decode`). `None` for one in
-/// ASCII, or without an IDN library, which sends it as it is, as C's
-/// build without one does.
+/// form, as [`ascii_form`] makes it. `None` for one in ASCII, or without
+/// an IDN library, which sends it as it is, as C's build without one
+/// does.
 pub(crate) fn lookup_name(
     idn: Option<&dyn Idn>,
     name: &[u8],
-) -> Result<Option<Vec<u8>>, IdnFailure> {
+) -> Result<Option<Vec<u8>>, NameRefused> {
     let Some(idn) = idn.filter(|_| !name.is_ascii()) else {
         return Ok(None);
     };
-    let ascii = idn.to_ascii(name)?;
-    if ascii.is_empty() {
-        return Err(IdnFailure::Malformed);
-    }
-    Ok(Some(ascii))
+    ascii_form(idn, name).map(Some)
 }
 
 /// A test library that knows a few names, as libidn2 converts them.
@@ -77,6 +122,15 @@ impl FakeIdn {
         ("åäö.test", "xn--4cab6c.test"),
         // Zero-width characters, which IDNA maps to nothing.
         ("\u{200b}\u{200c}", ""),
+        // Fullwidth forms, which IDNA maps to their ASCII: a commercial
+        // at, a solidus and a full stop (lib1560's `set_idn_url`).
+        (
+            "trusted.example\u{ff20}evil.example",
+            "trusted.example@evil.example",
+        ),
+        ("bad\u{ff0f}host.example", "bad/host.example"),
+        ("a\u{ff0f}host.example", "a/host.example"),
+        ("bad\u{ff0e}host.example", "bad.host.example"),
     ];
 }
 
@@ -121,11 +175,32 @@ mod tests {
         );
         assert_eq!(
             lookup_name(idn, "\u{200b}\u{200c}".as_bytes()),
-            Err(IdnFailure::Malformed)
+            Err(IdnFailure::Malformed.into())
         );
         assert_eq!(
             lookup_name(idn, b"bad-\xe2\x90.local"),
-            Err(IdnFailure::Malformed)
+            Err(IdnFailure::Malformed.into())
+        );
+    }
+
+    /// A name whose ASCII form holds a delimiter of a URL is refused,
+    /// with what it converted to; a fullwidth stop is an ordinary dot.
+    #[test]
+    fn a_name_converted_to_a_delimiter_is_refused() {
+        let idn: Option<&dyn Idn> = Some(&FakeIdn);
+        assert_eq!(
+            lookup_name(idn, "trusted.example\u{ff20}evil.example".as_bytes()),
+            Err(NameRefused::Illegal(
+                b"trusted.example@evil.example".to_vec()
+            ))
+        );
+        assert_eq!(
+            lookup_name(idn, "bad\u{ff0f}host.example".as_bytes()),
+            Err(NameRefused::Illegal(b"bad/host.example".to_vec()))
+        );
+        assert_eq!(
+            lookup_name(idn, "bad\u{ff0e}host.example".as_bytes()),
+            Ok(Some(b"bad.host.example".to_vec()))
         );
     }
 }

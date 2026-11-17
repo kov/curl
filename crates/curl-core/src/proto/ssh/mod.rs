@@ -616,9 +616,7 @@ impl Request {
             .ok_or(ErrorKind::UrlMalformat)?;
         let name: &[u8] = if sftp { b"sftp" } else { b"scp" };
         let scheme = Scheme::named(name).expect("libcurl knows SCP and SFTP");
-        let scope = cx.easy().options().address_scope;
-        let idn = cx.easy().libraries().idn;
-        let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
+        let peer = super::transfer_peer((scheme, host, port), url, cx)?;
         let pipeline = Pipeline::new(Reach::Network);
         let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
         let takes = Takes::of(Some(scheme));

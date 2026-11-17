@@ -35,7 +35,7 @@ use curl_alloc::Lock;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::error::UrlErrorKind;
-use crate::idn::{Idn, IdnFailure};
+use crate::idn::{Idn, IdnFailure, NameRefused};
 use encode::{Query, bad_octets, copy, push};
 
 /// URL text: bytes, valid UTF-8 or not, without a terminating zero.
@@ -238,21 +238,19 @@ impl GetOptions {
             return Ok(None);
         }
         let idn = idn.ok_or(UrlErrorKind::LacksIdn)?;
+        // Punycode is checked as a host name: a character IDNA maps to a
+        // delimiter must not become one (`urlget_format`, `urlget_url`).
         let converted = if to_ascii {
-            idn.to_ascii(host).and_then(|a| {
-                if a.is_empty() {
-                    Err(IdnFailure::Malformed)
-                } else {
-                    Ok(a)
-                }
-            })
+            crate::idn::ascii_form(idn, host)
         } else {
-            idn.to_unicode(host)
+            idn.to_unicode(host).map_err(NameRefused::Convert)
         };
         match converted {
             Ok(converted) => Ok(Some(converted)),
-            Err(IdnFailure::Malformed) => Err(UrlErrorKind::BadHostname),
-            Err(IdnFailure::OutOfMemory) => Err(UrlErrorKind::OutOfMemory),
+            Err(NameRefused::Convert(IdnFailure::OutOfMemory)) => Err(UrlErrorKind::OutOfMemory),
+            Err(NameRefused::Convert(IdnFailure::Malformed) | NameRefused::Illegal(_)) => {
+                Err(UrlErrorKind::BadHostname)
+            }
         }
     }
 }
@@ -2186,6 +2184,28 @@ mod tests {
             u.get_with(Part::Host, puny, fake),
             Err(UrlErrorKind::BadHostname)
         );
+        // Nor does one whose punycode is no host name: a fullwidth `@` or
+        // `/` maps to the delimiter itself; a fullwidth stop is a dot
+        // (lib1560's `set_idn_url`).
+        for (name, ok) in [
+            ("https://trusted.example\u{ff20}evil.example/", None),
+            ("https://bad\u{ff0f}host.example/", None),
+            (
+                "https://bad\u{ff0e}host.example/",
+                Some("https://bad.host.example/"),
+            ),
+        ] {
+            let u = Url::parse(name.as_bytes(), ParseOptions::NONE).unwrap();
+            let got = u.get_with(Part::Url, puny, fake).map(|v| show(&v));
+            let host = u.get_with(Part::Host, puny, fake).map(|v| show(&v));
+            match ok {
+                Some(url) => assert_eq!(got, Ok(url.into()), "{name}"),
+                None => {
+                    assert_eq!(got, Err(UrlErrorKind::BadHostname), "{name}");
+                    assert_eq!(host, Err(UrlErrorKind::BadHostname), "{name}");
+                }
+            }
+        }
 
         // A relative URL resolved against a base read with the flags
         // given: the default port is written into the result.

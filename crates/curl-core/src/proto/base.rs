@@ -106,6 +106,7 @@ impl RequestBase {
             scope,
             idn,
         )
+        .map_err(super::PeerRefused::kind)
     }
 
     pub(super) fn scheme(&self) -> Scheme {
@@ -146,7 +147,5 @@ pub(super) fn peer_of<H: Host>(
         .and_then(|p| p.parse().ok())
         .ok_or(ErrorKind::UrlMalformat)?;
     let scheme = Scheme::named(scheme).expect("libcurl knows the scheme");
-    let scope = cx.easy().options().address_scope;
-    let idn = cx.easy().libraries().idn;
-    url_peer((scheme, host, port), url, scope, idn)
+    super::transfer_peer((scheme, host, port), url, cx)
 }

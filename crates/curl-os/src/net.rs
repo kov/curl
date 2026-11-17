@@ -1212,11 +1212,21 @@ impl UdpSocket {
         let slot = room.slot;
         let n = out.len().min(room.slots);
         assert!(n > 0, "a receive needs room for a datagram");
-        let int = u32::try_from(size_of::<libc::c_int>()).expect("fits");
-        // SAFETY: a size computation, no pointer.
-        let per = 2 * unsafe { libc::CMSG_SPACE(int) } as usize;
+        // Room for each message the kernel may write beside a datagram: a
+        // basic timestamp of two 64-bit fields, timestamping's three
+        // timespecs, the packet's information of four 32-bit fields, the
+        // type of service or traffic class, and the joined packets' size
+        // (`CMSG_PER_MSG_SIZE`). Short of room, the kernel cuts the
+        // messages, the joined size among them.
+        let space = |data: usize| {
+            let data = u32::try_from(data).expect("fits");
+            // SAFETY: a size computation, no pointer.
+            unsafe { libc::CMSG_SPACE(data) as usize }
+        };
+        let int = size_of::<libc::c_int>();
+        let per = space(16) + space(48) + space(16) + space(int) + space(int);
         // Aligned for the control messages' headers.
-        let mut control = [0u64; BATCH * 6];
+        let mut control = [0u64; BATCH * 22];
         assert!(
             per * BATCH <= size_of_val(&control),
             "the room holds the messages"
@@ -1503,26 +1513,37 @@ fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (usize, u8) {
     while !cm.is_null() {
         // SAFETY: a control message within the room, as the kernel wrote it.
         let header = unsafe { &*cm };
-        let (level, kind, len) = (header.cmsg_level, header.cmsg_type, header.cmsg_len);
+        let (level, kind) = (header.cmsg_level, header.cmsg_type);
+        // Its data is read only as far as its length says it goes
+        // (`CMSG_LEN`): a message cut short carries less than its kind.
+        #[allow(clippy::useless_conversion, reason = "a `socklen_t` on macOS")]
+        let carries = |size: usize| {
+            let size = u32::try_from(size).expect("fits");
+            // SAFETY: a size computation, no pointer.
+            let wanted = unsafe { libc::CMSG_LEN(size) };
+            usize::try_from(header.cmsg_len).is_ok_and(|len| len >= wanted as usize)
+        };
         // SAFETY: as above: its data follows its header.
         let data = unsafe { libc::CMSG_DATA(cm) };
         let int = || {
-            // SAFETY: an int's data, as these messages carry.
+            // SAFETY: an int's data, which its length says it carries.
             unsafe { data.cast::<libc::c_int>().read_unaligned() }
         };
+        let int_size = size_of::<libc::c_int>();
         match (level, kind) {
             #[cfg(target_os = "linux")]
-            (libc::SOL_UDP, libc::UDP_GRO) if segment == 0 => {
+            (libc::SOL_UDP, libc::UDP_GRO) if segment == 0 && carries(int_size) => {
                 segment = usize::try_from(int()).unwrap_or(0);
             }
             (libc::IPPROTO_IP, IPV4_TOS_MESSAGE)
-                if family == libc::AF_INET as libc::sa_family_t && len > 0 =>
+                if family == libc::AF_INET as libc::sa_family_t && carries(1) =>
             {
-                // SAFETY: the type of service's one byte.
+                // SAFETY: the type of service's one byte, which its length
+                // says it carries.
                 ecn = unsafe { data.read() } & ECN_MASK as u8;
             }
             (libc::IPPROTO_IPV6, libc::IPV6_TCLASS)
-                if family == libc::AF_INET6 as libc::sa_family_t && len > 0 =>
+                if family == libc::AF_INET6 as libc::sa_family_t && carries(int_size) =>
             {
                 ecn = (int() & ECN_MASK) as u8;
             }
@@ -2406,6 +2427,86 @@ mod room_tests {
     fn a_room_too_large_fails() {
         assert!(DatagramRoom::try_new(2, usize::MAX).is_err());
         assert!(DatagramRoom::try_new(1, usize::MAX).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod control_tests {
+    use super::*;
+
+    /// What `control_of` reads of one control message of `level` and
+    /// `kind` whose length says it carries `said` bytes, `data` following
+    /// its header whatever the length says, for a datagram of `family`.
+    fn read_one(
+        level: libc::c_int,
+        kind: libc::c_int,
+        said: usize,
+        data: &[u8],
+        family: libc::c_int,
+    ) -> (usize, u8) {
+        let mut room = [0u64; 8];
+        let base = room.as_mut_ptr().cast::<u8>();
+        // SAFETY: all zeroes is a valid header.
+        let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+        hdr.msg_control = base.cast();
+        hdr.msg_controllen = size_of_val(&room) as _;
+        // SAFETY: the room is aligned for a header and holds one.
+        let cm = unsafe { libc::CMSG_FIRSTHDR(&hdr) };
+        assert!(!cm.is_null());
+        // SAFETY: a size computation, no pointer.
+        let len = unsafe { libc::CMSG_LEN(u32::try_from(said).unwrap()) };
+        // SAFETY: the header at the start of the room, which nothing else
+        // points to meanwhile.
+        let header = unsafe { &mut *cm };
+        header.cmsg_level = level;
+        header.cmsg_type = kind;
+        header.cmsg_len = len as _;
+        // SAFETY: the data follows the header within the room.
+        let at = unsafe { libc::CMSG_DATA(cm) };
+        assert!(at as usize - base as usize + data.len() <= size_of_val(&room));
+        // SAFETY: `data`'s few bytes fit after the header, as checked.
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), at, data.len()) };
+        // The one message is the last.
+        let longest = u32::try_from(said.max(data.len())).unwrap();
+        // SAFETY: a size computation, no pointer.
+        hdr.msg_controllen = unsafe { libc::CMSG_SPACE(longest) } as _;
+        control_of(&hdr, family as libc::sa_family_t)
+    }
+
+    /// A control message is read only as far as its length says it goes,
+    /// as C checks it against `CMSG_LEN` of what its kind carries: one cut
+    /// short tells nothing, though bytes follow its header.
+    #[test]
+    fn a_control_message_is_read_only_as_far_as_its_length() {
+        let int = size_of::<libc::c_int>();
+        let tclass = 2 as libc::c_int;
+        let v4 = libc::AF_INET;
+        let v6 = libc::AF_INET6;
+        // The type of service: its one byte.
+        let tos = (libc::IPPROTO_IP, IPV4_TOS_MESSAGE);
+        assert_eq!(read_one(tos.0, tos.1, 1, &[3], v4), (0, 3));
+        assert_eq!(read_one(tos.0, tos.1, 0, &[3], v4), (0, 0));
+        // The traffic class: an int.
+        let class = (libc::IPPROTO_IPV6, libc::IPV6_TCLASS);
+        assert_eq!(
+            read_one(class.0, class.1, int, &tclass.to_ne_bytes(), v6),
+            (0, 2)
+        );
+        assert_eq!(
+            read_one(class.0, class.1, 1, &tclass.to_ne_bytes(), v6),
+            (0, 0)
+        );
+        // The joined packets' size: an int, which Linux alone says.
+        #[cfg(target_os = "linux")]
+        {
+            let size = 1200 as libc::c_int;
+            let gro = (libc::SOL_UDP, libc::UDP_GRO);
+            assert_eq!(
+                read_one(gro.0, gro.1, int, &size.to_ne_bytes(), v4),
+                (1200, 0)
+            );
+            assert_eq!(read_one(gro.0, gro.1, 2, &size.to_ne_bytes(), v4), (0, 0));
+        }
     }
 }
 

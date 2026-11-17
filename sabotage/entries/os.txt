@@ -492,3 +492,11 @@ witness: curl-os fnmatch::tests::long_strings_match_as_short_ones
         return Ok(f(c(&buf[..=end])));
 --- new
         return Ok(f(c(&buf[..end])));
+
+=== a control message is read past the length it says it carries
+file: crates/curl-os/src/net.rs
+witness: curl-os net::control_tests::a_control_message_is_read_only_as_far_as_its_length
+--- old
+            usize::try_from(header.cmsg_len).is_ok_and(|len| len >= wanted as usize)
+--- new
+            usize::try_from(header.cmsg_len).is_ok_and(|len| len > 0 || wanted > 0)

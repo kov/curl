@@ -77,6 +77,8 @@ fn a_mechanism_s_name_ends_where_a_word_does() {
     assert_eq!(decode_mech(b"CRAM-MD5\r\n"), Some((Mechs::CRAM_MD5, 8)));
     // Run on into a longer name: no match.
     assert_eq!(decode_mech(b"PLAINX"), None);
+    // C names NTLM no longer: a server's offer of it is no mechanism.
+    assert_eq!(decode_mech(b"NTLM"), None);
     assert_eq!(decode_mech(b"LOGIN-1"), None);
     assert_eq!(
         decode_mech(b"SCRAM-SHA-256"),
@@ -95,6 +97,7 @@ fn the_url_s_first_auth_replaces_the_defaults() {
     assert!(sasl.url_auth(b"LOGIN"));
     assert_eq!(sasl.preferred(), Mechs::PLAIN.or(Mechs::LOGIN));
     assert!(!sasl.url_auth(b"PLAINX"));
+    assert!(!sasl.url_auth(b"NTLM"));
     assert!(!sasl.url_auth(b""));
 }
 
@@ -260,27 +263,28 @@ fn cont(resp: &[u8]) -> Progress {
     Progress::Sends(Send::Continue(b64(resp)))
 }
 
-/// The bits are C's `SASL_MECH_*`, and any is all of them but EXTERNAL.
+/// The bits are C's `SASL_MECH_*`, NTLM's left unnamed, and any is all
+/// of them but EXTERNAL.
 #[test]
 fn the_mechanisms_are_c_s_bits() {
     let bits = [
-        Mechs::LOGIN,
-        Mechs::PLAIN,
-        Mechs::CRAM_MD5,
-        Mechs::DIGEST_MD5,
-        Mechs::GSSAPI,
-        Mechs::EXTERNAL,
-        Mechs::NTLM,
-        Mechs::XOAUTH2,
-        Mechs::OAUTHBEARER,
-        Mechs::SCRAM_SHA_1,
-        Mechs::SCRAM_SHA_256,
+        (Mechs::LOGIN, 0),
+        (Mechs::PLAIN, 1),
+        (Mechs::CRAM_MD5, 2),
+        (Mechs::DIGEST_MD5, 3),
+        (Mechs::GSSAPI, 4),
+        (Mechs::EXTERNAL, 5),
+        (Mechs::XOAUTH2, 7),
+        (Mechs::OAUTHBEARER, 8),
+        (Mechs::SCRAM_SHA_1, 9),
+        (Mechs::SCRAM_SHA_256, 10),
     ];
-    for (i, m) in bits.iter().enumerate() {
-        assert_eq!(m.0, 1 << i, "{i}");
-        assert_eq!(TABLE[i].1, *m);
-        assert_eq!(m.or(*m), *m);
-        assert_eq!(Mechs::DEFAULT.has(*m), *m != Mechs::EXTERNAL);
+    assert_eq!(TABLE.len(), bits.len());
+    for (i, &(m, bit)) in bits.iter().enumerate() {
+        assert_eq!(m.0, 1 << bit, "{i}");
+        assert_eq!(TABLE[i].1, m);
+        assert_eq!(m.or(m), m);
+        assert_eq!(Mechs::DEFAULT.has(m), m != Mechs::EXTERNAL);
     }
 }
 
@@ -322,7 +326,7 @@ fn the_strongest_mechanism_both_ends_allow_is_chosen() {
     );
     assert_eq!(pick(bearer, Mechs::PLAIN), auth("PLAIN", None));
     assert_eq!(pick(pw, Mechs::LOGIN), auth("LOGIN", None));
-    assert_eq!(pick(pw, Mechs::GSSAPI.or(Mechs::NTLM)), Progress::Idle);
+    assert_eq!(pick(pw, Mechs::GSSAPI), Progress::Idle);
     assert_eq!(pick(pw, Mechs::NONE), Progress::Idle);
 }
 
@@ -713,7 +717,6 @@ fn a_mechanism_not_chosen_is_said_why() {
             "SASL: GSSAPI not builtin",
             "SASL: SCRAM-SHA-256 not builtin",
             "SASL: SCRAM-SHA-1 not builtin",
-            "SASL: NTLM not builtin",
             "SASL: OAUTHBEARER is missing CURLOPT_XOAUTH2_BEARER",
             "SASL: XOAUTH2 is missing CURLOPT_XOAUTH2_BEARER",
         ]

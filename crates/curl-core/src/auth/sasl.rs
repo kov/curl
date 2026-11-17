@@ -26,7 +26,7 @@ impl Mechs {
     pub(crate) const DIGEST_MD5: Mechs = Mechs(1 << 3);
     pub(crate) const GSSAPI: Mechs = Mechs(1 << 4);
     pub(crate) const EXTERNAL: Mechs = Mechs(1 << 5);
-    pub(crate) const NTLM: Mechs = Mechs(1 << 6);
+    // 1 << 6 was NTLM's, which C no longer names.
     pub(crate) const XOAUTH2: Mechs = Mechs(1 << 7);
     pub(crate) const OAUTHBEARER: Mechs = Mechs(1 << 8);
     pub(crate) const SCRAM_SHA_1: Mechs = Mechs(1 << 9);
@@ -51,15 +51,16 @@ impl Mechs {
     }
 }
 
-/// The mechanisms by name, in C's order (`mechtable`).
-const TABLE: [(&str, Mechs); 11] = [
+/// The mechanisms by name, in C's order (`mechtable`). NTLM is not one:
+/// a server's offer of it is not read, and a login option asking for it
+/// is malformed.
+const TABLE: [(&str, Mechs); 10] = [
     ("LOGIN", Mechs::LOGIN),
     ("PLAIN", Mechs::PLAIN),
     ("CRAM-MD5", Mechs::CRAM_MD5),
     ("DIGEST-MD5", Mechs::DIGEST_MD5),
     ("GSSAPI", Mechs::GSSAPI),
     ("EXTERNAL", Mechs::EXTERNAL),
-    ("NTLM", Mechs::NTLM),
     ("XOAUTH2", Mechs::XOAUTH2),
     ("OAUTHBEARER", Mechs::OAUTHBEARER),
     ("SCRAM-SHA-1", Mechs::SCRAM_SHA_1),
@@ -744,7 +745,6 @@ impl Sasl {
         unchosen(say, Mechs::SCRAM_SHA_1, false, false, None);
         unchosen(say, Mechs::DIGEST_MD5, true, true, None);
         unchosen(say, Mechs::CRAM_MD5, true, true, None);
-        unchosen(say, Mechs::NTLM, false, false, None);
         unchosen(say, Mechs::OAUTHBEARER, true, true, bearer);
         unchosen(say, Mechs::XOAUTH2, true, true, bearer);
     }

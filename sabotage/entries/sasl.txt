@@ -133,3 +133,33 @@ witness: curl-core auth::sasl::tests::a_password_passes_gss_api_s_gssapi_over
         matches!(security, Security::Gss(_)) && cx.has_password() && self.preferred != Mechs::GSSAPI
 --- new
         matches!(security, Security::Gss(_)) && cx.has_password() && false
+
+=== NTLM is still a mechanism's name
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::a_mechanism_s_name_ends_where_a_word_does
+--- old
+const TABLE: [(&str, Mechs); 10] = [
+    ("LOGIN", Mechs::LOGIN),
+    ("PLAIN", Mechs::PLAIN),
+    ("CRAM-MD5", Mechs::CRAM_MD5),
+    ("DIGEST-MD5", Mechs::DIGEST_MD5),
+    ("GSSAPI", Mechs::GSSAPI),
+    ("EXTERNAL", Mechs::EXTERNAL),
+--- new
+const TABLE: [(&str, Mechs); 11] = [
+    ("LOGIN", Mechs::LOGIN),
+    ("PLAIN", Mechs::PLAIN),
+    ("CRAM-MD5", Mechs::CRAM_MD5),
+    ("DIGEST-MD5", Mechs::DIGEST_MD5),
+    ("GSSAPI", Mechs::GSSAPI),
+    ("EXTERNAL", Mechs::EXTERNAL),
+    ("NTLM", Mechs(1 << 6)),
+
+=== a blocked login still says NTLM is not built in
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::a_mechanism_not_chosen_is_said_why
+--- old
+        unchosen(say, Mechs::CRAM_MD5, true, true, None);
+--- new
+        unchosen(say, Mechs::CRAM_MD5, true, true, None);
+        unchosen(say, Mechs(1 << 6), false, false, None);

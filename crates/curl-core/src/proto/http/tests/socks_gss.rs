@@ -400,3 +400,28 @@ fn sspi_s_failures_are_said_as_c_s_windows_build_says_them() {
         "{text:?}"
     );
 }
+
+/// The application's delegation is the origin's: the SOCKS5 proxy's
+/// GSS-API context delegates nothing unless the proxy's own option asks
+/// for it.
+#[test]
+fn delegation_to_the_origin_does_not_reach_the_socks_proxy() {
+    let always = crate::options::Delegation {
+        by_policy: false,
+        always: true,
+    };
+    for proxy_too in [false, true] {
+        let (gss, libraries) = scripted();
+        gss.then_token(b"t");
+        through_gss(&libraries, &[&b"\x05\x01"[..], b"\x01\x01"], true, |o| {
+            o.login.make_mut().unwrap().delegation = always;
+            if proxy_too {
+                o.proxy.make_mut().unwrap().delegation = always;
+            }
+        });
+        let Asked::Context { flags, .. } = &gss.asked()[0] else {
+            panic!("a context first");
+        };
+        assert_eq!(flags.delegate, proxy_too, "{flags:?}");
+    }
+}

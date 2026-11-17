@@ -282,7 +282,6 @@ pub(super) fn challenged<H: Host>(
         side: Side::Proxy,
         credentials,
         peer,
-        delegation: cx.easy().options().login.delegation,
         // The origin's TLS has no peer yet while the tunnel is set up.
         tls: None,
     };

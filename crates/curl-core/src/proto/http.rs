@@ -1295,14 +1295,12 @@ impl Request {
                 unreachable!("only a proxy that forwards is negotiated with here")
             }
         };
-        let delegation = cx.easy().options().login.delegation;
         let (kept, tls) = lease.get().negotiate_over();
         let request = negotiate::Request {
             security,
             side,
             credentials,
             peer,
-            delegation,
             tls,
         };
         let (made, closing) = negotiate::output(cx, kept, &request);
@@ -2711,7 +2709,6 @@ impl Request {
         if matches!(letter, Some(b'w' | b'p'))
             && let Some(security) = cx.easy().libraries().security
         {
-            let delegation = cx.easy().options().login.delegation;
             let forwarding = lease
                 .conn()
                 .forwarding()
@@ -2747,7 +2744,6 @@ impl Request {
                         side,
                         credentials,
                         peer,
-                        delegation,
                         tls,
                     };
                     let (taken, closing) = negotiate::challenged(cx, kept, &request, challenge);

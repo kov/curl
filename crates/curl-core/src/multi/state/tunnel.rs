@@ -657,7 +657,6 @@ fn challenged<H: Host>(s: &mut SetupMut<'_>, lent: &mut Lent<'_>, cx: &mut StepC
         side: Side::Proxy,
         credentials,
         peer,
-        delegation: cx.easy().options().login.delegation,
         // The origin's TLS has no peer yet while the tunnel is set up.
         tls: None,
     };
@@ -700,7 +699,6 @@ fn negotiate<H: Host>(
         side: Side::Proxy,
         credentials,
         peer,
-        delegation: cx.easy().options().login.delegation,
         // The origin's TLS has no peer yet while the tunnel is set up.
         tls: None,
     };

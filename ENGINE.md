@@ -2470,10 +2470,10 @@ Built so far: `enum Route { Local, Net(NetRoute) }`, with `NetRoute { origin, vi
 cold }`; `tls` is the origin's TLS, from the start (`OriginTls::Start`, a scheme
 with `PROTOPT_SSL`) or the STARTTLS upgrade's (`OriginTls::Upgrade`), each a `RouteTls`:
 `Wanted` on a transfer's route, `Made` on a connection's (§4.9); `cold` is `RouteCold { ip,
-delegation, local, login, use_ssl, ftp, ssh }` behind one shared pointer, none when a route
+delegation, proxy_delegation, local, login, use_ssl, ftp, ssh }` behind one shared pointer, none when a route
 has none of it, as few do (it keeps every connection's slot at C's size): the `IpVersion`
 other than any (`NetRoute::ip`; a waiting transfer that reads another as it looks again
-changes a copy, `NetRoute::set_ip`), the GSS-API delegation, the local end, the credentials a connection logs in with for a scheme without
+changes a copy, `NetRoute::set_ip`), the GSS-API delegation to the origin and to the proxy, the local end, the credentials a connection logs in with for a scheme without
 `PROTOPT_CREDSPERREQUEST` (moved there from the request, which then holds none), the
 `CURLOPT_USE_SSL` level and what FTP and SSH set up with. `Peer` is C's
 `struct Curl_peer`: the `Scheme` (its row in the scheme table, below), the host as the URL names it, the port, the IPv6 zone and its scope (a
@@ -2577,8 +2577,10 @@ credentials for it) after `Route::serves`, as C's `url_match_auth` and `url_matc
 a connection bound to credentials serves only those, one mid-handshake with the origin serves
 only a transfer negotiating as the same credentials with the same origin, and one negotiating
 with its proxy only a transfer negotiating with it — the proxy's credentials, its service
-among them, are the route's. The delegation asked (`CURLOPT_GSSAPI_DELEGATION`) is part of
-the route, in `RouteCold`, compared in `Route::serves` (url.c:882). A connection whose handshake with
+among them, are the route's. The delegation asked (`CURLOPT_GSSAPI_DELEGATION`) is the
+origin's alone; a proxy's GSS-API contexts, Negotiate's and SOCKS5's, delegate as
+`Proxy::delegation` says, none unless a Rust caller sets it (`negotiate::delegation` picks by
+side). Both are part of the route, in `RouteCold`, compared in `Route::serves` (url.c:882). A connection whose handshake with
 either peer is in progress (state `Recv`) is kept even when the transfer forbade reuse, as
 multi.c keeps it. Negotiate runs only with a GSS-API library on the handle; without one the
 challenges are still read, so `CURLINFO_HTTPAUTH_AVAIL` has the bit, which the shim reports only

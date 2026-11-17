@@ -536,6 +536,11 @@ pub struct Proxy {
     /// SOCKS5 GSS-API's protection level is sent unwrapped, as NEC's
     /// reference implementation has it (`CURLOPT_SOCKS5_GSSAPI_NEC`).
     pub socks5_gssapi_nec: bool,
+    /// Whether a GSS-API context with the proxy, Negotiate's or SOCKS5's,
+    /// hands the user's credentials on to it: none unless set here, as
+    /// the origin's (`Login::delegation`) is the origin's alone. The C
+    /// ABI has no option for it.
+    pub delegation: Delegation,
     /// The header lines an HTTP proxy is sent of its own
     /// (`CURLOPT_PROXYHEADER`).
     pub headers: UserHeaders,
@@ -643,6 +648,7 @@ impl Proxy {
             socks5_auth: self.socks5_auth,
             service: self.service.as_deref().map(copy).transpose()?,
             socks5_gssapi_nec: self.socks5_gssapi_nec,
+            delegation: self.delegation,
             headers: self.headers.shared(),
             unified_headers: self.unified_headers,
             haproxy: self.haproxy,
@@ -1105,6 +1111,10 @@ impl ColdGroup for Proxy {
         socks5_auth: Socks5Auth::DEFAULT,
         service: None,
         socks5_gssapi_nec: false,
+        delegation: Delegation {
+            by_policy: false,
+            always: false,
+        },
         headers: UserHeaders::NONE,
         unified_headers: false,
         haproxy: false,

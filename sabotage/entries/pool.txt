@@ -893,10 +893,19 @@ witness: curl-core proto::http::tests::negotiate::a_negotiated_connection_serves
 features: test-util,debug-hooks
 --- old
             && *delegation == crate::options::Delegation::default()
-            && !local.binds()
+            && *proxy_delegation == crate::options::Delegation::default()
 --- new
             && true
-            && !local.binds()
+            && *proxy_delegation == crate::options::Delegation::default()
+
+=== a route's delegation to its proxy is lost when it has nothing else rare
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::negotiate::a_negotiated_connection_serves_only_its_own
+features: test-util,debug-hooks
+--- old
+            && *proxy_delegation == crate::options::Delegation::default()
+--- new
+            && true
 
 === a waiting transfer whose route's copy is refused goes on with the IP version it had
 file: crates/curl-core/src/multi/state.rs

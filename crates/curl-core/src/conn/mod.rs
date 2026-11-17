@@ -328,6 +328,9 @@ pub(crate) struct RouteCold {
     /// (`conn->gssapi_delegation`): a transfer reusing it must ask the
     /// same (`url_match_auth`).
     pub(crate) delegation: crate::options::Delegation,
+    /// How far GSS-API contexts with its proxy delegate them: one made
+    /// with the proxy, kept on the connection, is the proxy's to keep.
+    pub(crate) proxy_delegation: crate::options::Delegation,
     /// What each socket's local end is bound to, if anything (C's
     /// `interface_opts`, `localport`, `localportrange`).
     pub(crate) local: crate::options::LocalBind,
@@ -422,6 +425,10 @@ impl RouteCold {
             by_policy: false,
             always: false,
         },
+        proxy_delegation: crate::options::Delegation {
+            by_policy: false,
+            always: false,
+        },
         local: crate::options::LocalBind::NONE,
         login: None,
         use_ssl: crate::options::UseSsl::None,
@@ -435,6 +442,7 @@ impl RouteCold {
         let RouteCold {
             ip,
             delegation,
+            proxy_delegation,
             local,
             login,
             use_ssl,
@@ -443,6 +451,7 @@ impl RouteCold {
         } = self;
         *ip == IpVersion::Any
             && *delegation == crate::options::Delegation::default()
+            && *proxy_delegation == crate::options::Delegation::default()
             && !local.binds()
             && login.is_none()
             && *use_ssl == crate::options::UseSsl::None
@@ -466,6 +475,7 @@ impl RouteCold {
             // `Route::reaches`, before C's notes of what the search saw.
             ip: _,
             delegation,
+            proxy_delegation,
             local: _,
             login,
             use_ssl,
@@ -475,6 +485,7 @@ impl RouteCold {
         let RouteCold {
             ip: _,
             delegation: want_delegation,
+            proxy_delegation: want_proxy_delegation,
             local: _,
             login: want_login,
             use_ssl: want_use_ssl,
@@ -525,6 +536,7 @@ impl RouteCold {
             && login_same
             // Compared for any protocol, as C compares it (`url_match_auth`).
             && delegation == want_delegation
+            && proxy_delegation == want_proxy_delegation
     }
 
     /// The rare part of a route that takes only addresses of `ip`, none
@@ -545,6 +557,7 @@ impl RouteCold {
         let RouteCold {
             ip,
             delegation,
+            proxy_delegation,
             local,
             login,
             use_ssl,
@@ -554,6 +567,7 @@ impl RouteCold {
         Ok(RouteCold {
             ip: *ip,
             delegation: *delegation,
+            proxy_delegation: *proxy_delegation,
             local: local.try_clone()?,
             login: login
                 .as_ref()
@@ -2838,6 +2852,7 @@ mod tests {
                     TryArc::try_new(RouteCold {
                         ip: IpVersion::Any,
                         delegation: Default::default(),
+                        proxy_delegation: Default::default(),
                         local: crate::options::LocalBind::NONE,
                         login: None,
                         use_ssl,
@@ -3170,6 +3185,7 @@ mod tests {
                     TryArc::try_new(RouteCold {
                         ip: IpVersion::Any,
                         delegation: Default::default(),
+                        proxy_delegation: Default::default(),
                         local,
                         login: None,
                         use_ssl: crate::options::UseSsl::None,

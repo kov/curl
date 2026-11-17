@@ -467,7 +467,7 @@ fn the_next_request_authenticates_again_unless_it_persists() {
 fn a_negotiated_connection_serves_only_its_own() {
     let reused = "Reusing existing http: connection with host 127.0.0.1\n";
     type Case = (&'static str, fn(&mut Options), bool);
-    let cases: [Case; 6] = [
+    let cases: [Case; 7] = [
         (
             "same credentials",
             |o| o.login.make_mut().unwrap().user = Some(b"u".to_vec()),
@@ -500,6 +500,14 @@ fn a_negotiated_connection_serves_only_its_own() {
             |o| {
                 o.login.make_mut().unwrap().user = Some(b"u".to_vec());
                 o.login.make_mut().unwrap().delegation.always = true;
+            },
+            false,
+        ),
+        (
+            "delegating to a proxy",
+            |o| {
+                o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+                o.proxy.make_mut().unwrap().delegation.always = true;
             },
             false,
         ),
@@ -971,6 +979,57 @@ fn a_forwarding_proxy_gets_the_first_token_at_once() {
         let report = ran.easy.report();
         assert_eq!(report.proxy_auth_used(), AuthMethods::NEGOTIATE);
         assert_eq!(report.auth_used(), AuthMethods::NONE);
+    }
+}
+
+/// The application's delegation is the origin's: a proxy negotiated with
+/// beside it gets none unless the proxy's own option asks for it, the
+/// forwarding proxy's context and a tunnel's alike.
+#[test]
+fn delegation_to_the_origin_does_not_reach_the_proxy() {
+    let always = Delegation {
+        by_policy: false,
+        always: true,
+    };
+    let flags = |gss: &Scripted| -> Vec<(Vec<u8>, Flags)> {
+        gss.asked()
+            .into_iter()
+            .filter_map(|a| match a {
+                Asked::Context { host, flags, .. } => Some((host, flags)),
+                _ => None,
+            })
+            .collect()
+    };
+    let delegating = Flags {
+        mutual: true,
+        delegate: true,
+        ..Flags::default()
+    };
+    let not = Flags {
+        mutual: true,
+        ..Flags::default()
+    };
+    for proxy_too in [false, true] {
+        let (gss, libraries) = scripted();
+        gss.then_token(b"proxy").then_token(b"origin");
+        let (mut m, talk, _) = server(&[OK_200], false);
+        let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
+            via_proxy(o, false);
+            o.login.make_mut().unwrap().delegation = always;
+            if proxy_too {
+                o.proxy.make_mut().unwrap().delegation = always;
+            }
+        });
+        assert_eq!(ran.result, Ok(()));
+        let proxy = if proxy_too { delegating } else { not };
+        assert_eq!(
+            flags(gss),
+            [
+                (b"127.0.0.1".to_vec(), proxy),
+                (b"origin.example".to_vec(), delegating),
+            ],
+            "{proxy_too}"
+        );
     }
 }
 

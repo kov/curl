@@ -956,6 +956,7 @@ fn route_cold<H: Host>(
     let cold = crate::conn::RouteCold {
         ip: options.ip_version,
         delegation: options.login.delegation,
+        proxy_delegation: options.proxy.delegation,
         local,
         login: proto.take_login()?,
         use_ssl,

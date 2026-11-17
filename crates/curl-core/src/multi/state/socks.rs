@@ -136,7 +136,7 @@ fn start<H: Host>(
     let gss = cx.easy().libraries().security.map(|library| GssMethod {
         library,
         nec: options.proxy.socks5_gssapi_nec,
-        delegation: options.login.delegation,
+        delegation: options.proxy.delegation,
     });
     let exchange = Exchange::new(version, dest, creds, auth, gss).map_err(|e| refused(cx, &e))?;
     try_box(Handshake::Socks(Socks(exchange))).map_err(|_| ErrorKind::OutOfMemory)

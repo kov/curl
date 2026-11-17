@@ -234,9 +234,9 @@ impl Wants<'static> {
     };
 }
 
-/// What a request negotiates with: the library, the peer, the
-/// credentials it has for that peer, and how far the credentials are
-/// delegated.
+/// What a request negotiates with: the library, the peer and the
+/// credentials it has for that peer. How far the credentials are
+/// delegated is the side's (`delegation`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Request<'r> {
     pub(crate) security: Security,
@@ -245,7 +245,6 @@ pub(crate) struct Request<'r> {
     pub(crate) credentials: Option<Secret<'r>>,
     /// The peer the context is with: the origin, or the proxy.
     pub(crate) peer: &'r Peer,
-    pub(crate) delegation: Delegation,
     /// The connection whose origin's TLS, if it has one, both sides'
     /// exchanges are bound to; none while a tunnel is set up, before that
     /// TLS has a peer.
@@ -575,8 +574,8 @@ fn step<H: Host>(
         };
         let flags = Flags {
             mutual: true,
-            delegate_by_policy: request.delegation.by_policy,
-            delegate: request.delegation.always,
+            delegate_by_policy: delegation(cx, request.side).by_policy,
+            delegate: delegation(cx, request.side).always,
         };
         match gss.context(target, Mech::Spnego, flags) {
             Ok(context) => side.context = Some(Context::Gss(context)),
@@ -605,6 +604,17 @@ fn step<H: Host>(
 
 /// The service the context is with: the one the credentials name, or
 /// `HTTP`.
+/// How far a context with `side` hands the user's credentials on: the
+/// origin's as `CURLOPT_GSSAPI_DELEGATION` says, the proxy's as its own
+/// option says, none unless set.
+fn delegation<H: Host>(cx: &StepCx<'_, H>, side: Side) -> Delegation {
+    let options = cx.easy().options();
+    match side {
+        Side::Host => options.login.delegation,
+        Side::Proxy => options.proxy.delegation,
+    }
+}
+
 fn service<'r>(request: &Request<'r>) -> &'r [u8] {
     request
         .credentials
@@ -689,7 +699,7 @@ fn sspi_step<H: Host>(
             .try_extend_from_slice(part)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     }
-    let delegate = request.delegation.always;
+    let delegate = delegation(cx, request.side).always;
     let call = Initialize {
         target: &target,
         flags: Req {

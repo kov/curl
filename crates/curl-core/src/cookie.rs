@@ -155,7 +155,8 @@ pub(crate) struct Cookie {
     tailmatch: bool,
     /// It goes only over a secure connection.
     secure: bool,
-    /// It was set by a server, not read from a file.
+    /// It was set by a server or given by the application, not read from
+    /// a file.
     live: bool,
     http_only: bool,
     prefix: Prefix,
@@ -577,7 +578,9 @@ impl Jar {
         if !self.running && self.new_session && co.expires == 0 {
             return Ok(None);
         }
-        co.live = self.running;
+        // A server's cookie, or one the application gives, is live; one
+        // read from a file is not (`COOKIE_LIVE`).
+        co.live = self.running || matches!(source, Source::Application);
         self.last_created = self.last_created.wrapping_add(1);
         co.created = self.last_created;
         if source.sweeps() {

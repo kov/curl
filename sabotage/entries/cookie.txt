@@ -408,3 +408,11 @@ witness: curl-core cookie::tests::a_file_s_set_cookie_line_without_a_path_has_th
     co.path = sanitized_path(path)?;
 --- new
     co.path = if path.is_empty() { Vec::new() } else { sanitized_path(path)? };
+
+=== an application's cookie before a transfer is taken for one read from a file
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::an_application_cookie_is_kept_over_a_file_s
+--- old
+        co.live = self.running || matches!(source, Source::Application);
+--- new
+        co.live = self.running;

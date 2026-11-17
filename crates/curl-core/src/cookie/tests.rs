@@ -604,6 +604,37 @@ fn takes_application_lines_of_both_forms() {
     );
 }
 
+/// A cookie the application gives before any transfer is live, as a
+/// server's is: a file read after it does not replace it, and a second
+/// line of the application's does (`COOKIE_LIVE` from `cookielist`).
+#[test]
+fn an_application_cookie_is_kept_over_a_file_s() {
+    for (first, second) in [
+        (
+            &b"example.com\tTRUE\t/\tFALSE\t0\thas_js\tfirst"[..],
+            &b"example.com\tTRUE\t/\tFALSE\t0\thas_js\tmanual"[..],
+        ),
+        (
+            b"Set-Cookie: has_js=first; domain=example.com; path=/",
+            b"Set-Cookie: has_js=manual; domain=example.com; path=/",
+        ),
+    ] {
+        let mut jar = Jar::default();
+        let mut n = 0;
+        jar.add_line(first, None, NOW, &mut n).unwrap();
+        jar.add_line(second, None, NOW, &mut n).unwrap();
+        let file = b"example.com\tTRUE\t/\tFALSE\t0\thas_js\t1\n";
+        jar.load(file, false, true, None, NOW, &mut 0, |_| {})
+            .unwrap();
+        assert_eq!(
+            lines(&jar),
+            [".example.com\tTRUE\t/\tFALSE\t0\thas_js\tmanual"],
+            "{}",
+            String::from_utf8_lossy(first)
+        );
+    }
+}
+
 /// A list naming `com` and `co.uk` alone.
 struct Two;
 

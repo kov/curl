@@ -129,7 +129,7 @@ yet meet.
      getinfo inside callbacks.
    - 7d. **Done.** `Pause`, `PauseRequest`, `ClientOut::Held` with `HeldOutput`, and
      `Multi::pause`/`TransferCx::pause`, a sibling's unpause replaying at once. Tests: pause and
-     replay with interleaving (3235/3236 shapes), the kept piece, the 64 MiB cap, a pause
+     replay with interleaving, the kept piece, the 64 MiB cap, a pause
      where none is supported, the timer told of an unpause. The timer and socket callbacks
      inside `TransferCx::pause` (decision 10) come with step 13; until then the timer hears of
      it at the end of the pass and the socket callback after the step.
@@ -440,12 +440,11 @@ cargo-mutants run on the milestone's diff.
     `CURLOPT_HAPROXYPROTOCOL`, `CURLOPT_HAPROXY_CLIENT_IP`, `--haproxy-protocol` and
     `--haproxy-clientip`; a SOCKS pre-proxy in front of the HTTP proxy, with
     `CURLOPT_PRE_PROXY` and `--preproxy`. HTTPS proxies wait on TLS.
-32. **http: decompress.** **Done**, but for 3236. The pause gate holds a paused body still
+32. **http: decompress.** **Done.** The pause gate holds a paused body still
     coded, as C's does; Content-Encoding and `Accept-Encoding` (`--compressed`), Transfer-Encoding
     and `TE` (`--tr-encoding`), and `--raw` for both, with a binding crate per library:
-    `curl-zlib` (`deflate`, `gzip`), `curl-brotli` (`br`) and `curl-zstd`. The 28 compression
-    tests run on both legs and 27 pass; 3236 waits on C's `write` trace component
-    (`curl_global_trace`), which opens milestone 3.
+    `curl-zlib` (`deflate`, `gzip`), `curl-brotli` (`br`) and `curl-zstd`. The 27 compression
+    tests run on both legs and pass.
 33. **http: the headers API, and time conditions.** **Done.** Each request's headers kept for
     `curl_easy_header` and `curl_easy_nextheader`, by origin and request across redirects, and
     the tool's `%header{}` and `%{header_json}` reading them (421, 764, 765, 1670, 1671). `-z`
@@ -535,7 +534,7 @@ milestone 2's review.
     `CURL_DEBUG` in the debug build. The lines of the components built so far, as ENGINE.md
     describes them: MULTI, TCP, WRITE, READ, TIMER, HAPPY-EYEBALLS and DNS, each later protocol
     bringing its own. The debug handler reachable outside a transfer, so `COOKIELIST`'s cookie
-    lines are traced where C traces them. Closes 3236, 3235, 1515 and 19. Waiting: the
+    lines are traced where C traces them. Closes 1515 and 19. Waiting: the
     connection setup filter's and the pollset's lines (step 40), and 758 (step 43).
 40. **The engine rewrite:** **Done.** Who owns a connection (exclusive leases checked against their home
     pool; the socket's closer carried from its creation) and the layer stack as a pull chain

@@ -1361,7 +1361,7 @@ fn a_sibling_s_unpause_replays_at_once() {
 }
 
 /// An unpause of the transfer being replayed, from inside the replay,
-/// only changes its pause: the replay under way goes on (3235).
+/// only changes its pause: the replay under way goes on.
 #[test]
 fn an_unpause_inside_the_replay_lets_it_go_on() {
     let mut m = multi();

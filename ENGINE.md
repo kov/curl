@@ -1532,7 +1532,7 @@ The rules that keep this sound:
   while the debug handler runs.
 - **Nested flushes cannot happen.** A callback of the transfer being stepped or replayed runs
   with its `Run` out, so `pause(me, Cont)` there only flips the value and marks it dirty; the
-  replay under way sees it before its next entry (3235, 3236), and one that had stopped resumes
+  replay under way sees it before its next entry, and one that had stopped resumes
   at the transfer's next step, which replays before it reads. The progress and prereq callbacks
   (7e) are made between pipeline calls, so the step replays right after they return.
 - **Event call-outs** (socket, timer) are made between transfers with no `Run` moved out;
@@ -5339,7 +5339,7 @@ peer gets a protocol error, not an out-of-memory one.
   when nothing is ready, so timeout tests take microseconds.
 - **`RecordingEvents`** logs every socket, timer and notify call; **recording handlers** can run a
   scripted action through their context (pause, setopt, getinfo, sibling calls) to test
-  re-entrancy. Golden call sequences for 530, 758, 1540, 1555, 2453, 3235 and 3236 come from the C
+  re-entrancy. Golden call sequences for 530, 758, 1540, 1555 and 2453 come from the C
   leg's run of the libtest and are replayed against the core over `FakeNet`.
 - **`tls::fake::FakeTls`** (test-util), a TLS library whose wire form a `Conversation` can
   script: a handshake of text lines (the client's hello a request head the peer answers, the

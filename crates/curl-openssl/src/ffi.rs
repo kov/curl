@@ -521,7 +521,8 @@ pub(crate) unsafe fn SSL_CTX_set_mode_moving_write_buffer(ctx: *mut SSL_CTX) {
 /// `SSL_CTX_clear_mode(ctx, SSL_MODE_AUTO_RETRY)`: a read that meets a
 /// record carrying no data, a session ticket, returns, wanting to read,
 /// rather than reading on from the connection, where a server sending
-/// only such records would hold it. The forks have the mode as a no-op
+/// only such records would hold it. LibreSSL has the mode as OpenSSL
+/// has it; AWS-LC and BoringSSL have it as a no-op
 /// (`SSL_MODE_AUTO_RETRY` 0 in their headers), so there is nothing to
 /// clear.
 ///

@@ -20,6 +20,9 @@ use curl_core::options::{Method, UploadSource};
 use super::*;
 
 pub(crate) const TESTS: &[(&str, fn())] = &[
+    // The server's ticket count is set through OpenSSL's own call, which
+    // the forks' builds of the crate serving it lack.
+    #[cfg(ossl3)]
     (
         "a_read_meeting_a_ticket_returns_wanting_more",
         a_read_meeting_a_ticket_returns_wanting_more,
@@ -309,6 +312,7 @@ fn count(got: &Got, line: &str) -> usize {
 /// hold a read. The server's bytes dribbled out, each ticket ends where
 /// what was read ends, and the read returns before asking the
 /// connection again; reading on, it asked straight away.
+#[cfg(ossl3)]
 fn a_read_meeting_a_ticket_returns_wanting_more() {
     let certs = certs("tickets", "localhost", &["localhost"]);
     let (at, server) = serve_configured(&certs, true, |a| a.set_num_tickets(8).unwrap());

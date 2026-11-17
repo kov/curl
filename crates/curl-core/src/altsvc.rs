@@ -326,19 +326,19 @@ impl AltSvc {
         Ok(())
     }
 
-    /// Forget every alternative of the origin `host`:`port` spoken to by
-    /// `alpn` (`altsvc_flush`).
-    fn flush(&mut self, host: &[u8], port: u16, alpn: Alpn) {
-        self.entries.retain(|e| {
-            !(e.src.alpn == alpn && e.src.port == port && same_host(host, &e.src.host))
-        });
+    /// Forget every alternative of the origin `host`:`port`, whatever
+    /// it was spoken to by (`altsvc_flush`).
+    fn flush(&mut self, host: &[u8], port: u16) {
+        self.entries
+            .retain(|e| !(e.src.port == port && same_host(host, &e.src.host)));
     }
 
     /// Take what a response's `Alt-Svc:` field, `value`, says of the
     /// origin `host`:`port` it came from by `alpn`, at `now`
     /// (`Curl_altsvc_parse`): `clear` alone forgets the origin's
-    /// alternatives; otherwise each alternative of a known version, the
-    /// first of them forgetting the origin's earlier ones. What cannot be
+    /// alternatives, by any version; otherwise each alternative of a
+    /// known version, the first of them forgetting the origin's earlier
+    /// ones, by any version. What cannot be
     /// read ends the reading; `say` is told what was added and why an
     /// alternative was passed over, as C traces it: a line in pieces,
     /// the field's own bytes among them as they came.
@@ -354,7 +354,7 @@ impl AltSvc {
         if let Some(word) = c.cspn(b";\n\r")
             && trim_blanks(word).eq_ignore_ascii_case(b"clear")
         {
-            self.flush(host, port, alpn);
+            self.flush(host, port);
             return Ok(());
         }
         let mut c = Cursor::new(value);
@@ -373,7 +373,7 @@ impl AltSvc {
             let (max_age, persist) = params(&mut c);
             if let Some(dst_alpn) = dst_alpn {
                 if !flushed {
-                    self.flush(host, port, alpn);
+                    self.flush(host, port);
                     flushed = true;
                 }
                 let expires = now.checked_add(max_age).unwrap_or(i64::MAX);

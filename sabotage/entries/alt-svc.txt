@@ -250,3 +250,26 @@ features: test-util,debug-hooks
         .is_some_and(|(address, _)| crate::url::pton6(address).is_some())
 --- new
         .is_some_and(|_| false)
+
+=== clear forgets nothing of the origin
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::unit1654_an_origin_is_flushed_across_versions
+--- old
+            && trim_blanks(word).eq_ignore_ascii_case(b"clear")
+        {
+            self.flush(host, port);
+            return Ok(());
+--- new
+            && trim_blanks(word).eq_ignore_ascii_case(b"clear")
+        {
+            return Ok(());
+
+=== an origin is flushed only of what it learned over the same version
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::unit1654_an_origin_is_flushed_across_versions
+--- old
+                if !flushed {
+                    self.flush(host, port);
+--- new
+                if !flushed {
+                    self.entries.retain(|e| !(e.src.alpn == alpn && e.src.port == port && same_host(host, &e.src.host)));

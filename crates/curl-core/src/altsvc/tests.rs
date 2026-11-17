@@ -177,6 +177,70 @@ fn unit1654_load_parse_save() {
     );
 }
 
+/// unit1654: `clear`, and a header's first alternative, forget the
+/// origin's alternatives whatever version they were learned over; other
+/// origins' stay.
+#[test]
+fn unit1654_an_origin_is_flushed_across_versions() {
+    let mut a = AltSvc::default();
+    parse(
+        &mut a,
+        "h2=\"other.example:443\"\r\n",
+        "other.example",
+        443,
+        Alpn::H1,
+    );
+    let others = a.len();
+    let h3 = Versions {
+        h1: false,
+        h2: false,
+        h3: true,
+    };
+    let h2 = Versions {
+        h1: false,
+        h2: true,
+        h3: false,
+    };
+    let origin = |alpn| (&b"cross-alpn.example"[..], 443, alpn);
+    parse(
+        &mut a,
+        "h3=\":443\"; ma=120\r\n",
+        "cross-alpn.example",
+        443,
+        Alpn::H2,
+    );
+    assert!(a.lookup(origin(Alpn::H2), h3, NOW).is_some());
+    parse(&mut a, "clear\r\n", "cross-alpn.example", 443, Alpn::H3);
+    assert!(
+        a.lookup(origin(Alpn::H2), h3, NOW).is_none(),
+        "clear kept the old"
+    );
+    assert_eq!(a.len(), others, "clear changed other origins");
+    parse(
+        &mut a,
+        "h3=\":443\"; ma=120\r\n",
+        "cross-alpn.example",
+        443,
+        Alpn::H2,
+    );
+    parse(
+        &mut a,
+        "h2=\":443\"; ma=120\r\n",
+        "cross-alpn.example",
+        443,
+        Alpn::H3,
+    );
+    assert!(
+        a.lookup(origin(Alpn::H2), h3, NOW).is_none(),
+        "replacing kept the old"
+    );
+    assert!(
+        a.lookup(origin(Alpn::H3), h2, NOW).is_some(),
+        "replacing lost the new"
+    );
+    assert_eq!(a.len(), others + 1, "replacing changed other origins");
+}
+
 /// unit1669: a file of more entries than the cache keeps keeps the most.
 #[test]
 fn unit1669_most_entries_kept() {
@@ -240,7 +304,7 @@ fn a_lookup_finds_the_first_allowed_alternative() {
     let found = a.lookup((b"origin", 80, Alpn::H1), ALL, NOW).unwrap();
     assert_eq!(found.host, b"second");
     assert_eq!(a.len(), 1);
-    a.flush(b"origin", 80, Alpn::H1);
+    a.flush(b"origin", 80);
     // The origin's own host and port, by another version.
     parse(&mut a, "h2=\":80\"", "origin", 80, Alpn::H1);
     assert!(a.lookup((b"origin", 80, Alpn::H1), ALL, NOW).unwrap().same);

@@ -1527,6 +1527,8 @@ impl crate::conn::layer::ForTransfer for ContextHandler {
 
     fn stop_recv(&mut self) {}
 
+    fn mark_dirty(&mut self) {}
+
     fn seconds_since_1970(&self) -> i64 {
         0
     }

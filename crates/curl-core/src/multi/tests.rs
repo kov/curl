@@ -124,6 +124,28 @@ fn a_later_completion_in_a_lower_row_is_read_first() {
     );
 }
 
+/// A layer's work that marks its transfer dirty, as one that gave the
+/// others their turn does, has the multi run it again at once: its
+/// timeout is none (`Curl_multi_mark_dirty`).
+#[test]
+fn a_transfer_its_layer_marks_dirty_is_due_at_once() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    let id = m.add(Box::new(easy("stall://a")), (), ev).unwrap();
+    assert_eq!(m.perform(ev), Ok(1));
+    assert_ne!(
+        m.timeout(),
+        Some(Duration::ZERO),
+        "a stalled transfer waits"
+    );
+    m.with_step_cx(id, |cx| {
+        crate::conn::layer::LayerCx::transfer(cx)
+            .expect("the stepping transfer")
+            .mark_dirty();
+    });
+    assert_eq!(m.timeout(), Some(Duration::ZERO));
+}
+
 #[test]
 fn removing_twice_finds_nothing_the_second_time() {
     let (mut m, _clock) = multi();

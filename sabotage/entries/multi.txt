@@ -1166,3 +1166,13 @@ witness: curl-core proto::http::tests::h2::a_transfer_pausing_itself_in_a_siblin
 --- new
     pub(super) fn as_ref(&self) -> Option<&Run> {
         self.0.as_ref()
+
+=== a layer's dirty mark is lost
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core multi::tests::a_transfer_its_layer_marks_dirty_is_due_at_once
+--- old
+    fn mark_dirty(&mut self) {
+        StepCx::mark_dirty(self);
+    }
+--- new
+    fn mark_dirty(&mut self) {}

@@ -208,6 +208,10 @@ impl crate::conn::layer::ForTransfer for RawCx<'_> {
 
     fn stop_recv(&mut self) {}
 
+    // A connection the application reads and writes itself is run by no
+    // multi.
+    fn mark_dirty(&mut self) {}
+
     fn seconds_since_1970(&self) -> i64 {
         self.unix_time
     }

@@ -139,6 +139,10 @@ impl<H: Host> crate::conn::layer::ForTransfer for StepCx<'_, H> {
         slot.expect("the stepping transfer").pause.stop_recv();
     }
 
+    fn mark_dirty(&mut self) {
+        StepCx::mark_dirty(self);
+    }
+
     fn seconds_since_1970(&self) -> i64 {
         self.rest.clock.unix_time()
     }

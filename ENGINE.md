@@ -1158,7 +1158,11 @@ body waiting for a 100 included, with nothing more sent. A step that stops at th
 past the step's timeout and progress checks, marks the transfer dirty (`Curl_multi_mark_dirty`):
 it runs in the next pass without waiting on its socket, and the multi's timeout is 0 until then.
 A peer that sends faster than it is read thus cannot keep a pass from ending, so the time limits,
-the progress handler and the other transfers get their turn as in C. C's other exits from that
+the progress handler and the other transfers get their turn as in C. Work below the step that
+cuts its own loop short marks its transfer the same way: `StepCx::mark_dirty`, or
+`ForTransfer::mark_dirty` from a layer, as libssh2's SFTP listing does every 1000 entries and the
+HTTP/2 proxy's read once it has taken in 16 KiB before its tunnel is established, the tunnel's
+window after. C's other exits from that
 loop: a receive limit spent ends the step without a dirty mark, the engine then waiting for
 the limit's timer (§5.3), and bytes held where a poll cannot see them, which run the transfer
 again (`data_pending`, §4.3: what a layer holds, as TLS holds decrypted bytes or says, as

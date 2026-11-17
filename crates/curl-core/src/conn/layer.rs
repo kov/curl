@@ -220,6 +220,11 @@ pub(crate) trait ForTransfer {
     /// (`Curl_xfer_pause_recv`).
     fn stop_recv(&mut self);
 
+    /// It runs again as soon as the multi next runs, though nothing it
+    /// waits on moves: the work gave the others their turn
+    /// (`Curl_multi_mark_dirty`).
+    fn mark_dirty(&mut self);
+
     /// The time of day, in seconds since 1970 (`time(NULL)`).
     fn seconds_since_1970(&self) -> i64;
 }

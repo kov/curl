@@ -1464,3 +1464,31 @@ witness: curl-core conn::h2proxy::tests::a_tunnel_whose_session_ended_is_dead_an
 --- old
             || self.session.ended().is_some()
 --- new
+
+=== a proxy's flood of frames is read in one go
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_proxy_s_flood_of_frames_gives_the_others_their_turn
+--- old
+            if read >= share {
+--- new
+            if read >= share && false {
+
+=== a proxy's read that gave the others their turn leaves its transfer unmarked
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_proxy_s_flood_of_frames_gives_the_others_their_turn
+--- old
+                if let Some(t) = cx.transfer() {
+                    t.mark_dirty();
+                }
+--- new
+                let _ = cx.transfer();
+
+=== a proxy's read before its tunnel takes in the tunnel's window
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_proxy_s_flood_of_frames_gives_the_others_their_turn
+--- old
+            CONNECT_SHARE
+        };
+--- new
+            TUNNEL_WINDOW as usize
+        };

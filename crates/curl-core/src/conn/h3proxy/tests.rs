@@ -248,11 +248,22 @@ fn a_tunnel_s_answer_is_its_stream_s_final_one() {
 
 /// A context that notes each call it is asked, and answers each with
 /// `yes` or something of its own.
-struct Asked {
-    calls: Vec<String>,
+pub(crate) struct Asked {
+    pub(crate) calls: Vec<String>,
     yes: bool,
     report: crate::report::TransferReport,
     room: crate::conn::quic::RecvRoom,
+}
+
+impl Asked {
+    pub(crate) fn new(yes: bool) -> Asked {
+        Asked {
+            calls: Vec::new(),
+            yes,
+            report: crate::report::TransferReport::default(),
+            room: crate::conn::quic::RecvRoom::Unmade,
+        }
+    }
 }
 
 impl LayerCx for Asked {
@@ -348,6 +359,9 @@ impl crate::conn::layer::ForTransfer for Asked {
     }
     fn stop_recv(&mut self) {
         self.calls.push("pause_recv".to_string());
+    }
+    fn mark_dirty(&mut self) {
+        self.calls.push("mark_dirty".to_string());
     }
     fn seconds_since_1970(&self) -> i64 {
         1_700_000_000

@@ -29,6 +29,11 @@ const CHUNK: usize = 16 * 1024;
 /// is also as much of its DATA as is held for the layer above.
 const TUNNEL_WINDOW: u32 = 10 * 1024 * 1024;
 
+/// The most one read of the connection takes in before the tunnel is
+/// established, when it gives the others their turn; once it is, the
+/// tunnel's window (`proxy_h2_progress_ingress`).
+const CONNECT_SHARE: usize = 16 * 1024;
+
 /// The connection's receive window (`PROXY_HTTP2_HUGE_WINDOW_SIZE`).
 const CONNECTION_WINDOW: i32 = 100 * 1024 * 1024;
 
@@ -522,8 +527,10 @@ impl H2Proxy {
     }
 
     /// Feed the session what was read and not fed, then read from below
-    /// until it would block, the connection or the stream closes, or the
-    /// stream holds as much as it may (`proxy_h2_progress_ingress`).
+    /// until it would block, the connection or the stream closes, the
+    /// stream holds as much as it may, or it read its share, when its
+    /// transfer is marked to run again and the others get their turn
+    /// (`proxy_h2_progress_ingress`).
     pub(crate) fn ingress(
         &mut self,
         cx: &mut dyn LayerCx,
@@ -537,6 +544,12 @@ impl H2Proxy {
             );
             self.feed(cx)?;
         }
+        let share = if self.tunnel.state == TunnelState::Established {
+            TUNNEL_WINDOW as usize
+        } else {
+            CONNECT_SHARE
+        };
+        let mut read = 0;
         while !self.conn_closed
             && !self.tunnel.closed
             && self.input.is_empty()
@@ -558,6 +571,7 @@ impl H2Proxy {
             );
             match got {
                 Ok(Recv::Data(n)) => {
+                    read += n.get();
                     self.input
                         .try_extend_from_slice(&buf[..n.get()])
                         .map_err(|OutOfMemory| Progress::OutOfMemory)?;
@@ -577,6 +591,12 @@ impl H2Proxy {
                 }
             }
             self.feed(cx)?;
+            if read >= share {
+                if let Some(t) = cx.transfer() {
+                    t.mark_dirty();
+                }
+                break;
+            }
         }
         Ok(())
     }

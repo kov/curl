@@ -151,6 +151,10 @@ fn main() {
             a_second_connection_takes_the_multi_s_store,
         ),
         (
+            "a_store_made_for_the_context_handler_is_kept_too",
+            a_store_made_for_the_context_handler_is_kept_too,
+        ),
+        (
             "a_handle_s_own_multi_keeps_its_store_between_performs",
             a_handle_s_own_multi_keeps_its_store_between_performs,
         ),
@@ -927,6 +931,35 @@ fn a_second_connection_takes_the_multi_s_store() {
     let mut other = multi(try_box(SystemClock::new()).unwrap());
     assert_eq!(loads(&verified_in(&mut other, &certs, |_| {})), 1);
     assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 0);
+}
+
+/// A context handler that changes nothing.
+struct Passing;
+
+impl curl_core::handler::TlsContextHandler for Passing {
+    fn configure(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: curl_core::tls::TlsNative,
+    ) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+}
+
+/// With a context handler, the store is made before the handler is given
+/// the context, and is kept for the multi's next connections as it is
+/// without one: the second loads nothing.
+fn a_store_made_for_the_context_handler_is_kept_too() {
+    let certs = certs("kept-hand", "localhost", &["localhost"]);
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let handing = |o: &mut Options| {
+        o.tls.options.make_mut().unwrap().context = Some(Handler::tls_context(Passing).unwrap());
+    };
+    let first = verified_in(&mut m, &certs, handing);
+    assert_eq!(loads(&first), 1, "{:#?}", first.seen.lines);
+    let second = verified_in(&mut m, &certs, handing);
+    assert_eq!(loads(&second), 0, "{:#?}", second.seen.lines);
+    assert!(said(&second, "SSL certificate verified via OpenSSL."));
 }
 
 /// A handle performing on its own does so in a multi of its own, kept

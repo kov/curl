@@ -62,20 +62,7 @@ pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
         }
         was
     };
-    let dir = dir_of(path);
-    let mut temp = Vec::new();
-    // One allocation, whatever the name's length.
-    temp.try_reserve_exact(dir.len() + 1 + TEMP_NAME + b".tmp".len())
-        .map_err(|_| SaveError::OutOfMemory)?;
-    temp.try_extend_from_slice(dir)?;
-    if !dir.is_empty() {
-        temp.try_push(PATHSEP)?;
-    }
-    let mut random = [0u8; TEMP_NAME];
-    alphanumeric(&mut random)?;
-    temp.try_extend_from_slice(&random)?;
-    temp.try_extend_from_slice(b".tmp")?;
-    let temp = c_path(&temp)?;
+    let temp = temp_beside(path)?;
     #[cfg(unix)]
     let written = write_temp(&temp, &was, text);
     #[cfg(windows)]
@@ -85,6 +72,25 @@ pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
         let _ = fs::remove(&temp);
     }
     renamed
+}
+
+/// A random name for the file written first, in the directory of `path`,
+/// the root's for a file directly under it (`dirslash`).
+fn temp_beside(path: &[u8]) -> Result<std::ffi::CString, SaveError> {
+    let dir = dir_of(path);
+    let mut temp = Vec::new();
+    // One allocation, whatever the name's length.
+    temp.try_reserve_exact(dir.map_or(0, <[u8]>::len) + 1 + TEMP_NAME + b".tmp".len())
+        .map_err(|_| SaveError::OutOfMemory)?;
+    if let Some(dir) = dir {
+        temp.try_extend_from_slice(dir)?;
+        temp.try_push(PATHSEP)?;
+    }
+    let mut random = [0u8; TEMP_NAME];
+    alphanumeric(&mut random)?;
+    temp.try_extend_from_slice(&random)?;
+    temp.try_extend_from_slice(b".tmp")?;
+    c_path(&temp)
 }
 
 /// Write `text` to a new file at `temp`, with the mode of the file it is
@@ -124,18 +130,21 @@ fn is_sep(b: u8) -> bool {
     b == b'/' || (cfg!(windows) && b == b'\\')
 }
 
-/// The directory part of `path`, without the separators after it, or
-/// nothing if it names none (`dirslash`, which then adds one `PATHSEP`).
-/// A file directly under `/` has none.
-fn dir_of(path: &[u8]) -> &[u8] {
+/// The directory part of `path`, without the separators after it, if it
+/// names one (`dirslash`, which then adds one `PATHSEP`): a file directly
+/// under `/` is in the empty one, the root, and a bare name in none.
+fn dir_of(path: &[u8]) -> Option<&[u8]> {
     let mut n = path.len();
     while n > 0 && !is_sep(path[n - 1]) {
         n -= 1;
     }
+    if n == 0 {
+        return None;
+    }
     while n > 0 && is_sep(path[n - 1]) {
         n -= 1;
     }
-    &path[..n]
+    Some(&path[..n])
 }
 
 /// Random letters and digits (`Curl_rand_alnum`).
@@ -168,17 +177,38 @@ mod tests {
 
     #[test]
     fn finds_the_directory_as_c() {
-        assert_eq!(dir_of(b"/a/b/file"), b"/a/b");
-        assert_eq!(dir_of(b"a//b"), b"a");
-        assert_eq!(dir_of(b"file"), b"");
-        assert_eq!(dir_of(b"/file"), b"");
+        assert_eq!(dir_of(b"/a/b/file"), Some(&b"/a/b"[..]));
+        assert_eq!(dir_of(b"a//b"), Some(&b"a"[..]));
+        assert_eq!(dir_of(b"file"), None);
+        // The root, which C's `dirslash` gives as one separator.
+        assert_eq!(dir_of(b"/file"), Some(&b""[..]));
+        assert_eq!(dir_of(b"//file"), Some(&b""[..]));
         // A backslash separates only on Windows.
         let windows = cfg!(windows);
         assert_eq!(
             dir_of(br"c:\a\\b"),
-            if windows { &br"c:\a"[..] } else { b"" }
+            if windows { Some(&br"c:\a"[..]) } else { None }
         );
-        assert_eq!(dir_of(br"c:\a/b"), br"c:\a");
+        assert_eq!(dir_of(br"c:\a/b"), Some(&br"c:\a"[..]));
+    }
+
+    /// The file written first is beside the one it replaces: in its
+    /// directory, the root's for a file under `/`, and the current one's
+    /// for a bare name.
+    #[test]
+    fn the_first_file_is_written_beside_its_target() {
+        let sep = char::from(PATHSEP);
+        for (path, dir) in [
+            (&b"/cookies"[..], format!("{sep}")),
+            (b"/a/b/jar", format!("/a/b{sep}")),
+            (b"jar", String::new()),
+        ] {
+            let temp = temp_beside(path).unwrap().into_string().unwrap();
+            let name = temp.strip_prefix(&dir).unwrap_or_else(|| panic!("{temp}"));
+            assert_eq!(name.len(), TEMP_NAME + 4, "{temp}");
+            assert!(name.ends_with(".tmp"), "{temp}");
+            assert!(!name.contains(['/', '\\']), "{temp}");
+        }
     }
 
     /// On Windows the file is replaced whatever it was, and written as

@@ -20,6 +20,7 @@ witness: curl-core save::tests::the_mode_is_kept_only_where_the_group_is_the_sam
 file: crates/curl-core/src/save.rs
 witness: curl-core save::tests::replaces_a_file_and_keeps_its_mode
 --- old
-        file.set_permissions(std::fs::Permissions::from_mode(was.mode()))?;
+        file.set_permissions(std::fs::Permissions::from_mode(was.mode()))
+            .ok();
 --- new
         let _ = was;

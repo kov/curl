@@ -1,5 +1,5 @@
 {
- "c-commit": "d29795a77d98f3c4bc9bdf4d836d5fbc41c6c53b",
+ "c-commit": "d6bfa228a762110345cb7d2776440c6ffdf8229b",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -84793,7 +84793,7 @@
     "attr_values": [
      "mode=text"
     ],
-    "bytes": 848,
+    "bytes": 829,
     "command": "-sS --cacert %CERTDIR/certs/test-client-cert.crt https://localhost:%HTTPSPORT/%TESTNUMBER",
     "command_option": null,
     "command_type": null,

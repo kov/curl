@@ -1347,6 +1347,14 @@ fn write_packet(
     now: u64,
     buf: &mut [u8],
 ) -> Result<Option<usize>, QuicError> {
+    // Once a packet is being filled from several streams
+    // (`NGTCP2_WRITE_STREAM_FLAG_MORE`), no other call may be made on the
+    // connection until a write ends it: whether the streams may write is
+    // asked once, before, and ngtcp2 refuses a stream that may not.
+    // SAFETY: the state's HTTP/3 connection, read before any call.
+    let has_h3 = !unsafe { (*inner).h3 }.is_null();
+    // SAFETY: the connection, no packet under way.
+    let streams_may_write = has_h3 && unsafe { sys::ngtcp2_conn_get_max_data_left(conn) } > 0;
     loop {
         let mut vecs = [sys::nghttp3_vec {
             base: ptr::null_mut(),
@@ -1357,8 +1365,7 @@ fn write_packet(
         let mut fin: c_int = 0;
         // SAFETY: the state's HTTP/3 connection, read before any call.
         let h3 = unsafe { (*inner).h3 };
-        // SAFETY: the connection.
-        if !h3.is_null() && unsafe { sys::ngtcp2_conn_get_max_data_left(conn) } > 0 {
+        if streams_may_write {
             // SAFETY: the HTTP/3 connection, out pointers and the pieces.
             let n = unsafe {
                 sys::nghttp3_conn_writev_stream(
@@ -1408,7 +1415,8 @@ fn write_packet(
                 unsafe { tell_stream(inner, sid, StreamEvent::Blocked) };
                 0
             }
-            Ok(sys::NGTCP2_ERR_STREAM_SHUT_WR) => {
+            // A stream gone, or shut for writing: it writes no more.
+            Ok(sys::NGTCP2_ERR_STREAM_NOT_FOUND | sys::NGTCP2_ERR_STREAM_SHUT_WR) => {
                 // SAFETY: as above.
                 unsafe { sys::nghttp3_conn_shutdown_stream_write(h3, sid) };
                 0

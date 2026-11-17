@@ -887,6 +887,7 @@ pub(crate) struct Run {              // created at add, dropped at removal
     url: Vec<u8>,                    // the request's URL read back whole (C's state.url)
     retries: u8,                     // fresh connections tried this transfer (retrycount)
     first: FirstOrigin,              // the first request's origin (state.initial_origin)
+    asked: AskedBy,                  // the application, or a push: never retried (set.never_retry)
     method: Method,                  // the method, as a redirect changed it (state.httpreq)
     allow_port: bool,                // CURLOPT_PORT still applies (state.allow_port)
     http: follow::Inherited,         // what HTTP's next request takes, HTTP's alone: HTTP/1.0
@@ -2209,8 +2210,11 @@ set, where C sets it inside the write. A pause asked while another transfer's st
 connection out reaches the stream only: its next read sets the window, and nothing is said.
 
 **Server push.** The client says it takes pushes (`SETTINGS_ENABLE_PUSH`) when the application's
-events do (`MultiEvents::wants_push`). A PUSH_PROMISE's fields come to the request whose stream
-it is beside, which keeps them as C does (`name:value`, at most 1,280) and fails the read on one
+events do (`MultiEvents::wants_push`). A promise heard by one of the multi's own transfers (a
+DoH probe's) is refused before the application is asked (`push_promise`'s `state.internal`). A
+pushed transfer's run inherits its parent request's first origin (`FirstOrigin::inherited`)
+and is never made again, by a retry or HTTP/1.1's (`AskedBy::Push`, C's `never_retry`). A
+PUSH_PROMISE's fields come to the request whose stream it is beside, which keeps them as C does (`name:value`, at most 1,280) and fails the read on one
 naming another authority (`on_header`). On the promise, the request makes the pushed transfer's
 `Easy` as `h2_duphandle` does (`Easy::pushed`: libraries, share, weight, the write, header,
 debug and progress handlers; not the cookie engine, so its cookies are off even on a share that
@@ -4576,7 +4580,9 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   name (1121, 1292), and `Host:` alone removes it (461); every other duplicate goes in order.
   Connection is assembled last: the first with a value, trimmed, then the rest as given.
 - **One credential gate.** `auth::gate` owns the run's first origin (`FirstOrigin`, which only
-  a fresh run has none of) and is the one place a gate is decided: `Origins::gate` compares
+  a run before its first request has none of; a pushed stream's run inherits the first origin
+  of the request it was promised on, or that request's own origin where it was the first, and
+  a push with neither is refused) and is the one place a gate is decided: `Origins::gate` compares
   the first origin with the request's (`Curl_peer_equal`) and adds `CURLOPT_UNRESTRICTED_AUTH`,
   and needs a `GateKey` only `proto/base.rs` makes, so the only gate a request gets is the one
   `RequestBase::new` decides for the peer it keeps. `CredentialGate` is neither `Copy` nor

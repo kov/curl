@@ -233,8 +233,9 @@ mod tests {
     /// `auth::gate` says. The tokens' fields are private to it, so the
     /// compiler keeps their literals there; what it cannot keep is who
     /// calls the two constructors a sibling module may reach: a fresh
-    /// first origin, which opens every gate, made only for a new run (a
-    /// transfer's, a pushed stream's) and a test's request; and
+    /// first origin, which opens the gate of the first request, made only
+    /// for a new run and a test's request (a pushed stream's run inherits
+    /// its parent's); and
     /// credentials' own leave, given only where `auth::creds` takes them
     /// from the URL or a `.netrc`.
     #[test]
@@ -245,12 +246,7 @@ mod tests {
         let fences: [(&str, &[&str]); 2] = [
             (
                 "FirstOrigin::fresh(",
-                &[
-                    "auth/gate.rs",
-                    "multi/state.rs",
-                    "proto/http/h2.rs",
-                    "proto/imap/tests.rs",
-                ],
+                &["auth/gate.rs", "multi/state.rs", "proto/imap/tests.rs"],
             ),
             ("OwnLeave::given(", &["auth/gate.rs", "auth/creds.rs"]),
         ];

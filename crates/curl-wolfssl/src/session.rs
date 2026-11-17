@@ -863,22 +863,37 @@ impl<W: Wolfssl> Session<W> {
                 format_args!("unable to get peer certificate"),
             ));
         }
-        if ret == sys::WOLFSSL_SUCCESS && self.identity.verify_host && self.sni()?.is_none() {
-            // An address, which the library's name check could not check.
-            let ip = c_string(&self.host)?;
-            let Some(rc) = self.ssl().check_ip(as_c(&ip)) else {
-                return Err(io.fail(
-                    ErrorKind::PeerFailedVerification,
-                    format_args!("unable to get peer certificate"),
-                ));
+        if ret == sys::WOLFSSL_SUCCESS && self.identity.verify_host {
+            // What the library's name check left unchecked: an address,
+            // which it cannot check, and a name where the chain is not
+            // verified, as the library lets every failure of its checks
+            // pass then.
+            let checked = match self.sni()? {
+                None => {
+                    let ip = c_string(&self.host)?;
+                    let rc = self.ssl().check_ip(as_c(&ip));
+                    if let Some(rc) = rc {
+                        io.trace(format_args!(
+                            "check peer certificate for IP match on {} -> {rc}",
+                            Text(&self.host)
+                        ));
+                    }
+                    Some(rc)
+                }
+                Some(name) if !self.identity.verify_peer => Some(self.ssl().check_host(&name)),
+                Some(_) => None,
             };
-            io.trace(format_args!(
-                "check peer certificate for IP match on {} -> {rc}",
-                Text(&self.host)
-            ));
-            ret = rc;
-            if rc != sys::WOLFSSL_SUCCESS {
-                detail = sys::DOMAIN_NAME_MISMATCH;
+            if let Some(rc) = checked {
+                let Some(rc) = rc else {
+                    return Err(io.fail(
+                        ErrorKind::PeerFailedVerification,
+                        format_args!("unable to get peer certificate"),
+                    ));
+                };
+                ret = rc;
+                if rc != sys::WOLFSSL_SUCCESS {
+                    detail = sys::DOMAIN_NAME_MISMATCH;
+                }
             }
         }
         if ret == sys::WOLFSSL_SUCCESS {

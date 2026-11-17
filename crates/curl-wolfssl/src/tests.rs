@@ -551,7 +551,9 @@ fn a_peer_without_a_certificate_is_refused_when_verifying() {
 /// Each pair of `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST`: a
 /// host's name is handed to the library to check, and an address is
 /// checked after the handshake, wherever the name is to be checked, the
-/// chain checked or not; neither where it is not.
+/// chain checked or not; neither where it is not. With the chain not
+/// checked the library lets a wrong name pass, so the name is checked
+/// after the handshake too, and a mismatch fails it.
 #[test]
 fn the_name_is_checked_whether_or_not_the_chain_is() {
     for (verify_peer, verify_host) in [(true, true), (true, false), (false, true), (false, false)] {
@@ -567,6 +569,32 @@ fn the_name_is_checked_whether_or_not_the_chain_is() {
             verify_host,
             "{case:?}: {calls:#?}"
         );
+        // The library lets the name pass where it does not verify the
+        // chain: the name is checked again on the peer's certificate.
+        assert_eq!(
+            calls.iter().any(|c| c == "check_host(example.com)"),
+            verify_host && !verify_peer,
+            "{case:?}: {calls:#?}"
+        );
+        let (r, notes, _) = shake(
+            World {
+                check_host: Some(0),
+                ..World::default()
+            },
+            &id,
+        );
+        if verify_host && !verify_peer {
+            assert_eq!(r, Err(ErrorKind::PeerFailedVerification), "{case:?}");
+            assert!(
+                has(
+                    &notes,
+                    "fail: PeerFailedVerification:  subject alt name(s) or common name do not match \"example.com\""
+                ),
+                "{case:?}: {notes:#?}"
+            );
+        } else {
+            assert_eq!(r, Ok(Handshake::Done), "{case:?}: {notes:#?}");
+        }
         let lib = Fake::new(World {
             check_ip: Some(0),
             ..World::default()

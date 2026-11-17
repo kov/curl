@@ -307,13 +307,9 @@ witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
 file: crates/curl-wolfssl/src/session.rs
 witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
 --- old
-        if ret == sys::WOLFSSL_SUCCESS && self.identity.verify_host && self.sni()?.is_none() {
+        if ret == sys::WOLFSSL_SUCCESS && self.identity.verify_host {
 --- new
-        if ret == sys::WOLFSSL_SUCCESS
-            && self.identity.verify_host
-            && self.identity.verify_peer
-            && self.sni()?.is_none()
-        {
+        if ret == sys::WOLFSSL_SUCCESS && self.identity.verify_host && self.identity.verify_peer {
 
 === a QUIC peer that is not verified has its pinned key unchecked
 file: crates/curl-wolfssl/src/quic.rs
@@ -351,3 +347,11 @@ witness: curl-wolfssl tests::the_pinned_key_is_the_one_the_library_parsed
                 format_args!("SSL: failed retrieving public key from server certificate"),
 --- new
                 format_args!("SSL: failed retrieving server certificate"),
+
+=== a name goes unchecked where the chain is not verified
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
+--- old
+                Some(name) if !self.identity.verify_peer => Some(self.ssl().check_host(&name)),
+--- new
+                Some(_) if !self.identity.verify_peer => None,

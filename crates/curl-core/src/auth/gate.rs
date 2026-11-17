@@ -41,6 +41,11 @@ impl FirstOrigin {
         }
     }
 
+    /// The first request's origin, once it went.
+    pub(crate) fn get(&self) -> Option<&Origin> {
+        self.0.as_ref()
+    }
+
     /// The transfer starts over.
     pub(crate) fn reset(&mut self) {
         self.0 = None;

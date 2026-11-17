@@ -675,7 +675,7 @@ pub(super) fn start_leg<H: Host>(
     if let Ok(Some(proto)) = &started {
         proto.set_up_said(cx);
     }
-    let proto = match started {
+    let mut proto = match started {
         Ok(Some(proto)) => proto,
         Ok(None) => {
             // A scheme libcurl knows that this build leaves out, or that
@@ -727,6 +727,7 @@ pub(super) fn start_leg<H: Host>(
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
     run.first.record(&origin);
+    proto.first_recorded(run.first.get().expect("recorded above"));
     // A Unix socket is connected to in place of the origin's host, and
     // of any connect-to entry, and no proxy is gone through
     // (`url_set_conn_origin_etc`).
@@ -772,9 +773,6 @@ pub(super) fn start_leg<H: Host>(
             Err(e) => return TransferState::Init.fail(e),
         }
     };
-    // A request a proxy sends on names the whole URL, and the connection
-    // is the proxy's (`origin_is_proxy`).
-    let mut proto = proto;
     // The origin speaks another version too: it is wanted, and preferred.
     if let (Some(alpn), Some(neg)) = (preferred, proto.negotiation_mut()) {
         match alpn {
@@ -790,6 +788,8 @@ pub(super) fn start_leg<H: Host>(
             return TransferState::Init.fail(ErrorKind::OutOfMemory);
         }
     }
+    // A request a proxy sends on names the whole URL, and the connection
+    // is the proxy's (`origin_is_proxy`).
     let origin = match &proxy {
         Some(p) if p.forward => {
             // A scheme a proxy takes as HTTP is asked of it in HTTP: the

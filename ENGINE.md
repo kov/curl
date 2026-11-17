@@ -4580,9 +4580,10 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   name (1121, 1292), and `Host:` alone removes it (461); every other duplicate goes in order.
   Connection is assembled last: the first with a value, trimmed, then the rest as given.
 - **One credential gate.** `auth::gate` owns the run's first origin (`FirstOrigin`, which only
-  a run before its first request has none of; a pushed stream's run inherits the first origin
-  of the request it was promised on, or that request's own origin where it was the first, and
-  a push with neither is refused) and is the one place a gate is decided: `Origins::gate` compares
+  a run before its first request has none of; the run gives each request the first origin as
+  it records it, the first request its own (`ProtoState::first_recorded`), and a pushed
+  stream's run inherits the one of the request it was promised on, a push beside a request
+  that has none being refused) and is the one place a gate is decided: `Origins::gate` compares
   the first origin with the request's (`Curl_peer_equal`) and adds `CURLOPT_UNRESTRICTED_AUTH`,
   and needs a `GateKey` only `proto/base.rs` makes, so the only gate a request gets is the one
   `RequestBase::new` decides for the peer it keeps. `CredentialGate` is neither `Copy` nor

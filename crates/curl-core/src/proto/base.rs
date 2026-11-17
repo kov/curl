@@ -48,9 +48,9 @@ pub(crate) struct RequestBase {
     /// `Cookie:` a tunnel's `CONNECT` sends (`Curl_auth_allowed_to_host`),
     /// decided for `peer` as the request is made.
     gate: CredentialGate,
-    /// The transfer's first origin the gate was decided by, none for its
-    /// first request: a stream the server pushes beside this request
-    /// inherits it.
+    /// The transfer's first origin, this request's own where it is the
+    /// first, given once it is recorded (`ProtoState::first_recorded`):
+    /// a stream the server pushes beside this request inherits it.
     first: Option<Origin>,
 }
 
@@ -92,9 +92,14 @@ impl RequestBase {
         &self.gate
     }
 
-    /// The transfer's first origin, unless this is its first request.
+    /// The transfer's first origin, once recorded.
     pub(super) fn first(&self) -> Option<&Origin> {
         self.first.as_ref()
+    }
+
+    /// The transfer's first origin, as the run records it.
+    pub(super) fn set_first(&mut self, first: &Origin) {
+        self.first = Some(first.clone());
     }
 
     /// The pipeline and the credentials, each to change, beside the peer.

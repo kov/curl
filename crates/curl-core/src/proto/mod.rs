@@ -1431,6 +1431,14 @@ impl ProtoState {
         }
     }
 
+    /// The run has recorded its first origin, `first`: the request
+    /// carries it from here on, its own if it is the first.
+    pub(crate) fn first_recorded(&mut self, first: &crate::multi::state::Origin) {
+        if let Some(base) = self.base_mut() {
+            base.set_first(first);
+        }
+    }
+
     fn base_mut(&mut self) -> Option<&mut base::RequestBase> {
         match self {
             ProtoState::Http(r) => Some(&mut r.base),

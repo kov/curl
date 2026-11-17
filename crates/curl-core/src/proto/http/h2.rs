@@ -2003,10 +2003,10 @@ impl Request {
         let Ok(Some(url)) = self.pushed_url(fields) else {
             return Offered::Denied;
         };
-        // The pushed transfer's first origin is the request's: its own
-        // origin where it was the first. Without one, nothing could tell
-        // where what the application said may go: refused.
-        let Some(first) = self.base.first().or(lease.conn().origin()).cloned() else {
+        // The pushed transfer's first origin is the request's. Without
+        // one, nothing could tell where what the application said may
+        // go: refused.
+        let Some(first) = self.base.first().cloned() else {
             return Offered::Denied;
         };
         let Ok(mut easy) = cx.easy().pushed().and_then(try_box) else {

@@ -189,9 +189,9 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::read_trace::an_empty_body_is_not_converted
 features: test-util
 --- old
-        let converts = options.crlf && upload.is_some() && client_size != Some(0);
+        let converts = options.converts_lines() && upload.is_some() && client_size != Some(0);
 --- new
-        let converts = options.crlf && upload.is_some();
+        let converts = options.converts_lines() && upload.is_some();
 
 === a lifted pause is not told to the conversion stage
 file: crates/curl-core/src/upload/mod.rs

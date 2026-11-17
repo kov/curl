@@ -4612,9 +4612,9 @@ fn a_handle_s_own_multi_goes_with_it() {
 #[derive(Default)]
 struct AskedInNotify {
     codes: Vec<(&'static str, ffi::CURLMcode)>,
-    /// A descriptor ready to read, given to the waits beside the
-    /// multi's own.
-    ready: c_int,
+    /// A socket ready to read, given to the waits beside the multi's
+    /// own.
+    ready: ffi::curl_socket_t,
     /// What the walks and waits reported: the highest descriptor
     /// `curl_multi_fdset` set, the count `curl_multi_waitfds` gave, and
     /// the counts of `curl_multi_wait` with nothing extra, then with
@@ -4684,12 +4684,19 @@ unsafe extern "C" fn notify_asking(m: *mut CURLM, _: c_uint, _: *mut CURL, data:
 #[test]
 fn a_notification_walks_and_waits_on_the_multi_s_sockets() {
     use std::io::Write as _;
-    use std::os::fd::AsRawFd as _;
     let (path, url) = file("notify-waits", b"hello");
-    let (ready, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    // A loopback pair, one end written to: the other is ready to read,
+    // a socket on every system.
+    let pair = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut writer = std::net::TcpStream::connect(pair.local_addr().unwrap()).unwrap();
+    let (ready, _) = pair.accept().unwrap();
     writer.write_all(b"x").unwrap();
+    #[cfg(unix)]
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&ready);
+    #[cfg(windows)]
+    let raw = std::os::windows::io::AsRawSocket::as_raw_socket(&ready) as ffi::curl_socket_t;
     let mut a = AskedInNotify {
-        ready: ready.as_raw_fd(),
+        ready: raw,
         ..AskedInNotify::default()
     };
     // A server that never answers: its transfer waits on its socket.

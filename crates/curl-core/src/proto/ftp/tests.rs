@@ -3466,51 +3466,73 @@ fn the_entry_path_is_reported_after_reuse() {
     );
 }
 
-/// The FTP account is the server's that asks for it, whichever server
-/// that is: one a redirect from HTTP on another host leads to is sent it
-/// as the first server would be, though the login is not
-/// (`ftp_state_user_resp`).
+/// The FTP account and the command in place of `USER` are what the
+/// application said for the first origin: a server a redirect from HTTP
+/// on another host leads to is sent neither, as it is not sent the
+/// login, unless the application lets its credentials follow anywhere
+/// (`CURLOPT_UNRESTRICTED_AUTH`).
 #[test]
-fn a_redirect_s_ftp_server_is_sent_the_account_it_asks_for() {
+fn a_redirect_s_ftp_server_is_sent_no_account_or_alternative() {
     use crate::options::{Follow, Login, Protocols};
-    let moved = format!(
-        "HTTP/1.1 302 Moved\r\nLocation: ftp://other.test:{PORT}/f\r\nConnection: close\r\n\
-         Content-Length: 0\r\n\r\n"
-    );
-    let http = Conversation::new(moved.as_bytes(), true);
-    let replies: [&'static [u8]; 8] = [
-        b"220 hi\r\n",
-        b"331 password?\r\n",
-        b"332 account?\r\n",
-        b"230 in\r\n",
+    let run = |replies: &[&'static [u8]], unrestricted: bool| {
+        let moved = format!(
+            "HTTP/1.1 302 Moved\r\nLocation: ftp://other.test:{PORT}/f\r\nConnection: close\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        let http = Conversation::new(moved.as_bytes(), true);
+        let mut all: Vec<&'static [u8]> = vec![b"220 hi\r\n"];
+        all.extend_from_slice(replies);
+        let control = Conversation::replies(&all, false).greeting();
+        let mut m = serving(&[&http, &control], &[]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let (id, _, text) = added(&mut m, "http://first.test:PORT/a", |o| {
+            o.method = crate::options::Method::Head;
+            o.http.follow = Follow::All;
+            o.http.unrestricted_auth = unrestricted;
+            o.schemes.make_mut().unwrap().redirect = Protocols::of(&["ftp"]).unwrap();
+            o.resolve
+                .set([
+                    format!("first.test:{PORT}:127.0.0.1").as_bytes(),
+                    entry.as_bytes(),
+                ])
+                .unwrap();
+            *o.login.make_mut().unwrap() = Login::from_pair(b"user:secret").unwrap();
+            let ftp = &mut o.line.make_mut().unwrap().ftp;
+            ftp.account = Some(b"my acct".to_vec());
+            ftp.alternative_to_user = Some(b"SITE login".to_vec());
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, received(&control), text.text())
+    };
+    let rest: [&'static [u8]; 4] = [
         b"257 \"/\" is it\r\n",
         b"200 binary\r\n",
         b"213 5\r\n",
         b"350 restarting\r\n",
     ];
-    let control = Conversation::replies(&replies, false).greeting();
-    let mut m = serving(&[&http, &control], &[]);
-    let entry = format!("other.test:{PORT}:127.0.0.1");
-    let (id, _, text) = added(&mut m, "http://first.test:PORT/a", |o| {
-        o.method = crate::options::Method::Head;
-        o.http.follow = Follow::All;
-        o.schemes.make_mut().unwrap().redirect = Protocols::of(&["ftp"]).unwrap();
-        o.resolve
-            .set([
-                format!("first.test:{PORT}:127.0.0.1").as_bytes(),
-                entry.as_bytes(),
-            ])
-            .unwrap();
-        *o.login.make_mut().unwrap() = Login::from_pair(b"user:secret").unwrap();
-        o.line.make_mut().unwrap().ftp.account = Some(b"my acct".to_vec());
-    });
-    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
-    assert_eq!(result, Ok(()), "{}", text.text());
-    let sent = received(&control);
+    let mut asks: Vec<&'static [u8]> =
+        vec![b"331 password?\r\n", b"332 account?\r\n", b"230 in\r\n"];
+    asks.extend_from_slice(&rest);
+    let (result, sent, said) = run(&asks[..2], false);
+    assert_eq!(result, Err(ErrorKind::LoginDenied), "{said}");
+    assert!(said.contains("ACCT requested but none available"), "{said}");
+    assert_eq!(sent, "USER anonymous\r\nPASS ftp@example.com\r\n");
+    let (result, sent, said) = run(&[b"530 no\r\n"], false);
+    assert_eq!(result, Err(ErrorKind::LoginDenied), "{said}");
+    assert!(said.contains("Access denied: 530"), "{said}");
+    assert_eq!(sent, "USER anonymous\r\n");
+    // Let follow, both go: the login the redirect's URL names, here none.
+    let (result, sent, said) = run(&asks, true);
+    assert_eq!(result, Ok(()), "{said}");
     assert!(
-        sent.starts_with("USER anonymous\r\nPASS ftp@example.com\r\nACCT my acct\r\n"),
+        sent.starts_with("USER user\r\nPASS secret\r\nACCT my acct\r\n"),
         "{sent}"
     );
+    let mut refused: Vec<&'static [u8]> = vec![b"530 no\r\n", b"230 in\r\n"];
+    refused.extend_from_slice(&rest);
+    let (result, sent, said) = run(&refused, true);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(sent.starts_with("USER user\r\nSITE login\r\n"), "{sent}");
 }
 
 /// The login's other ways: an account when the server asks for one, and

@@ -188,6 +188,13 @@ fn login_of(cold: &Option<TryArc<RouteCold>>) -> Option<&Credentials> {
     cold.as_deref().and_then(|c| c.login.as_ref())
 }
 
+/// What the connection logs in with beyond its credentials: the account
+/// and the alternative to `USER`, as the request's gate let them in
+/// (`route_cold`).
+fn setup_of(cold: &Option<TryArc<RouteCold>>) -> Option<&crate::conn::FtpSetup> {
+    cold.as_deref().and_then(|c| c.ftp.as_ref())
+}
+
 /// What a transfer knows of its control connection, for the data
 /// connection it makes.
 #[derive(Debug)]
@@ -1089,7 +1096,7 @@ impl Request {
         } else if code / 100 == 2 {
             self.logged_in(cx, pc, carrier)
         } else if code == 332 {
-            let Some(account) = cx.easy().options().line.ftp.account.as_deref() else {
+            let Some(account) = setup_of(&pc.cold).and_then(|f| f.account.as_deref()) else {
                 return Err(trace::fail(
                     cx,
                     ErrorKind::LoginDenied,
@@ -1108,7 +1115,7 @@ impl Request {
             set_state(cx, pc, State::Acct);
             Ok(())
         } else {
-            let alt = cx.easy().options().line.ftp.alternative_to_user.as_deref();
+            let alt = setup_of(&pc.cold).and_then(|f| f.alternative_to_user.as_deref());
             match alt {
                 Some(alt) if !self.trying_alternative => {
                     if has_ctrl(alt) {

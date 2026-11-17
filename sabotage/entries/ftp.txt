@@ -2,7 +2,7 @@
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::ftp::tests::a_connection_is_reused_only_with_the_same_account
 --- old
-                account: account.as_deref().map(copy_bytes).transpose()?,
+                account: given(account)?,
 --- new
                 account: None,
 
@@ -719,3 +719,11 @@ witness: curl-core proto::ftp::tests::an_unreadable_range_fails_the_download
                 let Ok(span) = super::file::span_of(cx) else {
                     return Ok(DoStep::Nothing);
                 };
+
+=== a redirect's FTP server is given the account and the alternative to USER
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::ftp::tests::a_redirect_s_ftp_server_is_sent_no_account_or_alternative
+--- old
+                |v: &Option<Vec<u8>>| v.as_deref().filter(|_| trusted).map(copy_bytes).transpose();
+--- new
+                |v: &Option<Vec<u8>>| v.as_deref().map(copy_bytes).transpose();

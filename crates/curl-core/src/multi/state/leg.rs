@@ -908,7 +908,11 @@ fn route_cold<H: Host>(
     let local = options.sockets.local.try_clone()?;
     let use_ssl = options.line.use_ssl;
     let ftp = match proto {
-        ProtoState::Ftp(_) => {
+        ProtoState::Ftp(request) => {
+            // The account and the alternative to `USER` are what the
+            // application said for the first origin: they go only where
+            // its gate lets what it said go.
+            let trusted = request.trusted().is_some();
             // Every option by name, so that one added does not compile
             // until it is said to set the connection up, and is copied
             // here to be compared (`Curl_ftp_conns_match`), or to be the
@@ -939,9 +943,11 @@ fn route_cold<H: Host>(
                 // matches no connection by it either.
                 ssl_auth: _,
             } = &options.line.ftp;
+            let given =
+                |v: &Option<Vec<u8>>| v.as_deref().filter(|_| trusted).map(copy_bytes).transpose();
             Some(crate::conn::FtpSetup {
-                account: account.as_deref().map(copy_bytes).transpose()?,
-                alternative_to_user: alternative_to_user.as_deref().map(copy_bytes).transpose()?,
+                account: given(account)?,
+                alternative_to_user: given(alternative_to_user)?,
                 ccc: *ssl_ccc,
             })
         }

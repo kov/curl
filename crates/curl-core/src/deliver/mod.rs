@@ -1095,8 +1095,9 @@ impl ClientOut {
             OutState::Direct => return Ok(()),
             OutState::Held(held) => held,
         };
-        // Only a handler's own pause stops the replay, and it is the only
-        // thing that leaves an entry part delivered.
+        // A pause stops the replay: a handler's own, which may leave an
+        // entry part delivered, or the application's, met before a piece
+        // (`app_paused`).
         while !handler_paused(cx) {
             let Some((kind, bytes)) = held.front() else {
                 break;

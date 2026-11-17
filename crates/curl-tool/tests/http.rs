@@ -1482,7 +1482,8 @@ fn reads_the_name_the_server_gives_as_c_does() {
         ),
         (vec![vec![moved(200)]], false, "url-name", b""),
         (vec![vec![interim.clone()]], true, "cd-name", &interim),
-        // Without a body, what was held when the file was made is all.
+        // Without a body, a disposition naming no file makes none until
+        // the transfer ends: the whole head held is written then.
         (
             vec![vec![
                 b"HTTP/1.1 200 OK\r\nContent-Disposition: inline\r\nContent-Length: 0\r\n\r\n"
@@ -1490,7 +1491,7 @@ fn reads_the_name_the_server_gives_as_c_does() {
             ]],
             true,
             "url-name",
-            b"HTTP/1.1 200 OK\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Disposition: inline\r\nContent-Length: 0\r\n\r\n",
         ),
     ];
     let dir = scratch("server-names");

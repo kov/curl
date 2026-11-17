@@ -98,7 +98,7 @@ witness: curl-core proto::ftp::list::tests::a_failed_listing_reads_no_more
 features: test-util debug-hooks
 --- old
         if self.error.is_some() {
-            return;
+            return None;
         }
         if self.os == Os::Unknown
 --- new

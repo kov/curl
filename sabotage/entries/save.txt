@@ -24,3 +24,20 @@ witness: curl-core save::tests::replaces_a_file_and_keeps_its_mode
             .ok();
 --- new
         let _ = was;
+
+=== a file under the root is taken for a bare name, its copy written elsewhere
+file: crates/curl-core/src/save.rs
+witness: curl-core save::tests::the_first_file_is_written_beside_its_target
+--- old
+    while n > 0 && is_sep(path[n - 1]) {
+        n -= 1;
+    }
+    Some(&path[..n])
+--- new
+    while n > 0 && is_sep(path[n - 1]) {
+        n -= 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    Some(&path[..n])

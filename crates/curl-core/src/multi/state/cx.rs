@@ -550,6 +550,13 @@ impl<H: Host> StepCx<'_, H> {
         self.rest.shutdowns.conn_changed();
     }
 
+    /// Step this transfer again as soon as the multi next runs, though
+    /// nothing it waits on moves: its step gave the others their turn
+    /// (`Curl_multi_mark_dirty`).
+    pub(crate) fn mark_dirty(&mut self) {
+        self.wake(self.me);
+    }
+
     /// Step transfer `id` again in the pass: something it waits on, a
     /// connection it shares, changed.
     pub(crate) fn wake(&mut self, id: TransferId) {

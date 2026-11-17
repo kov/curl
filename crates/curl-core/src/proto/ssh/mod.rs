@@ -590,6 +590,11 @@ pub(crate) struct Request {
     path: Option<Vec<u8>>,
     upload: bool,
     no_body: bool,
+    /// The directory entries read since the listing's step last gave the
+    /// others their turn (`readdir_count`).
+    readdir_count: u32,
+    /// The state just run gave the others their turn: the run ends.
+    yielded: bool,
     /// Where the transfer starts (`state.resume_from`): -1 for the end.
     resume_from: i64,
     /// The range asked for, or the resume point's (`state.range` while
@@ -672,6 +677,8 @@ impl Request {
             path: None,
             upload: options.method == crate::options::Method::Upload,
             no_body: options.method == crate::options::Method::Head,
+            readdir_count: 0,
+            yielded: false,
             resume_from,
             range,
             infilesize: None,

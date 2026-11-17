@@ -293,6 +293,10 @@ impl From<ErrorKind> for Halt {
 /// How a state's work went.
 type Ran = Result<(), Halt>;
 
+/// The most directory entries a listing's step reads before it gives the
+/// others their turn (`SFTP_READDIR_MAX_ENTRIES`).
+const SFTP_READDIR_MAX_ENTRIES: u32 = 1000;
+
 /// The failure a failed SFTP call's status makes
 /// (`sftp_libssh2_error_to_CURLE`): `LIBSSH2_FX_OK`, the server having
 /// said nothing of it, is a failure too, of SSH's.
@@ -994,6 +998,14 @@ impl Request {
         let mut ran;
         loop {
             ran = self.state2(cx, sc, carrier);
+            // A state that gave the others their turn ends the run as one
+            // that waits does (`*blockp`).
+            if std::mem::take(&mut self.yielded) {
+                if ran.is_ok() {
+                    ran = Err(Halt::Again);
+                }
+                break;
+            }
             // A session over pipes waits on them: once bytes move, the
             // call is made again, as C's callbacks would have moved them
             // inside it.
@@ -2183,6 +2195,15 @@ impl Request {
             }
             Ok(Some(entry)) => entry,
         };
+        // A server sending entries faster than they are read never has a
+        // call wait: every so many the step ends, to run again at once, so
+        // the transfer's timeout is checked and other transfers run.
+        self.readdir_count += 1;
+        if self.readdir_count >= SFTP_READDIR_MAX_ENTRIES {
+            self.readdir_count = 0;
+            self.yielded = true;
+            cx.mark_dirty();
+        }
         if list_only {
             let name = copy(entry.name)?;
             self.base.pipeline.body(cx, &name)?;

@@ -93,6 +93,8 @@ struct World {
     /// A directory's entries: name, `ls -l` line and attributes; and each
     /// link's target, by path.
     dir: Vec<(Vec<u8>, Vec<u8>, Attrs)>,
+    /// The fake clock moves on this long with each entry read.
+    entry_ms: u64,
     links: Vec<(Vec<u8>, Vec<u8>)>,
     /// Attributes a stat answers with in place of the file's.
     attrs: Vec<(Vec<u8>, Attrs)>,
@@ -145,6 +147,7 @@ impl Default for World {
             sha256: Some([7; 32]),
             md5: Some([7; 16]),
             dir: Vec::new(),
+            entry_ms: 0,
             links: Vec::new(),
             attrs: Vec::new(),
             statvfs: Statvfs::default(),
@@ -597,6 +600,9 @@ impl Session2 for FakeSession {
         let Some((name, long, attrs)) = w.dir.get(at).cloned() else {
             return Ok(None);
         };
+        if let Some(clock) = &w.clock {
+            clock.advance(Duration::from_millis(w.entry_ms));
+        }
         drop(w);
         self.dir = Some(at + 1);
         self.entry = (name, long);
@@ -3113,6 +3119,65 @@ fn an_upload_s_directories_and_their_failures() {
         !calls.iter().any(|c| c.starts_with("sftp_mkdir")),
         "{calls:?}"
     );
+}
+
+/// A listing whose entries come as fast as they are read, so that no call
+/// waits, ends its step every 1000 entries, run again at once, with no
+/// wait between: whole, as names or `ls -l` lines, its run of entries is
+/// cut twice in 2500; and
+/// with an entry read each millisecond, a timeout of 1500 ms ends it at
+/// the step after 1000 ms, 2000 entries in (`SFTP_READDIR_MAX_ENTRIES`).
+#[test]
+fn a_long_listing_gives_the_others_their_turn() {
+    let dir = |n: usize, ms: u64| {
+        move |w: &mut World| {
+            w.trace_multi = true;
+            w.entry_ms = ms;
+            w.dir = (0..n)
+                .map(|i| {
+                    let name = format!("f{i}").into_bytes();
+                    let mut long = b"-rw-r--r-- ".to_vec();
+                    long.extend_from_slice(&name);
+                    let attrs = Attrs {
+                        flags: AttrFlags::PERMISSIONS,
+                        permissions: 0o100644,
+                        ..Attrs::default()
+                    };
+                    (name, long, attrs)
+                })
+                .collect();
+        }
+    };
+    let url = "sftp://u@127.0.0.1:PORT/~/d/";
+    let cut = |said: &str| said.matches("statemachine() -> 0, block=1\n").count();
+    for list_only in [true, false] {
+        let (r, b, said, _) = over("x", url, dir(2500, 0), |o| {
+            o.line.make_mut().unwrap().list_only = list_only;
+        });
+        assert_eq!(r, Ok(()), "{said}");
+        let lines: Vec<&[u8]> = b.split(|&c| c == b'\n').collect();
+        assert_eq!(lines.len(), 2501, "{list_only}");
+        assert!(lines[2499].ends_with(b"f2499"), "{list_only}");
+        assert_eq!(cut(&said), 2, "{list_only}: {said}");
+        // Each wait once the listing started is none: the step marked its
+        // transfer to run again at once.
+        let from = said.find("[SSH_SFTP_READDIR").unwrap();
+        let waits: Vec<&str> = said[from..]
+            .lines()
+            .filter(|l| l.contains("multi_wait("))
+            .collect();
+        assert!(!waits.is_empty(), "{said}");
+        assert!(
+            waits.iter().all(|l| l.contains(", timeout=0)")),
+            "{waits:?}"
+        );
+    }
+    let (r, b, said, _) = over("x", url, dir(5000, 1), |o| {
+        o.line.make_mut().unwrap().list_only = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(1500);
+    });
+    assert_eq!(r, Err(ErrorKind::OperationTimedout), "{said}");
+    assert_eq!(b.iter().filter(|&&c| c == b'\n').count(), 2000);
 }
 
 /// A directory's listing: its names alone, or each `ls -l` line, a link's

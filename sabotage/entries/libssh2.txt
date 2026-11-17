@@ -127,3 +127,29 @@ witness: curl-core proto::ssh::libssh2::tests::the_logins_are_tried_in_c_s_order
             cx,
             &[
                 b"SSH: agent authenticated user '",
+
+=== a long SFTP listing reads on in one step
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::a_long_listing_gives_the_others_their_turn
+--- old
+            self.yielded = true;
+            cx.mark_dirty();
+--- new
+            cx.mark_dirty();
+
+=== a long SFTP listing's step ends unmarked to run again
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::a_long_listing_gives_the_others_their_turn
+--- old
+            self.yielded = true;
+            cx.mark_dirty();
+--- new
+            self.yielded = true;
+
+=== a long SFTP listing's step reads one entry more
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::a_long_listing_gives_the_others_their_turn
+--- old
+        if self.readdir_count >= SFTP_READDIR_MAX_ENTRIES {
+--- new
+        if self.readdir_count > SFTP_READDIR_MAX_ENTRIES {

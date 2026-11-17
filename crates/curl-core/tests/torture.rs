@@ -2553,15 +2553,101 @@ fn two_h3_tunnels_scenario() -> Result<bool, OutOfMemory> {
     Ok(fine)
 }
 
+/// The second response on an HTTP/3 connection: `ok`, on its next
+/// stream.
+fn h3_second_response() -> Vec<Told> {
+    let field = |name: &[u8], value: &[u8]| Told::Header {
+        stream: 4,
+        name: name.to_vec(),
+        value: value.to_vec(),
+    };
+    vec![
+        field(b":status", b"200"),
+        field(b"content-length", b"2"),
+        Told::HeadersDone(4),
+        Told::Data(4, b"ok".to_vec()),
+        Told::Closed(4, 0x100),
+    ]
+}
+
+/// Two GETs in HTTP/3 alone, one after the other in one multi, the
+/// second on the first's connection, looked at before its reuse with a
+/// datagram waiting on its socket: whether both ended well.
+fn two_h3_gets_on_one_connection_scenario() -> Result<bool, OutOfMemory> {
+    h3_scripts(
+        || {
+            // After the request, one more packet, whose answer, telling
+            // nothing, waits on the socket for the look before reuse.
+            let mut s = h3_script(
+                H3_GET_OUT,
+                vec![h3_response(), vec![], h3_second_response()],
+            );
+            s.out.extend([vec![4; 20], vec![]]);
+            s
+        },
+        None,
+    );
+    let (clock, net, _talk) = quic_server(&[b"server flight", b"response", b"late", b"second"]);
+    let env = Env {
+        clock: try_box(clock)?,
+        net: try_box(net)?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::with_env(env)?;
+    let mut fine = true;
+    for (i, url) in [&b"https://127.0.0.1/1?q"[..], b"https://127.0.0.1/2?q"]
+        .into_iter()
+        .enumerate()
+    {
+        if i == 1 {
+            // The packet the second request goes in, written once the
+            // first is over.
+            track::untracked(|| {
+                let fake = fake_h3();
+                let mut s = fake.script.lock().unwrap();
+                s.out.extend([vec![5; 75], vec![]]);
+            });
+        }
+        let mut easy = Easy::new();
+        easy.set_libraries(fake_h3_libraries());
+        let o = easy.options_mut();
+        o.set_url(Some(url))?;
+        o.http.user_agent = Some(b"curl/test".to_vec_fallible()?);
+        h3_only(o)?;
+        let id = m
+            .add(try_box(easy)?, (), &mut NoEvents)
+            .map_err(|_| OutOfMemory)?;
+        let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+            .expect("the transfer is in the multi");
+        fine &= result.is_ok();
+        m.remove(id, &mut NoEvents).expect("in the multi");
+    }
+    let s = fake_h3().script.lock().unwrap();
+    fine &= s.requests.len() == 2;
+    Ok(fine)
+}
+
 /// One room per multi for QUIC to receive in, as C's `xfer_sockbuf`, the
 /// connections to an HTTP/3 proxy borrowing it as the origin's do: two
 /// pooled connections to the proxy make one between them, and an HTTP/3
 /// origin through the proxy's CONNECT-UDP tunnel receives in a room of
 /// its own of C's tunnel's size (`QUIC_TUNNEL_INBUF_SIZE`), leaving the
-/// multi's to the proxy's connection below it.
+/// multi's to the proxy's connection below it. A connection looked at
+/// before its reuse receives in the multi's room too, not one made for
+/// the look (`Curl_multi_xfer_sockbuf_borrow`).
 fn one_quic_receive_room_per_multi() {
     let room = curl_os::net::BATCH * curl_os::net::SLOT;
     fake_h3_libraries();
+    let (fine, rooms) = track::count_sized(room, two_h3_gets_on_one_connection_scenario);
+    assert!(
+        fine.expect("nothing refused"),
+        "both GETs on the one connection"
+    );
+    assert_eq!(
+        rooms, 1,
+        "receive rooms made for two GETs on one connection"
+    );
     let (fine, rooms) = track::count_sized(room, two_h3_tunnels_scenario);
     assert!(
         fine.expect("nothing refused"),

@@ -1803,3 +1803,12 @@ witness: curl-core proto::ssh::libssh2::tests::a_paused_download_waits_on_nothin
                     let read = if pause.recv_paused() {
 --- new
                     let read = if false {
+
+=== a connection's look before reuse makes a receive room of its own
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core one_quic_receive_room_per_multi
+features: test-util,debug-hooks
+--- old
+            room: linger.map(|l| l.room),
+--- new
+            room: linger.map(|_| None).flatten(),

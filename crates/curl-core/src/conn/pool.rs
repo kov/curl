@@ -2350,15 +2350,23 @@ fn idle_ms(conn: &Conn, since: Instant, now: Instant) -> i64 {
 /// frames (`http2_connisalive`), and RTSP's server may send RTP between
 /// requests (`rtsp_conn_is_dead`). A change the session read of how
 /// many transfers the connection takes is the news of the multi behind
-/// `exits`, if there is one (`Curl_multi_connchanged`).
+/// `exits`, if there is one (`Curl_multi_connchanged`), whose room a
+/// QUIC connection receives in.
 fn alive(conn: &mut Conn, now: Instant, exits: &mut dyn Exits) -> Result<(), Option<PoolNote>> {
     let trace = internal(exits);
-    let mut cx = crate::trace::InternalCx {
-        now,
-        trace: trace.as_ref(),
-        room: None,
+    // A QUIC connection's look receives into the multi's room, as each of
+    // its receives does (`Curl_multi_xfer_sockbuf_borrow`), not into one
+    // made for the look.
+    let alive = {
+        let (_, linger) = exits.parts();
+        let mut cx = crate::trace::InternalCx {
+            now,
+            trace: trace.as_ref(),
+            room: linger.map(|l| l.room),
+        };
+        conn.alive(&mut cx)
     };
-    match conn.alive(&mut cx) {
+    match alive {
         Alive::Alive {
             input_pending: false,
         } => Ok(()),

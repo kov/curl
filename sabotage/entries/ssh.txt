@@ -256,3 +256,37 @@ witness: curl-core proto::ssh::tests::a_failed_sftp_call_said_ok_still_fails
         self.actual = Err(sftp_failure(status));
 --- new
         self.actual = if matches!(status, SftpStatus::Unsaid) { Ok(()) } else { Err(sftp_failure(status)) };
+
+=== a guessed key file that fails ends public key login
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
+--- old
+    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+--- new
+    if true {
+
+=== a named key file that fails goes on to the agent
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
+--- old
+    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+--- new
+    if !allows(cx, SshAuthTypes::AGENT) {
+
+=== a guessed key file goes on to the agent the transfer does not allow
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
+--- old
+    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+--- new
+    if keys(sc).is_some_and(|k| k.named) {
+
+=== a named key file that cannot be loaded goes on
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
+--- old
+                if keys(sc).is_some_and(|k| k.named) {
+                    let kind
+--- new
+                if false {
+                    let kind

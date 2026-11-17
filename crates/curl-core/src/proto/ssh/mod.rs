@@ -61,6 +61,11 @@ pub(crate) struct Keys {
     /// What the private key is decrypted with (`CURLOPT_KEYPASSWD`); not
     /// compared for reuse, as C compares it not.
     passphrase: Option<Vec<u8>>,
+    /// The private key file is the one the user named
+    /// (`CURLOPT_SSH_PRIVATE_KEYFILE`), the only key then tried, not the
+    /// default guess, after which the agent and libssh's own default
+    /// keys are.
+    named: bool,
 }
 
 impl Keys {
@@ -70,12 +75,14 @@ impl Keys {
             private,
             public,
             passphrase,
+            named,
         } = self;
         let copy = |v: &Option<Vec<u8>>| v.as_deref().map(crate::options::copy).transpose();
         Ok(Keys {
             private: copy(private)?,
             public: copy(public)?,
             passphrase: copy(passphrase)?,
+            named: *named,
         })
     }
 
@@ -89,6 +96,7 @@ impl Keys {
             public,
             // C's `ssh_config_matches` compares the files only.
             passphrase: _,
+            named: _,
         } = self;
         *private == other.private && *public == other.public
     }
@@ -100,9 +108,9 @@ impl Keys {
         if !ssh.auth_types.allows(SshAuthTypes::PUBLICKEY) {
             return Ok(Keys::default());
         }
-        let private = match ssh.private_key.as_deref() {
-            Some(given) => copy(given)?,
-            None => default_private_key()?,
+        let (private, named) = match ssh.private_key.as_deref() {
+            Some(given) => (copy(given)?, true),
+            None => (default_private_key()?, false),
         };
         let public = ssh
             .public_key
@@ -121,6 +129,7 @@ impl Keys {
             private: Some(private),
             public,
             passphrase,
+            named,
         })
     }
 
@@ -133,9 +142,18 @@ impl Keys {
 
 /// The first of the default private key files that exists, or empty:
 /// `~/.ssh/id_rsa`, `~/.ssh/id_dsa`, then `id_rsa` and `id_dsa` here.
+#[cfg(not(test))]
 fn default_private_key() -> Result<Vec<u8>, ErrorKind> {
     let home = curl_os::env::var(b"HOME").map_err(|_| ErrorKind::OutOfMemory)?;
     first_private_key(home.as_deref(), exists)
+}
+
+/// The tests' guess, the same wherever they run, not the key files of
+/// whoever runs them: their user's `~/.ssh/id_rsa`. Which file is
+/// guessed is `first_private_key`'s, tested on its own.
+#[cfg(test)]
+fn default_private_key() -> Result<Vec<u8>, ErrorKind> {
+    copy(b"/home/u/.ssh/id_rsa")
 }
 
 /// The first of the default private key files under `home`, then here,
@@ -163,6 +181,7 @@ fn first_private_key(
 }
 
 /// Whether `file` names one there is (`stat` succeeds).
+#[cfg(not(test))]
 fn exists(file: &[u8]) -> Result<bool, ErrorKind> {
     if file.contains(&0) {
         return Ok(false);
@@ -196,6 +215,8 @@ enum State {
     Authlist(HostVerified),
     AuthPkeyInit(HostVerified),
     AuthPkey(HostVerified),
+    /// libssh's own search: the agent, then its default key files.
+    AuthPkeyAuto(HostVerified),
     AuthPassInit(HostVerified),
     AuthPass(HostVerified),
     AuthGssapi(HostVerified),
@@ -253,6 +274,7 @@ impl State {
             State::Authlist(_) => "SSH_AUTHLIST",
             State::AuthPkeyInit(_) => "SSH_AUTH_PKEY_INIT",
             State::AuthPkey(_) => "SSH_AUTH_PKEY",
+            State::AuthPkeyAuto(_) => "SSH_AUTH_PKEY_AUTO",
             State::AuthPassInit(_) => "SSH_AUTH_PASS_INIT",
             State::AuthPass(_) => "SSH_AUTH_PASS",
             State::AuthGssapi(_) => "SSH_AUTH_GSSAPI",
@@ -831,6 +853,7 @@ impl Request {
                 State::Authlist(hv) => flow = authlist(cx, sc, hv),
                 State::AuthPkeyInit(hv) => flow = auth_pkey_init(cx, sc, hv),
                 State::AuthPkey(hv) => flow = auth_pkey(cx, sc, hv),
+                State::AuthPkeyAuto(hv) => flow = auth_pkey_auto(cx, sc, hv),
                 State::AuthGssapi(hv) => flow = auth_gssapi(cx, sc, hv),
                 State::AuthKeyInit(hv) => {
                     if allows(cx, SshAuthTypes::KEYBOARD) {
@@ -2521,9 +2544,21 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified)
     Flow::On
 }
 
-/// `SSH_AUTH_PKEY_INIT`: the private key given, its public key offered
-/// first if given and no passphrase is, or else the agent's and the
-/// default keys.
+/// The key file did not log in. One the user named ends public key
+/// login there; the default guess does not, libssh's own search going on
+/// to the agent and its default keys, as the agent is allowed
+/// (`myssh_to_PKEY_AUTO`).
+fn to_pkey_auto<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
+    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+        return to_gssapi(cx, sc, hv);
+    }
+    sc.to(cx, State::AuthPkeyAuto(hv));
+    Flow::On
+}
+
+/// `SSH_AUTH_PKEY_INIT`: the private key file, named or guessed, its
+/// public key offered first if given and no passphrase is; with none,
+/// libssh's own search.
 fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
     if !allows(cx, SshAuthTypes::PUBLICKEY) {
         return to_gssapi(cx, sc, hv);
@@ -2547,7 +2582,7 @@ fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVer
                 match sc.session().try_publickey() {
                     Auth::Again => return Flow::Again,
                     Auth::Success => {}
-                    _ => return to_gssapi(cx, sc, hv),
+                    _ => return to_pkey_auto(cx, sc, hv),
                 }
             }
             if sc
@@ -2555,26 +2590,43 @@ fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVer
                 .import_privkey_file(&private, passphrase.as_deref())
                 != Rc::Ok
             {
-                let kind = trace::fail_with(
-                    cx,
-                    ErrorKind::LoginDenied,
-                    &[b"Could not load private key file ", &private],
-                );
-                return sc.goto_error(cx, kind);
+                let said: &[&[u8]] = &[b"Could not load private key file ", &private];
+                if keys(sc).is_some_and(|k| k.named) {
+                    let kind = trace::fail_with(cx, ErrorKind::LoginDenied, said);
+                    return sc.goto_error(cx, kind);
+                }
+                trace::info_with(cx, said);
+                return to_pkey_auto(cx, sc, hv);
             }
             sc.to(cx, State::AuthPkey(hv));
             Flow::On
         }
-        None => match sc.session().auth_publickey_auto(passphrase.as_deref()) {
-            Auth::Again => Flow::Again,
-            Auth::Success => {
-                sc.authed = true;
-                trace::info(cx, format_args!("Completed public key authentication"));
-                sc.to(cx, State::AuthDone(hv));
-                Flow::On
-            }
-            _ => to_gssapi(cx, sc, hv),
+        None => {
+            sc.to(cx, State::AuthPkeyAuto(hv));
+            Flow::On
+        }
+    }
+}
+
+/// `SSH_AUTH_PKEY_AUTO`: libssh's own search, the agent and then its
+/// default key files.
+fn auth_pkey_auto<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
+    let passphrase = match keys(sc).and_then(|k| k.passphrase.as_deref()) {
+        Some(p) => match copy(c_string(p)) {
+            Ok(p) => Some(p),
+            Err(e) => return sc.goto_error(cx, e),
         },
+        None => None,
+    };
+    match sc.session().auth_publickey_auto(passphrase.as_deref()) {
+        Auth::Again => Flow::Again,
+        Auth::Success => {
+            sc.authed = true;
+            trace::info(cx, format_args!("Completed public key authentication"));
+            sc.to(cx, State::AuthDone(hv));
+            Flow::On
+        }
+        _ => to_gssapi(cx, sc, hv),
     }
 }
 
@@ -2594,7 +2646,7 @@ fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified
                 cx,
                 format_args!("Failed public key authentication (rc: {n})"),
             );
-            to_gssapi(cx, sc, hv)
+            to_pkey_auto(cx, sc, hv)
         }
     }
 }

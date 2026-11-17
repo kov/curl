@@ -55,6 +55,8 @@ struct World {
     reads: usize,
     /// The private key's login is refused.
     key_refused: bool,
+    /// The private key file cannot be loaded.
+    key_unloadable: bool,
     /// The calls, by name, whose first answer is to wait.
     waiting: Vec<&'static str>,
     /// The GSS-API login, and the agent's, succeed.
@@ -284,8 +286,9 @@ impl Session for FakeSession {
         Auth::Success
     }
     fn import_privkey_file(&mut self, file: &[u8], _: Option<&[u8]>) -> Rc {
-        self.w().call("import_privkey_file", &[file]);
-        Rc::Ok
+        let mut w = self.w();
+        w.call("import_privkey_file", &[file]);
+        if w.key_unloadable { Rc::Error } else { Rc::Ok }
     }
     fn auth_publickey(&mut self) -> Auth {
         let mut w = self.w();
@@ -2142,6 +2145,70 @@ fn the_agent_logs_in_without_a_private_key() {
     );
 }
 
+/// The key file guessed, `~/.ssh/id_rsa`, that does not log in or cannot
+/// be loaded is not the end of public key login: libssh's own search,
+/// the agent and its default keys, goes on from it, as the agent is
+/// allowed. A key file the user named is the only one tried, and one
+/// that cannot be loaded fails the transfer (`myssh_to_PKEY_AUTO`).
+#[test]
+fn the_agent_follows_a_guessed_key_file_alone() {
+    use crate::options::SshAuthTypes;
+    let guessed = "/home/u/.ssh/id_rsa";
+    let cases = [
+        // (named, refused, unloadable, the agent allowed, the agent asked)
+        (false, true, false, true, true),
+        (false, false, true, true, true),
+        (false, true, false, false, false),
+        (true, true, false, true, false),
+        (true, false, true, true, false),
+    ];
+    for (named, refused, unloadable, agent, asked) in cases {
+        let w = world_with(&[("/home/u/f", "x")], |w| {
+            w.key_refused = refused;
+            w.key_unloadable = unloadable;
+            w.agent_ok = true;
+        });
+        let mut m = chatty();
+        let (result, _, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+            let ssh = o.ssh.make_mut().unwrap();
+            ssh.private_key = named.then(|| guessed.as_bytes().to_vec());
+            ssh.public_key = None;
+            ssh.auth_types = if agent {
+                SshAuthTypes::ANY
+            } else {
+                SshAuthTypes::PUBLICKEY | SshAuthTypes::PASSWORD
+            };
+        });
+        let case = (named, refused, unloadable, agent);
+        let calls = w.lock().unwrap().calls.clone();
+        let load = format!("import_privkey_file {guessed}");
+        assert!(calls.contains(&load), "{case:?} {calls:?}");
+        assert_eq!(
+            calls.contains(&"auth_publickey_auto".to_owned()),
+            asked,
+            "{case:?} {calls:?}"
+        );
+        let unloaded = format!("Could not load private key file {guessed}\n");
+        assert_eq!(said.contains(&unloaded), unloadable, "{case:?} {said}");
+        if asked {
+            assert_eq!(result, Ok(()), "{case:?} {said}");
+            assert!(
+                said.contains("Completed public key authentication\n"),
+                "{said}"
+            );
+        } else if named && unloadable {
+            assert_eq!(result, Err(ErrorKind::LoginDenied), "{case:?} {said}");
+            // It ends the login: no other way is tried.
+            let password = calls.iter().any(|c| c.starts_with("auth_password"));
+            assert!(!password, "{case:?} {calls:?}");
+        } else {
+            // On to the password.
+            let password = calls.iter().any(|c| c.starts_with("auth_password"));
+            assert!(password, "{case:?} {calls:?}");
+        }
+    }
+}
+
 /// The keyboard-interactive login takes a round of no questions after
 /// the password's; an answer the library refuses falls to the password.
 #[test]
@@ -2535,11 +2602,13 @@ fn a_copy_of_the_keys_has_each_file() {
         private: Some(b"/k/id".to_vec()),
         public: Some(b"/k/id.pub".to_vec()),
         passphrase: Some(b"secret".to_vec()),
+        named: true,
     };
     let copy = keys.try_clone().unwrap();
     assert_eq!(copy.private.as_deref(), Some(&b"/k/id"[..]));
     assert_eq!(copy.public.as_deref(), Some(&b"/k/id.pub"[..]));
     assert_eq!(copy.passphrase.as_deref(), Some(&b"secret"[..]));
+    assert!(copy.named);
     assert!(copy.same(&keys));
 }
 

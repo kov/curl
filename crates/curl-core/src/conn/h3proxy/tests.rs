@@ -391,6 +391,9 @@ impl crate::conn::layer::QuicTimer for Asked {
     fn due_in(&mut self, wait: std::time::Duration) {
         self.calls.push(format!("quic_due {wait:?}"));
     }
+    fn due_no_later(&mut self, wait: std::time::Duration) {
+        self.calls.push(format!("quic_due_no_later {wait:?}"));
+    }
 }
 
 /// A call into the proxy's connection says to the transfer all it is

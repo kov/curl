@@ -467,6 +467,14 @@ impl<H: Host> crate::conn::layer::QuicTimer for DriveCx<'_, '_, H> {
             .expect("a QUIC attempt is driven with the transfer's timers");
         super::state::arm_quic(deadlines, self.step, wait);
     }
+
+    fn due_no_later(&mut self, wait: Duration) {
+        let deadlines = self
+            .deadlines
+            .as_deref_mut()
+            .expect("a QUIC attempt is driven with the transfer's timers");
+        super::state::arm_quic_no_later(deadlines, self.step, wait);
+    }
 }
 
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {

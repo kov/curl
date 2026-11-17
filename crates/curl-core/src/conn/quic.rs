@@ -911,7 +911,13 @@ impl Quic {
         if let Expiry::In(wait) = expiry {
             // In whole milliseconds, rounded up.
             let ms = wait.as_nanos().div_ceil(1_000_000);
-            cx.quic_due(Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX)));
+            let wait = Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX));
+            match self.flavour {
+                // An earlier call, as one its maintenance asked for, stays
+                // (`Curl_cf_ngtcp2_cmn_set_expiry`).
+                Flavour::Ngtcp2 => cx.quic_due_no_later(wait),
+                Flavour::Quiche => cx.quic_due(wait),
+            }
         }
         Ok(())
     }
@@ -2206,6 +2212,8 @@ pub(crate) mod tests {
         clock: ManualClock,
         lines: Vec<String>,
         due: Vec<Duration>,
+        /// The waits asked for unless a call is due sooner.
+        due_no_later: Vec<Duration>,
         socket: Scripted,
         /// The layers below, in place of the socket, if set.
         below: Option<Layers>,
@@ -2312,6 +2320,9 @@ pub(crate) mod tests {
         fn due_in(&mut self, wait: Duration) {
             self.due.push(wait);
         }
+        fn due_no_later(&mut self, wait: Duration) {
+            self.due_no_later.push(wait);
+        }
     }
 
     /// Its datagrams go through the layers it has, else on its socket.
@@ -2400,6 +2411,7 @@ pub(crate) mod tests {
             clock: clock.clone(),
             lines: Vec::new(),
             due: Vec::new(),
+            due_no_later: Vec::new(),
             socket: Scripted::default(),
             below: layered.then(Layers::default),
             room: RecvRoom::Unmade,
@@ -2773,19 +2785,32 @@ pub(crate) mod tests {
     }
 
     /// The library's timer is set in whole milliseconds, rounded up; one
-    /// due runs, then is set again for when it is next.
+    /// due runs, then is set again for when it is next. ngtcp2's keeps a
+    /// call due sooner (`Curl_expire_latest`); quiche's is set as asked
+    /// (`Curl_expire`).
     #[test]
     fn the_timer_rounds_up_and_runs_when_due() {
-        let script = Script::new();
-        script.lock().unwrap().expiry = Some(Duration::from_micros(4500));
-        let (mut q, mut cx) = quic(&script);
-        assert_eq!(q.start(&mut cx), Ok(false));
-        assert_eq!(cx.due, [Duration::from_millis(5)]);
-        script.lock().unwrap().expiry = Some(Duration::ZERO);
-        assert_eq!(q.connect(&mut cx), Ok(false));
-        assert_eq!(script.lock().unwrap().expired, 1);
-        // Run, it is never due again.
-        assert_eq!(cx.due.len(), 1);
+        for flavour in [Flavour::Ngtcp2, Flavour::Quiche] {
+            let script = Script::new();
+            {
+                let mut s = script.lock().unwrap();
+                s.flavour = flavour;
+                s.expiry = Some(Duration::from_micros(4500));
+            }
+            let (mut q, mut cx) = quic_as(&script, false, flavour);
+            assert_eq!(q.start(&mut cx), Ok(false));
+            let five = vec![Duration::from_millis(5)];
+            let asked = |cx: &Cx| match flavour {
+                Flavour::Ngtcp2 => (cx.due.clone(), cx.due_no_later.clone()),
+                Flavour::Quiche => (cx.due_no_later.clone(), cx.due.clone()),
+            };
+            assert_eq!(asked(&cx), (vec![], five.clone()), "{flavour:?}");
+            script.lock().unwrap().expiry = Some(Duration::ZERO);
+            assert_eq!(q.connect(&mut cx), Ok(false));
+            assert_eq!(script.lock().unwrap().expired, 1);
+            // Run, it is never due again.
+            assert_eq!(asked(&cx), (vec![], five), "{flavour:?}");
+        }
     }
 
     /// HTTP/3 that could not be set up as the keys came fails the

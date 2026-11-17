@@ -275,6 +275,10 @@ pub(crate) trait EarlyData {
 pub(crate) trait QuicTimer {
     /// Call it again after `wait` from now, in whole milliseconds.
     fn due_in(&mut self, wait: Duration);
+
+    /// `due_in`, unless it is to be called sooner already
+    /// (`Curl_expire_latest`).
+    fn due_no_later(&mut self, wait: Duration);
 }
 
 /// What a layer calls on its context, each through the capability it
@@ -436,6 +440,14 @@ pub(crate) trait LayerCalls: LayerCx {
     fn quic_due(&mut self, wait: Duration) {
         if let Some(timer) = self.quic_timer() {
             timer.due_in(wait);
+        }
+    }
+
+    /// The same, unless the library is to be called sooner already
+    /// (`Curl_expire_latest(EXPIRE_QUIC)`).
+    fn quic_due_no_later(&mut self, wait: Duration) {
+        if let Some(timer) = self.quic_timer() {
+            timer.due_no_later(wait);
         }
     }
 }

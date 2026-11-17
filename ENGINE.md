@@ -2373,7 +2373,10 @@ callbacks reach is set up once a datagram, not once a packet. Windows,
 which has neither, sends each datagram with a `send` of its own from the start and receives one
 at a time with `recvfrom`, traced by those names, as C's build there does. The
 library's timer is armed as the transfer's `QUIC` timer, in whole milliseconds rounded up, a
-wait from now that any multi stepping it arms. Every library call is given the time read again
+wait from now that any multi stepping it arms. ngtcp2's keeps a timer still to come by less than
+that, in whole milliseconds (`Curl_expire_latest`, `Deadlines::arm_no_later`), so an earlier call
+is never put off; a step weighs it against the timer as the step started (`StepCx::quic_armed`).
+quiche's is armed as asked. Every library call is given the time read again
 then (`Curl_cf_ngtcp2_io_ctx_update_time`) from the clock the connection was made under, which
 it keeps (`SharedClock`, the multi's one clock: the system's, or a test's held once): whichever transfer, multi or share
 uses it later, the library is never handed a time before one it had. A fatal error closes the

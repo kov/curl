@@ -1592,3 +1592,34 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_connection_asks_for_c_s_
 const H3_CONN_WINDOW_SIZE_MAX: u64 = 100 * 10 * 1024 * 1024;
 --- new
 const H3_CONN_WINDOW_SIZE_MAX: u64 = 100 * 10 * 1024 + 1024;
+
+=== an armed QUIC timer is put off by a later ask
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::the_quic_timer_is_not_put_off_while_it_is_to_come
+--- old
+                Flavour::Ngtcp2 => cx.quic_due_no_later(wait),
+--- new
+                Flavour::Ngtcp2 => cx.quic_due(wait),
+
+=== a step weighs the QUIC timer against none
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::h3_trace::the_quic_timer_is_not_put_off_while_it_is_to_come
+--- old
+        cx.quic_armed = run.deadlines.armed(TimerKind::Quic);
+--- new
+
+=== a QUIC connect puts its armed timer off
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::http::tests::h3_trace::the_quic_timer_is_not_put_off_while_it_is_to_come
+--- old
+        super::state::arm_quic_no_later(deadlines, self.step, wait);
+--- new
+        super::state::arm_quic(deadlines, self.step, wait);
+
+=== a timer due in as long as asked is kept
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::a_timer_kept_no_later_stays_only_when_sooner
+--- old
+    armed.is_some_and(|at| at > now && at.since(now).as_millis() < wait.as_millis())
+--- new
+    armed.is_some_and(|at| at > now && at.since(now).as_millis() <= wait.as_millis())

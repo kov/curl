@@ -122,6 +122,14 @@ pub(crate) enum TimeLeft {
     Expired(Duration),
 }
 
+/// Whether a timer armed for `armed` stays, asked to fire `wait` after
+/// `now` no later than it does: it is still to come, and what is left of
+/// its wait, in whole milliseconds, is less than `wait`'s
+/// (`Curl_expire_latest`).
+pub(crate) fn keeps_earlier(armed: Option<Instant>, now: Instant, wait: Duration) -> bool {
+    armed.is_some_and(|at| at > now && at.since(now).as_millis() < wait.as_millis())
+}
+
 /// A transfer's time limits and armed timers. The instants the limits are
 /// judged from are the report's (`Starts`).
 #[derive(Debug)]
@@ -173,8 +181,23 @@ impl Deadlines {
         at
     }
 
+    /// `arm_in`, unless `kind` is armed to fire sooner, still to come, by
+    /// a whole millisecond (`Curl_expire_latest`); one already due is
+    /// armed again. When it fires, if it was armed.
+    pub(crate) fn arm_no_later(
+        &mut self,
+        kind: TimerKind,
+        now: Instant,
+        wait: Duration,
+    ) -> Option<Instant> {
+        if keeps_earlier(self.armed(kind), now, wait) {
+            return None;
+        }
+        Some(self.arm_in(kind, now, wait))
+    }
+
     /// When `kind` fires, if armed.
-    fn armed(&self, kind: TimerKind) -> Option<Instant> {
+    pub(crate) fn armed(&self, kind: TimerKind) -> Option<Instant> {
         self.at[kind.ordinal()]
     }
 
@@ -542,6 +565,40 @@ mod tests {
             q.reserve(k.index() + 1).unwrap();
         }
         q
+    }
+
+    /// A timer asked to fire no later than it does stays when it is still
+    /// to come by less, in whole milliseconds, than the wait asked for;
+    /// one due, unarmed, as late or later is armed anew
+    /// (`Curl_expire_latest`).
+    #[test]
+    fn a_timer_kept_no_later_stays_only_when_sooner() {
+        let us = |us: u64| Instant::EPOCH.after(Duration::from_micros(us));
+        let now = us(10_000);
+        let wait = Duration::from_millis(5);
+        for (armed, keeps) in [
+            (None, false),
+            // Due already, or now.
+            (Some(us(9_000)), false),
+            (Some(now), false),
+            // 4.999 ms left is 4 whole: sooner.
+            (Some(us(14_999)), true),
+            (Some(us(10_001)), true),
+            // 5 whole, or more.
+            (Some(us(15_000)), false),
+            (Some(us(15_999)), false),
+            (Some(us(20_000)), false),
+        ] {
+            assert_eq!(keeps_earlier(armed, now, wait), keeps, "{armed:?}");
+            let mut d = Deadlines::new(None, None);
+            if let Some(at) = armed {
+                d.at[TimerKind::Quic.ordinal()] = Some(at);
+            }
+            let set = d.arm_no_later(TimerKind::Quic, now, wait);
+            let fires = if keeps { armed } else { Some(us(15_000)) };
+            assert_eq!(set, if keeps { None } else { fires }, "{armed:?}");
+            assert_eq!(d.armed(TimerKind::Quic), fires, "{armed:?}");
+        }
     }
 
     /// Unit 1309's first part: each queued transfer is removed once, and

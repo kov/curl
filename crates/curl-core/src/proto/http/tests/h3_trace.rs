@@ -938,6 +938,26 @@ fn a_shared_connection_is_reused_by_another_multi_on_their_clock() {
     );
 }
 
+/// The QUIC timer, armed, is not set again for later while it is still to
+/// come: each call into ngtcp2 asks for it again, the clock moving on a
+/// millisecond with each reading, and the timer fires before it is set
+/// anew (`Curl_expire_latest` in `Curl_cf_ngtcp2_cmn_set_expiry`).
+#[test]
+fn the_quic_timer_is_not_put_off_while_it_is_to_come() {
+    let script = get_script(b"123456789");
+    script.lock().unwrap().expiry = Some(std::time::Duration::from_millis(50));
+    let clock = ManualClock::new().unwrap();
+    let reads = Box::new(Ticking(clock.clone()));
+    let (mut m, _) = quic_peer_reading(clock, reads, &[&[b"server flight", b"response"]]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    // Armed as the connect starts; each later call, the connect's and the
+    // exchange's, keeps it.
+    let got = lines(&ran, &["[TIMER] [QUIC]"]);
+    assert_eq!(got, ["[TIMER] [QUIC] set for 49000us"]);
+}
+
 /// `get_script`, then a second response on the connection's next stream,
 /// `ok`, and the packet the second request goes in.
 fn and_then_ok(script: &Arc<Lock<Script>>) {

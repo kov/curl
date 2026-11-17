@@ -1717,6 +1717,7 @@ impl<H: Host> Multi<H> {
             }
         }
         let mut cx = StepCx::new(id, self.rest(now, ev));
+        cx.quic_armed = run.deadlines.armed(TimerKind::Quic);
         // The clock is read before each step, as C reads it at the top of
         // `multi_runsingle`'s loop: a step that took time, a `file:`
         // transfer's or a slow handler's, is timed and checked as it ends.

@@ -188,6 +188,13 @@ impl<H: Host> crate::conn::layer::QuicTimer for StepCx<'_, H> {
         self.quic_at = Some(at);
         trace_set(self, TimerKind::Quic, at);
     }
+
+    fn due_no_later(&mut self, wait: Duration) {
+        let armed = self.quic_at.or(self.quic_armed);
+        if !crate::multi::timers::keeps_earlier(armed, self.rest.clock.now(), wait) {
+            self.due_in(wait);
+        }
+    }
 }
 
 impl<H: Host> crate::conn::layer::TlsSessions for StepCx<'_, H> {
@@ -271,6 +278,9 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// When the QUIC library asked the step to call it again, the
     /// transfer's `QUIC` timer once the step is over.
     pub(crate) quic_at: Option<Instant>,
+    /// When the transfer's `QUIC` timer fired as the step started, which
+    /// a call asking for it no later than it does is weighed against.
+    pub(crate) quic_armed: Option<Instant>,
     /// When the server's time to answer runs out, as the step's line
     /// protocol last drove its back and forth: the transfer's
     /// `SERVER_RESPONSE` timer once the step is over.
@@ -332,6 +342,7 @@ impl<'a, H: Host> StepCx<'a, H> {
             rest,
             lent: None,
             quic_at: None,
+            quic_armed: None,
             server_response_at: None,
             side_due: SideDue::default(),
             rank: ConnRank::First,
@@ -395,6 +406,7 @@ impl<H: Host> StepCx<'_, H> {
             rest: self.rest.reborrow(),
             lent: self.lent,
             quic_at: self.quic_at,
+            quic_armed: self.quic_armed,
             server_response_at: self.server_response_at,
             side_due: self.side_due,
             rank: self.rank,

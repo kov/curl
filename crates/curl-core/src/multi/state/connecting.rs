@@ -1933,6 +1933,19 @@ pub(crate) fn arm_quic<H: Host>(deadlines: &mut Deadlines, cx: &mut StepCx<'_, H
     trace_set(cx, TimerKind::Quic, at);
 }
 
+/// `arm_quic`, unless the library is to be called sooner already
+/// (`Curl_expire_latest`).
+pub(crate) fn arm_quic_no_later<H: Host>(
+    deadlines: &mut Deadlines,
+    cx: &mut StepCx<'_, H>,
+    wait: Duration,
+) {
+    let now = cx.rest.clock.now();
+    if let Some(at) = deadlines.arm_no_later(TimerKind::Quic, now, wait) {
+        trace_set(cx, TimerKind::Quic, at);
+    }
+}
+
 /// Arm `kind` to fire `wait` after the step's start, traced as C's
 /// `Curl_expire_set` traces it.
 pub(super) fn arm<H: Host>(

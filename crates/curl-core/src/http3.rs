@@ -320,8 +320,6 @@ pub struct ClientSetup {
     pub max_window: u64,
     /// A request stream's first receive window.
     pub stream_window: u64,
-    /// The streams the peer may open of each kind.
-    pub max_streams: u64,
     /// Where the connection writes its qlog, if anywhere.
     pub qlog: Option<QlogDir>,
 }

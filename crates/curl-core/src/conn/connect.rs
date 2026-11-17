@@ -2155,7 +2155,6 @@ impl ConnectMachine {
             handshake_timeout: making.handshake_timeout,
             max_window: H3_CONN_WINDOW_SIZE_MAX,
             stream_window: crate::conn::quic::STREAM_WINDOW_INITIAL,
-            max_streams: QUIC_MAX_STREAMS,
             // Read as each connection starts, as C reads it
             // (`Curl_qlogdir`).
             qlog: crate::http3::QlogDir::from_env(making.file_mode),
@@ -2848,8 +2847,6 @@ impl Attempt {
 /// The receive window of a QUIC connection at its largest
 /// (`H3_CONN_WINDOW_SIZE_MAX`).
 const H3_CONN_WINDOW_SIZE_MAX: u64 = 100 * 10 * 1024 * 1024;
-/// The streams the peer may open of each kind (`QUIC_MAX_STREAMS`).
-const QUIC_MAX_STREAMS: u64 = 256 * 1024;
 
 /// A socket whose filter goes, still open (`cf_socket_destroy`).
 fn discard(cx: &mut dyn ConnCx, component: Component, socket: Sock) {

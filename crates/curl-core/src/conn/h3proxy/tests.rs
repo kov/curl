@@ -462,7 +462,6 @@ fn proxy(script: &Arc<Lock<Script>>) -> (H3Proxy, ManualClock) {
         handshake_timeout: std::time::Duration::from_secs(10),
         max_window: 1 << 20,
         stream_window: 1 << 15,
-        max_streams: 100,
         qlog: None,
     };
     let conn = FakeHttp3::new(script.clone())

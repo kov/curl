@@ -1,0 +1,9 @@
+# ngtcp2's QUIC connection (crates/curl-ngtcp2).
+
+=== the server may open request streams to the client
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::the_server_may_open_http_3_s_three_streams_alone
+--- old
+    params.initial_max_streams_bidi = 0;
+--- new
+    params.initial_max_streams_bidi = 256 * 1024;

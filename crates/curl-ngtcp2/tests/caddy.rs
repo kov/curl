@@ -472,7 +472,6 @@ fn with_conn_certs<R>(
             handshake_timeout: Duration::from_secs(10),
             max_window: 100 * 10 * 1024 * 1024,
             stream_window: 32 * 1024,
-            max_streams: 256 * 1024,
             qlog: qlog.map(|d| {
                 let dir = d.as_os_str().as_encoded_bytes();
                 QlogDir::new(dir, FileMode::default()).unwrap()
@@ -941,7 +940,6 @@ fn a_resumed_session_sends_its_get_as_early_data() {
                 handshake_timeout: Duration::from_secs(10),
                 max_window: 100 * 10 * 1024 * 1024,
                 stream_window: 32 * 1024,
-                max_streams: 256 * 1024,
                 qlog: None,
             };
             let mut conn = NGTCP2.client(&setup, tls).unwrap();

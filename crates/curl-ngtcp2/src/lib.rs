@@ -751,12 +751,7 @@ impl Connection {
         // Ten times ngtcp2's, for Caddy.
         settings.glitch_ratelim_burst = 1000 * 10;
         settings.glitch_ratelim_rate = 33 * 10;
-        params.initial_max_data = settings.max_window;
-        params.initial_max_stream_data_bidi_local = setup.stream_window;
-        params.initial_max_stream_data_bidi_remote = setup.stream_window;
-        params.initial_max_stream_data_uni = params.initial_max_data;
-        params.initial_max_streams_bidi = setup.max_streams;
-        params.initial_max_streams_uni = setup.max_streams;
+        streams_allowed(&mut params, settings.max_window, setup.stream_window);
         // No idle timeout of ours.
         params.max_idle_timeout = 0;
 
@@ -1549,9 +1544,29 @@ unsafe extern "C" fn acked_stream_data_offset(
     0
 }
 
-/// A stream closed (`cb_stream_close2`).
+/// The streams the server may open, and the windows of each kind
+/// (`quic_settings`): no request stream, as HTTP/3 has the client open
+/// them all, and HTTP/3's three of its own (control and QPACK's two),
+/// each with a window of its own; the connection's window, and that of
+/// each request stream the client opens.
+fn streams_allowed(params: &mut sys::ngtcp2_transport_params, max_window: u64, stream_window: u64) {
+    params.initial_max_streams_bidi = 0;
+    params.initial_max_stream_data_bidi_remote = 0;
+    params.initial_max_streams_uni = UNI_STREAMS;
+    params.initial_max_stream_data_uni = UNI_STREAM_WINDOW;
+    params.initial_max_data = max_window;
+    params.initial_max_stream_data_bidi_local = stream_window;
+}
+
+/// The one-way streams the server may open at once (`QUIC_UNI_STREAM_MAX`).
+const UNI_STREAMS: u64 = 3;
+/// Each such stream's window (`QUIC_UNI_STREAM_WIN_SIZE`).
+const UNI_STREAM_WINDOW: u64 = 64 * 1024;
+
+/// A stream closed (`cb_stream_close2`). One the server opened one way
+/// gives it room for another, its three at once kept.
 unsafe extern "C" fn stream_close2(
-    _conn: *mut sys::ngtcp2_conn,
+    conn: *mut sys::ngtcp2_conn,
     flags: u32,
     stream_id: i64,
     rx_app_error_code: u64,
@@ -1560,6 +1575,15 @@ unsafe extern "C" fn stream_close2(
     _stream_user_data: *mut c_void,
 ) -> c_int {
     let inner = inner_of(user_data);
+    // SAFETY: a number alone.
+    let one_way = unsafe { sys::ngtcp2_is_bidi_stream(stream_id) } == 0;
+    // SAFETY: the connection calling.
+    let theirs_one_way =
+        one_way && unsafe { sys::ngtcp2_conn_is_local_stream(conn, stream_id) } == 0;
+    if theirs_one_way {
+        // SAFETY: the connection calling.
+        unsafe { sys::ngtcp2_conn_extend_max_streams_uni(conn, 1) };
+    }
     let code = if flags & sys::NGTCP2_STREAM_CLOSE2_FLAG_RX_APP_ERROR_CODE_SET != 0 {
         rx_app_error_code
     } else {
@@ -2079,6 +2103,44 @@ mod tests {
             base: ptr::null_mut(),
             len: 0,
         }; 4]
+    }
+
+    /// The server may open no request stream and three one-way streams,
+    /// each with its own window; the client's request streams and the
+    /// connection have the windows asked for (`quic_settings`).
+    #[test]
+    fn the_server_may_open_http_3_s_three_streams_alone() {
+        // SAFETY: all zeroes, then the library's defaults for its version.
+        let mut params: sys::ngtcp2_transport_params = unsafe { core::mem::zeroed() };
+        // SAFETY: parameters of the version named.
+        unsafe {
+            sys::ngtcp2_transport_params_default_versioned(
+                sys::NGTCP2_TRANSPORT_PARAMS_VERSION,
+                &mut params,
+            )
+        };
+        streams_allowed(&mut params, 1000, 100);
+        assert_eq!(
+            (
+                params.initial_max_streams_bidi,
+                params.initial_max_stream_data_bidi_remote
+            ),
+            (0, 0)
+        );
+        assert_eq!(
+            (
+                params.initial_max_streams_uni,
+                params.initial_max_stream_data_uni
+            ),
+            (3, 64 * 1024)
+        );
+        assert_eq!(
+            (
+                params.initial_max_data,
+                params.initial_max_stream_data_bidi_local
+            ),
+            (1000, 100)
+        );
     }
 
     /// A close's kind is said as ngtcp2 numbers it, as C's traces print

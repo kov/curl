@@ -303,7 +303,6 @@ impl FakeHttp3 {
             handshake_timeout: setup.handshake_timeout,
             max_window: setup.max_window,
             stream_window: setup.stream_window,
-            max_streams: setup.max_streams,
             qlog: None,
         });
         {

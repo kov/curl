@@ -445,6 +445,9 @@ unsafe extern "C" {
         datalen: u64,
     ) -> c_int;
     pub(crate) fn ngtcp2_conn_extend_max_offset(conn: *mut ngtcp2_conn, datalen: u64);
+    pub(crate) fn ngtcp2_conn_extend_max_streams_uni(conn: *mut ngtcp2_conn, n: usize);
+    pub(crate) fn ngtcp2_conn_is_local_stream(conn: *mut ngtcp2_conn, stream_id: i64) -> c_int;
+    pub(crate) fn ngtcp2_is_bidi_stream(stream_id: i64) -> c_int;
     pub(crate) fn ngtcp2_conn_open_bidi_stream(
         conn: *mut ngtcp2_conn,
         pstream_id: *mut i64,

@@ -92,7 +92,6 @@ fn another_library_s_session_is_refused() {
         handshake_timeout: Duration::from_secs(10),
         max_window: 1024 * 1024,
         stream_window: 32 * 1024,
-        max_streams: 100,
         qlog: None,
     };
     let refused = ConnectFailed::Crypto {

@@ -2384,7 +2384,6 @@ pub(crate) mod tests {
             handshake_timeout: Duration::from_secs(10),
             max_window: 1 << 20,
             stream_window: 1 << 15,
-            max_streams: 100,
             qlog: None,
         };
         let h3 = FakeHttp3::new(script.clone());

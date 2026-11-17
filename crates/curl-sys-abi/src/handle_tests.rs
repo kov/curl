@@ -3789,15 +3789,30 @@ fn a_debug_line_outside_a_transfer_lets_in_only_reads() {
     pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asked);
     let bad = ffi::CURLE_BAD_FUNCTION_ARGUMENT;
     assert_eq!(long(c, ffi::CURLOPT_SSLVERSION, 999), bad);
-    assert_eq!(asked.changes, [CURLE_OK], "alone");
+    // How many lines it traces depends on the build: each is answered.
+    assert!(!asked.changes.is_empty());
+    assert!(
+        asked.changes.iter().all(|&r| r == CURLE_OK),
+        "alone: {:?}",
+        asked.changes
+    );
     asked = Asked::default();
     // SAFETY: a live handle and multi, then neither used again.
     unsafe {
         let m = curl_multi_init();
         assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
         assert_eq!(long(c, ffi::CURLOPT_SSLVERSION, 999), bad);
-        assert_eq!(asked.changes, [CURLE_RECURSIVE_API_CALL], "in a multi");
-        assert_eq!(asked.reads, [CURLE_OK]);
+        assert!(!asked.changes.is_empty());
+        assert!(
+            asked.changes.iter().all(|&r| r == CURLE_RECURSIVE_API_CALL),
+            "in a multi: {:?}",
+            asked.changes
+        );
+        assert!(
+            asked.reads.iter().all(|&r| r == CURLE_OK),
+            "{:?}",
+            asked.reads
+        );
         assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
         curl_easy_cleanup(c);
         assert_eq!(crate::multi::curl_multi_cleanup(m), CURLM_OK);

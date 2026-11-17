@@ -251,10 +251,12 @@ witness: curl-core proto::imap::tests::over_the_wire::logout_waits_for_its_tagge
 --- old
             untagged: Untagged::Ignored,
             continuations: Continuations::Unexpected,
+            literals: Literals::Ignored,
         }
 --- new
             untagged: Untagged::Any,
             continuations: Continuations::Unexpected,
+            literals: Literals::Ignored,
         }
 
 === LOGOUT awaiting its answer is not polled for it

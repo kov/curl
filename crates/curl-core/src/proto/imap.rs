@@ -12,7 +12,9 @@ use curl_alloc::{TryArc, TryVec as _};
 
 use super::mail::{self, login_of, sasl_failed, sasl_step};
 use super::pingpong::drive::{self, Read};
-use super::pingpong::imap::{Continuations, Imap, ImapReply, Tag, Untagged, literal};
+use super::pingpong::imap::{
+    Continuations, Imap, ImapReply, Literals, Tag, Untagged, find_literal, literal,
+};
 use super::pingpong::{ClearOrTls, Pingpong, TlsGate, UpgradeReady, tls_gate, upgrade_refused};
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
@@ -190,6 +192,7 @@ impl ImapConn {
             tag: self.tag,
             untagged: Untagged::Ignored,
             continuations: Continuations::Unexpected,
+            literals: Literals::Ignored,
         }
     }
 
@@ -614,10 +617,15 @@ impl Request {
                 State::Authenticate | State::Append => Continuations::Expected,
                 _ => Continuations::Unexpected,
             };
+            let literals = match pc.state {
+                State::FetchFinal => Literals::Refused,
+                _ => Literals::Ignored,
+            };
             let ends = Imap {
                 tag: pc.tag,
                 untagged,
                 continuations,
+                literals,
             };
             let read = drive::read(
                 cx,
@@ -641,6 +649,9 @@ impl Request {
                         ErrorKind::WeirdServerReply,
                         format_args!("Unexpected continuation response"),
                     ));
+                }
+                _ if code == ImapReply::ExtraLiteral => {
+                    return Err(several_literals(cx));
                 }
                 State::ServerGreet => self.greeting(cx, pc, carrier, code)?,
                 State::Capability => self.capability_resp(cx, pc, carrier, code)?,
@@ -1140,11 +1151,17 @@ impl Request {
             let after = pc.pp.after_reply().unwrap_or_default();
             let chunk = usize::try_from(size).map_or(after.len(), |s| s.min(after.len()));
             if chunk > 0 {
+                // What came after the literal announces another: the one
+                // transfer set up here cannot deliver it.
+                let another = find_literal(&after[chunk..]).is_some();
                 let mut held = Vec::new();
                 held.try_extend_from_slice(&after[..chunk])
                     .map_err(|_| ErrorKind::OutOfMemory)?;
                 pc.pp.consume_after_reply(chunk);
                 self.base.pipeline.body(cx, &held)?;
+                if another {
+                    return Err(several_literals(cx));
+                }
             } else {
                 pc.pp.consume_after_reply(0);
             }
@@ -1625,7 +1642,20 @@ fn code_number(code: ImapReply) -> char {
         ImapReply::Preauth => '\u{3}',
         ImapReply::Untagged => '*',
         ImapReply::Continuation | ImapReply::UnexpectedContinuation => '+',
+        // C's -1, never printed: the transfer fails on it.
+        ImapReply::ExtraLiteral => '\u{ff}',
     }
+}
+
+/// A `FETCH`'s answer announces a literal past the one its transfer
+/// reads, as one of several sections does: the transfer fails rather
+/// than drop it.
+fn several_literals<H: Host>(cx: &mut StepCx<'_, H>) -> ErrorKind {
+    trace::fail(
+        cx,
+        ErrorKind::WeirdServerReply,
+        format_args!("Multiple literals in FETCH response, only the first can be downloaded"),
+    )
 }
 
 /// The URL's or the application's login options

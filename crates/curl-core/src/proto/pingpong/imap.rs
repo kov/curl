@@ -70,6 +70,19 @@ pub(crate) enum Continuations {
     Unexpected,
 }
 
+/// What the transfer makes of a line, not a reply, that announces a
+/// literal (`{N}`), by its state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Literals {
+    /// Nothing: the line ends nothing.
+    Ignored,
+    /// Only the command's tagged reply is waited for, its one literal
+    /// read (`IMAP_FETCH_FINAL`): another one, as a `FETCH` of several
+    /// sections answers, fails the transfer ("Multiple literals in FETCH
+    /// response", C's code -1) rather than be dropped.
+    Refused,
+}
+
 /// IMAP's replies, in the state the transfer is in.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Imap<'a> {
@@ -77,6 +90,7 @@ pub(crate) struct Imap<'a> {
     pub(crate) tag: Tag,
     pub(crate) untagged: Untagged<'a>,
     pub(crate) continuations: Continuations,
+    pub(crate) literals: Literals,
 }
 
 /// What an IMAP line says.
@@ -95,6 +109,9 @@ pub(crate) enum ImapReply {
     /// A continuation no state waits for: the transfer fails, once the
     /// line is traced, with "Unexpected continuation response".
     UnexpectedContinuation,
+    /// A literal announced where none is read: the transfer fails, once
+    /// the line is traced, with "Multiple literals in FETCH response".
+    ExtraLiteral,
 }
 
 impl Ends for Imap<'_> {
@@ -119,10 +136,15 @@ impl Ends for Imap<'_> {
         // imap.c:381: `+` alone on a CRLF line, or `+ ` and anything.
         let plus = (line.len() == 3 && line[0] == b'+') || line.starts_with(b"+ ");
         match self.continuations {
-            _ if !plus => None,
-            Continuations::Ignored => None,
-            Continuations::Expected => Some(ImapReply::Continuation),
-            Continuations::Unexpected => Some(ImapReply::UnexpectedContinuation),
+            Continuations::Expected if plus => return Some(ImapReply::Continuation),
+            Continuations::Unexpected if plus => return Some(ImapReply::UnexpectedContinuation),
+            // A custom request's goes on to be looked at as any line.
+            Continuations::Ignored | Continuations::Expected | Continuations::Unexpected => {}
+        }
+        // imap.c:400: a literal while only the tagged reply is waited for.
+        match self.literals {
+            Literals::Refused if find_literal(line).is_some() => Some(ImapReply::ExtraLiteral),
+            Literals::Refused | Literals::Ignored => None,
         }
     }
 }
@@ -199,7 +221,7 @@ pub(crate) fn literal(line: &[u8]) -> Option<u64> {
 /// escaping the byte after it (`imap_find_literal`). C escapes nothing
 /// with a backslash that ends the line; skipping past the end instead
 /// finds nothing all the same.
-fn find_literal(line: &[u8]) -> Option<usize> {
+pub(crate) fn find_literal(line: &[u8]) -> Option<usize> {
     let mut quoted = false;
     let mut at = 0;
     while at < line.len() {
@@ -235,6 +257,7 @@ mod tests {
             tag: Tag::command(conn(0), 3),
             untagged,
             continuations,
+            literals: Literals::Ignored,
         }
     }
 
@@ -266,12 +289,43 @@ mod tests {
         assert_eq!(i.ends(b"A0031 OK\r\n"), None);
     }
 
+    /// While only the tagged answer is waited for, a line announcing a
+    /// literal outside a quoted string fails the transfer; an untagged
+    /// one ends nothing, as in any state that reads none; a continuation
+    /// is one first, but a custom request's is looked at as any line
+    /// (imap.c:381, imap.c:400). Elsewhere a literal ends nothing.
+    #[test]
+    fn a_literal_where_only_the_answer_is_waited_for_fails() {
+        let refusing = |continuations| Imap {
+            literals: Literals::Refused,
+            ..imap(Untagged::Ignored, continuations)
+        };
+        let i = refusing(Continuations::Unexpected);
+        assert_eq!(
+            i.ends(b" BODY[TEXT] {5}\r\n"),
+            Some(ImapReply::ExtraLiteral)
+        );
+        assert_eq!(i.ends(b" BODY[TEXT] \"{5}\"\r\n"), None);
+        assert_eq!(i.ends(b"* 1 FETCH (BODY[] {5}\r\n"), None);
+        assert_eq!(i.ends(b"A003 OK {5}\r\n"), Some(ImapReply::Ok));
+        assert_eq!(
+            i.ends(b"+ {5}\r\n"),
+            Some(ImapReply::UnexpectedContinuation)
+        );
+        let custom = refusing(Continuations::Ignored);
+        assert_eq!(custom.ends(b"+ {5}\r\n"), Some(ImapReply::ExtraLiteral));
+        assert_eq!(custom.ends(b"+ go\r\n"), None);
+        let reading = imap(Untagged::Ignored, Continuations::Unexpected);
+        assert_eq!(reading.ends(b" BODY[TEXT] {5}\r\n"), None);
+    }
+
     #[test]
     fn the_greeting_is_tagged_with_a_star() {
         let i = Imap {
             tag: Tag::GREETING,
             untagged: Untagged::Ignored,
             continuations: Continuations::Unexpected,
+            literals: Literals::Ignored,
         };
         assert_eq!(i.ends(b"* OK ready\r\n"), Some(ImapReply::Ok));
         assert_eq!(i.ends(b"* PREAUTH ready\r\n"), Some(ImapReply::Preauth));

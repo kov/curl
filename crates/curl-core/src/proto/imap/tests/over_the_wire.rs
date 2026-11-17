@@ -374,6 +374,34 @@ fn a_custom_command_s_answer_is_read_only_after_a_literal_still_to_come() {
     }
 }
 
+/// A custom FETCH answered with two literals, as one of two sections
+/// is, fails as weird rather than deliver the first and drop the second
+/// (upstream f40c351161): found in what came with the first literal
+/// when all came at once, or on the line after the first literal while
+/// only the tagged answer is waited for when it came in pieces.
+#[test]
+fn a_custom_fetch_answered_with_two_literals_fails() {
+    let answered = b"* 1 FETCH (BODY[HEADER] {5}\r\nhello BODY[TEXT] {5}\r\nworld)\r\nA003 OK\r\n";
+    for n in [3, 64] {
+        let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, answered], false)
+            .greeting()
+            .giving(NonZeroUsize::new(n).unwrap());
+        let mut m = serving(&[&talk]);
+        let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/", |o| {
+            o.http.custom.make_mut().unwrap().method =
+                Some(b"FETCH 1 (BODY[HEADER] BODY[TEXT])".to_vec());
+        });
+        assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply), "{n}");
+        assert_eq!(ran.body, b"* 1 FETCH (BODY[HEADER] {5}\r\nhello", "{n}");
+        assert!(
+            ran.text
+                .contains("Multiple literals in FETCH response, only the first can be downloaded"),
+            "{n}: {}",
+            ran.text
+        );
+    }
+}
+
 /// An upload APPENDs its body, its size and flags said, after the
 /// server's go-ahead; an empty line ends it.
 #[test]

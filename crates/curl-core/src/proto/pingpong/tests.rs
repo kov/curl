@@ -5,7 +5,7 @@ use std::time::Duration;
 use proptest::prelude::*;
 
 use super::ftp::Ftp;
-use super::imap::{self, Continuations, Imap, ImapReply, Tag, Untagged};
+use super::imap::{self, Continuations, Imap, ImapReply, Literals, Tag, Untagged};
 use super::pop3::{Pop3, Pop3Reply};
 use super::smtp::{Smtp, SmtpReply};
 use super::*;
@@ -346,6 +346,7 @@ fn an_imap_literal_is_taken_from_what_follows_its_line() {
         tag: Tag::command(crate::conn::ConnNumber::for_tests(0), 4),
         untagged: Untagged::Named(b"FETCH"),
         continuations: Continuations::Unexpected,
+        literals: Literals::Ignored,
     };
     let mut pp = Pingpong::new(Instant::EPOCH);
     pp.push(b"* 1 FETCH (BODY[TEXT] {7}\r\nA\n\0B\r\n)\r\nA004 OK done\r\n")
@@ -417,6 +418,7 @@ fn imap_caps() -> Imap<'static> {
         tag: Tag::command(crate::conn::ConnNumber::for_tests(0), 1),
         untagged: Untagged::Named(b"CAPABILITY"),
         continuations: Continuations::Expected,
+        literals: Literals::Ignored,
     }
 }
 
@@ -678,6 +680,7 @@ fn held_bytes_not_looked_through_are_told_apart_from_a_partial_line() {
         tag: Tag::command(crate::conn::ConnNumber::for_tests(0), 1),
         untagged: Untagged::Named(b"FETCH"),
         continuations: Continuations::Unexpected,
+        literals: Literals::Ignored,
     };
     assert!(matches!(pp.next(&fetch), Ok(Event::Reply { .. })));
     assert!(pp.unscanned());

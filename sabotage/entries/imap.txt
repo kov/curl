@@ -266,3 +266,19 @@ witness: curl-core proto::imap::tests::over_the_wire::logout_awaiting_its_answer
 --- new
     pub(crate) fn goodbye_wants(&self) -> Events {
         Events::NONE
+
+=== a literal while only the tagged answer is waited for is dropped
+file: crates/curl-core/src/proto/pingpong/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_custom_fetch_answered_with_two_literals_fails
+--- old
+            Literals::Refused if find_literal(line).is_some() => Some(ImapReply::ExtraLiteral),
+--- new
+            Literals::Refused if false => Some(ImapReply::ExtraLiteral),
+
+=== a second literal buffered after the first is dropped
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_custom_fetch_answered_with_two_literals_fails
+--- old
+                let another = find_literal(&after[chunk..]).is_some();
+--- new
+                let another = false;

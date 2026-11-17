@@ -828,6 +828,17 @@ so: weaknesses kept because C has them.
   `the_version_names_the_rustls_linked` (`crates/curl-rustls/src/tests/real.rs`), which also
   ties the rustls named to the one in `Cargo.lock`.
 
+## Files C empties before it knows their name
+
+- **`-O -J` empties no file while the server may still name another.** A response whose
+  `Trailer:` names Content-Disposition has the URL-named file opened only where no file of that
+  name is there: one that is fails the transfer (23) untouched. C opens it emptying as the body
+  starts, then refuses the trailer's name (23), the old file gone. With `--retry`, the empty
+  output file of a transfer that wrote nothing is made once no attempt follows; C makes it
+  after the attempt to be retried, emptying a file of the URL's name that a later attempt's
+  disposition then leaves behind. Upstream: #23858, PR #23887. Pinned by
+  `a_name_not_yet_final_empties_no_file` (`crates/curl-tool/tests/http.rs`).
+
 ## Residuals shared with C
 
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a

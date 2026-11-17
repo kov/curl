@@ -100,7 +100,10 @@ fn write_temp(temp: &CStr, was: &std::fs::Metadata, text: &[u8]) -> Result<(), S
     let file = fs::open_write(temp, Keep::Absent, 0o600)?;
     let new = file.metadata()?;
     if new.uid() == was.uid() && new.gid() == was.gid() {
-        file.set_permissions(std::fs::Permissions::from_mode(was.mode()))?;
+        // A mode that cannot be copied leaves the new file's 0600, as C
+        // lets it (`fchmod`'s failure ignored).
+        file.set_permissions(std::fs::Permissions::from_mode(was.mode()))
+            .ok();
     }
     // As text (`FOPEN_WRITETEXT`), which is binary here.
     Writer::new(file, Mode::TEXT).write_all(text)?;

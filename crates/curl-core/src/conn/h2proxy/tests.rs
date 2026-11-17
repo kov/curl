@@ -106,12 +106,13 @@ impl Layer for Under {
 }
 
 /// A layer under the tunnel whose connection never runs dry: each read
-/// is a whole chunk, one PING frame of the fake library's, until `most`
-/// have been read.
+/// is `size` bytes, or as much as is asked if less, one PING frame of
+/// the fake library's, until `most` have been read.
 #[derive(Debug)]
 struct Flood {
     reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     most: usize,
+    size: usize,
 }
 
 impl Part<Below<'_>> for Flood {}
@@ -124,11 +125,12 @@ impl Layer for Flood {
         if reads > self.most {
             return Ok(Recv::WouldBlock);
         }
-        let (line, end) = buf.split_at_mut(buf.len() - 1);
+        let n = self.size.min(buf.len());
+        let (line, end) = buf[..n].split_at_mut(n - 1);
         line.fill(b' ');
         line[0] = b'P';
         end[0] = b'\n';
-        Ok(Recv::Data(std::num::NonZeroUsize::new(buf.len()).unwrap()))
+        Ok(Recv::Data(std::num::NonZeroUsize::new(n).unwrap()))
     }
 
     fn send(&mut self, _: &mut dyn LayerCx, _: Below<'_>, _: &[u8]) -> io::Result<Sent> {
@@ -138,14 +140,20 @@ impl Layer for Flood {
 
 /// A proxy whose frames come as fast as they are read gives the others
 /// their turn: one read of the connection takes in 16 KiB before the
-/// tunnel is established, the tunnel's window after, and its transfer is
-/// marked to run again (`proxy_h2_progress_ingress`).
+/// tunnel is established, however small its reads, the tunnel's window
+/// after, and its transfer is marked to run again
+/// (`proxy_h2_progress_ingress`).
 #[test]
 fn a_proxy_s_flood_of_frames_gives_the_others_their_turn() {
     use crate::conn::quic::tests::Scripted;
-    for (state, reads) in [
-        (TunnelState::Connect, 1),
-        (TunnelState::Established, TUNNEL_WINDOW as usize / CHUNK),
+    for (state, size, reads) in [
+        (TunnelState::Connect, CHUNK, 1),
+        (TunnelState::Connect, 1024, 16),
+        (
+            TunnelState::Established,
+            CHUNK,
+            TUNNEL_WINDOW as usize / CHUNK,
+        ),
     ] {
         let mut p = H2Proxy::open(&crate::http2::fake::FakeH2, 100).unwrap();
         p.tunnel.state = state;
@@ -154,6 +162,7 @@ fn a_proxy_s_flood_of_frames_gives_the_others_their_turn() {
         let flood = Flood {
             reads: std::sync::Arc::clone(&reads_made),
             most: 1000,
+            size,
         };
         let mut layers: [Box<dyn Layer>; 1] = [Box::new(flood)];
         let mut asked = crate::conn::h3proxy::tests::Asked::new(false);
@@ -162,9 +171,9 @@ fn a_proxy_s_flood_of_frames_gives_the_others_their_turn() {
             Ok(())
         );
         let made = reads_made.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(made, reads, "{state:?}");
+        assert_eq!(made, reads, "{state:?} {size}");
         let marked = asked.calls.iter().filter(|c| *c == "mark_dirty").count();
-        assert_eq!(marked, 1, "{state:?}");
+        assert_eq!(marked, 1, "{state:?} {size}");
     }
 }
 

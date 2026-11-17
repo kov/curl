@@ -1812,3 +1812,27 @@ features: test-util,debug-hooks
             room: linger.map(|l| l.room),
 --- new
             room: linger.map(|_| None).flatten(),
+
+=== a proxy over quiche says it is kept up
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_http3_proxy_up
+--- old
+            LayerQuery::Maintained if self.quic.flavour() == Flavour::Ngtcp2 => {
+--- new
+            LayerQuery::Maintained => {
+
+=== a proxy over quiche is kept up
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_http3_proxy_up
+--- old
+        if self.quic.flavour() == Flavour::Ngtcp2 && !self.quic.shutdown_started() {
+--- new
+        if !self.quic.shutdown_started() {
+
+=== a paused transfer reads through its pause once its response is over
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::h3_trace::a_transfer_paused_with_its_response_in_waits_on_nothing
+--- old
+        matches!(*self, ProtoState::Http(ref r) if r.receiving())
+--- new
+        matches!(*self, ProtoState::Http(_))

@@ -1206,6 +1206,69 @@ fn a_paused_transfer_keeps_its_quic_connection_up() {
     }
 }
 
+/// Pauses at the first piece of the body, and takes it once let go.
+#[derive(Clone, Default)]
+struct PausesFirst(Arc<Lock<u32>>);
+
+impl crate::handler::WriteHandler for PausesFirst {
+    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+        let mut n = self.0.lock().unwrap();
+        *n += 1;
+        match *n {
+            1 => crate::handler::Write::Pause,
+            _ => crate::handler::Write::Accepted,
+        }
+    }
+}
+
+/// A transfer paused with its whole response in, its ngtcp2 connection
+/// kept up, waits on nothing: HTTP reads no more once its response is
+/// over (`Curl_http_perform_pollset` on a transfer no longer
+/// `KEEP_RECV`), and the upkeep adds no read the protocol does not ask.
+#[test]
+fn a_transfer_paused_with_its_response_in_waits_on_nothing() {
+    let script = get_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    let seen = Seen::default();
+    let o = e.options_mut();
+    let url = format!("https://localhost:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.http.version = crate::options::HttpVersion::Http3Only;
+    o.output.verbose = true;
+    o.limits.total = crate::time::TimeLimit::from_millis(100_000);
+    let pauses = PausesFirst::default();
+    o.callbacks.write = Some(Handler::write(pauses.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..30 {
+        let ended = crate::multi::drive_round(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(ended, None, "{:#?}", seen.text());
+    }
+    assert_eq!(*pauses.0.lock().unwrap(), 1, "paused at the body");
+    let text = seen.text();
+    let kept = text
+        .iter()
+        .filter(|l| l.ends_with("[HTTP/3] maintenance() -> 0\n"))
+        .count();
+    assert!(kept > 0, "{text:#?}");
+    let paused: Vec<&String> = text
+        .iter()
+        .filter(|l| l.contains("[PERFORMING] pollset[") && l.contains("paused 0/1"))
+        .collect();
+    assert!(!paused.is_empty(), "{text:#?}");
+    assert!(
+        paused.iter().all(|l| l.contains("pollset[], ")),
+        "{paused:#?}"
+    );
+}
+
 /// A paused transfer whose connection fails as it is kept up ends there,
 /// with what the receive failed with, as `Curl_sendrecv`'s failure, not
 /// made again: bytes came for it.
@@ -3501,30 +3564,51 @@ fn through_h3_proxy_over(m: &mut Multi, e: Easy, ip: IpVersion) -> Ran {
 /// the proxy's connection up meanwhile, through its protocol, HTTP/1.1,
 /// and its connection's layers to the proxy's (`Curl_conn_do_maintenance`
 /// reaching `cf_ngtcp2_cmn_maintenance`): the rest of the body comes in
-/// answer to a packet the client has to send meanwhile.
+/// answer to a packet the client has to send meanwhile. A proxy over
+/// quiche is not kept up (`cf-quiche`'s filter type has no
+/// `CF_TYPE_MAINTENANCE`): nothing of it is traced, and the transfer
+/// waits on nothing while held back.
 #[test]
 fn a_held_back_transfer_keeps_its_http3_proxy_up() {
-    let mut response = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".to_vec();
-    response.extend_from_slice(&[b'a'; 50]);
-    let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
-    {
-        let mut s = script.lock().unwrap();
-        s.on_read.push_back(vec![Told::Data(0, vec![b'b'; 50])]);
-        s.out.push_back(vec![5; 30]);
+    for flavour in [crate::http3::Flavour::Ngtcp2, crate::http3::Flavour::Quiche] {
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".to_vec();
+        response.extend_from_slice(&[b'a'; 50]);
+        let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
+        {
+            let mut s = script.lock().unwrap();
+            s.flavour = flavour;
+            s.on_read.push_back(vec![Told::Data(0, vec![b'b'; 50])]);
+            s.out.push_back(vec![5; 30]);
+        }
+        let mut m = quic_server(&[b"server flight", b"connect answer", b"response", b"more"]);
+        let mut e = tracing(FakeTls::new().unwrap(), &script);
+        let flow = e.options_mut().flow.make_mut().unwrap();
+        flow.max_recv_speed = std::num::NonZeroU64::new(25);
+        let ran = through_h3_proxy(&mut m, e);
+        assert_eq!(ran.result, Ok(()), "{flavour:?}: {:#?}", ran.seen.text());
+        assert_eq!(ran.seen.body().len(), 100);
+        let got = lines(&ran, &["[H3-PROXY] maintenance"]);
+        let held: Vec<String> = ran
+            .seen
+            .text()
+            .into_iter()
+            .filter(|l| l.contains("[RATELIMITING] pollset"))
+            .collect();
+        assert!(!held.is_empty(), "{flavour:?}: {:#?}", ran.seen.text());
+        match flavour {
+            crate::http3::Flavour::Ngtcp2 => {
+                assert!(!got.is_empty(), "{:#?}", ran.seen.text());
+                assert!(
+                    got.iter().all(|l| l == "[H3-PROXY] maintenance() -> 0"),
+                    "{got:#?}"
+                );
+            }
+            crate::http3::Flavour::Quiche => {
+                assert!(got.is_empty(), "{got:#?}");
+                assert!(held.iter().all(|l| l.contains("pollset[], ")), "{held:#?}");
+            }
+        }
     }
-    let mut m = quic_server(&[b"server flight", b"connect answer", b"response", b"more"]);
-    let mut e = tracing(FakeTls::new().unwrap(), &script);
-    let flow = e.options_mut().flow.make_mut().unwrap();
-    flow.max_recv_speed = std::num::NonZeroU64::new(25);
-    let ran = through_h3_proxy(&mut m, e);
-    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
-    assert_eq!(ran.seen.body().len(), 100);
-    let got = lines(&ran, &["[H3-PROXY] maintenance"]);
-    assert!(!got.is_empty(), "{:#?}", ran.seen.text());
-    assert!(
-        got.iter().all(|l| l == "[H3-PROXY] maintenance() -> 0"),
-        "{got:#?}"
-    );
 }
 
 /// A tunnel through an HTTP/3 proxy is a stream of a QUIC connection to

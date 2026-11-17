@@ -83,8 +83,9 @@ numbers are those of `SCOPE.md`.
 **Data path**
 
 12. **Pause is one value per direction**: `RecvPause::{Running, Stopped, Held}` and
-    `SendPause::{Running, Paused, Asked}`. `Stopped` is an API pause (the current buffer still
-    finishes); `Held` is a callback pause (output is held at once). `Paused` is an API pause of
+    `SendPause::{Running, Paused, Asked}`. `Stopped` is an API pause (no new reads; output
+    about to reach the application turns it into `Held`); `Held` is output held (a callback's
+    pause, or an API pause met by output). `Paused` is an API pause of
     sending; `Asked` a read handler's, which an API pause leaves as it is and whose lift the
     `Pause` counts (`Lifts`, §5.4.1). Rate limiting is a separate fact.
 13. **The response pipeline is a fixed struct**, ordered by its fields, not a phase-sorted list.
@@ -3985,8 +3986,10 @@ pub enum RecvPause { Running, Stopped, Held }
 pub enum SendPause { Running, Paused }
 ```
 
-- `curl_easy_pause(RECV)` outside a write callback → `Stopped`: no new socket reads; the buffer
-  in progress still flows through the pipeline (C sets only the rate-limit block).
+- `curl_easy_pause(RECV)` → `Stopped`: no new socket reads; output that then reaches the
+  application's handlers (`deliver::app_paused`, before each piece) is held there as under
+  `Write::Pause`, and the state becomes `Held`, so a pause asked inside a write stops after the
+  piece under way.
 - `Write::Pause` → `Held`: delivery stops at once and output is held.
 - `Read::Pause` and an API send pause → `SendPause::Paused`.
 - `CONT` → `Running`, flush held output (synchronously where the `Run` is in its slot, §3.6), reset

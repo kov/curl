@@ -864,10 +864,23 @@ impl<H: Host> Sink for Client<'_, '_, H> {
     }
 }
 
-/// A handler asked for a pause: output stops at once and is held. One the
-/// application asked for from inside a handler does not stop it.
+/// A handler asked for a pause, or the application paused receiving
+/// before output it was to be given: output stops at once and is held.
 fn handler_paused<H: Host>(cx: &StepCx<'_, H>) -> bool {
     cx.pause().recv == RecvPause::Held
+}
+
+/// The application paused receiving, from a handler or outside one, and
+/// output is about to go to it: none goes until it unpauses, what there
+/// is held as when a handler asks for a pause (the documented
+/// `CURLPAUSE_RECV`). Asked only with output to hold, so that what is
+/// held is never nothing.
+fn app_paused<H: Host>(cx: &mut StepCx<'_, H>, pausable: bool) -> bool {
+    if pausable && cx.pause().recv == RecvPause::Stopped {
+        cx.pause_mut().recv = RecvPause::Held;
+        return true;
+    }
+    false
 }
 
 /// The body as received, before any decoding, to the debug handler of a
@@ -1183,6 +1196,9 @@ fn deliver<H: Host>(
             Ok(0)
         }
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
+            if app_paused(cx, pausable) {
+                return Ok(0);
+            }
             // A line protocol's lines are told as a head's.
             let origin = kind.origin().unwrap_or(HeaderOrigin::Header);
             let Some(handler) = cx.easy().options().callbacks.header.clone() else {
@@ -1208,6 +1224,9 @@ fn deliver_body<H: Host>(
 ) -> Result<usize, ErrorKind> {
     let mut delivered = 0;
     for piece in bytes.chunks(MAX_WRITE) {
+        if app_paused(cx, pausable) {
+            break;
+        }
         let easy = cx.easy();
         let handler = easy.options().callbacks.write.clone();
         if handler.is_none() && listing.is_none() {

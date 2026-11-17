@@ -58,8 +58,8 @@ pub(crate) struct Lifts(u16);
 pub(crate) enum RecvPause {
     #[default]
     Running,
-    /// Paused by the application from outside a write: nothing more is
-    /// read, but what is being delivered still is.
+    /// Paused by the application: nothing more is read, and output that
+    /// would go to the application is held as it comes (`Held`).
     Stopped,
     /// A write handler asked for a pause: delivery stops at once and the
     /// output is held.

@@ -1286,10 +1286,11 @@ fn a_transfer_not_exchanging_cannot_be_paused() {
     );
 }
 
-/// A pause asked for from inside a write stops new input, not the write
-/// in progress; an unpause lets the input go on.
+/// A pause asked for from inside a write stops the output with the piece
+/// the handler was given: what is left of the write is held, and an
+/// unpause gives it, then lets the input go on.
 #[test]
-fn a_receive_pause_finishes_the_write_under_way() {
+fn a_receive_pause_holds_the_rest_of_the_write_under_way() {
     let mut m = multi();
     let mut e = script(vec![Piece::Body(bytes(40000)), body(b"z")]);
     let calls = planned(&mut e, |cx, n| {
@@ -1307,15 +1308,22 @@ fn a_receive_pause_finishes_the_write_under_way() {
         .iter()
         .map(|(_, b, _)| b.len())
         .collect();
+    assert_eq!(lens, [16384], "the rest of the write is held");
+    assert_eq!(m.info_read().map(|msg| msg.id), None);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(calls.lock().unwrap().len(), 1, "still paused");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let lens: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b, _)| b.len())
+        .collect();
     assert_eq!(
         lens,
         [16384, 16384, 7232],
-        "the write went on, the next did not come"
+        "the unpause gives what was held"
     );
-    assert_eq!(m.info_read().map(|msg| msg.id), None);
-    m.perform(&mut NoEvents).unwrap();
-    assert_eq!(calls.lock().unwrap().len(), 3, "still paused");
-    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     // The unpause marks it to run: a pass that runs only what is due or
     // marked runs it.
     m.socket_action(SocketEvent::Timeout, &mut NoEvents)
@@ -1458,10 +1466,10 @@ fn an_unpause_tells_the_timer() {
     assert_eq!(ev.0, before + 1, "no change");
 }
 
-/// A receive pause asked for inside a replay lets the replay finish, every
-/// entry of it, then stops the input until it is lifted.
+/// A receive pause asked for inside a replay stops it after the entry
+/// under way, holding the rest, and stops the input, until it is lifted.
 #[test]
-fn a_receive_pause_inside_the_replay_lets_it_finish() {
+fn a_receive_pause_inside_the_replay_holds_the_rest() {
     let mut m = multi();
     let status = b"HTTP/1.1 200 OK\r\n";
     let mut e = script(vec![Piece::Status(status.to_vec()), body(b"z")]);
@@ -1489,16 +1497,21 @@ fn a_receive_pause_inside_the_replay_lets_it_finish() {
     use Write::{Accepted as A, Pause as P};
     assert_eq!(
         seen,
-        [
-            ("write", status.to_vec(), P),
-            ("write", status.to_vec(), A),
-            ("header", status.to_vec(), A),
-        ]
+        [("write", status.to_vec(), P), ("write", status.to_vec(), A),]
     );
     m.perform(&mut NoEvents).unwrap();
-    assert_eq!(calls.lock().unwrap().len(), 3, "stopped: nothing more read");
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        2,
+        "stopped: nothing more given or read"
+    );
     assert_eq!(m.info_read().map(|msg| msg.id), None);
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    assert_eq!(
+        taken(&calls)[1],
+        ("header", status.to_vec()),
+        "the unpause gives the header's copy held"
+    );
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(taken(&calls).last(), Some(&("write", b"z".to_vec())));
     assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));

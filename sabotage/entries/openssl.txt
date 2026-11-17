@@ -574,3 +574,19 @@ witness: curl-openssl the_chain_is_reported_as_c_words_it_when_asked
         let mode = if identity.verify_peer {
 --- new
         let mode = if !identity.verify_peer {
+
+=== a goodbye goes on after its first read failed as OpenSSL forbids more I/O after
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_ccc_whose_first_read_fails_says_nothing_more
+--- old
+                openssl_sys::SSL_ERROR_SSL | openssl_sys::SSL_ERROR_SYSCALL
+--- new
+                -1
+
+=== a goodbye goes on after its close_notify's send failed
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_ccc_whose_close_notify_fails_to_go_reads_nothing_more
+--- old
+                    openssl_sys::SSL_ERROR_WANT_READ => {}
+--- new
+                    _ => {}

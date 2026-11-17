@@ -2048,6 +2048,27 @@ impl DriveCall for Check<'_> {
     }
 }
 
+/// Trace a goodbye ended by an error after which OpenSSL forbids any more
+/// I/O (`ossl_shutdown`): `what` it was, OpenSSL's word for `err`, the
+/// earliest error queued, and the system's error below.
+fn fatal(io: &mut TlsIo<'_>, what: &str, err: c_int, below: Below) {
+    // SAFETY: the thread's error queue, its earliest taken.
+    let e = unsafe { openssl_sys::ERR_get_error() };
+    let errno = errno_of(below);
+    let name = text::ssl_error(err);
+    if e != 0 {
+        let e = ErrText::of(e);
+        io.trace(format_args!(
+            "SSL shutdown, {what}: {name} ({}), errno {errno}",
+            e.versioned()
+        ));
+    } else {
+        io.trace(format_args!(
+            "SSL shutdown, {what}: {name} (no OpenSSL error), errno {errno}"
+        ));
+    }
+}
+
 impl Session {
     /// One try at the goodbye (`ossl_shutdown`): the peer's close_notify
     /// read first if it came, which ends one that sends none, and nothing
@@ -2065,9 +2086,9 @@ impl Session {
             // Not started from our side: the peer may have said goodbye.
             // SAFETY: the thread's error queue.
             unsafe { openssl_sys::ERR_clear_error() };
-            let mut nread = -1;
+            let (mut nread, mut below) = (-1, Below::Ok);
             for _ in 0..10 {
-                nread = read(self, io).0;
+                (nread, below) = read(self, io);
                 io.trace(format_args!("SSL shutdown not sent, read -> {nread}"));
                 if nread <= 0 {
                     break;
@@ -2075,6 +2096,15 @@ impl Session {
             }
             // SAFETY: the SSL and what its call returned.
             let err = unsafe { openssl_sys::SSL_get_error(ssl, nread) };
+            if matches!(
+                err,
+                openssl_sys::SSL_ERROR_SSL | openssl_sys::SSL_ERROR_SYSCALL
+            ) {
+                // OpenSSL forbids any more I/O after these; a peer's
+                // close_notify is `SSL_ERROR_ZERO_RETURN`, below.
+                fatal(io, "fatal recv before send", err, below);
+                return true;
+            }
             if matches!((nread, err), (0, openssl_sys::SSL_ERROR_ZERO_RETURN)) {
                 if !goodbye.sends() {
                     io.trace(format_args!("SSL shutdown received, not sending"));
@@ -2093,16 +2123,28 @@ impl Session {
             unsafe { openssl_sys::ERR_clear_error() };
             io.trace(format_args!("send SSL close notify"));
             // SAFETY: the session's SSL, its BIO reaching `io`.
-            let (rc, _) = self.call(io, |ssl| unsafe { openssl_sys::SSL_shutdown(ssl) });
+            let (rc, below) = self.call(io, |ssl| unsafe { openssl_sys::SSL_shutdown(ssl) });
             if rc == 1 {
                 io.trace(format_args!("SSL shutdown finished"));
                 return true;
             }
-            // SAFETY: the SSL and what its call returned.
-            if unsafe { openssl_sys::SSL_get_error(ssl, rc) } == openssl_sys::SSL_ERROR_WANT_WRITE {
-                io.trace(format_args!("SSL shutdown still wants to send"));
-                self.waits = TlsWait::Send;
-                return false;
+            // Nought is a shutdown still under way, which OpenSSL has no
+            // error for.
+            if rc < 0 {
+                // SAFETY: the SSL and what its call returned.
+                match unsafe { openssl_sys::SSL_get_error(ssl, rc) } {
+                    openssl_sys::SSL_ERROR_WANT_WRITE => {
+                        io.trace(format_args!("SSL shutdown still wants to send"));
+                        self.waits = TlsWait::Send;
+                        return false;
+                    }
+                    openssl_sys::SSL_ERROR_WANT_READ => {}
+                    // No more I/O on the session after the others.
+                    err => {
+                        fatal(io, "ignore send error", err, below);
+                        return true;
+                    }
+                }
             }
         }
         // Ours sent: the peer's is read for.

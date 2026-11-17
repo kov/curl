@@ -4,6 +4,8 @@
 
 use std::net::TcpStream;
 
+use std::io::{self, Write};
+
 use curl_core::options::{Ccc, Method};
 
 use super::waits::{Hold, Plan, multi_over};
@@ -22,7 +24,55 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "an_active_ccc_answers_the_server_s_close_notify",
         an_active_ccc_answers_the_server_s_close_notify,
     ),
+    (
+        "a_ccc_whose_first_read_fails_says_nothing_more",
+        a_ccc_whose_first_read_fails_says_nothing_more,
+    ),
+    (
+        "a_ccc_whose_close_notify_fails_to_go_reads_nothing_more",
+        a_ccc_whose_close_notify_fails_to_go_reads_nothing_more,
+    ),
 ];
+
+/// How the server ends its TLS after `CCC`'s answer.
+enum End {
+    /// Its close_notify; with a hold, sent while the client's receive
+    /// after the answer is held.
+    CloseNotify(Option<Arc<Hold>>),
+    /// Bytes that are no TLS record, in the answer's own write, where its
+    /// close_notify would be: the client's first read of the goodbye
+    /// fails.
+    Garbage,
+}
+
+/// The server's TCP stream, its writes held while `held` is some, to go
+/// out in one write with what follows them.
+#[derive(Debug)]
+struct Tap {
+    tcp: TcpStream,
+    held: Option<Vec<u8>>,
+}
+
+impl Read for Tap {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.tcp.read(buf)
+    }
+}
+
+impl Write for Tap {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &mut self.held {
+            Some(held) => {
+                held.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            None => self.tcp.write(buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.tcp.flush()
+    }
+}
 
 /// What the server saw after `CCC`: whether the client's close_notify
 /// came before its next command, and the commands it then sent in clear.
@@ -32,10 +82,9 @@ struct Cleared {
 }
 
 /// An implicit FTPS server for one connection: the login in TLS, `CCC`
-/// answered and its close_notify said, then each command read and
-/// answered in clear until the client closes. With `hold`, the close_notify is sent
-/// while the client's receive after the answer is held.
-fn serve_ccc(certs: &Certs, hold: Option<Arc<Hold>>) -> (SocketAddr, JoinHandle<Cleared>) {
+/// answered and its TLS ended as `end` says, then each command read and
+/// answered in clear until the client closes.
+fn serve_ccc(certs: &Certs, end: End) -> (SocketAddr, JoinHandle<Cleared>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
@@ -46,7 +95,11 @@ fn serve_ccc(certs: &Certs, hold: Option<Arc<Hold>>) -> (SocketAddr, JoinHandle<
         let (tcp, _) = curl_core::test_server::accept(&listener);
         tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
-        let mut tls = acceptor.accept(tcp).unwrap();
+        let mut tls = acceptor.accept(Tap { tcp, held: None }).unwrap();
+        let hold = match &end {
+            End::CloseNotify(hold) => hold.clone(),
+            End::Garbage => None,
+        };
         let line = |r: &mut dyn Read| {
             let mut got = Vec::new();
             let mut b = [0u8; 1];
@@ -73,20 +126,34 @@ fn serve_ccc(certs: &Certs, hold: Option<Arc<Hold>>) -> (SocketAddr, JoinHandle<
                 }
                 _ => panic!("{command:?} before CCC"),
             };
+            let last = answer.starts_with(b"200 CCC");
+            if last && matches!(end, End::Garbage) {
+                tls.get_mut().held = Some(Vec::new());
+            }
             tls.write_all(answer).unwrap();
-            if answer.starts_with(b"200 CCC") {
+            if last {
                 break;
             }
         }
-        if let Some(hold) = &hold {
-            hold.await_held();
+        match end {
+            End::CloseNotify(_) => {
+                if let Some(hold) = &hold {
+                    hold.await_held();
+                }
+                // Our close_notify, not waiting for the client's.
+                tls.shutdown().unwrap();
+                if let Some(hold) = &hold {
+                    hold.sent();
+                }
+            }
+            End::Garbage => {
+                let tap = tls.get_mut();
+                let mut out = tap.held.take().expect("the answer held");
+                out.extend_from_slice(b"garbage!garbage!");
+                tap.tcp.write_all(&out).unwrap();
+            }
         }
-        // Our close_notify, not waiting for the client's.
-        tls.shutdown().unwrap();
-        if let Some(hold) = &hold {
-            hold.sent();
-        }
-        let tcp: &mut TcpStream = tls.get_mut();
+        let tcp: &mut TcpStream = &mut tls.get_mut().tcp;
         // A close_notify is a record: an alert, or as TLS 1.3 hides it,
         // application data; a command is text.
         let mut first = [0u8; 1];
@@ -143,7 +210,7 @@ fn look(certs: &Certs, at: SocketAddr, ccc: Ccc, plan: Plan) -> Got {
 /// the next command is the first bytes after it.
 fn a_passive_ccc_answers_no_close_notify() {
     let certs = certs("ccc-passive", "localhost", &["localhost"]);
-    let (at, server) = serve_ccc(&certs, None);
+    let (at, server) = serve_ccc(&certs, End::CloseNotify(None));
     let got = look(&certs, at, Ccc::Passive, Plan::default());
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     assert!(
@@ -171,7 +238,7 @@ fn a_passive_ccc_answers_no_close_notify() {
 fn a_passive_ccc_reading_the_close_notify_on_its_second_try_answers_none() {
     let certs = certs("ccc-held", "localhost", &["localhost"]);
     let hold = track::untracked(|| Arc::new(Hold::default()));
-    let (at, server) = serve_ccc(&certs, Some(hold.clone()));
+    let (at, server) = serve_ccc(&certs, End::CloseNotify(Some(hold.clone())));
     let plan = Plan {
         hold: Some(hold),
         ..Plan::default()
@@ -210,7 +277,7 @@ fn a_passive_ccc_reading_the_close_notify_on_its_second_try_answers_none() {
 /// Active, the client says its close_notify before it goes on in clear.
 fn an_active_ccc_answers_the_server_s_close_notify() {
     let certs = certs("ccc-active", "localhost", &["localhost"]);
-    let (at, server) = serve_ccc(&certs, None);
+    let (at, server) = serve_ccc(&certs, End::CloseNotify(None));
     let got = look(&certs, at, Ccc::Active, Plan::default());
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     let cleared = server.join().unwrap();
@@ -220,4 +287,80 @@ fn an_active_ccc_answers_the_server_s_close_notify() {
         "{}",
         cleared.commands
     );
+}
+
+/// Active, the shutdown's first read finding no TLS record fails as
+/// OpenSSL forbids any more of its I/O: the goodbye ends there, no
+/// close_notify sent nor read for (`ossl_shutdown`), and the login goes
+/// on in clear.
+fn a_ccc_whose_first_read_fails_says_nothing_more() {
+    let certs = certs("ccc-garbage", "localhost", &["localhost"]);
+    let (at, server) = serve_ccc(&certs, End::Garbage);
+    let got = look(&certs, at, Ccc::Active, Plan::default());
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    let shutdown: Vec<&str> = track::untracked(|| {
+        got.seen
+            .lines
+            .iter()
+            .filter(|l| l.starts_with("[SSL] SSL shutdown") || l.contains("close notify"))
+            .map(String::as_str)
+            .collect()
+    });
+    let fatal = "[SSL] SSL shutdown, fatal recv before send: SSL_ERROR_SSL (OpenSSL/";
+    assert!(
+        matches!(&shutdown[..], [read, said] if *read == "[SSL] SSL shutdown not sent, read -> -1"
+            && said.starts_with(fatal)
+            && said.contains("), errno ")),
+        "{:#?}",
+        got.seen.lines
+    );
+    let cleared = server.join().unwrap();
+    assert!(
+        cleared.commands.starts_with("PWD\r\n"),
+        "{}",
+        cleared.commands
+    );
+}
+
+/// Active, the close_notify's send failing as a system call fails ends
+/// the goodbye: OpenSSL forbids any more I/O, so the server's is not read
+/// for (`ossl_shutdown`), and is taken for the first reply in clear. The first read
+/// finds nothing, held, so the close_notify is sent; its send is the
+/// eighth: the hello, the handshake's end, and the five commands in TLS.
+fn a_ccc_whose_close_notify_fails_to_go_reads_nothing_more() {
+    let certs = certs("ccc-send-fails", "localhost", &["localhost"]);
+    let hold = track::untracked(|| Arc::new(Hold::default()));
+    let (at, server) = serve_ccc(&certs, End::CloseNotify(Some(hold.clone())));
+    let plan = Plan {
+        hold: Some(hold),
+        fail_send: Some(8),
+        ..Plan::default()
+    };
+    let got = look(&certs, at, Ccc::Active, plan);
+    let shutdown: Vec<&str> = track::untracked(|| {
+        got.seen
+            .lines
+            .iter()
+            .filter(|l| l.starts_with("[SSL] SSL shutdown") || l.contains("close notify"))
+            .map(String::as_str)
+            .collect()
+    });
+    let ignored = "[SSL] SSL shutdown, ignore send error: SSL_ERROR_SYSCALL (";
+    assert!(
+        matches!(&shutdown[..], [read, send, ignore]
+            if *read == "[SSL] SSL shutdown not sent, read -> -1"
+            && *send == "[SSL] send SSL close notify"
+            && ignore.starts_with(ignored)),
+        "{:#?}",
+        got.seen.lines
+    );
+    // The server's close_notify, not read for, is the first reply read
+    // in clear.
+    assert_eq!(
+        got.result,
+        Err(ErrorKind::WeirdServerReply),
+        "{:#?}",
+        got.seen.lines
+    );
+    drop(server);
 }

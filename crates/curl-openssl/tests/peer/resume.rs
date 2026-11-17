@@ -26,6 +26,10 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         a_failed_check_forgets_the_peer_s_sessions,
     ),
     (
+        "a_session_the_server_does_not_resume_is_checked_in_full",
+        a_session_the_server_does_not_resume_is_checked_in_full,
+    ),
+    (
         "a_peer_failing_its_pin_leaves_no_session_to_resume",
         a_peer_failing_its_pin_leaves_no_session_to_resume,
     ),
@@ -565,6 +569,40 @@ fn a_failed_check_forgets_the_peer_s_sessions() {
     assert_eq!(two.result, Err(ErrorKind::PeerFailedVerification));
     assert_eq!(three.result, Ok(()), "{:#?}", three.seen.lines);
     assert!(!resumed(&three), "{:#?}", three.seen.lines);
+}
+
+/// A session offered to a server that makes a new one instead is not
+/// taken as resumed: the peer, which sent its chain, is checked in full,
+/// and the chain reported (`Curl_ossl_check_peer_cert`).
+fn a_session_the_server_does_not_resume_is_checked_in_full() {
+    let certs = certs("unresumed", "localhost", &["localhost"]);
+    // Two servers of one certificate, each with its own ticket keys: the
+    // second resumes none of the first's sessions.
+    let a = acceptor(&certs, |_| {});
+    let b = acceptor(&certs, |_| {});
+    let (at, server) = serve_each(vec![a, b]);
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let set = |o: &mut Options| {
+        trusting(&certs)(o);
+        o.tls.certinfo = true;
+    };
+    let one = get_in(&mut m, "https", "localhost", at, set, false);
+    let two = get_in(&mut m, "https", "localhost", at, set, false);
+    server.join().unwrap();
+    assert_eq!(one.result, Ok(()), "{:#?}", one.seen.lines);
+    assert_eq!(two.result, Ok(()), "{:#?}", two.seen.lines);
+    // LibreSSL's server gives no TLS 1.3 ticket: nothing is offered.
+    #[cfg(not(libressl))]
+    {
+        assert!(resumed(&two), "offered: {:#?}", two.seen.lines);
+        assert!(
+            said(&two, "SSL session not resumed by server, doing full checks"),
+            "{:#?}",
+            two.seen.lines
+        );
+    }
+    assert!(said(&two, "SSL certificate verified via OpenSSL."));
+    assert!(two.chain.is_some(), "a new session's chain is reported");
 }
 
 /// A peer whose key is not the one pinned fails before any session of

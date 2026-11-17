@@ -550,3 +550,11 @@ witness: curl-openssl tests::a_blocked_write_is_made_again_whole_and_a_shorter_o
         Some(blocked) if blocked > given => None,
 --- new
         Some(blocked) if blocked > given => Some(given),
+
+=== a session offered is taken as resumed whatever the server did
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_session_the_server_does_not_resume_is_checked_in_full
+--- old
+    if unsafe { openssl_sys::SSL_session_reused(ssl.as_ptr()) } == 0 {
+--- new
+    if unsafe { openssl_sys::SSL_session_reused(ssl.as_ptr()) } == 0 && false {

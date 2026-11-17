@@ -891,23 +891,49 @@ fn common_name(
     result.map(|matched| matched.expect("a common name matched where it passes"))
 }
 
+/// A session a handshake offers to resume, as the cache kept it
+/// (`reused_session`): whether it is resumed is the server's to decide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Offered {
+    /// Its peer was verified by Apple's SecTrust (`sectrust_session`).
+    pub(crate) from_sectrust: bool,
+}
+
+/// The session a finished handshake resumed: the one `offered`, if the
+/// server took it (`SSL_session_reused`). A server that made a new one
+/// sent its chain, and its peer is checked in full.
+fn resumed(ssl: NonNull<SSL>, offered: Option<Offered>, io: &mut TlsCx<'_>) -> Option<Offered> {
+    let offered = offered?;
+    // SAFETY: the session's SSL, its handshake done.
+    if unsafe { openssl_sys::SSL_session_reused(ssl.as_ptr()) } == 0 {
+        io.info(format_args!(
+            "SSL session not resumed by server, doing full checks"
+        ));
+        return None;
+    }
+    Some(offered)
+}
+
 /// Check the peer's certificate once the handshake is done
 /// (`Curl_ossl_check_peer_cert`): the lines about it, its name if the
 /// host is to be checked, then what OpenSSL made of its chain, which
 /// fails the transfer only if the peer is to be verified; where OpenSSL
 /// did not verify it, Apple's SecTrust may (`sectrust`), a resumed
-/// session's peer trusted if its session's was (`from_sectrust`). Gives
-/// the check, its name matched by curl-core, and whether SecTrust
-/// verified the peer (`sectrust_verified`).
+/// session's peer trusted if its session's was. A session `offered` and
+/// not resumed is checked as a new one. Gives the check, its name matched
+/// by curl-core, and whether SecTrust verified the peer
+/// (`sectrust_verified`).
 pub(crate) fn check_peer(
     ssl: NonNull<SSL>,
     identity: &TlsIdentity,
     host: &[u8],
     kind: TlsPeerKind,
-    reused: bool,
-    from_sectrust: bool,
+    offered: Option<Offered>,
     io: &mut TlsCx<'_>,
 ) -> Result<(Checked, bool), ErrorKind> {
+    let resumed = resumed(ssl, offered, io);
+    let reused = resumed.is_some();
+    let from_sectrust = resumed.is_some_and(|r| r.from_sectrust);
     // A resumed session's chain is not sent again.
     if !reused {
         crate::certinfo::report(ssl, io)?;

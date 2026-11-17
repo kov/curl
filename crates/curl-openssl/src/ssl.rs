@@ -244,8 +244,7 @@ impl OpenSsl {
             blocked_write: None,
             shut: false,
             keylog: self.keylog.clone(),
-            reused: false,
-            from_sectrust: false,
+            offered: None,
             early_data: peer.early_data,
             deferred: None,
             early: Early::None,
@@ -391,12 +390,9 @@ struct Session {
     shut: bool,
     /// Where the secrets are logged, if anywhere.
     keylog: Option<SharedKeyLog>,
-    /// The handshake resumes a session the cache kept
+    /// The session the handshake offers to resume, which the cache kept
     /// (`reused_session`).
-    reused: bool,
-    /// The session resumed came from a connection Apple's SecTrust
-    /// verified (`sectrust_session`).
-    from_sectrust: bool,
+    offered: Option<x509::Offered>,
     /// The transfer may send early data.
     early_data: bool,
     /// The handshake is put off for early data, as the session resumed
@@ -824,19 +820,19 @@ impl Session {
         // first, as servers may insist it does; else a session the cache
         // kept for the peer is resumed, of which the cache gives none where
         // the peer's status is to be checked (`ossl_init_session_and_alpns`).
-        self.reused = false;
+        self.offered = None;
         if let Some(given) = io.take_given_session() {
             self.resume(ssl, &given, io);
-            if self.reused {
+            if self.offered.is_some() {
                 io.trace(format_args!("applied SSL session from control connection"));
             }
         }
-        if !self.reused && io.caches_sessions() {
+        if self.offered.is_none() && io.caches_sessions() {
             let taken = io.take_session();
             if let Some(t) = taken.as_ref().filter(|t| !t.data.is_empty()) {
                 self.resume(ssl, t, io);
             }
-            if self.quic && self.reused {
+            if self.quic && self.offered.is_some() {
                 // Kept for the early data it allows; a TLS 1.3 session
                 // given back would be dropped.
                 self.resumed = taken;
@@ -1390,8 +1386,9 @@ impl Session {
             } else {
                 let alpn = ticket.alpn_name().unwrap_or(b"-");
                 io.info_with(&[b"SSL reusing session with ALPN '", alpn, b"'"]);
-                self.reused = true;
-                self.from_sectrust = ticket.sectrust();
+                self.offered = Some(x509::Offered {
+                    from_sectrust: ticket.sectrust(),
+                });
                 io.info(format_args!("SSL verify result: {verified:x}"));
                 // SAFETY: the session, alive until freed below.
                 let allows = unsafe { ffi::SSL_SESSION_get_max_early_data(session) };
@@ -1604,8 +1601,7 @@ impl TlsSession for Session {
             &self.identity,
             &self.host,
             self.kind,
-            self.reused,
-            self.from_sectrust,
+            self.offered,
             io,
         );
         let checked = match checked {
@@ -1918,8 +1914,7 @@ impl QuicTls for QuicSession {
             identity,
             host: &s.host,
             kind: s.kind,
-            reused: s.reused,
-            from_sectrust: s.from_sectrust,
+            offered: s.offered,
             slot: None,
         };
         bio::call_lent(ssl, &mut slot, |lent| {
@@ -1978,8 +1973,7 @@ struct Check<'s> {
     identity: &'s TlsIdentity,
     host: &'s [u8],
     kind: TlsPeerKind,
-    reused: bool,
-    from_sectrust: bool,
+    offered: Option<x509::Offered>,
     /// The slot of the call, reached by the callbacks of each packet
     /// without the BIO's data being asked for.
     slot: Option<bio::LentSlot>,
@@ -1997,8 +1991,7 @@ impl DriveCall for Check<'_> {
             identity,
             host,
             kind,
-            reused,
-            from_sectrust,
+            offered,
             slot: _,
         } = *self;
         // SAFETY: the session's SSL, alive while the check is.
@@ -2012,7 +2005,7 @@ impl DriveCall for Check<'_> {
                 // SAFETY: the session's SSL, its handshake done.
                 unsafe { report_handshake(ssl, cx) };
             }
-            match x509::check_peer(ssl, identity, host, kind, reused, from_sectrust, cx) {
+            match x509::check_peer(ssl, identity, host, kind, offered, cx) {
                 Ok(checked) => Ok(checked),
                 Err(kind) => {
                     cx.forget_sessions();

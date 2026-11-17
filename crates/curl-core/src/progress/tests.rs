@@ -600,35 +600,48 @@ impl WriteHandler for Pausing {
 }
 
 /// A paused transfer is not judged on its speed, and an unpause starts the
-/// measure over.
+/// measure over: one that only receives, blocked by the pause, takes no
+/// progress check at all (`Curl_sendrecv`); one with a body still to
+/// send, not blocked by its paused receiving, takes it and is passed over
+/// (`pgrs_speedcheck`).
 #[test]
 fn a_paused_transfer_is_not_too_slow() {
-    let (mut m, clock) = multi();
-    let mut e = script(vec![
-        body(10),
-        Piece::Yield,
-        Piece::Yield,
-        Piece::Yield,
-        Piece::Yield,
-    ]);
-    e.options_mut().flow.make_mut().unwrap().low_speed = slow(1000, 2);
-    e.options_mut().callbacks.write = Some(Handler::write(Pausing).unwrap());
-    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    for _ in 0..5 {
+    for sends in [false, true] {
+        let (mut m, clock) = multi();
+        let mut pieces = vec![
+            body(10),
+            Piece::Yield,
+            Piece::Yield,
+            Piece::Yield,
+            Piece::Yield,
+        ];
+        if sends {
+            pieces.push(Piece::Send(1));
+        }
+        let mut e = script(pieces);
+        e.options_mut().flow.make_mut().unwrap().low_speed = slow(1000, 2);
+        e.options_mut().callbacks.write = Some(Handler::write(Pausing).unwrap());
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).unwrap();
+            clock.advance(Duration::from_secs(1));
+        }
+        assert_eq!(result(&mut m), None, "held, never slow; sends {sends}");
+        m.easy_mut(id).unwrap().options_mut().callbacks.write = None;
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
+        assert_eq!(result(&mut m), None, "measured from the unpause");
         clock.advance(Duration::from_secs(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(result(&mut m), None);
+        clock.advance(Duration::from_secs(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(
+            result(&mut m),
+            Some(Err(ErrorKind::OperationTimedout)),
+            "sends {sends}"
+        );
     }
-    assert_eq!(result(&mut m), None, "held, never slow");
-    m.easy_mut(id).unwrap().options_mut().callbacks.write = None;
-    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
-    assert_eq!(result(&mut m), None, "measured from the unpause");
-    clock.advance(Duration::from_secs(1));
-    m.perform(&mut NoEvents).unwrap();
-    assert_eq!(result(&mut m), None);
-    clock.advance(Duration::from_secs(1));
-    m.perform(&mut NoEvents).unwrap();
-    assert_eq!(result(&mut m), Some(Err(ErrorKind::OperationTimedout)));
 }
 
 /// Held output a progress handler unpauses is replayed when it returns,

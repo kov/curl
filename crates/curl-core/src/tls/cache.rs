@@ -1118,9 +1118,12 @@ fn write_key(
         verify_peer,
         verify_host,
         options,
-        // Keyed as the CA file and path they resolve, below.
+        // Keyed as what they resolve, below: the CA file and path, and
+        // whether the system's store is trusted.
         ca_defaults: _,
-        // What an origin not the first leaves out is out of `options`.
+        // Keyed as the client's identity it gives or withholds: the
+        // certificate the system picks, below; the rest an origin not
+        // the first leaves out is out of `options`.
         origin: _,
         // Says only who made it.
         made: _,
@@ -1208,6 +1211,12 @@ fn write_key(
     if *verify_peer {
         path(out, "CA", identity.ca_file());
         path(out, "CApath", identity.ca_path());
+        // The system's store as the transfer trusts it, asked for or the
+        // build's default: a session verified against it serves no
+        // transfer trusting only its own CA.
+        if identity.native_ca_store() {
+            out.bytes(b":NATIVE-CA");
+        }
         path(out, "CRL", crl_file.as_deref());
         path(out, "Issuer", issuer_cert.as_deref());
         hash(out, "CAInfoBlob", identity.ca_blob());
@@ -1216,6 +1225,12 @@ fn write_key(
     hash(out, "CertBlob", cert_blob.as_deref());
     if let Some(pinned) = pinned_key.as_deref().filter(|p| !p.is_empty()) {
         text(out, "Pinned", pinned);
+    }
+    // The certificate the system picks, given to the first origin alone,
+    // whatever `TLSOPT` says: a session it authenticated serves no
+    // transfer for which the peer is another origin.
+    if identity.auto_client_cert() {
+        out.bytes(b":AUTOC");
     }
     path(out, "CCERT", cert.as_deref());
     path(out, "KEY", key.as_deref());

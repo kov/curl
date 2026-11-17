@@ -175,3 +175,23 @@ witness: curl-core tls::cache::tests::a_key_is_c_s_for_the_same_settings
         out.bytes(b":NO-VRFY-PEER");
 --- new
         out.bytes(b"");
+
+=== a session verified against the system's store is keyed as one trusting only its CA
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::the_system_s_store_is_keyed_where_it_is_trusted
+features: test-util,debug-hooks
+--- old
+        if identity.native_ca_store() {
+            out.bytes(b":NATIVE-CA");
+        }
+--- new
+
+=== a session given the system's client certificate is keyed as one given none
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::the_certificate_the_system_picks_is_keyed_for_the_first_origin_alone
+features: test-util,debug-hooks
+--- old
+    if identity.auto_client_cert() {
+        out.bytes(b":AUTOC");
+    }
+--- new

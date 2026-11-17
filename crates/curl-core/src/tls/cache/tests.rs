@@ -148,6 +148,68 @@ fn a_key_holds_every_setting_a_session_must_share() {
     );
 }
 
+/// The system's store, asked for or the build's default with no CA of
+/// the transfer's own, is in a verified peer's key; asked for, it is in
+/// `TLSOPT` too (`ssl_peer_key_build`'s `NATIVE-CA`).
+#[test]
+fn the_system_s_store_is_keyed_where_it_is_trusted() {
+    let ca = keyed("CA", CA);
+    let asked = peer(|i| i.options.ssl_options = SslOptions::NATIVE_CA);
+    assert_eq!(
+        key(&asked),
+        format!(
+            "https:localhost:18443:KEY-V3:TLSVER-6-0:TLSOPT-10:{ca}:NATIVE-CA:IMPL-13:OpenSSL/3.5.9:G"
+        )
+    );
+    // The build's default: no CA of its own, nor any option, only the
+    // store in the key.
+    let default = peer(|i| {
+        i.ca_defaults.system = crate::tls::SystemStore::Default;
+        i.ca_defaults.file = None;
+        i.options.ca_file = CaSetting::Default;
+    });
+    assert_eq!(
+        key(&default),
+        "https:localhost:18443:KEY-V3:TLSVER-6-0:NATIVE-CA:IMPL-13:OpenSSL/3.5.9:G"
+    );
+    // A CA of its own turns the default off.
+    let own = peer(|i| i.ca_defaults.system = crate::tls::SystemStore::Default);
+    assert!(!key(&own).contains("NATIVE-CA"), "{}", key(&own));
+    // An unverified peer keys no trust at all.
+    let unverified = peer(|i| {
+        i.verify_peer = false;
+        i.options.ssl_options = SslOptions::NATIVE_CA;
+    });
+    assert!(
+        !key(&unverified).contains("NATIVE-CA"),
+        "{}",
+        key(&unverified)
+    );
+}
+
+/// The certificate the system picks is keyed for the first origin, to
+/// which it goes, and not for another, though both carry the option in
+/// `TLSOPT` (`ssl_peer_key_build`'s `AUTOC`).
+#[test]
+fn the_certificate_the_system_picks_is_keyed_for_the_first_origin_alone() {
+    let ca = keyed("CA", CA);
+    let first = peer(|i| i.options.ssl_options = SslOptions::AUTO_CLIENT_CERT);
+    assert_eq!(
+        key(&first),
+        format!(
+            "https:localhost:18443:KEY-V3:TLSVER-6-0:TLSOPT-20:{ca}:AUTOC:IMPL-13:OpenSSL/3.5.9:G"
+        )
+    );
+    let other = peer(|i| {
+        i.options.ssl_options = SslOptions::AUTO_CLIENT_CERT;
+        i.origin = crate::tls::TlsOrigin::Other;
+    });
+    assert_eq!(
+        key(&other),
+        format!("https:localhost:18443:KEY-V3:TLSVER-6-0:TLSOPT-20:{ca}:IMPL-13:OpenSSL/3.5.9:G")
+    );
+}
+
 /// A relative path is made absolute; one that cannot be is kept as it is
 /// and makes the key this directory's alone (`:L`).
 #[test]

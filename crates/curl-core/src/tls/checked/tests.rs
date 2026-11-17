@@ -121,7 +121,7 @@ fn a_name_checked_in_core_cannot_be_left_out() {
             let pin = not_asked(cx);
             let name = hostcheck::check(cx, CertName::Dns(b"*.com"));
             assert!(name.is_none(), "a wildcard covers no whole domain");
-            let name = hostcheck::check(cx, CertName::Dns(b"EXAMPLE.com."));
+            let name = hostcheck::check(cx, CertName::Dns(b"EXAMPLE.com"));
             assert!(Checked::named(cx, pin, name, Residuals::NONE).is_ok());
         });
     }

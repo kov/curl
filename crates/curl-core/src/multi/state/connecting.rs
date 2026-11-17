@@ -2067,17 +2067,14 @@ pub(super) fn up<H: Host>(
     // it ends (`early_done`).
     // A QUIC connection reports its own: connected as its first datagram
     // came, then up as its handshake completed (`Curl_cf_ngtcp2_cmn_cntrl`).
-    // Through an HTTP/3 proxy, no filter of the chain reports the connect:
-    // the proxy's QUIC connection keeps its socket to itself, its filter
-    // reports nothing, and a QUIC origin over its tunnel has no socket of
-    // its own (`Curl_cf_ngtcp2_cmn_cntrl`), so C's time is never set.
-    let timed = !c.route.proxy_over_quic();
+    // Through an HTTP/3 proxy, the proxy's filter reports the connect, as
+    // its QUIC connection's first datagram came, a QUIC origin over its
+    // tunnel having no socket of its own (`Curl_cf_ngtcp2_cmn_cntrl`'s
+    // `CF_TYPE_PROXY`).
     let handshake_at = c.lease.conn().h3().and_then(|h3| h3.handshake_at());
     if let Some(handshake_at) = handshake_at {
-        if timed {
-            let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
-            mstate::marked(cx, Timer::Connect, marked);
-        }
+        let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+        mstate::marked(cx, Timer::Connect, marked);
         let marked = cx
             .report_mut()
             .timings_mut()
@@ -2089,10 +2086,8 @@ pub(super) fn up<H: Host>(
             let marked = cx.report_mut().timings_mut().mark(Timer::AppConnect, now);
             mstate::marked(cx, Timer::AppConnect, marked);
         }
-        if timed {
-            let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
-            mstate::marked(cx, Timer::Connect, marked);
-        }
+        let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+        mstate::marked(cx, Timer::Connect, marked);
     }
     // `CURL_CONN_HOST_DISPNAME`.
     say_established(cx, c.route.destination().shown(), &ends.remote, ends.local);

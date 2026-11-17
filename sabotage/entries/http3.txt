@@ -1042,13 +1042,33 @@ witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_as_its_
 --- new
             }) if true => h3conn.adjust_pollset(wanted, h3),
 
-=== the connect through an HTTP/3 proxy is timed
+=== the connect through an HTTP/3 proxy is not timed
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
 --- old
-    let timed = !c.route.proxy_over_quic();
+        let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+        mstate::marked(cx, Timer::Connect, marked);
+    }
 --- new
-    let timed = true;
+        if !c.route.proxy_over_quic() {
+            let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+            mstate::marked(cx, Timer::Connect, marked);
+        }
+    }
+
+=== the connect through an HTTP/3 proxy to a QUIC origin is not timed
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+    if let Some(handshake_at) = handshake_at {
+        let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+        mstate::marked(cx, Timer::Connect, marked);
+--- new
+    if let Some(handshake_at) = handshake_at {
+        if !c.route.proxy_over_quic() {
+            let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+            mstate::marked(cx, Timer::Connect, marked);
+        }
 
 === an attempt going on to its HTTP/3 proxy tunnel does not say what the race checked
 file: crates/curl-core/src/multi/state/connecting.rs

@@ -3541,10 +3541,14 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
     let ran = through_h3_proxy(&mut m, e);
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"ok\n");
-    // No filter of C's chain reports the connect through an HTTP/3 proxy:
-    // its time stays 0, as C's tool reports it through h2o.
-    assert_eq!(ran.easy.report().timings().connect(), Duration::ZERO);
-    assert!(lines(&ran, &["[MULTI] [CONNECTING] [PGRS-CONNECT]"]).is_empty());
+    // The proxy's filter reports the connect, as its QUIC connection's
+    // first datagram came (`Curl_cf_ngtcp2_cmn_cntrl`'s `CF_TYPE_PROXY`),
+    // as C's tool reports it through h2o.
+    assert!(ran.easy.report().timings().connect() > Duration::ZERO);
+    assert_eq!(
+        lines(&ran, &["[MULTI] [CONNECTING] [PGRS-CONNECT]"]).len(),
+        1
+    );
     {
         let s = script.lock().unwrap();
         assert_eq!(
@@ -4880,6 +4884,13 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
     let ran = h3_through_h3_proxy(&mut m, e);
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"123456789");
+    // The connect is the proxy's, timed as its first datagram came, the
+    // origin's QUIC connection having no socket of its own; the origin's
+    // handshake, after it, is the app connect, as C's tool reports both
+    // through h2o.
+    let t = ran.easy.report().timings();
+    assert!(t.connect() > Duration::ZERO, "{t:?}");
+    assert!(t.connect() <= t.appconnect(), "{t:?}");
     // The origin's TLS, the last session made, is the origin's own.
     assert_eq!(tls.log().name(), b"origin.example");
     {
@@ -5100,7 +5111,6 @@ fn early_data_goes_to_an_http3_proxy_counted_but_untimed() {
         (t.connect(), t.appconnect())
     };
     assert_eq!(timed(&ran), timed(&without));
-    assert_eq!(timed(&ran).0, Duration::ZERO);
 }
 
 /// An HTTP/3 proxy naming another capsule protocol than RFC 9297's in

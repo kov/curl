@@ -1047,7 +1047,7 @@ impl Request {
             Upload::open(cx)?
         };
         upload.trace_set(cx);
-        let converts = cx.easy().options().crlf;
+        let converts = cx.easy().options().converts_lines();
         let mut body = Body::new(upload);
         if converts {
             body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;

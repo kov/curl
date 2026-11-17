@@ -1103,7 +1103,7 @@ impl Request {
         };
         upload.trace_set(cx);
         // Converted unless empty (`do_init_reader_stack`).
-        let converts = cx.easy().options().crlf && upload.size() != Some(0);
+        let converts = cx.easy().options().converts_lines() && upload.size() != Some(0);
         let mut body = Body::new(upload);
         if converts {
             body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;

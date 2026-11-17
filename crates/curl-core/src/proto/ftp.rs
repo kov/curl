@@ -2134,7 +2134,7 @@ impl Request {
         // C makes its reader as the body is first read, of the size left.
         upload.trace_set_when_read();
         let mut body = Body::new(upload);
-        if cx.easy().options().crlf || self.prefer_ascii {
+        if crate::options::converts_lines(cx.easy().options().crlf, self.prefer_ascii) {
             body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
         }
         let room = cx.easy().options().limits.upload_buffer.get();
@@ -3005,6 +3005,7 @@ impl Request {
         }
         if self.upload {
             let written = cx.easy().report().sizes().upload;
+            // Either may have converted, on any system (`ftp_done_check_partial`).
             let converts = cx.easy().options().crlf || self.prefer_ascii;
             if self.transfer == Transfer::Body
                 && let Some(size) = self.infilesize

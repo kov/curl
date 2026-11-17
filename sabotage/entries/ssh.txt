@@ -240,3 +240,11 @@ witness: curl-core proto::ssh::hostkey::tests::a_fingerprint_is_verified_only_wh
         (w == f && want[..w] == found[..w]).then_some(HostVerified(HostCheck::Sha256))
 --- new
         (w == f).then_some(HostVerified(HostCheck::Sha256))
+
+=== an SCP upload converting its line ends is offered at a size it outruns
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::an_scp_upload_converting_line_ends_is_refused
+--- old
+        Some(n) if n > 0 && (options.crlf || options.line.ftp.ascii) => {
+--- new
+        Some(n) if n > 0 && options.crlf => {

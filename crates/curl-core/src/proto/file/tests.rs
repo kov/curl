@@ -21,7 +21,7 @@ use crate::handler::{
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx};
-use crate::options::{FileMode, Method, Progress, Resume, UploadSource};
+use crate::options::{FileMode, Method, Options, Progress, Resume, UploadSource};
 use crate::report::{HeaderError, Origins, Request};
 use crate::text::Text;
 use crate::time::ManualClock;
@@ -906,19 +906,30 @@ fn a_send_limit_does_not_cut_an_upload_short() {
     assert_eq!(s.read("f"), [b'u'; 70000]);
 }
 
-/// An upload's line ends are converted as it is written (`--crlf`): each
+/// An upload's line ends are converted as it is written (`--crlf`, or a
+/// text transfer, `-B`, but on Windows, whose text keeps its CRLF): each
 /// LF not after a CR becomes CRLF; the size announced is the body's
 /// before (`file_upload` announces `infilesize`).
 #[test]
 fn an_upload_s_line_ends_are_converted() {
-    let s = Scratch::new("upcrlf");
-    let (mut e, _) = upload(&s.url("f"), bytes(b"a\nb\r\n\nc"));
-    e.options_mut().crlf = true;
-    let (r, e) = run(e);
-    assert_eq!(r, Ok(()));
-    assert_eq!(s.read("f"), b"a\r\nb\r\n\r\nc");
-    assert_eq!(e.report().sizes().upload(), 9);
-    assert_eq!(e.report().sizes().upload_expected(), Some(7));
+    let crlf = |o: &mut Options| o.crlf = true;
+    let text = |o: &mut Options| o.line.make_mut().unwrap().ftp.ascii = true;
+    let crlf: fn(&mut Options) = crlf;
+    for (name, set, converts) in [("crlf", crlf, true), ("text", text, !cfg!(windows))] {
+        let s = Scratch::new(&format!("up{name}"));
+        let (mut e, _) = upload(&s.url("f"), bytes(b"a\nb\r\n\nc"));
+        set(e.options_mut());
+        let (r, e) = run(e);
+        assert_eq!(r, Ok(()), "{name}");
+        let (want, sent): (&[u8], _) = if converts {
+            (b"a\r\nb\r\n\r\nc", 9)
+        } else {
+            (b"a\nb\r\n\nc", 7)
+        };
+        assert_eq!(s.read("f"), want, "{name}");
+        assert_eq!(e.report().sizes().upload(), sent, "{name}");
+        assert_eq!(e.report().sizes().upload_expected(), Some(7), "{name}");
+    }
 }
 
 /// A resumed upload appends what of the body is past the resume point; at

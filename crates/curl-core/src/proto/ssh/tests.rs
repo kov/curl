@@ -1185,6 +1185,41 @@ fn an_scp_file_is_uploaded() {
     );
 }
 
+/// An SCP upload whose line ends would be converted (`--crlf`, or a text
+/// transfer, on any system) is refused before the file is offered: SCP
+/// says the size first, and the converted data would run past it, the
+/// rest read by the remote `scp` as commands. An empty one converts
+/// nothing and goes.
+#[test]
+fn an_scp_upload_converting_line_ends_is_refused() {
+    let crlf = |o: &mut Options| o.crlf = true;
+    let text = |o: &mut Options| o.line.make_mut().unwrap().ftp.ascii = true;
+    for (name, set) in [("crlf", crlf as fn(&mut Options)), ("text", text)] {
+        for (body, refused) in [(&b"a\nb\n"[..], true), (b"", false)] {
+            let w = world(&[]);
+            let (result, _, said, calls) = run_in(&w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
+                o.method = crate::options::Method::Upload;
+                o.upload = crate::options::UploadSource::Bytes(
+                    curl_alloc::TryArc::try_new(body.to_vec()).unwrap(),
+                );
+                set(o);
+            });
+            let pushed = calls.contains(&"scp_push_file /tmp/f".to_owned());
+            if refused {
+                assert_eq!(result, Err(ErrorKind::UploadFailed), "{name}: {said}");
+                assert!(
+                    said.contains("SCP cannot do CRLF conversions on upload\n"),
+                    "{name}: {said}"
+                );
+                assert!(!pushed, "{name}: {calls:?}");
+            } else {
+                assert_eq!(result, Ok(()), "{name}: {said}");
+                assert!(pushed, "{name}: {calls:?}");
+            }
+        }
+    }
+}
+
 /// A file shorter than the server said is a partial one.
 #[test]
 fn a_short_scp_file_is_partial() {

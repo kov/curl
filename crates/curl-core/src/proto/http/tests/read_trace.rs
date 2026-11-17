@@ -657,6 +657,34 @@ fn an_application_s_pause_is_told_to_no_reader() {
     assert!(!lines.iter().any(|l| l.contains("unpausing")), "{lines:?}");
 }
 
+/// A text transfer's body (`-B`, `CURLOPT_TRANSFERTEXT`) has its line ends
+/// converted as `--crlf` has them, and so goes chunked, but on Windows,
+/// whose text keeps its CRLF (`CURL_PREFER_LF_LINEENDS`). The C build
+/// sends `curl -B -T` of `one\ntwo\n` as the chunk `one\r\ntwo\r\n`.
+#[test]
+fn a_text_upload_converts_its_line_ends() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let crate::options::UploadSource::Read { handler, .. } = pieces(&[b"a\nb\r\nc\n"]) else {
+        unreachable!("pieces are read by a handler");
+    };
+    let ran = get_with(&mut m, tracing_read(), "/u", talk, |o| {
+        o.method = Method::Upload;
+        o.line.make_mut().unwrap().ftp.ascii = true;
+        o.upload = UploadSource::Read {
+            handler,
+            rewind: None,
+            size: Some(7),
+        };
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent: &[u8] = if cfg!(windows) {
+        b"\r\n\r\na\nb\r\nc\n"
+    } else {
+        b"9\r\na\r\nb\r\nc\r\n\r\n0\r\n\r\n"
+    };
+    assert!(ran.request.ends_with(sent), "{:?}", ran.request);
+}
+
 /// A file's body whose line ends are converted (`--crlf`) goes chunked,
 /// its size no longer known, though the client's size, small, still adds
 /// no `Expect`; the conversion stage reads into the chunk stage's room and

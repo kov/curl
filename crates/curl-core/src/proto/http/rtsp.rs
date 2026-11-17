@@ -727,7 +727,7 @@ impl Request {
         if size == Some(0) {
             upload = None;
         }
-        let converts = options.crlf && upload.is_some();
+        let converts = options.converts_lines() && upload.is_some();
         let http = &options.http;
         let accept_encoding = match &http.accept_encoding {
             _ if kind != RtspRequest::Describe || headers.replaces(b"Accept-Encoding") => None,

@@ -387,3 +387,13 @@ features: debug-hooks
 --- new
         let Some(seek) = ccb.seek else {
             return Ok(());
+
+=== a text transfer's upload keeps its LF line ends
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::file::tests::an_upload_s_line_ends_are_converted
+witness: curl-core proto::http::tests::read_trace::a_text_upload_converts_its_line_ends
+features: test-util
+--- old
+    crlf || (ascii && !cfg!(windows))
+--- new
+    crlf

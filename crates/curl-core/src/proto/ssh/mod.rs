@@ -1491,8 +1491,10 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         // C makes its reader as the body is first read.
         upload.trace_set_when_read();
+        // Converted unless empty (`do_init_reader_stack`).
+        let converts = cx.easy().options().converts_lines() && upload.size() != Some(0);
         let mut body = Body::new(upload);
-        if cx.easy().options().crlf {
+        if converts {
             body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
         }
         let room = cx.easy().options().limits.upload_buffer.get();
@@ -1819,13 +1821,9 @@ impl Request {
                 }
             };
             self.infilesize = upload.size();
-            if self.infilesize.is_none() {
+            if let Some(why) = scp_refused(cx, self.infilesize) {
                 self.path = Some(path);
-                let kind = trace::fail(
-                    cx,
-                    ErrorKind::UploadFailed,
-                    format_args!("SCP requires a known file size for upload"),
-                );
+                let kind = trace::fail(cx, ErrorKind::UploadFailed, format_args!("{why}"));
                 sc.goto_error(cx, kind);
                 return;
             }
@@ -2236,6 +2234,22 @@ impl Request {
         let sc = ssh_of(lease);
         sc.to(cx, State::Init);
         Ok(())
+    }
+}
+
+/// Why an SCP upload of `size` cannot go, if it cannot: SCP sends the
+/// size before the data, so the size must be known, and line ends
+/// converted (`CURLOPT_CRLF` or a text transfer, on any system) would
+/// make the data longer than the size said, its rest read by the remote
+/// `scp` as commands (`ssh_state_scp_trans_init`, `myssh_in_TRANS_INIT`).
+pub(super) fn scp_refused<H: Host>(cx: &StepCx<'_, H>, size: Option<u64>) -> Option<&'static str> {
+    let options = cx.easy().options();
+    match size {
+        None => Some("SCP requires a known file size for upload"),
+        Some(n) if n > 0 && (options.crlf || options.line.ftp.ascii) => {
+            Some("SCP cannot do CRLF conversions on upload")
+        }
+        Some(_) => None,
     }
 }
 

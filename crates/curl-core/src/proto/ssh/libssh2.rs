@@ -2369,12 +2369,8 @@ impl Request {
         if self.upload {
             let upload = Upload::open(cx)?;
             self.infilesize = upload.size();
-            if self.infilesize.is_none() {
-                let kind = trace::fail(
-                    cx,
-                    ErrorKind::UploadFailed,
-                    format_args!("SCP requires a known file size for upload"),
-                );
+            if let Some(why) = super::scp_refused(cx, self.infilesize) {
+                let kind = trace::fail(cx, ErrorKind::UploadFailed, format_args!("{why}"));
                 sc.to(cx, State::ScpChannelFree);
                 return Err(Halt::Fail(kind));
             }

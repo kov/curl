@@ -1607,7 +1607,7 @@ impl Request {
         } else {
             upload.as_ref().and_then(Upload::size)
         };
-        let converts = options.crlf && upload.is_some() && client_size != Some(0);
+        let converts = options.converts_lines() && upload.is_some() && client_size != Some(0);
         let size = client_size.filter(|_| !converts);
         let size_unknown = upload.is_some() && size.is_none();
         if asked.is_none() && size_unknown && self.version == SentIn::Http10 {

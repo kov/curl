@@ -148,6 +148,36 @@ fn sorted_lines(text: &[u8]) -> Vec<&[u8]> {
     lines
 }
 
+/// A cookie line the reader takes for a comment: its domain starts with
+/// `#`, which C writes as it is and reads back as a comment
+/// (`get_netscape_format`, `parse_netscape`). Comments have no tab.
+fn read_as_comment(line: &[u8]) -> bool {
+    let line = line.strip_prefix(b"#HttpOnly_").unwrap_or(line);
+    line.first() == Some(&b'#') && line.contains(&b'\t')
+}
+
+/// A cookie whose domain starts with `#` is written as C writes it, and
+/// read back as C reads it: as a comment, that cookie alone lost.
+#[test]
+fn a_domain_starting_with_a_hash_is_lost_alone() {
+    let mut jar = Jar::default();
+    let file = b".#x.com\tFALSE\t/\tFALSE\t0\ta\t1\nexample.com\tFALSE\t/\tFALSE\t0\tb\t2\n";
+    jar.load(file, false, true, None, NOW, &mut 0, |_| {})
+        .unwrap();
+    assert_eq!(jar.len(), 2);
+    let mut out = Vec::new();
+    jar.file(NOW, &mut out).unwrap();
+    let text = String::from_utf8(out.clone()).unwrap();
+    assert!(
+        text.contains("\n#x.com\tFALSE\t/\tFALSE\t0\ta\t1"),
+        "{text}"
+    );
+    let mut back = Jar::default();
+    back.load(&out, false, true, None, NOW, &mut 0, |_| {})
+        .unwrap();
+    assert_eq!(back.len(), 1);
+}
+
 /// A jar written out is read back whole, a cookie as long as a cookie
 /// may be among the rest (CVE-2026-92386: C's writer made a line its
 /// reader stopped at, dropping every cookie after it).
@@ -1267,7 +1297,8 @@ proptest! {
             back.load(&out, false, true, suffixes, now, &mut 0, |s| drop(said_text(s))).unwrap();
             let mut again = Vec::new();
             back.file(now, &mut again).unwrap();
-            prop_assert_eq!(sorted_lines(&again), sorted_lines(&out));
+            let kept: Vec<&[u8]> = sorted_lines(&out).into_iter().filter(|l| !read_as_comment(l)).collect();
+            prop_assert_eq!(sorted_lines(&again), kept);
         }
     }
 }

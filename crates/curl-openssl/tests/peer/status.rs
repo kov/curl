@@ -22,6 +22,11 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_good_status_passes_and_a_revoked_one_fails",
         a_good_status_passes_and_a_revoked_one_fails,
     ),
+    #[cfg(not(no_ocsp))]
+    (
+        "a_status_issued_over_four_days_ago_fails",
+        a_status_issued_over_four_days_ago_fails,
+    ),
     #[cfg(not(any(no_ocsp, boringssl_like)))]
     (
         "a_transfer_checking_the_status_resumes_no_session",
@@ -175,6 +180,29 @@ fn a_status_that_is_missing_or_unusable_fails_as_c_says() {
     assert_eq!(got.result, Ok(()));
 }
 
+/// A good status issued more than four days ago fails, however long it
+/// is valid for (`OCSP_check_validity`'s 345600 seconds), as the C build
+/// fails it: the fixture's, for a CA and server of its own, was issued on
+/// 2026-01-01 and is valid until 2046.
+#[cfg(not(no_ocsp))]
+fn a_status_issued_over_four_days_ago_fails() {
+    let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/peer/data");
+    let read = |name: &str| std::fs::read(data.join(format!("old-status-{name}"))).unwrap();
+    let certs = Certs {
+        ca_file: data.join("old-status-ca.pem"),
+        cert: X509::from_pem(&read("cert.pem")).unwrap(),
+        key: PKey::private_key_from_pem(&read("cert.key")).unwrap(),
+        ca: X509::from_pem(&read("ca.pem")).unwrap(),
+        ca_key: PKey::private_key_from_pem(&read("ca.key")).unwrap(),
+    };
+    let got = checking_status(&certs, Some(read("resp.der")));
+    assert_eq!(got.result, Err(ErrorKind::SslInvalidcertstatus));
+    assert_eq!(
+        String::from_utf8_lossy(&got.failure),
+        "OCSP response has expired"
+    );
+}
+
 /// A response the `openssl ocsp` responder makes for `certs`' server
 /// certificate, signed by `signer` (its certificate and key), the
 /// certificate said `revoked` or valid.
@@ -234,15 +262,13 @@ fn response(certs: &Certs, tag: &str, signer: (&X509, &PKey<Private>), revoked: 
     std::fs::read(resp).unwrap()
 }
 
-/// A status the CA signed: good passes, saying so, whenever it was
-/// issued; revoked fails with its reason; one signed by a stranger fails
-/// its verification.
+/// A status the CA signed: good passes, saying so; revoked fails with its
+/// reason; one signed by a stranger fails its verification.
 #[cfg(not(no_ocsp))]
 fn a_good_status_passes_and_a_revoked_one_fails() {
     let certs = certs("status", "localhost", &["localhost"]);
     let good = response(&certs, "status-good", (&certs.ca, &certs.ca_key), false);
-    // However old the response's issue, it is taken while it is valid
-    // (`OCSP_check_validity`'s `-1`): this one is two seconds old.
+    // Issued a moment ago, well inside the four days allowed.
     std::thread::sleep(std::time::Duration::from_millis(2100));
     let got = checking_status(&certs, Some(good));
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);

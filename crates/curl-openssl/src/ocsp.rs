@@ -191,10 +191,10 @@ fn basic(
             format_args!("Could not find certificate ID in OCSP response"),
         ));
     }
-    // Five minutes of clock skew allowed, and no limit on how old the
-    // response's issue may be.
+    // Five minutes of clock skew allowed, and a response issued at most
+    // four days ago.
     // SAFETY: the response's times.
-    if unsafe { openssl_sys::OCSP_check_validity(thisupd, nextupd, 300, -1) } == 0 {
+    if unsafe { openssl_sys::OCSP_check_validity(thisupd, nextupd, 300, 4 * 24 * 60 * 60) } == 0 {
         return Err(fail(io, format_args!("OCSP response has expired")));
     }
     // SAFETY: the library's text for any code.

@@ -599,3 +599,11 @@ witness: curl-openssl a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi
 --- new
         if self.libctx.is_none() && self.engine.is_none() {
             self.libctx = other.libctx.take();
+
+=== a stapled status is taken however long ago it was issued
+file: crates/curl-openssl/src/ocsp.rs
+witness: curl-openssl a_status_issued_over_four_days_ago_fails
+--- old
+openssl_sys::OCSP_check_validity(thisupd, nextupd, 300, 4 * 24 * 60 * 60)
+--- new
+openssl_sys::OCSP_check_validity(thisupd, nextupd, 300, -1)

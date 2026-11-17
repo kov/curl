@@ -96,3 +96,11 @@ witness: curl-core proto::ssh::libssh2::tests::the_goodbye_goes_out_through_an_h
                 Err(Halt::Again) if moved => {}
 --- new
                 Err(Halt::Again) if false => {}
+
+=== a failed SFTP call said OK passes for a success
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::a_failed_sftp_call_said_ok_still_fails
+--- old
+    Err(Halt::Fail(sftp_failure(fx)))
+--- new
+    if fx == Fx::OK { Ok(()) } else { Err(Halt::Fail(sftp_failure(fx))) }

@@ -954,6 +954,18 @@ fn an_sftp_file_is_downloaded_in_c_s_order() {
     assert_eq!(calls, want);
 }
 
+/// A failed SFTP call whose status the library gives as `LIBSSH2_FX_OK`,
+/// the server having said nothing of it, fails the transfer as SSH's
+/// failure, never passes for a success: a file that does not open is
+/// not a download of nothing.
+#[test]
+fn a_failed_sftp_call_said_ok_still_fails() {
+    let w = world_with(&[], |w| w.fx = Fx::OK);
+    let (result, body, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Err(ErrorKind::Ssh), "{said}");
+    assert!(body.is_empty());
+}
+
 /// A login that would wait is made again, the same, once the socket is
 /// ready, and the run goes on from it.
 #[test]
@@ -1418,29 +1430,29 @@ fn says(said: &str, lines: &[&str]) {
 fn c_s_numbers_and_words_for_libssh2_s_failures() {
     use ErrorKind as E;
     let sftp = [
-        (0, Ok(()), "Unknown error in libssh2"),
-        (1, Err(E::Ssh), "Unknown error in libssh2"),
-        (2, Err(E::RemoteFileNotFound), "No such file or directory"),
-        (3, Err(E::RemoteAccessDenied), "Permission denied"),
-        (4, Err(E::Ssh), "Operation failed"),
-        (5, Err(E::Ssh), "Bad message from SFTP server"),
-        (6, Err(E::Ssh), "Not connected to SFTP server"),
-        (7, Err(E::Ssh), "Connection to SFTP server lost"),
-        (8, Err(E::Ssh), "Operation not supported by SFTP server"),
-        (9, Err(E::Ssh), "Invalid handle"),
-        (10, Err(E::RemoteFileNotFound), "No such file or directory"),
-        (11, Err(E::RemoteFileExists), "File already exists"),
-        (12, Err(E::RemoteAccessDenied), "File is write protected"),
-        (13, Err(E::Ssh), "No media"),
-        (14, Err(E::RemoteDiskFull), "Disk full"),
-        (15, Err(E::RemoteDiskFull), "User quota exceeded"),
-        (16, Err(E::Ssh), "Unknown principal"),
-        (17, Err(E::RemoteAccessDenied), "File lock conflict"),
-        (18, Err(E::QuoteError), "Directory not empty"),
-        (19, Err(E::Ssh), "Not a directory"),
-        (20, Err(E::Ssh), "Invalid filename"),
-        (21, Err(E::Ssh), "Link points to itself"),
-        (22, Err(E::Ssh), "Unknown error in libssh2"),
+        (0, E::Ssh, "Unknown error in libssh2"),
+        (1, E::Ssh, "Unknown error in libssh2"),
+        (2, E::RemoteFileNotFound, "No such file or directory"),
+        (3, E::RemoteAccessDenied, "Permission denied"),
+        (4, E::Ssh, "Operation failed"),
+        (5, E::Ssh, "Bad message from SFTP server"),
+        (6, E::Ssh, "Not connected to SFTP server"),
+        (7, E::Ssh, "Connection to SFTP server lost"),
+        (8, E::Ssh, "Operation not supported by SFTP server"),
+        (9, E::Ssh, "Invalid handle"),
+        (10, E::RemoteFileNotFound, "No such file or directory"),
+        (11, E::RemoteFileExists, "File already exists"),
+        (12, E::RemoteAccessDenied, "File is write protected"),
+        (13, E::Ssh, "No media"),
+        (14, E::RemoteDiskFull, "Disk full"),
+        (15, E::RemoteDiskFull, "User quota exceeded"),
+        (16, E::Ssh, "Unknown principal"),
+        (17, E::RemoteAccessDenied, "File lock conflict"),
+        (18, E::QuoteError, "Directory not empty"),
+        (19, E::Ssh, "Not a directory"),
+        (20, E::Ssh, "Invalid filename"),
+        (21, E::Ssh, "Link points to itself"),
+        (22, E::Ssh, "Unknown error in libssh2"),
     ];
     for (n, kind, text) in sftp {
         assert_eq!(sftp_failure(Fx(n)), kind, "{n}");

@@ -293,25 +293,25 @@ impl From<ErrorKind> for Halt {
 /// How a state's work went.
 type Ran = Result<(), Halt>;
 
-/// The failure an SFTP status is (`sftp_libssh2_error_to_CURLE`); none
-/// for `LIBSSH2_FX_OK`.
-fn sftp_failure(fx: Fx) -> Result<(), ErrorKind> {
+/// The failure a failed SFTP call's status makes
+/// (`sftp_libssh2_error_to_CURLE`): `LIBSSH2_FX_OK`, the server having
+/// said nothing of it, is a failure too, of SSH's.
+fn sftp_failure(fx: Fx) -> ErrorKind {
     match fx {
-        Fx::OK => Ok(()),
-        Fx::NO_SUCH_FILE | Fx::NO_SUCH_PATH => Err(ErrorKind::RemoteFileNotFound),
+        Fx::NO_SUCH_FILE | Fx::NO_SUCH_PATH => ErrorKind::RemoteFileNotFound,
         Fx::PERMISSION_DENIED | Fx::WRITE_PROTECT | Fx::LOCK_CONFLICT => {
-            Err(ErrorKind::RemoteAccessDenied)
+            ErrorKind::RemoteAccessDenied
         }
-        Fx::NO_SPACE_ON_FILESYSTEM | Fx::QUOTA_EXCEEDED => Err(ErrorKind::RemoteDiskFull),
-        Fx::FILE_ALREADY_EXISTS => Err(ErrorKind::RemoteFileExists),
-        Fx::DIR_NOT_EMPTY => Err(ErrorKind::QuoteError),
-        _ => Err(ErrorKind::Ssh),
+        Fx::NO_SPACE_ON_FILESYSTEM | Fx::QUOTA_EXCEEDED => ErrorKind::RemoteDiskFull,
+        Fx::FILE_ALREADY_EXISTS => ErrorKind::RemoteFileExists,
+        Fx::DIR_NOT_EMPTY => ErrorKind::QuoteError,
+        _ => ErrorKind::Ssh,
     }
 }
 
 /// The SFTP failure as a state's result.
 fn sftp_ran(fx: Fx) -> Ran {
-    sftp_failure(fx).map_err(Halt::Fail)
+    Err(Halt::Fail(sftp_failure(fx)))
 }
 
 /// C's words for an SFTP status (`sftp_libssh2_strerror`).
@@ -2053,10 +2053,7 @@ impl Request {
             sc.to(cx, State::SftpClose);
             // The library may answer that the server said nothing of a
             // failed open.
-            let (kind, fx) = match sftp_failure(fx) {
-                Ok(()) => (ErrorKind::Ssh, Fx::OK),
-                Err(kind) => (kind, fx),
-            };
+            let kind = sftp_failure(fx);
             let why = if fx == Fx::OK {
                 "ssh error"
             } else {
@@ -2166,11 +2163,7 @@ impl Request {
             Err(_) => {
                 let fx = s.sftp_last_error();
                 let errno = s.last_errno();
-                let kind = if fx == Fx::OK {
-                    ErrorKind::Ssh
-                } else {
-                    sftp_failure(fx).err().unwrap_or(ErrorKind::Ssh)
-                };
+                let kind = sftp_failure(fx);
                 trace::fail(
                     cx,
                     kind,
@@ -2980,8 +2973,7 @@ fn sftp_realpath<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
             sc.to(cx, State::Stop);
             let fx = sc.session().sftp_last_error();
             // A failure not of SFTP's, a time-out or the like.
-            let kind = sftp_failure(fx).err().unwrap_or(ErrorKind::Ssh);
-            let kind = if fx == Fx::OK { ErrorKind::Ssh } else { kind };
+            let kind = sftp_failure(fx);
             cx.ssh(format_args!(
                 "error = {} makes libcurl = {}",
                 fx.0,

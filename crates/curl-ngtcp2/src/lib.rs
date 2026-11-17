@@ -485,6 +485,8 @@ struct Inner {
     local: Addr,
     /// Early data is sent (`use_earlydata`).
     early: bool,
+    /// What ngtcp2 still lets be asked of the connection.
+    contract: Contract,
     /// The file ngtcp2 writes the connection's qlog to (`qlogfd`), until
     /// a write to it fails. Reached by the qlog callback alone, which
     /// every call into ngtcp2 may fire, its making and freeing included.
@@ -570,6 +572,154 @@ fn inner_of(user_data: *mut c_void) -> *mut Inner {
     user_data.cast()
 }
 
+/// What ngtcp2 still lets be asked of the connection (`curl_ngtcp2`'s
+/// state). A packet being filled from several streams takes no other
+/// call until a write ends it; a connection a call failed fatally, or
+/// whose closing packet is written, is asked only why it ended, and is
+/// closed and freed. A call the contract refuses is not made: it answers
+/// the connection's first fatal failure, or `NGTCP2_ERR_INVALID_STATE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Contract {
+    Sound,
+    /// A packet is being filled (`CURL_NGTCP2_COALESCING`).
+    Filling,
+    /// Only why it ended may be asked (`CURL_NGTCP2_CLOSE_ONLY`), with
+    /// the failure that ended it.
+    Ending(c_int),
+}
+
+/// What a call asks of the connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ask {
+    /// Anything of a sound connection (`ntp2_allow_normal`, and
+    /// `ntp2_allow_shutdown`, which only filling would tell apart).
+    Sound,
+    /// Why it ended: its closing error, the TLS alert, its draining
+    /// (`ntp2_allow_terminal`).
+    WhyEnded,
+    /// A packet written from the streams, which a packet being filled
+    /// takes (`Curl_ngtcp2_conn_writev_stream`).
+    Write,
+}
+
+/// Which failures of a call end the connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ends {
+    /// Those ngtcp2 calls fatal (`ntp2_check_int`).
+    Fatal,
+    /// Any: a packet read or a timer handled that fails leaves the
+    /// connection to be closed (`ntp2_check_terminal_int`).
+    Any,
+}
+
+impl Contract {
+    /// Whether `ask` may be made now; asked while a packet is filled,
+    /// the connection is then ending (`ntp2_allow_*`).
+    fn allows(&mut self, ask: Ask) -> bool {
+        match (*self, ask) {
+            (Contract::Sound, _)
+            | (Contract::Filling, Ask::Write)
+            | (Contract::Ending(_), Ask::WhyEnded) => true,
+            (Contract::Filling, _) => {
+                self.end(sys::NGTCP2_ERR_INVALID_STATE);
+                false
+            }
+            (Contract::Ending(_), Ask::Sound | Ask::Write) => false,
+        }
+    }
+
+    /// What a refused call answers (`ntp2_error`).
+    fn refused(self) -> c_int {
+        match self {
+            Contract::Ending(e) => e,
+            _ => sys::NGTCP2_ERR_INVALID_STATE,
+        }
+    }
+
+    /// The connection ends with `rv`, unless it ended already
+    /// (`ntp2_set_close_only`): its first failure is kept.
+    fn end(&mut self, rv: c_int) {
+        if !matches!(self, Contract::Ending(_)) {
+            *self = Contract::Ending(if rv < 0 {
+                rv
+            } else {
+                sys::NGTCP2_ERR_INVALID_STATE
+            });
+        }
+    }
+
+    /// The answer of a call made, `rv`, the contract moved by it: the
+    /// first failure that ended the connection, once it is ending
+    /// (`ntp2_check_int`, `ntp2_check_terminal_int`).
+    fn answered(&mut self, rv: c_int, ends: Ends) -> c_int {
+        let ending = match ends {
+            Ends::Fatal => rv < sys::NGTCP2_ERR_FATAL,
+            Ends::Any => rv < 0,
+        };
+        if ending {
+            self.end(rv);
+        }
+        match *self {
+            Contract::Ending(e) => e,
+            _ => rv,
+        }
+    }
+
+    /// The answer of a packet's write, `rv`, the contract moved by it
+    /// (`Curl_ngtcp2_conn_writev_stream`): a write that would go on
+    /// filling it leaves it filling; one that fails otherwise ends the
+    /// connection, as every write may fill a packet further.
+    fn written(&mut self, rv: c_int) -> c_int {
+        let goes_on = matches!(
+            rv,
+            sys::NGTCP2_ERR_WRITE_MORE
+                | sys::NGTCP2_ERR_STREAM_DATA_BLOCKED
+                | sys::NGTCP2_ERR_STREAM_NOT_FOUND
+                | sys::NGTCP2_ERR_STREAM_SHUT_WR
+        );
+        if rv < 0 && !goes_on {
+            self.end(rv);
+            return self.refused();
+        }
+        *self = if goes_on {
+            Contract::Filling
+        } else {
+            Contract::Sound
+        };
+        rv
+    }
+
+    /// The closing packet written, answering `rv`: the connection ends
+    /// whatever it answered (`Curl_ngtcp2_conn_write_connection_close`).
+    fn closed(&mut self, rv: c_int) {
+        self.end(rv);
+    }
+}
+
+/// The connection, if `ask` may be made of it now; else what the refused
+/// call answers.
+///
+/// # Safety
+/// `inner` is the state, no reference into it held.
+unsafe fn asking(inner: *mut Inner, ask: Ask) -> Result<*mut sys::ngtcp2_conn, c_int> {
+    // SAFETY: as the caller says; held for these lines alone.
+    let state = unsafe { &mut *inner };
+    if state.contract.allows(ask) {
+        Ok(state.conn)
+    } else {
+        Err(state.contract.refused())
+    }
+}
+
+/// The answer of a call made, `rv`, the contract moved by it.
+///
+/// # Safety
+/// As for [`asking`]: the call has returned.
+unsafe fn answered(inner: *mut Inner, rv: c_int, ends: Ends) -> c_int {
+    // SAFETY: as the caller says.
+    unsafe { (*inner).contract.answered(rv, ends) }
+}
+
 /// A client connection (`ngtcp2_conn` and `nghttp3_conn`).
 pub struct Connection {
     inner: UserData,
@@ -606,9 +756,10 @@ impl Drop for Connection {
         // SAFETY: dropped once, here, as C frees the session next; nothing
         // calls it after.
         unsafe { ManuallyDrop::drop(&mut self.tls) };
-        // SAFETY: the state, alive until `inner` goes after this.
-        let h3 = unsafe { (*inner).h3 };
-        let conn = self.conn();
+        // SAFETY: the state, alive until `inner` goes after this; freeing
+        // the connection is always allowed.
+        let state = unsafe { &*inner };
+        let (h3, conn) = (state.h3, state.conn);
         if !h3.is_null() {
             // SAFETY: made by `nghttp3_conn_client_new`, freed once.
             unsafe { sys::nghttp3_conn_del(h3) };
@@ -768,6 +919,7 @@ impl Connection {
             last_error: unsafe { core::mem::zeroed() },
             local: Addr::new(setup.local),
             early: false,
+            contract: Contract::Sound,
             qlog,
         })?;
         let inner = UserData(NonNull::from(Box::leak(inner)));
@@ -896,9 +1048,11 @@ impl Connection {
         Ok(())
     }
 
-    fn conn(&self) -> *mut sys::ngtcp2_conn {
-        // SAFETY: the state; its connection is set once, when made.
-        unsafe { (*self.inner.ptr()).conn }
+    /// The connection, if `ask` may be made of it now; else what the
+    /// refused call answers.
+    fn asked(&self, ask: Ask) -> Result<*mut sys::ngtcp2_conn, c_int> {
+        // SAFETY: the state, between calls.
+        unsafe { asking(self.inner.ptr(), ask) }
     }
 
     fn h3(&self) -> *mut sys::nghttp3_conn {
@@ -915,8 +1069,7 @@ impl Connection {
         op: impl FnOnce(*mut Inner) -> R,
     ) -> R {
         let inner = self.inner.ptr();
-        let conn = self.conn();
-        let mut params = || encode_params(conn);
+        let mut params = || encode_params(inner);
         let events: *mut (dyn FnMut(&mut TlsCx<'_>, &Event<'_>) -> Heard + '_) = events;
         // SAFETY: the sink is lent for this call alone, taken back below
         // before it goes out of scope; only the lifetime is erased.
@@ -948,11 +1101,19 @@ impl Connection {
 
 /// The transport parameters a session the peer gives is kept with, for
 /// early data on its resumption (`quic_ossl_new_session_cb`).
-fn encode_params(conn: *mut sys::ngtcp2_conn) -> Option<Vec<u8>> {
+fn encode_params(inner: *mut Inner) -> Option<Vec<u8>> {
     let mut buf = [0u8; 256];
+    // SAFETY: the state, no reference into it held.
+    let conn = unsafe { asking(inner, Ask::Sound) }.ok()?;
     // SAFETY: the connection, and the buffer's bytes.
     let n =
         unsafe { sys::ngtcp2_conn_encode_0rtt_transport_params(conn, buf.as_mut_ptr(), buf.len()) };
+    if n < 0 {
+        let rv = c_int::try_from(n).unwrap_or(sys::NGTCP2_ERR_FATAL);
+        // SAFETY: as above, the call returned.
+        unsafe { answered(inner, rv, Ends::Fatal) };
+        return None;
+    }
     let n = usize::try_from(n).ok()?;
     let mut params = Vec::new();
     params.try_extend_from_slice(&buf[..n]).ok()?;
@@ -969,7 +1130,6 @@ impl curl_core::http3::Connection for Connection {
         packets: std::slice::Chunks<'_, u8>,
         events: Events<'_>,
     ) -> Result<(), QuicError> {
-        let conn = self.conn();
         let mut remote = Addr::new(from);
         self.call(cx, events, |inner| {
             // SAFETY: the state's local address, read and copied before the
@@ -982,6 +1142,9 @@ impl curl_core::http3::Connection for Connection {
             };
             let pi = sys::ngtcp2_pkt_info { ecn };
             for packet in packets {
+                // SAFETY: the state, no reference into it held.
+                let conn = unsafe { asking(inner, Ask::Sound) }
+                    .map_err(|rv| quic_error("ngtcp2_conn_read_pkt", rv))?;
                 // SAFETY: the connection, path, packet info and packet, which
                 // outlive the call.
                 let rv = unsafe {
@@ -995,6 +1158,8 @@ impl curl_core::http3::Connection for Connection {
                         ts(now),
                     )
                 };
+                // SAFETY: as above, the call returned.
+                let rv = unsafe { answered(inner, rv, Ends::Any) };
                 if rv != 0 {
                     return Err(quic_error("ngtcp2_conn_read_pkt", rv));
                 }
@@ -1010,8 +1175,7 @@ impl curl_core::http3::Connection for Connection {
         buf: &mut [u8],
         events: Events<'_>,
     ) -> Result<Option<usize>, QuicError> {
-        let conn = self.conn();
-        self.call(cx, events, |inner| write_packet(inner, conn, ts(now), buf))
+        self.call(cx, events, |inner| write_packet(inner, ts(now), buf))
     }
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
@@ -1027,28 +1191,37 @@ impl curl_core::http3::Connection for Connection {
     }
 
     fn sent_at(&mut self, now: Instant) {
-        // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_update_pkt_tx_time(self.conn(), ts(now)) };
+        if let Ok(conn) = self.asked(Ask::Sound) {
+            // SAFETY: the connection.
+            unsafe { sys::ngtcp2_conn_update_pkt_tx_time(conn, ts(now)) };
+        }
     }
 
     fn max_payload(&self) -> usize {
         // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_get_max_tx_udp_payload_size(self.conn()) }
+        self.asked(Ask::Sound).map_or(0, |conn| unsafe {
+            sys::ngtcp2_conn_get_max_tx_udp_payload_size(conn)
+        })
     }
 
     fn path_max_payload(&self) -> usize {
         // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_get_path_max_tx_udp_payload_size(self.conn()) }
+        self.asked(Ask::Sound).map_or(0, |conn| unsafe {
+            sys::ngtcp2_conn_get_path_max_tx_udp_payload_size(conn)
+        })
     }
 
     fn send_quantum(&self) -> usize {
         // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_get_send_quantum(self.conn()) }
+        self.asked(Ask::Sound)
+            .map_or(0, |conn| unsafe { sys::ngtcp2_conn_get_send_quantum(conn) })
     }
 
     fn expiry(&self, now: Instant) -> Expiry {
         // SAFETY: the connection.
-        let at = unsafe { sys::ngtcp2_conn_get_expiry(self.conn()) };
+        let at = self.asked(Ask::Sound).map_or(u64::MAX, |conn| unsafe {
+            sys::ngtcp2_conn_get_expiry(conn)
+        });
         let now = ts(now);
         if at == u64::MAX {
             Expiry::Never
@@ -1065,10 +1238,14 @@ impl curl_core::http3::Connection for Connection {
         now: Instant,
         events: Events<'_>,
     ) -> Result<(), QuicError> {
-        let conn = self.conn();
-        self.call(cx, events, |_| {
+        self.call(cx, events, |inner| {
+            // SAFETY: the state, no reference into it held.
+            let conn = unsafe { asking(inner, Ask::Sound) }
+                .map_err(|rv| quic_error("ngtcp2_conn_handle_expiry", rv))?;
             // SAFETY: the connection.
             let rv = unsafe { sys::ngtcp2_conn_handle_expiry(conn, ts(now)) };
+            // SAFETY: as above, the call returned.
+            let rv = unsafe { answered(inner, rv, Ends::Any) };
             if rv == 0 {
                 Ok(())
             } else {
@@ -1079,19 +1256,25 @@ impl curl_core::http3::Connection for Connection {
 
     fn handshake_done(&self) -> bool {
         // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_get_handshake_completed(self.conn()) != 0 }
+        self.asked(Ask::Sound)
+            .is_ok_and(|conn| unsafe { sys::ngtcp2_conn_get_handshake_completed(conn) } != 0)
     }
 
     fn set_early_params(&mut self, params: &[u8]) -> Result<(), &'static str> {
+        let conn = self
+            .asked(Ask::Sound)
+            .map_err(|rv| quic_error("", rv).text)?;
         // SAFETY: the connection, and the bytes, which the library reads
         // during the call.
         let rv = unsafe {
             sys::ngtcp2_conn_decode_and_set_0rtt_transport_params(
-                self.conn(),
+                conn,
                 params.as_ptr(),
                 params.len(),
             )
         };
+        // SAFETY: the state, between calls.
+        let rv = unsafe { answered(self.inner.ptr(), rv, Ends::Fatal) };
         match rv {
             0 => Ok(()),
             rv => Err(quic_error("", rv).text),
@@ -1102,7 +1285,7 @@ impl curl_core::http3::Connection for Connection {
         let p = self.inner.ptr();
         // HTTP/3 is set up now, as the 1-RTT keys would; they find it
         // made (`init_h3_conn_cb`).
-        let h3 = init_h3(self.conn(), p.cast())?;
+        let h3 = init_h3(p)?;
         // SAFETY: the state, which no callback reaches outside a call.
         unsafe { (*p).h3 = h3 };
         let ssl = self.ssl;
@@ -1125,12 +1308,14 @@ impl curl_core::http3::Connection for Connection {
 
     fn draining(&self) -> bool {
         // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_in_draining_period(self.conn()) != 0 }
+        self.asked(Ask::WhyEnded)
+            .is_ok_and(|conn| unsafe { sys::ngtcp2_conn_in_draining_period(conn) } != 0)
     }
 
     fn peer_idle_timeout(&self) -> Option<Duration> {
+        let conn = self.asked(Ask::Sound).ok()?;
         // SAFETY: the connection; its peer's parameters, or none yet.
-        let rp = unsafe { sys::ngtcp2_conn_get_remote_transport_params(self.conn()) };
+        let rp = unsafe { sys::ngtcp2_conn_get_remote_transport_params(conn) };
         // SAFETY: none, or the connection's, alive until its next call.
         let rp = unsafe { rp.as_ref() }?;
         (rp.max_idle_timeout != 0).then(|| Duration::from_nanos(rp.max_idle_timeout))
@@ -1138,12 +1323,16 @@ impl curl_core::http3::Connection for Connection {
 
     fn set_keep_alive(&mut self, every: Option<Duration>) {
         let timeout = every.map_or(u64::MAX, nanos);
-        // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_set_keep_alive_timeout(self.conn(), timeout) };
+        if let Ok(conn) = self.asked(Ask::Sound) {
+            // SAFETY: the connection.
+            unsafe { sys::ngtcp2_conn_set_keep_alive_timeout(conn, timeout) };
+        }
     }
 
     fn send_room(&self) -> bool {
-        let conn = self.conn();
+        let Ok(conn) = self.asked(Ask::Sound) else {
+            return false;
+        };
         // SAFETY: the connection.
         let cwnd = unsafe { sys::ngtcp2_conn_get_cwnd_left(conn) };
         // SAFETY: the connection.
@@ -1152,7 +1341,13 @@ impl curl_core::http3::Connection for Connection {
     }
 
     fn failed(&mut self, error: QuicError) -> bool {
-        let conn = self.conn();
+        // The alert, asked before the error kept is borrowed: none if it
+        // may not be asked.
+        let alert = match self.asked(Ask::WhyEnded) {
+            // SAFETY: the connection.
+            Ok(conn) => unsafe { sys::ngtcp2_conn_get_tls_alert(conn) },
+            Err(_) => 0,
+        };
         let inner = self.inner.ptr();
         // SAFETY: the state, between calls.
         let last = unsafe { &mut (*inner).last_error };
@@ -1160,8 +1355,6 @@ impl curl_core::http3::Connection for Connection {
             Layer::Quic | Layer::Crypto => {
                 if last.error_code == 0 {
                     if error.layer == Layer::Crypto {
-                        // SAFETY: the connection.
-                        let alert = unsafe { sys::ngtcp2_conn_get_tls_alert(conn) };
                         // SAFETY: the error, and no reason.
                         unsafe { sys::ngtcp2_ccerr_set_tls_alert(last, alert, ptr::null(), 0) };
                     } else {
@@ -1188,15 +1381,18 @@ impl curl_core::http3::Connection for Connection {
     }
 
     fn closed_with(&self) -> Option<CloseError> {
+        let conn = self.asked(Ask::WhyEnded).ok()?;
         // SAFETY: the connection; what it closed with, or NULL.
-        let cerr = unsafe { sys::ngtcp2_conn_get_ccerr(self.conn()) };
+        let cerr = unsafe { sys::ngtcp2_conn_get_ccerr(conn) };
         // SAFETY: none, or the connection's, alive until its next call.
         let cerr = unsafe { cerr.as_ref() }?;
         Some(close_error(cerr))
     }
 
     fn write_close(&mut self, now: Instant, buf: &mut [u8]) -> Result<usize, QuicError> {
-        let conn = self.conn();
+        // Closing is always allowed.
+        // SAFETY: the state, between calls.
+        let conn = unsafe { (*self.inner.ptr()).conn };
         // SAFETY: the state, between calls.
         let last: *const sys::ngtcp2_ccerr = unsafe { &(*self.inner.ptr()).last_error };
         // SAFETY: the connection, the buffer's bytes and the error kept,
@@ -1213,6 +1409,12 @@ impl curl_core::http3::Connection for Connection {
                 ts(now),
             )
         };
+        // SAFETY: the state, the call returned.
+        unsafe {
+            (*self.inner.ptr())
+                .contract
+                .closed(c_int::try_from(n).unwrap_or(0))
+        };
         usize::try_from(n).map_err(|_| {
             quic_error(
                 "ngtcp2_conn_write_connection_close",
@@ -1226,7 +1428,7 @@ impl curl_core::http3::Connection for Connection {
         fields: &[(&[u8], &[u8])],
         body: bool,
     ) -> Result<StreamId, SubmitFailed> {
-        let (conn, h3) = (self.conn(), self.h3());
+        let h3 = self.h3();
         assert!(!h3.is_null(), "a request goes once the connection is up");
         let mut nva = Vec::new();
         nva.try_reserve_exact(fields.len())
@@ -1249,8 +1451,11 @@ impl curl_core::http3::Connection for Connection {
                 .map_err(|_| SubmitFailed::OutOfMemory)?;
         }
         let mut sid = -1;
+        let conn = self.asked(Ask::Sound).map_err(|_| SubmitFailed::NoStream)?;
         // SAFETY: the connection, and an out pointer.
-        if unsafe { sys::ngtcp2_conn_open_bidi_stream(conn, &mut sid, ptr::null_mut()) } != 0 {
+        let rv = unsafe { sys::ngtcp2_conn_open_bidi_stream(conn, &mut sid, ptr::null_mut()) };
+        // SAFETY: the state, the call returned.
+        if unsafe { answered(self.inner.ptr(), rv, Ends::Fatal) } != 0 {
             return Err(SubmitFailed::NoStream);
         }
         let reader = sys::nghttp3_data_reader {
@@ -1329,30 +1534,61 @@ impl curl_core::http3::Connection for Connection {
         if let Some(body) = body_of(bodies, stream.0) {
             body.cancelled = true;
         }
-        // SAFETY: the connection; a stream gone already is refused, which
-        // C ignores.
-        unsafe { sys::ngtcp2_conn_shutdown_stream(self.conn(), 0, stream.0, error.0) };
+        if let Ok(conn) = self.asked(Ask::Sound) {
+            // SAFETY: the connection; a stream gone already is refused,
+            // which C ignores.
+            let rv = unsafe { sys::ngtcp2_conn_shutdown_stream(conn, 0, stream.0, error.0) };
+            // SAFETY: the state, the call returned.
+            unsafe { answered(self.inner.ptr(), rv, Ends::Fatal) };
+        }
     }
 
     fn extend_stream_window(&mut self, stream: StreamId, n: u64) {
+        // SAFETY: the state, between calls.
+        unsafe { extend_stream(self.inner.ptr(), stream.0, n) };
+    }
+}
+
+/// More of stream `sid`'s window and the connection's, `n` bytes, if
+/// they may be given now (`Curl_ngtcp2_conn_extend_max_stream_offset`,
+/// `Curl_ngtcp2_conn_extend_max_offset`).
+///
+/// # Safety
+/// `inner` is the state, no reference into it held.
+unsafe fn extend_stream(inner: *mut Inner, sid: i64, n: u64) {
+    // SAFETY: as the caller says.
+    if let Ok(conn) = unsafe { asking(inner, Ask::Sound) } {
         // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_extend_max_stream_offset(self.conn(), stream.0, n) };
+        let rv = unsafe { sys::ngtcp2_conn_extend_max_stream_offset(conn, sid, n) };
+        // SAFETY: as above, the call returned.
+        unsafe { answered(inner, rv, Ends::Fatal) };
+    }
+}
+
+/// More of the connection's window alone, `n` bytes, if it may be given
+/// now (`Curl_ngtcp2_conn_extend_max_offset`).
+///
+/// # Safety
+/// As for [`extend_stream`].
+unsafe fn extend_conn(inner: *mut Inner, n: u64) {
+    // SAFETY: as the caller says.
+    if let Ok(conn) = unsafe { asking(inner, Ask::Sound) } {
+        // SAFETY: the connection.
+        unsafe { sys::ngtcp2_conn_extend_max_offset(conn, n) };
     }
 }
 
 /// The next packet to send (`read_pkt_to_send`).
-fn write_packet(
-    inner: *mut Inner,
-    conn: *mut sys::ngtcp2_conn,
-    now: u64,
-    buf: &mut [u8],
-) -> Result<Option<usize>, QuicError> {
+fn write_packet(inner: *mut Inner, now: u64, buf: &mut [u8]) -> Result<Option<usize>, QuicError> {
+    let refused = |rv| quic_error("ngtcp2_conn_writev_stream", rv);
     // Once a packet is being filled from several streams
     // (`NGTCP2_WRITE_STREAM_FLAG_MORE`), no other call may be made on the
     // connection until a write ends it: whether the streams may write is
     // asked once, before, and ngtcp2 refuses a stream that may not.
     // SAFETY: the state's HTTP/3 connection, read before any call.
     let has_h3 = !unsafe { (*inner).h3 }.is_null();
+    // SAFETY: the state, no reference into it held.
+    let conn = unsafe { asking(inner, Ask::Sound) }.map_err(refused)?;
     // SAFETY: the connection, no packet under way.
     let streams_may_write = has_h3 && unsafe { sys::ngtcp2_conn_get_max_data_left(conn) } > 0;
     loop {
@@ -1388,6 +1624,8 @@ fn write_packet(
             flags |= sys::NGTCP2_WRITE_STREAM_FLAG_FIN;
         }
         let mut ndatalen: sys::ngtcp2_ssize = -1;
+        // SAFETY: the state, no reference into it held.
+        let conn = unsafe { asking(inner, Ask::Write) }.map_err(refused)?;
         // SAFETY: the connection, the buffer's bytes, and `count` pieces,
         // laid out as ngtcp2's are.
         let n = unsafe {
@@ -1405,6 +1643,19 @@ fn write_packet(
                 count,
                 now,
             )
+        };
+        // The contract moved by the write: a failure that does not go on
+        // filling the packet ends the connection, and is answered as the
+        // failure that ended it.
+        let n = if n < 0 {
+            let rv = c_int::try_from(n).unwrap_or(sys::NGTCP2_ERR_FATAL);
+            // SAFETY: the state, the call returned.
+            let rv = unsafe { (*inner).contract.written(rv) };
+            rv as sys::ngtcp2_ssize
+        } else {
+            // SAFETY: as above.
+            unsafe { (*inner).contract.written(0) };
+            n
         };
         let n = match c_int::try_from(n) {
             Ok(0) => return Ok(None),
@@ -1462,7 +1713,7 @@ unsafe extern "C" fn get_conn(conn_ref: *mut sys::ngtcp2_crypto_conn_ref) -> *mu
 /// The handshake is done: the peer checked inside it, and the caller
 /// told (`cb_ngtcp2_handshake_completed`).
 unsafe extern "C" fn handshake_completed(
-    conn: *mut sys::ngtcp2_conn,
+    _conn: *mut sys::ngtcp2_conn,
     user_data: *mut c_void,
 ) -> c_int {
     let inner = inner_of(user_data);
@@ -1471,18 +1722,29 @@ unsafe extern "C" fn handshake_completed(
     // SAFETY: as above; not inside its own `with_cx`.
     let checked = unsafe { &mut *lent.call }.handshake_done();
     let failed = checked.is_err();
+    // SAFETY: inside the call, holding nothing of the state.
+    let sound = unsafe { asking(inner, Ask::Sound) }.ok();
     // SAFETY: the connection; its peer's parameters, which a completed
-    // handshake has.
-    let rp = unsafe { sys::ngtcp2_conn_get_remote_transport_params(conn) };
-    // SAFETY: as above: never NULL then, alive until the next call.
-    let rp = unsafe { &*rp };
+    // handshake has; none of a connection that may not be asked.
+    let rp = sound.map_or(ptr::null(), |conn| unsafe {
+        sys::ngtcp2_conn_get_remote_transport_params(conn)
+    });
+    // SAFETY: none, or the connection's, alive until its next call.
+    let (max_udp_payload, initial_max_data) =
+        unsafe { rp.as_ref() }.map_or((0, 0), |rp| (rp.max_udp_payload_size, rp.initial_max_data));
     let event = ConnEvent::HandshakeDone {
         checked,
-        max_udp_payload: rp.max_udp_payload_size,
-        initial_max_data: rp.initial_max_data,
-        // SAFETY: the state, read and copied; the connection.
-        early_data: unsafe { (*inner).early }
-            .then(|| unsafe { sys::ngtcp2_conn_get_tls_early_data_rejected2(conn) } == 0),
+        max_udp_payload,
+        initial_max_data,
+        // SAFETY: the state, read and copied.
+        early_data: unsafe { (*inner).early }.then(|| {
+            // Not asked, not rejected, as C's refused call answers.
+            sound.is_none_or(|conn| {
+                // SAFETY: the connection.
+                let rejected = unsafe { sys::ngtcp2_conn_get_tls_early_data_rejected2(conn) };
+                rejected == 0
+            })
+        }),
     };
     // SAFETY: inside the call, holding nothing of the state.
     let heard = unsafe { tell(inner, Event::Connection(event)) };
@@ -1497,7 +1759,7 @@ unsafe extern "C" fn handshake_completed(
 /// by the framing it took (`cb_recv_stream_data`).
 #[allow(clippy::too_many_arguments)]
 unsafe extern "C" fn recv_stream_data(
-    conn: *mut sys::ngtcp2_conn,
+    _conn: *mut sys::ngtcp2_conn,
     flags: u32,
     stream_id: i64,
     _offset: u64,
@@ -1523,10 +1785,10 @@ unsafe extern "C" fn recv_stream_data(
         return sys::NGTCP2_ERR_CALLBACK_FAILURE;
     };
     if consumed > 0 {
-        // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_extend_max_stream_offset(conn, stream_id, consumed) };
-        // SAFETY: the connection.
-        unsafe { sys::ngtcp2_conn_extend_max_offset(conn, consumed) };
+        // SAFETY: inside the call, holding nothing of the state.
+        unsafe { extend_stream(inner, stream_id, consumed) };
+        // SAFETY: as above.
+        unsafe { extend_conn(inner, consumed) };
         // SAFETY: inside the call, holding nothing of the state.
         unsafe { tell_stream(inner, stream_id, StreamEvent::Consumed(consumed)) };
     }
@@ -1761,7 +2023,7 @@ unsafe extern "C" fn get_new_connection_id2(
 /// Keys arrived: with the 1-RTT ones, HTTP/3 is set up
 /// (`cb_recv_rx_key`, `init_ngh3_conn`).
 unsafe extern "C" fn recv_rx_key(
-    conn: *mut sys::ngtcp2_conn,
+    _conn: *mut sys::ngtcp2_conn,
     level: c_int,
     user_data: *mut c_void,
 ) -> c_int {
@@ -1770,7 +2032,7 @@ unsafe extern "C" fn recv_rx_key(
     if level != sys::NGTCP2_ENCRYPTION_LEVEL_1RTT || !unsafe { (*inner).h3 }.is_null() {
         return 0;
     }
-    match init_h3(conn, user_data) {
+    match init_h3(inner) {
         Ok(h3) => {
             // SAFETY: the state, no other reference into it held.
             unsafe { (*inner).h3 = h3 };
@@ -1787,17 +2049,20 @@ unsafe extern "C" fn recv_rx_key(
 
 /// The HTTP/3 connection over `conn`, its control and QPACK streams bound
 /// (`init_ngh3_conn`, `Curl_cf_ngtcp2_h3_init_ctrls`); or why not.
-fn init_h3(
-    conn: *mut sys::ngtcp2_conn,
-    user_data: *mut c_void,
-) -> Result<*mut sys::nghttp3_conn, H3Failed> {
+fn init_h3(inner: *mut Inner) -> Result<*mut sys::nghttp3_conn, H3Failed> {
+    let user_data: *mut c_void = inner.cast();
     let failed = |why, detail| H3Failed {
         why,
         detail,
         out_of_memory: false,
     };
-    // SAFETY: the connection.
-    if unsafe { sys::ngtcp2_conn_get_streams_uni_left(conn) } < 3 {
+    // SAFETY: the state, no reference into it held.
+    let sound = unsafe { asking(inner, Ask::Sound) };
+    // SAFETY: the connection; none left of one that may not be asked.
+    let left = sound.map_or(0, |conn| unsafe {
+        sys::ngtcp2_conn_get_streams_uni_left(conn)
+    });
+    if left < 3 {
         return Err(failed(
             "QUIC connection lacks 3 uni streams to run HTTP/3",
             None,
@@ -1843,8 +2108,17 @@ fn init_h3(
         "error creating HTTP/3 qpack decoding stream",
     ];
     for (i, why) in whys.into_iter().enumerate() {
-        // SAFETY: the connection, and an out pointer.
-        let rc = unsafe { sys::ngtcp2_conn_open_uni_stream(conn, &mut ids[i], ptr::null_mut()) };
+        // SAFETY: the state, no reference into it held.
+        let rc = match unsafe { asking(inner, Ask::Sound) } {
+            Ok(conn) => {
+                // SAFETY: the connection, and an out pointer.
+                let rc =
+                    unsafe { sys::ngtcp2_conn_open_uni_stream(conn, &mut ids[i], ptr::null_mut()) };
+                // SAFETY: as above, the call returned.
+                unsafe { answered(inner, rc, Ends::Fatal) }
+            }
+            Err(rc) => rc,
+        };
         if rc != 0 {
             return close(failed(why, Some(quic_error("", rc).text)));
         }
@@ -1922,16 +2196,14 @@ unsafe extern "C" fn h3_recv_data(
     _stream_user_data: *mut c_void,
 ) -> c_int {
     let inner = inner_of(user_data);
-    // SAFETY: the state, read and copied.
-    let conn = unsafe { (*inner).conn };
     // SAFETY: the library's bytes, alive for the callback.
     let bytes = unsafe { bytes(data, datalen) };
     // SAFETY: inside the call, holding nothing of the state.
     if unsafe { tell_stream(inner, stream_id, StreamEvent::Data(bytes)) } == Heard::Failed {
         return sys::NGHTTP3_ERR_CALLBACK_FAILURE;
     }
-    // SAFETY: the connection.
-    unsafe { sys::ngtcp2_conn_extend_max_offset(conn, datalen as u64) };
+    // SAFETY: inside the call, holding nothing of the state.
+    unsafe { extend_conn(inner, datalen as u64) };
     0
 }
 
@@ -1945,13 +2217,11 @@ unsafe extern "C" fn h3_deferred_consume(
     _stream_user_data: *mut c_void,
 ) -> c_int {
     let inner = inner_of(user_data);
-    // SAFETY: the state, read and copied.
-    let conn = unsafe { (*inner).conn };
     let n = consumed as u64;
-    // SAFETY: the connection.
-    unsafe { sys::ngtcp2_conn_extend_max_stream_offset(conn, stream_id, n) };
-    // SAFETY: the connection.
-    unsafe { sys::ngtcp2_conn_extend_max_offset(conn, n) };
+    // SAFETY: inside the call, holding nothing of the state.
+    unsafe { extend_stream(inner, stream_id, n) };
+    // SAFETY: as above.
+    unsafe { extend_conn(inner, n) };
     // SAFETY: inside the call, holding nothing of the state.
     unsafe { tell_stream(inner, stream_id, StreamEvent::Consumed(n)) };
     0
@@ -2011,10 +2281,19 @@ unsafe extern "C" fn h3_stop_sending(
     user_data: *mut c_void,
     _stream_user_data: *mut c_void,
 ) -> c_int {
-    // SAFETY: the state, read and copied.
-    let conn = unsafe { (*inner_of(user_data)).conn };
-    // SAFETY: the connection.
-    let rv = unsafe { sys::ngtcp2_conn_shutdown_stream_read(conn, 0, stream_id, app_error_code) };
+    let inner = inner_of(user_data);
+    // SAFETY: inside the call, holding nothing of the state.
+    let rv = match unsafe { asking(inner, Ask::Sound) } {
+        Ok(conn) => {
+            // SAFETY: the connection.
+            let rv = unsafe {
+                sys::ngtcp2_conn_shutdown_stream_read(conn, 0, stream_id, app_error_code)
+            };
+            // SAFETY: as above, the call returned.
+            unsafe { answered(inner, rv, Ends::Fatal) }
+        }
+        Err(rv) => rv,
+    };
     if rv != 0 && rv != sys::NGTCP2_ERR_STREAM_NOT_FOUND {
         return sys::NGHTTP3_ERR_CALLBACK_FAILURE;
     }
@@ -2030,10 +2309,18 @@ unsafe extern "C" fn h3_reset_stream(
     _stream_user_data: *mut c_void,
 ) -> c_int {
     let inner = inner_of(user_data);
-    // SAFETY: the state, read and copied.
-    let conn = unsafe { (*inner).conn };
-    // SAFETY: the connection.
-    let rv = unsafe { sys::ngtcp2_conn_shutdown_stream_write(conn, 0, stream_id, app_error_code) };
+    // SAFETY: inside the call, holding nothing of the state.
+    let rv = match unsafe { asking(inner, Ask::Sound) } {
+        Ok(conn) => {
+            // SAFETY: the connection.
+            let rv = unsafe {
+                sys::ngtcp2_conn_shutdown_stream_write(conn, 0, stream_id, app_error_code)
+            };
+            // SAFETY: as above, the call returned.
+            unsafe { answered(inner, rv, Ends::Fatal) }
+        }
+        Err(rv) => rv,
+    };
     let answer = answer(rv, |rv| quic_error("ngtcp2_conn_shutdown_stream_write", rv));
     // SAFETY: inside the call, holding nothing of the state.
     unsafe { tell_stream(inner, stream_id, StreamEvent::H3Reset { answer }) };
@@ -2111,6 +2398,96 @@ mod tests {
             base: ptr::null_mut(),
             len: 0,
         }; 4]
+    }
+
+    /// What may be asked of the connection moves as C's shim moves it
+    /// (`ntp2_allow_*`, `ntp2_check_*`, `Curl_ngtcp2_conn_writev_stream`,
+    /// `Curl_ngtcp2_conn_write_connection_close`): a packet being filled
+    /// takes only its writes; anything else asked then ends the
+    /// connection; an ended one is asked only why, and every refused or
+    /// later failing call answers its first failure.
+    #[test]
+    fn the_contract_refuses_what_ngtcp2_forbids() {
+        use Contract::{Ending, Filling, Sound};
+        let invalid = sys::NGTCP2_ERR_INVALID_STATE;
+        let fatal = sys::NGTCP2_ERR_FATAL - 1;
+        let later = sys::NGTCP2_ERR_FATAL - 2;
+        let argument = -201;
+        for (from, ask, allowed, to) in [
+            (Sound, Ask::Sound, true, Sound),
+            (Sound, Ask::WhyEnded, true, Sound),
+            (Sound, Ask::Write, true, Sound),
+            (Filling, Ask::Write, true, Filling),
+            (Filling, Ask::Sound, false, Ending(invalid)),
+            (Filling, Ask::WhyEnded, false, Ending(invalid)),
+            (Ending(fatal), Ask::Sound, false, Ending(fatal)),
+            (Ending(fatal), Ask::Write, false, Ending(fatal)),
+            (Ending(fatal), Ask::WhyEnded, true, Ending(fatal)),
+        ] {
+            let mut c = from;
+            assert_eq!(c.allows(ask), allowed, "{from:?} {ask:?}");
+            assert_eq!(c, to, "{from:?} {ask:?}");
+        }
+        assert_eq!(
+            (Ending(fatal).refused(), Filling.refused()),
+            (fatal, invalid)
+        );
+        for (from, rv, ends, answer, to) in [
+            (Sound, 0, Ends::Fatal, 0, Sound),
+            (Sound, argument, Ends::Fatal, argument, Sound),
+            (Sound, fatal, Ends::Fatal, fatal, Ending(fatal)),
+            (Sound, argument, Ends::Any, argument, Ending(argument)),
+            (Sound, 0, Ends::Any, 0, Sound),
+            (Ending(fatal), later, Ends::Fatal, fatal, Ending(fatal)),
+        ] {
+            let mut c = from;
+            assert_eq!(c.answered(rv, ends), answer, "{from:?} {rv} {ends:?}");
+            assert_eq!(c, to, "{from:?} {rv} {ends:?}");
+        }
+        for (from, rv, answer, to) in [
+            (
+                Sound,
+                sys::NGTCP2_ERR_WRITE_MORE,
+                sys::NGTCP2_ERR_WRITE_MORE,
+                Filling,
+            ),
+            (
+                Sound,
+                sys::NGTCP2_ERR_STREAM_DATA_BLOCKED,
+                sys::NGTCP2_ERR_STREAM_DATA_BLOCKED,
+                Filling,
+            ),
+            (
+                Filling,
+                sys::NGTCP2_ERR_STREAM_NOT_FOUND,
+                sys::NGTCP2_ERR_STREAM_NOT_FOUND,
+                Filling,
+            ),
+            (
+                Filling,
+                sys::NGTCP2_ERR_STREAM_SHUT_WR,
+                sys::NGTCP2_ERR_STREAM_SHUT_WR,
+                Filling,
+            ),
+            (Filling, 0, 0, Sound),
+            (Filling, 1200, 1200, Sound),
+            (Sound, argument, argument, Ending(argument)),
+            (Filling, fatal, fatal, Ending(fatal)),
+        ] {
+            let mut c = from;
+            assert_eq!(c.written(rv), answer, "{from:?} {rv}");
+            assert_eq!(c, to, "{from:?} {rv}");
+        }
+        for (from, rv, to) in [
+            (Sound, 40, Ending(invalid)),
+            (Sound, argument, Ending(argument)),
+            (Filling, 40, Ending(invalid)),
+            (Ending(fatal), argument, Ending(fatal)),
+        ] {
+            let mut c = from;
+            c.closed(rv);
+            assert_eq!(c, to, "{from:?} {rv}");
+        }
     }
 
     /// The server may open no request stream and three one-way streams,

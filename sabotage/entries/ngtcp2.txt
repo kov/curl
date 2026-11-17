@@ -7,3 +7,35 @@ witness: curl-ngtcp2 tests::the_server_may_open_http_3_s_three_streams_alone
     params.initial_max_streams_bidi = 0;
 --- new
     params.initial_max_streams_bidi = 256 * 1024;
+
+=== a packet being filled refuses its own writes
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::the_contract_refuses_what_ngtcp2_forbids
+--- old
+            | (Contract::Filling, Ask::Write)
+--- new
+            | (Contract::Sound, Ask::Write)
+
+=== a failed packet read leaves the connection sound
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::the_contract_refuses_what_ngtcp2_forbids
+--- old
+            Ends::Any => rv < 0,
+--- new
+            Ends::Any => rv < sys::NGTCP2_ERR_FATAL,
+
+=== a later failure replaces the one that ended the connection
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::the_contract_refuses_what_ngtcp2_forbids
+--- old
+        if !matches!(self, Contract::Ending(_)) {
+--- new
+        if true {
+
+=== a write that fails mid-packet leaves the connection sound
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::the_contract_refuses_what_ngtcp2_forbids
+--- old
+        if rv < 0 && !goes_on {
+--- new
+        if rv < sys::NGTCP2_ERR_FATAL {

@@ -43,6 +43,7 @@ pub(crate) const NGTCP2_CCERR_TYPE_IDLE_CLOSE: c_int = 3;
 pub(crate) const NGTCP2_CCERR_TYPE_DROP_CONN: c_int = 4;
 pub(crate) const NGTCP2_CCERR_TYPE_RETRY: c_int = 5;
 
+pub(crate) const NGTCP2_ERR_INVALID_STATE: c_int = -204;
 pub(crate) const NGTCP2_ERR_STREAM_DATA_BLOCKED: c_int = -208;
 pub(crate) const NGTCP2_ERR_CRYPTO: c_int = -213;
 pub(crate) const NGTCP2_ERR_STREAM_SHUT_WR: c_int = -219;

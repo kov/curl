@@ -1587,7 +1587,9 @@ experimental Apple fast UDP. They go with the macOS port.
 
 ## Milestone 11: macOS
 
-Status: **done**; Apple fast UDP, experimental in C, is not built. The library, the shim and
+Status: **done**; Apple fast UDP, experimental in C, is not built, nor is SecTrust beside
+GnuTLS (C's `gtls.c` with `USE_APPLE_SECTRUST`): `apple-sectrust` verifies beside OpenSSL
+alone. The library, the shim and
 the tool on aarch64-apple-darwin, scored on
 the suite against C's build from this tree with the Linux reference's options (`alface`,
 `~/work/c-ref`: 2082 of 2082). The curl macOS ships (8.7.1, SecureTransport and LibreSSL 3.3.6)

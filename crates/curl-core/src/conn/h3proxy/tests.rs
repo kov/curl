@@ -635,6 +635,62 @@ fn a_tunnel_is_alive_while_its_connection_is_usable() {
     );
 }
 
+/// A layer that counts the times it is asked to keep its connection up.
+#[derive(Debug, Default)]
+struct Kept(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Part<Below<'_>> for Kept {}
+
+impl Layer for Kept {
+    fn recv(&mut self, _: &mut dyn LayerCx, _: Below<'_>, _: &mut [u8]) -> io::Result<Recv> {
+        Ok(Recv::WouldBlock)
+    }
+
+    fn send(&mut self, _: &mut dyn LayerCx, _: Below<'_>, _: &[u8]) -> io::Result<Sent> {
+        Ok(Sent::WouldBlock)
+    }
+
+    fn maintain(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<(), ErrorKind> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        below.maintain(cx)
+    }
+}
+
+/// The proxy's ngtcp2 connection is kept up while its transfer moves
+/// nothing: the call reaches it through a layer above that does nothing
+/// of its own, sends the packet it held, says so, and goes on to the
+/// layer below (`cf_ngtcp2_cmn_maintenance`, `Curl_conn_do_maintenance`).
+#[test]
+fn a_tunnel_s_connection_is_kept_up_when_asked() {
+    let script = Script::new();
+    let (mut p, _) = proxy(&script);
+    assert_eq!(
+        p.query(LayerQuery::Maintained),
+        Some(LayerAnswer::Maintained)
+    );
+    hold_a_packet(&mut p, &script);
+    let socket = Scripted::default();
+    let below = Kept::default();
+    let count = Arc::clone(&below.0);
+    let mut layers: [Box<dyn Layer>; 3] = [
+        Box::new(below),
+        Box::new(p),
+        Box::new(Under { pending: false }),
+    ];
+    let mut notes = Notes::default();
+    assert_eq!(
+        Below::new(&mut layers, &socket).maintain(&mut notes),
+        Ok(())
+    );
+    assert_eq!(socket.sent.lock().unwrap().len(), 1, "the held packet");
+    assert!(
+        notes.0.contains(&"trace: maintenance() -> 0".to_owned()),
+        "{:?}",
+        notes.0
+    );
+    assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
 /// The layer is the `H3-PROXY` filter, the tunnel C's chain names,
 /// and says what its send or receive failed with.
 #[test]

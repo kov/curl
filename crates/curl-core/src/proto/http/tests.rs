@@ -165,10 +165,24 @@ fn get(m: &mut Multi, path: &str, talk: Conversation, set: impl FnOnce(&mut Opti
 /// As `get`, by the handle `e`.
 fn get_with(
     m: &mut Multi,
+    e: Easy,
+    path: &str,
+    talk: Conversation,
+    set: impl FnOnce(&mut Options),
+) -> Ran {
+    get_within(m, e, path, talk, set, None)
+}
+
+/// As `get_with`, driven at most `rounds` waits if given: a transfer that
+/// spins, never letting the fake clock reach its time limit, fails the
+/// test then.
+fn get_within(
+    m: &mut Multi,
     mut e: Easy,
     path: &str,
     talk: Conversation,
     set: impl FnOnce(&mut Options),
+    rounds: Option<usize>,
 ) -> Ran {
     let url = format!("http://127.0.0.1:{PORT}{path}");
     let seen = Seen::default();
@@ -189,7 +203,11 @@ fn get_with(
         .unwrap();
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
+    let result = match rounds {
+        Some(rounds) => crate::multi::drive_within(m, id, rounds, &mut NoEvents),
+        None => drive_to_completion(m, id, &mut NoEvents),
+    }
+    .unwrap();
     let easy = m.remove(id, &mut NoEvents).unwrap().easy;
     Ran {
         result,

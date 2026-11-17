@@ -1623,3 +1623,109 @@ witness: curl-core multi::timers::tests::a_timer_kept_no_later_stays_only_when_s
     armed.is_some_and(|at| at > now && at.since(now).as_millis() < wait.as_millis())
 --- new
     armed.is_some_and(|at| at > now && at.since(now).as_millis() <= wait.as_millis())
+
+=== a held-back transfer leaves its connection alone
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_quic_connection_up
+--- old
+                            match x.proto.maintain(cx, &mut x.lease) {
+--- new
+                            match Ok::<(), ErrorKind>(()) {
+
+=== a held-back transfer's failed upkeep is let go
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_ends_when_its_upkeep_fails
+--- old
+                                Err(e) => (TransferState::RateLimiting(x).fail(e), Wake::Again),
+--- new
+                                Err(_) => (TransferState::RateLimiting(x), Wake::Idle),
+
+=== a held-back transfer waits on nothing over a kept connection
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_quic_connection_up
+--- old
+                    && slot.wants_maintenance()
+                {
+--- new
+                    && slot.wants_maintenance()
+                    && false
+                {
+
+=== quiche's connection is kept up too
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_quic_connection_up
+--- old
+            if step.flavour != Flavour::Ngtcp2 || quic.shutdown_started() {
+--- new
+            if quic.shutdown_started() {
+
+=== an HTTP/3 session does not say it is kept up
+file: crates/curl-core/src/proto/http3.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_quic_connection_up
+--- old
+            LayerQuery::Maintained if self.quic.flavour() == crate::http3::Flavour::Ngtcp2 => {
+--- new
+            LayerQuery::Maintained if false => {
+
+=== an HTTP/3 session is not kept up
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_quic_connection_up
+--- old
+            Wire::H3(_) => self.h3_maintain(cx, lease),
+--- new
+            Wire::H3(_) => Ok(()),
+
+=== a held-back transfer's layers are not kept up
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::h3_trace::a_held_back_transfer_keeps_its_http3_proxy_up
+--- old
+            r.maintain_session(cx, lease)?;
+        }
+        lease.get().maintain_layers(cx)
+--- new
+            r.maintain_session(cx, lease)?;
+        }
+        Ok(())
+
+=== an HTTP/3 proxy is not kept up
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_tunnel_s_connection_is_kept_up_when_asked
+--- old
+        if self.quic.flavour() == Flavour::Ngtcp2 && !self.quic.shutdown_started() {
+            let socket
+--- new
+        if false {
+            let socket
+
+=== an HTTP/3 proxy's upkeep stops at it
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_tunnel_s_connection_is_kept_up_when_asked
+--- old
+            r?;
+        }
+        below.maintain(cx)
+--- new
+            r?;
+        }
+        let _ = below;
+        Ok(())
+
+=== an HTTP/3 proxy does not say it is kept up
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_tunnel_s_connection_is_kept_up_when_asked
+--- old
+            LayerQuery::Maintained if self.quic.flavour() == Flavour::Ngtcp2 => {
+--- new
+            LayerQuery::Maintained if false => {
+
+=== a layer stops the upkeep for those below
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core conn::h3proxy::tests::a_tunnel_s_connection_is_kept_up_when_asked
+--- old
+    fn maintain(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<(), ErrorKind> {
+        below.maintain(cx)
+    }
+--- new
+    fn maintain(&mut self, _cx: &mut dyn LayerCx, _below: Below<'_>) -> Result<(), ErrorKind> {
+        Ok(())
+    }

@@ -517,7 +517,8 @@ impl TransferState {
             | LayerAnswer::TlsDeferred
             | LayerAnswer::Tunnel(_)
             | LayerAnswer::Failure(_)
-            | LayerAnswer::Spent => {
+            | LayerAnswer::Spent
+            | LayerAnswer::Maintained => {
                 unreachable!("an answer of another question")
             }
         }
@@ -1156,8 +1157,9 @@ impl TransferState {
     /// (`Curl_multi_pollset`): a setup waits to write on each, unless
     /// receiving is paused (`mstate_connecting_pollset`); an exchange
     /// waits for what its protocol says (`Curl_http_perform_pollset`);
-    /// one over its speed limit waits on nothing but its timer (C's
-    /// RATELIMITING has no pollset). An exchange is never over a limit,
+    /// one over its speed limit waits on its timer, and to read on a
+    /// connection that is kept up meanwhile, as its layers adjust it
+    /// (`mstate_ratelimit_pollset`). An exchange is never over a limit,
     /// so C's taking a limited direction out (`multi_adjust_pollset`)
     /// leaves only the pause's, which the protocol applies. The
     /// connection's layers adjust what an exchange waits for, if it waits
@@ -1211,6 +1213,16 @@ impl TransferState {
                         for (s, events) in side {
                             set.add(s, events)?;
                         }
+                    }
+                }
+            }
+            TransferState::RateLimiting(x) => {
+                if let Some(slot) = pool.slot_of(&x.lease)
+                    && slot.wants_maintenance()
+                {
+                    let events = slot.adjust_pollset(Events::IN, x.proto.stream_sending());
+                    for s in slot.sockets() {
+                        set.add(s, events)?;
                     }
                 }
             }
@@ -1961,7 +1973,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Exchanging(x) if over_limit(run, cx) => {
             (TransferState::RateLimiting(x), Wake::Idle)
         }
-        TransferState::RateLimiting(x) => {
+        TransferState::RateLimiting(mut x) => {
             if expired(run, cx) {
                 let kind = timed_out(cx, Phase::Transferring, true);
                 (TransferState::RateLimiting(x).fail(kind), Wake::Again)
@@ -1975,7 +1987,12 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                             arm(&mut run.deadlines, cx, TimerKind::SpeedCheck, wait);
                         }
                         if over_limit(run, cx) {
-                            (TransferState::RateLimiting(x), Wake::Idle)
+                            // Still held back: its connection is kept up
+                            // meanwhile, a failure ending the transfer.
+                            match x.proto.maintain(cx, &mut x.lease) {
+                                Ok(()) => (TransferState::RateLimiting(x), Wake::Idle),
+                                Err(e) => (TransferState::RateLimiting(x).fail(e), Wake::Again),
+                            }
                         } else {
                             (TransferState::Exchanging(x), Wake::Again)
                         }

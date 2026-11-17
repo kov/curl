@@ -120,7 +120,9 @@ impl<'a> Part<Carrier<'a>> for H3Conn {
     }
 
     /// It agreed on HTTP/3, saying nothing of it, and its TLS session's
-    /// objects are the connection's (`cf_ngtcp2_query`).
+    /// objects are the connection's (`cf_ngtcp2_query`); ngtcp2's is kept
+    /// up while its transfer moves nothing (`Curl_cft_http3`'s
+    /// `CF_TYPE_MAINTENANCE`).
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match q {
             LayerQuery::Alpn => Some(LayerAnswer::Alpn(
@@ -128,6 +130,9 @@ impl<'a> Part<Carrier<'a>> for H3Conn {
                 crate::components::Component::Http3,
             )),
             LayerQuery::TlsNative => Some(LayerAnswer::TlsNative(self.quic.tls_native())),
+            LayerQuery::Maintained if self.quic.flavour() == crate::http3::Flavour::Ngtcp2 => {
+                Some(LayerAnswer::Maintained)
+            }
             _ => None,
         }
     }

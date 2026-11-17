@@ -74,6 +74,9 @@ pub(crate) enum LayerQuery {
     /// The filter of the tunnel through a proxy, when a layer is it:
     /// `H2-PROXY`'s, a stream of an HTTP/2 session.
     Tunnel,
+    /// The layer keeps its connection up while its transfer moves
+    /// nothing, when asked to (`CF_TYPE_MAINTENANCE`).
+    Maintained,
 }
 
 /// What a layer answers a `LayerQuery`.
@@ -88,6 +91,7 @@ pub(crate) enum LayerAnswer {
     Failure(ErrorKind),
     Spent,
     Tunnel(Component),
+    Maintained,
 }
 
 /// What a layer reaches while it works: the time, and each capability of
@@ -524,6 +528,14 @@ pub(crate) trait Layer: for<'a> Part<Below<'a>> + Send + fmt::Debug {
         below.flush(cx)
     }
 
+    /// Keep the connection up while its transfer moves nothing: a paused
+    /// or rate-limited one's (`CF_CTRL_MAINTENANCE`). Only a layer that
+    /// answers `LayerQuery::Maintained` does anything; each passes the
+    /// call on below, the first failure ending it.
+    fn maintain(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<(), ErrorKind> {
+        below.maintain(cx)
+    }
+
     /// The channel binding of the origin's TLS, if this layer is it:
     /// what its session binds with, or why it cannot (`Curl_conn_is_ssl`,
     /// which passes over an HTTPS proxy's, then `get_channel_binding`).
@@ -721,6 +733,15 @@ impl Below<'_> {
         match self.layers.split_last_mut() {
             Some((top, layers)) => top.flush(cx, Below { layers, ..self }),
             None => Ok(true),
+        }
+    }
+
+    /// Each layer's upkeep, from the top (`Curl_conn_do_maintenance`):
+    /// the socket has none.
+    pub(crate) fn maintain(self, cx: &mut dyn LayerCx) -> Result<(), ErrorKind> {
+        match self.layers.split_last_mut() {
+            Some((top, layers)) => top.maintain(cx, Below { layers, ..self }),
+            None => Ok(()),
         }
     }
 

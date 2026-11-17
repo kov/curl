@@ -393,6 +393,34 @@ impl Request {
         r
     }
 
+    /// What the server sent is read and what the connection holds sent,
+    /// its timer set again, while the transfer moves nothing: ngtcp2's,
+    /// not once the connection is shutting down
+    /// (`cf_ngtcp2_cmn_maintenance`).
+    pub(super) fn h3_maintain<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<(), ErrorKind> {
+        self.with_h3(cx, lease, |step, quic| {
+            if step.flavour != Flavour::Ngtcp2 || quic.shutdown_started() {
+                return Ok(());
+            }
+            let r = quic
+                .ingress(step)
+                .and_then(|()| step.open_windows(quic))
+                .and_then(|()| quic.egress(step))
+                .and_then(|()| quic.set_expiry(step));
+            let code = r.map_or_else(ErrorKind::number, |()| 0);
+            trace::of(
+                &mut *step.cx,
+                Component::Http3,
+                format_args!("maintenance() -> {code}"),
+            );
+            r
+        })
+    }
+
     /// Send what of the request is in `out[sent..end]`, the last of it if
     /// `eos` (`cf_ngtcp2_send`): what came is read first; the head opens
     /// the stream with its fields. How much was taken.

@@ -1047,9 +1047,15 @@ protocol's (`ProtoState::redirected`). The leg's `Plan` is built from where it l
 `Exchanging`. `Exchanging` asks the limits (`mspeed_check`) before its step and after one that
 leaves the request going: over either, it moves to `RateLimiting`, its `TooFast` timer armed for
 the wait and its run in the next pass called off; under them, the timer is armed for the next
-tokens. `RateLimiting` waits on nothing but that timer (no pollset), and at each wake fails at
-the time limit, takes the progress and low-speed check, and goes back to `Exchanging` at once
-once the limits allow. C's state changes inside `mspeed_check`, so the move to RATELIMITING and
+tokens. `RateLimiting` waits on that timer, and to read on a connection kept up meanwhile, as
+its session and layers adjust that (`mstate_ratelimit_pollset`); at each wake it fails at the
+time limit, takes the progress and low-speed check, and goes back to `Exchanging` at once once
+the limits allow. Still over them, it keeps its connection up (`Curl_conn_do_maintenance`,
+`ProtoState::maintain`): an HTTP/3 session over ngtcp2 and an HTTP/3 proxy's layer, the ones
+that answer `LayerQuery::Maintained`, read what came and send what they hold, their timer set
+again (`cf_ngtcp2_cmn_maintenance`); every other layer passes the call down. A failure there
+ends the transfer as the progress check's does. Such a transfer is never run again for what
+its connection holds (`input_polled` passes it over), or it would spin. C's state changes inside `mspeed_check`, so the move to RATELIMITING and
 back is traced there, before the timer is armed, among its `[RLIMIT]` lines.
 
 **A transfer runs as legs.** Init runs C's pretransfer once (the report restarted, `Starts::op`,

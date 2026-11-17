@@ -1149,6 +1149,20 @@ impl Request {
         events
     }
 
+    /// Keep its HTTP/3 session up while the transfer moves nothing, if
+    /// it is over one: the session's part of `Curl_conn_do_maintenance`,
+    /// above the connection's layers.
+    pub(crate) fn maintain_session<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<(), ErrorKind> {
+        match self.wire {
+            Wire::H3(_) => self.h3_maintain(cx, lease),
+            Wire::H1 | Wire::H2(_) => Ok(()),
+        }
+    }
+
     /// What of its sending its multiplexed connection weighs in its
     /// pollset, once its stream is open.
     pub(crate) fn stream_sending(&self) -> Option<StreamSending> {

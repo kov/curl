@@ -958,6 +958,119 @@ fn the_quic_timer_is_not_put_off_while_it_is_to_come() {
     assert_eq!(got, ["[TIMER] [QUIC] set for 49000us"]);
 }
 
+/// A GET whose body comes in two packets, 50 bytes each, read at most 25
+/// bytes a second: held back after the first, the second the server's
+/// answer to a packet the client has to send meanwhile.
+fn held_back(flavour: crate::http3::Flavour) -> Ran {
+    held_back_then(
+        flavour,
+        vec![Told::Data(0, vec![b'b'; 50]), Told::Closed(0, 0x100)],
+    )
+}
+
+/// `held_back`, its second packet telling `second`.
+fn held_back_then(flavour: crate::http3::Flavour, second: Vec<Told>) -> Ran {
+    let script = get_script(b"");
+    {
+        let mut s = script.lock().unwrap();
+        s.flavour = flavour;
+        let header = |name: &[u8], value: &[u8]| Told::Header {
+            stream: 0,
+            name: name.to_vec(),
+            value: value.to_vec(),
+        };
+        let last = s.on_read.len() - 1;
+        s.on_read[last] = vec![
+            header(b":status", b"200"),
+            header(b"content-length", b"100"),
+            Told::HeadersDone(0),
+            Told::Data(0, vec![b'a'; 50]),
+        ];
+        s.on_read.push_back(second);
+        s.out.push_back(vec![4; 30]);
+    }
+    let mut m = quic_server(&[b"server flight", b"response", b"more"]);
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    let flow = e.options_mut().flow.make_mut().unwrap();
+    flow.max_recv_speed = std::num::NonZeroU64::new(25);
+    // A held transfer whose readable socket goes unread would spin.
+    let url = format!("https://localhost:{PORT}/");
+    get_within(
+        &mut m,
+        e,
+        "/",
+        Conversation::replies(&[], false),
+        |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.version = crate::options::HttpVersion::Http3Only;
+            o.ip_version = IpVersion::Any;
+        },
+        Some(100),
+    )
+}
+
+/// A transfer held back by its speed limit keeps its ngtcp2 connection
+/// up meanwhile: each of its steps reads and sends what the connection
+/// has, and it waits to read on its socket (`multistate_ratelimiting`,
+/// `mstate_ratelimit_pollset`). quiche's is left alone, and waits on
+/// nothing but its timer.
+#[test]
+fn a_held_back_transfer_keeps_its_quic_connection_up() {
+    for flavour in [crate::http3::Flavour::Ngtcp2, crate::http3::Flavour::Quiche] {
+        let ran = held_back(flavour);
+        assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+        assert_eq!(ran.seen.body().len(), 100);
+        // The pollsets too, which `lines` leaves out.
+        let got: Vec<String> = ran
+            .seen
+            .text()
+            .into_iter()
+            .filter(|l| l.contains("maintenance") || l.contains("[RATELIMITING] pollset"))
+            .collect();
+        let kept = got
+            .iter()
+            .filter(|l| l.ends_with("[HTTP/3] maintenance() -> 0\n"))
+            .count();
+        let polled = got
+            .iter()
+            .filter(|l| l.contains("pollset[fd=1000 IN]"))
+            .count();
+        let waits = got.iter().filter(|l| l.contains("pollset[]")).count();
+        match flavour {
+            crate::http3::Flavour::Ngtcp2 => {
+                assert!(kept > 0 && polled > 0 && waits == 0, "{got:#?}");
+            }
+            crate::http3::Flavour::Quiche => {
+                assert!(kept == 0 && polled == 0 && waits > 0, "{got:#?}");
+            }
+        }
+    }
+}
+
+/// A connection that fails as it is kept up ends its held-back transfer
+/// there, as a premature end, as a failed progress check does
+/// (`multistate_ratelimiting`).
+#[test]
+fn a_held_back_transfer_ends_when_its_upkeep_fails() {
+    let ran = held_back_then(crate::http3::Flavour::Ngtcp2, vec![Told::ReadFails(-224)]);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::RecvError),
+        "{:#?}",
+        ran.seen.text()
+    );
+    let got = lines(&ran, &["[HTTP/3] maintenance", "[MULTI] [RATELIMITING] ->"]);
+    let failed = format!(
+        "[HTTP/3] maintenance() -> {}",
+        ErrorKind::RecvError.number()
+    );
+    assert_eq!(
+        got.last().map(String::as_str),
+        Some("[MULTI] [RATELIMITING] -> [COMPLETED]")
+    );
+    assert!(got.contains(&failed), "{got:#?}");
+}
+
 /// `get_script`, then a second response on the connection's next stream,
 /// `ok`, and the packet the second request goes in.
 fn and_then_ok(script: &Arc<Lock<Script>>) {
@@ -3188,6 +3301,36 @@ fn through_h3_proxy_over(m: &mut Multi, e: Easy, ip: IpVersion) -> Ran {
         proxy.kind = crate::options::ProxyType::Https3;
         proxy.tunnel = true;
     })
+}
+
+/// A transfer through an HTTP/3 proxy held back by its speed limit keeps
+/// the proxy's connection up meanwhile, through its protocol, HTTP/1.1,
+/// and its connection's layers to the proxy's (`Curl_conn_do_maintenance`
+/// reaching `cf_ngtcp2_cmn_maintenance`): the rest of the body comes in
+/// answer to a packet the client has to send meanwhile.
+#[test]
+fn a_held_back_transfer_keeps_its_http3_proxy_up() {
+    let mut response = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".to_vec();
+    response.extend_from_slice(&[b'a'; 50]);
+    let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
+    {
+        let mut s = script.lock().unwrap();
+        s.on_read.push_back(vec![Told::Data(0, vec![b'b'; 50])]);
+        s.out.push_back(vec![5; 30]);
+    }
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response", b"more"]);
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    let flow = e.options_mut().flow.make_mut().unwrap();
+    flow.max_recv_speed = std::num::NonZeroU64::new(25);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body().len(), 100);
+    let got = lines(&ran, &["[H3-PROXY] maintenance"]);
+    assert!(!got.is_empty(), "{:#?}", ran.seen.text());
+    assert!(
+        got.iter().all(|l| l == "[H3-PROXY] maintenance() -> 0"),
+        "{got:#?}"
+    );
 }
 
 /// A tunnel through an HTTP/3 proxy is a stream of a QUIC connection to

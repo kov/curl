@@ -1490,6 +1490,20 @@ impl ProtoState {
 
     /// What of its sending a multiplexed connection weighs in its
     /// pollset.
+    /// Keep the connection up while the transfer moves nothing
+    /// (`Curl_conn_do_maintenance`): its HTTP/3 session, if it is over
+    /// one, then its layers, the first failure ending it.
+    pub(crate) fn maintain<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<(), ErrorKind> {
+        if let ProtoState::Http(ref mut r) = *self {
+            r.maintain_session(cx, lease)?;
+        }
+        lease.get().maintain_layers(cx)
+    }
+
     pub(crate) fn stream_sending(&self) -> Option<crate::proto::http::StreamSending> {
         match *self {
             ProtoState::Http(ref r) => r.stream_sending(),

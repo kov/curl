@@ -311,7 +311,7 @@ impl Part<Below<'_>> for TlsLayer {
                 }
                 PeerState::Shaking | PeerState::Open { .. } | PeerState::Failed(_) => None,
             },
-            LayerQuery::TlsDeferred | LayerQuery::Tunnel => None,
+            LayerQuery::TlsDeferred | LayerQuery::Tunnel | LayerQuery::Maintained => None,
             LayerQuery::Failure => match self.peer_state {
                 PeerState::Failed(kind) => Some(LayerAnswer::Failure(kind)),
                 _ => None,

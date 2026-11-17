@@ -1952,6 +1952,19 @@ impl Conn {
         self.session = mux::Speaks::Made(mux::Session::H2(h2));
     }
 
+    /// Its layers' upkeep while its transfer moves nothing
+    /// (`Curl_conn_do_maintenance`); a connection without a network has
+    /// none.
+    pub(crate) fn maintain_layers(
+        &mut self,
+        cx: &mut dyn LayerCx,
+    ) -> Result<(), crate::error::ErrorKind> {
+        match self.split().1 {
+            Some(mut carrier) => carrier.layers().maintain(cx),
+            None => Ok(()),
+        }
+    }
+
     /// What its session works over: its stream. A connection without a
     /// network has none.
     pub(crate) fn carrier(&mut self) -> mux::Carrier<'_> {

@@ -19,6 +19,7 @@ use super::quic::{Quic, QuicIo, RecvRoom, SocketIo, Via};
 use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
+use crate::http3::Flavour;
 use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
 use crate::text::Text;
 use crate::time::Instant;
@@ -771,12 +772,34 @@ impl Part<Below<'_>> for H3Proxy {
         match q {
             LayerQuery::Failure => self.failure.map(LayerAnswer::Failure),
             LayerQuery::Tunnel => Some(LayerAnswer::Tunnel(H3P)),
+            // ngtcp2's (`Curl_cft_h3_proxy`'s `CF_TYPE_MAINTENANCE`).
+            LayerQuery::Maintained if self.quic.flavour() == Flavour::Ngtcp2 => {
+                Some(LayerAnswer::Maintained)
+            }
             _ => None,
         }
     }
 }
 
 impl Layer for H3Proxy {
+    /// What the proxy sent is read and what the connection holds sent,
+    /// its timer set again, while the transfer moves nothing; not once
+    /// the connection is shutting down (`cf_ngtcp2_cmn_maintenance`).
+    fn maintain(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<(), ErrorKind> {
+        if self.quic.flavour() == Flavour::Ngtcp2 && !self.quic.shutdown_started() {
+            let socket = below.socket();
+            let r = self.call(cx, socket, |quic, over| {
+                quic.ingress(over)
+                    .and_then(|()| quic.egress(over))
+                    .and_then(|()| quic.set_expiry(over))
+            });
+            let code = r.map_or_else(ErrorKind::number, |()| 0);
+            cx.of(H3P, format_args!("maintenance() -> {code}"));
+            r?;
+        }
+        below.maintain(cx)
+    }
+
     /// The tunnel's DATA as they come, the stream's window opened by as
     /// much as is read (`cf_h3_proxy_recv`).
     fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8]) -> io::Result<Recv> {

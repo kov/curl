@@ -259,6 +259,15 @@ impl Conn {
     fn closes(&self) -> bool {
         self.close || matches!(self.query(LayerQuery::Spent), Some(LayerAnswer::Spent))
     }
+
+    /// It is to be kept up while its transfer moves nothing: its session
+    /// or a layer says so (`Curl_conn_wants_maintenance`).
+    fn wants_maintenance(&self) -> bool {
+        matches!(
+            self.query(LayerQuery::Maintained),
+            Some(LayerAnswer::Maintained)
+        )
+    }
 }
 
 /// What can be read of a connection wherever it is, with its lease or in
@@ -333,6 +342,12 @@ impl ConnSlot {
             }) if !wanted.is_empty() => h3conn.adjust_pollset(wanted, h3),
             ConnSlot::Open(_) | ConnSlot::Connecting(_) | ConnSlot::Failed(_) => wanted,
         }
+    }
+
+    /// Whether the connection, once up, is to be kept up while its
+    /// transfer moves nothing (`Curl_conn_wants_maintenance`).
+    pub(crate) fn wants_maintenance(&self) -> bool {
+        matches!(self, ConnSlot::Open(conn) if conn.wants_maintenance())
     }
 
     /// What the connection's layers answer `q`, the topmost that does,

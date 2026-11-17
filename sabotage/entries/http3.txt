@@ -1789,3 +1789,19 @@ witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_as_its_
 --- new
                     if false
                         && x.proto.reads_through_pause()
+
+=== a paused transfer still waits to write
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_paused_stream_waits_on_nothing_while_its_session_holds_frames
+--- old
+                    let write = asked.contains(Events::OUT) && !pause.send_paused();
+--- new
+                    let write = asked.contains(Events::OUT);
+
+=== a paused transfer still waits to read
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ssh::libssh2::tests::a_paused_download_waits_on_nothing
+--- old
+                    let read = if pause.recv_paused() {
+--- new
+                    let read = if false {

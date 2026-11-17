@@ -1161,8 +1161,8 @@ impl TransferState {
     /// connection that is kept up meanwhile, as its layers adjust it
     /// (`mstate_ratelimit_pollset`). An exchange is never over a limit,
     /// so C's taking a limited direction out (`multi_adjust_pollset`)
-    /// leaves only the pause's, which the protocol applies, but for
-    /// reading on a connection kept up. The
+    /// leaves only the pause's: a paused direction comes out of what the
+    /// protocol asks, but for reading on a connection kept up. The
     /// connection's layers adjust what an exchange waits for, if it waits
     /// for anything (`Curl_conn_adjust_pollset`).
     pub(crate) fn pollset<'a>(
@@ -1240,15 +1240,23 @@ impl TransferState {
                 // A connection another transfer's step has out waits for
                 // nothing of this one's until it is back.
                 if let Some(slot) = pool.slot_of(&x.lease) {
-                    let mut interest = x.proto.interest(pause, slot.line());
-                    // A connection kept up reads while receiving is paused
-                    // (`multi_adjust_pollset`).
-                    if pause.recv_paused()
-                        && x.proto.reads_through_pause()
-                        && slot.wants_maintenance()
-                    {
-                        interest = interest | Events::IN;
-                    }
+                    // A paused direction is taken out of what the protocol
+                    // asks, but reading on a connection kept up, which HTTP
+                    // asks paused or not (`multi_adjust_pollset`).
+                    let asked = x.proto.interest(pause, slot.line());
+                    let read = if pause.recv_paused() {
+                        slot.wants_maintenance()
+                            && (asked.contains(Events::IN) || x.proto.reads_through_pause())
+                    } else {
+                        asked.contains(Events::IN)
+                    };
+                    let write = asked.contains(Events::OUT) && !pause.send_paused();
+                    let interest = match (read, write) {
+                        (true, true) => Events::IN | Events::OUT,
+                        (true, false) => Events::IN,
+                        (false, true) => Events::OUT,
+                        (false, false) => Events::NONE,
+                    };
                     let side_interest = x.proto.side_interest(pause);
                     let events = slot.adjust_pollset(interest, x.proto.stream_sending());
                     for s in slot.sockets() {
@@ -2295,7 +2303,7 @@ pub(crate) fn input_polled(state: &mut TransferState) -> Option<(&mut Attached, 
 /// the next pass, as C's pollset finds, says and marks it
 /// (`multi_adjust_pollset`): in DID and PERFORMING, and from PROTOCONNECT
 /// to DOING_MORE, which wait on the protocol's own pollset before the
-/// layers adjust it, unless its receiving is over its limit. A step that
+/// layers adjust it, unless its receiving is paused or over its limit. A step that
 /// stopped reading short has marked it already (`ProtoStep::AtReadLimit`);
 /// one whose read found nothing can still leave input held, taken in by
 /// its sends, as a QUIC connection's are with its packets, or a read that
@@ -2325,7 +2333,11 @@ fn marks_buffered<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
         Some(phase) => x.proto.waits(phase, x.lease.conn().line()),
         None => x.proto.interest(StepCx::pause(cx), x.lease.conn().line()),
     };
-    let wants = wants.contains(Events::IN) && !matches!(cx.rate_allowance(Way::Recv), Some(..=0));
+    // Receiving paused is blocked as one out of tokens is
+    // (`Curl_rlimit_avail` of a blocked limit).
+    let blocked =
+        StepCx::pause(cx).recv_paused() || matches!(cx.rate_allowance(Way::Recv), Some(..=0));
+    let wants = wants.contains(Events::IN) && !blocked;
     if wants && x.lease.get().data_pending() {
         mstate::trace(
             cx,

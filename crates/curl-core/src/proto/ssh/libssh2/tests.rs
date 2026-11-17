@@ -3180,6 +3180,72 @@ fn a_long_listing_gives_the_others_their_turn() {
     assert_eq!(b.iter().filter(|&&c| c == b'\n').count(), 2000);
 }
 
+/// Pauses its transfer at the first write of the body, and unpauses it
+/// from its progress handler five runs later; keeps what it is given.
+#[derive(Clone, Default)]
+struct PausedAWhile {
+    paused: Arc<std::sync::atomic::AtomicBool>,
+    runs: Arc<std::sync::atomic::AtomicUsize>,
+    body: Arc<Lock<Vec<u8>>>,
+}
+
+impl WriteHandler for PausedAWhile {
+    fn write(&self, _: &mut TransferCx<'_>, b: &[u8]) -> Wrote {
+        if !self.paused.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return Wrote::Pause;
+        }
+        self.body.lock().unwrap().extend_from_slice(b);
+        Wrote::Accepted
+    }
+}
+
+impl crate::handler::ProgressHandler for PausedAWhile {
+    fn progress(
+        &self,
+        cx: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        if self.paused.load(std::sync::atomic::Ordering::Relaxed)
+            && self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 5
+        {
+            cx.pause(cx.me(), crate::deliver::PauseRequest::CONT)
+                .unwrap();
+        }
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// A download paused by its write handler waits on nothing while paused,
+/// as C's pause takes out what SSH's pollset asks to read
+/// (`Curl_ssh_pollset`, then `multi_adjust_pollset`): a socket the peer
+/// keeps sending on would otherwise run the paused transfer, which does
+/// nothing, again and again.
+#[test]
+fn a_paused_download_waits_on_nothing() {
+    let w = world_with(&[("/home/u/f", "0123456789")], |w: &mut World| {
+        w.trace_multi = true;
+    });
+    let h = PausedAWhile::default();
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.callbacks.write = Some(Handler::write(h.clone()).unwrap());
+        o.progress = crate::options::Progress::Handler(Handler::progress(h.clone()).unwrap());
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(&h.body.lock().unwrap()[..], b"0123456789");
+    let pollsets: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("[PERFORMING] pollset["))
+        .collect();
+    let paused = pollsets
+        .iter()
+        .filter(|l| l.ends_with("pollset[], timeouts=1, paused 0/1 (r/w)"))
+        .count();
+    // Paused for its five runs, each but the last, which unpauses it,
+    // waiting on nothing: C's line, its send pause before its receive's
+    // under C's `(r/w)`.
+    assert_eq!(paused, 4, "{pollsets:#?}");
+}
+
 /// A directory's listing: its names alone, or each `ls -l` line, a link's
 /// target after it; C's words for each failure.
 #[test]

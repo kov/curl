@@ -3040,6 +3040,51 @@ fn a_pause_from_outside_shuts_the_window_at_once() {
     m.remove(id, &mut NoEvents).unwrap();
 }
 
+/// A stream paused both ways waits on nothing, though its session holds
+/// frames the socket would not take: the pause takes out what HTTP/2's
+/// output waits to write, and a pollset that wants nothing is not given
+/// to the session to add its own (`multi_adjust_pollset`,
+/// `Curl_conn_adjust_pollset`), or a writable socket would run the
+/// paused transfer, which does nothing, again and again.
+#[test]
+fn a_paused_stream_waits_on_nothing_while_its_session_holds_frames() {
+    use crate::conn::io::Events;
+    // The first send goes; every one after it is refused.
+    let talk = Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naa"], false)
+        .per_send()
+        .stalling_sends_after(1, 1000);
+    let seen = Seen::default();
+    let (mut m, id) = traced_h2(&talk, &seen, Seen::default());
+    let mut waits = Events::NONE;
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+        waits = Events::NONE;
+        m.sockets(&mut NoEvents, |_, e| waits = waits | e).unwrap();
+        if matches!(
+            m.state_of(id),
+            crate::multi::state::TransferState::Exchanging(_)
+        ) && waits.contains(Events::OUT)
+        {
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            m.state_of(id),
+            crate::multi::state::TransferState::Exchanging(_)
+        ),
+        "the request is under way"
+    );
+    assert!(waits.contains(Events::OUT), "the session holds frames");
+    m.pause(id, crate::deliver::PauseRequest::ALL, &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let mut paused = Events::NONE;
+    m.sockets(&mut NoEvents, |_, e| paused = paused | e)
+        .unwrap();
+    assert_eq!(paused, Events::NONE);
+}
+
 /// Unpauses the transfer it is given, once, at its first write.
 #[derive(Clone, Default)]
 struct Unpauses(Arc<Lock<Option<TransferId>>>);

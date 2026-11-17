@@ -1366,6 +1366,40 @@ fn undoes_a_compressed_response() {
     assert!(s.request().contains("\r\nAccept-Encoding: "));
 }
 
+/// Under `-O -J` the name the URL gives is not final while the server
+/// may still give another: a file of that name is not emptied by a
+/// response that says its `Content-Disposition:` comes as a trailer
+/// (the transfer fails as one whose file cannot be made), nor by an
+/// attempt `--retry` makes again.
+#[test]
+fn a_name_not_yet_final_empties_no_file() {
+    let dir = scratch("late-name");
+    let at = dir.to_str().unwrap();
+    let kept = dir.join("url-name");
+    std::fs::write(&kept, b"precious").unwrap();
+    let trailed: &[u8] = b"HTTP/1.1 200 OK\r\nTrailer: Content-Disposition\r\n\
+                           Transfer-Encoding: chunked\r\n\r\n3\r\nok\n\r\n0\r\n\
+                           Content-Disposition: attachment; filename=\"other\"\r\n\r\n";
+    let s = Server::script(vec![vec![trailed.to_vec()]]);
+    let url = format!("{}url-name", s.url());
+    let run = curl(&["-s", "-O", "-J", "--output-dir", at, &url]);
+    assert_eq!(run.code, 23, "{}", run.stderr);
+    assert_eq!(std::fs::read(&kept).unwrap(), b"precious");
+    assert!(!dir.join("other").exists());
+
+    let busy = b"HTTP/1.1 503 Busy\r\nContent-Length: 0\r\n\r\n".to_vec();
+    let named = b"HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"other\"\r\n\
+                  Content-Length: 3\r\n\r\nok\n"
+        .to_vec();
+    let s = Server::script(vec![vec![busy], vec![named]]);
+    let url = format!("{}url-name", s.url());
+    let run = curl(&["-s", "-O", "-J", "--retry", "1", "--output-dir", at, &url]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(std::fs::read(&kept).unwrap(), b"precious");
+    assert_eq!(std::fs::read(dir.join("other")).unwrap(), b"ok\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `-J` names the file `-O` saves as the response's
 /// `Content-Disposition:` says; a name `-o` gives is kept, and `-O`
 /// alone takes the URL's.

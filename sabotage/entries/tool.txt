@@ -1787,3 +1787,22 @@ witness: curl-tool output::tests::a_disposition_naming_no_file_makes_none
     }
 
     /// Make the file at the transfer's end
+
+=== a name the server may still replace empties the file of the URL's name
+file: crates/curl-tool/src/output.rs
+witness: curl-tool a_name_not_yet_final_empties_no_file
+--- old
+            (Clobber::Default, FileName::Given(name)) if late => {
+--- new
+            (Clobber::Default, FileName::Given(name)) if late && false => {
+
+=== an attempt to be retried makes its empty output file
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_name_not_yet_final_empties_no_file
+--- old
+    // `--xattr`, for a file the transfer opened.
+--- new
+    if result.is_ok() && !easy.report().condition_unmet() && !stream.create_at_end() {
+        result = Err(ErrorKind::WriteError);
+    }
+    // `--xattr`, for a file the transfer opened.

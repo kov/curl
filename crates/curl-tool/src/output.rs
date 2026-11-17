@@ -90,6 +90,10 @@ pub(crate) struct FromHeader {
     pub(crate) dir: Option<Vec<u8>>,
     /// Header lines to show, held until the file is named (`headlist`).
     held: Vec<Vec<u8>>,
+    /// The response said its `Content-Disposition:` comes as a trailer,
+    /// after the body: the name from the URL is not final as the body
+    /// starts, and opening it must not empty a file that is there.
+    late: bool,
 }
 
 impl FromHeader {
@@ -105,6 +109,7 @@ impl FromHeader {
         Ok(FromHeader {
             dir,
             held: Vec::new(),
+            late: false,
         })
     }
 }
@@ -537,10 +542,15 @@ impl Stream {
             unreachable!("only a file is opened");
         };
         let mut tried = None;
+        let late = self.name_from_header.as_ref().is_some_and(|f| f.late);
         let opened = match (self.clobber, &*name) {
             (Clobber::Never, _) => open_unclobbered(name.bytes_mut(), &mut tried),
-            // A name the server gives does not replace a file.
+            // A name the server gives does not replace a file, nor does
+            // the URL's while the server may still give another.
             (Clobber::Default, FileName::FromServer(name)) => {
+                fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE)
+            }
+            (Clobber::Default, FileName::Given(name)) if late => {
                 fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE)
             }
             (Clobber::Default, FileName::Given(name))
@@ -916,6 +926,14 @@ impl Stream {
                 && !self.rename(name)
             {
                 return Naming::Failed;
+            }
+        } else if starts(b"Trailer:") {
+            if line[8..]
+                .split(|&b| b == b',')
+                .any(|f| f.trim_ascii().eq_ignore_ascii_case(b"Content-Disposition"))
+                && let Some(from) = self.name_from_header.as_mut()
+            {
+                from.late = true;
             }
         } else if starts(b"Content-disposition:") {
             match self.disposition(line) {

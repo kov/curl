@@ -3675,6 +3675,14 @@ fn finish(
             }
             let mut stream = out.stream();
             let mut result = result;
+            // A successful transfer that wrote nothing still leaves its
+            // output file, empty, unless a time condition kept the file
+            // from coming or the server answered 304: then the file is not
+            // even replaced. Made once no attempt is to follow, so that one
+            // retried empties no file a later attempt may not name.
+            if result.is_ok() && !easy.report().condition_unmet() && !stream.create_at_end() {
+                result = Err(ErrorKind::WriteError);
+            }
             let opened = stream.is_open_file();
             if stream.close().is_err() && result.is_ok() {
                 let kind = ErrorKind::WriteError;
@@ -3813,12 +3821,6 @@ fn settle(
             b"': ",
             os_message(&e).as_bytes(),
         ]);
-    }
-    // A successful transfer that wrote nothing still leaves its output
-    // file, empty, unless a time condition kept the file from coming or
-    // the server answered 304: then the file is not even replaced.
-    if result.is_ok() && !easy.report().condition_unmet() && !stream.create_at_end() {
-        result = Err(ErrorKind::WriteError);
     }
     // Standard output is flushed here; a file, when it is closed.
     if stream.to_stdout() && stream.flush().is_err() && result.is_ok() {

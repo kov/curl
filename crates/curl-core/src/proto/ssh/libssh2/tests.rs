@@ -929,7 +929,6 @@ fn an_sftp_file_is_downloaded_in_c_s_order() {
     assert_eq!(body, b"hello\n");
     for line in [
         "SSH: libssh2 cryptography backend: openssl compatible\n",
-        "SSH: user 'u'\n",
         "SSH: no knownhosts file configured\n",
         "SSH: host offers authentication via: publickey,password\n",
         "SSH: trying public key file '/keys/id.pub'\n",
@@ -938,6 +937,11 @@ fn an_sftp_file_is_downloaded_in_c_s_order() {
     ] {
         assert!(said.contains(line), "{line:?} in {said}");
     }
+    // The user's name is said only to SSH's trace (`CURL_TRC_SSH`).
+    assert!(!said.contains("SSH: user 'u'"), "{said}");
+    let traced = world_with(&[("/home/u/f", "hello\n")], |w| w.trace_ssh = true);
+    let (_, _, traced, _) = run_in(&traced, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert!(traced.contains("SSH: user 'u'\n"), "{traced}");
     let want = [
         "handshake",
         "userauth_list u",
@@ -1815,13 +1819,15 @@ fn the_logins_are_tried_in_c_s_order() {
     };
     let (r, _, said, calls) = over("x", URL, agent, |_| {});
     assert_eq!(r, Ok(()), "{said}");
-    says(
-        &said,
-        &[
-            "SSH: trying publickey authentication via agent",
-            "SSH: agent authenticated user 'u' with key 'two'",
-        ],
-    );
+    says(&said, &["SSH: trying publickey authentication via agent"]);
+    // The user's name is said only to SSH's trace (`CURL_TRC_SSH`).
+    assert!(!said.contains("agent authenticated user"), "{said}");
+    let traced = |w: &mut World| {
+        agent(w);
+        w.trace_ssh = true;
+    };
+    let (_, _, said, _) = over("x", URL, traced, |_| {});
+    says(&said, &["SSH: agent authenticated user 'u' with key 'two'"]);
     let tried: Vec<_> = calls
         .iter()
         .filter(|c| c.starts_with("agent_userauth"))

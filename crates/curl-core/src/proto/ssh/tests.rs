@@ -898,6 +898,11 @@ fn an_sftp_file_is_downloaded() {
     ] {
         assert!(said.contains(line), "{line:?} in {said}");
     }
+    // The user's name is said only to SSH's trace (`CURL_TRC_SSH`).
+    assert!(!said.contains("User: u"), "{said}");
+    let traced = world_with(&[("/home/u/f", "hello\n")], |w| w.trace_ssh = true);
+    let (_, _, traced, _) = run_in(&traced, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert!(traced.contains("User: u\n"), "{traced}");
     let want = [
         "set_host 127.0.0.1",
         "set_socket",

@@ -2183,7 +2183,8 @@ impl Request {
         let login = cold.as_deref().and_then(|c| c.login.as_ref());
         let user = login.map_or(&[][..], |l| c_string(l.user()));
         if !user.is_empty() {
-            trace::info_with(cx, &[b"User: ", user]);
+            // The user's name, said only to SSH's trace.
+            trace::of_with(cx, Component::Ssh, &[b"User: ", user]);
             if session.set_user(user).is_err() {
                 return Err(trace::fail(
                     cx,

@@ -104,3 +104,26 @@ witness: curl-core proto::ssh::libssh2::tests::a_failed_sftp_call_said_ok_still_
     Err(Halt::Fail(sftp_failure(fx)))
 --- new
     if fx == Fx::OK { Ok(()) } else { Err(Halt::Fail(sftp_failure(fx))) }
+
+=== libssh2's user is said without SSH's trace
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::an_sftp_file_is_downloaded_in_c_s_order
+--- old
+        trace::of_with(cx, Component::Ssh, &[b"SSH: user '", user, b"'"]);
+--- new
+        trace::info_with(cx, &[b"SSH: user '", user, b"'"]);
+
+=== the agent's user and key are said without SSH's trace
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::the_logins_are_tried_in_c_s_order
+--- old
+        trace::of_with(
+            cx,
+            Component::Ssh,
+            &[
+                b"SSH: agent authenticated user '",
+--- new
+        trace::info_with(
+            cx,
+            &[
+                b"SSH: agent authenticated user '",

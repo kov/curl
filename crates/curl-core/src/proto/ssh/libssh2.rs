@@ -888,7 +888,8 @@ impl Request {
         let cold = lease.conn().net_route().and_then(|r| r.cold.clone());
         let login = cold.as_deref().and_then(|c| c.login.as_ref());
         let user = login.map_or(&[][..], |l| c_string(l.user()));
-        trace::info_with(cx, &[b"SSH: user '", user, b"'"]);
+        // The user's name, said only to SSH's trace.
+        trace::of_with(cx, Component::Ssh, &[b"SSH: user '", user, b"'"]);
         let Some(mut session) = library.session() else {
             return Err(trace::fail(
                 cx,
@@ -2883,8 +2884,9 @@ fn agent<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -
         Ok(Identity::Got) => {}
     }
     if authed {
-        trace::info_with(
+        trace::of_with(
             cx,
+            Component::Ssh,
             &[
                 b"SSH: agent authenticated user '",
                 login.user,

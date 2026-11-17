@@ -290,3 +290,11 @@ witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
 --- new
                 if false {
                     let kind
+
+=== libssh's user is said without SSH's trace
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::an_sftp_file_is_downloaded
+--- old
+            trace::of_with(cx, Component::Ssh, &[b"User: ", user]);
+--- new
+            trace::info_with(cx, &[b"User: ", user]);

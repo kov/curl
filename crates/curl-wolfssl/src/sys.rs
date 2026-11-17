@@ -241,7 +241,11 @@ unsafe extern "C" {
     pub(crate) fn wolfSSL_get_shutdown(ssl: *const WOLFSSL) -> c_int;
     pub(crate) fn wolfSSL_pending(ssl: *mut WOLFSSL) -> c_int;
     pub(crate) fn wolfSSL_get_peer_certificate(ssl: *mut WOLFSSL) -> *mut WOLFSSL_X509;
-    pub(crate) fn wolfSSL_X509_get_der(x509: *mut WOLFSSL_X509, len: *mut c_int) -> *const u8;
+    pub(crate) fn wolfSSL_X509_get_pubkey_buffer(
+        x509: *mut WOLFSSL_X509,
+        buf: *mut u8,
+        len: *mut c_int,
+    ) -> c_int;
     pub(crate) fn wolfSSL_X509_free(x509: *mut WOLFSSL_X509);
     pub(crate) fn wolfSSL_X509_check_host(
         x509: *mut WOLFSSL_X509,

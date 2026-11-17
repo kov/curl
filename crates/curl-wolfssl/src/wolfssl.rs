@@ -15,7 +15,7 @@ use curl_core::error::ErrorKind;
 use curl_core::tls::{Checked, DriveCall, TlsCx, TlsKind, TlsNative};
 
 use crate::library::{
-    self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerCert, Rc, Resume, Tls12Keys, Words,
+    self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerKey, Rc, Resume, Tls12Keys, Words,
 };
 use crate::sys;
 
@@ -982,23 +982,36 @@ impl library::Ssl for Ssl {
         unsafe { sys::wolfSSL_pending(self.p()) != 0 }
     }
 
-    fn peer_cert(&self) -> PeerCert {
+    fn peer_key(&self) -> PeerKey {
         self.with_peer(|x| {
             let mut len: c_int = 0;
-            // SAFETY: the certificate, alive while this runs; its DER.
-            let der = unsafe { sys::wolfSSL_X509_get_der(x.as_ptr(), &raw mut len) };
-            let Some(len) = usize::try_from(len).ok().filter(|_| !der.is_null()) else {
-                return PeerCert::NoDer;
+            // SAFETY: the certificate, alive while this runs; no buffer,
+            // the length asked for.
+            let rc = unsafe {
+                sys::wolfSSL_X509_get_pubkey_buffer(x.as_ptr(), ptr::null_mut(), &raw mut len)
             };
-            // SAFETY: `len` bytes of the certificate's, alive while it is.
-            let bytes = unsafe { core::slice::from_raw_parts(der, len) };
-            let mut copy = Vec::new();
-            if copy.try_extend_from_slice(bytes).is_err() {
-                return PeerCert::NoRoom;
+            let Some(room) = usize::try_from(len)
+                .ok()
+                .filter(|&n| rc == sys::WOLFSSL_SUCCESS && n > 0)
+            else {
+                return PeerKey::NoKey;
+            };
+            let Ok(mut key) = curl_alloc::try_zeroed(room) else {
+                return PeerKey::NoRoom;
+            };
+            // SAFETY: the certificate, and `len` bytes of room for its key.
+            let rc = unsafe {
+                sys::wolfSSL_X509_get_pubkey_buffer(x.as_ptr(), key.as_mut_ptr(), &raw mut len)
+            };
+            match usize::try_from(len) {
+                Ok(n) if rc == sys::WOLFSSL_SUCCESS && n > 0 && n <= room => {
+                    key.truncate(n);
+                    PeerKey::Key(key)
+                }
+                _ => PeerKey::NoKey,
             }
-            PeerCert::Der(copy)
         })
-        .unwrap_or(PeerCert::None)
+        .unwrap_or(PeerKey::None)
     }
 
     fn has_peer_cert(&self) -> bool {

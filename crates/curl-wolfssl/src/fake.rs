@@ -15,7 +15,7 @@ pub(crate) use curl_core::tls::Wire;
 use curl_core::tls::{Checked, DriveCall, TlsCx};
 
 use crate::library::{
-    self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerCert, Rc, Resume, Tls12Keys, Words,
+    self, AlpnGot, Call, FileType, Moved, NewSession, NoCtx, PeerKey, Rc, Resume, Tls12Keys, Words,
 };
 use crate::sys;
 
@@ -61,7 +61,7 @@ pub(crate) struct World {
     pub(crate) ciphers: Vec<&'static [u8]>,
     pub(crate) session_early: u32,
     pub(crate) alpn: AlpnGot,
-    pub(crate) peer: PeerCert,
+    pub(crate) peer: PeerKey,
     pub(crate) check_ip: Option<Rc>,
     pub(crate) check_host: Option<Rc>,
     pub(crate) resume: Resume,
@@ -101,7 +101,7 @@ impl Default for World {
             ],
             session_early: 0,
             alpn: AlpnGot::NotFound,
-            peer: PeerCert::Der(b"leaf-der".to_vec()),
+            peer: PeerKey::Key(b"leaf-spki".to_vec()),
             check_ip: Some(1),
             check_host: Some(1),
             resume: Resume::Done,
@@ -589,12 +589,12 @@ impl library::Ssl for FakeSsl {
         self.w().pending
     }
 
-    fn peer_cert(&self) -> PeerCert {
+    fn peer_key(&self) -> PeerKey {
         self.w().peer.clone()
     }
 
     fn has_peer_cert(&self) -> bool {
-        !matches!(self.w().peer, PeerCert::None)
+        !matches!(self.w().peer, PeerKey::None)
     }
 
     fn check_ip(&self, ip: &CStr) -> Option<Rc> {

@@ -211,15 +211,17 @@ pub(crate) enum Resume {
     Refused(Rc),
 }
 
-/// The peer's certificate, as the library hands it
-/// (`wolfSSL_get_peer_certificate`, `wolfSSL_X509_get_der`).
+/// The public key of the peer's certificate, its SubjectPublicKeyInfo
+/// as the library parsed it (`wolfSSL_get_peer_certificate`,
+/// `wolfSSL_X509_get_pubkey_buffer`): the key the handshake used, never
+/// read again from the certificate by another parser.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PeerCert {
-    /// It has none.
+pub(crate) enum PeerKey {
+    /// It has no certificate.
     None,
-    /// It has one and gives no DER of it.
-    NoDer,
-    Der(Vec<u8>),
+    /// It has one and gives no key of it.
+    NoKey,
+    Key(Vec<u8>),
     /// No room for a copy of it.
     NoRoom,
 }
@@ -326,8 +328,8 @@ pub(crate) trait Ssl: Send {
     /// `wolfSSL_pending` is not 0.
     fn pending(&self) -> bool;
 
-    /// The peer's certificate.
-    fn peer_cert(&self) -> PeerCert;
+    /// The public key of the peer's certificate.
+    fn peer_key(&self) -> PeerKey;
     /// The peer sent a certificate (`wolfSSL_get_peer_certificate` gives
     /// one).
     fn has_peer_cert(&self) -> bool;

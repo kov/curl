@@ -634,6 +634,40 @@ fn a_peer_certified_for_clients_alone_fails_its_check() {
     assert!(notes.iter().any(|n| n.contains(said)), "{notes:?}");
 }
 
+/// A pinned key is compared with the peer's SubjectPublicKeyInfo as the
+/// TLS library parsed it: the server's own key passes, another fails
+/// (`Curl_wssl_verify_pinned`, `wolfSSL_X509_get_pubkey_buffer`).
+#[test]
+fn the_pinned_key_is_the_server_s_own() {
+    for (mine, expected) in [
+        (true, Ok(())),
+        (false, Err(ErrorKind::SslPinnedpubkeynotmatch)),
+    ] {
+        let pin = |dir: &Path, o: &mut TlsOptions| {
+            let pem = std::fs::read(dir.join("key.pem")).unwrap();
+            let key = PKey::private_key_from_pem(&pem).unwrap();
+            let spki = if mine {
+                key.public_key_to_der().unwrap()
+            } else {
+                crate::key().public_key_to_der().unwrap()
+            };
+            let hash = openssl::sha::sha256(&spki);
+            let b64 = openssl::base64::encode_block(&hash);
+            o.pinned_key = Some(format!("sha256//{b64}").into_bytes());
+        };
+        let ((told, ran), notes) =
+            with_conn_certs("pinned", "ca.pem", None, false, pin, |conn, cx, over, _| {
+                let mut told = Told::default();
+                let ran = run(conn, cx, over, &mut told, |t| t.checked.is_some());
+                (told, ran.is_ok())
+            });
+        assert_eq!(told.checked, Some(expected), "{notes:?}");
+        // A key that fails its pin fails the packet that ends the
+        // handshake.
+        assert_eq!(ran, mine, "{notes:?}");
+    }
+}
+
 /// Over wolfSSL, and OpenSSL asked to verify the peer
 /// (`SSL_VERIFY_PEER`), which verify the peer's chain themselves, an
 /// untrusted peer fails the handshake inside the library: the packet's

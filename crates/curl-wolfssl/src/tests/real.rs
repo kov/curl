@@ -37,7 +37,7 @@ fn the_library_makes_and_frees_what_the_binding_asks() {
     assert!(ssl.check_domain(c"example.com"));
     ssl.quic_codepoint();
     ssl.bio().expect("a BIO");
-    assert_eq!(ssl.peer_cert(), crate::library::PeerCert::None);
+    assert_eq!(ssl.peer_key(), crate::library::PeerKey::None);
     assert_eq!(ssl.check_host(b"example.com"), None);
     assert_eq!(ssl.check_ip(c"127.0.0.1"), None);
     assert!(!ssl.pending());

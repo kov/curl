@@ -24,7 +24,7 @@ use curl_core::tls::{
 use curl_core::tls::{Checked, Residuals, Shaken};
 
 use crate::library::{
-    AGAIN, AlpnGot, Call, Ctx as _, FileType, IoResult, IoState, NoCtx, PeerCert, Reach, Resume,
+    AGAIN, AlpnGot, Call, Ctx as _, FileType, IoResult, IoState, NoCtx, PeerKey, Reach, Resume,
     Ssl, Wolfssl, as_c, c_string,
 };
 use crate::sys;
@@ -1151,33 +1151,25 @@ pub(crate) fn verify_pinned<S: Ssl>(ssl: &S, io: &mut TlsCx<'_>) -> Result<Pinne
         Pin::NotAsked(pin) => return Ok(pin),
         Pin::Asked(ask) => ask,
     };
-    let der = match ssl.peer_cert() {
-        PeerCert::None => {
+    // The key as the library parsed the certificate, which the handshake
+    // used: a second parser could read other bytes as the key.
+    let spki = match ssl.peer_key() {
+        PeerKey::None => {
             return Err(io.fail(
                 ErrorKind::SslPinnedpubkeynotmatch,
                 format_args!("SSL: failed retrieving server certificate"),
             ));
         }
-        PeerCert::NoDer => {
+        PeerKey::NoKey => {
             return Err(io.fail(
                 ErrorKind::SslPinnedpubkeynotmatch,
-                format_args!("SSL: failed retrieving ASN.1 server certificate"),
+                format_args!("SSL: failed retrieving public key from server certificate"),
             ));
         }
-        PeerCert::Der(der) => der,
-        PeerCert::NoRoom => return Err(ErrorKind::OutOfMemory),
+        PeerKey::Key(key) => key,
+        PeerKey::NoRoom => return Err(ErrorKind::OutOfMemory),
     };
-    let Some(cert) = curl_core::tls::x509::parse(&der) else {
-        return Err(ErrorKind::SslPinnedpubkeynotmatch);
-    };
-    let spki = cert.public_key_info.whole;
-    if spki.is_empty() {
-        return Err(io.fail(
-            ErrorKind::SslPinnedpubkeynotmatch,
-            format_args!("SSL: failed retrieving public key from server certificate"),
-        ));
-    }
-    ask.check(io, spki).map_err(|kind| {
+    ask.check(io, &spki).map_err(|kind| {
         io.fail(
             kind,
             format_args!("SSL: public key does not match pinned public key"),

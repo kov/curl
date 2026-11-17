@@ -333,7 +333,7 @@ fn an_address_is_checked_as_one_and_an_unverified_host_not_at_all() {
     });
     let lib = Fake::new(World {
         check_host: Some(0),
-        peer: PeerCert::None,
+        peer: PeerKey::None,
         ..World::default()
     });
     let mut kept = Kept::new();

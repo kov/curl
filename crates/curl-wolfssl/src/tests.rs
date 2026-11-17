@@ -17,7 +17,7 @@ use curl_core::tls::{
 
 use crate::fake::{Act, Fake, SOCKET_ERROR_E, Wire, World};
 use crate::library::{
-    AlpnGot, Call, IoResult, IoState, Moved, NewSession, NoCtx, PeerCert, Reach, Resume, Tls12Keys,
+    AlpnGot, Call, IoResult, IoState, Moved, NewSession, NoCtx, PeerKey, Reach, Resume, Tls12Keys,
     Words,
 };
 use crate::session::Session;
@@ -528,7 +528,7 @@ fn a_peer_without_a_certificate_is_refused_when_verifying() {
         let case = (verify_peer, verify_host);
         let (r, notes, _) = shake(
             World {
-                peer: PeerCert::None,
+                peer: PeerKey::None,
                 ..World::default()
             },
             &id,
@@ -1005,40 +1005,47 @@ fn credentials_are_kept_for_the_multi_only_where_they_may_be() {
 
 /// Unverified, as a verified peer without a certificate fails before
 /// its key is looked at (`a_peer_without_a_certificate_is_refused_when_verifying`).
+/// The key compared is the one the library parsed from the certificate,
+/// never read from it again (`wolfSSL_X509_get_pubkey_buffer`).
 #[test]
-fn the_pinned_key_needs_the_peer_s_certificate() {
-    let pinned = identity(|i| {
-        i.options.pinned_key =
-            Some(b"sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_vec());
-        i.verify_peer = false;
-        i.verify_host = false;
-    });
+fn the_pinned_key_is_the_one_the_library_parsed() {
+    let pinned = |key: &[u8]| {
+        identity(|i| {
+            i.options.pinned_key = Some(key.to_vec());
+            i.verify_peer = false;
+            i.verify_host = false;
+        })
+    };
+    let other = pinned(b"sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
     for (peer, line) in [
         (
-            PeerCert::None,
-            Some("fail: SslPinnedpubkeynotmatch: SSL: failed retrieving server certificate"),
+            PeerKey::None,
+            "fail: SslPinnedpubkeynotmatch: SSL: failed retrieving server certificate",
         ),
         (
-            PeerCert::NoDer,
-            Some("fail: SslPinnedpubkeynotmatch: SSL: failed retrieving ASN.1 server certificate"),
+            PeerKey::NoKey,
+            "fail: SslPinnedpubkeynotmatch: SSL: failed retrieving public key from server certificate",
         ),
-        // Not a certificate: no key to compare.
-        (PeerCert::Der(b"not der".to_vec()), None),
+        (
+            PeerKey::Key(b"leaf-spki".to_vec()),
+            "fail: SslPinnedpubkeynotmatch: SSL: public key does not match pinned public key",
+        ),
     ] {
         let world = World {
             peer,
             ..World::default()
         };
-        let (r, notes, _) = shake(world, &pinned);
+        let (r, notes, _) = shake(world, &other);
         assert_eq!(r, Err(ErrorKind::SslPinnedpubkeynotmatch));
-        if let Some(line) = line {
-            assert!(has(&notes, line), "{notes:#?}");
-        }
+        assert!(has(&notes, line), "{notes:#?}");
         assert!(said(&notes, "info: SSL connection using").is_empty());
     }
+    // The fake's key, `leaf-spki`: its SHA-256 in base64.
+    let mine = pinned(b"sha256//tFSbBwRy7IAiPWRnrcOixXjacEkAvOb39NItDTH7T7E=");
+    assert_eq!(shake(World::default(), &mine).0, Ok(Handshake::Done));
     // None pinned, the certificate is not looked at.
     let world = World {
-        peer: PeerCert::None,
+        peer: PeerKey::None,
         ..World::default()
     };
     let unverified = identity(|i| {

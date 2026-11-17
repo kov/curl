@@ -333,3 +333,21 @@ witness: curl-wolfssl tests::a_peer_without_a_certificate_is_refused_when_verify
             && !self.ssl().has_peer_cert()
 --- new
             && false
+
+=== the pinned key is compared with bytes other than the library's key
+file: crates/curl-wolfssl/src/wolfssl.rs
+witness: curl-ngtcp2 the_pinned_key_is_the_server_s_own
+features: wolfssl
+default-features: no
+--- old
+                    key.truncate(n);
+--- new
+                    key.truncate(n - 1);
+
+=== a certificate whose key the library cannot give passes its pin unsaid
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_pinned_key_is_the_one_the_library_parsed
+--- old
+                format_args!("SSL: failed retrieving public key from server certificate"),
+--- new
+                format_args!("SSL: failed retrieving server certificate"),

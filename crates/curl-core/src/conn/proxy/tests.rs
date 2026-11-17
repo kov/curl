@@ -178,8 +178,38 @@ fn parsed_by(
     ))
 }
 
+/// unit2413's proxies, read from its calls (`t2413_proxy`): a port
+/// given is used, even its scheme's or the one guessed, and over the one
+/// set; without one, the one set, or 443 for HTTPS, or 1080.
+#[test]
+fn unit2413_proxy_ports() {
+    // This build has proxies; the HTTPS ones are read as a build with a
+    // TLS library that can be one's reads them.
+    let calls = crate::c_source::calls_where("tests/unit/unit2413.c", "t2413_proxy", |c| {
+        assert_eq!(c, "!(defined(CURL_DISABLE_PROXY))");
+        true
+    });
+    assert_eq!(calls.len(), 11, "the calls were read");
+    for call in &calls {
+        let [name, _, proxy, kind, set, want] = &call[..] else {
+            panic!("{call:?}")
+        };
+        let name = name.str().escape_ascii().to_string();
+        let kind = match kind.word() {
+            "CURLPROXY_HTTP" => ProxyType::Http,
+            "CURLPROXY_SOCKS4" => ProxyType::Socks4,
+            "CURLPROXY_SOCKS5" => ProxyType::Socks5,
+            other => panic!("{name}: {other}"),
+        };
+        let text = std::str::from_utf8(proxy.str()).unwrap();
+        let set = u16::try_from(set.int()).unwrap();
+        let (_, _, port) = parsed(text, kind, set).unwrap();
+        assert_eq!(i128::from(port), want.int(), "{name}");
+    }
+}
+
 /// A proxy's URL gives its type by its scheme, or the type asked for, and
-/// its port, or the one asked for, or its scheme's.
+/// its port, or the one asked for, or its type's default.
 #[test]
 fn proxy_urls_read_as_c() {
     use ProxyType::*;
@@ -190,7 +220,7 @@ fn proxy_urls_read_as_c() {
     );
     assert_eq!(
         parsed("example.com", Http, 0),
-        ok(Http, "http://example.com", 80)
+        ok(Http, "http://example.com", 1080)
     );
     assert_eq!(
         parsed("example.com", Http, 3128),
@@ -202,11 +232,11 @@ fn proxy_urls_read_as_c() {
     );
     assert_eq!(
         parsed("example.com", Http10, 0),
-        ok(Http10, "http://example.com", 80)
+        ok(Http10, "http://example.com", 1080)
     );
     assert_eq!(
         parsed("http://example.com", Http10, 0),
-        ok(Http10, "http://example.com", 80)
+        ok(Http10, "http://example.com", 1080)
     );
     assert_eq!(
         parsed("socks5h://example.com", Http, 0),
@@ -220,10 +250,10 @@ fn proxy_urls_read_as_c() {
         parsed("[::1]:3128", Http, 0),
         ok(Http, "http://[::1]", 3128)
     );
-    // A port the scheme has anyway is no port given (`CURLU_NO_DEFAULT_PORT`).
+    // A port the scheme has anyway is a port given all the same.
     assert_eq!(
         parsed("http://example.com:80", Http, 3128),
-        ok(Http, "http://example.com", 3128)
+        ok(Http, "http://example.com", 80)
     );
     assert_eq!(parsed("ftp://example.com", Http, 0), Err(Refused::Scheme));
     // A scheme no URL knows is still read, then refused as no proxy's.

@@ -1005,3 +1005,30 @@ features: test-util,debug-hooks
         if taken >= PASS_BUDGET {
 --- new
         if false && taken >= PASS_BUDGET {
+
+=== a proxy port its scheme has anyway is dropped
+file: crates/curl-core/src/conn/proxy.rs
+witness: curl-core conn::proxy::tests::unit2413_proxy_ports
+--- old
+    let port = match url.get(Part::Port, GetOptions::NONE) {
+--- new
+    let port = match url.get(
+        Part::Port,
+        GetOptions {
+            no_default_port: true,
+            ..GetOptions::NONE
+        },
+    ) {
+
+=== an HTTP proxy without a port is on its scheme's
+file: crates/curl-core/src/conn/proxy.rs
+witness: curl-core conn::proxy::tests::unit2413_proxy_ports
+--- old
+        ProxyType::Https | ProxyType::Https2 | ProxyType::Https3 => 443,
+        ProxyType::Http
+        | ProxyType::Http10
+        | ProxyType::Socks4
+--- new
+        ProxyType::Https | ProxyType::Https2 | ProxyType::Https3 => 443,
+        ProxyType::Http | ProxyType::Http10 => 80,
+        ProxyType::Socks4

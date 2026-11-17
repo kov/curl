@@ -2294,10 +2294,11 @@ fn an_unresolved_proxy_is_named_in_the_failure() {
         }
     }
     for tunnel in [false, true] {
+        // An HTTP proxy that names no port is on 1080 too, as documented.
         let ran = through_proxies(url, "http://example.com", None, tunnel, None);
         assert_eq!(
             ran,
-            (Err(ErrorKind::CouldntResolveProxy), names(80).to_vec())
+            (Err(ErrorKind::CouldntResolveProxy), names(1080).to_vec())
         );
         let pre = Some("socks5://example.com");
         let ran = through_proxies(url, "http://127.0.0.1:2", pre, tunnel, None);

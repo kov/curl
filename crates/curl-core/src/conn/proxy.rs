@@ -269,7 +269,8 @@ impl From<OutOfMemory> for Refused {
 /// The proxy the URL `text` names, of type `kind` and on port `port`
 /// unless it says otherwise (`parse_proxy`, `Curl_peer_from_proxy_url`):
 /// a URL without a scheme is one of `kind`'s, and one without a port is
-/// on `port`, or else its scheme's. An HTTPS proxy is one only if the
+/// on `port`, or else the default for its type. A port given is the
+/// port, even one its scheme has anyway. An HTTPS proxy is one only if the
 /// build's TLS library can be one's, `tls` (`SSLSUPP_HTTPS_PROXY`).
 pub(crate) fn parse(
     text: &[u8],
@@ -314,11 +315,7 @@ pub(crate) fn parse(
         url_decode: true,
         ..GetOptions::NONE
     };
-    let given = GetOptions {
-        no_default_port: true,
-        ..GetOptions::NONE
-    };
-    let port = match url.get(Part::Port, given) {
+    let port = match url.get(Part::Port, GetOptions::NONE) {
         // The parser read it as a port already.
         Ok(p) => std::str::from_utf8(&p)
             .ok()
@@ -366,8 +363,8 @@ pub(crate) fn parse(
     })
 }
 
-/// The port C falls back on where the URL's cannot be read
-/// (`CURL_DEFAULT_PROXY_PORT`).
+/// The port of a proxy that names none, not HTTPS, and the one C falls
+/// back on where the URL's cannot be read (`CURL_DEFAULT_PROXY_PORT`).
 const DEFAULT_PORT: u16 = 1080;
 
 /// The type a proxy URL's scheme names, given `kind` was asked for
@@ -420,14 +417,18 @@ fn scheme_named(name: &[u8]) -> Scheme {
     Scheme::named(name).expect("a proxy's scheme is one libcurl knows")
 }
 
-/// The port of a proxy of type `kind` whose URL names none.
+/// The port of a proxy of type `kind` whose URL names none, and none
+/// set: 443 for HTTPS (`CURL_DEFAULT_HTTPS_PROXY_PORT`), else 1080,
+/// for HTTP too, as documented, not its scheme's.
 fn default_port(kind: ProxyType) -> u16 {
     match kind {
-        ProxyType::Http | ProxyType::Http10 => 80,
         ProxyType::Https | ProxyType::Https2 | ProxyType::Https3 => 443,
-        ProxyType::Socks4 | ProxyType::Socks4a | ProxyType::Socks5 | ProxyType::Socks5Hostname => {
-            1080
-        }
+        ProxyType::Http
+        | ProxyType::Http10
+        | ProxyType::Socks4
+        | ProxyType::Socks4a
+        | ProxyType::Socks5
+        | ProxyType::Socks5Hostname => DEFAULT_PORT,
     }
 }
 

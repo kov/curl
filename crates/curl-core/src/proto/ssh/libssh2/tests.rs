@@ -3374,6 +3374,25 @@ fn a_directory_is_listed_as_c_lists_it() {
     assert_eq!(r, Err(ErrorKind::OutOfMemory), "{said}");
 }
 
+/// An upload's line endings are made CRLF as `CURLOPT_CRLF` asks, and
+/// left as they are without it (`do_init_reader_stack`'s `cr_lc_add`).
+#[test]
+fn an_upload_s_lines_are_converted_as_asked() {
+    for (crlf, stored) in [(false, &b"a\nb\n"[..]), (true, &b"a\r\nb\r\n"[..])] {
+        let w = world_with(&[], |_| {});
+        let (r, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+            uploads(o, b"a\nb\n");
+            o.crlf = crlf;
+        });
+        assert_eq!(r, Ok(()), "{said}");
+        assert_eq!(
+            w.lock().unwrap().files,
+            [(b"/home/u/f".to_vec(), stored.to_vec())],
+            "crlf {crlf}"
+        );
+    }
+}
+
 /// SCP: the upload's channel opened at the file's size and mode, written
 /// and ended in C's order; each channel call's failure said and passed
 /// over; the open's failure the upload's or the download's.

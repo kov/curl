@@ -596,3 +596,17 @@ features: test-util
             Goodbye::Awaited { moved: true } => Some(now.after(BLOCKING_POLL)),
 --- new
             Goodbye::Awaited { moved: true } => (now < due).then_some(due),
+
+=== a connection joining the set leaves it to run when something else wakes it
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::the_shutdown_deadline_is_the_multi_s_own_row
+features: test-util
+--- old
+        self.dirty = true;
+    }
+
+    /// A line of the set's on its trace.
+--- new
+    }
+
+    /// A line of the set's on its trace.

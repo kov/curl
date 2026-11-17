@@ -603,6 +603,9 @@ impl ShutdownSet {
         self.say(format_args!(
             "[SHUTDOWN] added #{n} to shutdowns, now {now} conns in shutdown"
         ));
+        // Run by the next pass, which an event-driven application is told
+        // to make at once, as C marks its internal handle dirty.
+        self.dirty = true;
     }
 
     /// A line of the set's on its trace.

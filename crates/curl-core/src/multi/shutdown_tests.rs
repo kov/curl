@@ -305,10 +305,13 @@ fn an_aborted_transfer_s_connection_closes_at_once() {
 }
 
 /// The set's deadline is the multi's own (C's EXPIRE_SHUTDOWN on its
-/// internal handle): armed only when the set runs, never as a connection
-/// joins, at the time left of its 2 s, counted from the first try as the
-/// pool let it go. The timer callback hears it, and the connection is
-/// closed once its time is up.
+/// internal handle): armed only when the set runs, at the time left of
+/// its 2 s, counted from the first try as the pool let it go. A
+/// connection joining makes the set run at once, so that an application
+/// driving the multi by its events runs it (C marks its internal handle
+/// dirty): the C build says a timeout of 0 then, and 2000 once the set
+/// ran. The timer callback hears it, and the connection is closed once
+/// its time is up.
 #[test]
 fn the_shutdown_deadline_is_the_multi_s_own_row() {
     let (mut m, wire, clock) = lingering(Linger::UntilPeer);
@@ -317,8 +320,8 @@ fn the_shutdown_deadline_is_the_multi_s_own_row() {
     by_perform(&mut m, id, &mut ev);
     let released = clock.now();
     assert_eq!(m.shutdowns.len(), 1);
-    assert_eq!(m.timeout(), None, "not armed as it joins");
-    assert_eq!(ev.timers().last(), Some(&TimerChange::Clear));
+    assert_eq!(m.timeout(), Some(Duration::ZERO), "run at once as it joins");
+    assert_eq!(ev.timers().last(), Some(&TimerChange::Set(Duration::ZERO)));
     m.remove(id, &mut ev).unwrap();
     clock.advance(Duration::from_millis(500));
     ev.0.clear();

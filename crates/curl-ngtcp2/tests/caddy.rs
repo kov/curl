@@ -59,9 +59,6 @@ const VERIFIED: &str = "SSL certificate verified by GnuTLS";
 const UNTRUSTED: &str = "SSL certificate verification failed: certificate signer not trusted.";
 #[cfg(feature = "openssl")]
 const VERIFIED: &str = "SSL certificate verified via OpenSSL";
-#[cfg(feature = "openssl")]
-const UNTRUSTED: &str =
-    "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)";
 // wolfSSL's check says nothing of a peer it verified, as C's
 // (`Curl_vquic_tls_verify_peer`): the handshake is reported alone.
 #[cfg(feature = "wolfssl")]
@@ -569,7 +566,7 @@ fn a_qlog_directory_not_there_writes_none_and_connects() {
 /// handshake inside ngtcp2's callback: the check's verdict is told, then
 /// the packet's reading fails as the callback did, as C's
 /// `tls_vrfy_result` is set before `ngtcp2_conn_read_pkt` fails.
-#[cfg(not(feature = "wolfssl"))]
+#[cfg(feature = "gnutls")]
 #[test]
 fn an_untrusted_peer_fails_the_handshake_as_it_completes() {
     let ((told, failed), notes) = with_conn("untrusted", "other-ca.pem", |conn, cx, over, _| {
@@ -586,11 +583,12 @@ fn an_untrusted_peer_fails_the_handshake_as_it_completes() {
     assert!(notes.iter().any(|n| n.contains(UNTRUSTED)), "{notes:?}");
 }
 
-/// Over wolfSSL, which verifies the peer's chain itself, an untrusted
-/// peer fails the handshake inside the library: the packet's reading
-/// fails as ngtcp2's crypto says, the handshake is never done, and the
-/// check never runs.
-#[cfg(feature = "wolfssl")]
+/// Over wolfSSL, and OpenSSL asked to verify the peer
+/// (`SSL_VERIFY_PEER`), which verify the peer's chain themselves, an
+/// untrusted peer fails the handshake inside the library: the packet's
+/// reading fails as ngtcp2's crypto says, the handshake is never done,
+/// and the check never runs.
+#[cfg(any(feature = "wolfssl", feature = "openssl"))]
 #[test]
 fn an_untrusted_peer_fails_the_handshake_inside_the_library() {
     let ((told, failed), notes) = with_conn("untrusted", "other-ca.pem", |conn, cx, over, _| {

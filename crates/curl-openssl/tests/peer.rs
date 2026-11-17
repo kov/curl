@@ -718,7 +718,7 @@ fn an_unknown_issuer_fails_the_verification() {
     assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
     assert_eq!(
         got.failure,
-        b"SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)"
+        b"SSL certificate problem: unable to get local issuer certificate"
     );
 }
 

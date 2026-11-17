@@ -92,8 +92,9 @@ fn expected(cert: &X509, key: &PKey<Private>) -> Vec<Vec<u8>> {
 
 /// `CURLOPT_CERTINFO` (3102, 417): the peer's certificate, its fields
 /// each a line as C words it; nothing reported for a transfer that did
-/// not ask; a peer that fails to verify reported all the same, its chain
-/// read first, as C reads it.
+/// not ask, nor for a peer that fails to verify, whose handshake fails
+/// before the chain is read (`SSL_VERIFY_PEER`); one not to be verified
+/// is reported.
 fn the_chain_is_reported_as_c_words_it_when_asked() {
     let certs = rsa_certs("chain");
     let (at, server) = serve(&certs);
@@ -117,11 +118,20 @@ fn the_chain_is_reported_as_c_words_it_when_asked() {
     assert_eq!(got.result, Ok(()));
     assert_eq!(got.chain, None);
 
-    // A peer that fails its check has had its chain reported already.
+    // A peer that fails to verify fails the handshake: no chain read.
     let (at, server) = serve(&certs);
     let got = get("localhost", at, |o| o.tls.certinfo = true);
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
+    assert_eq!(got.chain, None);
+    // One not to be verified has its chain read and reported.
+    let (at, server) = serve(&certs);
+    let got = get("localhost", at, |o| {
+        o.tls.certinfo = true;
+        o.tls.verify_peer = false;
+    });
+    server.join().unwrap();
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     assert_eq!(got.chain.map(|c| c.len()), Some(1));
 }
 

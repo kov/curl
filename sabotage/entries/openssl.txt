@@ -558,3 +558,19 @@ witness: curl-openssl a_session_the_server_does_not_resume_is_checked_in_full
     if unsafe { openssl_sys::SSL_session_reused(ssl.as_ptr()) } == 0 {
 --- new
     if unsafe { openssl_sys::SSL_session_reused(ssl.as_ptr()) } == 0 && false {
+
+=== OpenSSL lets a handshake with a peer it cannot verify end
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl an_unknown_issuer_fails_the_verification
+--- old
+        let mode = if identity.verify_peer {
+--- new
+        let mode = if false {
+
+=== a peer that fails to verify has its chain reported
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl the_chain_is_reported_as_c_words_it_when_asked
+--- old
+        let mode = if identity.verify_peer {
+--- new
+        let mode = if !identity.verify_peer {

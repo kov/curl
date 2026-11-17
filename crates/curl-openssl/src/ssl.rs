@@ -475,6 +475,13 @@ fn said(errno: i32) -> io::Error {
     }
 }
 
+/// The verify callback with SecTrust to ask after: every certificate
+/// passes, so that the handshake ends and the result is checked then
+/// (`ossl_verify_cb_continue`).
+extern "C" fn verify_continues(_: c_int, _: *mut openssl_sys::X509_STORE_CTX) -> c_int {
+    1
+}
+
 /// How many of the `given` bytes the library is to write, after a write
 /// of `blocked` bytes that could not finish: those again, as the library
 /// wants a blocked write made again whole. Fewer given is the caller's
@@ -751,11 +758,22 @@ impl Session {
                 ));
             }
         }
-        // OpenSSL verifies whatever is asked; C checks its result after.
-        // SAFETY: the context, no callback.
-        unsafe {
-            openssl_sys::SSL_CTX_set_verify(ctx.as_ptr(), openssl_sys::SSL_VERIFY_NONE, None)
+        // A peer to verify fails the handshake if OpenSSL cannot verify it,
+        // unless Apple's SecTrust may yet: then a callback lets the
+        // handshake end, and the result is checked after. An application's
+        // own callback, set later, decides as it wishes
+        // (`Curl_ossl_ctx_init`).
+        let mode = if identity.verify_peer {
+            openssl_sys::SSL_VERIFY_PEER
+        } else {
+            openssl_sys::SSL_VERIFY_NONE
         };
+        // The bindings over BoringSSL declare the callback unsafe, those
+        // over OpenSSL not: the cast takes the one the call wants.
+        let callback = x509::sectrust(&identity).then_some(verify_continues as _);
+        // SAFETY: the context, and a callback of the library's signature
+        // that reads nothing, or none.
+        unsafe { openssl_sys::SSL_CTX_set_verify(ctx.as_ptr(), mode, callback) };
         // LibreSSL's callback is never called: its TLS 1.2 secrets are
         // logged once the handshake has them (`HAVE_KEYLOG_CALLBACK`).
         #[cfg(not(libressl))]

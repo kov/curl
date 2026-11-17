@@ -95,14 +95,12 @@ fn a_trusted_intermediate_is_an_anchor_unless_asked_not_to() {
     let certs = issued_by_intermediate("partial");
     let crl = super::checks::crl(&certs, "partial", false);
     let crl = crl.to_str().unwrap().as_bytes().to_vec();
-    // As C says it, checked against its build: the handshake passes, the
-    // result after does not.
+    // As C says it: the handshake fails, as the peer is to be verified.
     #[cfg(not(libressl))]
-    let refused = "SSL certificate OpenSSL verify result: unable to get issuer certificate (2)";
+    let refused = "SSL certificate problem: unable to get issuer certificate";
     // LibreSSL's verifier names the missing root as the local issuer.
     #[cfg(libressl)]
-    let refused =
-        "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)";
+    let refused = "SSL certificate problem: unable to get local issuer certificate";
     for (set, failure) in [
         (
             &(|_: &mut curl_core::options::TlsOptions| {}) as &dyn Fn(&mut _),
@@ -188,7 +186,7 @@ fn a_ca_blob_s_certificates_and_lists_are_all_taken() {
     assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
     assert_eq!(
         got.failure,
-        b"SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)"
+        b"SSL certificate problem: unable to get local issuer certificate"
     );
     let got = with(certs.key.private_key_to_pem_pkcs8().unwrap());
     assert_eq!(got.result, Err(ErrorKind::SslCacertBadfile));

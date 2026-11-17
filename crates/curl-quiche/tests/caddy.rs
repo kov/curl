@@ -14,8 +14,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant as StdInstant};
 
 use common::{Dir, Over, Told, UNTRUSTED, VERIFIED, certs, run, with_client, with_client_qlog};
-use curl_core::error::ErrorKind;
-use curl_core::http3::{Connection, H3Error, StreamId};
+use curl_core::http3::{Connection, H3Error, Layer, StreamId};
 use curl_core::tls::TlsCx;
 
 const BODY: &[u8] = b"hello h3\n";
@@ -262,19 +261,25 @@ fn a_large_body_is_handed_on_a_chunk_at_a_time() {
     assert!(told.pieces.contains(&(16 * 1024)), "{:?}", told.pieces);
 }
 
-/// A peer whose certificate the CA trusted did not sign fails as quiche's
-/// filter fails it: the connection is established, then the check's
-/// verdict is told, and no HTTP/3 is set up over it.
+/// A peer whose certificate the CA trusted did not sign fails the
+/// handshake inside quiche, as OpenSSL is asked to verify the peer
+/// (`SSL_VERIFY_PEER`): the packet's reading fails as the TLS library
+/// did, said as the verify result says (`cf_quiche`'s
+/// `QUICHE_ERR_TLS_FAIL`), and the peer's check never runs.
 #[test]
-fn an_untrusted_peer_fails_its_check_once_established() {
-    let (told, notes) = with_conn("untrusted", "other-ca.pem", |conn, cx, over, _| {
+fn an_untrusted_peer_fails_the_handshake_inside_quiche() {
+    let ((told, failed), notes) = with_conn("untrusted", "other-ca.pem", |conn, cx, over, _| {
         let mut told = Told::default();
-        let r = run(conn, cx, over, &mut told, |t| t.checked.is_some());
+        let failed = run(conn, cx, over, &mut told, |_| false).unwrap_err();
         assert!(!conn.handshake_done(), "no HTTP/3 over an unchecked peer");
-        r.map(|()| told)
+        (told, failed)
     });
-    let told = told.unwrap_or_else(|e| panic!("{e:?}: {notes:#?}"));
-    assert_eq!(told.checked, Some(Err(ErrorKind::PeerFailedVerification)));
+    assert_eq!(told.checked, None, "{notes:?}");
+    assert_eq!(
+        (failed.layer, failed.call),
+        (Layer::Crypto, "quiche_conn_recv"),
+        "{notes:?}"
+    );
     assert!(notes.iter().any(|n| n.contains(UNTRUSTED)), "{notes:?}");
 }
 

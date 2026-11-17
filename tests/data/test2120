@@ -31,7 +31,7 @@ HTTPS with a peer that fails verification says where to learn more
 60
 </errorcode>
 <stderr mode="text">
-curl: (60) SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)
+curl: (60) SSL certificate problem: unable to get local issuer certificate
 More details here: https://curl.se/docs/sslcerts.html
 
 curl failed to verify the legitimacy of the server and therefore could not

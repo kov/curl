@@ -550,20 +550,31 @@ fn a_transfer_keeping_no_session_resumes_none() {
     );
 }
 
-/// A connection whose peer fails its check forgets the sessions kept for
-/// the peer: the next connection, to a server that would resume them,
-/// resumes none.
+/// A connection whose peer fails its check after the handshake, here
+/// its name, forgets the sessions kept for the peer: the next
+/// connection, to a server that would resume them, resumes none
+/// (`Curl_ossl_check_peer_cert`). A peer that fails to verify fails the
+/// handshake instead, and forgets nothing.
 fn a_failed_check_forgets_the_peer_s_sessions() {
     let certs = certs("forget", "localhost", &["localhost"]);
     let wrong = self::certs("forget-wrong", "elsewhere", &["elsewhere.example"]);
+    // Both CAs trusted, so that only the name tells the servers apart.
+    let both = certs_dir().join("forget-both-ca.pem");
+    let mut pem = certs.ca.to_pem().unwrap();
+    pem.extend_from_slice(&wrong.ca.to_pem().unwrap());
+    std::fs::write(&both, pem).unwrap();
     let good = acceptor(&certs, |_| {});
     // Another server's TLS, which resumes none of the first's.
     let bad = acceptor(&wrong, |_| {});
     let (at, server) = serve_each(vec![good.clone(), bad, good]);
     let mut m = multi(try_box(SystemClock::new()).unwrap());
-    let one = get_in(&mut m, "https", "localhost", at, trusting(&certs), false);
-    let two = get_in(&mut m, "https", "localhost", at, trusting(&certs), false);
-    let three = get_in(&mut m, "https", "localhost", at, trusting(&certs), false);
+    let set = |o: &mut Options| {
+        let t = o.tls.options.make_mut().unwrap();
+        t.ca_file = CaSetting::Given(both.to_str().unwrap().as_bytes().to_vec());
+    };
+    let one = get_in(&mut m, "https", "localhost", at, set, false);
+    let two = get_in(&mut m, "https", "localhost", at, set, false);
+    let three = get_in(&mut m, "https", "localhost", at, set, false);
     server.join().unwrap();
     assert_eq!(one.result, Ok(()), "{:#?}", one.seen.lines);
     assert_eq!(two.result, Err(ErrorKind::PeerFailedVerification));

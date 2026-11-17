@@ -32,8 +32,7 @@ use openssl::x509::{X509, X509Name};
 /// What the OpenSSL backend says of a peer it verified, and of one signed
 /// by a CA it does not trust.
 pub const VERIFIED: &str = "SSL certificate verified via OpenSSL";
-pub const UNTRUSTED: &str =
-    "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)";
+pub const UNTRUSTED: &str = "SSL certificate problem: unable to get local issuer certificate";
 
 /// A directory of the test's own, removed as this goes.
 pub struct Dir(pub PathBuf);

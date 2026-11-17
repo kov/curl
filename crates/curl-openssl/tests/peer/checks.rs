@@ -95,10 +95,7 @@ fn a_revoked_certificate_fails_the_verification() {
     let got = get("localhost", at, checking(&certs, &file));
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
-    assert_eq!(
-        got.failure,
-        b"SSL certificate OpenSSL verify result: certificate revoked (23)"
-    );
+    assert_eq!(got.failure, b"SSL certificate problem: certificate revoked");
     assert!(
         said(&got, &format!(" CRLfile: {}", file.display())),
         "{:#?}",

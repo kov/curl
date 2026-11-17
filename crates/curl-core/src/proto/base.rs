@@ -49,8 +49,9 @@ pub(crate) struct RequestBase {
     /// decided for `peer` as the request is made.
     gate: CredentialGate,
     /// The transfer's first origin, this request's own where it is the
-    /// first, given once it is recorded (`ProtoState::first_recorded`):
-    /// a stream the server pushes beside this request inherits it.
+    /// first: none as the request is made, given by the run once it
+    /// records it (`ProtoState::first_recorded`). A stream the server
+    /// pushes beside this request inherits it.
     first: Option<Origin>,
 }
 
@@ -64,7 +65,7 @@ impl RequestBase {
             pipeline,
             credentials: None,
             gate,
-            first: origins.first().cloned(),
+            first: None,
         }
     }
 

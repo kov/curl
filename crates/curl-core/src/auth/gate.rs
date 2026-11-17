@@ -70,11 +70,6 @@ pub(crate) struct Origins<'r> {
 }
 
 impl<'r> Origins<'r> {
-    /// The first origin, if a request went to one.
-    pub(crate) fn first(&self) -> Option<&'r Origin> {
-        self.first
-    }
-
     /// The gate of a request to `peer`: open for the transfer's first
     /// request; else whether `peer` is the first origin, and whether what
     /// the application said may go there (`Curl_auth_allowed_to_host`).

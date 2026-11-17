@@ -2083,13 +2083,17 @@ impl Request {
         let inherited = Inherited::new(cx.easy().options().http.version);
         // A run of its own, as C's pushed handle is, whose first origin is
         // the request's it was promised on.
-        let first = crate::auth::gate::FirstOrigin::inherited(first.clone());
+        let inherited_first = crate::auth::gate::FirstOrigin::inherited(first.clone());
         let before = Before {
-            origins: first.origins(false),
+            origins: inherited_first.origins(false),
             method: Method::Get,
             http: &inherited,
         };
         let of = if secured { HTTPS } else { HTTP };
+        // Its request carries no first origin: nothing can be pushed
+        // beside it, the server's promises going only on the client's
+        // streams (RFC 9113 section 8.4), and an offer without one is
+        // refused.
         let mut request = Request::uncredentialed(url, of, before, cx)?;
         let options = cx.easy().options();
         let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);

@@ -273,3 +273,11 @@ witness: curl-core altsvc::tests::unit1654_an_origin_is_flushed_across_versions
 --- new
                 if !flushed {
                     self.entries.retain(|e| !(e.src.alpn == alpn && e.src.port == port && same_host(host, &e.src.host)));
+
+=== a percent-encoded protocol-id is matched undecoded
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::unit1654_percent_encoded_protocol_ids
+--- old
+    if !token.contains(&b'%') {
+--- new
+    if true {

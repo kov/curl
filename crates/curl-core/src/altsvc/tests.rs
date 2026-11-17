@@ -177,6 +177,36 @@ fn unit1654_load_parse_save() {
     );
 }
 
+/// unit1654's protocol-ids, read from its table: each percent-decoded,
+/// in any case of hex, before it is matched; a malformed escape or a
+/// control byte names no version, and the header's other alternatives
+/// still count.
+#[test]
+fn unit1654_percent_encoded_protocol_ids() {
+    let cases = crate::c_source::table("tests/unit/unit1654.c", "cases[] =", |c| {
+        panic!("a case under a condition: {c}")
+    });
+    assert_eq!(cases.len(), 15, "the cases were read");
+    let mut a = AltSvc::default();
+    for case in &cases {
+        let v = case.group();
+        let header = std::str::from_utf8(v[0].str()).unwrap();
+        let expected = match v[1].word() {
+            "ALPN_h1" => Some(Alpn::H1),
+            "ALPN_h2" => Some(Alpn::H2),
+            "ALPN_none" => None,
+            other => panic!("{other}"),
+        };
+        parse(&mut a, "clear\r\n", "percent.example", 443, Alpn::H1);
+        parse(&mut a, header, "percent.example", 443, Alpn::H1);
+        let found = a.lookup((b"percent.example", 443, Alpn::H1), ALL, NOW);
+        assert_eq!(found.as_ref().map(|f| f.alpn), expected, "{header:?}");
+        if let Some(found) = found {
+            assert_eq!(found.port, 8080, "{header:?}");
+        }
+    }
+}
+
 /// unit1654: `clear`, and a header's first alternative, forget the
 /// origin's alternatives whatever version they were learned over; other
 /// origins' stay.

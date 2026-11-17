@@ -338,7 +338,8 @@ impl AltSvc {
     /// (`Curl_altsvc_parse`): `clear` alone forgets the origin's
     /// alternatives, by any version; otherwise each alternative of a
     /// known version, the first of them forgetting the origin's earlier
-    /// ones, by any version. What cannot be
+    /// ones, by any version. A version is named by its ALPN id,
+    /// percent-encoded as RFC 7838 has it. What cannot be
     /// read ends the reading; `say` is told what was added and why an
     /// alternative was passed over, as C traces it: a line in pieces,
     /// the field's own bytes among them as they came.
@@ -363,7 +364,7 @@ impl AltSvc {
             let Some(name) = c.until(b'=', MAX_LINE) else {
                 break;
             };
-            let dst_alpn = Alpn::of(trim_blanks(name));
+            let dst_alpn = alpn_named(trim_blanks(name))?;
             if !c.single(b'=') {
                 break;
             }
@@ -612,6 +613,20 @@ fn params(c: &mut Cursor<'_>) -> (i64, bool) {
 
 /// `s` without blanks (spaces and tabs) at either end
 /// (`curlx_str_trimblanks`).
+/// The version an alternative's protocol-id names: its ALPN id,
+/// percent-decoded if it has a `%` (RFC 7838 section 3), a control byte
+/// in it naming none, as one it cannot hold; none for any other id.
+fn alpn_named(token: &[u8]) -> Result<Option<Alpn>, OutOfMemory> {
+    if !token.contains(&b'%') {
+        return Ok(Alpn::of(token));
+    }
+    match crate::url::decode_but_control(token) {
+        Ok(Some(decoded)) => Ok(Alpn::of(&decoded)),
+        Ok(None) => Ok(None),
+        Err(_) => Err(OutOfMemory),
+    }
+}
+
 fn trim_blanks(s: &[u8]) -> &[u8] {
     let blank = |b: &u8| *b == b' ' || *b == b'\t';
     let start = s.iter().position(|b| !blank(b)).unwrap_or(s.len());

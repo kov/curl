@@ -622,11 +622,12 @@ so: weaknesses kept because C has them.
 
 ## Changing a handle's share
 
-- **`CURLOPT_SHARE` from a callback is refused.** A callback running on the handle's multi gets
-  `CURLE_BAD_FUNCTION_ARGUMENT` whether or not the transfer has a connection, and says nothing; C
-  takes the change until the transfer has one, and traces "Cannot change share object while in
-  use" once it does. The step in progress holds the transfer's `Easy` and may be using
-  the share the change would replace. Pinned by `a_callback_cannot_change_the_share`
+- **`CURLOPT_SHARE` from a callback is refused without a word.** A callback running on the
+  handle's multi gets `CURLE_BAD_FUNCTION_ARGUMENT`, as C's does once the transfer has a
+  connection, but nothing is traced where C traces "Cannot change share object while in use"
+  and "setopt 0x2774 got bad argument" (both measured with the C build from a write callback).
+  The step in progress holds the transfer's `Easy` and may be using the share the change would
+  replace. Pinned by `a_callback_cannot_change_the_share`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 - **A share that stops keeping TLS sessions under a use leaves it no cache.** An application
   that unshares `CURL_LOCK_DATA_SSL_SESSION` on one thread while a handle links on another can

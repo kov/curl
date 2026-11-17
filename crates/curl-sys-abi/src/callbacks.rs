@@ -31,7 +31,7 @@ use crate::ffi::{
     curl_read_callback, curl_seek_callback, curl_trailer_callback, curl_write_callback,
     curl_xferinfo_callback,
 };
-use crate::gate::Frame;
+use crate::gate::{Callback, Frame};
 
 #[cfg(unix)]
 unsafe extern "C" {
@@ -697,11 +697,17 @@ impl Adapter {
     /// multi, or to the handle itself when its handlers are called
     /// outside any transfer.
     pub(crate) fn call<R>(&self, cx: &mut TransferCx<'_>, f: impl FnOnce() -> R) -> R {
+        self.call_as(cx, Callback::Other, f)
+    }
+
+    /// As `call`, for `callback`: the debug function lets in only the
+    /// calls that read the handle while it is in a multi (`easy_fdebug`).
+    fn call_as<R>(&self, cx: &mut TransferCx<'_>, callback: Callback, f: impl FnOnce() -> R) -> R {
         let me = cx.me();
         let frame = Frame::Transfer(NonNull::from(cx).cast());
-        // `cx` is not used again until `lend` or `lend_alone` returns.
+        // `cx` is not used again until `lend_as` or `lend_alone` returns.
         match self.easy().multi() {
-            Some(multi) => multi.stack.lend(frame, f),
+            Some(multi) => multi.stack.lend_as(frame, callback, f),
             None => self.easy().lend_alone(frame, me, f),
         }
     }
@@ -1345,7 +1351,7 @@ impl DebugHandler for Adapter {
         let Some(f) = ccb.debug else { return };
         let handle = self.handle();
         // The function's answer is ignored, as C ignores it.
-        self.call(cx, || {
+        self.call_as(cx, Callback::Debug, || {
             // SAFETY: the application's debug function takes the bytes,
             // which it may not change, as C's does.
             unsafe {
@@ -1387,18 +1393,27 @@ pub(crate) fn info(easy: &ShimEasy, line: &[u8]) {
 fn trace_as(easy: &ShimEasy, kind: DebugKind, bytes: &[u8]) {
     let ccb = easy.ccb.get();
     match ccb.debug {
-        // SAFETY: the application's debug function takes the bytes,
-        // which it may not change, as C's does; its answer is ignored,
-        // as C ignores it.
-        Some(f) => unsafe {
-            f(
-                ptr::from_ref(easy).cast_mut().cast(),
-                infotype(kind),
-                bytes.as_ptr().cast_mut().cast(),
-                bytes.len(),
-                ccb.debug_data,
-            );
-        },
+        Some(f) => {
+            let call = || {
+                // SAFETY: the application's debug function takes the
+                // bytes, which it may not change, as C's does; its answer
+                // is ignored, as C ignores it.
+                unsafe {
+                    f(
+                        ptr::from_ref(easy).cast_mut().cast(),
+                        infotype(kind),
+                        bytes.as_ptr().cast_mut().cast(),
+                        bytes.len(),
+                        ccb.debug_data,
+                    );
+                }
+            };
+            // In a multi, it lets in only the calls that read the handle.
+            match easy.multi() {
+                Some(multi) => multi.stack.debug_unlent(call),
+                None => call(),
+            }
+        }
         None if kind == DebugKind::Text => {
             to_stream(ccb.stderr, b"* ");
             to_stream(ccb.stderr, bytes);

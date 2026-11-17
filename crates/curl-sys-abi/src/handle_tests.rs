@@ -3712,6 +3712,98 @@ unsafe extern "C" fn debug_count(
     0
 }
 
+/// What a debug function's calls into its handle were answered.
+#[derive(Default)]
+struct Asked {
+    changes: Vec<CURLcode>,
+    reads: Vec<CURLcode>,
+}
+
+unsafe extern "C" fn debug_asks(
+    h: *mut CURL,
+    _kind: ffi::curl_infotype,
+    _ptr: *mut c_char,
+    _n: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: the test passes an `Asked`.
+    let asked = unsafe { &mut *data.cast::<Asked>() };
+    asked.changes.push(long(h, ffi::CURLOPT_MAXREDIRS, 3));
+    let mut url: *mut c_char = ptr::null_mut();
+    // SAFETY: the handle the function was called with, still live.
+    let code = unsafe { curl_easy_getinfo(h, ffi::CURLINFO_EFFECTIVE_URL, &raw mut url) };
+    asked.reads.push(code);
+    0
+}
+
+/// The debug function may read its handle but not change it: a call that
+/// would is refused (`CURLE_RECURSIVE_API_CALL`), as C's debug callback
+/// enforces read-only calls (`set_readonly`).
+#[test]
+fn the_debug_function_may_only_read_its_handle() {
+    let (path, url) = file("debug-readonly", b"hello");
+    let mut asked = Asked::default();
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    function(
+        c,
+        ffi::CURLOPT_DEBUGFUNCTION,
+        debug_asks as DebugFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asked);
+    // SAFETY: a live handle, then not used again.
+    unsafe {
+        assert_eq!(curl_easy_perform(c), CURLE_OK);
+        curl_easy_cleanup(c);
+    }
+    assert!(!asked.changes.is_empty());
+    assert!(
+        asked.changes.iter().all(|&r| r == CURLE_RECURSIVE_API_CALL),
+        "{:?}",
+        asked.changes
+    );
+    assert!(
+        asked.reads.iter().all(|&r| r == CURLE_OK),
+        "{:?}",
+        asked.reads
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A line a setopt traces goes to the debug function, which may change
+/// the handle while it is in no multi but only read it once it is in one,
+/// as C pushes the callback on the multi's stack (`Curl_cbapi_enter`).
+#[test]
+fn a_debug_line_outside_a_transfer_lets_in_only_reads() {
+    use crate::multi::{curl_multi_add_handle, curl_multi_init, curl_multi_remove_handle};
+    let mut asked = Asked::default();
+    let c = curl_easy_init();
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(
+        c,
+        ffi::CURLOPT_DEBUGFUNCTION,
+        debug_asks as DebugFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asked);
+    let bad = ffi::CURLE_BAD_FUNCTION_ARGUMENT;
+    assert_eq!(long(c, ffi::CURLOPT_SSLVERSION, 999), bad);
+    assert_eq!(asked.changes, [CURLE_OK], "alone");
+    asked = Asked::default();
+    // SAFETY: a live handle and multi, then neither used again.
+    unsafe {
+        let m = curl_multi_init();
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        assert_eq!(long(c, ffi::CURLOPT_SSLVERSION, 999), bad);
+        assert_eq!(asked.changes, [CURLE_RECURSIVE_API_CALL], "in a multi");
+        assert_eq!(asked.reads, [CURLE_OK]);
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(crate::multi::curl_multi_cleanup(m), CURLM_OK);
+    }
+}
+
 /// The trace goes to the debug function, with the handle, else to the
 /// STDERR stream after `* `.
 #[test]
@@ -4232,7 +4324,7 @@ struct Calls {
     /// Set once added and running.
     performing: bool,
     /// What a setopt on the transfer being added answered, in the add's
-    /// timer callback.
+    /// timer callback: refused, as the callback lets in only reads.
     adding_setopt: Option<CURLcode>,
     timer_getinfo: Option<CURLcode>,
     timer_pause: Option<CURLcode>,
@@ -4391,9 +4483,9 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
         assert_eq!(e.multi, m as usize);
         assert_eq!(e.timers.first(), Some(&0), "run at once");
-        assert_eq!(e.adding_setopt, Some(CURLE_OK));
-        let total = options(c, |o| o.limits.total);
-        assert_eq!(total, curl_core::time::TimeLimit::from_millis(100_000));
+        // The timer callback lets in only calls that read the handle.
+        assert_eq!(e.adding_setopt, Some(CURLE_RECURSIVE_API_CALL));
+        assert_eq!(options(c, |o| o.limits.total), None, "unchanged");
         e.performing = true;
         let mut offt: curl_off_t = -2;
         assert_eq!(
@@ -6853,9 +6945,9 @@ fn post_fields_asked_chunked_keep_their_size() {
     }
 }
 
-/// A debug function that sets `CURLOPT_CUSTOMREQUEST` to PATCH when the
-/// switch to GET after a redirect is traced, as `api.c` lets a callback
-/// set options (`easy_setopt` may recurse).
+/// A debug function that tries to set `CURLOPT_CUSTOMREQUEST` to PATCH
+/// when the switch to GET after a redirect is traced, and must be refused:
+/// the debug callback lets in only calls that read the handle.
 unsafe extern "C" fn patch_on_stick(
     h: *mut CURL,
     kind: ffi::curl_infotype,
@@ -6869,18 +6961,17 @@ unsafe extern "C" fn patch_on_stick(
         let patch = c"PATCH";
         assert_eq!(
             pointer(h, ffi::CURLOPT_CUSTOMREQUEST, patch.as_ptr().cast_mut()),
-            CURLE_OK
+            CURLE_RECURSIVE_API_CALL
         );
     }
     0
 }
 
 /// A custom method the debug function sets while a 303's "Stick to
-/// DELETE instead of GET" is traced is the one the next request sends:
-/// the C build sends `PATCH /b` (`http_switch_to_get` leaves the option
-/// where it is while it traces).
+/// DELETE instead of GET" is traced is refused, and the next request
+/// sends the one the application set: the C build sends `DELETE /b`.
 #[test]
-fn a_custom_method_set_from_the_debug_function_on_a_redirect_stands() {
+fn a_custom_method_set_from_the_debug_function_on_a_redirect_is_refused() {
     let (port, server) = serve(vec![
         b"HTTP/1.1 303 See Other\r\nLocation: /b\r\nContent-Length: 0\r\n\
           Connection: close\r\n\r\n",
@@ -6907,7 +6998,7 @@ fn a_custom_method_set_from_the_debug_function_on_a_redirect_stands() {
     let requests = server.join().unwrap();
     assert!(requests[0].starts_with(b"DELETE /a "));
     let second = String::from_utf8_lossy(&requests[1]);
-    assert!(second.starts_with("PATCH /b "), "{second}");
+    assert!(second.starts_with("DELETE /b "), "{second}");
 }
 
 /// What a debug function saw sent of the body.
@@ -10550,18 +10641,28 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
     }
 }
 
-/// From a callback, `CURLOPT_SHARE` is refused though the transfer has no
-/// connection yet, where C takes it: its `Easy` is the step's to use.
+/// From a callback, `CURLOPT_SHARE` is refused without a word, where C
+/// says "Cannot change share object while in use": the step in progress
+/// holds the transfer's `Easy`.
 #[test]
 fn a_callback_cannot_change_the_share() {
     use crate::share::{curl_share_cleanup, curl_share_init};
     struct Asked {
+        c: *mut CURL,
         sh: *mut ffi::CURLSH,
         answer: Option<ffi::CURLcode>,
-        said_setopt: bool,
+        lines: Vec<Vec<u8>>,
     }
-    unsafe extern "C" fn asks(
-        c: *mut CURL,
+    unsafe extern "C" fn write(_: *mut c_char, size: usize, n: usize, user: *mut c_void) -> usize {
+        // SAFETY: the test passes its record as the write data.
+        let asked = unsafe { &mut *user.cast::<Asked>() };
+        if asked.answer.is_none() {
+            asked.answer = Some(pointer(asked.c, ffi::CURLOPT_SHARE, asked.sh));
+        }
+        size * n
+    }
+    unsafe extern "C" fn lines(
+        _: *mut CURL,
         _: ffi::curl_infotype,
         data: *mut c_char,
         size: usize,
@@ -10571,35 +10672,38 @@ fn a_callback_cannot_change_the_share() {
         let asked = unsafe { &mut *user.cast::<Asked>() };
         // SAFETY: the `size` bytes the library gives at `data`.
         let line = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
-        // As the `.netrc` is read: in C, before the transfer has a connection.
-        if asked.answer.is_none() && line.starts_with(b"Could not find host") {
-            asked.answer = Some(pointer(c, ffi::CURLOPT_SHARE, asked.sh));
-        }
-        asked.said_setopt |= line.starts_with(b"setopt ");
+        asked.lines.push(line.to_vec());
         0
     }
+    let (path, url) = file("share-in-callback", b"hello");
     let sh = curl_share_init();
+    let c = curl_easy_init();
     let mut asked = Asked {
+        c,
         sh,
         answer: None,
-        said_setopt: false,
+        lines: Vec::new(),
     };
-    let c = curl_easy_init();
-    let url = c"file:///nonexistent/curl-shim-share";
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     long(c, ffi::CURLOPT_VERBOSE, 1);
-    long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_OPTIONAL);
-    pointer(c, ffi::CURLOPT_NETRC_FILE, c"/dev/null".as_ptr().cast_mut());
-    function(c, ffi::CURLOPT_DEBUGFUNCTION, asks as DebugFn as *const ());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, write as WriteFn as *const ());
+    pointer(c, ffi::CURLOPT_WRITEDATA, &raw mut asked);
+    function(c, ffi::CURLOPT_DEBUGFUNCTION, lines as DebugFn as *const ());
     pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asked);
     // SAFETY: a live handle, then it and the share, not used again.
     unsafe {
-        curl_easy_perform(c);
+        assert_eq!(curl_easy_perform(c), CURLE_OK);
         curl_easy_cleanup(c);
         assert_eq!(asked.answer, Some(CURLE_BAD_FUNCTION_ARGUMENT));
-        assert!(!asked.said_setopt, "this refusal is ours: C has no line");
+        let said = |start: &[u8]| asked.lines.iter().any(|l| l.starts_with(start));
+        assert!(
+            !said(b"setopt "),
+            "this refusal is ours: C has no such line"
+        );
+        assert!(!said(b"Cannot change share"), "nor C's own");
         assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
     }
+    std::fs::remove_file(path).unwrap();
 }
 
 /// A bad argument to any option adds C's `failf` line: to ERRORBUFFER if no

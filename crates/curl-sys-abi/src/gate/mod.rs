@@ -38,8 +38,9 @@ pub(crate) struct EasyRules {
     /// The call may run while another call on the handle, or on its
     /// multi, is under way.
     pub(crate) recurse: bool,
-    /// The call is refused inside the multi's socket and timer callbacks.
-    pub(crate) not_in_event: bool,
+    /// The call only reads the handle: the one kind of call a callback
+    /// that enforces read-only calls (debug, socket, timer) lets in.
+    pub(crate) readonly: bool,
     /// The call is refused while the sessions of the handle's cache go out
     /// on this thread.
     pub(crate) no_scache_lock: bool,
@@ -327,8 +328,9 @@ pub(crate) struct MultiStack {
     depth: Cell<u8>,
     /// The innermost callback's context.
     frame: Cell<Option<Frame>>,
-    /// Socket and timer callbacks running.
-    events: Cell<u8>,
+    /// Callbacks running that let in only read-only easy calls: socket,
+    /// timer and debug (`set_readonly`).
+    readonly: Cell<u8>,
     /// Notify callbacks running.
     notifies: Cell<u8>,
     /// Whether the sessions of its cache are going out, the application's
@@ -407,36 +409,64 @@ impl MultiStack {
         self.depth.get() > 0
     }
 
-    /// A socket or timer callback is running.
-    pub(crate) fn in_event(&self) -> bool {
-        self.events.get() > 0
+    /// A callback that lets in only read-only easy calls is running.
+    pub(crate) fn in_readonly(&self) -> bool {
+        self.readonly.get() > 0
     }
 
-    /// Run `f` with `frame` lent, as `Curl_cbapi_enter` pushes a callback.
-    /// Past the depth limit the callback runs without counting, as in C.
+    /// Run `f` with `frame` lent, as `Curl_cbapi_enter` pushes a callback:
+    /// an event callback lets in only read-only easy calls. Past the depth
+    /// limit the callback runs without counting, as in C.
     pub(crate) fn lend<R>(&self, frame: Frame, f: impl FnOnce() -> R) -> R {
+        self.lend_as(frame, Callback::Other, f)
+    }
+
+    /// Run `f`, a debug callback made with nothing of the handle lent (a
+    /// line traced outside a transfer while the handle is in the multi):
+    /// it lets in only read-only easy calls, as C's pushed on the multi's
+    /// call stack does.
+    pub(crate) fn debug_unlent<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.readonly.set(self.readonly.get() + 1);
+        // Panics abort, so the restore below always runs.
+        let r = f();
+        self.readonly.set(self.readonly.get() - 1);
+        r
+    }
+
+    /// As `lend`, for `callback`: the debug callback, as the event
+    /// callbacks, lets in only read-only easy calls.
+    pub(crate) fn lend_as<R>(&self, frame: Frame, callback: Callback, f: impl FnOnce() -> R) -> R {
         let counted = self.depth.get() < MULTI_MAX_DEPTH;
         if counted {
             self.depth.set(self.depth.get() + 1);
         }
-        let (events, notifies) = match frame {
-            Frame::Transfer(_) => (0, 0),
-            Frame::Event(_) => (1, 0),
-            Frame::Notify(_) => (0, 1),
+        let (readonly, notifies) = match (frame, callback) {
+            (_, Callback::Debug) | (Frame::Event(_), _) => (1, 0),
+            (Frame::Transfer(_), _) => (0, 0),
+            (Frame::Notify(_), _) => (0, 1),
         };
-        self.events.set(self.events.get() + events);
+        self.readonly.set(self.readonly.get() + readonly);
         self.notifies.set(self.notifies.get() + notifies);
         let outer = self.frame.replace(Some(frame));
         // Panics abort, so the restore below always runs.
         let r = f();
         self.frame.set(outer);
-        self.events.set(self.events.get() - events);
+        self.readonly.set(self.readonly.get() - readonly);
         self.notifies.set(self.notifies.get() - notifies);
         if counted {
             self.depth.set(self.depth.get() - 1);
         }
         r
     }
+}
+
+/// Which callback a frame is lent to, where the frame does not say.
+#[derive(Clone, Copy)]
+pub(crate) enum Callback {
+    /// The debug callback (`easy_fdebug`), which enforces read-only calls.
+    Debug,
+    /// Any other.
+    Other,
 }
 
 /// An easy handle's calls in progress (C's `data->callstack`).
@@ -469,7 +499,7 @@ impl EasyStack {
         if !rules.recurse && (self.depth.get() > 0 || multi_busy) {
             return Err(Recursive);
         }
-        if rules.not_in_event && multi.is_some_and(MultiStack::in_event) {
+        if !rules.readonly && multi.is_some_and(MultiStack::in_readonly) {
             return Err(Recursive);
         }
         if self.depth.get() >= EASY_MAX_DEPTH {
@@ -488,7 +518,9 @@ mod tests {
     #[test]
     fn reads_api_c() {
         let pause = EasyCall::Pause.rules();
-        assert!(pause.recurse && pause.not_in_event && !pause.kills);
+        assert!(pause.recurse && !pause.readonly && !pause.kills);
+        assert!(EasyCall::Getinfo.rules().readonly);
+        assert!(!EasyCall::Setopt.rules().readonly);
         assert!(EasyCall::Cleanup.rules().kills);
         assert!(!EasyCall::Perform.rules().recurse);
         assert!(EasyCall::Setopt.rules().recurse);
@@ -547,11 +579,34 @@ mod tests {
             let e = EasyStack::default();
             assert!(e.enter(EasyCall::Pause, Some(&m)).is_ok());
         });
-        assert!(!m.in_event());
+        assert!(!m.in_readonly());
         // Out of the notification, an add may not recurse again.
         m.lend(transfer_frame(), || {
             assert_eq!(m.enter(MultiCall::AddHandle).err(), Some(Recursive));
         });
+    }
+
+    /// The debug callback, and the event callbacks, let in only the calls
+    /// that read the handle; a transfer's other callbacks let in a change.
+    #[test]
+    fn the_debug_callback_lets_in_only_reads() {
+        let m = MultiStack::default();
+        let _perform = m.enter(MultiCall::Perform).unwrap();
+        let e = EasyStack::default();
+        let only_reads = |m: &MultiStack| {
+            assert!(e.enter(EasyCall::Getinfo, Some(m)).is_ok());
+            assert!(e.enter(EasyCall::Header, Some(m)).is_ok());
+            assert_eq!(e.enter(EasyCall::Setopt, Some(m)).err(), Some(Recursive));
+            assert_eq!(e.enter(EasyCall::Pause, Some(m)).err(), Some(Recursive));
+        };
+        m.lend_as(transfer_frame(), Callback::Debug, || only_reads(&m));
+        m.lend(Frame::Event(NonNull::dangling()), || only_reads(&m));
+        m.debug_unlent(|| only_reads(&m));
+        m.lend(transfer_frame(), || {
+            assert!(e.enter(EasyCall::Setopt, Some(&m)).is_ok());
+            assert!(e.enter(EasyCall::Pause, Some(&m)).is_ok());
+        });
+        assert!(!m.in_readonly());
     }
 
     /// Calls nest no deeper than C lets them.

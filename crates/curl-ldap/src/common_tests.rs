@@ -22,6 +22,7 @@ fn the_declarations_are_the_headers() {
         LDAP_RES_SEARCH_REFERENCE.into(),
         LDAP_RES_SEARCH_RESULT.into(),
         LDAP_RES_EXTENDED.into(),
+        LDAP_RES_UNSOLICITED.into(),
         LBER_SB_OPT_DATA_READY.into(),
         LBER_SB_OPT_SET_MAX_INCOMING.into(),
         LBER_SBIOD_LEVEL_TRANSPORT.into(),

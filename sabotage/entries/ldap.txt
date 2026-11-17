@@ -160,3 +160,11 @@ witness: curl-ldap openldap::tests::an_unbind_after_a_blocked_send_is_not_sent
         slot.send_blocked.set(blocked);
 --- new
         slot.send_blocked.set(false);
+
+=== the notices a server sends unasked are kept
+file: crates/curl-ldap/src/openldap.rs
+witness: curl-ldap openldap::tests::notices_sent_unasked_are_let_go
+--- old
+            unsafe { sys::ldap_msgdelete(ld, sys::LDAP_RES_UNSOLICITED) };
+--- new
+            let _ = sys::LDAP_RES_UNSOLICITED;

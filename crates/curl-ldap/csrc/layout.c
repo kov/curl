@@ -17,6 +17,7 @@ const int64_t curl_ldap_values[] = {
   LDAP_OPT_PROTOCOL_VERSION, LDAP_OPT_SOCKBUF, LDAP_API_INFO_VERSION,
   LDAP_MSG_ONE, LDAP_RES_BIND, LDAP_RES_SEARCH_ENTRY,
   LDAP_RES_SEARCH_REFERENCE, LDAP_RES_SEARCH_RESULT, LDAP_RES_EXTENDED,
+  LDAP_RES_UNSOLICITED,
   LBER_SB_OPT_DATA_READY, LBER_SB_OPT_SET_MAX_INCOMING,
   LBER_SBIOD_LEVEL_TRANSPORT, LDAP_URL_SUCCESS, LDAP_URL_ERR_MEM,
   (int64_t)sizeof(struct berval), (int64_t)offsetof(struct berval, bv_len),
@@ -45,7 +46,7 @@ const int64_t curl_ldap_values[] = {
 };
 
 _Static_assert(sizeof(curl_ldap_values) / sizeof(curl_ldap_values[0])
-               == 72, "src/sys.rs's LAYOUT_LEN");
+               == 73, "src/sys.rs's LAYOUT_LEN");
 
 /* What lib/ldap.c says of the library, from its headers: its name and
  * version (LDAP_VENDOR_NAME, LDAP_VENDOR_VERSION), and whether it is

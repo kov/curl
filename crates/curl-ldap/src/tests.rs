@@ -237,6 +237,47 @@ fn a_session_over_its_socket_uses_it() {
     drop(ours);
 }
 
+/// The notices a server sends unasked, message id 0, are let go as each
+/// read takes them, so a server cannot grow what libldap keeps of them
+/// without end (`oldap_result`): asked for after the search is read,
+/// there is none left. The search's own messages are read as before.
+#[test]
+fn notices_sent_unasked_are_let_go() {
+    let mut session = wired();
+    let mut wire = Bytes::default();
+    let search = Search {
+        dn: Some(b"dc=x".to_vec()),
+        scope: Scope::Subtree,
+        filter: None,
+        attrs: None,
+    };
+    let id = session.search(&mut wire, &search).unwrap();
+    let n = id.0 as u8;
+    // An extended response naming a notice other than the one of
+    // disconnection, which the library acts on itself.
+    let mut notice = result_op(0x78, 0, b"").split_off(2);
+    notice.extend_from_slice(&ber(0x8a, b"1.3.6.1.4.1.99999.1"));
+    let notice = ldap_message(0, &ber(0x78, &notice));
+    for _ in 0..3 {
+        wire.incoming.extend_from_slice(&notice);
+    }
+    wire.incoming
+        .extend_from_slice(&ldap_message(n, &entry_op(b"cn=a,dc=x", &[])));
+    wire.incoming.extend_from_slice(&notice);
+    wire.incoming
+        .extend_from_slice(&ldap_message(n, &result_op(0x65, 0, b"")));
+    let kinds: Vec<Kind> = (0..2)
+        .map(|_| session.result(&mut wire, id).unwrap().expect("read").kind())
+        .collect();
+    assert_eq!(kinds, [Kind::SearchEntry, Kind::SearchResult]);
+    assert!(wire.incoming.is_empty(), "all read");
+    let left = session
+        .result(&mut wire, MsgId(0))
+        .unwrap()
+        .map(|m| m.kind());
+    assert_eq!(left, None, "a notice kept");
+}
+
 /// A session over a wire, as the connect leaves it.
 fn wired() -> Box<dyn Session> {
     let (ours, _theirs) = UnixStream::pair().unwrap();

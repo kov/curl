@@ -343,7 +343,16 @@ impl Session for Libsession {
         let rc = self.with(wire, |ld| {
             // SAFETY: a live session, no time to wait, and where the
             // message goes.
-            unsafe { sys::ldap_result(ld, id.0, sys::LDAP_MSG_ONE, &raw mut tv, &raw mut msg) }
+            let rc =
+                unsafe { sys::ldap_result(ld, id.0, sys::LDAP_MSG_ONE, &raw mut tv, &raw mut msg) };
+            // The notices the server sent unasked, which libldap keeps
+            // until they are asked for and nothing asks for, go as they
+            // come, so that a server cannot grow them without end
+            // (`oldap_result`). None queued is no failure.
+            // SAFETY: a live session; the message read above is
+            // another's, and stays.
+            unsafe { sys::ldap_msgdelete(ld, sys::LDAP_RES_UNSOLICITED) };
+            rc
         });
         let failed = (rc < 0).then_some(Code(rc));
         if msg.is_null() {

@@ -115,6 +115,9 @@ pub(crate) const LDAP_RES_SEARCH_ENTRY: c_int = 0x64;
 pub(crate) const LDAP_RES_SEARCH_REFERENCE: c_int = 0x73;
 pub(crate) const LDAP_RES_SEARCH_RESULT: c_int = 0x65;
 pub(crate) const LDAP_RES_EXTENDED: c_int = 0x78;
+/// The message id of a notice the server sends unasked (RFC 4511,
+/// section 4.4).
+pub(crate) const LDAP_RES_UNSOLICITED: c_int = 0;
 pub(crate) const LBER_SB_OPT_DATA_READY: c_int = 8;
 pub(crate) const LBER_SB_OPT_SET_MAX_INCOMING: c_int = 14;
 pub(crate) const LBER_SBIOD_LEVEL_TRANSPORT: c_int = 20;
@@ -186,6 +189,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub(crate) fn ldap_msgtype(lm: *mut LDAPMessage) -> c_int;
     pub(crate) fn ldap_msgfree(lm: *mut LDAPMessage) -> c_int;
+    pub(crate) fn ldap_msgdelete(ld: *mut LDAP, msgid: c_int) -> c_int;
     pub(crate) fn ldap_parse_result(
         ld: *mut LDAP,
         res: *mut LDAPMessage,
@@ -302,4 +306,4 @@ unsafe extern "C" {
 }
 
 /// How many values and layouts `csrc/layout.c` gives.
-pub(crate) const LAYOUT_LEN: usize = 72;
+pub(crate) const LAYOUT_LEN: usize = 73;

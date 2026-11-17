@@ -1036,7 +1036,7 @@ witness: curl-core conn::quic::tests::the_multis_room_is_lent_once
 
 === a paused transfer waits to write for its QUIC connection's unsent packets
 file: crates/curl-core/src/conn/pool.rs
-witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_on_nothing_while_its_connection_holds_packets
+witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_as_its_connection_is_kept_up
 --- old
             }) if !wanted.is_empty() => h3conn.adjust_pollset(wanted, h3),
 --- new
@@ -1729,3 +1729,43 @@ witness: curl-core conn::h3proxy::tests::a_tunnel_s_connection_is_kept_up_when_a
     fn maintain(&mut self, _cx: &mut dyn LayerCx, _below: Below<'_>) -> Result<(), ErrorKind> {
         Ok(())
     }
+
+=== a paused transfer leaves its connection alone
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_keeps_its_quic_connection_up
+--- old
+            let kept = x
+                .proto
+                .maintain(cx, &mut x.lease)
+                .map_err(|e| layer_failed(&x.lease, e));
+--- new
+            let kept = Ok::<(), ErrorKind>(());
+
+=== a paused transfer steps as any other
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_keeps_its_quic_connection_up
+--- old
+            if StepCx::pause(cx).blocks(
+--- new
+            if false && StepCx::pause(cx).blocks(
+
+=== a paused transfer's failed upkeep is let go
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_ends_when_its_upkeep_fails
+--- old
+                Ok(()) => (TransferState::Exchanging(x), Wake::Idle),
+                // Its failure
+--- new
+                Ok(()) | Err(_) => (TransferState::Exchanging(x), Wake::Idle),
+                #[allow(unreachable_patterns)]
+                // Its failure
+
+=== a paused transfer stops reading on a connection kept up
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_as_its_connection_is_kept_up
+--- old
+                    if pause.recv_paused()
+                        && x.proto.reads_through_pause()
+--- new
+                    if false
+                        && x.proto.reads_through_pause()

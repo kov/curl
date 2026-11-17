@@ -335,7 +335,7 @@ pub fn drive_to_completion<H: Host>(
 }
 
 /// One wait and one perform of driving `id`: its result once it is done.
-fn drive_round<H: Host>(
+pub(crate) fn drive_round<H: Host>(
     m: &mut Multi<H>,
     id: TransferId,
     ev: &mut dyn MultiEvents<H>,

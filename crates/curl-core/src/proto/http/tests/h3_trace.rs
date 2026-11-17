@@ -447,64 +447,75 @@ fn get_script(body: &[u8]) -> Arc<Lock<Script>> {
     script
 }
 
-/// A transfer paused both ways waits on nothing, its QUIC connection's
-/// unsent packets among it: the connection's own wish to write is not
-/// put in a pollset that wants no I/O, as C's filters are not asked then
-/// (`Curl_conn_adjust_pollset`), or the multi would be woken by a socket
-/// that is always writable while the transfer can do nothing.
+/// A transfer paused both ways, its QUIC connection holding packets it
+/// has not sent: over ngtcp2, kept up while paused, it still waits to
+/// read, as HTTP's pollset asks whatever the pause says and the pause no
+/// longer takes that out (`Curl_http_perform_pollset`,
+/// `multi_adjust_pollset`), so its connection is asked and adds its wish
+/// to write (`cf_ngtcp2_adjust_pollset`): what the multi runs it for is
+/// upkeep. quiche's waits on nothing: its connection's wish to write is
+/// not put in a pollset that wants no I/O (`Curl_conn_adjust_pollset`),
+/// or the multi would be woken by a socket always writable while the
+/// transfer can do nothing.
 #[test]
-fn a_paused_transfer_waits_on_nothing_while_its_connection_holds_packets() {
+fn a_paused_transfer_waits_as_its_connection_is_kept_up() {
     use crate::conn::io::Events;
     use crate::deliver::PauseRequest;
-    let script = get_script(b"123456789");
-    let clock = ManualClock::new().unwrap();
-    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
-    // The handshake's sends go; the request's are refused from then on.
-    let talk = Conversation::replies(&[b"server flight", b"response"], false)
-        .per_send()
-        .stalling_sends_after(1, 1000);
-    let net = FakeNet::new(clock.clone())
-        .with_peer(at, Peer::Accepts)
-        .with_conversation(at, talk);
-    let env = Env {
-        clock: Box::new(clock),
-        net: Box::new(net),
-        arena: ArenaPolicy::new(16, 0).unwrap(),
-        waker: None,
-    };
-    let mut m: Multi = Multi::with_env(env).unwrap();
-    let mut e = tracing(FakeTls::new().unwrap(), &script);
-    let url = format!("https://127.0.0.1:{PORT}/");
-    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
-    e.options_mut().http.version = crate::options::HttpVersion::Http3Only;
-    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    let mut waits = Events::NONE;
-    for _ in 0..10 {
-        m.perform(&mut NoEvents).unwrap();
-        waits = Events::NONE;
-        m.sockets(&mut NoEvents, |_, e| waits = waits | e).unwrap();
-        if matches!(
-            m.state_of(id),
-            crate::multi::state::TransferState::Exchanging(_)
-        ) && waits.contains(Events::OUT)
-        {
-            break;
+    for (flavour, want) in [
+        (crate::http3::Flavour::Ngtcp2, Events::IN | Events::OUT),
+        (crate::http3::Flavour::Quiche, Events::NONE),
+    ] {
+        let script = get_script(b"123456789");
+        script.lock().unwrap().flavour = flavour;
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        // The handshake's sends go; the request's are refused from then on.
+        let talk = Conversation::replies(&[b"server flight", b"response"], false)
+            .per_send()
+            .stalling_sends_after(1, 1000);
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk);
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::with_env(env).unwrap();
+        let mut e = tracing(FakeTls::new().unwrap(), &script);
+        let url = format!("https://127.0.0.1:{PORT}/");
+        e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+        e.options_mut().http.version = crate::options::HttpVersion::Http3Only;
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        let mut waits = Events::NONE;
+        for _ in 0..10 {
+            m.perform(&mut NoEvents).unwrap();
+            waits = Events::NONE;
+            m.sockets(&mut NoEvents, |_, e| waits = waits | e).unwrap();
+            if matches!(
+                m.state_of(id),
+                crate::multi::state::TransferState::Exchanging(_)
+            ) && waits.contains(Events::OUT)
+            {
+                break;
+            }
         }
+        assert!(
+            matches!(
+                m.state_of(id),
+                crate::multi::state::TransferState::Exchanging(_)
+            ),
+            "the request is under way"
+        );
+        assert!(waits.contains(Events::OUT), "the connection holds packets");
+        m.pause(id, PauseRequest::ALL, &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        let mut paused = Events::NONE;
+        m.sockets(&mut NoEvents, |_, e| paused = paused | e)
+            .unwrap();
+        assert_eq!(paused, want, "{flavour:?}");
     }
-    assert!(
-        matches!(
-            m.state_of(id),
-            crate::multi::state::TransferState::Exchanging(_)
-        ),
-        "the request is under way"
-    );
-    assert!(waits.contains(Events::OUT), "the connection holds packets");
-    m.pause(id, PauseRequest::ALL, &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
-    let mut paused = Events::NONE;
-    m.sockets(&mut NoEvents, |_, e| paused = paused | e)
-        .unwrap();
-    assert_eq!(paused, Events::NONE);
 }
 
 /// A QUIC connection's socket is not drained as it closes: C reads the
@@ -1045,6 +1056,187 @@ fn a_held_back_transfer_keeps_its_quic_connection_up() {
             }
         }
     }
+}
+
+/// A progress handler that counts its calls.
+#[derive(Clone, Debug, Default)]
+struct ProgressCalls(Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::handler::ProgressHandler for ProgressCalls {
+    fn progress(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// What `paused_midway` saw while the transfer was paused, and after.
+struct Paused {
+    /// The lines traced while paused.
+    lines: Vec<String>,
+    /// The progress handler's calls while paused.
+    progress: usize,
+    result: Result<(), ErrorKind>,
+    body: Vec<u8>,
+}
+
+/// A GET of `held_back`'s body by `flavour`, paused as its first half
+/// comes for twenty of the multi's waits, then let go.
+fn paused_midway(flavour: crate::http3::Flavour) -> Paused {
+    paused_midway_then(
+        flavour,
+        vec![Told::Data(0, vec![b'b'; 50]), Told::Closed(0, 0x100)],
+    )
+}
+
+/// `paused_midway`, its second packet telling `second`; a transfer that
+/// ends while paused ends there.
+fn paused_midway_then(flavour: crate::http3::Flavour, second: Vec<Told>) -> Paused {
+    use crate::deliver::PauseRequest;
+    let script = get_script(b"");
+    {
+        let mut s = script.lock().unwrap();
+        s.flavour = flavour;
+        let header = |name: &[u8], value: &[u8]| Told::Header {
+            stream: 0,
+            name: name.to_vec(),
+            value: value.to_vec(),
+        };
+        let last = s.on_read.len() - 1;
+        s.on_read[last] = vec![
+            header(b":status", b"200"),
+            header(b"content-length", b"100"),
+            Told::HeadersDone(0),
+            Told::Data(0, vec![b'a'; 50]),
+        ];
+        s.on_read.push_back(second);
+        s.out.push_back(vec![4; 30]);
+    }
+    let mut m = quic_server(&[b"server flight", b"response", b"more"]);
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    let seen = Seen::default();
+    let o = e.options_mut();
+    let url = format!("https://localhost:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.http.version = crate::options::HttpVersion::Http3Only;
+    o.output.verbose = true;
+    o.limits.total = crate::time::TimeLimit::from_millis(100_000);
+    let calls = ProgressCalls::default();
+    o.progress = crate::options::Progress::Handler(Handler::progress(calls.clone()).unwrap());
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(seen.clone()).unwrap()),
+        )
+        .unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..50 {
+        if !seen.body().is_empty() {
+            break;
+        }
+        let ended = crate::multi::drive_round(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(ended, None, "{:#?}", seen.text());
+    }
+    assert_eq!(seen.body().len(), 50, "{:#?}", seen.text());
+    m.pause(id, PauseRequest::ALL, &mut NoEvents).unwrap();
+    let from = seen.text().len();
+    let called = calls.0.load(std::sync::atomic::Ordering::Relaxed);
+    let mut ended = None;
+    for _ in 0..20 {
+        ended = crate::multi::drive_round(&mut m, id, &mut NoEvents).unwrap();
+        if ended.is_some() {
+            break;
+        }
+    }
+    let lines = seen.text()[from..]
+        .iter()
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let progress = calls.0.load(std::sync::atomic::Ordering::Relaxed) - called;
+    let result = match ended {
+        Some(result) => result,
+        None => {
+            m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+            crate::multi::drive_within(&mut m, id, 100, &mut NoEvents).unwrap()
+        }
+    };
+    Paused {
+        lines,
+        progress,
+        result,
+        body: seen.body(),
+    }
+}
+
+/// A paused transfer its timer runs keeps its ngtcp2 connection up, and
+/// does nothing else: no read, no send, and no progress check, its
+/// progress handler called once a run, by the update at the run's end
+/// alone (`Curl_sendrecv` on a transfer `Curl_xfer_is_blocked`, then
+/// `multi_runsingle`'s `Curl_pgrsUpdateX`). The rest of the body, the
+/// answer to a packet only that upkeep sends, is read once it goes on.
+/// quiche's connection is left alone.
+#[test]
+fn a_paused_transfer_keeps_its_quic_connection_up() {
+    for flavour in [crate::http3::Flavour::Ngtcp2, crate::http3::Flavour::Quiche] {
+        let ran = paused_midway(flavour);
+        let paused = &ran.lines;
+        assert_eq!(ran.result, Ok(()), "{flavour:?} {paused:#?}");
+        assert_eq!(ran.body.len(), 100);
+        let runs = paused
+            .iter()
+            .filter(|l| l.contains("[MULTI] [PERFORMING] pollset["))
+            .count();
+        assert!(runs > 0, "{paused:#?}");
+        assert_eq!(ran.progress, runs, "{flavour:?} {paused:#?}");
+        let kept = paused
+            .iter()
+            .filter(|l| l.ends_with("[HTTP/3] maintenance() -> 0"))
+            .count();
+        let received = paused.iter().filter(|l| l.contains("cf_recv(")).count();
+        match flavour {
+            crate::http3::Flavour::Ngtcp2 => assert!(kept > 0, "{paused:#?}"),
+            crate::http3::Flavour::Quiche => assert_eq!(kept, 0, "{paused:#?}"),
+        }
+        assert_eq!(received, 0, "{flavour:?} {paused:#?}");
+    }
+}
+
+/// A paused transfer whose connection fails as it is kept up ends there,
+/// with what the receive failed with, as `Curl_sendrecv`'s failure, not
+/// made again: bytes came for it.
+#[test]
+fn a_paused_transfer_ends_when_its_upkeep_fails() {
+    let ran = paused_midway_then(crate::http3::Flavour::Ngtcp2, vec![Told::ReadFails(-224)]);
+    assert_eq!(ran.result, Err(ErrorKind::RecvError), "{:#?}", ran.lines);
+    assert_eq!(ran.body.len(), 50);
+    let failed = format!(
+        "[HTTP/3] maintenance() -> {}",
+        ErrorKind::RecvError.number()
+    );
+    assert!(
+        ran.lines.iter().any(|l| l.ends_with(&failed)),
+        "{:#?}",
+        ran.lines
+    );
+    assert!(
+        ran.lines
+            .iter()
+            .any(|l| l.ends_with("Curl_sendrecv() -> 56")),
+        "{:#?}",
+        ran.lines
+    );
+    assert!(
+        ran.lines
+            .iter()
+            .any(|l| l.ends_with("[MULTI] [PERFORMING] -> [COMPLETED]")),
+        "{:#?}",
+        ran.lines
+    );
 }
 
 /// A connection that fails as it is kept up ends its held-back transfer

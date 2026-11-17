@@ -1513,7 +1513,14 @@ The rules that keep this sound:
   if it exchanges and sending while it has more to send. A transfer runs again unless the
   pause stops every way it moves (`Curl_xfer_is_blocked`). A pause from the transfer's own
   handler, its run out of the slot, sets `judge_pause`; the engine judges it when the run is
-  back (`put_back`), against the protocol as the step left it.
+  back (`put_back`), against the protocol as the step left it. A blocked transfer that runs
+  anyway, by a timer, neither reads, sends nor takes the progress check: it keeps its
+  connection up (`ProtoState::maintain`, as `RateLimiting` does), a failure handled as a
+  step's; the update at the run's end still calls its progress handler. HTTP's pollset reads
+  while the response is to come, whatever the pause says, and the pause takes that out
+  unless the connection is kept up (`ProtoState::reads_through_pause`,
+  `multi_adjust_pollset`): a paused transfer over ngtcp2 waits to read, and its connection
+  adds what it wants on top.
 - **A call on a sibling transfer** routes to that slot. A sibling's unpause flushes its
   pipeline synchronously by the same rule as a step: its `Run` is moved out for the flush
   and put back after, so the handlers it calls get a context whose `EngineRest` does not alias

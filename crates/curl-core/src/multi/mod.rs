@@ -59,6 +59,8 @@ pub use sched::{Census, Counts};
 pub use sockets::{SocketFor, SocketWhat, UnknownSocket};
 pub use ssls::{ExportDone, ExportFailed, Exporting, SessionsOut};
 pub use timers::TimerChange;
+#[cfg(test)]
+pub(crate) use wait::drive_round;
 #[cfg(any(test, feature = "test-util"))]
 pub use wait::drive_within;
 pub use wait::{EventTable, drive_by_events_with};

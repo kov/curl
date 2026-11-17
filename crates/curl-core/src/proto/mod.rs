@@ -1511,6 +1511,14 @@ impl ProtoState {
         }
     }
 
+    /// Whether the protocol's pollset reads while receiving is paused, as
+    /// HTTP's does as long as its response is to come
+    /// (`Curl_http_perform_pollset`): the pause takes it out again unless
+    /// the connection is kept up (`multi_adjust_pollset`).
+    pub(crate) fn reads_through_pause(&self) -> bool {
+        matches!(*self, ProtoState::Http(ref r) if r.receiving())
+    }
+
     /// What the request waits for on its connection's socket, once made.
     pub(crate) fn interest(
         &self,

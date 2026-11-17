@@ -1161,7 +1161,8 @@ impl TransferState {
     /// connection that is kept up meanwhile, as its layers adjust it
     /// (`mstate_ratelimit_pollset`). An exchange is never over a limit,
     /// so C's taking a limited direction out (`multi_adjust_pollset`)
-    /// leaves only the pause's, which the protocol applies. The
+    /// leaves only the pause's, which the protocol applies, but for
+    /// reading on a connection kept up. The
     /// connection's layers adjust what an exchange waits for, if it waits
     /// for anything (`Curl_conn_adjust_pollset`).
     pub(crate) fn pollset<'a>(
@@ -1239,7 +1240,15 @@ impl TransferState {
                 // A connection another transfer's step has out waits for
                 // nothing of this one's until it is back.
                 if let Some(slot) = pool.slot_of(&x.lease) {
-                    let interest = x.proto.interest(pause, slot.line());
+                    let mut interest = x.proto.interest(pause, slot.line());
+                    // A connection kept up reads while receiving is paused
+                    // (`multi_adjust_pollset`).
+                    if pause.recv_paused()
+                        && x.proto.reads_through_pause()
+                        && slot.wants_maintenance()
+                    {
+                        interest = interest | Events::IN;
+                    }
                     let side_interest = x.proto.side_interest(pause);
                     let events = slot.adjust_pollset(interest, x.proto.stream_sending());
                     for s in slot.sockets() {
@@ -1996,6 +2005,35 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                         } else {
                             (TransferState::Exchanging(x), Wake::Again)
                         }
+                    }
+                }
+            }
+        }
+        // Paused every way the request moves bytes: nothing is read, sent
+        // or checked, but its connection is kept up (`Curl_sendrecv`'s
+        // `Curl_xfer_is_blocked`).
+        TransferState::Exchanging(mut x)
+            if StepCx::pause(cx).blocks(x.proto.directions(cx.easy().options())) =>
+        {
+            let kept = x
+                .proto
+                .maintain(cx, &mut x.lease)
+                .map_err(|e| layer_failed(&x.lease, e));
+            match kept {
+                Ok(()) => (TransferState::Exchanging(x), Wake::Idle),
+                // Its failure is `Curl_sendrecv`'s, a receive's retried as
+                // any is (`multistate_performing`).
+                Err(e) => {
+                    sendrecv_failed(cx, e);
+                    let retried = e == ErrorKind::RecvError
+                        && matches!(retry_request(run, &mut x, cx, false), Ok(true));
+                    if retried {
+                        (
+                            TransferState::Done(x.retried(Ok(()), Reached::Made)),
+                            Wake::Again,
+                        )
+                    } else {
+                        (TransferState::Exchanging(x).fail(e), Wake::Again)
                     }
                 }
             }

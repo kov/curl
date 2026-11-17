@@ -1130,6 +1130,13 @@ impl Request {
         }
     }
 
+    /// Whether the response is still to come (`CURL_REQ_WANT_RECV`), what
+    /// C's pollset reads for whatever the pause says
+    /// (`Curl_http_perform_pollset`).
+    pub(crate) fn receiving(&self) -> bool {
+        !matches!(self.stage, Stage::Done)
+    }
+
     /// What the request waits for on its socket.
     pub(crate) fn interest(&self, pause: Pause) -> Events {
         let mut events = Events::NONE;

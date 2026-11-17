@@ -578,10 +578,10 @@ witness: curl-core multi::shutdown_tests::the_socket_callback_reaches_a_transfer
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_multiplexed_connection_is_joined_only_as_it_may_be
 --- old
-    if conn.close || !conn.serves(wanted.route, tls) {
+    if conn.closes() || !conn.serves(wanted.route, tls) {
         return JoinVerdict::Passed;
 --- new
-    if conn.close && !conn.serves(wanted.route, tls) {
+    if conn.closes() && !conn.serves(wanted.route, tls) {
         return JoinVerdict::Passed;
 
 === a transfer that speaks HTTP/1.1 alone joins a connection that multiplexes

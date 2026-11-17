@@ -727,3 +727,19 @@ witness: curl-core proto::ftp::tests::a_redirect_s_ftp_server_is_sent_no_account
                 |v: &Option<Vec<u8>>| v.as_deref().filter(|_| trusted).map(copy_bytes).transpose();
 --- new
                 |v: &Option<Vec<u8>>| v.as_deref().map(copy_bytes).transpose();
+
+=== a wildcard listing keeps one file more than C's most
+file: crates/curl-core/src/proto/ftp/list.rs
+witness: curl-core proto::ftp::list::tests::a_listing_keeps_at_most_c_s_files
+--- old
+        if keep && self.files.len() >= MAX_FILES {
+--- new
+        if keep && self.files.len() > MAX_FILES {
+
+=== a wildcard listing filled to its most fails unsaid
+file: crates/curl-core/src/proto/ftp/wildcard.rs
+witness: curl-core proto::ftp::tests::a_wildcard_download_fails_on_a_listing_of_too_many_files
+--- old
+        if full.is_some() {
+--- new
+        if full.is_some() && false {

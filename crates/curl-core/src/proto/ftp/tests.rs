@@ -1969,6 +1969,30 @@ fn a_wildcard_download_fails_on_its_listing() {
     }
 }
 
+/// A listing naming more matching files than C keeps fails the download
+/// as one that cannot be read, saying so (`ftp_pl_insert_finfo`).
+#[test]
+fn a_wildcard_download_fails_on_a_listing_of_too_many_files() {
+    let most = crate::proto::ftp::list::MAX_FILES;
+    let mut listing = Vec::new();
+    for n in 0..=most {
+        listing
+            .extend_from_slice(format!("-rw-r--r-- 1 u g 5 Jan 17 11:01 {n}.txt\r\n").as_bytes());
+    }
+    let talk = listing_server(0);
+    let list = data(&listing);
+    let mut m = serving(&[&talk], &[&list]);
+    let (id, body, text) = added(&mut m, WILDCARD, |o| {
+        o.line.make_mut().unwrap().ftp.wildcard = true;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::FtpBadFileList), "{said}");
+    assert!(body.0.lock().unwrap().is_empty());
+    let line = format!("Reached maximum number of dir entries ({most})\n");
+    assert_eq!(said.matches(&line).count(), 1, "{said}");
+}
+
 /// A URL that ends with its directory is only listed, its listing the
 /// body, as without a wildcard; a scheme other than FTP's has none.
 #[test]

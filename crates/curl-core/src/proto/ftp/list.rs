@@ -178,7 +178,17 @@ pub(crate) struct Listing {
     item_offset: usize,
     offsets: Offsets,
     files: VecDeque<Entry>,
+    /// The line that failed it was one file more than it keeps.
+    full: bool,
 }
+
+/// The most files a listing keeps (`MAX_FTP_DIR_ENTRIES`): one more
+/// matching fails it, so that a server cannot grow it without end.
+pub(crate) const MAX_FILES: usize = 100_000;
+
+/// A listing failed, filled to the most files it keeps.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Full;
 
 /// Whether `c` is in `set` as C's `strchr` finds it: a zero byte always
 /// is, as the string's own end.
@@ -281,6 +291,7 @@ impl Listing {
             item_offset: 0,
             offsets: Offsets::default(),
             files: VecDeque::new(),
+            full: false,
         }
     }
 
@@ -302,14 +313,15 @@ impl Listing {
     /// Read `bytes`, the next of the listing (`Curl_ftp_parselist`):
     /// each name a line gives is given to `matches`, which says if the
     /// pattern matches it, or fails the listing. Once a line fails, nothing more is read, and
-    /// the failure is kept for the download to find.
+    /// the failure is kept for the download to find; `Full` if it failed
+    /// here filled to the most files it keeps.
     pub(crate) fn feed(
         &mut self,
         bytes: &[u8],
         matches: &mut dyn FnMut(&[u8]) -> Result<bool, ErrorKind>,
-    ) {
+    ) -> Option<Full> {
         if self.error.is_some() {
-            return;
+            return None;
         }
         if self.os == Os::Unknown
             && let Some(&first) = bytes.first()
@@ -325,9 +337,10 @@ impl Listing {
                 self.error = Some(e);
                 // The line read so far goes.
                 self.line = None;
-                return;
+                return self.full.then_some(Full);
             }
         }
+        None
     }
 
     fn byte(
@@ -855,6 +868,10 @@ impl Listing {
             && !info
                 .target
                 .is_some_and(|t| t.windows(4).any(|w| w == b" -> "));
+        if keep && self.files.len() >= MAX_FILES {
+            self.full = true;
+            return Err(BAD);
+        }
         if keep {
             self.files
                 .try_reserve(1)

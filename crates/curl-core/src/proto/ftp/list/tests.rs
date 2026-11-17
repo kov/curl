@@ -272,6 +272,29 @@ fn a_failed_listing_reads_no_more() {
     assert_eq!(l.files().len(), before);
 }
 
+/// A listing keeps C's most files and fails on one more that matches,
+/// saying so once; one more that does not match does not count.
+#[test]
+fn a_listing_keeps_at_most_c_s_files() {
+    let file = |n: usize| format!("-rw-r--r--    1 u u 3 Jan 11 10:00 f{n}\r\n");
+    let mut l = Listing::new();
+    let mut all = String::new();
+    for n in 0..MAX_FILES {
+        all.push_str(&file(n));
+    }
+    assert_eq!(l.feed(all.as_bytes(), &mut |_| Ok(true)), None);
+    assert_eq!((l.error(), l.files().len()), (None, MAX_FILES));
+    // One that does not match is passed over.
+    assert_eq!(l.feed(file(0).as_bytes(), &mut |_| Ok(false)), None);
+    assert_eq!(l.error(), None);
+    let more = file(MAX_FILES);
+    assert_eq!(l.feed(more.as_bytes(), &mut |_| Ok(true)), Some(Full));
+    assert_eq!(l.error(), Some(ErrorKind::FtpBadFileList));
+    assert_eq!(l.files().len(), MAX_FILES);
+    // Said once: nothing more is read.
+    assert_eq!(l.feed(more.as_bytes(), &mut |_| Ok(true)), None);
+}
+
 /// A listing that starts `total N`, as `ls -l` writes it, is read past
 /// its total, whatever its line ends and however it comes. C's reader
 /// takes the line feed that ends the total for the next line's file

@@ -78,7 +78,7 @@ impl Matching {
     pub(crate) fn take<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) {
         let handler = cx.easy().options().line.ftp.fnmatch.clone();
         let pattern = &self.pattern;
-        self.listing.feed(bytes, &mut |name| {
+        let full = self.listing.feed(bytes, &mut |name| {
             let matched = match &handler {
                 Some(h) => h.matches(&mut TransferCx::new(cx), pattern, name),
                 None => curl_os::fnmatch::fnmatch(pattern, name).map(|m| match m {
@@ -89,6 +89,13 @@ impl Matching {
             };
             Ok(matched.map_err(|_| ErrorKind::OutOfMemory)? == Matched::Match)
         });
+        if full.is_some() {
+            let most = super::list::MAX_FILES;
+            trace::info(
+                cx,
+                format_args!("Reached maximum number of dir entries ({most})"),
+            );
+        }
     }
 }
 

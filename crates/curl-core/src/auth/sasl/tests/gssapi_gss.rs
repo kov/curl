@@ -141,7 +141,7 @@ fn gssapi_logs_in_by_the_user_s_token_then_the_layer() {
 #[test]
 fn the_initial_response_is_the_user_s_token() {
     let gss = Scripted::leaked();
-    let creds = Secret::new(b"user@REALM", b"pw", b"service");
+    let creds = Secret::new(b"user@REALM", b"", b"service");
     let both = Delegation {
         by_policy: true,
         always: true,
@@ -236,7 +236,7 @@ fn gssapi_needs_a_library_and_a_domain() {
         };
         sasl.start_sent(&mut cx, false).unwrap()
     };
-    let domain = Secret::new(b"user@REALM", b"pw", b"");
+    let domain = Secret::new(b"user@REALM", b"", b"");
     assert_eq!(pick(domain, None), auth("DIGEST-MD5", None));
     let gss = Some(Security::Gss(gss));
     assert_eq!(pick(domain, gss), auth("GSSAPI", None));

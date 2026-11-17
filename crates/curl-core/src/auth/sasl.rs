@@ -431,6 +431,14 @@ impl Sasl {
         self.state = state;
     }
 
+    /// A password was given for a login GSS-API would make as whoever
+    /// holds the Kerberos ticket: GSSAPI is passed over unless it alone
+    /// is preferred. SSPI's GSSAPI logs in with the credentials given,
+    /// and is not.
+    fn password_beside_gss(&self, cx: &Ctx<'_>, security: Security) -> bool {
+        matches!(security, Security::Gss(_)) && cx.has_password() && self.preferred != Mechs::GSSAPI
+    }
+
     /// Choose the most secure mechanism both ends allow and start it
     /// (`Curl_sasl_start`).
     pub(crate) fn start(
@@ -460,6 +468,7 @@ impl Sasl {
                 enabled.has(Mechs::GSSAPI)
                     && krb5::supported(security)
                     && krb5::user_contains_domain(cx.user())
+                    && !self.password_beside_gss(cx, security)
             }) {
                 let resp = if ir {
                     krb5::user_message(&mut self.krb5, cx, security, self.params.service)?

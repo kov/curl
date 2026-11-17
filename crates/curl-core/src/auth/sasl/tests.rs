@@ -970,3 +970,30 @@ fn digest_md5_over_sspi_is_the_package_s() {
 
 mod gssapi;
 mod gssapi_gss;
+
+/// A password given passes GSS-API's GSSAPI over, which would log in as
+/// whoever holds the Kerberos ticket: the next mechanism both ends allow
+/// is chosen. GSSAPI is chosen without a password, or with one when it
+/// alone is preferred.
+#[test]
+fn a_password_passes_gss_api_s_gssapi_over() {
+    let gss = Security::Gss(crate::gss::testing::Scripted::leaked());
+    let pick = |creds: Secret<'_>, preferred: Mechs| {
+        let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
+        assert!(sasl.url_auth(b"*"));
+        sasl.preferred = preferred;
+        sasl.offers(Mechs::GSSAPI.or(Mechs::PLAIN));
+        with_cx(Some(creds), 110, &[0; 16], |cx| {
+            cx.security = Some(gss);
+            sasl.start_sent(cx, false).unwrap();
+            sasl.current
+        })
+    };
+    let pw = Secret::new(b"user@EXAMPLE.COM", b"secret", b"");
+    let nopw = Secret::new(b"user@EXAMPLE.COM", b"", b"");
+    let both = Mechs::GSSAPI.or(Mechs::PLAIN);
+    assert_eq!(pick(pw, Mechs::DEFAULT), Some("PLAIN"));
+    assert_eq!(pick(pw, both), Some("PLAIN"));
+    assert_eq!(pick(pw, Mechs::GSSAPI), Some("GSSAPI"));
+    assert_eq!(pick(nopw, Mechs::DEFAULT), Some("GSSAPI"));
+}

@@ -125,3 +125,11 @@ witness: curl-core auth::sasl::tests::gssapi_gss::digest_md5_beside_gss_api_is_t
                     match cx.security.and_then(Security::sspi) {
 --- new
                     match cx.security.map(|_| unreachable!()).and_then(Security::sspi) {
+
+=== GSS-API's GSSAPI is chosen beside a password
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::a_password_passes_gss_api_s_gssapi_over
+--- old
+        matches!(security, Security::Gss(_)) && cx.has_password() && self.preferred != Mechs::GSSAPI
+--- new
+        matches!(security, Security::Gss(_)) && cx.has_password() && false

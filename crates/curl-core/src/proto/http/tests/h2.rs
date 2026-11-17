@@ -594,7 +594,8 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
 /// step starts; the limit read is the one the next SETTINGS are told
 /// against (`http2_connisalive`, `on_frame_recv`'s
 /// `Curl_multi_connchanged`). The C build says the same against a server
-/// sending `MAX_CONCURRENT_STREAMS` 5 on an idle connection.
+/// sending `MAX_CONCURRENT_STREAMS` 5 on an idle connection, the check
+/// made by the prune and again by the reuse.
 #[test]
 fn a_stream_limit_read_while_idle_is_news_to_the_multi() {
     #[derive(Clone, Default)]
@@ -661,6 +662,8 @@ fn a_stream_limit_read_while_idle_is_news_to_the_multi() {
             "* [HTTP/2] [0] MAX_CONCURRENT_STREAMS: 5",
             "* [HTTP/2] [0] ENABLE_PUSH: TRUE",
             "* [HTTP/2] [0] notify MAX_CONCURRENT_STREAMS: 5",
+            "* [HTTP/2] conn alive -> 1, input_pending=0",
+            // Looked at again as it is reused, though the prune just did.
             "* [HTTP/2] conn alive -> 1, input_pending=0",
         ],
         "{internal}"
@@ -1251,14 +1254,14 @@ fn the_upkeep_interval_starts_as_the_connection_is_given_back() {
     assert_eq!(&talk.received()[request.len()..], b"P\n");
 }
 
-/// An idle HTTP/2 connection is looked at once a second at most: a
-/// GOAWAY waiting on it goes unread by a reuse within a second of its
-/// return, whose stream the GOAWAY then refuses, and is read a second on,
-/// when the connection is let go and a new one made
-/// (`Curl_cpool_conn_seems_healthy`'s `lastchecked_ms`).
+/// An idle HTTP/2 connection is looked at each time it could be reused,
+/// as an HTTP/1 one is: a GOAWAY waiting on it is read even within a
+/// second of its return, and the connection let go and a new one made
+/// (`Curl_cpool_conn_seems_healthy`, which spares only a connection in
+/// use a second look within a second).
 #[test]
-fn an_idle_connection_s_health_is_looked_at_once_a_second() {
-    for (after_ms, reused) in [(999, true), (1000, false)] {
+fn an_idle_connection_s_health_is_looked_at_each_time() {
+    for (after_ms, reused) in [(0, false), (999, false), (1000, false)] {
         let mut first = RESPONSE.to_vec();
         for _ in 0..600 {
             first.extend_from_slice(b"P\n");

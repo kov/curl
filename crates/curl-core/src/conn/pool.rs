@@ -1663,10 +1663,7 @@ impl Pool {
             && let ConnSlot::Open(conn) = &mut *slot
         {
             assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
-            conn.use_ = Use::Idle {
-                since: now,
-                checked_ms: ms_since_made(conn, now),
-            };
+            conn.use_ = Use::Idle { since: now };
             conn.served = true;
             let number = conn.number;
             *self.conns.get_mut(id).expect("checked above") = match finish.reserve {
@@ -2315,35 +2312,15 @@ fn health(
     {
         return Err(None);
     }
-    // A multiplexed one is looked at once a second at most, healthy
-    // meanwhile; an HTTP/1 one's input is polled at every reuse
-    // (`Curl_cpool_conn_seems_healthy`), each in milliseconds since the
-    // connection was made, as C counts them.
-    if let Use::Idle { checked_ms, .. } = conn.use_
-        && conn.multiplexes()
-        && made_ms(conn, now) - i64::from(checked_ms) < 1000
-    {
-        return Ok(());
-    }
-    let healthy = alive(conn, now, exits);
-    let made_ms = ms_since_made(conn, now);
-    if healthy.is_ok()
-        && let Use::Idle { checked_ms, .. } = &mut conn.use_
-    {
-        *checked_ms = made_ms;
-    }
-    healthy
+    // Idle, it is looked at each time, multiplexed or not
+    // (`Curl_cpool_conn_seems_healthy`).
+    alive(conn, now, exits)
 }
 
 /// The milliseconds from `conn`'s making to `now`, as C keeps its times
 /// of use (`curlx_ptimediff_ms(pnow, &conn->created)`).
 fn made_ms(conn: &Conn, now: Instant) -> i64 {
     now.ms_since(conn.created)
-}
-
-/// [`made_ms`] as a connection keeps it; `u32::MAX` past its range.
-fn ms_since_made(conn: &Conn, now: Instant) -> u32 {
-    u32::try_from(made_ms(conn, now).max(0)).unwrap_or(u32::MAX)
 }
 
 /// The milliseconds `conn` has been idle at `now`, since `since`, as C

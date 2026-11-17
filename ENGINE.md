@@ -2239,10 +2239,9 @@ transfer is taken out as the parent's step ends, with no message, its `Easy` and
 back through `MultiEvents::unpushed` for the host to close, as C closes the handle it added
 (`discard_newhandle`); C does it inside the read (`DIVERGENCE.md`).
 
-An idle multiplexed connection's health is looked at once a second at most, healthy meanwhile,
-where an idle HTTP/1 one's input is polled at every reuse (`Curl_cpool_conn_seems_healthy`): its
-`Use::Idle` keeps when it was last found healthy as C does, in milliseconds since it was
-made (`lastchecked_ms`), set as it is returned.
+An idle connection's health is looked at each time the prune or a reuse meets it, multiplexed
+or not (`Curl_cpool_conn_seems_healthy`); C spares only a connection in use a second look
+within a second, and neither its prune nor its reuse looks at one in use.
 
 The upkeep (`curl_easy_upkeep`, `Curl_cpool_upkeep`; `Easy::upkeep`, `Multi::upkeep`) visits
 every connection of the calling handle's pool the pool holds, idle, reserved or attached

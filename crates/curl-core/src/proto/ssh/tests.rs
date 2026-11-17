@@ -57,6 +57,12 @@ struct World {
     key_refused: bool,
     /// The private key file cannot be loaded.
     key_unloadable: bool,
+    /// A directory's files come with no name, or no `ls -l` line, as
+    /// libssh reads a newer SFTP version's entries; a link's target
+    /// cannot be read.
+    entries_nameless: bool,
+    entries_unlong: bool,
+    target_unread: bool,
     /// The calls, by name, whose first answer is to wait.
     waiting: Vec<&'static str>,
     /// The GSS-API login, and the agent's, succeed.
@@ -477,7 +483,14 @@ impl Session for FakeSession {
         let mut entries = Vec::new();
         for (p, bytes) in &w.files {
             if let Some(name) = p.strip_prefix(path) {
-                entries.push(Self::attrs(name, bytes.len(), false));
+                let mut entry = Self::attrs(name, bytes.len(), false);
+                if w.entries_nameless {
+                    entry.name = None;
+                }
+                if w.entries_nameless || w.entries_unlong {
+                    entry.longname = None;
+                }
+                entries.push(entry);
             }
         }
         for (p, target) in &w.links {
@@ -515,6 +528,9 @@ impl Session for FakeSession {
     }
     fn readlink(&mut self, path: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
         let w = self.w();
+        if w.target_unread {
+            return Ok(None);
+        }
         Ok(w.links
             .iter()
             .find(|(p, _)| p == path)
@@ -1110,6 +1126,44 @@ fn a_directory_is_listed() {
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{}", text.text());
     assert_eq!(*body.0.lock().unwrap(), b"file\nlink\n");
+}
+
+/// An entry with no name fails the listing with 79, as one with a link
+/// whose target cannot be read does; one with no `ls -l` line is listed
+/// by its name (`myssh_in_SFTP_READDIR`).
+#[test]
+fn a_listing_s_nameless_entry_fails_it() {
+    let list = |set: fn(&mut World)| {
+        let w = world(&[("/d/file", "abc")]);
+        set(&mut w.lock().unwrap());
+        let mut m = serving(PORT, &silent());
+        let (id, body, text) = added(&mut m, &w, "sftp://u@127.0.0.1:PORT/d/", |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let listed = String::from_utf8(body.0.lock().unwrap().clone()).unwrap();
+        (result, listed, text.text())
+    };
+    let (result, listed, said) = list(|w| w.entries_unlong = true);
+    assert_eq!((result, listed.as_str()), (Ok(()), "file\n"), "{said}");
+    let (result, listed, said) = list(|w| w.entries_nameless = true);
+    assert_eq!(
+        (result, listed.as_str()),
+        (Err(ErrorKind::Ssh), ""),
+        "{said}"
+    );
+    assert!(
+        said.contains("SFTP readdir: entry without a name\n"),
+        "{said}"
+    );
+    let (result, listed, said) = list(|w| {
+        w.links.push((b"/d/link".to_vec(), b"file".to_vec()));
+        w.target_unread = true;
+    });
+    assert_eq!(result, Err(ErrorKind::Ssh), "{said}");
+    assert!(!listed.contains("link"), "{listed}");
+    assert!(
+        said.contains("SFTP readdir: link target without a name\n"),
+        "{said}"
+    );
 }
 
 /// A range asks for its part of the file only.

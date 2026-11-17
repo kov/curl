@@ -1603,7 +1603,18 @@ impl Request {
             sc.to(cx, State::SftpReaddirDone);
             return;
         };
-        let name = attrs.name.as_deref().unwrap_or_default();
+        // An entry libssh read with no name, as from a server answering
+        // the SFTP init with a newer version than it parses, fails.
+        let Some(name) = attrs.name.as_deref() else {
+            trace::fail(
+                cx,
+                ErrorKind::Ssh,
+                format_args!("SFTP readdir: entry without a name"),
+            );
+            sc.to(cx, State::SftpClose);
+            sc.actual = Err(ErrorKind::Ssh);
+            return;
+        };
         if cx.easy().options().line.list_only {
             let mut line = Vec::new();
             if line
@@ -1621,7 +1632,8 @@ impl Request {
             }
             return;
         }
-        let long = attrs.longname.as_deref().unwrap_or_default();
+        // With no `ls -l` line, its name stands for one.
+        let long = attrs.longname.as_deref().unwrap_or(name);
         if sc.listing.try_extend_from_slice(long).is_err() {
             sc.actual = Err(ErrorKind::OutOfMemory);
             sc.to(cx, State::Stop);
@@ -2857,16 +2869,30 @@ fn sftp_readdir_link<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
         Some(name) => Ok(Some(name)),
         None => sc.session().readlink(&link),
     };
-    let added = target.map_err(|_| ()).and_then(|target| {
-        sc.listing
-            .try_extend_from_slice(b" -> ")
-            .and_then(|()| {
-                // A target the server does not give is C's `%s` of NULL.
-                sc.listing
-                    .try_extend_from_slice(target.as_deref().unwrap_or(b"(nil)"))
-            })
-            .map_err(|_| ())
-    });
+    let target = match target {
+        Ok(Some(target)) => target,
+        // A target neither the link's attributes nor its reading name,
+        // as for a nameless entry, fails.
+        Ok(None) => {
+            trace::fail(
+                cx,
+                ErrorKind::Ssh,
+                format_args!("SFTP readdir: link target without a name"),
+            );
+            sc.to(cx, State::SftpClose);
+            sc.actual = Err(ErrorKind::Ssh);
+            return;
+        }
+        Err(curl_alloc::OutOfMemory) => {
+            sc.to(cx, State::SftpClose);
+            sc.actual = Err(ErrorKind::OutOfMemory);
+            return;
+        }
+    };
+    let added = sc
+        .listing
+        .try_extend_from_slice(b" -> ")
+        .and_then(|()| sc.listing.try_extend_from_slice(&target));
     if added.is_err() {
         sc.to(cx, State::SftpClose);
         sc.actual = Err(ErrorKind::OutOfMemory);

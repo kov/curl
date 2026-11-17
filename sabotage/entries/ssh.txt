@@ -298,3 +298,28 @@ witness: curl-core proto::ssh::tests::an_sftp_file_is_downloaded
             trace::of_with(cx, Component::Ssh, &[b"User: ", user]);
 --- new
             trace::info_with(cx, &[b"User: ", user]);
+
+=== a nameless directory entry is listed as an empty name
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_listing_s_nameless_entry_fails_it
+--- old
+        let Some(name) = attrs.name.as_deref() else {
+--- new
+        let Some(name) = attrs.name.as_deref().or(Some(b"")) else {
+
+=== an entry with no ls line is listed as an empty line
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_listing_s_nameless_entry_fails_it
+--- old
+        let long = attrs.longname.as_deref().unwrap_or(name);
+--- new
+        let long = attrs.longname.as_deref().unwrap_or_default();
+
+=== a link whose target cannot be read is listed
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_listing_s_nameless_entry_fails_it
+--- old
+        Ok(Some(target)) => target,
+--- new
+        Ok(Some(target)) => target,
+        Ok(None) if true => b"(nil)".to_vec(),

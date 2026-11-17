@@ -46,12 +46,11 @@ so: weaknesses kept because C has them.
   length was counted with, ends there as in C, and the body's size check fails it. Pinned by
   `a_file_that_fails_to_read_ends_or_fails` (`crates/curl-core/src/mime/tests.rs`).
 
-- **A `file://` download whose read fails is a read error.** A `read()` failing anywhere in the
-  file, or a `readdir()` failing partway through a directory listing, ends the transfer with 26
-  (`CURLE_READ_ERROR`). C's `file_do` (`lib/file.c`) takes either for the end of the data and
-  succeeds with a truncated body: `curl file:///proc/self/mem` exits 0 with an empty body.
-  Pinned by `a_file_that_cannot_be_read_fails`, `a_read_failing_partway_fails` and
-  `a_listing_failing_partway_fails` (`crates/curl-core/src/proto/file/tests.rs`).
+- **A `file://` directory listing whose read fails partway is a read error.** A `readdir()`
+  failing partway through a listing ends the transfer with 26 (`CURLE_READ_ERROR`). C's
+  `file_do` (`lib/file.c`) takes it for the listing's end and succeeds with the listing
+  truncated. Pinned by `a_listing_failing_partway_fails`
+  (`crates/curl-core/src/proto/file/tests.rs`).
 
 - **A send limit does not cut a `file://` upload short.** The whole body is written to the file
   whatever `CURLOPT_MAX_SEND_SPEED_LARGE` or `--limit-rate` says. C's `file_upload`
@@ -280,22 +279,6 @@ so: weaknesses kept because C has them.
   build. Pinned by `a_silent_upload_of_standard_input_draws_no_meter`
   (`crates/curl-tool/tests/http.rs`).
 
-- **A read-only HSTS file is not written.** With `CURLOPT_HSTS_CTRL` set to `CURLHSTS_ENABLE |
-  CURLHSTS_READONLYFILE`, the file named by `CURLOPT_HSTS` is read and never written back, as
-  the option's documentation says; a copy of the handle keeps the mode. C's `Curl_hsts_save`
-  tests the flag, but `CURLOPT_HSTS_CTRL` never sets it, so cleanup rewrites the file:
-  measured against the C build, a file holding a comment and no entries is replaced by C's
-  two-line header. Pinned by `a_read_only_file_is_not_written_back`
-  (`crates/curl-core/src/proto/http/tests/hsts.rs`) and `a_read_only_hsts_file_is_not_written`
-  (`crates/curl-sys-abi/src/handle_tests.rs`).
-
-- **A duplicated handle keeps its alt-svc control.** `curl_easy_duphandle` of a handle with
-  `CURLOPT_ALTSVC_CTRL` set gives a copy whose cache behaves the same: a read-only file stays
-  unwritten, and only the versions allowed are taken. C's copy makes its cache with the default
-  control (`Curl_altsvc_init` in `curl_easy_duphandle`), so a copy of a handle told not to write
-  its file writes it as it goes. Pinned by `a_read_only_file_is_kept_and_a_copy_reads_the_file`
-  (`crates/curl-core/src/proto/http/tests/alt_svc.rs`).
-
 ## State C carries across transfers
 
 - **`--etag-compare` sends one `If-None-Match:` a transfer.** Each transfer of a URL pattern
@@ -447,18 +430,6 @@ so: weaknesses kept because C has them.
   35. Here the option is refused with `CURLE_BAD_FUNCTION_ARGUMENT`, as the same values are as
   the oldest. Pinned by `tls_options_are_kept_as_c_keeps_them`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
-
-- **An FTP listing that starts with its total is read.** A wildcard download
-  (`CURLOPT_WILDCARDMATCH`) of a directory whose `LIST` answer starts `total 12`, as `ls -l`
-  writes it and Unix servers send it, gets the files the listing names. C's
-  `parse_unix_totalsize` (`lib/ftplistparser.c`) checks the total at its line feed, then falls
-  through with that same line feed into the next line's file type, which it is not: every such
-  listing fails with 87 (`CURLE_FTP_BAD_FILE_LIST`), "Unable to parse FTP file list". Measured
-  against the C build, its lines ending in CRLF and in a bare line feed; the same listing
-  without its total line downloads. A first line that only starts with `t` fails as in C.
-  Pinned by `a_wildcard_download_reads_past_the_listing_s_total`
-  (`crates/curl-core/src/proto/ftp/tests.rs`) and `a_listing_that_starts_with_its_total_is_read`
-  (`crates/curl-core/src/proto/ftp/list/tests.rs`).
 
 - **An `Alt-Svc:` field from an origin named by a dot alone is passed over.** For
   `http://./`, `Curl_altsvc_parse` (`lib/altsvc.c`) returns `CURLE_OUT_OF_MEMORY` when

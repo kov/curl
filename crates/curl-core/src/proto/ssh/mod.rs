@@ -452,7 +452,7 @@ impl SshConn {
     /// (`myssh_to_SFTP_CLOSE`).
     fn goto_close(&mut self, says: &mut dyn Says, status: SftpStatus) -> Flow {
         self.to(says, State::SftpClose);
-        self.actual = sftp_failure(status);
+        self.actual = Err(sftp_failure(status));
         Flow::On
     }
 
@@ -539,16 +539,15 @@ impl SshConn {
     }
 }
 
-/// The failure an SFTP status is (`sftp_error_to_CURLE`).
-fn sftp_failure(status: SftpStatus) -> Result<(), ErrorKind> {
+/// The failure a failed SFTP call's status makes (`sftp_error_to_CURLE`):
+/// `SSH_FX_OK`, nothing said of it, is a failure too, of SSH's, as
+/// libssh2's is.
+fn sftp_failure(status: SftpStatus) -> ErrorKind {
     match status {
-        SftpStatus::Unsaid => Ok(()),
-        SftpStatus::NoSuchFile | SftpStatus::NoSuchPath => Err(ErrorKind::RemoteFileNotFound),
-        SftpStatus::PermissionDenied | SftpStatus::WriteProtect => {
-            Err(ErrorKind::RemoteAccessDenied)
-        }
-        SftpStatus::FileAlreadyExists => Err(ErrorKind::RemoteFileExists),
-        SftpStatus::Failure | SftpStatus::Other(_) => Err(ErrorKind::Ssh),
+        SftpStatus::NoSuchFile | SftpStatus::NoSuchPath => ErrorKind::RemoteFileNotFound,
+        SftpStatus::PermissionDenied | SftpStatus::WriteProtect => ErrorKind::RemoteAccessDenied,
+        SftpStatus::FileAlreadyExists => ErrorKind::RemoteFileExists,
+        SftpStatus::Unsaid | SftpStatus::Failure | SftpStatus::Other(_) => ErrorKind::Ssh,
     }
 }
 
@@ -2744,7 +2743,7 @@ fn sftp_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
             ErrorKind::Ssh,
             &[b"Failure initializing sftp session: ", &text],
         );
-        let kind = sftp_failure(SftpStatus::Failure).expect_err("FAILURE is one");
+        let kind = sftp_failure(SftpStatus::Failure);
         sc.goto_error(cx, kind);
         return;
     }

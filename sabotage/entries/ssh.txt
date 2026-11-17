@@ -248,3 +248,11 @@ witness: curl-core proto::ssh::tests::an_scp_upload_converting_line_ends_is_refu
         Some(n) if n > 0 && (options.crlf || options.line.ftp.ascii) => {
 --- new
         Some(n) if n > 0 && options.crlf => {
+
+=== a failed SFTP call said OK passes for a success over libssh
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_failed_sftp_call_said_ok_still_fails
+--- old
+        self.actual = Err(sftp_failure(status));
+--- new
+        self.actual = if matches!(status, SftpStatus::Unsaid) { Ok(()) } else { Err(sftp_failure(status)) };

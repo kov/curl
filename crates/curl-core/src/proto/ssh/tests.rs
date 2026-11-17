@@ -1185,6 +1185,23 @@ fn an_scp_file_is_uploaded() {
     );
 }
 
+/// A failed SFTP call whose status libssh gives as `SSH_FX_OK`, nothing
+/// said of it, fails the transfer as SSH's failure: an upload whose file
+/// did not open is not one done.
+#[test]
+fn a_failed_sftp_call_said_ok_still_fails() {
+    let w = world(&[]);
+    w.lock().unwrap().open_code = Some(0);
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/tmp/f", |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"data".to_vec()).unwrap(),
+        );
+    });
+    assert_eq!(result, Err(ErrorKind::Ssh), "{said}");
+    assert!(w.lock().unwrap().files.is_empty());
+}
+
 /// An SCP upload whose line ends would be converted (`--crlf`, or a text
 /// transfer, on any system) is refused before the file is offered: SCP
 /// says the size first, and the converted data would run past it, the
@@ -1809,11 +1826,12 @@ fn a_refused_key_falls_back_to_the_password() {
 }
 
 /// An SFTP status code is the failure C makes of it
-/// (`sftp_error_to_CURLE`).
+/// (`sftp_error_to_CURLE`); a failed call said OK is SSH's failure, as it
+/// is for libssh2.
 #[test]
 fn sftp_codes_are_c_s_failures() {
     use super::sftp_failure;
-    assert_eq!(sftp_failure(SftpStatus::Unsaid), Ok(()));
+    assert_eq!(sftp_failure(SftpStatus::Unsaid), ErrorKind::Ssh);
     for (code, kind) in [
         (2, ErrorKind::RemoteFileNotFound),
         (10, ErrorKind::RemoteFileNotFound),
@@ -1822,11 +1840,7 @@ fn sftp_codes_are_c_s_failures() {
         (11, ErrorKind::RemoteFileExists),
         (4, ErrorKind::Ssh),
     ] {
-        assert_eq!(
-            sftp_failure(SftpStatus::from_number(code)),
-            Err(kind),
-            "{code}"
-        );
+        assert_eq!(sftp_failure(SftpStatus::from_number(code)), kind, "{code}");
     }
 }
 

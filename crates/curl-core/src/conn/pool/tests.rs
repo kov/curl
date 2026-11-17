@@ -1880,19 +1880,45 @@ fn connections_lent_by_two_shares_are_told_apart() {
     }
 }
 
-/// A share's connection lent to a multi, `close` if it is marked to
-/// close, searched for by a transfer that speaks `versions`: what the
-/// search finds.
-fn search_lent(versions: crate::proto::http::Versions, close: bool) -> Found {
+/// Whether a connection is marked to close, or has a layer that failed.
+#[derive(Clone, Copy, PartialEq)]
+enum Ending {
+    No,
+    Marked,
+    LayerFailed,
+}
+
+/// Puts a layer that failed on the connection `lease` holds, up.
+fn fail_a_layer(lease: &mut ConnLease) {
+    let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() else {
+        panic!("not up");
+    };
+    let Transport::Stream(stream) = &mut conn.transport else {
+        panic!("not a stream");
+    };
+    let failed = crate::conn::layer::testing::Failed(crate::error::ErrorKind::SslConnectError);
+    stream
+        .layers_mut()
+        .push(curl_alloc::try_box(failed).unwrap())
+        .unwrap();
+}
+
+/// A share's connection lent to a multi, ending as `ending` says,
+/// searched for by a transfer that speaks `versions`: what the search
+/// finds.
+fn search_lent(versions: crate::proto::http::Versions, ending: Ending) -> Found {
     let (mut net, clock) = net();
     let now = clock.now();
     let share = crate::share::Share::new().unwrap();
     let home = Home::Share(share.clone());
     let mut lease = new(&mut share.pool(), &home, tcp(1), &mut net, now);
     up(&mut lease, &mut net, now);
+    if ending == Ending::LayerFailed {
+        fail_a_layer(&mut lease);
+    }
     speaks_h2(&mut lease);
     if let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() {
-        conn.close = close;
+        conn.close = ending == Ending::Marked;
     }
     let mut multi = Pool::new().unwrap();
     multi.borrow(&mut lease).unwrap();
@@ -1931,17 +1957,59 @@ fn search_lent(versions: crate::proto::http::Versions, close: bool) -> Found {
 #[test]
 fn a_multiplexed_connection_is_joined_only_as_it_may_be() {
     use crate::proto::http::Versions;
-    let found = search_lent(Versions::ALL, false);
+    let found = search_lent(Versions::ALL, Ending::No);
     assert!(matches!(found, Found::Lent(_)), "{found:?}");
     let http_1 = Versions {
         h1: true,
         h2: false,
         h3: false,
     };
-    let found = search_lent(http_1, false);
+    let found = search_lent(http_1, Ending::No);
     assert!(!matches!(found, Found::Lent(_)), "{found:?}");
-    let found = search_lent(Versions::ALL, true);
+    let found = search_lent(Versions::ALL, Ending::Marked);
     assert!(!matches!(found, Found::Lent(_)), "{found:?}");
+    let found = search_lent(Versions::ALL, Ending::LayerFailed);
+    assert!(!matches!(found, Found::Lent(_)), "{found:?}");
+}
+
+/// A connection one of whose layers failed, as a handshake put off for
+/// early data that fails, is closed as it comes back, not kept for
+/// another transfer (`ssl_cf_connect_deferred`'s `connclose`); one
+/// whose layers are sound is kept.
+#[test]
+fn a_connection_whose_layer_failed_is_not_kept() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    // The failed one first: the second, to the same origin, finds none
+    // kept and makes its own.
+    for (failed, kept) in [(true, false), (false, true)] {
+        let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+        up(&mut lease, &mut net, now);
+        if failed {
+            fail_a_layer(&mut lease);
+        }
+        assert_eq!(lease.closes(), failed);
+        let released = pool.release(
+            &Home::Multi,
+            lease,
+            Finish::default(),
+            UNLIMITED,
+            &mut net,
+            now,
+        );
+        assert_eq!(
+            matches!(released, Released::Idle { .. }),
+            kept,
+            "{released:?}"
+        );
+        assert_eq!(
+            matches!(released, Released::Closed(_)),
+            !kept,
+            "{released:?}"
+        );
+    }
+    pool.close_idle(&mut net, now);
 }
 
 /// What a share's search finds for a transfer that multiplexes and waits

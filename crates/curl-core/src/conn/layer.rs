@@ -1128,6 +1128,37 @@ pub(crate) mod testing {
         }
     }
 
+    /// Passes the bytes, and says it failed with `0`, as a handshake put
+    /// off for early data that failed says.
+    #[derive(Debug)]
+    pub(crate) struct Failed(pub(crate) ErrorKind);
+
+    impl Part<Below<'_>> for Failed {
+        fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+            matches!(q, LayerQuery::Failure).then_some(LayerAnswer::Failure(self.0))
+        }
+    }
+
+    impl Layer for Failed {
+        fn recv(
+            &mut self,
+            cx: &mut dyn LayerCx,
+            below: Below<'_>,
+            buf: &mut [u8],
+        ) -> io::Result<Recv> {
+            below.recv(cx, buf)
+        }
+
+        fn send(
+            &mut self,
+            cx: &mut dyn LayerCx,
+            below: Below<'_>,
+            bytes: &[u8],
+        ) -> io::Result<Sent> {
+            below.send(cx, bytes)
+        }
+    }
+
     /// Makes the letters it passes upper case, both ways.
     #[derive(Debug)]
     pub(crate) struct Upper;

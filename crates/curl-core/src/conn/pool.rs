@@ -208,7 +208,7 @@ impl ConnLease {
     /// The connection is up and to close after its request
     /// (`bits.close`).
     pub(crate) fn closes(&self) -> bool {
-        matches!(self.slot(), ConnSlot::Open(conn) if conn.close)
+        matches!(self.slot(), ConnSlot::Open(conn) if conn.closes())
     }
 
     /// Whether the connection is up and multiplexes.
@@ -236,6 +236,32 @@ impl ConnLease {
             ConnSlot::Open(conn) => conn.number,
             ConnSlot::Failed(number) => *number,
         }
+    }
+}
+
+impl Conn {
+    /// What its layers answer `q`, the topmost that does: its session is
+    /// on top, an HTTP/3 one the filter that answers for QUIC.
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        let session = self
+            .session()
+            .and_then(|s| crate::conn::part::Part::query(s, q));
+        match &self.transport {
+            Transport::Stream(stream) => session.or_else(|| stream.query(q)),
+            Transport::Datagram(_) => session,
+            Transport::Local => None,
+        }
+    }
+
+    /// It is to serve no other request: marked so (`connclose`), or one
+    /// of its layers failed, which none can use again, as a handshake put
+    /// off for early data that fails (`ssl_cf_connect_deferred`).
+    fn closes(&self) -> bool {
+        self.close
+            || matches!(
+                self.query(LayerQuery::Failure),
+                Some(LayerAnswer::Failure(_))
+            )
     }
 }
 
@@ -318,26 +344,8 @@ impl ConnSlot {
     pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match self {
             ConnSlot::Connecting(m) => m.query(q),
-            // Its session is on top, an HTTP/3 one the filter that answers
-            // for QUIC.
-            ConnSlot::Open(
-                conn @ Conn {
-                    transport: Transport::Stream(stream),
-                    ..
-                },
-            ) => conn
-                .session()
-                .and_then(|s| crate::conn::part::Part::query(s, q))
-                .or_else(|| stream.query(q)),
-            ConnSlot::Open(
-                conn @ Conn {
-                    transport: Transport::Datagram(_),
-                    ..
-                },
-            ) => conn
-                .session()
-                .and_then(|s| crate::conn::part::Part::query(s, q)),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+            ConnSlot::Open(conn) => conn.query(q),
+            ConnSlot::Failed(_) => None,
         }
     }
 
@@ -1650,7 +1658,7 @@ impl Pool {
                 // Forbidden its reuse, it is kept all the same for the
                 // request Negotiate's handshake makes again on it.
                 && (!finish.forbid_reuse || conn.negotiating())
-                && !conn.close
+                && !conn.closes()
         };
         let kept = matches!(&*slot, ConnSlot::Open(conn) if keeps(conn));
         let shut_down = kept && finish.shut_down;
@@ -1937,7 +1945,7 @@ impl Pool {
 /// `wanted` describes, its TLS settings `tls` (`url_match_multiplex_needs`,
 /// `url_match_multiplex_limits`).
 fn join_verdict(conn: &Conn, wanted: &Wanted<'_>, tls: Option<TlsWants<'_>>) -> JoinVerdict {
-    if conn.close || !conn.serves(wanted.route, tls) {
+    if conn.closes() || !conn.serves(wanted.route, tls) {
         return JoinVerdict::Passed;
     }
     let Some(max) = wanted.multiplex else {

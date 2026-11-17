@@ -927,3 +927,17 @@ witness: curl-core proto::http::tests::a_clear_connection_serves_no_transfer_req
             || !want.origin.scheme().reuses_tls()
         {
             // Over TLS from the start: the route's to say.
+
+=== a connection whose layer failed is kept for another transfer
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_connection_whose_layer_failed_is_not_kept
+--- old
+        self.close
+            || matches!(
+                self.query(LayerQuery::Failure),
+                Some(LayerAnswer::Failure(_))
+            )
+    }
+--- new
+        self.close
+    }

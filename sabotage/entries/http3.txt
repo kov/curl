@@ -1584,3 +1584,11 @@ features: test-util,debug-hooks
                 if false {
                     return Heard::Fine;
                 }
+
+=== a QUIC connection asks for another window than C's
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_connection_asks_for_c_s_windows
+--- old
+const H3_CONN_WINDOW_SIZE_MAX: u64 = 100 * 10 * 1024 * 1024;
+--- new
+const H3_CONN_WINDOW_SIZE_MAX: u64 = 100 * 10 * 1024 + 1024;

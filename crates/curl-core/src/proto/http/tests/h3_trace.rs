@@ -534,6 +534,34 @@ fn a_quic_connection_closes_without_draining_its_socket() {
 /// C's, its response written as it is read, the head a line at a time,
 /// and the transfer done as the stream closes: the stream is done with
 /// once the request is, and the connection no longer kept alive.
+/// A QUIC connection asks its library for C's windows: the connection's
+/// at most a hundred times a stream's largest, 1000 MiB
+/// (`H3_CONN_WINDOW_SIZE_MAX`), and a stream's 32 KiB to start
+/// (`H3_STREAM_WINDOW_SIZE_INITIAL`).
+#[test]
+fn a_quic_connection_asks_for_c_s_windows() {
+    let script = get_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let h3: &'static FakeHttp3 = Box::leak(Box::new(FakeHttp3::new(script.clone())));
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(tls)),
+        h3: Some(h3),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    let setups = h3.setups.lock().unwrap();
+    let windows: Vec<(u64, u64)> = setups
+        .iter()
+        .map(|s| (s.max_window, s.stream_window))
+        .collect();
+    assert_eq!(windows, [(1000 * 1024 * 1024, 32 * 1024)]);
+}
+
 #[test]
 fn a_get_over_http3_is_answered() {
     let script = get_script(b"123456789");

@@ -1398,4 +1398,8 @@ exclude_re = [
     # spread over the table's slots and tags, which is all a hash is seen
     # by (`each_bit_of_a_key_reaches_the_slot_and_the_tag`).
     'curl-core/src/conn/dns\.rs:.*: replace \| with \^ in <impl Hasher for SeededHasher>::finish$',
+    # The verify callback is installed only where SecTrust checks the
+    # peer after the handshake (`x509::sectrust`), which is macOS's
+    # build alone: elsewhere it is never called. Its tests run on macOS.
+    'curl-openssl/src/ssl\.rs:\d+:\d+: replace verify_continues -> c_int with Default::default\(\)$',
 ]

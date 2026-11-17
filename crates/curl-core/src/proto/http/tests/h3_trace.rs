@@ -1223,10 +1223,12 @@ fn a_paused_transfer_ends_when_its_upkeep_fails() {
         "{:#?}",
         ran.lines
     );
-    assert!(
+    // C's debug build's line, traced by ours with `debug-hooks`.
+    assert_eq!(
         ran.lines
             .iter()
             .any(|l| l.ends_with("Curl_sendrecv() -> 56")),
+        cfg!(feature = "debug-hooks"),
         "{:#?}",
         ran.lines
     );

@@ -657,9 +657,9 @@ witness: curl-core proto::http::tests::h2::a_connection_gone_away_is_not_kept
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_push_on_a_share_s_connection_is_taken
 --- old
-        let offered = if cx.wants_push() {
+        } else if cx.wants_push() {
 --- new
-        let offered = if cx.wants_push() && matches!(lease.home(), crate::conn::Home::Multi) {
+        } else if cx.wants_push() && matches!(lease.home(), crate::conn::Home::Multi) {
 
 === a pushed transfer is not counted on the connection it joins
 file: crates/curl-core/src/conn/pool.rs
@@ -1352,3 +1352,39 @@ witness: curl-core proto::http::tests::h2_trace::a_head_s_end_read_by_a_sibling_
             Event::HeadersDone { end_stream, .. } => *end_stream || !s.body_started,
 --- new
             Event::HeadersDone { end_stream, .. } => *end_stream,
+
+=== a push heard by a DoH probe is offered to the application
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_push_to_a_doh_probe_is_refused_unasked
+features: test-util
+--- old
+        let offered = if cx.internal() {
+--- new
+        let offered = if false {
+
+=== a pushed transfer starts with no first origin
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_pushed_transfer_s_login_does_not_follow_it_elsewhere
+features: test-util
+--- old
+    run.first = crate::auth::gate::FirstOrigin::inherited(first);
+--- new
+    let _ = first;
+
+=== a pushed transfer is made again on a fresh connection
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::h2::a_pushed_transfer_is_never_made_again
+features: test-util
+--- old
+    if run.asked == super::AskedBy::Push {
+--- new
+    if false {
+
+=== a pushed transfer is made again in HTTP/1.1
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_pushed_transfer_is_never_made_again
+features: test-util
+--- old
+                    if x.proto.h1_required() && run.asked != AskedBy::Push =>
+--- new
+                    if x.proto.h1_required() =>

@@ -101,6 +101,9 @@ pub(crate) struct Run {
     /// Where the first request went (`state.initial_origin`): what the
     /// application said for it goes nowhere else.
     first: crate::auth::gate::FirstOrigin,
+    /// Who asked for it: a transfer a server pushed is never retried
+    /// (`set.never_retry`).
+    asked: AskedBy,
     /// The method, which a redirect may have turned into a GET
     /// (`state.httpreq`).
     method: Method,
@@ -137,6 +140,7 @@ impl Run {
             url: Vec::new(),
             retries: 0,
             first: crate::auth::gate::FirstOrigin::fresh(),
+            asked: AskedBy::Application,
             method: Method::Get,
             course: Course::START,
             http: Inherited::new(crate::options::HttpVersion::Any),
@@ -145,6 +149,16 @@ impl Run {
             wildcard: None,
         }
     }
+}
+
+/// Who asked for a transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AskedBy {
+    /// The application, adding it.
+    Application,
+    /// A server, by a push the application took: nothing it did asked
+    /// for it, so it is never made again (`set.never_retry`).
+    Push,
 }
 
 /// The request is about to be made: the application hears of the
@@ -1993,7 +2007,9 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 // A stream that said HTTP/1.1 is required is made again
                 // in it, on a fresh connection, its failure let go
                 // (`multistate_performing`).
-                Err(ErrorKind::Http2Stream) if x.proto.h1_required() => {
+                Err(ErrorKind::Http2Stream)
+                    if x.proto.h1_required() && run.asked != AskedBy::Push =>
+                {
                     trace::info(cx, format_args!("Downgrades to HTTP/1.1"));
                     x.proto.downgrade();
                     x.lease.get().mark_close();
@@ -2426,8 +2442,11 @@ pub(crate) fn start_pushed<H: Host>(
     url: &Url,
     (lease, origin): (ConnLease, Option<Origin>),
     proto: ProtoState,
+    first: Origin,
 ) -> Result<(), ErrorKind> {
     let whole = url.get(Part::Url, GetOptions::NONE).map_err(url_error);
+    run.first = crate::auth::gate::FirstOrigin::inherited(first);
+    run.asked = AskedBy::Push;
     run.state = TransferState::Exchanging(Attached {
         lease,
         proto,

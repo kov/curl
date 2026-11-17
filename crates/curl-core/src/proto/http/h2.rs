@@ -21,7 +21,7 @@ use crate::error::AGAIN_NUMBER;
 use crate::http2::{BodyRead, DEFAULT_WEIGHT, Event, Frame, FrameKind, H2Error, Heard, StreamId};
 use crate::multi::PushFields;
 use crate::multi::push::Full;
-use crate::multi::state::{Offered, start_pushed};
+use crate::multi::state::{Offered, Origin, start_pushed};
 use crate::proto::http2::{
     CHUNK, EgressFailed, GoAway, H2Conn, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
     trace_frame, trace_settings,
@@ -1955,15 +1955,17 @@ impl Request {
         // fail between the application taking the push and its transfer
         // starting but that start, refused unasked, as C refuses a push
         // whose handle it cannot make (`h2_duphandle`).
-        let offered = if cx.wants_push() {
+        let offered = if cx.internal() {
+            // Never offered on the multi's own transfers, whose responses
+            // reach no application (`push_promise`).
+            Offered::Denied
+        } else if cx.wants_push() {
             match after.routed.try_reserve(1) {
                 Ok(()) => self.offer(cx, lease, promised, &fields),
                 Err(_) => Offered::Denied,
             }
         } else {
-            if !cx.wants_push() {
-                trace::of(cx, H2, format_args!("Got PUSH_PROMISE, ignore it"));
-            }
+            trace::of(cx, H2, format_args!("Got PUSH_PROMISE, ignore it"));
             Offered::Denied
         };
         let pushed = match offered {
@@ -2001,6 +2003,12 @@ impl Request {
         let Ok(Some(url)) = self.pushed_url(fields) else {
             return Offered::Denied;
         };
+        // The pushed transfer's first origin is the request's: its own
+        // origin where it was the first. Without one, nothing could tell
+        // where what the application said may go: refused.
+        let Some(first) = self.base.first().or(lease.conn().origin()).cloned() else {
+            return Offered::Denied;
+        };
         let Ok(mut easy) = cx.easy().pushed().and_then(try_box) else {
             return Offered::Denied;
         };
@@ -2008,14 +2016,14 @@ impl Request {
             return Offered::Denied;
         }
         cx.offer_push(fields, easy, |pcx, run| {
-            let request = Request::pushed(&url, pcx, promised)?;
+            let request = Request::pushed(&url, pcx, promised, &first)?;
             let request = try_box(request).map_err(|_| ErrorKind::OutOfMemory)?;
             let origin = lease.conn().origin().cloned();
             let key = pcx
                 .pushed_lease(lease)
                 .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
             let proto = crate::proto::ProtoState::Http(request.into());
-            start_pushed(run, pcx, &url, (key, origin), proto)
+            start_pushed(run, pcx, &url, (key, origin), proto, first)
         })
     }
 
@@ -2068,12 +2076,14 @@ impl Request {
         url: &Url,
         cx: &mut StepCx<'_, H>,
         promised: StreamId,
+        first: &Origin,
     ) -> Result<Request, ErrorKind> {
         let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
         let secured = scheme.eq_ignore_ascii_case(b"https");
         let inherited = Inherited::new(cx.easy().options().http.version);
-        // A run of its own, as C's pushed handle is: its first request.
-        let first = crate::auth::gate::FirstOrigin::fresh();
+        // A run of its own, as C's pushed handle is, whose first origin is
+        // the request's it was promised on.
+        let first = crate::auth::gate::FirstOrigin::inherited(first.clone());
         let before = Before {
             origins: first.origins(false),
             method: Method::Get,

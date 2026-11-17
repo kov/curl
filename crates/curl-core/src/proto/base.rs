@@ -13,6 +13,7 @@ use crate::deliver::Pipeline;
 use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
+use crate::multi::state::Origin;
 use crate::multi::state::StepCx;
 use crate::url::{GetOptions, Part, Url};
 
@@ -47,6 +48,10 @@ pub(crate) struct RequestBase {
     /// `Cookie:` a tunnel's `CONNECT` sends (`Curl_auth_allowed_to_host`),
     /// decided for `peer` as the request is made.
     gate: CredentialGate,
+    /// The transfer's first origin the gate was decided by, none for its
+    /// first request: a stream the server pushes beside this request
+    /// inherits it.
+    first: Option<Origin>,
 }
 
 impl RequestBase {
@@ -59,6 +64,7 @@ impl RequestBase {
             pipeline,
             credentials: None,
             gate,
+            first: origins.first().cloned(),
         }
     }
 
@@ -72,6 +78,7 @@ impl RequestBase {
             pipeline,
             credentials: None,
             gate: self.gate,
+            first: self.first,
         }
     }
 
@@ -83,6 +90,11 @@ impl RequestBase {
     /// What may go to it.
     pub(super) fn gate(&self) -> &CredentialGate {
         &self.gate
+    }
+
+    /// The transfer's first origin, unless this is its first request.
+    pub(super) fn first(&self) -> Option<&Origin> {
+        self.first.as_ref()
     }
 
     /// The pipeline and the credentials, each to change, beside the peer.

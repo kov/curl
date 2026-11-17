@@ -3553,6 +3553,8 @@ enum Answer {
     /// Taken, its handle asked to require a `.netrc` file that is not
     /// there.
     TakeRequiringNetrc,
+    /// Taken, its handle given a login and asked to follow redirects.
+    TakeFollowingWithLogin,
     Deny,
     Fail,
 }
@@ -3600,9 +3602,14 @@ impl crate::multi::MultiEvents<crate::multi::NoHost> for Pushes {
         self.offers
             .push((fields, easy.report().url().map(<[u8]>::to_vec)));
         match self.answer {
-            Answer::Take | Answer::TakeRequiringNetrc => {
+            Answer::Take | Answer::TakeRequiringNetrc | Answer::TakeFollowingWithLogin => {
                 let o = easy.options_mut();
                 o.callbacks.write = Some(Handler::write(self.seen.clone()).unwrap());
+                if self.answer == Answer::TakeFollowingWithLogin {
+                    o.http.follow = crate::options::Follow::All;
+                    *o.login.make_mut().unwrap() =
+                        crate::options::Login::from_pair(b"u:p").unwrap();
+                }
                 if self.answer == Answer::TakeRequiringNetrc {
                     let netrc = o.netrc.make_mut().unwrap();
                     netrc.mode = crate::options::NetrcMode::Required;
@@ -4205,4 +4212,154 @@ fn a_change_is_heard_in_the_call_that_made_it() {
         ],
         "{states:#?}"
     );
+}
+
+/// A promise heard by an internal transfer, a DoH probe's, is refused
+/// unasked, though the application takes pushes: C denies any push on an
+/// internal handle (`push_promise`), whose response would reach no one.
+#[test]
+fn a_push_to_a_doh_probe_is_refused_unasked() {
+    use crate::libraries::Library;
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    static FAKE: FakeH2 = FakeH2;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE as &dyn crate::http2::Http2),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    // The answer naming 127.0.0.1 for a question of A.
+    let mut answer = vec![0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+    answer.extend_from_slice(b"\x03foo\x04test\x00\x00\x01\x00\x01");
+    answer.extend_from_slice(b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04\x7f\x00\x00\x01");
+    let n = answer.len();
+    let mut said = format!(
+        "S\nH 1 0\n:status: 200\ncontent-type: application/dns-message\n\
+         content-length: {n}\n\nPP 1 2\n:method: GET\n:scheme: https\n\
+         :authority: 127.0.0.1:{PORT}\n:path: /pushed\n\nD 1 {n} 1\n"
+    )
+    .into_bytes();
+    said.extend_from_slice(&answer);
+    let response = fake::records(&said).unwrap();
+    let doh = Conversation::replies(&[WELCOME, &response], false).per_send();
+    let target = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", false);
+    let mut m = serving(Peer::Accepts, &[&doh, &target]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let o = e.options_mut();
+    let url = format!("http://foo.test:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.ip_version = crate::options::IpVersion::V4;
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    let doh_url = format!("https://127.0.0.1:{PORT}/dns");
+    o.doh.make_mut().unwrap().url = Some(doh_url.into_bytes());
+    let mut ev = Pushes::answering(Answer::Take);
+    let id = m.add(Box::new(e), (), &mut ev).unwrap();
+    let mut done = Vec::new();
+    for _ in 0..40 {
+        m.perform(&mut ev).unwrap();
+        while let Some(msg) = m.info_read() {
+            done.push((msg.id, msg.result));
+        }
+    }
+    let sent = String::from_utf8_lossy(&fake::read_client(&doh.received()).unwrap()).into_owned();
+    assert_eq!(done, [(id, Ok(()))], "{sent}");
+    assert!(ev.offers.is_empty(), "the application was asked");
+    assert!(sent.contains("R 2 8\n"), "{sent}");
+    m.remove(id, &mut ev).unwrap();
+}
+
+/// A pushed transfer's first origin is the request's it was promised on
+/// (C links the pushed handle's `initial_origin` to its parent's): the
+/// login its application gave it does not follow a redirect to another
+/// host, as if the push were the first request, its own origin taken.
+#[test]
+fn a_pushed_transfer_s_login_does_not_follow_it_elsewhere() {
+    let mut ev = Pushes::answering(Answer::TakeFollowingWithLogin);
+    let reply = format!(
+        "S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: http\n\
+         :authority: 127.0.0.1:{PORT}\n:path: /pushed\n\nH 2 0\n:status: 302\n\
+         location: http://localhost:{PORT}/elsewhere\ncontent-length: 0\n\nD 2 0 1\n\
+         D 1 2 1\nok"
+    );
+    let talk = Conversation::replies(&[reply.as_bytes(), WINDOW_SENT], false).per_send();
+    let elsewhere = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc", false);
+    let mut m = serving(Peer::Accepts, &[&talk, &elsewhere]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.version = HttpVersion::Http2Prior;
+    o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+    let id = m.add(Box::new(e), (), &mut ev).unwrap();
+    let mut done = Vec::new();
+    for _ in 0..30 {
+        m.perform(&mut ev).unwrap();
+        while let Some(msg) = m.info_read() {
+            done.push((msg.id, msg.result));
+        }
+    }
+    let followed = String::from_utf8_lossy(&elsewhere.received()).into_owned();
+    assert!(
+        followed.starts_with("GET /elsewhere HTTP/1.1\r\n"),
+        "{followed}\n{done:?}"
+    );
+    assert!(!followed.contains("Authorization:"), "{followed}");
+    let ids: Vec<TransferId> =
+        std::iter::successors(m.next_transfer(None), |&t| m.next_transfer(Some(t))).collect();
+    for t in ids {
+        m.remove(t, &mut ev).unwrap();
+    }
+    let _ = id;
+}
+
+/// A pushed stream the server resets saying HTTP/1.1 is required, or
+/// refusing it, fails its transfer: it is never made again, in HTTP/1.1 or
+/// on a fresh connection, as nothing the application did asked for it
+/// (`set.never_retry`).
+#[test]
+fn a_pushed_transfer_is_never_made_again() {
+    for (code, failed) in [(13, ErrorKind::Http2Stream), (7, ErrorKind::RecvError)] {
+        never_made_again(code, failed);
+    }
+}
+
+fn never_made_again(code: u32, failed: ErrorKind) {
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply = format!(
+        "S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: http\n\
+         :authority: 127.0.0.1:{PORT}\n:path: /pushed\n\nR 2 {code}\nD 1 2 1\nok"
+    );
+    let again = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc", false);
+    let talk = Conversation::replies(&[reply.as_bytes(), WINDOW_SENT], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk, &again]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.version = HttpVersion::Http2Prior;
+    o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+    let id = m.add(Box::new(e), (), &mut ev).unwrap();
+    let mut done = Vec::new();
+    for _ in 0..30 {
+        m.perform(&mut ev).unwrap();
+        while let Some(msg) = m.info_read() {
+            done.push((msg.id, msg.result));
+        }
+    }
+    done.sort_by_key(|&(t, _)| t != id);
+    assert_eq!(done.len(), 2, "{done:?}");
+    assert_eq!(done[0].1, Ok(()));
+    assert_eq!(done[1].1, Err(failed), "{code}: {done:?}");
+    assert_eq!(again.received(), b"", "{code}: made again");
+    let ids: Vec<TransferId> =
+        std::iter::successors(m.next_transfer(None), |&t| m.next_transfer(Some(t))).collect();
+    for t in ids {
+        m.remove(t, &mut ev).unwrap();
+    }
 }

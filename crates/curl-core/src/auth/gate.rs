@@ -15,15 +15,22 @@ use crate::proto::GateKey;
 
 /// Where the transfer's first request went (`state.initial_origin`), once
 /// it has gone: what the application said for it goes nowhere else. Only
-/// a run that has made no request yet has none, which opens every gate.
+/// a run that has made no request yet has none, which opens the gate of
+/// that first request, whose origin it then records.
 #[derive(Debug)]
 pub(crate) struct FirstOrigin(Option<Origin>);
 
 impl FirstOrigin {
-    /// A run's before its first request, or a pushed stream's request,
-    /// which is a run of its own (C's pushed handle).
+    /// A run's before its first request.
     pub(crate) fn fresh() -> FirstOrigin {
         FirstOrigin(None)
+    }
+
+    /// A pushed stream's run, which makes no first request of its own:
+    /// the first origin of the request it was promised on (C links the
+    /// pushed handle's `initial_origin` to its parent's).
+    pub(crate) fn inherited(first: Origin) -> FirstOrigin {
+        FirstOrigin(Some(first))
     }
 
     /// The first request's origin, recorded once: later ones change
@@ -43,7 +50,7 @@ impl FirstOrigin {
     /// lets credentials follow it anywhere (`CURLOPT_UNRESTRICTED_AUTH`).
     pub(crate) fn origins(&self, unrestricted: bool) -> Origins<'_> {
         Origins {
-            first: self.0.as_deref(),
+            first: self.0.as_ref(),
             unrestricted,
         }
     }
@@ -53,11 +60,16 @@ impl FirstOrigin {
 /// to the holder of the key, `RequestBase`, for the peer it stores.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Origins<'r> {
-    first: Option<&'r Peer>,
+    first: Option<&'r Origin>,
     unrestricted: bool,
 }
 
-impl Origins<'_> {
+impl<'r> Origins<'r> {
+    /// The first origin, if a request went to one.
+    pub(crate) fn first(&self) -> Option<&'r Origin> {
+        self.first
+    }
+
     /// The gate of a request to `peer`: open for the transfer's first
     /// request; else whether `peer` is the first origin, and whether what
     /// the application said may go there (`Curl_auth_allowed_to_host`).
@@ -68,7 +80,7 @@ impl Origins<'_> {
                 trusted: true,
             },
             Some(first) => {
-                let same = first == peer;
+                let same = **first == *peer;
                 CredentialGate {
                     same,
                     trusted: same || self.unrestricted,

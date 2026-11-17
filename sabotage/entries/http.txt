@@ -667,7 +667,7 @@ witness: curl-sys-abi handle_tests::scheme_options_reach_the_transfer
 file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-                let same = first == peer;
+                let same = **first == *peer;
 --- new
                 let same = true;
 

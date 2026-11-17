@@ -527,6 +527,10 @@ pub(super) fn retry_request<H: Host>(
     cx: &mut StepCx<'_, H>,
     ended: bool,
 ) -> Result<bool, ErrorKind> {
+    // Nothing the application did asked for a pushed one.
+    if run.asked == super::AskedBy::Push {
+        return Ok(false);
+    }
     let uploads = cx.easy().options().method == Method::Upload;
     let reused = x.proto.retryable(ended, uploads) && x.lease.conn().reused();
     // A stream HTTP/2 refused is safe to make again, on any connection,

@@ -429,6 +429,13 @@ impl<H: Host> StepCx<'_, H> {
         self.rest.events.wants_push()
     }
 
+    /// Whether the stepping transfer is the multi's own, not the
+    /// application's: a DoH probe (`state.internal`).
+    pub(crate) fn internal(&self) -> bool {
+        let slot = self.rest.tell.slots.get(self.me);
+        slot.is_some_and(|slot| slot.owner.is_internal())
+    }
+
     /// Offer the application a response the server promised beside the
     /// stepping transfer's request (`push_promise`): `easy`, made for it,
     /// its URL set. Taken, it is a transfer of the multi's from now, its

@@ -691,6 +691,8 @@ impl Session {
         };
         // SAFETY: as above.
         unsafe { ffi::SSL_CTX_set_mode_moving_write_buffer(c) };
+        // SAFETY: as above.
+        unsafe { ffi::SSL_CTX_clear_mode_auto_retry(c) };
         if let Some(ciphers) = &options.ciphers
             && min_version != TlsMinVersion::Tls1_3
         {

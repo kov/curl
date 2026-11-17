@@ -355,6 +355,7 @@ mod ctrl {
     use core::ffi::{c_int, c_long};
 
     pub(crate) const SSL_CTRL_MODE: c_int = 33;
+    pub(crate) const SSL_CTRL_CLEAR_MODE: c_int = 78;
     pub(crate) const SSL_CTRL_SET_READ_AHEAD: c_int = 41;
     pub(crate) const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
     pub(crate) const SSL_CTRL_SET_MIN_PROTO_VERSION: c_int = 123;
@@ -514,6 +515,29 @@ pub(crate) unsafe fn SSL_CTX_set_mode_moving_write_buffer(ctx: *mut SSL_CTX) {
     // SAFETY: as the caller says.
     unsafe {
         openssl_sys::SSL_CTX_set_mode(ctx, openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER as u32)
+    };
+}
+
+/// `SSL_CTX_clear_mode(ctx, SSL_MODE_AUTO_RETRY)`: a read that meets a
+/// record carrying no data, a session ticket, returns, wanting to read,
+/// rather than reading on from the connection, where a server sending
+/// only such records would hold it. The forks have the mode as a no-op
+/// (`SSL_MODE_AUTO_RETRY` 0 in their headers), so there is nothing to
+/// clear.
+///
+/// # Safety
+/// `ctx` is a context.
+#[cfg_attr(boringssl_like, allow(unused_variables, reason = "nothing to clear"))]
+pub(crate) unsafe fn SSL_CTX_clear_mode_auto_retry(ctx: *mut SSL_CTX) {
+    #[cfg(not(boringssl_like))]
+    // SAFETY: as the caller says; the command takes no pointer.
+    unsafe {
+        openssl_sys::SSL_CTX_ctrl(
+            ctx,
+            SSL_CTRL_CLEAR_MODE,
+            openssl_sys::SSL_MODE_AUTO_RETRY,
+            core::ptr::null_mut(),
+        )
     };
 }
 
@@ -831,6 +855,7 @@ mod tests {
                 ),
                 (33, 41, 55, 123, 124, 92, 98)
             );
+            assert_eq!(SSL_CTRL_CLEAR_MODE, 78);
             assert_eq!(TLSEXT_NAMETYPE_HOST_NAME, 0);
             assert_eq!(
                 (

@@ -21,6 +21,10 @@ use super::*;
 
 pub(crate) const TESTS: &[(&str, fn())] = &[
     (
+        "a_read_meeting_a_ticket_returns_wanting_more",
+        a_read_meeting_a_ticket_returns_wanting_more,
+    ),
+    (
         "a_socket_that_stutters_has_each_step_wait_and_go_on",
         a_socket_that_stutters_has_each_step_wait_and_go_on,
     ),
@@ -297,6 +301,32 @@ pub(crate) fn multi_over(plan: Plan) -> Multi {
 
 fn count(got: &Got, line: &str) -> usize {
     got.seen.lines.iter().filter(|l| l.as_str() == line).count()
+}
+
+/// A read that meets a record carrying no data, a TLS 1.3 session ticket,
+/// returns wanting to read rather than reading on from the connection
+/// (`SSL_MODE_AUTO_RETRY` cleared): a server sending only tickets cannot
+/// hold a read. The server's bytes dribbled out, each ticket ends where
+/// what was read ends, and the read returns before asking the
+/// connection again; reading on, it asked straight away.
+fn a_read_meeting_a_ticket_returns_wanting_more() {
+    let certs = certs("tickets", "localhost", &["localhost"]);
+    let (at, server) = serve_configured(&certs, true, |a| a.set_num_tickets(8).unwrap());
+    let got = get_traced("localhost", at, trusting(&certs), true);
+    server.join().unwrap();
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert_eq!(got.seen.body, BODY);
+    const TICKET: &str = "TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):";
+    let lines = &got.seen.lines;
+    let tickets: Vec<usize> = (0..lines.len()).filter(|&i| lines[i] == TICKET).collect();
+    assert_eq!(tickets.len(), 8, "{lines:#?}");
+    for at in tickets {
+        let next = lines[at + 1..].iter().find(|l| l.starts_with("[SSL] "));
+        assert!(
+            next.is_some_and(|l| l.starts_with("[SSL] ossl_recv(") && l.contains(") -> 81, 0")),
+            "after the ticket at {at}, {next:?}: {lines:#?}"
+        );
+    }
 }
 
 /// A socket whose every first try would block: the handshake waits to

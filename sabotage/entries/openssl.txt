@@ -607,3 +607,11 @@ witness: curl-openssl a_status_issued_over_four_days_ago_fails
 openssl_sys::OCSP_check_validity(thisupd, nextupd, 300, 4 * 24 * 60 * 60)
 --- new
 openssl_sys::OCSP_check_validity(thisupd, nextupd, 300, -1)
+
+=== a read meeting a session ticket reads on from the connection
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_read_meeting_a_ticket_returns_wanting_more
+--- old
+        unsafe { ffi::SSL_CTX_clear_mode_auto_retry(c) };
+--- new
+        if false { unsafe { ffi::SSL_CTX_clear_mode_auto_retry(c) } };

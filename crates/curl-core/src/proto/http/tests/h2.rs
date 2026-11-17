@@ -3157,13 +3157,15 @@ impl WriteHandler for PausesOnceAt {
 }
 
 /// A stream whose window the library fails to set in a sibling's step,
-/// as nghttp2 fails out of memory, is reset there with C's code, and its
-/// transfer learns so as the reset goes, failing once it next reads; the
-/// sibling goes on (`cf_h2_update_local_win`'s failure). `/b` leaves the
-/// pass once its request is sent (`multistate_did`), so `/a` reads
-/// `/b`'s body, which pauses `/b` in `/a`'s step.
+/// as nghttp2 fails out of memory, ends the session, a fatal failure:
+/// the sibling's read fails with it, as C's window is set in the read's
+/// callback and its shim makes that the read's result
+/// (`Curl_ngh2_session_mem_recv`); the stream is not reset, as nothing
+/// more goes on the session, and its transfer fails as it next reads.
+/// `/b` leaves the pass once its request is sent (`multistate_did`), so
+/// `/a` reads `/b`'s body, which pauses `/b` in `/a`'s step.
 #[test]
-fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
+fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_ends_the_session() {
     let talk = Conversation::replies(
         &[
             b"S\nH 1 0\n:status: 200\n\n",
@@ -3205,24 +3207,18 @@ fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
     }
     assert_eq!(
         drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
-        Ok(())
+        Err(ErrorKind::RecvError)
     );
     let sent = String::from_utf8(talk.received()).unwrap();
-    assert!(
-        sent.contains("R 3 4294966394\n"),
-        "{sent} {:#?}",
-        b_seen.text()
-    );
+    assert!(!sent.contains("R 3 "), "{sent} {:#?}", b_seen.text());
     m.pause(ids[1], crate::deliver::PauseRequest::CONT, &mut NoEvents)
         .unwrap();
     let done = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
-    assert_eq!(done, Err(ErrorKind::Http2Stream), "{:?}", b_seen.text());
-    let said = "HTTP/2 stream 3 reset by curl (error 0xfffffc7a unknown)\n";
-    assert!(
-        b_seen.text().iter().any(|l| l == said),
-        "{:?}",
-        b_seen.text()
-    );
+    assert_eq!(done, Err(ErrorKind::Http2), "{:#?}", b_seen.text());
+    // Said once, on its own transfer, where it failed.
+    let said = "[3] nghttp2 set_local_window_size(10485760) failed: Out of memory(-901)\n";
+    let lines = b_seen.text();
+    assert_eq!(lines.iter().filter(|l| *l == said).count(), 1, "{lines:#?}");
     for id in ids {
         m.remove(id, &mut NoEvents).unwrap();
     }
@@ -3283,9 +3279,11 @@ fn said(lines: &[String], line: &str) -> bool {
 /// A read the session fails, here on a promise naming another authority,
 /// fails the transfer reading, and each other transfer on the connection
 /// fails as it next runs, at once and with C's code and lines: the
-/// session is read no more, as what it took of the bytes is gone, and no
-/// stream is reset on it. `/b` sends its request and leaves the pass to
-/// `/a` (`multistate_did`), so `/a` reads the bytes for both streams.
+/// session, ended, is called no more (`ngh2_shim`), so the window the
+/// other asks for is refused it, and nothing more is sent, not even the
+/// reset the failed read queued. `/b` sends its request and leaves the
+/// pass to `/a` (`multistate_did`), so `/a` reads the bytes for both
+/// streams.
 #[test]
 fn a_failed_read_fails_every_stream_on_the_connection() {
     let talk = Conversation::replies(
@@ -3314,21 +3312,30 @@ fn a_failed_read_fails_every_stream_on_the_connection() {
         texts[0]
     );
     for line in [
-        "[HTTP/2] [0] ingress: session is closed\n",
-        "[HTTP/2] [3] premature DATA_DONE, RST stream\n",
+        "[3] nghttp2 set_local_window_size(10485760) failed: \
+         The user callback function failed(-902)\n",
+        "[HTTP/2] [3] xfer write failed\n",
     ] {
         assert!(said(&texts[1], line), "{line:?} in {:?}", texts[1]);
     }
+    // Its stream is not reset, nor said to be: the session it was on
+    // has ended.
+    assert!(
+        !texts[1].iter().any(|l| l.contains("premature DATA_DONE")),
+        "{:?}",
+        texts[1]
+    );
     let read = "[HTTP/2] [3] cf_recv(len=16384) -> 16, 0,";
     assert!(
         texts[1].iter().any(|l| l.starts_with(read)),
         "{:?}",
         texts[1]
     );
-    // The reader's reset of its own stream goes, as C's egress sends it
-    // after the failed read; nothing more goes on the session after.
+    // The reader's reset of its own stream, queued as the read failed,
+    // does not go: C's egress after the read sends nothing on a session
+    // that ended.
     let sent = String::from_utf8(talk.received()).unwrap();
-    assert!(sent.contains("R 1 1\n"), "{sent}");
+    assert!(!sent.contains("R 1 1\n"), "{sent}");
     assert!(!sent.contains("R 3 5\n"), "{sent}");
 }
 
@@ -3813,8 +3820,10 @@ fn without_a_push_handler_a_push_is_cancelled() {
     assert!(sent.contains("R 2 8\n"), "{sent}");
 }
 
-/// A promise naming another authority than the request's resets the
-/// request's stream and fails the read (RFC 9113 §8.4), unoffered.
+/// A promise naming another authority than the request's fails the
+/// read (RFC 9113 §8.4), unoffered: the session ends with it, so the
+/// reset of the request's stream queued as it failed is not sent, as
+/// C's shim sends nothing more on it.
 #[test]
 fn a_promise_for_another_authority_fails_the_read() {
     let mut ev = Pushes::answering(Answer::Take);
@@ -3822,7 +3831,7 @@ fn a_promise_for_another_authority_fails_the_read() {
     let (done, sent) = pushed_get(&reply, &mut ev);
     assert_eq!(done.len(), 1, "{done:?}");
     assert_eq!(done[0].1, Err(ErrorKind::RecvError), "{sent}");
-    assert!(sent.contains("R 1 1\n"), "{sent}");
+    assert!(!sent.contains("R 1 1\n"), "{sent}");
     assert!(ev.offers.is_empty());
 }
 

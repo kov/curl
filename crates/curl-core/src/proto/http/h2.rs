@@ -1539,10 +1539,17 @@ impl Request {
                 let to = h2.route_of(stream).filter(|&to| to != me);
                 // Not marked to run: C's `cf_h2_update_local_win` marks
                 // none.
+                // A sibling's failure is its stream's, said on its
+                // transfer, which finds it when it next reads (C's
+                // `xfer_result`).
                 let lent = to.and_then(|to| {
-                    cx.lend_sibling(to, |bcx, _| {
+                    cx.lend_sibling(to, |bcx, req| {
                         let set = h2.window_to(bcx, stream, wanted);
                         said_pause(bcx, stream, paused.filter(|_| set.is_ok()));
+                        if let Err(e) = set {
+                            let kind = window_failed(bcx, stream, wanted, e);
+                            req.stream().failed = Some(kind);
+                        }
                         set
                     })
                 });
@@ -1592,6 +1599,15 @@ impl Request {
             // it takes no more transfers than it has (`cf_h2_query`).
             self.wake_others(cx, lease);
         }
+        // What was done for the read, done after it here, ended the
+        // session: the read fails with it, as C's callbacks do it during
+        // the read, whose result its shim makes the session's end
+        // (`Curl_ngh2_session_mem_recv`).
+        let ended = lease.conn().h2().and_then(H2Conn::ended);
+        let fed = match (fed, ended) {
+            (Ok(Ok(_)), Some(e)) => Ok(Err(e)),
+            (fed, _) => fed,
+        };
         if !matches!(fed, Ok(Ok(_))) {
             // The read failed for the session, not for this stream: what
             // it took of the bytes is gone with it, so the session is
@@ -2218,7 +2234,9 @@ impl Request {
         };
         // The stream is no transfer's from here.
         with_session(lease, |h2, _| h2.unroute(id));
-        if !open {
+        // A session that ended sends nothing more, and says nothing of
+        // its streams: they go with the connection (`Curl_ngh2_valid`).
+        if !open || lease.conn().h2().is_some_and(H2Conn::broken) {
             return;
         }
         let shown = id.0;
@@ -2227,11 +2245,6 @@ impl Request {
             H2,
             format_args!("[{shown}] premature DATA_DONE, RST stream"),
         );
-        // A session whose read failed sends nothing more: its streams go
-        // with the connection.
-        if lease.conn().h2().is_some_and(H2Conn::broken) {
-            return;
-        }
         let _reset = with_session(lease, |h2, _| {
             h2.session().reset(id, H2Error::STREAM_CLOSED)
         });

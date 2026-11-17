@@ -1398,3 +1398,80 @@ features: test-util
 --- old
     proto.first_recorded(run.first.get().expect("recorded above"));
 --- new
+
+=== a session's fatal failure is not kept
+file: crates/curl-core/src/http2/latch.rs
+witness: curl-core http2::latch::tests::a_session_ended_by_a_fatal_failure_is_called_no_more
+--- old
+        {
+            self.ended = Some(e);
+        }
+--- new
+        {
+        }
+
+=== a session that ended is still asked its windows and wants
+file: crates/curl-core/src/http2/latch.rs
+witness: curl-core http2::latch::tests::a_session_ended_by_a_fatal_failure_is_called_no_more
+--- old
+        if self.ended.is_some() {
+            none
+--- new
+        if false {
+            none
+
+=== a session ended by what its read gathered lets the read succeed
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_ends_the_session
+--- old
+            (Ok(Ok(_)), Some(e)) => Ok(Err(e)),
+--- new
+            (Ok(Ok(_)), Some(_)) if false => unreachable!(),
+
+=== a sibling's window failure is not kept on its stream
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_ends_the_session
+--- old
+                            req.stream().failed = Some(kind);
+                        }
+                        set
+--- new
+                            let _ = (kind, &req);
+                        }
+                        set
+
+=== a stream on a session that ended is said to be reset
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_failed_read_fails_every_stream_on_the_connection
+--- old
+        if !open || lease.conn().h2().is_some_and(H2Conn::broken) {
+            return;
+        }
+--- new
+        if !open {
+            return;
+        }
+
+=== a connection whose session ended takes the peer's limit of transfers
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http2::tests::a_connection_whose_session_ended_takes_no_more_transfers
+--- old
+        if self.closed() || self.goaway.is_some() || self.broken() {
+--- new
+        if self.closed() || self.goaway.is_some() {
+
+=== a tunnel whose session ended is still alive
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_tunnel_whose_session_ended_is_dead_and_says_no_goodbye
+--- old
+        if self.session.ended().is_some() {
+            return Alive::Dead;
+        }
+--- new
+
+=== a tunnel whose session ended says goodbye
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_tunnel_whose_session_ended_is_dead_and_says_no_goodbye
+--- old
+            || self.session.ended().is_some()
+--- new

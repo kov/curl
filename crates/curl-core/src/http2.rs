@@ -433,3 +433,5 @@ pub const DEFAULT_WEIGHT: u16 = 16;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod fake;
+mod latch;
+pub(crate) use latch::Latched;

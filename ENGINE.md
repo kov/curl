@@ -2053,7 +2053,11 @@ reset) and per connection (settings, goaway). An event the caller cannot take fa
 reading, as C's callbacks return `NGHTTP2_ERR_CALLBACK_FAILURE`; what C's callbacks call back
 into the session for (consuming, resetting, resuming, windows) is gathered as the read runs and
 done once it returns, in scratch kept on the request's stream between reads, so a body's frames
-allocate nothing. Each response field is made into its line (`name: value\r\n`) in a buffer the
+allocate nothing. The layers reach a session only through `http2::Latched` (C's `ngh2_shim`):
+its first fatal failure is kept, every later call answers it without reaching the library, and
+its questions answer nothing; a fatal failure in what was gathered fails the read it was
+gathered for, as C's shim makes a callback's the read's result. A connection whose session
+ended is dead, takes no more transfers than it has, sends no goodbye and resets no stream. Each response field is made into its line (`name: value\r\n`) in a buffer the
 `H2Conn` keeps and lends to the read, as C's `ctx->scratch`, so a head's fields allocate nothing
 once the connection has seen one as long.
 

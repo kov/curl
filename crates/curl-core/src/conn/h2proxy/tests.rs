@@ -82,3 +82,65 @@ fn what_the_tunnel_read_is_let_go_of_while_more_comes() {
         );
     }
 }
+
+/// The layer under the tunnel: alive, with nothing to read or send.
+#[derive(Debug)]
+struct Under;
+
+impl Part<Below<'_>> for Under {
+    fn is_alive(&mut self, _: &mut dyn LayerCx, _: Below<'_>) -> Alive {
+        Alive::Alive {
+            input_pending: false,
+        }
+    }
+}
+
+impl Layer for Under {
+    fn recv(&mut self, _: &mut dyn LayerCx, _: Below<'_>, _: &mut [u8]) -> io::Result<Recv> {
+        Ok(Recv::WouldBlock)
+    }
+
+    fn send(&mut self, _: &mut dyn LayerCx, _: Below<'_>, _: &[u8]) -> io::Result<Sent> {
+        Ok(Sent::WouldBlock)
+    }
+}
+
+/// A tunnel whose session a fatal failure ended is dead, whatever is
+/// below, and shuts down at once, saying no goodbye it could not send
+/// (`Curl_ngh2_valid` in `cf_h2_proxy_is_alive` and
+/// `cf_h2_proxy_shutdown`); before, it is alive, and says GOAWAY.
+#[test]
+fn a_tunnel_whose_session_ended_is_dead_and_says_no_goodbye() {
+    use crate::conn::quic::tests::Scripted;
+    use crate::tls::Notes;
+    for ended in [false, true] {
+        let mut p = H2Proxy::open(&crate::http2::fake::FakeH2, 100).unwrap();
+        p.tunnel.state = TunnelState::Established;
+        if ended {
+            // A frame its reader fails ends the session, as nghttp2's
+            // callback failure does.
+            let read = p.session.recv(b"S\n", &mut |_| Heard::Failed);
+            assert!(read.is_err_and(|e| e.fatal), "{read:?}");
+        }
+        let socket = Scripted::default();
+        let mut layers: [Box<dyn Layer>; 1] = [Box::new(Under)];
+        let mut notes = Notes::default();
+        let alive = p.is_alive(&mut notes, Below::new(&mut layers, &socket));
+        let expected = if ended {
+            Alive::Dead
+        } else {
+            Alive::Alive {
+                input_pending: false,
+            }
+        };
+        assert_eq!(alive, expected, "ended {ended}");
+        let shut = p.shutdown(&mut notes, Below::new(&mut layers, &socket));
+        if ended {
+            assert_eq!(shut, Ok(Handshake::Done));
+            assert!(!p.sent_goaway);
+        } else {
+            assert!(shut.is_ok(), "{shut:?}");
+            assert!(p.sent_goaway);
+        }
+    }
+}

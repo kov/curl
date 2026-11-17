@@ -18,8 +18,8 @@ use crate::conn::mux::{Carrier, Routes};
 use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
 use crate::http2::{
-    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Session, Setting,
-    StreamId, Took,
+    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Latched, Session,
+    Setting, StreamId, Took,
 };
 use crate::multi::TransferId;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
@@ -59,7 +59,7 @@ pub(crate) fn send_buffer() -> ChunkQueue {
 pub(crate) struct H2Conn {
     /// The library the session is of, for its texts.
     library: &'static dyn Http2,
-    session: Box<dyn Session>,
+    session: Latched,
     /// What the session gave to send and the connection has not taken
     /// yet (`outbufq`), a chunk sent whole once it is full.
     out: ChunkQueue,
@@ -253,9 +253,11 @@ impl H2Conn {
         settings: &[Setting],
         upgrade: Option<(&[u8], bool)>,
     ) -> Result<(H2Conn, Option<StreamId>), ErrorKind> {
-        let mut session = library
-            .client()
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let mut session = Latched::new(
+            library
+                .client()
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
+        );
         let stream = match upgrade {
             Some((payload, head)) => Some(session.upgrade(payload, head).map_err(failed)?),
             None => {
@@ -286,7 +288,7 @@ impl H2Conn {
     }
 
     pub(crate) fn session(&mut self) -> &mut dyn Session {
-        &mut *self.session
+        &mut self.session
     }
 
     /// How many transfers it takes at once, with `attached` on it
@@ -294,7 +296,7 @@ impl H2Conn {
     /// once it may make no more requests, its peer gone or going away,
     /// those on it.
     pub(crate) fn max_concurrent(&self, attached: u32) -> u32 {
-        if self.closed() || self.goaway.is_some() {
+        if self.closed() || self.goaway.is_some() || self.broken() {
             return attached;
         }
         self.session.max_concurrent()
@@ -474,8 +476,13 @@ impl H2Conn {
     }
 
     /// A read of the session failed: it is read no more.
+    /// The fatal failure that ended the session, if one has.
+    pub(crate) fn ended(&self) -> Option<FrameError> {
+        self.session.ended()
+    }
+
     pub(crate) fn broken(&self) -> bool {
-        self.broken
+        self.broken || self.session.ended().is_some()
     }
 
     pub(crate) fn set_broken(&mut self) {
@@ -628,7 +635,7 @@ impl H2Conn {
     /// `is_alive`'s answer, its read said as C says it
     /// (`http2_connisalive`).
     fn connisalive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'_>) -> Alive {
-        if self.broken {
+        if self.broken() {
             return Alive::Dead;
         }
         let below_alive = below.reborrow().alive(cx);

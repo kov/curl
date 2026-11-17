@@ -18,8 +18,8 @@ use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http2::{
-    BodyRead, DEFAULT_WEIGHT, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId,
-    Took,
+    BodyRead, DEFAULT_WEIGHT, Event, FrameError, H2Error, Heard, Http2, Latched, Session, Setting,
+    StreamId, Took,
 };
 
 /// What the session reads and writes at a time (`PROXY_H2_CHUNK_SIZE`).
@@ -380,7 +380,7 @@ impl Progress {
 /// (`cf_h2_proxy_ctx`).
 pub(crate) struct H2Proxy {
     library: &'static dyn Http2,
-    session: Box<dyn Session>,
+    session: Latched,
     /// What was read from below and not fed to the session (`inbufq`).
     input: Vec<u8>,
     /// What the session gave to send and the layers below did not take
@@ -418,9 +418,11 @@ impl H2Proxy {
         library: &'static dyn Http2,
         max_streams: u32,
     ) -> Result<H2Proxy, ErrorKind> {
-        let mut session = library
-            .client()
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let mut session = Latched::new(
+            library
+                .client()
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
+        );
         let settings = [
             Setting::MaxConcurrentStreams(max_streams),
             Setting::InitialWindowSize(TUNNEL_WINDOW),
@@ -875,6 +877,9 @@ impl Part<Below<'_>> for H2Proxy {
     /// an idle connection was sent, the proxy's frames, is read
     /// (`proxy_h2_connisalive`).
     fn is_alive(&mut self, cx: &mut dyn LayerCx, mut below: Below<'_>) -> Alive {
+        if self.session.ended().is_some() {
+            return Alive::Dead;
+        }
         match below.reborrow().alive(cx) {
             Alive::Dead => Alive::Dead,
             Alive::Alive {
@@ -922,7 +927,10 @@ impl Part<Below<'_>> for H2Proxy {
         cx: &mut dyn LayerCx,
         mut below: Below<'_>,
     ) -> Result<Handshake, ErrorKind> {
-        if self.tunnel.state != TunnelState::Established || self.conn_closed {
+        if self.tunnel.state != TunnelState::Established
+            || self.session.ended().is_some()
+            || self.conn_closed
+        {
             return Ok(Handshake::Done);
         }
         if !self.sent_goaway {

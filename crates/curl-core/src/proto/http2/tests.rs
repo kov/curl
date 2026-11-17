@@ -250,3 +250,22 @@ fn unit2603_request_heads() {
         assert_eq!(fields, kept, "{name}");
     }
 }
+
+/// A connection whose session a fatal failure ended takes no more
+/// transfers than it has, as one whose peer went away
+/// (`cf_h2_query`'s `Curl_ngh2_valid`); before, the peer's limit.
+#[test]
+fn a_connection_whose_session_ended_takes_no_more_transfers() {
+    let library = &crate::http2::fake::FakeH2;
+    let (mut h2, _) = H2Conn::open(library, &settings(100, false), None).unwrap();
+    assert_eq!(h2.max_concurrent(3), u32::MAX);
+    assert!(!h2.broken());
+    // A frame its reader fails ends the session, as nghttp2's callback
+    // failure does.
+    let read = h2
+        .session()
+        .recv(b"S 7\n", &mut |_| crate::http2::Heard::Failed);
+    assert!(read.is_err_and(|e| e.fatal), "{read:?}");
+    assert!(h2.broken());
+    assert_eq!(h2.max_concurrent(3), 3);
+}

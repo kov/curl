@@ -26,6 +26,7 @@ const int64_t curl_gnutls_values[] = {
   GNUTLS_CERT_INVALID, GNUTLS_CERT_SIGNER_NOT_FOUND,
   GNUTLS_CERT_INSECURE_ALGORITHM, GNUTLS_CERT_NOT_ACTIVATED,
   GNUTLS_CERT_EXPIRED, GNUTLS_CERT_INVALID_OCSP_STATUS,
+  GNUTLS_CERT_PURPOSE_MISMATCH, GNUTLS_DT_KEY_PURPOSE_OID,
   GNUTLS_SSL3, GNUTLS_TLS1_0, GNUTLS_TLS1_1, GNUTLS_TLS1_2, GNUTLS_TLS1_3,
   GNUTLS_PKCS_USE_PKCS12_3DES, GNUTLS_PKCS_USE_PKCS12_ARCFOUR,
   GNUTLS_PKCS_USE_PKCS12_RC2_40, GNUTLS_PKCS_USE_PBES2_3DES,
@@ -36,10 +37,14 @@ const int64_t curl_gnutls_values[] = {
   ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE,
   (int64_t)sizeof(gnutls_datum_t), (int64_t)offsetof(gnutls_datum_t, data),
   (int64_t)offsetof(gnutls_datum_t, size),
+  (int64_t)sizeof(gnutls_typed_vdata_st),
+  (int64_t)offsetof(gnutls_typed_vdata_st, data),
+  (int64_t)offsetof(gnutls_typed_vdata_st, size),
   (int64_t)sizeof(time_t), (int64_t)sizeof(ssize_t),
 };
 
 const char *const curl_gnutls_oid_cn = GNUTLS_OID_X520_COMMON_NAME;
+const char *const curl_gnutls_kp_tls_www_server = GNUTLS_KP_TLS_WWW_SERVER;
 
 _Static_assert(sizeof(curl_gnutls_values) / sizeof(curl_gnutls_values[0])
-               == 52, "src/sys.rs's LAYOUT_LEN");
+               == 57, "src/sys.rs's LAYOUT_LEN");

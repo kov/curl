@@ -775,8 +775,18 @@ impl library::Session for Session {
 
     fn verify_peers(&self) -> Result<u32, Rc> {
         let mut status: c_uint = 0;
-        // SAFETY: the session, and the status to fill in.
-        let rc = unsafe { sys::gnutls_certificate_verify_peers2(self.s(), &mut status) };
+        // The chain must be valid for TLS server authentication, which
+        // `gnutls_certificate_verify_peers2` does not check: its extended
+        // key usage is asked of it (`gtls_verify_cert`).
+        let mut purpose = sys::gnutls_typed_vdata_st {
+            kind: sys::GNUTLS_DT_KEY_PURPOSE_OID,
+            data: sys::GNUTLS_KP_TLS_WWW_SERVER.as_ptr().cast_mut().cast(),
+            size: 0,
+        };
+        // SAFETY: the session, one element read only, its OID a C string
+        // that lives for ever, and the status to fill in.
+        let rc =
+            unsafe { sys::gnutls_certificate_verify_peers(self.s(), &mut purpose, 1, &mut status) };
         if rc < 0 { Err(rc) } else { Ok(status) }
     }
 

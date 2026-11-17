@@ -189,3 +189,21 @@ witness: curl-gnutls tests::no_session_is_kept_or_resumed_without_the_cache_nor_
             return None;
         }
 --- new
+
+=== the peer's chain is verified for any purpose
+file: crates/curl-gnutls/src/gnutls.rs
+witness: curl-ngtcp2 a_peer_certified_for_clients_alone_fails_its_check
+features: gnutls
+default-features: no
+--- old
+            unsafe { sys::gnutls_certificate_verify_peers(self.s(), &mut purpose, 1, &mut status) };
+--- new
+            unsafe { sys::gnutls_certificate_verify_peers(self.s(), &mut purpose, 0, &mut status) };
+
+=== a chain not for server authentication is said as no detail
+file: crates/curl-gnutls/src/verify.rs
+witness: curl-gnutls tests::the_chain_s_verdict_is_said_as_c_says_it
+--- old
+    } else if status & sys::GNUTLS_CERT_PURPOSE_MISMATCH != 0 {
+--- new
+    } else if status & sys::GNUTLS_CERT_PURPOSE_MISMATCH != 0 && false {

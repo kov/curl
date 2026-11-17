@@ -648,6 +648,11 @@ fn the_chain_s_verdict_is_said_as_c_says_it() {
             "certificate uses insecure algorithm",
         ),
         (
+            invalid | sys::GNUTLS_CERT_PURPOSE_MISMATCH,
+            ErrorKind::PeerFailedVerification,
+            "certificate is not valid for server authentication",
+        ),
+        (
             invalid | sys::GNUTLS_CERT_INVALID_OCSP_STATUS,
             ErrorKind::SslInvalidcertstatus,
             "OCSP status response is invalid",

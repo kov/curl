@@ -169,6 +169,8 @@ fn verify_cert<G: Gnutls>(
         "certificate signer not trusted"
     } else if status & sys::GNUTLS_CERT_INSECURE_ALGORITHM != 0 {
         "certificate uses insecure algorithm"
+    } else if status & sys::GNUTLS_CERT_PURPOSE_MISMATCH != 0 {
+        "certificate is not valid for server authentication"
     } else if status & sys::GNUTLS_CERT_INVALID_OCSP_STATUS != 0 {
         kind = ErrorKind::SslInvalidcertstatus;
         "OCSP status response is invalid"

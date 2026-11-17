@@ -29,7 +29,7 @@ use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::{PKey, Private};
 use openssl::symm::{Cipher, Crypter, Mode as CipherMode, decrypt_aead};
-use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
+use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, SubjectAlternativeName};
 use openssl::x509::{X509, X509Name};
 
 const BODY: &[u8] = b"hello h3\n";
@@ -104,6 +104,12 @@ fn since() -> Asn1Time {
 }
 
 fn certs(dir: &Path) {
+    certs_for(dir, false);
+}
+
+/// As `certs`, the server's certificate for client authentication alone
+/// (its extended key usage) if `client_only`.
+fn certs_for(dir: &Path, client_only: bool) {
     let ca_key = key();
     let mut ca = X509::builder().unwrap();
     ca.set_version(2).unwrap();
@@ -135,6 +141,10 @@ fn certs(dir: &Path) {
         .build(&cert.x509v3_context(Some(&ca), None))
         .unwrap();
     cert.append_extension(san).unwrap();
+    if client_only {
+        let eku = ExtendedKeyUsage::new().client_auth().build().unwrap();
+        cert.append_extension(eku).unwrap();
+    }
     cert.sign(&ca_key, MessageDigest::sha256()).unwrap();
     std::fs::write(dir.join("ca.pem"), ca.to_pem().unwrap()).unwrap();
     let other_key = crate::key();
@@ -402,18 +412,34 @@ fn with_conn_qlog<R>(
     qlog: Option<&Path>,
     f: impl FnOnce(&mut dyn Connection, &mut TlsCx<'_>, &Over<'_>, SocketAddr) -> R,
 ) -> (R, Vec<String>) {
+    with_conn_certs(test, ca, qlog, false, |_, _| {}, f)
+}
+
+/// `with_conn_qlog`, caddy's certificate for client authentication alone
+/// if `client_only`, the session's options as `tune` makes them, given
+/// the directory of the certificates.
+fn with_conn_certs<R>(
+    test: &str,
+    ca: &str,
+    qlog: Option<&Path>,
+    client_only: bool,
+    tune: impl FnOnce(&Path, &mut TlsOptions),
+    f: impl FnOnce(&mut dyn Connection, &mut TlsCx<'_>, &Over<'_>, SocketAddr) -> R,
+) -> (R, Vec<String>) {
     let dir = Dir(std::env::temp_dir().join(format!("curl-ngtcp2-{test}-{}", std::process::id())));
     std::fs::create_dir_all(&dir.0).unwrap();
-    certs(&dir.0);
+    certs_for(&dir.0, client_only);
     let (_server, addr) = caddy(&dir.0);
     let ca = dir.0.join(ca).into_os_string().into_encoded_bytes();
+    let mut options = TlsOptions {
+        ca_file: CaSetting::Given(ca),
+        ..TlsOptions::NONE
+    };
+    tune(&dir.0, &mut options);
     let identity = TryArc::try_new(TlsIdentity::for_tests(
         true,
         true,
-        TlsOptions {
-            ca_file: CaSetting::Given(ca),
-            ..TlsOptions::NONE
-        },
+        options,
         CaDefaults::NONE,
         curl_core::tls::TlsOrigin::First,
     ))
@@ -581,6 +607,31 @@ fn an_untrusted_peer_fails_the_handshake_as_it_completes() {
     );
     assert_eq!(failed.text, "ERR_CALLBACK_FAILURE");
     assert!(notes.iter().any(|n| n.contains(UNTRUSTED)), "{notes:?}");
+}
+
+/// A peer whose certificate is for client authentication alone fails
+/// its check: GnuTLS is asked for a chain valid for TLS server
+/// authentication (`gtls_verify_cert`).
+#[cfg(feature = "gnutls")]
+#[test]
+fn a_peer_certified_for_clients_alone_fails_its_check() {
+    let ((told, failed), notes) = with_conn_certs(
+        "clientonly",
+        "ca.pem",
+        None,
+        true,
+        |_, _| {},
+        |conn, cx, over, _| {
+            let mut told = Told::default();
+            let failed = run(conn, cx, over, &mut told, |_| false).unwrap_err();
+            (told, failed)
+        },
+    );
+    assert_eq!(told.checked, Some(Err(ErrorKind::PeerFailedVerification)));
+    assert_eq!(failed.call, "ngtcp2_conn_read_pkt");
+    let said =
+        "SSL certificate verification failed: certificate is not valid for server authentication.";
+    assert!(notes.iter().any(|n| n.contains(said)), "{notes:?}");
 }
 
 /// Over wolfSSL, and OpenSSL asked to verify the peer

@@ -168,7 +168,9 @@ pub(crate) trait Session: Send {
     /// `gnutls_certificate_get_peers`: the peer's chain, DER, leaf
     /// first; none if it sent none.
     fn peers(&self) -> Option<impl ExactSizeIterator<Item = &[u8]> + Clone>;
-    /// `gnutls_certificate_verify_peers2`: the status bits, or the error.
+    /// `gnutls_certificate_verify_peers` for TLS server authentication,
+    /// the chain's extended key usage checked: the status bits, or the
+    /// error.
     fn verify_peers(&self) -> Result<u32, Rc>;
     /// The stapled status checked for `cert` (`gtls_verify_ocsp_status`'s
     /// calls).

@@ -45,6 +45,15 @@ pub(crate) struct gnutls_datum_t {
     pub(crate) size: c_uint,
 }
 
+/// `gnutls_typed_vdata_st`: what a peer's certificate is checked for.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct gnutls_typed_vdata_st {
+    pub(crate) kind: c_uint,
+    pub(crate) data: *mut u8,
+    pub(crate) size: c_uint,
+}
+
 /// `time_t`, a `long` on the systems the crate builds for.
 pub(crate) type time_t = c_long;
 
@@ -98,6 +107,10 @@ pub(crate) const GNUTLS_CERT_INSECURE_ALGORITHM: c_uint = 1 << 8;
 pub(crate) const GNUTLS_CERT_NOT_ACTIVATED: c_uint = 1 << 9;
 pub(crate) const GNUTLS_CERT_EXPIRED: c_uint = 1 << 10;
 pub(crate) const GNUTLS_CERT_INVALID_OCSP_STATUS: c_uint = 1 << 20;
+pub(crate) const GNUTLS_CERT_PURPOSE_MISMATCH: c_uint = 1 << 18;
+pub(crate) const GNUTLS_DT_KEY_PURPOSE_OID: c_uint = 2;
+/// `GNUTLS_KP_TLS_WWW_SERVER`: TLS server authentication.
+pub(crate) const GNUTLS_KP_TLS_WWW_SERVER: &core::ffi::CStr = c"1.3.6.1.5.5.7.3.1";
 
 pub(crate) const GNUTLS_SSL3: c_int = 1;
 pub(crate) const GNUTLS_TLS1_0: c_int = 2;
@@ -288,8 +301,10 @@ unsafe extern "C" {
         session: gnutls_session_t,
         list_size: *mut c_uint,
     ) -> *const gnutls_datum_t;
-    pub(crate) fn gnutls_certificate_verify_peers2(
+    pub(crate) fn gnutls_certificate_verify_peers(
         session: gnutls_session_t,
+        data: *mut gnutls_typed_vdata_st,
+        elements: c_uint,
         status: *mut c_uint,
     ) -> c_int;
     pub(crate) fn gnutls_ocsp_status_request_get(
@@ -394,7 +409,7 @@ unsafe extern "C" {
 }
 
 /// How many values `csrc/layout.c` gives.
-pub(crate) const LAYOUT_LEN: usize = 52;
+pub(crate) const LAYOUT_LEN: usize = 57;
 
 #[cfg(test)]
 mod tests {
@@ -438,6 +453,8 @@ mod tests {
             GNUTLS_CERT_NOT_ACTIVATED.into(),
             GNUTLS_CERT_EXPIRED.into(),
             GNUTLS_CERT_INVALID_OCSP_STATUS.into(),
+            GNUTLS_CERT_PURPOSE_MISMATCH.into(),
+            GNUTLS_DT_KEY_PURPOSE_OID.into(),
             GNUTLS_SSL3.into(),
             GNUTLS_TLS1_0.into(),
             GNUTLS_TLS1_1.into(),
@@ -458,6 +475,9 @@ mod tests {
             i64::try_from(size_of::<gnutls_datum_t>()).expect("small"),
             i64::try_from(core::mem::offset_of!(gnutls_datum_t, data)).expect("small"),
             i64::try_from(core::mem::offset_of!(gnutls_datum_t, size)).expect("small"),
+            i64::try_from(size_of::<gnutls_typed_vdata_st>()).expect("small"),
+            i64::try_from(core::mem::offset_of!(gnutls_typed_vdata_st, data)).expect("small"),
+            i64::try_from(core::mem::offset_of!(gnutls_typed_vdata_st, size)).expect("small"),
             i64::try_from(size_of::<time_t>()).expect("small"),
             i64::try_from(size_of::<isize>()).expect("small"),
         ];
@@ -469,9 +489,13 @@ mod tests {
         // SAFETY: the library's static text.
         let oid = unsafe { core::ffi::CStr::from_ptr(curl_gnutls_oid_cn) };
         assert_eq!(oid, GNUTLS_OID_X520_COMMON_NAME);
+        // SAFETY: as above.
+        let server = unsafe { core::ffi::CStr::from_ptr(curl_gnutls_kp_tls_www_server) };
+        assert_eq!(server, GNUTLS_KP_TLS_WWW_SERVER);
     }
 
     unsafe extern "C" {
         static curl_gnutls_oid_cn: *const c_char;
+        static curl_gnutls_kp_tls_www_server: *const c_char;
     }
 }

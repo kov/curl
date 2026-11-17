@@ -292,9 +292,9 @@ witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_li
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
 --- old
-                b';' if rest.is_empty() => rest,
+        .filter(|&at| at > 0 && at + 1 == line.len() && !line[..at].contains(&b':'));
 --- new
-                b';' => rest,
+        .filter(|&at| at > 0 && !line[..at].contains(&b':'));
 
 === a forwarded request leaves the proxy's own lines out
 file: crates/curl-core/src/proto/http1/request.rs

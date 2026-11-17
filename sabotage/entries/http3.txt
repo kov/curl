@@ -1784,11 +1784,9 @@ witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_ends_when_its
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_as_its_connection_is_kept_up
 --- old
-                    if pause.recv_paused()
-                        && x.proto.reads_through_pause()
+                            && (asked.contains(Events::IN) || x.proto.reads_through_pause())
 --- new
-                    if false
-                        && x.proto.reads_through_pause()
+                            && asked.contains(Events::IN)
 
 === a paused transfer still waits to write
 file: crates/curl-core/src/multi/state.rs

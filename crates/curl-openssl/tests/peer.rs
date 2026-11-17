@@ -103,6 +103,13 @@ fn main() {
         track::untracked(|| println!("ok"));
         return;
     }
+    #[cfg(all(unix, ossl3))]
+    if std::env::var_os(engine::TOKEN_CHILD).is_some() {
+        track::untracked(|| print!("token_child ... "));
+        engine::token_child();
+        track::untracked(|| println!("ok"));
+        return;
+    }
     #[cfg(ossl3)]
     if std::env::var_os(engine::CONF_CHILD).is_some() {
         track::untracked(|| print!("conf_child ... "));

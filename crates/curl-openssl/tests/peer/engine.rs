@@ -38,6 +38,11 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_configuration_a_provider_cannot_load_is_said",
         a_configuration_a_provider_cannot_load_is_said,
     ),
+    #[cfg(all(unix, ossl3))]
+    (
+        "a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi",
+        a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi,
+    ),
 ];
 
 /// Engines that start but load neither a certificate nor a key: on Linux
@@ -88,6 +93,17 @@ pub(crate) const CHILD: &str = "CURL_OPENSSL_PEER_ENGINE_CHILD";
 /// runs, which runs `conf_child` alone; OpenSSL reads `OPENSSL_CONF` as
 /// a context loads its configuration.
 pub(crate) const CONF_CHILD: &str = "CURL_OPENSSL_PEER_CONF_CHILD";
+
+/// Set in the child `a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi`
+/// runs, which runs `token_child` alone, to the client's key; SoftHSM
+/// reads `SOFTHSM2_CONF` and the pkcs11 provider `PKCS11_PROVIDER_MODULE`
+/// as each loads.
+#[cfg(all(unix, ossl3))]
+pub(crate) const TOKEN_CHILD: &str = "CURL_OPENSSL_PEER_TOKEN_CHILD";
+
+/// The client's certificate on the SoftHSM token the child is given.
+#[cfg(all(unix, ossl3))]
+const TOKEN_CERT: &[u8] = b"pkcs11:token=curltest;object=client;type=cert";
 
 type Set<'a> = Box<dyn Fn(&mut curl_core::options::TlsOptions) + 'a>;
 
@@ -597,4 +613,155 @@ fn a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded() {
     if !installed {
         skip("the pkcs11 provider is not installed, so no store was opened");
     }
+}
+
+/// Where SoftHSM's PKCS#11 module is, if it is installed.
+#[cfg(all(unix, ossl3))]
+fn softhsm() -> Option<PathBuf> {
+    [
+        "/usr/lib64/pkcs11/libsofthsm2.so",
+        "/usr/lib/softhsm/libsofthsm2.so",
+        "/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so",
+        "/usr/lib/aarch64-linux-gnu/softhsm/libsofthsm2.so",
+        "/opt/homebrew/lib/softhsm/libsofthsm2.so",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|p| p.exists())
+}
+
+/// A client certificate a PKCS#11 URI names loads the pkcs11 provider
+/// into a library context, and a store loaded under it is neither taken
+/// from the multi nor kept there, as C's `USING_PROVIDER` decides once
+/// the certificate is loaded (2c5f9c8ac0): each transfer loads its own.
+/// Without the URI the store is kept, from one transfer to the next. An
+/// engine selected beside it changes nothing, the provider kept with it.
+/// The certificate is on a SoftHSM token made here, the key in a file;
+/// the run is a child given the token. Skipped where SoftHSM, its tools
+/// or the pkcs11 provider are not installed.
+#[cfg(all(unix, ossl3))]
+fn a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi() {
+    let Some(module) = softhsm() else {
+        return skip("SoftHSM is not installed");
+    };
+    if !pkcs11_installed() {
+        return skip("the pkcs11 provider is not installed");
+    }
+    let client = client("token");
+    track::untracked(|| {
+        let dir = certs_dir().join("softhsm");
+        let tokens = dir.join("tokens");
+        std::fs::create_dir_all(&tokens).unwrap();
+        let conf = dir.join("softhsm2.conf");
+        std::fs::write(
+            &conf,
+            format!(
+                "directories.tokendir = {}\nobjectstore.backend = file\n",
+                tokens.display()
+            ),
+        )
+        .unwrap();
+        let run = |program: &str, args: &[&std::ffi::OsStr]| {
+            let ran = std::process::Command::new(program)
+                .args(args)
+                .env("SOFTHSM2_CONF", &conf)
+                .output();
+            match ran {
+                Ok(ran) => {
+                    assert!(
+                        ran.status.success(),
+                        "{program}: {}",
+                        String::from_utf8_lossy(&ran.stderr)
+                    );
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        let os = |s: &'static str| std::ffi::OsStr::new(s);
+        let made = run(
+            "softhsm2-util",
+            &[
+                os("--init-token"),
+                os("--free"),
+                os("--label"),
+                os("curltest"),
+                os("--pin"),
+                os("1234"),
+                os("--so-pin"),
+                os("1234"),
+            ],
+        ) && run(
+            "pkcs11-tool",
+            &[
+                os("--module"),
+                module.as_os_str(),
+                os("--token-label"),
+                os("curltest"),
+                os("--login"),
+                os("--pin"),
+                os("1234"),
+                os("--write-object"),
+                client.cert_der.as_os_str(),
+                os("--type"),
+                os("cert"),
+                os("--id"),
+                os("01"),
+                os("--label"),
+                os("client"),
+            ],
+        );
+        if !made {
+            return skip("softhsm2-util or pkcs11-tool is not installed");
+        }
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .env("SOFTHSM2_CONF", &conf)
+            .env("PKCS11_PROVIDER_MODULE", &module)
+            .env(TOKEN_CHILD, &client.key_pem)
+            .output()
+            .unwrap();
+        assert!(
+            ran.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(ran.stdout, b"token_child ... ok\n");
+    });
+}
+
+/// The child's run: transfers in one multi, without the token's
+/// certificate and with it, alone and beside an engine.
+#[cfg(all(unix, ossl3))]
+pub(crate) fn token_child() {
+    let certs = certs("token", "localhost", &["localhost"]);
+    let key = track::untracked(|| std::env::var_os(TOKEN_CHILD).unwrap());
+    let key = bytes(std::path::Path::new(&key));
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let token = |engine: Option<&'static [u8]>| {
+        let key = key.clone();
+        move |o: &mut Options| {
+            let t = o.tls.options.make_mut().unwrap();
+            t.engine = engine.map(<[u8]>::to_vec);
+            t.cert = Some(TOKEN_CERT.to_vec());
+            t.cert_type = Some(b"PROV".to_vec());
+            t.key = Some(key);
+        }
+    };
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 1);
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 0);
+    for engine in [None, Some(&b"loader_attic"[..])] {
+        assert_eq!(
+            loads(&verified_in(&mut m, &certs, token(engine))),
+            1,
+            "{engine:?}"
+        );
+        assert_eq!(
+            loads(&verified_in(&mut m, &certs, token(engine))),
+            1,
+            "{engine:?}"
+        );
+    }
+    // The store kept before is kept still.
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 0);
 }

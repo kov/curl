@@ -61,7 +61,7 @@ pub(crate) struct Client {
     /// encrypted with `secret`; both in one PEM file; a PKCS#12 file
     /// with `secret`.
     pub(crate) cert_pem: PathBuf,
-    cert_der: PathBuf,
+    pub(crate) cert_der: PathBuf,
     pub(crate) key_pem: PathBuf,
     key_der: PathBuf,
     pub(crate) key_enc: PathBuf,

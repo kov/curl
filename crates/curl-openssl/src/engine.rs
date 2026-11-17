@@ -178,9 +178,19 @@ impl Crypto {
         Crypto::provider(given, io)
     }
 
-    /// Nothing was selected.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.engine.is_none() && self.libctx.is_none()
+    /// Take from `other` what this lacks: its engine if this has none,
+    /// its library context with its providers if this has none. What
+    /// this has already stays; the rest of `other` is let go.
+    pub(crate) fn absorb(&mut self, mut other: Crypto) {
+        if self.engine.is_none() {
+            self.engine = other.engine.take();
+        }
+        if self.libctx.is_none() {
+            self.libctx = other.libctx.take();
+            self.propq = other.propq.take();
+            self.provider = other.provider.take();
+            self.base = other.base.take();
+        }
     }
 
     /// An engine was selected.

@@ -505,13 +505,28 @@ fn errno_of(below: Below) -> i32 {
     }
 }
 
+/// `Session::store_cache`, over the fields it reads.
+fn store_cache<'a>(shared: Option<&'a TlsShared>, crypto: &Crypto) -> Option<&'a TlsShared> {
+    shared.filter(|_| !crypto.has_libctx())
+}
+
 impl Session {
+    /// The multi's state the store may be taken from and kept in: none
+    /// once a provider's library context is in use, by name or loaded
+    /// for a PKCS#11 URI, as a store loaded under it cannot outlive it
+    /// (`USING_PROVIDER`). Asked when the store is set up, after the
+    /// client's certificate and key are loaded.
+    fn store_cache(&self) -> Option<&TlsShared> {
+        store_cache(self.shared.as_ref(), &self.crypto)
+    }
+
     /// Run `op` on the SSL with the BIO reaching `io` (`bio::call`).
     fn call<R>(&mut self, io: &mut TlsIo<'_>, op: impl FnOnce(*mut SSL) -> R) -> (R, Below) {
         let ssl = self.ssl();
         let ctx = self.ctx.as_ref().expect("made at the first step").0;
         let identity = &self.identity;
-        let shared = self.shared.as_ref();
+        // Its fields borrowed apart from the flags.
+        let shared = store_cache(self.shared.as_ref(), &self.crypto);
         let mut setup = |cx: &mut TlsCx<'_>| x509::setup_store(ctx, identity, shared, cx);
         let mut slot = Slot {
             io: bio::Reach::Stream(io),
@@ -575,11 +590,6 @@ impl Session {
         }
         if options.engine_default {
             self.crypto.set_default(io)?;
-        }
-        if self.crypto.has_libctx() {
-            // A store loaded in a provider's library context cannot
-            // outlive it in the multi (`USING_PROVIDER`).
-            self.shared = None;
         }
         // Not verified until the peer is checked (`!X509_V_OK`).
         io.verified(1);
@@ -795,7 +805,7 @@ impl Session {
         // whole first, its trust store too (C's #11800).
         if io.configures_context() {
             if !self.flags.store_ready {
-                x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
+                x509::setup_store(ctx, &self.identity, self.store_cache(), io)?;
                 self.flags.store_ready = true;
             }
             io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
@@ -1029,7 +1039,7 @@ impl Session {
             // The ClientHello went out without a read: the store is set
             // up for the certificate to come.
             let ctx = self.ctx.as_ref().expect("made at the first step").0;
-            x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
+            x509::setup_store(ctx, &self.identity, self.store_cache(), io)?;
             self.flags.store_ready = true;
         }
         if self.flags.store_ready {

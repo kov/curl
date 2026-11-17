@@ -16,9 +16,9 @@ pub(crate) type StoreCache<S> = curl_core::tls::StoreCache<S>;
 /// loads (`Curl_ssl_setup_x509_store`'s `cache_criteria_met`): the cache
 /// is on, and the peer is verified against the CA file and path alone, no
 /// blob, no revocation list and not the system's own store, asked for
-/// or the library's default (`native_ca_store`). (C also
-/// leaves a store loaded under an OpenSSL provider out; this build loads
-/// none.)
+/// or the library's default (`native_ca_store`). A store loaded under an
+/// OpenSSL provider is left out too, by the session that knows its
+/// provider (`Session::store_cache`, C's `USING_PROVIDER`).
 pub(crate) fn cacheable(identity: &TlsIdentity) -> bool {
     let o = &identity.options;
     o.ca_cache != CaCache::Off

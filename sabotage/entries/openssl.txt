@@ -212,15 +212,6 @@ witness: curl-openssl an_engine_or_provider_that_cannot_be_had_fails_as_c_says
 --- new
             return Err(ErrorKind::SslEngineNotfound);
 
-=== a store loaded under a provider is kept by the multi
-file: crates/curl-openssl/src/ssl.rs
-witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
---- old
-            // outlive it in the multi (`USING_PROVIDER`).
-            self.shared = None;
---- new
-            // outlive it in the multi (`USING_PROVIDER`).
-
 === a provider's certificate is never read from its store
 file: crates/curl-openssl/src/cert.rs
 witness: curl-openssl a_provider_s_store_gives_the_client_certificate_and_key
@@ -312,7 +303,7 @@ file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_set_up
 --- old
             if !self.flags.store_ready {
-                x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
+                x509::setup_store(ctx, &self.identity, self.store_cache(), io)?;
                 self.flags.store_ready = true;
             }
             io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
@@ -590,3 +581,21 @@ witness: curl-openssl a_ccc_whose_close_notify_fails_to_go_reads_nothing_more
                     openssl_sys::SSL_ERROR_WANT_READ => {}
 --- new
                     _ => {}
+
+=== a store loaded under a provider is shared with the multi
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi
+--- old
+    shared.filter(|_| !crypto.has_libctx())
+--- new
+    shared
+
+=== a PKCS#11 URI's provider is dropped beside an engine
+file: crates/curl-openssl/src/engine.rs
+witness: curl-openssl a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi
+--- old
+        if self.libctx.is_none() {
+            self.libctx = other.libctx.take();
+--- new
+        if self.libctx.is_none() && self.engine.is_none() {
+            self.libctx = other.libctx.take();

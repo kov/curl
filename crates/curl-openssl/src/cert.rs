@@ -414,7 +414,7 @@ fn pkcs12_use(
 /// An engine's or a provider's certificate or key made the context's
 /// (`engineload`, `enginecheck`, `providerload`, `providercheck`). With
 /// none of that kind selected, a PKCS#11 URI selects `pkcs11` as C does,
-/// kept for the session if it had nothing selected. A provider's store
+/// kept for the session. A provider's store
 /// is read; an engine is asked, a key with `password`, a C string.
 #[cfg(ossl3)]
 fn from_crypto(
@@ -439,7 +439,6 @@ fn from_crypto(
         }
     };
     let pkcs11 = file.is_some_and(|f| f.len() >= 7 && f[..7].eq_ignore_ascii_case(b"pkcs11:"));
-    let mut picked = None;
     if !has(crypto) && pkcs11 {
         let made = if engine {
             Crypto::select(b"pkcs11", io)
@@ -449,13 +448,11 @@ fn from_crypto(
         let Ok(made) = made else {
             return Err(ErrorKind::SslCertproblem);
         };
-        if crypto.is_empty() {
-            *crypto = made;
-        } else {
-            picked = Some(made);
-        }
+        // Kept for the session beside what it had, as C's `struct
+        // provider` keeps an engine and a provider side by side.
+        crypto.absorb(made);
     }
-    let using = picked.as_ref().unwrap_or(crypto);
+    let using = &*crypto;
     let (name, short) = if engine {
         ("ENGINE", "engine")
     } else {

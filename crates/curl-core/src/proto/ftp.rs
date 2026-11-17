@@ -2567,26 +2567,18 @@ impl Request {
             } else {
                 // A download: its size unknown as yet.
                 self.download_size = None;
-                let span = match super::file::span_of(cx) {
-                    Ok(span) => Some(span),
-                    Err(ErrorKind::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-                    // C goes on with no command sent, the range's failure
-                    // lost to the state machine's result after it: the
-                    // transfer ends with nothing moved (test 1449).
-                    Err(_) => None,
-                };
-                if let Some(span) = span {
-                    self.resume_from = span.resume;
-                    self.max_download = span.max.and_then(|m| u64::try_from(m).ok());
-                    if self.max_download.is_some() {
-                        // The end of a range is not checked.
-                        self.dont_check = true;
-                    }
+                // A range that cannot be read fails the download, as a
+                // file's does (test 1449).
+                let span = super::file::span_of(cx)?;
+                self.resume_from = span.resume;
+                self.max_download = span.max.and_then(|m| u64::try_from(m).ok());
+                if self.max_download.is_some() {
+                    // The end of a range is not checked.
+                    self.dont_check = true;
                 }
                 let prequote = cx.easy().options().line.prequote.iter().next().is_some();
                 let file = self.path().file().is_some();
-                if span.is_none() {
-                } else if (self.list_only || !file) && !prequote {
+                if (self.list_only || !file) && !prequote {
                     // A directory: listed, in ASCII.
                     if self.transfer == Transfer::Body {
                         self.nb_type(cx, pc, &mut carrier, true, State::ListType)?;

@@ -2704,6 +2704,20 @@ fn a_file_past_the_maximum_size_fails() {
     assert_eq!(run(4), (Err(ErrorKind::FilesizeExceeded), vec![]));
 }
 
+/// A range that cannot be read fails the download before its type is
+/// set, as a file's does (`Curl_range`'s error returned, test 1449).
+#[test]
+fn an_unreadable_range_fails_the_download() {
+    let control = logged_in(&[b"229 Entering Extended Passive Mode (|||8022|)\r\n"]);
+    let file = data(b"");
+    let mut m = serving(&[&control], &[&file]);
+    let (id, _body, text) = added(&mut m, URL, |o| o.range = Some(b"5-3".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let sent = received(&control);
+    assert_eq!(result, Err(ErrorKind::RangeError), "{}", text.text());
+    assert!(!sent.contains("TYPE") && !sent.contains("RETR"), "{sent}");
+}
+
 /// Where a download resumes against the file's size: past its end fails,
 /// at its end gets nothing, and a range of the last bytes restarts where
 /// they start (`ftp_state_retr`).

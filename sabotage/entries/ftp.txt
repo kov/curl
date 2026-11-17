@@ -709,3 +709,13 @@ features: test-util
     (use_ssl == UseSsl::Try).then_some(ClearOrTls(()))
 --- new
     (use_ssl <= UseSsl::All).then_some(ClearOrTls(()))
+
+=== a download's unreadable range is passed over
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::an_unreadable_range_fails_the_download
+--- old
+                let span = super::file::span_of(cx)?;
+--- new
+                let Ok(span) = super::file::span_of(cx) else {
+                    return Ok(DoStep::Nothing);
+                };

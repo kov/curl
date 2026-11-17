@@ -964,9 +964,10 @@ pub(crate) fn fields_of(
 /// The fields of a CONNECT-UDP to a proxy that speaks HTTP/2 (RFC 9298's
 /// extended `CONNECT`; `http_proxy_create_CONNECTUDP`,
 /// `Curl_http_req_to_h2`): the proxy's `scheme` and `authority` and the
-/// `path` naming the target, then what `head` holds after its request
-/// line, the proxy's authorization first if `authorized`, then the
-/// protocol asked for and the capsules it is to carry, then the rest.
+/// `path` naming the target and the protocol asked for, pseudo-headers
+/// all; then what `head` holds after its request line, the proxy's
+/// authorization first if `authorized`, then the capsules it is to
+/// carry, then the rest.
 pub(crate) fn connect_udp_fields(
     head: &[u8],
     authorized: bool,
@@ -980,6 +981,9 @@ pub(crate) fn connect_udp_fields(
     fields.add(b":scheme", scheme, false).map_err(oom)?;
     fields.add(b":authority", authority, false).map_err(oom)?;
     fields.add(b":path", path, false).map_err(oom)?;
+    fields
+        .add(b":protocol", b"connect-udp", false)
+        .map_err(oom)?;
     let mut lines = head
         .split_inclusive(|&b| b == b'\n')
         .map(trim_line)
@@ -988,9 +992,6 @@ pub(crate) fn connect_udp_fields(
     if authorized && let Some(line) = lines.next() {
         add_line(&mut fields, line)?;
     }
-    fields
-        .add(b":protocol", b"connect-udp", false)
-        .map_err(oom)?;
     fields.add(b"capsule-protocol", b"?1", false).map_err(oom)?;
     for line in lines {
         add_line(&mut fields, line)?;

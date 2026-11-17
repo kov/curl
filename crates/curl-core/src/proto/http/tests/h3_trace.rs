@@ -4151,11 +4151,11 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
     let request = format!(
         "GET http://127.0.0.1:{UDP_PROXY_PORT}/.well-known/masque/udp/localhost/{PORT}/ HTTP/1.1\r\n\
          Host: 127.0.0.1:{UDP_PROXY_PORT}\r\n\
-         User-Agent: curl/test\r\n\
          Proxy-Connection: Keep-Alive\r\n\
          Connection: Upgrade\r\n\
          Upgrade: connect-udp\r\n\
-         Capsule-Protocol: ?1\r\n\r\n"
+         Capsule-Protocol: ?1\r\n\
+         User-Agent: curl/test\r\n\r\n"
     );
     let sent = talk.received();
     assert_eq!(

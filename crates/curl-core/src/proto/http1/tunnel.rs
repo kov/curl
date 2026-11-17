@@ -76,25 +76,43 @@ impl ConnectRequest<'_> {
             ])?,
             None => line(&[b"CONNECT ", self.authority, b" HTTP/", version])?,
         }
+        let user_agent = self
+            .user_agent
+            .filter(|ua| h1 && !ua.is_empty() && !theirs(b"User-Agent"));
         if h1 && !theirs(b"Host") {
             line(&[b"Host: ", self.authority])?;
         }
-        if let Some(authorization) = self.proxy_authorization {
-            line(&authorization.line())?;
-        }
-        if let Some(ua) = self
-            .user_agent
-            .filter(|ua| h1 && !ua.is_empty() && !theirs(b"User-Agent"))
-        {
-            line(&[b"User-Agent: ", ua])?;
-        }
-        if h1 && !theirs(b"Proxy-Connection") {
-            line(&[b"Proxy-Connection: Keep-Alive"])?;
-        }
-        if h1 && self.udp.is_some() {
-            line(&[b"Connection: Upgrade"])?;
-            line(&[b"Upgrade: connect-udp"])?;
-            line(&[b"Capsule-Protocol: ?1"])?;
+        if self.udp.is_some() {
+            // A CONNECT-UDP's (`http_proxy_create_CONNECTUDP`): the upgrade
+            // asked for, then the authorization, the capsules and the
+            // agent. Over HTTP/2 or HTTP/3 the protocol and the capsules
+            // are the fields' own, put there as the head becomes them.
+            if h1 {
+                if !theirs(b"Proxy-Connection") {
+                    line(&[b"Proxy-Connection: Keep-Alive"])?;
+                }
+                line(&[b"Connection: Upgrade"])?;
+                line(&[b"Upgrade: connect-udp"])?;
+            }
+            if let Some(authorization) = self.proxy_authorization {
+                line(&authorization.line())?;
+            }
+            if h1 {
+                line(&[b"Capsule-Protocol: ?1"])?;
+            }
+            if let Some(ua) = user_agent {
+                line(&[b"User-Agent: ", ua])?;
+            }
+        } else {
+            if let Some(authorization) = self.proxy_authorization {
+                line(&authorization.line())?;
+            }
+            if let Some(ua) = user_agent {
+                line(&[b"User-Agent: ", ua])?;
+            }
+            if h1 && !theirs(b"Proxy-Connection") {
+                line(&[b"Proxy-Connection: Keep-Alive"])?;
+            }
         }
         for (name, value) in self.headers.lines().for_connect(self.trusted) {
             line(&[name, b": ", value])?;

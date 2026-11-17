@@ -1032,3 +1032,25 @@ witness: curl-core conn::proxy::tests::unit2413_proxy_ports
         ProxyType::Https | ProxyType::Https2 | ProxyType::Https3 => 443,
         ProxyType::Http | ProxyType::Http10 => 80,
         ProxyType::Socks4
+
+=== a CONNECT header's value is split at a semicolon in its name
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
+--- old
+            Asks::Value => {
+                let at = self.line.iter().position(|&b| b == b':')?;
+--- new
+            Asks::Value => {
+                let at = self.line.iter().position(|&b| b == b':' || b == b';')?;
+
+=== a CONNECT header's value keeps its trailing blanks
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
+--- old
+                Some(trim(&rest[..end]))
+            }
+            Asks::Blank => Some(&[]),
+--- new
+                Some(&rest[..end])
+            }
+            Asks::Blank => Some(&[]),

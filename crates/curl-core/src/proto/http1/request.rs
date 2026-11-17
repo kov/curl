@@ -168,6 +168,26 @@ impl UserHeader {
             && matches!(self.line[name.len()], b':' | b';')
     }
 
+    /// The value the line sends, read as it was classified: after the
+    /// name's colon to the line's end, its blanks trimmed; empty for
+    /// `Name;`; none for a line that sends nothing
+    /// (`Curl_dynhds_add_slist`).
+    fn sent_value(&self) -> Option<&[u8]> {
+        match self.asks {
+            Asks::Value => {
+                let at = self.line.iter().position(|&b| b == b':')?;
+                let rest = &self.line[at + 1..];
+                let end = rest
+                    .iter()
+                    .position(|&b| b == b'\r' || b == b'\n')
+                    .unwrap_or(rest.len());
+                Some(trim(&rest[..end]))
+            }
+            Asks::Blank => Some(&[]),
+            Asks::Nothing => None,
+        }
+    }
+
     /// The value after the name's colon or semicolon, its blanks trimmed,
     /// if there is one (C's `header_has_value`).
     fn value(&self) -> Option<&[u8]> {
@@ -279,32 +299,20 @@ impl UserHeaders {
 
     /// The lines that may go as the application gave them: its credentials
     /// among them only with the gate's leave.
-    /// The lines as a `CONNECT` sends them (`dynhds_add_custom`): each
-    /// name trimmed, with what follows its colon and blanks, to the end;
-    /// `Name;` alone with an empty value. A line with nothing after its
-    /// colon, or anything after its semicolon, or no name, is left out,
-    /// and so are an Authorization and a Cookie unless `trusted`.
+    /// The lines as a `CONNECT` sends them (`dynhds_add_custom`), read
+    /// as a request's are (`Curl_dynhds_add_slist`): each name trimmed,
+    /// with its value trimmed and cut at the line's end; `Name;` alone
+    /// with an empty value. A line that sends nothing, or has no name, is
+    /// left out, and so are an Authorization and a Cookie unless
+    /// `trusted`.
     pub(crate) fn for_connect(
         &self,
         trusted: Option<OriginTrusted>,
     ) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.lines.items().iter().filter_map(move |h| {
-            let line = &h.line[..];
-            let at = line.iter().position(|&b| b == b':' || b == b';')?;
-            let rest = &line[at + 1..];
-            let rest = &rest[rest
-                .iter()
-                .position(|&b| !is_blank(b))
-                .unwrap_or(rest.len())..];
-            let value = match line[at] {
-                b':' if !rest.is_empty() => rest,
-                b';' if rest.is_empty() => rest,
-                _ => return None,
-            };
-            let name = trim(&line[..at]);
-            let secret =
-                name.eq_ignore_ascii_case(b"Authorization") || name.eq_ignore_ascii_case(b"Cookie");
-            (!name.is_empty() && (trusted.is_some() || !secret)).then_some((name, value))
+            let value = h.sent_value()?;
+            let secret = h.is(b"Authorization") || h.is(b"Cookie");
+            (!h.name().is_empty() && (trusted.is_some() || !secret)).then_some((h.name(), value))
         })
     }
 

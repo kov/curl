@@ -69,9 +69,11 @@ fn renders_connect_as_c() {
 
 /// The application's lines for the proxy replace the library's Host,
 /// User-Agent and Proxy-Connection, then follow them as `CONNECT` sends
-/// them (tests 287 and 1428): a name trimmed, and an empty `Name;`; those
-/// with no value or no name left out, and Authorization and Cookie unless
-/// they may go.
+/// them (tests 287 and 1428), read as a request's are: a name and a
+/// value trimmed, the value cut at the line's end, a semicolon in a name
+/// before its colon kept, and an empty `Name;`; those with no value or no
+/// name left out, and Authorization and Cookie unless they may go. C's
+/// curl sends the same for `--proxy-header` lines.
 #[test]
 fn the_proxy_s_lines_replace_the_library_s_and_follow() {
     let headers = UserHeaders::new([
@@ -81,6 +83,9 @@ fn the_proxy_s_lines_replace_the_library_s_and_follow() {
         b"X-Empty;",
         b"X-None:",
         b"X-Semi; x",
+        b"X-Semi;a: b",
+        b"X-Tab:\tt\t",
+        b"X-Line: v\r\nX-Inject: w",
         b" : ignored",
         b"no colon",
         b"Cookie: a=b",
@@ -102,8 +107,8 @@ fn the_proxy_s_lines_replace_the_library_s_and_follow() {
     assert_eq!(
         String::from_utf8_lossy(&out),
         "CONNECT origin:80 HTTP/1.1\r\nProxy-Connection: Keep-Alive\r\n\
-         User-Agent: looser/2007\r\nHost: elsewhere\r\nX-Pad: v  \r\nX-Empty: \r\n\
-         Cookie: a=b\r\n\r\n"
+         User-Agent: looser/2007\r\nHost: elsewhere\r\nX-Pad: v\r\nX-Empty: \r\n\
+         X-Semi;a: b\r\nX-Tab: t\r\nX-Line: v\r\nCookie: a=b\r\n\r\n"
     );
     out.clear();
     request(None).render(&mut out).unwrap();

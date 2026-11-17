@@ -721,12 +721,20 @@ witness: curl-tool write_out::tests::writes_header_json_as_c
 --- new
 
 === a typed password keeps the line's end
-file: crates/curl-tool/src/operate.rs
+file: crates/curl-os/src/terminal.rs
 witness: curl-tool asks_for_a_missing_password
 --- old
-    let password = buf[..n.saturating_sub(1)]
+        Some(b'\n') => n - 1,
 --- new
-    let password = buf[..n]
+        Some(b'\n') => n,
+
+=== a password piped with no newline loses its last byte
+file: crates/curl-os/src/terminal.rs
+witness: curl-os terminal::tests::a_line_read_keeps_all_but_its_newline
+--- old
+        _ => n,
+--- new
+        _ => n.saturating_sub(1),
 
 === a prompt among several operations does not say whose it is
 file: crates/curl-tool/src/operate.rs

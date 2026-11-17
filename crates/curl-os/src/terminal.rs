@@ -301,9 +301,9 @@ impl Unechoed {
     }
 
     /// The keys typed into `buf` up to Enter, as C's `getpass_r` reads
-    /// them: a backspace takes back the key before it, and Enter, or the
-    /// last byte of a `buf` filled without it, is the last byte, as one
-    /// read of a terminal ends with the line's end. How many bytes.
+    /// them: a backspace takes back the key before it, and Enter is not
+    /// kept; a `buf` filled without it loses its last byte, which C ends
+    /// the string with. How many bytes are typed.
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         read_keys(buf, || {
             // SAFETY: `_getch` takes no arguments and waits for a key.
@@ -320,10 +320,7 @@ fn read_keys(buf: &mut [u8], mut key: impl FnMut() -> core::ffi::c_int) -> usize
         // C keeps the low byte, as a `char`.
         let b = key() as u8;
         match b {
-            b'\r' | b'\n' => {
-                buf[i] = b;
-                return i + 1;
-            }
+            b'\r' | b'\n' => return i,
             8 => i = i.saturating_sub(1),
             _ => {
                 buf[i] = b;
@@ -331,7 +328,7 @@ fn read_keys(buf: &mut [u8], mut key: impl FnMut() -> core::ffi::c_int) -> usize
             }
         }
     }
-    buf.len()
+    buf.len().saturating_sub(1)
 }
 
 #[cfg(unix)]
@@ -369,14 +366,27 @@ impl Unechoed {
             .map_or(libc::STDIN_FILENO, |tty| tty.as_raw_fd())
     }
 
-    /// One read into `buf`, as much as one `read` gives: the bytes read,
-    /// none at the end or on any failure.
+    /// One read into `buf`, as much as one `read` gives but its last
+    /// byte, which C keeps for the string's end: how many bytes are
+    /// typed, a newline ending them not kept; none at the end or on any
+    /// failure. A password piped with no newline keeps its last byte.
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
+        let room = buf.len().saturating_sub(1);
         // SAFETY: the descriptor is open for the call, and `read` writes
-        // at most `buf.len()` bytes to `buf`, which is borrowed mutably
-        // for it.
-        let n = unsafe { libc::read(self.fd(), buf.as_mut_ptr().cast(), buf.len()) };
-        usize::try_from(n).unwrap_or(0)
+        // at most `room` bytes to `buf`, which is borrowed mutably for it
+        // and holds more.
+        let n = unsafe { libc::read(self.fd(), buf.as_mut_ptr().cast(), room) };
+        line_typed(buf, usize::try_from(n).unwrap_or(0))
+    }
+}
+
+/// How many of the `n` bytes read into `buf` were typed: all of them but
+/// a newline ending them (`getpass_r`).
+#[cfg(unix)]
+fn line_typed(buf: &[u8], n: usize) -> usize {
+    match buf[..n].last() {
+        Some(b'\n') => n - 1,
+        _ => n,
     }
 }
 
@@ -397,9 +407,9 @@ impl Drop for Unechoed {
 mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
-    /// Enter ends the keys, kept last; a backspace takes back the key
+    /// Enter ends the keys, not kept; a backspace takes back the key
     /// before it, or nothing at the start; a buffer filled without Enter
-    /// is all read, its last byte taken for the end as C cuts it there.
+    /// loses its last byte, as C cuts it there.
     #[test]
     #[cfg(windows)]
     fn keys_are_read_as_c_reads_them() {
@@ -410,11 +420,28 @@ mod tests {
             buf.truncate(n);
             buf
         };
-        assert_eq!(read(b"secret\r", 16), b"secret\r");
-        assert_eq!(read(b"ab\x08c\n", 16), b"ac\n");
-        assert_eq!(read(b"\x08\x08a\r", 16), b"a\r");
-        assert_eq!(read(b"abcd", 3), b"abc");
-        assert_eq!(read(b"\r", 16), b"\r");
+        assert_eq!(read(b"secret\r", 16), b"secret");
+        assert_eq!(read(b"ab\x08c\n", 16), b"ac");
+        assert_eq!(read(b"\x08\x08a\r", 16), b"a");
+        assert_eq!(read(b"abcd", 3), b"ab");
+        assert_eq!(read(b"\r", 16), b"");
+    }
+
+    /// A newline ending what was read is not typed; anything else ending
+    /// it is, as a password piped with no newline ends (`getpass_r`).
+    #[test]
+    #[cfg(unix)]
+    fn a_line_read_keeps_all_but_its_newline() {
+        fn typed(read: &[u8]) -> &[u8] {
+            let mut buf = [0u8; 16];
+            buf[..read.len()].copy_from_slice(read);
+            &read[..super::line_typed(&buf, read.len())]
+        }
+        assert_eq!(typed(b"secret\n"), b"secret");
+        assert_eq!(typed(b"secret"), b"secret");
+        assert_eq!(typed(b"\n"), b"");
+        assert_eq!(typed(b""), b"");
+        assert_eq!(typed(b"a\r\n"), b"a\r");
     }
 
     /// UTF-8 is converted as Windows converts it: what is not UTF-8 is

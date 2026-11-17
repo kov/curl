@@ -224,12 +224,8 @@ fn ask_password(
     drop(stderr.write_all(&prompt));
     let mut buf = [0; PASSWORD_ROOM];
     let n = typed.read(&mut buf);
-    // The last byte read is taken for the line's end, whatever it is, and
-    // a zero byte ends the password as it ends C's string.
-    let password = buf[..n.saturating_sub(1)]
-        .split(|&b| b == 0)
-        .next()
-        .unwrap_or_default();
+    // A zero byte ends the password as it ends C's string.
+    let password = buf[..n].split(|&b| b == 0).next().unwrap_or_default();
     // What was typed was not echoed, so the line is ended here; C ends it
     // whether or not echo could be turned off.
     drop(stderr.write_all(b"\n"));

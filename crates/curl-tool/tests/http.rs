@@ -1743,8 +1743,8 @@ fn logins(request: &str) -> Vec<&str> {
 const CLOSED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 /// A `-u` or `-U` without a password asks for one on standard error and
-/// takes one read of standard input, its last byte cut, up to a zero
-/// byte; options after the user stay. `;options` alone, a password,
+/// takes one read of standard input, a newline ending it cut, up to a
+/// zero byte; options after the user stay. `;options` alone, a password,
 /// even empty, and `--oauth2-bearer` ask for none.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1791,12 +1791,12 @@ fn asks_for_a_missing_password() {
             host,
             &["Authorization: Basic Ym9iOg=="],
         ),
-        // bob:secre
+        // bob:secret: piped with no newline, it keeps its last byte.
         (
             &["-u", "bob"],
             b"secret",
             host,
-            &["Authorization: Basic Ym9iOnNlY3Jl"],
+            &["Authorization: Basic Ym9iOnNlY3JldA=="],
         ),
         // bob:se
         (

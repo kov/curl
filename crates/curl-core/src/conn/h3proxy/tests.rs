@@ -636,6 +636,9 @@ fn a_tunnel_is_the_h3_proxy_filter() {
         p.query(LayerQuery::Failure),
         Some(LayerAnswer::Failure(ErrorKind::SendError))
     );
+    // A tunnel that failed does not close its connection, as C's
+    // `connclose` is a deferred handshake's alone.
+    assert_eq!(p.query(LayerQuery::Spent), None);
 }
 
 /// The layer above's bytes go as the stream's body as far as the

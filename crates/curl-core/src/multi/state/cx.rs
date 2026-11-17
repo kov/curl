@@ -955,7 +955,8 @@ pub(crate) fn native_of(answer: Option<LayerAnswer>) -> Option<TlsNative> {
         | LayerAnswer::TlsWaits(_)
         | LayerAnswer::TlsDeferred
         | LayerAnswer::Tunnel(_)
-        | LayerAnswer::Failure(_) => {
+        | LayerAnswer::Failure(_)
+        | LayerAnswer::Spent => {
             unreachable!("an answer of another question")
         }
     }

@@ -253,15 +253,11 @@ impl Conn {
         }
     }
 
-    /// It is to serve no other request: marked so (`connclose`), or one
-    /// of its layers failed, which none can use again, as a handshake put
-    /// off for early data that fails (`ssl_cf_connect_deferred`).
+    /// It is to serve no other request: marked so (`connclose`), or a
+    /// layer of it says it is spent, as a handshake put off for early
+    /// data that failed does (`ssl_cf_connect_deferred`).
     fn closes(&self) -> bool {
-        self.close
-            || matches!(
-                self.query(LayerQuery::Failure),
-                Some(LayerAnswer::Failure(_))
-            )
+        self.close || matches!(self.query(LayerQuery::Spent), Some(LayerAnswer::Spent))
     }
 }
 

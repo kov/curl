@@ -66,6 +66,11 @@ pub(crate) enum LayerQuery {
     /// What a layer's send or receive failed with, where it names the
     /// transfer's error: a handshake put off failing as it goes on.
     Failure,
+    /// The layer can serve no request again, and so neither can its
+    /// connection: a handshake put off for early data that failed
+    /// (`ssl_cf_connect_deferred`'s `connclose`). A tunnel that failed
+    /// does not say so, as C's do not.
+    Spent,
     /// The filter of the tunnel through a proxy, when a layer is it:
     /// `H2-PROXY`'s, a stream of an HTTP/2 session.
     Tunnel,
@@ -81,6 +86,7 @@ pub(crate) enum LayerAnswer {
     TlsWaits(crate::tls::TlsWait),
     TlsDeferred,
     Failure(ErrorKind),
+    Spent,
     Tunnel(Component),
 }
 
@@ -1128,14 +1134,19 @@ pub(crate) mod testing {
         }
     }
 
-    /// Passes the bytes, and says it failed with `0`, as a handshake put
-    /// off for early data that failed says.
+    /// Passes the bytes, and says it failed with `0` and can serve no
+    /// request again, as a handshake put off for early data that failed
+    /// says.
     #[derive(Debug)]
     pub(crate) struct Failed(pub(crate) ErrorKind);
 
     impl Part<Below<'_>> for Failed {
         fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
-            matches!(q, LayerQuery::Failure).then_some(LayerAnswer::Failure(self.0))
+            match q {
+                LayerQuery::Failure => Some(LayerAnswer::Failure(self.0)),
+                LayerQuery::Spent => Some(LayerAnswer::Spent),
+                _ => None,
+            }
         }
     }
 

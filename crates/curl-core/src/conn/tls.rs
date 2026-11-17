@@ -316,6 +316,9 @@ impl Part<Below<'_>> for TlsLayer {
                 PeerState::Failed(kind) => Some(LayerAnswer::Failure(kind)),
                 _ => None,
             },
+            LayerQuery::Spent => {
+                matches!(self.peer_state, PeerState::Failed(_)).then_some(LayerAnswer::Spent)
+            }
         }
     }
 }
@@ -841,7 +844,8 @@ mod tests {
     }
 
     /// A handshake put off that fails fails the send that let it go on,
-    /// and each use after, naming the handshake's error.
+    /// and each use after, naming the handshake's error; and its
+    /// connection is spent.
     #[test]
     fn a_handshake_put_off_that_fails_names_its_error() {
         let session = Deferring {
@@ -853,6 +857,8 @@ mod tests {
             assert!(layer.send(cx, below.reborrow(), b"ab").is_err());
             let failure = Some(LayerAnswer::Failure(ErrorKind::SslConnectError));
             assert_eq!(layer.query(LayerQuery::Failure), failure);
+            // Its connection serves no request again.
+            assert_eq!(layer.query(LayerQuery::Spent), Some(LayerAnswer::Spent));
             let mut out = [0u8; 4];
             assert!(layer.recv(cx, below, &mut out).is_err());
             assert_eq!(cx.0, None, "nothing told of a handshake that failed");

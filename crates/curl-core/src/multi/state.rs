@@ -516,7 +516,8 @@ impl TransferState {
             | LayerAnswer::Alpn(..)
             | LayerAnswer::TlsDeferred
             | LayerAnswer::Tunnel(_)
-            | LayerAnswer::Failure(_) => {
+            | LayerAnswer::Failure(_)
+            | LayerAnswer::Spent => {
                 unreachable!("an answer of another question")
             }
         }

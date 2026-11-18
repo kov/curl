@@ -126,7 +126,13 @@ impl Tracer {
         let stamp = start.bytes();
         let written = match state.kind {
             Trace::Plain => plain(&mut state, &mut out, stamp, kind, data, terminal),
-            Trace::Ascii | Trace::Binary => dump(&mut out, stamp, kind, data, state.kind),
+            trace @ (Trace::Ascii | Trace::Binary) => {
+                let sink = &mut state.sink;
+                dump(&mut out, stamp, kind, data, trace, &mut |line| {
+                    sink.write(line);
+                    line.clear();
+                })
+            }
             Trace::None => unreachable!("no handler without a trace"),
         };
         if written.is_ok() {
@@ -412,13 +418,15 @@ fn plain(
 }
 
 /// A `--trace` or `--trace-ascii` entry: text as it is, anything else as
-/// a dump.
+/// a dump, each of its lines handed to `line_done` once made, as C
+/// prints each to the file as it goes: an entry is never held whole.
 fn dump(
     out: &mut Vec<u8>,
     stamp: &[u8],
     kind: DebugKind,
     data: &[u8],
     trace: Trace,
+    line_done: &mut dyn FnMut(&mut Vec<u8>),
 ) -> Result<(), OutOfMemory> {
     let title: &[u8] = match kind {
         DebugKind::Text => {
@@ -439,6 +447,7 @@ fn dump(
     w.0.try_extend_from_slice(stamp)?;
     w.0.try_extend_from_slice(title)?;
     writeln!(w, ", {} bytes (0x{:x})", data.len(), data.len()).map_err(oom)?;
+    line_done(w.0);
     // Without the hexadecimal, more fits a line.
     let width = if ascii { 0x40 } else { 0x10 };
     let crlf_at = |i: usize| data.get(i) == Some(&b'\r') && data.get(i + 1) == Some(&b'\n');
@@ -477,6 +486,7 @@ fn dump(
             c += 1;
         }
         w.0.try_push(b'\n')?;
+        line_done(w.0);
         i = next;
     }
     Ok(())

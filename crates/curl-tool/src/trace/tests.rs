@@ -6,7 +6,7 @@ use super::*;
 
 fn dumped(data: &[u8], trace: Trace) -> String {
     let mut out = Vec::new();
-    dump(&mut out, b"", DebugKind::DataIn, data, trace).unwrap();
+    dump(&mut out, b"", DebugKind::DataIn, data, trace, &mut |_| {}).unwrap();
     String::from_utf8(out).unwrap()
 }
 
@@ -29,19 +29,75 @@ fn dumps_binary_as_c() {
     );
 }
 
+/// A dump's lines go as each is made: what is held is never more than
+/// a line, however long the data, and what goes is the dump as it is
+/// whole.
+#[test]
+fn a_dump_goes_a_line_at_a_time() {
+    let data: Vec<u8> = (0..4000).map(|i| (i % 251) as u8).collect();
+    for trace in [Trace::Ascii, Trace::Binary] {
+        let mut out = Vec::new();
+        let mut went = Vec::new();
+        let mut most = 0;
+        dump(
+            &mut out,
+            b"",
+            DebugKind::HeaderOut,
+            &data,
+            trace,
+            &mut |line| {
+                most = most.max(line.len());
+                went.extend_from_slice(line);
+                line.clear();
+            },
+        )
+        .unwrap();
+        assert!(out.is_empty());
+        assert!(most <= 100, "{most}");
+        let mut whole = Vec::new();
+        dump(
+            &mut whole,
+            b"",
+            DebugKind::HeaderOut,
+            &data,
+            trace,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(went, whole);
+    }
+}
+
 #[test]
 fn dumps_text_and_titles() {
     let mut out = Vec::new();
-    dump(&mut out, b"T ", DebugKind::Text, b"hello\n", Trace::Ascii).unwrap();
+    dump(
+        &mut out,
+        b"T ",
+        DebugKind::Text,
+        b"hello\n",
+        Trace::Ascii,
+        &mut |_| {},
+    )
+    .unwrap();
     dump(
         &mut out,
         b"T ",
         DebugKind::HeaderOut,
         b"a\r\n",
         Trace::Ascii,
+        &mut |_| {},
     )
     .unwrap();
-    dump(&mut out, b"", DebugKind::SslDataOut, b"", Trace::Binary).unwrap();
+    dump(
+        &mut out,
+        b"",
+        DebugKind::SslDataOut,
+        b"",
+        Trace::Binary,
+        &mut |_| {},
+    )
+    .unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
         "T * hello\nT => Send header, 3 bytes (0x3)\n0000: a\n=> Send SSL data, 0 bytes (0x0)\n"

@@ -1814,3 +1814,12 @@ witness: curl-tool a_name_not_yet_final_empties_no_file
         result = Err(ErrorKind::WriteError);
     }
     // `--xattr`, for a file the transfer opened.
+
+=== a trace dump is held whole before it is written
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::a_dump_goes_a_line_at_a_time
+--- old
+        w.0.try_push(b'\n')?;
+        line_done(w.0);
+--- new
+        w.0.try_push(b'\n')?;

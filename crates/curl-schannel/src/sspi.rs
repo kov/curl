@@ -19,6 +19,7 @@ use windows_sys::Win32::Security::Credentials::SecHandle;
 use windows_sys::Win32::Security::Cryptography::CERT_CONTEXT;
 
 use crate::crypt::{CertContext, CertStore};
+use crate::versions::Protocols;
 
 /// The status codes SSPI calls return that C tells apart.
 pub(crate) mod status {
@@ -45,14 +46,6 @@ pub(crate) mod cred {
     pub(crate) const IGNORE_NO_REVOCATION_CHECK: u32 = 0x800;
     pub(crate) const IGNORE_REVOCATION_OFFLINE: u32 = 0x1000;
     pub(crate) const USE_STRONG_CRYPTO: u32 = 0x0040_0000;
-}
-
-/// The client protocols a credential enables (`SP_PROT_*_CLIENT`).
-pub(crate) mod protocol {
-    pub(crate) const TLS1_0: u32 = 0x80;
-    pub(crate) const TLS1_1: u32 = 0x200;
-    pub(crate) const TLS1_2: u32 = 0x800;
-    pub(crate) const TLS1_3: u32 = 0x2000;
 }
 
 /// What a context is asked to be, and says it is (`ISC_REQ_*`,
@@ -85,7 +78,7 @@ pub(crate) enum CredKind<'a> {
 /// What a credential is made with.
 pub(crate) struct CredSpec<'a> {
     pub(crate) flags: u32,
-    pub(crate) protocols: u32,
+    pub(crate) protocols: Protocols,
     pub(crate) client: Option<&'a CertContext>,
     pub(crate) kind: CredKind<'a>,
 }
@@ -115,7 +108,7 @@ impl Credentials {
             CredKind::Modern => {
                 let mut crypto = [id::CRYPTO_SETTINGS::default()];
                 let mut tls = id::TLS_PARAMETERS {
-                    grbitDisabledProtocols: !spec.protocols,
+                    grbitDisabledProtocols: !spec.protocols.bits(),
                     cDisabledCrypto: 0,
                     pDisabledCrypto: crypto.as_mut_ptr(),
                     ..Default::default()
@@ -153,7 +146,7 @@ impl Credentials {
                 let creds = id::SCHANNEL_CRED {
                     dwVersion: SCHANNEL_CRED_VERSION,
                     dwFlags: spec.flags,
-                    grbitEnabledProtocols: spec.protocols,
+                    grbitEnabledProtocols: spec.protocols.bits(),
                     cSupportedAlgs: algs.map_or(0, |a| u32::try_from(a.len()).expect("a few")),
                     palgSupportedAlgs: algs.map_or(ptr::null_mut(), |a| a.as_ptr().cast_mut()),
                     cCreds: count,

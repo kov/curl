@@ -24,3 +24,11 @@ platform: windows
     if false && cert
         .der()
         .and_then(curl_core::tls::x509::host_name_holds_zero)
+
+=== a version range enabling none falls back to TLS 1.2
+file: crates/curl-schannel/src/versions.rs
+witness: curl-schannel versions::tests::a_range_enabling_none_is_refused
+--- old
+    NonZeroU32::new(enabled)
+--- new
+    NonZeroU32::new(enabled).or(NonZeroU32::new(protocol::TLS1_2))

@@ -27,11 +27,10 @@ use curl_os::error::ErrorText;
 
 use crate::client;
 use crate::close::{Flushed, Pending, Record};
-use crate::sspi::{
-    self, Context, CredKind, CredSpec, Credentials, StreamSizes, cred, protocol, req, status,
-};
+use crate::sspi::{self, Context, CredKind, CredSpec, Credentials, StreamSizes, cred, req, status};
 use crate::text::Text;
 use crate::verify;
+use crate::versions::{self, Protocols, Refused, protocol};
 
 /// The room the buffers start with, and keep free at least
 /// (`CURL_SCHANNEL_BUFFER_INIT_SIZE`, `CURL_SCHANNEL_BUFFER_FREE_SIZE`).
@@ -233,8 +232,9 @@ fn ensure_decoding(
 }
 
 /// The protocols a credential enables for the versions the identity
-/// allows (`schannel_set_ssl_version_min_max`).
-fn protocols(identity: &TlsIdentity, cx: &mut TlsCx<'_>) -> Result<u32, ErrorKind> {
+/// allows (`schannel_set_ssl_version_min_max`): a range enabling none is
+/// refused, as Schannel would take no protocol for its default.
+fn protocols(identity: &TlsIdentity, cx: &mut TlsCx<'_>) -> Result<Protocols, ErrorKind> {
     let tls13 = tls13_built_in();
     // C's numbers for the versions, which it counts through.
     let min = match identity.options.min_version {
@@ -257,23 +257,13 @@ fn protocols(identity: &TlsIdentity, cx: &mut TlsCx<'_>) -> Result<u32, ErrorKin
         TlsMaxVersion::Tls1_2 => 6,
         TlsMaxVersion::Tls1_3 => 7,
     };
-    let mut enabled = 0;
-    for i in min..=max {
-        match i {
-            4 => enabled |= protocol::TLS1_0,
-            5 => enabled |= protocol::TLS1_1,
-            6 => enabled |= protocol::TLS1_2,
-            7 if tls13 => enabled |= protocol::TLS1_3,
-            7 => {
-                return Err(cx.fail(
-                    ErrorKind::SslConnectError,
-                    format_args!("schannel: TLS 1.3 not supported on Windows 10 or older"),
-                ));
-            }
-            _ => {}
-        }
-    }
-    Ok(enabled)
+    versions::enabled(min, max, tls13).map_err(|refused| {
+        let why = match refused {
+            Refused::Tls13Unsupported => "schannel: TLS 1.3 not supported on Windows 10 or older",
+            Refused::NoneInRange => "schannel: no supported TLS version in the requested range",
+        };
+        cx.fail(ErrorKind::SslConnectError, format_args!("{why}"))
+    })
 }
 
 /// Schannel speaks TLS 1.3: Windows Server 2022 and Windows 11, build
@@ -387,8 +377,8 @@ impl Session {
         } else {
             match &o.ciphers {
                 Some(list) => {
-                    if enabled & protocol::TLS1_3 != 0 {
-                        if enabled & !protocol::TLS1_3 == 0 {
+                    if enabled.bits() & protocol::TLS1_3 != 0 {
+                        if enabled.bits() & !protocol::TLS1_3 == 0 {
                             return Err(io.fail(
                                 ErrorKind::SslConnectError,
                                 format_args!(

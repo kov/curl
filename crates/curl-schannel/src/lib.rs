@@ -22,6 +22,9 @@ mod sspi;
 mod text;
 #[cfg(windows)]
 mod verify;
+// Windows' alone, but tested everywhere.
+#[cfg(any(windows, test))]
+mod versions;
 
 #[cfg(windows)]
 pub use backend::{SCHANNEL, Schannel};

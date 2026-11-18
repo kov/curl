@@ -24,7 +24,7 @@ const PORT: u16 = 8025;
 struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.lock().unwrap().extend_from_slice(body);
         Write::Took(body.len())
     }
@@ -1367,7 +1367,7 @@ struct PausesOnce {
 }
 
 impl WriteHandler for PausesOnce {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         if !self.paused.replace(true) {
             return Write::Pause;
         }

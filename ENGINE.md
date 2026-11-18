@@ -928,8 +928,8 @@ and `TransferState::Init` and `Completed` are its first and last variants.
 pub enum Write { Accepted, Pause, Fail, Took(usize) } // Took(n != len) fails, as a short count
 pub enum Read { Data(NonZeroUsize), Eof, Pause, Abort } // Data(n > buf.len()) is rejected, not asserted
 pub enum ProgressVerdict { Continue, ContinueWithMeter, Abort }
-pub trait WriteHandler  { fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write; }
-pub trait HeaderHandler { fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write; }
+pub trait WriteHandler  { fn write(&self, cx: &mut WriteCx<'_>, body: &[u8]) -> Write; }
+pub trait HeaderHandler { fn header(&self, cx: &mut WriteCx<'_>, line: &[u8], o: HeaderOrigin) -> Write; }
 pub trait ReadHandler   { fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read; }
 pub trait DebugHandler  { fn debug(&self, cx: &mut TransferCx<'_>, k: DebugKind, data: &[u8]); }
 pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: ProgressNow) -> ProgressVerdict; }
@@ -959,6 +959,11 @@ or an atomic. With that, `Easy` is `Send` (a compile-time assertion holds it), i
 multi too, whose network (and a test's clock) is boxed `Send`; a multi is not `Sync`. The shim's
 adapters, which hold a handle's pointer and the application's userdata, are declared `Send +
 Sync` on C's contract that one thread at a time uses a handle.
+
+The write and header handlers take a `WriteCx`, a `TransferCx` (which it derefs to) that only
+`deliver` makes: no other code can call them, so the pause and the size limit, checked there,
+hold for every piece of output. RTSP's RTP goes the same way (`deliver::rtp`), whole and outside
+the pause and the limit, as C's `rtp_client_write`.
 
 `TransferCx` names no `Host`: the handlers live in an `Easy`, which has none. It wraps a
 crate-private object-safe trait, `TransferCalls`, which the step context implements for each
@@ -5031,7 +5036,8 @@ the interleaved channels, kept on the handle (`easy::RtspState`, which `curl_eas
 a copy of the handle starts afresh). No length is no body; a length overrides the method's want
 of one unless the application asked for none. What is read goes through the RTP filter
 (`rtsp_rtp_write_resp`, `rtsp_filter_rtp`): outside a head, `$`, a channel the handle named and a
-two-byte length make a message for the interleave handler (else the write handler), anything else
+two-byte length make a message for the interleave handler (else the write handler, through
+`deliver::rtp`), anything else
 is body as far as the body is due and dropped past it, and `RTSP/` outside a body stops the
 filter for the head parser; reading stops once the body is whole, what is unread left on the
 connection for the next request. The connection's end cuts a body short (18); a head it cuts

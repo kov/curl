@@ -87,14 +87,14 @@ enum Event {
 }
 
 impl WriteHandler for Seen {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.lock().unwrap().push(Event::Body(body.to_vec()));
         Write::Accepted
     }
 }
 
 impl HeaderHandler for Seen {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write {
+    fn header(&self, _: &mut crate::handler::WriteCx<'_>, line: &[u8], o: HeaderOrigin) -> Write {
         assert_eq!(o, HeaderOrigin::Header);
         self.0.lock().unwrap().push(Event::Header(line.to_vec()));
         Write::Accepted
@@ -268,7 +268,7 @@ fn a_file_is_read_as_far_as_its_size() {
         seen: Seen,
     }
     impl WriteHandler for Grower {
-        fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
             if self.seen.body().is_empty() {
                 use std::io::Write as _;
                 let mut f = std::fs::File::options()
@@ -594,7 +594,7 @@ fn a_directory_cannot_be_resumed() {
 fn a_pausing_write_fails() {
     struct Pauser;
     impl WriteHandler for Pauser {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
             Write::Pause
         }
     }
@@ -796,7 +796,7 @@ struct SlowWriter {
 }
 
 impl WriteHandler for SlowWriter {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         self.clock.advance(self.took);
         Write::Accepted
     }

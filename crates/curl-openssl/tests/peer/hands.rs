@@ -61,7 +61,7 @@ impl TlsContextHandler for Noting {
 }
 
 impl WriteHandler for Noting {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         let reached = cx.tls_native(cx.me()).map(objects);
         track::untracked(|| self.hands.lock().unwrap().written.push(reached));
         Write::Took(body.len())

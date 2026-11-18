@@ -87,7 +87,7 @@ fn a_goodbye_answers_the_peer_s_own() {
 fn an_aborted_transfer_s_connection_says_no_goodbye() {
     struct Refuse;
     impl WriteHandler for Refuse {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, _: &[u8]) -> Write {
             Write::Fail
         }
     }

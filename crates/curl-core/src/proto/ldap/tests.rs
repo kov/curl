@@ -778,7 +778,7 @@ impl Message for Answer {
 struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Writes {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Writes {
         self.0.lock().unwrap().extend_from_slice(body);
         Writes::Took(body.len())
     }
@@ -788,7 +788,7 @@ impl WriteHandler for Body {
 struct Refuses;
 
 impl WriteHandler for Refuses {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Writes {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Writes {
         Writes::Took(0)
     }
 }
@@ -1437,7 +1437,7 @@ struct PausesFirst {
 }
 
 impl WriteHandler for PausesFirst {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Writes {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Writes {
         if !std::mem::replace(&mut *self.paused.lock().unwrap(), true) {
             return Writes::Pause;
         }

@@ -9,7 +9,6 @@ use std::io::Write as _;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 use curl_core::handler::{Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler};
-use curl_core::multi::TransferCx;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 use curl_core::version::Protocol;
 use curl_os::fs::{self, Keep};
@@ -1138,7 +1137,7 @@ pub(crate) fn redirect_stderr(name: &[u8], msgs: &Messages) {
 struct Body(Output);
 
 impl WriteHandler for Body {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.stream().body(body)
     }
 }
@@ -1148,7 +1147,7 @@ impl WriteHandler for Body {
 struct NullBody;
 
 impl WriteHandler for NullBody {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, _: &[u8]) -> Write {
         Write::Accepted
     }
 }
@@ -1156,7 +1155,12 @@ impl WriteHandler for NullBody {
 struct Headers(Output);
 
 impl HeaderHandler for Headers {
-    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(
+        &self,
+        cx: &mut curl_core::handler::WriteCx<'_>,
+        line: &[u8],
+        _: HeaderOrigin,
+    ) -> Write {
         let report = cx.info(cx.me());
         let protocol = report.and_then(|r| r.protocol());
         let code = report.and_then(|r| r.response_code());

@@ -594,7 +594,7 @@ fn a_transfer_fast_enough_is_not_stopped() {
 struct Pausing;
 
 impl WriteHandler for Pausing {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         Write::Pause
     }
 }
@@ -653,7 +653,7 @@ fn an_unpause_from_the_progress_handler_replays_at_once() {
     let written = Arc::new(Lock::new(Vec::new()));
     struct Once(Arc<Lock<Vec<usize>>>);
     impl WriteHandler for Once {
-        fn write(&self, _: &mut TransferCx<'_>, b: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, b: &[u8]) -> Write {
             let first = self.0.lock().unwrap().is_empty();
             self.0.lock().unwrap().push(b.len());
             if first { Write::Pause } else { Write::Accepted }

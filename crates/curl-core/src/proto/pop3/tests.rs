@@ -182,7 +182,7 @@ mod over_the_wire {
     struct Body(Arc<Lock<Vec<u8>>>);
 
     impl WriteHandler for Body {
-        fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
             self.0.lock().unwrap().extend_from_slice(body);
             Write::Took(body.len())
         }
@@ -226,7 +226,12 @@ mod over_the_wire {
     struct Seen(Arc<Lock<(Vec<u8>, Vec<u8>)>>);
 
     impl HeaderHandler for Seen {
-        fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+        fn header(
+            &self,
+            _: &mut crate::handler::WriteCx<'_>,
+            line: &[u8],
+            _: HeaderOrigin,
+        ) -> Write {
             self.0.lock().unwrap().0.extend_from_slice(line);
             Write::Took(line.len())
         }
@@ -1461,7 +1466,7 @@ mod over_the_wire {
     }
 
     impl WriteHandler for PausesOnce {
-        fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
             if !self.paused.replace(true) {
                 return Write::Pause;
             }

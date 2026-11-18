@@ -642,8 +642,9 @@ fn a_pause_blocks_an_upload_only_every_way_it_moves() {
 struct PauseOnWrite;
 
 impl WriteHandler for PauseOnWrite {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
-        cx.pause(cx.me(), PauseRequest::RECV).unwrap();
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
+        let me = cx.me();
+        cx.pause(me, PauseRequest::RECV).unwrap();
         Write::Accepted
     }
 }

@@ -149,7 +149,7 @@ fn the_connection_s_end_is_said_as_reading_is_done() {
 fn a_refused_write_fails_the_reads_and_the_pass() {
     struct Refuses;
     impl WriteHandler for Refuses {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
             Write::Fail
         }
     }

@@ -555,11 +555,7 @@ mod over_the_wire {
     }
 
     impl crate::handler::WriteHandler for PausesFirst {
-        fn write(
-            &self,
-            _: &mut crate::multi::TransferCx<'_>,
-            body: &[u8],
-        ) -> crate::handler::Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> crate::handler::Write {
             if !self.paused.replace(true) {
                 return crate::handler::Write::Pause;
             }
@@ -690,7 +686,7 @@ mod over_the_wire {
         impl crate::handler::WriteHandler for RefusesSecond {
             fn write(
                 &self,
-                _: &mut crate::multi::TransferCx<'_>,
+                _: &mut crate::handler::WriteCx<'_>,
                 body: &[u8],
             ) -> crate::handler::Write {
                 if self.0.replace(true) {
@@ -728,7 +724,7 @@ mod over_the_wire {
         impl crate::handler::WriteHandler for Pieces {
             fn write(
                 &self,
-                _: &mut crate::multi::TransferCx<'_>,
+                _: &mut crate::handler::WriteCx<'_>,
                 body: &[u8],
             ) -> crate::handler::Write {
                 self.0.lock().unwrap().push(body.len());

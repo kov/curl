@@ -403,13 +403,18 @@ impl Pauser {
 }
 
 impl WriteHandler for Pauser {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.take(body.len(), &self.0.body)
     }
 }
 
 impl HeaderHandler for Pauser {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(
+        &self,
+        _: &mut curl_core::handler::WriteCx<'_>,
+        line: &[u8],
+        _: HeaderOrigin,
+    ) -> Write {
         self.take(line.len(), &self.0.headers)
     }
 }
@@ -560,14 +565,19 @@ struct Took {
 struct Taker(TryArc<Took>);
 
 impl WriteHandler for Taker {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.body.set(self.0.body.get() + body.len() as u64);
         Write::Accepted
     }
 }
 
 impl HeaderHandler for Taker {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(
+        &self,
+        _: &mut curl_core::handler::WriteCx<'_>,
+        line: &[u8],
+        _: HeaderOrigin,
+    ) -> Write {
         self.0.headers.set(self.0.headers.get() + line.len() as u64);
         Write::Accepted
     }
@@ -2081,7 +2091,7 @@ fn a_handler_is_one_allocation() {
         }
     }
     impl WriteHandler for Counted {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, _: &[u8]) -> Write {
             Write::Accepted
         }
     }

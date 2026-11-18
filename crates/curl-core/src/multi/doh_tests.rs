@@ -366,7 +366,7 @@ fn a_probe_inherits_only_cs_list() {
 struct Dropped;
 
 impl crate::handler::WriteHandler for Dropped {
-    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> crate::handler::Write {
         crate::handler::Write::Accepted
     }
 }

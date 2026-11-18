@@ -233,7 +233,7 @@ fn a_bad_end_of_chunks_is_traced_as_c() {
 struct PausesTwice(Arc<Lock<u32>>);
 
 impl WriteHandler for PausesTwice {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let mut calls = self.0.lock().unwrap();
         *calls += 1;
         if *calls <= 2 {
@@ -315,7 +315,7 @@ fn a_paused_body_is_traced_as_it_is_held_and_flushed() {
 struct PausesAtTheEnd(Arc<Lock<u32>>);
 
 impl HeaderHandler for PausesAtTheEnd {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(&self, _: &mut crate::handler::WriteCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         let mut calls = self.0.lock().unwrap();
         if line == b"\r\n" && *calls == 0 {
             *calls += 1;
@@ -463,7 +463,7 @@ fn a_body_past_the_size_limit_is_not_written() {
 struct PausesSecond(Arc<Lock<u32>>);
 
 impl WriteHandler for PausesSecond {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let mut calls = self.0.lock().unwrap();
         *calls += 1;
         if *calls == 2 {

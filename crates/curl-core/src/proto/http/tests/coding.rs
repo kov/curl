@@ -164,7 +164,12 @@ fn identity_holds_no_gate_in_front_of_the_body() {
 struct PausesAtHeadEnd(Seen);
 
 impl HeaderHandler for PausesAtHeadEnd {
-    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write {
+    fn header(
+        &self,
+        cx: &mut crate::handler::WriteCx<'_>,
+        line: &[u8],
+        origin: HeaderOrigin,
+    ) -> Write {
         if line == b"\r\n" && !self.0.0.lock().unwrap().iter().any(|(w, _)| *w == "end") {
             self.0.0.lock().unwrap().push(("end", Vec::new()));
             return Write::Pause;
@@ -213,7 +218,7 @@ struct PausesFirst {
 }
 
 impl WriteHandler for PausesFirst {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         if !self.paused.replace(true) {
             return Write::Pause;
         }
@@ -222,7 +227,12 @@ impl WriteHandler for PausesFirst {
 }
 
 impl HeaderHandler for PausesFirst {
-    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write {
+    fn header(
+        &self,
+        cx: &mut crate::handler::WriteCx<'_>,
+        line: &[u8],
+        origin: HeaderOrigin,
+    ) -> Write {
         self.seen.header(cx, line, origin)
     }
 }

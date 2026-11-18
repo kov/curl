@@ -505,7 +505,7 @@ fn a_reset_fails_with_the_socket_s_reason() {
 struct Pieces(std::sync::Arc<curl_alloc::Lock<Vec<usize>>>);
 
 impl crate::handler::WriteHandler for Pieces {
-    fn write(&self, _: &mut crate::multi::TransferCx<'_>, body: &[u8]) -> crate::handler::Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> crate::handler::Write {
         self.0.lock().unwrap().push(body.len());
         crate::handler::Write::Took(body.len())
     }

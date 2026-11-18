@@ -25,9 +25,8 @@ use crate::conn::{ConnLease, Peer};
 use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{Directions, Expect, Pipeline};
 use crate::error::ErrorKind;
-use crate::handler::Write;
+use crate::multi::Host;
 use crate::multi::state::StepCx;
-use crate::multi::{Host, TransferCx};
 use crate::options::{AuthMethods, Follow, Method, RtspRequest, RtspSession, UploadSource};
 use crate::proto::http1::framing::{Asked, Framing};
 use crate::proto::http1::request::{Accepted, Conditional, RtspContent, RtspHead, render_rtsp};
@@ -343,46 +342,11 @@ impl<H: Host> RtpOut for Delivered<'_, '_, H> {
     }
 
     fn packet(&mut self, _: u8, message: &[u8]) -> Result<(), ErrorKind> {
-        write_rtp(self.cx, message)
+        crate::deliver::rtp(self.cx, message)
     }
 
     fn note(&mut self, args: fmt::Arguments<'_>) {
         trace::debug_info(self.cx, args);
-    }
-}
-
-/// Give an RTP message to the interleave handler, else the write handler
-/// (`rtp_client_write`).
-fn write_rtp<H: Host>(cx: &mut StepCx<'_, H>, message: &[u8]) -> Result<(), ErrorKind> {
-    if message.is_empty() {
-        return Err(trace::fail(
-            cx,
-            ErrorKind::WriteError,
-            format_args!("Cannot write a 0 size RTP packet."),
-        ));
-    }
-    let options = cx.easy().options();
-    let handler = options
-        .small
-        .interleave
-        .clone()
-        .or_else(|| options.callbacks.write.clone());
-    let Some(handler) = handler else {
-        return Ok(());
-    };
-    match handler.write(&mut TransferCx::new(cx), message) {
-        Write::Accepted => Ok(()),
-        Write::Took(n) if n == message.len() => Ok(()),
-        Write::Pause => Err(trace::fail(
-            cx,
-            ErrorKind::WriteError,
-            format_args!("Cannot pause RTP"),
-        )),
-        Write::Took(_) | Write::Fail => Err(trace::fail(
-            cx,
-            ErrorKind::WriteError,
-            format_args!("Failed writing RTP data"),
-        )),
     }
 }
 

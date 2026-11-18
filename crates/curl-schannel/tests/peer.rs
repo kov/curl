@@ -24,7 +24,7 @@ use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, Write, WriteHandler};
 use curl_core::id::ArenaPolicy;
 use curl_core::libraries::{Libraries, Library, SharedLibraries};
-use curl_core::multi::{Env, Multi, NoEvents, TransferCx};
+use curl_core::multi::{Env, Multi, NoEvents};
 use curl_core::options::{IpVersion, Method, UploadSource};
 use curl_core::time::SystemClock;
 use openssl::asn1::{Asn1Object, Asn1OctetString, Asn1Time};
@@ -247,7 +247,7 @@ fn serve_named(alt_names: Option<&[u8]>) -> (SocketAddr, JoinHandle<Vec<u8>>) {
 struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.lock().unwrap().extend_from_slice(body);
         Write::Took(body.len())
     }

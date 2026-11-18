@@ -1211,7 +1211,7 @@ fn a_paused_transfer_keeps_its_quic_connection_up() {
 struct PausesFirst(Arc<Lock<u32>>);
 
 impl crate::handler::WriteHandler for PausesFirst {
-    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> crate::handler::Write {
         let mut n = self.0.lock().unwrap();
         *n += 1;
         match *n {
@@ -1627,7 +1627,7 @@ struct Quieting {
 }
 
 impl WriteHandler for Quieting {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         if self.on {
             let id = self.quiets.lock().unwrap().unwrap_or(cx.me());
             cx.options_mut(id).unwrap().output.verbose = false;
@@ -2025,7 +2025,7 @@ fn an_empty_body_is_none() {
 struct Natives(Arc<Lock<Vec<bool>>>);
 
 impl crate::handler::WriteHandler for Natives {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> crate::handler::Write {
         let me = cx.me();
         let session = cx.tls_native(me).and_then(|n| n.session());
         self.0.lock().unwrap().push(session.is_some());

@@ -298,7 +298,7 @@ struct Unpausing<H> {
 }
 
 impl WriteHandler for Unpausing<Handler<dyn WriteHandler>> {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         let wrote = self.inner.write(cx, body);
         self.stdin.unpause(cx);
         wrote

@@ -153,7 +153,6 @@ mod leaks {
     use curl_core::error::ErrorKind;
     use curl_core::handler::{Handler, Write, WriteHandler};
     use curl_core::libraries::{Libraries, Library, SharedLibraries};
-    use curl_core::multi::TransferCx;
     use curl_core::options::{CaSetting, IpVersion, Options};
     use openssl::asn1::{Asn1Time, Asn1Type};
     use openssl::bn::BigNum;
@@ -392,7 +391,7 @@ mod leaks {
     struct Sink;
 
     impl WriteHandler for Sink {
-        fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
             Write::Took(body.len())
         }
     }

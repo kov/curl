@@ -13,6 +13,7 @@ use std::sync::atomic::AtomicUsize;
 use curl_alloc::{OutOfMemory, SharedBlock, TryArc, TryVec as _};
 
 use crate::conn::io::{Socket, SocketKey, SocketOption};
+pub use crate::deliver::WriteCx;
 use crate::error::ErrorKind;
 use crate::multi::TransferCx;
 use crate::tls::TlsNative;
@@ -229,13 +230,13 @@ pub trait DebugHandler: Send + Sync {
 /// Takes the body (`CURLOPT_WRITEFUNCTION`), in pieces of at most 16384
 /// bytes (`CURL_MAX_WRITE_SIZE`).
 pub trait WriteHandler: Send + Sync {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write;
+    fn write(&self, cx: &mut WriteCx<'_>, body: &[u8]) -> Write;
 }
 
 /// Takes each header line whole, with its line ending
 /// (`CURLOPT_HEADERFUNCTION`).
 pub trait HeaderHandler: Send + Sync {
-    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write;
+    fn header(&self, cx: &mut WriteCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write;
 }
 
 /// Opens the sockets a transfer connects over, in place of the system

@@ -798,7 +798,7 @@ fn an_idle_connection_its_server_closed_is_alive_and_reused() {
 fn a_refused_body_resets_its_stream_as_c_does() {
     struct Refuses;
     impl WriteHandler for Refuses {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
             Write::Fail
         }
     }
@@ -1522,7 +1522,7 @@ struct DeliveredBy {
 }
 
 impl WriteHandler for DeliveredBy {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         let mut seen = self.seen.lock().unwrap();
         let total = seen.last().map_or(0, |s| s.1) + body.len();
         seen.push((self.clock.now().since(self.start), total));
@@ -2642,7 +2642,7 @@ fn a_body_read_by_a_sibling_is_told_to_its_progress_handler() {
 struct PausesSecond(Arc<Lock<u32>>);
 
 impl WriteHandler for PausesSecond {
-    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let mut n = self.0.lock().unwrap();
         *n += 1;
         if *n == 1 {
@@ -2754,7 +2754,7 @@ fn a_step_reads_a_buffer_of_the_connection_at_most() {
 struct PausesFirst(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for PausesFirst {
-    fn write(&self, _: &mut crate::multi::TransferCx<'_>, bytes: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, bytes: &[u8]) -> Write {
         let mut got = self.0.lock().unwrap();
         if got.is_empty() {
             got.push(0);
@@ -3090,7 +3090,7 @@ fn a_paused_stream_waits_on_nothing_while_its_session_holds_frames() {
 struct Unpauses(Arc<Lock<Option<TransferId>>>);
 
 impl WriteHandler for Unpauses {
-    fn write(&self, cx: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         if let Some(id) = self.0.lock().unwrap().take() {
             cx.pause(id, crate::deliver::PauseRequest::CONT).unwrap();
         }
@@ -3193,7 +3193,7 @@ fn a_stream_unpaused_in_a_siblings_step_opens_its_window_in_its_own() {
 struct PausesOnceAt(u32, Arc<Lock<u32>>);
 
 impl WriteHandler for PausesOnceAt {
-    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let mut n = self.1.lock().unwrap();
         *n += 1;
         if *n == self.0 {
@@ -3524,7 +3524,7 @@ fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
 struct PausesItselfAt(u32, Arc<Lock<u32>>);
 
 impl WriteHandler for PausesItselfAt {
-    fn write(&self, cx: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let mut n = self.1.lock().unwrap();
         *n += 1;
         if *n == self.0 {

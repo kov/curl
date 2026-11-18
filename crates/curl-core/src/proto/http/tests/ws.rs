@@ -182,7 +182,7 @@ struct MetaWrites {
 }
 
 impl crate::handler::WriteHandler for MetaWrites {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> crate::handler::Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> crate::handler::Write {
         if !self.paused.replace(true) {
             return crate::handler::Write::Pause;
         }
@@ -250,7 +250,7 @@ type MetaLen = (usize, Option<crate::ws::Meta>);
 struct MetaLens(Arc<curl_alloc::Lock<Vec<MetaLen>>>);
 
 impl crate::handler::WriteHandler for MetaLens {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> crate::handler::Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> crate::handler::Write {
         self.0.lock().unwrap().push((body.len(), cx.ws_meta()));
         crate::handler::Write::Accepted
     }
@@ -551,7 +551,7 @@ fn a_long_frame_paused_goes_on_where_it_stopped() {
 struct Fragments(Arc<crate::test_cell::Cell<bool>>);
 
 impl crate::handler::WriteHandler for Fragments {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> crate::handler::Write {
         use crate::ws::{FrameKind, FrameLen, SendFlags};
         if !self.0.replace(true) {
             let sends = [

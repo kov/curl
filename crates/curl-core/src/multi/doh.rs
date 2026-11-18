@@ -34,7 +34,6 @@ use crate::doh::{
 };
 use crate::error::ErrorKind;
 use crate::handler::{Handler, Write, WriteHandler};
-use crate::multi::TransferCx;
 use crate::trace;
 
 /// The most of an answer kept (`DYN_DOH_RESPONSE`).
@@ -182,7 +181,7 @@ impl Probe {
 struct ProbeBody(Probe);
 
 impl WriteHandler for ProbeBody {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         if self.0.accepts(body) {
             Write::Accepted
         } else {

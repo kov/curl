@@ -6,10 +6,10 @@
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_handler_replaced_inside_its_own_call_takes_the_next_piece
 --- old
-            (None, Some(handler)) => handler.write(&mut TransferCx::new(cx), piece),
+            (None, Some(handler)) => handler.write(&mut WriteCx::new(cx), piece),
 --- new
             (None, Some(handler)) => {
-                let mut tcx = TransferCx::new(cx);
+                let mut tcx = WriteCx::new(cx);
                 let w = handler.write(&mut tcx, piece);
                 let me = tcx.me();
                 tcx.options_mut(me).unwrap().callbacks.write = Some(handler);

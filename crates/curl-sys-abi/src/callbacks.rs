@@ -754,7 +754,7 @@ fn write_verdict(wrote: usize) -> Write {
 }
 
 impl WriteHandler for Adapter {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         let ccb = self.easy().ccb.get();
         let f = ccb.write.unwrap_or(fwrite);
         let wrote = self.call(cx, || {
@@ -778,7 +778,7 @@ impl WriteHandler for Adapter {
 pub(crate) struct Interleave(pub(crate) Adapter);
 
 impl WriteHandler for Interleave {
-    fn write(&self, cx: &mut TransferCx<'_>, message: &[u8]) -> Write {
+    fn write(&self, cx: &mut curl_core::handler::WriteCx<'_>, message: &[u8]) -> Write {
         let c = self.0.easy().interleave();
         let Some(f) = c.function else {
             // Taken away as setopt runs from a callback: the adapter goes
@@ -795,7 +795,12 @@ impl WriteHandler for Interleave {
 }
 
 impl HeaderHandler for Adapter {
-    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(
+        &self,
+        cx: &mut curl_core::handler::WriteCx<'_>,
+        line: &[u8],
+        _: HeaderOrigin,
+    ) -> Write {
         let ccb = self.easy().ccb.get();
         // The header function, else the write function given header data;
         // with neither, `sync_text` installs no adapter.

@@ -1832,7 +1832,7 @@ mod tests {
     struct Body(Arc<Lock<Vec<u8>>>);
 
     impl WriteHandler for Body {
-        fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
             self.0.lock().unwrap().extend_from_slice(body);
             Write::Accepted
         }
@@ -2031,7 +2031,7 @@ mod tests {
     struct Refuse;
 
     impl WriteHandler for Refuse {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
             Write::Fail
         }
     }

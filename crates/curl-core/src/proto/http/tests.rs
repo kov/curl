@@ -85,14 +85,19 @@ impl Seen {
 }
 
 impl WriteHandler for Seen {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.lock().unwrap().push(("body", body.to_vec()));
         Write::Accepted
     }
 }
 
 impl HeaderHandler for Seen {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write {
+    fn header(
+        &self,
+        _: &mut crate::handler::WriteCx<'_>,
+        line: &[u8],
+        origin: HeaderOrigin,
+    ) -> Write {
         let what = match origin {
             HeaderOrigin::Trailer => "trailer",
             HeaderOrigin::Interim => "interim",
@@ -302,7 +307,7 @@ struct PausesOnce {
 }
 
 impl WriteHandler for PausesOnce {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         if !self.paused.replace(true) {
             return Write::Pause;
         }
@@ -1112,7 +1117,7 @@ struct Watched(Arc<Lock<Vec<WatchedLine>>>);
 type WatchedLine = (Vec<u8>, Option<u16>, Option<u64>);
 
 impl HeaderHandler for Watched {
-    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(&self, cx: &mut crate::handler::WriteCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         let r = cx.info(cx.me()).unwrap();
         let seen = (
             line.to_vec(),
@@ -5337,7 +5342,12 @@ fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
 fn the_proxy_protocol_s_line_follows_every_proxy_s_handshake() {
     struct OnInTheTunnel;
     impl HeaderHandler for OnInTheTunnel {
-        fn header(&self, cx: &mut TransferCx<'_>, _: &[u8], origin: HeaderOrigin) -> Write {
+        fn header(
+            &self,
+            cx: &mut crate::handler::WriteCx<'_>,
+            _: &[u8],
+            origin: HeaderOrigin,
+        ) -> Write {
             if origin == HeaderOrigin::Connect {
                 let me = cx.me();
                 let o = cx.options_mut(me).unwrap();
@@ -7233,7 +7243,7 @@ const UNTIL_CLOSE: &[u8] = b"HTTP/1.1 200 OK\r\n\r\n";
 struct Drops(Arc<crate::test_cell::Cell<u64>>);
 
 impl WriteHandler for Drops {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.set(self.0.get() + body.len() as u64);
         Write::Accepted
     }
@@ -8328,7 +8338,12 @@ fn the_system_s_scope_is_the_system_s() {
 fn a_100_that_pauses_waits_for_the_application() {
     struct PausesOn100;
     impl HeaderHandler for PausesOn100 {
-        fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+        fn header(
+            &self,
+            cx: &mut crate::handler::WriteCx<'_>,
+            line: &[u8],
+            _: HeaderOrigin,
+        ) -> Write {
             if line.starts_with(b"HTTP/1.1 100") {
                 let me = cx.me();
                 cx.pause(me, PauseRequest::SEND).unwrap();

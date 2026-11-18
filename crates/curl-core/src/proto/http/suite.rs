@@ -18,7 +18,7 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler};
 use crate::id::ArenaPolicy;
-use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
+use crate::multi::{Env, Multi, NoEvents, drive_to_completion};
 use crate::options::{HttpVersion, Method, Options, UserHeaders};
 use crate::proto::http1::fixture::{self, PORT, VERSION, find};
 use crate::time::{ManualClock, TimeLimit};
@@ -225,14 +225,14 @@ struct Got {
 }
 
 impl WriteHandler for Got {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.written.lock().unwrap().0.extend_from_slice(body);
         Write::Accepted
     }
 }
 
 impl HeaderHandler for Got {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(&self, _: &mut crate::handler::WriteCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         let mut got = self.written.lock().unwrap();
         if self.include {
             got.0.extend_from_slice(line);

@@ -735,7 +735,7 @@ impl Session for FakeSession {
 struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Wrote {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Wrote {
         self.0.lock().unwrap().extend_from_slice(body);
         Wrote::Took(body.len())
     }
@@ -744,7 +744,7 @@ impl WriteHandler for Body {
 impl crate::handler::HeaderHandler for Body {
     fn header(
         &self,
-        _: &mut TransferCx<'_>,
+        _: &mut crate::handler::WriteCx<'_>,
         line: &[u8],
         _: crate::handler::HeaderOrigin,
     ) -> Wrote {

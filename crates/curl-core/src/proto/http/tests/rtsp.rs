@@ -11,7 +11,7 @@ use crate::options::{RtspRequest, RtspSession};
 struct Numbers(Arc<Lock<Vec<(u32, u32)>>>);
 
 impl WriteHandler for Numbers {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         let me = cx.me();
         let r = cx.rtsp(me).expect("in its multi");
         self.0
@@ -28,7 +28,7 @@ impl WriteHandler for Numbers {
 struct Rtp(Arc<Lock<Vec<Vec<u8>>>>);
 
 impl WriteHandler for Rtp {
-    fn write(&self, _: &mut TransferCx<'_>, message: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, message: &[u8]) -> Write {
         self.0.lock().unwrap().push(message.to_vec());
         Write::Accepted
     }
@@ -1071,7 +1071,7 @@ fn a_response_cut_short_ends_as_c_ends_it() {
 struct Takes(usize);
 
 impl WriteHandler for Takes {
-    fn write(&self, _: &mut TransferCx<'_>, message: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, message: &[u8]) -> Write {
         Write::Took(message.len() - self.0)
     }
 }

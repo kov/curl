@@ -55,7 +55,7 @@ impl TlsContextHandler for Configure {
 struct Reaching(Notes, Arc<Lock<Option<TransferId>>>);
 
 impl WriteHandler for Reaching {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.note("write", cx.tls_native(cx.me()));
         if let Some(other) = *self.1.lock().unwrap() {
             self.0.note("other", cx.tls_native(other));
@@ -165,7 +165,7 @@ fn a_handler_reaches_another_transfer_s_objects_by_its_id() {
     // The first transfer holds its connection, its output paused.
     struct Pausing;
     impl WriteHandler for Pausing {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
             Write::Pause
         }
     }

@@ -456,7 +456,7 @@ impl DebugHandler for Taker {
 }
 
 impl WriteHandler for Taker {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, body: &[u8]) -> Write {
         track::untracked(|| self.0.lock().unwrap().body.extend_from_slice(body));
         Write::Took(body.len())
     }

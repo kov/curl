@@ -28,6 +28,38 @@ use held::{HeldOutput, OutKind};
 /// The most body a write handler is given at once (`CURL_MAX_WRITE_SIZE`).
 pub(crate) const MAX_WRITE: usize = 16384;
 
+/// What a write or header handler is given: the transfer as its handlers
+/// see it ([`TransferCx`], which this derefs to). Only delivery makes one,
+/// so only delivery, which holds output under a pause and checks the
+/// size limit, calls those handlers. No one else can make one:
+///
+/// ```compile_fail,E0423
+/// fn make(cx: curl_core::multi::TransferCx<'_>) -> curl_core::handler::WriteCx<'_> {
+///     curl_core::handler::WriteCx(cx)
+/// }
+/// ```
+pub struct WriteCx<'a>(TransferCx<'a>);
+
+impl<'a> WriteCx<'a> {
+    fn new(calls: &'a mut dyn crate::multi::cx::TransferCalls) -> WriteCx<'a> {
+        WriteCx(TransferCx::new(calls))
+    }
+}
+
+impl<'a> core::ops::Deref for WriteCx<'a> {
+    type Target = TransferCx<'a>;
+
+    fn deref(&self) -> &TransferCx<'a> {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for WriteCx<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Where a protocol's output comes from (C's `PROTOPT_NONETWORK`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reach {
@@ -1196,6 +1228,42 @@ fn wrote_traced<H: Host>(cx: &mut StepCx<'_, H>, kind: OutKind, len: usize, w: W
     );
 }
 
+/// Give an RTSP connection's RTP message to the interleave handler, else
+/// the write handler, whole, as C's `rtp_client_write` does: a pause fails
+/// it, and it counts toward no size limit.
+pub(crate) fn rtp<H: Host>(cx: &mut StepCx<'_, H>, message: &[u8]) -> Result<(), ErrorKind> {
+    if message.is_empty() {
+        return Err(trace::fail(
+            cx,
+            ErrorKind::WriteError,
+            format_args!("Cannot write a 0 size RTP packet."),
+        ));
+    }
+    let options = cx.easy().options();
+    let handler = options
+        .small
+        .interleave
+        .clone()
+        .or_else(|| options.callbacks.write.clone());
+    let Some(handler) = handler else {
+        return Ok(());
+    };
+    match handler.write(&mut WriteCx::new(cx), message) {
+        Write::Accepted => Ok(()),
+        Write::Took(n) if n == message.len() => Ok(()),
+        Write::Pause => Err(trace::fail(
+            cx,
+            ErrorKind::WriteError,
+            format_args!("Cannot pause RTP"),
+        )),
+        Write::Took(_) | Write::Fail => Err(trace::fail(
+            cx,
+            ErrorKind::WriteError,
+            format_args!("Failed writing RTP data"),
+        )),
+    }
+}
+
 /// Give `bytes` to the handler for `kind`, body in pieces, until a handler
 /// pauses; how much it took. A paused piece is not taken: it is given
 /// again, whole, when the transfer goes on (`cw_out_ptr_flush`).
@@ -1213,7 +1281,7 @@ fn deliver<H: Host>(
                 return Ok(0);
             };
             let reasons = cx.easy().report().reasons();
-            let w = handler.write(&mut TransferCx::new(cx), &[]);
+            let w = handler.write(&mut WriteCx::new(cx), &[]);
             wrote(cx, kind, 0, w);
             verdict(cx, w, 0, reasons, pausable)?;
             Ok(0)
@@ -1228,7 +1296,7 @@ fn deliver<H: Host>(
                 return Ok(bytes.len());
             };
             let reasons = cx.easy().report().reasons();
-            let w = handler.header(&mut TransferCx::new(cx), bytes, origin);
+            let w = handler.header(&mut WriteCx::new(cx), bytes, origin);
             wrote(cx, kind, bytes.len(), w);
             Ok(if verdict(cx, w, bytes.len(), reasons, pausable)? {
                 bytes.len()
@@ -1274,7 +1342,7 @@ fn deliver_body<H: Host>(
                 listing.take(cx, piece);
                 Write::Accepted
             }
-            (None, Some(handler)) => handler.write(&mut TransferCx::new(cx), piece),
+            (None, Some(handler)) => handler.write(&mut WriteCx::new(cx), piece),
             (None, None) => unreachable!("one of them takes the body"),
         };
         wrote(cx, OutKind::Body, piece.len(), w);

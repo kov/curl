@@ -61,7 +61,7 @@ impl Recorder {
 }
 
 impl WriteHandler for Recorder {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.log.lock().unwrap().push((self.name, body.to_vec()));
         if let Some(next) = self.then.lock().unwrap().take() {
             let me = cx.me();
@@ -72,7 +72,7 @@ impl WriteHandler for Recorder {
 }
 
 impl HeaderHandler for Recorder {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(&self, _: &mut crate::handler::WriteCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         self.log.lock().unwrap().push((self.name, line.to_vec()));
         self.verdict
     }
@@ -204,7 +204,7 @@ fn a_short_count_fails_with_c_s_reason() {
 struct Explains;
 
 impl WriteHandler for Explains {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         cx.fail(b"mine");
         Write::Fail
     }
@@ -268,7 +268,7 @@ fn a_handler_s_own_reason_is_the_only_one() {
 struct ExplainsTwice;
 
 impl WriteHandler for ExplainsTwice {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         cx.fail(b"first");
         cx.fail(b"second");
         Write::Fail
@@ -314,7 +314,7 @@ fn the_first_reason_is_the_one_kept() {
 struct Introspect(crate::test_cell::Cell<Option<TransferId>>);
 
 impl WriteHandler for Introspect {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let me = cx.me();
         assert_eq!(cx.options(me).unwrap().url(), Some(&b"script://a"[..]));
         let copy = cx.duplicate(me).unwrap().unwrap();
@@ -341,7 +341,7 @@ fn a_handler_reaches_its_own_transfer() {
 struct RcWrite(std::sync::Arc<Introspect>);
 
 impl WriteHandler for RcWrite {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.write(cx, body)
     }
 }
@@ -607,7 +607,7 @@ fn only_a_verbose_transfer_traces_bytes() {
 struct Verbosing(std::sync::atomic::AtomicBool);
 
 impl WriteHandler for Verbosing {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         if !self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
             let me = cx.me();
             cx.options_mut(me).unwrap().output.verbose = true;
@@ -699,7 +699,7 @@ fn failed_output_stays_failed() {
 struct SizeProbe(curl_alloc::Lock<Vec<(u64, u64, Duration)>>);
 
 impl WriteHandler for std::sync::Arc<SizeProbe> {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let report = cx.info(cx.me()).unwrap();
         let sizes = report.sizes();
         self.0.lock().unwrap().push((
@@ -777,7 +777,7 @@ fn a_connect_answer_does_not_start_the_response() {
 struct ReadsHeader(curl_alloc::Lock<Option<Vec<u8>>>);
 
 impl WriteHandler for std::sync::Arc<ReadsHeader> {
-    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Write {
         let h = cx.info(cx.me()).unwrap().headers();
         let found = h.get(b"content-type", 0, Origins::ALL, Request::Last);
         *self.0.lock().unwrap() = Some(found.unwrap().value.to_vec());
@@ -876,13 +876,13 @@ impl<F: Fn(&mut TransferCx<'_>, usize) -> Write + Send + Sync> Planned<F> {
 }
 
 impl<F: Fn(&mut TransferCx<'_>, usize) -> Write + Send + Sync> WriteHandler for Planned<F> {
-    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.answer("write", cx, body)
     }
 }
 
 impl<F: Fn(&mut TransferCx<'_>, usize) -> Write + Send + Sync> HeaderHandler for Planned<F> {
-    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(&self, cx: &mut crate::handler::WriteCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         self.answer("header", cx, line)
     }
 }
@@ -1071,7 +1071,7 @@ struct PausesFirst {
 }
 
 impl WriteHandler for PausesFirst {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.calls.set(self.calls.get() + 1);
         if self.calls.get() == 1 {
             return Write::Pause;

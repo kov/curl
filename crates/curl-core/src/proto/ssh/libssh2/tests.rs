@@ -762,7 +762,7 @@ impl Session2 for FakeSession {
 struct Body(Arc<Lock<Vec<u8>>>);
 
 impl WriteHandler for Body {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Wrote {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Wrote {
         self.0.lock().unwrap().extend_from_slice(body);
         Wrote::Took(body.len())
     }
@@ -2769,7 +2769,7 @@ struct Headers(Text);
 impl crate::handler::HeaderHandler for Headers {
     fn header(
         &self,
-        _: &mut TransferCx<'_>,
+        _: &mut crate::handler::WriteCx<'_>,
         line: &[u8],
         _: crate::handler::HeaderOrigin,
     ) -> Wrote {
@@ -3190,7 +3190,7 @@ struct PausedAWhile {
 }
 
 impl WriteHandler for PausedAWhile {
-    fn write(&self, _: &mut TransferCx<'_>, b: &[u8]) -> Wrote {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, b: &[u8]) -> Wrote {
         if !self.paused.swap(true, std::sync::atomic::Ordering::Relaxed) {
             return Wrote::Pause;
         }
@@ -3924,7 +3924,7 @@ fn the_goodbye_waits_a_second_at_most() {
 fn a_channel_left_open_is_freed_by_the_goodbye() {
     struct Fails;
     impl WriteHandler for Fails {
-        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Wrote {
+        fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Wrote {
             Wrote::Fail
         }
     }
@@ -3972,7 +3972,7 @@ fn a_read_that_fails_fails_the_download() {
 struct Fails;
 
 impl WriteHandler for Fails {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Wrote {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, _: &[u8]) -> Wrote {
         Wrote::Fail
     }
 }

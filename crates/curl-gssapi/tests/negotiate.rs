@@ -98,7 +98,7 @@ impl DebugHandler for Seen {
 }
 
 impl WriteHandler for Seen {
-    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+    fn write(&self, _: &mut curl_core::handler::WriteCx<'_>, _: &[u8]) -> Write {
         Write::Accepted
     }
 }

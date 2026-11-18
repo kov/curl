@@ -41,14 +41,14 @@ pub(crate) struct Ran {
 }
 
 impl WriteHandler for Seen {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         self.0.lock().unwrap().body.extend_from_slice(body);
         Write::Took(body.len())
     }
 }
 
 impl HeaderHandler for Seen {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+    fn header(&self, _: &mut crate::handler::WriteCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         self.0.lock().unwrap().headers.extend_from_slice(line);
         Write::Took(line.len())
     }
@@ -187,7 +187,7 @@ pub(crate) struct PausesFirst {
 }
 
 impl WriteHandler for PausesFirst {
-    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
         if !self.paused.replace(true) {
             return Write::Pause;
         }

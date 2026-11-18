@@ -6269,7 +6269,7 @@ struct HaproxyOnInTheTunnel;
 impl crate::handler::HeaderHandler for HaproxyOnInTheTunnel {
     fn header(
         &self,
-        cx: &mut crate::multi::TransferCx<'_>,
+        cx: &mut crate::handler::WriteCx<'_>,
         _: &[u8],
         origin: crate::handler::HeaderOrigin,
     ) -> crate::handler::Write {

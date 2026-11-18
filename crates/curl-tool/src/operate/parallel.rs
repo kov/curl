@@ -76,6 +76,9 @@ struct Gauge {
     download_total: AtomicU64,
     uploaded: AtomicU64,
     upload_total: AtomicU64,
+    /// What attempts before this one downloaded and kept, the resumed
+    /// one counting on from them (`dlretry`).
+    kept: AtomicU64,
     /// Another transfer failed critically: this one stops.
     abort: AtomicBool,
 }
@@ -84,16 +87,30 @@ struct Gauge {
 /// counts and draws nothing, so the library draws no meter of its own.
 struct Gauged(TryArc<Gauge>);
 
+impl Gauge {
+    /// Keep what the attempt's progress says. An unknown size counts as
+    /// 0, as C's; what earlier attempts kept counts in, and in a size
+    /// that is known.
+    fn told(&self, now: ProgressNow) {
+        let kept = self.kept.load(Ordering::Relaxed);
+        let mut downloaded = now.downloaded;
+        add_off(&mut downloaded, kept);
+        self.downloaded.store(downloaded, Ordering::Relaxed);
+        let mut total = now.download_total.unwrap_or(0);
+        if total != 0 {
+            add_off(&mut total, kept);
+        }
+        self.download_total.store(total, Ordering::Relaxed);
+        self.uploaded.store(now.uploaded, Ordering::Relaxed);
+        let total = now.upload_total.unwrap_or(0);
+        self.upload_total.store(total, Ordering::Relaxed);
+    }
+}
+
 impl ProgressHandler for Gauged {
     fn progress(&self, _: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
         let g = &self.0;
-        // An unknown size counts as 0, as C's.
-        g.downloaded.store(now.downloaded, Ordering::Relaxed);
-        let total = now.download_total.unwrap_or(0);
-        g.download_total.store(total, Ordering::Relaxed);
-        g.uploaded.store(now.uploaded, Ordering::Relaxed);
-        let total = now.upload_total.unwrap_or(0);
-        g.upload_total.store(total, Ordering::Relaxed);
+        g.told(now);
         if g.abort.load(Ordering::Relaxed) {
             ProgressVerdict::Abort
         } else {
@@ -434,15 +451,18 @@ impl Parallel<'_, '_, '_> {
             let again = per
                 .retrying
                 .check(per.op, run.msgs, &mut easy, &per.out, attempt);
-            self.meter.finalize(&mut entry.counted);
             self.all_added -= 1;
             checked = true;
             match again {
                 Again::After(wait) => {
+                    let kept = entry.per.retrying.kept;
+                    self.meter.reset_retry(&entry.counted, kept);
                     entry.start_at = start_at(unix_now(), wait);
                     entry.place = Place::Here(easy);
                 }
                 Again::No(settled) => {
+                    // Counted once, as it goes for good.
+                    self.meter.finalize(&entry.counted);
                     let retries = entry.per.retrying.retries;
                     let done = entry.per.end(run, &easy, Ended::Settled(settled, retries));
                     if done.is_err() && (!aborted || result.is_ok()) {
@@ -513,7 +533,7 @@ impl Parallel<'_, '_, '_> {
         }
         let census = self.multi.census();
         let (counts, live) = (census.counts, census.working());
-        let counted = self.list.iter_mut().map(|e| &mut e.counted);
+        let counted = self.list.iter().map(|e| &e.counted);
         let mut err = crate::stderr::Stderr;
         let now = Instant::now();
         let line = Line {
@@ -531,9 +551,9 @@ impl Parallel<'_, '_, '_> {
 struct Meter {
     header: bool,
     stamp: Option<Instant>,
-    /// What transfers ended or tried again got (`all_dlalready`,
-    /// `all_ulalready`), and the totals counted (`all_dltotal`,
-    /// `all_ultotal`).
+    /// What transfers that ended got (`all_dlalready`, `all_ulalready`),
+    /// and their totals (`all_dltotal_done`, `all_ultotal_done`); those
+    /// of the transfers still listed are added each line.
     downloaded: u64,
     uploaded: u64,
     download_total: u64,
@@ -569,24 +589,34 @@ impl Meter {
         }
     }
 
-    /// Count a transfer's numbers before it goes, or is tried again
+    /// Count a transfer's numbers as it goes for good
     /// (`progress_finalize`).
-    fn finalize(&mut self, counted: &mut Counted) {
+    fn finalize(&mut self, counted: &Counted) {
         let g = &counted.gauge;
         add_off(&mut self.downloaded, g.downloaded.load(Ordering::Relaxed));
         add_off(&mut self.uploaded, g.uploaded.load(Ordering::Relaxed));
-        if !std::mem::replace(&mut counted.download, true) {
-            add_off(
-                &mut self.download_total,
-                g.download_total.load(Ordering::Relaxed),
-            );
-        }
-        if !std::mem::replace(&mut counted.upload, true) {
-            add_off(
-                &mut self.upload_total,
-                g.upload_total.load(Ordering::Relaxed),
-            );
-        }
+        add_off(
+            &mut self.download_total,
+            g.download_total.load(Ordering::Relaxed),
+        );
+        add_off(
+            &mut self.upload_total,
+            g.upload_total.load(Ordering::Relaxed),
+        );
+    }
+
+    /// A transfer to be tried again counts from nothing but what its
+    /// attempts `kept`, its sizes not known; the speed starts over, as
+    /// the counts went down (`progress_reset_retry`).
+    fn reset_retry(&mut self, counted: &Counted, kept: u64) {
+        let g = &counted.gauge;
+        g.kept.store(kept, Ordering::Relaxed);
+        g.downloaded.store(kept, Ordering::Relaxed);
+        g.uploaded.store(0, Ordering::Relaxed);
+        g.download_total.store(0, Ordering::Relaxed);
+        g.upload_total.store(0, Ordering::Relaxed);
+        self.speed_at = 0;
+        self.wrapped = false;
     }
 
     /// Onto `out`, the header once, then the line of the transfers
@@ -594,7 +624,7 @@ impl Meter {
     fn draw<'c>(
         &mut self,
         out: &mut dyn std::io::Write,
-        counted: impl Iterator<Item = &'c mut Counted>,
+        counted: impl Iterator<Item = &'c Counted>,
         line: Line,
     ) {
         // Nowhere to report a failed write, as in C.
@@ -618,7 +648,7 @@ impl Meter {
     fn line<'c>(
         &mut self,
         buf: &mut [u8],
-        counted: impl Iterator<Item = &'c mut Counted>,
+        counted: impl Iterator<Item = &'c Counted>,
         line: Line,
     ) -> usize {
         let Line {
@@ -632,6 +662,7 @@ impl Meter {
         let (mut dlnow, mut ulnow) = (0, 0);
         add_off(&mut dlnow, self.downloaded);
         add_off(&mut ulnow, self.uploaded);
+        let (mut dltotal, mut ultotal) = (self.download_total, self.upload_total);
         let (mut dlknown, mut ulknown) = (true, true);
         for c in counted {
             let g = &c.gauge;
@@ -640,18 +671,18 @@ impl Meter {
             let total = g.download_total.load(Ordering::Relaxed);
             if total == 0 {
                 dlknown = false;
-            } else if !std::mem::replace(&mut c.download, true) {
-                add_off(&mut self.download_total, total);
+            } else {
+                add_off(&mut dltotal, total);
             }
             let total = g.upload_total.load(Ordering::Relaxed);
             if total == 0 {
                 ulknown = false;
-            } else if !std::mem::replace(&mut c.upload, true) {
-                add_off(&mut self.upload_total, total);
+            } else {
+                add_off(&mut ultotal, total);
             }
         }
-        let dlpercent = percent(dlknown, dlnow, self.download_total);
-        let ulpercent = percent(ulknown, ulnow, self.upload_total);
+        let dlpercent = percent(dlknown, dlnow, dltotal);
+        let ulpercent = percent(ulknown, ulnow, ultotal);
         // The speed, the higher of the two, over the last few draws.
         let at = self.speed_at;
         self.speeds[at] = (dlnow, ulnow, Some(now));
@@ -671,7 +702,7 @@ impl Meter {
         let per_sec = |n: u64| (n as f64 / (ms as f64 / 1000.0)) as u64;
         let speed = per_sec(dl).max(per_sec(ul));
         let (left, total) = if dlknown && speed > 0 {
-            let total = self.download_total;
+            let total = dltotal;
             let left = total.saturating_sub(dlnow) / speed;
             (time(left), time(total / speed))
         } else {
@@ -728,16 +759,12 @@ fn percent(known: bool, now: u64, total: u64) -> Option<u64> {
 /// whether its totals are counted (`dltotal_added`, `ultotal_added`).
 struct Counted {
     gauge: TryArc<Gauge>,
-    download: bool,
-    upload: bool,
 }
 
 impl Counted {
     fn new() -> Result<Counted, OutOfMemory> {
         Ok(Counted {
             gauge: TryArc::try_new(Gauge::default())?,
-            download: false,
-            upload: false,
         })
     }
 }
@@ -929,10 +956,26 @@ mod tests {
         c
     }
 
+    /// The progress an attempt of `c` tells.
+    fn told(
+        c: &Counted,
+        downloaded: u64,
+        download_total: Option<u64>,
+        uploaded: u64,
+        upload_total: Option<u64>,
+    ) {
+        c.gauge.told(ProgressNow {
+            download_total,
+            downloaded,
+            upload_total,
+            uploaded,
+        });
+    }
+
     /// The line `meter` draws of `list` at `line`.
     fn drawn(meter: &mut Meter, list: &mut [Counted], line: Line) -> String {
         let mut buf = [0u8; 128];
-        let n = meter.line(&mut buf, list.iter_mut(), line);
+        let n = meter.line(&mut buf, list.iter(), line);
         String::from_utf8(buf[..n].to_vec()).unwrap()
     }
 
@@ -993,19 +1036,61 @@ mod tests {
         );
     }
 
-    /// A transfer's totals count once it ends, if no line counted them
-    /// (`progress_finalize`), and its counts stay in those of the ended.
+    /// A transfer's counts and totals stay in those of the ended
+    /// (`progress_finalize`).
     #[test]
     fn an_ended_transfer_stays_counted() {
         let start = Instant::now();
         let mut meter = Meter::new();
-        let mut c = counted(10, 10, 4, 4);
-        meter.finalize(&mut c);
-        meter.finalize(&mut counted(0, 0, 0, 0));
+        meter.finalize(&counted(10, 10, 4, 4));
+        meter.finalize(&counted(0, 0, 0, 0));
         assert_eq!(
             drawn(&mut meter, &mut [], at(start, 1000, 1, 0, false)),
             "\r100 100    10     4     1     0  00:00:01 00:00:01             10      "
         );
+    }
+
+    /// A transfer tried again counts once: its attempt's counts and sizes
+    /// go, but for what a resumed attempt kept, which the next counts on
+    /// from, and the speed starts over (`progress_reset_retry`; tests
+    /// 3039 and 3040).
+    #[test]
+    fn a_transfer_tried_again_counts_once() {
+        let start = Instant::now();
+        let mut meter = Meter::new();
+        let mut list = [counted(100, 100, 6, 6)];
+        for k in 0..10 {
+            drawn(&mut meter, &mut list, at(start, 1000 * k, 1, 1, false));
+        }
+        assert!(meter.wrapped);
+        meter.reset_retry(&list[0], 0);
+        assert_eq!((meter.speed_at, meter.wrapped), (0, false));
+        assert_eq!(
+            drawn(&mut meter, &mut list, at(start, 10_000, 2, 0, false)),
+            "\r--  --      0     0     2     0           00:00:10              0      "
+        );
+        // The next attempt's progress: one transfer's sizes, not two;
+        // the speed since the start, the draws before forgotten.
+        told(&list[0], 100, Some(100), 6, Some(6));
+        assert_eq!(
+            drawn(&mut meter, &mut list, at(start, 11_000, 3, 1, false)),
+            "\r100 100   100     6     3     1  00:00:11 00:00:11              9      "
+        );
+        meter.finalize(&list[0]);
+        assert_eq!(
+            drawn(&mut meter, &mut [], at(start, 12_000, 3, 0, true)),
+            "\r100 100   100     6     3     0  00:00:12 00:00:12              8     \n"
+        );
+        // 40 bytes kept by a resumed attempt count in the next one's.
+        let mut meter = Meter::new();
+        let list = [counted(40, 0, 0, 0)];
+        meter.reset_retry(&list[0], 40);
+        told(&list[0], 10, Some(60), 0, None);
+        let g = &list[0].gauge;
+        assert_eq!(g.downloaded.load(Ordering::Relaxed), 50);
+        assert_eq!(g.download_total.load(Ordering::Relaxed), 100);
+        told(&list[0], 10, None, 0, None);
+        assert_eq!(g.download_total.load(Ordering::Relaxed), 0, "not known");
     }
 
     /// Once ten lines are drawn, the speed is over the last ten

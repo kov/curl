@@ -1478,6 +1478,9 @@ struct Retrying {
     wait_ms: u64,
     /// Where the output file was resumed from, if it was.
     resumed_at: u64,
+    /// The bytes downloaded and kept by the attempts resumed after them
+    /// (`dlretry`), counted in each later attempt's progress.
+    kept: u64,
 }
 
 /// One attempt, as it ended.
@@ -1577,6 +1580,7 @@ impl Retrying {
             retries: 0,
             wait_ms: op.retry_delay_ms,
             resumed_at: resumed_at.unwrap_or(0),
+            kept: 0,
         }
     }
 
@@ -1655,7 +1659,8 @@ impl Retrying {
         // What came of a GET that can be resumed is kept, and the next
         // attempt asks for the rest.
         if self.resumable(op, &stream, &attempt) && answered_resumably(easy, self.resumed_at) {
-            if let Ok(n) = try_format(format_args!("{}", stream.written())) {
+            let written = stream.written();
+            if let Ok(n) = try_format(format_args!("{written}")) {
                 msgs.note(&[b"Keeping ", n.as_bytes(), b" bytes"]);
             }
             if stream.flush().is_err() {
@@ -1673,6 +1678,7 @@ impl Retrying {
                 return Again::No(Err(ErrorKind::WriteError));
             };
             self.resumed_at = at;
+            self.kept = self.kept.saturating_add(written);
             let resume = resume_at(at);
             Setopt::new(easy, None)
                 .unwritten("`retrycheck` sets it itself", |o| {
@@ -5396,6 +5402,7 @@ mod tests {
             retries: 0,
             wait_ms: 0,
             resumed_at: 4,
+            kept: 0,
         };
         let get = || Attempt {
             result: Err(ErrorKind::PartialFile),

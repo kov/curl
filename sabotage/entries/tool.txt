@@ -1872,3 +1872,37 @@ witness: curl-tool config::tests::reads_indented_and_crlf_lines_as_c_does
     let mut at = (name_end + 1).min(end);
 --- new
     let mut at = name_end;
+
+=== a parallel transfer tried again is counted as it goes
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool a_parallel_transfer_tried_again_is_metered_once
+--- old
+                    let kept = entry.per.retrying.kept;
+                    self.meter.reset_retry(&entry.counted, kept);
+--- new
+                    self.meter.finalize(&entry.counted);
+
+=== what a resumed attempt kept is not in the next one's progress
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool operate::parallel::tests::a_transfer_tried_again_counts_once
+--- old
+        add_off(&mut downloaded, kept);
+--- new
+        let _ = kept;
+
+=== the meter's speed keeps the draws before a retry
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool operate::parallel::tests::a_transfer_tried_again_counts_once
+--- old
+        g.upload_total.store(0, Ordering::Relaxed);
+        self.speed_at = 0;
+        self.wrapped = false;
+--- new
+        g.upload_total.store(0, Ordering::Relaxed);
+
+=== a resumed retry does not count what it kept
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_parallel_transfer_resumed_is_metered_with_what_it_kept
+--- old
+            self.kept = self.kept.saturating_add(written);
+--- new

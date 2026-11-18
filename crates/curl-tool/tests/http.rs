@@ -3050,3 +3050,86 @@ fn the_library_reads_its_files_as_text() {
     assert_eq!(after, lines, "{shown}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A parallel transfer tried again counts once in the meter: after two
+/// attempts cut short, the last line is the last attempt's 10 bytes down
+/// and 6 up, each 100% of one transfer's sizes (test 3039).
+#[test]
+fn a_parallel_transfer_tried_again_is_metered_once() {
+    let cut = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nbad\n";
+    let whole = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\ncomplete!\n";
+    let s = Server::script(vec![
+        vec![cut.to_vec()],
+        vec![cut.to_vec()],
+        vec![whole.to_vec()],
+    ]);
+    let dir = std::env::temp_dir().join(format!("curl-tool-meter-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (out, meter) = (dir.join("out"), dir.join("meter"));
+    let args = [
+        "--parallel",
+        "--retry",
+        "2",
+        "--retry-all-errors",
+        "--retry-delay",
+        "0.1",
+        "--stderr",
+        meter.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--data-binary",
+        "upload",
+        &s.url(),
+    ];
+    let run = curl(&args);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(std::fs::read(&out).unwrap(), b"complete!\n");
+    let shown = String::from_utf8(std::fs::read(&meter).unwrap()).unwrap();
+    let last = shown.rsplit('\r').next().unwrap();
+    let fields: Vec<&str> = last.split_whitespace().take(4).collect();
+    assert_eq!(fields, ["100", "100", "10", "6"], "{shown:?}");
+    s.request();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Bytes a resumed retry kept count in the meter's next attempt: three
+/// pieces of 26 bytes, each attempt resuming where the last was cut, end
+/// at 26 down, as one transfer (test 3040).
+#[test]
+fn a_parallel_transfer_resumed_is_metered_with_what_it_kept() {
+    let first = b"HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: 26\r\nConnection: close\r\n\r\nabcde";
+    let second = b"HTTP/1.1 206 Partial Content\r\nContent-Length: 21\r\nContent-Range: bytes 5-25/26\r\nConnection: close\r\n\r\nfghijk";
+    let last = b"HTTP/1.1 206 Partial Content\r\nContent-Length: 15\r\nContent-Range: bytes 11-25/26\r\nConnection: close\r\n\r\nlmnopqrstuvwxyz";
+    let s = Server::script(vec![
+        vec![first.to_vec()],
+        vec![second.to_vec()],
+        vec![last.to_vec()],
+    ]);
+    let dir = std::env::temp_dir().join(format!("curl-tool-kept-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (out, meter) = (dir.join("out"), dir.join("meter"));
+    let args = [
+        "--parallel",
+        "--stderr",
+        meter.to_str().unwrap(),
+        "--continue-at",
+        "-",
+        "--retry",
+        "4",
+        "--retry-delay",
+        "0.1",
+        "--retry-all-errors",
+        "-o",
+        out.to_str().unwrap(),
+        &s.url(),
+    ];
+    let run = curl(&args);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(std::fs::read(&out).unwrap(), b"abcdefghijklmnopqrstuvwxyz");
+    let shown = String::from_utf8(std::fs::read(&meter).unwrap()).unwrap();
+    let last = shown.rsplit('\r').next().unwrap();
+    let fields: Vec<&str> = last.split_whitespace().take(4).collect();
+    assert_eq!(fields, ["100", "--", "26", "0"], "{shown:?}");
+    s.request();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

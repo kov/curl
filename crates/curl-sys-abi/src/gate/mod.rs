@@ -233,6 +233,34 @@ impl Frame {
         }
     }
 
+    /// The cookies of the jar a transfer uses, through the context lent.
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn cookie_list(
+        self,
+        id: TransferId,
+    ) -> Option<Result<Vec<Vec<u8>>, OutOfMemory>> {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.cookie_list(id)
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.cookie_list(id)
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.cookie_list(id)
+            }
+        }
+    }
+
     /// What a transfer reports, through the context lent.
     ///
     /// # Safety

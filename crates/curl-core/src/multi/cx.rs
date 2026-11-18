@@ -1155,6 +1155,13 @@ impl<'a> TransferCx<'a> {
         self.calls.easy_mut(id).map(Easy::rtsp_mut)
     }
 
+    /// The cookies of the jar a transfer uses, a line each in the
+    /// Netscape format, the expired ones swept (`CURLINFO_COOKIELIST`,
+    /// which C answers from a callback too).
+    pub fn cookie_list(&mut self, id: TransferId) -> Option<Result<Vec<Vec<u8>>, OutOfMemory>> {
+        self.calls.easy_mut(id).map(Easy::cookie_list)
+    }
+
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.duplicate_with(id, &mut |_| Ok(()))
@@ -1488,6 +1495,11 @@ impl<H: Host> EventCx<'_, H> {
         self.slots.app_easy_mut(id).map(Easy::rtsp_mut)
     }
 
+    /// As `TransferCx::cookie_list`.
+    pub fn cookie_list(&mut self, id: TransferId) -> Option<Result<Vec<Vec<u8>>, OutOfMemory>> {
+        self.slots.app_easy_mut(id).map(Easy::cookie_list)
+    }
+
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.duplicate_with(id, &mut |_| Ok(()))
@@ -1681,6 +1693,11 @@ impl<H: Host> NotifyCx<'_, H> {
         id: TransferId,
     ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
         self.multi.slots.app_easy_mut(id).map(Easy::rtsp_mut)
+    }
+
+    /// As `TransferCx::cookie_list`.
+    pub fn cookie_list(&mut self, id: TransferId) -> Option<Result<Vec<Vec<u8>>, OutOfMemory>> {
+        self.multi.slots.app_easy_mut(id).map(Easy::cookie_list)
     }
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {

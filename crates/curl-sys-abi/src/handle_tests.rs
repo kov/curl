@@ -11303,3 +11303,67 @@ fn a_multi_s_transfers_report_in_c_s_id_order() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+/// `CURLINFO_COOKIELIST` asked from the transfer's own callback lists the
+/// jar's cookies, as C's `Curl_cookie_list` does wherever it is asked:
+/// not none, as if the jar were empty.
+#[test]
+fn the_cookie_list_is_read_from_a_callback() {
+    unsafe extern "C" fn listing(_: *mut c_char, size: usize, n: usize, out: *mut c_void) -> usize {
+        // SAFETY: the `Listed` below, live through the transfer.
+        let out = unsafe { &mut *out.cast::<Listed>() };
+        let mut list: *mut ffi::curl_slist = ptr::null_mut();
+        // SAFETY: the handle under way, from its own callback, and a list
+        // pointer for the info.
+        out.code = unsafe { curl_easy_getinfo(out.c, ffi::CURLINFO_COOKIELIST, &raw mut list) };
+        let mut at = list;
+        while !at.is_null() {
+            // SAFETY: a node of the list getinfo made, its text a C string.
+            let node = unsafe { &*at };
+            // SAFETY: the node's text, a C string getinfo made.
+            let line = unsafe { CStr::from_ptr(node.data) };
+            out.lines.push(line.to_owned());
+            at = node.next;
+        }
+        // SAFETY: the list getinfo made, the application's to free.
+        unsafe { crate::strings::curl_slist_free_all(list) };
+        size * n
+    }
+    struct Listed {
+        c: *mut CURL,
+        code: CURLcode,
+        lines: Vec<std::ffi::CString>,
+    }
+    let (path, url) = file("cookie-list-in-callback", b"x");
+    let c = curl_easy_init();
+    let stored = c"Set-Cookie: flavour=oat; domain=example.com; path=/";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_COOKIELIST, stored.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let mut listed = Listed {
+        c,
+        code: ffi::CURLE_UNKNOWN_OPTION,
+        lines: Vec::new(),
+    };
+    function(
+        c,
+        ffi::CURLOPT_WRITEFUNCTION,
+        listing as WriteFn as *const (),
+    );
+    pointer(
+        c,
+        ffi::CURLOPT_WRITEDATA,
+        (&raw mut listed).cast::<c_void>(),
+    );
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle, `listed` live through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(listed.code, CURLE_OK);
+    let lines: Vec<&[u8]> = listed.lines.iter().map(|l| l.as_bytes()).collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].ends_with(b"flavour\toat"), "{lines:?}");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    std::fs::remove_file(path).unwrap();
+}

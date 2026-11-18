@@ -248,8 +248,12 @@ fn effective_method(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
 fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
     let lines = easy.with_easy(|e| match e {
         EasyRef::Easy(mut easy) => easy.cookie_list().ok(),
-        // From a callback the jar is not reached.
-        EasyRef::Frame(..) => None,
+        EasyRef::Frame(frame, id) => {
+            // SAFETY: the frame is the innermost lent, and the borrow ends
+            // with this call, inside its callback.
+            let lines = unsafe { frame.cookie_list(id) };
+            lines.expect("an added handle is in its multi").ok()
+        }
     })?;
     Ok(Some(list_of(lines.iter().flatten())))
 }

@@ -435,3 +435,11 @@ witness: curl-core cookie::tests::a_cookie_is_small_and_its_strings_one_block
         for part in [name, value, path, rest] {
 --- new
         for part in [name, path, value, rest] {
+
+=== the cookie list asked from a callback is none, as if the jar were empty
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi handle_tests::the_cookie_list_is_read_from_a_callback
+--- old
+            lines.expect("an added handle is in its multi").ok()
+--- new
+            lines.and(None)

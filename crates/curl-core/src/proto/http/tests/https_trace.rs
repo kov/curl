@@ -299,6 +299,50 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
     );
 }
 
+/// HTTP/1.1 alone, no version but the first attempt's is allowed: its
+/// handshake failing fails the setup with its own error at once, not
+/// waiting for the origin's record still to come, and no timer is armed
+/// for a second attempt (`cf_hc_set_baller2`'s `cf_hc_may_choose_alpn`;
+/// pytest's test_22_07, where C's tool says the certificate's problem).
+#[test]
+fn a_failed_attempt_with_no_other_version_allowed_waits_for_no_record() {
+    static NEVER: Ares = Ares {
+        late: false,
+        record_at: u32::MAX,
+        with_alpn: false,
+    };
+    let closes = Conversation::replies(&[], true);
+    let mut m = serving(Peer::Accepts, &[&closes]);
+    let url = format!("https://name.test:{PORT}/");
+    let e = tracing_over(&NEVER, b"https-connect,timer");
+    let ran = https_get(&mut m, e, &url, |o| {
+        o.http.version = crate::options::HttpVersion::Http11;
+        o.limits.total = crate::time::TimeLimit::from_millis(5000);
+    });
+    assert!(
+        matches!(ran.result, Err(kind) if kind != ErrorKind::OperationTimedout),
+        "{:?} {:#?}",
+        ran.result,
+        ran.seen.text()
+    );
+    let got = lines(
+        &ran,
+        &[
+            "[HTTPS-CONNECT] HTTPS-RR",
+            "[HTTPS-CONNECT] 1st",
+            "[HTTPS-CONNECT] 2nd",
+            "[HTTPS-CONNECT] connect, all",
+            "[TIMER] [ALPN",
+        ],
+    );
+    let want = expect(
+        "[HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] 1st attempt uses h1 from wanted versions
+        [HTTPS-CONNECT] connect, all attempts failed",
+    );
+    assert_eq!(got, want);
+}
+
 /// A name's record and its addresses answered by the same connect, after
 /// the first attempt started: both are taken, the record's first, before
 /// the HTTPS connect filter chooses the second attempt by the record, as

@@ -204,6 +204,16 @@ impl Choosing {
             })
     }
 
+    /// Whether a version but `first` is allowed, which a second attempt
+    /// could be whatever the record says: without one, the record is not
+    /// waited for (`cf_hc_may_choose_alpn`).
+    fn others(&self, first: Alpn) -> bool {
+        let allowed = self.neg.allowed;
+        (first != Alpn::H1 && allowed.h1)
+            || (first != Alpn::H2 && allowed.h2)
+            || (first != Alpn::H3 && allowed.h3 && self.may_h3())
+    }
+
     /// The second's after `first`: the preferred, else the first wanted
     /// (`cf_hc_set_baller2`).
     fn second(&self, first: Alpn) -> Option<(Alpn, Source)> {
@@ -1097,8 +1107,8 @@ fn pending(c: &Connecting) -> bool {
 
 /// The setup's first attempt starts (`cf_hc_connect`'s INIT): its
 /// version chosen, the one the plan dialed for, its second chosen if
-/// the record is known, and the wait for the second armed while there
-/// may be one.
+/// the record is known, none if no other version is allowed, and the
+/// wait for the second armed while there may be one.
 pub(super) fn start<H: Host>(
     c: &mut Connecting,
     deadlines: &mut Deadlines,
@@ -1137,12 +1147,17 @@ pub(super) fn start<H: Host>(
     );
     let h = c.https.as_mut().expect("the filter heads the setup");
     h.first = Some(first);
-    if !pending(c) {
-        let second = choose_second(c, cx, first, said);
+    let others = choosing.others(first);
+    let asked = choosing.asked_h3.get();
+    h3_refused(c, cx, asked && !said);
+    if !others {
+        c.https.as_mut().expect("the filter heads the setup").second = Second::None;
+    } else if !pending(c) {
+        let second = choose_second(c, cx, first, asked);
         c.https.as_mut().expect("the filter heads the setup").second = second;
     }
     let h = c.https.expect("the filter heads the setup");
-    if pending(c) || matches!(h.second, Second::Due(_)) {
+    if matches!(h.second, Second::Unchosen | Second::Due(_)) {
         let wait = cx.easy().options().limits.eyeballs.0 / 2;
         super::arm(deadlines, cx, TimerKind::AlpnEyeballs, wait);
     }
@@ -1438,6 +1453,35 @@ mod tests {
             c().by_record(Some(&no_default), 443).first().map(|f| f.1),
             Some(Source::Wanted)
         );
+    }
+
+    /// A second attempt may be waited for only while a version but the
+    /// first's is allowed: HTTP/1 and HTTP/2 each other's, HTTP/3 only if
+    /// it may be spoken, weighed last (`cf_hc_may_choose_alpn`).
+    #[test]
+    fn the_record_is_waited_for_only_with_another_version_allowed() {
+        use Alpn::{H1, H2, H3};
+        use HttpVersion::{Any, Http2Prior, Http3, Http3Only, Http10, Http11};
+        let cases = [
+            // version, the first's, HTTP/3 may be spoken
+            ((Http11, H1, true), (false, false)),
+            ((Http10, H1, true), (false, false)),
+            ((Http2Prior, H2, true), (false, false)),
+            ((Http3Only, H3, true), (false, false)),
+            ((Any, H1, true), (true, false)),
+            ((Any, H2, true), (true, false)),
+            ((Http3, H3, true), (true, false)),
+        ];
+        for ((version, first, may_h3), want) in cases {
+            let c = choosing(version, None, true, may_h3);
+            let got = (c.others(first), c.asked_h3.get());
+            assert_eq!(got, want, "{version:?} {first:?}");
+        }
+        for may_h3 in [false, true] {
+            let mut c = choosing(Http2Prior, None, true, may_h3);
+            c.neg.allowed.h3 = true;
+            assert_eq!((c.others(H2), c.asked_h3.get()), (may_h3, true));
+        }
     }
 
     /// With none of the wanted versions to be spoken, the first allowed

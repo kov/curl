@@ -469,3 +469,23 @@ features: test-util
     if let Err(kind) = look_at_name(&mut c, run, cx) {
 --- new
     if c.attempt(Attempt::First).is_some() && let Err(kind) = look_at_name(&mut c, run, cx) {
+
+=== a setup with no other version allowed waits for the record
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_failed_attempt_with_no_other_version_allowed_waits_for_no_record
+features: test-util,debug-hooks
+--- old
+    let others = choosing.others(first);
+    let asked
+--- new
+    let others = choosing.others(first) || true;
+    let asked
+
+=== the ALPN-eyeballs timer is armed with no second attempt to come
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_failed_attempt_with_no_other_version_allowed_waits_for_no_record
+features: test-util,debug-hooks
+--- old
+    if matches!(h.second, Second::Unchosen | Second::Due(_)) {
+--- new
+    if pending(c) || matches!(h.second, Second::Due(_)) {

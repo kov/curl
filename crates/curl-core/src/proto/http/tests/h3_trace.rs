@@ -2049,15 +2049,6 @@ fn a_callback_reaches_the_quic_connection_s_tls_session() {
     assert!(natives.iter().all(|&reached| reached), "{natives:?}");
 }
 
-/// The HTTPS connect filter's timer among the transfer's, for HTTP/3
-/// alone: armed while the origin's record is to come, which it is over
-/// a resolver library; the threaded resolver says at once there is none,
-/// and C's filter, its attempts then complete, arms nothing
-/// (`cf_hc_connect`).
-fn alpn_eyeballs_timer() -> usize {
-    usize::from(!cfg!(feature = "threaded-resolver"))
-}
-
 /// A body with as much in flight as is meant to be waits, the transfer
 /// waiting on what the peer says rather than on the socket's room, until
 /// the peer acknowledges some (`cf_ngtcp2_send`, `cf_ngtcp2_adjust_pollset`).
@@ -2101,15 +2092,9 @@ fn a_body_in_flight_waits_for_its_acknowledgement() {
     assert_eq!(
         said[..4],
         [
-            format!(
-                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
-                2 + alpn_eyeballs_timer()
-            ),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
-            format!(
-                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
-                2 + alpn_eyeballs_timer()
-            ),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
         ]
     );
@@ -4814,24 +4799,17 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
                 || l.starts_with("[MULTI] [PERFORMING] pollset")
         })
         .collect();
-    let alpn = alpn_eyeballs_timer();
+    // HTTP/3 alone, the HTTPS connect filter has no second attempt to
+    // wait for the origin's record for, and arms no timer of its own
+    // (`cf_hc_set_baller2`'s `cf_hc_may_choose_alpn`).
     assert_eq!(
         said,
         [
-            format!(
-                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
-                2 + alpn
-            ),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
-            format!(
-                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
-                2 + alpn
-            ),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
-            format!(
-                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
-                1 + alpn
-            ),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=1".to_owned(),
         ]
     );
     let s = script.lock().unwrap();

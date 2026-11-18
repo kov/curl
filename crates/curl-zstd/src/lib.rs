@@ -79,6 +79,8 @@ const ROUNDS_PER_CHECK: u32 = (1024 * 1024 / BUFFER) as u32;
 struct Zstd {
     zds: NonNull<DStream>,
     buffer: Box<[u8; BUFFER]>,
+    /// The last frame read is not finished.
+    incomplete: bool,
 }
 
 impl fmt::Debug for Zstd {
@@ -94,7 +96,11 @@ pub fn decoder() -> Result<Box<dyn Decoder>, ErrorKind> {
     let zds = unsafe { ZSTD_createDStream() };
     let zds = NonNull::new(zds).ok_or(ErrorKind::OutOfMemory)?;
     // Made before the box, so that a failed box still frees the stream.
-    let zstd = Zstd { zds, buffer };
+    let zstd = Zstd {
+        zds,
+        buffer,
+        incomplete: false,
+    };
     Ok(try_box(zstd).map_err(|_| ErrorKind::OutOfMemory)?)
 }
 
@@ -133,13 +139,28 @@ impl Decoder for Zstd {
             if unsafe { ZSTD_isError(code) } != 0 {
                 return Err(ErrorKind::BadContentEncoding);
             }
+            // What is left to read of the frame, or 0 once it is whole.
+            self.incomplete = code != 0;
             if output.pos > 0 {
                 out.write(&self.buffer[..output.pos])?;
             }
-            if input.pos == input.size && output.pos < output.size {
+            // A frame completed with the output full starts no other.
+            if input.pos == input.size && (code == 0 || output.pos < output.size) {
                 return Ok(());
             }
         }
+    }
+
+    /// A frame begun must have ended by the body's end
+    /// (`zstd_do_flush`).
+    fn end(&mut self, out: &mut dyn Sink) -> Result<(), ErrorKind> {
+        if self.incomplete {
+            return Err(out.fail(
+                ErrorKind::BadContentEncoding,
+                format_args!("Zstd stream ended before completion"),
+            ));
+        }
+        Ok(())
     }
 }
 

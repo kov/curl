@@ -93,7 +93,7 @@ fn a_chunked_body_is_traced_through_its_writers_as_c() {
         [WRITE] client_write(type=1, len=43) -> 0
         [WRITE] xfer_write_resp(len=90, eos=0) -> 0
         [WRITE] [OUT] done
-        [WRITE] client_flush() -> 0",
+        [WRITE] client_flush(eos=1) -> 0",
     );
     assert_eq!(lines, want);
 }
@@ -223,7 +223,7 @@ fn a_bad_end_of_chunks_is_traced_as_c() {
             [WRITE] client_write(type=1, len=13) -> 56
             [WRITE] xfer_write_resp(len=60, eos=0) -> 56
             [WRITE] [OUT] done
-            [WRITE] client_flush() -> 0"
+            [WRITE] client_flush(eos=1) -> 0"
         )
     );
 }
@@ -529,7 +529,7 @@ fn a_body_paused_part_way_holds_what_is_left() {
 /// as the C build does.
 #[test]
 fn an_empty_reply_says_the_output_s_end() {
-    let end = ["[WRITE] [OUT] done", "[WRITE] client_flush() -> 0"];
+    let end = ["[WRITE] [OUT] done", "[WRITE] client_flush(eos=1) -> 0"];
     let (_, lines) = written(writing(), b"", |_| {});
     assert_eq!(lines, end);
     let (ran, lines) = written(writing(), b"", |o| {

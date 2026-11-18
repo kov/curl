@@ -922,7 +922,13 @@ fn multi_done<H: Host>(
         premature |= is_premature(d.result);
     }
     if d.chain_made() {
-        crate::deliver::Pipeline::done(cx);
+        let pipeline = d.proto.as_mut().and_then(ProtoState::pipeline_mut);
+        let ended = crate::deliver::Pipeline::done(pipeline, cx);
+        // The transfer's own failure stands over the output's
+        // (`Curl_1st_fatal`).
+        if d.result.is_ok() {
+            d.result = ended;
+        }
     }
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let kept = cx.rest.kept(cx.me, Kind::Names);

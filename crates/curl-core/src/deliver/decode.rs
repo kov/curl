@@ -27,6 +27,22 @@ pub(crate) fn run(
     }
 }
 
+/// The body is over: each decoder of `chain`, the last added first, is
+/// told so as C flushes its writers at the end of the stream
+/// (`Curl_cwriter_flush` with `eos`), the first to fail failing the rest.
+pub(crate) fn end(chain: &mut [Box<dyn Decoder>], last: &mut dyn Sink) -> Result<(), ErrorKind> {
+    match chain.split_last_mut() {
+        Some((first, rest)) => {
+            first.end(&mut Next {
+                rest: &mut *rest,
+                last: &mut *last,
+            })?;
+            end(rest, last)
+        }
+        None => Ok(()),
+    }
+}
+
 /// What a decoder writes to: the decoders before it in the chain, then
 /// `last`.
 struct Next<'a> {

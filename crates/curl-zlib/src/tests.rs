@@ -298,3 +298,40 @@ fn a_failing_round_passes_nothing_on() {
         )]
     );
 }
+
+/// A body that ends inside the stream fails, said in the coding's name;
+/// a whole one does not, nor one that never came, nor a raw stream
+/// still owed its trailer (`deflate_do_flush`, `gzip_do_flush`).
+#[test]
+fn a_body_cut_short_fails_at_its_end() {
+    let codings: [(MakeDecoder, &[u8], &str); 3] = [
+        (gzip, GZIP_HELLO, "Gzip"),
+        (deflate, ZLIB_HELLO, "Deflate"),
+        (deflate, RAW_HELLO, "Deflate"),
+    ];
+    for (make, whole, name) in codings {
+        let mut out = Collect::default();
+        assert_eq!(make().unwrap().end(&mut out), Ok(()));
+        let mut d = make().unwrap();
+        let mut out = Collect::default();
+        d.decode(whole, &mut out).unwrap();
+        assert_eq!(d.end(&mut out), Ok(()), "{name}: {:?}", out.said);
+        let mut d = make().unwrap();
+        let mut out = Collect::default();
+        d.decode(&whole[..whole.len() / 2], &mut out).unwrap();
+        assert_eq!(d.end(&mut out), Err(ErrorKind::BadContentEncoding));
+        assert_eq!(
+            out.said,
+            [(
+                ErrorKind::BadContentEncoding,
+                format!("{name} stream ended before completion")
+            )]
+        );
+    }
+    let mut d = deflate().unwrap();
+    let mut out = Collect::default();
+    let mut owed = RAW_HELLO.to_vec();
+    owed.push(0);
+    d.decode(&owed, &mut out).unwrap();
+    assert_eq!(d.end(&mut out), Ok(()), "{:?}", out.said);
+}

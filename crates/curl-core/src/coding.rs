@@ -82,6 +82,14 @@ pub trait Decoder: fmt::Debug + Send {
     /// Undo `input`, giving what it makes to `out` as it makes it.
     fn decode(&mut self, input: &[u8], out: &mut dyn Sink) -> Result<(), ErrorKind>;
 
+    /// The body is over (a writer's flush at the end of the stream): a
+    /// coded body begun and not finished fails the transfer, said to
+    /// `out`, where a decoder given nothing is whole, as a response
+    /// without a body is.
+    fn end(&mut self, _out: &mut dyn Sink) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
     /// What it makes may be far larger than what it is given
     /// (`CURL_CW_FLAG_BLOWUP`): a paused transfer holds the body before
     /// it, still coded.

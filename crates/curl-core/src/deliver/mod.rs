@@ -243,11 +243,33 @@ impl Pipeline {
         self.made
     }
 
-    /// The request's output is over (`Curl_cw_out_done`), its chain made:
-    /// what is held goes with the request.
-    pub(crate) fn done<H: Host>(cx: &mut StepCx<'_, H>) {
+    /// The request's output is over (`Curl_cw_out_done`), its chain made,
+    /// by `pipeline` if the request has one: what is held goes with the
+    /// request, and the content decoders are told the body ended
+    /// (`Curl_client_flush` with `eos`), unless the gate holds body they
+    /// have not been given (`cw_pause_flush`'s `eos && !ctx->buf`). A
+    /// coded body cut short fails here.
+    pub(crate) fn done<H: Host>(
+        pipeline: Option<&mut Pipeline>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<(), ErrorKind> {
         write_trace(cx, format_args!("[OUT] done"));
-        write_trace(cx, format_args!("client_flush() -> 0"));
+        let result = match pipeline {
+            Some(p) => {
+                let pausable = p.pausable();
+                match p.codings.as_deref_mut() {
+                    Some(c) if !c.gate.as_ref().is_some_and(Gate::holds_output) => {
+                        let out = &mut p.out;
+                        decode::end(&mut c.content.0, &mut Client { cx, out, pausable })
+                    }
+                    _ => Ok(()),
+                }
+            }
+            None => Ok(()),
+        };
+        let code = result.map_or_else(ErrorKind::number, |()| 0);
+        write_trace(cx, format_args!("client_flush(eos=1) -> {code}"));
+        result
     }
 
     /// Whether output is held: the request cannot be over until it is

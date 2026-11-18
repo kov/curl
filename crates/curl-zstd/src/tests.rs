@@ -111,3 +111,44 @@ fn the_version_is_the_library_s() {
     let v = version().to_string();
     assert!(v.starts_with("1."), "{v}");
 }
+
+/// A frame of 16384 bytes of `q`, one RLE block: what it makes fills the
+/// buffer exactly.
+const ZSTD_FULL: &[u8] = b"\x28\xb5\x2f\xfd\x60\x00\x3f\x03\x00\x02\x71";
+
+/// A body that ends inside a frame fails, said; one whose frames are
+/// whole does not, nor one that never came (`zstd_do_flush`).
+#[test]
+fn a_body_cut_short_fails_at_its_end() {
+    let mut out = Collect::default();
+    assert_eq!(decoder().unwrap().end(&mut out), Ok(()));
+    for whole in [ZSTD_HELLO, ZSTD_BIG, ZSTD_FULL] {
+        let mut d = decoder().unwrap();
+        let mut out = Collect::default();
+        d.decode(whole, &mut out).unwrap();
+        assert_eq!(d.end(&mut out), Ok(()), "{:?}", out.said);
+    }
+    let mut d = decoder().unwrap();
+    let mut out = Collect::default();
+    d.decode(&ZSTD_HELLO[..ZSTD_HELLO.len() - 3], &mut out)
+        .unwrap();
+    assert_eq!(d.end(&mut out), Err(ErrorKind::BadContentEncoding));
+    assert_eq!(
+        out.said,
+        [(
+            ErrorKind::BadContentEncoding,
+            "Zstd stream ended before completion".to_owned()
+        )]
+    );
+}
+
+/// A frame whose output fills the buffer exactly ends there: no round
+/// is asked for after it, which would read the start of a frame that
+/// never comes.
+#[test]
+fn a_frame_that_fills_the_buffer_is_whole() {
+    let (r, out) = decode(ZSTD_FULL);
+    assert_eq!(r, Ok(()));
+    assert_eq!(out.made(), vec![b'q'; BUFFER]);
+    assert_eq!(out.pieces.len(), 1);
+}

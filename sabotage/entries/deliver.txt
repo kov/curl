@@ -463,10 +463,10 @@ witness: curl-core proto::smtp::tests::over_the_wire::an_end_with_nothing_writte
 features: test-util
 --- old
     if d.chain_made() {
-        crate::deliver::Pipeline::done(cx);
+        let pipeline = d.proto.as_mut().and_then(ProtoState::pipeline_mut);
 --- new
     if true {
-        crate::deliver::Pipeline::done(cx);
+        let pipeline = d.proto.as_mut().and_then(ProtoState::pipeline_mut);
 
 === HTTP's chain of writers is taken as unmade once its connect fails
 file: crates/curl-core/src/multi/state.rs

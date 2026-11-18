@@ -73,6 +73,9 @@ const ROUNDS_PER_CHECK: u32 = (1024 * 1024 / BUFFER) as u32;
 struct Brotli {
     state: Option<NonNull<State>>,
     buffer: Box<[u8; BUFFER]>,
+    /// It was given input (`BrotliDecoderIsUsed`: a decoder is only ever
+    /// given some).
+    used: bool,
 }
 
 impl fmt::Debug for Brotli {
@@ -93,6 +96,7 @@ pub fn decoder() -> Result<Box<dyn Decoder>, ErrorKind> {
     let brotli = Brotli {
         state: Some(state),
         buffer,
+        used: false,
     };
     Ok(try_box(brotli).map_err(|_| ErrorKind::OutOfMemory)?)
 }
@@ -127,6 +131,7 @@ impl Decoder for Brotli {
             // The stream ended.
             return Err(ErrorKind::WriteError);
         };
+        self.used |= !input.is_empty();
         let mut next_in = input.as_ptr();
         let mut left = input.len();
         let mut r = RESULT_NEEDS_MORE_OUTPUT;
@@ -175,6 +180,18 @@ impl Decoder for Brotli {
                     return Err(map_error(code));
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A stream given input must have ended by the body's end; one given
+    /// none is a response without a body (`brotli_do_flush`).
+    fn end(&mut self, out: &mut dyn Sink) -> Result<(), ErrorKind> {
+        if self.state.is_some() && self.used {
+            return Err(out.fail(
+                ErrorKind::BadContentEncoding,
+                format_args!("Brotli stream ended before completion"),
+            ));
         }
         Ok(())
     }

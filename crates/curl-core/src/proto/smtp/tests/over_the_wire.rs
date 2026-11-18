@@ -881,7 +881,7 @@ fn an_end_with_nothing_written_says_nothing_of_the_output() {
     assert_eq!(ran.result, Ok(()), "{}", ran.text);
     assert!(
         ran.text
-            .contains("[WRITE] [OUT] done\n[WRITE] client_flush() -> 0\n"),
+            .contains("[WRITE] [OUT] done\n[WRITE] client_flush(eos=1) -> 0\n"),
         "{}",
         ran.text
     );

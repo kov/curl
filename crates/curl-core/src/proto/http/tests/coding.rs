@@ -280,6 +280,99 @@ fn a_trailer_stays_behind_the_body_held_before_its_decoder() {
     assert_eq!(handler.seen.body(), vec![b'z'; 20000]);
 }
 
+/// Passes each byte on, and at the body's end fails as a stream cut
+/// short does, naming its coding.
+#[derive(Debug)]
+struct Cut(&'static str);
+
+impl Decoder for Cut {
+    fn decode(&mut self, input: &[u8], out: &mut dyn Sink) -> Result<(), ErrorKind> {
+        out.write(input)
+    }
+
+    fn end(&mut self, out: &mut dyn Sink) -> Result<(), ErrorKind> {
+        Err(out.fail(
+            ErrorKind::BadContentEncoding,
+            format_args!("{} stream ended before completion", self.0),
+        ))
+    }
+}
+
+/// A handle whose `gzip` and `br` bodies are always cut short.
+fn cutting() -> Easy {
+    static CUTTING: Libraries = Libraries {
+        decoders: Decoders::none()
+            .with(Coding::Brotli, || Ok(Box::new(Cut("Brotli"))))
+            .with(Coding::Gzip, || Ok(Box::new(Cut("Gzip")))),
+        ..Libraries::NONE
+    };
+    let mut e = Easy::new();
+    e.set_libraries(SharedLibraries::of_static(&CUTTING));
+    e
+}
+
+/// A coded body cut short fails the transfer at its end, though all of it
+/// was delivered: the decoders are told the body ended, the last coding
+/// listed first, as C flushes its writers (`Curl_cw_out_done`), and the
+/// first to fail is the transfer's failure.
+#[test]
+fn a_coded_body_cut_short_fails_at_its_end() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Encoding: br, gzip\r\n\r\nabc";
+    let ran = fetch(cutting(), reply, all);
+    assert_eq!(ran.result, Err(ErrorKind::BadContentEncoding));
+    assert_eq!(ran.seen.body(), b"abc");
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l == "Gzip stream ended before completion\n"),
+        "{text:?}"
+    );
+    assert!(!text.iter().any(|l| l.starts_with("Brotli")), "{text:?}");
+}
+
+/// A transfer that ends while a pause holds its body in front of the
+/// decoders does not tell them the body ended: they have not been given
+/// it (`cw_pause_flush`'s `eos && !ctx->buf`).
+#[test]
+fn a_body_held_in_front_of_its_decoders_is_not_ended() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Encoding: gzip\r\n\r\nabc";
+    let (mut m, _talk, _) = server(&[reply], false);
+    let mut e = cutting();
+    let handler = PausesAtHeadEnd::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.output.verbose = true;
+    all(o);
+    o.callbacks.write = Some(Handler::write(handler.0.clone()).unwrap());
+    o.callbacks.header = Some(Handler::header(handler.clone()).unwrap());
+    o.callbacks
+        .rare
+        .set(
+            |r| &mut r.debug,
+            Some(Handler::debug(handler.0.clone()).unwrap()),
+        )
+        .unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "over with its body held");
+    assert!(handler.0.body().is_empty(), "the body held");
+    m.remove(id, &mut NoEvents).unwrap();
+    let text = handler.0.text();
+    assert!(
+        text.iter().any(|l| l == "closing connection #0\n"),
+        "{text:?}"
+    );
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.contains("stream ended before completion")),
+        "{text:?}"
+    );
+}
+
 fn transfer_coded(o: &mut Options) {
     o.http.transfer_encoding = true;
 }

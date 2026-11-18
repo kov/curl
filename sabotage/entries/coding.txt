@@ -122,7 +122,7 @@ witness: curl-zstd tests::a_transfer_out_of_time_stops_decoding
 file: crates/curl-zstd/src/lib.rs
 witness: curl-zstd tests::output_goes_in_pieces_of_at_most_16_kib
 --- old
-            if input.pos == input.size && output.pos < output.size {
+            if input.pos == input.size && (code == 0 || output.pos < output.size) {
 --- new
             if input.pos == input.size {
 
@@ -166,3 +166,74 @@ witness: curl-core proto::http::tests::coding::a_transfer_coded_body_is_undone_b
                 *slot.expect("no more than the most codings") = Some(named);
 --- new
                 *slot.expect("no more than the most codings") = None;
+
+=== a zstd frame that fills the buffer asks for the next frame's start
+file: crates/curl-zstd/src/lib.rs
+witness: curl-zstd tests::a_body_cut_short_fails_at_its_end
+--- old
+            if input.pos == input.size && (code == 0 || output.pos < output.size) {
+--- new
+            if input.pos == input.size && output.pos < output.size {
+
+=== a zstd body cut inside a frame is whole
+file: crates/curl-zstd/src/lib.rs
+witness: curl-zstd tests::a_body_cut_short_fails_at_its_end
+--- old
+            self.incomplete = code != 0;
+--- new
+            self.incomplete = false;
+
+=== a brotli decoder never given input is cut short
+file: crates/curl-brotli/src/lib.rs
+witness: curl-brotli tests::a_body_cut_short_fails_at_its_end
+--- old
+        if self.state.is_some() && self.used {
+--- new
+        if self.state.is_some() {
+
+=== a gzip or deflate stream that ended is cut short
+file: crates/curl-zlib/src/lib.rs
+witness: curl-zlib tests::a_body_cut_short_fails_at_its_end
+--- old
+                        result = self.trailer(out);
+                        self.body = Body::Ended;
+--- new
+                        result = self.trailer(out);
+
+=== a gzip or deflate stream begun is never cut short
+file: crates/curl-zlib/src/lib.rs
+witness: curl-zlib tests::a_body_cut_short_fails_at_its_end
+--- old
+            self.body = Body::Inflating;
+--- new
+            self.body = Body::Unread;
+
+=== decoders are told the body ended though the gate holds it
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::coding::a_body_held_in_front_of_its_decoders_is_not_ended
+--- old
+                    Some(c) if !c.gate.as_ref().is_some_and(Gate::holds_output) => {
+--- new
+                    Some(c) => {
+
+=== the first coding added is told the body ended first
+file: crates/curl-core/src/deliver/decode.rs
+witness: curl-core proto::http::tests::coding::a_coded_body_cut_short_fails_at_its_end
+--- old
+pub(crate) fn end(chain: &mut [Box<dyn Decoder>], last: &mut dyn Sink) -> Result<(), ErrorKind> {
+    match chain.split_last_mut() {
+--- new
+pub(crate) fn end(chain: &mut [Box<dyn Decoder>], last: &mut dyn Sink) -> Result<(), ErrorKind> {
+    match chain.split_first_mut() {
+
+=== a coded body cut short ends the transfer well
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::coding::a_coded_body_cut_short_fails_at_its_end
+--- old
+        if d.result.is_ok() {
+            d.result = ended;
+        }
+--- new
+        if d.result.is_ok() {
+            drop(ended);
+        }

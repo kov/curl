@@ -122,3 +122,28 @@ fn the_version_is_the_library_s() {
     assert!(v.starts_with("1."), "{v}");
     assert_eq!(version_number() >> 24, 1);
 }
+
+/// A body that ends inside the stream fails, said; a whole one does not,
+/// nor one that never came (`brotli_do_flush`).
+#[test]
+fn a_body_cut_short_fails_at_its_end() {
+    let mut out = Collect::default();
+    assert_eq!(decoder().unwrap().end(&mut out), Ok(()));
+    for whole in [BR_HELLO, BR_BIG] {
+        let mut d = decoder().unwrap();
+        let mut out = Collect::default();
+        d.decode(whole, &mut out).unwrap();
+        assert_eq!(d.end(&mut out), Ok(()), "{:?}", out.said);
+    }
+    let mut d = decoder().unwrap();
+    let mut out = Collect::default();
+    d.decode(&BR_HELLO[..BR_HELLO.len() - 3], &mut out).unwrap();
+    assert_eq!(d.end(&mut out), Err(ErrorKind::BadContentEncoding));
+    assert_eq!(
+        out.said,
+        [(
+            ErrorKind::BadContentEncoding,
+            "Brotli stream ended before completion".to_owned()
+        )]
+    );
+}

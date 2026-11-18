@@ -3994,7 +3994,11 @@ pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize
   `AcceptEncoding::All`. Transfer codings other than chunked, asked for with `TE: gzip` (only
   where the handle undoes gzip), are stacked the same way when the body starts, and undone
   before the body is counted, so the size downloaded is the decoded one, as in C. A decoder writes to a `coding::Sink`, which also answers whether the
-  transfer's time is up and says a failure as the transfer's error.
+  transfer's time is up and says a failure as the transfer's error. At the request's end
+  (`Pipeline::done`, C's `Curl_cw_out_done`) each decoder is told the body ended
+  (`Decoder::end`), the last stacked first, unless the gate still holds body it was not given: a
+  stream begun and not finished fails the transfer with BadContentEncoding, unless it failed
+  already.
 - **Accounting after the call**: the handler is called with a context that borrows the report;
   the context is dropped; then `accountant` bumps SIZE_DOWNLOAD. The borrow checker enforces the
   order, which reproduces "dlnow inside the write callback excludes this chunk".

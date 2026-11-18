@@ -133,6 +133,17 @@ enum State {
     InitGzip,
 }
 
+/// How far the coded body has come (C's `zlibStreamState`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Body {
+    /// Nothing of it inflated yet.
+    Unread,
+    /// Begun and not ended: a body that ends here is cut short.
+    Inflating,
+    /// Its stream ended.
+    Ended,
+}
+
 /// The most a stream makes at once (`DECOMPRESS_BUFFER_SIZE`).
 const BUFFER: usize = 16384;
 
@@ -148,6 +159,7 @@ struct Inflater {
     started: State,
     /// Bytes of trailer let by after a raw stream.
     trailer: u32,
+    body: Body,
     buffer: Box<[u8; BUFFER]>,
 }
 
@@ -219,6 +231,7 @@ impl Inflater {
             state,
             started,
             trailer: 0,
+            body: Body::Unread,
             buffer,
         })
     }
@@ -284,6 +297,9 @@ impl Inflater {
         if !matches!(self.state, State::Init | State::Inflating | State::InitGzip) {
             return self.exit(out, Err(ErrorKind::WriteError));
         }
+        if self.body == Body::Unread {
+            self.body = Body::Inflating;
+        }
         let mut result = Ok(());
         let mut rounds = 0;
         let mut done = false;
@@ -330,6 +346,7 @@ impl Inflater {
                         result = self.exit(out, Err(e));
                     } else {
                         result = self.trailer(out);
+                        self.body = Body::Ended;
                     }
                 }
                 // A server that sends raw deflate without zlib's framing:
@@ -382,6 +399,23 @@ impl Decoder for Inflater {
             return self.exit(out, Err(ErrorKind::WriteError));
         }
         self.inflate(input, out)
+    }
+
+    /// A stream begun must have ended by the body's end
+    /// (`deflate_do_flush`, `gzip_do_flush`).
+    fn end(&mut self, out: &mut dyn Sink) -> Result<(), ErrorKind> {
+        if self.body != Body::Inflating {
+            return Ok(());
+        }
+        let coding = if self.started == State::InitGzip {
+            "Gzip"
+        } else {
+            "Deflate"
+        };
+        Err(out.fail(
+            ErrorKind::BadContentEncoding,
+            format_args!("{coding} stream ended before completion"),
+        ))
     }
 }
 

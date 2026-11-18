@@ -1039,17 +1039,28 @@ impl Request {
                     };
                     sc.to(cx, next);
                 }
+                // A channel that fails to close fails the upload, the
+                // channel still freed (`myssh_in_SCP_SEND_EOF`).
                 State::ScpSendEof => {
                     if sc.session().has_scp() {
-                        match sc.session().scp_close() {
+                        let rc = sc.session().scp_close();
+                        let number = match rc {
+                            Rc::Ok => 0,
+                            Rc::Error => -1,
+                            Rc::Again => -2,
+                        };
+                        cx.ssh(format_args!("ssh_scp_close() -> {number}"));
+                        match rc {
                             Rc::Again => flow = Flow::Again,
                             Rc::Ok => {}
                             Rc::Error => {
                                 let text = sc.error_text();
-                                trace::info_with(
+                                trace::fail_with(
                                     cx,
+                                    ErrorKind::Ssh,
                                     &[b"Failed to close libssh scp channel: ", &text],
                                 );
+                                sc.actual = Err(ErrorKind::Ssh);
                             }
                         }
                     }

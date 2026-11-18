@@ -96,6 +96,8 @@ struct World {
     link_without_flag: bool,
     /// What the session says a call that would wait waits for.
     poll: PollFlags,
+    /// The SCP channel's close fails.
+    scp_close_fails: bool,
 }
 
 impl World {
@@ -459,6 +461,9 @@ impl Session for FakeSession {
             return Rc::Again;
         }
         w.call("scp_close", &[]);
+        if w.scp_close_fails {
+            return Rc::Error;
+        }
         Rc::Ok
     }
     fn scp_free(&mut self) {
@@ -2436,6 +2441,25 @@ fn an_scp_close_that_waits_is_waited_on() {
     assert!(w.waiting.is_empty());
     assert!(w.calls.contains(&"scp_close".to_owned()), "{:?}", w.calls);
     assert_eq!(w.files, [(b"/tmp/f".to_vec(), b"over scp".to_vec())]);
+}
+
+/// An SCP channel that fails to close fails the upload with SSH's
+/// failure: what was written is not known to have arrived. The channel
+/// is still freed (`myssh_in_SCP_SEND_EOF`, upstream 4b25afa16e).
+#[test]
+fn an_scp_close_that_fails_fails_the_upload() {
+    let w = world_with(&[], |w| w.scp_close_fails = true);
+    let mut m = chatty();
+    let (result, _, said) = run_on(&mut m, &w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
+        uploads(o, b"over scp");
+    });
+    assert_eq!(result, Err(ErrorKind::Ssh), "{said}");
+    assert!(
+        said.contains("Failed to close libssh scp channel: "),
+        "{said}"
+    );
+    drop(m);
+    assert!(w.lock().unwrap().calls.contains(&"scp_close".to_owned()));
 }
 
 /// A known-hosts key of a type the library has no name for is refused.

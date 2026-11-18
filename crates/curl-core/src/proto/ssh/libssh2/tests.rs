@@ -3394,8 +3394,11 @@ fn an_upload_s_lines_are_converted_as_asked() {
 }
 
 /// SCP: the upload's channel opened at the file's size and mode, written
-/// and ended in C's order; each channel call's failure said and passed
-/// over; the open's failure the upload's or the download's.
+/// and ended in C's order; a failed EOF said and passed over, a channel
+/// that fails to close or to be freed failing the upload, the end not
+/// said complete, as what was written is not known to have arrived
+/// (upstream 4b25afa16e); the open's failure the upload's or the
+/// download's.
 #[test]
 fn scp_s_channel_as_c_drives_it() {
     let url = "scp://u@127.0.0.1:PORT/home/u/up";
@@ -3423,28 +3426,46 @@ fn scp_s_channel_as_c_drives_it() {
             "channel_free"
         ]
     );
-    for (fail, line) in [
+    for (fail, line, result) in [
         (
             "channel_send_eof",
             "Failed to send libssh2 channel EOF: -5 fake failure",
+            Ok(()),
         ),
         (
             "channel_wait_eof",
             "Failed to get channel EOF: -5 fake failure",
+            Ok(()),
         ),
         (
             "channel_wait_closed",
             "Channel failed to close: -5 fake failure",
+            Err(ErrorKind::Ssh),
         ),
         (
             "channel_free",
             "Failed to free libssh2 scp subsystem: -5 fake failure",
+            Err(ErrorKind::Ssh),
+        ),
+        (
+            "channel_wait_closed",
+            "Channel failed to close: -7 fake failure",
+            Err(ErrorKind::SendError),
         ),
     ] {
-        let w = world_with(&[], |w| w.fails = vec![(fail, Code(-5))]);
+        let code = if line.contains("-7") { -7 } else { -5 };
+        let w = world_with(&[], |w| {
+            w.fails = vec![(fail, Code(code))];
+            w.trace_ssh = true;
+        });
         let (r, _, said, _) = run_in(&w, url, |o| uploads(o, b"scp up"));
-        assert_eq!(r, Ok(()), "{fail}: {said}");
+        assert_eq!(r, result, "{fail}: {said}");
         says(&said, &[line]);
+        assert_eq!(
+            said.contains("SCP DONE phase complete"),
+            result.is_ok(),
+            "{fail}: {said}"
+        );
     }
     for (code, kind) in [
         (-28, ErrorKind::UploadFailed),

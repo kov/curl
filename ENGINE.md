@@ -4448,8 +4448,12 @@ range and resume point, and the body read or sent.
   C runs them, its waits answered as `Finish::Waiting`, each looked at again within a second
   (`due`), as C's `ssh_block_statemach` waits on its socket; each pass checks the progress
   and the time left, and a transfer out of time fails "Operation timed out" and closes its
-  connection, mid-exchange as it is, whether or not the run ended. The session says goodbye
-  as the connection shuts down.
+  connection, mid-exchange as it is, whether or not the run ended. An SCP upload's channel
+  that fails to close (libssh's `ssh_scp_close`, libssh2's wait for the close or the free)
+  fails the upload; a failed EOF is only said, as C says it. C runs that end inside the send
+  of the upload's last chunk (`scp_send`), before the transfer reaches DONE; the rewrite runs
+  it in DONE, with the same calls in the same order and the same result, so only where its
+  lines fall in the trace differs. The session says goodbye as the connection shuts down.
 - **libssh2 is the other library**, as C's configure chooses `USE_LIBSSH2` over
   `USE_LIBSSH`: `Libraries::ssh` is an `SshLibrary`, libssh's traits or libssh2's (`ssh2.rs`,
   answered by `curl-libssh2`), and the connect over libssh2 makes the connection's

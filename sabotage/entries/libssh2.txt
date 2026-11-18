@@ -181,3 +181,22 @@ witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_
         self.done_due = Some(cx.now().after(std::time::Duration::from_secs(1)));
 --- new
         self.done_due = None;
+
+=== an SCP channel that fails to close passes the upload
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::scp_s_channel_as_c_drives_it
+--- old
+                            failed = session_failure(rc);
+                            let kind = match failed {
+--- new
+                            let kind = match session_failure(rc) {
+
+=== an SCP channel that fails to be freed passes the upload
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::scp_s_channel_as_c_drives_it
+--- old
+                            failed = session_failure(rc);
+                        }
+--- new
+                            let _ = session_failure(rc);
+                        }

@@ -323,3 +323,14 @@ witness: curl-core proto::ssh::tests::a_listing_s_nameless_entry_fails_it
 --- new
         Ok(Some(target)) => target,
         Ok(None) if true => b"(nil)".to_vec(),
+
+=== a libssh SCP channel that fails to close passes the upload
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::an_scp_close_that_fails_fails_the_upload
+--- old
+                                    &[b"Failed to close libssh scp channel: ", &text],
+                                );
+                                sc.actual = Err(ErrorKind::Ssh);
+--- new
+                                    &[b"Failed to close libssh scp channel: ", &text],
+                                );

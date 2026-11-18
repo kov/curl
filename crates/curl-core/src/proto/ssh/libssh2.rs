@@ -1345,18 +1345,43 @@ impl Request {
                 sc.to(cx, State::ScpWaitClose);
                 Ok(())
             }
+            // A channel that fails to close fails the upload: what was
+            // written is not known to have arrived (`ssh_state_scp_wait_close`).
             State::ScpWaitClose => {
-                channel_step(
-                    cx,
-                    sc,
-                    |s| s.channel_wait_closed(),
-                    "Channel failed to close: ",
-                )?;
+                let s = sc.session();
+                let mut failed = Ok(());
+                if s.has_channel() {
+                    match s.channel_wait_closed() {
+                        Err(rc) if rc.again() => return Err(Halt::Again),
+                        Err(rc) => {
+                            let text = s.last_error().1;
+                            failed = session_failure(rc);
+                            let kind = match failed {
+                                Err(Halt::Fail(kind)) => kind,
+                                _ => ErrorKind::Ssh,
+                            };
+                            trace::fail_with(
+                                cx,
+                                kind,
+                                &[
+                                    b"Channel failed to close: ",
+                                    format_code(rc).as_bytes(),
+                                    b" ",
+                                    &text,
+                                ],
+                            );
+                        }
+                        Ok(()) => {}
+                    }
+                }
                 sc.to(cx, State::ScpChannelFree);
-                Ok(())
+                failed
             }
+            // A channel that fails to be freed fails the transfer too,
+            // and its end is not said (`ssh_state_scp_channel_free`).
             State::ScpChannelFree => {
                 let s = sc.session();
+                let mut failed = Ok(());
                 if s.has_channel() {
                     match s.channel_free(Let::Wait) {
                         Err(rc) if rc.again() => return Err(Halt::Again),
@@ -1371,13 +1396,16 @@ impl Request {
                                     &text,
                                 ],
                             );
+                            failed = session_failure(rc);
                         }
                         Ok(()) => {}
                     }
                 }
-                cx.ssh(format_args!("SCP DONE phase complete"));
+                if failed.is_ok() {
+                    cx.ssh(format_args!("SCP DONE phase complete"));
+                }
                 sc.to(cx, State::Stop);
-                Ok(())
+                failed
             }
             State::SessionDisconnect => sc.session_disconnect(cx),
             State::SessionFree => sc.session_free(cx),

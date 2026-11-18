@@ -31,11 +31,11 @@ tftp
 <protocol crlf="headers">
 GET http://%HOSTIP:%HTTPPORT/.well-known/masque/udp/%HOSTIP/%NOLISTENPORT/ HTTP/1.1
 Host: %HOSTIP:%HTTPPORT
-User-Agent: curl/%VERSION
 Proxy-Connection: Keep-Alive
 Connection: Upgrade
 Upgrade: connect-udp
 Capsule-Protocol: ?1
+User-Agent: curl/%VERSION
 
 </protocol>
 <errorcode>

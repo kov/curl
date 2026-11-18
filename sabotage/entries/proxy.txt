@@ -927,7 +927,8 @@ witness: curl-core proto::ldap::tests::a_tunnel_to_a_redirected_to_host_carries_
 --- old
                 let to = addressed(url, scheme, first, cx)?;
 --- new
-                let to = addressed(url, scheme, &mut crate::auth::gate::FirstOrigin::fresh(), cx)?;
+                let mut fresh = crate::auth::gate::FirstOrigin::fresh();
+                let to = addressed(url, scheme, &mut fresh, cx)?;
 
 === a TFTP request's UDP tunnel after a redirect to another host sends the first host's Authorization and Cookie
 file: crates/curl-core/src/proto/mod.rs
@@ -943,8 +944,9 @@ witness: curl-core proto::http::tests::a_forwarded_ftp_url_after_http_on_its_por
 --- old
         let base = base.forwarded(peer, Pipeline::collecting());
 --- new
-        let _ = base;
-        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        let mut first = crate::auth::gate::FirstOrigin::inherited(base.first().clone());
+        let origins = first.lend(&peer, false).map_err(|_| ErrorKind::OutOfMemory)?;
+        let base = RequestBase::new(super::Addressed { peer, origins }, Pipeline::collecting());
 
 === a forwarded request sends the proxy's lines though they are the origin's
 file: crates/curl-core/src/options/mod.rs

@@ -886,6 +886,20 @@ so: weaknesses kept because C has them.
   (measured with wolfSSL 5.9.4). Upstream: #23475, open. Pinned by
   `the_name_is_checked_whether_or_not_the_chain_is` (`crates/curl-wolfssl/src/tests.rs`).
 
+## Ends C runs inside a send
+
+- **An SCP upload's channel is closed in DONE.** C sends the EOF and waits for the channel to
+  close and be freed inside the send of the upload's last chunk (`scp_send` in
+  `lib/vssh/libssh2.c` and `lib/vssh/libssh.c`), before the transfer reaches DONE. Here the
+  upload's sends write the body alone and DONE runs that end, with the same library calls in
+  the same order, the same result and a failed close failing the upload as C's does. Two things
+  differ: where its lines fall in a verbose trace, and the count of bytes sent, which C's last
+  chunk adds only once the channel has closed (`*pnwritten` stays 0 until then), so a failed
+  close leaves C's count short by that chunk. Moving it would have the upload pipeline tell
+  the protocol which chunk is its last. Upstream: #23774. Pinned by `scp_s_channel_as_c_drives_it`
+  (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`) and
+  `an_scp_close_that_fails_fails_the_upload` (`crates/curl-core/src/proto/ssh/tests.rs`).
+
 ## Residuals shared with C
 
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a

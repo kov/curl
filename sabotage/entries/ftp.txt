@@ -720,14 +720,6 @@ witness: curl-core proto::ftp::tests::an_unreadable_range_fails_the_download
                     return Ok(DoStep::Nothing);
                 };
 
-=== a redirect's FTP server is given the account and the alternative to USER
-file: crates/curl-core/src/multi/state/leg.rs
-witness: curl-core proto::ftp::tests::a_redirect_s_ftp_server_is_sent_no_account_or_alternative
---- old
-            let trusted = request.trusted();
---- new
-            let trusted = Some(crate::auth::gate::OriginTrusted::testing());
-
 === a wildcard listing keeps one file more than C's most
 file: crates/curl-core/src/proto/ftp/list.rs
 witness: curl-core proto::ftp::list::tests::a_listing_keeps_at_most_c_s_files

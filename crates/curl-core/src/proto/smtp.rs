@@ -112,6 +112,11 @@ pub(crate) struct SmtpConn {
 }
 
 impl SmtpConn {
+    /// Where its back and forth stands between two requests
+    /// ([`Pingpong::rest`]).
+    pub(crate) fn rest(&self) -> crate::conn::line::Rest {
+        self.pp.rest()
+    }
     /// Say `QUIT`, as the connection shuts down, unless it is `dead` or
     /// a command waits half sent (`smtp_disconnect`): awaited while what the
     /// connection did not take of it waits to go, or its answer does,

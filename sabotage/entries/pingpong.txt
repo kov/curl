@@ -233,3 +233,36 @@ features: test-util
     if pp.needs_flush() {
         return Goodbye::Done;
         match carrier.send(cx, pp.unsent()) {
+
+=== a command partly sent leaves the back and forth at rest
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::the_back_and_forth_rests_only_between_a_reply_and_a_command
+--- old
+            (Sent::Partly(_), _) => Rest::Owes(Owed::PartSent),
+--- new
+            (Sent::Partly(_), _) => Rest::AtRest,
+
+=== a command wholly sent owes no reply
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::the_back_and_forth_rests_only_between_a_reply_and_a_command
+--- old
+            self.response = now;
+            self.turn = Turn::Server;
+--- new
+            self.response = now;
+
+=== a reply read whole leaves the server's turn
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::the_back_and_forth_rests_only_between_a_reply_and_a_command
+--- old
+                self.turn = Turn::Ours;
+--- new
+
+=== a transfer's go-ahead owes no reply
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::the_back_and_forth_rests_only_between_a_reply_and_a_command
+--- old
+        self.pending = true;
+        self.turn = Turn::Server;
+--- new
+        self.pending = true;

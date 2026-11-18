@@ -402,6 +402,16 @@ fn text(bytes: &[u8]) -> &[u8] {
 }
 
 impl Ssh2Conn {
+    /// Where its exchange stands between two requests: owing the rest of
+    /// it while the state machine has not stopped.
+    pub(crate) fn rest(&self) -> crate::conn::line::Rest {
+        use crate::conn::line::{Owed, Rest};
+        match self.state {
+            State::Stop => Rest::AtRest,
+            _ => Rest::Owes(Owed::SshExchange),
+        }
+    }
+
     fn session(&mut self) -> &mut dyn Session2 {
         self.session
             .as_deref_mut()
@@ -2656,7 +2666,7 @@ impl Request {
         exchanged: bool,
     ) -> Finish {
         let ran = self.run2(cx, lease);
-        self.finished(cx, lease, ran, exchanged)
+        self.finished(cx, ran, exchanged)
     }
 
     /// The connect over libssh2: the connection's state made, then the

@@ -436,6 +436,16 @@ enum Flow {
 }
 
 impl SshConn {
+    /// Where its exchange stands between two requests: owing the rest of
+    /// it while the state machine has not stopped.
+    pub(crate) fn rest(&self) -> crate::conn::line::Rest {
+        use crate::conn::line::{Owed, Rest};
+        match self.state {
+            State::Stop => Rest::AtRest,
+            _ => Rest::Owes(Owed::SshExchange),
+        }
+    }
+
     fn session(&mut self) -> &mut dyn Session {
         self.session
             .as_deref_mut()
@@ -2134,19 +2144,19 @@ impl Request {
             return self.finishing2(cx, lease, exchanged);
         }
         let ran = self.run(cx, lease);
-        self.finished(cx, lease, ran, exchanged)
+        self.finished(cx, ran, exchanged)
     }
 
     /// Where a pass of DONE's run leaves it (`ssh_block_statemach`): a
     /// failure ends it; else the progress is checked, and a transfer out
-    /// of time fails, its connection closed so that no other takes it on
-    /// mid-exchange, whether or not the run ended; else it is over, or
+    /// of time fails, whether or not the run ended; else it is over, or
     /// waits to be looked at again within a second, as C's wait on the
-    /// socket. The multi's own timer wakes it as the time runs out.
+    /// socket. The multi's own timer wakes it as the time runs out. A run
+    /// cut short leaves the connection mid-exchange, which then closes
+    /// ([`SshConn::rest`]).
     pub(super) fn finished<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &mut ConnLease,
         ran: Result<bool, ErrorKind>,
         exchanged: bool,
     ) -> Finish {
@@ -2157,7 +2167,6 @@ impl Request {
             Err(e) => return self.over(cx, Err(e), exchanged),
         };
         if let TimeLeft::Expired(_) = cx.time_left() {
-            lease.get().mark_close();
             let e = trace::fail(
                 cx,
                 ErrorKind::OperationTimedout,

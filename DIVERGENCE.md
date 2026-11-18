@@ -886,6 +886,19 @@ so: weaknesses kept because C has them.
   (measured with wolfSSL 5.9.4). Upstream: #23475, open. Pinned by
   `the_name_is_checked_whether_or_not_the_chain_is` (`crates/curl-wolfssl/src/tests.rs`).
 
+## Connections C keeps mid-exchange
+
+- **A connection whose protocol is mid-exchange is closed, not kept.** As a request ends, its
+  connection is asked where its exchange stands (`LineConn::rest`). One with a ping-pong
+  command partly sent or its reply owed, or an SSH state machine short of its stop, closes, whichever exit left it so. C keeps such a connection unless that
+  exit called `connclose`, so a later transfer takes it on with the old exchange's bytes still
+  to come. One such exit is a progress handler's abort while SSH's DONE waits:
+  `ssh_block_statemach` returns on `Curl_pgrsCheck`'s failure without `connclose`. Pinned by
+  `a_done_stopped_by_the_progress_handler_closes` (`crates/curl-core/src/proto/ssh/tests.rs`
+  and `crates/curl-core/src/proto/ssh/libssh2/tests.rs`) and
+  `the_back_and_forth_rests_only_between_a_reply_and_a_command`
+  (`crates/curl-core/src/proto/pingpong/tests.rs`).
+
 ## Ends C runs inside a send
 
 - **An SCP upload's channel is closed in DONE.** C sends the EOF and waits for the channel to

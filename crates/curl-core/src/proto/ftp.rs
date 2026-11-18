@@ -184,6 +184,14 @@ pub(crate) struct FtpConn {
     upgrade: Option<TryArc<crate::tls::TlsIdentity>>,
 }
 
+impl FtpConn {
+    /// Where its back and forth stands between two requests
+    /// ([`Pingpong::rest`]).
+    pub(crate) fn rest(&self) -> crate::conn::line::Rest {
+        self.pp.rest()
+    }
+}
+
 /// The credentials a connection logs in with, as its route holds them.
 fn login_of(cold: &Option<TryArc<RouteCold>>) -> Option<&Credentials> {
     cold.as_deref().and_then(|c| c.login.as_ref())

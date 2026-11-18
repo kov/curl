@@ -139,6 +139,11 @@ pub(crate) struct ImapConn {
 }
 
 impl ImapConn {
+    /// Where its back and forth stands between two requests
+    /// ([`Pingpong::rest`]).
+    pub(crate) fn rest(&self) -> crate::conn::line::Rest {
+        self.pp.rest()
+    }
     /// The tag of the next command, now the one answers are waited for
     /// with (`imap_sendf`).
     fn next_tag(&mut self) -> Tag {

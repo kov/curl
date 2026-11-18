@@ -253,11 +253,16 @@ impl Conn {
         }
     }
 
-    /// It is to serve no other request: marked so (`connclose`), or a
-    /// layer of it says it is spent, as a handshake put off for early
-    /// data that failed does (`ssl_cf_connect_deferred`).
+    /// It is to serve no other request: marked so (`connclose`), a layer
+    /// of it says it is spent, as a handshake put off for early data that
+    /// failed does (`ssl_cf_connect_deferred`), or its protocol is
+    /// mid-exchange ([`LineConn::rest`](super::line::LineConn::rest)).
     fn closes(&self) -> bool {
-        self.close || matches!(self.query(LayerQuery::Spent), Some(LayerAnswer::Spent))
+        self.close
+            || matches!(self.query(LayerQuery::Spent), Some(LayerAnswer::Spent))
+            || self
+                .line()
+                .is_some_and(|l| l.rest() != super::line::Rest::AtRest)
     }
 
     /// It is to be kept up while its transfer moves nothing: its session

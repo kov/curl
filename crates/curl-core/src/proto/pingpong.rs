@@ -73,6 +73,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::conn::line::{Owed, Rest};
 use crate::error::ErrorKind;
 use crate::multi::timers::TimeLeft;
 use crate::options::UseSsl;
@@ -323,6 +324,19 @@ pub(crate) struct Pingpong {
     /// until a pass of reads ends without the connection blocking it
     /// (`pending_resp`).
     pending: bool,
+    /// Whose turn it is: the server's from the start, from each command
+    /// wholly sent and from a go-ahead that awaits a reply; ours from each
+    /// reply read whole.
+    turn: Turn,
+}
+
+/// Whose turn it is to speak on a connection's back and forth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Turn {
+    /// The server owes a reply.
+    Server,
+    /// The server owes nothing: the connection is between exchanges.
+    Ours,
 }
 
 impl Pingpong {
@@ -337,6 +351,7 @@ impl Pingpong {
             sent: Sent::Idle,
             response: now,
             pending: true,
+            turn: Turn::Server,
         }
     }
 
@@ -355,6 +370,18 @@ impl Pingpong {
     /// (FTP's to the transfer it lets go, `ftp_initiate_transfer`).
     pub(crate) fn awaits_answer(&mut self) {
         self.pending = true;
+        self.turn = Turn::Server;
+    }
+
+    /// Where the back and forth stands between two requests: the rest of
+    /// a command partly sent is owed to the server, and a reply to one
+    /// wholly sent is owed by it.
+    pub(crate) fn rest(&self) -> Rest {
+        match (self.sent, self.turn) {
+            (Sent::Partly(_), _) => Rest::Owes(Owed::PartSent),
+            (Sent::Idle, Turn::Server) => Rest::Owes(Owed::Reply),
+            (Sent::Idle, Turn::Ours) => Rest::AtRest,
+        }
     }
 
     /// A pass of reads ended neither blocked nor at its most, whether or
@@ -433,6 +460,7 @@ impl Pingpong {
         match ends.ends(line) {
             Some(reply) => {
                 self.scan = Scan::Reply(length);
+                self.turn = Turn::Ours;
                 let size = ReplySize(std::mem::take(&mut self.pushed));
                 Ok(Event::Reply { line, reply, size })
             }
@@ -628,6 +656,7 @@ impl Pingpong {
         } else {
             self.sent = Sent::Idle;
             self.response = now;
+            self.turn = Turn::Server;
         }
     }
 

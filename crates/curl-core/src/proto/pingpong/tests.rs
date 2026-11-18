@@ -836,3 +836,29 @@ fn a_login_without_tls_is_had_only_where_tls_is_not_required() {
         assert!(upgrade_refused(use_ssl).is_none(), "{use_ssl:?}");
     }
 }
+
+/// The back and forth is at rest only between a reply read whole and the
+/// next command: from its start the greeting is owed, a command part
+/// sent owes the rest of it, one wholly sent is owed its reply, and so is
+/// the go-ahead a transfer awaits the end of. A connection owing either
+/// serves no other request.
+#[test]
+fn the_back_and_forth_rests_only_between_a_reply_and_a_command() {
+    use crate::conn::line::{Owed, Rest};
+    let mut pp = Pingpong::new(at(0));
+    assert_eq!(pp.rest(), Rest::Owes(Owed::Reply));
+    assert_eq!(pp.next(&Ftp), Ok(Event::NeedMore));
+    pp.push(b"220 hi\r\n").unwrap();
+    assert!(matches!(pp.next(&Ftp), Ok(Event::Reply { .. })));
+    assert_eq!(pp.rest(), Rest::AtRest);
+    pp.command(None, &[b"NOOP"]).unwrap().wrote(2, at(1));
+    assert_eq!(pp.rest(), Rest::Owes(Owed::PartSent));
+    pp.flushed(4, at(2));
+    assert_eq!(pp.rest(), Rest::Owes(Owed::Reply));
+    assert_eq!(pp.next(&Ftp), Ok(Event::NeedMore));
+    pp.push(b"150 go\r\n").unwrap();
+    assert!(matches!(pp.next(&Ftp), Ok(Event::Reply { .. })));
+    assert_eq!(pp.rest(), Rest::AtRest);
+    pp.awaits_answer();
+    assert_eq!(pp.rest(), Rest::Owes(Owed::Reply));
+}

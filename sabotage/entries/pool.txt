@@ -929,8 +929,6 @@ witness: curl-core proto::http::tests::a_clear_connection_serves_no_transfer_req
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_connection_whose_layer_failed_is_not_kept
 --- old
-        self.close || matches!(self.query(LayerQuery::Spent), Some(LayerAnswer::Spent))
-    }
+            || matches!(self.query(LayerQuery::Spent), Some(LayerAnswer::Spent))
 --- new
-        self.close
-    }
+            || false

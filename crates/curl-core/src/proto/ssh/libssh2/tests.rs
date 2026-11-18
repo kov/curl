@@ -4164,3 +4164,40 @@ fn a_done_that_never_ends_times_out_and_closes() {
         "{said}"
     );
 }
+
+/// A progress handler that stops the transfer once the library has
+/// waited: in DONE, the request itself over.
+struct StopOnWait(Arc<Lock<World>>);
+
+impl crate::handler::ProgressHandler for StopOnWait {
+    fn progress(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        let w = self.0.lock().unwrap();
+        match w.calls.iter().any(|c| c.starts_with("waits ")) {
+            true => crate::handler::ProgressVerdict::Abort,
+            false => crate::handler::ProgressVerdict::Continue,
+        }
+    }
+}
+
+/// A progress handler that stops the transfer while DONE waits for the
+/// file to close leaves the connection mid-exchange: it is closed, not
+/// kept for another transfer, as C keeps it (`ssh_block_statemach` stops
+/// on the progress check without `connclose`; DIVERGENCE.md).
+#[test]
+fn a_done_stopped_by_the_progress_handler_closes() {
+    let w = world_with(&[("/home/u/f", "hello\n")], |w| {
+        w.stuck = vec!["sftp_close"];
+        w.trace_multi = true;
+    });
+    let stop = crate::handler::Handler::progress(StopOnWait(w.clone())).unwrap();
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.progress = crate::options::Progress::Handler(stop);
+    });
+    assert_eq!(result, Err(ErrorKind::AbortedByCallback), "{said}");
+    let at = said.find("Callback aborted").expect(&said);
+    assert!(said[at..].contains("close=1, premature=0"), "{said}");
+}

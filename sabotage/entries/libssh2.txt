@@ -162,17 +162,21 @@ witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_
 --- new
         if let TimeLeft::Expired(_) = TimeLeft::Unlimited {
 
-=== an SSH DONE out of time keeps its connection for reuse
-file: crates/curl-core/src/proto/ssh/mod.rs
+=== an SSH connection mid-exchange over libssh2 is kept for reuse
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::a_done_stopped_by_the_progress_handler_closes
+--- old
+            _ => Rest::Owes(Owed::SshExchange),
+--- new
+            _ => Rest::AtRest,
+
+=== a connection whose protocol is mid-exchange is kept for reuse
+file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
 --- old
-        if let TimeLeft::Expired(_) = cx.time_left() {
-            lease.get().mark_close();
+                .is_some_and(|l| l.rest() != super::line::Rest::AtRest)
 --- new
-        if let TimeLeft::Expired(_) = cx.time_left() {
-            if false {
-                lease.get().mark_close();
-            }
+                .is_some_and(|l| l.rest() == super::line::Rest::AtRest && false)
 
 === an SSH DONE waits past its second
 file: crates/curl-core/src/proto/ssh/mod.rs

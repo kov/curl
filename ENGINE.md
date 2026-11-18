@@ -2675,8 +2675,11 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   with no room left it returns `Wait`. A connection without a network is added unchecked, and
   counts toward the total.
 - `release` decides the connection's fate as `multi_done_locked` does, from what the pool knows
-  (other leases, the route's reuse rules, a close mark) and what the transfer reports in
-  `Finish` (premature, reuse forbidden by `CURLOPT_FORBID_REUSE`):
+  (other leases, the route's reuse rules, a close mark, a layer spent, and where its
+  protocol's exchange stands: `LineConn::rest`, `Rest::Owes(Owed)` for a ping-pong command
+  part sent or a reply owed, or an SSH state machine short of its stop) and what the transfer reports in `Finish` (premature, reuse forbidden by
+  `CURLOPT_FORBID_REUSE`). A connection mid-exchange closes whichever exit left it so, where C
+  keeps it unless that exit marked it (DIVERGENCE.md):
   `Released::{Idle, Evicted, Closed, Terminated}` so far,
   traced as "Connection #N to host H:P left intact", nothing, "shutting down connection #N",
   "closing connection #N". A connection kept idle may leave the pool over its `Limit`
@@ -4447,8 +4450,9 @@ range and resume point, and the body read or sent.
 - **DONE** closes the file or channel and runs the commands after the transfer, blocking as
   C runs them, its waits answered as `Finish::Waiting`, each looked at again within a second
   (`due`), as C's `ssh_block_statemach` waits on its socket; each pass checks the progress
-  and the time left, and a transfer out of time fails "Operation timed out" and closes its
-  connection, mid-exchange as it is, whether or not the run ended. An SCP upload's channel
+  and the time left, and a transfer out of time fails "Operation timed out", whether or not
+  the run ended. A run cut short, by the time, a progress handler's abort or a failure, leaves
+  the connection mid-exchange, which then closes (`LineConn::rest`). An SCP upload's channel
   that fails to close (libssh's `ssh_scp_close`, libssh2's wait for the close or the free)
   fails the upload; a failed EOF is only said, as C says it. C runs that end inside the send
   of the upload's last chunk (`scp_send`), before the transfer reaches DONE; the rewrite runs

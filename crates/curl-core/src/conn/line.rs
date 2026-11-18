@@ -48,6 +48,29 @@ pub(crate) enum LineConn {
 }
 
 impl LineConn {
+    /// Where its exchange with the peer stands as a request ends: at
+    /// rest, or owing what makes the connection unfit for another
+    /// request, which then closes it whatever its request's end said. RTSP
+    /// and a WebSocket are at rest: RTSP's RTP is interleaved across a
+    /// session's requests, so a message read in part is its normal state,
+    /// and a WebSocket's connection is never kept.
+    pub(crate) fn rest(&self) -> Rest {
+        match *self {
+            LineConn::Ftp(ref p) => p.rest(),
+            LineConn::Pop3(ref p) => p.rest(),
+            LineConn::Imap(ref p) => p.rest(),
+            LineConn::Smtp(ref p) => p.rest(),
+            LineConn::Ssh(ref p) => p.rest(),
+            LineConn::Ssh2(ref p) => p.rest(),
+            // A search under way is given up as its request ends
+            // (`oldap_done`), and a set-up that did not finish failed the
+            // connect, which closed the connection.
+            LineConn::Ldap(_) | LineConn::Ws(_) | LineConn::Rtsp(_) => Rest::AtRest,
+            #[cfg(any(test, feature = "test-util"))]
+            LineConn::Test(_) => Rest::AtRest,
+        }
+    }
+
     /// Whether it says a goodbye as the connection shuts down, which C's
     /// debug build traces (the scheme has a `disconnect`).
     pub(crate) fn says_goodbye(&self) -> bool {
@@ -115,6 +138,28 @@ impl LineConn {
             _ => panic!("only a pingpong protocol's goodbye awaits an answer"),
         }
     }
+}
+
+/// Where a protocol's exchange with the peer stands between two
+/// requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rest {
+    /// Nothing is owed either way: another request may start.
+    AtRest,
+    /// Mid-exchange: the connection is to serve no other request.
+    Owes(Owed),
+}
+
+/// What a connection mid-exchange owes, or is owed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Owed {
+    /// The rest of a command partly sent.
+    PartSent,
+    /// The server's reply to a command wholly sent.
+    Reply,
+    /// The rest of an SSH exchange: the library's state machine stopped
+    /// short of its rest.
+    SshExchange,
 }
 
 /// How a protocol's goodbye stands, said or read on.

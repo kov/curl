@@ -98,6 +98,8 @@ struct World {
     poll: PollFlags,
     /// The SCP channel's close fails.
     scp_close_fails: bool,
+    /// The calls, by name, that wait every time they are made.
+    stuck: Vec<&'static str>,
 }
 
 impl World {
@@ -112,6 +114,16 @@ impl World {
 
     /// Whether `name`'s call answers that it waits, the first time.
     fn waits(&mut self, name: &'static str) -> bool {
+        if self.stuck.contains(&name) {
+            self.call("waits", &[name.as_bytes()]);
+            let waited = self
+                .calls
+                .iter()
+                .filter(|c| c.starts_with("waits "))
+                .count();
+            assert!(waited < 50, "{name} was waited on for ever");
+            return true;
+        }
         let at = self.waiting.iter().position(|&n| n == name);
         if let Some(at) = at {
             self.waiting.remove(at);
@@ -2460,6 +2472,41 @@ fn an_scp_close_that_fails_fails_the_upload() {
     );
     drop(m);
     assert!(w.lock().unwrap().calls.contains(&"scp_close".to_owned()));
+}
+
+/// A progress handler that stops the transfer once the library has
+/// waited: in DONE, the request itself over.
+struct StopOnWait(Arc<Lock<World>>);
+
+impl crate::handler::ProgressHandler for StopOnWait {
+    fn progress(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        let w = self.0.lock().unwrap();
+        match w.calls.iter().any(|c| c.starts_with("waits ")) {
+            true => crate::handler::ProgressVerdict::Abort,
+            false => crate::handler::ProgressVerdict::Continue,
+        }
+    }
+}
+
+/// A progress handler that stops the transfer while DONE waits for its
+/// SCP channel to close leaves the connection mid-exchange: it is closed,
+/// not kept for another transfer, as C keeps it (`ssh_block_statemach`
+/// stops on the progress check without `connclose`; DIVERGENCE.md).
+#[test]
+fn a_done_stopped_by_the_progress_handler_closes() {
+    let w = world_with(&[], |w| w.stuck = vec!["scp_close"]);
+    let mut m = chatty();
+    let stop = crate::handler::Handler::progress(StopOnWait(w.clone())).unwrap();
+    let (result, _, said) = run_on(&mut m, &w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
+        uploads(o, b"over scp");
+        o.progress = crate::options::Progress::Handler(stop);
+    });
+    assert_eq!(result, Err(ErrorKind::AbortedByCallback), "{said}");
+    assert!(said.contains("shutting down connection #0"), "{said}");
 }
 
 /// A known-hosts key of a type the library has no name for is refused.

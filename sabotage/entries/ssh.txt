@@ -334,3 +334,11 @@ witness: curl-core proto::ssh::tests::an_scp_close_that_fails_fails_the_upload
 --- new
                                     &[b"Failed to close libssh scp channel: ", &text],
                                 );
+
+=== an SSH connection mid-exchange over libssh is kept for reuse
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_done_stopped_by_the_progress_handler_closes
+--- old
+            _ => Rest::Owes(Owed::SshExchange),
+--- new
+            _ => Rest::AtRest,

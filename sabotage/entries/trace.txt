@@ -698,9 +698,11 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::debug_lines::a_request_c_buffers_blocked_at_once_waits_at_once
 features: debug-hooks
 --- old
-        let nothing_to_read = !chunked && self.body.as_ref().is_none_or(|b| b.size() == Some(0));
+        let nothing_to_read = !chunked
+            && self
 --- new
-        let nothing_to_read = self.body.as_ref().is_none_or(|b| b.size() == Some(0));
+        let nothing_to_read = true
+            && self
 
 === a head larger than the upload buffer is sent at once
 file: crates/curl-core/src/proto/http.rs

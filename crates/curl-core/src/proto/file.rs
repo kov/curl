@@ -465,14 +465,10 @@ impl Request {
         buf.try_reserve_exact(room)
             .map_err(|_| ErrorKind::OutOfMemory)?;
         super::http::zeros(&mut buf, room).map_err(|_| ErrorKind::OutOfMemory)?;
-        // The reader is set as the body is first read (`Curl_client_read`),
-        // its line ends converted unless it is empty (`do_init_reader_stack`).
+        // The reader is set as the body is first read (`Curl_client_read`).
         upload.trace_set(cx);
-        let converts = cx.easy().options().converts_lines() && upload.size() != Some(0);
-        let mut upload = Body::new(upload);
-        if converts {
-            upload.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
-        }
+        let upload = Body::sent(upload, cx.easy().options().line_ends())
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         self.file = Some(target);
         self.buf = buf;
         self.write_piece(cx, upload, skip)

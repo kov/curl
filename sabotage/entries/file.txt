@@ -350,9 +350,9 @@ witness: curl-core proto::file::tests::a_send_limit_does_not_cut_an_upload_short
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_upload_s_line_ends_are_converted
 --- old
-        let converts = cx.easy().options().converts_lines() && upload.size() != Some(0);
+        let upload = Body::sent(upload, cx.easy().options().line_ends())
 --- new
-        let converts = false;
+        let upload = Body::sent(upload, crate::upload::chain::LineEnds::Kept)
 
 === a file's last bytes may be one more than it has
 file: crates/curl-core/src/proto/file.rs

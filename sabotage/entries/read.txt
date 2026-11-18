@@ -167,13 +167,13 @@ features: test-util
                 }
 
 === a converted body keeps the size it had before
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/upload/chain.rs
 witness: curl-core proto::http::tests::read_trace::converted_line_ends_are_read_through_their_stage
 features: test-util
 --- old
-        let size = client_size.filter(|_| !converts);
+        if self.chain.lines.is_some() || self.chain.mail.is_some() || self.chain.ws.is_some() {
 --- new
-        let size = client_size;
+        if self.chain.mail.is_some() || self.chain.ws.is_some() {
 
 === a converted body's unknown size adds an Expect
 file: crates/curl-core/src/proto/http.rs
@@ -185,13 +185,13 @@ features: test-util
             && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
 
 === an empty body is converted too
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/upload/chain.rs
 witness: curl-core proto::http::tests::read_trace::an_empty_body_is_not_converted
 features: test-util
 --- old
-        let converts = options.converts_lines() && upload.is_some() && client_size != Some(0);
+        if ends == LineEnds::Converted && body.upload.size() != Some(0) {
 --- new
-        let converts = options.converts_lines() && upload.is_some();
+        if ends == LineEnds::Converted {
 
 === a lifted pause is not told to the conversion stage
 file: crates/curl-core/src/upload/mod.rs

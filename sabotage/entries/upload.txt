@@ -389,14 +389,14 @@ features: debug-hooks
             return Ok(());
 
 === a text transfer's upload keeps its LF line ends
-file: crates/curl-core/src/options/mod.rs
+file: crates/curl-core/src/upload/chain.rs
 witness: curl-core proto::file::tests::an_upload_s_line_ends_are_converted
 witness: curl-core proto::http::tests::read_trace::a_text_upload_converts_its_line_ends
 features: test-util
 --- old
-    crlf || (ascii && !cfg!(windows))
+        match crlf || (ascii && !cfg!(windows)) {
 --- new
-    crlf
+        match crlf {
 
 === a mail's size grows past the largest offset
 file: crates/curl-core/src/upload/chain.rs
@@ -405,3 +405,19 @@ witness: curl-core upload::chain::tests::a_mail_s_size_cannot_grow_past_the_larg
                     self.growth = Some(growth.checked_sub(1).ok_or(ErrorKind::TooLarge)?);
 --- new
                     self.growth = Some(growth.saturating_sub(1));
+
+=== an empty body's line ends are converted, its size made unknown
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core proto::imap::tests::over_the_wire::an_empty_upload_is_appended_whatever_the_line_ends
+--- old
+        if ends == LineEnds::Converted && body.upload.size() != Some(0) {
+--- new
+        if ends == LineEnds::Converted {
+
+=== a converted body's size is its source's
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core proto::http::tests::rtsp::a_body_with_converted_line_ends_is_refused
+--- old
+        if self.chain.lines.is_some() || self.chain.mail.is_some() || self.chain.ws.is_some() {
+--- new
+        if self.chain.mail.is_some() || self.chain.ws.is_some() {

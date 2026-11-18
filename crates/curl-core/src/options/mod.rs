@@ -789,14 +789,6 @@ impl Login {
     }
 }
 
-/// An upload's line ends are converted under `crlf`, or for a text
-/// transfer (`ascii`) where LF is the system's line end: everywhere but
-/// Windows, which keeps text's CRLF as it is (`CURL_PREFER_LF_LINEENDS`,
-/// `do_init_reader_stack`).
-pub(crate) fn converts_lines(crlf: bool, ascii: bool) -> bool {
-    crlf || (ascii && !cfg!(windows))
-}
-
 impl Options {
     /// The application's header lists read again from their sources, as
     /// C walks them each time it builds a request or a `CONNECT`.
@@ -811,10 +803,10 @@ impl Options {
         }
     }
 
-    /// An upload's line ends are converted: `CURLOPT_CRLF`, or a text
-    /// transfer (`CURLOPT_TRANSFERTEXT`) as `converts_lines` says.
-    pub(crate) fn converts_lines(&self) -> bool {
-        converts_lines(self.crlf, self.line.ftp.ascii)
+    /// What an upload's line ends become: `CURLOPT_CRLF`, or a text
+    /// transfer (`CURLOPT_TRANSFERTEXT`), as `LineEnds::of` says.
+    pub(crate) fn line_ends(&self) -> crate::upload::chain::LineEnds {
+        crate::upload::chain::LineEnds::of(self.crlf, self.line.ftp.ascii)
     }
 
     /// How a multipart body's names are quoted.

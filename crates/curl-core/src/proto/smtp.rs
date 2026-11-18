@@ -1107,14 +1107,12 @@ impl Request {
             Upload::open(cx)?
         };
         upload.trace_set(cx);
-        // Converted unless empty (`do_init_reader_stack`).
-        let converts = cx.easy().options().converts_lines() && upload.size() != Some(0);
-        let mut body = Body::new(upload);
-        if converts {
-            body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
-        }
+        let mut body = Body::sent(upload, cx.easy().options().line_ends())
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        // SIZE is the mail's size as the server is to expect it, not a
+        // length the message is framed by: C's, the source's for a file.
         let size = if mime {
-            body.size()
+            body.size().map(|s| s.get())
         } else {
             body.upload().size()
         };
@@ -1139,7 +1137,7 @@ impl Request {
             chunked: false,
             exp100: false,
             mail: true,
-            lines: converts,
+            lines: body.converts_lines(),
             client,
         });
         let room = cx.easy().options().limits.upload_buffer.get();

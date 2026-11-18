@@ -365,6 +365,18 @@ so: weaknesses kept because C has them.
   multi from the raw clock's origin. Pinned by `a_limit_s_first_step_is_a_whole_one`
   (`crates/curl-core/src/proto/http/tests/timer_trace.rs`).
 
+## Lengths C says of a converted body
+
+- **RTSP refuses a text transfer's upload, as it refuses `CURLOPT_CRLF`'s.** Under
+  `CURLOPT_TRANSFERTEXT`, where LF is the system's line end, an upload's LF line ends go as
+  CRLF, so the body is longer than its source. C's RTSP refuses the conversion only under
+  `CURLOPT_CRLF` (`rtsp_setup_body`) and otherwise says the source's size as the
+  `Content-Length`, so the server reads the body short and takes its rest as the start of the
+  next message. Here the length comes only from the body as sent, which a conversion leaves
+  without one, and the request fails with C's own "Cannot do CRLF conversions on upload".
+  Windows converts no text, and sends such a body as C does. Pinned by
+  `a_body_with_converted_line_ends_is_refused` (`crates/curl-core/src/proto/http/tests/rtsp.rs`).
+
 ## Input C misreads
 
 - **An SFTP quote command's group or owner is read as a number, over libssh2.** `chgrp` and

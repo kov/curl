@@ -41,7 +41,7 @@ use crate::ssh::{
 };
 use crate::trace;
 use crate::upload::Upload;
-use crate::upload::chain::Body;
+use crate::upload::chain::{Body, WireSize};
 use crate::upload::sending::{Outlet, Sending};
 use crate::url::{GetOptions, Part, Url};
 use hostkey::HostVerified;
@@ -615,8 +615,9 @@ pub(crate) struct Request {
     range: Option<Vec<u8>>,
     /// The upload's size, if known (`state.infilesize`).
     infilesize: Option<u64>,
-    /// The upload, from its open until its body is made.
-    source: Option<Upload>,
+    /// An SCP upload's body as it goes, and the size the file is offered
+    /// at, from the upload's open until it is sent.
+    source: Option<(Body, WireSize)>,
     /// The size of the body to receive, if known (`req.size`).
     size: Option<u64>,
     /// The ways the request moves bytes once made (`xfer_setup`).
@@ -1541,16 +1542,14 @@ impl Request {
     fn start_sending<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        mut upload: Upload,
+        upload: Upload,
     ) -> Result<(), ErrorKind> {
-        // C makes its reader as the body is first read.
-        upload.trace_set_when_read();
-        // Converted unless empty (`do_init_reader_stack`).
-        let converts = cx.easy().options().converts_lines() && upload.size() != Some(0);
-        let mut body = Body::new(upload);
-        if converts {
-            body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
-        }
+        let body = body_of(cx, upload)?;
+        self.send_body(cx, body)
+    }
+
+    /// `body` to be sent once the request is.
+    fn send_body<H: Host>(&mut self, cx: &mut StepCx<'_, H>, body: Body) -> Result<(), ErrorKind> {
         let room = cx.easy().options().limits.upload_buffer.get();
         self.sending = Some(Sending::new(body, room)?);
         Ok(())
@@ -1887,13 +1886,15 @@ impl Request {
                 }
             };
             self.infilesize = upload.size();
-            if let Some(why) = scp_refused(cx, self.infilesize) {
-                self.path = Some(path);
-                let kind = trace::fail(cx, ErrorKind::UploadFailed, format_args!("{why}"));
-                sc.goto_error(cx, kind);
-                return;
+            let offered = scp_offered(cx, upload, self.infilesize);
+            match offered {
+                Ok(offered) => self.source = Some(offered),
+                Err(kind) => {
+                    self.path = Some(path);
+                    sc.goto_error(cx, kind);
+                    return;
+                }
             }
-            self.source = Some(upload);
             let made = sc.session().scp_new(ScpWay::Write, &path);
             sc.to(cx, State::ScpUploadInit);
             made
@@ -1913,7 +1914,11 @@ impl Request {
     /// `SSH_SCP_UPLOAD_INIT`: the channel started, the file offered at
     /// its size, and the upload set up.
     fn scp_upload_init<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
-        let size = self.infilesize.unwrap_or_default();
+        let (body, offered) = self
+            .source
+            .take()
+            .expect("the upload opened with its channel");
+        let size = offered.get();
         let mode = u32::from(cx.easy().options().new_file_mode.bits());
         let path = self.path.take().unwrap_or_default();
         let pushed = sc.session().scp_init() == Rc::Ok
@@ -1925,11 +1930,7 @@ impl Request {
             sc.goto_error(cx, kind);
             return;
         }
-        let upload = self
-            .source
-            .take()
-            .expect("the upload opened with its channel");
-        if let Err(e) = self.start_sending(cx, upload) {
+        if let Err(e) = self.send_body(cx, body) {
             sc.goto_error(cx, e);
             return;
         }
@@ -2351,6 +2352,34 @@ pub(super) fn scp_refused<H: Host>(cx: &StepCx<'_, H>, size: Option<u64>) -> Opt
             Some("SCP cannot do CRLF conversions on upload")
         }
         Some(_) => None,
+    }
+}
+
+/// `upload` as it goes: its line ends as the options say, its reader made
+/// as the body is first read, as C makes it.
+pub(super) fn body_of<H: Host>(cx: &StepCx<'_, H>, mut upload: Upload) -> Result<Body, ErrorKind> {
+    upload.trace_set_when_read();
+    Body::sent(upload, cx.easy().options().line_ends()).map_err(|_| ErrorKind::OutOfMemory)
+}
+
+/// An SCP upload of `size` as it goes, and the size its file is offered
+/// at: the body's own, failed with C's words where SCP refuses it
+/// ([`scp_refused`]) or the body has none.
+pub(super) fn scp_offered<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    upload: Upload,
+    size: Option<u64>,
+) -> Result<(Body, WireSize), ErrorKind> {
+    let refused = |cx: &mut StepCx<'_, H>, why: &str| {
+        trace::fail(cx, ErrorKind::UploadFailed, format_args!("{why}"))
+    };
+    if let Some(why) = scp_refused(cx, size) {
+        return Err(refused(cx, why));
+    }
+    let body = body_of(cx, upload)?;
+    match body.size() {
+        Some(offered) => Ok((body, offered)),
+        None => Err(refused(cx, "SCP requires a known file size for upload")),
     }
 }
 

@@ -514,7 +514,10 @@ pub(crate) enum RangeLine<'o> {
     Get(Ranged<'o>),
     /// A POST or PUT sends its body as this range of a resource whose
     /// size is the body's, C's -1 if not known: `Content-Range:`.
-    Upload { range: &'o [u8], total: Option<u64> },
+    Upload {
+        range: &'o [u8],
+        total: Option<crate::upload::chain::WireSize>,
+    },
 }
 
 /// A time condition as a request header (`Curl_add_timecondition`).
@@ -537,7 +540,7 @@ pub(crate) enum Accepted<'o> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Content<'o> {
     /// Its size, unless it goes chunked or its end is the connection's.
-    pub(crate) length: Option<u64>,
+    pub(crate) length: Option<crate::upload::chain::WireSize>,
     /// The library asks for a 100 before it (`addexpect`); one the
     /// application asks for, its own header says.
     pub(crate) expect: bool,
@@ -676,7 +679,7 @@ fn write_h1(
                 {
                     let mut digits = [0u8; 20];
                     let total = match total {
-                        Some(n) => decimal(n, &mut digits),
+                        Some(n) => decimal(n.get(), &mut digits),
                         None => b"-1",
                     };
                     out.line(&[b"Content-Range: bytes ", range, b"/", total])?;
@@ -708,7 +711,7 @@ fn write_h1(
                         && (head.probe || head.headers.replacing(b"Content-Length").is_none())
                     {
                         let mut digits = [0u8; 20];
-                        out.line(&[b"Content-Length: ", decimal(length, &mut digits)])?;
+                        out.line(&[b"Content-Length: ", decimal(length.get(), &mut digits)])?;
                     }
                     match content.typed {
                         Typed::No => {}

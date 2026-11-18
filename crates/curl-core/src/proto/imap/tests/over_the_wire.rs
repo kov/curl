@@ -496,6 +496,31 @@ fn an_upload_of_unknown_size_is_refused() {
     );
 }
 
+/// An empty upload has no line ends to convert, so its size is known
+/// and it is appended, as C's reader stack adds no conversion to a body
+/// of no bytes (`do_init_reader_stack`).
+#[test]
+fn an_empty_upload_is_appended_whatever_the_line_ends() {
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(Vec::new()).unwrap());
+        o.crlf = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(
+        talk.received()
+            .ends_with(b"A003 APPEND Sent (\\Seen) {0}\r\n\r\n"),
+        "{:?}",
+        String::from_utf8_lossy(&talk.received())
+    );
+}
+
 /// A greeting that says PREAUTH logs nobody in.
 #[test]
 fn a_preauthenticated_connection_does_not_log_in() {

@@ -424,6 +424,42 @@ impl LineConv {
     }
 }
 
+/// What a request does to an upload's line ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LineEnds {
+    Kept,
+    /// LF made CRLF: under `CURLOPT_CRLF`, or for a text transfer where
+    /// LF is the system's line end, everywhere but Windows, which keeps
+    /// text's CRLF as it is (`CURL_PREFER_LF_LINEENDS`).
+    Converted,
+}
+
+impl LineEnds {
+    /// Under `crlf`, or for a text transfer, `ascii`.
+    pub(crate) fn of(crlf: bool, ascii: bool) -> LineEnds {
+        match crlf || (ascii && !cfg!(windows)) {
+            true => LineEnds::Converted,
+            false => LineEnds::Kept,
+        }
+    }
+}
+
+/// An upload's size as it goes on the wire: what a head says of the body
+/// (a `Content-Length`, RTSP's, SCP's offer of the file). Only the body as
+/// sent gives one ([`Body::size`]), so no size of the source can be said
+/// of a body a conversion makes longer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct WireSize(u64);
+
+impl WireSize {
+    /// No body's: what a request with none says, as a probe does.
+    pub(crate) const EMPTY: WireSize = WireSize(0);
+
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
 impl Body {
     /// `upload` read as it is.
     pub(crate) fn new(upload: Upload) -> Body {
@@ -431,6 +467,22 @@ impl Body {
             upload,
             chain: Chain::default(),
         }
+    }
+
+    /// `upload` as a request sends it, its line ends as `ends` says,
+    /// converted only if it is not known to be empty
+    /// (`do_init_reader_stack`, the conversion stage `cr_lc_add`).
+    pub(crate) fn sent(upload: Upload, ends: LineEnds) -> Result<Body, OutOfMemory> {
+        let mut body = Body::new(upload);
+        if ends == LineEnds::Converted && body.upload.size() != Some(0) {
+            body.chain.lines = Some(try_box(LineConv::default())?);
+        }
+        Ok(body)
+    }
+
+    /// Whether its line ends are converted.
+    pub(crate) fn converts_lines(&self) -> bool {
+        self.chain.lines.is_some()
     }
 
     /// Sent chunked: the chunk stage added (`Curl_httpchunk_add_reader`).
@@ -442,12 +494,6 @@ impl Body {
     /// Whether it goes chunked.
     pub(crate) fn is_chunked(&self) -> bool {
         self.chain.chunks.is_some()
-    }
-
-    /// Its line ends converted: the conversion stage added (`cr_lc_add`).
-    pub(crate) fn convert_lines(&mut self) -> Result<(), OutOfMemory> {
-        self.chain.lines = Some(try_box(LineConv::default())?);
-        Ok(())
     }
 
     /// Sent as a mail's body to SMTP's `DATA`: its dots escaped and its
@@ -466,11 +512,11 @@ impl Body {
     /// Its size as sent, where known (`Curl_creader_total_length`): a
     /// conversion, a mail's escaping or a WebSocket's frames make it
     /// unknown.
-    pub(crate) fn size(&self) -> Option<u64> {
+    pub(crate) fn size(&self) -> Option<WireSize> {
         if self.chain.lines.is_some() || self.chain.mail.is_some() || self.chain.ws.is_some() {
             return None;
         }
-        self.upload.size()
+        self.upload.size().map(WireSize)
     }
 
     /// The source.

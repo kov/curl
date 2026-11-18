@@ -53,7 +53,7 @@ pub(crate) struct RtspHead<'o> {
 /// What an RTSP head says of its body (`rtsp_setup_body`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RtspContent {
-    pub(crate) length: u64,
+    pub(crate) length: crate::upload::chain::WireSize,
     /// The library's `Content-Type:`, unless the application sends its
     /// own.
     pub(crate) typed: Option<&'static [u8]>,
@@ -128,7 +128,10 @@ fn write_rtsp(head: &RtspHead<'_>, out: &mut Out<'_>) -> Result<(), ErrorKind> {
     if let Some(content) = head.content {
         if head.headers.replacing(b"Content-Length").is_none() {
             let mut digits = [0u8; 20];
-            out.line(&[b"Content-Length: ", decimal(content.length, &mut digits)])?;
+            out.line(&[
+                b"Content-Length: ",
+                decimal(content.length.get(), &mut digits),
+            ])?;
         }
         if let Some(typed) = content.typed
             && head.headers.replacing(b"Content-Type").is_none()

@@ -547,9 +547,9 @@ witness: curl-core proto::http::tests::a_body_waits_for_a_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::an_error_response_stops_the_body
 --- old
-        let then = if upload.is_none() || !announced {
+        let then = if sent.is_none() || !announced {
 --- new
-        let then = if upload.is_none() || true {
+        let then = if sent.is_none() || true {
 
 === a request ends with its body unsent
 file: crates/curl-core/src/proto/http.rs
@@ -1147,9 +1147,9 @@ witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 --- old
-        let mut upload = match body.filter(|_| !probe) {
+        let mut sent = match body.filter(|_| !probe) {
 --- new
-        let mut upload = match body.filter(|_| true) {
+        let mut sent = match body.filter(|_| true) {
 
 === Digest gives way to the application's Authorization
 file: crates/curl-core/src/proto/http.rs

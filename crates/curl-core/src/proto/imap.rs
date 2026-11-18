@@ -1063,13 +1063,10 @@ impl Request {
             Upload::open(cx)?
         };
         upload.trace_set(cx);
-        let converts = cx.easy().options().converts_lines();
-        let mut body = Body::new(upload);
-        if converts {
-            body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
-        }
+        let body = Body::sent(upload, cx.easy().options().line_ends())
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         let Some(size) = body.size() else {
-            let why = if converts {
+            let why = if body.converts_lines() {
                 "Cannot APPEND with CRLF conversion making size unknown"
             } else {
                 "Cannot APPEND with unknown input file size"
@@ -1082,8 +1079,8 @@ impl Request {
         };
         let mailbox = atom(mailbox, false)?;
         let flags = flags_of(cx.easy().options().line.upload_flags)?;
-        let size_text =
-            curl_alloc::try_format(format_args!("{size}")).map_err(|_| ErrorKind::OutOfMemory)?;
+        let size_text = curl_alloc::try_format(format_args!("{}", size.get()))
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         let room = cx.easy().options().limits.upload_buffer.get();
         self.sending = Some(Sending::new(body, room)?);
         let (pc, mut carrier) = imap_of(lease);
@@ -1117,7 +1114,11 @@ impl Request {
         if code != ImapReply::Continuation {
             return Err(ErrorKind::UploadFailed);
         }
-        let size = self.sending.as_ref().and_then(|s| s.body().size());
+        let size = self
+            .sending
+            .as_ref()
+            .and_then(|s| s.body().size())
+            .map(|s| s.get());
         upload::announce_size(cx, size);
         // Sent, the answer read in DONE (`Curl_xfer_setup_send`).
         let ways = crate::deliver::Directions {

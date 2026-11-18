@@ -4084,15 +4084,20 @@ names the room in its buffer it wants filled (`wants`), the stage before it, or 
 it, and it frames what came (`got`, with the trailers at the end for the chunk stage). The protocol
 reads only the `Body`. `Expect: 100-continue` is not a stage: C's `cr_exp100` only holds reads
 back, which `Sending::AwaitingContinue` does (§6.1). `CURLOPT_CRLF` is the `LineConv` stage
-(C's `cr_lc`), added for any body not known to be empty, `file:`'s too: each LF not after a CR
+(C's `cr_lc`), which `Body::sent` alone adds, as the options' `LineEnds` say, to any body not
+known to be empty (`do_init_reader_stack`), `file:`'s too: each LF not after a CR
 goes as CRLF, a CR ending one read carried to the next; a read with no LF passes through, one
 with an LF is converted into the stage's buffer, boxed and grown fallibly as only such a body
 needs it. It makes the body's size unknown (`Body::size`, C's total length), so HTTP sends it
-chunked, while `Expect: 100-continue` still weighs the client's size, as `addexpect` does.
+chunked, while `Expect: 100-continue` still weighs the client's size, as `addexpect` does. A
+length a head says of the body (HTTP's `Content-Length` and `Content-Range` total, RTSP's
+`Content-Length`, SCP's offer of the file) is a `WireSize`, which only `Body::size` gives: the
+body is made before its head, and a size of the source cannot be said in its place. RTSP and
+SCP refuse a converted body, whose length they must say.
 SMTP's end of body is the `MailEnd` stage (C's `cr_eob`), after the line conversion: a dot that
 starts a line is doubled, however the reads cut it, and the body ends with CRLF `.` CRLF, or the
 part of it the body's last bytes do not already give. FTP's ASCII uploads (`--crlf`,
-`--use-ascii`, `;type=a`) go through the same line conversion (`Body::convert_lines`).
+`--use-ascii`, `;type=a`) go through the same line conversion (`Body::sent`).
 
 - The request head is rendered into the request's own send buffer, as C's `req.sendbuf` is per
   request, measured first so that it takes one allocation; body bytes are pulled from the `Body`

@@ -2422,12 +2422,13 @@ impl Request {
         if self.upload {
             let upload = Upload::open(cx)?;
             self.infilesize = upload.size();
-            if let Some(why) = super::scp_refused(cx, self.infilesize) {
-                let kind = trace::fail(cx, ErrorKind::UploadFailed, format_args!("{why}"));
-                sc.to(cx, State::ScpChannelFree);
-                return Err(Halt::Fail(kind));
+            match super::scp_offered(cx, upload, self.infilesize) {
+                Ok(offered) => self.source = Some(offered),
+                Err(kind) => {
+                    sc.to(cx, State::ScpChannelFree);
+                    return Err(Halt::Fail(kind));
+                }
             }
-            self.source = Some(upload);
             sc.to(cx, State::ScpUploadInit);
         } else {
             sc.to(cx, State::ScpDownloadInit);
@@ -2438,7 +2439,11 @@ impl Request {
     /// `SSH_SCP_UPLOAD_INIT`: the channel opened to write the file at its
     /// size, and the upload set up.
     fn scp_upload_init2<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
-        let size = self.infilesize.unwrap_or_default();
+        let size = self
+            .source
+            .as_ref()
+            .map(|(_, offered)| offered.get())
+            .expect("the upload opened with its channel");
         let mode = u32::from(cx.easy().options().new_file_mode.bits());
         let path = self.path.take().unwrap_or_default();
         let sent = sc
@@ -2463,11 +2468,11 @@ impl Request {
             return Err(Halt::Fail(trace::fail_with(cx, kind, &[&text])));
         }
         crate::upload::announce_size(cx, self.infilesize);
-        let upload = self
+        let (body, _) = self
             .source
             .take()
             .expect("the upload opened with its channel");
-        self.start_sending(cx, upload)?;
+        self.send_body(cx, body)?;
         self.xfer_setup(
             cx,
             Directions {

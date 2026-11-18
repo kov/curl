@@ -2162,10 +2162,8 @@ impl Request {
         }
         // C makes its reader as the body is first read, of the size left.
         upload.trace_set_when_read();
-        let mut body = Body::new(upload);
-        if crate::options::converts_lines(cx.easy().options().crlf, self.prefer_ascii) {
-            body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
-        }
+        let ends = crate::upload::chain::LineEnds::of(cx.easy().options().crlf, self.prefer_ascii);
+        let body = Body::sent(upload, ends).map_err(|_| ErrorKind::OutOfMemory)?;
         let room = cx.easy().options().limits.upload_buffer.get();
         self.sending = Some(Sending::new(body, room)?);
         let file = self.file()?;

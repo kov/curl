@@ -1232,13 +1232,13 @@ fn open<H: Host>(
     let pairs = fields.pairs().map_err(|_| ErrorKind::OutOfMemory)?;
     // A body of no bytes is none: the head ends the stream.
     let size = match &step.req.body {
-        None => Some(0),
+        None => Some(crate::upload::chain::WireSize::EMPTY),
         Some(body) => {
             assert!(!body.is_chunked(), "HTTP/3 frames the body itself");
             body.size()
         }
     };
-    let body = size != Some(0);
+    let body = size != Some(crate::upload::chain::WireSize::EMPTY);
     let url = step.cx.easy().report().url().map(copied).transpose()?;
     let url = url.as_deref().unwrap_or_default();
     let Some(stream) = quic.submit(step, &pairs, body, url)? else {
@@ -1261,7 +1261,7 @@ fn open<H: Host>(
     let s = step.stream();
     s.id = Some(stream);
     s.send_closed = !body;
-    s.body_size = size;
+    s.body_size = size.map(crate::upload::chain::WireSize::get);
     rx_window(step, quic);
     if step.cx.verbose() {
         let id = curl_alloc::try_format(format_args!("{}", stream.0))

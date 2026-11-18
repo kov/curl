@@ -656,25 +656,34 @@ impl Request {
             (UploadSource::Bytes(_) | UploadSource::Lent(_), _) => Some(&options.upload),
             _ => None,
         };
-        let mut upload = match source {
+        // The body as it goes, its line ends converted as the options say.
+        let mut sent = match source {
             Some(source) => {
-                Some(Upload::new(source, headers, options.mime_escape()).map_err(|e| e.kind())?)
+                let upload =
+                    Upload::new(source, headers, options.mime_escape()).map_err(|e| e.kind())?;
+                let sent = chain::Body::sent(upload, options.line_ends())
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+                Some(sent)
             }
             None => None,
         };
-        let size = upload.as_ref().map_or(Some(0), Upload::size);
+        let size = sent.as_ref().map_or(Some(0), |s| s.upload().size());
         let mut heartbeat = false;
         let content = match size {
             Some(n) if n > 0 => {
-                if options.crlf {
+                // Converted, the body is longer than its source by what
+                // reading it shows: its length is refused rather than said
+                // wrong. C refuses it only under `CURLOPT_CRLF`, and says
+                // the source's length of a text transfer (DIVERGENCE.md).
+                let Some(length) = sent.as_ref().and_then(chain::Body::size) else {
                     return Err(trace::fail(
                         cx,
                         ErrorKind::UploadFailed,
                         format_args!("Cannot do CRLF conversions on upload"),
                     ));
-                }
+                };
                 Some(RtspContent {
-                    length: n,
+                    length,
                     typed: match kind {
                         RtspRequest::Announce => Some(&b"application/sdp"[..]),
                         _ => Some(&b"text/parameters"[..]),
@@ -689,9 +698,8 @@ impl Request {
             }
         };
         if size == Some(0) {
-            upload = None;
+            sent = None;
         }
-        let converts = options.converts_lines() && upload.is_some();
         let http = &options.http;
         let accept_encoding = match &http.accept_encoding {
             _ if kind != RtspRequest::Describe || headers.replaces(b"Accept-Encoding") => None,
@@ -738,43 +746,42 @@ impl Request {
         let no_body = rtsp.no_body;
         self.method = if no_body { Method::Head } else { Method::Get };
         let upload_buffer = cx.easy().options().limits.upload_buffer.get();
-        if let Some(upload) = &mut upload {
-            upload.start(cx)?;
+        if let Some(sent) = &mut sent {
+            sent.upload_mut().start(cx)?;
         }
         let head_len = out.len();
-        if upload.is_some() {
+        if sent.is_some() {
             let room = upload_buffer.saturating_sub(head_len);
             out.try_reserve_exact(room)
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             super::zeros(&mut out, room).map_err(|_| ErrorKind::OutOfMemory)?;
         }
         let then = AfterHead::Body(Reading {
-            eos_read: upload.is_none(),
+            eos_read: sent.is_none(),
             announced: false,
         });
         self.out = out;
         self.filled = head_len;
         self.sent = 0;
-        self.body = match upload {
-            Some(upload) => {
-                upload.trace_set(cx);
-                *cx.readers_mut() = upload.pausing().map(|client| upload::Readers {
+        self.body = match sent {
+            Some(body) => {
+                body.upload().trace_set(cx);
+                *cx.readers_mut() = body.upload().pausing().map(|client| upload::Readers {
                     chunked: false,
                     exp100: false,
                     mail: false,
-                    lines: converts,
+                    lines: body.converts_lines(),
                     client,
                 });
-                let mut body = chain::Body::new(upload);
-                if converts {
-                    body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
-                }
                 Some(body)
             }
             None => None,
         };
         self.body_sent = 0;
-        let nothing_to_read = self.body.as_ref().is_none_or(|b| b.size() == Some(0));
+        let nothing_to_read = self
+            .body
+            .as_ref()
+            .is_none_or(|b| b.size() == Some(chain::WireSize::EMPTY));
         self.outgoing = Sending::Head {
             left: NonZeroUsize::new(head_len).expect("a head is never empty"),
             then,

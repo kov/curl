@@ -1609,7 +1609,8 @@ impl Request {
         // A probe goes without its body, saying it has none
         // (`Curl_creader_set_null`). A POST asked chunked is read to its
         // end (`set_reader`).
-        let mut upload = match body.filter(|_| !probe) {
+        // The body as it goes, its line ends converted as the options say.
+        let mut sent = match body.filter(|_| !probe) {
             None => None,
             Some(_) => {
                 let mut upload = Upload::new(&options.upload, &http.headers, options.mime_escape())
@@ -1617,20 +1618,23 @@ impl Request {
                 if asked == Some(true) && self.method == Method::Post {
                     upload.read_to_end();
                 }
-                Some(upload)
+                let sent = chain::Body::sent(upload, options.line_ends())
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+                Some(sent)
             }
         };
         // The client's size, and the body's as sent: unknown if its line
-        // ends are converted, as they are for any body not known to be
-        // empty (`do_init_reader_stack`).
-        let client_size = if probe {
-            Some(0)
-        } else {
-            upload.as_ref().and_then(Upload::size)
+        // ends are converted.
+        let client_size = match &sent {
+            None if probe => Some(0),
+            None => None,
+            Some(sent) => sent.upload().size(),
         };
-        let converts = options.converts_lines() && upload.is_some() && client_size != Some(0);
-        let size = client_size.filter(|_| !converts);
-        let size_unknown = upload.is_some() && size.is_none();
+        let size = match &sent {
+            None => Some(chain::WireSize::EMPTY),
+            Some(sent) => sent.size(),
+        };
+        let size_unknown = sent.is_some() && size.is_none();
         if asked.is_none() && size_unknown && self.version == SentIn::Http10 {
             return Err(trace::fail(
                 cx,
@@ -1644,23 +1648,23 @@ impl Request {
         let suppressed = framed && asked == Some(true);
         let chunked = !framed && asked.unwrap_or(size_unknown);
         // Even a request without a body sends a last chunk if chunked.
-        if chunked && upload.is_none() {
-            upload = Some(Upload::empty());
+        if chunked && sent.is_none() {
+            sent = Some(chain::Body::new(Upload::empty()));
         }
         // A tree's head lines are kept for a probe after this request to
         // send again; a probe sends those an earlier request sent, as C
         // sends the headers it made last (`http_add_content_hds`).
-        let sent = match &options.upload {
+        let kept = match &options.upload {
             UploadSource::Mime(source) if body == Some(BodyKind::Mime) => source.sent_head(),
             _ => None,
         };
-        let probe_head = match (sent, &upload) {
-            (Some(sent), Some(upload)) if !probe => {
-                sent.keep(upload.head().unwrap_or(&[]))
+        let probe_head = match (kept, &sent) {
+            (Some(kept), Some(sent)) if !probe => {
+                kept.keep(sent.upload().head().unwrap_or(&[]))
                     .map_err(|_| ErrorKind::OutOfMemory)?;
                 Vec::new()
             }
-            (Some(sent), _) if probe => sent.lines().map_err(|_| ErrorKind::OutOfMemory)?,
+            (Some(kept), _) if probe => kept.lines().map_err(|_| ErrorKind::OutOfMemory)?,
             _ => Vec::new(),
         };
         let mut content = body.map(|kind| request::Content {
@@ -1670,7 +1674,7 @@ impl Request {
                 BodyKind::Put => Typed::No,
                 BodyKind::Mime if probe => Typed::Mime(&probe_head),
                 BodyKind::Mime => {
-                    Typed::Mime(upload.as_ref().and_then(Upload::head).unwrap_or(&[]))
+                    Typed::Mime(sent.as_ref().and_then(|s| s.upload().head()).unwrap_or(&[]))
                 }
             },
             expect: false,
@@ -1873,25 +1877,25 @@ impl Request {
         let length = content.and_then(|c| c.length);
         // A tree's handlers are rewound before it is read
         // (`Curl_creader_set_mime`).
-        if let Some(upload) = &mut upload {
-            upload.start(cx)?;
+        if let Some(sent) = &mut sent {
+            sent.upload_mut().start(cx)?;
         }
         let head_len = out.len();
-        if upload.is_some() {
+        if sent.is_some() {
             // The body goes behind the head, in what is left of one
             // buffer (`Curl_req_send`).
             let room = upload_buffer.saturating_sub(head_len);
             out.try_reserve_exact(room)
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             zeros(&mut out, room).map_err(|_| ErrorKind::OutOfMemory)?;
-            upload::announce_size(cx, length);
+            upload::announce_size(cx, length.map(chain::WireSize::get));
         }
         // Without a body to read, all of it is in the buffer, whatever
         // was announced; with one announced, none of it is read until a
         // 100 comes or the wait runs out.
-        let then = if upload.is_none() || !announced {
+        let then = if sent.is_none() || !announced {
             AfterHead::Body(Reading {
-                eos_read: upload.is_none(),
+                eos_read: sent.is_none(),
                 announced,
             })
         } else {
@@ -1900,21 +1904,17 @@ impl Request {
         self.out = out;
         self.filled = head_len;
         self.sent = 0;
-        self.body = match upload {
-            Some(upload) => {
+        self.body = match sent {
+            Some(mut body) => {
                 // The request's reader (`http_req_set_reader`).
-                upload.trace_set(cx);
-                *cx.readers_mut() = upload.pausing().map(|client| upload::Readers {
+                body.upload().trace_set(cx);
+                *cx.readers_mut() = body.upload().pausing().map(|client| upload::Readers {
                     chunked,
                     exp100: announced,
                     mail: false,
-                    lines: converts,
+                    lines: body.converts_lines(),
                     client,
                 });
-                let mut body = chain::Body::new(upload);
-                if converts {
-                    body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
-                }
                 if chunked {
                     body.chunked().map_err(|_| ErrorKind::OutOfMemory)?;
                 }
@@ -1926,7 +1926,11 @@ impl Request {
         // C sends a request with nothing to read for its body (a reader
         // whose length is 0, `Curl_creader_total_length`) at once if its
         // head fits a buffer (`sendbuf.chunk_size`, the upload buffer).
-        let nothing_to_read = !chunked && self.body.as_ref().is_none_or(|b| b.size() == Some(0));
+        let nothing_to_read = !chunked
+            && self
+                .body
+                .as_ref()
+                .is_none_or(|b| b.size() == Some(chain::WireSize::EMPTY));
         self.outgoing = Sending::Head {
             left: NonZeroUsize::new(head_len).expect("a head is never empty"),
             then,
@@ -2313,7 +2317,7 @@ impl Request {
                 .body
                 .as_ref()
                 .and_then(chain::Body::size)
-                .is_some_and(|n| n != 0);
+                .is_some_and(|n| n != chain::WireSize::EMPTY);
             let said = if sized {
                 "We are completely uploaded and fine"
             } else {
@@ -2545,7 +2549,7 @@ impl Request {
             Some(_) if sent_all => Left::Nothing,
             Some(body) if body.is_chunked() => Left::Unknown,
             Some(body) => match body.size() {
-                Some(size) => Left::Bytes(size.saturating_sub(body_sent)),
+                Some(size) => Left::Bytes(size.get().saturating_sub(body_sent)),
                 None => Left::Unknown,
             },
         };

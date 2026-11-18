@@ -635,6 +635,42 @@ fn requests_with_bodies_are_sent_as_c_sends_them() {
     }
 }
 
+/// A body whose line ends are converted is longer than its source by
+/// what reading it shows, so no length can be said of it: it is refused,
+/// under `CURLOPT_CRLF` as C refuses it, and for a text transfer where C
+/// says the source's length (DIVERGENCE.md). Windows converts no text.
+#[test]
+fn a_body_with_converted_line_ends_is_refused() {
+    let ok = ok_for(1);
+    let announce = |o: &mut Options| {
+        kind(o, RtspRequest::Announce);
+        o.upload = bytes(b"v=0\n");
+    };
+    let (result, request) = sent(&[&ok], |o| {
+        announce(o);
+        o.crlf = true;
+    });
+    assert_eq!(result, Err(ErrorKind::UploadFailed), "{request}");
+    let (result, request) = sent(&[&ok], |o| {
+        announce(o);
+        o.line.make_mut().unwrap().ftp.ascii = true;
+    });
+    if cfg!(windows) {
+        assert_eq!(result, Ok(()), "{request}");
+        assert!(request.contains("Content-Length: 4\r\n"), "{request}");
+    } else {
+        assert_eq!(result, Err(ErrorKind::UploadFailed), "{request}");
+        assert!(!request.contains("Content-Length"), "{request}");
+    }
+    // An empty body is not converted, and goes as none.
+    let (result, request) = sent(&[&ok], |o| {
+        kind(o, RtspRequest::Announce);
+        o.upload = bytes(b"");
+        o.crlf = true;
+    });
+    assert_eq!(result, Ok(()), "{request}");
+}
+
 /// A DESCRIBE asks for SDP and the codings, and only it and a SETUP go
 /// with the time condition; a PLAY, PAUSE or RECORD with the range; each
 /// unless the application sends its own (`rtsp_do`).

@@ -925,6 +925,18 @@ so: weaknesses kept because C has them.
   (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`) and
   `an_scp_close_that_fails_fails_the_upload` (`crates/curl-core/src/proto/ssh/tests.rs`).
 
+## Bytes C counts as sent
+
+- **A send after early data that gives other bytes fails.** TLS early data goes with the first
+  send while the handshake is put off. That send answers that it would block, and the sends
+  after it are to begin with the same bytes, which are then counted without being sent again.
+  C counts that many bytes of whatever the later send gives (`earlydata_skip` in `ssl_cf_send`,
+  `lib/vtls/vtls.c`), so different bytes are reported as sent while the early bytes went in
+  their place. An application's own send (`curl_easy_send`) is free to give other bytes after
+  a send that would block. Here such a send fails with a send error and the session is not
+  asked to send it. Pinned by `other_bytes_than_went_early_are_refused`
+  (`crates/curl-core/src/conn/tls.rs`).
+
 ## Residuals shared with C
 
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a

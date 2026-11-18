@@ -380,10 +380,13 @@ impl Layer for TlsLayer {
         {
             let left = &early[*at..];
             let n = left.len().min(bytes.len());
-            assert!(
-                bytes[..n] == left[..n],
-                "what went early is sent again as it was"
-            );
+            // The caller is to give again what went early. Other bytes,
+            // which an application's own send may give after a send that
+            // would block, are refused: C counts them as sent and sends
+            // what went early in their place (`earlydata_skip`).
+            if bytes[..n] != left[..n] {
+                return Err(io::Error::other("bytes other than the early data sent"));
+            }
             *at += n;
             skipped = n;
             if *at == early.len() {
@@ -781,6 +784,28 @@ mod tests {
             assert_eq!(sent, Sent::Bytes(NonZeroUsize::new(1).unwrap()));
             let sent = layer.send(cx, below, b"d").unwrap();
             assert_eq!(sent, Sent::Bytes(NonZeroUsize::new(1).unwrap()));
+        });
+    }
+
+    /// A send after the handshake took early data that gives other bytes
+    /// than went early fails, and the session is not asked to send them:
+    /// counting them as sent would report bytes that never went.
+    #[test]
+    fn other_bytes_than_went_early_are_refused() {
+        let session = Deferring {
+            most: 4,
+            takes: true,
+            waits: true,
+            quiet: true,
+            ..Deferring::default()
+        };
+        deferring(session, |layer, mut below, cx| {
+            let sent = layer.send(cx, below.reborrow(), b"abcd").unwrap();
+            assert_eq!(sent, Sent::WouldBlock, "the handshake waits");
+            let refused = layer.send(cx, below.reborrow(), b"abXY");
+            assert!(refused.is_err(), "{refused:?}");
+            let sent = layer.send(cx, below, b"abcd").unwrap();
+            assert_eq!(sent, Sent::Bytes(NonZeroUsize::new(4).unwrap()));
         });
     }
 

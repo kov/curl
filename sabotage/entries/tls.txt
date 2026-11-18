@@ -759,3 +759,11 @@ witness: curl-core conn::tls::tests::a_failed_handshake_is_not_started_again
 --- new
             let _ = kind;
         })?;
+
+=== a send after early data is counted as sent whatever bytes it gives
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core conn::tls::tests::other_bytes_than_went_early_are_refused
+--- old
+            if bytes[..n] != left[..n] {
+--- new
+            if false {

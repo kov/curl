@@ -4512,7 +4512,8 @@ What the connection does not take waits and goes before the next read. Each roun
 with C's own time check, "Time-out", and a progress update; the engine's timeout check
 leaves TELNET's DOING to it (`times_itself`), as C's multi never sees that time pass. The
 bytes read count as downloaded twice, once read and once delivered, as C counts them. The
-server closing ends the transfer, and so does an input that aborts.
+server closing ends the transfer; an input that aborts fails it as aborted, "operation
+aborted by callback", and one that cannot be read as a read error.
 
 On Windows the rounds are C's `USE_WINSOCK` loop (`WINSOCK`): a round with the server's
 bytes reads no input; the input handler is called only once the socket has been quiet for

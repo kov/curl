@@ -167,7 +167,8 @@ impl OriginTrusted {
 ///     &v.0
 /// }
 /// ```
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
+#[cfg_attr(any(test, feature = "test-util"), derive(PartialEq, Eq))]
 pub struct ForOrigin<T>(T);
 
 impl<T> ForOrigin<T> {

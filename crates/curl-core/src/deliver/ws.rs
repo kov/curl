@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use super::{Client, ClientOut, handler_paused, write_trace};
+use super::{Client, ClientOut, MAX_WRITE, handler_paused, write_trace};
 use crate::bufq::ChunkQueue;
 use crate::coding::Decoder;
 use crate::components::Component;
@@ -221,6 +221,10 @@ impl<H: Host> Take for Pass<'_, '_, '_, H> {
                 self.ws(format_args!("auto PONG to [PING payload={len}]"));
             }
         } else if !bytes.is_empty() || remain == 0 {
+            // No more than a write is given, so that the frame's metadata,
+            // which the handler may ask for, says what it is given; the
+            // rest is passed next.
+            let bytes = &bytes[..bytes.len().min(MAX_WRITE)];
             ws_of(self.cx).set_meta(frame, offset, len, bytes.len());
             let n = bytes.len();
             write_trace(self.cx, format_args!("[WS] pass {n} decoded bytes"));
@@ -231,6 +235,7 @@ impl<H: Host> Take for Pass<'_, '_, '_, H> {
                 self.after.write(self.cx, bytes)
             };
             written?;
+            return Ok(n);
         }
         Ok(bytes.len())
     }

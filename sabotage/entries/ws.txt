@@ -154,3 +154,12 @@ witness: curl-core proto::http::tests::ws::a_frame_in_pieces_is_written_as_it_co
         return None;
     }
 --- new
+
+=== a frame's payload is written past a write's size with one metadata
+file: crates/curl-core/src/deliver/ws.rs
+witness: curl-core proto::http::tests::ws::a_large_frame_is_written_with_the_meta_of_each_write
+features: test-util,debug-hooks
+--- old
+            let bytes = &bytes[..bytes.len().min(MAX_WRITE)];
+--- new
+            let bytes = &bytes[..bytes.len().min(usize::MAX)];

@@ -241,6 +241,65 @@ fn frames_held_by_a_pause_are_delivered_with_their_meta() {
     );
 }
 
+/// A write's length and what `curl_ws_meta` said of it.
+type MetaLen = (usize, Option<crate::ws::Meta>);
+
+/// Each write it is given, by its length, with what `curl_ws_meta` says
+/// of it.
+#[derive(Clone, Default)]
+struct MetaLens(Arc<curl_alloc::Lock<Vec<MetaLen>>>);
+
+impl crate::handler::WriteHandler for MetaLens {
+    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> crate::handler::Write {
+        self.0.lock().unwrap().push((body.len(), cx.ws_meta()));
+        crate::handler::Write::Accepted
+    }
+}
+
+/// A frame read in pieces larger than a write is given in writes of no
+/// more than `CURL_MAX_WRITE_SIZE`, each with the metadata of what it is
+/// given (`ws_cw_dec_next`'s `passlen`; pytest's test_20_16).
+#[test]
+fn a_large_frame_is_written_with_the_meta_of_each_write() {
+    use crate::ws::{Frame, FrameKind, FrameType};
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x82\x7e");
+    reply.extend_from_slice(&40_000u16.to_be_bytes());
+    reply.extend(std::iter::repeat_n(b'x', 40_000));
+    let (mut m, _talk, _) = server(&[&reply], true);
+    let mut e = Easy::new();
+    let handler = MetaLens::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("ws://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.limits.buffer_size = crate::options::BufferSize::clamped(65_536);
+    o.callbacks.write = Some(Handler::write(handler.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    let write = |offset: u64, len: usize| {
+        let frame = Frame {
+            kind: FrameType {
+                kind: FrameKind::Binary,
+                more: false,
+            },
+            offset,
+            bytes_left: 40_000 - offset - len as u64,
+            len,
+        };
+        (len, Some(crate::ws::Meta::Frame(frame)))
+    };
+    assert_eq!(
+        *handler.0.lock().unwrap(),
+        [
+            write(0, 16_384),
+            write(16_384, 16_384),
+            write(32_768, 7_232)
+        ]
+    );
+}
+
 /// Without a TLS library wss:// is a scheme the build leaves out, as it
 /// is for C built without one; ws:// is not.
 #[test]

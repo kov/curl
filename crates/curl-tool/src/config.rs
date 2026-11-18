@@ -193,7 +193,7 @@ const MAX_LINE: usize = 10 * 1024 * 1024;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Entry<'t> {
     /// The line's number, from 1, as C counts them: blank lines and
-    /// comments are not.
+    /// comments are counted too.
     pub(crate) number: usize,
     pub(crate) option: &'t [u8],
     /// The argument; a quoted empty one is there, an unquoted one is not.
@@ -265,10 +265,12 @@ pub(crate) fn entries(text: &mut [u8]) -> Result<Vec<Entry<'_>>, Unread> {
             .position(|&b| b == 0)
             .map_or(end, |at| start + at);
         let first = text[start..line_end].iter().position(|b| !is_blank(*b));
-        if first.is_some_and(|at| text[start + at] != b'#') {
-            number += 1;
+        number += 1;
+        if first.is_some_and(|at| text[start + at] != b'#')
+            && let Some(span) = entry(text, start, line_end, number)
+        {
             spans
-                .try_push(entry(text, start, line_end, number))
+                .try_push(span)
                 .map_err(|OutOfMemory| Unread::OutOfMemory)?;
         }
         start = end + 1;
@@ -332,19 +334,27 @@ fn is_blank(b: u8) -> bool {
     b == b' ' || b == b'\t'
 }
 
+/// C's `ISSPACE`: a blank, or a byte from LF to CR.
+fn is_space(b: u8) -> bool {
+    is_blank(b) || (0x0a..=0x0d).contains(&b)
+}
+
 /// `parseconfig`'s reading of the line `text[start..end]`, and
-/// `extract_param`'s.
-fn entry(text: &mut [u8], start: usize, end: usize, number: usize) -> Spans {
+/// `extract_param`'s; `None` for a line of whitespace alone, as a lone
+/// CR before a CRLF's LF is.
+fn entry(text: &mut [u8], start: usize, end: usize, number: usize) -> Option<Spans> {
+    // The name starts past the whitespace an indented line has.
+    let start = start + text[start..end].iter().position(|&b| !is_space(b))?;
     // A name without dashes may be followed by `=` or `:`.
     let dashed = text[start] == b'-';
     let separator = |b: u8| !dashed && (b == b'=' || b == b':');
     let name_end = text[start..end]
         .iter()
-        .position(|&b| is_blank(b) || separator(b))
+        .position(|&b| is_space(b) || separator(b))
         .map_or(end, |at| start + at);
-    // Blanks and separators are passed over, the byte that ended the
-    // name among them.
-    let mut at = name_end;
+    // The byte that ended the name is passed over, as C's zero takes its
+    // place, then blanks and separators.
+    let mut at = (name_end + 1).min(end);
     while at < end && (is_blank(text[at]) || separator(text[at])) {
         at += 1;
     }
@@ -354,7 +364,6 @@ fn entry(text: &mut [u8], start: usize, end: usize, number: usize) -> Spans {
         Some(unquote(text, at + 1, end))
     } else {
         quote = at < end && text[at] == b'\'';
-        let is_space = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
         let arg_end = text[at..end]
             .iter()
             .position(|&b| is_space(b))
@@ -372,12 +381,12 @@ fn entry(text: &mut [u8], start: usize, end: usize, number: usize) -> Spans {
         (false, true) => &[Warning::UnquotedWhitespace],
         (true, true) => &[Warning::LeadingSingleQuote, Warning::UnquotedWhitespace],
     };
-    Spans {
+    Some(Spans {
         number,
         option: (start, name_end),
         argument,
         warnings,
-    }
+    })
 }
 
 /// Undo the quoting of `text[from..end]` up to its closing double quote, in
@@ -619,8 +628,9 @@ mod tests {
     }
 
     /// `parseconfig`: a name, separators if it has no dashes, then an
-    /// argument plain or quoted; comments and blank lines are skipped, and
-    /// not counted. A line's first byte starts the name, even a blank.
+    /// argument plain or quoted; comments and blank lines are skipped, but
+    /// counted, as C counts them for its messages (test 459). An indented
+    /// line's name starts past its blanks.
     #[test]
     fn reads_lines_as_c_does() {
         use Warning::*;
@@ -630,21 +640,41 @@ mod tests {
         assert_eq!(
             read(text),
             [
-                (1, "url".into(), s("http://a/\"q\t"), &[][..]),
-                (2, "-o:x".into(), None, &[]),
-                (3, "silent".into(), None, &[]),
+                (3, "url".into(), s("http://a/\"q\t"), &[][..]),
+                (4, "-o:x".into(), None, &[]),
+                (5, "silent".into(), None, &[]),
                 (
-                    4,
+                    6,
                     "header".into(),
                     s("'a"),
                     &[LeadingSingleQuote, UnquotedWhitespace]
                 ),
-                (5, "referer".into(), s(""), &[]),
-                (6, "".into(), s("fail"), &[]),
-                (7, "output".into(), s("y"), &[]),
-                (8, "last".into(), None, &[]),
+                (7, "referer".into(), s(""), &[]),
+                (8, "fail".into(), s("#"), &[UnquotedWhitespace]),
+                (9, "output".into(), s("y"), &[]),
+                (10, "last".into(), None, &[]),
             ]
         );
+    }
+
+    /// Indented lines and CRLF endings (test 430): the name starts past
+    /// any whitespace and ends at any, a CR among them; a line of a CR
+    /// alone is passed over, still counted.
+    #[test]
+    fn reads_indented_and_crlf_lines_as_c_does() {
+        let s = |t: &str| Some(t.to_string());
+        assert_eq!(
+            read("  head\r\n\r\n\t-o x\r\n \x0b\x0curl=\"u\"\r\nfail\r\n"),
+            [
+                (1, "head".into(), None, &[][..]),
+                (3, "-o".into(), s("x"), &[]),
+                (4, "url".into(), s("u"), &[]),
+                (5, "fail".into(), None, &[]),
+            ]
+        );
+        // A CR ends the name and is passed over: what follows is the
+        // argument.
+        assert_eq!(read("output\ry"), [(1, "output".into(), s("y"), &[][..])]);
     }
 
     /// A comment after blanks on any line, a quote left open, a carriage
@@ -659,10 +689,10 @@ mod tests {
             read(text),
             [
                 (1, "silent".into(), None, &[][..]),
-                (2, "url".into(), s("abc"), &[]),
-                (3, "fail".into(), None, &[]),
-                (4, "output".into(), s("y"), &[UnquotedWhitespace]),
-                (5, "url".into(), s("x"), &[]),
+                (3, "url".into(), s("abc"), &[]),
+                (4, "fail".into(), None, &[]),
+                (5, "output".into(), s("y"), &[UnquotedWhitespace]),
+                (6, "url".into(), s("x"), &[]),
             ]
         );
         assert_eq!(read("url \"abc"), [(1, "url".into(), s("abc"), &[][..])]);
@@ -688,7 +718,7 @@ mod tests {
             read("write-out X\n\0\nwrite-out Y\n"),
             [
                 (1, "write-out".into(), s("X"), &[][..]),
-                (2, "write-out".into(), s("Y"), &[]),
+                (3, "write-out".into(), s("Y"), &[]),
             ]
         );
     }
@@ -842,7 +872,8 @@ mod tests {
     proptest::proptest! {
         #![proptest_config(crate::untrusted::config(512))]
 
-        /// Any file is read into entries, numbered in order, or refused;
+        /// Any file is read into entries, numbered by their lines in order,
+        /// or refused;
         /// any file of URLs gives its lines or refuses one.
         #[test]
         fn any_file_is_read_or_refused(text in crate::untrusted::input(WORDS, FILES, 40)) {
@@ -850,9 +881,13 @@ mod tests {
             for url in url_lines(&text).flatten() {
                 proptest::prop_assert!(url.len() < URL_LINE_BUFFER);
             }
+            let lines = text.split_inclusive(|&b| b == b'\n').count();
             if let Ok(entries) = entries(&mut text) {
-                for (i, e) in entries.iter().enumerate() {
-                    proptest::prop_assert_eq!(e.number, i + 1);
+                for pair in entries.windows(2) {
+                    proptest::prop_assert!(pair[0].number < pair[1].number);
+                }
+                for e in &entries {
+                    proptest::prop_assert!((1..=lines).contains(&e.number));
                 }
             }
         }

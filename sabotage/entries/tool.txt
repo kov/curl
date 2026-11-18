@@ -547,16 +547,6 @@ witness: curl-tool output::tests::reads_a_file_name_as_c_does
 --- new
     for separator in *b"" {
 
-=== a configuration file's comments are counted as lines
-file: crates/curl-tool/src/config.rs
-witness: curl-tool config::tests::reads_lines_as_c_does
---- old
-        if first.is_some_and(|at| text[start + at] != b'#') {
-            number += 1;
---- new
-        number += 1;
-        if first.is_some_and(|at| text[start + at] != b'#') {
-
 === a quoted argument keeps its escapes
 file: crates/curl-tool/src/config.rs
 witness: curl-tool config::tests::reads_lines_as_c_does
@@ -1849,3 +1839,36 @@ witness: curl-tool vars::tests::escapes_json_as_c_does
         let (taken, piece) = crate::write_out::json_escape(rest, false, &mut one);
 --- new
         let (taken, piece) = crate::write_out::json_escape(rest, true, &mut one);
+
+=== a config file's blank and comment lines are not counted
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_lines_as_c_does
+--- old
+        number += 1;
+        if first.is_some_and(|at| text[start + at] != b'#')
+--- new
+        if first.is_some_and(|at| text[start + at] != b'#')
+
+=== an indented config line's name starts at its first byte
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_indented_and_crlf_lines_as_c_does
+--- old
+    let start = start + text[start..end].iter().position(|&b| !is_space(b))?;
+--- new
+    text[start..end].iter().position(|&b| !is_space(b))?;
+
+=== a config option's name runs on over a CR
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_indented_and_crlf_lines_as_c_does
+--- old
+        .position(|&b| is_space(b) || separator(b))
+--- new
+        .position(|&b| is_blank(b) || separator(b))
+
+=== the byte ending a config option's name is kept for its argument
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_indented_and_crlf_lines_as_c_does
+--- old
+    let mut at = (name_end + 1).min(end);
+--- new
+    let mut at = name_end;

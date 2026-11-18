@@ -153,3 +153,29 @@ witness: curl-core proto::ssh::libssh2::tests::a_long_listing_gives_the_others_t
         if self.readdir_count >= SFTP_READDIR_MAX_ENTRIES {
 --- new
         if self.readdir_count > SFTP_READDIR_MAX_ENTRIES {
+
+=== an SSH DONE out of time waits on
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
+--- old
+        let wait = match cx.time_left() {
+--- new
+        let wait = match crate::multi::timers::TimeLeft::Unlimited {
+
+=== an SSH DONE out of time keeps its connection for reuse
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
+--- old
+                lease.get().mark_close();
+--- new
+                if false {
+                    lease.get().mark_close();
+                }
+
+=== an SSH DONE's wait outlasts the time left
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
+--- old
+            TimeLeft::Remaining(left) => left.min(wait),
+--- new
+            TimeLeft::Remaining(_) => wait,

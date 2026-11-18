@@ -595,6 +595,10 @@ pub(crate) struct Request {
     readdir_count: u32,
     /// The state just run gave the others their turn: the run ends.
     yielded: bool,
+    /// When DONE, as it waits, looks at the time again: C's wait on the
+    /// socket in `ssh_block_statemach`, at most a second, and no later
+    /// than the transfer's time runs out.
+    done_due: Option<crate::time::Instant>,
     /// Where the transfer starts (`state.resume_from`): -1 for the end.
     resume_from: i64,
     /// The range asked for, or the resume point's (`state.range` while
@@ -679,6 +683,7 @@ impl Request {
             no_body: options.method == crate::options::Method::Head,
             readdir_count: 0,
             yielded: false,
+            done_due: None,
             resume_from,
             range,
             infilesize: None,
@@ -2119,12 +2124,52 @@ impl Request {
             return self.finishing2(cx, lease, exchanged);
         }
         let ran = self.run(cx, lease);
-        let checked = crate::progress::check(cx, exchanged);
-        match (ran, checked) {
-            (Err(e), _) | (Ok(_), Err(e)) => self.over(cx, Err(e), exchanged),
-            (Ok(true), Ok(_)) => self.over(cx, Ok(()), exchanged),
-            (Ok(false), Ok(_)) => Finish::Waiting,
+        self.finished(cx, lease, ran, exchanged)
+    }
+
+    /// Where a pass of DONE's run leaves it (`ssh_block_statemach`): a
+    /// failure ends it; else the progress is checked, and a transfer out
+    /// of time fails, its connection closed so that no other takes it on
+    /// mid-exchange, whether or not the run ended; else it is over, or
+    /// waits to be looked at again within a second, as C's wait on the
+    /// socket.
+    pub(super) fn finished<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        ran: Result<bool, ErrorKind>,
+        exchanged: bool,
+    ) -> Finish {
+        use crate::multi::timers::TimeLeft;
+        self.done_due = None;
+        let done = match ran.and_then(|done| crate::progress::check(cx, exchanged).map(|_| done)) {
+            Ok(done) => done,
+            Err(e) => return self.over(cx, Err(e), exchanged),
+        };
+        let wait = std::time::Duration::from_secs(1);
+        let wait = match cx.time_left() {
+            TimeLeft::Expired(_) => {
+                lease.get().mark_close();
+                let e = trace::fail(
+                    cx,
+                    ErrorKind::OperationTimedout,
+                    format_args!("Operation timed out"),
+                );
+                return self.over(cx, Err(e), exchanged);
+            }
+            TimeLeft::Remaining(left) => left.min(wait),
+            TimeLeft::Unlimited => wait,
+        };
+        if done {
+            return self.over(cx, Ok(()), exchanged);
         }
+        self.done_due = Some(cx.now().after(wait));
+        Finish::Waiting
+    }
+
+    /// When DONE, as it waits, looks again.
+    pub(crate) fn due(&self) -> Option<crate::time::Instant> {
+        self.done_due
     }
 
     /// The end: the progress done, an abort it asks for the result

@@ -4445,8 +4445,11 @@ range and resume point, and the body read or sent.
   directories made once if missing and asked for); SCP's channel is opened to read or write.
   The body is then read or sent in PERFORMING, at most `MAX_READS` reads a step.
 - **DONE** closes the file or channel and runs the commands after the transfer, blocking as
-  C runs them, its waits answered as `Finish::Waiting`; the session says goodbye as the
-  connection shuts down.
+  C runs them, its waits answered as `Finish::Waiting`, each looked at again within a second
+  (`due`), as C's `ssh_block_statemach` waits on its socket; each pass checks the progress
+  and the time left, and a transfer out of time fails "Operation timed out" and closes its
+  connection, mid-exchange as it is, whether or not the run ended. The session says goodbye
+  as the connection shuts down.
 - **libssh2 is the other library**, as C's configure chooses `USE_LIBSSH2` over
   `USE_LIBSSH`: `Libraries::ssh` is an `SshLibrary`, libssh's traits or libssh2's (`ssh2.rs`,
   answered by `curl-libssh2`), and the connect over libssh2 makes the connection's

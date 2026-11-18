@@ -1326,6 +1326,7 @@ impl ProtoState {
             ProtoState::Ftp(r) => r.due(),
             ProtoState::Telnet(r) => r.due(),
             ProtoState::Tftp(r) => r.due(),
+            ProtoState::Ssh(r) => r.due(),
             _ => None,
         }
     }

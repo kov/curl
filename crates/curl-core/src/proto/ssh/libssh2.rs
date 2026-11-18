@@ -2628,12 +2628,7 @@ impl Request {
         exchanged: bool,
     ) -> Finish {
         let ran = self.run2(cx, lease);
-        let checked = crate::progress::check(cx, exchanged);
-        match (ran, checked) {
-            (Err(e), _) | (Ok(_), Err(e)) => self.over(cx, Err(e), exchanged),
-            (Ok(true), Ok(_)) => self.over(cx, Ok(()), exchanged),
-            (Ok(false), Ok(_)) => Finish::Waiting,
-        }
+        self.finished(cx, lease, ran, exchanged)
     }
 
     /// The connect over libssh2: the connection's state made, then the

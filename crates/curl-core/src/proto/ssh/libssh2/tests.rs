@@ -4104,3 +4104,27 @@ fn a_failed_download_runs_no_commands_after_it() {
         "{calls:?}"
     );
 }
+
+/// A DONE whose answer never comes runs out with the transfer's time, as
+/// C's `ssh_block_statemach` does, waiting at most a second at a time:
+/// "Operation timed out", and the connection, mid-exchange, is closed
+/// rather than kept for another transfer (upstream b052c835a3).
+#[test]
+fn a_done_that_never_ends_times_out_and_closes() {
+    let w = world_with(&[("/home/u/f", "hello\n")], |w| {
+        w.stuck = vec!["sftp_close"];
+        w.trace_multi = true;
+    });
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.limits.total = crate::time::TimeLimit::from_millis(1000);
+    });
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
+    let at = said.find("Operation timed out\n").expect(&said);
+    assert!(said[at..].contains("close=1, premature=0"), "{said}");
+    // DONE's wait was bounded by the time left, not left to the socket.
+    let done = said.find("[DONE] multi_wait(").expect(&said);
+    assert!(
+        said[done..].starts_with("[DONE] multi_wait(fds=1, timeout=750)"),
+        "{said}"
+    );
+}

@@ -233,7 +233,7 @@ impl OpenSsl {
             crypto: Crypto::default(),
             method: None,
             identity: identity.clone(),
-            shared: Some(shared.clone()),
+            shared: StoreCache::new(shared.clone()),
             host,
             port: peer.port,
             kind: peer.kind,
@@ -374,7 +374,7 @@ struct Session {
     identity: TryArc<TlsIdentity>,
     /// What the library keeps for the multi, until the trust store is
     /// set up: the store it may take, and keep its own in.
-    shared: Option<TlsShared>,
+    shared: StoreCache,
     /// The origin's name as the URL gives it, without brackets.
     host: Vec<u8>,
     port: u16,
@@ -505,19 +505,44 @@ fn errno_of(below: Below) -> i32 {
     }
 }
 
-/// `Session::store_cache`, over the fields it reads.
-fn store_cache<'a>(shared: Option<&'a TlsShared>, crypto: &Crypto) -> Option<&'a TlsShared> {
-    shared.filter(|_| !crypto.has_libctx())
+/// What the library keeps for the multi, as a session holds it until its
+/// trust store is set up: in a module of its own, so that nothing else
+/// reaches it but through the filter.
+mod store_cache {
+    use super::{Crypto, TlsShared};
+
+    /// The multi's state, read only for the session's trust store,
+    /// through the filter that keeps a store loaded under a provider's
+    /// library context out of the multi.
+    pub(super) struct StoreCache(Option<TlsShared>);
+
+    impl StoreCache {
+        pub(super) fn new(shared: TlsShared) -> StoreCache {
+            StoreCache(Some(shared))
+        }
+
+        /// The multi's state the store may be taken from and kept in:
+        /// none once a provider's library context is in use, by name or
+        /// loaded for a PKCS#11 URI, as a store loaded under it cannot
+        /// outlive it (`USING_PROVIDER`). Asked when the store is set up,
+        /// after the client's certificate and key are loaded.
+        pub(super) fn for_store(&self, crypto: &Crypto) -> Option<&TlsShared> {
+            self.0.as_ref().filter(|_| !crypto.has_libctx())
+        }
+
+        /// Not needed past the store: the connection does not keep the
+        /// multi's state alive, wherever it goes.
+        pub(super) fn release(&mut self) {
+            self.0 = None;
+        }
+    }
 }
+use store_cache::StoreCache;
 
 impl Session {
-    /// The multi's state the store may be taken from and kept in: none
-    /// once a provider's library context is in use, by name or loaded
-    /// for a PKCS#11 URI, as a store loaded under it cannot outlive it
-    /// (`USING_PROVIDER`). Asked when the store is set up, after the
-    /// client's certificate and key are loaded.
+    /// As `StoreCache::for_store`, with the session's crypto.
     fn store_cache(&self) -> Option<&TlsShared> {
-        store_cache(self.shared.as_ref(), &self.crypto)
+        self.shared.for_store(&self.crypto)
     }
 
     /// Run `op` on the SSL with the BIO reaching `io` (`bio::call`).
@@ -526,7 +551,7 @@ impl Session {
         let ctx = self.ctx.as_ref().expect("made at the first step").0;
         let identity = &self.identity;
         // Its fields borrowed apart from the flags.
-        let shared = store_cache(self.shared.as_ref(), &self.crypto);
+        let shared = self.shared.for_store(&self.crypto);
         let mut setup = |cx: &mut TlsCx<'_>| x509::setup_store(ctx, identity, shared, cx);
         let mut slot = Slot {
             io: bio::Reach::Stream(io),
@@ -1045,9 +1070,7 @@ impl Session {
             self.flags.store_ready = true;
         }
         if self.flags.store_ready {
-            // Not needed past the store: the connection does not keep the
-            // multi's state alive, wherever it goes.
-            self.shared = None;
+            self.shared.release();
         }
         #[cfg(libressl)]
         if let Some(log) = self.keylog.as_deref().filter(|l| KeyLog::enabled(l))
@@ -1908,10 +1931,10 @@ impl QuicTls for QuicSession {
         let s = &mut self.0;
         if !s.flags.store_ready {
             let ctx = s.ctx.as_ref().expect("made as the session is").0;
-            x509::setup_store(ctx, &s.identity, s.shared.as_ref(), cx)?;
+            x509::setup_store(ctx, &s.identity, s.shared.for_store(&s.crypto), cx)?;
             s.flags.store_ready = true;
             // Not needed past the store, as for a stream session.
-            s.shared = None;
+            s.shared.release();
         }
         Ok(())
     }
@@ -1926,7 +1949,7 @@ impl QuicTls for QuicSession {
         let ssl = s.ssl();
         let ctx = s.ctx.as_ref().expect("made as the session is").0;
         let identity = &s.identity;
-        let shared = s.shared.as_ref();
+        let shared = s.shared.for_store(&s.crypto);
         let mut setup = |cx: &mut TlsCx<'_>| x509::setup_store(ctx, identity, shared, cx);
         let mut slot = Slot {
             io: bio::Reach::Quic(cx),

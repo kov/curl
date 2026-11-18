@@ -586,9 +586,9 @@ witness: curl-openssl a_ccc_whose_close_notify_fails_to_go_reads_nothing_more
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi
 --- old
-    shared.filter(|_| !crypto.has_libctx())
+            self.0.as_ref().filter(|_| !crypto.has_libctx())
 --- new
-    shared
+            self.0.as_ref()
 
 === a PKCS#11 URI's provider is dropped beside an engine
 file: crates/curl-openssl/src/engine.rs
@@ -621,7 +621,7 @@ file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_store_made_for_the_context_handler_is_kept_too
 --- old
     fn store_cache(&self) -> Option<&TlsShared> {
-        store_cache(self.shared.as_ref(), &self.crypto)
+        self.shared.for_store(&self.crypto)
     }
 --- new
     fn store_cache(&self) -> Option<&TlsShared> {

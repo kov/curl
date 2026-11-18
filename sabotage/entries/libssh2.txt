@@ -158,32 +158,26 @@ witness: curl-core proto::ssh::libssh2::tests::a_long_listing_gives_the_others_t
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
 --- old
-        let wait = match cx.time_left() {
+        if let TimeLeft::Expired(_) = cx.time_left() {
 --- new
-        let wait = match crate::multi::timers::TimeLeft::Unlimited {
+        if let TimeLeft::Expired(_) = TimeLeft::Unlimited {
 
 === an SSH DONE out of time keeps its connection for reuse
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
 --- old
+        if let TimeLeft::Expired(_) = cx.time_left() {
+            lease.get().mark_close();
+--- new
+        if let TimeLeft::Expired(_) = cx.time_left() {
+            if false {
                 lease.get().mark_close();
---- new
-                if false {
-                    lease.get().mark_close();
-                }
-
-=== an SSH DONE's wait outlasts the time left
-file: crates/curl-core/src/proto/ssh/mod.rs
-witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
---- old
-            TimeLeft::Remaining(left) => left.min(wait),
---- new
-            TimeLeft::Remaining(_) => wait,
+            }
 
 === an SSH DONE waits past its second
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::libssh2::tests::a_done_that_never_ends_times_out_and_closes
 --- old
-            TimeLeft::Remaining(left) => left.min(wait),
+        self.done_due = Some(cx.now().after(std::time::Duration::from_secs(1)));
 --- new
-            TimeLeft::Remaining(left) => left,
+        self.done_due = None;

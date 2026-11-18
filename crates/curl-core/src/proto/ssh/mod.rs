@@ -595,9 +595,8 @@ pub(crate) struct Request {
     readdir_count: u32,
     /// The state just run gave the others their turn: the run ends.
     yielded: bool,
-    /// When DONE, as it waits, looks at the time again: C's wait on the
-    /// socket in `ssh_block_statemach`, at most a second, and no later
-    /// than the transfer's time runs out.
+    /// When DONE, as it waits, looks again: C's wait on the socket in
+    /// `ssh_block_statemach`, at most a second.
     done_due: Option<crate::time::Instant>,
     /// Where the transfer starts (`state.resume_from`): -1 for the end.
     resume_from: i64,
@@ -2132,7 +2131,7 @@ impl Request {
     /// of time fails, its connection closed so that no other takes it on
     /// mid-exchange, whether or not the run ended; else it is over, or
     /// waits to be looked at again within a second, as C's wait on the
-    /// socket.
+    /// socket. The multi's own timer wakes it as the time runs out.
     pub(super) fn finished<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -2146,24 +2145,19 @@ impl Request {
             Ok(done) => done,
             Err(e) => return self.over(cx, Err(e), exchanged),
         };
-        let wait = std::time::Duration::from_secs(1);
-        let wait = match cx.time_left() {
-            TimeLeft::Expired(_) => {
-                lease.get().mark_close();
-                let e = trace::fail(
-                    cx,
-                    ErrorKind::OperationTimedout,
-                    format_args!("Operation timed out"),
-                );
-                return self.over(cx, Err(e), exchanged);
-            }
-            TimeLeft::Remaining(left) => left.min(wait),
-            TimeLeft::Unlimited => wait,
-        };
+        if let TimeLeft::Expired(_) = cx.time_left() {
+            lease.get().mark_close();
+            let e = trace::fail(
+                cx,
+                ErrorKind::OperationTimedout,
+                format_args!("Operation timed out"),
+            );
+            return self.over(cx, Err(e), exchanged);
+        }
         if done {
             return self.over(cx, Ok(()), exchanged);
         }
-        self.done_due = Some(cx.now().after(wait));
+        self.done_due = Some(cx.now().after(std::time::Duration::from_secs(1)));
         Finish::Waiting
     }
 

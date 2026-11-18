@@ -353,8 +353,8 @@ fn reads_options_from_files() {
     let run = curl(&dir, &["-K", &dir.path("outer")]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(dir.read("out"), b"data");
-    // Comments and blank lines are not counted. Short names keep the
-    // messages from being wrapped.
+    // Comments and blank lines are counted, as C counts them. Short
+    // names keep the messages from being wrapped.
     dir.write("bad", b"\n# no\nfail\n--bogus\n");
     dir.write("cfg", b"fail\nconfig=bad\n");
     let run = curl(&dir, &["--config", "cfg", &dir.url("in")]);
@@ -364,7 +364,7 @@ fn reads_options_from_files() {
     assert_eq!(
         lines,
         [
-            "curl: bad:2 config file option '--bogus' is unknown",
+            "curl: bad:4 config file option '--bogus' is unknown",
             "curl: cfg:2 config file option 'config' found an unknown config option",
             "curl: option --config: found an unknown config option",
         ]

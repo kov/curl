@@ -997,16 +997,22 @@ mod tests {
     fn a_local_port_range_is_read_as_c_reads_it() {
         let ports = |given: &str| {
             parsed(&["x", "--local-port", given]).map(|p| match p {
-                Parsed::Run(l) => (l.operations[0].local_port, l.operations[0].local_port_range),
+                Parsed::Run(l) => l.operations[0]
+                    .local_ports
+                    .map(|p| (p.first.get(), p.range)),
                 Parsed::Request(r) => panic!("asked for {r:?}"),
             })
         };
-        assert_eq!(ports("4000"), Ok((4000, 1)));
-        assert_eq!(ports("4000-4002"), Ok((4000, 3)));
-        assert_eq!(ports("4000 - 4002"), Ok((4000, 3)));
-        assert_eq!(ports("4000\t-4000"), Ok((4000, 1)));
-        assert_eq!(ports("65535"), Ok((65535, 1)));
-        assert_eq!(ports("0"), Ok((0, 1)));
+        assert_eq!(ports("4000"), Ok(Some((4000, 1))));
+        assert_eq!(ports("4000-4002"), Ok(Some((4000, 3))));
+        assert_eq!(ports("4000 - 4002"), Ok(Some((4000, 3))));
+        assert_eq!(ports("4000\t-4000"), Ok(Some((4000, 1))));
+        assert_eq!(ports("65535"), Ok(Some((65535, 1))));
+        assert_eq!(ports("1-65535"), Ok(Some((1, 65535))));
+        // A first port of 0 asks for none, whatever its range: the widest
+        // too, which counts one port more than a range can.
+        assert_eq!(ports("0"), Ok(None));
+        assert_eq!(ports("0-65535"), Ok(None));
         for bad in [
             "65536",
             "10-5",
@@ -1016,6 +1022,7 @@ mod tests {
             "10  -12",
             "",
             "4000-65536",
+            "0-65536",
         ] {
             assert_eq!(ports(bad), Err(ParamError::BadUse), "{bad:?}");
         }

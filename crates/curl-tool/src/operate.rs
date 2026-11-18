@@ -2072,19 +2072,16 @@ fn setopts(
             Ok(())
         },
     )?;
-    if op.local_port != 0 {
-        s.long("CURLOPT_LOCALPORT", i64::from(op.local_port), |o| {
-            o.sockets.make_mut().map_err(oom)?.local.port = op.local_port;
+    if let Some(ports) = op.local_ports {
+        let first = ports.first.get();
+        s.long("CURLOPT_LOCALPORT", i64::from(first), |o| {
+            o.sockets.make_mut().map_err(oom)?.local.port = first;
             Ok(())
         })?;
-        s.long(
-            "CURLOPT_LOCALPORTRANGE",
-            i64::from(op.local_port_range),
-            |o| {
-                o.sockets.make_mut().map_err(oom)?.local.port_range = op.local_port_range;
-                Ok(())
-            },
-        )?;
+        s.long("CURLOPT_LOCALPORTRANGE", i64::from(ports.range), |o| {
+            o.sockets.make_mut().map_err(oom)?.local.port_range = ports.range;
+            Ok(())
+        })?;
     }
     if op.raw {
         s.long("CURLOPT_HTTP_CONTENT_DECODING", 0, |o| {

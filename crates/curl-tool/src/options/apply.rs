@@ -493,10 +493,9 @@ pub(crate) struct Operation<'a> {
     /// which.
     pub(crate) unix_socket: Option<&'a [u8]>,
     pub(crate) abstract_unix_socket: bool,
-    /// `--local-port`: the first port, 0 for none, and how many from it
-    /// are tried.
-    pub(crate) local_port: u16,
-    pub(crate) local_port_range: u16,
+    /// `--local-port`: the ports a connection is made from; none if not
+    /// asked for, or asked for from port 0.
+    pub(crate) local_ports: Option<LocalPorts>,
     /// `--no-keepalive`.
     pub(crate) no_keepalive: bool,
     /// `--keepalive-time`, in seconds; 0 leaves libcurl's.
@@ -997,8 +996,11 @@ fn range(msgs: &Messages, given: &[u8]) -> Result<Vec<u8>, ParamError> {
 }
 
 /// `--local-port`'s `N` or `N-M`, a blank allowed on each side of the
-/// dash: the first port and how many are tried (`parse_localport`).
-fn local_port(given: &[u8]) -> Result<(u16, u16), ParamError> {
+/// dash: the first port and how many are tried (`parse_localport`); none
+/// for a first port of 0, which C reads, checks and then sets nothing
+/// for, whatever the range (`config->localport` tested before
+/// `CURLOPT_LOCALPORT`).
+fn local_port(given: &[u8]) -> Result<Option<LocalPorts>, ParamError> {
     let digits = given.iter().take_while(|b| b.is_ascii_digit()).count();
     let (first, rest) = given.split_at(digits);
     let last = if rest.is_empty() {
@@ -1020,18 +1022,30 @@ fn local_port(given: &[u8]) -> Result<(u16, u16), ParamError> {
         Err(_) => Err(ParamError::BadUse),
     };
     let first = port(first)?;
-    let range = match last {
-        None => 1,
-        Some(last) => {
-            let last = i32::from(port(last)?);
-            let range = last - (i32::from(first) - 1);
-            if range < 1 {
-                return Err(ParamError::BadUse);
-            }
-            u16::try_from(range).expect("a range within the ports fits")
-        }
+    let last = match last {
+        None => first,
+        Some(last) => port(last)?,
     };
-    Ok((first, range))
+    // A range that ends before it starts is badly used, the first port
+    // 0 or not.
+    let span = last.checked_sub(first).ok_or(ParamError::BadUse)?;
+    let Some(first) = NonZeroU16::new(first) else {
+        return Ok(None);
+    };
+    // From a first port of 1 at least, the most ports a range can count
+    // is 65535.
+    Ok(Some(LocalPorts {
+        first,
+        range: span + 1,
+    }))
+}
+
+/// `--local-port`'s ports: the first, never 0, and how many from it are
+/// tried, 1 to 65535.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LocalPorts {
+    pub(crate) first: NonZeroU16,
+    pub(crate) range: u16,
 }
 
 /// The error of an etag option on more than one URL.
@@ -1778,10 +1792,7 @@ pub(crate) fn apply<'a>(
             line.current().interface = Some(name);
         }
         Opt::LocalPort => {
-            let (port, range) = local_port(value.text())?;
-            let op = line.current();
-            op.local_port = port;
-            op.local_port_range = range;
+            line.current().local_ports = local_port(value.text())?;
         }
         Opt::Keepalive => line.current().no_keepalive = !value.toggle(),
         Opt::KeepaliveTime => line.current().keepalive_time = value.number(),

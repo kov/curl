@@ -1906,3 +1906,11 @@ witness: curl-tool a_parallel_transfer_resumed_is_metered_with_what_it_kept
 --- old
             self.kept = self.kept.saturating_add(written);
 --- new
+
+=== a local port range from port 0 is taken as asked
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::a_local_port_range_is_read_as_c_reads_it
+--- old
+    let Some(first) = NonZeroU16::new(first) else {
+--- new
+    let Some(first) = NonZeroU16::new(first.max(1)) else {

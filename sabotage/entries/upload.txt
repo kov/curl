@@ -397,3 +397,11 @@ features: test-util
     crlf || (ascii && !cfg!(windows))
 --- new
     crlf
+
+=== a mail's size grows past the largest offset
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core upload::chain::tests::a_mail_s_size_cannot_grow_past_the_largest_offset
+--- old
+                    self.growth = Some(growth.checked_sub(1).ok_or(ErrorKind::TooLarge)?);
+--- new
+                    self.growth = Some(growth.saturating_sub(1));

@@ -1129,7 +1129,7 @@ impl Request {
                 .iter()
                 .any(|rcpt| !rcpt.is_ascii());
         }
-        body.end_as_mail().map_err(|_| ErrorKind::OutOfMemory)?;
+        body.end_as_mail(size).map_err(|_| ErrorKind::OutOfMemory)?;
         *cx.readers_mut() = body.upload().pausing().map(|client| Readers {
             chunked: false,
             exp100: false,

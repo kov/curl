@@ -210,6 +210,48 @@ fn a_mail_is_sent_with_its_envelope_and_its_end() {
     assert!(talk.received().ends_with(b".\r\nQUIT\r\n"));
 }
 
+/// Reads a line that starts with a dot, once.
+struct DotLine(crate::test_cell::Cell<bool>);
+
+impl crate::handler::ReadHandler for DotLine {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        let line = b".dot\r\n";
+        if self.0.replace(true) {
+            return crate::handler::Read::Eof;
+        }
+        buf[..line.len()].copy_from_slice(line);
+        crate::handler::Read::Data(std::num::NonZeroUsize::new(line.len()).unwrap())
+    }
+}
+
+/// A mail whose size the application gives as the largest offset fails
+/// as too large at the first dot escaped, which its size cannot count
+/// (`cr_eob_read`); one of no size given is sent.
+#[test]
+fn a_mail_whose_size_cannot_grow_fails_at_its_first_dot() {
+    for (size, want) in [
+        (
+            Some(u64::try_from(i64::MAX).unwrap()),
+            Err(ErrorKind::TooLarge),
+        ),
+        (None, Ok(())),
+    ] {
+        let talk = mailing(&[]);
+        let mut m = serving(&[&talk]);
+        let ran = transfer(&mut m, URL, move |o| {
+            mail(b"")(o);
+            o.upload = UploadSource::Read {
+                handler: Handler::read(DotLine(Default::default())).unwrap(),
+                rewind: None,
+                size,
+            };
+        });
+        assert_eq!(ran.result, want, "{size:?}: {}", ran.text);
+        let sent = received(&talk);
+        assert_eq!(sent.contains("..dot"), want.is_ok(), "{sent}");
+    }
+}
+
 /// A mail with no sender has the null reverse-path, and one to several
 /// recipients a RCPT TO for each, their brackets and what follows them
 /// kept.

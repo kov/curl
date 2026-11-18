@@ -177,6 +177,10 @@ pub(crate) struct MailEnd {
     ended: bool,
     /// The end was given (`eos`).
     eos: bool,
+    /// How many dots the mail's size, where the application gave one, may
+    /// still grow by before C's offset cannot hold it (`infilesize`, one
+    /// more for each dot added, short of `CURL_OFF_T_MAX`).
+    growth: Option<u64>,
 }
 
 impl Default for MailEnd {
@@ -188,11 +192,21 @@ impl Default for MailEnd {
             read_eos: false,
             ended: false,
             eos: false,
+            growth: None,
         }
     }
 }
 
 impl MailEnd {
+    /// The end of a mail of `size`, if the application gave one.
+    fn of_size(size: Option<u64>) -> MailEnd {
+        let max = u64::try_from(i64::MAX).expect("positive");
+        MailEnd {
+            growth: size.filter(|&n| n > 0).map(|n| max.saturating_sub(n)),
+            ..MailEnd::default()
+        }
+    }
+
     /// Read into `dest`, which is not empty, from `below` changed.
     fn read<H: Host>(
         &mut self,
@@ -225,7 +239,7 @@ impl MailEnd {
                         eos: false,
                     });
                 }
-                self.stuff(read).map_err(|_| ErrorKind::OutOfMemory)?;
+                self.stuff(read)?;
             }
         }
         if self.read_eos && !self.ended {
@@ -262,8 +276,9 @@ impl MailEnd {
     }
 
     /// Take `read` into the buffer, a dot added before what follows a
-    /// line's starting dot.
-    fn stuff(&mut self, read: &[u8]) -> Result<(), OutOfMemory> {
+    /// line's starting dot; a dot the mail's size cannot count fails it
+    /// as too large.
+    fn stuff(&mut self, read: &[u8]) -> Result<(), ErrorKind> {
         self.compact();
         // A dot at most for each in the read, and one more before its
         // first byte where the last read ended on a line's starting dot.
@@ -271,9 +286,12 @@ impl MailEnd {
         let dots = read.iter().filter(|&&b| b == b'.').count() + carried;
         self.buf
             .try_reserve(read.len() + dots)
-            .map_err(|_| OutOfMemory)?;
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         for &b in read {
             if self.matched >= DOT_AT_START {
+                if let Some(growth) = self.growth {
+                    self.growth = Some(growth.checked_sub(1).ok_or(ErrorKind::TooLarge)?);
+                }
                 self.buf.try_push(b'.').expect("reserved");
                 self.matched = 0;
             }
@@ -433,9 +451,10 @@ impl Body {
     }
 
     /// Sent as a mail's body to SMTP's `DATA`: its dots escaped and its
-    /// end marked, above any conversion (`cr_eob_add`).
-    pub(crate) fn end_as_mail(&mut self) -> Result<(), OutOfMemory> {
-        self.chain.mail = Some(try_box(MailEnd::default())?);
+    /// end marked, above any conversion (`cr_eob_add`); `size` is the
+    /// mail's as the application gave it, if it did.
+    pub(crate) fn end_as_mail(&mut self, size: Option<u64>) -> Result<(), OutOfMemory> {
+        self.chain.mail = Some(try_box(MailEnd::of_size(size))?);
         Ok(())
     }
 
@@ -619,6 +638,26 @@ mod tests {
         stage.stuff(read).unwrap();
         assert_eq!(stage.held(), b"a\r\n..b\r\n..c");
         assert_eq!(stage.buf.capacity(), read.len() + 2);
+    }
+
+    /// A dot added to a mail whose size the application gave grows it by
+    /// one, and one that would grow it past the largest offset fails it
+    /// as too large, nothing of the read taken; a mail of no size given
+    /// grows without limit (`cr_eob_read`).
+    #[test]
+    fn a_mail_s_size_cannot_grow_past_the_largest_offset() {
+        let max = u64::try_from(i64::MAX).unwrap();
+        let mut stage = MailEnd::of_size(Some(max - 1));
+        stage.stuff(b".a\r\n").unwrap();
+        assert_eq!(stage.stuff(b".b\r\n"), Err(ErrorKind::TooLarge));
+        let mut stage = MailEnd::of_size(Some(max));
+        stage.stuff(b"no dot\r\n").unwrap();
+        assert_eq!(stage.stuff(b".a"), Err(ErrorKind::TooLarge));
+        for size in [None, Some(0)] {
+            let mut stage = MailEnd::of_size(size);
+            stage.stuff(b".a\r\n.b\r\n").unwrap();
+            assert_eq!(stage.held(), b"..a\r\n..b\r\n");
+        }
     }
 
     /// What was given is let go of before more is taken: the buffer

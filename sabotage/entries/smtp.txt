@@ -422,3 +422,12 @@ witness: curl-core a_mail_s_dots_survive_every_allocation_failing
         let carried = usize::from(self.matched >= DOT_AT_START);
 --- new
         let carried = 0;
+
+=== a mail's size is not given to its dot escaping
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_mail_whose_size_cannot_grow_fails_at_its_first_dot
+features: test-util
+--- old
+        body.end_as_mail(size).map_err(|_| ErrorKind::OutOfMemory)?;
+--- new
+        body.end_as_mail(None).map_err(|_| ErrorKind::OutOfMemory)?;

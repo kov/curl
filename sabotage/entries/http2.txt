@@ -51,11 +51,11 @@ witness: curl-core proto::http::tests::h2::a_body_goes_as_data_ending_the_stream
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_reset_stream_fails_the_transfer
 --- old
-        if stream.reset {
-            let error = stream.error;
+        if stream.reset() {
+            let error = stream.error();
 --- new
         if false {
-            let error = stream.error;
+            let error = stream.error();
 
 === a stream that closed before its head ended is taken as whole
 file: crates/curl-core/src/proto/http/h2.rs
@@ -585,17 +585,17 @@ witness: curl-core an_http_2_body_s_frames_allocate_nothing
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_stream_refused_by_a_goaway_with_an_error_fails_with_it
 --- old
-                        && let Some(g) = goaway.filter(|g| g.error != H2Error::NO_ERROR)
+                let failed = match goaway.filter(|g| g.error != H2Error::NO_ERROR) {
 --- new
-                        && let Some(g) = goaway.filter(|g| g.error == H2Error::NO_ERROR)
+                let failed = match goaway.filter(|g| g.error == H2Error::NO_ERROR) {
 
 === a success mid-upload resets the stream
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_success_mid_upload_does_not_reset_the_stream
 --- old
-        if !s.closed && !s.body_eos && !(200..400).contains(&status) {
+        if !s.closed() && !s.body_eos && !(200..400).contains(&status) {
 --- new
-        if !s.closed && (!s.body_eos || !(200..400).contains(&status)) {
+        if !s.closed() && (!s.body_eos || !(200..400).contains(&status)) {
 
 === a body the application refuses resets its stream with a code of its own
 file: crates/curl-core/src/http2.rs
@@ -618,19 +618,19 @@ file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
 --- old
     fn closed_with(&mut self, error: H2Error) {
-        self.closed = true;
+        self.end = self.end.closed_with(error);
 --- new
     fn closed_with(&mut self, error: H2Error) {
         return;
-        self.closed = true;
+        self.end = self.end.closed_with(error);
 
 === a stream closed with an error as its reset goes is not taken as reset
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
 --- old
-        self.reset |= error != H2Error::NO_ERROR;
+            reset: was || error != H2Error::NO_ERROR,
 --- new
-        self.reset |= error == H2Error::NO_ERROR;
+            reset: was || error == H2Error::NO_ERROR,
 
 === a sibling's window the session could not set leaves its stream open
 file: crates/curl-core/src/proto/http/h2.rs

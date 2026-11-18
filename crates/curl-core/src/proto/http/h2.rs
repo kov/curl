@@ -81,12 +81,10 @@ pub(super) struct H2Stream {
     sendbuf: ChunkQueue,
     /// All of the body is in the buffer (`body_eos`).
     body_eos: bool,
-    /// The stream closed (`closed`), with this error code (`error`); one
-    /// is a reset (`reset`), by the server if it said so
-    /// (`reset_by_server`).
-    closed: bool,
-    error: H2Error,
-    reset: bool,
+    /// Whether the stream ended, and how (`closed`, `error`, `reset`).
+    end: StreamEnd,
+    /// The server reset it (`reset_by_server`): told as its RST_STREAM
+    /// came, before the session closes the stream.
     reset_by_server: bool,
     /// The response's status, while its head is read.
     status: Option<u16>,
@@ -118,9 +116,7 @@ impl Default for H2Stream {
             id: None,
             sendbuf: crate::proto::http2::send_buffer(),
             body_eos: false,
-            closed: false,
-            error: H2Error::default(),
-            reset: false,
+            end: StreamEnd::Open,
             reset_by_server: false,
             status: None,
             body_started: false,
@@ -190,9 +186,72 @@ impl H2Stream {
 
     /// The session closed the stream as it sent, with `error`.
     fn closed_with(&mut self, error: H2Error) {
-        self.closed = true;
-        self.error = error;
-        self.reset |= error != H2Error::NO_ERROR;
+        self.end = self.end.closed_with(error);
+    }
+
+    fn closed(&self) -> bool {
+        self.end != StreamEnd::Open
+    }
+
+    fn reset(&self) -> bool {
+        matches!(self.end, StreamEnd::Ended { reset: true, .. })
+    }
+
+    /// The error it ended with; none while it is open.
+    fn error(&self) -> H2Error {
+        match self.end {
+            StreamEnd::Open => H2Error::NO_ERROR,
+            StreamEnd::Ended { error, .. } => error,
+        }
+    }
+}
+
+/// Whether a stream has ended, and how: one fact, where C keeps `closed`,
+/// `error` and `reset` beside each other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamEnd {
+    Open,
+    /// It ended with `error`; `reset` if a reset ended it, by either side,
+    /// which a later close does not undo.
+    Ended {
+        error: H2Error,
+        reset: bool,
+    },
+}
+
+impl StreamEnd {
+    /// The session closed it with `error`, a reset where that is not
+    /// `NO_ERROR` (`on_stream_close`).
+    fn closed_with(self, error: H2Error) -> StreamEnd {
+        let was = matches!(self, StreamEnd::Ended { reset: true, .. });
+        StreamEnd::Ended {
+            error,
+            reset: was || error != H2Error::NO_ERROR,
+        }
+    }
+
+    /// Ended as the request decides, its error and reset left as they
+    /// were (`stream->closed = TRUE`).
+    fn ended(self) -> StreamEnd {
+        match self {
+            StreamEnd::Open => StreamEnd::Ended {
+                error: H2Error::NO_ERROR,
+                reset: false,
+            },
+            ended => ended,
+        }
+    }
+
+    /// Ended by a reset of ours, its error left as it was
+    /// (`cf_h2_header_error`).
+    fn reset_by_us(self) -> StreamEnd {
+        match self {
+            StreamEnd::Open => StreamEnd::Ended {
+                error: H2Error::NO_ERROR,
+                reset: true,
+            },
+            StreamEnd::Ended { error, .. } => StreamEnd::Ended { error, reset: true },
+        }
     }
 }
 
@@ -813,7 +872,7 @@ impl Request {
         }
         self.h2_egress(cx, lease)?;
         let stream = self.stream();
-        if stream.closed && !stream.body_started {
+        if stream.closed() && !stream.body_started {
             let id = stream.id.map_or(0, |id| id.0);
             trace::info(cx, format_args!("stream {id} closed"));
             return Err(ErrorKind::SendError);
@@ -834,7 +893,7 @@ impl Request {
         let stream = wire.h2_mut().expect("a request over HTTP/2");
         let id = stream.id.expect("its head went");
         let len = range.len();
-        if stream.closed {
+        if stream.closed() {
             if stream.body_started {
                 // The server is done with the request: what is left of its
                 // body is dropped, as no transport failed.
@@ -952,7 +1011,7 @@ impl Request {
     pub(crate) fn h1_required(&self) -> bool {
         self.wire
             .h2()
-            .is_some_and(|s| s.reset && s.error == H2Error::HTTP_1_1_REQUIRED)
+            .is_some_and(|s| s.reset() && s.error() == H2Error::HTTP_1_1_REQUIRED)
     }
 
     fn stream(&mut self) -> &mut H2Stream {
@@ -1098,7 +1157,7 @@ impl Request {
             // one receive: C's `cf_h2_recv` says nothing read, the body
             // written by the session's callbacks, so `sendrecv_dl` does
             // not call it again.
-            if self.stream().closed || left == 0 {
+            if self.stream().closed() || left == 0 {
                 spent = left == 0;
                 break;
             }
@@ -1246,14 +1305,14 @@ impl Request {
             trace::of(cx, H2, format_args!("[{id}] xfer write failed"));
             return Err(e);
         }
-        if stream.closed {
+        if stream.closed() {
             trace::of(cx, H2, format_args!("[{id}] returning CLOSE"));
             self.stream_closed(cx, lease)?;
             return Ok(StreamRecv::Closed);
         }
         let h2 = lease.conn().h2().expect("an HTTP/2 connection");
         let gone = h2.closed() || h2.goaway().is_some_and(|g| g.last.0 < id);
-        if stream.reset || gone {
+        if stream.reset() || gone {
             trace::of(cx, H2, format_args!("[{id}] returning ERR"));
             return Err(if self.base.pipeline.bytecount() > 0 {
                 ErrorKind::PartialFile
@@ -1361,8 +1420,8 @@ impl Request {
         let bytecount = self.base.pipeline.bytecount();
         let stream = self.stream();
         let id = stream.id.map_or(0, |id| id.0);
-        if stream.reset {
-            let error = stream.error;
+        if stream.reset() {
+            let error = stream.error();
             if error == H2Error::REFUSED_STREAM {
                 trace::info(
                     cx,
@@ -1849,19 +1908,17 @@ impl Request {
                 Heard::Fine
             }
             Event::Closed { stream, error } if ours(stream) => {
+                // A stream a GOAWAY refused fails with the GOAWAY's error,
+                // if it had one.
+                let goaway = after.goaway.or(goaway);
+                let failed = match goaway.filter(|g| g.error != H2Error::NO_ERROR) {
+                    Some(g) if error == H2Error::REFUSED_STREAM => g.error,
+                    _ => error,
+                };
                 let s = self.stream();
-                s.closed = true;
-                s.error = error;
-                if error != H2Error::NO_ERROR {
-                    s.reset = true;
-                    // A stream a GOAWAY refused fails with the GOAWAY's
-                    // error, if it had one.
-                    let goaway = after.goaway.or(goaway);
-                    if error == H2Error::REFUSED_STREAM
-                        && let Some(g) = goaway.filter(|g| g.error != H2Error::NO_ERROR)
-                    {
-                        s.error = g.error;
-                    }
+                s.end = s.end.closed_with(error);
+                if let StreamEnd::Ended { error, .. } = &mut s.end {
+                    *error = failed;
                 }
                 trace_closed(cx, stream, error);
                 Heard::Fine
@@ -2159,9 +2216,9 @@ impl Request {
     fn stream_end<H: Host>(&mut self, cx: &mut StepCx<'_, H>, stream: StreamId, after: &mut After) {
         let s = self.stream();
         let status = s.status.unwrap_or(0);
-        if !s.closed && !s.body_eos && !(200..400).contains(&status) {
+        if !s.closed() && !s.body_eos && !(200..400).contains(&status) {
             after.resets.try_push((stream, H2Error::STREAM_CLOSED)).ok();
-            s.closed = true;
+            s.end = s.end.ended();
             let id = stream.0;
             let status = s.status.map_or(-1, i32::from);
             trace::of(
@@ -2194,8 +2251,7 @@ impl Request {
         if let Some(id) = s.id {
             after.resets.try_push((id, H2Error::STREAM_CLOSED)).ok();
         }
-        s.closed = true;
-        s.reset = true;
+        s.end = s.end.reset_by_us();
         Heard::Failed
     }
 
@@ -2220,8 +2276,8 @@ impl Request {
     pub(super) fn h2_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) {
         let stream = self.stream();
         let id = stream.id;
-        let open = !stream.closed;
-        stream.closed = true;
+        let open = !stream.closed();
+        stream.end = stream.end.ended();
         if lease.conn().h2().is_none() {
             return;
         }

@@ -233,6 +233,36 @@ impl Frame {
         }
     }
 
+    /// Do `command` to the jar a transfer uses, through the context lent.
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn jar_command(
+        self,
+        id: TransferId,
+        command: curl_core::easy::JarCommand<'_>,
+        notes: &mut dyn FnMut(&[u8]),
+    ) -> Option<Result<(), curl_core::easy::JarError>> {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.jar_command(id, command, notes)
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.jar_command(id, command, notes)
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.jar_command(id, command, notes)
+            }
+        }
+    }
+
     /// The cookies of the jar a transfer uses, through the context lent.
     ///
     /// # Safety

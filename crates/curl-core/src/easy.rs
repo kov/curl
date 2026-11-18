@@ -224,6 +224,52 @@ impl EasyView<'_> {
     pub fn save_cookies(&mut self) -> Result<(), SaveError> {
         self.easy.save_cookies()
     }
+
+    /// Do `command` to the handle's jar, its trace lines given to `notes`.
+    pub fn jar_command(
+        &mut self,
+        command: JarCommand<'_>,
+        notes: impl FnMut(&[u8]),
+    ) -> Result<(), JarError> {
+        match command {
+            JarCommand::Clear => self.clear_cookies().map_err(JarError::from),
+            JarCommand::ClearSession => self.clear_session_cookies().map_err(JarError::from),
+            JarCommand::Save => self.save_cookies().map_err(JarError::Save),
+            JarCommand::Reload => self.reload_cookies(notes).map_err(JarError::Load),
+            JarCommand::Add(line) => self.add_cookie(line, notes).map_err(JarError::from),
+        }
+    }
+}
+
+/// A change the application asks of a handle's cookie jar
+/// (`CURLOPT_COOKIELIST`), from outside a transfer or from one of its
+/// handlers alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JarCommand<'a> {
+    /// Every cookie dropped.
+    Clear,
+    /// The session cookies dropped.
+    ClearSession,
+    /// The jar written to its file.
+    Save,
+    /// The cookie files read again.
+    Reload,
+    /// A cookie stored, a `Set-Cookie:` header or a Netscape line.
+    Add(&'a [u8]),
+}
+
+/// Why a [`JarCommand`] failed.
+#[derive(Debug)]
+pub enum JarError {
+    OutOfMemory,
+    Load(LoadError),
+    Save(SaveError),
+}
+
+impl From<OutOfMemory> for JarError {
+    fn from(_: OutOfMemory) -> JarError {
+        JarError::OutOfMemory
+    }
 }
 
 /// What RTSP keeps from one request and connection to the next, through

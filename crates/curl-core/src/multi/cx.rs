@@ -1155,6 +1155,19 @@ impl<'a> TransferCx<'a> {
         self.calls.easy_mut(id).map(Easy::rtsp_mut)
     }
 
+    /// Do `command` to the jar a transfer uses (`CURLOPT_COOKIELIST`,
+    /// which C does from a callback too).
+    pub fn jar_command(
+        &mut self,
+        id: TransferId,
+        command: crate::easy::JarCommand<'_>,
+        notes: &mut dyn FnMut(&[u8]),
+    ) -> Option<Result<(), crate::easy::JarError>> {
+        self.calls
+            .easy_mut(id)
+            .map(|easy| easy.view_as(id).jar_command(command, notes))
+    }
+
     /// The cookies of the jar a transfer uses, a line each in the
     /// Netscape format, the expired ones swept (`CURLINFO_COOKIELIST`,
     /// which C answers from a callback too).
@@ -1495,6 +1508,18 @@ impl<H: Host> EventCx<'_, H> {
         self.slots.app_easy_mut(id).map(Easy::rtsp_mut)
     }
 
+    /// As `TransferCx::jar_command`.
+    pub fn jar_command(
+        &mut self,
+        id: TransferId,
+        command: crate::easy::JarCommand<'_>,
+        notes: &mut dyn FnMut(&[u8]),
+    ) -> Option<Result<(), crate::easy::JarError>> {
+        self.slots
+            .app_easy_mut(id)
+            .map(|easy| easy.view_as(id).jar_command(command, notes))
+    }
+
     /// As `TransferCx::cookie_list`.
     pub fn cookie_list(&mut self, id: TransferId) -> Option<Result<Vec<Vec<u8>>, OutOfMemory>> {
         self.slots.app_easy_mut(id).map(Easy::cookie_list)
@@ -1693,6 +1718,19 @@ impl<H: Host> NotifyCx<'_, H> {
         id: TransferId,
     ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
         self.multi.slots.app_easy_mut(id).map(Easy::rtsp_mut)
+    }
+
+    /// As `TransferCx::jar_command`.
+    pub fn jar_command(
+        &mut self,
+        id: TransferId,
+        command: crate::easy::JarCommand<'_>,
+        notes: &mut dyn FnMut(&[u8]),
+    ) -> Option<Result<(), crate::easy::JarError>> {
+        self.multi
+            .slots
+            .app_easy_mut(id)
+            .map(|easy| easy.view_as(id).jar_command(command, notes))
     }
 
     /// As `TransferCx::cookie_list`.

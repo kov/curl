@@ -246,9 +246,9 @@ witness: curl-sys-abi handle_tests::a_cookie_list_is_traced_as_it_is_set
 file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::a_cookie_list_is_traced_as_it_is_set
 --- old
-        if verbose && !short {
+        if self.verbose && !self.short {
 --- new
-        if !short {
+        if !self.short {
 
 === a reload does not warn of a cookie file it cannot open
 file: crates/curl-core/src/easy.rs
@@ -443,3 +443,14 @@ witness: curl-sys-abi handle_tests::the_cookie_list_is_read_from_a_callback
             lines.expect("an added handle is in its multi").ok()
 --- new
             lines.and(None)
+
+=== a cookie command from a callback is refused as a recursive call
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_cookie_command_from_a_callback_changes_the_jar
+--- old
+                let (ffi::CURLOPT_COOKIELIST, Some(command)) = (option, given) else {
+--- new
+                if option == ffi::CURLOPT_COOKIELIST {
+                    return Err(EasyError::RecursiveApiCall);
+                }
+                let (ffi::CURLOPT_COOKIELIST, Some(command)) = (option, given) else {

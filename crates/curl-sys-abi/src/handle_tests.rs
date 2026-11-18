@@ -11412,3 +11412,75 @@ fn a_handle_being_cleaned_up_is_not_added_from_its_callback() {
     let refused = format!("added {}\n", ffi::CURLM_RECURSIVE_API_CALL.0);
     assert!(seen.texts.contains(&refused), "{:#?}", seen.texts);
 }
+
+/// `CURLOPT_COOKIELIST` set from the transfer's own callback does what it
+/// says to the jar, as C's setopt does wherever it is called: a cookie
+/// stored, then every cookie dropped.
+#[test]
+fn a_cookie_command_from_a_callback_changes_the_jar() {
+    struct Commanded {
+        c: *mut CURL,
+        codes: Vec<CURLcode>,
+        counts: Vec<usize>,
+    }
+    fn count(c: *mut CURL) -> usize {
+        let mut list: *mut ffi::curl_slist = ptr::null_mut();
+        // SAFETY: a live handle, and a list pointer for the info.
+        let code = unsafe { curl_easy_getinfo(c, ffi::CURLINFO_COOKIELIST, &raw mut list) };
+        assert_eq!(code, CURLE_OK);
+        let (mut n, mut at) = (0, list);
+        while !at.is_null() {
+            n += 1;
+            // SAFETY: a node of the list getinfo made.
+            at = unsafe { &*at }.next;
+        }
+        // SAFETY: the list getinfo made, the application's to free.
+        unsafe { crate::strings::curl_slist_free_all(list) };
+        n
+    }
+    unsafe extern "C" fn commanding(
+        _: *mut c_char,
+        size: usize,
+        n: usize,
+        out: *mut c_void,
+    ) -> usize {
+        // SAFETY: the `Commanded` below, live through the transfer.
+        let out = unsafe { &mut *out.cast::<Commanded>() };
+        let stored = c"Set-Cookie: flavour=oat; domain=example.com; path=/";
+        for command in [stored, c"ALL"] {
+            out.codes.push(pointer(
+                out.c,
+                ffi::CURLOPT_COOKIELIST,
+                command.as_ptr().cast_mut(),
+            ));
+            out.counts.push(count(out.c));
+        }
+        size * n
+    }
+    let (path, url) = file("cookie-command-in-callback", b"x");
+    let c = curl_easy_init();
+    let mut commanded = Commanded {
+        c,
+        codes: Vec::new(),
+        counts: Vec::new(),
+    };
+    function(
+        c,
+        ffi::CURLOPT_WRITEFUNCTION,
+        commanding as WriteFn as *const (),
+    );
+    pointer(
+        c,
+        ffi::CURLOPT_WRITEDATA,
+        (&raw mut commanded).cast::<c_void>(),
+    );
+    pointer(c, ffi::CURLOPT_COOKIEFILE, c"".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle, `commanded` live through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(commanded.codes, [CURLE_OK, CURLE_OK]);
+    assert_eq!(commanded.counts, [1, 0]);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    std::fs::remove_file(path).unwrap();
+}

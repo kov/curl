@@ -22,7 +22,7 @@ use core::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::altsvc::{AltSvcCtrl, Versions};
 use curl_core::cookie::LoadError;
-use curl_core::easy::CacheFile;
+use curl_core::easy::{CacheFile, JarCommand, JarError};
 use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
 use curl_core::hsts::LoadError as CacheLoadError;
@@ -2326,14 +2326,26 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
     // What a cookie command traces, held until the handle is no longer
     // borrowed: the debug function may call back into it.
     let mut notes: Vec<Vec<u8>> = Vec::new();
+    let verbose = shim.with_options(|o| o.output.verbose).unwrap_or(false);
     let done = shim.with_easy(|e| {
         let mut easy = match e {
             easy::EasyRef::Easy(easy) => easy,
-            // From a callback, only the options are reached: the jar the
-            // files and the save name turn on is made as the next transfer
-            // starts.
-            easy::EasyRef::Frame(..) if option != ffi::CURLOPT_COOKIELIST => return Ok(()),
-            easy::EasyRef::Frame(..) => return Err(EasyError::RecursiveApiCall),
+            // A command reaches the jar from a callback too, as C's does.
+            easy::EasyRef::Frame(frame, id) => {
+                let (ffi::CURLOPT_COOKIELIST, Some(command)) = (option, given) else {
+                    // From a callback, only the options are reached: the
+                    // jar the files and the save name turn on is made as
+                    // the next transfer starts.
+                    return Ok(());
+                };
+                let mut note = noting(verbose, &mut notes);
+                // SAFETY: the frame is the innermost lent, and the borrow
+                // ends with this call, inside its callback.
+                let done =
+                    unsafe { frame.jar_command(id, jar_command(command), &mut |l| note.note(l)) };
+                let done = done.expect("an added handle is in its multi");
+                return note.finish(done).map_err(EasyError::from);
+            }
         };
         match (option, given) {
             (ffi::CURLOPT_COOKIEFILE, None) => easy.forget_cookies(),
@@ -2341,7 +2353,9 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
                 easy.enable_cookies().map_err(|_| ErrorKind::OutOfMemory)?;
             }
             (ffi::CURLOPT_COOKIELIST, Some(command)) => {
-                return cookie_command(&mut easy, command, &mut notes).map_err(EasyError::from);
+                let mut note = noting(verbose, &mut notes);
+                let done = easy.jar_command(jar_command(command), |l| note.note(l));
+                return note.finish(done).map_err(EasyError::from);
             }
             _ => {}
         }
@@ -2357,45 +2371,66 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
     }
 }
 
-/// `CURLOPT_COOKIELIST`: a command, in any case, or a cookie to store;
-/// what a verbose handle traces of it into `notes`.
-fn cookie_command(
-    easy: &mut curl_core::easy::EasyView<'_>,
-    command: &[u8],
-    notes: &mut Vec<Vec<u8>>,
-) -> Result<(), ErrorKind> {
-    let verbose = easy.options().output.verbose;
-    let mut short = false;
-    let note = |line: &[u8]| {
-        if verbose && !short {
-            let mut held = Vec::new();
-            short = held.try_extend_from_slice(line).is_err() || notes.try_push(held).is_err();
-        }
-    };
-    let oom = |_: OutOfMemory| ErrorKind::OutOfMemory;
-    let done = if command.eq_ignore_ascii_case(b"ALL") {
-        easy.clear_cookies().map_err(oom)
+/// `CURLOPT_COOKIELIST`'s value as what it asks of the jar: a command,
+/// in any case, or else a cookie to store.
+fn jar_command(command: &[u8]) -> JarCommand<'_> {
+    if command.eq_ignore_ascii_case(b"ALL") {
+        JarCommand::Clear
     } else if command.eq_ignore_ascii_case(b"SESS") {
-        easy.clear_session_cookies().map_err(oom)
+        JarCommand::ClearSession
     } else if command.eq_ignore_ascii_case(b"FLUSH") {
-        // A jar that cannot be written fails nothing, as in C, which says
-        // so only in the trace; outside a transfer, there is none here.
-        easy.save_cookies().ok();
-        Ok(())
+        JarCommand::Save
     } else if command.eq_ignore_ascii_case(b"RELOAD") {
-        easy.reload_cookies(note).map_err(|e| match e {
-            LoadError::OutOfMemory => ErrorKind::OutOfMemory,
-            LoadError::Read => ErrorKind::ReadError,
-            LoadError::TooLarge => ErrorKind::TooLarge,
-        })
+        JarCommand::Reload
     } else {
-        easy.add_cookie(command, note).map_err(oom)
-    };
-    match short {
-        true => done.and(Err(ErrorKind::OutOfMemory)),
-        false => done,
+        JarCommand::Add(command)
     }
 }
+
+/// What a verbose handle traces of a jar command, held in `notes` until
+/// the handle is no longer borrowed.
+struct Noting<'n> {
+    verbose: bool,
+    notes: &'n mut Vec<Vec<u8>>,
+    /// A line could not be held, for want of memory.
+    short: bool,
+}
+
+fn noting(verbose: bool, notes: &mut Vec<Vec<u8>>) -> Noting<'_> {
+    Noting {
+        verbose,
+        notes,
+        short: false,
+    }
+}
+
+impl Noting<'_> {
+    fn note(&mut self, line: &[u8]) {
+        if self.verbose && !self.short {
+            let mut held = Vec::new();
+            self.short =
+                held.try_extend_from_slice(line).is_err() || self.notes.try_push(held).is_err();
+        }
+    }
+
+    /// The command's result as setopt answers it: a jar that cannot be
+    /// written fails nothing, as in C, which says so only in the trace.
+    fn finish(self, done: Result<(), JarError>) -> Result<(), ErrorKind> {
+        let done = match done {
+            Ok(()) | Err(JarError::Save(_)) => Ok(()),
+            Err(JarError::OutOfMemory | JarError::Load(LoadError::OutOfMemory)) => {
+                Err(ErrorKind::OutOfMemory)
+            }
+            Err(JarError::Load(LoadError::Read)) => Err(ErrorKind::ReadError),
+            Err(JarError::Load(LoadError::TooLarge)) => Err(ErrorKind::TooLarge),
+        };
+        match self.short {
+            true => done.and(Err(ErrorKind::OutOfMemory)),
+            false => done,
+        }
+    }
+}
+
 const _: ffi::proto::curl_easy_setopt = curl_easy_setopt;
 
 /// `CURLOPT_UPLOAD_FLAGS`' value: its low byte, whatever the rest, as

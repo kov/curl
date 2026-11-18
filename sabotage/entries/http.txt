@@ -64,7 +64,7 @@ witness: curl-core proto::http::tests::a_head_wants_no_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 --- old
-        self.head().meta().close() || self.base.pipeline.body_closes() || self.closing
+        self.head().closes() || self.base.pipeline.body_closes() || self.closing
 --- new
         self.base.pipeline.body_closes() || self.closing
 
@@ -531,9 +531,9 @@ witness: curl-core proto::http::tests::an_error_response_stops_the_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::an_error_response_stops_the_body
 --- old
-        self.head().meta().close() || self.base.pipeline.body_closes() || self.closing
+        self.head().closes() || self.base.pipeline.body_closes() || self.closing
 --- new
-        self.head().meta().close() || self.base.pipeline.body_closes()
+        self.head().closes() || self.base.pipeline.body_closes()
 
 === the library's Expect line is not sent
 file: crates/curl-core/src/proto/http.rs
@@ -1612,9 +1612,9 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_challenge_read_as_a_probe_goes_lets_its_head_go
 --- old
             || head.probe()
-            || meta.close()
+            || head.closes()
 --- new
-            || meta.close()
+            || head.closes()
 
 === a location followed is parsed with spaces allowed
 file: crates/curl-core/src/multi/state/leg.rs

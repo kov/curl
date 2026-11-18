@@ -419,3 +419,11 @@ witness: curl-core proto::http1::response::tests::a_blank_first_line_an_empty_al
         let kind = if is_newline(self.line[0]) && self.status.is_none() {
 --- new
         let kind = if false {
+
+=== a response whose body is abandoned unread keeps its connection
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
+--- old
+        self.meta.close() || self.framing == Some(Framing::Abandoned)
+--- new
+        self.meta.close()

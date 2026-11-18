@@ -61,13 +61,12 @@ witness: curl-core proto::http::tests::time_condition::an_older_document_ends_as
                 let _ = version;
 
 === a document ruled out keeps its connection
-file: crates/curl-core/src/proto/http1/framing.rs
+file: crates/curl-core/src/proto/http1/response.rs
 witness: curl-core proto::http::tests::time_condition::an_older_document_ends_as_a_304
 --- old
-            note.push(Note::Simulate304);
-            self.close = true;
+        self.meta.close() || self.framing == Some(Framing::Abandoned)
 --- new
-            note.push(Note::Simulate304);
+        self.meta.close()
 
 === the second before 1970 is taken as a time
 file: crates/curl-tool/src/options/apply.rs

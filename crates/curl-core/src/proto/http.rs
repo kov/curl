@@ -2975,7 +2975,7 @@ impl Request {
         let meta = head.meta();
         if !self.sending()
             || head.probe()
-            || meta.close()
+            || head.closes()
             || meta.rewinds()
             || !matches!(self.method, Method::Post | Method::Upload)
         {
@@ -3214,7 +3214,7 @@ impl Request {
     /// the connection closes), its body showed more than it should, or
     /// the request decided it (`streamclose`).
     fn closes(&self) -> bool {
-        self.head().meta().close() || self.base.pipeline.body_closes() || self.closing
+        self.head().closes() || self.base.pipeline.body_closes() || self.closing
     }
 
     /// The connection hears the transfer is done with it

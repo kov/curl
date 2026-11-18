@@ -293,6 +293,13 @@ impl HeadParser {
         &self.meta
     }
 
+    /// The connection is not used again for what this head says: it asks
+    /// so (`Connection: close`, a body read until the connection closes),
+    /// or its body is abandoned, left on the connection unread.
+    pub(crate) fn closes(&self) -> bool {
+        self.meta.close() || self.framing == Some(Framing::Abandoned)
+    }
+
     pub(crate) fn meta_mut(&mut self) -> &mut Meta {
         &mut self.meta
     }

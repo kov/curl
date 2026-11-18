@@ -1075,11 +1075,15 @@ fn a_resumed_get_takes_only_the_rest() {
         resume,
     );
     assert_eq!((ran.result, ran.seen.body()), (Ok(()), Vec::new()));
+    let text = ran.seen.text();
     assert!(
-        ran.seen
-            .text()
-            .iter()
+        text.iter()
             .any(|l| l == "The entire document is already downloaded\n")
+    );
+    // Its body, left unread, goes with the connection.
+    assert!(
+        text.last().unwrap().starts_with("shutting down connection"),
+        "{text:?}"
     );
 }
 

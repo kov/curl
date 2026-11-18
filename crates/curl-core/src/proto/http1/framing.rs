@@ -746,8 +746,8 @@ impl Meta {
             if !whole {
                 return (note, Err(FramingError::CannotResume));
             }
-            // What is stored is the whole document.
-            self.close = true;
+            // What is stored is the whole document; abandoned, the
+            // connection goes with it (`Response::closes`).
             note.push(Note::AlreadyDownloaded);
             return (note, Ok(Framing::Abandoned));
         }
@@ -758,7 +758,6 @@ impl Meta {
         if let Some(Err(unmet)) = asked.time_condition.map(|c| c.met_by(self.doc_time)) {
             note.push(Note::Unmet(unmet));
             note.push(Note::Simulate304);
-            self.close = true;
             self.unmet = true;
             return (note, Ok(Framing::Abandoned));
         }

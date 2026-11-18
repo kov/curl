@@ -220,7 +220,15 @@ impl Part<Below<'_>> for TlsLayer {
             PeerState::Failed(kind) => return Err(kind),
         }
         let (session, mut io) = self.parts(cx, below);
-        match session.handshake(&mut io)? {
+        // A handshake that fails is over: the layer stays failed and is
+        // not started again. C's filter has no such state, and a
+        // connection whose handshake failed is closed before anything
+        // could connect it again; here a second connect cannot step a
+        // session its library has given up on.
+        let shaken = session.handshake(&mut io).inspect_err(|&kind| {
+            self.peer_state = PeerState::Failed(kind);
+        })?;
+        match shaken {
             Shaken::Waiting => Ok(Handshake::Waiting),
             Shaken::Deferred(deferred) => {
                 self.peer_state = PeerState::Awaiting {
@@ -868,10 +876,20 @@ mod tests {
     /// A session whose handshake is done with a check made for another
     /// session than the layer's, or not done, and which reads and writes
     /// as if open: neither may be read from or written to.
-    struct Unopened(Option<SessionPeer>);
+    /// A session whose handshake ends checked for `.0`, or goes on if
+    /// none, or fails with `.1`; `.2` counts the handshake's steps.
+    struct Unopened(
+        Option<SessionPeer>,
+        Option<ErrorKind>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    );
 
     impl TlsSession for Unopened {
         fn handshake(&mut self, _: &mut TlsIo<'_>) -> Result<Shaken, ErrorKind> {
+            self.2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(kind) = self.1 {
+                return Err(kind);
+            }
             Ok(match &self.0 {
                 Some(other) => Shaken::Done(Checked::testing_for(other)),
                 None => Shaken::Waiting,
@@ -909,6 +927,20 @@ mod tests {
     /// through it: what the connect gave, and whether the read or the
     /// write reached the session.
     fn used(session: Unopened) -> (Result<Handshake, ErrorKind>, bool, bool) {
+        let (shaken, _, read, written) = used_twice(session);
+        (shaken, read, written)
+    }
+
+    /// As `used`, the connect made a second time after the first: what
+    /// each gave.
+    fn used_twice(
+        session: Unopened,
+    ) -> (
+        Result<Handshake, ErrorKind>,
+        Result<Handshake, ErrorKind>,
+        bool,
+        bool,
+    ) {
         let clock = ManualClock::new().unwrap();
         let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(clock)
@@ -926,11 +958,13 @@ mod tests {
         let (top, rest) = layers.split_last_mut().unwrap();
         let mut cx = Noting(None);
         let shaken = top.connect(&mut cx, Below::new(rest, &*socket));
+        let again = top.connect(&mut cx, Below::new(rest, &*socket));
         let mut out = [0u8; 4];
         let read = top.recv(&mut cx, Below::new(rest, &*socket), &mut out);
         let written = top.send(&mut cx, Below::new(rest, &*socket), b"ab");
         (
             shaken,
+            again,
             matches!(read, Ok(Recv::Data(_))),
             matches!(written, Ok(Sent::Bytes(_))),
         )
@@ -942,17 +976,31 @@ mod tests {
     #[test]
     fn only_a_session_checked_for_its_own_peer_is_read_or_written() {
         let other = SessionPeer::testing();
-        let (shaken, read, written) = used(Unopened(Some(other)));
+        let (shaken, read, written) = used(Unopened(Some(other), None, Default::default()));
         assert_eq!(shaken, Err(ErrorKind::PeerFailedVerification));
         assert!(
             !read && !written,
             "a session checked for another is not used"
         );
-        let (shaken, read, written) = used(Unopened(None));
+        let (shaken, read, written) = used(Unopened(None, None, Default::default()));
         assert_eq!(shaken, Ok(Handshake::Waiting));
         assert!(
             !read && !written,
             "a session still shaking hands is not used"
         );
+    }
+
+    /// A handshake that fails leaves the layer failed: connected again,
+    /// it gives the same failure without starting the handshake over, and
+    /// the session is neither read from nor written to.
+    #[test]
+    fn a_failed_handshake_is_not_started_again() {
+        let steps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refused = Some(ErrorKind::SslConnectError);
+        let (shaken, again, read, written) = used_twice(Unopened(None, refused, steps.clone()));
+        assert_eq!(shaken, Err(ErrorKind::SslConnectError));
+        assert_eq!(again, Err(ErrorKind::SslConnectError));
+        assert_eq!(steps.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(!read && !written, "a failed session is not used");
     }
 }

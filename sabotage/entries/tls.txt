@@ -749,3 +749,13 @@ witness: curl-core tls::hostcheck::tests::unit1397_host_checks
     let host = host.strip_suffix(b".").unwrap_or(host);
     let pattern = pattern.strip_suffix(b".").unwrap_or(pattern);
     if pattern.len() > 2
+
+=== a failed handshake leaves the layer shaking hands, to be started again
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core conn::tls::tests::a_failed_handshake_is_not_started_again
+--- old
+            self.peer_state = PeerState::Failed(kind);
+        })?;
+--- new
+            let _ = kind;
+        })?;

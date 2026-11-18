@@ -337,7 +337,7 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
         let child = ShimEasy::doh_probe(unsafe { parent.as_ref() }, easy)?;
         // SAFETY: made above, live until `internal_gone`.
         let shim = unsafe { child.as_ref() };
-        let easy = shim.detach();
+        let easy = shim.detach().expect("a probe's handle, made above");
         shim.attach_internal(NonNull::from(self.multi));
         Ok((easy, Some(child)))
     }
@@ -400,7 +400,12 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
         });
         if rc == ffi::CURL_PUSH_OK {
             // SAFETY: made above, live until the multi or a cleanup has it.
-            let easy = unsafe { child.as_ref() }.detach();
+            // The application may have added the handle to a multi from
+            // its callback: it is the application's there, and the push is
+            // refused.
+            let Ok(easy) = unsafe { child.as_ref() }.detach() else {
+                return Pushed::Failed;
+            };
             return Pushed::Accepted { easy, owner: child };
         }
         // SAFETY: made above, and handed to no one.
@@ -542,9 +547,11 @@ pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<()
         return Err(MultiError::AddedAlready);
     }
     let core = Core::of(multi, reach).map_err(|_| MultiError::RecursiveApiCall)?;
-    // Cleared as early as possible (multi.c:516).
+    let mut transfer = easy.detach()?;
+    let owner = NonNull::from(easy);
+    // Cleared as early as possible (multi.c:516), once the handle is known
+    // to be one to add.
     easy.clear_error_buffer();
-    let (mut transfer, owner) = (easy.detach(), NonNull::from(easy));
     // The body is sized as the transfer starts, the application's fields
     // as they are now (`Curl_pretransfer`).
     let set = easy.set.get();

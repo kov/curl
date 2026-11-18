@@ -937,6 +937,16 @@ so: weaknesses kept because C has them.
   asked to send it. Pinned by `other_bytes_than_went_early_are_refused`
   (`crates/curl-core/src/conn/tls.rs`).
 
+## Handles C adds from inside themselves
+
+- **A handle is not added to a multi from its own handlers outside a transfer.** While cleanup
+  or reset lets go of a handle's resolves, its debug function is told of each
+  (`Curl_resolv_destroy_all`). Here the handle's transfer is out of reach meanwhile, and a
+  `curl_multi_add_handle` of that handle from the function is refused with
+  `CURLM_RECURSIVE_API_CALL`. C's `curl_multi_add_handle` adds it. Pinned by
+  `a_handle_being_cleaned_up_is_not_added_from_its_callback`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
+
 ## Residuals shared with C
 
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a

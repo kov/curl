@@ -132,6 +132,31 @@ pub(crate) struct StringInfos {
 }
 
 /// Where the handle's transfer is.
+/// Where a handle that cannot be added to a multi is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotDetached {
+    /// In a multi already (`CURLM_ADDED_ALREADY`).
+    Added,
+    /// A DoH probe's, which is its master's multi's (`CURLM_BAD_EASY_HANDLE`).
+    Internal,
+    /// Out of reach while its own handlers run, or moved for a moment:
+    /// asked from inside it (`CURLM_RECURSIVE_API_CALL`).
+    InUse,
+}
+
+impl From<NotDetached> for crate::error_codes::MultiError {
+    fn from(not: NotDetached) -> crate::error_codes::MultiError {
+        use crate::error_codes::MultiError;
+        match not {
+            NotDetached::Added => MultiError::AddedAlready,
+            NotDetached::Internal => {
+                MultiError::Core(curl_core::error::MultiErrorKind::BadEasyHandle)
+            }
+            NotDetached::InUse => MultiError::RecursiveApiCall,
+        }
+    }
+}
+
 enum Home {
     /// In memory of its own, which moves to the multi and back whole.
     Detached(Box<Easy>),
@@ -621,13 +646,23 @@ impl ShimEasy {
         going.unwrap_or(false)
     }
 
-    /// The handle's transfer, to add to a multi.
-    pub(crate) fn detach(&self) -> Box<Easy> {
-        match self.home.replace(Home::Nowhere) {
-            Home::Detached(easy) => easy,
-            Home::Added { .. } | Home::Internal(_) | Home::Alone(_) | Home::Nowhere => {
-                unreachable!("a handle on its own")
-            }
+    /// The handle's transfer, to add to a multi; where it is anywhere
+    /// but on its own, it stays there and says where. The application
+    /// names the handle, so each of these is its error, never ours.
+    pub(crate) fn detach(&self) -> Result<Box<Easy>, NotDetached> {
+        let mut home = self.home.borrow_mut();
+        let not = match &*home {
+            Home::Detached(_) => None,
+            Home::Added { .. } => Some(NotDetached::Added),
+            Home::Internal(_) => Some(NotDetached::Internal),
+            Home::Alone(_) | Home::Nowhere => Some(NotDetached::InUse),
+        };
+        if let Some(not) = not {
+            return Err(not);
+        }
+        match core::mem::replace(&mut *home, Home::Nowhere) {
+            Home::Detached(easy) => Ok(easy),
+            _ => unreachable!("matched as on its own above"),
         }
     }
 

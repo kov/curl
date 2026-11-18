@@ -11367,3 +11367,48 @@ fn the_cookie_list_is_read_from_a_callback() {
     unsafe { curl_easy_cleanup(c) };
     std::fs::remove_file(path).unwrap();
 }
+
+/// A debug function that, as it is told a record is destroyed, adds the
+/// handle to a multi of its own, and keeps what it was answered.
+#[cfg(feature = "c-ares")]
+unsafe extern "C" fn debug_adding(
+    h: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: as `debug_count` is called.
+    let r = unsafe { debug_count(h, kind, ptr, n, data) };
+    // SAFETY: the test passes a `Seen`.
+    let s = unsafe { &mut *data.cast::<Seen>() };
+    if kind == ffi::CURLINFO_TEXT
+        && s.texts
+            .last()
+            .is_some_and(|t| t.ends_with(" destroy async\n"))
+    {
+        let multi = curl_multi_init();
+        // SAFETY: a live multi and handle; the multi let go of here.
+        let added = unsafe { curl_multi_add_handle(multi, h) };
+        // SAFETY: as above.
+        unsafe { curl_multi_cleanup(multi) };
+        s.texts.push(format!("added {}\n", added.0));
+    }
+    r
+}
+
+/// A handle its cleanup has out of reach while its debug function is told
+/// its resolves' records go is not added to a multi from that function:
+/// refused as a call from inside the handle, never an abort.
+#[cfg(feature = "c-ares")]
+#[test]
+fn a_handle_being_cleaned_up_is_not_added_from_its_callback() {
+    let mut seen = Seen::default();
+    let c = refused_tracing_dns(debug_adding, &mut seen);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    // SAFETY: a live handle, then not used again.
+    unsafe { curl_easy_cleanup(c) };
+    let refused = format!("added {}\n", ffi::CURLM_RECURSIVE_API_CALL.0);
+    assert!(seen.texts.contains(&refused), "{:#?}", seen.texts);
+}

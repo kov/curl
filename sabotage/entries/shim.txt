@@ -626,3 +626,11 @@ features: debug-hooks
         ShimMulti::free(OwnedMulti(self.0));
 --- new
         std::mem::forget(OwnedMulti(self.0));
+
+=== a handle out of reach while its handlers run is taken as one on its own to add
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_handle_being_cleaned_up_is_not_added_from_its_callback
+--- old
+            Home::Alone(_) | Home::Nowhere => Some(NotDetached::InUse),
+--- new
+            Home::Alone(_) | Home::Nowhere => unreachable!("a handle on its own"),

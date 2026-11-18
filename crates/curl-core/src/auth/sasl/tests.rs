@@ -743,14 +743,18 @@ fn a_mechanism_not_chosen_is_said_why() {
 }
 
 /// Hex is lowercase, two digits a byte; the quoted string escapes `"`
-/// and `\` and writes bytes outside printable ASCII as `%XX`.
+/// and `\`, writes control bytes and DEL as `%XX` and bytes past ASCII
+/// as they are, and is at most 2047 bytes, as HTTP's Digest quotes.
 #[test]
 fn hex_and_quoting_are_c_s() {
     assert_eq!(hex(&[0x00, 0xff, 0x1a, 0xa1]).unwrap(), b"00ff1aa1");
     assert_eq!(
-        quoted(b"a\"b\\c d\x01\xff\x7f").unwrap(),
-        b"a\\\"b\\\\c d%01%FF%7F"
+        quoted(b"a\"b\\c d\x01\xff\x7f\x80").unwrap(),
+        b"a\\\"b\\\\c d%01\xff%7F\x80"
     );
+    assert_eq!(quoted(&[b'a'; 2047]).unwrap().len(), 2047);
+    assert!(quoted(&[b'a'; 2048]).is_err());
+    assert!(quoted(&[b'"'; 1024]).is_err(), "escaped past the limit");
 }
 
 /// A challenge's value by its key, quoted or up to a comma, its escapes

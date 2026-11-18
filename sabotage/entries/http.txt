@@ -1187,9 +1187,9 @@ witness: curl-core proto::http::tests::a_digest_answer_refused_ends_the_transfer
 file: crates/curl-core/src/auth/digest.rs
 witness: curl-core auth::digest::tests::quotes_and_hashes_the_user
 --- old
-                b'"' | b'\\' => &[b'\\', b],
+            b'"' | b'\\' => &[b'\\', b],
 --- new
-                b'\\' => &[b'\\', b],
+            b'\\' => &[b'\\', b],
 
 === a client nonce is kept though its random bytes were not drawn
 file: crates/curl-core/src/auth/digest.rs
@@ -1651,3 +1651,19 @@ witness: curl-core auth::http::tests::keeps_digest_for_its_origin_and_credential
                 .filter(|kept| kept.peer == *peer)
 --- new
                 .filter(|_| true)
+
+=== a digest's bytes past ASCII are sent %-escaped
+file: crates/curl-core/src/auth/digest.rs
+witness: curl-core auth::sasl::tests::hex_and_quoting_are_c_s
+--- old
+            b' '..=0x7e | 0x80..=0xff => &[b],
+--- new
+            b' '..=0x7e => &[b],
+
+=== a digest's quoted string may be a byte past C's limit
+file: crates/curl-core/src/auth/digest.rs
+witness: curl-core auth::sasl::tests::hex_and_quoting_are_c_s
+--- old
+        if out.len() - start + escaped.len() > MAX_QUOTED {
+--- new
+        if out.len() - start + escaped.len() > MAX_QUOTED + 1 {

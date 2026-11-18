@@ -374,25 +374,37 @@ impl Bounded {
         self.0.try_extend_from_slice(bytes)
     }
 
-    /// `s` as a quoted string's inside: quotes and backslashes escaped,
-    /// control and non-ASCII bytes as `%XX`; at most `MAX_QUOTED` long
-    /// (`auth_digest_string_quoted`).
+    /// `s` as a quoted string's inside (`quote`).
     fn quoted(&mut self, s: &[u8]) -> Result<(), OutOfMemory> {
-        const HEX: &[u8; 16] = b"0123456789ABCDEF";
-        let start = self.0.len();
-        for &b in s {
-            let escaped: &[u8] = match b {
-                b'"' | b'\\' => &[b'\\', b],
-                b' '..=0x7e => &[b],
-                _ => &[b'%', HEX[usize::from(b >> 4)], HEX[usize::from(b & 15)]],
-            };
-            if self.0.len() - start + escaped.len() > MAX_QUOTED {
-                return Err(OutOfMemory);
-            }
-            self.put(escaped)?;
+        quote(&mut self.0, s)?;
+        if self.0.len() > MAX_RESPONSE {
+            return Err(OutOfMemory);
         }
         Ok(())
     }
+}
+
+/// `s` as a quoted string's inside, put after `out`: quotes and
+/// backslashes escaped, control bytes and DEL as `%XX`, and bytes past
+/// ASCII as they are, a quoted string's obs-text (RFC 9110, 5.6.4),
+/// which the response's hash is made over; at most `MAX_QUOTED` long
+/// (`auth_digest_string_quoted`, for HTTP's Digest and SASL's
+/// DIGEST-MD5 alike).
+pub(crate) fn quote(out: &mut Vec<u8>, s: &[u8]) -> Result<(), OutOfMemory> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let start = out.len();
+    for &b in s {
+        let escaped: &[u8] = match b {
+            b'"' | b'\\' => &[b'\\', b],
+            b' '..=0x7e | 0x80..=0xff => &[b],
+            _ => &[b'%', HEX[usize::from(b >> 4)], HEX[usize::from(b & 15)]],
+        };
+        if out.len() - start + escaped.len() > MAX_QUOTED {
+            return Err(OutOfMemory);
+        }
+        out.try_extend_from_slice(escaped)?;
+    }
+    Ok(())
 }
 
 /// The hash of `parts` joined, in lowercase hex.
@@ -605,13 +617,14 @@ mod tests {
         assert!(decoded(&fits).is_ok());
     }
 
-    /// Quoted strings escape quotes and backslashes and spell out what is
-    /// not printable; userhash sends the user's hash.
+    /// Quoted strings escape quotes and backslashes and spell out control
+    /// bytes; bytes past ASCII go as they are, as the hash takes them
+    /// (test 3221); userhash sends the user's hash.
     #[test]
     fn quotes_and_hashes_the_user() {
         let out = respond("nonce=\"n\"", "a\"b\\c\nd\u{e9}", "p", "GET", "/");
         assert!(
-            out.starts_with("username=\"a\\\"b\\\\c%0Ad%C3%A9\""),
+            out.starts_with("username=\"a\\\"b\\\\c%0Ad\u{e9}\""),
             "{out}"
         );
         let out = respond(

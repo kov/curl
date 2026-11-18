@@ -941,25 +941,10 @@ fn digest_value(mut chlg: &[u8], key: &[u8], max: usize) -> Option<Vec<u8>> {
     }
 }
 
-/// `s` quoted as RFC 2616's errata quote a string: `"` and `\` escaped,
-/// other bytes outside printable ASCII as `%XX`
-/// (`auth_digest_string_quoted`).
+/// `s` quoted as a digest quotes it (`digest::quote`).
 fn quoted(s: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut out = Vec::new();
-    for &b in s {
-        match b {
-            b'"' | b'\\' => out.try_extend_from_slice(&[b'\\', b])?,
-            0x20..=0x7e => out.try_push(b)?,
-            _ => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.try_extend_from_slice(&[
-                    b'%',
-                    HEX[usize::from(b >> 4)],
-                    HEX[usize::from(b & 15)],
-                ])?;
-            }
-        }
-    }
+    crate::auth::digest::quote(&mut out, s)?;
     Ok(out)
 }
 

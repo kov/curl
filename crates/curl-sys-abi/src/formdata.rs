@@ -464,11 +464,10 @@ unsafe fn read_options(forms: &mut Vec<FormInfo>, args: &mut VaList<'_>) -> CURL
             ffi::CURLFORM_FILENAME | ffi::CURLFORM_BUFFER => {
                 // SAFETY: as the caller guarantees.
                 let v = unsafe { ptr_arg::<c_char>(entry, args) };
-                if curr.showfilename.is_set() {
-                    CURL_FORMADD_OPTION_TWICE
-                } else if v.is_null() {
-                    // C reads the length of NULL; it is refused here.
+                if v.is_null() {
                     CURL_FORMADD_NULL
+                } else if curr.showfilename.is_set() {
+                    CURL_FORMADD_OPTION_TWICE
                 // SAFETY: the application's name is a C string.
                 } else if !unsafe { curr.showfilename.copy_c(v) } {
                     CURL_FORMADD_MEMORY
@@ -594,6 +593,7 @@ fn formadd_check(
             || ((name.is_null() || !form.value.is_set()) && post.is_null())
             || (form.contentslength != 0 && flags & FILENAME != 0)
             || (flags & FILENAME != 0 && flags & PTRCONTENTS != 0)
+            || (flags & (FILENAME | READFILE) != 0 && !form.value.is_set())
             || (flags & READFILE != 0 && flags & PTRCONTENTS != 0)
         {
             return CURL_FORMADD_INCOMPLETE;
@@ -933,7 +933,8 @@ unsafe fn set_content(
     };
     let code = if p.flags & (FILENAME | READFILE) != 0 {
         let code = if file.contents.is_null() {
-            // A type given past the last file: C reads NULL; here the part
+            // A file node without a file, which `curl_formadd` refuses but
+            // a chain built by hand can hold: C reads NULL; here the part
             // has no content.
             CURLE_OK
         // SAFETY: a file's name is a C string.
@@ -1054,8 +1055,7 @@ pub(crate) mod tests {
     const END: c_int = ffi::CURLFORM_END.0;
 
     /// Refused as C refuses: an option given twice, a part without a
-    /// value. A NULL file name to show, whose length C reads, is refused
-    /// as a NULL value is.
+    /// value, a NULL file name to show, NULL before twice (test 1308).
     #[test]
     fn formadd_refuses_as_c_does() {
         let (mut first, mut last): (*mut curl_httppost, *mut curl_httppost) =
@@ -1088,6 +1088,20 @@ pub(crate) mod tests {
             );
             assert_eq!(null, CURL_FORMADD_NULL);
             assert!(first.is_null() && last.is_null(), "nothing added");
+            let null_twice = curl_formadd(
+                &mut first,
+                &mut last,
+                COPYNAME,
+                n(c"a"),
+                COPYCONTENTS,
+                n(c"v"),
+                FILENAME,
+                n(c"f"),
+                FILENAME,
+                ptr::null::<c_char>(),
+                END,
+            );
+            assert_eq!(null_twice, CURL_FORMADD_NULL);
             let ok = curl_formadd(
                 &mut first,
                 &mut last,
@@ -1103,11 +1117,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// A type given past a field's last file makes a part with a type
-    /// and no file, which C reads as a NULL file name when it makes the
-    /// tree, and crashes; here the part has no content.
+    /// A type given past a field's last file would make a part with a
+    /// type and no file: refused as incomplete, as C now refuses it
+    /// (test 1308). A chain built by hand can still hold such a node,
+    /// whose missing name C compares with `-` and crashes on; here the
+    /// part has no content.
     #[test]
-    fn a_type_past_the_last_file_is_a_part_without_content() {
+    fn a_file_part_without_a_file_is_refused_or_empty() {
         unsafe extern "C" fn count(arg: *mut c_void, _: *const c_char, len: usize) -> usize {
             // SAFETY: the test's counter.
             unsafe { *arg.cast::<usize>() += len };
@@ -1118,11 +1134,11 @@ pub(crate) mod tests {
         let file = std::env::temp_dir().join("curl-formdata-type-past");
         std::fs::write(&file, b"x").unwrap();
         let path = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
-        let mut total = 0usize;
-        // SAFETY: options and values as documented; the counter outlives
-        // the call.
+        let (mut whole, mut empty) = (0usize, 0usize);
+        // SAFETY: options and values as documented; the counters outlive
+        // the calls; the node's name is put back before it is freed.
         unsafe {
-            let added = curl_formadd(
+            let refused = curl_formadd(
                 &mut first,
                 &mut last,
                 COPYNAME,
@@ -1135,12 +1151,29 @@ pub(crate) mod tests {
                 c"t/2".as_ptr(),
                 END,
             );
+            assert_eq!(refused, CURL_FORMADD_INCOMPLETE);
+            assert!(first.is_null() && last.is_null(), "nothing added");
+            let added = curl_formadd(
+                &mut first,
+                &mut last,
+                COPYNAME,
+                c"m".as_ptr(),
+                ffi::CURLFORM_FILE.0,
+                path.as_ptr(),
+                END,
+            );
             assert_eq!(added, CURL_FORMADD_OK);
-            let got = super::curl_formget(first, (&raw mut total).cast(), Some(count));
+            let got = super::curl_formget(first, (&raw mut whole).cast(), Some(count));
             assert_eq!(got, 0);
+            let name = std::mem::replace(&mut (*first).contents, ptr::null_mut());
+            let got = super::curl_formget(first, (&raw mut empty).cast(), Some(count));
+            assert_eq!(got, 0);
+            (*first).contents = name;
             curl_formfree(first);
         }
-        assert!(total > 0);
+        // Without the file, its name and its one byte are gone.
+        let named = "; filename=\"curl-formdata-type-past\"".len();
+        assert_eq!(whole, empty + named + 1);
         std::fs::remove_file(&file).unwrap();
     }
 

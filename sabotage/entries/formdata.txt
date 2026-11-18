@@ -21,18 +21,41 @@ witness: curl-sys-abi formdata::tests::a_chain_is_made_a_tree_once_each_time_it_
 file: crates/curl-sys-abi/src/formdata.rs
 witness: curl-sys-abi formdata::tests::formadd_refuses_as_c_does
 --- old
-                    // C reads the length of NULL; it is refused here.
+                if v.is_null() {
                     CURL_FORMADD_NULL
+                } else if curr.showfilename.is_set() {
 --- new
-                    // C reads the length of NULL; it is refused here.
+                if v.is_null() {
                     CURL_FORMADD_OK
+                } else if curr.showfilename.is_set() {
 
 === a part with a type and no file fails the form
 file: crates/curl-sys-abi/src/formdata.rs
-witness: curl-sys-abi formdata::tests::a_type_past_the_last_file_is_a_part_without_content
+witness: curl-sys-abi formdata::tests::a_file_part_without_a_file_is_refused_or_empty
 --- old
             // has no content.
             CURLE_OK
 --- new
             // has no content.
             ffi::CURLE_READ_ERROR
+
+=== a NULL file name to show given twice is refused as twice
+file: crates/curl-sys-abi/src/formdata.rs
+witness: curl-sys-abi formdata::tests::formadd_refuses_as_c_does
+--- old
+                if v.is_null() {
+                    CURL_FORMADD_NULL
+                } else if curr.showfilename.is_set() {
+                    CURL_FORMADD_OPTION_TWICE
+--- new
+                if curr.showfilename.is_set() {
+                    CURL_FORMADD_OPTION_TWICE
+                } else if v.is_null() {
+                    CURL_FORMADD_NULL
+
+=== a file part without a file is added
+file: crates/curl-sys-abi/src/formdata.rs
+witness: curl-sys-abi formdata::tests::a_file_part_without_a_file_is_refused_or_empty
+--- old
+            || (flags & (FILENAME | READFILE) != 0 && !form.value.is_set())
+--- new

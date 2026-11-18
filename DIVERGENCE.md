@@ -471,14 +471,11 @@ so: weaknesses kept because C has them.
   with `(nil)=x`. Pinned by `canonical_queries_c_leaves_out`
   (`crates/curl-core/src/proto/http/sigv4/tests.rs`).
 
-- **The form API refuses or leaves empty what C dereferences as NULL.** `curl_formadd` given a
-  NULL `CURLFORM_FILENAME` or `CURLFORM_BUFFER` returns `CURL_FORMADD_NULL`, as it does for
-  other NULL values; C takes the length of the NULL and crashes. A `CURLFORM_CONTENTTYPE` given
-  after a field's last `CURLFORM_FILE` makes a part with that type and no file; sending the
-  form, or `curl_formget`, then gives it no content, where C compares the missing file name
-  with `-` and crashes. Both crashes measured against the C build. Pinned by
-  `formadd_refuses_as_c_does` and `a_type_past_the_last_file_is_a_part_without_content`
-  (`crates/curl-sys-abi/src/formdata.rs`).
+- **A form chain's file node without a file has no content.** `curl_formadd` refuses such a
+  node, as C does, but an application can build a `curl_httppost` chain by hand with one:
+  sending the form, or `curl_formget`, then gives that part no content, where C compares the
+  missing file name with `-` and crashes. Pinned by
+  `a_file_part_without_a_file_is_refused_or_empty` (`crates/curl-sys-abi/src/formdata.rs`).
 
 - **A GSS-API stub's context is nothing to the library, and fails.** In the debug build, a SOCKS5
   GSS-API context the stub (`CURL_STUB_GSS_CREDS`) completed is then asked who it authenticated

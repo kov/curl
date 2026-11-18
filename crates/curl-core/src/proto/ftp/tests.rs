@@ -644,6 +644,135 @@ fn a_data_connection_s_handshake_stalls_no_other_transfer() {
     );
 }
 
+/// A passive data connection whose TLS is never made after the server
+/// said it would move the data runs out of the connect limit, counted
+/// from the data connection's start, as C's blocking connect does: a
+/// failure, "connect timeout", not a wait for the transfer's whole time
+/// (test 1792). A millisecond before the limit, it still waits.
+#[test]
+fn a_data_connection_s_stalled_handshake_runs_out_of_the_connect_limit() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    // Held before the answer to EPSV, so that the data connection
+    // starts a second after the transfer.
+    let control = Conversation::replies(&replies, false).per_send().held();
+    control.allow(7);
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send().held();
+    let (mut m, _, clock) = clocked(&[&control], &[&file]);
+    let url = "ftps://127.0.0.1:PORT/f";
+    let (id, _, text) = added_with(&mut m, url, Some(with_tls()), |o| {
+        o.limits.connect = crate::time::TimeLimit::from_millis(2000);
+        o.limits.total = crate::time::TimeLimit::from_millis(5000);
+    });
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    clock.advance(std::time::Duration::from_millis(1000));
+    control.allow(replies.len());
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "the handshake waits");
+    // Within the limit from the data connection's start, past it from
+    // the transfer's.
+    clock.advance(std::time::Duration::from_millis(1999));
+    m.perform(&mut NoEvents).unwrap();
+    assert!(m.info_read().is_none(), "within the limit");
+    // The wait wakes the transfer as the limit runs out.
+    assert_eq!(m.timeout(), Some(std::time::Duration::from_millis(1)));
+    clock.advance(std::time::Duration::from_millis(1));
+    m.perform(&mut NoEvents).unwrap();
+    let ended = m.info_read().expect("out of time");
+    assert_eq!(
+        (ended.id, ended.result),
+        (id, Err(ErrorKind::OperationTimedout)),
+        "{}",
+        text.text()
+    );
+    // Said as the wait C blocks in says it, not as the multi does.
+    let said = text.text();
+    assert!(said.contains("connect timeout"), "{said}");
+    assert!(!said.contains("Operation timed out"), "{said}");
+}
+
+/// The connect limit counts from the data connection's start while the
+/// transfer waits for the server to say it moves the data, its data
+/// connection's TLS not made: past it, the transfer is out of time as
+/// the multi looks (`Curl_timeleft_ms` with `connect_start_ms`), within
+/// a total limit not run out.
+#[test]
+fn the_connect_limit_counts_while_the_data_connection_is_unmade() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    // The 150 is held back.
+    let control = Conversation::replies(&replies, false).per_send().held();
+    control.allow(replies.len() - 1);
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    // Its TLS is not answered.
+    let file = Conversation::replies(&file, true).per_send().held();
+    let (mut m, _, clock) = clocked(&[&control], &[&file]);
+    let url = "ftps://127.0.0.1:PORT/f";
+    let (id, _, text) = added_with(&mut m, url, Some(with_tls()), |o| {
+        o.limits.connect = crate::time::TimeLimit::from_millis(2000);
+        o.limits.total = crate::time::TimeLimit::from_millis(5000);
+    });
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "the 150 is awaited");
+    clock.advance(std::time::Duration::from_millis(2000));
+    control.allow(replies.len());
+    for _ in 0..4 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let ended = m.info_read().expect("out of time");
+    assert_eq!(
+        (ended.id, ended.result),
+        (id, Err(ErrorKind::OperationTimedout)),
+        "{}",
+        text.text()
+    );
+    // As the multi looks, before the 150 is read: at the connect limit,
+    // the total's still to run.
+    let said = text.text();
+    assert!(
+        said.contains("Operation timed out after 2000 milliseconds"),
+        "{said}"
+    );
+    assert!(!said.contains("connect timeout"), "{said}");
+}
+
 /// While a passive data connection's TLS is made after the server said
 /// it would move the data, the transfer waits on the data connection
 /// alone, as C's blocking connect polls it alone

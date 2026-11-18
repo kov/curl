@@ -1260,6 +1260,12 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   in the error text follows C's two checks: the multi-level check reports the time since
   `Starts::single` while connecting and since `Starts::op` after (multi.c:1820), the check at the
   end of a receive/send pass always since `Starts::single` (transfer.c:382-393).
+- **A connect past DO counts the connect limit from its own start**: while an FTP data
+  connection is not made, `time_left` takes `Phase::SecondConnecting` with the instant it
+  started (C's `connect_start_ms`, connect.c:141), so the multi's check sees the connect limit
+  as well as the total. The wait for that connection after the server said it moves the data,
+  where C blocks (`ftp_initiate_transfer`), is FTP's own: it is left out of the multi's check
+  (`times_itself`), wakes at the limit through its `due`, and fails "connect timeout".
 - `MultiPending` is not a kind: C declares EXPIRE_MULTI_PENDING (urldata.h:498) and never arms
   it.
 - `Proto` is HTTP's wait for a 100 (EXPIRE_100_TIMEOUT): never stored apart from the

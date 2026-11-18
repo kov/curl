@@ -1295,10 +1295,24 @@ impl ProtoState {
     }
 
     /// The request's DOING runs out of time itself, with its own reason:
-    /// TELNET's loop, which C runs within DO, where the multi does not
-    /// look at the time.
+    /// TELNET's loop, which C runs within DO, and FTP's wait for its data
+    /// connection to be made after the transfer was started, which C
+    /// blocks in; in both, the multi does not look at the time.
     pub(crate) fn times_itself(&self) -> bool {
-        matches!(self, ProtoState::Telnet(_))
+        match self {
+            ProtoState::Telnet(_) => true,
+            ProtoState::Ftp(r) => r.waits_for_data(),
+            _ => false,
+        }
+    }
+
+    /// Since when a connect of the request's own goes on, past DO: an FTP
+    /// data connection's not made yet (C's `connect_start_ms`).
+    pub(crate) fn second_connecting(&self) -> Option<crate::time::Instant> {
+        match self {
+            ProtoState::Ftp(r) => r.second_connecting(),
+            _ => None,
+        }
     }
 
     /// When the request wants to look again whatever its socket says: an

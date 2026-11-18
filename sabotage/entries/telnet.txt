@@ -42,9 +42,9 @@ witness: curl-core proto::telnet::tests::nothing_is_negotiated_unasked
 file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::telnet::tests::a_session_times_out_as_c_s_does
 --- old
-        matches!(self, ProtoState::Telnet(_))
+            ProtoState::Telnet(_) => true,
 --- new
-        false
+            ProtoState::Telnet(_) => false,
 
 === what the connection did not take is dropped
 file: crates/curl-core/src/proto/telnet.rs

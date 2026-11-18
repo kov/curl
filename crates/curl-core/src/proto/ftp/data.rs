@@ -50,6 +50,9 @@ pub(crate) struct DataConn {
     socket: Component,
     /// Its layers shut down so far, once its shutdown started.
     shut: Option<usize>,
+    /// When it began to be made, its connect limit counted from then
+    /// (C's `connect_start_ms`, set by the first connect call).
+    started: crate::time::Instant,
 }
 
 #[derive(Debug)]
@@ -138,6 +141,7 @@ impl DataConn {
             tls,
             socket,
             shut: None,
+            started: now,
         })
     }
 
@@ -168,6 +172,7 @@ impl DataConn {
             tls,
             socket: Component::TcpAccept,
             shut: None,
+            started: since,
         }
     }
 
@@ -523,6 +528,11 @@ impl DataConn {
     }
 
     /// How far it has come, without moving it on.
+    /// Since when it is being made, if it is not made yet.
+    pub(crate) fn connecting_since(&self) -> Option<crate::time::Instant> {
+        (self.reached() != Reached::Up).then_some(self.started)
+    }
+
     pub(crate) fn reached(&self) -> Reached {
         match self.phase.as_ref() {
             Some(Phase::Connecting(..) | Phase::Listening { .. }) | None => Reached::Connecting,
@@ -746,6 +756,7 @@ mod tests {
                 tls: None,
                 socket: Component::Tcp,
                 shut: shutdown.then_some(0),
+                started: crate::time::Clock::now(&clock),
             };
             // The transfer's own wants, before any chain adds to them.
             let transfer = if xfer_io { Events::IN } else { Events::NONE };

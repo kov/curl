@@ -88,11 +88,11 @@ witness: curl-core multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_m
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- old
-fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
     matches!(
+        run.deadlines.time_left(starts(cx), cx.rest.now, phase),
 --- new
-fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
     false && matches!(
+        run.deadlines.time_left(starts(cx), cx.rest.now, phase),
 
 === a fired timer stays armed
 file: crates/curl-core/src/multi/mod.rs
@@ -760,9 +760,9 @@ witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_transfer_out_of_time_reads_no_more
 --- old
-        TransferState::Exchanging(x) if expired(run, cx) => {
+        TransferState::Exchanging(x) if expired(run, cx, &x.proto) => {
 --- new
-        TransferState::Exchanging(x) if false && expired(run, cx) => {
+        TransferState::Exchanging(x) if false && expired(run, cx, &x.proto) => {
 
 === a transfer over its limit is said to wait before it changes state
 file: crates/curl-core/src/multi/state.rs
@@ -801,9 +801,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::file::tests::an_upload_past_its_time_limit_is_written_then_times_out
 features: test-util
 --- old
-        TransferState::Did(x) if expired(run, cx) => {
+        TransferState::Did(x) if expired(run, cx, &x.proto) => {
 --- new
-        TransferState::Did(x) if false && expired(run, cx) => {
+        TransferState::Did(x) if false && expired(run, cx, &x.proto) => {
 
 === a transfer let out of PENDING by a removal stays traced as pending
 file: crates/curl-core/src/multi/mod.rs
@@ -937,7 +937,7 @@ witness: curl-core multi::tests::a_reused_connection_skips_the_protocol_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_request_waiting_to_be_made_times_out_closing_its_connection
 --- old
-            if !x.proto.times_itself() && expired(run, cx) =>
+            if !x.proto.times_itself() && expired(run, cx, &x.proto) =>
 --- new
             if false =>
 

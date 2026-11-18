@@ -1905,7 +1905,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         // Out of time as the step starts (`multi_handle_timeout`), unless
         // the protocol times its DOING itself, as C's TELNET does in DO.
         TransferState::Doing(x) | TransferState::DoingMore(x)
-            if !x.proto.times_itself() && expired(run, cx) =>
+            if !x.proto.times_itself() && expired(run, cx, &x.proto) =>
         {
             let kind = timed_out(cx, Phase::Transferring, x.proto.sizes_request());
             // Either half ends the same: past DO, cut short.
@@ -1948,7 +1948,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         // (`multistate_did`).
         // Out of time as the step starts, the request made: over
         // (`multi_handle_timeout`, ahead of the state's work).
-        TransferState::Did(x) if expired(run, cx) => {
+        TransferState::Did(x) if expired(run, cx, &x.proto) => {
             let kind = timed_out(cx, Phase::Transferring, x.proto.sizes_request());
             (TransferState::Did(x).fail(kind), Wake::Again)
         }
@@ -1985,7 +1985,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         }
         // Out of time as the pass starts: nothing more is read or sent
         // (`multi_handle_timeout`, ahead of the state's work).
-        TransferState::Exchanging(x) if expired(run, cx) => {
+        TransferState::Exchanging(x) if expired(run, cx, &x.proto) => {
             let kind = timed_out(cx, Phase::Transferring, true);
             (TransferState::Exchanging(x).fail(kind), Wake::Again)
         }
@@ -1995,7 +1995,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             (TransferState::RateLimiting(x), Wake::Idle)
         }
         TransferState::RateLimiting(mut x) => {
-            if expired(run, cx) {
+            if expired(run, cx, &x.proto) {
                 let kind = timed_out(cx, Phase::Transferring, true);
                 (TransferState::RateLimiting(x).fail(kind), Wake::Again)
             } else {
@@ -2271,11 +2271,15 @@ fn sendrecv_failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind) {
     trace::debug_info(cx, format_args!("Curl_sendrecv() -> {code}"));
 }
 
-/// Whether the transfer's time is up, as of the step's start.
-fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
+/// Whether the transfer's time is up, as of the step's start: a connect
+/// of its request's, `proto`, still going on counts the connect limit
+/// too.
+fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>, proto: &ProtoState) -> bool {
+    let phase = proto
+        .second_connecting()
+        .map_or(Phase::Transferring, Phase::SecondConnecting);
     matches!(
-        run.deadlines
-            .time_left(starts(cx), cx.rest.now, Phase::Transferring),
+        run.deadlines.time_left(starts(cx), cx.rest.now, phase),
         TimeLeft::Expired(_)
     )
 }

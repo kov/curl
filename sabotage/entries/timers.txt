@@ -129,9 +129,9 @@ witness: curl-core proto::http::tests::the_time_limit_is_the_whole_transfer_s
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::the_time_limit_is_the_whole_transfer_s
 --- old
-        Phase::Transferring => timings.since_op_ms(cx.rest.now),
+        Phase::Transferring | Phase::SecondConnecting(_) => timings.since_op_ms(cx.rest.now),
 --- new
-        Phase::Transferring => timings.since_single_ms(cx.rest.now),
+        Phase::Transferring | Phase::SecondConnecting(_) => timings.since_single_ms(cx.rest.now),
 
 === a transfer completing with a timer armed does not say they are cleared
 file: crates/curl-core/src/multi/state.rs

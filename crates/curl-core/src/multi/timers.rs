@@ -108,6 +108,10 @@ impl TimerKind {
 pub(crate) enum Phase {
     Connecting,
     Transferring,
+    /// Past DO, a connect of the request's still going on since this
+    /// instant, as an FTP data connection's: the connect limit counts
+    /// from there (C's `connect_start_ms`).
+    SecondConnecting(Instant),
 }
 
 /// What is left of a transfer's time (`timeleft_now_ms`).
@@ -268,6 +272,10 @@ impl Deadlines {
             Phase::Connecting => left(
                 self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration),
                 starts.single,
+            ),
+            Phase::SecondConnecting(since) => left(
+                self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration),
+                since,
             ),
             Phase::Transferring => 0,
         };

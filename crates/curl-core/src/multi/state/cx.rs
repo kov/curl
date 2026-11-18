@@ -745,6 +745,18 @@ impl<H: Host> StepCx<'_, H> {
         Deadlines::new(limits.total, limits.connect).time_left(starts(self), now, phase)
     }
 
+    /// What is left of the transfer's time now, past DO, with a connect
+    /// of its request's going on since `since`: its connect limit counts
+    /// from there (`Curl_timeleft_now_ms` with `connect_start_ms`).
+    pub(crate) fn time_left_connecting_since(&self, since: Instant) -> TimeLeft {
+        let limits = self.easy().options().limits;
+        Deadlines::new(limits.total, limits.connect).time_left(
+            starts(self),
+            self.now(),
+            Phase::SecondConnecting(since),
+        )
+    }
+
     /// The calendar time, read now (`time(NULL)`).
     pub(crate) fn unix_time(&self) -> i64 {
         self.rest.clock.unix_time()

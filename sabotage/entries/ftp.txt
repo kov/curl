@@ -743,3 +743,39 @@ witness: curl-core proto::ftp::tests::a_wildcard_download_fails_on_a_listing_of_
         if full.is_some() {
 --- new
         if full.is_some() && false {
+
+=== a connect past DO does not count the connect limit as the multi looks
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ftp::tests::the_connect_limit_counts_while_the_data_connection_is_unmade
+features: test-util,debug-hooks
+--- old
+        .map_or(Phase::Transferring, Phase::SecondConnecting);
+--- new
+        .map_or(Phase::Transferring, |_| Phase::Transferring);
+
+=== FTP's wait for its data connection is timed by the multi
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_stalled_handshake_runs_out_of_the_connect_limit
+features: test-util,debug-hooks
+--- old
+            ProtoState::Ftp(r) => r.waits_for_data(),
+--- new
+            ProtoState::Ftp(_) => false,
+
+=== a data connection's connect limit counts from each look
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_stalled_handshake_runs_out_of_the_connect_limit
+features: test-util,debug-hooks
+--- old
+            let since = self.second_connecting().expect("not made yet");
+--- new
+            let since = cx.now();
+
+=== the wait for a data connection wakes at once
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_stalled_handshake_runs_out_of_the_connect_limit
+features: test-util,debug-hooks
+--- old
+                TimeLeft::Remaining(left) => self.data_due = Some(cx.now().after(left)),
+--- new
+                TimeLeft::Remaining(_) => self.data_due = Some(cx.now()),

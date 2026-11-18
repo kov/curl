@@ -2436,7 +2436,7 @@ pub(super) fn timed_out<H: Host>(cx: &mut StepCx<'_, H>, phase: Phase, sized: bo
     let timings = cx.easy().report().timings();
     let ms = match phase {
         Phase::Connecting => timings.since_single_ms(cx.rest.now),
-        Phase::Transferring => timings.since_op_ms(cx.rest.now),
+        Phase::Transferring | Phase::SecondConnecting(_) => timings.since_op_ms(cx.rest.now),
     };
     let report = cx.easy().report();
     let sizes = report.sizes();

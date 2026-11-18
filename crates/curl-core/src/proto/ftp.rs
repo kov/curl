@@ -39,6 +39,7 @@ use crate::error::{ErrorKind, url_error};
 use crate::multi::Host;
 use crate::multi::cx::DriveCx;
 use crate::multi::state::StepCx;
+use crate::multi::timers::TimeLeft;
 use crate::options::{Ccc, CreateDirs, FtpMethod, Method, SslAuth, UseSsl};
 use crate::time::Instant;
 use crate::tls::TlsWait;
@@ -323,6 +324,9 @@ pub(crate) struct Request {
     ending_read: u64,
     round: drive::Blocking,
     due: Option<Instant>,
+    /// When the wait for the data connection after the transfer started
+    /// runs out of time, as it waits (`initiating`).
+    data_due: Option<Instant>,
     /// What DONE was given, for its trace and the checks after the
     /// answer.
     status: Result<(), ErrorKind>,
@@ -442,6 +446,7 @@ impl Request {
             ending_read: 0,
             round: drive::Blocking::default(),
             due: None,
+            data_due: None,
             status: Ok(()),
             premature: false,
             wildcard: None,
@@ -479,7 +484,23 @@ impl Request {
 
     /// When DONE, as it awaits an answer, looks again: its poll's end.
     pub(crate) fn due(&self) -> Option<Instant> {
-        self.due
+        match (self.due, self.data_due) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Since when its data connection is being made, if it is not made
+    /// yet.
+    pub(crate) fn second_connecting(&self) -> Option<Instant> {
+        self.data.as_deref().and_then(DataConn::connecting_since)
+    }
+
+    /// It waits for its data connection to be made after the transfer
+    /// started, where C blocks (`ftp_initiate_transfer`'s connect): it
+    /// times that wait itself.
+    pub(crate) fn waits_for_data(&self) -> bool {
+        self.data_due.is_some()
     }
 
     /// What the exchange waits for on the control connection: nothing,
@@ -2243,8 +2264,21 @@ impl Request {
         let reached = self.connect_data(cx).ok_or(ErrorKind::FailedInit)?;
         if reached? != Reached::Up {
             self.initiating = true;
+            // C blocks here as long as the time left allows, the connect
+            // limit counted from the data connection's start.
+            let since = self.second_connecting().expect("not made yet");
+            self.data_due = None;
+            match cx.time_left_connecting_since(since) {
+                TimeLeft::Expired(_) => {
+                    let kind = ErrorKind::OperationTimedout;
+                    return Err(trace::fail(cx, kind, format_args!("connect timeout")));
+                }
+                TimeLeft::Remaining(left) => self.data_due = Some(cx.now().after(left)),
+                TimeLeft::Unlimited => unreachable!("the connect limit always counts"),
+            }
             return Ok(());
         }
+        self.data_due = None;
         self.initiating = false;
         if self.upload {
             upload::announce_size(cx, self.infilesize);

@@ -74,6 +74,7 @@ witness: curl-core proto::http::tests::h2::trailers_come_as_the_stream_closes
             handed = self.base.pipeline.header(cx, line, HeaderOrigin::Trailer);
 --- new
             handed = Ok::<(), ErrorKind>(());
+
 === a connection closed under an open stream ends it whole
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_connection_closed_under_a_stream_fails_it
@@ -1380,13 +1381,16 @@ features: test-util
 --- new
                     if x.proto.h1_required() =>
 
-=== a first request carries no first origin to push beside
-file: crates/curl-core/src/multi/state/leg.rs
+=== a push beside a request is refused as if it had no first origin
+file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_pushed_response_becomes_a_transfer_of_its_own
 features: test-util
 --- old
-    proto.first_recorded(run.first.get().expect("recorded above"));
+        let first = self.base.first().clone();
 --- new
+        let Some(first) = None::<crate::multi::state::Origin> else {
+            return Offered::Denied;
+        };
 
 === a session's fatal failure is not kept
 file: crates/curl-core/src/http2/latch.rs

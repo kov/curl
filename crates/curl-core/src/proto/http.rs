@@ -716,12 +716,11 @@ impl Request {
     /// large, and each move of it a copy.
     pub(crate) fn new<H: Host>(
         url: &Url,
-        secured: bool,
+        to: super::Addressed<'_>,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
-        let scheme = if secured { HTTPS } else { HTTP };
-        Request::of_scheme(url, scheme, before, cx)
+        Request::of_scheme(url, to, before, cx)
     }
 
     /// A request for a WebSocket at `url`, whose scheme is `ws`, or
@@ -729,16 +728,11 @@ impl Request {
     /// alone (`ws_setup_conn`, `Curl_http_method`).
     pub(crate) fn websocket<H: Host>(
         url: &Url,
-        secured: bool,
+        to: super::Addressed<'_>,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
-        let scheme = if secured {
-            Scheme::of("wss")
-        } else {
-            Scheme::of("ws")
-        };
-        let mut request = Request::of_scheme(url, scheme, before, cx)?;
+        let mut request = Request::of_scheme(url, to, before, cx)?;
         request.neg.h1_only();
         request.neg.only_10 = false;
         if request.method != Method::Head {
@@ -750,17 +744,18 @@ impl Request {
         Ok(request)
     }
 
-    /// A request of `scheme`, with the credentials the options, the URL
-    /// and a `.netrc` file give it where it may send them; boxed, as
-    /// `new` says.
-    fn of_scheme<H: Host>(
+    /// A request of the scheme it is addressed in, with the credentials
+    /// the options, the URL and a `.netrc` file give it where it may send
+    /// them; boxed, as `new` says.
+    pub(super) fn of_scheme<H: Host>(
         url: &Url,
-        scheme: Scheme,
+        to: super::Addressed<'_>,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
-        let (peer, target) = Request::addressed(url, scheme, cx)?;
-        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        let scheme = to.peer.scheme();
+        let target = url.request_target().map_err(url_error)?;
+        let base = RequestBase::new(to, Pipeline::collecting());
         Request::credentialed(url, scheme, base, target, before, cx)
     }
 
@@ -805,14 +800,13 @@ impl Request {
     }
 
     /// A request of `scheme` with no credentials, none read.
-    fn uncredentialed<H: Host>(
+    fn uncredentialed(
         url: &Url,
-        scheme: Scheme,
+        to: super::Addressed<'_>,
         before: Before<'_>,
-        cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let (peer, target) = Request::addressed(url, scheme, cx)?;
-        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
+        let target = url.request_target().map_err(url_error)?;
+        let base = RequestBase::new(to, Pipeline::collecting());
         Ok(Request::fresh(base, target, before))
     }
 

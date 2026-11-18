@@ -49,23 +49,22 @@ pub(crate) struct RequestBase {
     /// decided for `peer` as the request is made.
     gate: CredentialGate,
     /// The transfer's first origin, this request's own where it is the
-    /// first: none as the request is made, given by the run once it
-    /// records it (`ProtoState::first_recorded`). A stream the server
-    /// pushes beside this request inherits it.
-    first: Option<Origin>,
+    /// first. A stream the server pushes beside this request inherits it.
+    first: Origin,
 }
 
 impl RequestBase {
-    /// A request to `peer`, its gate decided for it by `origins`, with no
-    /// credentials yet.
-    pub(super) fn new(peer: Peer, origins: Origins<'_>, pipeline: Pipeline) -> RequestBase {
+    /// A request to the peer it is addressed to, its gate decided for that
+    /// peer by the first origin, with no credentials yet.
+    pub(super) fn new(to: super::Addressed<'_>, pipeline: Pipeline) -> RequestBase {
+        let super::Addressed { peer, origins } = to;
         let gate = origins.gate(&peer, GateKey(()));
         RequestBase {
             peer,
             pipeline,
             credentials: None,
             gate,
-            first: None,
+            first: origins.first().clone(),
         }
     }
 
@@ -93,14 +92,9 @@ impl RequestBase {
         &self.gate
     }
 
-    /// The transfer's first origin, once recorded.
-    pub(super) fn first(&self) -> Option<&Origin> {
-        self.first.as_ref()
-    }
-
-    /// The transfer's first origin, as the run records it.
-    pub(super) fn set_first(&mut self, first: &Origin) {
-        self.first = Some(first.clone());
+    /// The transfer's first origin.
+    pub(super) fn first(&self) -> &Origin {
+        &self.first
     }
 
     /// The pipeline and the credentials, each to change, beside the peer.
@@ -140,8 +134,8 @@ pub(super) fn gate_at(origins: Origins<'_>, peer: &Peer) -> CredentialGate {
 }
 
 /// The same for a request that goes over no network (`file:`).
-pub(super) fn gate_locally(origins: Origins<'_>) -> CredentialGate {
-    origins.local(GateKey(()))
+pub(super) fn gate_locally() -> CredentialGate {
+    CredentialGate::local(GateKey(()))
 }
 
 /// The peer of `url`, a URL of `scheme`, at its port or the scheme's.

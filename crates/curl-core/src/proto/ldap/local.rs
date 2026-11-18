@@ -23,7 +23,7 @@ use crate::ldap::{
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::UseSsl;
-use crate::proto::{Before, Connect, DoPhase, DoStep, Waiting};
+use crate::proto::{Connect, DoPhase, DoStep, Waiting};
 use crate::trace;
 use crate::url::{GetOptions, Part, Url};
 
@@ -59,14 +59,11 @@ impl Request {
     pub(crate) fn new<H: Host>(
         library: &'static dyn Local,
         url: &Url,
-        secured: bool,
-        before: Before<'_>,
+        to: crate::proto::Addressed<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let name: &[u8] = if secured { b"ldaps" } else { b"ldap" };
-        let peer = crate::proto::base::peer_of(url, name, cx)?;
         let pipeline = Pipeline::new(Reach::Network);
-        let mut base = crate::proto::base::RequestBase::new(peer, before.origins, pipeline);
+        let mut base = crate::proto::base::RequestBase::new(to, pipeline);
         let takes = Takes::of(Some(base.peer().scheme()));
         let credentials = crate::proto::request_credentials(cx, base.gate(), url, takes)?;
         base.credentials = crate::proto::with_netrc(credentials, base.peer().name(), takes, cx)?;

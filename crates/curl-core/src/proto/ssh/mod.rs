@@ -636,29 +636,12 @@ impl Request {
     /// its key files (`myssh_setup_connection`).
     pub(crate) fn new<H: Host>(
         url: &Url,
-        sftp: bool,
-        before: super::Before<'_>,
+        to: super::Addressed<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
-        let port = url
-            .get(
-                Part::Port,
-                GetOptions {
-                    default_port: true,
-                    ..GetOptions::NONE
-                },
-            )
-            .map_err(url_error)?;
-        let port = std::str::from_utf8(&port)
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .ok_or(ErrorKind::UrlMalformat)?;
-        let name: &[u8] = if sftp { b"sftp" } else { b"scp" };
-        let scheme = Scheme::named(name).expect("libcurl knows SCP and SFTP");
-        let peer = super::transfer_peer((scheme, host, port), url, cx)?;
+        let scheme = to.peer.scheme();
         let pipeline = Pipeline::new(Reach::Network);
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+        let mut base = super::base::RequestBase::new(to, pipeline);
         let takes = Takes::of(Some(scheme));
         let credentials = super::request_credentials(cx, base.gate(), url, takes)?;
         base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;

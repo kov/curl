@@ -13,10 +13,10 @@ use crate::conn::Peer;
 use crate::multi::state::Origin;
 use crate::proto::GateKey;
 
-/// Where the transfer's first request went (`state.initial_origin`), once
-/// it has gone: what the application said for it goes nowhere else. Only
-/// a run that has made no request yet has none, which opens the gate of
-/// that first request, whose origin it then records.
+/// Where the transfer's first request went (`state.initial_origin`): what
+/// the application said for it goes nowhere else. A run records it as its
+/// first request over a network is addressed, before that request's gate
+/// is decided ([`FirstOrigin::lend`]), so every gate compares with one.
 #[derive(Debug)]
 pub(crate) struct FirstOrigin(Option<Origin>);
 
@@ -33,31 +33,29 @@ impl FirstOrigin {
         FirstOrigin(Some(first))
     }
 
-    /// The first request's origin, recorded once: later ones change
-    /// nothing.
-    pub(crate) fn record(&mut self, origin: &Origin) {
-        if self.0.is_none() {
-            self.0 = Some(origin.clone());
-        }
-    }
-
-    /// The first request's origin, once it went.
-    pub(crate) fn get(&self) -> Option<&Origin> {
-        self.0.as_ref()
-    }
-
     /// The transfer starts over.
     pub(crate) fn reset(&mut self) {
         self.0 = None;
     }
 
-    /// What a request of this run decides its gate by; `unrestricted`
-    /// lets credentials follow it anywhere (`CURLOPT_UNRESTRICTED_AUTH`).
-    pub(crate) fn origins(&self, unrestricted: bool) -> Origins<'_> {
-        Origins {
-            first: self.0.as_ref(),
+    /// What a request of this run to `peer` decides its gate by: the
+    /// first origin, `peer` itself if it is the run's first request over a
+    /// network, which is recorded here and nowhere else
+    /// (`url_set_data_origin_and_creds`); `unrestricted` lets credentials
+    /// follow it anywhere (`CURLOPT_UNRESTRICTED_AUTH`).
+    pub(crate) fn lend(
+        &mut self,
+        peer: &Peer,
+        unrestricted: bool,
+    ) -> Result<Origins<'_>, curl_alloc::OutOfMemory> {
+        let first = match self.0.take() {
+            Some(first) => first,
+            None => curl_alloc::TryArc::try_new(peer.try_clone()?)?,
+        };
+        Ok(Origins {
+            first: self.0.insert(first),
             unrestricted,
-        }
+        })
     }
 }
 
@@ -65,33 +63,32 @@ impl FirstOrigin {
 /// to the holder of the key, `RequestBase`, for the peer it stores.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Origins<'r> {
-    first: Option<&'r Origin>,
+    first: &'r Origin,
     unrestricted: bool,
 }
 
 impl<'r> Origins<'r> {
-    /// The gate of a request to `peer`: open for the transfer's first
-    /// request; else whether `peer` is the first origin, and whether what
-    /// the application said may go there (`Curl_auth_allowed_to_host`).
+    /// The gate of a request to `peer`: whether `peer` is the first
+    /// origin, and whether what the application said may go there
+    /// (`Curl_auth_allowed_to_host`).
     pub(crate) fn gate(&self, peer: &Peer, _: GateKey) -> CredentialGate {
-        match self.first {
-            None => CredentialGate {
-                same: true,
-                trusted: true,
-            },
-            Some(first) => {
-                let same = **first == *peer;
-                CredentialGate {
-                    same,
-                    trusted: same || self.unrestricted,
-                }
-            }
+        let same = **self.first == *peer;
+        CredentialGate {
+            same,
+            trusted: same || self.unrestricted,
         }
     }
 
+    /// The transfer's first origin, which a request keeps.
+    pub(crate) fn first(&self) -> &'r Origin {
+        self.first
+    }
+}
+
+impl CredentialGate {
     /// The gate of a request that goes over no network (`file:`), which
     /// has no origin to keep the application's login from.
-    pub(crate) fn local(&self, _: GateKey) -> CredentialGate {
+    pub(crate) fn local(_: GateKey) -> CredentialGate {
         CredentialGate {
             same: true,
             trusted: true,
@@ -241,28 +238,31 @@ mod tests {
         Peer::new(Scheme::HTTP, host.to_vec(), port, None)
     }
 
-    /// A fresh run's gate is open; once the first origin is recorded, a
-    /// request to it is the same origin, and to any other is shut unless
-    /// the application lets credentials follow; a second record changes
-    /// nothing, and a reset opens it again.
+    /// The first request's peer is recorded as it is lent, and its gate
+    /// compares it with itself; a later request to it is the same origin,
+    /// and to any other is shut unless the application lets credentials
+    /// follow; a later lend changes nothing, and a reset forgets it.
     #[test]
     fn the_gate_is_the_first_origin_s() {
         let key = || crate::proto::GateKey::testing();
         let here = peer(b"here.example", 80);
         let there = peer(b"there.example", 80);
         let mut first = FirstOrigin::fresh();
-        let open = first.origins(false).gate(&there, key());
-        assert!(open.same_origin().is_some() && open.trusted().is_some());
-        first.record(&TryArc::try_new(peer(b"here.example", 80)).unwrap());
-        first.record(&TryArc::try_new(peer(b"there.example", 80)).unwrap());
-        let same = first.origins(false).gate(&here, key());
-        assert!(same.same_origin().is_some() && same.trusted().is_some());
-        let other = first.origins(false).gate(&there, key());
+        let opened = first.lend(&here, false).unwrap().gate(&here, key());
+        assert!(opened.same_origin().is_some() && opened.trusted().is_some());
+        let other = first.lend(&there, false).unwrap().gate(&there, key());
         assert!(other.same_origin().is_none() && other.trusted().is_none());
-        let followed = first.origins(true).gate(&there, key());
+        let same = first.lend(&there, false).unwrap().gate(&here, key());
+        assert!(same.same_origin().is_some() && same.trusted().is_some());
+        let followed = first.lend(&there, true).unwrap().gate(&there, key());
         assert!(followed.same_origin().is_none() && followed.trusted().is_some());
         first.reset();
-        let open = first.origins(false).gate(&there, key());
-        assert!(open.same_origin().is_some() && open.trusted().is_some());
+        let anew = first.lend(&there, false).unwrap().gate(&there, key());
+        assert!(anew.same_origin().is_some() && anew.trusted().is_some());
+        let inherited = FirstOrigin::inherited(TryArc::try_new(here.try_clone().unwrap()).unwrap())
+            .lend(&there, false)
+            .unwrap()
+            .gate(&there, key());
+        assert!(inherited.same_origin().is_none() && inherited.trusted().is_none());
     }
 }

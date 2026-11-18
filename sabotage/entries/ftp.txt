@@ -489,12 +489,12 @@ impl crate::multi::state::SetupLend for Lent<'_> {
         None
 
 === the control connection's CONNECT after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/ftp.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::ftp::tests::tunnels_after_a_redirect_to_another_host_s_ftp_send_no_credentials
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"ftp", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"ftp", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === an accepted data connection is said to have a DNS filter connected
 file: crates/curl-core/src/multi/state/side.rs

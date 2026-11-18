@@ -76,12 +76,12 @@ witness: curl-core proto::telnet::tests::an_exchange_stalls_no_other_transfer
         Ok(DoStep::Did)
 
 === a redirect's other host is given the application's TELNET user
-file: crates/curl-core/src/proto/telnet.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::telnet::tests::the_application_s_user_stays_with_the_first_host
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"telnet", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"telnet", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === the input is read before C's poll has seen the server or waited its interval
 file: crates/curl-core/src/proto/telnet.rs

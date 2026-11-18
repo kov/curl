@@ -7,7 +7,6 @@ use curl_alloc::TryVec as _;
 use super::raw::Outgoing;
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::auth::gate::Origins;
 use crate::conn::ConnLease;
 use crate::conn::io::Events;
 use crate::deliver::{Pause, Pipeline, Reach};
@@ -137,14 +136,9 @@ fn escape_word(word: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 
 impl Request {
     /// A transfer of `url`: its peer and its path.
-    pub(crate) fn new<H: Host>(
-        url: &Url,
-        origins: Origins<'_>,
-        cx: &mut StepCx<'_, H>,
-    ) -> Result<Request, ErrorKind> {
-        let peer = super::base::peer_of(url, b"dict", cx)?;
+    pub(crate) fn new(url: &Url, to: super::Addressed<'_>) -> Result<Request, ErrorKind> {
         let pipeline = Pipeline::new(Reach::Network);
-        let base = super::base::RequestBase::new(peer, origins, pipeline);
+        let base = super::base::RequestBase::new(to, pipeline);
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE

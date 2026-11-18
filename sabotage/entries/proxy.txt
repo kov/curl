@@ -415,14 +415,12 @@ witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_f
     let (user, password) = if from_url {
 
 === a tunnel after a redirect elsewhere sends the proxy's Cookie
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::http::tests::a_tunnel_after_a_redirect_elsewhere_sends_no_cookie
 --- old
-        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
-        Request::credentialed(url, scheme, base, target, before, cx)
+addressed(url, b"http", first, cx)?
 --- new
-        let base = RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), Pipeline::collecting());
-        Request::credentialed(url, scheme, base, target, before, cx)
+addressed(url, b"http", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === a proxy closing on the credentials is asked again over the same connection
 file: crates/curl-core/src/multi/state/tunnel.rs
@@ -852,94 +850,92 @@ witness: curl-core options::tests::the_proxy_s_generation_moves_as_c_s_changepro
             proxy.generation = proxy.generation.next();
 
 === a DICT request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/dict.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let base = super::base::RequestBase::new(peer, origins, pipeline);
+addressed(url, b"dict", first, cx)?
 --- new
-        let base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"dict", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === a Gopher request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/gopher.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let base = super::base::RequestBase::new(peer, origins, pipeline);
+addressed(url, b"gopher", first, cx)?
 --- new
-        let base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"gopher", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === an IMAP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/imap.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"imap", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"imap", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === a POP3 request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"pop3", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"pop3", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === an SMTP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/smtp.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"smtp", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"smtp", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === a TELNET request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/telnet.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"telnet", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"telnet", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === an MQTT request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/mqtt.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"mqtt", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"mqtt", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === an RTSP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let base = RequestBase::new(peer, before.origins, Pipeline::collecting());
-        Request::credentialed(url, scheme, base, target, before, cx)
+addressed(url, b"rtsp", first, cx)?
 --- new
-        let base = RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), Pipeline::collecting());
-        Request::credentialed(url, scheme, base, target, before, cx)
+addressed(url, b"rtsp", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === an SCP or SFTP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/ssh/mod.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::ssh::tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+addressed(url, b"scp", first, cx)?
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"scp", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === an LDAP request's tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/ldap.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::ldap::tests::a_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+                let to = addressed(url, scheme, first, cx)?;
 --- new
-        let mut base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+                let to = addressed(url, scheme, &mut crate::auth::gate::FirstOrigin::fresh(), cx)?;
 
 === a TFTP request's UDP tunnel after a redirect to another host sends the first host's Authorization and Cookie
-file: crates/curl-core/src/proto/tftp.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::gate_tests::a_udp_tunnel_to_a_redirected_to_host_carries_no_first_host_lines
 --- old
-        let base = super::base::RequestBase::new(peer, origins, pipeline);
+addressed(url, b"tftp", first, cx)?
 --- new
-        let base = super::base::RequestBase::new(peer, crate::auth::gate::FirstOrigin::fresh().origins(false), pipeline);
+addressed(url, b"tftp", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
 
 === a forwarded FTP request's gate is decided for the HTTP peer it is addressed as
 file: crates/curl-core/src/proto/http.rs

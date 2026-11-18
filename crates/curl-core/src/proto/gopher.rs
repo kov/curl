@@ -4,11 +4,9 @@
 
 use curl_alloc::TryVec as _;
 
-use super::base::peer_of;
 use super::raw::Outgoing;
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::auth::gate::Origins;
 use crate::conn::ConnLease;
 use crate::conn::io::Events;
 use crate::deliver::{Pause, Pipeline, Reach};
@@ -73,16 +71,9 @@ pub(crate) enum Refused {
 impl Request {
     /// A transfer of `url`, `gophers` if `secured`: its peer, its path and
     /// its query.
-    pub(crate) fn new<H: Host>(
-        url: &Url,
-        secured: bool,
-        origins: Origins<'_>,
-        cx: &mut StepCx<'_, H>,
-    ) -> Result<Request, ErrorKind> {
-        let name: &[u8] = if secured { b"gophers" } else { b"gopher" };
-        let peer = peer_of(url, name, cx)?;
+    pub(crate) fn new(url: &Url, to: super::Addressed<'_>) -> Result<Request, ErrorKind> {
         let pipeline = Pipeline::new(Reach::Network);
-        let base = super::base::RequestBase::new(peer, origins, pipeline);
+        let base = super::base::RequestBase::new(to, pipeline);
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE

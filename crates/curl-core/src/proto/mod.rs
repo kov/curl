@@ -40,7 +40,7 @@ pub(crate) mod xfer;
 use std::num::NonZeroU32;
 
 use crate::auth::creds::{Credentials, CredentialsError, NetrcLookup, Takes};
-use crate::auth::gate::{CredentialGate, OriginTrusted, Origins};
+use crate::auth::gate::{CredentialGate, FirstOrigin, OriginTrusted, Origins};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
@@ -128,13 +128,35 @@ pub(super) fn transfer_peer<H: Host>(
     url_peer(target, url, scope, idn).map_err(|e| e.fail(cx))
 }
 
+/// Where a request over a network goes, and the transfer's first origin
+/// its gate is decided by: what the application said for that goes
+/// nowhere else.
+pub(crate) struct Addressed<'r> {
+    pub(crate) peer: Peer,
+    pub(crate) origins: Origins<'r>,
+}
+
+/// The peer of `url`, a URL of `scheme`, recorded as the transfer's first
+/// origin if it is the first request's (`state.initial_origin`, set in
+/// `url_set_data_origin_and_creds` as the origin is made, before the
+/// protocol is set up), with what its gate is decided by.
+pub(crate) fn addressed<'f, H: Host>(
+    url: &Url,
+    scheme: &[u8],
+    first: &'f mut FirstOrigin,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Addressed<'f>, ErrorKind> {
+    let peer = base::peer_of(url, scheme, cx)?;
+    let unrestricted = cx.easy().options().http.unrestricted_auth;
+    let origins = first
+        .lend(&peer, unrestricted)
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    Ok(Addressed { peer, origins })
+}
+
 /// What a transfer's next request takes from the ones before it.
 #[derive(Clone, Copy)]
 pub(crate) struct Before<'r> {
-    /// Where the first request went (`state.initial_origin`), which a
-    /// request's gate is decided by: what the application said for it
-    /// goes nowhere else.
-    pub(crate) origins: Origins<'r>,
     /// The method, which a redirect may have turned into a GET
     /// (`state.httpreq`).
     pub(crate) method: Method,
@@ -583,19 +605,19 @@ fn set_out_with<H: Host>(
 /// any request.
 pub(crate) fn netrc_unkept<H: Host>(
     url: &Url,
-    origins: Origins<'_>,
+    first: &mut FirstOrigin,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
     let name = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
     let scheme = Scheme::named(&name);
     let takes = Takes::of(scheme);
     if let Some(scheme) = scheme.filter(|s| !s.no_network()) {
-        let peer = base::peer_of(url, scheme.name().as_bytes(), cx)?;
-        let gate = base::gate_at(origins, &peer);
+        let to = addressed(url, scheme.name().as_bytes(), first, cx)?;
+        let gate = base::gate_at(to.origins, &to.peer);
         let credentials = request_credentials(cx, &gate, url, takes)?;
-        return with_netrc(credentials, peer.name(), takes, cx).map(drop);
+        return with_netrc(credentials, to.peer.name(), takes, cx).map(drop);
     }
-    let credentials = request_credentials(cx, &base::gate_locally(origins), url, takes)?;
+    let credentials = request_credentials(cx, &base::gate_locally(), url, takes)?;
     let host = match url.get(Part::Host, GetOptions::NONE) {
         Ok(host) => host,
         Err(UrlErrorKind::NoHost) => Vec::new(),
@@ -736,61 +758,102 @@ impl ProtoState {
     pub(crate) fn start<H: Host>(
         scheme: &[u8],
         url: &Url,
+        first: &mut FirstOrigin,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
             b"file" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::File(
                     curl_alloc::try_box(file::Request::open(url, cx)?)
                         .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
-            b"http" => ProtoState::Http(http::Request::new(url, false, before, cx)?.into()),
+            b"http" => ProtoState::Http(
+                http::Request::new(url, addressed(url, b"http", first, cx)?, before, cx)?.into(),
+            ),
             // Over TLS, if the handle has a TLS library: without one, it
             // is a scheme the build leaves out, as in C built without.
-            b"https" if cx.easy().libraries().tls.is_some() => {
-                ProtoState::Http(http::Request::new(url, true, before, cx)?.into())
-            }
+            b"https" if cx.easy().libraries().tls.is_some() => ProtoState::Http(
+                http::Request::new(url, addressed(url, b"https", first, cx)?, before, cx)?.into(),
+            ),
             // A WebSocket is an HTTP/1.1 request until its 101.
-            b"ws" => ProtoState::Http(http::Request::websocket(url, false, before, cx)?.into()),
-            b"wss" if cx.easy().libraries().tls.is_some() => {
-                ProtoState::Http(http::Request::websocket(url, true, before, cx)?.into())
-            }
+            b"ws" => ProtoState::Http(
+                http::Request::websocket(url, addressed(url, b"ws", first, cx)?, before, cx)?
+                    .into(),
+            ),
+            b"wss" if cx.easy().libraries().tls.is_some() => ProtoState::Http(
+                http::Request::websocket(url, addressed(url, b"wss", first, cx)?, before, cx)?
+                    .into(),
+            ),
             // RTSP is spoken through HTTP's request (`lib/rtsp.c`).
-            b"rtsp" => ProtoState::Http(http::Request::rtsp(url, before, cx)?.into()),
+            b"rtsp" => ProtoState::Http(
+                http::Request::rtsp(url, addressed(url, b"rtsp", first, cx)?, before, cx)?.into(),
+            ),
             b"imap" => ProtoState::Imap(
-                curl_alloc::try_box(imap::Request::new(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(imap::Request::new(
+                    url,
+                    addressed(url, b"imap", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"imaps" if cx.easy().libraries().tls.is_some() => ProtoState::Imap(
-                curl_alloc::try_box(imap::Request::new(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(imap::Request::new(
+                    url,
+                    addressed(url, b"imaps", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"ftp" => ProtoState::Ftp(
-                curl_alloc::try_box(ftp::Request::new(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(ftp::Request::new(
+                    url,
+                    addressed(url, b"ftp", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"ftps" if cx.easy().libraries().tls.is_some() => ProtoState::Ftp(
-                curl_alloc::try_box(ftp::Request::new(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(ftp::Request::new(
+                    url,
+                    addressed(url, b"ftps", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"pop3" => ProtoState::Pop3(
-                curl_alloc::try_box(pop3::Request::new(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(pop3::Request::new(
+                    url,
+                    addressed(url, b"pop3", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"pop3s" if cx.easy().libraries().tls.is_some() => ProtoState::Pop3(
-                curl_alloc::try_box(pop3::Request::new(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(pop3::Request::new(
+                    url,
+                    addressed(url, b"pop3s", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"smtp" => ProtoState::Smtp(
-                curl_alloc::try_box(smtp::Request::new(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(smtp::Request::new(
+                    url,
+                    addressed(url, b"smtp", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"smtps" if cx.easy().libraries().tls.is_some() => ProtoState::Smtp(
-                curl_alloc::try_box(smtp::Request::new(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(smtp::Request::new(
+                    url,
+                    addressed(url, b"smtps", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             // With an LDAP library, as in C built with one: OpenLDAP's
             // over the connection's socket (`lib/openldap.c`), any other
@@ -799,82 +862,113 @@ impl ProtoState {
                 if cx.easy().libraries().ldap.is_some()
                     && (scheme == b"ldap" || cx.easy().libraries().tls.is_some()) =>
             {
-                let secured = scheme == b"ldaps";
+                let to = addressed(url, scheme, first, cx)?;
                 match cx.easy().libraries().ldap {
                     Some(LdapLibrary::Local(library)) => ProtoState::LdapLocal(
-                        curl_alloc::try_box(ldap::local::Request::new(
-                            library, url, secured, before, cx,
-                        )?)
-                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                        curl_alloc::try_box(ldap::local::Request::new(library, url, to, cx)?)
+                            .map_err(|_| ErrorKind::OutOfMemory)?,
                     ),
                     _ => ProtoState::Ldap(
-                        curl_alloc::try_box(ldap::Request::new(url, secured, before, cx)?)
+                        curl_alloc::try_box(ldap::Request::new(url, to, cx)?)
                             .map_err(|_| ErrorKind::OutOfMemory)?,
                     ),
                 }
             }
             // With an SSH library, as in C built with libssh.
             b"scp" if cx.easy().libraries().ssh.is_some() => ProtoState::Ssh(
-                curl_alloc::try_box(ssh::Request::new(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(ssh::Request::new(
+                    url,
+                    addressed(url, b"scp", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"sftp" if cx.easy().libraries().ssh.is_some() => ProtoState::Ssh(
-                curl_alloc::try_box(ssh::Request::new(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(ssh::Request::new(
+                    url,
+                    addressed(url, b"sftp", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"dict" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Dict(
-                    curl_alloc::try_box(dict::Request::new(url, before.origins, cx)?)
-                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                    curl_alloc::try_box(dict::Request::new(
+                        url,
+                        addressed(url, b"dict", first, cx)?,
+                    )?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             b"gopher" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Gopher(
-                    curl_alloc::try_box(gopher::Request::new(url, false, before.origins, cx)?)
-                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                    curl_alloc::try_box(gopher::Request::new(
+                        url,
+                        addressed(url, b"gopher", first, cx)?,
+                    )?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             b"gophers" if cx.easy().libraries().tls.is_some() => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Gopher(
-                    curl_alloc::try_box(gopher::Request::new(url, true, before.origins, cx)?)
-                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                    curl_alloc::try_box(gopher::Request::new(
+                        url,
+                        addressed(url, b"gophers", first, cx)?,
+                    )?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             b"mqtt" => ProtoState::Mqtt(
-                curl_alloc::try_box(mqtt::Request::new(url, false, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(mqtt::Request::new(
+                    url,
+                    addressed(url, b"mqtt", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"mqtts" if cx.easy().libraries().tls.is_some() => ProtoState::Mqtt(
-                curl_alloc::try_box(mqtt::Request::new(url, true, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(mqtt::Request::new(
+                    url,
+                    addressed(url, b"mqtts", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"telnet" => ProtoState::Telnet(
-                curl_alloc::try_box(telnet::Request::new(url, before, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
+                curl_alloc::try_box(telnet::Request::new(
+                    url,
+                    addressed(url, b"telnet", first, cx)?,
+                    cx,
+                )?)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"tftp" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Tftp(
-                    curl_alloc::try_box(tftp::Request::new(url, before.origins, cx)?)
-                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                    curl_alloc::try_box(tftp::Request::new(
+                        url,
+                        addressed(url, b"tftp", first, cx)?,
+                        cx,
+                    )?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
                 )
             }
             #[cfg(any(test, feature = "test-util"))]
             b"null" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Null
             }
             #[cfg(any(test, feature = "test-util"))]
             b"stall" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Stall
             }
             #[cfg(any(test, feature = "test-util"))]
             b"script" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Script(
                     curl_alloc::try_box(script::Player::default())
                         .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -882,7 +976,7 @@ impl ProtoState {
             }
             #[cfg(any(test, feature = "test-util"))]
             b"tcp" => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
                 ProtoState::Tcp
             }
             _ => return Ok(None),
@@ -1443,14 +1537,6 @@ impl ProtoState {
             ProtoState::Telnet(r) => Some(&r.base),
             ProtoState::Tftp(r) => Some(&r.base),
             _ => None,
-        }
-    }
-
-    /// The run has recorded its first origin, `first`: the request
-    /// carries it from here on, its own if it is the first.
-    pub(crate) fn first_recorded(&mut self, first: &crate::multi::state::Origin) {
-        if let Some(base) = self.base_mut() {
-            base.set_first(first);
         }
     }
 

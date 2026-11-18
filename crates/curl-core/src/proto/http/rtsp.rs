@@ -455,10 +455,11 @@ impl Request {
     /// responses.
     pub(crate) fn rtsp<H: Host>(
         url: &crate::url::Url,
+        to: super::super::Addressed<'_>,
         before: super::super::Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
-        let mut request = Request::of_scheme(url, crate::conn::Scheme::of("rtsp"), before, cx)?;
+        let mut request = Request::of_scheme(url, to, before, cx)?;
         request.neg.h1_only();
         request.neg.only_10 = false;
         let options = cx.easy().options();

@@ -16,7 +16,7 @@ use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
 use crate::conn::io::Events;
 use crate::conn::line::{Goodbye, LineConn};
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, RouteCold, Scheme};
+use crate::conn::{ConnLease, RouteCold};
 use crate::deliver::{Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::hash::{Hash as _, Md5};
@@ -323,31 +323,14 @@ impl Request {
     /// asked for, and its path (`pop3_setup_connection`).
     pub(crate) fn new<H: Host>(
         url: &Url,
-        secured: bool,
-        before: super::Before<'_>,
+        to: super::Addressed<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
-        let port = url
-            .get(
-                Part::Port,
-                GetOptions {
-                    default_port: true,
-                    ..GetOptions::NONE
-                },
-            )
-            .map_err(url_error)?;
-        let port = std::str::from_utf8(&port)
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .ok_or(ErrorKind::UrlMalformat)?;
-        let name: &[u8] = if secured { b"pop3s" } else { b"pop3" };
-        let scheme = Scheme::named(name).expect("libcurl knows POP3");
-        let peer = super::transfer_peer((scheme, host, port), url, cx)?;
+        let scheme = to.peer.scheme();
         // The application's login goes to a redirect's other host only
         // as HTTP's does (`Curl_auth_allowed_to_host`).
         let pipeline = Pipeline::new(Reach::Network);
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+        let mut base = super::base::RequestBase::new(to, pipeline);
         let takes = Takes::of(Some(scheme));
         let credentials = super::request_credentials(cx, base.gate(), url, takes)?;
         base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;

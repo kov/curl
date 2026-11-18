@@ -667,27 +667,28 @@ witness: curl-sys-abi handle_tests::scheme_options_reach_the_transfer
 file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-                let same = **first == *peer;
+        let same = **self.first == *peer;
 --- new
-                let same = true;
+        let same = true;
 
 === the first origin is each request's own
 file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-        if self.0.is_none() {
-            self.0 = Some(origin.clone());
-        }
+        let first = match self.0.take() {
+            Some(first) => first,
+            None => curl_alloc::TryArc::try_new(peer.try_clone()?)?,
+        };
 --- new
-        self.0 = Some(origin.clone());
+        let first = curl_alloc::TryArc::try_new(peer.try_clone()?)?;
 
 === unrestricted auth is ignored
 file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-                    trusted: same || self.unrestricted,
+            trusted: same || self.unrestricted,
 --- new
-                    trusted: same,
+            trusted: same,
 
 === a 301 turns a POST into a GET whatever POSTREDIR says
 file: crates/curl-core/src/proto/http1/follow.rs
@@ -1421,11 +1422,7 @@ witness: curl-core proto::http::tests::the_wait_for_a_100_starts_once_a_pause_en
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
 --- old
-        Ok(None) => {
-            let unrestricted = cx.easy().options().http.unrestricted_auth;
-            let origins = run.first.origins(unrestricted);
-            crate::proto::netrc_unkept(&url, origins, cx).map(|()| None)
-        }
+        Ok(None) => crate::proto::netrc_unkept(&url, &mut run.first, cx).map(|()| None),
 --- new
         Ok(None) => Ok(None),
 
@@ -1574,7 +1571,7 @@ file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_once
 --- old
             b"gophers" if cx.easy().libraries().tls.is_some() => {
-                netrc_unkept(url, before.origins, cx)?;
+                netrc_unkept(url, first, cx)?;
 --- new
             b"gophers" if cx.easy().libraries().tls.is_some() => {
 
@@ -1582,9 +1579,9 @@ witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_on
 file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::http::tests::netrc_reads::a_netrc_is_read_for_the_origin_s_name
 --- old
-        return with_netrc(credentials, peer.name(), takes, cx).map(drop);
+        return with_netrc(credentials, to.peer.name(), takes, cx).map(drop);
 --- new
-        return with_netrc(credentials, peer.shown(), takes, cx).map(drop);
+        return with_netrc(credentials, to.peer.shown(), takes, cx).map(drop);
 
 === a host too long is told only after the netrc is read
 file: crates/curl-core/src/multi/state/leg.rs

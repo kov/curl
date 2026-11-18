@@ -318,17 +318,14 @@ impl Request {
     /// (`oldap_setup_connection`).
     pub(crate) fn new<H: Host>(
         url: &Url,
-        secured: bool,
-        before: super::Before<'_>,
+        to: super::Addressed<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
         let Some(LdapLibrary::Fd(library)) = cx.easy().libraries().ldap else {
             return Err(ErrorKind::UnsupportedProtocol);
         };
-        let name: &[u8] = if secured { b"ldaps" } else { b"ldap" };
-        let peer = super::base::peer_of(url, name, cx)?;
         let pipeline = Pipeline::new(Reach::Network);
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+        let mut base = super::base::RequestBase::new(to, pipeline);
         let takes = Takes::of(Some(base.peer().scheme()));
         let credentials = super::request_credentials(cx, base.gate(), url, takes)?;
         base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;

@@ -2019,12 +2019,8 @@ impl Request {
         let Ok(Some(url)) = self.pushed_url(fields) else {
             return Offered::Denied;
         };
-        // The pushed transfer's first origin is the request's. Without
-        // one, nothing could tell where what the application said may
-        // go: refused.
-        let Some(first) = self.base.first().cloned() else {
-            return Offered::Denied;
-        };
+        // The pushed transfer's first origin is the request's.
+        let first = self.base.first().clone();
         let Ok(mut easy) = cx.easy().pushed().and_then(try_box) else {
             return Offered::Denied;
         };
@@ -2099,18 +2095,18 @@ impl Request {
         let inherited = Inherited::new(cx.easy().options().http.version);
         // A run of its own, as C's pushed handle is, whose first origin is
         // the request's it was promised on.
-        let inherited_first = crate::auth::gate::FirstOrigin::inherited(first.clone());
+        let mut inherited_first = crate::auth::gate::FirstOrigin::inherited(first.clone());
         let before = Before {
-            origins: inherited_first.origins(false),
             method: Method::Get,
             http: &inherited,
         };
         let of = if secured { HTTPS } else { HTTP };
-        // Its request carries no first origin: nothing can be pushed
-        // beside it, the server's promises going only on the client's
-        // streams (RFC 9113 section 8.4), and an offer without one is
-        // refused.
-        let mut request = Request::uncredentialed(url, of, before, cx)?;
+        let peer = super::super::base::peer_of(url, of.name().as_bytes(), cx)?;
+        let origins = inherited_first
+            .lend(&peer, false)
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        let to = super::super::Addressed { peer, origins };
+        let mut request = Request::uncredentialed(url, to, before)?;
         let options = cx.easy().options();
         let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
         let generation = options.proxy.generation();

@@ -647,23 +647,17 @@ pub(super) fn start_leg<H: Host>(
     let started = if refused {
         Ok(None)
     } else {
-        let unrestricted = cx.easy().options().http.unrestricted_auth;
         let before = Before {
-            origins: run.first.origins(unrestricted),
             method: run.method,
             http: &run.http,
         };
-        ProtoState::start(scheme, &url, before, cx)
+        ProtoState::start(scheme, &url, &mut run.first, before, cx)
     };
     // A request made has read the `.netrc`, once. With none to make, C has
     // read it all the same, before it checks the protocol is built and
     // allowed.
     let started = match started {
-        Ok(None) => {
-            let unrestricted = cx.easy().options().http.unrestricted_auth;
-            let origins = run.first.origins(unrestricted);
-            crate::proto::netrc_unkept(&url, origins, cx).map(|()| None)
-        }
+        Ok(None) => crate::proto::netrc_unkept(&url, &mut run.first, cx).map(|()| None),
         started => started,
     };
     // Out of the queue once the request knows its origin and its
@@ -726,8 +720,6 @@ pub(super) fn start_leg<H: Host>(
     let Ok(origin) = TryArc::try_new(target) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    run.first.record(&origin);
-    proto.first_recorded(run.first.get().expect("recorded above"));
     // A Unix socket is connected to in place of the origin's host, and
     // of any connect-to entry, and no proxy is gone through
     // (`url_set_conn_origin_etc`).
@@ -804,9 +796,7 @@ pub(super) fn start_leg<H: Host>(
                 }
             });
             if ftp {
-                let unrestricted = cx.easy().options().http.unrestricted_auth;
                 let before = Before {
-                    origins: run.first.origins(unrestricted),
                     method: run.method,
                     http: &run.http,
                 };

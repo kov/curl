@@ -4642,12 +4642,15 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   `Authorization :` is still an Authorization. A custom Host is `Host:` plus the bytes after the
   name (1121, 1292), and `Host:` alone removes it (461); every other duplicate goes in order.
   Connection is assembled last: the first with a value, trimmed, then the rest as given.
-- **One credential gate.** `auth::gate` owns the run's first origin (`FirstOrigin`, which only
-  a run before its first request has none of; the run gives each request the first origin as
-  it records it, the first request its own (`ProtoState::first_recorded`), and a pushed
-  stream's run inherits the one of the request it was promised on, a push beside a request
-  that has none being refused) and is the one place a gate is decided: `Origins::gate` compares
-  the first origin with the request's (`Curl_peer_equal`) and adds `CURLOPT_UNRESTRICTED_AUTH`,
+- **One credential gate.** `auth::gate` owns the run's first origin (`FirstOrigin`). A request
+  over a network is addressed before it is made (`proto::addressed`, as C makes the origin in
+  `url_set_data_origin_and_creds` before the protocol's setup): its peer is worked out, recorded
+  as the first origin if none is yet (`FirstOrigin::lend`, the one writer), and handed to the
+  constructor with the first origin as `Addressed`, so every gate compares with a first origin
+  and the first request's compares equal to itself. Each request keeps the first origin, and a
+  pushed stream's run inherits the one of the request it was promised on. `auth::gate` is the
+  one place a gate is decided: `Origins::gate` compares the first origin with the request's
+  (`Curl_peer_equal`) and adds `CURLOPT_UNRESTRICTED_AUTH`,
   and needs a `GateKey` only `proto/base.rs` makes, so the only gate a request gets is the one
   `RequestBase::new` decides for the peer it keeps. `CredentialGate` is neither `Copy` nor
   `Clone`, and has no always-open constant. A custom Host is reached only through
@@ -4662,7 +4665,7 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   `OriginTrusted`. Every network protocol's request holds its gate in its `RequestBase`,
   which a tunnel's `CONNECT` sends by (`SetupLend::trusted`, FTP's data connection's too, which
   borrows the base). `file:`, which has no origin to keep a login from, is given the
-  application's by a gate always open (`Origins::local`) and keeps none; it and the tests' own
+  application's by a gate always open (`CredentialGate::local`) and keeps none; it and the tests' own
   protocols hold no gate, and a tunnel made for them trusts nothing. The HTTP
   request a forwarding proxy is sent for FTP takes the FTP request's base
   (`RequestBase::forwarded`), its gate decided for the FTP origin, as C's origin stays the

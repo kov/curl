@@ -6,9 +6,8 @@
 
 use curl_alloc::TryVec as _;
 
-use super::base::peer_of;
 use super::raw::{Got, xfer_recv, xfer_send};
-use super::{Before, Connect, DoPhase, DoStep, ProtoStep, Waiting};
+use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::auth::creds::Takes;
 use crate::conn::ConnLease;
 use crate::conn::io::Events;
@@ -271,17 +270,14 @@ impl Request {
     /// asked for (`mqtt_setup_conn`).
     pub(crate) fn new<H: Host>(
         url: &Url,
-        secured: bool,
-        before: Before<'_>,
+        to: super::Addressed<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let name: &[u8] = if secured { b"mqtts" } else { b"mqtt" };
-        let peer = peer_of(url, name, cx)?;
-        let takes = Takes::of(Some(peer.scheme()));
+        let takes = Takes::of(Some(to.peer.scheme()));
         // The application's login goes to a redirect's other host only
         // as HTTP's does (`Curl_auth_allowed_to_host`).
         let pipeline = Pipeline::new(Reach::Network);
-        let mut base = super::base::RequestBase::new(peer, before.origins, pipeline);
+        let mut base = super::base::RequestBase::new(to, pipeline);
         let credentials = super::request_credentials(cx, base.gate(), url, takes)?;
         base.credentials = super::with_netrc(credentials, base.peer().name(), takes, cx)?;
         let encoded = GetOptions {

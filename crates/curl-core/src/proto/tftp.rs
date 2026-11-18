@@ -13,9 +13,7 @@ use std::time::Duration;
 use curl_alloc::TryVec as _;
 use curl_os::error::ErrorText;
 
-use super::base::peer_of;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::auth::gate::Origins;
 use crate::conn::ConnLease;
 use crate::conn::io::{Events, Remote};
 use crate::deliver::{Pipeline, Reach};
@@ -335,12 +333,11 @@ impl Request {
     /// taken off (`tftp_setup_connection`).
     pub(crate) fn new<H: Host>(
         url: &Url,
-        origins: Origins<'_>,
+        to: super::Addressed<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
-        let peer = peer_of(url, b"tftp", cx)?;
         let pipeline = Pipeline::new(Reach::Network);
-        let base = super::base::RequestBase::new(peer, origins, pipeline);
+        let base = super::base::RequestBase::new(to, pipeline);
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE

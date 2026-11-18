@@ -288,7 +288,7 @@ fn callback_mode_traces_its_frames_as_c_does() {
             "[WS] WS, using chunk size 65535",
             "[WS] Received 101, switch to WebSocket",
             "[WS] decoded head [PING payload=0/2]",
-            "[WS] auto PONG to [PING payload=0/2]",
+            "[WS] auto PONG to [PING payload=2]",
             "[WS] passed 2 bytes payload, 0 remain",
             "[WS] decoded passing [PING payload=2/2]",
             "[WS] decoded head [TEXT payload=0/1]",
@@ -450,8 +450,9 @@ fn follows_on(writes: &[MetaWrite], total: u64) {
 }
 
 /// A frame that comes a byte at a time is written as it comes, each
-/// piece told where in the frame it is. A ping in pieces is written but
-/// for its last, which a pong answers, of that piece alone, as C's.
+/// piece told where in the frame it is. A ping in pieces is never
+/// written, and a pong of its whole payload answers it once it is in
+/// (`ws_auto_pong`).
 #[test]
 fn a_frame_in_pieces_is_written_as_it_comes() {
     use crate::ws::FrameKind;
@@ -467,12 +468,10 @@ fn a_frame_in_pieces_is_written_as_it_comes() {
     let text = of(FrameKind::Text);
     assert_eq!(text.len(), 5, "{writes:?}");
     follows_on(&text, 5);
-    let ping = of(FrameKind::Ping);
-    assert_eq!(ping.len(), 1, "{writes:?}");
-    assert_eq!(ping[0].0, b"h");
+    assert!(of(FrameKind::Ping).is_empty(), "{writes:?}");
     let sent = frames_sent(&ran);
-    assert_eq!(&sent[..2], [0x8a, 0x81], "{sent:x?}");
-    assert_eq!(sent[6] ^ sent[2], b'i');
+    assert_eq!(&sent[..2], [0x8a, 0x82], "{sent:x?}");
+    assert_eq!([sent[6] ^ sent[2], sent[7] ^ sent[3]], *b"hi");
 }
 
 /// A frame longer than the stage holds, paused at its first piece,

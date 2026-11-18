@@ -152,6 +152,8 @@ pub(crate) struct WsConn {
     /// The frame the bytes last received are of (`recvframe`).
     meta: Option<Frame>,
     pending: Option<Pong>,
+    /// The payload of the ping being received, for its pong (`ping`).
+    ping: [u8; MAX_CONTROL],
     /// The transfer's upload is sent as frames through its reader
     /// (`using_reader`), which sends what is encoded.
     pub(crate) using_reader: bool,
@@ -172,6 +174,7 @@ impl WsConn {
             sendbuf_payload: 0,
             meta: None,
             pending: None,
+            ping: [0; MAX_CONTROL],
             using_reader: false,
             debugging,
         })
@@ -202,10 +205,26 @@ impl WsConn {
         self.pending.is_some()
     }
 
+    /// The payload of the pong waiting to go, if one is.
+    #[cfg(test)]
+    pub(crate) fn pong(&self) -> Option<&[u8]> {
+        self.pending
+            .as_ref()
+            .map(|p| &p.payload[..usize::from(p.len)])
+    }
+
     /// Answer a ping with a pong of `payload`, in place of any waiting
     /// (`ws_enc_add_cntrl`).
+    #[cfg(test)]
     pub(crate) fn add_pong(&mut self, payload: &[u8]) {
         self.pending = Some(Pong::of(payload));
+    }
+
+    /// Take `bytes` of a ping's payload, from `offset` of its `len`, and
+    /// answer it once it is whole; the length answered, if it is
+    /// (`ws_auto_pong`).
+    pub(crate) fn ping_piece(&mut self, bytes: &[u8], offset: u64, len: u64) -> Option<u64> {
+        ping_piece(&mut self.ping, &mut self.pending, bytes, offset, len)
     }
 
     /// Start a frame, `len` bytes long, its head into the send buffer:
@@ -529,6 +548,7 @@ impl WsConn {
             dec,
             recvbuf,
             pending,
+            ping,
             ..
         } = self;
         let mut collect = Collect {
@@ -539,6 +559,7 @@ impl WsConn {
             written: false,
             auto_pong,
             pending,
+            ping,
         };
         loop {
             if recvbuf.is_empty() {
@@ -776,6 +797,7 @@ struct Collect<'a> {
     written: bool,
     auto_pong: bool,
     pending: &'a mut Option<Pong>,
+    ping: &'a mut [u8; MAX_CONTROL],
 }
 
 impl Said for Collect<'_> {
@@ -800,15 +822,16 @@ impl Take for Collect<'_> {
         offset: u64,
         len: u64,
     ) -> Result<usize, Stop> {
-        let remain = len - offset - bytes.len() as u64;
         if self.at == 0 {
             self.first = Some((frame, offset, len));
         }
-        if self.auto_pong && frame.kind == FrameKind::Ping && remain == 0 {
-            // Only a ping's last bytes are its pong's (`ws_client_collect`).
-            self.said
-                .ws(format_args!("auto PONG to [PING payload={offset}/{len}]"));
-            *self.pending = Some(Pong::of(bytes));
+        if self.auto_pong && frame.kind == FrameKind::Ping {
+            // A ping is never the application's: its payload, as it
+            // comes, is its pong's (`ws_client_collect`).
+            if let Some(len) = ping_piece(self.ping, self.pending, bytes, offset, len) {
+                self.said
+                    .ws(format_args!("auto PONG to [PING payload={len}]"));
+            }
             return Ok(bytes.len());
         }
         self.written = true;
@@ -828,6 +851,27 @@ impl Take for Collect<'_> {
     fn paused(&self) -> bool {
         false
     }
+}
+
+/// Keep `bytes`, from `offset` of a ping's payload of `len`, in `ping`,
+/// and once the payload is whole, make the pong of it the one waiting in
+/// `pending`: the length answered, if it is (`ws_auto_pong`). The decoder
+/// takes no ping longer than a control frame may be.
+fn ping_piece(
+    ping: &mut [u8; MAX_CONTROL],
+    pending: &mut Option<Pong>,
+    bytes: &[u8],
+    offset: u64,
+    len: u64,
+) -> Option<u64> {
+    let at = usize::try_from(offset).expect("a ping is short");
+    let total = usize::try_from(len).expect("a ping is short");
+    ping[at..at + bytes.len()].copy_from_slice(bytes);
+    if at + bytes.len() < total {
+        return None;
+    }
+    *pending = Some(Pong::of(&ping[..total]));
+    Some(len)
 }
 
 impl Pong {

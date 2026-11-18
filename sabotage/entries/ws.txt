@@ -26,11 +26,13 @@ witness: curl-core proto::ws::tests::a_control_frame_is_at_most_125_bytes
 file: crates/curl-core/src/proto/ws.rs
 witness: curl-core proto::ws::tests::a_ping_is_answered
 --- old
-        if self.auto_pong && frame.kind == FrameKind::Ping && remain == 0 {
-            // Only a ping's last bytes are its pong's (`ws_client_collect`).
+        if self.auto_pong && frame.kind == FrameKind::Ping {
+            // A ping is never the application's: its payload, as it
+            // comes, is its pong's (`ws_client_collect`).
 --- new
         if false {
-            // Only a ping's last bytes are its pong's (`ws_client_collect`).
+            // A ping is never the application's: its payload, as it
+            // comes, is its pong's (`ws_client_collect`).
 
 === the upgrade request sends its own key over the application's
 file: crates/curl-core/src/proto/http1/request.rs
@@ -90,8 +92,9 @@ witness: curl-core proto::http::tests::connect_only::a_websocket_head_cut_short_
 file: crates/curl-core/src/deliver/ws.rs
 witness: curl-core proto::http::tests::ws::a_ping_delivered_is_answered_with_a_pong
 --- old
-            ws_of(self.cx).add_pong(bytes);
+            if let Some(len) = ws_of(self.cx).ping_piece(bytes, offset, len) {
 --- new
+            if let Some(len) = None::<u64> {
 
 === a frame cut short at the end is taken as whole
 file: crates/curl-core/src/deliver/ws.rs
@@ -118,3 +121,36 @@ witness: curl-sys-abi handle_tests::the_websocket_s_frame_is_zero_before_the_fir
         Meta::Nothing => return ptr::null(),
         #[allow(unreachable_patterns)]
         Meta::Nothing => curl_ws_frame {
+
+=== a pong is of a ping's last piece alone
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::ws::tests::a_ping_in_pieces_is_answered_at_its_last
+--- old
+    *pending = Some(Pong::of(&ping[..total]));
+--- new
+    *pending = Some(Pong::of(&ping[at..total]));
+
+=== a ping's early pieces are written in callback mode
+file: crates/curl-core/src/deliver/ws.rs
+witness: curl-core proto::http::tests::ws::a_frame_in_pieces_is_written_as_it_comes
+--- old
+        if self.auto_pong && frame.kind == FrameKind::Ping {
+--- new
+        if self.auto_pong && frame.kind == FrameKind::Ping && offset + bytes.len() as u64 == len {
+
+=== a ping's early pieces are received by the application
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::ws::tests::a_ping_in_pieces_is_answered_at_its_last
+--- old
+        if self.auto_pong && frame.kind == FrameKind::Ping {
+--- new
+        if self.auto_pong && frame.kind == FrameKind::Ping && offset + bytes.len() as u64 == len {
+
+=== a ping is answered before its payload is whole
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::http::tests::ws::a_frame_in_pieces_is_written_as_it_comes
+--- old
+    if at + bytes.len() < total {
+        return None;
+    }
+--- new

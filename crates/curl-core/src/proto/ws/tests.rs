@@ -839,7 +839,7 @@ fn a_ping_before_a_close_traces_as_c_s_2708() {
         [
             "[WS] curl_ws_recv, added 8 bytes from network",
             "[WS] decoded head [PING payload=0/4]",
-            "[WS] auto PONG to [PING payload=0/4]",
+            "[WS] auto PONG to [PING payload=4]",
             "[WS] passed 4 bytes payload, 0 remain",
             "[WS] decoded passing [PING payload=4/4]",
             "[WS] decoded head [CLOSE payload=0/0]",
@@ -1097,8 +1097,9 @@ fn a_receive_fills_its_buffer_from_more_than_one_chunk() {
     assert_eq!((frame.offset, frame.bytes_left), (3, 0));
 }
 
-/// A ping that comes a byte at a time is handed on as it comes, as C's
-/// is, and answered once its last byte is in: the pong is of that piece.
+/// A ping that comes a byte at a time is never handed on, and is
+/// answered once its last byte is in, with a pong of its whole payload
+/// (`ws_auto_pong`).
 #[test]
 fn a_ping_in_pieces_is_answered_at_its_last() {
     let mut rec = Rec {
@@ -1109,17 +1110,20 @@ fn a_ping_in_pieces_is_answered_at_its_last() {
     rec.incoming = b"\x89\x02hi\x81\x01x".to_vec();
     let mut buf = [0u8; 16];
     let frame = ws.recv(&mut rec, &mut buf, true).unwrap();
-    assert_eq!(frame.kind, ft(FrameKind::Ping, false));
-    assert_eq!((&buf[..frame.len], frame.bytes_left), (&b"h"[..], 1));
-    assert!(!ws.pending());
-    let frame = ws.recv(&mut rec, &mut buf, true).unwrap();
     assert_eq!(
         frame.kind,
         ft(FrameKind::Text, false),
-        "the ping's end taken"
+        "the ping not handed on"
     );
     assert_eq!(&buf[..frame.len], b"x");
-    assert!(ws.pending());
+    assert_eq!(ws.pong(), Some(&b"hi"[..]));
+    assert!(
+        rec.lines
+            .iter()
+            .any(|l| l == "[WS] auto PONG to [PING payload=2]"),
+        "{:?}",
+        rec.lines
+    );
 }
 
 /// A frame started while one is under way is refused with C's reason.

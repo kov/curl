@@ -214,10 +214,12 @@ impl<H: Host> Take for Pass<'_, '_, '_, H> {
         len: u64,
     ) -> Result<usize, Stop> {
         let remain = len - offset - bytes.len() as u64;
-        if self.auto_pong && frame.kind == FrameKind::Ping && remain == 0 {
-            // Only a ping's last bytes are its pong's.
-            self.ws(format_args!("auto PONG to [PING payload={offset}/{len}]"));
-            ws_of(self.cx).add_pong(bytes);
+        if self.auto_pong && frame.kind == FrameKind::Ping {
+            // A ping is never the application's: its payload, as it
+            // comes, is its pong's (`ws_cw_dec_next`).
+            if let Some(len) = ws_of(self.cx).ping_piece(bytes, offset, len) {
+                self.ws(format_args!("auto PONG to [PING payload={len}]"));
+            }
         } else if !bytes.is_empty() || remain == 0 {
             ws_of(self.cx).set_meta(frame, offset, len, bytes.len());
             let n = bytes.len();

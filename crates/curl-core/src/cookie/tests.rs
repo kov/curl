@@ -604,6 +604,37 @@ fn takes_application_lines_of_both_forms() {
     );
 }
 
+/// A cookie is small and its strings are one block, name, value, path
+/// and domain one after another, as C makes a cookie (`cookiedup`): a
+/// jar of many cookies stays within C's memory (test 442).
+#[test]
+fn a_cookie_is_small_and_its_strings_one_block() {
+    assert!(
+        std::mem::size_of::<Cookie>() <= 64,
+        "{}",
+        std::mem::size_of::<Cookie>()
+    );
+    let mut jar = Jar::default();
+    jar.add_line(
+        b"example.com\tFALSE\t/p\tFALSE\t0\tname\tvalue",
+        None,
+        NOW,
+        &mut 0,
+    )
+    .unwrap();
+    let co = jar.listed().next().expect("stored");
+    assert_eq!(&co.text.bytes[..], b"namevalue/pexample.com");
+    assert_eq!(
+        (co.name(), co.value(), co.path(), co.domain()),
+        (
+            &b"name"[..],
+            &b"value"[..],
+            &b"/p"[..],
+            Some(&b"example.com"[..])
+        )
+    );
+}
+
 /// A cookie the application gives before any transfer is live, as a
 /// server's is: a file read after it does not replace it, and a second
 /// line of the application's does (`COOKIE_LIVE` from `cookielist`).

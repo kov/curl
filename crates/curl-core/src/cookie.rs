@@ -137,14 +137,12 @@ impl std::fmt::Debug for Suffixes {
 /// One cookie.
 #[derive(Debug)]
 pub(crate) struct Cookie {
-    name: Vec<u8>,
-    value: Vec<u8>,
-    /// The paths it is sent for, without a trailing slash: `/` where
-    /// nothing gives one, as for a `Set-Cookie:` line read from a file.
-    path: Vec<u8>,
-    /// The host it was set for, or the domain it names; none where it was
-    /// read from a `Set-Cookie:` line in a file that names none.
-    domain: Option<Vec<u8>>,
+    /// Its name, its value, the paths it is sent for and its domain
+    /// (`Text`).
+    text: Text,
+    /// It has a domain, the end of its text: kept apart from the text so
+    /// that a cookie stays small.
+    has_domain: bool,
     /// When it expires, in seconds since 1970; zero for a cookie that
     /// lasts the session.
     expires: i64,
@@ -185,13 +183,74 @@ impl Prefix {
     }
 }
 
+/// A cookie's strings, in one block, one after another, as C keeps them
+/// after its cookie (`cookiedup`): one allocation a cookie.
+#[derive(Debug, Default)]
+struct Text {
+    /// Boxed, to keep a cookie small: a bucket of them holds C's list of
+    /// cookies in one block.
+    bytes: Box<[u8]>,
+    /// Where the name ends and the value starts.
+    name: usize,
+    /// Where the value ends and the path starts.
+    value: usize,
+    /// Where the path ends and the domain, if the cookie has one
+    /// (`Cookie::has_domain`), starts.
+    path: usize,
+}
+
+impl Text {
+    fn new(name: &[u8], value: &[u8], path: &[u8], domain: &[u8]) -> Result<Text, OutOfMemory> {
+        let rest = domain;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(name.len() + value.len() + path.len() + rest.len())?;
+        for part in [name, value, path, rest] {
+            bytes.try_extend_from_slice(part)?;
+        }
+        // Room was made for the length exactly: it does not shrink.
+        #[allow(clippy::disallowed_methods)]
+        let bytes = bytes.into_boxed_slice();
+        Ok(Text {
+            bytes,
+            name: name.len(),
+            value: name.len() + value.len(),
+            path: name.len() + value.len() + path.len(),
+        })
+    }
+}
+
 impl Cookie {
     pub(crate) fn name(&self) -> &[u8] {
-        &self.name
+        &self.text.bytes[..self.text.name]
     }
 
     pub(crate) fn value(&self) -> &[u8] {
-        &self.value
+        &self.text.bytes[self.text.name..self.text.value]
+    }
+
+    /// The paths it is sent for, without a trailing slash: `/` where
+    /// nothing gives one, as for a `Set-Cookie:` line read from a file.
+    fn path(&self) -> &[u8] {
+        &self.text.bytes[self.text.value..self.text.path]
+    }
+
+    /// The host it was set for, or the domain it names; none where it was
+    /// read from a `Set-Cookie:` line in a file that names none.
+    fn domain(&self) -> Option<&[u8]> {
+        self.has_domain.then(|| &self.text.bytes[self.text.path..])
+    }
+
+    /// Its strings, and whether it has a domain.
+    fn set_text(
+        &mut self,
+        name: &[u8],
+        value: &[u8],
+        path: &[u8],
+        domain: Option<&[u8]>,
+    ) -> Result<(), OutOfMemory> {
+        self.text = Text::new(name, value, path, domain.unwrap_or_default())?;
+        self.has_domain = domain.is_some();
+        Ok(())
     }
 
     /// The cookie as a line of a Netscape file, without its end
@@ -202,23 +261,18 @@ impl Cookie {
         }
         // A cookie for the hosts below its domain is written as Mozilla
         // writes it, after a dot.
-        if self.tailmatch
-            && self
-                .domain
-                .as_ref()
-                .is_some_and(|d| d.first() != Some(&b'.'))
-        {
+        if self.tailmatch && self.domain().is_some_and(|d| d.first() != Some(&b'.')) {
             out.try_extend_from_slice(b".")?;
         }
         let mut digits = [0u8; 20];
         for (i, field) in [
-            self.domain.as_deref().unwrap_or(b"unknown"),
+            self.domain().unwrap_or(b"unknown"),
             truth(self.tailmatch),
-            &self.path,
+            self.path(),
             truth(self.secure),
             signed(self.expires, &mut digits),
-            &self.name,
-            &self.value,
+            self.name(),
+            self.value(),
         ]
         .into_iter()
         .enumerate()
@@ -357,31 +411,31 @@ impl Said<'_> {
                 }
                 f(&[
                     b"cookie '",
-                    &cookie.name,
+                    cookie.name(),
                     b"' dropped, domain '",
                     host.unwrap_or(b"[file]"),
                     b"' must not set cookies for '",
-                    cookie.domain.as_deref().unwrap_or(NIL),
+                    cookie.domain().unwrap_or(NIL),
                     b"'",
                 ]);
             }
             Said::Overlay(cookie) => f(&[
                 b"cookie '",
-                &cookie.name,
+                cookie.name(),
                 b"' for domain '",
-                cookie.domain.as_deref().unwrap_or(NIL),
+                cookie.domain().unwrap_or(NIL),
                 b"' dropped, would overlay an existing cookie",
             ]),
             Said::Stored { replaced, cookie } => f(&[
                 if *replaced { b"Replaced" } else { b"Added" },
                 b" cookie ",
-                &cookie.name,
+                cookie.name(),
                 b"=\"",
-                &cookie.value,
+                cookie.value(),
                 b"\" for domain ",
-                cookie.domain.as_deref().unwrap_or(NIL),
+                cookie.domain().unwrap_or(NIL),
                 b", path ",
-                &cookie.path,
+                cookie.path(),
                 b", expire ",
                 signed(cookie.expires, &mut a),
             ]),
@@ -572,7 +626,7 @@ impl Jar {
                 problem,
             }));
         }
-        if co.prefix == Prefix::Host && !(co.secure && co.path == b"/" && !co.tailmatch) {
+        if co.prefix == Prefix::Host && !(co.secure && co.path() == b"/" && !co.tailmatch) {
             return Ok(None);
         }
         if !self.running && self.new_session && co.expires == 0 {
@@ -590,7 +644,7 @@ impl Jar {
             self.buckets.try_reserve_exact(BUCKETS)?;
             self.buckets.resize_with(BUCKETS, Vec::new);
         }
-        let bucket = bucket(co.domain.as_deref());
+        let bucket = bucket(co.domain());
         let replaced = match self.replaced(&co, bucket, source.secure()) {
             Replace::Refused { overlay: true } => return Ok(Some(Said::Overlay(co))),
             Replace::Refused { overlay: false } => return Ok(None),
@@ -622,15 +676,15 @@ impl Jar {
     fn replaced(&self, co: &Cookie, bucket: usize, secure: bool) -> Replace {
         let mut at = None;
         for (i, old) in self.buckets[bucket].iter().enumerate() {
-            if old.name != co.name {
+            if old.name() != co.name() {
                 continue;
             }
-            let overlapping = domains_overlap(old.domain.as_deref(), co.domain.as_deref());
+            let overlapping = domains_overlap(old.domain(), co.domain());
             // A cookie from a connection that is not secure may not
             // overlay a secure one: for an existing cookie with path
             // `/login/en`, no new one whose path starts `/login`.
             if overlapping && old.secure && !co.secure && !secure {
-                let (old_path, path) = (&old.path, &co.path);
+                let (old_path, path) = (old.path(), co.path());
                 let first = old_path
                     .iter()
                     .skip(1)
@@ -643,12 +697,12 @@ impl Jar {
             if at.is_some() {
                 continue;
             }
-            let same_domain = match (&old.domain, &co.domain) {
+            let same_domain = match (old.domain(), co.domain()) {
                 (Some(a), Some(b)) => a.eq_ignore_ascii_case(b) && old.tailmatch == co.tailmatch,
                 (None, None) => true,
                 _ => false,
             };
-            if same_domain && old.path == co.path {
+            if same_domain && old.path() == co.path() {
                 // A cookie a server set is kept over one read from a file.
                 if !co.live && old.live {
                     return Replace::Refused { overlay: false };
@@ -694,12 +748,12 @@ impl Jar {
             if co.secure && !secure {
                 continue;
             }
-            let domain_matches = match &co.domain {
+            let domain_matches = match co.domain() {
                 None => true,
                 Some(d) if co.tailmatch && !is_ip => tailmatch(d, host),
                 Some(d) => host.eq_ignore_ascii_case(d),
             };
-            if !domain_matches || !path_matches(&co.path, path) {
+            if !domain_matches || !path_matches(co.path(), path) {
                 continue;
             }
             cookies.try_push(co)?;
@@ -720,7 +774,7 @@ impl Jar {
         self.buckets
             .iter()
             .flatten()
-            .filter(|co| co.domain.is_some())
+            .filter(|co| co.domain().is_some())
     }
 
     /// The jar as a Netscape file (`cookie_output`), newest first: the
@@ -763,6 +817,10 @@ impl Jar {
     fn netscape_cookie(&self, line: &[u8], secure: bool) -> Result<Parsed<'static>, OutOfMemory> {
         let mut line = until_zero(line);
         let mut co = Cookie::empty();
+        // Set as the line's third field is read; a line without one is
+        // no cookie.
+        let (mut name, mut value, mut path, mut domain): (&[u8], &[u8], &[u8], &[u8]) =
+            (b"", b"", b"", b"");
         // Firefox writes cookies scripts may not read after `#HttpOnly_`.
         if let Some(rest) = line.strip_prefix(b"#HttpOnly_") {
             line = rest;
@@ -784,15 +842,15 @@ impl Jar {
                 // The file may leave the path out: a field that reads as
                 // the next is taken for it.
                 if !(is_prefix_of(field, b"TRUE") || is_prefix_of(field, b"FALSE")) {
-                    co.path = sanitized_path(field)?;
+                    path = sanitized_path(field);
                     fields += 1;
                     continue;
                 }
-                co.path = copy(b"/")?;
+                path = b"/";
                 fields += 1;
             }
             match fields {
-                0 => co.domain = Some(copy(field.strip_prefix(b".").unwrap_or(field))?),
+                0 => domain = field.strip_prefix(b".").unwrap_or(field),
                 1 => co.tailmatch = is_prefix_of_ignore_case(field, b"TRUE"),
                 3 => {
                     co.secure = false;
@@ -808,10 +866,10 @@ impl Jar {
                     Number::None | Number::Overflow => return Ok(Parsed::Dropped(None)),
                 },
                 5 => {
-                    co.name = copy(field)?;
+                    name = field;
                     co.prefix = Prefix::of(field);
                 }
-                6 => co.value = copy(field)?,
+                6 => value = field,
                 _ => {}
             }
             fields += 1;
@@ -820,9 +878,10 @@ impl Jar {
         if fields == 6 {
             fields += 1;
         }
-        if fields != 7 || invalid_octets(&co.name) || invalid_octets(&co.value) {
+        if fields != 7 || invalid_octets(name) || invalid_octets(value) {
             return Ok(Parsed::Dropped(None));
         }
+        co.set_text(name, value, path, Some(domain))?;
         Ok(Parsed::Cookie(co))
     }
 }
@@ -853,12 +912,8 @@ enum Replace {
 impl Cookie {
     fn empty() -> Cookie {
         Cookie {
-            name: Vec::new(),
-            value: Vec::new(),
-            // Set as the line's third field is read; a line without one
-            // is no cookie.
-            path: Vec::new(),
-            domain: None,
+            text: Text::default(),
+            has_domain: false,
             expires: 0,
             created: 0,
             tailmatch: false,
@@ -975,8 +1030,6 @@ fn header_cookie<'a>(
     let Some((name, val)) = name_value else {
         return Ok(Parsed::Dropped(None));
     };
-    co.name = copy(name)?;
-    co.value = copy(val)?;
     // Without a path, the request's, up to its last slash; without a
     // request either, `/` (`storecookie`).
     let path = if !path.is_empty() {
@@ -987,12 +1040,12 @@ fn header_cookie<'a>(
             None => p,
         })
     };
-    co.path = sanitized_path(path)?;
-    co.domain = if !domain.is_empty() {
-        Some(copy(domain)?)
+    let domain = if !domain.is_empty() {
+        Some(domain)
     } else {
-        host.map(copy).transpose()?
+        host
     };
+    co.set_text(name, val, sanitized_path(path), domain)?;
     Ok(Parsed::Cookie(co))
 }
 
@@ -1037,7 +1090,7 @@ fn on_public_suffix(
     host: Option<&[u8]>,
     suffixes: &dyn SuffixCheck,
 ) -> Option<bool> {
-    let domain = co.domain.as_deref()?;
+    let domain = co.domain()?;
     if is_ip_address(domain) {
         return None;
     }
@@ -1138,18 +1191,18 @@ fn number(s: &[u8]) -> Number {
 /// A cookie path as stored (`sanitize_cookie_path`): out of the quotes
 /// some sites put it in, `/` for one that does not start with a slash,
 /// and without a trailing slash.
-fn sanitized_path(path: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+fn sanitized_path(path: &[u8]) -> &[u8] {
     let mut path = path;
     if let Some(rest) = path.strip_prefix(b"\"") {
         path = rest.strip_suffix(b"\"").unwrap_or(rest);
     }
     if path.first() != Some(&b'/') {
-        return copy(b"/");
+        return b"/";
     }
     if path.len() > 1 {
         path = path.strip_suffix(b"/").unwrap_or(path);
     }
-    copy(path)
+    path
 }
 
 /// Whether a cookie for domain `a` and one for `b` are for the same hosts
@@ -1189,12 +1242,12 @@ fn path_matches(cookie_path: &[u8], path: &[u8]) -> bool {
 /// The order a request sends its cookies in (`cookie_sort`): longest
 /// path first, then longest domain, then longest name, then newest.
 fn send_order(a: &Cookie, b: &Cookie) -> Ordering {
-    let len = |v: &Option<Vec<u8>>| v.as_ref().map_or(0, Vec::len);
-    b.path
+    let len = |v: Option<&[u8]>| v.map_or(0, <[u8]>::len);
+    b.path()
         .len()
-        .cmp(&a.path.len())
-        .then(len(&b.domain).cmp(&len(&a.domain)))
-        .then(b.name.len().cmp(&a.name.len()))
+        .cmp(&a.path().len())
+        .then(len(b.domain()).cmp(&len(a.domain())))
+        .then(b.name().len().cmp(&a.name().len()))
         .then(b.created.cmp(&a.created))
 }
 
@@ -1275,10 +1328,4 @@ fn trim(s: &[u8]) -> &[u8] {
     let s = trim_start(s);
     let end = s.iter().rposition(|&b| !is_blank(b)).map_or(0, |p| p + 1);
     &s[..end]
-}
-
-fn copy(s: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
-    let mut v = Vec::new();
-    v.try_extend_from_slice(s)?;
-    Ok(v)
 }

@@ -121,13 +121,13 @@ witness: curl-core cookie::tests::replaces_in_place_of_time_and_keeps_live_cooki
 file: crates/curl-core/src/cookie.rs
 witness: curl-core cookie::tests::matches_hosts_paths_and_security_as_c
 --- old
-    b.path
+    b.path()
         .len()
-        .cmp(&a.path.len())
+        .cmp(&a.path().len())
 --- new
-    a.path
+    a.path()
         .len()
-        .cmp(&b.path.len())
+        .cmp(&b.path().len())
 
 === a secure cookie goes over any connection
 file: crates/curl-core/src/cookie.rs
@@ -405,9 +405,9 @@ features: test-util,debug-hooks
 file: crates/curl-core/src/cookie.rs
 witness: curl-core cookie::tests::a_file_s_set_cookie_line_without_a_path_has_the_root
 --- old
-    co.path = sanitized_path(path)?;
+    co.set_text(name, val, sanitized_path(path), domain)?;
 --- new
-    co.path = if path.is_empty() { Vec::new() } else { sanitized_path(path)? };
+    co.set_text(name, val, if path.is_empty() { b"" } else { sanitized_path(path) }, domain)?;
 
 === an application's cookie before a transfer is taken for one read from a file
 file: crates/curl-core/src/cookie.rs
@@ -416,3 +416,22 @@ witness: curl-core cookie::tests::an_application_cookie_is_kept_over_a_file_s
         co.live = self.running || matches!(source, Source::Application);
 --- new
         co.live = self.running;
+
+=== a cookie grows past C's size for it
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::a_cookie_is_small_and_its_strings_one_block
+--- old
+#[derive(Debug, Default)]
+struct Text {
+--- new
+#[derive(Debug, Default)]
+#[repr(align(32))]
+struct Text {
+
+=== a cookie's strings are laid out in another order than read
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::a_cookie_is_small_and_its_strings_one_block
+--- old
+        for part in [name, value, path, rest] {
+--- new
+        for part in [name, path, value, rest] {

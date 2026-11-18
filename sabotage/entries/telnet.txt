@@ -91,3 +91,13 @@ witness: curl-core proto::telnet::tests::the_input_waits_for_the_server_or_the_i
                 return Ok(None);
             }
 --- new
+
+=== a TELNET input that aborts ends the exchange well
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::an_aborted_or_failed_input_fails_it
+--- old
+            Read::Abort => Err(aborted(live.cx)),
+            Read::Fail => {
+--- new
+            Read::Abort => Ok(Some(true)),
+            Read::Fail => {

@@ -444,6 +444,9 @@ impl ReadHandler for Input {
         if next == b"ABORT" {
             return Read::Abort;
         }
+        if next == b"FAIL" {
+            return Read::Fail;
+        }
         buf[..next.len()].copy_from_slice(&next);
         Read::Data(std::num::NonZeroUsize::new(next.len()).unwrap())
     }
@@ -512,19 +515,34 @@ fn the_application_s_user_stays_with_the_first_host() {
     }
 }
 
-/// An input that aborts ends the exchange, well; in C's Windows loop as
-/// a read error.
+/// An input that aborts fails the transfer as aborted, saying so, in
+/// both of C's loops (test 1695); one that fails to be read fails it as
+/// a read error, said in the loop off Windows.
 #[test]
-fn an_aborted_input_ends_it() {
+fn an_aborted_or_failed_input_fails_it() {
     let talk = Conversation::replies(&[b"hi"], false).greeting();
     let (_, ran) = telnet(talk, &[b"ABORT"], |_| {});
-    let ended = if WINSOCK {
-        Err(ErrorKind::ReadError)
-    } else {
-        Ok(())
-    };
-    assert_eq!(ran.result, Some(ended), "{}", ran.text);
+    assert_eq!(
+        ran.result,
+        Some(Err(ErrorKind::AbortedByCallback)),
+        "{}",
+        ran.text
+    );
+    assert!(
+        ran.text.contains("operation aborted by callback"),
+        "{}",
+        ran.text
+    );
     assert_eq!(ran.body, b"hi");
+    let talk = Conversation::replies(&[b"hi"], false).greeting();
+    let (_, ran) = telnet(talk, &[b"FAIL"], |_| {});
+    assert_eq!(ran.result, Some(Err(ErrorKind::ReadError)), "{}", ran.text);
+    assert_eq!(
+        ran.text.contains("Failed to read input"),
+        !WINSOCK,
+        "{}",
+        ran.text
+    );
 }
 
 /// In C's Windows loop the input is read only once the socket has been

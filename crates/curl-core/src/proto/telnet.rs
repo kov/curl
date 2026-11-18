@@ -1060,7 +1060,8 @@ impl Request {
                     Read::Data(n) if n.get() > buf.len() => return Err(ErrorKind::ReadError),
                     Read::Data(n) => send_data(&mut live, &buf[..n.get()])?,
                     Read::Eof | Read::Pause => break,
-                    Read::Abort | Read::Fail => return Err(ErrorKind::ReadError),
+                    Read::Abort => return Err(aborted(live.cx)),
+                    Read::Fail => return Err(ErrorKind::ReadError),
                 }
             }
             return Ok(Some(false));
@@ -1073,11 +1074,23 @@ impl Request {
                 Ok(Some(false))
             }
             Read::Eof | Read::Pause => Ok(Some(false)),
-            // The exchange ends, well, as C's does.
-            Read::Abort => Ok(Some(true)),
-            Read::Fail => Err(ErrorKind::ReadError),
+            Read::Abort => Err(aborted(live.cx)),
+            Read::Fail => {
+                let kind = ErrorKind::ReadError;
+                Err(trace::fail(
+                    live.cx,
+                    kind,
+                    format_args!("Failed to read input"),
+                ))
+            }
         }
     }
+}
+
+/// The input's read handler aborted: the transfer fails, as said.
+fn aborted<H: Host>(cx: &mut StepCx<'_, H>) -> ErrorKind {
+    let kind = ErrorKind::AbortedByCallback;
+    trace::fail(cx, kind, format_args!("operation aborted by callback"))
 }
 
 /// The exchange's world: the connection, the body's way to the

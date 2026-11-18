@@ -393,7 +393,7 @@ fn a_session_named_is_kept_and_checked() {
 fn a_session_goes_only_to_the_origin_that_named_it() {
     let ok: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n";
     let elsewhere = || {
-        Some(crate::conn::Peer::new(
+        crate::options::SessionFrom::Server(crate::conn::Peer::new(
             crate::conn::Scheme::of("rtsp"),
             b"example.com".to_vec(),
             PORT,
@@ -403,13 +403,13 @@ fn a_session_goes_only_to_the_origin_that_named_it() {
     for (origin, unrestricted, sent) in [
         (elsewhere(), false, false),
         (elsewhere(), true, true),
-        (None, false, true),
+        (crate::options::SessionFrom::Application, false, true),
     ] {
         let (ran, _) = rtsp(&[ok], |o| {
             o.http.unrestricted_auth = unrestricted;
             o.small.make_mut().unwrap().rtsp_session = Some(RtspSession {
                 id: b"abc".to_vec(),
-                origin,
+                from: origin,
             });
         });
         assert_eq!(ran.result, Ok(()));
@@ -684,10 +684,7 @@ fn each_kind_s_own_headers_are_sent_as_c_sends_them() {
         });
     }
     fn ranged(o: &mut Options) {
-        o.small.make_mut().unwrap().rtsp_session = Some(RtspSession {
-            id: b"s1".to_vec(),
-            origin: None,
-        });
+        o.small.make_mut().unwrap().rtsp_session = Some(RtspSession::given(b"s1".to_vec()));
         o.range = Some(b"npt=0-".to_vec());
     }
     let ok = ok_for(1);
@@ -756,8 +753,8 @@ fn each_kind_s_own_headers_are_sent_as_c_sends_them() {
 fn logins_and_the_application_s_headers_are_sent_as_c_sends_them() {
     fn login(o: &mut Options) {
         let login = o.login.make_mut().unwrap();
-        login.user = Some(b"u".to_vec());
-        login.password = Some(b"p".to_vec());
+        login.user = Some(crate::options::ForOrigin::new(b"u".to_vec()));
+        login.password = Some(crate::options::ForOrigin::new(b"p".to_vec()));
     }
     let ok = ok_for(1);
     assert_eq!(

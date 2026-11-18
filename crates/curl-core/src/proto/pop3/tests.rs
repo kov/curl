@@ -625,7 +625,8 @@ mod over_the_wire {
         let capa = b"+OK\r\nSASL PLAIN\r\n.\r\n";
         let (sent, ran) = against(&[GREETING, capa, OK, MESSAGE], URL, |o| {
             o.line.make_mut().unwrap().sasl_ir = true;
-            o.login.make_mut().unwrap().authzid = Some(b"boss".to_vec());
+            o.login.make_mut().unwrap().authzid =
+                Some(crate::options::ForOrigin::new(b"boss".to_vec()));
         });
         assert_eq!(ran.result, Ok(()));
         assert_eq!(sent, b"CAPA\r\nAUTH PLAIN Ym9zcwB1AHA=\r\nRETR 1\r\n");

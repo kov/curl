@@ -116,9 +116,9 @@ witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credenti
 file: crates/curl-core/src/options/mod.rs
 witness: curl-sys-abi handle_tests::proxy_credentials_are_decoded_as_in_c
 --- old
-                    login.user.as_deref().map(decoded).transpose()?,
+                (Some(decoded(user)?), password.map(decoded).transpose()?)
 --- new
-                    login.user.as_deref().map(|u| Ok(u.to_vec())).transpose()?,
+                (Some(user.to_vec()), password.map(decoded).transpose()?)
 
 === the application's Proxy-Authorization replaces the proxy's
 file: crates/curl-core/src/proto/http.rs

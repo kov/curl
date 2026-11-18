@@ -2919,7 +2919,8 @@ fn a_token_goes_as_bearer() {
     for (reply, result) in [(OK, Ok(())), (&refused[..], Ok(()))] {
         let (mut m, talk, _) = server(&[reply], false);
         let ran = get(&mut m, "/a", talk.clone(), |o| {
-            o.login.make_mut().unwrap().bearer = Some(b"mF_9.B5f".to_vec());
+            o.login.make_mut().unwrap().bearer =
+                Some(crate::options::ForOrigin::new(b"mF_9.B5f".to_vec()));
             o.http.auth = crate::options::HttpAuth(AuthMethods::BEARER);
         });
         assert_eq!(ran.result, result);
@@ -4718,8 +4719,8 @@ fn a_forwarded_ftp_url_carries_its_credentials() {
             o.set_url(Some(url)).unwrap();
             if let Some(user) = user {
                 let login = o.login.make_mut().unwrap();
-                login.user = Some(user.to_vec());
-                login.password = Some(b"c".to_vec());
+                login.user = Some(crate::options::ForOrigin::new(user.to_vec()));
+                login.password = Some(crate::options::ForOrigin::new(b"c".to_vec()));
             }
             o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
                 .unwrap();
@@ -4744,8 +4745,8 @@ fn a_forwarded_ftp_url_after_http_on_its_port_carries_no_credentials() {
         o.set_url(Some(b"http://origin.example:21/a")).unwrap();
         o.http.follow = Follow::All;
         let login = o.login.make_mut().unwrap();
-        login.user = Some(b"user".to_vec());
-        login.password = Some(b"secret".to_vec());
+        login.user = Some(crate::options::ForOrigin::new(b"user".to_vec()));
+        login.password = Some(crate::options::ForOrigin::new(b"secret".to_vec()));
         o.http.headers = UserHeaders::new([&b"Cookie: crumb=1"[..]]).unwrap();
         o.set_proxy_url(Some(format!("127.0.0.1:{PORT}").into_bytes()))
             .unwrap();

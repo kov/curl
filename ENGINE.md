@@ -4652,7 +4652,12 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   `RequestBase::new` decides for the peer it keeps. `CredentialGate` is neither `Copy` nor
   `Clone`, and has no always-open constant. A custom Host is reached only through
   `UserHeaders::host(SameOrigin)`, and Authorization and Cookie lines only through
-  `UserHeaders::sendable(Option<OriginTrusted>)`: a new emit site cannot skip the gate.
+  `UserHeaders::sendable(Option<OriginTrusted>)`: a new emit site cannot skip the gate. What
+  the application gave for the first origin is held as `ForOrigin<T>` (the login's user,
+  password, token, service and identity to act for, FTP's account and alternative to `USER`),
+  which the application sets and the library reads only by `ForOrigin::get(OriginTrusted)`:
+  a read that skips the gate does not compile. An RTSP session id says who gave it
+  (`SessionFrom::Application`, which goes anywhere, or `Server(peer)`, which goes back there).
   Credentials the request's own URL or a `.netrc` entry carry go by `OwnLeave`, which is no
   `OriginTrusted`. Every network protocol's request holds its gate in its `RequestBase`,
   which a tunnel's `CONNECT` sends by (`SetupLend::trusted`, FTP's data connection's too, which

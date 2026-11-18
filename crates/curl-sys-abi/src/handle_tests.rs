@@ -16,7 +16,7 @@ use curl_core::conn::io::Events;
 use curl_core::multi::NotifyKind;
 use curl_core::options::script::{Piece, Script};
 use curl_core::options::{
-    HttpVersion, Method, Options, Progress, Resume, ResumeOffset, UploadSource,
+    ForOrigin, HttpVersion, Method, Options, Progress, Resume, ResumeOffset, UploadSource,
 };
 use curl_core::report::TransferReport;
 
@@ -947,7 +947,7 @@ fn http_options_reach_the_request() {
     unsafe { crate::strings::curl_slist_free_all(list) };
     assert!(resolve(c).is_empty());
     let login = |c| options(c, |o| (o.login.user.clone(), o.login.password.clone()));
-    let some = |s: &[u8]| Some(s.to_vec());
+    let some = |s: &[u8]| Some(ForOrigin::new(s.to_vec()));
     pointer(c, ffi::CURLOPT_USERPWD, c"a:b:c".as_ptr().cast_mut());
     assert_eq!(login(c), (some(b"a"), some(b"b:c")));
     pointer(c, ffi::CURLOPT_PASSWORD, c"pw".as_ptr().cast_mut());
@@ -965,7 +965,7 @@ fn http_options_reach_the_request() {
         CURLE_OK
     );
     pointer(c, ffi::CURLOPT_NETRC_FILE, c"/n".as_ptr().cast_mut());
-    assert_eq!(netrc(c), (NetrcMode::Required, some(b"/n")));
+    assert_eq!(netrc(c), (NetrcMode::Required, Some(b"/n".to_vec())));
     assert_eq!(
         long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_OPTIONAL),
         CURLE_OK
@@ -6014,7 +6014,10 @@ fn gss_options_are_read_as_c() {
     );
     assert_eq!(
         services(c),
-        (Some(b"imap".to_vec()), Some(b"HTTP".to_vec()))
+        (
+            Some(ForOrigin::new(b"imap".to_vec())),
+            Some(b"HTTP".to_vec())
+        )
     );
     assert_eq!(
         pointer(
@@ -6026,7 +6029,10 @@ fn gss_options_are_read_as_c() {
     );
     assert_eq!(
         services(c),
-        (Some(b"imap".to_vec()), Some(b"rcmd/host".to_vec())),
+        (
+            Some(ForOrigin::new(b"imap".to_vec())),
+            Some(b"rcmd/host".to_vec())
+        ),
         "the proxy's, as its alias"
     );
     pointer(c, ffi::CURLOPT_SERVICE_NAME, ptr::null_mut::<c_char>());

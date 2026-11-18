@@ -609,12 +609,10 @@ impl Request {
         };
         // A session a server gave goes back only to its origin, unless
         // credentials may go anywhere.
-        let session = small.rtsp_session.as_ref().filter(|s| {
-            s.origin
-                .as_ref()
-                .is_none_or(|origin| origin == self.base.peer())
-                || options.http.unrestricted_auth
-        });
+        let session = small
+            .rtsp_session
+            .as_ref()
+            .filter(|s| s.goes_to(self.base.peer(), options.http.unrestricted_auth));
         if headers.replaces(b"CSeq") {
             return Err(trace::fail(
                 cx,
@@ -945,7 +943,9 @@ impl Request {
                 None => {
                     let session = RtspSession {
                         id: super::copied(id)?,
-                        origin: Some(origin.try_clone().map_err(|_| ErrorKind::OutOfMemory)?),
+                        from: crate::options::SessionFrom::Server(
+                            origin.try_clone().map_err(|_| ErrorKind::OutOfMemory)?,
+                        ),
                     };
                     cx.easy_mut()
                         .options_mut()

@@ -158,6 +158,49 @@ impl OriginTrusted {
     }
 }
 
+/// A value the application gave for the transfer's first origin: its
+/// login, its token, the service and the identity it authenticates as,
+/// FTP's account. The application sets it; inside the library it is read
+/// only with the leave of a gate that trusts the request's origin
+/// ([`ForOrigin::get`]), so a reading that skips the gate does not
+/// compile.
+///
+/// ```compile_fail,E0616
+/// fn read(v: &curl_core::options::ForOrigin<Vec<u8>>) -> &Vec<u8> {
+///     &v.0
+/// }
+/// ```
+#[derive(Clone, PartialEq, Eq)]
+pub struct ForOrigin<T>(T);
+
+impl<T> ForOrigin<T> {
+    pub const fn new(value: T) -> ForOrigin<T> {
+        ForOrigin(value)
+    }
+
+    /// The value, for an origin the request's gate trusts.
+    pub(crate) fn get(&self, _: OriginTrusted) -> &T {
+        &self.0
+    }
+}
+
+impl ForOrigin<Vec<u8>> {
+    /// A copy, allocated fallibly.
+    pub(crate) fn try_clone(&self) -> Result<ForOrigin<Vec<u8>>, curl_alloc::OutOfMemory> {
+        use curl_alloc::TryVec as _;
+        let mut copy = Vec::new();
+        copy.try_extend_from_slice(&self.0)?;
+        Ok(ForOrigin(copy))
+    }
+}
+
+/// Said without the value, which is the first origin's alone.
+impl<T> core::fmt::Debug for ForOrigin<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ForOrigin(..)")
+    }
+}
+
 /// Credentials the request's own URL or a `.netrc` entry for its host
 /// carry go to its origin, which they were given for, wherever the
 /// transfer started (`url_set_data_creds`). Not an `OriginTrusted`, and

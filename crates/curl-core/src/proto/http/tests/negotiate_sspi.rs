@@ -141,8 +141,10 @@ fn credentials_and_delegation_are_the_identity_s_and_the_flags() {
             .then(made(SecStatus::CONTINUE_NEEDED, b"t"));
         let (mut m, talk, _) = server(&[OK_200], false);
         let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
-            o.login.make_mut().unwrap().user = Some(b"dom\\user".to_vec());
-            o.login.make_mut().unwrap().password = Some(b"pw".to_vec());
+            o.login.make_mut().unwrap().user =
+                Some(crate::options::ForOrigin::new(b"dom\\user".to_vec()));
+            o.login.make_mut().unwrap().password =
+                Some(crate::options::ForOrigin::new(b"pw".to_vec()));
             o.login.make_mut().unwrap().delegation = delegation;
         });
         assert_eq!(ran.result, Ok(()));

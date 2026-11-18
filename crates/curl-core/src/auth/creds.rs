@@ -9,7 +9,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use crate::auth::gate::{CredentialGate, Leave, OriginTrusted, OwnLeave};
 use crate::error::UrlErrorKind;
 use crate::netrc::Found;
-use crate::options::{Login, NetrcMode};
+use crate::options::{ForOrigin, Login, NetrcMode};
 use crate::url::{GetOptions, Part, Url, decode_but_control, decode_but_zero};
 
 /// Credentials kept to tell when a later request's are others
@@ -74,8 +74,9 @@ pub(crate) struct AppSecrets {
 impl AppSecrets {
     /// What `login` gives of them, for an origin the gate trusts; none if
     /// it gives none.
-    fn of(login: &Login, _: OriginTrusted) -> Result<Option<AppSecrets>, OutOfMemory> {
-        let given = |v: &Option<Vec<u8>>| v.as_deref().map(copy).transpose();
+    fn of(login: &Login, trusted: OriginTrusted) -> Result<Option<AppSecrets>, OutOfMemory> {
+        let given =
+            |v: &Option<ForOrigin<Vec<u8>>>| v.as_ref().map(|v| copy(v.get(trusted))).transpose();
         let app = AppSecrets {
             bearer: given(&login.bearer)?.unwrap_or_default(),
             service: given(&login.service)?.unwrap_or_default(),
@@ -184,8 +185,11 @@ impl Credentials {
         let trusted = gate.trusted();
         let (mut user, mut password, mut app) = (None, None, None);
         if let Some(trusted) = trusted {
-            user = login.user.as_deref().map(copy).transpose()?;
-            password = login.password.as_deref().map(copy).transpose()?;
+            let given = |v: &Option<ForOrigin<Vec<u8>>>| {
+                v.as_ref().map(|v| copy(v.get(trusted))).transpose()
+            };
+            user = given(&login.user)?;
+            password = given(&login.password)?;
             app = AppSecrets::of(login, trusted)?;
             // `Curl_creds_create`'s check of what the application gave.
             let given = [user.as_deref(), password.as_deref()];
@@ -630,7 +634,7 @@ mod tests {
             Err(CredentialsError::Malformed)
         );
         let login = Login {
-            user: Some(b"a\rb".to_vec()),
+            user: Some(crate::options::ForOrigin::new(b"a\rb".to_vec())),
             ..Login::default()
         };
         assert_eq!(
@@ -660,9 +664,9 @@ mod tests {
     #[test]
     fn a_netrc_entry_does_not_trust_a_bearer() {
         let login = Login {
-            bearer: Some(b"t0ken".to_vec()),
-            service: Some(b"svc".to_vec()),
-            authzid: Some(b"ursel".to_vec()),
+            bearer: Some(crate::options::ForOrigin::new(b"t0ken".to_vec())),
+            service: Some(crate::options::ForOrigin::new(b"svc".to_vec())),
+            authzid: Some(crate::options::ForOrigin::new(b"ursel".to_vec())),
             ..Login::default()
         };
         let url = Url::parse(b"imap://h/", ParseOptions::NONE).unwrap();
@@ -697,7 +701,7 @@ mod tests {
     #[test]
     fn the_authzid_is_the_login_s() {
         let login = Login {
-            authzid: Some(b"ursel".to_vec()),
+            authzid: Some(crate::options::ForOrigin::new(b"ursel".to_vec())),
             ..Login::default()
         };
         let url = Url::parse(b"pop3://kurt:x@h/", ParseOptions::NONE).unwrap();
@@ -716,8 +720,8 @@ mod tests {
     #[test]
     fn composes_the_login_and_the_url_s_as_c() {
         let login = |u: Option<&[u8]>, p: Option<&[u8]>| Login {
-            user: u.map(<[u8]>::to_vec),
-            password: p.map(<[u8]>::to_vec),
+            user: u.map(<[u8]>::to_vec).map(crate::options::ForOrigin::new),
+            password: p.map(<[u8]>::to_vec).map(crate::options::ForOrigin::new),
             ..Login::default()
         };
         let got = |u: &[u8], p: &[u8], s| Ok(Some((u.to_vec(), p.to_vec(), s)));
@@ -744,10 +748,16 @@ mod tests {
         let pair = Login::from_pair(b"a:b:c").unwrap();
         assert_eq!(
             (pair.user, pair.password),
-            (Some(b"a".to_vec()), Some(b"b:c".to_vec()))
+            (
+                Some(ForOrigin::new(b"a".to_vec())),
+                Some(ForOrigin::new(b"b:c".to_vec()))
+            )
         );
         let pair = Login::from_pair(b"a").unwrap();
-        assert_eq!((pair.user, pair.password), (Some(b"a".to_vec()), None));
+        assert_eq!(
+            (pair.user, pair.password),
+            (Some(ForOrigin::new(b"a".to_vec())), None)
+        );
         let user_alone = login(Some(b"smith"), None);
         assert_eq!(
             with(&user_alone, true, "http://first:secret@h/"),
@@ -766,23 +776,23 @@ mod tests {
         let empty = || Some(Vec::new());
         let one = [
             Login {
-                user: empty(),
+                user: empty().map(crate::options::ForOrigin::new),
                 ..Login::default()
             },
             Login {
-                password: empty(),
+                password: empty().map(crate::options::ForOrigin::new),
                 ..Login::default()
             },
             Login {
-                bearer: empty(),
+                bearer: empty().map(crate::options::ForOrigin::new),
                 ..Login::default()
             },
             Login {
-                service: empty(),
+                service: empty().map(crate::options::ForOrigin::new),
                 ..Login::default()
             },
             Login {
-                authzid: empty(),
+                authzid: empty().map(crate::options::ForOrigin::new),
                 ..Login::default()
             },
         ];
@@ -843,7 +853,7 @@ mod tests {
     #[test]
     fn composes_a_token_with_the_rest() {
         let token = Login {
-            bearer: Some(b"t".to_vec()),
+            bearer: Some(crate::options::ForOrigin::new(b"t".to_vec())),
             ..Login::default()
         };
         let bearer = |trusted: bool, url: &str| {
@@ -876,11 +886,11 @@ mod tests {
                 .expect("credentials")
         };
         let base = || Login {
-            user: Some(b"u".to_vec()),
-            password: Some(b"Secret".to_vec()),
-            bearer: Some(b"t".to_vec()),
-            service: Some(b"s".to_vec()),
-            authzid: Some(b"z".to_vec()),
+            user: Some(crate::options::ForOrigin::new(b"u".to_vec())),
+            password: Some(crate::options::ForOrigin::new(b"Secret".to_vec())),
+            bearer: Some(crate::options::ForOrigin::new(b"t".to_vec())),
+            service: Some(crate::options::ForOrigin::new(b"s".to_vec())),
+            authzid: Some(crate::options::ForOrigin::new(b"z".to_vec())),
             ..Login::default()
         };
         let a = make(base());
@@ -891,35 +901,35 @@ mod tests {
             (
                 "password",
                 Login {
-                    password: Some(b"secret".to_vec()),
+                    password: Some(crate::options::ForOrigin::new(b"secret".to_vec())),
                     ..base()
                 },
             ),
             (
                 "user",
                 Login {
-                    user: Some(b"U".to_vec()),
+                    user: Some(crate::options::ForOrigin::new(b"U".to_vec())),
                     ..base()
                 },
             ),
             (
                 "bearer",
                 Login {
-                    bearer: Some(b"T".to_vec()),
+                    bearer: Some(crate::options::ForOrigin::new(b"T".to_vec())),
                     ..base()
                 },
             ),
             (
                 "service",
                 Login {
-                    service: Some(b"S".to_vec()),
+                    service: Some(crate::options::ForOrigin::new(b"S".to_vec())),
                     ..base()
                 },
             ),
             (
                 "authzid",
                 Login {
-                    authzid: Some(b"Z".to_vec()),
+                    authzid: Some(crate::options::ForOrigin::new(b"Z".to_vec())),
                     ..base()
                 },
             ),
@@ -970,7 +980,7 @@ mod tests {
     #[test]
     fn a_service_makes_credentials() {
         let login = Login {
-            service: Some(b"web".to_vec()),
+            service: Some(crate::options::ForOrigin::new(b"web".to_vec())),
             ..Login::default()
         };
         let url = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
@@ -985,7 +995,7 @@ mod tests {
                 .is_none()
         );
         let other = Login {
-            service: Some(b"other".to_vec()),
+            service: Some(crate::options::ForOrigin::new(b"other".to_vec())),
             ..Login::default()
         };
         let d = Credentials::for_request(&other, &gate(true), &url, Takes::ControlBytes)

@@ -24,14 +24,12 @@ witness: curl-core proto::http::tests::rtsp::a_cseq_other_than_the_request_s_fai
         if false {
 
 === a session a server named goes to another origin
-file: crates/curl-core/src/proto/http/rtsp.rs
+file: crates/curl-core/src/options/mod.rs
 witness: curl-core proto::http::tests::rtsp::a_session_goes_only_to_the_origin_that_named_it
 --- old
-            s.origin
-                .as_ref()
-                .is_none_or(|origin| origin == self.base.peer())
+            SessionFrom::Server(origin) => origin == peer || unrestricted,
 --- new
-            true
+            SessionFrom::Server(_) => true,
 
 === the application's Transport goes twice
 file: crates/curl-core/src/proto/http/rtsp.rs
@@ -146,3 +144,11 @@ witness: curl-core proto::http::tests::rtsp::requests_with_bodies_are_sent_as_c_
             _ if !carries => None,
 --- new
             _ if false => None,
+
+=== a session id the application gave goes nowhere else
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::rtsp::a_session_goes_only_to_the_origin_that_named_it
+--- old
+            SessionFrom::Application => true,
+--- new
+            SessionFrom::Application => false,

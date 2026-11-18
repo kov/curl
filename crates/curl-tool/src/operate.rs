@@ -24,7 +24,7 @@ use curl_core::handler::{
 };
 use curl_core::libraries::{Library, SharedLibraries};
 use curl_core::multi::TransferCx;
-use curl_core::options::{self, Method, Progress, UploadSource};
+use curl_core::options::{self, ForOrigin, Method, Progress, UploadSource};
 use curl_core::report::{OsErrno, Request as HeaderRequest};
 use curl_core::share::{Kind, Share};
 use curl_core::time::TimeLimit;
@@ -2059,7 +2059,8 @@ fn setopts(
     }
     s.str("CURLOPT_SERVICE_NAME", op.service_name, |o| {
         if let Some(name) = op.service_name {
-            o.login.make_mut().map_err(oom)?.service = Some(copy(name).map_err(oom)?);
+            o.login.make_mut().map_err(oom)?.service =
+                Some(ForOrigin::new(copy(name).map_err(oom)?));
         }
         Ok(())
     })?;
@@ -2751,7 +2752,8 @@ fn mail_auth_and_sasl(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), Erro
     })?;
     s.str("CURLOPT_SASL_AUTHZID", op.sasl_authzid, |o| {
         if let Some(authzid) = op.sasl_authzid {
-            o.login.make_mut().map_err(oom)?.authzid = Some(copy(authzid).map_err(oom)?);
+            o.login.make_mut().map_err(oom)?.authzid =
+                Some(ForOrigin::new(copy(authzid).map_err(oom)?));
         }
         Ok(())
     })?;
@@ -2885,7 +2887,8 @@ fn credentials_and_headers(
 ) -> Result<(), ErrorKind> {
     s.str("CURLOPT_XOAUTH2_BEARER", op.bearer, |o| {
         if let Some(token) = op.bearer {
-            o.login.make_mut().map_err(oom)?.bearer = Some(copy(token).map_err(oom)?);
+            o.login.make_mut().map_err(oom)?.bearer =
+                Some(ForOrigin::new(copy(token).map_err(oom)?));
         }
         Ok(())
     })?;
@@ -3346,7 +3349,8 @@ fn ftp_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     }
     s.str("CURLOPT_FTP_ACCOUNT", op.ftp_account, |o| {
         if let Some(account) = op.ftp_account {
-            o.line.make_mut().map_err(oom)?.ftp.account = Some(copy(account).map_err(oom)?);
+            o.line.make_mut().map_err(oom)?.ftp.account =
+                Some(ForOrigin::new(copy(account).map_err(oom)?));
         }
         Ok(())
     })?;
@@ -3374,7 +3378,7 @@ fn ftp_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         |o| {
             if let Some(alt) = op.ftp_alternative_to_user {
                 o.line.make_mut().map_err(oom)?.ftp.alternative_to_user =
-                    Some(copy(alt).map_err(oom)?);
+                    Some(ForOrigin::new(copy(alt).map_err(oom)?));
             }
             Ok(())
         },
@@ -4829,7 +4833,8 @@ mod tests {
             ]
         );
         for field in [
-            format!("service: Some({:?})", b"foo".to_vec()),
+            // The origin's is said only as set; its value is the line above.
+            "service: Some(ForOrigin(..))".to_owned(),
             format!("service: Some({:?})", b"bar".to_vec()),
             "socks5_gssapi_nec: true".to_owned(),
             "always: true".to_owned(),

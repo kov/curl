@@ -1686,12 +1686,12 @@ fn a_challenge_on_a_connection_bound_to_others_is_refused() {
         |i, o| {
             o.http.auth = crate::options::HttpAuth(AuthMethods::NEGOTIATE);
             let login = o.login.make_mut().unwrap();
-            login.user = Some(if i == 0 {
+            login.user = Some(crate::options::ForOrigin::new(if i == 0 {
                 b"one".to_vec()
             } else {
                 b"two".to_vec()
-            });
-            login.password = Some(b"p".to_vec());
+            }));
+            login.password = Some(crate::options::ForOrigin::new(b"p".to_vec()));
         },
         |e| e.set_libraries(libraries.clone()),
     );

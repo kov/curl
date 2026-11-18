@@ -97,7 +97,7 @@ fn the_context_takes_the_service_and_the_delegation() {
     gss.then_token(b"t");
     let (mut m, talk, _) = server(&[OK_200], false);
     let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
-        o.login.make_mut().unwrap().service = Some(b"web".to_vec());
+        o.login.make_mut().unwrap().service = Some(crate::options::ForOrigin::new(b"web".to_vec()));
         o.login.make_mut().unwrap().delegation = Delegation {
             by_policy: true,
             always: false,
@@ -195,8 +195,8 @@ fn a_401_offering_negotiate_has_it_picked() {
     e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.http.auth = HttpAuth(AuthMethods::ANY);
-        o.login.make_mut().unwrap().user = Some(Vec::new());
-        o.login.make_mut().unwrap().password = Some(Vec::new());
+        o.login.make_mut().unwrap().user = Some(crate::options::ForOrigin::new(Vec::new()));
+        o.login.make_mut().unwrap().password = Some(crate::options::ForOrigin::new(Vec::new()));
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
@@ -470,19 +470,26 @@ fn a_negotiated_connection_serves_only_its_own() {
     let cases: [Case; 7] = [
         (
             "same credentials",
-            |o| o.login.make_mut().unwrap().user = Some(b"u".to_vec()),
+            |o| {
+                o.login.make_mut().unwrap().user =
+                    Some(crate::options::ForOrigin::new(b"u".to_vec()))
+            },
             true,
         ),
         (
             "other credentials",
-            |o| o.login.make_mut().unwrap().user = Some(b"v".to_vec()),
+            |o| {
+                o.login.make_mut().unwrap().user =
+                    Some(crate::options::ForOrigin::new(b"v".to_vec()))
+            },
             false,
         ),
         ("none", |_| {}, false),
         (
             "not negotiating",
             |o| {
-                o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+                o.login.make_mut().unwrap().user =
+                    Some(crate::options::ForOrigin::new(b"u".to_vec()));
                 o.http.auth = HttpAuth(AuthMethods::BASIC);
             },
             false,
@@ -490,7 +497,8 @@ fn a_negotiated_connection_serves_only_its_own() {
         (
             "other credentials, not negotiating",
             |o| {
-                o.login.make_mut().unwrap().user = Some(b"v".to_vec());
+                o.login.make_mut().unwrap().user =
+                    Some(crate::options::ForOrigin::new(b"v".to_vec()));
                 o.http.auth = HttpAuth(AuthMethods::BASIC);
             },
             false,
@@ -498,7 +506,8 @@ fn a_negotiated_connection_serves_only_its_own() {
         (
             "delegating",
             |o| {
-                o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+                o.login.make_mut().unwrap().user =
+                    Some(crate::options::ForOrigin::new(b"u".to_vec()));
                 o.login.make_mut().unwrap().delegation.always = true;
             },
             false,
@@ -506,7 +515,8 @@ fn a_negotiated_connection_serves_only_its_own() {
         (
             "delegating to a proxy",
             |o| {
-                o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+                o.login.make_mut().unwrap().user =
+                    Some(crate::options::ForOrigin::new(b"u".to_vec()));
                 o.proxy.make_mut().unwrap().delegation.always = true;
             },
             false,
@@ -521,7 +531,7 @@ fn a_negotiated_connection_serves_only_its_own() {
         let second = Conversation::replies(&[OK_200], false);
         let mut m = serving(Peer::Accepts, &[&first, &second]);
         let ran = get_with(&mut m, negotiating(&libraries), "/a", first.clone(), |o| {
-            o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+            o.login.make_mut().unwrap().user = Some(crate::options::ForOrigin::new(b"u".to_vec()));
         });
         assert_eq!(ran.result, Ok(()), "{what}");
         let ran = get_with(&mut m, negotiating(&libraries), "/b", first.clone(), set);
@@ -703,7 +713,7 @@ fn a_body_still_going_closes_unless_negotiate_started() {
         let ran = get_with(&mut m, e, "/a", first.clone(), |o| {
             o.method = Method::Upload;
             o.upload = stream.source(true);
-            o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+            o.login.make_mut().unwrap().user = Some(crate::options::ForOrigin::new(b"u".to_vec()));
             // Negotiate at once only where it is to have started.
             o.http.auth = HttpAuth(if started {
                 AuthMethods::NEGOTIATE
@@ -1742,8 +1752,12 @@ fn a_negotiation_refused_after_its_token_closes_the_connection() {
     let script = |gss: &Scripted| {
         gss.then_token(b"first").then_token(b"again");
     };
-    let as_u = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"u".to_vec());
-    let as_v = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"v".to_vec());
+    let as_u = |o: &mut Options| {
+        o.login.make_mut().unwrap().user = Some(crate::options::ForOrigin::new(b"u".to_vec()))
+    };
+    let as_v = |o: &mut Options| {
+        o.login.make_mut().unwrap().user = Some(crate::options::ForOrigin::new(b"v".to_vec()))
+    };
     assert!(!second_reuses(script, &[refused], as_u, Ok(()), as_v, true));
     assert!(!second_reuses(
         script,
@@ -1772,7 +1786,9 @@ fn a_token_made_empty_leaves_the_connection_bound() {
     let script = |gss: &Scripted| {
         gss.then_token(b"").then_token(b"t");
     };
-    let as_u = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+    let as_u = |o: &mut Options| {
+        o.login.make_mut().unwrap().user = Some(crate::options::ForOrigin::new(b"u".to_vec()))
+    };
     let denied = Err(ErrorKind::RemoteAccessDenied);
     assert!(second_reuses(script, &[], |_| {}, denied, as_u, false));
     assert!(!second_reuses(script, &[], |_| {}, denied, as_u, true));

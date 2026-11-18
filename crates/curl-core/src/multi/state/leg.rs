@@ -912,7 +912,7 @@ fn route_cold<H: Host>(
             // The account and the alternative to `USER` are what the
             // application said for the first origin: they go only where
             // its gate lets what it said go.
-            let trusted = request.trusted().is_some();
+            let trusted = request.trusted();
             // Every option by name, so that one added does not compile
             // until it is said to set the connection up, and is copied
             // here to be compared (`Curl_ftp_conns_match`), or to be the
@@ -943,8 +943,10 @@ fn route_cold<H: Host>(
                 // matches no connection by it either.
                 ssl_auth: _,
             } = &options.line.ftp;
-            let given =
-                |v: &Option<Vec<u8>>| v.as_deref().filter(|_| trusted).map(copy_bytes).transpose();
+            let given = |v: &Option<crate::options::ForOrigin<Vec<u8>>>| match (v, trusted) {
+                (Some(v), Some(trusted)) => copy_bytes(v.get(trusted)).map(Some),
+                _ => Ok(None),
+            };
             Some(crate::conn::FtpSetup {
                 account: given(account)?,
                 alternative_to_user: given(alternative_to_user)?,

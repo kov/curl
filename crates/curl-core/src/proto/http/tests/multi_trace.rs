@@ -315,7 +315,7 @@ fn a_request_says_the_credentials_the_last_one_set_out_with() {
         o.http.follow = Follow::All;
         o.http.unrestricted_auth = true;
         *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
-        o.login.make_mut().unwrap().authzid = Some(b"az".to_vec());
+        o.login.make_mut().unwrap().authzid = Some(crate::options::ForOrigin::new(b"az".to_vec()));
     });
     assert_eq!(ran.result, Ok(()));
     // The application's credentials stay out of the redirect's URL: only

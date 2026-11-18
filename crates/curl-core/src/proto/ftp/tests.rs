@@ -3652,8 +3652,8 @@ fn a_redirect_s_ftp_server_is_sent_no_account_or_alternative() {
                 .unwrap();
             *o.login.make_mut().unwrap() = Login::from_pair(b"user:secret").unwrap();
             let ftp = &mut o.line.make_mut().unwrap().ftp;
-            ftp.account = Some(b"my acct".to_vec());
-            ftp.alternative_to_user = Some(b"SITE login".to_vec());
+            ftp.account = Some(crate::options::ForOrigin::new(b"my acct".to_vec()));
+            ftp.alternative_to_user = Some(crate::options::ForOrigin::new(b"SITE login".to_vec()));
         });
         let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
         (result, received(&control), text.text())
@@ -3713,8 +3713,11 @@ fn a_login_takes_an_account_or_an_alternative() {
         b"213 5\r\n",
         b"350 restarting\r\n",
     ];
-    let account =
-        |a: &'static [u8]| move |f: &mut crate::options::Ftp| f.account = Some(a.to_vec());
+    let account = |a: &'static [u8]| {
+        move |f: &mut crate::options::Ftp| {
+            f.account = Some(crate::options::ForOrigin::new(a.to_vec()))
+        }
+    };
     let mut asks: Vec<&'static [u8]> =
         vec![b"331 password?\r\n", b"332 account?\r\n", b"230 in\r\n"];
     asks.extend_from_slice(&rest);
@@ -3736,7 +3739,9 @@ fn a_login_takes_an_account_or_an_alternative() {
     }
 
     let alternative = |a: &'static [u8]| {
-        move |f: &mut crate::options::Ftp| f.alternative_to_user = Some(a.to_vec())
+        move |f: &mut crate::options::Ftp| {
+            f.alternative_to_user = Some(crate::options::ForOrigin::new(a.to_vec()))
+        }
     };
     let mut refused: Vec<&'static [u8]> = vec![b"530 no\r\n", b"230 in\r\n"];
     refused.extend_from_slice(&rest);
@@ -4745,7 +4750,7 @@ fn an_odd_entry_path_asks_the_server_s_system() {
     }
     // An account refused.
     let (result, sent, said) = run(&[b"332 account?\r\n", b"530 no\r\n"], &|f| {
-        f.account = Some(b"acct".to_vec())
+        f.account = Some(crate::options::ForOrigin::new(b"acct".to_vec()))
     });
     assert_eq!(result, Err(ErrorKind::FtpWeirdPassReply), "{said}");
     assert!(said.contains("ACCT rejected by server: 530"), "{said}");
@@ -5755,7 +5760,8 @@ fn a_connection_is_reused_only_with_the_same_account() {
         let mut m = serving(&[&one, &two], &[&f1, &f2]);
         for account in [&b"mine"[..], second] {
             let (id, _, text) = added(&mut m, URL, |o| {
-                o.line.make_mut().unwrap().ftp.account = Some(account.to_vec());
+                o.line.make_mut().unwrap().ftp.account =
+                    Some(crate::options::ForOrigin::new(account.to_vec()));
             });
             let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
             assert_eq!(result, Ok(()), "{}", text.text());

@@ -33,7 +33,7 @@ use curl_core::options::{
     UploadFlags, UseSsl, UserHeaders,
 };
 use curl_core::options::{
-    Ccc, CreateDirs, FtpMethod, RtspRequest, RtspSession, SslAuth, TftpBlockSize,
+    Ccc, CreateDirs, ForOrigin, FtpMethod, RtspRequest, RtspSession, SslAuth, TftpBlockSize,
 };
 use curl_core::time::TimeLimit;
 use curl_core::tls::TlsSupport;
@@ -1006,12 +1006,16 @@ fn apply(
         (ffi::CURLOPT_USERNAME, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options.login.set(|g| &mut g.user, value)?;
+            options
+                .login
+                .set(|g| &mut g.user, value.map(ForOrigin::new))?;
         }
         (ffi::CURLOPT_PASSWORD, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options.login.set(|g| &mut g.password, value)?;
+            options
+                .login
+                .set(|g| &mut g.password, value.map(ForOrigin::new))?;
         }
         (ffi::CURLOPT_NETRC, Long(n)) => {
             let mode = match n {
@@ -1106,7 +1110,9 @@ fn apply(
         (ffi::CURLOPT_SERVICE_NAME, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options.login.set(|g| &mut g.service, value)?;
+            options
+                .login
+                .set(|g| &mut g.service, value.map(ForOrigin::new))?;
         }
         (ffi::CURLOPT_PROXY_SERVICE_NAME | ffi::CURLOPT_SOCKS5_GSSAPI_SERVICE, Ptr(p)) => {
             // SAFETY: as above.
@@ -1147,12 +1153,16 @@ fn apply(
         (ffi::CURLOPT_XOAUTH2_BEARER, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options.login.set(|g| &mut g.bearer, value)?;
+            options
+                .login
+                .set(|g| &mut g.bearer, value.map(ForOrigin::new))?;
         }
         (ffi::CURLOPT_SASL_AUTHZID, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options.login.set(|g| &mut g.authzid, value)?;
+            options
+                .login
+                .set(|g| &mut g.authzid, value.map(ForOrigin::new))?;
         }
         (ffi::CURLOPT_LOGIN_OPTIONS, Ptr(p)) => {
             // SAFETY: as above.
@@ -1333,14 +1343,17 @@ fn apply(
         (ffi::CURLOPT_FTP_ACCOUNT, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options.line.set(|g| &mut g.ftp.account, value)?;
+            options
+                .line
+                .set(|g| &mut g.ftp.account, value.map(ForOrigin::new))?;
         }
         (ffi::CURLOPT_FTP_ALTERNATIVE_TO_USER, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options
-                .line
-                .set(|g| &mut g.ftp.alternative_to_user, value)?;
+            options.line.set(
+                |g| &mut g.ftp.alternative_to_user,
+                value.map(ForOrigin::new),
+            )?;
         }
         // The application's lists, walked as each transfer sends them.
         (ffi::CURLOPT_QUOTE | ffi::CURLOPT_POSTQUOTE | ffi::CURLOPT_PREQUOTE, Ptr(p)) => {

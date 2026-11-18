@@ -815,7 +815,8 @@ fn a_redirect_from_http_sends_no_bearer() {
             o.http.unrestricted_auth = unrestricted;
             o.schemes.make_mut().unwrap().redirect = Protocols::of(&["imap"]).unwrap();
             o.resolve.set([entry.as_bytes()]).unwrap();
-            o.login.make_mut().unwrap().bearer = Some(b"t0ken".to_vec());
+            o.login.make_mut().unwrap().bearer =
+                Some(crate::options::ForOrigin::new(b"t0ken".to_vec()));
         });
         assert_eq!(ran.result, Ok(()), "{}", ran.text);
         let said = String::from_utf8_lossy(&imap.received()).into_owned();

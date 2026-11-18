@@ -932,8 +932,8 @@ fn run_driven(
 fn credentials(o: &mut Options, pair: &[u8]) {
     let (user, password) = pair.split_at(pair.iter().position(|&b| b == b':').unwrap());
     let login = o.login.make_mut().unwrap();
-    login.user = Some(user.to_vec());
-    login.password = Some(password[1..].to_vec());
+    login.user = Some(crate::options::ForOrigin::new(user.to_vec()));
+    login.password = Some(crate::options::ForOrigin::new(password[1..].to_vec()));
 }
 
 fn login_options(o: &mut Options, options: &[u8]) {

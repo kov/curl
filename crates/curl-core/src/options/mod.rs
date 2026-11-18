@@ -24,6 +24,7 @@ use crate::mime::read::Escape;
 use crate::time::TimeLimit;
 use crate::url::SharedUrl;
 
+pub use crate::auth::gate::ForOrigin;
 pub use crate::proto::http1::request::{UserHeaders, Version as HttpVersion};
 
 /// Every option of a transfer. The default sets nothing and allocates
@@ -132,20 +133,20 @@ pub struct Options {
 /// unless `Http::unrestricted_auth` says otherwise.
 #[derive(Debug)]
 pub struct Login {
-    pub user: Option<Vec<u8>>,
-    pub password: Option<Vec<u8>>,
+    pub user: Option<ForOrigin<Vec<u8>>>,
+    pub password: Option<ForOrigin<Vec<u8>>>,
     /// An OAuth 2.0 token, for Bearer (`CURLOPT_XOAUTH2_BEARER`).
-    pub bearer: Option<Vec<u8>>,
+    pub bearer: Option<ForOrigin<Vec<u8>>>,
     /// The service the origin is authenticated as, in place of the
     /// protocol's (`CURLOPT_SERVICE_NAME`): Negotiate's `HTTP` in
     /// `HTTP@host`.
-    pub service: Option<Vec<u8>>,
+    pub service: Option<ForOrigin<Vec<u8>>>,
     /// Whether a GSS-API context hands the user's credentials on to the
     /// peer (`CURLOPT_GSSAPI_DELEGATION`).
     pub delegation: Delegation,
     /// The identity a SASL login acts for, in place of the user's own
     /// (`CURLOPT_SASL_AUTHZID`).
-    pub authzid: Option<Vec<u8>>,
+    pub authzid: Option<ForOrigin<Vec<u8>>>,
 }
 
 /// What the line protocols are told (C's `use_ssl`, `STRING_OPTIONS`,
@@ -216,10 +217,10 @@ pub struct Ftp {
     pub create_dirs: CreateDirs,
     /// The account given when the server asks for one (`ACCT`,
     /// `CURLOPT_FTP_ACCOUNT`).
-    pub account: Option<Vec<u8>>,
+    pub account: Option<ForOrigin<Vec<u8>>>,
     /// The command sent in place of `USER` once that is refused
     /// (`CURLOPT_FTP_ALTERNATIVE_TO_USER`).
-    pub alternative_to_user: Option<Vec<u8>>,
+    pub alternative_to_user: Option<ForOrigin<Vec<u8>>>,
     /// The command channel goes back to the clear once logged in
     /// (`CCC`, `CURLOPT_FTP_SSL_CCC`).
     pub ssl_ccc: Ccc,
@@ -324,8 +325,16 @@ impl Ftp {
             skip_pasv_ip: self.skip_pasv_ip,
             port: self.port.as_deref().map(copy).transpose()?,
             create_dirs: self.create_dirs,
-            account: self.account.as_deref().map(copy).transpose()?,
-            alternative_to_user: self.alternative_to_user.as_deref().map(copy).transpose()?,
+            account: self
+                .account
+                .as_ref()
+                .map(ForOrigin::try_clone)
+                .transpose()?,
+            alternative_to_user: self
+                .alternative_to_user
+                .as_ref()
+                .map(ForOrigin::try_clone)
+                .transpose()?,
             ssl_ccc: self.ssl_ccc,
             ssl_auth: self.ssl_auth,
             accept_timeout: self.accept_timeout,
@@ -687,12 +696,8 @@ impl Proxy {
         let (user, password) = match pair {
             None => (None, None),
             Some(pair) => {
-                let login =
-                    Login::from_pair(pair).map_err(|OutOfMemory| ProxyUserError::OutOfMemory)?;
-                (
-                    login.user.as_deref().map(decoded).transpose()?,
-                    login.password.as_deref().map(decoded).transpose()?,
-                )
+                let (user, password) = split_pair(pair);
+                (Some(decoded(user)?), password.map(decoded).transpose()?)
             }
         };
         self.user = user;
@@ -745,17 +750,23 @@ pub enum NetrcMode {
     Required,
 }
 
+/// `user:password` split at the first colon; with none, a user alone
+/// (`Curl_parse_login_details`).
+fn split_pair(pair: &[u8]) -> (&[u8], Option<&[u8]>) {
+    match pair.iter().position(|&b| b == b':') {
+        Some(at) => (&pair[..at], Some(&pair[at + 1..])),
+        None => (pair, None),
+    }
+}
+
 impl Login {
     /// `user:password`, split at the first colon; with none, a user alone
     /// (`Curl_parse_login_details`).
     pub fn from_pair(pair: &[u8]) -> Result<Login, OutOfMemory> {
-        let (user, password) = match pair.iter().position(|&b| b == b':') {
-            Some(at) => (&pair[..at], Some(&pair[at + 1..])),
-            None => (pair, None),
-        };
+        let (user, password) = split_pair(pair);
         Ok(Login {
-            user: Some(copy(user)?),
-            password: password.map(copy).transpose()?,
+            user: Some(ForOrigin::new(copy(user)?)),
+            password: password.map(copy).transpose()?.map(ForOrigin::new),
             ..Login::NONE
         })
     }
@@ -778,13 +789,15 @@ impl Login {
     }
 
     fn try_clone(&self) -> Result<Login, OutOfMemory> {
+        let copied =
+            |v: &Option<ForOrigin<Vec<u8>>>| v.as_ref().map(ForOrigin::try_clone).transpose();
         Ok(Login {
-            user: self.user.as_deref().map(copy).transpose()?,
-            password: self.password.as_deref().map(copy).transpose()?,
-            bearer: self.bearer.as_deref().map(copy).transpose()?,
-            service: self.service.as_deref().map(copy).transpose()?,
+            user: copied(&self.user)?,
+            password: copied(&self.password)?,
+            bearer: copied(&self.bearer)?,
+            service: copied(&self.service)?,
             delegation: self.delegation,
-            authzid: self.authzid.as_deref().map(copy).transpose()?,
+            authzid: copied(&self.authzid)?,
         })
     }
 }
@@ -2862,14 +2875,37 @@ impl RtspRequest {
 #[derive(Debug)]
 pub struct RtspSession {
     pub(crate) id: Vec<u8>,
-    /// None for an id the application gave.
-    pub(crate) origin: Option<crate::conn::Peer>,
+    pub(crate) from: SessionFrom,
+}
+
+/// Who gave an RTSP session's id, which decides where it goes.
+#[derive(Debug)]
+pub(crate) enum SessionFrom {
+    /// The application (`CURLOPT_RTSP_SESSION_ID`): to any origin, as it
+    /// chose.
+    Application,
+    /// A server, in a response: back to that origin alone, unless
+    /// credentials may go anywhere.
+    Server(crate::conn::Peer),
 }
 
 impl RtspSession {
     /// An id the application gives (`CURLOPT_RTSP_SESSION_ID`).
     pub fn given(id: Vec<u8>) -> RtspSession {
-        RtspSession { id, origin: None }
+        RtspSession {
+            id,
+            from: SessionFrom::Application,
+        }
+    }
+
+    /// Whether it goes to `peer`: an id the application gave goes
+    /// anywhere, a server's back to its origin, or anywhere where
+    /// credentials may go anywhere (`unrestricted`).
+    pub(crate) fn goes_to(&self, peer: &crate::conn::Peer, unrestricted: bool) -> bool {
+        match &self.from {
+            SessionFrom::Application => true,
+            SessionFrom::Server(origin) => origin == peer || unrestricted,
+        }
     }
 
     pub fn id(&self) -> &[u8] {
@@ -3869,15 +3905,15 @@ mod tests {
         o.set_proxy_url(Some(b"http://proxy.example:3128".to_vec()))
             .unwrap();
         o.proxy.make_mut().unwrap().user = Some(b"pu".to_vec());
-        o.login.make_mut().unwrap().user = Some(b"lu".to_vec());
-        o.login.make_mut().unwrap().bearer = Some(b"t".to_vec());
+        o.login.make_mut().unwrap().user = Some(crate::options::ForOrigin::new(b"lu".to_vec()));
+        o.login.make_mut().unwrap().bearer = Some(crate::options::ForOrigin::new(b"t".to_vec()));
         o.http.cookies.make_mut().unwrap().send = Some(b"a=1".to_vec());
         o.http.cookies.make_mut().unwrap().new_session = true;
         let copy = o.try_clone().unwrap();
         assert_eq!(copy.proxy.url(), Some(&b"http://proxy.example:3128"[..]));
         assert_eq!(copy.proxy.user.as_deref(), Some(&b"pu"[..]));
-        assert_eq!(copy.login.user.as_deref(), Some(&b"lu"[..]));
-        assert_eq!(copy.login.bearer.as_deref(), Some(&b"t"[..]));
+        assert_eq!(copy.login.user, Some(ForOrigin::new(b"lu".to_vec())));
+        assert_eq!(copy.login.bearer, Some(ForOrigin::new(b"t".to_vec())));
         assert_eq!(copy.http.cookies.send.as_deref(), Some(&b"a=1"[..]));
         assert!(copy.http.cookies.new_session);
     }
@@ -4078,8 +4114,10 @@ mod tests {
         let mut login: Cold<Login> = Cold::new();
         login.set(|l| &mut l.user, None).unwrap();
         assert!(login.made_mut().is_none());
-        login.set(|l| &mut l.user, Some(b"u".to_vec())).unwrap();
-        assert_eq!(login.user.as_deref(), Some(&b"u"[..]));
+        login
+            .set(|l| &mut l.user, Some(ForOrigin::new(b"u".to_vec())))
+            .unwrap();
+        assert_eq!(login.user, Some(ForOrigin::new(b"u".to_vec())));
         login.set(|l| &mut l.user, None).unwrap();
         assert_eq!(login.user, None);
     }

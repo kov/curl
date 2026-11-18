@@ -297,23 +297,15 @@ fn functions_on(
 }
 
 /// `bytes` with the characters JSON escapes in a string escaped, without
-/// quotes around (`jsonquoted`, not lowercased).
+/// quotes around (`jsonquoted`, not lowercased; `write_out::json_escape`).
 fn json_quoted(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut out = Vec::new();
-    for &b in bytes {
-        match b {
-            b'\\' => out.try_extend_from_slice(b"\\\\")?,
-            b'"' => out.try_extend_from_slice(b"\\\"")?,
-            0x08 => out.try_extend_from_slice(b"\\b")?,
-            0x0c => out.try_extend_from_slice(b"\\f")?,
-            b'\n' => out.try_extend_from_slice(b"\\n")?,
-            b'\r' => out.try_extend_from_slice(b"\\r")?,
-            b'\t' => out.try_extend_from_slice(b"\\t")?,
-            0..0x20 => {
-                out.try_extend_from_slice(try_format(format_args!("\\u{b:04x}"))?.as_bytes())?
-            }
-            _ => out.try_push(b)?,
-        }
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let mut one = [0; crate::write_out::JSON_ESC_MAX];
+        let (taken, piece) = crate::write_out::json_escape(rest, false, &mut one);
+        out.try_extend_from_slice(piece)?;
+        rest = &rest[taken..];
     }
     Ok(out)
 }
@@ -467,13 +459,14 @@ mod tests {
     }
 
     /// JSON escapes the characters it has a letter for with it, and the
-    /// other controls as `\u00XX` (`jsonquoted`).
+    /// other controls as `\u00XX`; letters keep their case and UTF-8 goes
+    /// as it is (`jsonquoted`).
     #[test]
     fn escapes_json_as_c_does() {
-        let v = vars(&["c=\x08\x0c\n\r\t\x01\x1f /"]);
+        let v = vars(&["c=\x08\x0c\n\r\t\x01\x1f /A\u{e9}"]);
         assert_eq!(
             expand(&v, "{{c:json}}"),
-            Ok(Some("\\b\\f\\n\\r\\t\\u0001\\u001f /".to_string()))
+            Ok(Some("\\b\\f\\n\\r\\t\\u0001\\u001f /A\u{e9}".to_string()))
         );
     }
 

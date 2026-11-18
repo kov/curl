@@ -616,38 +616,90 @@ fn header_json(headers: &HeaderStore, out: &mut dyn Write) -> std::io::Result<()
     out.write_all(b"\n}")
 }
 
-/// The longest JSON string C writes, its quotes not counted
-/// (`MAX_JSON_STRING`, with room for its terminating zero).
-const MAX_JSON_STRING: usize = 100_000 - 1;
+/// The longest JSON form of one character, `\u00XX` (`JSON_ESC_MAX`).
+pub(crate) const JSON_ESC_MAX: usize = 6;
 
-/// `s` as a quoted JSON string, its ASCII letters lowercase if asked; one
-/// longer quoted than C's buffer is not written at all
+/// The JSON form of the character `s` starts with, in `buf`, and how many
+/// bytes of `s` it took (`jsonescape`): the escapes JSON has a letter
+/// for, other controls as `\u00XX`, a valid UTF-8 sequence as it is, and
+/// a byte past ASCII that starts none as the ISO-8859-1 character it
+/// would be; ASCII letters lowercase if asked. `s` is not empty.
+pub(crate) fn json_escape<'b>(
+    s: &[u8],
+    lowercase: bool,
+    buf: &'b mut [u8; JSON_ESC_MAX],
+) -> (usize, &'b [u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let b = s[0];
+    let letter = match b {
+        b'\\' => Some(b'\\'),
+        b'"' => Some(b'"'),
+        0x08 => Some(b'b'),
+        0x0c => Some(b'f'),
+        b'\n' => Some(b'n'),
+        b'\r' => Some(b'r'),
+        b'\t' => Some(b't'),
+        _ => None,
+    };
+    if let Some(letter) = letter {
+        buf[..2].copy_from_slice(&[b'\\', letter]);
+        return (1, &buf[..2]);
+    }
+    if b >= 0x80 {
+        let n = utf8_len(s);
+        if n > 0 {
+            buf[..n].copy_from_slice(&s[..n]);
+            return (n, &buf[..n]);
+        }
+    }
+    if !(0x20..0x80).contains(&b) {
+        *buf = [
+            b'\\',
+            b'u',
+            b'0',
+            b'0',
+            HEX[usize::from(b >> 4)],
+            HEX[usize::from(b & 15)],
+        ];
+        return (1, &buf[..]);
+    }
+    buf[0] = if lowercase { b.to_ascii_lowercase() } else { b };
+    (1, &buf[..1])
+}
+
+/// How long the valid UTF-8 sequence `s` starts with is, or 0
+/// (`utf8len`): std's checks are C's, no overlong forms, no surrogates
+/// and nothing past U+10FFFF.
+fn utf8_len(s: &[u8]) -> usize {
+    let head = &s[..s.len().min(4)];
+    let valid = match std::str::from_utf8(head) {
+        Ok(all) => all,
+        Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).expect("valid up to there"),
+    };
+    valid.chars().next().map_or(0, char::len_utf8)
+}
+
+/// `s` as a quoted JSON string, its ASCII letters lowercase if asked,
+/// written in pieces of at most C's buffer, however long it is
 /// (`jsonWriteString`).
 fn json_string(out: &mut dyn Write, s: &[u8], lowercase: bool) -> std::io::Result<()> {
-    let escaped = |b: u8| -> usize {
-        match b {
-            b'\\' | b'"' | 0x08 | 0x0c | b'\n' | b'\r' | b'\t' => 2,
-            0..0x20 => 6,
-            _ => 1,
-        }
-    };
-    if s.iter().map(|&b| escaped(b)).sum::<usize>() > MAX_JSON_STRING {
-        return Ok(());
-    }
+    let mut buf = [0; 128];
+    let mut len = 0;
+    let mut rest = s;
     out.write_all(b"\"")?;
-    for &b in s {
-        match b {
-            b'\\' => out.write_all(b"\\\\")?,
-            b'"' => out.write_all(b"\\\"")?,
-            0x08 => out.write_all(b"\\b")?,
-            0x0c => out.write_all(b"\\f")?,
-            b'\n' => out.write_all(b"\\n")?,
-            b'\r' => out.write_all(b"\\r")?,
-            b'\t' => out.write_all(b"\\t")?,
-            0..0x20 => write!(out, "\\u{b:04x}")?,
-            b'A'..=b'Z' if lowercase => out.write_all(&[b.to_ascii_lowercase()])?,
-            _ => out.write_all(&[b])?,
+    while !rest.is_empty() {
+        let mut one = [0; JSON_ESC_MAX];
+        let (taken, piece) = json_escape(rest, lowercase, &mut one);
+        buf[len..len + piece.len()].copy_from_slice(piece);
+        len += piece.len();
+        rest = &rest[taken..];
+        if len > buf.len() - JSON_ESC_MAX {
+            out.write_all(&buf[..len])?;
+            len = 0;
         }
+    }
+    if len > 0 {
+        out.write_all(&buf[..len])?;
     }
     out.write_all(b"\"")
 }
@@ -1264,8 +1316,9 @@ mod tests {
     }
 
     /// `jsonWriteString`: C's escapes, letters lowercased only when
-    /// asked, and nothing at all for a string longer quoted than C's
-    /// buffer holds.
+    /// asked, UTF-8 as it is and a byte past ASCII starting none as
+    /// `\u00XX` (test 1671), however long the string, in pieces of C's
+    /// buffer.
     #[test]
     fn writes_json_strings_as_c() {
         let json = |s: &[u8], lowercase| written(|out| json_string(out, s, lowercase));
@@ -1274,16 +1327,51 @@ mod tests {
             "\"Ab\\b\\f\\n\\r\\t\\u001f\\\"\\\\\""
         );
         assert_eq!(json(b"AbZ-", true), "\"abz-\"");
-        let fits = |s: Vec<u8>| json(&s, false).len() == s.len() + 2;
-        let a = |n| vec![b'a'; n];
-        assert!(fits(a(99_999)));
-        assert_eq!(json(&a(100_000), false), "");
-        // Two bytes for a quote, six for a control byte.
-        let mut quotes = vec![b'"'; 49_999];
-        quotes.push(b'a');
-        assert_eq!(json(&quotes, false).len(), 2 + 99_999);
-        assert_eq!(json(&[b'"'; 50_000], false), "");
-        assert_eq!(json(&[1; 16_667], false), "");
+        assert_eq!(
+            json("A\u{e9}\u{20ac}\u{1f600}".as_bytes(), true),
+            "\"a\u{e9}\u{20ac}\u{1f600}\""
+        );
+        // Not UTF-8: a lone byte, a cut sequence, an overlong form, a
+        // surrogate and past U+10FFFF, each byte as ISO-8859-1's.
+        assert_eq!(json(b"abc\xe9", false), "\"abc\\u00e9\"");
+        assert_eq!(json(b"abc\xc3", false), "\"abc\\u00c3\"");
+        assert_eq!(json(b"\xc0\x80", false), "\"\\u00c0\\u0080\"");
+        assert_eq!(json(b"\xed\xa0\x80", false), "\"\\u00ed\\u00a0\\u0080\"");
+        assert_eq!(
+            json(b"\xf4\x90\x80\x80", false),
+            "\"\\u00f4\\u0090\\u0080\\u0080\""
+        );
+        // No limit: a string escaped to 300000 bytes is written whole.
+        let quotes = json(&[b'"'; 150_000], false);
+        assert_eq!(quotes.len(), 2 + 300_000);
+        assert!(
+            quotes.as_bytes()[1..quotes.len() - 1]
+                .chunks(2)
+                .all(|c| c == b"\\\"")
+        );
+    }
+
+    /// A JSON string goes in pieces of at most C's buffer of 128 bytes,
+    /// none cutting a character's escape.
+    #[test]
+    fn a_json_string_is_written_in_pieces_of_c_s_buffer() {
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut w = Writes(Vec::new());
+        json_string(&mut w, &[1; 100], false).unwrap();
+        let sizes: Vec<usize> = w.0.iter().map(Vec::len).collect();
+        // The quote, pieces of 21 escapes of 6 bytes (126 is past 128
+        // less 6), the 16 left, the quote.
+        assert_eq!(sizes, [1, 126, 126, 126, 126, 96, 1]);
+        assert_eq!(w.0[1..6].concat(), "\\u0001".repeat(100).as_bytes());
     }
 
     #[test]

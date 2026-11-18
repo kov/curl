@@ -706,9 +706,9 @@ witness: curl-tool write_out::tests::writes_headers_as_c
 file: crates/curl-tool/src/write_out.rs
 witness: curl-tool write_out::tests::writes_header_json_as_c
 --- old
-            b'A'..=b'Z' if lowercase => out.write_all(&[b.to_ascii_lowercase()])?,
+    buf[0] = if lowercase { b.to_ascii_lowercase() } else { b };
 --- new
-            b'A'..=b'Z' if false => out.write_all(&[b.to_ascii_lowercase()])?,
+    buf[0] = b;
 
 === header json writes a name for each of its values
 file: crates/curl-tool/src/write_out.rs
@@ -1823,3 +1823,29 @@ witness: curl-tool trace::tests::a_dump_goes_a_line_at_a_time
         line_done(w.0);
 --- new
         w.0.try_push(b'\n')?;
+
+=== a JSON string's UTF-8 is written as ISO-8859-1's escapes
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_json_strings_as_c
+--- old
+        if n > 0 {
+            buf[..n].copy_from_slice(&s[..n]);
+--- new
+        if n > 0 && false {
+            buf[..n].copy_from_slice(&s[..n]);
+
+=== a JSON string goes in pieces smaller than C's buffer
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::a_json_string_is_written_in_pieces_of_c_s_buffer
+--- old
+        if len > buf.len() - JSON_ESC_MAX {
+--- new
+        if len > buf.len() - 2 * JSON_ESC_MAX {
+
+=== a variable's JSON is lowercased
+file: crates/curl-tool/src/vars.rs
+witness: curl-tool vars::tests::escapes_json_as_c_does
+--- old
+        let (taken, piece) = crate::write_out::json_escape(rest, false, &mut one);
+--- new
+        let (taken, piece) = crate::write_out::json_escape(rest, true, &mut one);

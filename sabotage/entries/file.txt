@@ -281,14 +281,6 @@ witness: curl-core proto::file::tests::a_range_is_read_as_c_reads_it
 --- new
             if to - from == i64::MAX {
 
-=== a start before the file's is read from its start
-file: crates/curl-core/src/proto/file.rs
-witness: curl-core proto::file::tests::a_download_delivers_its_range
---- old
-            Err(_) => resume == -1,
---- new
-            Err(_) => true,
-
 === a directory's listing runs past its range
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_directory_listing_is_cut_at_its_range
@@ -361,3 +353,11 @@ witness: curl-core proto::file::tests::an_upload_s_line_ends_are_converted
         let converts = cx.easy().options().converts_lines() && upload.size() != Some(0);
 --- new
         let converts = false;
+
+=== a file's last bytes may be one more than it has
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_range_of_more_last_bytes_than_the_file_has_fails
+--- old
+            if st_size < -resume {
+--- new
+            if st_size + 1 < -resume {

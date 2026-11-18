@@ -539,7 +539,7 @@ fn a_download_resumes_into_the_file() {
 }
 
 /// Resuming at the end is the last byte, as C's -1 is the range "-1-";
-/// an empty file's is nothing, announced as a byte.
+/// an empty file has no last byte, and fails.
 #[test]
 fn a_download_resumed_at_the_end_is_the_last_byte() {
     let s = Scratch::new("end");
@@ -549,10 +549,32 @@ fn a_download_resumed_at_the_end_is_the_last_byte() {
     assert_eq!(seen.body(), b"o");
     assert_eq!(e.report().sizes().download_expected(), Some(1));
     s.file("empty", b"", Y2K_NOON);
-    let (r, seen, e) = resumed(&s, "empty", Resume::AtEnd);
-    assert_eq!(r, Ok(()));
+    let (r, seen, _) = resumed(&s, "empty", Resume::AtEnd);
+    assert_eq!(r, Err(ErrorKind::BadDownloadResume));
     assert_eq!(seen.body(), b"");
-    assert_eq!(e.report().sizes().download_expected(), Some(1));
+}
+
+/// The last bytes of a file are no more than it has: as many is the
+/// whole file, one more fails before any byte (test 1020).
+#[test]
+fn a_range_of_more_last_bytes_than_the_file_has_fails() {
+    let s = Scratch::new("lastn");
+    s.file("f", b"hello", Y2K_NOON);
+    let ranged = |range: &[u8]| {
+        let (mut e, seen) = easy(&s.url("f"));
+        e.options_mut().range = Some(range.to_vec());
+        let (r, _) = run(e);
+        (r, seen.body())
+    };
+    assert_eq!(ranged(b"-5"), (Ok(()), b"hello".to_vec()));
+    assert_eq!(
+        ranged(b"-6"),
+        (Err(ErrorKind::BadDownloadResume), Vec::new())
+    );
+    assert_eq!(
+        ranged(b"-7"),
+        (Err(ErrorKind::BadDownloadResume), Vec::new())
+    );
 }
 
 /// A directory cannot be resumed into.

@@ -249,6 +249,15 @@ impl Request {
             mut resume, max, ..
         } = span_of(cx)?;
         if resume < 0 {
+            // The last bytes of a file are no more than it has.
+            if st_size < -resume {
+                let kind = ErrorKind::BadDownloadResume;
+                return Err(trace::fail(
+                    cx,
+                    kind,
+                    format_args!("Offset ({resume}) was beyond file size ({st_size})"),
+                ));
+            }
             resume += st_size;
         }
         if resume > 0 {
@@ -281,16 +290,12 @@ impl Request {
         if resume != 0 && is_dir {
             return Err(ErrorKind::BadDownloadResume);
         }
-        // Before the start, C's seek fails and returns -1, which only an
-        // offset of -1 is: the last byte of an empty file, read from the
-        // start. Any other fails.
-        let sought = match u64::try_from(resume) {
-            Ok(0) => true,
-            Ok(at) => {
+        let sought = match u64::try_from(resume).expect("not before the start") {
+            0 => true,
+            at => {
                 let file = self.file.as_mut().expect("opened to read");
                 file.seek(SeekFrom::Start(at)).ok() == Some(at)
             }
-            Err(_) => resume == -1,
         };
         if !sought {
             return Err(ErrorKind::BadDownloadResume);

@@ -553,7 +553,8 @@ fn a_peer_without_a_certificate_is_refused_when_verifying() {
 /// checked after the handshake, wherever the name is to be checked, the
 /// chain checked or not; neither where it is not. With the chain not
 /// checked the library lets a wrong name pass, so the name is checked
-/// after the handshake too, and a mismatch fails it.
+/// after the handshake too, and a mismatch fails it. C leaves the name to
+/// `wolfSSL_check_domain_name` alone and so accepts it (DIVERGENCE.md).
 #[test]
 fn the_name_is_checked_whether_or_not_the_chain_is() {
     for (verify_peer, verify_host) in [(true, true), (true, false), (false, true), (false, false)] {

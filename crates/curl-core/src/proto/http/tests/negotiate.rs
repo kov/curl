@@ -984,7 +984,9 @@ fn a_forwarding_proxy_gets_the_first_token_at_once() {
 
 /// The application's delegation is the origin's: a proxy negotiated with
 /// beside it gets none unless the proxy's own option asks for it, the
-/// forwarding proxy's context and a tunnel's alike.
+/// forwarding proxy's context and a tunnel's alike. C delegates to every
+/// context the application's option covers, the proxy's too
+/// (DIVERGENCE.md).
 #[test]
 fn delegation_to_the_origin_does_not_reach_the_proxy() {
     let always = Delegation {

@@ -1288,7 +1288,9 @@ fn a_transfer_not_exchanging_cannot_be_paused() {
 
 /// A pause asked for from inside a write stops the output with the piece
 /// the handler was given: what is left of the write is held, and an
-/// unpause gives it, then lets the input go on.
+/// unpause gives it, then lets the input go on. C holds output only under a
+/// handler's own pause and goes on handing the rest of the write to the
+/// handler while the application's pause stands (DIVERGENCE.md).
 #[test]
 fn a_receive_pause_holds_the_rest_of_the_write_under_way() {
     let mut m = multi();

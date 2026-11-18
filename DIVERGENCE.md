@@ -836,6 +836,56 @@ so: weaknesses kept because C has them.
   disposition then leaves behind. Upstream: #23858, PR #23887. Pinned by
   `a_name_not_yet_final_empties_no_file` (`crates/curl-tool/tests/http.rs`).
 
+## Credentials C lets go past their party
+
+- **GSS-API delegation is the origin's alone.** `CURLOPT_GSSAPI_DELEGATION` sets the
+  delegation of the origin's Negotiate context only. An HTTP proxy's Negotiate, forwarding or
+  tunnelling, and SOCKS5's GSS-API delegate as `Proxy::delegation` says, none by default; the C
+  ABI has no option for it, so through the shim a proxy never gets the application's
+  credentials. C reads the one option for every context (`Curl_gss_init_sec_context`), so
+  asking to delegate to the server delegates the ticket to each proxy on the way. Upstream:
+  #23820, treated as documentation. Pinned by `delegation_to_the_origin_does_not_reach_the_proxy`
+  (`crates/curl-core/src/proto/http/tests/negotiate.rs`) and
+  `delegation_to_the_origin_does_not_reach_the_socks_proxy`
+  (`crates/curl-core/src/proto/http/tests/socks_gss.rs`).
+- **A mail login given a password does not log in by Kerberos ticket.** With a non-empty
+  password, SASL passes GSS-API's GSSAPI over for the next mechanism both ends allow, unless the
+  login options prefer it alone (`AUTH=GSSAPI`); without a password it is chosen as before, and
+  SSPI's GSSAPI, which uses the credentials given, is unchanged. C chooses GSSAPI whenever the
+  server offers it and a GSS-API library is there (`sasl_choose_krb5`), and so logs in as
+  whoever holds the ticket, not as the user named. Upstream: #23851, PR #23943. Pinned by
+  `a_password_passes_gss_api_s_gssapi_over` (`crates/curl-core/src/auth/sasl/tests.rs`).
+- **The FTP account goes only where the login may.** `CURLOPT_FTP_ACCOUNT` and
+  `CURLOPT_FTP_ALTERNATIVE_TO_USER` reach the login only when the request's credential gate
+  trusts its origin: the first origin, or any with `CURLOPT_UNRESTRICTED_AUTH`. C reads both
+  from the options (`ftp_state_user_resp`), so an HTTP redirect to
+  `ftp://` on another host sends that server the account when it asks for one, though not the
+  user and password. Upstream: #23856, treated as documentation. Pinned by
+  `a_redirect_s_ftp_server_is_sent_no_account_or_alternative`
+  (`crates/curl-core/src/proto/ftp/tests.rs`).
+
+## Output C delivers while paused
+
+- **`CURLPAUSE_RECV` holds output already read.** After `curl_easy_pause(CURLPAUSE_RECV)`,
+  delivery checks the pause before each piece that would reach the write or header handler and
+  holds the rest until the unpause, as it does under a handler's own `CURL_WRITEFUNC_PAUSE`. A
+  pause asked inside a write stops after the piece under way. C's client writer stops only on a
+  handler's pause (`writer.paused`, which `curl_easy_pause` does not set), so the rest of a
+  write already under way, such as all that one read of a compressed body decodes to, goes on
+  to the handler while the pause stands.
+  Upstream: #23853, PR #23885. Pinned by `a_receive_pause_holds_the_rest_of_the_write_under_way`
+  (`crates/curl-core/src/deliver/tests.rs`).
+
+## Names C leaves unchecked
+
+- **wolfSSL checks the name when the chain is not verified.** With `CURLOPT_SSL_VERIFYPEER` off
+  and `CURLOPT_SSL_VERIFYHOST` on, the session checks the name on the peer's certificate after
+  the handshake (`wolfSSL_X509_check_host`), as it already did for an address, and a mismatch
+  fails the handshake. C hands the name to `wolfSSL_check_domain_name` alone, whose mismatch
+  wolfSSL lets pass under `WOLFSSL_VERIFY_NONE`, so a certificate for any name is accepted
+  (measured with wolfSSL 5.9.4). Upstream: #23475, open. Pinned by
+  `the_name_is_checked_whether_or_not_the_chain_is` (`crates/curl-wolfssl/src/tests.rs`).
+
 ## Residuals shared with C
 
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a

@@ -3623,7 +3623,8 @@ fn the_entry_path_is_reported_after_reuse() {
 /// application said for the first origin: a server a redirect from HTTP
 /// on another host leads to is sent neither, as it is not sent the
 /// login, unless the application lets its credentials follow anywhere
-/// (`CURLOPT_UNRESTRICTED_AUTH`).
+/// (`CURLOPT_UNRESTRICTED_AUTH`). C reads both from the options and sends
+/// them to any server that asks (DIVERGENCE.md).
 #[test]
 fn a_redirect_s_ftp_server_is_sent_no_account_or_alternative() {
     use crate::options::{Follow, Login, Protocols};

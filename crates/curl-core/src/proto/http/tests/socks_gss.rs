@@ -403,7 +403,7 @@ fn sspi_s_failures_are_said_as_c_s_windows_build_says_them() {
 
 /// The application's delegation is the origin's: the SOCKS5 proxy's
 /// GSS-API context delegates nothing unless the proxy's own option asks
-/// for it.
+/// for it. C's delegates as the application's option says (DIVERGENCE.md).
 #[test]
 fn delegation_to_the_origin_does_not_reach_the_socks_proxy() {
     let always = crate::options::Delegation {

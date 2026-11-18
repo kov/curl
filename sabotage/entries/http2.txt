@@ -615,7 +615,7 @@ witness: curl-core proto::http::h2::tests::trailers_are_held_to_c_s_limits_at_th
 
 === a stream closed as its reset goes is not told so
 file: crates/curl-core/src/proto/http/h2.rs
-witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_ends_the_session
 --- old
     fn closed_with(&mut self, error: H2Error) {
         self.end = self.end.closed_with(error);
@@ -626,7 +626,7 @@ witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_i
 
 === a stream closed with an error as its reset goes is not taken as reset
 file: crates/curl-core/src/proto/http/h2.rs
-witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_ends_the_session
 --- old
             reset: was || error != H2Error::NO_ERROR,
 --- new
@@ -634,7 +634,7 @@ witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_i
 
 === a sibling's window the session could not set leaves its stream open
 file: crates/curl-core/src/proto/http/h2.rs
-witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_ends_the_session
 --- old
             if let Some((stream, _, _)) = unset.as_ref().filter(|u| Some(u.0) != own) {
 --- new

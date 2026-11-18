@@ -4116,12 +4116,27 @@ fn a_done_that_never_ends_times_out_and_closes() {
         w.trace_multi = true;
     });
     let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
-        o.limits.total = crate::time::TimeLimit::from_millis(1000);
+        o.limits.total = crate::time::TimeLimit::from_millis(600);
     });
     assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
     let at = said.find("Operation timed out\n").expect(&said);
     assert!(said[at..].contains("close=1, premature=0"), "{said}");
-    // DONE's wait was bounded by the time left, not left to the socket.
+    // DONE's wait was bounded by the time left, below its second.
+    let done = said.find("[DONE] multi_wait(").expect(&said);
+    assert!(
+        said[done..].starts_with("[DONE] multi_wait(fds=1, timeout=350)"),
+        "{said}"
+    );
+    // With more time left than a second, a second at most from the pass,
+    // as C's wait: the scripted call took 250 ms of it.
+    let w = world_with(&[("/home/u/f", "hello\n")], |w| {
+        w.stuck = vec!["sftp_close"];
+        w.trace_multi = true;
+    });
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.limits.total = crate::time::TimeLimit::from_millis(5000);
+    });
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
     let done = said.find("[DONE] multi_wait(").expect(&said);
     assert!(
         said[done..].starts_with("[DONE] multi_wait(fds=1, timeout=750)"),

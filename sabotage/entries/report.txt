@@ -34,9 +34,9 @@ witness: curl-core report::tests::queue_time_sums_over_requests
 
 === a transfer ending early misses the times it skipped
 file: crates/curl-core/src/multi/state.rs
-witness: curl-core multi::tests::a_transfer_failing_before_its_request_gets_the_skipped_times
+witness: curl-core proto::http::tests::multi_trace::a_request_failing_in_do_gets_the_times_it_skipped
 --- old
-    if before_did {
+    if (MState::Do..MState::Did).contains(&from) {
 --- new
     if false {
 

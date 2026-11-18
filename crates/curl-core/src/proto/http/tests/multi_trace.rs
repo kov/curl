@@ -136,7 +136,8 @@ fn a_redirect_starts_over_from_setup() {
 }
 
 /// A refused connect is done with in CONNECTING, its connection
-/// terminated, and the times it skipped taken as it completes.
+/// terminated, and none of the request's times taken as it completes:
+/// it never got to make its request (test 1698).
 #[test]
 fn a_refused_connect_is_done_with_where_it_failed() {
     let mut m = serving(Peer::Refuses, &[]);
@@ -160,9 +161,6 @@ fn a_refused_connect_is_done_with_where_it_failed() {
         [MULTI] [CONNECTING] multi_done_locked, in use=0
         [MULTI] [CONNECTING] multi_done, terminating conn #0 to 127.0.0.1:{PORT}, forbid=0, close=0, premature=1, conn_multiplex=0
         [MULTI] [CONNECTING] -> [COMPLETED]
-        [MULTI] [COMPLETED] [PGRS-PRETRANSFER] added Nus
-        [MULTI] [COMPLETED] [PGRS-POSTRANSFER] added Nus
-        [MULTI] [COMPLETED] [PGRS-STARTTRANSFER] added Nus
         [MULTI] [COMPLETED] [TIMEOUT] all cleared
         [MULTI] [COMPLETED] -> [MSGSENT]
         [MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1"
@@ -475,5 +473,53 @@ fn a_connection_closed_at_once_is_said_by_the_next_step() {
             [MULTI] [COMPLETED] -> [MSGSENT]"
         ),
         "{lines:#?}"
+    );
+}
+
+/// A body whose read callback aborts at once.
+struct AbortsRead;
+
+impl crate::handler::ReadHandler for AbortsRead {
+    fn read(&self, _: &mut crate::multi::TransferCx<'_>, _: &mut [u8]) -> crate::handler::Read {
+        crate::handler::Read::Abort
+    }
+}
+
+/// A request that fails as it is made, in DO, gets the times a jump to
+/// the end skipped, traced in COMPLETED (`mstate_enter_completed`).
+#[test]
+fn a_request_failing_in_do_gets_the_times_it_skipped() {
+    let mut m = serving(Peer::Accepts, &[]);
+    let ran = get_with(
+        &mut m,
+        tracing_multi(),
+        "/",
+        Conversation::replies(&[], false),
+        |o| {
+            o.method = Method::Post;
+            o.upload = crate::options::UploadSource::Read {
+                handler: Handler::read(AbortsRead).unwrap(),
+                rewind: None,
+                size: Some(3),
+            };
+        },
+    );
+    assert_eq!(ran.result, Err(ErrorKind::AbortedByCallback));
+    let lines = multi_lines(&ran);
+    let from = lines
+        .iter()
+        .position(|l| l == "[MULTI] [DO] -> [COMPLETED]")
+        .expect("failed in DO");
+    assert_eq!(
+        lines[from..],
+        [
+            "[MULTI] [DO] -> [COMPLETED]",
+            "[MULTI] [COMPLETED] [PGRS-PRETRANSFER] added Nus",
+            "[MULTI] [COMPLETED] [PGRS-POSTRANSFER] added Nus",
+            "[MULTI] [COMPLETED] [PGRS-STARTTRANSFER] added Nus",
+            "[MULTI] [COMPLETED] [TIMEOUT] all cleared",
+            "[MULTI] [COMPLETED] -> [MSGSENT]",
+            "[MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1",
+        ]
     );
 }

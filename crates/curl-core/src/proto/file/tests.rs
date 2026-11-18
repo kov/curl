@@ -448,7 +448,8 @@ fn a_head_request_on_a_file_that_cannot_be_stated_reads_its_body() {
 }
 
 /// A file that cannot be opened ends the transfer before a connection,
-/// without progress, every time taken at the end.
+/// without progress, and before its request: none of the request's
+/// times is taken (`mstate_enter_completed` from before DO).
 #[test]
 fn a_missing_file_cannot_be_read() {
     let s = Scratch::new("missing");
@@ -458,8 +459,8 @@ fn a_missing_file_cannot_be_read() {
     assert_eq!(seen.events(), []);
     let t = e.report().timings();
     assert_eq!(t.namelookup(), Duration::ZERO, "never connected");
-    assert_eq!(t.pretransfer(), Duration::from_micros(1));
-    assert_eq!(t.starttransfer(), Duration::from_micros(1));
+    assert_eq!(t.pretransfer(), Duration::ZERO);
+    assert_eq!(t.starttransfer(), Duration::ZERO);
 }
 
 /// A zero byte in the path is a malformed URL; other control bytes are

@@ -267,12 +267,12 @@ witness: curl-core proto::http::tests::multi_trace::a_failed_response_closes_its
 
 === the times a failure skipped are taken before COMPLETED
 file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::multi_trace::a_refused_connect_is_done_with_where_it_failed
+witness: curl-core proto::http::tests::multi_trace::a_request_failing_in_do_gets_the_times_it_skipped
 --- old
     mstate::enter(cx, MState::Completed);
-    for (timer, marked) in enter_completed(cx.report_mut(), now, before_did)
+    for (timer, marked) in enter_completed(cx.report_mut(), now, from)
 --- new
-    for (timer, marked) in enter_completed(cx.report_mut(), now, before_did)
+    for (timer, marked) in enter_completed(cx.report_mut(), now, from)
 
 === a redirect's request starts over from CONNECT
 file: crates/curl-core/src/multi/state/leg.rs

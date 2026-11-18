@@ -1331,10 +1331,11 @@ fn a_refused_url_is_reported_with_its_path_as_the_handle_keeps_it() {
     }
 }
 
-/// A transfer that ends before it was about to send gets the times it
-/// skipped (`mstate_enter_completed`).
+/// A transfer that ends before it got to make its request gets none of
+/// the request's times, which it never reached (`mstate_enter_completed`
+/// from before DO).
 #[test]
-fn a_transfer_failing_before_its_request_gets_the_skipped_times() {
+fn a_transfer_failing_before_its_request_gets_no_request_times() {
     let (mut m, clock) = multi();
     let ev = &mut NoEvents;
     let no_url = m.add(Box::new(Easy::new()), (), ev).unwrap();
@@ -1345,13 +1346,13 @@ fn a_transfer_failing_before_its_request_gets_the_skipped_times() {
         let t = *m.easy(id).unwrap().report().timings();
         assert_eq!(
             [t.pretransfer(), t.posttransfer(), t.starttransfer()],
-            [us(1); 3]
+            [Duration::ZERO; 3]
         );
         assert_eq!(t.namelookup(), Duration::ZERO);
         assert_eq!(
             t.total(),
-            us(1),
-            "it ended where it began, holding its phases"
+            Duration::ZERO,
+            "it ended where it began, with no phase to hold"
         );
     }
 }
@@ -1377,7 +1378,8 @@ fn a_transfer_a_dead_multi_ends_unstarted_gets_a_report() {
     let t = *m.easy(id).unwrap().report().timings();
     assert_eq!(
         [t.pretransfer(), t.posttransfer(), t.starttransfer()],
-        [us(1); 3]
+        [Duration::ZERO; 3],
+        "a request never begun"
     );
 }
 

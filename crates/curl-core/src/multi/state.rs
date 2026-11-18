@@ -841,7 +841,6 @@ impl TransferState {
 struct RequestEnd {
     proto: Option<ProtoState>,
     result: Result<(), ErrorKind>,
-    reached: Reached,
     next: AfterRequest,
 }
 
@@ -970,7 +969,6 @@ fn multi_done<H: Host>(
     Ok(RequestEnd {
         proto: d.proto,
         result: d.result,
-        reached: d.reached,
         next: d.next,
     })
 }
@@ -1789,7 +1787,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 Err(kind) => TransferState::Init.fail(kind),
             };
             if next.is_completed() {
-                complete(cx, now, true);
+                complete(cx, now);
             }
             (next, Wake::Again)
         }
@@ -1818,7 +1816,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 TimeLeft::Remaining(_) | TimeLeft::Unlimited => setup(cx, plan),
             };
             if next.is_completed() {
-                complete(cx, now, true);
+                complete(cx, now);
             }
             (next, Wake::Again)
         }
@@ -2199,7 +2197,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             };
             if let Some(next) = leg {
                 if next.is_completed() {
-                    complete(cx, now, true);
+                    complete(cx, now);
                 }
                 (next, Wake::Again)
             } else if more && d.result.is_ok() {
@@ -2208,11 +2206,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 mstate::enter(cx, MState::Init);
                 (TransferState::Init, Wake::Again)
             } else {
-                complete(
-                    cx,
-                    now,
-                    matches!(d.reached, Reached::Unmade | Reached::Making),
-                );
+                complete(cx, now);
                 let completed = TransferState::Completed(Completed { outcome: d.result });
                 (completed, Wake::Again)
             }
@@ -2452,17 +2446,19 @@ fn pending<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> (TransferState, Wa
     }
 }
 
-/// The report of a transfer completing, from before the request was
-/// about to be sent or not (`mstate_enter_completed`, `Curl_pgrsCompleted`):
-/// the times it took, if any.
+/// The report of a transfer completing from C's state `from`
+/// (`mstate_enter_completed`, `Curl_pgrsCompleted`): the times it took,
+/// if any. One whose request was being made and not yet made gets the
+/// times a jump to the end skipped; one that never got to make it, as
+/// one whose connect failed, never reached them and gets none.
 fn enter_completed(
     report: &mut TransferReport,
     now: Instant,
-    before_did: bool,
+    from: MState,
 ) -> [Option<(Timer, Marked)>; 3] {
     let t = report.timings_mut();
     let mut marks = [None; 3];
-    if before_did {
+    if (MState::Do..MState::Did).contains(&from) {
         // The times a jump to the end skipped.
         let skipped = [
             Timer::PreTransfer,
@@ -2477,10 +2473,12 @@ fn enter_completed(
     marks
 }
 
-/// `enter_completed` as the transfer steps, traced in COMPLETED.
-fn complete<H: Host>(cx: &mut StepCx<'_, H>, now: Instant, before_did: bool) {
+/// `enter_completed` from where the transfer is as it steps, traced in
+/// COMPLETED: a request that failed is where it ended (`c_state`).
+fn complete<H: Host>(cx: &mut StepCx<'_, H>, now: Instant) {
+    let from = cx.mstate();
     mstate::enter(cx, MState::Completed);
-    for (timer, marked) in enter_completed(cx.report_mut(), now, before_did)
+    for (timer, marked) in enter_completed(cx.report_mut(), now, from)
         .into_iter()
         .flatten()
     {
@@ -2493,7 +2491,7 @@ fn complete<H: Host>(cx: &mut StepCx<'_, H>, now: Instant, before_did: bool) {
 pub(crate) fn complete_unstarted(easy: &mut Easy, now: Instant) {
     let report = easy.report_mut();
     report.restart(now);
-    enter_completed(report, now, true);
+    enter_completed(report, now, MState::Init);
 }
 
 /// `multi_done` treats these failures as premature whatever the caller

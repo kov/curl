@@ -26,7 +26,7 @@ use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
-use crate::options::{ConnectOnly, Method, UploadSource};
+use crate::options::{ConnectOnly, Lines, Method, UploadSource};
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::chain::Body;
@@ -284,8 +284,11 @@ pub(crate) struct Request {
     url_options: Option<Vec<u8>>,
     /// The application's command, decoded in DO (`custom`).
     custom: Option<Vec<u8>>,
+    /// The application's recipients as the request started (`smtp->rcpt`
+    /// at DO): what a callback sets later reaches no request under way.
+    rcpts: Lines,
     /// The recipient the command or `RCPT TO` is for, by its place in
-    /// the application's list (`rcpt`).
+    /// `rcpts` (`rcpt`).
     rcpt: usize,
     /// The last code a `RCPT TO` was refused with (`rcpt_last_error`).
     rcpt_last_error: u32,
@@ -365,6 +368,7 @@ impl Request {
             path,
             url_options,
             custom: None,
+            rcpts: Lines::NONE,
             rcpt: 0,
             rcpt_last_error: 0,
             rcpt_had_ok: false,
@@ -439,7 +443,7 @@ impl Request {
             lease.get().mark_close();
             return self.finished(cx, result);
         }
-        if cx.easy().options().connect_only != ConnectOnly::No || !mails(cx) {
+        if cx.easy().options().connect_only != ConnectOnly::No || !mails(cx, &self.rcpts) {
             return self.finished(cx, Ok(()));
         }
         let (pc, _) = smtp_of(lease);
@@ -936,21 +940,21 @@ impl Request {
     /// `MAIL FROM`, or a command.
     fn perform<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) -> Step {
         trace::of(cx, Component::Smtp, format_args!("smtp_perform(), start"));
+        self.rcpts = cx.easy().options().line.mail_rcpt.shared();
         self.rcpt = 0;
         self.rcpt_had_ok = false;
         self.rcpt_last_error = 0;
         let (pc, mut carrier) = smtp_of(lease);
-        if mails(cx) {
+        if mails(cx, &self.rcpts) {
             self.mail(cx, pc, &mut carrier)
         } else {
             self.command(cx, pc, &mut carrier)
         }
     }
 
-    /// The recipient the request is at, copied out of the options; none
-    /// past the last.
-    fn recipient<H: Host>(&self, cx: &StepCx<'_, H>) -> Result<Option<Vec<u8>>, ErrorKind> {
-        let Some(rcpt) = cx.easy().options().line.mail_rcpt.iter().nth(self.rcpt) else {
+    /// The recipient the request is at, copied; none past the last.
+    fn recipient(&self) -> Result<Option<Vec<u8>>, ErrorKind> {
+        let Some(rcpt) = self.rcpts.iter().nth(self.rcpt) else {
             return Ok(None);
         };
         let mut copy = Vec::new();
@@ -969,7 +973,7 @@ impl Request {
         carrier: &mut Carrier<'_>,
     ) -> Step {
         let custom = self.custom.as_deref().filter(|c| !c.is_empty());
-        match (self.recipient(cx)?, custom) {
+        match (self.recipient()?, custom) {
             (Some(rcpt), None) => {
                 let idn = cx.easy().libraries().idn;
                 let mailbox = parse_address(cx, &rcpt, idn)?;
@@ -1011,7 +1015,7 @@ impl Request {
         carrier: &mut Carrier<'_>,
         code: u32,
     ) -> Step {
-        let has_rcpt = self.rcpt < cx.easy().options().line.mail_rcpt.iter().count();
+        let has_rcpt = self.rcpt < self.rcpts.iter().count();
         let refused = code / 100 != 2 && code != 1 && !(has_rcpt && code == 553);
         if refused {
             return Err(trace::fail(
@@ -1029,7 +1033,7 @@ impl Request {
         }
         if has_rcpt {
             self.rcpt += 1;
-            if self.recipient(cx)?.is_some() {
+            if self.recipient()?.is_some() {
                 return self.command(cx, pc, carrier);
             }
         }
@@ -1107,13 +1111,7 @@ impl Request {
             None => None,
         };
         if pc.utf8_offered && !utf8 {
-            utf8 = cx
-                .easy()
-                .options()
-                .line
-                .mail_rcpt
-                .iter()
-                .any(|rcpt| !rcpt.is_ascii());
+            utf8 = self.rcpts.iter().any(|rcpt| !rcpt.is_ascii());
         }
         body.end_as_mail(size).map_err(|_| ErrorKind::OutOfMemory)?;
         *cx.readers_mut() = body.upload().pausing().map(|client| Readers {
@@ -1153,7 +1151,7 @@ impl Request {
         pc: &mut SmtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        let rcpt = self.recipient(cx)?.expect("a mail has a recipient at hand");
+        let rcpt = self.recipient()?.expect("a mail has a recipient at hand");
         let idn = cx.easy().libraries().idn;
         let mailbox = parse_address(cx, &rcpt, idn)?.bracketed()?;
         drive::send(cx, &mut pc.pp, carrier, None, &[b"RCPT TO:", &mailbox])?;
@@ -1185,7 +1183,7 @@ impl Request {
             self.rcpt_had_ok = true;
         }
         self.rcpt += 1;
-        if self.recipient(cx)?.is_some() {
+        if self.recipient()?.is_some() {
             return self.rcpt_to(cx, pc, carrier);
         }
         if !self.rcpt_had_ok {
@@ -1240,11 +1238,11 @@ impl Request {
 
 /// Whether the transfer sends a mail (`state.upload`, or a MIME post,
 /// with recipients): else it sends a command.
-fn mails<H: Host>(cx: &StepCx<'_, H>) -> bool {
+fn mails<H: Host>(cx: &StepCx<'_, H>, rcpts: &Lines) -> bool {
     let options = cx.easy().options();
     let uploads = options.method == Method::Upload
         || (options.method == Method::Post && matches!(options.upload, UploadSource::Mime(_)));
-    uploads && options.line.mail_rcpt.iter().next().is_some()
+    uploads && rcpts.iter().next().is_some()
 }
 
 /// `EHLO`, what the server offered and the login used forgotten

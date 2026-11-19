@@ -276,6 +276,52 @@ fn each_recipient_has_its_rcpt_to() {
     );
 }
 
+/// Clears the transfer's recipients as the answer to `MAIL FROM` comes,
+/// as an application's header callback setting `CURLOPT_MAIL_RCPT` may.
+struct ClearsRecipients;
+
+impl crate::handler::HeaderHandler for ClearsRecipients {
+    fn header(
+        &self,
+        cx: &mut crate::handler::WriteCx<'_>,
+        line: &[u8],
+        _: crate::handler::HeaderOrigin,
+    ) -> Write {
+        if line == OK {
+            let me = cx.me();
+            let o = cx.options_mut(me).unwrap();
+            o.line.make_mut().unwrap().mail_rcpt.set([]).unwrap();
+        }
+        Write::Took(line.len())
+    }
+}
+
+/// The recipients are the application's as the request started: a
+/// callback changing them mid-mail reaches the next request, not this
+/// one, which still mails each it began with (`smtp->rcpt`).
+#[test]
+fn recipients_cleared_by_a_callback_mid_mail_are_still_mailed() {
+    let replies = [GREETING, EHLO, OK, OK, OK, GO, OK];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, URL, |o| {
+        mail(b"x")(o);
+        o.line
+            .make_mut()
+            .unwrap()
+            .mail_rcpt
+            .set([&b"r@b"[..], b"s@c"])
+            .unwrap();
+        o.callbacks.header = Some(Handler::header(ClearsRecipients).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(
+        received(&talk),
+        "EHLO 900\r\nMAIL FROM:<f@a> SIZE=1\r\nRCPT TO:<r@b>\r\n\
+         RCPT TO:<s@c>\r\nDATA\r\nx\r\n.\r\n"
+    );
+}
+
 /// A recipient refused fails the mail, unless refused ones are let pass,
 /// when it fails only if none was taken, with the last code.
 #[test]

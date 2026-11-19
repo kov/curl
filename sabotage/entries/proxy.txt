@@ -945,7 +945,7 @@ witness: curl-core proto::http::tests::a_forwarded_ftp_url_after_http_on_its_por
         let base = base.forwarded(peer, Pipeline::collecting());
 --- new
         let mut first = crate::auth::gate::FirstOrigin::inherited(base.first().clone());
-        let origins = first.lend(&peer, false).map_err(|_| ErrorKind::OutOfMemory)?;
+        let origins = first.lend(&peer, false);
         let base = RequestBase::new(super::Addressed { peer, origins }, Pipeline::collecting());
 
 === a forwarded request sends the proxy's lines though they are the origin's

@@ -533,8 +533,9 @@ so: weaknesses kept because C has them.
 - **A status after the body over quiche fails the stream.** quiche hands on a trailers'
   block's fields as any other, a `:status` among them, and C's filter writes it as a new status
   line into a response whose head is over (`cb_each_header`). A pseudo-header in trailers is a
-  malformed response (RFC 9114, 4.3) that nghttp3 refuses, so here the stream fails, as over
-  ngtcp2. Read from `lib/vquic/cf-quiche.c`. Pinned by
+  malformed response (RFC 9114, 4.3), which nghttp3 refuses over ngtcp2; here the transfer
+  fails with `CURLE_RECV_ERROR`, as on a status it cannot read, and the connection's other
+  transfers go on. Read from `lib/vquic/cf-quiche.c`. Pinned by
   `a_status_after_the_body_over_quiche_fails_the_stream`
   (`crates/curl-core/src/proto/http/tests/h3_trace.rs`).
 

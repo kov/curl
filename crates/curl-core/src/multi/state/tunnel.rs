@@ -747,9 +747,7 @@ fn finish<H: Host>(
         // The request follows the `CONNECT`: what reads it starts over
         // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
         crate::upload::trace_reset(cx, false);
-        s.machine.proxied(Handshook::Tunnel(Tunneled::H1), || {
-            cx.easy().options().proxy.haproxy
-        });
+        s.machine.proxied(Handshook::Tunnel(Tunneled::H1));
         return Ok(Ran::Through);
     }
     // What the challenges lead to (`Curl_http_auth_act`).

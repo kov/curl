@@ -513,7 +513,7 @@ witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_line_is_sent
 --- old
-        if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
+        if quic.is_none() && (self.route.handshakes() || haproxy || self.route.secured()) {
 --- new
         if quic.is_none() && (self.route.handshakes() || self.route.secured()) {
 
@@ -552,17 +552,17 @@ const READ_SIZE: usize = 1;
 
 === the PROXY line is decided as the connection is dialed, before a tunnel
 file: crates/curl-core/src/conn/connect.rs
-witness: curl-core multi::tests::the_proxy_protocol_is_read_once_its_stage_is_reached
+witness: curl-core multi::tests::the_proxy_protocol_is_decided_as_the_transfer_is_routed
 --- old
-                preface: (!self.route.handshakes()).then_some(setup.haproxy),
+                preface: (!self.route.handshakes()).then_some(haproxy),
 --- new
-                preface: Some(setup.haproxy),
+                preface: Some(haproxy),
 
 === the PROXY line is never decided after a proxy's handshake
 file: crates/curl-core/src/conn/connect.rs
-witness: curl-core multi::tests::the_proxy_protocol_is_read_once_its_stage_is_reached
+witness: curl-core multi::tests::the_proxy_protocol_is_decided_as_the_transfer_is_routed
 --- old
-            d.preface = Some(haproxy());
+            d.preface = Some(route.haproxy().is_some());
 --- new
             d.preface = Some(false);
 
@@ -1064,3 +1064,11 @@ witness: curl-core conn::h2proxy::tests::a_proxy_s_flood_of_frames_gives_the_oth
 const CONNECT_SHARE: usize = 16 * 1024;
 --- new
 const CONNECT_SHARE: usize = 1024;
+
+=== a connection serves a transfer asking for another PROXY line
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::a_connection_is_reused_only_by_a_transfer_asking_its_proxy_line
+--- old
+            && haproxy == want_haproxy
+--- new
+            && true

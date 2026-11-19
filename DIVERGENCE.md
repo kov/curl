@@ -967,6 +967,19 @@ so: weaknesses kept because C has them.
   `a_connection_is_reused_only_with_the_same_ways_to_log_in`
   (`crates/curl-core/src/proto/ssh/tests.rs`).
 
+- **A connection that sent the PROXY protocol's line serves only a transfer asking for the
+  same line.** The line says who the requests over the connection come from: the client address
+  the application gives (`CURLOPT_HAPROXY_CLIENT_IP`), or the socket's. The route keeps the line
+  its first transfer asked for, or that it asked for none, and a transfer asking otherwise gets a
+  connection of its own, which sends its own line. C does not compare them and reuses the
+  connection. Pinned by `a_connection_is_reused_only_by_a_transfer_asking_its_proxy_line`
+  (`crates/curl-core/src/proto/http/tests.rs`).
+- **Whether the PROXY line goes is decided as the transfer is routed.** C reads
+  `CURLOPT_HAPROXYPROTOCOL` as the setup reaches that stage, so an application that turns it on
+  from a callback during the proxy's handshake gets the line; here the route was decided before,
+  and it does not. Pinned by `the_proxy_protocol_is_decided_as_the_transfer_is_routed`
+  (`crates/curl-core/src/multi/tests.rs`).
+
 ## Residuals shared with C
 
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a

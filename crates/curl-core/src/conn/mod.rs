@@ -349,6 +349,17 @@ pub(crate) struct RouteCold {
     /// transfer asked, which a transfer reusing it must ask
     /// (`ssh_config_matches`); none for another scheme's.
     pub(crate) ssh: Option<crate::proto::ssh::SshSetup>,
+    /// The PROXY protocol's line the connection sends its first hop, if
+    /// it sends one; a transfer reusing it must ask for the same line.
+    pub(crate) haproxy: Option<Haproxy>,
+}
+
+/// The PROXY protocol's line a connection sends to its first hop
+/// (`CURLOPT_HAPROXYPROTOCOL`): saying `client` in place of the
+/// connection's own addresses, if given (`CURLOPT_HAPROXY_CLIENT_IP`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Haproxy {
+    pub(crate) client: Option<Vec<u8>>,
 }
 
 /// What an FTP connection logged in and set up with, beyond its
@@ -434,6 +445,7 @@ impl RouteCold {
         use_ssl: crate::options::UseSsl::None,
         ftp: None,
         ssh: None,
+        haproxy: None,
     };
 
     /// Whether it holds nothing a route without it does not. Every field
@@ -448,6 +460,7 @@ impl RouteCold {
             use_ssl,
             ftp,
             ssh,
+            haproxy,
         } = self;
         *ip == IpVersion::Any
             && *delegation == crate::options::Delegation::default()
@@ -457,6 +470,7 @@ impl RouteCold {
             && *use_ssl == crate::options::UseSsl::None
             && ftp.is_none()
             && ssh.is_none()
+            && haproxy.is_none()
     }
 
     /// Whether a connection of a route with `self` and the origin's TLS
@@ -481,6 +495,7 @@ impl RouteCold {
             use_ssl,
             ftp,
             ssh,
+            haproxy,
         } = self;
         let RouteCold {
             ip: _,
@@ -491,6 +506,7 @@ impl RouteCold {
             use_ssl: want_use_ssl,
             ftp: want_ftp,
             ssh: want_ssh,
+            haproxy: want_haproxy,
         } = want;
         let (upgrade, want_upgrade) = (tls.upgrade, want_tls.upgrade);
         let (tls, want_tls) = (tls.start, want_tls.start);
@@ -537,6 +553,10 @@ impl RouteCold {
             // Compared for any protocol, as C compares it (`url_match_auth`).
             && delegation == want_delegation
             && proxy_delegation == want_proxy_delegation
+            // The PROXY line the connection sent says who its requests are
+            // from: only a transfer asking for the same line takes it. C
+            // compares neither the line nor whether one went.
+            && haproxy == want_haproxy
     }
 
     /// The rare part of a route that takes only addresses of `ip`, none
@@ -563,6 +583,7 @@ impl RouteCold {
             use_ssl,
             ftp,
             ssh,
+            haproxy,
         } = self;
         Ok(RouteCold {
             ip: *ip,
@@ -578,6 +599,13 @@ impl RouteCold {
             ssh: ssh
                 .as_ref()
                 .map(crate::proto::ssh::SshSetup::try_clone)
+                .transpose()?,
+            haproxy: haproxy
+                .as_ref()
+                .map(|h| {
+                    let client = h.client.as_deref().map(crate::options::copy).transpose()?;
+                    Ok::<_, OutOfMemory>(Haproxy { client })
+                })
                 .transpose()?,
         })
     }
@@ -928,6 +956,12 @@ impl NetRoute {
                 .made_tls()
                 .expect("a connection's TLS is made as it is set up"),
         )
+    }
+
+    /// The PROXY protocol's line the connection sends its first hop, if
+    /// it sends one.
+    pub(crate) fn haproxy(&self) -> Option<&Haproxy> {
+        self.cold.as_deref().and_then(|c| c.haproxy.as_ref())
     }
 
     /// The route goes through a proxy by a handshake the setup makes
@@ -2868,6 +2902,7 @@ mod tests {
                         use_ssl,
                         ftp,
                         ssh: None,
+                        haproxy: None,
                     })
                     .unwrap(),
                 ),
@@ -3201,6 +3236,7 @@ mod tests {
                         use_ssl: crate::options::UseSsl::None,
                         ftp: None,
                         ssh: None,
+                        haproxy: None,
                     })
                     .unwrap()
                 }),

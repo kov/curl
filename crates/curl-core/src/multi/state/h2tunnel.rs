@@ -227,9 +227,7 @@ fn inspect<H: Host>(
             Ok(p as Box<dyn crate::conn::layer::Layer>)
         })
         .map_err(oom)?;
-    s.machine.proxied(Handshook::Tunnel(Tunneled::H2), || {
-        cx.easy().options().proxy.haproxy
-    });
+    s.machine.proxied(Handshook::Tunnel(Tunneled::H2));
     Ok(Ran::Through)
 }
 

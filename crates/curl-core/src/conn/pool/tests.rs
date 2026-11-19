@@ -49,7 +49,6 @@ fn connect(
         delay: Duration::from_millis(200),
         scope: None,
         socket: crate::conn::SocketSetup::PLAIN,
-        haproxy: false,
         layer: None,
         linger: None,
     };

@@ -45,9 +45,9 @@ witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_befor
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
 --- old
-        if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
+        if quic.is_none() && (self.route.handshakes() || haproxy || self.route.secured()) {
 --- new
-        if quic.is_none() && (self.route.handshakes() || setup.haproxy) {
+        if quic.is_none() && (self.route.handshakes() || haproxy) {
 
 === a read waiting on TLS to write waits to read
 file: crates/curl-core/src/conn/tls.rs

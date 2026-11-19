@@ -98,11 +98,11 @@ fn line(
 /// names if it does.
 pub(super) fn start<H: Host>(
     s: &mut SetupMut<'_>,
-    _: &mut Lent<'_>,
-    cx: &mut StepCx<'_, H>,
+    lent: &mut Lent<'_>,
+    _: &mut StepCx<'_, H>,
 ) -> Result<Wake, Failure> {
     let (remote, local) = s.machine.dialed().ends();
-    let client = cx.easy().options().proxy.haproxy_client_ip.as_deref();
+    let client = lent.route.haproxy().and_then(|h| h.client.as_deref());
     let preface = line(&remote, local, client)
         .and_then(|line| try_box(Handshake::Haproxy(Preface { line, sent: 0 })));
     match preface {

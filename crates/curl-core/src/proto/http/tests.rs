@@ -5297,6 +5297,62 @@ fn a_new_connection_sends_the_proxy_protocol_s_line_first() {
     assert_eq!(first_line(&ran.request).1, want, "no line again");
 }
 
+/// A connection that sent the PROXY line serves only a transfer asking for
+/// the same line: one naming another client, or none, or asking for no
+/// line, gets a connection of its own, which says what it asks. C reuses
+/// the connection whatever either asked.
+#[test]
+fn a_connection_is_reused_only_by_a_transfer_asking_its_proxy_line() {
+    let ask = |line: bool, client: Option<&'static str>| {
+        move |o: &mut Options| {
+            let p = o.proxy.make_mut().unwrap();
+            p.haproxy = line;
+            p.haproxy_client_ip = client.map(|c| c.as_bytes().to_vec());
+        }
+    };
+    let cases = [
+        ((true, Some("192.168.1.1")), (true, Some("192.168.1.1")), 0),
+        ((true, None), (true, None), 0),
+        ((false, None), (false, None), 0),
+        ((true, Some("192.168.1.1")), (true, Some("192.168.1.2")), 1),
+        ((true, Some("192.168.1.1")), (true, None), 1),
+        ((false, None), (true, None), 1),
+        ((true, None), (false, None), 1),
+    ];
+    for (first, second, connects) in cases {
+        // The first connection's conversation answers both requests if
+        // it is reused; a second connection has its own.
+        let talk = Conversation::replies(&[OK, OK], false);
+        let other = Conversation::replies(&[OK], false);
+        let mut m = serving(Peer::Accepts, &[&talk, &other]);
+        let ran = get(&mut m, "/a", talk.clone(), ask(first.0, first.1));
+        assert_eq!(ran.result, Ok(()));
+        let ran = get_with(
+            &mut m,
+            ran.easy,
+            "/b",
+            talk.clone(),
+            ask(second.0, second.1),
+        );
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(
+            ran.easy.report().connects(),
+            connects,
+            "{first:?} then {second:?}"
+        );
+        if connects == 1 && second.0 {
+            let sent = other.received();
+            let (line, rest) = first_line(&sent);
+            let ip = second.1.unwrap_or("127.0.0.1");
+            assert!(
+                line.starts_with(&format!("PROXY TCP4 {ip} {ip} ")),
+                "{line}"
+            );
+            assert!(rest.starts_with(b"GET /b HTTP/1.1\r\n"));
+        }
+    }
+}
+
 /// An address the application gives is said as both ends, its family
 /// IPv6 unless it is an IPv4 address (test 3220); the ports stay the
 /// socket's.
@@ -5341,26 +5397,9 @@ fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
 /// Behind a SOCKS proxy the line goes once its handshake is made, and
 /// behind a SOCKS pre-proxy and a tunnel only once the tunnel is up too,
 /// ahead of the origin's request (`cf_setup_connect`: SOCKS, then the
-/// HTTP proxy, then the PROXY protocol). Whether it goes is read then:
-/// turned on as the tunnel's answer comes, it goes.
+/// HTTP proxy, then the PROXY protocol).
 #[test]
 fn the_proxy_protocol_s_line_follows_every_proxy_s_handshake() {
-    struct OnInTheTunnel;
-    impl HeaderHandler for OnInTheTunnel {
-        fn header(
-            &self,
-            cx: &mut crate::handler::WriteCx<'_>,
-            _: &[u8],
-            origin: HeaderOrigin,
-        ) -> Write {
-            if origin == HeaderOrigin::Connect {
-                let me = cx.me();
-                let o = cx.options_mut(me).unwrap();
-                o.proxy.make_mut().unwrap().haproxy = true;
-            }
-            Write::Accepted
-        }
-    }
     let socks = b"\x05\x01\x00\x05\x01\x00\x03\x0eorigin.example\x00\x50";
     let talk = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
@@ -5390,7 +5429,7 @@ fn the_proxy_protocol_s_line_follows_every_proxy_s_handshake() {
         o.proxy.make_mut().unwrap().tunnel = true;
         o.proxy.make_mut().unwrap().pre_proxy =
             Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
-        o.callbacks.header = Some(Handler::header(OnInTheTunnel).unwrap());
+        o.proxy.make_mut().unwrap().haproxy = true;
     });
     assert_eq!(ran.result, Ok(()));
     let socks = b"\x05\x01\x00\x05\x01\x00\x03\x0dproxy.example\x0c\x38";

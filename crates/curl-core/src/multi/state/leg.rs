@@ -954,11 +954,29 @@ fn route_cold<H: Host>(
         use_ssl,
         ftp,
         ssh: proto.take_ssh_setup(),
+        haproxy: haproxy(options)?,
     };
     if cold.is_empty() {
         return Ok(None);
     }
     TryArc::try_new(cold).map(Some)
+}
+
+/// The PROXY protocol's line a connection made for the transfer sends,
+/// if it sends one.
+fn haproxy(options: &crate::options::Options) -> Result<Option<crate::conn::Haproxy>, OutOfMemory> {
+    // Every option by name, so that one added does not compile until it
+    // is said to set the connection up or not.
+    let crate::options::Proxy {
+        haproxy,
+        haproxy_client_ip,
+        ..
+    } = &*options.proxy;
+    if !*haproxy {
+        return Ok(None);
+    }
+    let client = haproxy_client_ip.as_deref().map(copy_bytes).transpose()?;
+    Ok(Some(crate::conn::Haproxy { client }))
 }
 
 /// A copy of `bytes`.

@@ -256,8 +256,7 @@ fn opened<H: Host>(
     if authenticated {
         s.machine.dialed().socks5_authenticated();
     }
-    s.machine
-        .proxied(Handshook::Socks, || cx.easy().options().proxy.haproxy);
+    s.machine.proxied(Handshook::Socks);
     let (remote, local) = s.machine.dialed().ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
     let proxy = lent.route.proxy.as_ref().expect("dialed through a proxy");

@@ -1796,8 +1796,7 @@ announced to the socket callback first. A transfer whose receiving is paused is 
   (§ the HTTP/3 tunnel), and the race is won only once one is through.
 - **Dialed.** A setup that makes a handshake does not end at the winning attempt: a route
   through SOCKS or an HTTP proxy that tunnels (`NetRoute::handshakes`), one secured, or a
-  transfer that sends the PROXY line (`DriveOptions::haproxy`, the creating transfer's, as the
-  line is not part of the route), has the machine keep its socket as `Stage::Dialed`, with a
+  route that sends the PROXY line (`NetRoute::haproxy`), has the machine keep its socket as `Stage::Dialed`, with a
   receive buffer, and return `Progress::Dialed`. Each handshake runs over that `Stream`. One whose
   layer goes on working once it is done (TLS, an HTTP/2 or HTTP/3 proxy's tunnel) pushes it on
   the stream; SOCKS and the HTTP/1.1 tunnel, which only pass bytes once connected, are recorded
@@ -1806,7 +1805,7 @@ announced to the socket callback first. A transfer whose receiving is paused is 
   (`ConnLease::handshaken`), keeping what came after the answer, and it is traced as
   established only then.
 - **Handshake order** is decided in one place, `handshake_due` (`multi/state/connecting.rs`), from the
-  route, the transfer's PROXY line and what `Dialed::made` records, in cf-setup.c's order: the
+  route, its PROXY line and what `Dialed::made` records, in cf-setup.c's order: the
   eyeballs race, then SOCKS, then the proxy's TLS, then the HTTP proxy's `CONNECT`, then the
   PROXY line, then the origin's TLS (or its QUIC through a CONNECT-UDP tunnel). Each handshake,
   once made, ends with none under way, and the step goes on to the next within the same call,
@@ -1863,12 +1862,13 @@ announced to the socket callback first. A transfer whose receiving is paused is 
   asks for the HTTP proxy (`NetRoute::socks` gives the leg), and a tunnelling HTTP proxy's
   `CONNECT` follows over the same `Dialed` stage; a SOCKS5 authentication is kept on `Dialed` and
   carried to the `Conn`. Reuse compares the pre-proxy too.
-- **The PROXY line** goes over `Dialed`, after any proxy's handshake, if the transfer asks
-  (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the socket to the first hop.
-  Whether it asks is read once, as the setup reaches that stage, as `cf_setup_add_haproxy` reads
-  it: as the attempt wins for a route without a proxy's handshake, else as the last of them is
-  made (`ConnectMachine::proxied`); `Dialed` carries the answer. A reused connection sends none,
-  and reuse does not ask, as in C.
+- **The PROXY line** goes over `Dialed`, after any proxy's handshake, if the route sends one
+  (`RouteCold::haproxy`, `multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the
+  socket to the first hop or the client address it names. The route's is the transfer's as it
+  was routed: an option changed from a callback mid-setup does not change it, where C reads it
+  as the setup reaches that stage (`cf_setup_add_haproxy`). A reused connection sends none, and
+  serves only a transfer asking for the same line or none (deliberate differences,
+  DIVERGENCE.md).
 
 **Two setups at once.** C's HTTPS connect filter races two ballers for an `https://` origin
 asking HTTP/3 (`cf_hc`; its lines are in §2.5). Here the first setup is the

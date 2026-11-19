@@ -1273,7 +1273,6 @@ pub(crate) fn drive_options<H: Host>(cx: &mut StepCx<'_, H>) -> DriveOptions {
         delay: options.limits.eyeballs.0,
         scope: options.address_scope,
         socket: crate::conn::SocketSetup::of(&options.sockets),
-        haproxy: options.proxy.haproxy,
         #[cfg(test)]
         layer: options.layer,
         #[cfg(any(test, feature = "test-util"))]

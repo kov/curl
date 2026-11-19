@@ -6340,19 +6340,20 @@ fn sent_through_a_tunnel(set: impl FnOnce(&mut Easy)) -> Vec<u8> {
     sent[tunnel_end..].to_vec()
 }
 
-/// Whether a connection sends the PROXY protocol's line is read as the
-/// setup reaches it, after the proxy's handshakes, and only then
-/// (`cf_setup_add_haproxy`): the option turned on as the tunnel's answer
-/// comes sends the line; turned off as the filter is traced as added, it
-/// still goes. The C build sends the line in both.
+/// Whether a connection sends the PROXY protocol's line is its route's,
+/// decided as the transfer is routed: the option turned on from a
+/// callback as the tunnel's answer comes sends no line; turned off as the
+/// filter is traced as added, the line still goes. The C build reads the
+/// option as the setup reaches that stage (`cf_setup_add_haproxy`) and
+/// sends the line in both.
 #[test]
-fn the_proxy_protocol_is_read_once_its_stage_is_reached() {
+fn the_proxy_protocol_is_decided_as_the_transfer_is_routed() {
     let sent = sent_through_a_tunnel(|e| {
         let header = crate::handler::Handler::header(HaproxyOnInTheTunnel).unwrap();
         e.options_mut().callbacks.header = Some(header);
     });
     assert!(
-        sent.starts_with(b"PROXY TCP4 127.0.0.1 127.0.0.1 "),
+        sent.starts_with(b"GET /a HTTP/1.1\r\n"),
         "{}",
         String::from_utf8_lossy(&sent)
     );

@@ -646,10 +646,6 @@ pub(crate) struct DriveOptions {
     pub(crate) scope: Option<NonZeroU32>,
     /// What each socket is set to before it connects.
     pub(crate) socket: SocketSetup,
-    /// The transfer sends the PROXY protocol's line over a connection it
-    /// makes (`CURLOPT_HAPROXYPROTOCOL`): the connection is open only
-    /// once it is sent.
-    pub(crate) haproxy: bool,
     /// A layer of the tests' to put on the connection once it is up.
     #[cfg(test)]
     pub(crate) layer: Option<fn() -> Box<dyn super::layer::Layer>>,
@@ -1274,9 +1270,9 @@ impl ConnectMachine {
     }
 
     /// The proxy's handshake `which` is made over the dialed connection.
-    /// Once the route's are all made, whether the PROXY protocol's line
-    /// follows is decided, `haproxy` read then and only then.
-    pub(crate) fn proxied(&mut self, which: Handshook, haproxy: impl FnOnce() -> bool) {
+    /// Once the route's are all made, the PROXY protocol's line follows
+    /// if the route sends one.
+    pub(crate) fn proxied(&mut self, which: Handshook) {
         let Stage::Dialed(d) = &mut self.stage else {
             panic!("no handshake is made");
         };
@@ -1286,7 +1282,7 @@ impl ConnectMachine {
         let tunnel = route.proxy.as_ref().is_some_and(|p| p.tunnels()) && d.made.tunnel.is_none();
         if !socks && !tunnel {
             assert!(d.preface.is_none(), "the PROXY line is decided once");
-            d.preface = Some(haproxy());
+            d.preface = Some(route.haproxy().is_some());
         }
     }
 
@@ -2294,7 +2290,8 @@ impl ConnectMachine {
             Link::Quic(quic) => (Some(quic), None),
             Link::Tunnel(tunnel) => (None, Some(tunnel)),
         };
-        if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
+        let haproxy = self.route.haproxy().is_some();
+        if quic.is_none() && (self.route.handshakes() || haproxy || self.route.secured()) {
             // The connection is the first hop's; the handshakes over it
             // are still to be made.
             let answer = r.eyeballs.answer.clone();
@@ -2346,11 +2343,11 @@ impl ConnectMachine {
                 made,
                 // With no proxy's handshake to make first, the stage is
                 // reached now.
-                preface: (!self.route.handshakes()).then_some(setup.haproxy),
+                preface: (!self.route.handshakes()).then_some(haproxy),
                 quic: None,
             });
             if to_proxy {
-                self.proxied(Handshook::Tunnel(super::Tunneled::H3), || setup.haproxy);
+                self.proxied(Handshook::Tunnel(super::Tunneled::H3));
             }
             return Ok(Drove::Connecting(self, Progress::Dialed));
         }
@@ -4734,7 +4731,6 @@ mod tests {
             delay: Duration::from_millis(200),
             scope: None,
             socket: SocketSetup::PLAIN,
-            haproxy: false,
             layer: None,
             linger: None,
         };
@@ -4836,7 +4832,6 @@ mod tests {
                 delay: he,
                 scope: None,
                 socket: SocketSetup::PLAIN,
-                haproxy: false,
                 layer: None,
                 linger: None,
             };
@@ -4911,7 +4906,6 @@ mod tests {
             delay: Duration::from_millis(200),
             scope: None,
             socket: SocketSetup::PLAIN,
-            haproxy: false,
             layer: None,
             linger: None,
         };
@@ -4981,7 +4975,6 @@ mod tests {
                     },
                     fastopen: true,
                 },
-                haproxy: false,
                 layer: None,
                 linger: None,
             };
@@ -5121,7 +5114,6 @@ mod tests {
                 delay: Duration::from_millis(200),
                 scope: None,
                 socket: SocketSetup::PLAIN,
-                haproxy: false,
                 layer: None,
                 linger: None,
             };
@@ -5189,7 +5181,6 @@ mod tests {
             delay: Duration::from_millis(200),
             scope: None,
             socket: SocketSetup::PLAIN,
-            haproxy: false,
             layer: None,
             linger: None,
         };
@@ -5280,7 +5271,6 @@ mod tests {
                 delay: he,
                 scope: None,
                 socket: SocketSetup::PLAIN,
-                haproxy: false,
                 layer: None,
                 linger: None,
             };
@@ -5512,7 +5502,6 @@ mod tests {
             delay: Duration::from_millis(200),
             scope: None,
             socket: SocketSetup::PLAIN,
-            haproxy: false,
             layer: None,
             linger: None,
         };

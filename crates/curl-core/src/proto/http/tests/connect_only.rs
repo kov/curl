@@ -367,6 +367,28 @@ fn a_perform_that_only_connects_leaves_the_handle_its_socket() {
     assert_eq!(&server.join().unwrap(), b"ping");
 }
 
+/// A reset handle no longer has the connection its perform only made:
+/// no socket is said, and a raw send reaches no one, with only
+/// connecting asked again (`curl_easy_reset`'s `last_conn_id = -1`).
+#[test]
+fn a_reset_handle_forgets_the_connection_it_only_made() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || crate::test_server::accept(&listener));
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{port}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().connect_only = ConnectOnly::Yes;
+    e.perform().unwrap();
+    assert!(e.active_socket().is_some());
+    e.reset();
+    assert_eq!(e.active_socket(), None);
+    e.options_mut().connect_only = ConnectOnly::Yes;
+    assert_eq!(e.active_socket(), None);
+    assert!(e.send_raw(b"ping", &mut |_, _| {}).is_err());
+    drop(server.join().unwrap());
+}
+
 /// A WebSocket's 101 cut short by the server's close leaves the handle
 /// the connection, as C leaves it: not a WebSocket's, which its calls
 /// say (test 2304).

@@ -768,6 +768,9 @@ impl Easy {
         // `Curl_req_hard_reset`, before `Curl_freeset`).
         self.asyncs_let_go(me);
         self.options = Options::default();
+        // The connection's record goes with the report's: neither the
+        // socket said nor a raw send reaches it (`last_conn_id = -1`).
+        self.last_conn = None;
         self.report = self.report.reset();
         self.meter_titled = false;
         self.resolve_read = 0;

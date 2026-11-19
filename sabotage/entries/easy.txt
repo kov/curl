@@ -130,3 +130,13 @@ witness: curl-sys-abi handle_tests::cleanup_goes_on_when_the_removal_fails
         if crate::multi::remove(multi, reach, easy).is_err() {
             return;
         }
+
+=== a reset handle keeps the connection its last transfer had
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::connect_only::a_reset_handle_forgets_the_connection_it_only_made
+features: test-util
+--- old
+        self.last_conn = None;
+        self.report = self.report.reset();
+--- new
+        self.report = self.report.reset();

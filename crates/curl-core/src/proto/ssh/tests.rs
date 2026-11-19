@@ -1942,6 +1942,50 @@ fn pwd_after_the_transfer_says_no_path() {
     assert_eq!(told, b"257 \"(nil)\" is current directory.\n");
 }
 
+/// Clears the transfer's commands after it as `pwd`'s answer comes, as
+/// an application's header callback setting `CURLOPT_POSTQUOTE` may.
+struct ClearsPostquote;
+
+impl crate::handler::HeaderHandler for ClearsPostquote {
+    fn header(
+        &self,
+        cx: &mut crate::handler::WriteCx<'_>,
+        line: &[u8],
+        _: crate::handler::HeaderOrigin,
+    ) -> Wrote {
+        if line.starts_with(b"257 ") {
+            let me = cx.me();
+            let o = cx.options_mut(me).unwrap();
+            o.line.make_mut().unwrap().postquote.set([]).unwrap();
+        }
+        Wrote::Accepted
+    }
+}
+
+/// The commands after the transfer are the application's as their run
+/// started: a callback clearing them after the first reaches the next
+/// transfer, and this one runs each it began with.
+#[test]
+fn commands_after_the_transfer_cleared_by_a_callback_are_still_run() {
+    let w = world_with(&[("/home/u/f", "x")], |_| {});
+    let (result, body, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.callbacks.header = Some(crate::handler::Handler::header(ClearsPostquote).unwrap());
+        o.line
+            .make_mut()
+            .unwrap()
+            .postquote
+            .set([&b"pwd"[..], b"rename /home/u/f /home/u/g"])
+            .unwrap();
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    let calls = w.lock().unwrap().calls.clone();
+    assert!(
+        calls.contains(&"rename /home/u/f /home/u/g".to_owned()),
+        "{calls:?}"
+    );
+}
+
 /// An SFTP write that fails fails the upload as a send error.
 #[test]
 fn a_failing_write_fails_the_upload() {

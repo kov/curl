@@ -21,7 +21,9 @@ use curl_alloc::{TryArc, TryVec as _};
 
 use super::hostkey::HostVerified;
 use super::path::{self, Home, RangeError};
-use super::{Keys, Quotes, Request, S_IFLNK, S_IFMT, SshSetup, c_string, copy, quote_command};
+use super::{
+    Keys, QuoteRun, Quotes, Request, S_IFLNK, S_IFMT, SshSetup, c_string, copy, quote_command,
+};
 use crate::components::Component;
 use crate::conn::io::{Events, Sent, SocketPoll};
 use crate::conn::layer::{LayerCalls as _, LayerCx};
@@ -204,7 +206,7 @@ pub(crate) struct Ssh2Conn {
     /// it logs in with, its first transfer's.
     cold: Option<TryArc<RouteCold>>,
     /// The quote command being run: its list, and where in it.
-    quote: Option<(Quotes, usize)>,
+    quote: Option<QuoteRun>,
     /// The quote command's paths (`quote_path1`, `quote_path2`).
     path1: Option<Vec<u8>>,
     path2: Option<Vec<u8>>,
@@ -1114,9 +1116,9 @@ impl Request {
             State::SftpRealpath => sftp_realpath(cx, sc),
             State::SftpQuoteInit => self.sftp_quote_init2(cx, sc),
             State::SftpPostquoteInit => {
-                if cx.easy().options().line.postquote.iter().next().is_some() {
+                if let Some(run) = QuoteRun::start(cx, Quotes::After) {
                     trace::info(cx, format_args!("SSH: sending quote commands"));
-                    sc.quote = Some((Quotes::After, 0));
+                    sc.quote = Some(run);
                     sc.to(cx, State::SftpQuote);
                 } else {
                     sc.to(cx, State::Stop);
@@ -1134,9 +1136,8 @@ impl Request {
             State::SftpNextQuote => {
                 sc.path1 = None;
                 sc.path2 = None;
-                let (list, at) = sc.quote.expect("a quote command was run");
-                sc.quote = Some((list, at + 1));
-                if quote_command(cx, list, at + 1).is_some() {
+                let run = sc.quote.as_mut().expect("a quote command was run");
+                if run.advance() {
                     sc.to(cx, State::SftpQuote);
                 } else if let Some(next) = sc.next.take() {
                     sc.to(cx, next);
@@ -1838,9 +1839,9 @@ impl Request {
             }
             Ok(p) => {
                 self.path = Some(p);
-                if cx.easy().options().line.quote.iter().next().is_some() {
+                if let Some(run) = QuoteRun::start(cx, Quotes::Before) {
                     trace::info(cx, format_args!("SSH: sending quote commands"));
-                    sc.quote = Some((Quotes::Before, 0));
+                    sc.quote = Some(run);
                     sc.to(cx, State::SftpQuote);
                 } else {
                     sc.to(cx, State::SftpGetinfo);
@@ -1853,8 +1854,8 @@ impl Request {
     /// `SSH_SFTP_QUOTE`: the next quote command read, and the state that
     /// runs it chosen (`sftp_quote`).
     fn sftp_quote2<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
-        let (list, at) = sc.quote.expect("a quote command to run");
-        let given = quote_command(cx, list, at).expect("the quote command is in its list");
+        let (list, at) = sc.quote.as_ref().expect("a quote command to run").command();
+        let given = quote_command(&list, at);
         let cmd = copy(c_string(given))?;
         sc.accept_fail = false;
         // A command starting with `*` may fail, as if it did not.
@@ -3124,8 +3125,8 @@ fn quote_done2<H: Host>(
 /// sets its permissions, and the command's change to them made, to be
 /// sent (`sftp_quote_stat`).
 fn quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
-    let (list, at) = sc.quote.expect("a quote command to run");
-    let given = quote_command(cx, list, at).expect("the quote command is in its list");
+    let (list, at) = sc.quote.as_ref().expect("a quote command to run").command();
+    let given = quote_command(&list, at);
     let given = c_string(given);
     sc.accept_fail = false;
     let given = match given.strip_prefix(b"*") {

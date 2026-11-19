@@ -32,7 +32,7 @@ use crate::error::{ErrorKind, url_error};
 use crate::handler::{DebugKind, KeyMatch, KeyVerdict};
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
-use crate::options::{CreateDirs, Resume, SshAuthTypes};
+use crate::options::{CreateDirs, Lines, Resume, SshAuthTypes};
 use crate::progress::rate::Way;
 use crate::report::Timer;
 use crate::ssh::{
@@ -448,8 +448,8 @@ pub(crate) struct SshConn {
     /// What of its route few routes have: the credentials and key files
     /// it logs in with, its first transfer's.
     cold: Option<TryArc<RouteCold>>,
-    /// The quote command being run: its list, and where in it.
-    quote: Option<(Quotes, usize)>,
+    /// The quote commands being run.
+    quote: Option<QuoteRun>,
     /// The quote command's paths (`quote_path1`, `quote_path2`).
     path1: Option<Vec<u8>>,
     path2: Option<Vec<u8>>,
@@ -951,9 +951,9 @@ impl Request {
                 State::SftpRealpath => sftp_realpath(cx, sc),
                 State::SftpQuoteInit => self.sftp_quote_init(cx, sc),
                 State::SftpPostquoteInit => {
-                    if cx.easy().options().line.postquote.iter().next().is_some() {
+                    if let Some(run) = QuoteRun::start(cx, Quotes::After) {
                         trace::info(cx, format_args!("Sending quote commands"));
-                        sc.quote = Some((Quotes::After, 0));
+                        sc.quote = Some(run);
                         sc.to(cx, State::SftpQuote);
                     } else {
                         sc.to(cx, State::Stop);
@@ -963,9 +963,8 @@ impl Request {
                 State::SftpNextQuote => {
                     sc.path1 = None;
                     sc.path2 = None;
-                    let (list, at) = sc.quote.expect("a quote command was run");
-                    sc.quote = Some((list, at + 1));
-                    if quote_command(cx, list, at + 1).is_some() {
+                    let run = sc.quote.as_mut().expect("a quote command was run");
+                    if run.advance() {
                         sc.to(cx, State::SftpQuote);
                     } else if let Some(next) = sc.next.take() {
                         sc.to(cx, next);
@@ -1332,9 +1331,9 @@ impl Request {
             }
             Ok(p) => {
                 self.path = Some(p);
-                if cx.easy().options().line.quote.iter().next().is_some() {
+                if let Some(run) = QuoteRun::start(cx, Quotes::Before) {
                     trace::info(cx, format_args!("Sending quote commands"));
-                    sc.quote = Some((Quotes::Before, 0));
+                    sc.quote = Some(run);
                     sc.to(cx, State::SftpQuote);
                 } else {
                     sc.to(cx, State::SftpGetinfo);
@@ -1346,8 +1345,8 @@ impl Request {
     /// `SSH_SFTP_QUOTE`: the next quote command read, and the state that
     /// runs it chosen (`myssh_in_SFTP_QUOTE`).
     fn sftp_quote<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
-        let (list, at) = sc.quote.expect("a quote command to run");
-        let given = quote_command(cx, list, at).expect("the quote command is in its list");
+        let (list, at) = sc.quote.as_ref().expect("a quote command to run").command();
+        let given = quote_command(&list, at);
         let cmd = match copy(c_string(given)) {
             Ok(cmd) => cmd,
             Err(e) => return quote_failed(cx, sc, e),
@@ -2438,13 +2437,45 @@ pub(super) fn scp_offered<H: Host>(
     }
 }
 
-/// The transfer's quote command `at` of `list`, if it has one.
-fn quote_command<'c, H: Host>(cx: &'c StepCx<'_, H>, list: Quotes, at: usize) -> Option<&'c [u8]> {
-    let line = &cx.easy().options().line;
-    match list {
-        Quotes::Before => line.quote.iter().nth(at),
-        Quotes::After => line.postquote.iter().nth(at),
+/// A list of the transfer's quote commands being run: the list as it was
+/// when the run started, shared, and where in it. A callback setting the
+/// option meanwhile reaches the next transfer's run, not this one.
+#[derive(Debug)]
+struct QuoteRun {
+    list: Lines,
+    at: usize,
+}
+
+impl QuoteRun {
+    /// The transfer's list `which`, if it has a command.
+    fn start<H: Host>(cx: &StepCx<'_, H>, which: Quotes) -> Option<QuoteRun> {
+        let line = &cx.easy().options().line;
+        let list = match which {
+            Quotes::Before => line.quote.shared(),
+            Quotes::After => line.postquote.shared(),
+        };
+        let some = list.iter().next().is_some();
+        some.then_some(QuoteRun { list, at: 0 })
     }
+
+    /// The command it is at, and the list it is of, shared: none is past
+    /// the list's end, which nothing changes.
+    fn command(&self) -> (Lines, usize) {
+        (self.list.shared(), self.at)
+    }
+
+    /// On to the next command: whether there is one.
+    fn advance(&mut self) -> bool {
+        self.at += 1;
+        self.list.iter().nth(self.at).is_some()
+    }
+}
+
+/// The command `at` of `list`, which a run holds.
+fn quote_command(list: &Lines, at: usize) -> &[u8] {
+    list.iter()
+        .nth(at)
+        .expect("a run's command is in the list it holds")
 }
 
 /// The quote commands end on `kind` (`myssh_quote_error` without a

@@ -452,6 +452,53 @@ fn an_answer_awaited_in_done_stalls_no_other_transfer() {
     assert_eq!(result, Ok(()));
 }
 
+/// Clears the transfer's commands after it as the answer to the first
+/// comes, as an application's header callback setting
+/// `CURLOPT_POSTQUOTE` may.
+struct ClearsPostquote;
+
+impl crate::handler::HeaderHandler for ClearsPostquote {
+    fn header(
+        &self,
+        cx: &mut crate::handler::WriteCx<'_>,
+        line: &[u8],
+        _: crate::handler::HeaderOrigin,
+    ) -> Write {
+        if line.starts_with(b"200 noop") {
+            let me = cx.me();
+            let o = cx.options_mut(me).unwrap();
+            o.line.make_mut().unwrap().postquote.set([]).unwrap();
+        }
+        Write::Took(line.len())
+    }
+}
+
+/// The commands after the transfer are the application's as the request
+/// was made: a callback changing them while DONE awaits an answer
+/// reaches the next request, and this one sends each it began with.
+#[test]
+fn commands_after_the_transfer_cleared_by_a_callback_are_still_sent() {
+    let talk = control(&[b"150 here\r\n226 done\r\n", b"200 noop\r\n", b"500 no\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.line
+            .make_mut()
+            .unwrap()
+            .postquote
+            .set([&b"NOOP"[..], b"*SITE x"])
+            .unwrap();
+        o.callbacks.header = Some(Handler::header(ClearsPostquote).unwrap());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert!(
+        received(&talk).ends_with("RETR f\r\nNOOP\r\nSITE x\r\n"),
+        "{}",
+        received(&talk)
+    );
+}
+
 /// DONE reads the control connection once before it first waits for the
 /// answer, as the line that ended the last reply is still held
 /// (`getftpresponse`), so a server yet to answer shows as a read that

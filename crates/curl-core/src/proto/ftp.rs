@@ -40,7 +40,7 @@ use crate::multi::Host;
 use crate::multi::cx::DriveCx;
 use crate::multi::state::StepCx;
 use crate::multi::timers::TimeLeft;
-use crate::options::{Ccc, CreateDirs, FtpMethod, Method, SslAuth, UseSsl};
+use crate::options::{Ccc, CreateDirs, FtpMethod, Lines, Method, SslAuth, UseSsl};
 use crate::time::Instant;
 use crate::tls::TlsWait;
 use crate::trace;
@@ -219,6 +219,14 @@ struct Control {
     tunnels: bool,
 }
 
+/// The application's quote commands a request sends.
+#[derive(Debug)]
+struct Quotes {
+    quote: Lines,
+    prequote: Lines,
+    postquote: Lines,
+}
+
 /// Where DONE is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ending {
@@ -290,8 +298,12 @@ pub(crate) struct Request {
     /// The `MKD`s that may fail before the `CWD` is tried again (`count3`
     /// in `FTP_MKD`).
     mkd_may_fail: u8,
-    /// The quote command sent, by its index (`count1` in the quote
-    /// states).
+    /// The application's commands before the transfer, before its
+    /// command and after it, as the request was made: what a callback
+    /// sets later reaches the next request, not this one.
+    quotes: Quotes,
+    /// The quote command sent, by its index in its list of `quotes`
+    /// (`count1` in the quote states).
     quote_at: usize,
     /// It may fail (`count2` in the quote states).
     quote_may_fail: bool,
@@ -418,6 +430,11 @@ impl Request {
             cwd_count: 0,
             mkd_tried: false,
             mkd_may_fail: 0,
+            quotes: Quotes {
+                quote: options.line.quote.shared(),
+                prequote: options.line.prequote.shared(),
+                postquote: options.line.postquote.shared(),
+            },
             quote_at: 0,
             quote_may_fail: false,
             auth_at: 0,
@@ -1318,10 +1335,11 @@ impl Request {
         } else {
             self.quote_at += 1;
         }
-        let line = &cx.easy().options().line;
         let list = match instate {
-            State::RetrPrequote | State::StorPrequote | State::ListPrequote => &line.prequote,
-            _ => &line.quote,
+            State::RetrPrequote | State::StorPrequote | State::ListPrequote => {
+                &self.quotes.prequote
+            }
+            _ => &self.quotes.quote,
         };
         let next = list
             .iter()
@@ -2606,7 +2624,7 @@ impl Request {
                     // The end of a range is not checked.
                     self.dont_check = true;
                 }
-                let prequote = cx.easy().options().line.prequote.iter().next().is_some();
+                let prequote = self.quotes.prequote.iter().next().is_some();
                 let file = self.path().file().is_some();
                 if (self.list_only || !file) && !prequote {
                     // A directory: listed, in ASCII.
@@ -2946,8 +2964,8 @@ impl Request {
                 Some(self.after_reply(cx, lease, result, exchanged))
             }
             Ending::Postquote(at) => {
-                let cmd = cx.easy().options().line.postquote.iter().nth(at);
-                let cmd = cmd.expect("the command answered is the list's");
+                let cmd = self.quotes.postquote.iter().nth(at);
+                let cmd = cmd.expect("the command answered is the request's list's");
                 let (cmd, may_fail) = match cmd.strip_prefix(b"*") {
                     Some(rest) => (rest, true),
                     None => (cmd, false),
@@ -2980,7 +2998,7 @@ impl Request {
         let result = self.check_partial(cx, result);
         self.transfer = Transfer::Body;
         self.dont_check = false;
-        let postquote = cx.easy().options().line.postquote.iter().next().is_some();
+        let postquote = self.quotes.postquote.iter().next().is_some();
         if self.status.is_ok() && result.is_ok() && !self.premature && postquote {
             return self
                 .postquote(cx, lease, 0)
@@ -2997,7 +3015,7 @@ impl Request {
         lease: &mut ConnLease,
         at: usize,
     ) -> Option<Finish> {
-        let Some(cmd) = cx.easy().options().line.postquote.iter().nth(at) else {
+        let Some(cmd) = self.quotes.postquote.iter().nth(at) else {
             self.ending = None;
             return Some(self.finished(cx, lease, Ok(())));
         };

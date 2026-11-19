@@ -356,3 +356,11 @@ witness: curl-core proto::ssh::tests::a_connection_is_reused_only_with_the_same_
         keys.same(&want.keys) & host.serves(&want.host) & (*auth_types == want.auth_types)
 --- new
         keys.same(&want.keys) & host.serves(&want.host)
+
+=== a run's next quote command is looked up in the live options
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::commands_after_the_transfer_cleared_by_a_callback_are_still_run
+--- old
+                    if run.advance() {
+--- new
+                    if run.advance() && cx.easy().options().line.postquote.iter().nth(run.at).is_some() {

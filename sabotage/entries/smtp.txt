@@ -102,9 +102,9 @@ file: crates/curl-core/src/proto/smtp.rs
 witness: curl-core proto::smtp::tests::over_the_wire::smtputf8_is_said_for_a_mailbox_in_utf8
 features: test-util
 --- old
-                .any(|rcpt| !rcpt.is_ascii());
+            utf8 = self.rcpts.iter().any(|rcpt| !rcpt.is_ascii());
 --- new
-                .any(|rcpt| rcpt.is_empty());
+            utf8 = self.rcpts.iter().any(|rcpt| rcpt.is_empty());
 
 === the submitter goes with MAIL FROM though nobody logged in
 file: crates/curl-core/src/proto/smtp.rs

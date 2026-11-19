@@ -310,15 +310,15 @@ witness: curl-core cookie::tests::hashes_as_c
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_line_is_looked_for
 --- old
-        let cookie = if cx.easy().jar.is_on() || application {
+        let cookie = if cx.easy().jar.is_on() || application.is_some() {
 --- new
-        let cookie = if application {
+        let cookie = if application.is_some() {
 
 === a request with only the application's cookies sends none
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_line_is_looked_for
 --- old
-        let cookie = if cx.easy().jar.is_on() || application {
+        let cookie = if cx.easy().jar.is_on() || application.is_some() {
 --- new
         let cookie = if cx.easy().jar.is_on() {
 
@@ -326,9 +326,9 @@ witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::without_a_jar_or_cookies_given_no_cookie_line_is_looked_for
 --- old
-        let cookie = if cx.easy().jar.is_on() || application {
+        let cookie = if cx.easy().jar.is_on() || application.is_some() {
 --- new
-        let cookie = if true || cx.easy().jar.is_on() || application {
+        let cookie = if true || cx.easy().jar.is_on() || application.is_some() {
 
 === a cookie file's line of any length is read
 file: crates/curl-core/src/cookie.rs
@@ -454,3 +454,11 @@ witness: curl-sys-abi handle_tests::a_cookie_command_from_a_callback_changes_the
                     return Err(EasyError::RecursiveApiCall);
                 }
                 let (ffi::CURLOPT_COOKIELIST, Some(command)) = (option, given) else {
+
+=== the application's cookies are read from the options after the jar's trace
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::the_application_s_cookies_cleared_while_the_jar_is_traced_still_go
+--- old
+    if let Some(send) = application
+--- new
+    if let Some(send) = application.and(cx.easy().options().http.cookies.send.as_deref())

@@ -10,7 +10,7 @@ use crate::auth::creds::Credentials;
 use crate::auth::gate::{CredentialGate, Origins};
 use crate::conn::{Peer, Scheme};
 use crate::deliver::Pipeline;
-use crate::error::{ErrorKind, url_error};
+use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::Origin;
@@ -151,19 +151,10 @@ pub(super) fn peer_of<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Result<Peer, ErrorKind> {
     let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
+    // Read as a number, not made into text and parsed back.
     let port = url
-        .get(
-            Part::Port,
-            GetOptions {
-                default_port: true,
-                ..GetOptions::NONE
-            },
-        )
-        .map_err(url_error)?;
-    let port = std::str::from_utf8(&port)
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .ok_or(ErrorKind::UrlMalformat)?;
+        .port_or_default()
+        .ok_or(url_error(UrlErrorKind::NoPort))?;
     let scheme = Scheme::named(scheme).expect("libcurl knows the scheme");
     super::transfer_peer((scheme, host, port), url, cx)
 }

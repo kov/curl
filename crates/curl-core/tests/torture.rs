@@ -938,16 +938,15 @@ fn a_get_takes_no_refusal_for_success() {
 /// rows, holds its first 64 in place; then the URL as fetched
 /// and its parts, the URL read back once parsed (as C reads it back), the
 /// target, its path and query made at once, the protocol's state, the
-/// peer, shared as the first origin and with the connection's route
-/// once it is worked out again there, the effective URL kept for the
-/// report, the answer for the host
+/// peer, shared as the first origin and with the connection's route,
+/// the effective URL kept for the report, the answer for the host
 /// kept in the
 /// DNS cache (its name, its addresses, the answer shared, the cache's
 /// table), the connection, as C's `connectdata`, the list of connect
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 41;
+const GET_BUDGET: u64 = 40;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.

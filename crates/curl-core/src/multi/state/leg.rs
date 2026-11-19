@@ -953,7 +953,7 @@ fn route_cold<H: Host>(
         login: proto.take_login()?,
         use_ssl,
         ftp,
-        ssh: proto.take_ssh_keys(),
+        ssh: proto.take_ssh_setup(),
     };
     if cold.is_empty() {
         return Ok(None);

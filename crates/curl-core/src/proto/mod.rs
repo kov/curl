@@ -1109,11 +1109,11 @@ impl ProtoState {
         })
     }
 
-    /// The key files an SSH connection made for the request logs in
-    /// with, taken from it for the route.
-    pub(crate) fn take_ssh_keys(&mut self) -> Option<ssh::Keys> {
+    /// What an SSH connection made for the request is set up with,
+    /// taken from it for the route.
+    pub(crate) fn take_ssh_setup(&mut self) -> Option<ssh::SshSetup> {
         match self {
-            ProtoState::Ssh(r) => r.take_keys(),
+            ProtoState::Ssh(r) => r.take_setup(),
             _ => None,
         }
     }

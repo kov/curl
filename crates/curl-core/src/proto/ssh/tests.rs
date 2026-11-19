@@ -1461,6 +1461,46 @@ fn a_connection_is_reused_only_with_the_same_key_files() {
     assert_eq!(connects(b"/keys/other"), 2);
 }
 
+/// A connection serves a later transfer that asks for its host key to be
+/// checked only if it was checked as that transfer asks; one asking
+/// nothing takes any. C reuses it whatever either asked.
+#[test]
+fn a_connection_is_reused_only_where_its_host_key_was_checked_as_asked() {
+    const GOOD: &[u8] = b"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+    const BAD: &[u8] = b"AAAAAAAAAAAAAAAAAAAA";
+    let runs = |first: Option<&'static [u8]>, second: Option<&'static [u8]>| {
+        let w = world(&[("/home/u/f", "x")]);
+        let mut m = serving(PORT, &silent());
+        let mut results = Vec::new();
+        for pin in [first, second] {
+            let (result, _, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+                o.ssh.make_mut().unwrap().host_key_sha256 = pin.map(<[u8]>::to_vec);
+            });
+            results.push((result, said));
+        }
+        drop(m);
+        let calls = w.lock().unwrap().calls.clone();
+        (results, calls.iter().filter(|c| *c == "connect").count())
+    };
+    // Checked as the second asks, or asked nothing: reused.
+    assert_eq!(runs(Some(GOOD), Some(GOOD)).1, 1);
+    assert_eq!(runs(Some(GOOD), None).1, 1);
+    assert_eq!(runs(None, None).1, 1);
+    // Not checked, the second's fingerprint is checked on a new one.
+    let (results, connects) = runs(None, Some(GOOD));
+    assert_eq!(connects, 2);
+    assert_eq!(results[1].0, Ok(()), "{}", results[1].1);
+    // And one the server's key does not have fails it.
+    let (results, connects) = runs(None, Some(BAD));
+    assert_eq!(connects, 2);
+    assert_eq!(
+        results[1].0,
+        Err(ErrorKind::PeerFailedVerification),
+        "{}",
+        results[1].1
+    );
+}
+
 /// The server's key is checked against the SHA-256 fingerprint given, as
 /// base64 without its padding, else the MD5 one, in hex.
 #[test]

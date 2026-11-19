@@ -4448,8 +4448,12 @@ range and resume point, and the body read or sent.
   shutdown's drain makes it nonblocking first, as C's does.
 - **The connect** is the session's: the host key checked against the fingerprints, the
   known-hosts file and the key handler, then the logins in C's order of fallbacks, then
-  SFTP's subsystem and home directory. A connection serves only a transfer with the same key
-  files (`RouteCold::ssh`, `ssh_config_matches`). Every login state holds a `HostVerified`,
+  SFTP's subsystem and home directory. What the connection is set up with is its route's
+  `SshSetup` (`RouteCold::ssh`), its first transfer's: the key files, what the host key is
+  checked against, the ways to log in and compression; the set-up reads it from there, never
+  from a later transfer's options. A connection serves only a transfer with the same key files
+  (`ssh_config_matches`) that asks no host key check or the same one (a deliberate difference,
+  DIVERGENCE.md). Every login state holds a `HostVerified`,
   which only `proto::ssh::hostkey` makes, each from one check's evidence: a fingerprint that
   matched, the handler's or the file's acceptance, or none of the three asked for, where any
   key is taken as C takes it.

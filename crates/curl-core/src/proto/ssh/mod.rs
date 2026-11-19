@@ -44,8 +44,77 @@ use crate::upload::Upload;
 use crate::upload::chain::{Body, WireSize};
 use crate::upload::sending::{Outlet, Sending};
 use crate::url::{GetOptions, Part, Url};
-use hostkey::HostVerified;
+use hostkey::{HostAsk, HostVerified};
 use path::{Home, RangeError};
+
+/// What an SCP or SFTP connection is set up with, as its first transfer
+/// asked, kept on its route: what it is set up with is read from here,
+/// never from a later transfer's options, and a transfer reusing it must
+/// ask what it was set up with (`SshSetup::serves`).
+#[derive(Debug)]
+pub(crate) struct SshSetup {
+    /// The key files it logs in with.
+    keys: Keys,
+    /// What the server's host key is checked against.
+    host: HostAsk,
+    /// The ways the user may log in (`CURLOPT_SSH_AUTH_TYPES`).
+    auth_types: SshAuthTypes,
+    /// zlib compression is offered (`CURLOPT_SSH_COMPRESSION`).
+    compression: bool,
+}
+
+impl SshSetup {
+    /// The transfer's, as its options and the files at hand say.
+    fn find<H: Host>(cx: &StepCx<'_, H>) -> Result<SshSetup, ErrorKind> {
+        let ssh = &cx.easy().options().ssh;
+        Ok(SshSetup {
+            keys: Keys::find(cx)?,
+            host: HostAsk::of(ssh).map_err(|_| ErrorKind::OutOfMemory)?,
+            auth_types: ssh.auth_types,
+            compression: ssh.compression,
+        })
+    }
+
+    /// A copy.
+    pub(crate) fn try_clone(&self) -> Result<SshSetup, curl_alloc::OutOfMemory> {
+        let SshSetup {
+            keys,
+            host,
+            auth_types,
+            compression,
+        } = self;
+        Ok(SshSetup {
+            keys: keys.try_clone()?,
+            host: host.try_clone()?,
+            auth_types: *auth_types,
+            compression: *compression,
+        })
+    }
+
+    /// The key files it logs in with.
+    pub(crate) fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
+    /// Whether a connection set up as `self` serves a transfer that would
+    /// set one up as `want`: the same key files (`ssh_config_matches`),
+    /// and its host key checked as the transfer asks, if it asks.
+    pub(crate) fn serves(&self, want: &SshSetup) -> bool {
+        // Every field by name, so that one added does not compile until
+        // it is compared here or said why not.
+        let SshSetup {
+            keys,
+            host,
+            // Compared as C compares it not: the ways a connection logged
+            // in by are the first transfer's.
+            auth_types: _,
+            // Whether the session's bytes are compressed changes nothing
+            // a transfer sends, receives or is told of; C compares it not.
+            compression: _,
+        } = self;
+        keys.same(&want.keys) & host.serves(&want.host)
+    }
+}
 
 /// The key files a connection logs in with, as its first transfer found
 /// them (`Curl_ssh_setup_pkey`), kept on its route; none of them where
@@ -592,8 +661,9 @@ const S_IFLNK: u32 = 0o120_000;
 #[derive(Debug)]
 pub(crate) struct Request {
     pub(super) base: super::base::RequestBase,
-    /// The transfer's key files, until its route takes them.
-    keys: Option<Keys>,
+    /// What the transfer would set a connection up with, until its route
+    /// takes it.
+    setup: Option<SshSetup>,
     /// The URL's path, encoded (`state.up.path`).
     url_path: Vec<u8>,
     /// The path the request works on, decoded (`sshp->path`).
@@ -669,7 +739,7 @@ impl Request {
         };
         Ok(Request {
             base,
-            keys: Some(Keys::find(cx)?),
+            setup: Some(SshSetup::find(cx)?),
             url_path,
             path: None,
             upload: options.method == crate::options::Method::Upload,
@@ -701,7 +771,7 @@ impl Request {
         {
             return;
         }
-        let Some(keys) = self.keys.as_ref() else {
+        let Some(keys) = self.setup.as_ref().map(SshSetup::keys) else {
             return;
         };
         if let Some(public) = keys.public.as_deref() {
@@ -723,9 +793,9 @@ impl Request {
         self.base.credentials.take()
     }
 
-    /// Its key files, which its route takes.
-    pub(crate) fn take_keys(&mut self) -> Option<Keys> {
-        self.keys.take()
+    /// What it would set a connection up with, which its route takes.
+    pub(crate) fn take_setup(&mut self) -> Option<SshSetup> {
+        self.setup.take()
     }
 
     /// Whether the request, once made, moves bytes: its body to read or
@@ -861,7 +931,7 @@ impl Request {
                 State::AuthPkeyAuto(hv) => flow = auth_pkey_auto(cx, sc, hv),
                 State::AuthGssapi(hv) => flow = auth_gssapi(cx, sc, hv),
                 State::AuthKeyInit(hv) => {
-                    if allows(cx, SshAuthTypes::KEYBOARD) {
+                    if allows(sc, SshAuthTypes::KEYBOARD) {
                         sc.to(cx, State::AuthKey(hv));
                     } else {
                         to_passwd(cx, sc, hv);
@@ -869,7 +939,7 @@ impl Request {
                 }
                 State::AuthKey(hv) => flow = auth_key(cx, sc, hv),
                 State::AuthPassInit(hv) => {
-                    if allows(cx, SshAuthTypes::PASSWORD) {
+                    if allows(sc, SshAuthTypes::PASSWORD) {
                         sc.to(cx, State::AuthPass(hv));
                     } else {
                         sc.goto_error(cx, ErrorKind::LoginDenied);
@@ -1137,8 +1207,9 @@ impl Request {
         sc: &mut SshConn,
     ) -> Option<HostVerified> {
         let key = sc.session().host_key()?;
-        let ssh = &cx.easy().options().ssh;
-        if let Some(want) = ssh.host_key_sha256.as_deref() {
+        let cold = sc.cold.clone();
+        let ssh = &setup(cold.as_deref()).host;
+        if let Some(want) = ssh.sha256.as_deref() {
             let want = copy(c_string(want)).ok()?;
             let Some(sha) = key.sha256 else {
                 trace::fail(
@@ -1168,7 +1239,7 @@ impl Request {
             }
             return verified;
         }
-        if let Some(want) = ssh.host_key_md5.as_deref() {
+        if let Some(want) = ssh.md5.as_deref() {
             let want = copy(c_string(want)).ok()?;
             let Some(md5) = key.md5 else {
                 trace::fail(
@@ -2255,7 +2326,8 @@ impl Request {
                 ));
             }
         }
-        if let Some(known) = cx.easy().options().ssh.known_hosts.as_deref() {
+        let set_up = setup(cold.as_deref());
+        if let Some(known) = set_up.host.known_hosts.as_deref() {
             let known = copy(c_string(known))?;
             trace::info_with(cx, &[b"Known hosts: ", &known]);
             if session.set_known_hosts(&known).is_err() {
@@ -2273,14 +2345,14 @@ impl Request {
                 format_args!("Could not set remote port"),
             ));
         }
-        if cx.easy().options().ssh.compression && session.set_compression().is_err() {
+        if set_up.compression && session.set_compression().is_err() {
             return Err(trace::fail(
                 cx,
                 ErrorKind::FailedInit,
                 format_args!("Could not set compression"),
             ));
         }
-        let keys = cold.as_deref().and_then(|c| c.ssh.as_ref());
+        let keys = Some(setup(cold.as_deref()).keys());
         if let Some(public) = keys.and_then(|k| k.public.as_deref())
             && session.import_pubkey_file(c_string(public)).is_err()
         {
@@ -2525,9 +2597,16 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, kind: Quot
     sc.to(cx, State::SftpQuoteSetstat);
 }
 
-/// Whether the application lets the user log in by `way`.
-fn allows<H: Host>(cx: &StepCx<'_, H>, way: SshAuthTypes) -> bool {
-    cx.easy().options().ssh.auth_types.allows(way)
+/// What the connection is set up with, as its route says.
+fn setup(cold: Option<&RouteCold>) -> &SshSetup {
+    cold.and_then(|c| c.ssh.as_ref())
+        .expect("an SSH connection's route says what it is set up with")
+}
+
+/// Whether the application lets the user log in by `way`, as the
+/// connection was set up.
+fn allows(sc: &SshConn, way: SshAuthTypes) -> bool {
+    setup(sc.cold.as_deref()).auth_types.allows(way)
 }
 
 /// The password the connection logs in with, up to a zero byte.
@@ -2538,7 +2617,10 @@ fn password(sc: &SshConn) -> Result<Vec<u8>, ErrorKind> {
 
 /// The key files the connection logs in with.
 fn keys(sc: &SshConn) -> Option<&Keys> {
-    sc.cold.as_deref().and_then(|c| c.ssh.as_ref())
+    sc.cold
+        .as_deref()
+        .and_then(|c| c.ssh.as_ref())
+        .map(SshSetup::keys)
 }
 
 /// The password login, if the server offers it, else a failed one
@@ -2620,7 +2702,7 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified)
     let private = keys(sc)
         .and_then(Keys::private)
         .is_some_and(|k| !k.is_empty());
-    if m.has(Methods::PUBLICKEY) && (private || allows(cx, SshAuthTypes::AGENT)) {
+    if m.has(Methods::PUBLICKEY) && (private || allows(sc, SshAuthTypes::AGENT)) {
         sc.to(cx, State::AuthPkeyInit(hv));
         trace::info(cx, format_args!("Authentication using SSH public key file"));
     } else if m.has(Methods::GSSAPI_MIC) {
@@ -2640,7 +2722,7 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified)
 /// to the agent and its default keys, as the agent is allowed
 /// (`myssh_to_PKEY_AUTO`).
 fn to_pkey_auto<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
-    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+    if keys(sc).is_some_and(|k| k.named) || !allows(sc, SshAuthTypes::AGENT) {
         return to_gssapi(cx, sc, hv);
     }
     sc.to(cx, State::AuthPkeyAuto(hv));
@@ -2651,7 +2733,7 @@ fn to_pkey_auto<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerif
 /// public key offered first if given and no passphrase is; with none,
 /// libssh's own search.
 fn auth_pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
-    if !allows(cx, SshAuthTypes::PUBLICKEY) {
+    if !allows(sc, SshAuthTypes::PUBLICKEY) {
         return to_gssapi(cx, sc, hv);
     }
     let (private, passphrase) = match keys(sc) {
@@ -2744,7 +2826,7 @@ fn auth_pkey<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified
 
 /// `SSH_AUTH_GSSAPI`: a GSS-API login, if the transfer may.
 fn auth_gssapi<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, hv: HostVerified) -> Flow {
-    if !allows(cx, SshAuthTypes::GSSAPI) {
+    if !allows(sc, SshAuthTypes::GSSAPI) {
         return to_key_auth(cx, sc, hv);
     }
     match sc.session().auth_gssapi() {

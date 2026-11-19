@@ -21,7 +21,7 @@ use curl_alloc::{TryArc, TryVec as _};
 
 use super::hostkey::HostVerified;
 use super::path::{self, Home, RangeError};
-use super::{Keys, Quotes, Request, S_IFLNK, S_IFMT, c_string, copy, quote_command};
+use super::{Keys, Quotes, Request, S_IFLNK, S_IFMT, SshSetup, c_string, copy, quote_command};
 use crate::components::Component;
 use crate::conn::io::{Events, Sent, SocketPoll};
 use crate::conn::layer::{LayerCalls as _, LayerCx};
@@ -478,14 +478,19 @@ impl Ssh2Conn {
             Login {
                 user: login.map_or(&[][..], |l| c_string(l.user())),
                 password: login.map_or(&[][..], |l| c_string(l.secret().password())),
-                keys: cold.and_then(|c| c.ssh.as_ref()),
+                keys: cold.and_then(|c| c.ssh.as_ref()).map(SshSetup::keys),
             },
         )
     }
 
     /// The key files the connection logs in with.
     fn keys(&self) -> Option<&Keys> {
-        self.cold.as_deref().and_then(|c| c.ssh.as_ref())
+        Some(self.setup().keys())
+    }
+
+    /// What the connection is set up with, as its route says.
+    fn setup(&self) -> &SshSetup {
+        super::setup(self.cold.as_deref())
     }
 
     /// Free what the session has open, then the session (`sshc_cleanup`):
@@ -869,9 +874,10 @@ impl Ssh2Conn {
     }
 }
 
-/// Whether the application lets the user log in by `way`.
-fn allows<H: Host>(cx: &StepCx<'_, H>, way: SshAuthTypes) -> bool {
-    cx.easy().options().ssh.auth_types.allows(way)
+/// Whether the application lets the user log in by `way`, as the
+/// connection was set up.
+fn allows(sc: &Ssh2Conn, way: SshAuthTypes) -> bool {
+    sc.setup().auth_types.allows(way)
 }
 
 impl Request {
@@ -935,13 +941,14 @@ impl Request {
                 ));
             }
         }
-        if cx.easy().options().ssh.compression && session.enable_compression().is_err() {
+        let set_up = super::setup(cold.as_deref());
+        if set_up.compression && session.enable_compression().is_err() {
             trace::info(
                 cx,
                 format_args!("SSH: failed to enable compression for session"),
             );
         }
-        if let Some(known) = cx.easy().options().ssh.known_hosts.as_deref() {
+        if let Some(known) = set_up.host.known_hosts.as_deref() {
             let known = copy(c_string(known))?;
             if session.knownhost_init().is_err() {
                 return Err(ErrorKind::FailedInit);
@@ -1065,7 +1072,7 @@ impl Request {
             State::AuthPkey(hv) => auth_pkey(cx, sc, hv),
             State::AuthPassInit(hv) => {
                 let next =
-                    if allows(cx, SshAuthTypes::PASSWORD) && offers(&sc.authlist, b"password") {
+                    if allows(sc, SshAuthTypes::PASSWORD) && offers(&sc.authlist, b"password") {
                         State::AuthPass(hv)
                     } else {
                         State::AuthHostInit(hv)
@@ -1075,7 +1082,7 @@ impl Request {
             }
             State::AuthPass(hv) => auth_pass(cx, sc, hv),
             State::AuthHostInit(hv) => {
-                let next = if allows(cx, SshAuthTypes::HOST) && offers(&sc.authlist, b"hostbased") {
+                let next = if allows(sc, SshAuthTypes::HOST) && offers(&sc.authlist, b"hostbased") {
                     State::AuthHost(hv)
                 } else {
                     State::AuthAgentInit(hv)
@@ -1091,7 +1098,7 @@ impl Request {
             State::AuthAgentList(hv) => agent_list(cx, sc, hv),
             State::AuthAgent(hv) => agent(cx, sc, hv),
             State::AuthKeyInit(hv) => {
-                let next = if allows(cx, SshAuthTypes::KEYBOARD)
+                let next = if allows(sc, SshAuthTypes::KEYBOARD)
                     && offers(&sc.authlist, b"keyboard-interactive")
                 {
                     State::AuthKey(hv)
@@ -1453,11 +1460,9 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         sc: &mut Ssh2Conn,
     ) -> Result<(), ErrorKind> {
-        let ssh = &cx.easy().options().ssh;
-        if !sc.session().has_knownhosts()
-            || ssh.host_key_md5.is_some()
-            || ssh.host_key_sha256.is_some()
-        {
+        let cold = sc.cold.clone();
+        let ssh = &super::setup(cold.as_deref()).host;
+        if !sc.session().has_knownhosts() || ssh.md5.is_some() || ssh.sha256.is_some() {
             return Ok(());
         }
         let file = copy(c_string(ssh.known_hosts.as_deref().unwrap_or_default()))?;
@@ -1568,17 +1573,14 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         sc: &mut Ssh2Conn,
     ) -> Result<HostVerified, Halt> {
-        let ssh = &cx.easy().options().ssh;
+        let cold = sc.cold.clone();
+        let ssh = &super::setup(cold.as_deref()).host;
         let sha256 = ssh
-            .host_key_sha256
+            .sha256
             .as_deref()
             .map(|w| copy(c_string(w)))
             .transpose()?;
-        let md5 = ssh
-            .host_key_md5
-            .as_deref()
-            .map(|w| copy(c_string(w)))
-            .transpose()?;
+        let md5 = ssh.md5.as_deref().map(|w| copy(c_string(w))).transpose()?;
         let denied = |cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn| {
             sc.to(cx, State::SessionFree);
             Err(Halt::Fail(ErrorKind::PeerFailedVerification))
@@ -1666,7 +1668,7 @@ impl Request {
             // As already matched, the known hosts are not checked.
             return Ok(verified);
         }
-        if let Some(handler) = cx.easy().options().ssh.host_key_handler.clone() {
+        if let Some(handler) = ssh.host_key_handler.clone() {
             let Some((key, kind)) = sc.session().host_key() else {
                 return denied(cx, sc);
             };
@@ -1697,7 +1699,8 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         sc: &mut Ssh2Conn,
     ) -> Result<HostVerified, Halt> {
-        let ssh = &cx.easy().options().ssh;
+        let cold = sc.cold.clone();
+        let ssh = &super::setup(cold.as_deref()).host;
         let Some(file) = ssh.known_hosts.as_deref() else {
             let verified = HostVerified::not_requested(ssh);
             trace::info(cx, format_args!("SSH: no knownhosts file configured"));
@@ -1706,7 +1709,7 @@ impl Request {
         let file = copy(c_string(file))?;
         let host = copy(self.base.peer().name())?;
         let port = self.base.peer().port();
-        let handler = cx.easy().options().ssh.key_handler.clone();
+        let handler = ssh.key_handler.clone();
         let mut check = Check::Failure;
         let mut keybit = None;
         let mut found_key = Vec::new();
@@ -2793,7 +2796,7 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified
 /// the server offers it.
 fn pkey_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) {
     sc.authed = false;
-    if allows(cx, SshAuthTypes::PUBLICKEY) && offers(&sc.authlist, b"publickey") {
+    if allows(sc, SshAuthTypes::PUBLICKEY) && offers(&sc.authlist, b"publickey") {
         let keys = sc.keys();
         let public = keys.and_then(|k| k.public.as_deref()).map(c_string);
         let private = keys.and_then(Keys::private).unwrap_or(b"(nil)");
@@ -2863,7 +2866,7 @@ fn auth_pass<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerifie
 /// `SSH_AUTH_AGENT_INIT`: the agent connected to, if the user may and
 /// the server takes public keys.
 fn agent_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn, hv: HostVerified) -> Ran {
-    if !(allows(cx, SshAuthTypes::AGENT) && offers(&sc.authlist, b"publickey")) {
+    if !(allows(sc, SshAuthTypes::AGENT) && offers(&sc.authlist, b"publickey")) {
         sc.to(cx, State::AuthKeyInit(hv));
         return Ok(());
     }

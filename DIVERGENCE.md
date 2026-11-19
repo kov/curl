@@ -947,6 +947,20 @@ so: weaknesses kept because C has them.
   `a_handle_being_cleaned_up_is_not_added_from_its_callback`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## Connections C reuses whatever they were set up with
+
+- **An SSH connection serves a transfer that asks for a host key check only if it was checked
+  as that transfer asks.** A connection's route keeps what its first transfer asked the
+  server's host key be checked against: the SHA-256 and MD5 fingerprints, the known-hosts
+  file and the key handlers. A later transfer that asks for any of them takes the connection
+  only if it was made with the same; otherwise a new connection is made and checked. One that
+  asks nothing takes any, as in C. C compares the key files alone (`ssh_config_matches`,
+  `lib/url.c`) and reuses the connection.
+  Handlers are the same where they are the same handler object: two easy handles given the
+  same C function each hold their own, and do not share connections when they set one. Pinned
+  by `a_connection_is_reused_only_where_its_host_key_was_checked_as_asked`
+  (`crates/curl-core/src/proto/ssh/tests.rs`).
+
 ## Residuals shared with C
 
 Weaknesses the rewrite has because C has them, kept to do what C does. Closing one would be a

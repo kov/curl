@@ -345,10 +345,10 @@ pub(crate) struct RouteCold {
     /// transfer reusing it must share (`Curl_ftp_conns_match`); none for
     /// another scheme's.
     pub(crate) ftp: Option<FtpSetup>,
-    /// The key files an SCP or SFTP connection logs in with, as its first
-    /// transfer found them, which a transfer reusing it must find the
-    /// same (`ssh_config_matches`); none for another scheme's.
-    pub(crate) ssh: Option<crate::proto::ssh::Keys>,
+    /// What an SCP or SFTP connection is set up with, as its first
+    /// transfer asked, which a transfer reusing it must ask
+    /// (`ssh_config_matches`); none for another scheme's.
+    pub(crate) ssh: Option<crate::proto::ssh::SshSetup>,
 }
 
 /// What an FTP connection logged in and set up with, beyond its
@@ -520,10 +520,10 @@ impl RouteCold {
             (Some(have), Some(want)) => have.serves(want, *use_ssl, *want_use_ssl),
             _ => true,
         };
-        // An SSH connection serves only a transfer that found the same key
-        // files, both having them (`ssh_config_matches`).
+        // An SSH connection serves only a transfer that would set it up
+        // the same way, both being SSH's (`ssh_config_matches`).
         let ssh_same = match (ssh, want_ssh) {
-            (Some(have), Some(want)) => have.same(want),
+            (Some(have), Some(want)) => have.serves(want),
             (have, want) => have.is_none() && want.is_none(),
         };
         // TLS made with every setting the transfer's has, or none on both
@@ -577,7 +577,7 @@ impl RouteCold {
             ftp: ftp.as_ref().map(FtpSetup::try_clone).transpose()?,
             ssh: ssh
                 .as_ref()
-                .map(crate::proto::ssh::Keys::try_clone)
+                .map(crate::proto::ssh::SshSetup::try_clone)
                 .transpose()?,
         })
     }

@@ -62,14 +62,12 @@ witness: curl-core proto::ssh::tests::a_directory_is_listed
         let link = attrs.permissions.is_some_and(|p| p & S_IFMT == 0);
 
 === a connection is reused whatever key files it was made with
-file: crates/curl-core/src/conn/mod.rs
+file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::a_connection_is_reused_only_with_the_same_key_files
 --- old
-        let ssh_same = match (ssh, want_ssh) {
-            (Some(have), Some(want)) => have.same(want),
+        keys.same(&want.keys) & host.serves(&want.host)
 --- new
-        let ssh_same = match (ssh, want_ssh) {
-            (Some(_), Some(_)) => true,
+        host.serves(&want.host)
 
 === the directories of an upload are made again for as long as the file is refused
 file: crates/curl-core/src/proto/ssh/mod.rs
@@ -221,17 +219,17 @@ witness: curl-core proto::ssh::tests::the_known_hosts_file_and_the_key_handler_d
 file: crates/curl-core/src/proto/ssh/hostkey.rs
 witness: curl-core proto::ssh::hostkey::tests::a_key_is_taken_unchecked_only_where_no_check_is_asked
 --- old
-            || ssh.known_hosts.is_some();
+        let asked = ask.sha256.is_some() || ask.md5.is_some() || ask.known_hosts.is_some();
 --- new
-            || ssh.known_hosts.is_none();
+        let asked = ask.sha256.is_some() || ask.md5.is_some() || ask.known_hosts.is_none();
 
 === a key is taken unchecked though a known-hosts file is set, end to end
 file: crates/curl-core/src/proto/ssh/hostkey.rs
 witness: curl-core proto::ssh::tests::the_known_hosts_file_and_the_key_handler_decide
 --- old
-            || ssh.known_hosts.is_some();
+        let asked = ask.sha256.is_some() || ask.md5.is_some() || ask.known_hosts.is_some();
 --- new
-            || ssh.known_hosts.is_none();
+        let asked = ask.sha256.is_some() || ask.md5.is_some() || ask.known_hosts.is_none();
 
 === a SHA-256 fingerprint is taken whatever comes after its first bytes
 file: crates/curl-core/src/proto/ssh/hostkey.rs
@@ -261,7 +259,7 @@ witness: curl-core proto::ssh::tests::a_failed_sftp_call_said_ok_still_fails
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
 --- old
-    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+    if keys(sc).is_some_and(|k| k.named) || !allows(sc, SshAuthTypes::AGENT) {
 --- new
     if true {
 
@@ -269,15 +267,15 @@ witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
 --- old
-    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+    if keys(sc).is_some_and(|k| k.named) || !allows(sc, SshAuthTypes::AGENT) {
 --- new
-    if !allows(cx, SshAuthTypes::AGENT) {
+    if !allows(sc, SshAuthTypes::AGENT) {
 
 === a guessed key file goes on to the agent the transfer does not allow
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::the_agent_follows_a_guessed_key_file_alone
 --- old
-    if keys(sc).is_some_and(|k| k.named) || !allows(cx, SshAuthTypes::AGENT) {
+    if keys(sc).is_some_and(|k| k.named) || !allows(sc, SshAuthTypes::AGENT) {
 --- new
     if keys(sc).is_some_and(|k| k.named) {
 
@@ -342,3 +340,11 @@ witness: curl-core proto::ssh::tests::a_done_stopped_by_the_progress_handler_clo
             _ => Rest::Owes(Owed::SshExchange),
 --- new
             _ => Rest::AtRest,
+
+=== an SSH connection whose host key was not checked serves a transfer that pins one
+file: crates/curl-core/src/proto/ssh/hostkey.rs
+witness: curl-core proto::ssh::tests::a_connection_is_reused_only_where_its_host_key_was_checked_as_asked
+--- old
+        want.nothing() || self == want
+--- new
+        true

@@ -17,6 +17,13 @@ step's status, in [`MILESTONES.md`](MILESTONES.md).
 We are not porting for fashion. The language is the point: it is meant to remove whole classes
 of the bugs this code has cost its users. Every rule below is that reason, applied.
 
+**The measure is fewer vulnerabilities than the C.** Memory safety removes one class; the rest
+of curl's advisories are logic, and Rust prevents those only where the code is shaped so the
+wrong program does not compile. When designing or reviewing, ask of each fact who owns it, what
+its absent value permits, and whether a later step can run without the check before it.
+[`HARDENING.md`](HARDENING.md) holds the patterns, with the types that close them, and the
+review method.
+
 **Keep `unsafe` minimal and wrapped.** Unsafe lives in named modules and nowhere else: the
 bindings to C libraries (TLS backends, compression, resolvers and the like), the socket and OS
 interfaces, and the C shim that exposes the libcurl ABI. Every unsafe block carries a `SAFETY:`
@@ -215,7 +222,9 @@ shim were deleted?** If the answer needs a C header to explain it, the translati
 shim.
 
 **Do what the C does.** Observable behaviour — the bytes on the wire and their order, what is
-traced, returned, reported and called back — follows the C unless the C's is a clear bug. Where
+traced, returned, reported and called back — follows the C unless the C's is a clear bug, and
+a security weakness is one: there the rewrite does the safe thing, as the owner decides each
+case (`HARDENING.md`, "Diverging from C for security"). Where
 compatibility and performance or efficiency pull apart, compatibility wins, and the faster way
 comes later as an addition or an opt-in. That choice is not a question for the user: take C's.
 A deliberate difference from C is recorded, with the test that pins it, in `DIVERGENCE.md`.
@@ -266,6 +275,9 @@ one will find it and the next regeneration eats it. Fix the generator or its inp
   heads `.cargo/mutants.toml`; a runaway mutant otherwise takes the session down). Not on every
   commit: their builds are slow. A survivor is code no test checks: add the test, or exclude the
   mutant in that config with a comment saying why it changes nothing observable.
+- **After each batch of upstream security reports, and at the end of a large piece of work, run
+  the two security reviews** in `HARDENING.md`: what would have prevented each report here, and
+  the idiom audit of the tree. A reviewer's finding is a hypothesis until re-read at its lines.
 - **An unrun test is absent, not passing.** A skipped test, a feature missing from the build or a
   test number not in the run all read as success. Read `runtests.pl`'s skipped line, and check
   the test ran on both legs.

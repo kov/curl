@@ -36,9 +36,9 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    BODY_HELD, ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, EarlyStart, Event,
-    Events, Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId,
-    SubmitFailed,
+    BODY_HELD, BodyRefused, ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed,
+    EarlyStart, Event, Events, Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError,
+    StreamEvent, StreamId, SubmitFailed,
 };
 use curl_core::time::Instant;
 use curl_core::tls::{DriveCall, QuicTls, TlsCx, TlsKind, TlsNative};
@@ -1494,12 +1494,12 @@ impl curl_core::http3::Connection for Connection {
         Ok(stream)
     }
 
-    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, OutOfMemory> {
+    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused> {
         // SAFETY: the state, between calls.
         let bodies = unsafe { &mut (*self.inner.ptr()).bodies };
-        body_of(bodies, stream.0)
+        Ok(body_of(bodies, stream.0)
             .expect("a body is written to a stream submitted with one")
-            .write(bytes)
+            .write(bytes)?)
     }
 
     fn end_body(&mut self, stream: StreamId) {

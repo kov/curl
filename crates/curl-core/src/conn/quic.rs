@@ -1113,10 +1113,8 @@ impl Quic {
         &mut self,
         stream: StreamId,
         bytes: &[u8],
-    ) -> Result<usize, ErrorKind> {
-        self.conn
-            .write_body(stream, bytes)
-            .map_err(|_| ErrorKind::OutOfMemory)
+    ) -> Result<usize, crate::http3::BodyRefused> {
+        self.conn.write_body(stream, bytes)
     }
 
     /// `stream`'s body ends after what it holds.

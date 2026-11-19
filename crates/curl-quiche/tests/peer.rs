@@ -17,8 +17,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant as StdInstant};
 
 use common::{Dir, Told, certs, flush, refs, request, run, take_one, with_client};
+use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    CloseError, CloseKind, Connection, Expiry, Layer, QuicError, StreamId, SubmitFailed,
+    BodyRefused, CloseError, CloseKind, Connection, Expiry, Layer, QuicError, StreamId,
+    SubmitFailed,
 };
 
 /// How the server answers.
@@ -42,6 +44,9 @@ struct Serve {
     cert: (&'static str, &'static str),
     /// How long each datagram it sends takes to arrive: the path's delay.
     delay: Duration,
+    /// It stops each request's body as it comes, with this error
+    /// (STOP_SENDING).
+    stop_sending: Option<u64>,
 }
 
 impl Default for Serve {
@@ -55,6 +60,7 @@ impl Default for Serve {
             close_with: None,
             cert: ("cert.pem", "key.pem"),
             delay: Duration::ZERO,
+            stop_sending: None,
         }
     }
 }
@@ -234,7 +240,10 @@ fn serve_on(
                 match h.poll(c) {
                     Ok((stream, quiche::h3::Event::Headers { more_frames, .. })) => {
                         seen.lock().unwrap().requests.push((stream, !more_frames));
-                        if more_frames {
+                        if let Some(code) = serve.stop_sending.filter(|_| more_frames) {
+                            c.stream_shutdown(stream, quiche::Shutdown::Read, code)
+                                .unwrap();
+                        } else if more_frames {
                             bodies.push((stream, Vec::new()));
                         } else {
                             respond(h, c, serve, stream, &mut sending);
@@ -490,6 +499,38 @@ fn an_upload_held_back_goes_on_as_packets_come() {
         conn.end_body(stream);
         run(conn, cx, over, told, |t| t.closed_streams.contains(&stream)).unwrap();
         assert!(server.seen().bodies == [upload.clone()], "the body whole");
+    });
+}
+
+/// An upload the peer stops (STOP_SENDING) is refused as quiche next
+/// refuses its bytes, not taken for one its flow control holds back and
+/// offered again for ever (`cf_quiche_send_body`).
+#[test]
+fn an_upload_the_peer_stops_is_refused() {
+    let serve = Serve {
+        stop_sending: Some(0x10c),
+        ..Serve::default()
+    };
+    let upload = vec![7u8; 4096];
+    let ((), _) = connected("stopped", serve, |conn, cx, over, server, told| {
+        let fields = request("POST", "/", server.addr);
+        let stream = conn.submit_request(&refs(&fields), true).unwrap();
+        let deadline = StdInstant::now() + Duration::from_secs(10);
+        let refused = loop {
+            assert!(StdInstant::now() < deadline, "the stopped upload goes on");
+            match conn.write_body(stream, &upload) {
+                Ok(_) => {
+                    flush(conn, cx, over, told).unwrap();
+                    take_one(conn, cx, over, told).unwrap();
+                }
+                Err(refused) => break refused,
+            }
+        };
+        assert!(
+            matches!(refused, BodyRefused::Other(_) | BodyRefused::StreamState),
+            "{refused:?}"
+        );
+        assert_ne!(refused.kind(), ErrorKind::OutOfMemory);
     });
 }
 

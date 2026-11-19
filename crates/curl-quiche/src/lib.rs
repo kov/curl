@@ -29,9 +29,9 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, EarlyStart, Event, Events,
-    Expiry, Flavour, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId,
-    SubmitFailed,
+    BodyRefused, ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, EarlyStart, Event,
+    Events, Expiry, Flavour, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent,
+    StreamId, SubmitFailed,
 };
 use curl_core::time::Instant;
 use curl_core::tls::{DriveCall, QuicTls, TlsCx, TlsKind, TlsNative};
@@ -1022,12 +1022,24 @@ impl curl_core::http3::Connection for Connection {
 
     /// What of `bytes` quiche takes of the body now: it holds them, none
     /// if its flow control holds the stream back (`cf_quiche_send_body`).
-    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, OutOfMemory> {
+    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused> {
+        use quiche::h3::Error as H;
         let quic = &mut *self.quic;
         let h3 = self.h3.as_mut().expect("bodies go once HTTP/3 is set up");
-        // A stream the peer stopped or reset takes nothing either: the
-        // peer's word for it comes as the connection next reads.
-        let n = quiet(|| h3.send_body(quic, quiche_id(stream), bytes, false)).unwrap_or_default();
+        // Only quiche's `Done`, or nothing taken, is its flow control
+        // holding the stream back; a stream the peer stopped or reset is
+        // refused, or the body would be offered again for ever.
+        let n = match quiet(|| h3.send_body(quic, quiche_id(stream), bytes, false)) {
+            Ok(n) => n,
+            Err(H::Done) => 0,
+            Err(H::TransportError(quiche::Error::InvalidStreamState(_))) => {
+                return Err(BodyRefused::StreamState);
+            }
+            Err(H::TransportError(quiche::Error::FinalSize)) => {
+                return Err(BodyRefused::FinalSize);
+            }
+            Err(e) => return Err(BodyRefused::Other(h3_code(e))),
+        };
         if n == 0 && !bytes.is_empty() {
             self.streams.block(stream);
         }

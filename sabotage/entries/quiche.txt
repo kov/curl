@@ -265,3 +265,12 @@ openssl-fork: quiche
         if tls.native().kind() != TlsKind::OpenSsl || tls.quiche().is_none() {
 --- new
         if tls.native().kind() != TlsKind::OpenSsl {
+
+=== a body quiche refuses is taken for one its flow control holds back
+file: crates/curl-quiche/src/lib.rs
+witness: curl-quiche an_upload_the_peer_stops_is_refused
+openssl-fork: quiche
+--- old
+            Err(e) => return Err(BodyRefused::Other(h3_code(e))),
+--- new
+            Err(_) => 0,

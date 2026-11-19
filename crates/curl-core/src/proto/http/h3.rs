@@ -517,7 +517,10 @@ impl Request {
                     }
                     let took = match quic.write_body(stream, &step.req.out[start..end]) {
                         Ok(took) => took,
-                        Err(kind) => break 'out Err(kind),
+                        Err(refused) => {
+                            refused_traced(&mut *step.cx, id, len, refused);
+                            break 'out Err(refused.kind());
+                        }
                     };
                     match step.flavour {
                         Flavour::Ngtcp2 => {
@@ -1318,4 +1321,34 @@ fn adjust_ideal<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &Quic, len: usize, 
             "[{id}] cf_send({len}), added {added}, inflight={in_flight}, {said} tx_win={ideal}"
         ),
     );
+}
+
+/// A body's bytes refused, said as C's quiche filter says it
+/// (`cf_quiche_send_body`).
+fn refused_traced<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    id: impl std::fmt::Display,
+    len: usize,
+    refused: crate::http3::BodyRefused,
+) {
+    use crate::http3::BodyRefused;
+    let h3 = Component::Http3;
+    match refused {
+        BodyRefused::StreamState => trace::of(
+            cx,
+            h3,
+            format_args!("[{id}] send_body(len={len}) -> invalid stream state"),
+        ),
+        BodyRefused::FinalSize => trace::of(
+            cx,
+            h3,
+            format_args!("[{id}] send_body(len={len}) -> exceeds size"),
+        ),
+        BodyRefused::Other(code) => trace::of(
+            cx,
+            h3,
+            format_args!("[{id}] send_body(len={len}) -> quiche err {code}"),
+        ),
+        BodyRefused::OutOfMemory => {}
+    }
 }

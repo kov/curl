@@ -630,7 +630,10 @@ pub trait Connection: fmt::Debug + Send {
     /// peer acknowledges them, as the HTTP/3 library points at them
     /// until then; it holds at most `BODY_HELD` of a stream's, as C's
     /// buffer does (`H3_STREAM_SEND_BUFFER_MAX`).
-    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, OutOfMemory>;
+    /// None taken is the peer's flow control holding the stream back; a
+    /// stream that takes no more is refused, never taken for one held
+    /// back.
+    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused>;
 
     /// The body of `stream` ends after what it holds.
     fn end_body(&mut self, stream: StreamId);
@@ -650,6 +653,37 @@ pub trait Connection: fmt::Debug + Send {
     /// Open `stream`'s receive window by `n`
     /// (`ngtcp2_conn_extend_max_stream_offset`).
     fn extend_stream_window(&mut self, stream: StreamId, n: u64);
+}
+
+/// Why a stream's body bytes were refused (`cf_quiche_send_body`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyRefused {
+    /// The stream is in no state to send: the peer stopped or reset it
+    /// (`QUICHE_H3_TRANSPORT_ERR_INVALID_STREAM_STATE`, `CURLE_HTTP3`).
+    StreamState,
+    /// More than the body's final size (`QUICHE_H3_TRANSPORT_ERR_FINAL_SIZE`).
+    FinalSize,
+    /// Any other refusal, with the library's code, the peer's
+    /// STOP_SENDING among them.
+    Other(i32),
+    OutOfMemory,
+}
+
+impl BodyRefused {
+    /// What the transfer fails with.
+    pub fn kind(self) -> ErrorKind {
+        match self {
+            BodyRefused::StreamState => ErrorKind::Http3,
+            BodyRefused::FinalSize | BodyRefused::Other(_) => ErrorKind::SendError,
+            BodyRefused::OutOfMemory => ErrorKind::OutOfMemory,
+        }
+    }
+}
+
+impl From<OutOfMemory> for BodyRefused {
+    fn from(_: OutOfMemory) -> BodyRefused {
+        BodyRefused::OutOfMemory
+    }
 }
 
 /// Why a request could not be submitted (`h3_stream_open`).

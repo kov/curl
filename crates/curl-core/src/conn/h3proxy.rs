@@ -657,7 +657,7 @@ impl H3Proxy {
         };
         let took = match self.quic.write_body(stream, bytes) {
             Ok(took) => took,
-            Err(kind) => return (self.send_ended(cx, socket, Err(kind)), 0),
+            Err(refused) => return (self.send_ended(cx, socket, Err(refused.kind())), 0),
         };
         let (id, len) = (stream.0, bytes.len());
         let code = if took == 0 && len > 0 {

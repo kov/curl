@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
-use curl_alloc::OutOfMemory;
+use crate::http3::BodyRefused;
 
 use super::{
     ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, Connection, EarlyStart, Event,
@@ -807,7 +807,7 @@ impl Connection for FakeConnection {
         Ok(StreamId(id))
     }
 
-    fn write_body(&mut self, _stream: StreamId, bytes: &[u8]) -> Result<usize, OutOfMemory> {
+    fn write_body(&mut self, _stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused> {
         let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         let b = &mut s.body;
         let room = b

@@ -398,7 +398,14 @@ impl Layer for TlsLayer {
             return Ok(Sent::Bytes(skip.expect("a send has bytes")));
         }
         let (session, mut io) = self.parts(cx, below);
-        match (session.send(&mut io, &bytes[skipped..]), skip) {
+        let given = &bytes[skipped..];
+        match (session.send(&mut io, given), skip) {
+            // A count past what it was given is the library's, or its
+            // binding's, broken word: a caller advancing by it would read
+            // past its buffer. Refused, never clamped.
+            (Ok(Sent::Bytes(n)), _) if n.get() > given.len() => Err(io::Error::other(
+                "the TLS library said it sent more than it was given",
+            )),
             (Ok(Sent::Bytes(n)), _) => Ok(Sent::Bytes(n.saturating_add(skipped))),
             (Ok(Sent::WouldBlock), Some(skip)) => Ok(Sent::Bytes(skip)),
             (sent, _) => sent,

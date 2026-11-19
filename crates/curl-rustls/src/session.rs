@@ -637,6 +637,17 @@ impl<G: Rustls> Session<G> {
         let mut buf = plain;
         if self.plain_out_buffered > 0 {
             let buffered = self.plain_out_buffered;
+            // The library took these bytes already; a retry with fewer
+            // cannot have them counted as sent.
+            if len < buffered {
+                return Err(io.fail(
+                    ErrorKind::BadFunctionArgument,
+                    format_args!(
+                        "rustls: send retried with less data ({len}) than the \
+                         {buffered} bytes already buffered"
+                    ),
+                ));
+            }
             let r = self.flush_out(io);
             let code = match &r {
                 Ok(Flushed::Again) => crate::library::AGAIN,
@@ -648,7 +659,7 @@ impl<G: Rustls> Session<G> {
             if r? == Flushed::Again {
                 return Ok((Flushed::Again, 0));
             }
-            buf = buf.get(buffered..).unwrap_or_default();
+            buf = &buf[buffered..];
             written += buffered;
             self.plain_out_buffered = 0;
         }

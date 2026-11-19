@@ -104,6 +104,9 @@ pub struct FakeTls {
     /// (`input_pending`): from a read that gave bytes until one that
     /// gives none.
     sticky: bool,
+    /// Each session says a send took a byte more than it was given, as
+    /// a library breaking its contract would.
+    oversends: bool,
 }
 
 /// When a fake QUIC session gives its ticket to keep: as its handshake
@@ -287,6 +290,7 @@ impl FakeTls {
             support: SUPPORT,
             record_wait: crate::tls::RecordWait::Plain,
             sticky: false,
+            oversends: false,
         })
     }
 
@@ -296,6 +300,15 @@ impl FakeTls {
     pub fn sticky_pending() -> Result<FakeTls, OutOfMemory> {
         Ok(FakeTls {
             sticky: true,
+            ..FakeTls::new()?
+        })
+    }
+
+    /// The same, each session saying a send took a byte more than it was
+    /// given.
+    pub fn oversending() -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            oversends: true,
             ..FakeTls::new()?
         })
     }
@@ -598,6 +611,7 @@ impl TlsBackend for FakeTls {
             body_read: 0,
             plain: 0..0,
             sticky: self.sticky,
+            oversends: self.oversends,
             fed: false,
             peer_closed: false,
             out: [0; HEADER + RECORD],
@@ -670,6 +684,8 @@ struct FakeSession {
     plain: std::ops::Range<usize>,
     /// It says input may be pending while `fed` (`input_pending`).
     sticky: bool,
+    /// It says a send took a byte more than it was given.
+    oversends: bool,
     /// Its last read gave bytes.
     fed: bool,
     /// The peer said goodbye.
@@ -1062,6 +1078,9 @@ impl FakeSession {
             Flushed::Done => TlsWait::Nothing,
             Flushed::Blocked => TlsWait::Send,
         };
+        if self.oversends {
+            return Ok(Sent::Bytes(n.saturating_add(1)));
+        }
         Ok(Sent::Bytes(n))
     }
 

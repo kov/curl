@@ -1012,9 +1012,10 @@ fn sends_are_c_s() {
     ));
 }
 
-/// A send whose blocked bytes are more than it has counts them all.
+/// A send given fewer bytes than its blocked one took is refused, in
+/// C's words: none of it is counted as sent.
 #[test]
-fn a_shorter_send_after_a_block_counts_what_was_taken() {
+fn a_shorter_send_after_a_block_is_refused() {
     let lib = Fake::new(World::one_round());
     let id = plain();
     let mut s = session(lib, &id, Alpn::None);
@@ -1034,8 +1035,16 @@ fn a_shorter_send_after_a_block_counts_what_was_taken() {
     assert_eq!(sent.unwrap(), Sent::WouldBlock);
     let wire = Wire::default();
     let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"abc"));
-    assert_eq!(sent.unwrap(), Sent::Bytes(6.try_into().unwrap()));
+    assert!(sent.is_err(), "{sent:?}");
+    assert!(has(
+        &kept.notes.0,
+        "fail: BadFunctionArgument: rustls: send retried with less data (3) than the 6 bytes \
+         already buffered"
+    ));
     assert_eq!(lib.w().made("write(").len(), 1);
+    // The same bytes again are sent.
+    let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"abcdef"));
+    assert_eq!(sent.unwrap(), Sent::Bytes(6.try_into().unwrap()));
 }
 
 /// The goodbye sends the close_notify once, unless only the peer's is

@@ -456,7 +456,12 @@ pub trait TlsSession: Send {
     /// the peer sent.
     fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv>;
 
-    /// Send from `bytes`, which is not empty.
+    /// Send from `bytes`, which is not empty: how many of them went,
+    /// never more than their length (a larger count is refused as a
+    /// failure). A library that took bytes on a send that would block
+    /// counts them on the next, which the caller makes with the same
+    /// bytes first; given fewer, it refuses (`BadFunctionArgument`), never
+    /// counting them as sent from a buffer that does not hold them.
     fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent>;
 
     /// Move the goodbye on: the peer's close_notify read for, and ours

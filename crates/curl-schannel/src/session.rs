@@ -1213,8 +1213,20 @@ impl TlsSession for Session {
         }
         if let Some((_, _, plain)) = self.sending {
             // A record not sent whole goes first: it holds the first
-            // bytes of these, which the caller gives again.
-            assert!(plain <= bytes.len(), "a record's bytes are given again");
+            // bytes of these, which the caller gives again. A retry with
+            // fewer is the caller's error, refused as mbedTLS's is: the
+            // record's bytes cannot be counted as sent from it.
+            if plain > bytes.len() {
+                let len = bytes.len();
+                io.fail(
+                    ErrorKind::BadFunctionArgument,
+                    format_args!(
+                        "schannel: send retried with less data ({len}) than the {plain} bytes \
+                         already encrypted"
+                    ),
+                );
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
             if !self.flush_record(io)? {
                 return Ok(Sent::WouldBlock);
             }

@@ -32,9 +32,9 @@ witness: curl-rustls tests::reads_are_c_s
 file: crates/curl-rustls/src/session.rs
 witness: curl-rustls tests::sends_are_c_s
 --- old
-            buf = buf.get(buffered..).unwrap_or_default();
+            buf = &buf[buffered..];
 --- new
-            buf = buf.get(0..).unwrap_or_default();
+            buf = &buf[0..];
 
 === the goodbye sends a close_notify where only the peer's is waited for
 file: crates/curl-rustls/src/session.rs
@@ -93,3 +93,11 @@ witness: curl-rustls tests::the_versions_are_c_s
 --- new
             TlsMaxVersion::Tls1_2 => len = 1,
 
+
+=== a send retried with fewer bytes than rustls took counts them as sent
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::a_shorter_send_after_a_block_is_refused
+--- old
+            if len < buffered {
+--- new
+            if len < buffered && false {

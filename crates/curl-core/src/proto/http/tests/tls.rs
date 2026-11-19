@@ -1619,6 +1619,30 @@ fn only_connecting(libraries: &SharedLibraries) -> Easy {
     e
 }
 
+/// A TLS library that says a send took more than it was given is
+/// refused, never believed: the application advancing by the count would
+/// read past its buffer.
+#[test]
+fn a_send_said_to_take_more_than_it_was_given_fails() {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::oversending().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let talk = answering(1).remove(0);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let id = m
+        .add(Box::new(only_connecting(&libraries)), (), &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let sent = m.send_raw(id, b"x", &mut |_, _| {});
+    assert!(matches!(sent, Some(Err(_))), "{sent:?}");
+}
+
 /// A library giving its ticket as TLS 1.3's comes.
 fn ticketing_late() -> (&'static FakeTls, SharedLibraries) {
     let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing_late().unwrap()));

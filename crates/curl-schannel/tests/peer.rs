@@ -304,6 +304,46 @@ fn a_record_half_sent_is_waited_for_by_the_multi() {
     assert!(spun < waits, "{spun} of {waits} waits tried again in place");
 }
 
+/// A send retried after one that left its record half sent, with fewer
+/// bytes than the record holds, is refused in the session's words and
+/// fails: the record's bytes cannot be counted as sent from the shorter
+/// buffer, and the process is not taken down.
+#[test]
+fn a_shorter_send_after_a_record_half_sent_is_refused() {
+    let (at, server) = serve();
+    let seen = Arc::new(Seen::default());
+    let env = Env {
+        clock: try_box(SystemClock::new()).unwrap(),
+        net: try_box(Choppy(SystemNet::default(), seen.clone())).unwrap(),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::with_env(env).unwrap();
+    let mut easy = Easy::new();
+    easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
+    let o = easy.options_mut();
+    let url = format!("https://localhost:{}/", at.port());
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.ip_version = IpVersion::V4;
+    o.tls.verify_peer = false;
+    o.tls.verify_host = false;
+    o.connect_only = curl_core::options::ConnectOnly::Yes;
+    let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();
+    let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok::<(), ErrorKind>(()));
+    let big = vec![b'a'; 10_000];
+    let sent = m.send_raw(id, &big, &mut |_, _| {});
+    assert!(
+        matches!(sent, Some(Ok(curl_core::multi::RawIo::WouldBlock))),
+        "{sent:?}"
+    );
+    assert_eq!(seen.blocked_mid_record.load(Ordering::Relaxed), 1);
+    let sent = m.send_raw(id, b"x", &mut |_, _| {});
+    assert_eq!(sent, Some(Err(ErrorKind::SendError)));
+    drop(m);
+    server.join().unwrap();
+}
+
 /// The host is checked against the certificate's names, a name with a
 /// zero byte in it matched in no part: its certificate, whose common name
 /// is the host's and whose alternative name is `localhost`, a zero byte

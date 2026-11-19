@@ -767,3 +767,11 @@ witness: curl-core conn::tls::tests::other_bytes_than_went_early_are_refused
             if bytes[..n] != left[..n] {
 --- new
             if false {
+
+=== a TLS library's count of bytes sent past what it was given is believed
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::a_send_said_to_take_more_than_it_was_given_fails
+--- old
+            (Ok(Sent::Bytes(n)), _) if n.get() > given.len() => Err(io::Error::other(
+--- new
+            (Ok(Sent::Bytes(n)), _) if n.get() > given.len() + 1 => Err(io::Error::other(

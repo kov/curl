@@ -72,6 +72,52 @@ So:
 - a requirement the connection did not meet (a host key check, a login method) gets a new
   connection, even where C reuses.
 
+The same holds for every cache shared between transfers: whatever shaped a cached CA store,
+TLS session or pooled connection is part of what the cache is keyed and compared by, or the
+entry is that transfer's alone.
+
+### What the application gave is taken where C reads it
+
+The application may set an option from any of its callbacks, and the engine runs callbacks in
+the middle of a protocol's exchange. A step that finds a value by its place in the live options
+after a callback ran (the next recipient, the next quote command, the cookie string) reads a
+list the callback may have emptied or replaced: an `expect` that aborts, or a command applied to
+another command's arguments. Take the value where C reads it, shared rather than copied, and
+have every later step read what was taken: SMTP's recipients at DO, FTP's postquote list as DONE
+starts, an SFTP quote run's list as it starts (`QuoteRun`), the cookie string before the jar is
+traced. Where C reads live at each step, read live, and let a missing entry end the list.
+
+### A callback reaches only what it was lent
+
+Every call into application code either lends the callback a frame through which its calls
+reach the transfer, or lends nothing, and then the gate refuses what would reach a borrowed
+handle or a held multi (`CURLE_RECURSIVE_API_CALL`), never panics on the borrow. An easy call
+reaches a multi's core only counted as a call on it (`MultiStack::hold`), so a callback inside
+it cannot take the core a second time; the uncounted reach is private to the gate.
+
+### A call that blocks says what it took
+
+A send that would block after the library took some bytes leaves the caller an unstated duty:
+give the same bytes again. A shorter retry made rustls count bytes the caller no longer held,
+and Schannel abort. A call that blocks either takes nothing or reports what it took; where a
+library keeps the duty, it refuses a retry that breaks it, and the core refuses a count larger
+than the bytes it handed down (`TlsLayer::send`).
+
+### Foreign errors are typed, not defaulted
+
+`unwrap_or_default()`, `.ok()` and `Err(_) => {}` on a foreign library's result turn a refusal
+into a value that means something else: quiche's "stream stopped" became "nothing taken", and an
+upload was offered again for ever. A binding returns the library's answer as an enum the caller
+must match (`BodyRefused`).
+
+### An unsafe module's safe surface is sound in any order
+
+A safe function in an unsafe module must stay sound whatever the caller does before and after.
+No reference into an object lives across a foreign call whose callback writes that object
+through its own pointer; such an object lives behind that one pointer and is borrowed only
+between calls (c-ares's `Answers`). A precondition on call order or on a library's lifetime is
+an `unsafe fn` or a type, not a sentence in a `SAFETY:` comment no test checks.
+
 ### Lengths come from the thing they measure
 
 A size kept beside the bytes it measures drifts from them: a converted upload announced with its
@@ -146,10 +192,15 @@ Sweep the tree for the patterns above, without waiting for a report:
 - `Option` fields and parameters whose `None` is a policy, sentinels compared with `0` or `-1`;
 - `bool` parameters and fields at decision points;
 - options read from `Options` during connection set-up or in a protocol's connection state;
+- options read by index, or read again, after a step that runs a callback;
 - `assert!`, `expect`, `unreachable!` and indexing in modules that peer input reaches;
 - flags set by `mark_*` at one site and read at another;
 - two fields or containers that hold one fact;
-- `as` casts on lengths and offsets; `let _ =` on a `Result`;
+- `as` casts on lengths and offsets; `let _ =`, `.ok()`, `unwrap_or_default()` and
+  `Err(_) => {}` on a `Result`, a foreign library's above all;
+- a `RefCell` borrow, or a `&mut` into the core, held across a call into application code;
+- a reference held across a foreign call that may call back;
+- a call that may block after taking input, and what it asks of the caller's retry;
 - comments that claim a property a test does not check.
 
 Include a critique of what the last round landed: each fix is a new design, and its gaps are the

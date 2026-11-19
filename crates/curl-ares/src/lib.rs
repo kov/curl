@@ -6,6 +6,7 @@
 mod sys;
 
 use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ptr::NonNull;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Once;
@@ -102,7 +103,11 @@ struct Answers {
 #[derive(Debug)]
 struct Resolving {
     channel: *mut sys::Channel,
-    answers: Box<Answers>,
+    /// The callbacks' data, made by `Box::into_raw` and freed as this
+    /// goes: c-ares's callbacks write to it through this same pointer,
+    /// inside calls made from here, so no borrow of it (`answers`,
+    /// `answers_mut`) lives across a call into c-ares.
+    answers: NonNull<Answers>,
     wants: Vec<(Box<dyn Socket>, Events)>,
 }
 
@@ -113,8 +118,8 @@ unsafe impl Send for Resolving {}
 /// The callback's data, `arg`, as the answers it is.
 ///
 /// # Safety
-/// `arg` is the `Answers` of a live `Resolving`, not otherwise borrowed while
-/// c-ares runs, which it is only called from `&mut self`.
+/// `arg` is the `Answers` of a live `Resolving`, which holds no borrow of
+/// them across a call into c-ares, the only place a callback runs.
 unsafe fn answers<'a>(arg: *mut c_void) -> &'a mut Answers {
     // SAFETY: as this function requires.
     unsafe { &mut *arg.cast::<Answers>() }
@@ -319,7 +324,7 @@ fn c_text(text: &[u8], why: &'static str) -> Result<Vec<u8>, DnsRefused> {
 
 impl Resolving {
     fn new(closed: &SocketsClosed) -> Result<Resolving, DnsRefused> {
-        let mut answers = try_box(Answers {
+        let answers = try_box(Answers {
             ongoing: 0,
             a_answered: false,
             aaaa_answered: false,
@@ -335,11 +340,17 @@ impl Resolving {
             closed: closed.clone(),
         })
         .map_err(|OutOfMemory| DnsRefused::OutOfMemory)?;
+        let answers = NonNull::from(Box::leak(answers));
+        // Freed with the channel's resolve, or here if there is none.
+        let free = || {
+            // SAFETY: made by the leak above, and no channel calls back.
+            drop(unsafe { Box::from_raw(answers.as_ptr()) });
+        };
         // SAFETY: all zeroes is valid for each field of the options; only the
         // callback's, set below, is read, as the mask says.
         let mut options: sys::Options = unsafe { core::mem::zeroed() };
         options.sock_state_cb = Some(socket_state);
-        options.sock_state_cb_data = (&raw mut *answers).cast();
+        options.sock_state_cb_data = answers.as_ptr().cast();
         let mut channel = core::ptr::null_mut();
         // SAFETY: the out pointer and the options are valid for the call.
         let status = unsafe {
@@ -351,9 +362,28 @@ impl Resolving {
                 answers,
                 wants: Vec::new(),
             }),
-            sys::ENOMEM => Err(DnsRefused::OutOfMemory),
-            _ => Err(DnsRefused::Init),
+            sys::ENOMEM => {
+                free();
+                Err(DnsRefused::OutOfMemory)
+            }
+            _ => {
+                free();
+                Err(DnsRefused::Init)
+            }
         }
+    }
+
+    /// The answers, between calls into c-ares.
+    fn answers(&self) -> &Answers {
+        // SAFETY: ours until this goes; callbacks write to them only inside
+        // calls into c-ares, which `&self` does not make while this lives.
+        unsafe { self.answers.as_ref() }
+    }
+
+    /// The same, to change, never across a call into c-ares.
+    fn answers_mut(&mut self) -> &mut Answers {
+        // SAFETY: as `answers`; `&mut self` makes no call while this lives.
+        unsafe { self.answers.as_mut() }
     }
 
     /// `async_ares_init`'s settings: servers, interface, local addresses.
@@ -417,7 +447,7 @@ impl Resolving {
     fn ask(&mut self, ask: &DnsAsk<'_>, say: &mut DnsSay<'_>) -> Result<(), DnsRefused> {
         let name = c_text(ask.name, "bad name")?;
         let oom = |OutOfMemory| DnsRefused::OutOfMemory;
-        let arg: *mut c_void = (&raw mut *self.answers).cast();
+        let arg: *mut c_void = self.answers.as_ptr().cast();
         let Some(family) = ask.family else {
             // An HTTPS record, named by its port off HTTPS's.
             let mut qname = Vec::new();
@@ -430,8 +460,8 @@ impl Resolving {
             qname.try_extend_from_slice(ask.name).map_err(oom)?;
             say(&[b"[HTTPS] ares: query records for ", &qname]);
             let qname = c_text(&qname, "bad name")?;
-            self.answers.https = true;
-            self.answers.ongoing += 1;
+            self.answers_mut().https = true;
+            self.answers_mut().ongoing += 1;
             // SAFETY: the channel is ours, the name ends in its NUL, and the
             // answers outlive the channel.
             unsafe {
@@ -453,19 +483,22 @@ impl Resolving {
         } else {
             sys::SOCK_DGRAM
         };
-        let query = |pf: c_int, callback: sys::AddrinfoCb, answers: &mut Answers| {
+        let channel = self.channel;
+        // The query is counted before it is made, by the caller: its
+        // callback may run inside the call, for a name c-ares knows.
+        let query = |pf: c_int, callback: sys::AddrinfoCb| {
             let hints = sys::Hints {
                 ai_flags: sys::AI_NUMERICSERV,
                 ai_family: pf,
                 ai_socktype: socktype,
                 ai_protocol: 0,
             };
-            answers.ongoing += 1;
             // SAFETY: the channel is ours, the texts end in their NULs, c-ares
-            // copies them and the hints, and the answers outlive the channel.
+            // copies them and the hints, and the answers outlive the channel,
+            // borrowed by nothing while it runs.
             unsafe {
                 sys::ares_getaddrinfo(
-                    self.channel,
+                    channel,
                     name.as_ptr().cast::<c_char>(),
                     service.as_ptr().cast::<c_char>(),
                     &raw const hints,
@@ -476,13 +509,17 @@ impl Resolving {
         };
         if matches!(family, Family::Any | Family::V6) {
             say(&[b"[AAAA] ares: query records for ", ask.name]);
-            self.answers.asked_v6 = true;
-            query(sys::AF_INET6, v6_done, &mut self.answers);
+            let a = self.answers_mut();
+            a.asked_v6 = true;
+            a.ongoing += 1;
+            query(sys::AF_INET6, v6_done);
         }
         if matches!(family, Family::Any | Family::V4) {
             say(&[b"[A] ares: query records for ", ask.name]);
-            self.answers.asked_v4 = true;
-            query(sys::AF_INET, v4_done, &mut self.answers);
+            let a = self.answers_mut();
+            a.asked_v4 = true;
+            a.ongoing += 1;
+            query(sys::AF_INET, v4_done);
         }
         Ok(())
     }
@@ -523,7 +560,7 @@ impl Resolving {
                 Some(at) => self.wants.swap(kept, kept + at),
                 None => {
                     let Ok(socket) = try_box(FdSocket(fd)) else {
-                        self.answers.failed = Some(DnsRefused::OutOfMemory);
+                        self.answers_mut().failed = Some(DnsRefused::OutOfMemory);
                         return;
                     };
                     if self
@@ -531,7 +568,7 @@ impl Resolving {
                         .try_push((socket as Box<dyn Socket>, events))
                         .is_err()
                     {
-                        self.answers.failed = Some(DnsRefused::OutOfMemory);
+                        self.answers_mut().failed = Some(DnsRefused::OutOfMemory);
                         return;
                     }
                     let last = self.wants.len() - 1;
@@ -579,6 +616,9 @@ impl Drop for Resolving {
         // SAFETY: the channel is ours and goes here; its callbacks, told it
         // goes, still find the answers.
         unsafe { sys::ares_destroy(self.channel) };
+        // SAFETY: made by `Box::leak` in `new`; with the channel gone, no
+        // callback reaches them.
+        drop(unsafe { Box::from_raw(self.answers.as_ptr()) });
     }
 }
 
@@ -636,7 +676,7 @@ impl DnsResolve for Resolving {
             }
         }
         self.refresh();
-        match self.answers.failed {
+        match self.answers().failed {
             Some(DnsRefused::OutOfMemory) => Err(OutOfMemory),
             _ => Ok(()),
         }
@@ -668,7 +708,7 @@ impl DnsResolve for Resolving {
     }
 
     fn partial(&self) -> Result<Partial, OutOfMemory> {
-        let a = &self.answers;
+        let a = self.answers();
         let mut addrs = Vec::new();
         addrs.try_extend_from_slice(&a.v6)?;
         addrs.try_extend_from_slice(&a.v4)?;
@@ -680,7 +720,7 @@ impl DnsResolve for Resolving {
     }
 
     fn ongoing(&self) -> (u32, &'static str) {
-        let a = &self.answers;
+        let a = self.answers();
         // `Curl_resolv_query_str`.
         let responses = match (a.a_answered, a.aaaa_answered) {
             (false, false) => "-",
@@ -692,7 +732,7 @@ impl DnsResolve for Resolving {
     }
 
     fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
-        let a = &mut *self.answers;
+        let a = self.answers_mut();
         if a.ongoing > 0 {
             return None;
         }
@@ -715,7 +755,7 @@ impl DnsResolve for Resolving {
     }
 
     fn record(&mut self) -> Option<RecordAnswer> {
-        let a = &mut *self.answers;
+        let a = self.answers_mut();
         if a.ongoing > 0 {
             return None;
         }
@@ -733,7 +773,7 @@ impl DnsResolve for Resolving {
     }
 
     fn explain(&self) -> Option<&'static str> {
-        let status = self.answers.status;
+        let status = self.answers().status;
         if status == sys::SUCCESS {
             return None;
         }
@@ -744,7 +784,7 @@ impl DnsResolve for Resolving {
     }
 
     fn status(&self) -> i32 {
-        self.answers.status
+        self.answers().status
     }
 }
 
@@ -834,8 +874,8 @@ mod tests {
     fn a_socket_with_nothing_to_wait_for_is_told_to_close() {
         library_init();
         let closed = SocketsClosed::new().unwrap();
-        let mut r = Resolving::new(&closed).unwrap();
-        let arg: *mut core::ffi::c_void = (&raw mut *r.answers).cast();
+        let r = Resolving::new(&closed).unwrap();
+        let arg: *mut core::ffi::c_void = r.answers.as_ptr().cast();
         // SAFETY: `arg` is this resolve's answers, borrowed by nothing here.
         unsafe { socket_state(arg, 7, 1, 0) };
         assert!(closed.take().is_empty(), "it still waits");
@@ -856,8 +896,8 @@ mod tests {
             (false, true, "AAAA"),
             (true, true, "A+AAAA"),
         ] {
-            r.answers.a_answered = a;
-            r.answers.aaaa_answered = aaaa;
+            r.answers_mut().a_answered = a;
+            r.answers_mut().aaaa_answered = aaaa;
             assert_eq!(super::DnsResolve::ongoing(&r).1, named);
         }
     }

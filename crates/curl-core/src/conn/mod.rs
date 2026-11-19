@@ -1027,7 +1027,9 @@ struct ProxyCold {
 /// The user and password a proxy is given, and the service it is
 /// authenticated as, each empty for none (C's `http_proxy.creds`, its
 /// `sasl_service` from `CURLOPT_PROXY_SERVICE_NAME`).
-#[derive(Debug, PartialEq, Eq)]
+/// No `==` outside tests: compared as secrets (`same_creds`).
+#[derive(Debug)]
+#[cfg_attr(any(test, feature = "test-util"), derive(PartialEq, Eq))]
 pub(crate) struct ProxyCreds {
     pub(crate) user: Vec<u8>,
     pub(crate) password: Vec<u8>,
@@ -1043,13 +1045,47 @@ impl ProxyCreds {
 
 /// What of a route's proxy a connection must share to serve another
 /// transfer (`proxy_info_matches`, `origin_is_proxy`).
-#[derive(PartialEq)]
 struct ProxyKey<'a> {
     kind: ProxyType,
     peer: Destination<'a>,
     creds: Option<&'a ProxyCreds>,
     forward: bool,
     pre: Option<(ProxyType, Destination<'a>, Option<&'a ProxyCreds>)>,
+}
+
+/// Compared by hand, every field by name: the credentials as secrets, in
+/// the same time whatever their bytes, as C's `Curl_timestrcmp` does.
+impl PartialEq for ProxyKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        let ProxyKey {
+            kind,
+            peer,
+            creds,
+            forward,
+            pre,
+        } = self;
+        let pre_same = match (pre, &other.pre) {
+            (None, None) => true,
+            (Some((kind, peer, creds)), Some((other_kind, other_peer, other_creds))) => {
+                kind == other_kind && peer == other_peer && same_creds(*creds, *other_creds)
+            }
+            _ => false,
+        };
+        *kind == other.kind
+            && *peer == other.peer
+            && *forward == other.forward
+            && same_creds(*creds, other.creds)
+            && pre_same
+    }
+}
+
+/// Two proxies' credentials, each part compared as a secret.
+fn same_creds(a: Option<&ProxyCreds>, b: Option<&ProxyCreds>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.secret().same(&b.secret()),
+        _ => false,
+    }
 }
 
 impl ProxyRoute {
@@ -3320,6 +3356,27 @@ mod tests {
         assert!(!socks.serves(&behind(ProxyType::Socks5, b"other.example"), None));
         assert!(!socks.serves(&behind(ProxyType::Socks4, b"socks.example"), None));
         assert!(!socks.serves(&route, None) && !route.serves(&socks, None));
+        // The SOCKS proxy's credentials, compared as the HTTP proxy's are.
+        let behind_as = |user: &[u8]| match via_proxy(b"proxy.example", None, true) {
+            Route::Net(mut tcp) => {
+                let creds = ProxyCreds {
+                    user: user.to_vec(),
+                    password: b"secret".to_vec(),
+                    service: Vec::new(),
+                };
+                let pre = PreProxy {
+                    kind: ProxyType::Socks5,
+                    peer: TryArc::try_new(peer(b"socks.example", 1080, None)).unwrap(),
+                    creds: Some(TryArc::try_new(creds).unwrap()),
+                };
+                tcp.proxy = tcp.proxy.map(|p| p.behind(pre).unwrap());
+                Route::Net(tcp)
+            }
+            Route::Local => unreachable!(),
+        };
+        assert!(behind_as(b"u").serves(&behind_as(b"u"), None));
+        assert!(!behind_as(b"u").serves(&behind_as(b"v"), None));
+        assert!(!behind_as(b"u").serves(&socks, None) && !socks.serves(&behind_as(b"u"), None));
     }
 
     /// unit2413: peers made from a host as `Curl_peer_create` makes them,

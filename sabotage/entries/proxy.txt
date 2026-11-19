@@ -1072,3 +1072,12 @@ witness: curl-core proto::http::tests::a_connection_is_reused_only_by_a_transfer
             && haproxy == want_haproxy
 --- new
             && true
+
+=== a connection behind a SOCKS proxy serves a transfer with other SOCKS credentials
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::proxied_routes_match_as_c
+features: test-util
+--- old
+                kind == other_kind && peer == other_peer && same_creds(*creds, *other_creds)
+--- new
+                kind == other_kind && peer == other_peer

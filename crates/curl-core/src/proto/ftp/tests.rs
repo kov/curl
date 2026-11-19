@@ -499,6 +499,50 @@ fn commands_after_the_transfer_cleared_by_a_callback_are_still_sent() {
     );
 }
 
+/// Sets the transfer's commands after it as the transfer's command is
+/// answered, as an application's header callback may.
+struct SetsPostquote;
+
+impl crate::handler::HeaderHandler for SetsPostquote {
+    fn header(
+        &self,
+        cx: &mut crate::handler::WriteCx<'_>,
+        line: &[u8],
+        _: crate::handler::HeaderOrigin,
+    ) -> Write {
+        if line.starts_with(b"150 ") {
+            let me = cx.me();
+            let o = cx.options_mut(me).unwrap();
+            o.line
+                .make_mut()
+                .unwrap()
+                .postquote
+                .set([&b"NOOP"[..]])
+                .unwrap();
+        }
+        Write::Took(line.len())
+    }
+}
+
+/// The commands after the transfer are read as DONE starts sending them
+/// (`ftp_done`): a list a callback set during the transfer is sent.
+#[test]
+fn commands_after_the_transfer_set_during_it_are_sent() {
+    let talk = control(&[b"150 here\r\n226 done\r\n", b"200 noop\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.callbacks.header = Some(Handler::header(SetsPostquote).unwrap());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert!(
+        received(&talk).ends_with("RETR f\r\nNOOP\r\n"),
+        "{}",
+        received(&talk)
+    );
+}
+
 /// DONE reads the control connection once before it first waits for the
 /// answer, as the line that ended the last reply is still held
 /// (`getftpresponse`), so a server yet to answer shows as a read that

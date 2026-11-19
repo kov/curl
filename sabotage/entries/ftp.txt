@@ -771,3 +771,21 @@ features: test-util,debug-hooks
                 TimeLeft::Remaining(left) => self.data_due = Some(cx.now().after(left)),
 --- new
                 TimeLeft::Remaining(_) => self.data_due = Some(cx.now()),
+
+=== the commands after the transfer are taken as the request is made, not as DONE starts
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::commands_after_the_transfer_set_during_it_are_sent
+features: test-util
+--- old
+        self.postquote = cx.easy().options().line.postquote.shared();
+--- new
+        self.postquote = self.postquote.shared();
+
+=== a command after the transfer is looked up in the live options as its answer comes
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::commands_after_the_transfer_cleared_by_a_callback_are_still_sent
+features: test-util
+--- old
+                let cmd = self.postquote.iter().nth(at);
+--- new
+                let cmd = cx.easy().options().line.postquote.iter().nth(at);

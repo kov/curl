@@ -11679,3 +11679,72 @@ fn a_lock_function_s_call_during_upkeep_is_refused() {
     stop.send(()).unwrap();
     server.join().unwrap();
 }
+
+/// The handle the debug function below asks, and what it was answered.
+#[cfg(feature = "c-ares")]
+static SIBLING: curl_alloc::Lock<(usize, Vec<CURLcode>)> = curl_alloc::Lock::new((0, Vec::new()));
+
+/// A debug function that, told of a resolve's record let go of, asks
+/// another handle its private pointer.
+#[cfg(feature = "c-ares")]
+unsafe extern "C" fn debug_asking_sibling(
+    h: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: as `debug_count` is called.
+    let r = unsafe { debug_count(h, kind, ptr, n, data) };
+    // SAFETY: the test passes a `Seen`.
+    let s = unsafe { &*data.cast::<Seen>() };
+    if kind == ffi::CURLINFO_TEXT
+        && s.texts
+            .last()
+            .is_some_and(|t| t.ends_with(" destroy async\n"))
+    {
+        let sibling = SIBLING.lock().unwrap().0 as *mut CURL;
+        let mut p: *mut c_char = ptr::null_mut();
+        // SAFETY: a live handle, and the pointer the info takes.
+        let got = unsafe { curl_easy_getinfo(sibling, ffi::CURLINFO_PRIVATE, &raw mut p) };
+        SIBLING.lock().unwrap().1.push(got);
+    }
+    r
+}
+
+/// A handle reset while in a multi lends its debug function that handle
+/// alone: asked there of another handle of the multi, the call is refused
+/// (`CURLE_RECURSIVE_API_CALL`), where it aborted on finding the other
+/// handle out of the frame's reach.
+#[cfg(feature = "c-ares")]
+#[test]
+fn a_reset_s_debug_function_asking_another_handle_is_refused() {
+    let mut seen = Seen::default();
+    let c = refused_tracing_dns(debug_asking_sibling, &mut seen);
+    let other = curl_easy_init();
+    *SIBLING.lock().unwrap() = (other as usize, Vec::new());
+    let multi = curl_multi_init();
+    // SAFETY: a live multi and handles, one reset while both are added,
+    // then all let go of.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(multi, other), CURLM_OK);
+        let mut running = 1;
+        let mut rounds = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(multi, &raw mut running), CURLM_OK);
+            let waited = curl_multi_wait(multi, ptr::null_mut(), 0, 100, ptr::null_mut());
+            assert_eq!(waited, CURLM_OK);
+            rounds += 1;
+            assert!(rounds < 100, "the transfer never ends");
+        }
+        assert_eq!(asyncs_seen(&seen).len(), 1, "a resolve kept to let go of");
+        crate::easy::curl_easy_reset(c);
+        assert_eq!(SIBLING.lock().unwrap().1, [CURLE_RECURSIVE_API_CALL]);
+        assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+        assert_eq!(curl_multi_remove_handle(multi, other), CURLM_OK);
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(other);
+        assert_eq!(curl_multi_cleanup(multi), CURLM_OK);
+    }
+}

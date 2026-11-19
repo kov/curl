@@ -664,3 +664,13 @@ witness: curl-sys-abi handle_tests::a_lock_function_s_call_during_upkeep_is_refu
 --- new
             let direct = m.stack.between_performs();
             let mut ev = ShimEvents::new(m);
+
+=== a call naming a handle the lent frame does not reach aborts
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_reset_s_debug_function_asking_another_handle_is_refused
+--- old
+                let report = unsafe { frame.info(id) };
+                report.map(f).ok_or(Recursive)
+--- new
+                let report = unsafe { frame.info(id) };
+                Ok(f(report.expect("an added handle is in its multi")))

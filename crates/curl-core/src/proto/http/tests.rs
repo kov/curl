@@ -2668,6 +2668,38 @@ fn the_application_s_credentials_stay_with_the_first_origin() {
     }
 }
 
+/// The application's cookie string (`CURLOPT_COOKIE`) goes to the origin
+/// the transfer started at, and to another only if it lets credentials
+/// follow; and never beside a `Cookie:` header of the application's own,
+/// which replaces it.
+#[test]
+fn the_application_s_cookie_string_stays_with_the_first_origin() {
+    for (unrestricted, own_header) in [(false, false), (true, false), (false, true)] {
+        let location = format!("http://other.test:{PORT}/b");
+        let first = Conversation::new(&moved(&location, true), true);
+        let second = Conversation::new(OK, false);
+        let mut m = serving(Peer::Accepts, &[&first, &second]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let ran = get(&mut m, "/a", first.clone(), |o| {
+            o.http.follow = Follow::All;
+            o.http.unrestricted_auth = unrestricted;
+            o.resolve.set([entry.as_bytes()]).unwrap();
+            o.http.cookies.make_mut().unwrap().send = Some(b"c=d".to_vec());
+            if own_header {
+                o.http.headers = UserHeaders::new([&b"Cookie: a=b"[..]]).unwrap();
+            }
+        });
+        assert_eq!(ran.result, Ok(()));
+        let sent = |r: &[u8], line: &[u8]| fixture::find(r, line).is_some();
+        let (first, second) = (first.received(), second.received());
+        let why = format!("unrestricted {unrestricted}, own header {own_header}");
+        assert_eq!(sent(&first, b"Cookie: c=d\r\n"), !own_header, "{why}");
+        assert_eq!(sent(&first, b"Cookie: a=b\r\n"), own_header, "{why}");
+        assert!(sent(&second, b"Host: other.test:8990\r\n"), "{why}");
+        assert_eq!(sent(&second, b"c=d"), unrestricted, "{why}");
+    }
+}
+
 /// The application's login goes as Basic to the origin the transfer
 /// started at, before the URL's own credentials; to another only if it
 /// lets it, and a redirect's own credentials go there in its place.

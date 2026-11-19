@@ -32,3 +32,12 @@ witness: curl-schannel versions::tests::a_range_enabling_none_is_refused
     NonZeroU32::new(enabled)
 --- new
     NonZeroU32::new(enabled).or(NonZeroU32::new(protocol::TLS1_2))
+
+=== a send retried with fewer bytes than the record half sent holds counts them as sent
+file: crates/curl-schannel/src/session.rs
+witness: curl-schannel a_shorter_send_after_a_record_half_sent_is_refused
+platform: windows
+--- old
+            if plain > bytes.len() {
+--- new
+            if false && plain > bytes.len() {

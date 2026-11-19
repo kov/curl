@@ -334,7 +334,7 @@ fn a_shorter_send_after_a_record_half_sent_is_refused() {
     let big = vec![b'a'; 10_000];
     let sent = m.send_raw(id, &big, &mut |_, _| {});
     assert!(
-        matches!(sent, Some(Ok(curl_core::multi::RawIo::WouldBlock))),
+        matches!(sent, Some(Ok(curl_core::multi::raw::RawIo::WouldBlock))),
         "{sent:?}"
     );
     assert_eq!(seen.blocked_mid_record.load(Ordering::Relaxed), 1);

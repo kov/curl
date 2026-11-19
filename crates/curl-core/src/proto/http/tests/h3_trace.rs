@@ -717,6 +717,46 @@ fn trailers_over_http3_are_handed_on_and_not_taken_in() {
     assert_eq!(easy.cookie_list().unwrap(), [other.to_vec()]);
 }
 
+/// A status in a trailers' block, which quiche hands on as any other
+/// field, is the peer's malformed response: the stream fails, and no
+/// second status line reaches the response's head, which is over.
+#[test]
+fn a_status_after_the_body_over_quiche_fails_the_stream() {
+    let script = quiche_script(b"12");
+    {
+        let mut s = script.lock().unwrap();
+        let reply = s.on_read.back_mut().unwrap();
+        let closed = reply
+            .iter()
+            .position(|t| matches!(t, Told::Closed(..)))
+            .unwrap();
+        reply.splice(
+            closed..closed,
+            [
+                Told::Header {
+                    stream: 0,
+                    name: b":status".to_vec(),
+                    value: b"200".to_vec(),
+                },
+                Told::HeadersDone(0),
+            ],
+        );
+    }
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+    assert_eq!(ran.seen.body(), b"12");
+    assert_eq!(
+        ran.seen.of("header"),
+        [
+            b"HTTP/3 200 \r\n".to_vec(),
+            b"content-length: 2\r\n".to_vec(),
+            b"\r\n".to_vec()
+        ]
+    );
+}
+
 /// The request's packet goes unanswered: the transfer waits for the
 /// library's timer, which the multi runs as it comes due, and what the
 /// library then sends, its retransmission, has the response come.

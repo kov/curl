@@ -453,6 +453,29 @@ fn a_request_s_head_bytes_are_counted() {
     assert_eq!((p.request_bytes(), transfer, input), (25, 25, &b"rest"[..]));
 }
 
+/// A line handed on whole after the final head is refused, never read
+/// into a head that is over: a framed protocol's peer decides when one
+/// comes.
+#[test]
+fn a_line_after_the_final_head_is_refused() {
+    let mut p = HeadParser::new(Exchange {
+        sent: HttpVersion::Http3,
+        ..PLAIN
+    });
+    for line in [&b"HTTP/3 200 \r\n"[..], b"\r\n"] {
+        p.line(line, &mut 0, Unsent::default(), Default::default())
+            .unwrap();
+    }
+    assert!(p.is_done());
+    let late = p.line(
+        b"HTTP/3 200 \r\n",
+        &mut 0,
+        Unsent::default(),
+        Default::default(),
+    );
+    assert_eq!(late.err(), Some(HeadError::AfterHead));
+}
+
 /// Only interim heads, and no body, is nothing that counts: as the C
 /// tool showed for a lone "100 Continue". A final head's status line
 /// alone is something.

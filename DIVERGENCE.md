@@ -530,6 +530,13 @@ so: weaknesses kept because C has them.
   `lib/vquic/cf-quiche.c`; neither suite has a server that sends a 1xx over HTTP/3. Pinned by
   `an_interim_head_over_quiche_ends_before_the_final_one`
   (`crates/curl-core/src/proto/http/tests/h3_trace.rs`).
+- **A status after the body over quiche fails the stream.** quiche hands on a trailers'
+  block's fields as any other, a `:status` among them, and C's filter writes it as a new status
+  line into a response whose head is over (`cb_each_header`). A pseudo-header in trailers is a
+  malformed response (RFC 9114, 4.3) that nghttp3 refuses, so here the stream fails, as over
+  ngtcp2. Read from `lib/vquic/cf-quiche.c`. Pinned by
+  `a_status_after_the_body_over_quiche_fails_the_stream`
+  (`crates/curl-core/src/proto/http/tests/h3_trace.rs`).
 
 ## Error numbers C leaves stale
 

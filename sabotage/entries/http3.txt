@@ -1836,3 +1836,15 @@ witness: curl-core proto::http::tests::h3_trace::a_transfer_paused_with_its_resp
         matches!(*self, ProtoState::Http(ref r) if r.receiving())
 --- new
         matches!(*self, ProtoState::Http(_))
+
+=== a status after the final head, quiche's trailers', reaches the head
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_status_after_the_body_over_quiche_fails_the_stream
+--- old
+                if s.head_done {
+                    return Heard::Failed;
+                }
+--- new
+                if s.head_done && false {
+                    return Heard::Failed;
+                }

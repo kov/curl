@@ -427,3 +427,15 @@ witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
         self.meta.close() || self.framing == Some(Framing::Abandoned)
 --- new
         self.meta.close()
+
+=== a line handed on after the final head is read into it
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::a_line_after_the_final_head_is_refused
+--- old
+        if self.phase != Phase::Head {
+            return Err(HeadError::AfterHead);
+        }
+--- new
+        if self.phase != Phase::Head && false {
+            return Err(HeadError::AfterHead);
+        }

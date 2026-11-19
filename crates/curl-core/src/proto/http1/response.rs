@@ -116,6 +116,9 @@ pub(crate) enum HeadError {
     BadTerminator,
     /// A 101 answering a request not sent as HTTP/1.1.
     SwitchedNotHttp11,
+    /// A line of a head after the final head ended: a framed protocol's
+    /// peer sent a status or a field where only body or trailers go.
+    AfterHead,
     /// What a header says of the body is refused.
     Framing(FramingError),
     OutOfMemory,
@@ -130,6 +133,7 @@ impl HeadError {
             | HeadError::VersionMismatch { .. }
             | HeadError::SwitchedNotHttp11
             | HeadError::BadTerminator
+            | HeadError::AfterHead
             | HeadError::BadLine(_) => ErrorKind::WeirdServerReply,
             HeadError::Http09NotAllowed
             | HeadError::BadSubversion
@@ -189,6 +193,7 @@ impl fmt::Display for HeadError {
             HeadError::SwitchedNotHttp11 => {
                 f.write_str("server sent 101 response while not talking HTTP/1.1")
             }
+            HeadError::AfterHead => f.write_str("Response head line after the final head"),
         }
     }
 }
@@ -453,7 +458,11 @@ impl HeadParser {
         sending: Unsent,
         conn: ConnNegotiate,
     ) -> Result<HeadEvent<'s>, HeadError> {
-        assert!(self.phase == Phase::Head, "a line of a head not over");
+        // The peer's framing decides when a line comes: one after the
+        // final head is its error, not ours.
+        if self.phase != Phase::Head {
+            return Err(HeadError::AfterHead);
+        }
         self.line.clear();
         self.first_room(line.len())?;
         self.line.try_extend_from_slice(line)?;

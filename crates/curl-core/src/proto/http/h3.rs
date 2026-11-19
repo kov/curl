@@ -854,6 +854,12 @@ impl Request {
                 status: true,
                 ..
             } => {
+                // A status after the final head, which quiche hands on
+                // from a trailers' block, is the peer's malformed
+                // response (RFC 9114, 4.3), as nghttp3 refuses it.
+                if s.head_done {
+                    return Heard::Failed;
+                }
                 let Some(code) = decode_status(value) else {
                     return Heard::Failed;
                 };

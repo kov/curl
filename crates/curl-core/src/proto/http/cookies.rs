@@ -361,11 +361,11 @@ pub(super) fn set_by_server<H: Host>(
 
 /// What the request's `Cookie:` line says, if it has one (`http_cookies`):
 /// the jar's cookies for the site, longest path first, then the
-/// application's own if `application`.
+/// application's own, `application`, read before any callback ran.
 pub(super) fn request_value<H: Host>(
     cx: &mut StepCx<'_, H>,
     site: &Site<'_>,
-    application: bool,
+    application: Option<&[u8]>,
 ) -> Result<Option<Vec<u8>>, ErrorKind> {
     let mut value = Vec::new();
     let mut count = 0;
@@ -378,9 +378,9 @@ pub(super) fn request_value<H: Host>(
     });
     held.trace(cx)?;
     made.transpose()?;
-    if application && !full {
-        let send = cx.easy().options().http.cookies.send.as_deref();
-        let send = send.expect("asked for only where the application sends some");
+    if let Some(send) = application
+        && !full
+    {
         if count > 0 {
             value.try_extend_from_slice(b"; ").map_err(oom)?;
         }

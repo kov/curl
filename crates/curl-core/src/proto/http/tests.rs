@@ -3344,6 +3344,38 @@ impl DebugHandler for ChangesOn {
     }
 }
 
+/// The application's own cookies are read for the request before the
+/// jar's capped line is traced: the debug handler clearing
+/// `CURLOPT_COOKIE` then reaches the next request, and this one sends
+/// them after the jar's.
+#[test]
+fn the_application_s_cookies_cleared_while_the_jar_is_traced_still_go() {
+    let (mut m, talk, _) = server(&[&fixture::reply(1)], false);
+    let mut e = Easy::new();
+    for i in 0..151 {
+        let line = format!("127.0.0.1\tFALSE\t/\tFALSE\t0\tc{i}\t1");
+        e.add_cookie(line.as_bytes(), |_| {}).unwrap();
+    }
+    let ran = get_with(&mut m, e, "/1", talk, |o| {
+        o.http.cookies.make_mut().unwrap().send = Some(b"app=2".to_vec());
+        let change = ChangesOn {
+            at: b"Included max number of cookies",
+            change: Box::new(|o| o.http.cookies.make_mut().unwrap().send = None),
+        };
+        o.callbacks
+            .rare
+            .set(|r| &mut r.debug, Some(Handler::debug(change).unwrap()))
+            .unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let request = String::from_utf8_lossy(&ran.request).into_owned();
+    let cookie = request
+        .lines()
+        .find(|l| l.starts_with("Cookie: "))
+        .unwrap_or_else(|| panic!("{request}"));
+    assert!(cookie.ends_with("; app=2"), "{cookie}");
+}
+
 /// A custom method that is not text is traced as its bytes as it sticks
 /// across a redirect, as C's `%s` writes it (`http_switch_to_get`).
 #[test]

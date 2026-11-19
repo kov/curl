@@ -1567,15 +1567,22 @@ impl Request {
             cx.report_mut().set_proxy_auth_used(proxy_auth.used);
         }
         let http = &cx.easy().options().http;
-        let application = http.cookies.send.is_some()
-            && !http.headers.replaces(b"Cookie")
-            && self.base.gate().trusted().is_some();
+        // The application's own, copied now: the jar's trace below runs
+        // the debug callback, which may set `CURLOPT_COOKIE`.
+        let application = match http.cookies.send.as_deref() {
+            Some(send)
+                if !http.headers.replaces(b"Cookie") && self.base.gate().trusted().is_some() =>
+            {
+                Some(copied_cookie(send)?)
+            }
+            _ => None,
+        };
         // Without a jar or the application's own, there is no line to make
         // (`http_cookies`).
-        let cookie = if cx.easy().jar.is_on() || application {
+        let cookie = if cx.easy().jar.is_on() || application.is_some() {
             let proxied = cx.report_mut().used_proxy();
             let site = cookie_site(&self.cookie_host, &self.target, self.base.peer(), proxied);
-            cookies::request_value(cx, &site, application)?
+            cookies::request_value(cx, &site, application.as_deref())?
         } else {
             None
         };
@@ -3594,4 +3601,12 @@ fn write_trace<H: Host>(cx: &mut StepCx<'_, H>, args: std::fmt::Arguments<'_>) {
 /// `write_trace` with a line made of `parts`, which need not be text.
 fn write_trace_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
     trace::of_with(cx, Component::Write, parts);
+}
+
+/// A copy of the application's `CURLOPT_COOKIE`, for one request.
+fn copied_cookie(send: &[u8]) -> Result<Vec<u8>, ErrorKind> {
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(send)
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    Ok(copy)
 }

@@ -1461,6 +1461,35 @@ fn a_connection_is_reused_only_with_the_same_key_files() {
     assert_eq!(connects(b"/keys/other"), 2);
 }
 
+/// A connection serves a later transfer only if it may log in the same
+/// ways: one that allows a password login is not taken by a transfer that
+/// allows public keys alone. C reuses it whatever either allows.
+#[test]
+fn a_connection_is_reused_only_with_the_same_ways_to_log_in() {
+    use crate::options::SshAuthTypes as A;
+    let connects = |first: A, second: A| {
+        let w = world(&[("/home/u/f", "x")]);
+        let mut m = serving(PORT, &silent());
+        let mut results = Vec::new();
+        for ways in [first, second] {
+            let (result, _, said) = run_on(&mut m, &w, "sftp://u:secret@127.0.0.1:PORT/~/f", |o| {
+                o.ssh.make_mut().unwrap().auth_types = ways;
+            });
+            results.push((result, said));
+        }
+        // The first logs in; the second's login, if it makes one, is the
+        // fake's to refuse: only the connections are counted.
+        assert_eq!(results[0].0, Ok(()), "{}", results[0].1);
+        drop(m);
+        let calls = w.lock().unwrap().calls.clone();
+        calls.iter().filter(|c| *c == "connect").count()
+    };
+    assert_eq!(connects(A::ANY, A::ANY), 1);
+    assert_eq!(connects(A::PASSWORD, A::PASSWORD), 1);
+    assert_eq!(connects(A::PASSWORD, A::PUBLICKEY), 2);
+    assert_eq!(connects(A::ANY, A::PUBLICKEY), 2);
+}
+
 /// A connection serves a later transfer that asks for its host key to be
 /// checked only if it was checked as that transfer asks; one asking
 /// nothing takes any. C reuses it whatever either asked.

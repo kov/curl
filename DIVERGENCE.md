@@ -960,6 +960,12 @@ so: weaknesses kept because C has them.
   same C function each hold their own, and do not share connections when they set one. Pinned
   by `a_connection_is_reused_only_where_its_host_key_was_checked_as_asked`
   (`crates/curl-core/src/proto/ssh/tests.rs`).
+- **An SSH connection serves only a transfer that allows the same ways to log in.** The route
+  keeps the ways its first transfer allowed (`CURLOPT_SSH_AUTH_TYPES`), and a transfer that
+  allows other ways gets a new connection, which logs in only as it allows. C does not compare
+  them and reuses the connection. Pinned by
+  `a_connection_is_reused_only_with_the_same_ways_to_log_in`
+  (`crates/curl-core/src/proto/ssh/tests.rs`).
 
 ## Residuals shared with C
 

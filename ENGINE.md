@@ -4452,8 +4452,8 @@ range and resume point, and the body read or sent.
   `SshSetup` (`RouteCold::ssh`), its first transfer's: the key files, what the host key is
   checked against, the ways to log in and compression; the set-up reads it from there, never
   from a later transfer's options. A connection serves only a transfer with the same key files
-  (`ssh_config_matches`) that asks no host key check or the same one (a deliberate difference,
-  DIVERGENCE.md). Every login state holds a `HostVerified`,
+  (`ssh_config_matches`) and the same ways to log in, that asks no host key check or the same
+  one (deliberate differences, DIVERGENCE.md). Every login state holds a `HostVerified`,
   which only `proto::ssh::hostkey` makes, each from one check's evidence: a fingerprint that
   matched, the handler's or the file's acceptance, or none of the three asked for, where any
   key is taken as C takes it.

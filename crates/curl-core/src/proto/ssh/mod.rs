@@ -98,21 +98,21 @@ impl SshSetup {
 
     /// Whether a connection set up as `self` serves a transfer that would
     /// set one up as `want`: the same key files (`ssh_config_matches`),
-    /// and its host key checked as the transfer asks, if it asks.
+    /// its host key checked as the transfer asks, if it asks, and the same
+    /// ways to log in, so that a transfer never takes a login it does not
+    /// allow. C compares neither of the last two.
     pub(crate) fn serves(&self, want: &SshSetup) -> bool {
         // Every field by name, so that one added does not compile until
         // it is compared here or said why not.
         let SshSetup {
             keys,
             host,
-            // Compared as C compares it not: the ways a connection logged
-            // in by are the first transfer's.
-            auth_types: _,
+            auth_types,
             // Whether the session's bytes are compressed changes nothing
             // a transfer sends, receives or is told of; C compares it not.
             compression: _,
         } = self;
-        keys.same(&want.keys) & host.serves(&want.host)
+        keys.same(&want.keys) & host.serves(&want.host) & (*auth_types == want.auth_types)
     }
 }
 

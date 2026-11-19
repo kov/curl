@@ -348,3 +348,11 @@ witness: curl-core proto::ssh::tests::a_connection_is_reused_only_where_its_host
         want.nothing() || self == want
 --- new
         true
+
+=== an SSH connection serves a transfer that allows other ways to log in
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_connection_is_reused_only_with_the_same_ways_to_log_in
+--- old
+        keys.same(&want.keys) & host.serves(&want.host) & (*auth_types == want.auth_types)
+--- new
+        keys.same(&want.keys) & host.serves(&want.host)

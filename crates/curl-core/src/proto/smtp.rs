@@ -443,7 +443,10 @@ impl Request {
             lease.get().mark_close();
             return self.finished(cx, result);
         }
-        if cx.easy().options().connect_only != ConnectOnly::No || !mails(cx, &self.rcpts) {
+        // Asked of the options as they are now (`smtp_done`), not of the
+        // recipients the request walked.
+        let rcpts = &cx.easy().options().line.mail_rcpt;
+        if cx.easy().options().connect_only != ConnectOnly::No || !mails(cx, rcpts) {
             return self.finished(cx, Ok(()));
         }
         let (pc, _) = smtp_of(lease);

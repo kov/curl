@@ -431,3 +431,13 @@ features: test-util
         body.end_as_mail(size).map_err(|_| ErrorKind::OutOfMemory)?;
 --- new
         body.end_as_mail(None).map_err(|_| ErrorKind::OutOfMemory)?;
+
+=== a recipient is looked up in the live options as the previous one's answer comes
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::recipients_cleared_by_a_callback_mid_mail_are_still_mailed
+features: test-util
+--- old
+        let rcpt = self.recipient()?.expect("a mail has a recipient at hand");
+--- new
+        self.rcpts = cx.easy().options().line.mail_rcpt.shared();
+        let rcpt = self.recipient()?.expect("a mail has a recipient at hand");

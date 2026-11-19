@@ -56,6 +56,7 @@ use crate::options::{Method, Options};
 use crate::proto::http1::follow::Inherited;
 use crate::trace;
 use crate::url::{GetOptions, Part, Url};
+use curl_alloc::TryArc;
 use curl_alloc::TryVec as _;
 use std::ffi::CStr;
 
@@ -132,7 +133,7 @@ pub(super) fn transfer_peer<H: Host>(
 /// its gate is decided by: what the application said for that goes
 /// nowhere else.
 pub(crate) struct Addressed<'r> {
-    pub(crate) peer: Peer,
+    pub(crate) peer: crate::multi::state::Origin,
     pub(crate) origins: Origins<'r>,
 }
 
@@ -147,10 +148,9 @@ pub(crate) fn addressed<'f, H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Result<Addressed<'f>, ErrorKind> {
     let peer = base::peer_of(url, scheme, cx)?;
+    let peer = TryArc::try_new(peer).map_err(|_| ErrorKind::OutOfMemory)?;
     let unrestricted = cx.easy().options().http.unrestricted_auth;
-    let origins = first
-        .lend(&peer, unrestricted)
-        .map_err(|_| ErrorKind::OutOfMemory)?;
+    let origins = first.lend(&peer, unrestricted);
     Ok(Addressed { peer, origins })
 }
 
@@ -1010,6 +1010,12 @@ impl ProtoState {
 
     /// The peer the request connects to, or none for a protocol that
     /// does its own I/O (C's `PROTOPT_NONETWORK`).
+    /// The peer the request is addressed to, shared, for a protocol that
+    /// keeps one.
+    pub(crate) fn shared_peer(&self) -> Option<&crate::multi::state::Origin> {
+        self.base().map(base::RequestBase::shared_peer)
+    }
+
     pub(crate) fn network(
         &self,
         url: &Url,

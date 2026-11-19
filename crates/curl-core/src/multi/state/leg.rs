@@ -717,8 +717,14 @@ pub(super) fn start_leg<H: Host>(
         }
         Err(e) => return TransferState::Init.fail(e),
     };
-    let Ok(origin) = TryArc::try_new(target) else {
-        return TransferState::Init.fail(ErrorKind::OutOfMemory);
+    // The request's own peer where the leg goes there, shared with it and
+    // with the first origin rather than copied.
+    let origin = match proto.shared_peer() {
+        Some(peer) if **peer == target => peer.clone(),
+        _ => match TryArc::try_new(target) {
+            Ok(origin) => origin,
+            Err(_) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
+        },
     };
     // A Unix socket is connected to in place of the origin's host, and
     // of any connect-to entry, and no proxy is gone through

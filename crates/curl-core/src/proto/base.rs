@@ -35,8 +35,9 @@ impl GateKey {
 #[derive(Debug)]
 pub(crate) struct RequestBase {
     /// The scheme, the host as the URL names it, and the port the request
-    /// goes to.
-    peer: Peer,
+    /// goes to; shared with the first origin where it is that, and with
+    /// the transfer's leg as it connects.
+    peer: Origin,
     /// The body on its way to the application.
     pub(super) pipeline: Pipeline,
     /// What the URL and the application say to log in with, until its
@@ -72,7 +73,7 @@ impl RequestBase {
     /// one (FTP's, made as HTTP's): the gate moves with it, decided for
     /// the URL's origin, which stays the transfer's; a pipeline of its own
     /// and no credentials, which it reads again.
-    pub(super) fn forwarded(self, peer: Peer, pipeline: Pipeline) -> RequestBase {
+    pub(super) fn forwarded(self, peer: Origin, pipeline: Pipeline) -> RequestBase {
         RequestBase {
             peer,
             pipeline,
@@ -84,6 +85,11 @@ impl RequestBase {
 
     /// The peer the request is for.
     pub(super) fn peer(&self) -> &Peer {
+        &self.peer
+    }
+
+    /// The peer the request is for, to share.
+    pub(super) fn shared_peer(&self) -> &Origin {
         &self.peer
     }
 

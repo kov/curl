@@ -771,6 +771,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
     ) -> Result<Box<Request>, ErrorKind> {
         let (peer, target) = Request::addressed(url, HTTP, cx)?;
+        let peer = curl_alloc::TryArc::try_new(peer).map_err(|_| ErrorKind::OutOfMemory)?;
         let base = base.forwarded(peer, Pipeline::collecting());
         Request::credentialed(url, HTTP, base, target, before, cx)
     }

@@ -184,7 +184,8 @@ fn request() -> Request {
     let scheme = crate::conn::Scheme::named(b"imap").unwrap();
     let peer = super::super::url_peer((scheme, b"h".to_vec(), 143), &url, None, None).unwrap();
     let mut first = crate::auth::gate::FirstOrigin::fresh();
-    let origins = first.lend(&peer, false).unwrap();
+    let peer = curl_alloc::TryArc::try_new(peer).unwrap();
+    let origins = first.lend(&peer, false);
     let pipeline = Pipeline::new(Reach::Network);
     let to = crate::proto::Addressed { peer, origins };
     Request {

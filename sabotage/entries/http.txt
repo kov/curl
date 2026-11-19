@@ -675,12 +675,9 @@ witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_t
 file: crates/curl-core/src/auth/gate.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-        let first = match self.0.take() {
-            Some(first) => first,
-            None => curl_alloc::TryArc::try_new(peer.try_clone()?)?,
-        };
+            first: self.0.get_or_insert_with(|| peer.clone()),
 --- new
-        let first = curl_alloc::TryArc::try_new(peer.try_clone()?)?;
+            first: self.0.insert(peer.clone()),
 
 === unrestricted auth is ignored
 file: crates/curl-core/src/auth/gate.rs

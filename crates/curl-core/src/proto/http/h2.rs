@@ -2159,9 +2159,8 @@ impl Request {
         };
         let of = if secured { HTTPS } else { HTTP };
         let peer = super::super::base::peer_of(url, of.name().as_bytes(), cx)?;
-        let origins = inherited_first
-            .lend(&peer, false)
-            .map_err(|_| ErrorKind::OutOfMemory)?;
+        let peer = curl_alloc::TryArc::try_new(peer).map_err(|_| ErrorKind::OutOfMemory)?;
+        let origins = inherited_first.lend(&peer, false);
         let to = super::super::Addressed { peer, origins };
         let mut request = Request::uncredentialed(url, to, before)?;
         let options = cx.easy().options();
